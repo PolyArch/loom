@@ -595,6 +595,7 @@ SpatialBindingRelationModel::create(
       continue;
     if (!isBindingProjection(*projection)) {
       if (isRouteProjection(*projection) ||
+          *projection == Projection::NetAssignedTagValues ||
           *projection == Projection::MemoryBoundServices ||
           *projection == Projection::MemoryAddressRegion)
         continue;

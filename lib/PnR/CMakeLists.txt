@@ -43,6 +43,7 @@ add_mlir_library(LoomPnR
   SpatialRouteConstraintModel.cpp
   SpatialRouteResourceState.cpp
   SpatialTagAssignment.cpp
+  SpatialTagConstraintModel.cpp
   SpatialTagContinuity.cpp
 
   ADDITIONAL_HEADER_DIRS

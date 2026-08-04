@@ -30,6 +30,7 @@ namespace detail {
 class SpatialBindingRelationModel;
 class SpatialMemoryConstraintModel;
 class SpatialRouteConstraintModel;
+class SpatialTagConstraintModel;
 } // namespace detail
 
 struct FrozenSpatialComputePlacement final {
@@ -990,6 +991,9 @@ public:
   const detail::SpatialMemoryConstraintModel &memoryConstraints() const {
     return *memoryConstraints_;
   }
+  const detail::SpatialTagConstraintModel &tagConstraints() const {
+    return *tagConstraints_;
+  }
   const FrozenSpatialPnrCacheKey &cacheKey() const { return cacheKey_; }
 
 private:
@@ -1009,6 +1013,7 @@ private:
           bindingRelations,
       std::shared_ptr<const detail::SpatialMemoryConstraintModel>
           memoryConstraints,
+      std::shared_ptr<const detail::SpatialTagConstraintModel> tagConstraints,
       std::shared_ptr<const detail::SpatialRouteConstraintModel>
           routeConstraints,
       FrozenSpatialPnrCacheKey cacheKey)
@@ -1027,6 +1032,7 @@ private:
         progressClosure_(progressClosure),
         bindingRelations_(std::move(bindingRelations)),
         memoryConstraints_(std::move(memoryConstraints)),
+        tagConstraints_(std::move(tagConstraints)),
         routeConstraints_(std::move(routeConstraints)), cacheKey_(cacheKey) {}
 
   ArtifactIdentity dataflowIdentity_;
@@ -1049,6 +1055,7 @@ private:
   std::shared_ptr<const detail::SpatialBindingRelationModel> bindingRelations_;
   std::shared_ptr<const detail::SpatialMemoryConstraintModel>
       memoryConstraints_;
+  std::shared_ptr<const detail::SpatialTagConstraintModel> tagConstraints_;
   std::shared_ptr<const detail::SpatialRouteConstraintModel> routeConstraints_;
   FrozenSpatialPnrCacheKey cacheKey_;
 

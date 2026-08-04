@@ -784,6 +784,9 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
       loom::mapping::importTechMapping(candidates->candidates.front(), store));
   const auto constraints = loom::test::buildSpatialMappingConstraints(
       context, dataflow, tech.view(), fabric.view(), store, forceTagConflict);
+  if (boundaryWrapped && !forceTagConflict)
+    loom::test::exerciseSpatialTagConstraintRelations(
+        context, dataflow, tech.view(), fabric.view(), store);
   if (!temporal && !boundaryWrapped && !forceTagConflict)
     loom::test::exerciseSpatialAttachmentConstraintRelations(
         context, dataflow, tech.view(), fabric.view(), store);

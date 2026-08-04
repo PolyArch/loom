@@ -1,12 +1,16 @@
 #include "PnR/SpatialTagAssignment.h"
 
+#include "SpatialTagConstraintModel.h"
+
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/Errc.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <system_error>
@@ -59,6 +63,23 @@ llvm::APInt canonicalUnsigned(const llvm::APInt &value) {
   return value.zextOrTrunc(width);
 }
 
+bool unsignedLess(const llvm::APInt &lhs, const llvm::APInt &rhs) {
+  return compareUnsigned(lhs, rhs) < 0;
+}
+
+void normalizeValues(std::vector<llvm::APInt> &values) {
+  for (llvm::APInt &value : values)
+    value = canonicalUnsigned(value);
+  llvm::sort(values, unsignedLess);
+  values.erase(std::unique(values.begin(), values.end()), values.end());
+}
+
+bool containsValue(llvm::ArrayRef<llvm::APInt> values,
+                   const llvm::APInt &value) {
+  const auto found = llvm::lower_bound(values, value, unsignedLess);
+  return found != values.end() && compareUnsigned(*found, value) == 0;
+}
+
 llvm::Expected<llvm::APInt> nextUnsigned(const llvm::APInt &value) {
   if (value.getBitWidth() == std::numeric_limits<unsigned>::max())
     return invalid("Physical Tag candidate width overflows");
@@ -79,6 +100,7 @@ llvm::Expected<std::optional<llvm::APInt>>
 chooseValue(std::uint32_t tagWidthBits, llvm::ArrayRef<PnrIndex> domains,
             const std::optional<llvm::ArrayRef<SpatialConstraintDomainValue>>
                 &restriction,
+            llvm::ArrayRef<llvm::APInt> forbidden,
             llvm::ArrayRef<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy) {
   std::optional<llvm::APInt> firstAllowed;
   const auto considerRange = [&](llvm::APInt candidate,
@@ -87,6 +109,13 @@ chooseValue(std::uint32_t tagWidthBits, llvm::ArrayRef<PnrIndex> domains,
     candidate = canonicalUnsigned(candidate);
     while ((!upper || compareUnsigned(candidate, *upper) < 0) &&
            ::fabric::isRepresentablePhysicalTagValue(tagWidthBits, candidate)) {
+      if (containsValue(forbidden, candidate)) {
+        auto next = nextUnsigned(candidate);
+        if (!next)
+          return next.takeError();
+        candidate = std::move(*next);
+        continue;
+      }
       if (!firstAllowed)
         firstAllowed = candidate;
       if (isFree(domains, candidate, occupancy))
@@ -210,15 +239,18 @@ struct SpatialTagAssignmentScratchStorage final {
   const FrozenSpatialPnrProblem *problem = nullptr;
   std::vector<SpatialTagNetState> stagedNets;
   std::vector<PnrIndex> touchedRoutes;
+  std::vector<PnrIndex> routedNets;
+  std::vector<PnrIndex> rebuiltNets;
   SpatialTagContinuityScratch continuityScratch;
-  std::size_t proposedRouteCount = 0;
   bool active = false;
 };
 
 struct SpatialTagAssignmentStateStorage final {
   const FrozenSpatialPnrProblem *problem = nullptr;
+  const SpatialTagConstraintModel *constraints = nullptr;
   std::vector<SpatialTagNetState> nets;
   std::vector<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy;
+  std::vector<std::uint8_t> classBuilt;
   std::uint64_t unassignedCount = 0;
   std::uint64_t conflictCount = 0;
 };
@@ -268,9 +300,21 @@ preservedValue(const TagNetState *oldNet,
 }
 
 llvm::Error buildNet(TagStateStorage &storage, PnrIndex logicalNet,
-                     const TagNetState *oldNet, TagNetState &result) {
-  result.values.clear();
-  result.values.reserve(result.continuity.segments().size());
+                     const TagNetState *oldNet, TagNetState &result,
+                     std::optional<llvm::ArrayRef<llvm::APInt>> requiredValues,
+                     llvm::ArrayRef<llvm::APInt> forbiddenValues) {
+  result.values.assign(result.continuity.segments().size(), std::nullopt);
+  std::vector<std::uint8_t> added(result.values.size(), 0);
+  bool committed = false;
+  const llvm::scope_exit rollback([&] {
+    if (committed)
+      return;
+    for (PnrIndex segment = 0; segment < result.values.size(); ++segment)
+      if (added[segment])
+        removeAssignment(storage.occupancy, storage.unassignedCount,
+                         storage.conflictCount, segmentDomains(result, segment),
+                         result.values[segment]);
+  });
 
   const auto logicalNets = storage.problem->transfers().logicalNets();
   if (logicalNet >= logicalNets.size())
@@ -292,27 +336,261 @@ llvm::Error buildNet(TagStateStorage &storage, PnrIndex logicalNet,
       if (domain >= matchDomains.size() ||
           matchDomains[domain].tagWidthBits != segment.tagWidthBits)
         return invalid("segment and local match-domain widths disagree");
+  }
 
+  if (requiredValues) {
+    if (requiredValues->size() > result.values.size())
+      return unsupported(
+          "tag equality requires more values than one member has segments");
+    if (requiredValues->empty()) {
+      if (!result.values.empty())
+        return unsupported(
+            "nonempty tagged route cannot realize an empty equality set");
+      committed = true;
+      return llvm::Error::success();
+    }
+
+    std::vector<PnrIndex> valueForSegment(result.values.size(),
+                                          getInvalidPnrIndex());
+    const auto compatible = [&](PnrIndex value, PnrIndex segment) {
+      const llvm::APInt &candidate = (*requiredValues)[value];
+      const auto &descriptor = result.continuity.segments()[segment];
+      return ::fabric::isRepresentablePhysicalTagValue(descriptor.tagWidthBits,
+                                                       candidate) &&
+             valueAllowed(candidate, restriction) &&
+             isFree(segmentDomains(result, segment), candidate,
+                    storage.occupancy);
+    };
+    std::function<bool(PnrIndex, std::vector<std::uint8_t> &)> matchValue =
+        [&](PnrIndex value, std::vector<std::uint8_t> &visited) {
+          for (PnrIndex segment = 0; segment < result.values.size();
+               ++segment) {
+            if (visited[segment] || !compatible(value, segment))
+              continue;
+            visited[segment] = 1;
+            if (valueForSegment[segment] == getInvalidPnrIndex() ||
+                matchValue(valueForSegment[segment], visited)) {
+              valueForSegment[segment] = value;
+              return true;
+            }
+          }
+          return false;
+        };
+    for (PnrIndex value = 0; value < requiredValues->size(); ++value) {
+      std::vector<std::uint8_t> visited(result.values.size(), 0);
+      if (!matchValue(value, visited))
+        return unsupported(
+            "tag equality set has no representative segment matching");
+    }
+    for (PnrIndex segment = 0; segment < valueForSegment.size(); ++segment) {
+      const PnrIndex value = valueForSegment[segment];
+      if (value == getInvalidPnrIndex())
+        continue;
+      result.values[segment] = (*requiredValues)[value];
+      if (llvm::Error error = addAssignment(
+              storage.occupancy, storage.unassignedCount, storage.conflictCount,
+              segmentDomains(result, segment), result.values[segment]))
+        return error;
+      added[segment] = 1;
+    }
+    std::vector<PnrIndex> remaining;
+    remaining.reserve(result.values.size() - requiredValues->size());
+    for (PnrIndex segment = 0; segment < result.values.size(); ++segment)
+      if (!result.values[segment])
+        remaining.push_back(segment);
+    llvm::sort(remaining, [&](PnrIndex lhs, PnrIndex rhs) {
+      const auto left = segmentDomains(result, lhs).size();
+      const auto right = segmentDomains(result, rhs).size();
+      if (left != right)
+        return left > right;
+      return lhs < rhs;
+    });
+    for (PnrIndex segment : remaining) {
+      const auto &descriptor = result.continuity.segments()[segment];
+      const auto domains = segmentDomains(result, segment);
+      for (const llvm::APInt &candidate : *requiredValues)
+        if (::fabric::isRepresentablePhysicalTagValue(descriptor.tagWidthBits,
+                                                      candidate) &&
+            valueAllowed(candidate, restriction) &&
+            isFree(domains, candidate, storage.occupancy)) {
+          result.values[segment] = candidate;
+          break;
+        }
+      if (!result.values[segment])
+        return unsupported(
+            "tag equality set cannot color one continuity segment");
+      if (llvm::Error error = addAssignment(
+              storage.occupancy, storage.unassignedCount, storage.conflictCount,
+              domains, result.values[segment]))
+        return error;
+      added[segment] = 1;
+    }
+    committed = true;
+    return llvm::Error::success();
+  }
+
+  for (PnrIndex ordinal = 0; ordinal < result.continuity.segments().size();
+       ++ordinal) {
+    const SpatialTagContinuitySegment &segment =
+        result.continuity.segments()[ordinal];
+    const auto domains = segmentDomains(result, ordinal);
     std::optional<llvm::APInt> selected = preservedValue(oldNet, segment);
     if (selected && (!::fabric::isRepresentablePhysicalTagValue(
                          segment.tagWidthBits, *selected) ||
                      !valueAllowed(*selected, restriction) ||
+                     containsValue(forbiddenValues, *selected) ||
                      !isFree(domains, *selected, storage.occupancy)))
       selected.reset();
     if (!selected) {
       auto chosen = chooseValue(segment.tagWidthBits, domains, restriction,
-                                storage.occupancy);
+                                forbiddenValues, storage.occupancy);
       if (!chosen)
         return chosen.takeError();
       selected = std::move(*chosen);
     }
-    result.values.push_back(std::move(selected));
-    if (llvm::Error error =
-            addAssignment(storage.occupancy, storage.unassignedCount,
-                          storage.conflictCount, domains, result.values.back()))
+    result.values[ordinal] = std::move(selected);
+    if (llvm::Error error = addAssignment(
+            storage.occupancy, storage.unassignedCount, storage.conflictCount,
+            domains, result.values[ordinal]))
       return error;
+    added[ordinal] = 1;
   }
+  committed = true;
   return llvm::Error::success();
+}
+
+std::vector<llvm::APInt> projectedValues(const TagNetState &net) {
+  std::vector<llvm::APInt> result;
+  result.reserve(net.values.size());
+  for (const auto &value : net.values)
+    if (value)
+      result.push_back(*value);
+  normalizeValues(result);
+  return result;
+}
+
+std::vector<llvm::APInt> disjointForbiddenValues(const TagStateStorage &storage,
+                                                 PnrIndex equalityClass) {
+  std::vector<llvm::APInt> result;
+  for (PnrIndex group : storage.constraints->classDisjointGroups(equalityClass))
+    for (PnrIndex peer : storage.constraints->disjointGroupMembers(group)) {
+      if (peer == equalityClass || !storage.classBuilt[peer])
+        continue;
+      for (PnrIndex net : storage.constraints->classMembers(peer))
+        for (const auto &value : storage.nets[net].values)
+          if (value)
+            result.push_back(*value);
+    }
+  normalizeValues(result);
+  return result;
+}
+
+llvm::Error buildClass(TagStateStorage &storage, PnrIndex equalityClass,
+                       const std::vector<TagNetState> *oldNets,
+                       std::vector<PnrIndex> *builtNets = nullptr) {
+  const auto members = storage.constraints->classMembers(equalityClass);
+  if (members.empty())
+    return invalid("Physical Tag equality class has no member");
+  PnrIndex leader = members.front();
+  for (PnrIndex net : members)
+    if (storage.nets[net].continuity.segments().size() <
+            storage.nets[leader].continuity.segments().size() ||
+        (storage.nets[net].continuity.segments().size() ==
+             storage.nets[leader].continuity.segments().size() &&
+         net < leader))
+      leader = net;
+  std::vector<PnrIndex> order;
+  order.reserve(members.size());
+  order.push_back(leader);
+  for (PnrIndex net : members)
+    if (net != leader)
+      order.push_back(net);
+
+  const std::vector<llvm::APInt> forbidden =
+      disjointForbiddenValues(storage, equalityClass);
+  const TagNetState *oldLeader = oldNets ? &(*oldNets)[leader] : nullptr;
+  if (llvm::Error error =
+          buildNet(storage, leader, oldLeader, storage.nets[leader],
+                   std::nullopt, forbidden))
+    return error;
+  if (builtNets)
+    builtNets->push_back(leader);
+  const std::vector<llvm::APInt> required =
+      projectedValues(storage.nets[leader]);
+  for (PnrIndex net : llvm::drop_begin(order)) {
+    if (llvm::Error error = buildNet(storage, net, nullptr, storage.nets[net],
+                                     required, forbidden))
+      return error;
+    if (builtNets)
+      builtNets->push_back(net);
+  }
+  storage.classBuilt[equalityClass] = 1;
+  return llvm::Error::success();
+}
+
+llvm::Error verifyRelations(const TagStateStorage &storage) {
+  if (!storage.constraints->hasRelations())
+    return llvm::Error::success();
+  std::vector<std::vector<llvm::APInt>> classValues(
+      storage.constraints->classCount());
+  for (PnrIndex equalityClass = 0;
+       equalityClass < storage.constraints->classCount(); ++equalityClass) {
+    const auto members = storage.constraints->classMembers(equalityClass);
+    if (members.empty())
+      return invalid("Physical Tag equality class has no member");
+    classValues[equalityClass] = projectedValues(storage.nets[members.front()]);
+    for (PnrIndex net : members.drop_front())
+      if (projectedValues(storage.nets[net]) != classValues[equalityClass])
+        return invalid("Physical Tag value-set equality is violated");
+  }
+  for (PnrIndex equalityClass = 0;
+       equalityClass < storage.constraints->classCount(); ++equalityClass)
+    for (PnrIndex group :
+         storage.constraints->classDisjointGroups(equalityClass)) {
+      const auto members = storage.constraints->disjointGroupMembers(group);
+      if (members.empty() || members.front() != equalityClass)
+        continue;
+      std::vector<llvm::APInt> observed;
+      for (PnrIndex member : members) {
+        for (const llvm::APInt &value : classValues[member])
+          if (containsValue(observed, value))
+            return invalid("Physical Tag value-set disjointness is violated");
+        observed.insert(observed.end(), classValues[member].begin(),
+                        classValues[member].end());
+        normalizeValues(observed);
+      }
+    }
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::unique_ptr<TagStateStorage>>
+buildStorage(const FrozenSpatialPnrProblem &problem,
+             llvm::ArrayRef<const RouteTreeState *> routes) {
+  if (routes.size() != problem.transfers().logicalNets().size())
+    return invalid("route count does not match the frozen logical nets");
+  auto storage = std::make_unique<TagStateStorage>();
+  storage->problem = &problem;
+  storage->constraints = &problem.tagConstraints();
+  storage->nets.resize(routes.size());
+  storage->occupancy.resize(
+      problem.routing().tagContinuity().matchDomains().size());
+  storage->classBuilt.assign(storage->constraints->classCount(), 0);
+  for (PnrIndex logicalNet = 0; logicalNet < routes.size(); ++logicalNet) {
+    if (!routes[logicalNet] ||
+        &routes[logicalNet]->routingGraph() != &problem.routing())
+      return invalid("route does not belong to the frozen routing graph");
+    auto continuity = deriveSpatialTagContinuity(*routes[logicalNet]);
+    if (!continuity)
+      return continuity.takeError();
+    storage->nets[logicalNet].continuity = std::move(*continuity);
+  }
+  for (PnrIndex equalityClass = 0;
+       equalityClass < storage->constraints->classCount(); ++equalityClass)
+    if (llvm::Error error = buildClass(*storage, equalityClass, nullptr))
+      return std::move(error);
+  if (llvm::Error error = verifyRelations(*storage))
+    return std::move(error);
+  return storage;
 }
 
 std::size_t retainedBytes(const TagNetState &net) {
@@ -334,37 +612,28 @@ llvm::Expected<SpatialTagAssignmentProjection>
 loom::pnr::deriveCanonicalSpatialTagAssignments(
     const FrozenSpatialPnrProblem &problem,
     llvm::ArrayRef<const RouteTreeState *> routes) {
-  const auto logicalNets = problem.transfers().logicalNets();
-  if (routes.size() != logicalNets.size())
-    return invalid("route count does not match the frozen logical nets");
-
-  const FrozenConstraintShard &tagConstraints = problem.constraints().shard(
-      ::mapping::SpatialConstraintProjection::NetAssignedTagValues);
-  if (!tagConstraints.equalityClasses().empty() ||
-      !tagConstraints.disjointGroups().empty())
-    return unsupported(
-        "tag equality and disjointness require their relation owner");
+  auto storage = buildStorage(problem, routes);
+  if (!storage)
+    return storage.takeError();
 
   SpatialTagAssignmentProjection result;
   result.netSegmentOffsets_.reserve(routes.size() + 1);
   result.netSegmentOffsets_.push_back(0);
   result.segmentDomainOffsets_.push_back(0);
-  for (auto [logicalNet, route] : llvm::enumerate(routes)) {
-    if (!route || &route->routingGraph() != &problem.routing())
-      return invalid("route does not belong to the frozen routing graph");
-    auto continuity = deriveSpatialTagContinuity(*route);
-    if (!continuity)
-      return continuity.takeError();
+  for (const TagNetState &net : (*storage)->nets) {
+    const auto &continuity = net.continuity;
     if (llvm::Error error = preflightPnrIndexCapacity(
             segmentCountContext,
-            result.segments_.size() + continuity->segments().size()))
+            result.segments_.size() + continuity.segments().size()))
       return std::move(error);
     result.segments_.insert(result.segments_.end(),
-                            continuity->segments().begin(),
-                            continuity->segments().end());
-    const auto localOffsets = continuity->segmentDomainOffsets();
-    const auto localDomains = continuity->segmentDomains();
-    for (PnrIndex segment = 0; segment < continuity->segments().size();
+                            continuity.segments().begin(),
+                            continuity.segments().end());
+    result.values_.insert(result.values_.end(), net.values.begin(),
+                          net.values.end());
+    const auto localOffsets = continuity.segmentDomainOffsets();
+    const auto localDomains = continuity.segmentDomains();
+    for (PnrIndex segment = 0; segment < continuity.segments().size();
          ++segment) {
       const PnrIndex begin = localOffsets[segment];
       const PnrIndex end = localOffsets[segment + 1];
@@ -385,7 +654,6 @@ loom::pnr::deriveCanonicalSpatialTagAssignments(
     if (!netEnd)
       return netEnd.takeError();
     result.netSegmentOffsets_.push_back(*netEnd);
-    (void)logicalNet;
   }
 
   const std::size_t domainCount =
@@ -417,45 +685,8 @@ loom::pnr::deriveCanonicalSpatialTagAssignments(
       result.domainSegments_[cursors[domain]++] = segment;
     }
 
-  std::vector<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy(domainCount);
-  result.values_.reserve(result.segments_.size());
-  for (PnrIndex logicalNet = 0; logicalNet < logicalNets.size(); ++logicalNet) {
-    const auto restriction = tagConstraints.restrictedDomain(
-        SpatialConstraintSubject{logicalNets[logicalNet].producer});
-    for (PnrIndex segment = result.netSegmentOffsets_[logicalNet];
-         segment < result.netSegmentOffsets_[logicalNet + 1]; ++segment) {
-      const auto domains =
-          llvm::ArrayRef<PnrIndex>(result.segmentDomains_)
-              .slice(result.segmentDomainOffsets_[segment],
-                     result.segmentDomainOffsets_[segment + 1] -
-                         result.segmentDomainOffsets_[segment]);
-      for (PnrIndex domain : domains)
-        if (problem.routing()
-                .tagContinuity()
-                .matchDomains()[domain]
-                .tagWidthBits != result.segments_[segment].tagWidthBits)
-          return invalid("segment and local match-domain widths disagree");
-      auto value = chooseValue(result.segments_[segment].tagWidthBits, domains,
-                               restriction, occupancy);
-      if (!value)
-        return value.takeError();
-      if (!*value) {
-        ++result.unassignedCount_;
-        result.values_.push_back(std::nullopt);
-        continue;
-      }
-      result.values_.push_back(std::move(**value));
-      const llvm::APInt &selected = *result.values_.back();
-      for (PnrIndex domain : domains) {
-        PnrIndex &count = occupancy[domain][selected];
-        if (count != 0)
-          ++result.conflictCount_;
-        if (count >= getInvalidPnrIndex() - PnrIndex{1})
-          return invalid("tag match-domain occupancy overflows PnrIndex");
-        ++count;
-      }
-    }
-  }
+  result.unassignedCount_ = (*storage)->unassignedCount;
+  result.conflictCount_ = (*storage)->conflictCount;
   return result;
 }
 
@@ -476,6 +707,10 @@ SpatialTagAssignmentScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   storage_->stagedNets.resize(problem.transfers().logicalNets().size());
   storage_->touchedRoutes.clear();
   storage_->touchedRoutes.reserve(problem.transfers().logicalNets().size());
+  storage_->routedNets.clear();
+  storage_->routedNets.reserve(problem.transfers().logicalNets().size());
+  storage_->rebuiltNets.clear();
+  storage_->rebuiltNets.reserve(problem.transfers().logicalNets().size());
   return llvm::Error::success();
 }
 
@@ -483,6 +718,8 @@ std::size_t SpatialTagAssignmentScratch::retainedStorageBytes() const {
   std::size_t bytes =
       storage_->stagedNets.capacity() * sizeof(detail::SpatialTagNetState) +
       storage_->touchedRoutes.capacity() * sizeof(PnrIndex) +
+      storage_->routedNets.capacity() * sizeof(PnrIndex) +
+      storage_->rebuiltNets.capacity() * sizeof(PnrIndex) +
       storage_->continuityScratch.retainedStorageBytes();
   for (const auto &net : storage_->stagedNets)
     bytes += retainedBytes(net);
@@ -501,33 +738,14 @@ SpatialTagAssignmentState::~SpatialTagAssignmentState() = default;
 llvm::Expected<SpatialTagAssignmentState>
 SpatialTagAssignmentState::create(const FrozenSpatialPnrProblem &problem,
                                   llvm::ArrayRef<RouteTreeStateHandle> routes) {
-  if (routes.size() != problem.transfers().logicalNets().size())
-    return invalid("route count does not match the frozen logical nets");
-  const FrozenConstraintShard &tagConstraints = problem.constraints().shard(
-      ::mapping::SpatialConstraintProjection::NetAssignedTagValues);
-  if (!tagConstraints.equalityClasses().empty() ||
-      !tagConstraints.disjointGroups().empty())
-    return unsupported(
-        "tag equality and disjointness require their relation owner");
-
-  auto storage = std::make_unique<detail::SpatialTagAssignmentStateStorage>();
-  storage->problem = &problem;
-  storage->nets.resize(routes.size());
-  storage->occupancy.resize(
-      problem.routing().tagContinuity().matchDomains().size());
-  for (PnrIndex logicalNet = 0; logicalNet < routes.size(); ++logicalNet) {
-    if (!routes[logicalNet] ||
-        &routes[logicalNet]->routingGraph() != &problem.routing())
-      return invalid("route does not belong to the frozen routing graph");
-    auto continuity = deriveSpatialTagContinuity(*routes[logicalNet]);
-    if (!continuity)
-      return continuity.takeError();
-    storage->nets[logicalNet].continuity = std::move(*continuity);
-    if (llvm::Error error =
-            buildNet(*storage, logicalNet, nullptr, storage->nets[logicalNet]))
-      return std::move(error);
-  }
-  return SpatialTagAssignmentState(std::move(storage));
+  std::vector<const RouteTreeState *> rawRoutes;
+  rawRoutes.reserve(routes.size());
+  for (const RouteTreeStateHandle &route : routes)
+    rawRoutes.push_back(route.get());
+  auto storage = buildStorage(problem, rawRoutes);
+  if (!storage)
+    return storage.takeError();
+  return SpatialTagAssignmentState(std::move(*storage));
 }
 
 llvm::ArrayRef<SpatialTagContinuitySegment>
@@ -571,43 +789,71 @@ llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
       routeTransactions.size() != storage_->nets.size())
     return invalid("Physical Tag scratch belongs to another frozen problem");
 
-  transaction.touchedRoutes.assign(touchedRoutes.begin(), touchedRoutes.end());
+  transaction.routedNets.assign(touchedRoutes.begin(), touchedRoutes.end());
+  llvm::sort(transaction.routedNets);
+  transaction.routedNets.erase(
+      std::unique(transaction.routedNets.begin(), transaction.routedNets.end()),
+      transaction.routedNets.end());
+  if (transaction.routedNets.empty())
+    return llvm::Error::success();
+  for (PnrIndex logicalNet : transaction.routedNets)
+    if (logicalNet >= routes.size() || !routes[logicalNet] ||
+        &routes[logicalNet]->routingGraph() != &storage_->problem->routing() ||
+        !routeTransactions[logicalNet])
+      return invalid("touched route does not belong to the frozen problem");
+
+  std::vector<PnrIndex> affectedClasses;
+  affectedClasses.reserve(transaction.routedNets.size());
+  for (PnrIndex logicalNet : transaction.routedNets)
+    affectedClasses.push_back(storage_->constraints->classOfNet(logicalNet));
+  llvm::sort(affectedClasses);
+  affectedClasses.erase(
+      std::unique(affectedClasses.begin(), affectedClasses.end()),
+      affectedClasses.end());
+  transaction.touchedRoutes.clear();
+  for (PnrIndex equalityClass : affectedClasses) {
+    const auto members = storage_->constraints->classMembers(equalityClass);
+    transaction.touchedRoutes.insert(transaction.touchedRoutes.end(),
+                                     members.begin(), members.end());
+  }
   llvm::sort(transaction.touchedRoutes);
   transaction.touchedRoutes.erase(std::unique(transaction.touchedRoutes.begin(),
                                               transaction.touchedRoutes.end()),
                                   transaction.touchedRoutes.end());
-  if (transaction.touchedRoutes.empty())
-    return llvm::Error::success();
-  for (PnrIndex logicalNet : transaction.touchedRoutes)
-    if (logicalNet >= routes.size() || !routes[logicalNet] ||
-        &routes[logicalNet]->routingGraph() != &storage_->problem->routing())
-      return invalid("touched route does not belong to the frozen problem");
 
   transaction.active = true;
-  transaction.proposedRouteCount = 0;
+  transaction.rebuiltNets.clear();
   for (PnrIndex logicalNet : transaction.touchedRoutes) {
     removeNet(*storage_, storage_->nets[logicalNet]);
     std::swap(storage_->nets[logicalNet], transaction.stagedNets[logicalNet]);
   }
+  for (PnrIndex equalityClass : affectedClasses)
+    storage_->classBuilt[equalityClass] = 0;
   for (PnrIndex logicalNet : transaction.touchedRoutes) {
-    if (!routeTransactions[logicalNet]) {
-      rollback(scratch);
-      return invalid("touched route has no prepared transaction");
+    if (std::binary_search(transaction.routedNets.begin(),
+                           transaction.routedNets.end(), logicalNet)) {
+      if (llvm::Error error =
+              rebuildSpatialTagContinuity(*routeTransactions[logicalNet],
+                                          storage_->nets[logicalNet].continuity,
+                                          transaction.continuityScratch)) {
+        rollback(scratch);
+        return error;
+      }
+    } else {
+      storage_->nets[logicalNet].continuity =
+          transaction.stagedNets[logicalNet].continuity;
     }
+  }
+  for (PnrIndex equalityClass : affectedClasses)
     if (llvm::Error error =
-            rebuildSpatialTagContinuity(*routeTransactions[logicalNet],
-                                        storage_->nets[logicalNet].continuity,
-                                        transaction.continuityScratch)) {
+            buildClass(*storage_, equalityClass, &transaction.stagedNets,
+                       &transaction.rebuiltNets)) {
       rollback(scratch);
       return error;
     }
-    ++transaction.proposedRouteCount;
-    if (llvm::Error error =
-            buildNet(*storage_, logicalNet, &transaction.stagedNets[logicalNet],
-                     storage_->nets[logicalNet])) {
-      rollback(scratch);
-      return error;
-    }
+  if (llvm::Error error = verifyRelations(*storage_)) {
+    rollback(scratch);
+    return error;
   }
   return llvm::Error::success();
 }
@@ -618,8 +864,9 @@ void SpatialTagAssignmentState::commit(
   if (!transaction.active)
     return;
   transaction.active = false;
-  transaction.proposedRouteCount = 0;
   transaction.touchedRoutes.clear();
+  transaction.routedNets.clear();
+  transaction.rebuiltNets.clear();
 }
 
 void SpatialTagAssignmentState::rollback(
@@ -627,8 +874,7 @@ void SpatialTagAssignmentState::rollback(
   auto &transaction = *scratch.storage_;
   if (!transaction.active)
     return;
-  for (PnrIndex logicalNet : llvm::ArrayRef<PnrIndex>(transaction.touchedRoutes)
-                                 .take_front(transaction.proposedRouteCount))
+  for (PnrIndex logicalNet : transaction.rebuiltNets)
     removeNet(*storage_, storage_->nets[logicalNet]);
   for (PnrIndex logicalNet : transaction.touchedRoutes) {
     std::swap(storage_->nets[logicalNet], transaction.stagedNets[logicalNet]);
@@ -639,9 +885,12 @@ void SpatialTagAssignmentState::rollback(
           storage_->conflictCount, ::segmentDomains(restored, segment),
           restored.values[segment]));
   }
+  for (PnrIndex logicalNet : transaction.touchedRoutes)
+    storage_->classBuilt[storage_->constraints->classOfNet(logicalNet)] = 1;
   transaction.active = false;
-  transaction.proposedRouteCount = 0;
   transaction.touchedRoutes.clear();
+  transaction.routedNets.clear();
+  transaction.rebuiltNets.clear();
 }
 
 llvm::Error SpatialTagAssignmentState::verify(
@@ -740,5 +989,7 @@ llvm::Error SpatialTagAssignmentState::verify(
       if (expectedOccupancy[domain].lookup(entry.first) != entry.second)
         return invalid("cached Physical Tag occupancy has drifted");
   }
+  if (llvm::Error error = verifyRelations(*storage_))
+    return error;
   return llvm::Error::success();
 }

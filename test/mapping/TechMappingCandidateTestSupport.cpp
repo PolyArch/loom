@@ -17,7 +17,9 @@
 #include "PnR/SpatialAnnealingSearch.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialCandidateState.h"
+#include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialExactRepair.h"
+#include "PnR/SpatialGlobalRoutingClosure.h"
 #include "PnR/SpatialObjective.h"
 #include "SpatialMappingCapacityVerification.h"
 
@@ -146,6 +148,131 @@ loom::test::buildSpatialMappingConstraints(
   auto roots = module->getOps<::mapping::ConstraintsSpatialOp>();
   return take(mapping::finalizeSpatialMappingConstraintSet(
       *roots.begin(), dataflow, techMapping, fabric, store));
+}
+
+void loom::test::exerciseSpatialTagConstraintRelations(
+    mlir::MLIRContext &context,
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const fabric::FabricArtifactView &fabric, const ArtifactStore &store) {
+  const auto nets = techMapping.residualLogicalNets();
+  if (nets.size() < 2)
+    fail("tag relation fixture has fewer than two residual logical nets");
+
+  const auto pnrConfig = take(pnr::projectResolvedSpatialPnrConfigView(
+      buildSpatialPnrTestResolvedConfig()));
+  const auto unconstrained = buildSpatialMappingConstraints(
+      context, dataflow, techMapping, fabric, store);
+  auto unconstrainedProblem = take(pnr::freezeSpatialPnrProblem(
+      dataflow, techMapping, fabric, pnrConfig, unconstrained.view()));
+  auto unconstrainedSeed =
+      take(pnr::createCanonicalPathFinderSpatialSeed(unconstrainedProblem));
+  const auto projectedValues = [&](pnr::PnrIndex net) {
+    std::vector<llvm::APInt> projected;
+    for (const auto &value : unconstrainedSeed.candidate->tagValues(net))
+      if (value)
+        projected.push_back(
+            value->zextOrTrunc(std::max(1u, value->getActiveBits())));
+    llvm::sort(projected, [](const llvm::APInt &lhs, const llvm::APInt &rhs) {
+      const unsigned width = std::max(lhs.getBitWidth(), rhs.getBitWidth());
+      return lhs.zext(width).ult(rhs.zext(width));
+    });
+    projected.erase(std::unique(projected.begin(), projected.end()),
+                    projected.end());
+    return projected;
+  };
+  std::optional<std::array<pnr::PnrIndex, 2>> selectedNets;
+  for (pnr::PnrIndex lhs = 0; lhs < nets.size() && !selectedNets; ++lhs) {
+    const auto lhsValues = projectedValues(lhs);
+    if (lhsValues.empty())
+      continue;
+    for (pnr::PnrIndex rhs = lhs + 1; rhs < nets.size(); ++rhs)
+      if (lhsValues == projectedValues(rhs)) {
+        selectedNets = std::array<pnr::PnrIndex, 2>{lhs, rhs};
+        break;
+      }
+  }
+  if (!selectedNets)
+    fail("tag relation fixture has no proven-compatible net pair");
+  const std::array<std::string, 2> subjects = {
+      dataflowAttr("graph_producer_endpoint_ref", dataflow.identity(),
+                   nets[(*selectedNets)[0]].producer),
+      dataflowAttr("graph_producer_endpoint_ref", dataflow.identity(),
+                   nets[(*selectedNets)[1]].producer),
+  };
+  const auto buildConstraints = [&](llvm::StringRef relation,
+                                    bool singletonDomain) {
+    std::string clauses;
+    if (singletonDomain)
+      for (const std::string &subject : subjects)
+        clauses += "    mapping.constraint.domain_restriction "
+                   "projection(net_assigned_tag_values) subject(" +
+                   subject +
+                   ") admissible_domain(["
+                   "#mapping.constraint_unsigned_interval<"
+                   "lower = 0 : ui8, upper = 1 : ui8>])\n";
+    clauses += "    mapping.constraint." + relation.str() +
+               " projection(net_assigned_tag_values) subjects([" + subjects[0] +
+               ", " + subjects[1] + "])\n";
+    const std::string text =
+        "module {\n  mapping.constraints.spatial dataflow(" +
+        identityAttr(dataflow.identity()) + ") tech_mapping(" +
+        identityAttr(techMapping.identity()) + ") fabric(" +
+        identityAttr(fabric.identity()) + ") {\n" + clauses + "  }\n}\n";
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    if (!module)
+      fail("cannot parse Physical Tag relation fixture");
+    auto roots = module->getOps<::mapping::ConstraintsSpatialOp>();
+    return take(mapping::finalizeSpatialMappingConstraintSet(
+        *roots.begin(), dataflow, techMapping, fabric, store));
+  };
+
+  const auto equality = buildConstraints("equal", false);
+  auto equalityProblem = take(pnr::freezeSpatialPnrProblem(
+      dataflow, techMapping, fabric, pnrConfig, equality.view()));
+  auto equalitySeed = take(
+      pnr::createCanonicalPathFinderSpatialSeed(std::move(equalityProblem)));
+  requireSuccess(equalitySeed.candidate->verify());
+  std::array<std::vector<llvm::APInt>, 2> projected;
+  for (pnr::PnrIndex member = 0; member < projected.size(); ++member) {
+    for (const auto &value :
+         equalitySeed.candidate->tagValues((*selectedNets)[member]))
+      if (value)
+        projected[member].push_back(
+            value->zextOrTrunc(std::max(1u, value->getActiveBits())));
+    llvm::sort(
+        projected[member], [](const llvm::APInt &lhs, const llvm::APInt &rhs) {
+          const unsigned width = std::max(lhs.getBitWidth(), rhs.getBitWidth());
+          return lhs.zext(width).ult(rhs.zext(width));
+        });
+    projected[member].erase(
+        std::unique(projected[member].begin(), projected[member].end()),
+        projected[member].end());
+    if (projected[member].empty())
+      fail("tag equality fixture produced an empty routed projection");
+  }
+  if (projected[0] != projected[1])
+    fail("tag equality relation did not constrain the selected value sets");
+
+  const auto disjoint = buildConstraints("disjoint", true);
+  auto disjointProblem = take(pnr::freezeSpatialPnrProblem(
+      dataflow, techMapping, fabric, pnrConfig, disjoint.view()));
+  auto disjointSeed =
+      take(pnr::createCanonicalPathFinderSpatialSeed(disjointProblem));
+  pnr::SpatialGlobalRoutingClosureScratch closure;
+  llvm::Error rejected = closure.run(*disjointSeed.candidate);
+  if (!rejected)
+    fail("singleton Physical Tag domains satisfied a disjoint relation");
+  bool observedUnassigned = false;
+  llvm::handleAllErrors(
+      std::move(rejected),
+      [&](const pnr::SpatialGlobalRoutingClosureFailure &failure) {
+        observedUnassigned =
+            failure.kind() ==
+            pnr::SpatialGlobalRoutingClosureFailureKind::TagUnassigned;
+      });
+  if (!observedUnassigned)
+    fail("tag disjointness rejection lost its typed unassigned witness");
 }
 
 loom::ResolvedConfig loom::test::buildSpatialPnrTestResolvedConfig() {
