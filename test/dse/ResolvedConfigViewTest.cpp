@@ -67,6 +67,14 @@ llvm::Error validateAcquisitionConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return validateComponentViewDigest(acquisitionConfigSchema, bytes, digest);
 }
 
+llvm::Expected<std::vector<EvidenceObligationTemplateRef>>
+resolveNoObligations(llvm::ArrayRef<std::uint8_t> bytes) {
+  if (!bytes.empty())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "test acquisition config is not empty");
+  return std::vector<EvidenceObligationTemplateRef>{};
+}
+
 const PromotionAcquisitionDescriptor acquisition{
     PromotionAcquisitionKind(0x7fff3000),
     "test.resolved_dse",
@@ -76,6 +84,7 @@ const PromotionAcquisitionDescriptor acquisition{
     evaluation::CaseSubjectRoleRef(0),
     ResolvedDseConfigViewContract{acquisitionConfigSchema,
                                   validateAcquisitionConfig},
+    resolveNoObligations,
 };
 
 ArtifactRootReference candidate() {

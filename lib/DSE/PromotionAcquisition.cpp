@@ -1,10 +1,13 @@
 #include "DSE/PromotionAcquisition.h"
 
 #include "Common/ArtifactLocalReference.h"
+#include "Common/ArtifactStore.h"
+#include "Evaluation/ModelProvider.h"
 
 #include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
+#include <limits>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -70,6 +73,8 @@ validateDescriptor(const PromotionAcquisitionDescriptor &descriptor) {
   if (descriptor.resolvedConfigView.schemaDescriptorBytes.empty() ||
       !descriptor.resolvedConfigView.validateCanonical)
     return invalid("descriptor requires an exact resolved config contract");
+  if (!descriptor.resolveEvidenceObligations)
+    return invalid("descriptor requires an Evidence obligation resolver");
   for (std::size_t index = 0; index < descriptor.inputSlots.size(); ++index) {
     const PromotionAcquisitionInputSlotDescriptor &slot =
         descriptor.inputSlots[index];
@@ -156,17 +161,41 @@ findPromotionAcquisitionDescriptor(PromotionAcquisitionKind kind) {
 llvm::Expected<ResolvedPromotionAcquisitionBinding>
 ResolvedPromotionAcquisitionBinding::get(
     PromotionAcquisitionDescriptorRef descriptorRef,
-    std::vector<PromotionAcquisitionInputBinding> inputBindings,
     llvm::ArrayRef<std::uint8_t> canonicalConfigBytes,
     const ComponentViewDigest &configDigest) {
   const PromotionAcquisitionDescriptor *descriptor = descriptorRef.descriptor();
   if (!descriptor)
     return invalid("binding references an unregistered descriptor");
+  if (llvm::Error error = descriptor->resolvedConfigView.validateCanonical(
+          canonicalConfigBytes, configDigest))
+    return std::move(error);
+  auto obligations =
+      descriptor->resolveEvidenceObligations(canonicalConfigBytes);
+  if (!obligations)
+    return obligations.takeError();
+  if (!llvm::is_sorted(*obligations,
+                       [](EvidenceObligationTemplateRef lhs,
+                          EvidenceObligationTemplateRef rhs) {
+                         return lhs.ordinal() < rhs.ordinal();
+                       }) ||
+      std::adjacent_find(obligations->begin(), obligations->end()) !=
+          obligations->end())
+    return invalid("Evidence obligation references are not canonical");
+  return ResolvedPromotionAcquisitionBinding(
+      descriptorRef, canonicalConfigBytes.vec(), configDigest,
+      std::move(*obligations));
+}
+
+llvm::Error validatePromotionAcquisitionInputBindings(
+    PromotionAcquisitionDescriptorRef descriptorRef,
+    llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings) {
+  const PromotionAcquisitionDescriptor *descriptor = descriptorRef.descriptor();
+  if (!descriptor)
+    return invalid("input bindings reference an unregistered descriptor");
   if (inputBindings.size() != descriptor->inputSlots.size())
     return invalid("binding does not provide every descriptor input slot");
-
   for (std::size_t index = 0; index < inputBindings.size(); ++index) {
-    PromotionAcquisitionInputBinding &binding = inputBindings[index];
+    const PromotionAcquisitionInputBinding &binding = inputBindings[index];
     const PromotionAcquisitionInputSlotDescriptor &slot =
         descriptor->inputSlots[index];
     if (binding.slot.ordinal() != index)
@@ -175,38 +204,25 @@ ResolvedPromotionAcquisitionBinding::get(
       if (!acceptsSchema(slot, artifact))
         return invalid("input artifact schema does not match slot '" +
                        slot.spelling + "'");
-    llvm::sort(binding.artifacts, artifactRootReferenceLess);
-    binding.artifacts.erase(
-        std::unique(binding.artifacts.begin(), binding.artifacts.end()),
-        binding.artifacts.end());
+    if (!llvm::is_sorted(binding.artifacts, artifactRootReferenceLess) ||
+        std::adjacent_find(binding.artifacts.begin(),
+                           binding.artifacts.end()) != binding.artifacts.end())
+      return invalid("input artifact sets must be canonical");
     if (!planCardinalityContains(slot.cardinality, binding.artifacts.size()))
       return invalid("canonical input set violates descriptor cardinality");
   }
-  if (llvm::Error error = descriptor->resolvedConfigView.validateCanonical(
-          canonicalConfigBytes, configDigest))
-    return std::move(error);
-  return ResolvedPromotionAcquisitionBinding(
-      descriptorRef, std::move(inputBindings), canonicalConfigBytes.vec(),
-      configDigest);
-}
-
-const PromotionAcquisitionInputBinding *
-ResolvedPromotionAcquisitionBinding::findInputBinding(
-    PromotionAcquisitionInputSlotRef slot) const {
-  if (slot.ordinal() >= inputBindings_.size())
-    return nullptr;
-  return &inputBindings_[slot.ordinal()];
+  return llvm::Error::success();
 }
 
 llvm::Error registerPromotionAcquisitionProvider(
     const PromotionAcquisitionProvider &provider) {
-  if (!provider.acquire || !provider.descriptor.descriptor())
+  if (!provider.resolve || !provider.descriptor.descriptor())
     return invalid("provider requires a registered descriptor and callback");
   std::unique_lock<std::shared_mutex> lock(providerMutex());
   for (const PromotionAcquisitionProvider &existing : providers()) {
     if (existing.descriptor != provider.descriptor)
       continue;
-    if (existing.acquire == provider.acquire)
+    if (existing.resolve == provider.resolve)
       return llvm::Error::success();
     return invalid("conflicting provider registration");
   }
@@ -218,12 +234,68 @@ llvm::Error registerPromotionAcquisitionProvider(
   return llvm::Error::success();
 }
 
-llvm::Expected<PromotionAcquisitionOutcome>
-invokePromotionAcquisition(const ResolvedPromotionAcquisitionBinding &binding,
-                           const ArtifactStore &store) {
-  if (!binding.descriptorRef().descriptor())
+llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
+    llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings,
+    const ResolvedPromotionAcquisitionBinding &binding,
+    llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligationTemplates,
+    const ArtifactStore &store) {
+  const PromotionAcquisitionDescriptor *descriptor =
+      binding.descriptorRef().descriptor();
+  if (!descriptor)
     return invalid("binding references an unregistered descriptor");
-  PromotionAcquisitionProviderFunction acquire = nullptr;
+  if (llvm::Error error = validatePromotionAcquisitionInputBindings(
+          binding.descriptorRef(), inputBindings))
+    return std::move(error);
+  if (descriptor->candidateInputSlot.ordinal() >= inputBindings.size())
+    return invalid("candidate input slot is unavailable");
+
+  std::vector<PromotionEvidenceAcquisitionTask> tasks;
+  const PromotionAcquisitionInputBinding &candidates =
+      inputBindings[descriptor->candidateInputSlot.ordinal()];
+  const std::size_t obligationCount = binding.evidenceObligations().size();
+  if (obligationCount != 0 &&
+      candidates.artifacts.size() >
+          std::numeric_limits<std::size_t>::max() / obligationCount)
+    return invalid("acquisition task count overflows size_t");
+
+  std::vector<std::vector<EvidenceAcquisitionInputBinding>> obligationInputs;
+  obligationInputs.reserve(obligationCount);
+  for (EvidenceObligationTemplateRef obligationRef :
+       binding.evidenceObligations()) {
+    if (obligationRef.ordinal() >= evidenceObligationTemplates.size())
+      return invalid("acquisition references a foreign Evidence obligation");
+    const EvidenceObligationTemplate &obligation =
+        evidenceObligationTemplates[obligationRef.ordinal()];
+    std::vector<std::uint32_t> slots;
+    slots.reserve(obligation.inputSubjectBindings().size());
+    for (const InputSubjectBinding &subject : obligation.inputSubjectBindings())
+      slots.push_back(subject.inputSlot.ordinal());
+    llvm::sort(slots);
+    slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
+
+    std::vector<EvidenceAcquisitionInputBinding> taskInputs;
+    taskInputs.reserve(slots.size());
+    for (std::uint32_t slot : slots) {
+      if (slot >= inputBindings.size())
+        return invalid("template references an unavailable acquisition slot");
+      taskInputs.push_back({EvidenceAcquisitionInputSlotRef(slot),
+                            inputBindings[slot].artifacts});
+    }
+    obligationInputs.push_back(std::move(taskInputs));
+  }
+
+  tasks.reserve(candidates.artifacts.size() * obligationCount);
+  for (const ArtifactRootReference &candidate : candidates.artifacts) {
+    for (std::size_t index = 0; index < obligationCount; ++index) {
+      const EvidenceObligationTemplateRef obligationRef =
+          binding.evidenceObligations()[index];
+      tasks.push_back({obligationRef,
+                       &evidenceObligationTemplates[obligationRef.ordinal()],
+                       candidate, obligationInputs[index]});
+    }
+  }
+
+  PromotionAcquisitionProviderFunction resolve = nullptr;
   {
     std::shared_lock<std::shared_mutex> lock(providerMutex());
     auto found =
@@ -234,23 +306,52 @@ invokePromotionAcquisition(const ResolvedPromotionAcquisitionBinding &binding,
                           });
     if (found != providers().end() &&
         found->descriptor == binding.descriptorRef())
-      acquire = found->acquire;
+      resolve = found->resolve;
   }
-  if (!acquire)
+  if (!resolve)
     return PromotionAcquisitionOutcome{IncompletePromotionAcquisition{
         PromotionAcquisitionIncompleteReason::ProviderUnavailable, {}}};
 
-  auto outcome = acquire(binding, store);
-  if (!outcome)
-    return outcome.takeError();
+  auto resolution = resolve(binding, inputBindings, tasks, store);
+  if (!resolution)
+    return resolution.takeError();
   if (auto *incomplete =
-          std::get_if<IncompletePromotionAcquisition>(&*outcome)) {
+          std::get_if<IncompletePromotionAcquisitionResolution>(&*resolution)) {
     if (static_cast<std::uint32_t>(incomplete->reason) >
         static_cast<std::uint32_t>(
             PromotionAcquisitionIncompleteReason::Unsupported))
       return invalid("provider returned an invalid Incomplete reason");
+    return PromotionAcquisitionOutcome{
+        IncompletePromotionAcquisition{incomplete->reason, {}}};
   }
-  return outcome;
+
+  auto &completed =
+      std::get<CompletedPromotionAcquisitionResolution>(*resolution);
+  if (completed.tasks.size() != tasks.size())
+    return invalid("provider did not resolve every acquisition task");
+  std::vector<PromotionEvidence> evidence;
+  evidence.reserve(tasks.size());
+  for (std::size_t index = 0; index < tasks.size(); ++index) {
+    const PromotionEvidenceAcquisitionTask &task = tasks[index];
+    ResolvedPromotionEvidenceAcquisitionTask &resolved = completed.tasks[index];
+    auto request = instantiateEvidenceObligation(
+        *task.obligation, task.candidate, task.inputBindings,
+        resolved.replicateIndex, resolved.resolution, store);
+    if (!request)
+      return request.takeError();
+    auto requestReference =
+        evaluation::publishEvaluationRequest(*request, store);
+    if (!requestReference)
+      return requestReference.takeError();
+    auto result =
+        evaluation::evaluateRequest(*request, resolved.resolution, store);
+    if (!result)
+      return result.takeError();
+    evidence.emplace_back(std::move(*request), std::move(*result),
+                          task.obligationTemplate.ordinal());
+  }
+  return PromotionAcquisitionOutcome{
+      CompletedPromotionAcquisition{std::move(evidence)}};
 }
 
 } // namespace loom::dse

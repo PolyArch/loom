@@ -2,6 +2,8 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/ComponentViewDigest.h"
+#include "Config/ResolvedConfig.h"
+#include "DSE/ResolvedConfigView.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -49,6 +51,14 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "plan test config is not canonical");
   return validateComponentViewDigest(configSchema, bytes, digest);
+}
+
+llvm::Expected<std::vector<EvidenceObligationTemplateRef>>
+resolveNoObligations(llvm::ArrayRef<std::uint8_t> bytes) {
+  if (bytes != llvm::ArrayRef<std::uint8_t>({0x01}))
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "plan test config is not canonical");
+  return std::vector<EvidenceObligationTemplateRef>{};
 }
 
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> sourceInputs = {
@@ -113,6 +123,7 @@ const PromotionAcquisitionDescriptor objectiveAcquisition{
     PromotionAcquisitionInputSlotRef(0),
     evaluation::CaseSubjectRoleRef(0),
     ResolvedDseConfigViewContract{configSchema, validateConfig},
+    resolveNoObligations,
 };
 
 const PromotionAcquisitionDescriptor unavailableAcquisition{
@@ -123,6 +134,7 @@ const PromotionAcquisitionDescriptor unavailableAcquisition{
     PromotionAcquisitionInputSlotRef(0),
     evaluation::CaseSubjectRoleRef(0),
     ResolvedDseConfigViewContract{configSchema, validateConfig},
+    resolveNoObligations,
 };
 
 ArtifactRootReference makeReference(const ArtifactSchemaDescriptor &schema,
@@ -171,16 +183,18 @@ generateSource(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   }};
 }
 
-llvm::Expected<PromotionAcquisitionOutcome>
-acquireObjectives(const ResolvedPromotionAcquisitionBinding &binding,
+llvm::Expected<PromotionAcquisitionResolutionOutcome>
+resolveObjectives(const ResolvedPromotionAcquisitionBinding &binding,
+                  llvm::ArrayRef<PromotionAcquisitionInputBinding> inputs,
+                  llvm::ArrayRef<PromotionEvidenceAcquisitionTask> tasks,
                   const ArtifactStore &) {
-  const PromotionAcquisitionInputBinding *candidates =
-      binding.findInputBinding(PromotionAcquisitionInputSlotRef(0));
-  if (!candidates || candidates->artifacts.size() != 2)
+  if (binding.descriptorRef() != objectiveAcquisition.reference() ||
+      inputs.size() != 1 || inputs.front().artifacts.size() != 2 ||
+      !tasks.empty())
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "objective provider received invalid input");
-
-  return CompletedPromotionAcquisition{};
+  return PromotionAcquisitionResolutionOutcome{
+      CompletedPromotionAcquisitionResolution{}};
 }
 
 void registerOwners() {
@@ -204,10 +218,20 @@ void registerOwners() {
   if (llvm::Error error = registerCandidateGeneratorProvider(sourceProvider))
     fail(llvm::toString(std::move(error)));
   const PromotionAcquisitionProvider objectiveProvider{
-      objectiveAcquisition.reference(), acquireObjectives};
+      objectiveAcquisition.reference(), resolveObjectives};
   if (llvm::Error error =
           registerPromotionAcquisitionProvider(objectiveProvider))
     fail(llvm::toString(std::move(error)));
+}
+
+ResolvedDseConfigView resolveView(std::vector<DsePlanNodeDefinition> nodes,
+                                  ResolvedObjectiveCatalogs objectiveCatalogs,
+                                  std::vector<QualityGatePolicy> qualityGates) {
+  ResolvedConfig config = defaultResolvedConfig();
+  config.dse.objectiveCatalogs = std::move(objectiveCatalogs);
+  config.dse.qualityGatePolicies = std::move(qualityGates);
+  config.dse.planNodes = std::move(nodes);
+  return take(projectResolvedDseConfigView(config));
 }
 
 void exerciseOrderedTypedUseDef() {
@@ -226,7 +250,7 @@ void exerciseOrderedTypedUseDef() {
                                   PlanOutputRef{0, 0}, digest,
                                   AllPassingSelection{}));
   ResolvedDsePlan plan =
-      take(ResolvedDsePlan::get(nodes, objectiveCatalogs, qualityGates));
+      take(ResolvedDsePlan::get(nodes, {}, objectiveCatalogs, qualityGates));
   const auto &generate = std::get<ResolvedGeneratePlanNode>(plan.nodes()[0]);
   const auto &promote = std::get<ResolvedPromotePlanNode>(plan.nodes()[1]);
   if (plan.nodes().size() != 2 || generate.inputBindings().size() != 1 ||
@@ -250,7 +274,15 @@ void exerciseOrderedTypedUseDef() {
           llvm::sys::fs::createUniqueDirectory("loom-dse-plan", storePath))
     fail("cannot create plan test ArtifactStore: " + error.message());
   ArtifactStore store(storePath);
-  DsePlanExecutionOutcome execution = take(executeDsePlan(plan, store));
+  std::vector<DsePlanNodeDefinition> executionNodes;
+  executionNodes.push_back(makeNode(sourceGenerator.reference(),
+                                    {ExactPlanArtifacts{{source}}}, digest));
+  executionNodes.push_back(makePromoteNode(objectiveAcquisition.reference(),
+                                           PlanOutputRef{0, 0}, digest,
+                                           AllPassingSelection{}));
+  ResolvedDseConfigView view =
+      resolveView(std::move(executionNodes), objectiveCatalogs, qualityGates);
+  DsePlanExecutionOutcome execution = take(executeDsePlan(view, store));
   const auto *completed = std::get_if<CompletedDsePlanExecution>(&execution);
   if (!completed)
     fail("available mixed plan did not complete");
@@ -271,10 +303,10 @@ void exerciseOrderedTypedUseDef() {
                digest),
       makeNode(unavailableGenerator.reference(), {PlanOutputRef{0, 0}}, digest),
   };
-  ResolvedDsePlan unavailablePlan = take(
-      ResolvedDsePlan::get(unavailableNodes, objectiveCatalogs, qualityGates));
+  ResolvedDseConfigView unavailableView =
+      resolveView(unavailableNodes, objectiveCatalogs, qualityGates);
   DsePlanExecutionOutcome unavailable =
-      take(executeDsePlan(unavailablePlan, store));
+      take(executeDsePlan(unavailableView, store));
   const auto *incomplete =
       std::get_if<IncompleteDsePlanExecution>(&unavailable);
   const auto *reason =
@@ -292,8 +324,8 @@ void exerciseOrderedTypedUseDef() {
       makePromoteNode(unavailableAcquisition.reference(), PlanOutputRef{0, 0},
                       digest, AllPassingSelection{}),
   };
-  ResolvedDsePlan unavailablePromotion = take(ResolvedDsePlan::get(
-      unavailablePromotionNodes, objectiveCatalogs, qualityGates));
+  ResolvedDseConfigView unavailablePromotion =
+      resolveView(unavailablePromotionNodes, objectiveCatalogs, qualityGates);
   DsePlanExecutionOutcome unavailablePromotionOutcome =
       take(executeDsePlan(unavailablePromotion, store));
   const auto *promotionIncomplete =
@@ -313,7 +345,7 @@ void exerciseOrderedTypedUseDef() {
   forward.push_back(
       makeNode(transformGenerator.reference(), {PlanOutputRef{1, 0}}, digest));
   auto rejectedForward =
-      ResolvedDsePlan::get(forward, objectiveCatalogs, qualityGates);
+      ResolvedDsePlan::get(forward, {}, objectiveCatalogs, qualityGates);
   if (rejectedForward)
     fail("plan accepted a forward use-def edge");
   requireErrorContains(rejectedForward.takeError(), "earlier node");
@@ -323,7 +355,7 @@ void exerciseOrderedTypedUseDef() {
       sourceGenerator.reference(),
       {ExactPlanArtifacts{{makeReference(candidateSchema, 0x22)}}}, digest));
   auto rejectedForeign =
-      ResolvedDsePlan::get(foreign, objectiveCatalogs, qualityGates);
+      ResolvedDsePlan::get(foreign, {}, objectiveCatalogs, qualityGates);
   if (rejectedForeign)
     fail("plan accepted a foreign static artifact schema");
   requireErrorContains(rejectedForeign.takeError(), "artifact schema");

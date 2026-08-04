@@ -1,6 +1,7 @@
 #include "DSE/Plan.h"
 
 #include "Common/ArtifactLocalReference.h"
+#include "DSE/ResolvedConfigView.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -138,6 +139,140 @@ llvm::Error validateSelection(const CandidateSelectionPolicy &selection,
   return llvm::Error::success();
 }
 
+void collectGateObligations(const QualityGatePolicy &gate,
+                            std::vector<std::uint32_t> &result) {
+  for (const QualityGateClause &clause : gate.clauses()) {
+    for (const QualityGateAtom &atom : clause.atoms) {
+      if (const auto *metric = std::get_if<MetricGate>(&atom))
+        result.push_back(metric->evidenceObligationTemplate);
+      else
+        result.push_back(
+            std::get<FindingGate>(atom).evidenceObligationTemplate);
+    }
+  }
+}
+
+void collectDimensionObligation(const ResolvedObjectiveCatalogs &catalogs,
+                                std::uint32_t dimension,
+                                std::vector<std::uint32_t> &result) {
+  if (dimension >= catalogs.dimensions.size())
+    return;
+  if (const auto *metric = std::get_if<ResolvedEvaluationMetricObjectiveSource>(
+          &catalogs.dimensions[dimension].source))
+    result.push_back(metric->evidenceObligationTemplate);
+}
+
+void collectSelectionObligations(const CandidateSelectionPolicy &selection,
+                                 const ResolvedObjectiveCatalogs &catalogs,
+                                 std::vector<std::uint32_t> &result) {
+  if (const auto *topK = std::get_if<TopKSelection>(&selection)) {
+    if (topK->totalOrdering >= catalogs.totalOrderings.size())
+      return;
+    for (std::uint32_t level :
+         catalogs.totalOrderings[topK->totalOrdering].weightedLevels) {
+      if (level >= catalogs.weightedLevels.size())
+        continue;
+      for (const ResolvedWeightedObjectiveTerm &term :
+           catalogs.weightedLevels[level].terms)
+        collectDimensionObligation(catalogs, term.dimension, result);
+    }
+    return;
+  }
+  if (const auto *pareto = std::get_if<ParetoSelection>(&selection))
+    for (std::uint32_t dimension : pareto->objectiveDimensions)
+      collectDimensionObligation(catalogs, dimension, result);
+}
+
+bool acceptsSchema(const evaluation::CaseSubjectRoleDescriptor &role,
+                   const ArtifactSchemaDescriptor &schema) {
+  return llvm::any_of(role.acceptedSchemas,
+                      [&](const ArtifactSchemaDescriptor *accepted) {
+                        return accepted && *accepted == schema;
+                      });
+}
+
+llvm::Error validateObligationRole(
+    const evaluation::EvaluationCaseSignatureDescriptor &signature,
+    evaluation::CaseSubjectRoleRef roleRef,
+    const PromotionAcquisitionInputSlotDescriptor &slot) {
+  const evaluation::CaseSubjectRoleDescriptor *role =
+      signature.findSubjectRole(roleRef);
+  if (!role)
+    return invalid("Evidence obligation references a foreign case role");
+  if (!slot.schema || !acceptsSchema(*role, *slot.schema))
+    return invalid("Evidence obligation role rejects its acquisition slot "
+                   "schema");
+  const PlanValueCardinality required =
+      role->cardinality == evaluation::SubjectRoleCardinality::ExactlyOne
+          ? PlanValueCardinality::ExactlyOne
+          : PlanValueCardinality::NonEmptySet;
+  if (!planCardinalityCanFlow(slot.cardinality, required))
+    return invalid("Evidence obligation role and acquisition slot cardinality "
+                   "do not match");
+  return llvm::Error::success();
+}
+
+llvm::Error validateAcquisitionObligations(
+    const ResolvedPromotionAcquisitionBinding &binding,
+    const PromotionAcquisitionDescriptor &descriptor,
+    llvm::ArrayRef<EvidenceObligationTemplate> templates,
+    const QualityGatePolicy &gate, const CandidateSelectionPolicy &selection,
+    const ResolvedObjectiveCatalogs &catalogs) {
+  std::vector<std::uint32_t> required;
+  collectGateObligations(gate, required);
+  collectSelectionObligations(selection, catalogs, required);
+  llvm::sort(required);
+  required.erase(std::unique(required.begin(), required.end()), required.end());
+
+  const auto selected = binding.evidenceObligations();
+  for (std::uint32_t ordinal : required) {
+    if (!llvm::binary_search(selected, EvidenceObligationTemplateRef(ordinal),
+                             [](EvidenceObligationTemplateRef lhs,
+                                EvidenceObligationTemplateRef rhs) {
+                               return lhs.ordinal() < rhs.ordinal();
+                             }))
+      return invalid("acquisition policy omits a required Evidence obligation");
+  }
+
+  const PromotionAcquisitionInputSlotDescriptor *candidateSlot =
+      descriptor.findInputSlot(descriptor.candidateInputSlot);
+  if (!candidateSlot || !candidateSlot->schema)
+    return invalid("Promote candidate input slot is unavailable");
+
+  for (EvidenceObligationTemplateRef ref : selected) {
+    if (ref.ordinal() >= templates.size())
+      return invalid("acquisition references a foreign Evidence obligation");
+    const EvidenceObligationTemplate &obligation = templates[ref.ordinal()];
+    if (obligation.candidateRole() != descriptor.candidateRole)
+      return invalid("acquisition and Evidence obligation candidate roles "
+                     "do not match");
+    const evaluation::EvaluationModelDescriptor *model =
+        obligation.modelBinding().descriptorRef().descriptor();
+    const evaluation::EvaluationCaseSignatureDescriptor *signature =
+        model ? model->caseSignature.descriptor() : nullptr;
+    if (!signature)
+      return invalid("Evidence obligation has no registered case signature");
+    const evaluation::CaseSubjectRoleDescriptor *candidateRole =
+        signature->findSubjectRole(descriptor.candidateRole);
+    if (!candidateRole ||
+        !acceptsSchema(*candidateRole, *candidateSlot->schema))
+      return invalid("Evidence obligation candidate role rejects the candidate "
+                     "slot schema");
+
+    for (const InputSubjectBinding &subject :
+         obligation.inputSubjectBindings()) {
+      if (subject.inputSlot.ordinal() >= descriptor.inputSlots.size())
+        return invalid("Evidence obligation references an unavailable "
+                       "acquisition slot");
+      if (llvm::Error error = validateObligationRole(
+              *signature, subject.role,
+              descriptor.inputSlots[subject.inputSlot.ordinal()]))
+        return error;
+    }
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::vector<ArtifactRootReference>>
 publishEvidence(llvm::ArrayRef<PromotionEvidence> records,
                 const ArtifactStore &store) {
@@ -173,10 +308,11 @@ llvm::Expected<std::vector<ArtifactRootReference>> resolveRuntimeInput(
 
 } // namespace
 
-llvm::Expected<ResolvedDsePlan>
-ResolvedDsePlan::get(llvm::ArrayRef<DsePlanNodeDefinition> definitions,
-                     const ResolvedObjectiveCatalogs &objectiveCatalogs,
-                     llvm::ArrayRef<QualityGatePolicy> qualityGates) {
+llvm::Expected<ResolvedDsePlan> ResolvedDsePlan::get(
+    llvm::ArrayRef<DsePlanNodeDefinition> definitions,
+    llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligationTemplates,
+    const ResolvedObjectiveCatalogs &objectiveCatalogs,
+    llvm::ArrayRef<QualityGatePolicy> qualityGates) {
   std::vector<ResolvedDsePlanNode> nodes;
   std::vector<std::uint64_t> outputOffsets;
   std::vector<PlanValueDescriptor> outputs;
@@ -246,9 +382,11 @@ ResolvedDsePlan::get(llvm::ArrayRef<DsePlanNodeDefinition> definitions,
         definition.acquisition.descriptor();
     if (!descriptor)
       return invalid("Promote node references an unregistered acquisition");
-    if (llvm::Error error = descriptor->resolvedConfigView.validateCanonical(
-            definition.canonicalConfigBytes, definition.configDigest))
-      return std::move(error);
+    auto acquisitionBinding = ResolvedPromotionAcquisitionBinding::get(
+        definition.acquisition, definition.canonicalConfigBytes,
+        definition.configDigest);
+    if (!acquisitionBinding)
+      return acquisitionBinding.takeError();
     std::vector<PlanValueDescriptor> expected;
     expected.reserve(descriptor->inputSlots.size());
     for (const PromotionAcquisitionInputSlotDescriptor &slot :
@@ -271,6 +409,11 @@ ResolvedDsePlan::get(llvm::ArrayRef<DsePlanNodeDefinition> definitions,
             validateSelection(definition.selection,
                               objectiveProgram ? &*objectiveProgram : nullptr))
       return std::move(error);
+    if (llvm::Error error = validateAcquisitionObligations(
+            *acquisitionBinding, *descriptor, evidenceObligationTemplates,
+            qualityGates[definition.qualityGate.ordinal()],
+            definition.selection, objectiveCatalogs))
+      return std::move(error);
     const PromotionAcquisitionInputSlotDescriptor *candidateSlot =
         descriptor->findInputSlot(descriptor->candidateInputSlot);
     if (!candidateSlot || !candidateSlot->schema)
@@ -284,8 +427,7 @@ ResolvedDsePlan::get(llvm::ArrayRef<DsePlanNodeDefinition> definitions,
                        PlanValueCardinality::FiniteSet});
     outputOffsets.push_back(outputs.size());
     nodes.emplace_back(ResolvedPromotePlanNode(
-        definition.acquisition, std::move(inputBindings),
-        definition.canonicalConfigBytes, definition.configDigest,
+        std::move(*acquisitionBinding), std::move(inputBindings),
         definition.qualityGate, definition.selection, definition.purpose));
   }
   return ResolvedDsePlan(std::move(nodes), std::move(outputOffsets),
@@ -324,7 +466,8 @@ CompletedDsePlanExecution::resolve(PlanOutputRef output) const {
 }
 
 llvm::Expected<DsePlanExecutionOutcome>
-executeDsePlan(const ResolvedDsePlan &plan, const ArtifactStore &store) {
+executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
+  const ResolvedDsePlan &plan = view.plan();
   std::vector<std::uint64_t> outputOffsets;
   std::vector<std::vector<ArtifactRootReference>> outputs;
   outputOffsets.reserve(plan.nodes().size() + 1);
@@ -392,12 +535,9 @@ executeDsePlan(const ResolvedDsePlan &plan, const ArtifactStore &store) {
           {PromotionAcquisitionInputSlotRef(static_cast<std::uint32_t>(index)),
            std::move(*artifacts)});
     }
-    auto binding = ResolvedPromotionAcquisitionBinding::get(
-        promote.acquisitionRef(), std::move(inputs),
-        promote.canonicalConfigBytes(), promote.configDigest());
-    if (!binding)
-      return binding.takeError();
-    auto acquisition = invokePromotionAcquisition(*binding, store);
+    auto acquisition =
+        invokePromotionAcquisition(inputs, promote.acquisitionBinding(),
+                                   view.evidenceObligationTemplates(), store);
     if (!acquisition)
       return acquisition.takeError();
     if (auto *incomplete =
@@ -415,7 +555,9 @@ executeDsePlan(const ResolvedDsePlan &plan, const ArtifactStore &store) {
 
     auto &completed = std::get<CompletedPromotionAcquisition>(*acquisition);
     const PromotionAcquisitionInputBinding *candidateInput =
-        binding->findInputBinding(descriptor->candidateInputSlot);
+        descriptor->candidateInputSlot.ordinal() < inputs.size()
+            ? &inputs[descriptor->candidateInputSlot.ordinal()]
+            : nullptr;
     const PromotionAcquisitionInputSlotDescriptor *candidateSlot =
         descriptor->findInputSlot(descriptor->candidateInputSlot);
     if (!candidateInput || !candidateSlot || !candidateSlot->schema)

@@ -16,6 +16,8 @@
 
 namespace loom::dse {
 
+class ResolvedDseConfigView;
+
 struct GeneratePlanNodeDefinition final {
   CandidateGeneratorDescriptorRef descriptor;
   std::vector<PlanInputBinding> inputBindings;
@@ -72,36 +74,37 @@ private:
 class ResolvedPromotePlanNode final {
 public:
   PromotionAcquisitionDescriptorRef acquisitionRef() const {
-    return acquisition_;
+    return acquisitionBinding_.descriptorRef();
+  }
+  const ResolvedPromotionAcquisitionBinding &acquisitionBinding() const {
+    return acquisitionBinding_;
   }
   llvm::ArrayRef<PlanInputBinding> inputBindings() const {
     return inputBindings_;
   }
   llvm::ArrayRef<std::uint8_t> canonicalConfigBytes() const {
-    return canonicalConfigBytes_;
+    return acquisitionBinding_.canonicalConfigBytes();
   }
-  const ComponentViewDigest &configDigest() const { return configDigest_; }
+  const ComponentViewDigest &configDigest() const {
+    return acquisitionBinding_.configDigest();
+  }
   QualityGatePolicyRef qualityGateRef() const { return qualityGate_; }
   const CandidateSelectionPolicy &selection() const { return selection_; }
   PromotePurpose purpose() const { return purpose_; }
 
 private:
-  ResolvedPromotePlanNode(PromotionAcquisitionDescriptorRef acquisition,
-                          std::vector<PlanInputBinding> inputBindings,
-                          std::vector<std::uint8_t> canonicalConfigBytes,
-                          ComponentViewDigest configDigest,
-                          QualityGatePolicyRef qualityGate,
-                          CandidateSelectionPolicy selection,
-                          PromotePurpose purpose)
-      : acquisition_(acquisition), inputBindings_(std::move(inputBindings)),
-        canonicalConfigBytes_(std::move(canonicalConfigBytes)),
-        configDigest_(configDigest), qualityGate_(std::move(qualityGate)),
-        selection_(std::move(selection)), purpose_(purpose) {}
+  ResolvedPromotePlanNode(
+      ResolvedPromotionAcquisitionBinding acquisitionBinding,
+      std::vector<PlanInputBinding> inputBindings,
+      QualityGatePolicyRef qualityGate, CandidateSelectionPolicy selection,
+      PromotePurpose purpose)
+      : acquisitionBinding_(std::move(acquisitionBinding)),
+        inputBindings_(std::move(inputBindings)),
+        qualityGate_(std::move(qualityGate)), selection_(std::move(selection)),
+        purpose_(purpose) {}
 
-  PromotionAcquisitionDescriptorRef acquisition_;
+  ResolvedPromotionAcquisitionBinding acquisitionBinding_;
   std::vector<PlanInputBinding> inputBindings_;
-  std::vector<std::uint8_t> canonicalConfigBytes_;
-  ComponentViewDigest configDigest_;
   QualityGatePolicyRef qualityGate_;
   CandidateSelectionPolicy selection_;
   PromotePurpose purpose_;
@@ -117,6 +120,7 @@ class ResolvedDsePlan final {
 public:
   static llvm::Expected<ResolvedDsePlan>
   get(llvm::ArrayRef<DsePlanNodeDefinition> nodes,
+      llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligationTemplates,
       const ResolvedObjectiveCatalogs &objectiveCatalogs,
       llvm::ArrayRef<QualityGatePolicy> qualityGates);
 
@@ -178,7 +182,7 @@ using DsePlanExecutionOutcome =
     std::variant<CompletedDsePlanExecution, IncompleteDsePlanExecution>;
 
 llvm::Expected<DsePlanExecutionOutcome>
-executeDsePlan(const ResolvedDsePlan &plan, const ArtifactStore &store);
+executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store);
 
 } // namespace loom::dse
 

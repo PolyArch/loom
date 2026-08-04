@@ -2,6 +2,7 @@
 #define LOOM_DSE_PROMOTIONACQUISITION_H
 
 #include "DSE/CandidateGenerator.h"
+#include "DSE/EvidenceObligation.h"
 #include "DSE/Promotion.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -103,6 +104,9 @@ struct PromotionAcquisitionDescriptor final {
   PromotionAcquisitionInputSlotRef candidateInputSlot;
   evaluation::CaseSubjectRoleRef candidateRole;
   ResolvedDseConfigViewContract resolvedConfigView;
+  llvm::Expected<std::vector<EvidenceObligationTemplateRef>> (
+      *resolveEvidenceObligations)(
+      llvm::ArrayRef<std::uint8_t> canonicalConfigBytes);
 
   PromotionAcquisitionDescriptorRef reference() const;
   const PromotionAcquisitionInputSlotDescriptor *
@@ -123,38 +127,40 @@ class ResolvedPromotionAcquisitionBinding final {
 public:
   static llvm::Expected<ResolvedPromotionAcquisitionBinding>
   get(PromotionAcquisitionDescriptorRef descriptor,
-      std::vector<PromotionAcquisitionInputBinding> inputBindings,
       llvm::ArrayRef<std::uint8_t> canonicalConfigBytes,
       const ComponentViewDigest &configDigest);
 
   PromotionAcquisitionDescriptorRef descriptorRef() const {
     return descriptor_;
   }
-  llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings() const {
-    return inputBindings_;
-  }
   llvm::ArrayRef<std::uint8_t> canonicalConfigBytes() const {
     return canonicalConfigBytes_;
   }
   const ComponentViewDigest &configDigest() const { return configDigest_; }
-  const PromotionAcquisitionInputBinding *
-  findInputBinding(PromotionAcquisitionInputSlotRef slot) const;
+  llvm::ArrayRef<EvidenceObligationTemplateRef> evidenceObligations() const {
+    return evidenceObligations_;
+  }
 
 private:
   ResolvedPromotionAcquisitionBinding(
       PromotionAcquisitionDescriptorRef descriptor,
-      std::vector<PromotionAcquisitionInputBinding> inputBindings,
       std::vector<std::uint8_t> canonicalConfigBytes,
-      ComponentViewDigest configDigest)
-      : descriptor_(descriptor), inputBindings_(std::move(inputBindings)),
+      ComponentViewDigest configDigest,
+      std::vector<EvidenceObligationTemplateRef> evidenceObligations)
+      : descriptor_(descriptor),
         canonicalConfigBytes_(std::move(canonicalConfigBytes)),
-        configDigest_(configDigest) {}
+        configDigest_(configDigest),
+        evidenceObligations_(std::move(evidenceObligations)) {}
 
   PromotionAcquisitionDescriptorRef descriptor_;
-  std::vector<PromotionAcquisitionInputBinding> inputBindings_;
   std::vector<std::uint8_t> canonicalConfigBytes_;
   ComponentViewDigest configDigest_;
+  std::vector<EvidenceObligationTemplateRef> evidenceObligations_;
 };
+
+llvm::Error validatePromotionAcquisitionInputBindings(
+    PromotionAcquisitionDescriptorRef descriptor,
+    llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings);
 
 struct CompletedPromotionAcquisition final {
   std::vector<PromotionEvidence> evidence;
@@ -175,22 +181,53 @@ struct IncompletePromotionAcquisition final {
 using PromotionAcquisitionOutcome =
     std::variant<CompletedPromotionAcquisition, IncompletePromotionAcquisition>;
 
+struct PromotionEvidenceAcquisitionTask final {
+  EvidenceObligationTemplateRef obligationTemplate;
+  const EvidenceObligationTemplate *obligation;
+  ArtifactRootReference candidate;
+  /// Invocation-local view shared by every candidate for this obligation.
+  llvm::ArrayRef<EvidenceAcquisitionInputBinding> inputBindings;
+};
+
+struct ResolvedPromotionEvidenceAcquisitionTask final {
+  std::uint64_t replicateIndex;
+  evaluation::CaseArtifactResolution resolution;
+};
+
+struct CompletedPromotionAcquisitionResolution final {
+  /// Positional results in the exact canonical task order supplied to the
+  /// provider. Request and Evidence construction remain central-owned.
+  std::vector<ResolvedPromotionEvidenceAcquisitionTask> tasks;
+};
+
+struct IncompletePromotionAcquisitionResolution final {
+  PromotionAcquisitionIncompleteReason reason;
+};
+
+using PromotionAcquisitionResolutionOutcome =
+    std::variant<CompletedPromotionAcquisitionResolution,
+                 IncompletePromotionAcquisitionResolution>;
+
 using PromotionAcquisitionProviderFunction =
-    llvm::Expected<PromotionAcquisitionOutcome> (*)(
+    llvm::Expected<PromotionAcquisitionResolutionOutcome> (*)(
         const ResolvedPromotionAcquisitionBinding &binding,
+        llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings,
+        llvm::ArrayRef<PromotionEvidenceAcquisitionTask> tasks,
         const ArtifactStore &store);
 
 struct PromotionAcquisitionProvider final {
   PromotionAcquisitionDescriptorRef descriptor;
-  PromotionAcquisitionProviderFunction acquire;
+  PromotionAcquisitionProviderFunction resolve;
 };
 
 llvm::Error registerPromotionAcquisitionProvider(
     const PromotionAcquisitionProvider &provider);
 
-llvm::Expected<PromotionAcquisitionOutcome>
-invokePromotionAcquisition(const ResolvedPromotionAcquisitionBinding &binding,
-                           const ArtifactStore &store);
+llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
+    llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings,
+    const ResolvedPromotionAcquisitionBinding &binding,
+    llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligationTemplates,
+    const ArtifactStore &store);
 
 } // namespace loom::dse
 

@@ -884,8 +884,8 @@ llvm::Expected<ResolvedDseConfigView> ResolvedDseConfigView::get(
   auto bytes = encodeParts(parts);
   if (!bytes)
     return bytes.takeError();
-  auto plan =
-      ResolvedDsePlan::get(parts.planNodes, parts.objectives, parts.gates);
+  auto plan = ResolvedDsePlan::get(parts.planNodes, parts.templates,
+                                   parts.objectives, parts.gates);
   if (!plan)
     return plan.takeError();
   const llvm::ArrayRef<std::uint8_t> descriptor(
