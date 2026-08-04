@@ -881,17 +881,86 @@ A central DSE candidate is an existing exact `ArtifactRootReference`. There is n
 domain-local search state enters a central candidate set only after it is
 finalized as its domain Artifact.
 
-Invocation lineage has exactly two edge kinds:
+Invocation lineage has exactly two edge kinds. Facts fixed for one Generate
+invocation remain in its enclosing record rather than being repeated on every
+edge:
 
 ```text
 MechanicalDerivation:
-  exact input ArtifactRootReferences + producer/config
+  enclosing exact inputs + resolved producer/config
   -> output ArtifactRootReference
 
 CandidateDecision:
   parent candidate ArtifactRootReferences + typed decision
   -> child ArtifactRootReference
 ```
+
+Each edge has exactly one output or child. A Generate invocation that returns
+several Artifacts therefore does not become a multi-output lineage hyperedge.
+Instead, one invocation occurrence record contains the exact typed input
+bindings, one resolved candidate-generator binding, the exact output bindings,
+and zero or more single-child lineage edges:
+
+```text
+GenerateInvocationRecord {
+  plan_node_ref
+  typed_input_bindings
+  resolved_generator_binding
+  output_bindings
+  lineage_edges
+}
+
+OutputBinding {
+  descriptor_output_slot
+  canonical set<ArtifactRootReference>
+}
+```
+
+`PlanNodeRef` is the unsigned 64-bit ordinal of a node in the exact resolved
+plan. The enclosing `InvocationManifest` alone owns the
+`InvocationOccurrenceRef`; a nested Generate record cannot repeat or override
+it. One manifest contains at most one Generate record for each executed
+Generate plan node.
+
+Output bindings and lineage edges own different facts. An output binding owns
+which Artifacts the invocation returned through one descriptor-owned slot. A
+lineage edge owns one production path to one returned Artifact. An exact input
+Artifact may be retained in an output binding without a fabricated self-edge,
+while several distinct edges may target one deduplicated output Artifact.
+Outputs in different slots have no positional pairing; any semantic dependency
+between them belongs to the output Artifacts' own dependency closures.
+
+Every completed or incomplete Generate record contains exactly one input
+binding for every descriptor input slot and exactly one output binding for
+every descriptor output slot. Both binding arrays follow dense descriptor slot
+ordinal. An incomplete record retains an empty or partial canonical Artifact
+set in a slot rather than omitting the slot. The maximum cardinality applies to
+every record; a completed record also satisfies every minimum.
+
+Every lineage edge names its exact descriptor output slot, and its target must
+occur in that slot's output binding. Every finalized output member that is not
+an exact retained input requires at least one lineage edge, including a member
+retained by an incomplete invocation. Completely identical edges are
+deduplicated. CandidateDecision parent references form a canonical set using
+Common's root-reference order. Edges with different parents or canonical owner
+decision bytes remain distinct; the producer binding is inherited from the
+enclosing record and is not an edge field.
+
+Generate records are ordered by `PlanNodeRef` rather than completion time and
+duplicate refs are invalid. Artifact sets use Common's canonical root-reference
+order. Lineage edges use edge-kind, output-slot, output-reference, canonical
+parent-reference set, and canonical owner-payload bytes in that order; the
+parent and payload fields are empty for MechanicalDerivation. Descriptor role,
+schema, and cardinality fields are recovered from the exact descriptor and are
+not copied into the manifest.
+
+The outer controller outcome uniquely classifies record completeness. A
+completed manifest has only completed Generate records. An `Incomplete`
+outcome names the exact `PlanNodeRef` at which execution stopped. Generate
+records before that node are completed; if the named node is a Generate node,
+its one record is incomplete; and no later plan node has an invocation record.
+An interruption at a non-Generate node does not create a Generate record for
+that node. The nested record therefore has no independent outcome tag.
 
 Mechanical lowering cannot be represented as an optimization decision, and a
 decision edge cannot replace an Artifact's own dependency closure. If several
@@ -944,6 +1013,7 @@ CompletedNoFeasibleCandidate {
 }
 
 Incomplete {
+  incomplete PlanNodeRef
   unsatisfied obligations
   retained finalized Artifacts and Evidence
   typed interruption reason
@@ -1189,10 +1259,13 @@ finite Generate and Promote nodes express cross-domain iteration.
 Candidate-generator capabilities live in a static typed descriptor registry.
 A resolved Generate node fixes typed inputs through the common plan bindings
 and fixes owner-typed generator configuration through its generator binding.
-The generator produces domain Artifacts; `InvocationManifest` records each
-`MechanicalDerivation` or `CandidateDecision` edge. Its domain owns
-transformations and local search semantics; the central plan sees only
-canonical input and output Artifact sets.
+The generator produces domain Artifacts and its invocation outcome supplies
+descriptor-owned output bindings. `InvocationManifest` records that outcome
+and each owner-supplied `MechanicalDerivation` or `CandidateDecision` edge.
+Its domain owns transformations, typed decision payloads, and local search
+semantics; the central plan sees only canonical input and output Artifact sets
+plus the closed lineage contributions admitted by the exact generator
+descriptor.
 
 ### Objectives and Quality Gates
 
@@ -1500,8 +1573,9 @@ The manifest records:
 - occurrence and semantic-closure references;
 - descriptors and verification digests for component views actually consumed;
 - optional resume provenance and one controller outcome;
-- canonical `MechanicalDerivation` and `CandidateDecision` records binding
-  exact typed inputs, the resolved producer binding, and exact outputs;
+- canonical Generate invocation records binding exact typed inputs, one
+  resolved producer binding, exact descriptor-slot output sets, and
+  single-child `MechanicalDerivation` or `CandidateDecision` lineage edges;
 - selected or retained Artifact and Evidence references;
 - owner-local planned/consumed work summaries;
 - retained owner attempt/checkpoint references; and
@@ -1558,6 +1632,7 @@ CandidateGeneratorDescriptor {
   typed_input_slot_descriptors
   typed_output_slot_descriptors
   resolved_generator_config_view_contract
+  optional owner_lineage_payload_contract
   determinism_contract
   owner_local_work_unit_descriptors
 }
@@ -1578,6 +1653,12 @@ ResolvedGeneratorConfigViewContract {
   encode(owner-typed view) -> canonical_view_bytes
   adopt(canonical_view_bytes, component_view_digest)
     -> owner-typed immutable view
+}
+
+OwnerLineagePayloadContract {
+  schema_descriptor_bytes
+  encode(owner-typed decision) -> canonical_payload_bytes
+  adopt(canonical_payload_bytes) -> owner-typed decision
 }
 ```
 
@@ -1606,6 +1687,24 @@ ArtifactIdentity. `InvocationManifest` may retain every valid derivation path
 to the converged Artifact. Compiler transformations, Mapping Actions, hardware
 transformations, and model training remain owned by their respective domains;
 the controller does not define a universal Action or mutable candidate IR.
+
+The generic provider boundary must not discard owner-produced lineage. The
+exact candidate-generator descriptor contains the optional owner lineage
+payload contract and therefore uniquely selects the codec, schema, and version
+for any typed CandidateDecision payload. Descriptor registration rejects a
+conflicting contract for the same descriptor reference, and provider-output
+validation rejects a CandidateDecision edge when the descriptor has no such
+contract. The adopter decodes, validates, re-encodes, and requires exact byte
+equality. A descriptor without the contract can publish only
+MechanicalDerivation edges. This is an
+owner-typed byte contract, not a universal decision algebra.
+
+Rejected owner-local attempts remain work-summary or attempt records rather
+than fake lineage edges. Every completed or incomplete invocation records a
+dense binding for every descriptor output slot and only fully finalized
+retained outputs. A completed invocation satisfies each descriptor-owned
+minimum and maximum cardinality; an incomplete invocation may remain below a
+minimum but cannot exceed a maximum.
 
 An external flow that preserves a new `HardwareImplementation` is a hardware
 Candidate Generator even when the same process also emits reports. The new

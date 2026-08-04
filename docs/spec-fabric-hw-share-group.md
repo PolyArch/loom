@@ -122,7 +122,7 @@ relations:
 | `ScalarIntegerAddSub` | `arith.addi`, `arith.subi`, optional `llvm.getelementptr` |
 | `ScalarIntegerSaturatingAddSub` | `llvm.intr.sadd.sat`, `llvm.intr.uadd.sat`, `llvm.intr.ssub.sat`, `llvm.intr.usub.sat` |
 | `ScalarIntegerCountZeros` | `math.ctlz`, `math.cttz`, poison-flagged `llvm.intr.ctlz`, poison-flagged `llvm.intr.cttz` |
-| `ScalarIntegerLogic` | `arith.andi`, `arith.ori`, `arith.xori` |
+| `ScalarIntegerLogic` | `arith.andi`, `arith.ori`, `arith.xori`, disjoint `llvm.or` |
 | `ScalarIntegerShift` | `arith.shli`, `arith.shrsi`, `arith.shrui` |
 | `ScalarIntegerCompareMinMax` | `arith.cmpi`, `arith.minsi`, `arith.maxsi`, `arith.minui`, `arith.maxui` |
 | `ScalarValueSelect` | `arith.select` |
@@ -144,6 +144,16 @@ also belong to a separately registered fixed-vector family. Basic LLVM-dialect
 aliases are normalized before Canonical Dataflow and are not duplicate
 members. An irreducible LLVM compute intrinsic requires its own registered
 operation schema and a physically justified family admission.
+
+Only `llvm.or` with the canonical disjoint contract is a
+`ScalarIntegerLogic` member. A flag-free LLVM OR is normalized to `arith.ori`
+before Canonical Dataflow. Disjointness remains exact actor semantics rather
+than a hardware parameter or a runtime checker mode. The ordinary OR and
+disjoint LLVM OR semantic configurations may select the same physical OR
+datapath while retaining distinct canonical actor identities. In the
+fixed-vector Logic family, canonical semantics marks only an affected lane as
+Poison, and RTL applies the lane-local non-defined refinement without relaxing
+defined sibling lanes.
 
 The saturating and ordinary floating-to-integer schemas belong to one
 `ScalarFloatToInteger` implementation family because the saturation path is
@@ -203,7 +213,7 @@ payload width; it has no independent lane-count field.
 | `FixedVectorIntegerAddSub` | `arith.addi`, `arith.subi` |
 | `FixedVectorIntegerSaturatingAddSub` | `llvm.intr.sadd.sat`, `llvm.intr.uadd.sat`, `llvm.intr.ssub.sat`, `llvm.intr.usub.sat` |
 | `FixedVectorIntegerCountZeros` | fixed-vector forms of `math.ctlz`, `math.cttz`, poison-flagged `llvm.intr.ctlz`, and poison-flagged `llvm.intr.cttz` |
-| `FixedVectorIntegerLogic` | `arith.andi`, `arith.ori`, `arith.xori` |
+| `FixedVectorIntegerLogic` | fixed-vector forms of `arith.andi`, `arith.ori`, `arith.xori`, and disjoint `llvm.or` |
 | `FixedVectorIntegerShift` | `arith.shli`, `arith.shrsi`, `arith.shrui` |
 | `FixedVectorIntegerCompareMinMax` | `arith.cmpi`, integer min/max schemas |
 | `FixedVectorValueSelect` | `arith.select` |

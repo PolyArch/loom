@@ -210,12 +210,13 @@ physical connections inside `fabric.module`. Operation-specific specs
 may constrain the declared ports of a resource, but they must not
 redefine the semantics of a connection between two such ports.
 
-The rule applies at all three module-level connection classes:
+The rule applies at all four module-level connection classes:
 
 1. a module input endpoint connected to a resource input endpoint;
 2. a resource output endpoint connected to another resource input
    endpoint;
-3. a resource output endpoint connected to a module output endpoint.
+3. a resource output endpoint connected to a module output endpoint; and
+4. a module input endpoint connected directly to a module output endpoint.
 
 The source and destination must have the same port kind:
 
@@ -226,6 +227,13 @@ The source and destination must have the same port kind:
 Memory endpoint roles determine whether a connection is boundary forwarding
 or complementary provider-to-requester service composition. They do not add
 another type-compatibility rule to the SSA value.
+
+The fourth class is a token-plane boundary passthrough. It is legal only for
+`bits` or `bits_tag`, obeys the same same-kind low-bit alignment rule as every
+other ordinary connection, forwards valid with the payload, and propagates
+ready in the reverse direction. It creates no resource endpoint, traversal,
+capacity, buffering, or handshake owner. A direct module-input-to-output
+`memref` passthrough remains illegal under the module export provenance rule.
 
 An ordinary connection must not convert `bits` to `bits_tag` or
 `bits_tag` to `bits`. Such a spatial/temporal domain transition requires

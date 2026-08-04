@@ -58,6 +58,27 @@ already owns. Those dialects remain available when a future source contract
 actually requires their semantics; they are not mandatory transit layers for
 an already scheduled Fabric.
 
+## Why Non-Defined Values Need No RTL Sideband
+
+Poison and Undef describe where the software semantic model no longer requires
+one particular payload value. They are not runtime exceptions that every
+physical datapath must detect. Requiring a poison bit, overlap checker, trap,
+or stall protocol would change Fabric-visible ports and behavior and would
+duplicate promises already owned by OperationSchema.
+
+A total RTL circuit can instead choose one concrete bit value wherever the
+software result is non-defined while remaining exact for every defined result.
+The choice is local to the non-defined result lane, so a poisoned vector lane
+does not relax its defined siblings. This is the smallest refinement relation
+and applies uniformly to overflow, exactness, disjointness, and other
+promise-bearing schemas.
+
+The relation observes rather than rewrites Canonical Dataflow semantics. Undef
+remains unconstrained until its owning observation or freeze, and a canonical
+Defined result from that operation must still be reproduced exactly. Fabric
+may declare an explicit checker or exception protocol when hardware
+observability is genuinely required; a provider cannot invent one locally.
+
 ## Why Fake RTL Success Is Forbidden
 
 An X-filled module, passthrough stub, unimplemented branch, or same-provider

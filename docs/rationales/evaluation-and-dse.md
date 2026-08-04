@@ -141,6 +141,24 @@ deduplication, and local work. The central controller owns lineage, scheduling,
 Evidence acquisition, promotion, Pareto selection, and deterministic replay.
 It does not define one generic mutable candidate or action language.
 
+## Why Invocation Output And Lineage Are Separate
+
+A generator invocation may retain an input unchanged, return several Artifacts
+through one slot, return Artifacts through several typed slots, or preserve
+several valid paths to one deduplicated Artifact. Treating its complete output
+as one lineage hyperedge would erase those distinctions. Conversely, repeating
+the complete input closure and resolved configuration on every single-output
+edge would make large candidate sets duplicate invocation facts.
+
+The manifest therefore records the invocation's typed input and output
+bindings once and nests ordinary single-child lineage edges beneath that
+occurrence. Output bindings answer what the invocation returned; lineage edges
+answer how a particular returned Artifact was produced. This is not duplicate
+authority because neither can derive the other when an input is retained or
+several paths converge. Artifact dependency closure continues to own semantic
+data dependence, while owner codecs preserve typed decisions without creating
+a universal action language.
+
 ## Why Model Parameters Are Ordinary Domain Candidates
 
 A training request Artifact would repeat facts already fixed by the typed

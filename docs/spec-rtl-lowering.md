@@ -57,6 +57,35 @@ a choice in RTL.
 Visualization metadata is stripped before Fabric identity and has no effect on
 hardware generation.
 
+### Non-Defined Value Refinement
+
+RTL payloads are total fixed-width bit values, while each Canonical Dataflow
+`SemanticLane` or scalar result component may independently be Defined, Poison,
+or Undef. Fabric-to-RTL applies one lane-local refinement rule through the exact
+actor-result-to-physical-payload correspondence:
+
+* when one canonical result lane is `Defined(v)`, the corresponding emitted RTL
+  payload bits must equal `v` exactly;
+* when one canonical result lane is Poison or Undef, only that lane's
+  corresponding RTL payload bits may take any type-correct value; and
+* protocol, state, commit, and side-effect behavior must remain within the
+  exact actor and Fabric contracts.
+
+A provider cannot turn a poison-generating precondition into a trap, stall,
+valid suppression, checker state, or additional sideband. Such observable
+behavior is legal only when the exact Fabric capability declares it. A normal
+total circuit value is a valid refinement of a non-defined payload; an
+unsynthesizable `X`, placeholder, or stub is not a provider implementation.
+One non-defined vector lane never relaxes a defined sibling lane.
+
+This refinement observes the canonical output; it does not rewrite Canonical
+Dataflow propagation, masks, observation, or `freeze` semantics. If an owning
+operation, including a later observation or freeze, produces a canonical
+`Defined(v)` lane, its provider must reproduce `v` exactly. A family/recipe that
+cannot preserve this relation remains typed `Unsupported`. The same rule covers
+disjoint LLVM OR, integer overflow promises, exact shifts, zero-poison count
+operations, and every other registered semantic promise.
+
 ## Common CIRCT Skeleton
 
 Fabric-to-RTL first constructs one target-independent CIRCT skeleton. The
@@ -205,6 +234,13 @@ occurrence-scoped mechanism:
 * Cadence ChipWare;
 * AMD/Xilinx primitives and configured IP; and
 * Intel/Altera primitives and configured IP.
+
+These recipes may materialize different RTL, wrapper modules, primitive or IP
+instances, parameters, black-box contracts, and external implementation
+bindings. DesignWare, ChipWare, AMD/Xilinx, and Intel/Altera recipes are not
+aliases for portable RTL and are not aliases for one another. A downstream EDA
+tool consumes the already selected implementation; choosing that tool cannot
+silently rewrite the occurrence recipe.
 
 This list is an implementation-provider catalog, not a second operation
 catalog. One provider keyed by an `ImplementationFamilyId` may implement every

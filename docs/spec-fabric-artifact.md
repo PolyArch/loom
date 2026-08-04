@@ -363,6 +363,18 @@ resource endpoint for them. This relation is derived from the canonical Module
 SSA graph and is not another serialized catalog. A Module boundary reference
 remains an attachment correspondence rather than a transport endpoint,
 traversal, or capacity owner.
+
+The same Module view separately exposes the complete canonical token-plane
+boundary-passthrough relation. Each row contains one exact input
+`FabricModuleBoundaryEndpointRef` and one exact output
+`FabricModuleBoundaryEndpointRef` connected directly by the canonical Module
+SSA graph. Rows follow output signature ordinal; original signature ordinals
+are retained even when memory-plane endpoints create holes in the token-plane
+inventory. Inputs and outputs are each unique in the relation. A boundary
+present in an attachment row cannot also appear in a passthrough row. The
+relation contains no resource endpoint, traversal, capacity, EntityId, or
+serialized payload and does not change Fabric Artifact identity.
+
 Memory-plane Module boundaries remain in the typed memory endpoint model and
 never appear in this token-plane relation. A `System` root
 additionally exposes complete canonical
