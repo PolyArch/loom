@@ -1,5 +1,7 @@
 #include "Fabric/Identity/FabricRefImport.h"
 
+#include "Dataflow/IR/OperationSchemaCodec.h"
+
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -147,4 +149,46 @@ llvm::Error ResolvedFabricOpCapabilityView::admitCorrespondence(
     return error;
   return verify(represented->type.getResults(), resultPorts,
                 FabricPortDirection::Output);
+}
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+ResolvedFabricOpCapabilityView::encodeOperationSelection(
+    const FabricSemanticConfigFieldRef &field,
+    ::dataflow::OperationSchemaId schema) const {
+  const auto rejected = [](const llvm::Twine &message) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "fabric_operation_selection_codec_rejected: " + message);
+  };
+  if (configurationFieldSchema.size() != 1 ||
+      configurationFieldSchema.front() != field)
+    return rejected("field is not the exact operation configuration field");
+  if (enabledOperationSchemas.size() < 2)
+    return rejected("capability does not select among operation schemas");
+  if (!llvm::is_contained(enabledOperationSchemas, schema))
+    return rejected("operation schema is not enabled by the capability");
+
+  std::uint32_t inputCount = 0;
+  std::uint32_t resultCount = 0;
+  for (const ResolvedFabricOpPhysicalPortView &port : physicalPorts) {
+    if (port.reference.direction == FabricPortDirection::Input)
+      ++inputCount;
+    else if (port.reference.direction == FabricPortDirection::Output)
+      ++resultCount;
+    else
+      return rejected("physical port has an unknown direction");
+  }
+  for (::dataflow::OperationSchemaId enabled : enabledOperationSchemas) {
+    auto singletonNeedsConfiguration =
+        ::fabric::requiresSemanticConfigurationField(
+            implementationFamily, parameterizedCapability,
+            llvm::ArrayRef<::dataflow::OperationSchemaId>(&enabled, 1),
+            inputCount, resultCount);
+    if (!singletonNeedsConfiguration)
+      return singletonNeedsConfiguration.takeError();
+    if (*singletonNeedsConfiguration)
+      return rejected("field has semantic dimensions beyond operation "
+                      "selection");
+  }
+  return ::dataflow::encodeOperationSchemaId(schema);
 }

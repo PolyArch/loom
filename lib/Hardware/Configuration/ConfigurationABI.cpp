@@ -433,14 +433,8 @@ parseConfigurationABI(llvm::ArrayRef<std::uint8_t> bytes) {
                                std::move(parsedUnits)};
 }
 
-std::uint64_t encodedBitCount(const ConfigurationFieldEncoding &field) {
-  return std::visit(
-      [](const auto &encoding) { return encoding.encodedBitCount; },
-      field.semanticEncoding);
-}
-
 llvm::Error canonicalizeEncoding(ConfigurationFieldEncoding &field) {
-  const std::uint64_t bitCount = encodedBitCount(field);
+  const std::uint64_t bitCount = field.encodedBitCount();
   if (bitCount == 0)
     return invalid("semantic encoding has zero encoded_bit_count");
   if (auto *direct = std::get_if<DirectBitsEncoding>(&field.semanticEncoding)) {
@@ -482,7 +476,7 @@ llvm::Error canonicalizeEncoding(ConfigurationFieldEncoding &field) {
 llvm::Error canonicalizeSlices(
     ConfigurationFieldEncoding &field, std::uint64_t payloadBitCount,
     std::vector<std::pair<std::uint64_t, std::uint64_t>> &destinationRanges) {
-  const std::uint64_t sourceLimit = encodedBitCount(field);
+  const std::uint64_t sourceLimit = field.encodedBitCount();
   std::vector<std::pair<std::uint64_t, std::uint64_t>> sourceRanges;
   sourceRanges.reserve(field.destinationSlices.size());
   for (const DestinationSlice &slice : field.destinationSlices) {
@@ -703,8 +697,8 @@ serializeConfigurationABI(const ArtifactRootReference &fabricReference,
   return output.str().str();
 }
 
-const ConfigurationFieldEncoding *findField(const ProgrammingUnit &unit,
-                                            llvm::ArrayRef<std::uint8_t> key) {
+const ConfigurationFieldEncoding *
+findFieldInUnit(const ProgrammingUnit &unit, llvm::ArrayRef<std::uint8_t> key) {
   for (const ConfigurationFieldEncoding &field : unit.fields)
     if (llvm::ArrayRef<std::uint8_t>(referenceKey(field.field)).equals(key))
       return &field;
@@ -743,6 +737,15 @@ ConfigurationABI::findProgrammingUnit(ProgrammingUnitId id) const {
   return unit.id == id ? &unit : nullptr;
 }
 
+const ConfigurationFieldEncoding *ConfigurationABI::findField(
+    const fabric::FabricSemanticConfigFieldRef &field) const {
+  const ByteVector key = referenceKey(field);
+  for (const ProgrammingUnit &unit : programmingUnits_)
+    if (const ConfigurationFieldEncoding *encoding = findFieldInUnit(unit, key))
+      return encoding;
+  return nullptr;
+}
+
 llvm::Expected<std::vector<std::uint8_t>> ConfigurationABI::encode(
     ProgrammingUnitId id,
     llvm::ArrayRef<SemanticConfigurationValue> values) const {
@@ -758,7 +761,7 @@ llvm::Expected<std::vector<std::uint8_t>> ConfigurationABI::encode(
   std::map<ByteVector, llvm::ArrayRef<std::uint8_t>> selected;
   for (const SemanticConfigurationValue &value : values) {
     ByteVector key = referenceKey(value.field);
-    if (!findField(*unit, key))
+    if (!findFieldInUnit(*unit, key))
       return invalid(
           "semantic value names a field outside the programming unit");
     if (!selected.emplace(std::move(key), value.value).second)
@@ -801,7 +804,7 @@ ConfigurationABI::decode(ProgrammingUnitId id,
   std::vector<SemanticConfigurationValue> values;
   values.reserve(unit->fields.size());
   for (const ConfigurationFieldEncoding &field : unit->fields) {
-    const std::uint64_t fieldBitCount = encodedBitCount(field);
+    const std::uint64_t fieldBitCount = field.encodedBitCount();
     auto fieldByteCount =
         byteCountForBits(fieldBitCount, "configuration field");
     if (!fieldByteCount)

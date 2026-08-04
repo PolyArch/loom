@@ -50,6 +50,19 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-scalar-integer-add-sub-test
+    PortableScalarIntegerAddSubTest.cpp
+  )
+
+  target_link_libraries(loom-portable-scalar-integer-add-sub-test PRIVATE
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-circt-conformance-test
     CirctConformanceTest.cpp
   )

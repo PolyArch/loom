@@ -64,6 +64,12 @@ struct ConfigurationFieldEncoding final {
   SemanticFieldEncoding semanticEncoding;
   std::vector<DestinationSlice> destinationSlices;
   std::vector<std::uint8_t> inactiveValue;
+
+  std::uint64_t encodedBitCount() const {
+    return std::visit(
+        [](const auto &encoding) { return encoding.encodedBitCount; },
+        semanticEncoding);
+  }
 };
 
 struct ProgrammingUnitDraft final {
@@ -96,6 +102,8 @@ public:
     return programmingUnits_;
   }
   const ProgrammingUnit *findProgrammingUnit(ProgrammingUnitId id) const;
+  const ConfigurationFieldEncoding *
+  findField(const fabric::FabricSemanticConfigFieldRef &field) const;
 
   llvm::Expected<std::vector<std::uint8_t>>
   encode(ProgrammingUnitId id,

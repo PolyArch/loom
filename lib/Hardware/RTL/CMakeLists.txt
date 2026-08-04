@@ -1,6 +1,8 @@
 add_library(LoomHardwareRTL
   CirctConformance.cpp
   CommonSkeleton.cpp
+  OperationLeaf.cpp
+  Providers/ScalarIntegerAddSub.cpp
   Specialization.cpp
   Transport.cpp
 )

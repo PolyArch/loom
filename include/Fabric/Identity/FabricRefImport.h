@@ -86,6 +86,12 @@ struct ResolvedFabricOpCapabilityView {
       unsigned indexBitWidth, llvm::ArrayRef<std::uint64_t> operandPorts,
       llvm::ArrayRef<std::uint64_t> resultPorts,
       const ::loom::PointerLayout *pointerLayout = nullptr) const;
+
+  /// Encodes one enabled operation-schema choice through a configuration
+  /// field proven to have no semantic dimension beyond member selection.
+  llvm::Expected<CanonicalSemanticBytes>
+  encodeOperationSelection(const FabricSemanticConfigFieldRef &field,
+                           ::dataflow::OperationSchemaId schema) const;
 };
 
 /// One boundary's exact role in Physical Tag continuity. The point is a
