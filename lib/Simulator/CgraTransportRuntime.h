@@ -183,16 +183,31 @@ private:
   };
 
   struct StorageBinding final {
-    explicit StorageBinding(CgraTransportStorageRuntime state)
-        : queue(std::move(state)) {}
+    StorageBinding(CgraTransportStorageRuntime state,
+                   CgraTraversalStorageKind storageKind,
+                   bool independentServices)
+        : queue(std::move(state)), kind(storageKind),
+          independentReadWriteServices(independentServices) {}
 
     CgraTransportStorageRuntime queue;
+    CgraTraversalStorageKind kind = CgraTraversalStorageKind::None;
     std::uint64_t enqueueAction = invalidCgraTransportOrdinal;
     std::uint64_t dequeueAction = invalidCgraTransportOrdinal;
     std::uint64_t simultaneousAction = invalidCgraTransportOrdinal;
     std::vector<std::uint64_t> pendingEnqueueNodes;
+    std::vector<std::uint64_t> pendingDequeueNodes;
+    bool independentReadWriteServices = false;
     bool eventScheduled = false;
-    bool actionPending = false;
+    std::uint8_t activeActionCount = 0;
+  };
+
+  struct StorageFrameCommit final {
+    std::optional<CgraTransportStorageEntry> enqueue;
+    std::optional<CgraTransportStorageEntry> expectedDequeue;
+    std::uint64_t enqueueNode = invalidCgraTransportOrdinal;
+    std::uint64_t dequeueNode = invalidCgraTransportOrdinal;
+    std::uint8_t retireCount = 0;
+    bool touched = false;
   };
 
   CgraTransportRuntime(
@@ -239,6 +254,8 @@ private:
   std::vector<TraversalNodeBinding> traversalNodes_;
   std::vector<std::uint64_t> traversalSuccessors_;
   std::vector<StorageBinding> storages_;
+  std::vector<StorageFrameCommit> storageFrameCommits_;
+  std::vector<std::uint64_t> touchedStorageFrameCommits_;
   std::vector<std::uint32_t> traversalRemainingPredecessors_;
   std::vector<TraversalNodeState> traversalNodeStates_;
   std::vector<std::uint64_t> traversalNodeTransferSlots_;

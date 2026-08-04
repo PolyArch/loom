@@ -576,6 +576,33 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
                                                  selectedPatterns, activations);
   if (!resources)
     return resources.takeError();
+  for (CgraTraversalStoragePlan &storage : result.transport.traversalStorages) {
+    if (storage.enqueuePhysicalUseOrdinal >= resources->selectedUses.size() ||
+        storage.dequeuePhysicalUseOrdinal >= resources->selectedUses.size())
+      return invalid("CGRA storage actions are absent from resource plan");
+    const CgraResourceUsePlan &enqueue =
+        resources->selectedUses[storage.enqueuePhysicalUseOrdinal];
+    const CgraResourceUsePlan &dequeue =
+        resources->selectedUses[storage.dequeuePhysicalUseOrdinal];
+    if (enqueue.claimOffset > resources->claims.size() ||
+        enqueue.claimCount > resources->claims.size() - enqueue.claimOffset ||
+        dequeue.claimOffset > resources->claims.size() ||
+        dequeue.claimCount > resources->claims.size() - dequeue.claimOffset)
+      return invalid("CGRA storage action claim slice is malformed");
+    llvm::SmallDenseSet<std::uint64_t, 4> enqueueDimensions;
+    for (const CgraResourceClaimPlan &claim :
+         llvm::ArrayRef(resources->claims)
+             .slice(enqueue.claimOffset, enqueue.claimCount))
+      enqueueDimensions.insert(claim.dimensionOrdinal);
+    storage.independentReadWriteServices = true;
+    for (const CgraResourceClaimPlan &claim :
+         llvm::ArrayRef(resources->claims)
+             .slice(dequeue.claimOffset, dequeue.claimCount))
+      if (enqueueDimensions.contains(claim.dimensionOrdinal)) {
+        storage.independentReadWriteServices = false;
+        break;
+      }
+  }
   result.resources = std::move(*resources);
   result.summary.physicalUseCount =
       static_cast<std::uint64_t>(result.physicalUses.size());

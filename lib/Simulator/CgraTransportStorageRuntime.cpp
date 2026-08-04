@@ -26,16 +26,18 @@ const CgraTransportStorageEntry &CgraTransportStorageRuntime::front() const {
   return *entries_[head_];
 }
 
+bool CgraTransportStorageRuntime::admits(bool enqueue, bool dequeue) const {
+  if (!enqueue && !dequeue)
+    return false;
+  const std::uint32_t dequeues = dequeue ? 1 : 0;
+  return dequeues <= occupancy_ &&
+         (!enqueue || occupancy_ - dequeues < entries_.size());
+}
+
 llvm::Expected<CgraTransportStorageCommit> CgraTransportStorageRuntime::commit(
     std::optional<CgraTransportStorageEntry> enqueue, bool dequeue) {
-  if (!enqueue && !dequeue)
-    return invalid("CGRA traversal storage commit is empty");
-  const std::uint32_t dequeues = dequeue ? 1 : 0;
-  if (dequeues > occupancy_)
-    return invalid("CGRA traversal storage dequeue underflows the queue");
-  const std::uint32_t afterDequeue = occupancy_ - dequeues;
-  if (enqueue && afterDequeue >= entries_.size())
-    return invalid("CGRA traversal storage enqueue exceeds queue capacity");
+  if (!admits(enqueue.has_value(), dequeue))
+    return invalid("CGRA traversal storage commit violates queue capacity");
 
   CgraTransportStorageCommit result;
   if (dequeue) {

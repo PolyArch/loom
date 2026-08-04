@@ -56,6 +56,7 @@ struct CgraTraversalStoragePlan final {
   std::uint64_t enqueuePhysicalUseOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t dequeuePhysicalUseOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t simultaneousPhysicalUseOrdinal = invalidCgraTransportOrdinal;
+  bool independentReadWriteServices = false;
 };
 
 struct CgraRouteNodePlan final {

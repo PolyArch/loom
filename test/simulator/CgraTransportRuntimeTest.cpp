@@ -421,9 +421,255 @@ void localRealizationEdgePublishesThroughExactConsumer() {
           "buffered traversal did not preserve delayed token delivery");
 }
 
+void registerFifoWriteAndReadShareOneDurableQueue() {
+  auto artifact = program();
+  auto view = take(artifact.view());
+  const dataflow::CanonicalActorView *add = nullptr;
+  const dataflow::CanonicalActorView *sync = nullptr;
+  for (const dataflow::CanonicalActorView &actor : view.actors()) {
+    const auto schema = dataflow::operationSchemaOf(actor.op);
+    if (schema == dataflow::OperationSchemaId::ArithAddI)
+      add = &actor;
+    if (schema == dataflow::OperationSchemaId::DataflowSync)
+      sync = &actor;
+  }
+  require(add && sync, "register-FIFO fixture lacks add or sync actor");
+  auto graphView = take(view.resolve(add->graph));
+  auto graph = mlir::cast<dataflow::GraphOp>(graphView.op);
+  GraphPreparationResult preparedResult =
+      take(prepareGraphExecution(artifact.module(), graph));
+  auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
+  require(prepared, "register-FIFO graph preparation failed");
+
+  CgraFrozenExecutionPlan plan;
+  plan.computeActors.push_back({add->ref, add->graph, {}, {}, 0, 0});
+  plan.transport.traversals.resize(2);
+  plan.transport.traversals[0].kind =
+      loom::fabric::FabricPhysicalTraversalKind::PeRegisterFifoTraversal;
+  plan.transport.traversals[0].storageKind =
+      CgraTraversalStorageKind::RegisterFifoWrite;
+  plan.transport.traversals[0].storageOrdinal = 0;
+  plan.transport.traversals[1].kind =
+      loom::fabric::FabricPhysicalTraversalKind::PeRegisterFifoTraversal;
+  plan.transport.traversals[1].storageKind =
+      CgraTraversalStorageKind::RegisterFifoRead;
+  plan.transport.traversals[1].storageOrdinal = 0;
+  plan.transport.traversalStorages.push_back({});
+  CgraTraversalStoragePlan &storage = plan.transport.traversalStorages.front();
+  storage.kind = CgraTraversalStorageKind::RegisterFifoWrite;
+  storage.capacity = 1;
+  storage.enqueuePhysicalUseOrdinal = 0;
+  storage.dequeuePhysicalUseOrdinal = 1;
+  storage.independentReadWriteServices = true;
+  plan.transport.routeNodes.push_back(
+      {std::numeric_limits<std::uint32_t>::max(), invalidCgraTransportOrdinal});
+  plan.transport.routeSinks.push_back(
+      {{dataflow::ActorTokenOperandRef{sync->ref, 1}}, 0, 1});
+  plan.transport.routes.push_back({{dataflow::ActorTokenResultRef{add->ref, 0}},
+                                   add->graph,
+                                   0,
+                                   0,
+                                   1,
+                                   0,
+                                   1});
+  for (std::uint64_t action = 0; action != 2; ++action) {
+    plan.physicalUseClients.push_back(
+        CgraPhysicalUseClientKind::TraversalTransport);
+    plan.resources.selectedUses.push_back({});
+    plan.physicalUseTimings.push_back({action, 0, 0, 1, 0, 1, 0});
+  }
+
+  SimulatorState state;
+  state.graphScope = graph.getOperation();
+  initializeRunState(state, *prepared);
+  auto physical = take(CgraPhysicalActionRuntime::create(
+      plan.resources, plan.physicalUseTimings));
+  auto transport = take(CgraTransportRuntime::create(
+      plan, view, add->graph, *prepared, state, physical));
+  llvm::SmallVector<CgraComputeActorEmission, 1> emissions;
+  emissions.push_back(
+      {0, 0, 0, 0,
+       take(tokenFromBitPattern(llvm::APInt(32, 31),
+                                mlir::IntegerType::get(&context(), 32)))});
+  if (llvm::Error error =
+          transport.acceptActorEmissions(coordinate(20), emissions))
+    fail(llvm::toString(std::move(error)));
+
+  bool sawWrite = false;
+  bool sawRead = false;
+  bool sawPublication = false;
+  std::optional<loom::evaluation::ExactRatio> writeCycle;
+  std::optional<loom::evaluation::ExactRatio> readCycle;
+  for (unsigned iteration = 0; iteration != 32 && !sawPublication;
+       ++iteration) {
+    const auto transportCoordinate = transport.nextCoordinate();
+    const auto physicalCoordinate = physical.nextCoordinate();
+    const bool advancePhysical =
+        physicalCoordinate &&
+        (!transportCoordinate ||
+         loom::sim::compareSpatialEventCoordinates(*physicalCoordinate,
+                                                   *transportCoordinate) <= 0);
+    if (advancePhysical) {
+      auto frame = take(physical.advance());
+      require(frame.has_value(), "register-FIFO physical event disappeared");
+      (void)take(transport.acceptPhysicalEvents(*frame));
+      continue;
+    }
+    require(transportCoordinate.has_value(),
+            "register-FIFO transfer became quiescent before publication");
+    auto frame = take(transport.advance());
+    require(frame.has_value(), "register-FIFO transport event disappeared");
+    for (const CgraPhysicalLifecycleEvent &event : frame->physicalEvents) {
+      if (event.kind != CgraPhysicalLifecycleKind::Requested)
+        continue;
+      if (event.actionOrdinal == 0) {
+        sawWrite = true;
+        writeCycle = event.coordinate.referenceCycle;
+      }
+      if (event.actionOrdinal == 1) {
+        sawRead = true;
+        readCycle = event.coordinate.referenceCycle;
+      }
+    }
+    sawPublication |= !frame->publications.empty();
+  }
+
+  require(sawWrite && sawRead && sawPublication && writeCycle && readCycle &&
+              static_cast<__uint128_t>(writeCycle->numerator()) *
+                      readCycle->denominator() <
+                  static_cast<__uint128_t>(readCycle->numerator()) *
+                      writeCycle->denominator() &&
+              channelQueue(state, sync->op->getOpOperand(1)).size() == 1 &&
+              take(tokenBitPattern(
+                  channelQueue(state, sync->op->getOpOperand(1)).front(),
+                  mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 31),
+          "register-FIFO write/read did not preserve durable ordered storage");
+
+  CgraFrozenExecutionPlan dualPlan = plan;
+  const std::uint64_t ingressNodeOffset = dualPlan.transport.routeNodes.size();
+  const std::uint64_t ingressSinkOffset = dualPlan.transport.routeSinks.size();
+  dualPlan.transport.routeNodes.push_back(
+      {std::numeric_limits<std::uint32_t>::max(), invalidCgraTransportOrdinal});
+  dualPlan.transport.routeSinks.push_back(
+      {{dataflow::ActorTokenOperandRef{add->ref, 0}}, 0, 1});
+  dualPlan.transport.routes.push_back(
+      {{dataflow::GraphIngressTokenRef{
+           dataflow::GraphValueInputTokenRef{add->graph, 0}}},
+       add->graph,
+       0,
+       ingressNodeOffset,
+       1,
+       ingressSinkOffset,
+       1});
+
+  SimulatorState dualState;
+  dualState.graphScope = graph.getOperation();
+  initializeRunState(dualState, *prepared);
+  auto dualPhysical = take(CgraPhysicalActionRuntime::create(
+      dualPlan.resources, dualPlan.physicalUseTimings));
+  auto dualTransport = take(CgraTransportRuntime::create(
+      dualPlan, view, add->graph, *prepared, dualState, dualPhysical));
+  channelQueue(dualState, add->op->getOpOperand(0))
+      .push_back(take(tokenFromBitPattern(
+          llvm::APInt(32, 99), mlir::IntegerType::get(&context(), 32))));
+  llvm::SmallVector<GraphIngressEmission, 1> ingress;
+  dualState.graphIngressCapture = &ingress;
+  seedBlockArgument(
+      dualState, graph.getBody().front().getArgument(1),
+      take(tokenFromBitPattern(llvm::APInt(32, 41),
+                               mlir::IntegerType::get(&context(), 32))));
+  dualState.graphIngressCapture = nullptr;
+  if (llvm::Error error =
+          dualTransport.acceptGraphIngressEmissions(coordinate(40), ingress))
+    fail(llvm::toString(std::move(error)));
+
+  bool queueBlocked = false;
+  for (unsigned iteration = 0; iteration != 24 && !queueBlocked; ++iteration) {
+    const auto transportCoordinate = dualTransport.nextCoordinate();
+    const auto physicalCoordinate = dualPhysical.nextCoordinate();
+    const bool advancePhysical =
+        physicalCoordinate &&
+        (!transportCoordinate ||
+         loom::sim::compareSpatialEventCoordinates(*physicalCoordinate,
+                                                   *transportCoordinate) <= 0);
+    if (advancePhysical) {
+      auto frame = take(dualPhysical.advance());
+      require(frame.has_value(), "dual-port physical event disappeared");
+      (void)take(dualTransport.acceptPhysicalEvents(*frame));
+      continue;
+    }
+    require(transportCoordinate.has_value(),
+            "dual-port register FIFO became quiescent before blocking");
+    auto frame = take(dualTransport.advance());
+    require(frame.has_value(), "dual-port transport event disappeared");
+    queueBlocked = !frame->blockedTransfers.empty();
+  }
+  require(queueBlocked,
+          "full register FIFO did not preserve downstream backpressure");
+
+  llvm::SmallVector<CgraComputeActorEmission, 1> replacement;
+  replacement.push_back(
+      {0, 1, 0, 0,
+       take(tokenFromBitPattern(llvm::APInt(32, 43),
+                                mlir::IntegerType::get(&context(), 32)))});
+  if (llvm::Error error =
+          dualTransport.acceptActorEmissions(coordinate(50), replacement))
+    fail(llvm::toString(std::move(error)));
+  channelQueue(dualState, add->op->getOpOperand(0)).pop_front();
+  if (llvm::Error error = dualTransport.retryBlocked(coordinate(50)))
+    fail(llvm::toString(std::move(error)));
+
+  bool sawAtomicPair = false;
+  bool sawIngressPublication = false;
+  bool sawReplacementPublication = false;
+  for (unsigned iteration = 0; iteration != 48 && !sawReplacementPublication;
+       ++iteration) {
+    const auto transportCoordinate = dualTransport.nextCoordinate();
+    const auto physicalCoordinate = dualPhysical.nextCoordinate();
+    const bool advancePhysical =
+        physicalCoordinate &&
+        (!transportCoordinate ||
+         loom::sim::compareSpatialEventCoordinates(*physicalCoordinate,
+                                                   *transportCoordinate) <= 0);
+    if (advancePhysical) {
+      auto frame = take(dualPhysical.advance());
+      require(frame.has_value(), "dual-port physical event disappeared");
+      (void)take(dualTransport.acceptPhysicalEvents(*frame));
+      continue;
+    }
+    require(transportCoordinate.has_value(),
+            "dual-port replacement became quiescent before publication");
+    auto frame = take(dualTransport.advance());
+    require(frame.has_value(), "dual-port transport event disappeared");
+    unsigned requested = 0;
+    bool requestedWrite = false;
+    bool requestedRead = false;
+    for (const CgraPhysicalLifecycleEvent &event : frame->physicalEvents) {
+      if (event.kind != CgraPhysicalLifecycleKind::Requested)
+        continue;
+      ++requested;
+      requestedWrite |= event.actionOrdinal == 0;
+      requestedRead |= event.actionOrdinal == 1;
+    }
+    sawAtomicPair |= requested == 2 && requestedWrite && requestedRead;
+    for (const CgraTokenPublication &publication : frame->publications) {
+      const llvm::APInt value = take(tokenBitPattern(
+          publication.token, mlir::IntegerType::get(&context(), 32)));
+      sawIngressPublication |= value == llvm::APInt(32, 41);
+      sawReplacementPublication |= value == llvm::APInt(32, 43);
+    }
+  }
+  require(sawAtomicPair && sawIngressPublication && sawReplacementPublication &&
+              channelQueue(dualState, add->op->getOpOperand(0)).size() == 1 &&
+              channelQueue(dualState, sync->op->getOpOperand(1)).size() == 1,
+          "dual-port full-queue replacement was not one atomic cycle update");
+}
+
 } // namespace
 
 int main() {
   localRealizationEdgePublishesThroughExactConsumer();
+  registerFifoWriteAndReadShareOneDurableQueue();
   return EXIT_SUCCESS;
 }

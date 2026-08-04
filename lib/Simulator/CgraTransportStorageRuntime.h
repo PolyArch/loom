@@ -37,6 +37,7 @@ public:
   bool empty() const { return occupancy_ == 0; }
   bool full() const { return occupancy_ == entries_.size(); }
   const CgraTransportStorageEntry &front() const;
+  bool admits(bool enqueue, bool dequeue) const;
 
   /// Atomically applies one cycle-start dequeue and/or enqueue. A dequeue sees
   /// only the cycle-start queue, while its released slot is available to the
