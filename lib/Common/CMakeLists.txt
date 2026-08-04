@@ -9,6 +9,7 @@ add_mlir_library(LoomCommon
   BlobStore.cpp
   CanonicalRelation.cpp
   ComponentViewDigest.cpp
+  ExternalFileFingerprint.cpp
   IndexWidth.cpp
   PointerLayout.cpp
   ResolvedConfig.cpp

@@ -1,4 +1,5 @@
 add_subdirectory(Configuration)
+add_subdirectory(Implementation)
 if(LOOM_HAVE_CIRCT)
   add_subdirectory(RTL)
 endif()

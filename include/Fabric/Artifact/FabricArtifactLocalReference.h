@@ -15,6 +15,8 @@
 
 namespace loom::fabric {
 
+class FabricArtifactView;
+
 /// The closed loom.fabric 1.x owner-local kind space used by Common's
 /// ArtifactLocalReference framing. Enumerators and typed traits are generated
 /// from the one declaration in FabricRefs.def.
@@ -111,6 +113,10 @@ llvm::Expected<ArtifactReference<Ref>> decodeFabricArtifactLocalReference(
   return ArtifactReference<Ref>{reference.artifact.artifact,
                                 std::move(*decoded)};
 }
+
+llvm::Error validateFabricArtifactLocalReference(
+    const FabricArtifactView &view,
+    const EncodedArtifactLocalReference &reference);
 
 } // namespace loom::fabric
 

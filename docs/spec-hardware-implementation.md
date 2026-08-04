@@ -118,7 +118,7 @@ timing authority or a separate constraint artifact.
 ```text
 ImplementationInterface {
   interface_key
-  role
+  role: ImplementationInterfaceRole
   semantic_fabric_ref
   representation_locator
   device_pin_ref?
@@ -129,6 +129,31 @@ ActivityPoint {
   representation_locator
   semantic_fabric_ref?
 }
+
+ImplementationInterfaceRole =
+    Data
+  | Clock
+  | Reset
+  | Configuration
+  | Memory
+  | ExternalProtocol
+
+RepresentationLocator {
+  object_kind: RepresentationObjectKind
+  canonical_name
+}
+
+RepresentationObjectKind =
+    Module
+  | Instance
+  | Port
+  | Net
+  | Register
+  | Memory
+  | Cell
+  | Pin
+  | PhysicalObject
+  | DeviceResource
 ```
 
 The interface catalog binds Fabric-visible boundaries, clocks, resets,
@@ -137,9 +162,17 @@ implementation locators. The activity catalog is the sole implementation-
 local source for RTL, netlist, physical, and FPGA activity references used by
 simulation or Evaluation.
 
-Locators are representation-local typed values. They do not alter Fabric or
-Mapping identity. A missing required interface or activity point makes the
-artifact incomplete.
+The enclosing representation gives every locator its representation-local
+interpretation; a locator therefore does not repeat a representation tag.
+`canonical_name` is the stable name within that exact represented state, not a
+filesystem path, report path, tool query, or Fabric entity name. The closed
+object kind prevents a port, net, cell, pin, physical object, and device
+resource from becoming interchangeable strings. A locator kind incompatible
+with the enclosing representation is invalid.
+
+Locators do not alter Fabric or Mapping identity. `device_pin_ref` is valid
+only for an FPGA representation with an exact FPGA target manifest. A missing
+required interface or activity point makes the artifact incomplete.
 
 ## Memory And External Bindings
 
