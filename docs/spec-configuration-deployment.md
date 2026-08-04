@@ -42,8 +42,10 @@ A `HardwareImplementation` references the exact Fabric and ConfigurationABI it
 implements. The ABI does not refer back to a final implementation.
 
 An implementation-only backend recipe is selected by the exact hardware
-candidate-generator binding per `FabricEntityRef`. That selection contributes
-to `HardwareImplementation` lineage and identity, but only when every
+candidate-generator binding per `FabricEntityRef`. `InvocationManifest` records
+that selection on the derivation edge. The recipe affects
+HardwareImplementation identity only through its materialized payloads,
+platform reference, or implementation bindings, and is legal only when every
 Fabric-observable semantic, timing, capacity, progress, and ABI fact is
 unchanged. It does not create another configuration field, alter a
 `HardwareConfigurationImage`, or change Fabric identity.
@@ -123,6 +125,35 @@ a complete image and defines when that image becomes visible and active.
 AXI, JTAG, MMIO, and custom transport mechanisms belong to the implementation
 that realizes the ABI; the ABI does not contain a command-script language.
 
+### Complete-Image Programming Model
+
+Version 1.0 has one closed programming model:
+
+```text
+CompleteImageAtomic {
+  payload_bit_count
+}
+```
+
+An implementation accepts all `payload_bit_count` bits into non-observable
+staging state and makes the complete new state visible atomically only after
+the complete image is accepted. A partial write never changes active
+configuration. Transport framing, addresses, write beats, and the mechanism
+that commits staging state are HardwareImplementation details derived from
+this contract; they are not additional ABI fields.
+
+All ABI bit vectors use one fixed representation. Logical bit `i` is bit
+`i % 8` of byte `i / 8`, where bit zero is the least-significant bit of the
+byte. The byte vector has exactly `ceil(bit_count / 8)` bytes and unused high
+bits of its last byte are zero. There is no host-endian or tool-endian variant.
+
+Programming units are sorted by the canonical byte sequence of their exact
+Fabric resource closure and receive dense `unit_id` values starting at zero.
+Resource closures are nonempty, canonical sets and do not overlap. Every
+configuration field belongs to exactly one unit, and its Fabric configuration
+owner must occur in that unit's resource closure. Authoring order never enters
+identity.
+
 ### Field Encoding
 
 Composite semantic configuration is flattened into typed leaves during ABI
@@ -131,6 +162,36 @@ finalization. A leaf uses one of two atoms:
 * `DirectBits`: encode one fixed-width bit vector directly.
 * `FiniteCodebook`: map each allowed typed value to one unique physical code.
 
+The closed wire shapes are:
+
+```text
+DirectBits {
+  encoded_bit_count
+}
+
+FiniteCodebook {
+  encoded_bit_count
+  entries[] {
+    semantic_value
+    physical_code
+  }
+}
+
+DestinationSlice {
+  source_bit_offset
+  destination_bit_offset
+  bit_count
+}
+```
+
+`semantic_value` is the exact canonical byte carrier produced by the referenced
+Fabric field-domain codec. The ConfigurationABI never parses it into a local
+enum, operation string, or property map. A DirectBits semantic value uses the
+fixed ABI bit-vector representation. A FiniteCodebook entry's physical code
+uses that same representation with `encoded_bit_count`; semantic values and
+physical codes are each unique. `inactive_value` uses the same semantic carrier
+and must be encodable by the selected atom.
+
 `destination_slices` may cross words or be non-contiguous. Every destination
 bit has exactly one source, slices are in range and non-overlapping, and all
 reserved or padding bits are zero. An unselected hardware field uses the
@@ -138,6 +199,14 @@ ABI-declared `inactive_value`; Fabric must prove that value functionally inert.
 The encoder may not invent a default. RTL providers consume these fields and
 their codebooks; they cannot create an independent exact-mode index or decoder
 authority.
+
+The slices of one field cover every source bit exactly once. Fields and slices
+are sorted by canonical Fabric reference bytes and destination position.
+Encoding starts from an all-zero payload, substitutes `inactive_value` for an
+omitted semantic field, and then applies the slices. Decoding first rejects a
+nonzero reserved bit, reconstructs every encoded field, and rejects a
+FiniteCodebook pattern with no entry. Re-encoding a decoded complete image must
+return identical bytes.
 
 ## HardwareConfigurationImage
 
@@ -209,8 +278,9 @@ DeploymentExternalInterfaceRef =
 
 The exact Canonical Dataflow Program and architecture-only Fabric are recovered
 from `system_mapping_ref`. Exact Fabric, ConfigurationABI, Interconnect
-Implementation, and ImplementationPlatform facts are recovered from each
-selected HardwareImplementation. Deployment does not duplicate those
+Implementation, ImplementationPlatform target and corner facts, and
+provider-owned external bindings are recovered from each selected
+HardwareImplementation. Deployment does not duplicate those
 references. Its verifier requires the recovered closures to agree exactly and
 requires `hardware_bindings[]` to cover the complete selected system without a
 foreign or unused implementation.

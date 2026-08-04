@@ -20,9 +20,9 @@ Every report field that describes a semantic fact resolves to one exact owner:
 - an `EvaluationRequest` owns the exact evaluation question;
 - an `EvaluationEvidence` owns normalized outcome, metric results, and finding
   results;
-- owner-attempt or scratch storage retains scripts, logs, raw tool reports,
-  diagnostic trace chunks, and other payloads until their exact Artifact owner
-  is defined; and
+- owner-attempt or scratch storage retains ExternalToolInvocationBundles,
+  scripts, logs, raw tool reports, diagnostic trace chunks, and other payloads
+  until their exact Artifact owner is defined; and
 - `InvocationManifest`, `ExecutionJournal`, and owner-specific attempt records
   own invocation provenance, recovery state, and retry history.
 
@@ -53,6 +53,11 @@ are invocation bindings. They do not enter source artifact identity. Consumers
 must receive report paths explicitly and must not discover semantic inputs by
 scanning a scratch directory.
 
+Direct EDA projections, their source Evidence, and their owner-attempt material
+are local-only under the repository disclosure boundary in
+[EDA Tooling](spec-eda-tooling.md). Normalization into Evidence does not make
+captured EDA data eligible for repository tracking.
+
 ## Simulation Reports
 
 A DFG-sim, CGRA-sim, or system-simulation report obtains terminal values,
@@ -74,6 +79,12 @@ Architecture-only RTL or EDA evaluation has no workload execution and
 therefore produces no empty `SimulationExecution`. Its report projects exact
 Request, Evidence, and owner-attempt records instead. Raw payloads remain
 scratch state until their exact Artifact owner exists.
+
+An external-tool report may reference the exact bundle and completion record,
+but it cannot discover outputs by scanning the bundle directory. The provider
+importer first validates the declared output inventory and produces typed
+Evidence; human reports project that result rather than normalize vendor text
+again.
 
 ## Mapping Reports
 

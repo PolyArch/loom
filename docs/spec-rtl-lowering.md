@@ -11,10 +11,10 @@ Fabric-to-RTL consumes:
 * one exact `ConfigurationABI` for that Fabric;
 * exact Interconnect Implementation roots required by that Fabric system;
 * one resolved hardware candidate-generator binding;
-* one exact `ImplementationPlatform` when a selected provider or payload is
-  technology dependent; and
-* exact external implementation bindings required by selected Fabric
-  resources.
+* one exact `ImplementationPlatform` when the emitted implementation is bound
+  to an ASIC technology release or FPGA ordering code; and
+* exact provider-owned external input bindings required by selected Fabric
+  resources or implementation recipes.
 
 It produces one `HardwareImplementation` containing or content-addressing the
 SystemVerilog sources, packages, interfaces, constraints, black-box contracts,
@@ -22,8 +22,10 @@ activity-point catalog, and implementation manifest needed by downstream
 tools.
 
 `docs/spec-hardware-implementation.md` owns the output root, payload roles,
-interface and activity catalogs, lineage, and finalization.
-`docs/spec-implementation-platform.md` owns ASIC and FPGA technology inputs.
+interface and activity catalogs, semantic closure, and finalization.
+`docs/spec-implementation-platform.md` owns only the shared ASIC or FPGA target
+manifest and technology-corner catalog. Provider descriptors own the exact
+external files or tool-bundled resources they consume.
 
 The lowering does not consume Dataflow or Mapping and does not create a
 workload-specific RTL design. Workload execution combines the reusable
@@ -54,6 +56,56 @@ a choice in RTL.
 
 Visualization metadata is stripped before Fabric identity and has no effect on
 hardware generation.
+
+## Common CIRCT Skeleton
+
+Fabric-to-RTL first constructs one target-independent CIRCT skeleton. The
+skeleton is transient compiler IR inside one candidate-generator invocation;
+it is not an Artifact, a cache authority, or another hardware semantic model.
+An optional diagnostic dump is a removable report projection.
+
+The skeleton uses:
+
+* `hw.module`, `hw.instance`, and HW aggregate types for hierarchy, ports, and
+  structural composition;
+* `comb` for target-independent combinational logic;
+* `seq` for Fabric-declared state, clocks, enables, and reset behavior; and
+* `hw.module.generated` for a leaf whose exact Fabric contract is known but
+  whose implementation recipe has not yet been materialized.
+
+Each Loom-generated abstract leaf is mechanically associated with one exact
+Fabric occurrence and `ResolvedFabricOpCapabilityView`. The association is an
+internal lookup key, not a second capability record. The skeleton never stores
+operation-name classifications, provider ecosystem names, PDK paths, target
+part data, or independently chosen latency and resource facts.
+
+The skeleton pass owns all target-independent structure: module boundaries,
+connections, handshake composition, FIFOs, configuration transport, clocks,
+resets, resource control, and external interfaces. It does not emit a portable,
+DesignWare, ChipWare, AMD/Xilinx, or Intel/Altera implementation for an
+abstract operation leaf.
+
+The resolved candidate-generator binding then drives target specialization.
+For every abstract leaf it selects one typed occurrence recipe, obtains the
+same Fabric-owned capability view, and invokes the registered provider. A
+provider may replace the leaf with ordinary `hw`/`comb`/`seq` logic, a
+target-specific wrapper and external module, or a configured primitive/IP
+contract. It may not rebuild the surrounding Fabric structure.
+
+After specialization, no Loom abstract generated leaf may remain. A
+target-specific external module may remain only when the resulting
+HardwareImplementation contains its exact `BlackBoxContract` and external
+implementation binding. The complete module is verified before and after
+target specialization, lowered through the registered CIRCT legalization and
+Seq-to-SV pipeline, verified again, and only then exported as SystemVerilog.
+Failure at any boundary publishes no partial HardwareImplementation.
+
+Fabric is already the exact latency-insensitive, state, scheduling, and HSG
+authority. Fabric-to-RTL therefore does not route the complete design through
+a second Handshake, DC, scheduling, or operator-library semantic layer.
+Individual CIRCT transformations may be used internally only when they
+provably preserve the exact Fabric contract and leave no competing persistent
+authority.
 
 ## Operation Provider Registry
 
@@ -137,10 +189,71 @@ FabricEntityRef -> typed BackendRecipeKey
 ```
 
 Recipe selection is not global by operation name. It is recorded in
-`HardwareImplementation` derivation and identity while leaving Fabric identity
-unchanged. Accuracy, timing, or other Fabric-visible differences cannot be
-hidden behind a recipe key. A provider may report an unavailable recipe or
-external dependency, but it may not silently choose another contract.
+the resolved generator configuration, and `InvocationManifest` records the
+selection on the derivation edge. The selected provider must materialize every
+resulting implementation fact in the HardwareImplementation payloads and
+bindings. Fabric identity remains unchanged. Accuracy, timing, or other
+Fabric-visible differences cannot be hidden behind a recipe key. A provider
+may report an unavailable recipe or external dependency, but it may not
+silently choose another contract.
+
+The initial recipe catalog supports five provider families through the same
+occurrence-scoped mechanism:
+
+* portable synthesizable SystemVerilog;
+* Synopsys DesignWare;
+* Cadence ChipWare;
+* AMD/Xilinx primitives and configured IP; and
+* Intel/Altera primitives and configured IP.
+
+This list is an implementation-provider catalog, not a second operation
+catalog. One provider keyed by an `ImplementationFamilyId` may implement every
+compatible operation admitted by that HSG family. It consumes each concrete
+operation's resolved capability view instead of classifying operation-name
+strings.
+
+Vendor inference is not an implementation identity. A vendor-specific recipe
+emits an explicit wrapper, primitive or IP instantiation, and exact
+`BlackBoxContract` where required. The resolved generator binding owns the
+selected recipe keys and required provider-library slots for that invocation.
+An explicit external file is selected by its provider-owned typed input slot
+and exact content fingerprint. A resource distributed with DesignWare,
+ChipWare, Vivado, or Quartus is selected by the exact provider tool/build
+identity and resource key. No recipe imports a PDK, IP tree, device database,
+or tool installation into ImplementationPlatform.
+
+`external_implementation_bindings` record every provider dependency that
+remains necessary to reconstruct or consume the resulting
+`HardwareImplementation`. A binding materializes the selected provider,
+resource or file identity, occurrence relation, and representation locator;
+it never contains a host path or a free-form property map.
+
+Portable RTL remains a separately selectable recipe and is mandatory for the
+open-source flow. It may also be selected explicitly for a commercial flow.
+Failure to resolve a selected vendor recipe is `Unsupported`; the backend may
+not silently replace it with portable RTL, downstream inference, or a different
+vendor primitive. Conversely, merely running a vendor EDA tool does not change
+a portable recipe into a vendor-specific one.
+
+One exact Fabric and ConfigurationABI may feed several resolved implementation
+flows with different occurrence recipe maps. Portable, DesignWare, ChipWare,
+AMD/Xilinx, and Intel/Altera selections normally produce distinct immutable RTL
+HardwareImplementations because their materialized sources, black-box
+contracts, or external bindings differ. If two selections produce identical
+canonical implementation state, they converge on one HardwareImplementation
+identity while `InvocationManifest` retains both derivation paths. Compatible
+downstream evaluators may observe any resulting implementation, but their tool
+choice cannot rewrite its materialized recipe. This explicit fan-out is the
+only cross-ecosystem comparison boundary; there is no implicit provider
+conversion.
+
+An HLS product such as Stratus or Vitis HLS is not another RTL recipe. It may
+be registered as a candidate generator only when Loom has an exact typed
+high-level body, interface, protocol, numeric, and timing contract that the
+generator consumes directly. The baseline Fabric-to-RTL path already emits RTL
+and never reconstructs such a body from generated SystemVerilog. Software
+deployment, platform packaging, and device execution through Vitis are likewise
+separate typed generators or evaluators when their required owners exist.
 
 ## Structural Lowering
 
@@ -307,17 +420,21 @@ checks produce Evidence without an empty execution artifact.
 Generated SDC or equivalent constraints are `GenerationConstraint` payloads of
 the exact HardwareImplementation. They are mechanically derived from Fabric
 clock, reset, timing, and crossing facts; HardwareImplementation locators; the
-resolved generator binding; and the exact ImplementationPlatform. A generated
-clock, asynchronous relation, false path, multicycle path, IO delay, or load is
-legal only when one of those typed owners supplies the fact. Report parsing or
-backend heuristics cannot silently create a semantic constraint.
+resolved generator binding; and the exact target manifest when one is present.
+A generated clock, asynchronous relation, false path, multicycle path, IO
+delay, or load is legal only when one of those typed owners supplies the fact.
+An external PDK or library file is an implementation input, not an independent
+timing-constraint authority. Report parsing or backend heuristics cannot
+silently create a semantic constraint.
 
 An architecture verification harness is derived from
 `HardwareImplementation + ConfigurationABI`. A mapped workload harness is
 derived from `HardwareImplementation + Deployment + SimulationWorkload +
 SimulationRuntimeInput`. Harness source, simulator scripts, and waveforms are
-raw execution material; Loom does not add a `TestbenchArtifact` or another
-stimulus schema. The harness must program mapped RTL through the exact
+materialized in an ExternalToolInvocationBundle as owner-attempt execution
+material; Loom does not add a `TestbenchArtifact` or another stimulus schema.
+The bundle manifest references the exact semantic owners rather than copying
+their contracts. The harness must program mapped RTL through the exact
 ConfigurationABI path and use the implementation interface catalog rather than
 private hierarchy guesses.
 
@@ -338,6 +455,14 @@ references but remain presentation details.
 
 Stable anchors cover:
 
+* one Fabric lowering to a target-independent verified HW/Comb/Seq skeleton,
+  with abstract leaves tied only to exact Fabric occurrences;
+* the same skeleton specialized to portable and vendor-backed RTL without
+  rebuilding structural topology;
+* rejection of a skeleton that reaches SystemVerilog export with an unresolved
+  Loom abstract leaf;
+* acceptance of a target-specific external module only with an exact black-box
+  contract and external implementation binding;
 * one regular and one arbitrary-topology Fabric lowering;
 * exact replication/arbitration and width/tag behavior;
 * atomic two-input `s2t` and two-output `t2s` handshakes with no partial

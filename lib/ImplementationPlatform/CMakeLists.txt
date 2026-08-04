@@ -1,4 +1,5 @@
 add_mlir_library(LoomImplementationPlatform
+  ImplementationPlatform.cpp
   TechnologyCorner.cpp
 
   ADDITIONAL_HEADER_DIRS

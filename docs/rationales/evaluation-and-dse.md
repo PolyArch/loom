@@ -3,7 +3,7 @@
 Normative contracts are owned by
 [Evaluation And DSE](../spec-dse-feedback.md),
 [Evaluation Metrics](../spec-evaluation-metrics.md),
-[Evaluation ToolRunner](../spec-evaluation-tool-runner.md), and
+[External Tool Invocation](../spec-external-tool-invocation.md), and
 [FPA Evaluation](../spec-fpa-estimation.md).
 
 ## Why Evaluation Is Shared Across The Stack
@@ -144,8 +144,9 @@ It does not define one generic mutable candidate or action language.
 ## Why Model Parameters Are Ordinary Domain Candidates
 
 A training request Artifact would repeat facts already fixed by the typed
-generator binding, resolved plan, run key, and invocation manifest: exact input
-Evidence, trainer identity, configuration, seed, and occurrence provenance.
+Generate inputs, generator binding, resolved plan, run key, and invocation
+manifest: exact input Evidence, trainer identity, configuration, seed, and
+occurrence provenance.
 Including those facts in parameter identity would also make two training
 occurrences with identical parameter semantics produce different Artifacts.
 
@@ -157,6 +158,13 @@ obtained. Equal payloads under one contract deduplicate, while a contract or
 payload change creates a different identity. A promoted default may later be
 checked into the codebase, but online state never silently changes an existing
 model identity.
+
+Checking in a promoted bundle publishes only the same contract-owned canonical
+parameter object used by inference. It does not publish, redact, summarize, or
+copy its source Evidence. Direct EDA Evidence and training provenance stay in
+local stores, while the bundle schema structurally excludes those occurrence
+facts. This preserves one model-weight authority and avoids a public/private
+pair that would require synchronization.
 
 One shared bundle family does not make the payload opaque. The exact model
 parameter-contract registry owns the typed adopter, encoder, feature
@@ -303,34 +311,43 @@ and cache dependencies. Every cross-model dependency is an explicit plan edge
 with exact upstream Evidence. Shared pure kernels and parameter bundles remain
 libraries, not fake evaluator nodes.
 
-The common in-process model interface provides artifacts, scratch, a controlled
-ToolRunner, cancellation, resource leases, and structured logging. It does not
-give a model mutable DSE state, objective weights, or permission to promote or
-replace candidates.
+The common in-process model interface provides exact artifacts, immutable
+configuration views, scratch ownership, cancellation observation, resource
+leases, and structured logging. An external model instead prepares an exact
+invocation bundle and imports its declared result. Neither interface gives a
+model mutable DSE state, objective weights, or permission to promote or replace
+candidates.
 
-## Why ToolRunner Is Narrow
+## Why External Tools Are Script Driven
 
-External EDA and simulation tools need consistent process control, environment
-binding, output inventory, timeout handling, and secret isolation. ToolRunner
-owns that local execution primitive, not tool semantics or workflow policy.
-Adapters own script generation, report parsing, and typed Evidence.
+EDA and external simulation tools already own Tcl, Python, shell, module,
+license, and container conventions. Reimplementing those conventions in a C++
+process supervisor would make Loom an environment manager and create another
+place where site policy, tool setup, resource behavior, and debugging output
+could diverge.
 
-A structured argv and explicit environment avoid a second shell language.
-Tool versions and result-affecting options enter model identity; executable
-paths, module locations, license endpoints, and temporary directories remain
-nonsemantic bindings.
+Loom instead resolves machine bindings once and emits an independently
+executable bundle. Its manifest preserves structured commands and exact
+provenance; generated Bash is only their executable projection. This keeps
+tool-specific drivers reviewable and lets the same material run under a local
+shell, Make, Ninja, Slurm, or site orchestration without changing compiler
+semantics.
 
-External tools may create descendant process trees, so a per-process address-
-space limit or periodic process sampling cannot enforce an aggregate memory
-budget. When a hard process-tree limit is requested, ToolRunner requires one
-kernel-enforced containment owner that accounts all descendants, reports a
-local OOM event, records aggregate peak memory, and terminates the complete
-tree. The specification names the behavior rather than one operating-system
-service API.
+Discovery belongs before bundle finalization. Explicit configuration has
+priority over the current environment, and module discovery is only a final
+fallback. Freezing the exact executable, loaded-module closure, version, and
+runtime prevents repeated searches from selecting different tools in parallel
+or on replay.
 
-Touching a hard threshold is not equivalent to failure because reclaim can
-allow execution to continue. Conversely, an ordinary allocation failure does
-not prove that the containment owner killed the process tree. The terminal
-status is therefore committed only from the owner-local hard-limit event. Peak
-memory remains a raw execution fact; an Evaluation model must explicitly
-interpret it before it can become a metric or Evidence.
+Tool and PolyArch/container choices are independent but require composition
+preflight. A site module may already wrap a vendor container, an absolute tool
+path may not be mounted, or a license environment may be unavailable inside an
+outer runtime. Treating every pair as valid would make orthogonality a false
+claim; rejecting an invalid pair before execution preserves both dimensions
+without adding a hidden fallback.
+
+Memory, CPU, namespace, process-tree, wall-time, image, and scheduler policy
+belong to the shell, container, scheduler, or site that executes the script.
+An externally stopped run may leave an incomplete attempt. It cannot select a
+different model, fabricate partial Evidence, or justify a Loom-owned cgroup
+abstraction.

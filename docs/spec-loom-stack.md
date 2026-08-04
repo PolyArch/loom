@@ -350,6 +350,12 @@ material until their exact Artifact owner is defined. Mapped RTL execution
 produces SimulationExecution only when it actually runs the Deployment and
 observes the requested values, streams, memories, and completion behavior.
 
+RTL and EDA providers materialize independently executable bundles containing
+exact inputs, generated drivers, frozen local tool/runtime bindings, declared
+outputs, and an importer. Loom may invoke the generated top-level script, but
+it does not implement the tool's environment, process-tree resource control,
+container lifecycle, scheduler, or license service.
+
 The simulator contracts are
 [Simulation Artifacts](spec-simulation-artifacts.md),
 [DFG Simulation](spec-sim-dfg.md),
@@ -365,6 +371,13 @@ are versioned mechanical projections. Semantic values, defaults, and schema
 versions are each owned once; invocation paths, output directories, host
 parallelism, licenses, and wall-clock limits remain nonsemantic execution
 bindings.
+
+Machine-local tool, runtime, and external-file bindings use the separate
+explicit `--loom-local-config=<path>` input. It is never implicitly loaded and
+never enters ResolvedConfig or semantic Artifact identity. Exact expected file
+fingerprints or tool-bundled resource identities belong to the consuming
+provider binding. Tool and input resolution freezes one local projection before
+a generated script runs; scripts do not rediscover tools or inputs.
 
 Every persistent semantic object uses the common Artifact identity contract.
 One codebase semantic/build identity plus one exact resolved semantic closure

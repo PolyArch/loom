@@ -8,6 +8,9 @@ config.name = "LOOM"
 config.test_format = lit.formats.ShTest()
 config.suffixes = [".mlir", ".test"]
 
+if getattr(config, "loom_have_circt", False):
+    config.available_features.add("circt")
+
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.loom_obj_root, "test")
 

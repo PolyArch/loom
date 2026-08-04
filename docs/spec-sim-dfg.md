@@ -421,7 +421,7 @@ a partial summary names only continuously observed actors, and omitted actors
 are unknown. DFG-sim does not fabricate Fabric-resource or
 implementation-signal activity. Actor activity can be projected to a physical
 Evaluation target only when the exact Request closure also supplies the
-required Mapping and implementation lineage.
+required exact Mapping, HardwareImplementation, and activity-point binding.
 
 Supported normalized observations may include logical cycle count, actor fire
 and retirement counts, operation-class activity, terminal observables, and

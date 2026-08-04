@@ -14,6 +14,16 @@ add_mlir_library(LoomFabricIdentity
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Identity
 
+  DEPENDS
+  LoomImplementationFamiliesIncGen
+  LoomOperationSchemasIncGen
+  MLIRDataflowAttrsIncGen
+  MLIRDataflowDialectIncGen
+  MLIRDataflowEnumsIncGen
+  MLIRDataflowInterfacesIncGen
+  MLIRDataflowOpsIncGen
+  MLIRFabricEnumsIncGen
+
 )
 
 target_link_libraries(LoomFabricIdentity PUBLIC

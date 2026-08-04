@@ -130,6 +130,18 @@ Expensive raw tool products remain owner-attempt or scratch material until an
 exact raw detailed-bundle Artifact owner exists; they are not committed as
 routine test fixtures.
 
+A released parameter bundle may be committed as that same canonical
+`ModelParameterBundle`; Loom does not define a public-weight projection or a
+second serialization. Repository eligibility requires the contract-owned
+payload to contain only derived predictive or analytical parameters. It must
+not encode training samples, Evidence or Invocation references, sample-group
+keys, report excerpts, tool paths, local platform paths, proprietary payloads,
+or other attempt data. The canonical bundle root and its canonical payload are
+the complete publishable model-weight unit. Source Evidence, partition
+membership, calibration Evidence, training invocation manifests, and all
+direct EDA products remain local under the disclosure boundary in
+[EDA Tooling](spec-eda-tooling.md).
+
 The initial FPA parameter contract is exactly
 `ModelParameterContractRef("loom.fpa", 1.0, 0)`. Its prediction case signatures
 are `structured_program_with_fabric` and
@@ -233,11 +245,14 @@ as synthesis, layout, signoff, or measured evidence.
 
 ## Tool And Library Binding
 
-EDA execution uses the common ToolRunner and an exact model binding containing
-the result-affecting tool version, technology/library data, parser, and
-semantic effort. PVT, required clock, and the activity binding are typed base
-conditions. Local executable paths, activation scripts, licenses, scratch
-roots, and host concurrency are invocation bindings.
+EDA preparation emits an ExternalToolInvocationBundle from an exact model
+binding containing the result-affecting tool version, technology/library data,
+parser, and semantic effort. PVT, required clock, and the activity binding are
+typed base conditions. Local executable paths, activation scripts, licenses,
+scratch roots, and container selection are invocation bindings. Host
+concurrency and resource policy remain owned by the caller or scheduler.
+Optional execution invokes the generated bundle script; Loom does not supervise
+the EDA process tree or own its resource environment.
 
 An authorized expensive model is genuinely executed when the resolved DSE plan
 selects it. Loom must not silently replace it with an estimate. Cancellation or

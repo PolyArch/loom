@@ -1,0 +1,7 @@
+# RUN: not test -e %S/../../include/ImplementationPlatform/PayloadContent.h
+# RUN: not test -e %S/../../include/ImplementationPlatform/PayloadImport.h
+# RUN: not test -e %S/../../lib/ImplementationPlatform/PayloadContent.cpp
+# RUN: not test -e %S/../../lib/ImplementationPlatform/PayloadImport.cpp
+# RUN: not test -e %S/PayloadContentTest.cpp
+# RUN: not test -e %S/PayloadImportTest.cpp
+# RUN: not rg -n "PlatformPayloadContent|CanonicalDirectory|platform_payload_roots" %S/../../include/ImplementationPlatform %S/../../lib/ImplementationPlatform %S/../../include/ExternalTool %S/../../lib/ExternalTool %S/../../loom-local-config.example.json

@@ -1187,11 +1187,12 @@ runtime loop, generic workflow DSL, or mutable workflow authority. Repeated
 finite Generate and Promote nodes express cross-domain iteration.
 
 Candidate-generator capabilities live in a static typed descriptor registry.
-A resolved binding fixes typed inputs through the common plan bindings, typed
-generator configuration, and objective/Evaluation projections.
-The generator produces domain Artifacts and `CandidateDecision` lineage. Its
-domain owns transformations and local search semantics; the central plan sees
-only canonical input and output Artifact sets.
+A resolved Generate node fixes typed inputs through the common plan bindings
+and fixes owner-typed generator configuration through its generator binding.
+The generator produces domain Artifacts; `InvocationManifest` records each
+`MechanicalDerivation` or `CandidateDecision` edge. Its domain owns
+transformations and local search semantics; the central plan sees only
+canonical input and output Artifact sets.
 
 ### Objectives and Quality Gates
 
@@ -1499,7 +1500,8 @@ The manifest records:
 - occurrence and semantic-closure references;
 - descriptors and verification digests for component views actually consumed;
 - optional resume provenance and one controller outcome;
-- canonical `MechanicalDerivation` and `CandidateDecision` records;
+- canonical `MechanicalDerivation` and `CandidateDecision` records binding
+  exact typed inputs, the resolved producer binding, and exact outputs;
 - selected or retained Artifact and Evidence references;
 - owner-local planned/consumed work summaries;
 - retained owner attempt/checkpoint references; and
@@ -1534,8 +1536,9 @@ renumber work, consume the same logical slot twice, substitute another
 candidate, or complete from best-so-far state.
 
 Attempts and checkpoints remain owner-specific. Evaluation uses its
-request-local attempt record; ToolRunner retains scripts, stdout, stderr, raw
-reports, and process outcome in attempt or scratch material; PnR, training, and other
+request-local attempt record; an ExternalToolInvocationBundle retains generated
+scripts, frozen local bindings, stdout, stderr, raw reports, and its atomic
+completion record in attempt or scratch material; PnR, training, and other
 domains define typed checkpoints only when real recovery requires them. A
 checkpoint binds the exact run key, occurrence, plan node, WorkUnitKey, owner
 schema, and version. There is no generic Attempt Artifact or all-domain
@@ -1554,29 +1557,55 @@ CandidateGeneratorDescriptor {
   implementation_semantic_identity
   typed_input_slot_descriptors
   typed_output_slot_descriptors
-  resolved_generator_config_schema
+  resolved_generator_config_view_contract
   determinism_contract
   owner_local_work_unit_descriptors
-  objective_and_evaluation_projection_slots
 }
 
 ResolvedCandidateGeneratorBinding {
   descriptor_ref
-  exact_static_input_bindings
-  resolved_generator_config
-  objective_and_evaluation_projection_refs
+  resolved_generator_config: ResolvedGeneratorConfigViewWire
+}
+
+ResolvedGeneratorConfigViewWire {
+  canonical_view_bytes: canonical byte string
+  component_view_digest: ComponentViewDigest
+}
+
+ResolvedGeneratorConfigViewContract {
+  schema_descriptor_bytes
+  project(exact ResolvedConfig) -> owner-typed immutable view
+  encode(owner-typed view) -> canonical_view_bytes
+  adopt(canonical_view_bytes, component_view_digest)
+    -> owner-typed immutable view
 }
 ```
 
 Central `Generate` plan nodes connect exact static values or earlier
 `PlanOutputRef` values to descriptor-owned input slots. The resolved node's
 output slots are mechanically obtained from the descriptor's role, schema, and
-cardinality contract.
-A generator publishes normal domain Artifacts and candidate lineage, then
-deduplicates by ArtifactIdentity. Compiler transformations, Mapping Actions,
-hardware transformations, and model training remain owned by their respective
-domains; the controller does not define a universal Action or mutable candidate
-IR.
+cardinality contract. Those `typed_input_bindings` are the sole owner of the
+generator's Artifact inputs; the generator binding does not copy them.
+
+The config-view contract follows the component-view framing and validation
+owned by `docs/spec-config-ssot.md`. The exact descriptor recovers the schema
+descriptor. The adopter recomputes the digest, decodes and validates the
+owner-typed value, re-encodes it, and requires exact byte equality. A
+`ResolvedCandidateGeneratorBinding` is a versioned canonical value in the
+resolved plan and invocation record, not an Artifact, candidate identity, or
+independently authorable configuration.
+
+Central ranking and promotion consume their own typed plan inputs and policies;
+they are not copied into a generic generator binding. If a generator itself
+consumes an objective, Evidence, or another Artifact, that dependency is an
+explicit typed input slot. Any other owner-local decision that changes its
+generation behavior belongs in the descriptor-owned config view.
+
+A generator publishes normal domain Artifacts, then deduplicates by
+ArtifactIdentity. `InvocationManifest` may retain every valid derivation path
+to the converged Artifact. Compiler transformations, Mapping Actions, hardware
+transformations, and model training remain owned by their respective domains;
+the controller does not define a universal Action or mutable candidate IR.
 
 An external flow that preserves a new `HardwareImplementation` is a hardware
 Candidate Generator even when the same process also emits reports. The new
@@ -1593,13 +1622,10 @@ FabricTemplateConfig {
 }
 
 FabricRewriteConfig {
-  base_fabric_ref
   typed_structural_decisions
 }
 
 ImplementationFlowConfig {
-  input_fabric_or_implementation_ref
-  implementation_platform_ref?
   provider_bindings[]
   occurrence_recipe_bindings[]
   typed_flow_decisions
@@ -1608,12 +1634,15 @@ ImplementationFlowConfig {
 
 `FabricTemplateConfig` invokes the public ADG Builder expansion path and
 produces a Fabric Artifact. `FabricRewriteConfig` produces another exact Fabric
-Artifact because it changes architecture semantics or structure.
+Artifact because it changes architecture semantics or structure; its base
+Fabric is an explicit typed input slot.
 `ImplementationFlowConfig` preserves Fabric semantics while producing an
-immutable HardwareImplementation child or initial RTL implementation. Each
-descriptor owns a closed schema for its typed parameter and decision records;
-there is no generic property bag, hardware action language, mutable candidate
-IR, or evaluator-owned rewrite.
+immutable HardwareImplementation. The exact Fabric or prior
+HardwareImplementation and optional ImplementationPlatform are descriptor-owned
+typed input slots, not configuration fields. Each descriptor owns a closed
+schema for its typed parameter and decision records; there is no generic
+property bag, hardware action language, mutable candidate IR, or
+evaluator-owned rewrite.
 
 The central plan may compose and rank these generators, but it does not copy
 their semantics. Builtin search ranges and heuristics are resolved generator
@@ -1782,7 +1811,8 @@ result-affecting Base condition: process corner, supply voltage, temperature,
 activity binding, and any present required-clock or relative-clock condition.
 The architecture cases target the exact Fabric-owned domains; the physical
 case targets the exact HardwareImplementation-owned domains and recovers the
-same pre-attempt Fabric structure through implementation lineage. The
+same pre-attempt Fabric structure through the implementation's exact
+`fabric_ref`. The
 projector validates the typed target relation, includes condition payloads in
 its feature view, and rejects any Base condition outside its declared table.
 Its prediction-schema descriptor bytes are exactly the FPA owner's canonical
@@ -1793,9 +1823,10 @@ prediction finalization uses 18 significant decimal digits and
 Model kinds 7 and 8 consume this contract in model-input slot 0 and one exact
 ImplementationPlatform in model-input slot 1. The platform supplies the
 TechnologyCorner owner needed by architecture-case conditions; the exact
-HardwareImplementation case recovers the same platform through its lineage.
-Changing a condition, platform, bundle, source case, or lineage changes the
-Request or makes projection invalid. The contract never treats two operating
+HardwareImplementation case recovers the same platform through its exact
+`implementation_platform_ref`. Changing a condition, platform, bundle, source
+case, or HardwareImplementation identity changes the Request or makes
+projection invalid. The contract never treats two operating
 conditions as one prediction question merely because their structural subject
 matches.
 

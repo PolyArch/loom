@@ -327,6 +327,17 @@ hardware paths, output directories, `--loom-viz-export`,
 `--loom-deploy-output`, tool/runtime provenance, and retained execution
 records.
 
+Machine-local tool, runtime, and external-file configuration is
+supplied only through the explicit `--loom-local-config=<path>` option defined by
+[External Tool Invocation](spec-external-tool-invocation.md). It is not a
+profile parent, ResolvedConfig field, component view, Artifact, or implicit
+repository default. The exact expected fingerprint or tool-bundled resource
+identity belongs to the consuming provider binding; the local file map only
+makes matching bytes accessible. The local resolver freezes its selected
+executable, external-input, environment, module, and runtime bindings into an
+owner-specific invocation bundle. The central InvocationManifest references
+that retained record instead of copying or reinterpreting its fields.
+
 Changing an output or artifact-store location does not change ResolvedConfig,
 any semantic component view, Mapping, simulation semantics, or a cache key that
 does not consume that location. Configuration fields are not copied into every

@@ -1,5 +1,3 @@
-find_package(Threads REQUIRED)
-
 add_library(LoomEvaluation
   CanonicalSupport.cpp
   CaseSignature.cpp
@@ -19,7 +17,6 @@ add_library(LoomEvaluation
   RequestText.cpp
   Scope.cpp
   StandardFindings.cpp
-  ToolRunner.cpp
 )
 
 target_include_directories(LoomEvaluation PUBLIC
@@ -30,5 +27,4 @@ target_link_libraries(LoomEvaluation PUBLIC
   LoomCommon
   LoomImplementationPlatform
   LLVMSupport
-  Threads::Threads
 )

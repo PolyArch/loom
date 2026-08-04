@@ -29,12 +29,3 @@ target_link_libraries(loom-evaluation-evidence-test PRIVATE
   LoomEvaluation
   LLVMSupport
 )
-
-add_executable(loom-evaluation-tool-runner-test
-  ToolRunnerTest.cpp
-)
-
-target_link_libraries(loom-evaluation-tool-runner-test PRIVATE
-  LoomEvaluation
-  LLVMSupport
-)

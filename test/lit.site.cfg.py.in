@@ -15,6 +15,7 @@ config.lit_tools_dir = "@LLVM_LIT_TOOLS_DIR@"
 config.mlir_obj_dir = "@MLIR_BINARY_DIR@"
 config.loom_src_root = "@LOOM_SOURCE_DIR@"
 config.loom_obj_root = "@LOOM_BINARY_DIR@"
+config.loom_have_circt = "@LOOM_HAVE_CIRCT@" == "ON"
 
 import lit.llvm
 lit.llvm.initialize(lit_config, config)

@@ -35,8 +35,9 @@ Each persistent fact has one owner:
   validation against exact architecture and Interconnect Implementation;
   Deployment admission separately validates selected compiler bindings;
 * HardwareImplementation owns immutable RTL, netlist, ASIC, and FPGA
-  implementation state, while ImplementationPlatform owns immutable technology
-  inputs;
+  implementation state plus its exact provider-owned external dependencies,
+  while ImplementationPlatform owns the selected ASIC technology release or
+  FPGA ordering code and typed technology-corner keys;
 * Deployment owns the complete selected executable closure, and
   RuntimePlatformBinding owns provider-facing installation compatibility;
 * `SimulationExecution` 1.0 owns workload terminal observables and activity;
@@ -134,6 +135,14 @@ These edges are required traceability relations, not duplicated field schemas.
 Their exact roots are owned by the linked artifact specifications; this view
 cannot reopen or weaken them.
 
+In the hardware edges, the resolved generator binding labels the invocation
+derivation recorded by `InvocationManifest`; it is not a field of the output
+HardwareImplementation. Each HardwareImplementation independently owns the
+complete exact dependencies and payload closure needed to consume its
+represented state. A later implementation may name an earlier implementation
+as a typed derivation input without making that input an implicit semantic
+parent.
+
 Not every invocation traverses every edge. Compatibility compilation may stop
 at ordinary compiler output. Mapping, simulation, RTL, EDA, deployment, and DSE
 are explicit requested derivations or evaluations.
@@ -193,6 +202,11 @@ the sole owner of `InvocationManifest` and `ExecutionJournal` fields. This
 traceability view references those records and does not repeat their schema,
 copy artifact fields, or copy normalized Evidence results. Repeated lineage
 paths to identical semantic content converge on the same ArtifactIdentity.
+An ExternalToolInvocationBundle is an owner-specific nonsemantic attempt
+record referenced by that manifest; its local paths, module closure, generated
+scripts, raw outputs, and completion record are never copied into semantic
+lineage.
+
 Training occurrence, dataset, trainer, configuration, seed, and attempt facts
 therefore remain manifest lineage. They are not copied into a parameter bundle;
 two occurrences producing the same canonical payload under the same exact

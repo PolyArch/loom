@@ -1,4 +1,4 @@
-# Build artifacts
+# Build artifacts, including repository-local EDA runs
 /build/
 /externals/llvm/build/
 /externals/or-tools/build/
@@ -34,6 +34,7 @@ core.*
 
 # Local tool state and scratch files
 /.claude/
+/loom-local-config.json
 /temp/
 /externals/.loom-build.llvm.lock
 /externals/.loom-build.llvm.turnstile.lock

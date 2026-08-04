@@ -32,6 +32,28 @@ between incompatible changes and compatible schema growth. Unknown fields are
 not an extension mechanism; an owner must introduce and validate a new schema
 version.
 
+## Why Local Tool Binding Is Separate
+
+Executable locations, module initialization, container entrypoints, license
+environment names, and scratch roots differ by host without changing the
+question Loom is compiling or evaluating. Putting them in ResolvedConfig would
+make semantic identity depend on installation layout. Reading a conventional
+file implicitly would instead make the same command depend on ambient
+repository state.
+
+Loom therefore accepts machine-local bindings only through an explicit
+`--loom-local-config=<path>` input. Missing tool entries fall through to the
+current environment and finally module discovery; invalid explicit entries
+fail closed. Resolution is performed once and frozen into a nonsemantic
+invocation bundle, so generated scripts do not become another configuration
+system.
+
+The separation is about ownership, not whether a value looks like a command
+line option. Tool version, effort, corner, constraints, libraries, or any
+option that can change a result still belongs to the semantic model or
+generator binding. Only provider-declared operational launch values may remain
+local.
+
 ## Why ResolvedConfig 2.0 Removes The Provisional Flat Knobs
 
 The first implementation carried a display `config_id`, three global hardware
@@ -130,6 +152,14 @@ This model admits deduplication and honest crash recovery. A failed durability
 acknowledgement cannot promise that a complete final object is absent, so retry
 uses the same deterministic put/get operation. Readers observe absent or
 complete validated objects, never a partial semantic artifact.
+
+An external PDK, library, macro, rule, or IP file does not become an Artifact
+merely because a provider consumes it. Its provider-owned semantic binding
+freezes the exact expected digest, and the local invocation bundle maps that
+identity to a machine-local path and validates the bytes before use. Keeping
+such files outside the Artifact Store preserves the one-object publication
+rule and avoids inventing a platform-content Artifact family solely to mirror
+licensed or private storage.
 
 ## Why Reports And Visualization Are Projections
 

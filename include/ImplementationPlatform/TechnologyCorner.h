@@ -11,14 +11,8 @@
 #include <cstdint>
 
 // The typed technology-corner reference and canonical local payload specified
-// by docs/spec-implementation-platform.md. The complete platform root codec,
-// importer, and finalized corner catalog are required to validate a reference
-// against one exact platform.
-//
-// Those providers are absent from this repository. This module therefore owns
-// only the typed reference and canonical payload projection. Common validation
-// reports the absent owner codec as a capability error; no substitute view or
-// identity registry is provided here.
+// by docs/spec-implementation-platform.md. The platform root importer resolves
+// this owner-local ID against one exact finalized corner catalog.
 
 namespace loom::platform {
 

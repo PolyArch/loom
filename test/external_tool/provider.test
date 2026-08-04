@@ -1,0 +1,1 @@
+# RUN: %loom-external-tool-provider-test

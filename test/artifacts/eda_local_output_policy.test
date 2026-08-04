@@ -1,0 +1,4 @@
+# RUN: cd %S/../.. && git check-ignore -q build/eda-runs/.loom-policy-probe
+# RUN: cd %S/../.. && git check-ignore -q loom-local-config.json
+
+# Repository-local EDA runs and machine-local configuration must stay ignored.

@@ -1,13 +1,16 @@
 # EDA Tooling
 
 This document defines the portable boundary between Loom and external RTL,
-FPGA, ASIC, formal, and physical-design tools. Process execution is owned by
-[Evaluation ToolRunner](spec-evaluation-tool-runner.md); Evaluation schemas are
-owned by [DSE and Evaluation](spec-dse-feedback.md).
+FPGA, ASIC, formal, and physical-design tools. Local tool binding, script
+materialization, and optional script execution are owned by
+[External Tool Invocation](spec-external-tool-invocation.md); Evaluation
+schemas are owned by [DSE and Evaluation](spec-dse-feedback.md).
 Persistent implementation state is owned by
-[Hardware Implementation](spec-hardware-implementation.md), and immutable ASIC
-or FPGA technology inputs are owned by
-[Implementation Platform](spec-implementation-platform.md).
+[Hardware Implementation](spec-hardware-implementation.md). The shared ASIC or
+FPGA target manifest and technology-corner catalog are owned by
+[Implementation Platform](spec-implementation-platform.md); exact library,
+macro, IP, rule, and tool-bundled resource inputs are owned by the descriptor
+that consumes them.
 
 ## Tool Descriptors And Bindings
 
@@ -16,19 +19,27 @@ capability:
 
 * required Artifact schemas;
 * modeled phenomena and supported metrics/findings;
-* required technology or platform input slots;
+* required target, technology-corner, explicit-file, and tool-bundled resource
+  input slots;
 * full-execution method and determinism contract;
 * parser/adapter semantic identity.
 
-One resolved model binding supplies exact result-affecting inputs such as tool
-version, standard-cell or FPGA platform data, corner, constraints, parser
-version, and semantic effort. Executable paths, module activation, license
-servers, host selection, scratch roots, and parallel-job limits are invocation
-bindings. They do not enter candidate semantics unless the model descriptor
-explicitly declares a result-affecting value.
+One resolved model binding supplies exact result-affecting inputs such as the
+stable provider build, selected standard-cell or macro file fingerprints,
+tool-bundled FPGA resource keys, corner mapping, constraints, parser version,
+and semantic effort. Executable paths, module activation, license servers,
+host selection, scratch roots, and parallel-job limits are invocation bindings.
+They do not enter candidate semantics unless the model descriptor explicitly
+declares a result-affecting value.
 
 Loom selects by descriptor capability and exact model binding, not by a global
 fidelity level or hard-coded workstation tool name.
+
+Local tool and runtime resolution follows the shared explicit-configuration,
+current-environment, then module-discovery precedence. An adapter does not
+inspect `PATH`, source module initialization, choose a container, or read a
+machine-local configuration itself. It supplies its provider descriptor and
+consumes the frozen binding produced by the shared resolver.
 
 An adapter consumes the exact `GenerationConstraint` payload of its
 HardwareImplementation. It may translate that payload into vendor syntax, but
@@ -42,29 +53,146 @@ the central `CandidateGeneratorDescriptor` and
 an implementation and retain raw reports for a following Evaluation, but it
 does not make EvaluationModelDescriptor an implementation generator.
 
-## HardwareImplementation Derivation
+## Capability Obligations And Provider Catalog
+
+Hardware-backend completeness is stated against an explicit conformance
+scope, not against a closed product matrix. A scope declares the following
+capability obligations that it needs. Each obligation is realized by an exact
+registered descriptor and binding:
+
+| Capability obligation | Descriptor role | Accepted implementation | Published result |
+| --- | --- | --- | --- |
+| RTL or gate functional observation | evaluator | `Rtl` or `GateNetlist` | `EvaluationEvidence` and, for a real workload, `SimulationExecution` |
+| ASIC logic synthesis | generator, then evaluator | `Rtl`, ASIC target, and declared library inputs | `GateNetlist`, then synthesis Evidence |
+| ASIC physical implementation | generator, then evaluator | `Rtl` or `GateNetlist`, ASIC target, and declared physical inputs | `AsicPhysical`, then physical Evidence |
+| parasitic extraction | generator | routed `AsicPhysical`, ASIC target, and declared RC inputs | extracted `AsicPhysical` |
+| timing, area, or power observation | evaluator | one exact implementation, target, provider inputs, and conditions | normalized Evidence |
+| physical verification | evaluator | one exact physical implementation and declared rule inputs | normalized findings |
+| static FPGA implementation | generator, then evaluator | `Rtl`, exact FPGA ordering code, and provider resource binding | `FpgaPhysical`, `FpgaImage`, and implementation Evidence |
+| implementation-space search | generator | exact typed flow inputs and decisions | immutable implementation candidates |
+
+One tool process may realize more than one registered descriptor, but an
+implementation is finalized before any evaluator observes it. Product names
+do not create Artifact, Evidence, flow, or ecosystem identities. A run selects
+exact generator and evaluator bindings; it never selects a global ecosystem
+mode.
+
+The built-in provider catalog initially covers these baseline routes and may
+grow without changing the capability model:
+
+| Ecosystem | Baseline providers | Additional provider roles |
+| --- | --- | --- |
+| open-source ASIC | Verilator, Yosys, OpenROAD with its registered timing and extraction engines | independent formal or physical-verification adapters when available |
+| Synopsys ASIC | VCS, Design Compiler, Fusion Compiler, PrimeTime, and PrimePower | StarRC, IC Validator, Formality, and other compatible recent tools |
+| Cadence ASIC | Xcelium, DDI Genus and Innovus, Joules, Tempus, and Voltus | Quantus, Pegasus, Cerebrus, and other compatible recent tools |
+| AMD/Xilinx FPGA | Vivado | Vitis when an exact HLS, software-platform, or device-execution contract requires it |
+| Intel/Altera FPGA | Quartus Prime Pro | additional device-programming or execution adapters with exact contracts |
+
+An installed executable or suite directory is not catalog support by itself.
+A provider is supported only after its descriptor, deterministic driver,
+declared outputs, strict importer, failure mapping, and capability anchors are
+registered. Built-in providers are maintained against explicitly validated
+recent releases, normally from the current two-year tool generation. This is
+a catalog maintenance rule, not a runtime subtraction from the wall clock and
+not permission to scan installation trees or guess version order.
+
+Catalog breadth does not require the Cartesian product of every provider,
+platform, recipe, and operation. Every adapter has license-independent driver
+and importer anchors; each baseline route has a real representative smoke
+platform; broader platform and recipe coverage is scheduled as explicit
+conformance work. A result claims only the descriptors, implementation state,
+target and provider-input closure, and checks that actually completed.
+
+OpenROAD is the required open-source physical provider, not a proxy for ASIC
+signoff. Its exact implementation input is the Yosys-derived `GateNetlist`. A
+coherent placed or routed database may publish the matching closed
+`AsicPhysical` variant. The `Extracted` variant is legal only when the complete
+parasitic payload closure is materialized. A layout stream is a payload of the
+corresponding coherent physical implementation, not another representation.
+
+Vivado and Quartus Prime target the exact vendor ordering code of an
+`ImplementationPlatform`. Their verified provider build and exact device key
+own access to the bundled primitive and timing database; Loom does not import
+or hash that database. A successful implementation publishes an immutable
+routed FPGA state before a separate full-device image implementation may be
+derived. The initial contract is static full-device implementation; partial
+reconfiguration and measured-device execution remain outside the baseline
+capability obligations.
+
+VCS and Xcelium initially provide functional RTL and gate-netlist simulation.
+Timing-annotated simulation is not implied by a gate-netlist input. It requires
+an explicit timing-annotation payload owner and model dependency before an
+adapter may claim it.
+
+Every provider uses the same shared tool and runtime resolver, invocation
+bundle, completion contract, HardwareImplementation finalization, and Evidence
+registries. An unavailable executable, license, target, external input,
+primitive, or provider capability is typed `Unavailable` or `Unsupported`;
+it never selects another provider or a lower-fidelity model implicitly.
+
+DesignWare, ChipWare, AMD/Xilinx primitives, and Intel/Altera primitives are
+RTL implementation providers rather than environment-discovery or Evaluation
+providers. Their exact occurrence-scoped selection and dependency ownership is
+defined by [Fabric To RTL](spec-rtl-lowering.md). Tool installation paths and
+module aliases remain local invocation bindings.
+
+Cerebrus is a candidate generator over exact typed implementation decisions,
+not an evaluator, environment manager, or mutable-current-best authority.
+Stratus and Vitis HLS may be candidate generators only after their descriptor
+has an exact high-level body and protocol input contract. The baseline
+Fabric-to-RTL path already produces RTL and does not route RTL back through an
+HLS tool. Virtuoso may originate exact custom-cell or macro views for a
+provider-owned external input binding; it is not a default digital RTL
+implementation stage and does not turn those bytes into Platform fields.
+
+## Invocation Bundles
+
+An EDA adapter emits one finalized `ExternalToolInvocationBundle` containing
+exact materialized Artifact inputs, frozen references to declared external
+files, generated constraints, workload inputs and expected observations where
+applicable, provider Tcl/Python or equivalent drivers, a top-level Bash script,
+declared output locations, and an exact importer identity. Command lines are
+structured tokens before script projection. Machine-local paths, module
+activation, inherited environment names, and PolyArch/container binding are
+frozen into the nonsemantic bundle manifest. The script validates every frozen
+external-file fingerprint before invoking the tool.
+
+The top-level script performs no discovery and does not contain a second copy
+of result-affecting model or generator configuration. Tool options that can
+change implementation or Evaluation output come only from the exact semantic
+binding. The bundle may translate those typed values into vendor syntax.
+
+Loom prepares bundles by default. Optional execution invokes the generated
+script; resource isolation, limits, scheduling, container lifecycle, and
+license services remain external. Independent bundles may be executed in
+parallel without sharing mutable process environment.
+
+## HardwareImplementation Generation
 
 The initial RTL implementation is a `MechanicalDerivation` from exact Fabric,
-exact `ConfigurationABI`, and the resolved generator binding. It has no parent
-implementation. A later flow that consumes existing hardware state and
-preserves new state creates another immutable `HardwareImplementation`.
-Representative later derivations are:
+exact `ConfigurationABI`, and the resolved generator binding. A later flow that
+consumes existing hardware state and preserves new state creates another
+immutable `HardwareImplementation`. `InvocationManifest`, not the output
+Artifact, owns both derivation records. Representative later derivations are:
 
 * RTL elaboration or synthesis to a gate-level implementation;
 * FPGA synthesis and implementation;
 * physical placement, routing, extraction, or stream-out; and
 * explicit insertion or transformation of implementation buffers/state.
 
-ASIC and FPGA use the same immutable lineage. The first FPGA contract produces
-a static full-device implementation and image. Partial reconfiguration, DFT,
-ATPG, multi-power-state intent, retention, fault injection, and silicon bringup
-are explicitly deferred rather than represented by empty fields or generic
-tool options.
+ASIC and FPGA use the same immutable implementation family. The first FPGA
+contract produces a static full-device implementation and image. Partial
+reconfiguration, DFT, ATPG, multi-power-state intent, retention, fault
+injection, and silicon bringup are explicitly deferred rather than represented
+by empty fields or generic tool options.
 
-Each later output records the exact parent implementation and
-implementation-defining generator binding. A purely mechanical transformation
-uses `MechanicalDerivation`; a search choice uses `CandidateDecision`. Logs and
-QoR observations do not become fields of `HardwareImplementation`.
+Each output is complete under its own exact dependencies and payload closure;
+it records no parent implementation or generator binding. The manifest edge
+records the exact typed inputs and resolved binding. A purely mechanical
+transformation uses `MechanicalDerivation`; a search choice uses
+`CandidateDecision`. Multiple paths to identical canonical output state
+converge on one HardwareImplementation identity. Logs and QoR observations do
+not become fields of `HardwareImplementation`.
 
 For a Fabric-to-RTL generator, an implementation-only recipe selection is a
 typed occurrence-scoped entry in the resolved generator configuration:
@@ -80,12 +208,14 @@ external dependencies without redefining the Fabric capability.
 
 The recipe may change gate structure or another implementation detail only
 when it preserves the exact Fabric-observable semantics, timing, capacity,
-progress, and `ConfigurationABI`. The selected map therefore contributes to
-`HardwareImplementation` lineage and identity but not to Fabric identity.
-Numeric policy, supported actor domains, latency, initiation interval,
-buffering, or other Fabric-visible choices must already be represented by
-Fabric or by a Fabric-declared Mapping refinement; the generator cannot
-reclassify them as recipes.
+progress, and `ConfigurationABI`. The selected map belongs to resolved
+generator configuration and the manifest derivation edge. Its materialized
+RTL, black-box contracts, platform reference, and external bindings contribute
+to HardwareImplementation identity, but the map itself does not become another
+lineage field. Numeric policy, supported actor domains, latency, initiation
+interval, buffering, or other Fabric-visible choices must already be
+represented by Fabric or by a Fabric-declared Mapping refinement; the
+generator cannot reclassify them as recipes.
 
 ## Evaluation
 
@@ -103,7 +233,46 @@ promotion based on a tool's exit status.
 
 An invocation that derives and evaluates hardware first finalizes the new
 implementation, then issues Evaluation against that exact identity. It must not
-attach observations to the parent design or mutate an existing implementation.
+attach observations to the input design or mutate an existing implementation.
+
+## Repository Disclosure Boundary
+
+Artifact persistence and repository publication are different decisions. A
+valid semantic Artifact may remain confined to a machine-local store. Every
+direct EDA attempt and every result derived directly from that attempt is
+local-only and must not be committed to this public repository, even when the
+result has been normalized into a valid semantic Artifact.
+
+The local-only training-corpus class includes:
+
+* concrete invocation bundles, materialized inputs, generated per-run scripts,
+  manifests, completion records, and attempt metadata;
+* tool stdout and stderr, logs, reports, databases, checkpoints, waveforms,
+  netlists, parasitics, layouts, images, and other declared outputs;
+* EDA-derived `HardwareImplementation`, `SimulationExecution`, and
+  `EvaluationEvidence` roots and their reachable payloads; and
+* training, validation, or held-out collections, invocation manifests, sample
+  rows, and calibration results whose source is direct EDA Evidence.
+
+This prohibition applies to open-source and commercial tool attempts alike, so
+the repository has one disclosure rule rather than a vendor-dependent matrix.
+Provider drivers, parsers, schemas, and deterministic generators remain normal
+source. Small fixtures may be tracked only when they are authored synthetic
+data, contain no captured tool output or proprietary payload, and assert a
+stable semantic contract instead of vendor report wording.
+
+The only EDA-derived data product eligible for repository publication is an
+immutable predictive or analytical `ModelParameterBundle` permitted by
+[Frequency, Power, And Area Evaluation](spec-fpa-estimation.md). It is the
+open-source model-weight object; its source EDA corpus remains local.
+Publication does not include source Evidence or training provenance and does
+not create a sanitized Evidence format, public dataset Artifact, or second
+model-weight representation.
+
+All repository-local EDA material follows the ignored-root contract in
+[External Tool Invocation](spec-external-tool-invocation.md). A path outside
+the repository may be selected instead. Neither choice changes implementation,
+Evidence, or model identity.
 
 ## External Artifacts
 
@@ -119,21 +288,34 @@ does not refer to it; a later Evidence schema minor may add an exact typed
 reference after the owner exists. Normalized metrics and findings remain owned
 only by Evidence.
 
-High-cost products use a caller-selected artifact root, with a resolved default
-under Loom's user data area when no path is supplied. Public specs and portable
-manifests never require private installation paths, credentials, license data,
-user names, or host names.
+High-cost products use the local output placement contract in External Tool
+Invocation. A caller-selected path outside the worktree or the resolved user
+data location is valid; repository-local work uses the one canonical ignored
+root. Public specs and portable manifests never require private installation
+paths, credentials, license data, user names, or host names.
 
-## Library And Platform Inputs
+## Target And External Inputs
 
-Technology data is referenced through typed model-input slots. It may represent
-standard cells, SRAMs, IO, RC data, FPGA devices, timing/power models, or other
-platform facts. The exact immutable content or release identity is part of the
-semantic model binding when it can affect results. The requested PVT corner,
-required clock, and other ground-truth evaluation scenario facts are typed
-`EvaluationCondition` values rather than model inputs.
+ImplementationPlatform identifies the shared ASIC technology release or exact
+FPGA ordering code. It does not contain standard-cell, SRAM, IO, RC, rule,
+timing, power, primitive, pin, or user-IP files. Every generator or evaluator
+descriptor declares the exact typed external input slots it consumes.
 
-A process corner condition uses an exact technology-family-owned
+An explicit ordinary file contributes its exact SHA-256 fingerprint to the
+resolved semantic binding. A resource distributed with a tool contributes the
+stable provider build identity and exact resource key instead. Provider slot
+compatibility and role are descriptor-owned; there is no global library-role
+property bag, filename inference, implicit directory scan, or fallback to a
+nearby input. A flow that needs several files declares several slots.
+
+The same platform may intentionally feed different provider representations of
+one corner, such as Liberty text for one flow and a vendor database for another.
+The platform-owned `TechnologyCornerRef` is the common semantic corner; each
+resolved provider binding owns its exact mapping to consumed models. Evidence
+therefore records one target/corner question and one exact model binding rather
+than pretending that a particular file format defines the corner.
+
+A process corner condition uses an exact ImplementationPlatform-owned
 `TechnologyCornerRef` into `loom.implementation_platform 1.0`; it is not a free
 corner string. The ImplementationPlatform codec and validator resolve that
 typed local reference before an adapter runs. Evaluation stores only the
@@ -144,7 +326,11 @@ payloads in `docs/spec-evaluation-metrics.md`. An EDA adapter maps those facts
 to tool syntax through its exact model binding without redefining them.
 
 Local resolution from a logical reference to files is an execution concern and
-must not create a second library-profile authority.
+must not create a second target, corner, or library-profile authority. Paths
+and local-file keys occur only in explicit local configuration and the ignored
+bundle. The bundle verifies that the selected local file still realizes the
+fingerprint frozen by the semantic binding. Tool-bundled resources are verified
+by provider-owned build and resource probes rather than whole-tree hashing.
 
 ## Failure And Completion
 
@@ -159,6 +345,11 @@ Execution distinguishes at least:
 * missing declared output;
 * parser/normalizer failure; and
 * completed Evaluation with adverse typed findings.
+
+The owner-specific completion record distinguishes bundle preparation,
+activation, tool execution, declared-output, and import failures. An
+interrupted script without a valid atomic completion record is an incomplete
+attempt, not an `ExecutionFailed` Evidence value.
 
 Infrastructure failures and execution limits do not select a different formal
 candidate. Timeout or cancellation maps to `CancelledOrTimeout`; tool or
@@ -187,11 +378,15 @@ deterministic invocation.
 
 ## Anchor Verification
 
-Stable tests cover semantic versus invocation binding, exact implementation
-parentage, occurrence-scoped recipe identity, derivation-before-evaluation,
-output collection, typed failure classification, canonical parameter payload
-validation before Blob Store publication, producer/consumer parameter-contract
-matching, typed validation/held-out subject binding, pairwise sample-group
-isolation before training, and held-out exclusion from ranking. Vendor command
-lines, local module names, licenses, and report text are adapter tests rather
-than global fixture matrices.
+Stable tests cover semantic versus invocation binding, exact manifest
+derivation inputs, occurrence-scoped recipe selection,
+derivation-before-evaluation, implementation-state convergence,
+capability-obligation resolution without an ecosystem mode, output collection,
+typed failure classification, canonical parameter payload validation before
+Blob Store publication, producer/consumer parameter-contract matching, typed
+validation/held-out subject binding, pairwise sample-group isolation before
+training, held-out exclusion from ranking, and repository-local output ignore
+coverage. An executable without its driver/importer contract is not admitted as
+provider support. Vendor command lines, local module names, licenses, and
+report text are adapter behavior, not captured repository fixtures or global
+provider-by-platform-by-recipe fixture matrices.

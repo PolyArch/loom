@@ -1,0 +1,30 @@
+{
+  "schema": "loom.local_tool_config",
+  "version": "1.0",
+  "external_files": {
+    "asic_liberty": "/path/to/pdk/library/typical.lib"
+  },
+  "runtime": {
+    "policy": "auto",
+    "polyarch_container": {
+      "os": "almalinux9",
+      "inherit_environment": [],
+      "provider_options": {}
+    }
+  },
+  "tools": {
+    "verilator": {
+      "inherit_environment": [],
+      "provider_options": {}
+    },
+    "vcs": {
+      "binding": {
+        "executable": "/path/to/synopsys/vcs/bin/vcs"
+      },
+      "inherit_environment": [
+        "SNPSLMD_LICENSE_FILE"
+      ],
+      "provider_options": {}
+    }
+  }
+}

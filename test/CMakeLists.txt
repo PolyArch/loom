@@ -24,11 +24,15 @@ add_subdirectory(adg)
 add_subdirectory(dataflow)
 add_subdirectory(dse)
 add_subdirectory(evaluation)
+add_subdirectory(external_tool)
+add_subdirectory(eda)
+add_subdirectory(implementation_platform)
 add_subdirectory(frontend)
 add_subdirectory(mapping)
 add_subdirectory(pnr)
 add_subdirectory(fabric)
 add_subdirectory(simulator)
+add_subdirectory(hardware)
 
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
@@ -72,7 +76,15 @@ set(LOOM_TEST_DEPENDS
   loom-evaluation-case-test
   loom-evaluation-evidence-test
   loom-evaluation-metric-test
-  loom-evaluation-tool-runner-test
+  loom-external-tool-local-config-test
+  loom-external-tool-external-file-test
+  loom-external-tool-binding-test
+  loom-external-tool-shell-probe-test
+  loom-external-tool-invocation-bundle-test
+  loom-external-tool-runtime-binding-test
+  loom-external-tool-provider-test
+  loom-eda-open-source-adapter-test
+  loom-implementation-platform-test
   loom-fabric-artifact-gate-test
   loom-fabric-artifact-codec-test
   loom-fabric-artifact-finalizer-test
@@ -99,6 +111,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-system-service-contract-test
   loom-fabric-temporal-operand-buffer-test
   loom-fabric-temporal-switch-resource-contract-test
+  loom-hardware-configuration-abi-test
   loom-frontend-dfg-integration-test
   loom-static-global-memory-test
   loom-structured-address-index-narrowing-test
@@ -147,6 +160,13 @@ set(LOOM_TEST_DEPENDS
   loom-simulator-vector-boundary-test
   loom-tblgen
 )
+
+if(LOOM_HAVE_CIRCT)
+  list(APPEND LOOM_TEST_DEPENDS
+    loom-circt-conformance-test
+    loom-hw-probe
+  )
+endif()
 
 add_lit_testsuite(check-loom "Running the Loom regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}

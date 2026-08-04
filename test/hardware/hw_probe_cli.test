@@ -1,0 +1,58 @@
+# REQUIRES: circt
+# RUN: %loom-hw-probe --help | FileCheck %s
+
+# CHECK: --bundle=<path>
+# CHECK: --execute
+# CHECK: --loom-local-config=<path>
+
+# RUN: rm -rf %t && split-file %s %t
+# RUN: chmod +x %t/bin/verilator %t/bin/container
+# RUN: mkdir -p %t/home
+# RUN: env HOME=%t/home PATH=%t/bin:%PATH% %loom-hw-probe --bundle=%t/bundle --execute | FileCheck %s --check-prefix=EXEC
+# RUN: FileCheck %s --check-prefix=MANIFEST < %t/bundle/tool-invocation.json
+
+# EXEC: bundle: {{.*}}/bundle
+# EXEC: completion: success
+# MANIFEST: "source": "environment_path"
+# MANIFEST: "kind": "polyarch_container"
+# MANIFEST: "os": "almalinux9"
+
+#--- bin/verilator
+#!/usr/bin/env bash
+set -eu
+if [[ "${1-}" == --version ]]; then
+  printf '%s\n' 'Verilator 5.050 test fixture'
+  exit 0
+fi
+[[ "${1-}" == --lint-only ]]
+[[ "${2-}" == --Wno-fatal ]]
+[[ "${3-}" == --Wall ]]
+[[ -f "${4-}" ]]
+grep -q 'module loom_circt_conformance' "$4"
+
+#--- bin/container
+#!/usr/bin/env bash
+set -eu
+if [[ "${1-}" == --version ]]; then
+  printf '%s\n' 'PolyArch container v0.1.0 test fixture'
+  exit 0
+fi
+[[ "${1-}" == run ]]
+shift
+workdir=''
+while (( $# )); do
+  case "$1" in
+    --workdir) workdir=$2; shift 2 ;;
+    --os|--env) shift 2 ;;
+    --) shift; break ;;
+    *) exit 64 ;;
+  esac
+done
+[[ -n "$workdir" ]]
+container_home="$workdir/outputs/fake-container-home"
+mkdir -p "$container_home"
+ln -sfn "$workdir" "$container_home/work"
+export HOME=$container_home
+cd "$HOME"
+printf '%s\n' 'container wrapper chatter'
+exec "$@"

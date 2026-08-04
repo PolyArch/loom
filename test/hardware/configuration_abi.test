@@ -1,0 +1,2 @@
+# RUN: rm -rf %t
+# RUN: %loom-hardware-configuration-abi-test %t

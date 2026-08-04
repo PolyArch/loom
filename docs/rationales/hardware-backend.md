@@ -4,7 +4,13 @@ Normative contracts are owned by
 [RTL Lowering](../spec-rtl-lowering.md),
 [Hardware Implementation](../spec-hardware-implementation.md),
 [EDA Tooling](../spec-eda-tooling.md), and
-[FPA Evaluation](../spec-fpa-estimation.md).
+[FPA Evaluation](../spec-fpa-estimation.md). Shared ASIC or FPGA target identity
+and technology-corner keys are owned by
+[Implementation Platform](../spec-implementation-platform.md). Exact external
+files and tool-bundled resources are owned by the provider binding that
+consumes them, while local tool, input-path, runtime, and script binding is
+owned by
+[External Tool Invocation](../spec-external-tool-invocation.md).
 
 ## Why RTL Is Derived From Fabric
 
@@ -18,6 +24,39 @@ resolved capability view. A backend-local operation list, `cfg_mode` enum, or
 hard-coded semantic table would compete with OperationSchema, HSG, and the
 concrete resource. Missing provider support is typed Unsupported and produces
 no successful RTL artifact.
+
+This boundary also exposes the backend's natural implementation parallelism.
+Providers for independent implementation families or provider ecosystems share
+only the stable capability-view, ConfigurationABI, RTL protocol, and recipe
+contracts. Once those contracts have representative anchors, independent
+providers can be developed and verified without splitting ownership of Fabric
+semantics or the structural lowering core. A complex floating-point family may
+therefore have a dedicated vendor-provider implementation while related simple
+integer families share one provider, without creating per-operation semantic
+registries.
+
+## Why A Common CIRCT Skeleton Comes First
+
+Fabric lowering needs one target-independent structural form before portable,
+ASIC-library, or FPGA-device choices diverge. CIRCT HW, Comb, and Seq already
+provide that form. Loom therefore lowers the exact Fabric topology, protocols,
+state boundaries, and ordinary target-independent logic into an ephemeral
+CIRCT skeleton, then specializes only the leaves whose implementation really
+depends on a provider.
+
+This is analogous to lowering source semantics to LLVM IR before target code
+generation. The skeleton is not another semantic Artifact and does not own a
+second operation catalog. An `hw.module.generated` declaration is only a typed
+rendezvous point between one exact Fabric occurrence and its resolved
+implementation-family binding. The selected provider replaces it with portable
+logic, a vendor primitive, or a contract-bound external module. Every Loom
+abstract generated leaf must be gone before SystemVerilog export.
+
+Lowering the complete design through Handshake or DC-SC would add another
+authority for scheduling, buffering, progress, and resource sharing that Fabric
+already owns. Those dialects remain available when a future source contract
+actually requires their semantics; they are not mandatory transit layers for
+an already scheduled Fabric.
 
 ## Why Fake RTL Success Is Forbidden
 
@@ -34,18 +73,30 @@ unrealizable resources stop publication.
 ## Why HardwareImplementation Is An Artifact
 
 Generated RTL, synthesized netlist, physical layout, or FPGA image represents
-an immutable implementation state with exact lineage, payload roles,
-interfaces, activity points, memory macro bindings, and platform inputs. Each
-real implementation change produces another HardwareImplementation.
+an immutable implementation state with exact semantic dependencies, payload
+roles, interfaces, activity points, memory macro bindings, external bindings,
+and an optional target manifest. Each real implementation change produces
+another HardwareImplementation.
+
+The generator invocation is deliberately excluded from that state. A parent
+implementation, recipe selection, search decision, and tool-flow configuration
+explain how an output was produced, so `InvocationManifest` owns them. Keeping
+them in HardwareImplementation as well would create a second lineage authority
+and would assign different identities to byte-for-byte equivalent hardware
+states reached through different paths. The output instead materializes every
+fact needed by a consumer. Identical canonical states converge, while the
+manifest may preserve every valid derivation.
 
 QoR, pass/fail status, logs, and reports do not enter that artifact. They are
 Evaluation observations or attempt material. This prevents a tool result from
 changing implementation identity and lets several evaluations query the same
 layout under different corners or requirements.
 
-ImplementationPlatform separately owns technology libraries, devices, and
-typed corners. The backend cannot hide a host filesystem library path as
-portable hardware truth.
+ImplementationPlatform separately owns the selected ASIC technology release or
+FPGA ordering code and its typed corner keys. Exact library, macro, rule, IP,
+and tool-bundled dependencies are owned by provider-specific bindings in the
+implementation. The backend cannot hide a host filesystem path as portable
+hardware truth.
 
 ## Why CIRCT And LLVM Are Pinned Together
 
@@ -62,10 +113,11 @@ semantic options rather than following floating branches.
 ## Why Constraints Are Derived
 
 Clock/reset domains, crossings, Fabric resource timing, generator bindings,
-implementation interfaces, and platform facts already determine the SDC and
-verification harness. A handwritten or backend-default constraint would be a
-second hardware contract. Generated constraints and scripts are reproducible
-payloads or attempt inputs whose derivation is recorded.
+implementation interfaces, target and corner identity, and exact external
+bindings already determine the SDC and verification harness. A handwritten or
+backend-default constraint would be a second hardware contract. Generated
+constraints and scripts are reproducible payloads or attempt inputs whose
+derivation is recorded.
 
 Implementation-only choices such as floorplan or tool flow are typed generator
 inputs and produce a new HardwareImplementation. A choice that changes a
@@ -76,13 +128,172 @@ candidate; the backend cannot hide it as an implementation option.
 
 Synthesis, placement, routing, timing, power, area, and FPGA implementation are
 expensive providers that create implementation artifacts and Evidence. The
-tool adapter uses the common ToolRunner, exact platform and condition inputs,
-and shared metric/finding registries. It does not publish a private status or
-metric schema.
+tool adapter emits an independently executable invocation bundle from the exact
+implementation, target, provider inputs, and conditions, then imports declared
+results through shared metric/finding registries. It does not publish a private
+status or metric schema or manage the EDA environment in C++.
 
 An unmet timing target is completed adverse Evidence, not an invalid design
 artifact. Tool crash, license failure, timeout, unsupported primitive, and
 structural invalidity remain distinct outcomes.
+
+Generated scripts are part of the compiler output because they make the exact
+tool translation inspectable and reusable. The optional execution path merely
+invokes the top-level script. Containers, modules, licenses, resource limits,
+and schedulers retain their existing owners instead of being approximated by a
+backend-specific process manager.
+
+## Why Direct EDA Material Stays Local
+
+The Artifact Store answers whether an object is a valid immutable semantic
+result. Git answers whether bytes are suitable for public source distribution.
+Conflating those decisions would either weaken Evidence semantics or publish
+tool, library, IP, design, and host details that belong to licensed or private
+environments. Normalized Evidence remains the one semantic evaluation result,
+but direct EDA Evidence and all attempt material stay in an ignored local store.
+
+The rule applies equally to open-source and commercial runs. That removes a
+vendor classification table, prevents a mixed flow from changing disclosure
+status halfway through, and keeps repository review mechanical. Parser tests
+use small authored semantic fixtures rather than captured report snapshots.
+
+Model parameters are a distinct derived semantic result, analogous to
+publishable model weights rather than their private training corpus. The
+existing `ModelParameterBundle` deliberately excludes datasets, training
+provenance, reports, paths, and confidence summaries, so its canonical weights
+can be published after disclosure review without inventing a sanitized
+Evidence schema or a duplicate model format. Exact training lineage remains
+local in the InvocationManifest.
+
+## Why Capabilities Compose Instead Of Ecosystem Flows
+
+The five required tool ecosystems are coverage families, not five compiler
+models. Simulation, synthesis, implementation, extraction, timing, power, and
+physical verification have the same ownership boundaries regardless of vendor.
+Representing each product suite as a monolithic flow would duplicate
+HardwareImplementation finalization, invocation lineage, constraints, Evidence
+normalization, failure classification, and script execution policy.
+
+The central candidate-generator and evaluator descriptors already express the
+real distinction: generators publish immutable implementation states, while
+evaluators observe exact states. The open-source path supplies an inspectable
+portable baseline. Synopsys and Cadence supply independent commercial ASIC
+implementations and signoff-oriented observations. Vivado and Quartus Prime
+supply the two static FPGA routes. New products extend one of those
+capabilities instead of extending a global ecosystem enum or workflow language.
+
+This also explains why every installed suite product is not mandatory in every
+run. PrimeTime, Tempus, extraction, power, or physical-verification adapters
+are useful only when their required implementation, target, and provider input
+views exist.
+
+Cerebrus is naturally a candidate search generator over typed flow decisions.
+Stratus and Vitis HLS require an exact high-level input contract; sending
+already generated RTL through HLS would add no capability. Virtuoso is useful
+as a source of exact custom-cell and macro views without becoming a default
+digital implementation stage.
+
+Vendor arithmetic libraries and FPGA primitives remain explicit RTL recipes
+because downstream inference is not reproducible implementation identity. An
+explicit DesignWare, ChipWare, AMD/Xilinx, or Intel/Altera recipe records which
+occurrence uses which provider contract and tool-bundled resource key. Portable
+synthesizable RTL remains a distinct recipe, so open-source support does not
+depend on proprietary IP and a commercial flow can deliberately choose the
+portable implementation. No tool or adapter silently substitutes one for the
+other.
+
+OpenROAD observations are deliberately labeled by their actual implementation
+state and model binding rather than promoted to generic signoff. Likewise, the
+first VCS and Xcelium contract is functional simulation; timing annotation is
+deferred until its payload and dependency contract has one semantic owner.
+Completeness therefore means completing the declared capability scope, not
+claiming that one tool name implies every signoff check.
+
+## Why Provider Coverage Is Not A Cartesian Matrix
+
+The full product-by-platform-by-recipe-by-operation matrix is neither necessary
+nor affordable. Driver projection, output declaration, importer behavior, and
+failure mapping can be tested without licenses. A real representative platform
+then proves each baseline route, while scheduled broader runs establish the
+declared process and device coverage. Evidence records exactly which checks ran,
+so untested combinations never acquire implied support.
+
+This structure exposes the available parallelism. One immutable RTL
+implementation may fan out to independent simulation or implementation
+bundles. Different occurrence recipe maps create independent generator
+invocations from the same Fabric and normally materialize distinct RTL states;
+equal canonical states converge without losing either manifest edge. Only true
+data dependencies, such as synthesis before placement or extraction before
+post-route timing, remain serial. License and machine scheduling stay outside
+Loom, so adding concurrency does not require a shared mutable environment or
+process manager.
+
+## Why Version And Word Size Are Provider Binding Facts
+
+Recent commercial tool generations replace or consolidate older products, but
+a rolling wall-clock cutoff would make reproducibility depend on the day a
+bundle is prepared. Provider maintenance therefore validates explicit current
+releases and orders their exact module aliases ahead of generic site aliases.
+The resolver still freezes the actual version and never guesses that a
+directory name is newer. Explicit configuration remains highest priority but
+cannot turn an incompatible executable into the selected provider.
+
+Choosing a supported 64-bit launcher is likewise provider knowledge. It should
+not be repeated in every user configuration or delegated to an unreliable
+presentation `PATH`. Mandatory architecture tokens such as VCS `-full64` belong
+to deterministic command projection and cannot be accidentally removed. This
+keeps local installation paths private while making the generated script's
+actual architecture choice inspectable.
+
+## Why ImplementationPlatform Is A Target Manifest
+
+The ASIC and FPGA conformance targets prove materially different technology and
+device routes: educational and commercial ASIC releases, plus HBM-oriented and
+DSP-oriented devices across two generations from each FPGA vendor. The shared
+fact needed by every flow is small: which ASIC technology release or exact FPGA
+ordering code is selected, and which typed technology-corner keys that target
+defines. ImplementationPlatform owns only that manifest.
+
+Putting libraries, macros, rule decks, user IP, or vendor databases into the
+same object would turn a target identity into a content warehouse. It would
+also make an unrelated view required by one provider perturb every consumer.
+Keeping the manifest small gives each target fact one owner and lets a
+target-independent RTL implementation omit Platform entirely.
+
+## Why External Files Belong To Provider Bindings
+
+The exact files required by synthesis, timing, extraction, simulation, or
+physical verification differ by provider and capability. The consuming
+provider contract is therefore the only place that can define the required
+slots, roles, compatibility rules, and exact SHA-256 fingerprints. A
+HardwareImplementation records the resolved bindings for dependencies that are
+part of that implementation, such as a memory macro or black-box module.
+
+Machine-local paths are only projections used to materialize an invocation
+bundle. Two machines may map the same expected fingerprint to different paths
+without changing semantic identity. A user-authored synthesizable RTL body is
+an explicit generator input and becomes ordinary RTL payload. Encrypted or
+black-box user IP remains an external binding with an explicit black-box
+contract. Neither case broadens ImplementationPlatform.
+
+There is no generic directory-import contract. When a provider genuinely needs
+a logical directory, its typed input declares the exact relative file set and
+layout it consumes. Loom never scans or hashes an installation, PDK, or IP tree
+to discover semantic membership.
+
+## Why Tool-Bundled Resources Use Provider Build Identity
+
+DesignWare, ChipWare, and FPGA device databases are released as part of a tool
+provider and are normally resolved internally by that tool. Copying or hashing
+the complete installation tree would be expensive, license-sensitive, and less
+precise than the actual dependency. Their semantic identity is the stable
+provider build plus the exact resource, library, primitive, or device key used
+by the recipe.
+
+The local resolver still finds the executable through explicit configuration,
+the current environment, or module discovery. That machine-local mechanism does
+not own the provider build identity and does not change which bundled resource
+the semantic binding selected.
 
 ## Why Functional Oracles Must Be Independent
 
