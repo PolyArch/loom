@@ -726,6 +726,14 @@ ResolvedPnrConfigView::schemaDescriptorBytes() const {
   return descriptorBytes(domain_);
 }
 
+llvm::ArrayRef<std::uint8_t> resolvedSpatialPnrConfigSchemaDescriptorBytes() {
+  return descriptorBytes(PnrConfigDomain::Spatial);
+}
+
+llvm::ArrayRef<std::uint8_t> resolvedSystemPnrConfigSchemaDescriptorBytes() {
+  return descriptorBytes(PnrConfigDomain::System);
+}
+
 llvm::Expected<ResolvedPnrConfigView>
 projectResolvedSpatialPnrConfigView(const ResolvedConfig &config) {
   return makeProjectedView(PnrConfigDomain::Spatial, config.dse.spatialPnr,

@@ -61,6 +61,7 @@ set(LOOM_TEST_DEPENDS
   loom-dataflow-operation-schema-codec-test
   loom-dataflow-operation-schema-test
   loom-dataflow-service-schema-test
+  loom-dse-candidate-generator-test
   loom-dse-objective-test
   loom-dfg-sim
   loom-dfg-run

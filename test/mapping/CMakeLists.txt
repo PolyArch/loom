@@ -122,6 +122,7 @@ target_link_libraries(loom-spatial-mapping-wire-test PRIVATE
 
 target_link_libraries(loom-spatial-mapping-artifact-test PRIVATE
   LoomADGBuilder
+  LoomDSEMappingGenerator
   LoomMappingArtifact
   LoomPnR
   LoomPnRCpSat

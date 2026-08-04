@@ -34,6 +34,9 @@ enum class PnrWorkUnit : std::uint32_t {
   ExactRepairSolverCall,
 };
 
+llvm::ArrayRef<std::uint8_t> resolvedSpatialPnrConfigSchemaDescriptorBytes();
+llvm::ArrayRef<std::uint8_t> resolvedSystemPnrConfigSchemaDescriptorBytes();
+
 struct DeterministicWorkBudgetEntry final {
   PnrWorkUnit unit;
   std::uint64_t limit;
@@ -54,8 +57,7 @@ public:
   const ComponentViewDigest &digest() const { return digest_; }
 
 private:
-  ResolvedPnrConfigView(PnrConfigDomain domain,
-                        ResolvedPnrPolicyConfig policy,
+  ResolvedPnrConfigView(PnrConfigDomain domain, ResolvedPnrPolicyConfig policy,
                         ResolvedObjectiveCatalogs selectedObjectiveCatalogs,
                         std::vector<std::uint8_t> canonicalBytes,
                         ComponentViewDigest digest)
@@ -78,8 +80,7 @@ private:
       llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
       llvm::ArrayRef<std::uint8_t> canonicalViewBytes,
       const ComponentViewDigest &digest);
-  friend llvm::Expected<ResolvedPnrConfigView>
-  adoptResolvedSystemPnrConfigView(
+  friend llvm::Expected<ResolvedPnrConfigView> adoptResolvedSystemPnrConfigView(
       llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
       llvm::ArrayRef<std::uint8_t> canonicalViewBytes,
       const ComponentViewDigest &digest);

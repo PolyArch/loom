@@ -11,6 +11,19 @@ target_link_libraries(LoomDSEObjective PUBLIC
   LLVMSupport
 )
 
+add_library(LoomDSECandidateGenerator
+  CandidateGenerator.cpp
+)
+
+target_include_directories(LoomDSECandidateGenerator PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomDSECandidateGenerator PUBLIC
+  LoomCommon
+  LLVMSupport
+)
+
 add_library(LoomDSE
   PreMappingExploration.cpp
   Promotion.cpp
@@ -31,3 +44,5 @@ target_link_libraries(LoomDSE PUBLIC
   LoomStructuredFabricAnalyticModel
   LLVMSupport
 )
+
+add_subdirectory(Generators/Mapping)
