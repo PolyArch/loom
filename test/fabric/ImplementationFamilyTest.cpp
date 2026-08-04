@@ -18,6 +18,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -902,6 +903,277 @@ bool checkScalarFloatFmaBehaviorDomain(MLIRContext &context) {
   return true;
 }
 
+bool checkIntegerLogicBehaviorDomains(MLIRContext &context) {
+  constexpr std::array enabled = {
+      OperationSchemaId::ArithAndI, OperationSchemaId::ArithOrI,
+      OperationSchemaId::ArithXOrI, OperationSchemaId::LLVMOrDisjoint};
+  const auto check = [&](ImplementationFamilyId family,
+                         const FamilyCapabilityParams &params) {
+    unsigned verifiedActors = 0;
+    auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
+        family, params, enabled, 2, 1, context,
+        [&](const dataflow::CanonicalActorSchemaProjection &actor)
+            -> llvm::Error {
+          ++verifiedActors;
+          if (actor.schema == OperationSchemaId::LLVMOrDisjoint) {
+            const auto *payload =
+                std::get_if<dataflow::DisjointPayload>(&actor.payload);
+            if (!payload || !payload->isDisjoint)
+              return llvm::createStringError(
+                  llvm::inconvertibleErrorCode(),
+                  "LLVM disjoint OR lost its canonical payload");
+          } else if (!std::holds_alternative<dataflow::NoPayload>(
+                         actor.payload)) {
+            return llvm::createStringError(
+                llvm::inconvertibleErrorCode(),
+                "arith integer logic gained a semantic payload");
+          }
+          return llvm::Error::success();
+        });
+    if (!domain) {
+      llvm::errs() << implementationFamilyKeyword(family)
+                   << " behavior domain did not resolve: "
+                   << llvm::toString(domain.takeError()) << '\n';
+      return false;
+    }
+    if (domain->size() != 3) {
+      llvm::errs() << implementationFamilyKeyword(family)
+                   << " did not collapse to AND/OR/XOR behaviors\n";
+      return false;
+    }
+    llvm::SmallDenseSet<OperationSchemaId, 4> projectedSchemas;
+    std::vector<std::vector<std::uint8_t>> semanticValues;
+    for (const auto &point : *domain) {
+      if (!point.semanticConfiguration) {
+        llvm::errs() << implementationFamilyKeyword(family)
+                     << " logic behavior has no schema selection value\n";
+        return false;
+      }
+      projectedSchemas.insert(point.representativeActor.schema);
+      semanticValues.emplace_back(point.semanticConfiguration->bytes().begin(),
+                                  point.semanticConfiguration->bytes().end());
+    }
+    llvm::sort(semanticValues);
+    const bool hasOrRepresentative =
+        projectedSchemas.contains(OperationSchemaId::ArithOrI) ||
+        projectedSchemas.contains(OperationSchemaId::LLVMOrDisjoint);
+    return verifiedActors == integerWidthDomain.size() * enabled.size() &&
+           projectedSchemas.size() == 3 &&
+           projectedSchemas.contains(OperationSchemaId::ArithAndI) &&
+           projectedSchemas.contains(OperationSchemaId::ArithXOrI) &&
+           hasOrRepresentative &&
+           std::adjacent_find(semanticValues.begin(), semanticValues.end()) ==
+               semanticValues.end();
+  };
+
+  const auto checkEquivalentOrSchemas =
+      [&](ImplementationFamilyId family, const FamilyCapabilityParams &params) {
+        constexpr std::array equivalentOrSchemas = {
+            OperationSchemaId::ArithOrI, OperationSchemaId::LLVMOrDisjoint};
+        auto needsConfiguration = requiresSemanticConfigurationField(
+            family, params, equivalentOrSchemas, 2, 1);
+        if (!needsConfiguration || *needsConfiguration) {
+          if (!needsConfiguration)
+            llvm::consumeError(needsConfiguration.takeError());
+          llvm::errs() << implementationFamilyKeyword(family)
+                       << " gave equivalent OR schemas a configuration field\n";
+          return false;
+        }
+        unsigned verifiedActors = 0;
+        auto rejected = resolveFiniteImplementationFamilyBehaviorDomain(
+            family, params, equivalentOrSchemas, 2, 1, context,
+            [](const dataflow::CanonicalActorSchemaProjection &actor)
+                -> llvm::Error {
+              if (actor.schema == OperationSchemaId::LLVMOrDisjoint)
+                return llvm::createStringError(
+                    llvm::inconvertibleErrorCode(),
+                    "reject disjoint OR before behavior deduplication");
+              return llvm::Error::success();
+            });
+        if (rejected) {
+          llvm::errs() << implementationFamilyKeyword(family)
+                       << " skipped concrete verification after OR dedup\n";
+          return false;
+        }
+        const std::string rejection = llvm::toString(rejected.takeError());
+        if (!llvm::StringRef(rejection).contains(
+                "reject disjoint OR before behavior deduplication")) {
+          llvm::errs() << implementationFamilyKeyword(family)
+                       << " did not propagate concrete verification failure\n";
+          return false;
+        }
+        auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
+            family, params, equivalentOrSchemas, 2, 1, context,
+            [&](const dataflow::CanonicalActorSchemaProjection &)
+                -> llvm::Error {
+              ++verifiedActors;
+              return llvm::Error::success();
+            });
+        if (!domain) {
+          llvm::errs() << implementationFamilyKeyword(family)
+                       << " equivalent OR domain did not resolve: "
+                       << llvm::toString(domain.takeError()) << '\n';
+          return false;
+        }
+        return verifiedActors == integerWidthDomain.size() * 2 &&
+               domain->size() == 1 && !domain->front().semanticConfiguration;
+      };
+
+  const FamilyCapabilityParams scalar =
+      ScalarIntegerParams{IntegerWidthSet::get(
+          {IntegerWidth::I1, IntegerWidth::I8, IntegerWidth::I16,
+           IntegerWidth::I32, IntegerWidth::I64})};
+  const FamilyCapabilityParams vector = FixedVectorIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I1, IntegerWidth::I8,
+                            IntegerWidth::I16, IntegerWidth::I32,
+                            IntegerWidth::I64}),
+      128};
+  const bool scalarOk =
+      check(ImplementationFamilyId::ScalarIntegerLogic, scalar);
+  const bool vectorOk =
+      check(ImplementationFamilyId::FixedVectorIntegerLogic, vector);
+  const bool scalarEquivalentOrOk = checkEquivalentOrSchemas(
+      ImplementationFamilyId::ScalarIntegerLogic, scalar);
+  const bool vectorEquivalentOrOk = checkEquivalentOrSchemas(
+      ImplementationFamilyId::FixedVectorIntegerLogic, vector);
+  return scalarOk && vectorOk && scalarEquivalentOrOk && vectorEquivalentOrOk;
+}
+
+bool checkFixedVectorMultiplyBehaviorDomain(MLIRContext &context) {
+  const FamilyCapabilityParams params = FixedVectorIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16}), 128};
+  constexpr std::array enabled = {OperationSchemaId::ArithMulI};
+  unsigned verifiedActors = 0;
+  auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
+      ImplementationFamilyId::FixedVectorIntegerMultiply, params, enabled, 2, 1,
+      context,
+      [&](const dataflow::CanonicalActorSchemaProjection &) -> llvm::Error {
+        ++verifiedActors;
+        return llvm::Error::success();
+      });
+  if (!domain) {
+    llvm::errs() << "fixed-vector multiply behavior domain did not resolve: "
+                 << llvm::toString(domain.takeError()) << '\n';
+    return false;
+  }
+  llvm::SmallDenseSet<unsigned, 2> widths;
+  std::vector<std::vector<std::uint8_t>> semanticValues;
+  for (const auto &point : *domain) {
+    if (!point.semanticConfiguration ||
+        point.representativeActor.schema != OperationSchemaId::ArithMulI)
+      return false;
+    auto vector =
+        dyn_cast<VectorType>(point.representativeActor.type.getInput(0));
+    auto element =
+        vector ? dyn_cast<IntegerType>(vector.getElementType()) : IntegerType{};
+    if (!element)
+      return false;
+    widths.insert(element.getWidth());
+    semanticValues.emplace_back(point.semanticConfiguration->bytes().begin(),
+                                point.semanticConfiguration->bytes().end());
+  }
+  llvm::sort(semanticValues);
+  const auto encode = [&](VectorType vector) {
+    return encodeImplementationFamilySemanticConfiguration(
+        ImplementationFamilyId::FixedVectorIntegerMultiply, params, enabled, 2,
+        1,
+        dataflow::CanonicalActorSchemaProjection{
+            OperationSchemaId::ArithMulI,
+            FunctionType::get(&context, {vector, vector}, {vector}),
+            dataflow::IntegerOverflowPayload{}});
+  };
+  auto i16x4 = encode(VectorType::get({4}, IntegerType::get(&context, 16)));
+  auto i16x8 = encode(VectorType::get({8}, IntegerType::get(&context, 16)));
+  auto i8x8 = encode(VectorType::get({8}, IntegerType::get(&context, 8)));
+  if (!i16x4 || !i16x8 || !i8x8) {
+    if (!i16x4)
+      llvm::consumeError(i16x4.takeError());
+    if (!i16x8)
+      llvm::consumeError(i16x8.takeError());
+    if (!i8x8)
+      llvm::consumeError(i8x8.takeError());
+    llvm::errs() << "fixed-vector multiply configuration did not encode\n";
+    return false;
+  }
+  return verifiedActors == 2 && domain->size() == 2 && widths.contains(8) &&
+         widths.contains(16) && i16x4->bytes().equals(i16x8->bytes()) &&
+         !i16x4->bytes().equals(i8x8->bytes()) &&
+         std::adjacent_find(semanticValues.begin(), semanticValues.end()) ==
+             semanticValues.end();
+}
+
+bool checkFixedVectorValueSelectBehaviorDomain(MLIRContext &context) {
+  const FamilyCapabilityParams params = FixedVectorValueSelectParams{
+      IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16}),
+      FloatFormatSet::get({FloatFormat::F16, FloatFormat::F32}), 128};
+  constexpr std::array enabled = {OperationSchemaId::ArithSelect};
+  unsigned verifiedActors = 0;
+  auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
+      ImplementationFamilyId::FixedVectorValueSelect, params, enabled, 3, 1,
+      context,
+      [&](const dataflow::CanonicalActorSchemaProjection &) -> llvm::Error {
+        ++verifiedActors;
+        return llvm::Error::success();
+      });
+  if (!domain) {
+    llvm::errs() << "fixed-vector select behavior domain did not resolve: "
+                 << llvm::toString(domain.takeError()) << '\n';
+    return false;
+  }
+  llvm::SmallDenseSet<unsigned, 4> widths;
+  std::vector<std::vector<std::uint8_t>> semanticValues;
+  for (const auto &point : *domain) {
+    if (!point.semanticConfiguration ||
+        point.representativeActor.schema != OperationSchemaId::ArithSelect)
+      return false;
+    auto values =
+        dyn_cast<VectorType>(point.representativeActor.type.getInput(1));
+    auto condition =
+        dyn_cast<VectorType>(point.representativeActor.type.getInput(0));
+    if (!values || !condition || condition.getShape() != values.getShape() ||
+        !condition.getElementType().isInteger(1))
+      return false;
+    widths.insert(values.getElementTypeBitWidth());
+    semanticValues.emplace_back(point.semanticConfiguration->bytes().begin(),
+                                point.semanticConfiguration->bytes().end());
+  }
+  llvm::sort(semanticValues);
+  const auto encode = [&](Type element, std::int64_t lanes) {
+    VectorType values = VectorType::get({lanes}, element);
+    VectorType condition =
+        VectorType::get({lanes}, IntegerType::get(&context, 1));
+    return encodeImplementationFamilySemanticConfiguration(
+        ImplementationFamilyId::FixedVectorValueSelect, params, enabled, 3, 1,
+        dataflow::CanonicalActorSchemaProjection{
+            OperationSchemaId::ArithSelect,
+            FunctionType::get(&context, {condition, values, values}, {values}),
+            dataflow::NoPayload{}});
+  };
+  auto i16x4 = encode(IntegerType::get(&context, 16), 4);
+  auto f16x4 = encode(Float16Type::get(&context), 4);
+  auto f16x8 = encode(Float16Type::get(&context), 8);
+  auto i8x8 = encode(IntegerType::get(&context, 8), 8);
+  if (!i16x4 || !f16x4 || !f16x8 || !i8x8) {
+    if (!i16x4)
+      llvm::consumeError(i16x4.takeError());
+    if (!f16x4)
+      llvm::consumeError(f16x4.takeError());
+    if (!f16x8)
+      llvm::consumeError(f16x8.takeError());
+    if (!i8x8)
+      llvm::consumeError(i8x8.takeError());
+    llvm::errs() << "fixed-vector select configuration did not encode\n";
+    return false;
+  }
+  return verifiedActors == 4 && domain->size() == 3 && widths.contains(8) &&
+         widths.contains(16) && widths.contains(32) &&
+         i16x4->bytes().equals(f16x4->bytes()) &&
+         f16x4->bytes().equals(f16x8->bytes()) &&
+         !i16x4->bytes().equals(i8x8->bytes()) &&
+         std::adjacent_find(semanticValues.begin(), semanticValues.end()) ==
+             semanticValues.end();
+}
+
 } // namespace
 
 int main() {
@@ -923,5 +1195,8 @@ int main() {
   ok &= checkFixedVectorAdmission(context);
   ok &= checkAdapterAndTokenAdmission(context);
   ok &= checkScalarFloatFmaBehaviorDomain(context);
+  ok &= checkIntegerLogicBehaviorDomains(context);
+  ok &= checkFixedVectorMultiplyBehaviorDomain(context);
+  ok &= checkFixedVectorValueSelectBehaviorDomain(context);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

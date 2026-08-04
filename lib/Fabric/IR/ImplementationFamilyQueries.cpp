@@ -67,6 +67,12 @@ constexpr char kScalarIntegerCompareConfigurationDomain[] =
     "loom.fabric.scalar-integer-compare-min-max-configuration\0";
 constexpr char kFixedVectorIntegerAddSubConfigurationDomain[] =
     "loom.fabric.fixed-vector-integer-add-sub-configuration\0";
+constexpr char kFixedVectorIntegerMultiplyConfigurationDomain[] =
+    "loom.fabric.fixed-vector-integer-multiply-configuration\0";
+constexpr char kFixedVectorValueSelectConfigurationDomain[] =
+    "loom.fabric.fixed-vector-value-select-configuration\0";
+constexpr char kIntegerLogicConfigurationDomain[] =
+    "loom.fabric.integer-logic-configuration\0";
 constexpr std::uint32_t kConfigurationCodecMajor = 1;
 constexpr std::uint32_t kConfigurationCodecMinor = 0;
 constexpr std::array<mlir::arith::CmpIPredicate, 4> kSignedIntegerPredicates = {
@@ -96,6 +102,24 @@ bool isSignedIntegerPredicate(mlir::arith::CmpIPredicate predicate) {
   return llvm::is_contained(kSignedIntegerPredicates, predicate);
 }
 
+enum class IntegerLogicOperation : std::uint32_t { And, Or, Xor };
+
+llvm::Expected<IntegerLogicOperation>
+integerLogicOperation(::dataflow::OperationSchemaId schema) {
+  using Schema = ::dataflow::OperationSchemaId;
+  switch (schema) {
+  case Schema::ArithAndI:
+    return IntegerLogicOperation::And;
+  case Schema::ArithOrI:
+  case Schema::LLVMOrDisjoint:
+    return IntegerLogicOperation::Or;
+  case Schema::ArithXOrI:
+    return IntegerLogicOperation::Xor;
+  default:
+    return reject("integer logic capability contains a non-logic schema");
+  }
+}
+
 ::dataflow::CanonicalActorSchemaProjection makeScalarIntegerCompareActor(
     mlir::MLIRContext &context, unsigned width,
     ::dataflow::OperationSchemaId schema,
@@ -112,23 +136,108 @@ bool isSignedIntegerPredicate(mlir::arith::CmpIPredicate predicate) {
   return {schema, type, ::dataflow::NoPayload{}};
 }
 
+llvm::Expected<::dataflow::SemanticPayload>
+makeIntegerLogicPayload(::dataflow::OperationSchemaId schema) {
+  using Schema = ::dataflow::OperationSchemaId;
+  switch (schema) {
+  case Schema::ArithAndI:
+  case Schema::ArithOrI:
+  case Schema::ArithXOrI:
+    return ::dataflow::SemanticPayload(::dataflow::NoPayload{});
+  case Schema::LLVMOrDisjoint:
+    return ::dataflow::SemanticPayload(::dataflow::DisjointPayload{true});
+  default:
+    return reject("integer logic capability contains a non-logic schema");
+  }
+}
+
+llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
+makeScalarIntegerLogicActor(mlir::MLIRContext &context, unsigned width,
+                            ::dataflow::OperationSchemaId schema) {
+  auto payload = makeIntegerLogicPayload(schema);
+  if (!payload)
+    return payload.takeError();
+  mlir::Type operand = mlir::IntegerType::get(&context, width);
+  return ::dataflow::CanonicalActorSchemaProjection{
+      schema, mlir::FunctionType::get(&context, {operand, operand}, {operand}),
+      std::move(*payload)};
+}
+
+llvm::Expected<mlir::VectorType>
+makeMaximalVectorType(mlir::Type element, std::uint32_t maxPayloadBits) {
+  const unsigned elementWidth = element.getIntOrFloatBitWidth();
+  if (elementWidth == 0)
+    return reject("fixed-vector element has no finite bit width");
+  const std::uint32_t laneCount = maxPayloadBits / elementWidth;
+  if (laneCount == 0)
+    return reject("fixed-vector element width exceeds payload capacity");
+  return mlir::VectorType::get({static_cast<std::int64_t>(laneCount)}, element);
+}
+
+llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
+makeFixedVectorIntegerActor(mlir::MLIRContext &context, unsigned elementWidth,
+                            std::uint32_t maxPayloadBits,
+                            ::dataflow::OperationSchemaId schema,
+                            ::dataflow::SemanticPayload payload) {
+  auto vector = makeMaximalVectorType(
+      mlir::IntegerType::get(&context, elementWidth), maxPayloadBits);
+  if (!vector)
+    return vector.takeError();
+  return ::dataflow::CanonicalActorSchemaProjection{
+      schema, mlir::FunctionType::get(&context, {*vector, *vector}, {*vector}),
+      std::move(payload)};
+}
+
 llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
 makeFixedVectorIntegerAddSubActor(mlir::MLIRContext &context,
                                   unsigned elementWidth,
                                   std::uint32_t maxPayloadBits,
                                   ::dataflow::OperationSchemaId schema) {
-  // Port capacity is monotone in flattened width. The largest reachable
-  // one-dimensional vector therefore covers every shape with this behavior.
-  const std::uint32_t laneCount = maxPayloadBits / elementWidth;
-  if (laneCount == 0)
-    return reject("fixed-vector element width exceeds payload capacity");
-  mlir::Type element = mlir::IntegerType::get(&context, elementWidth);
-  mlir::Type vector =
-      mlir::VectorType::get({static_cast<std::int64_t>(laneCount)}, element);
-  mlir::FunctionType type =
-      mlir::FunctionType::get(&context, {vector, vector}, {vector});
+  return makeFixedVectorIntegerActor(context, elementWidth, maxPayloadBits,
+                                     schema,
+                                     ::dataflow::IntegerOverflowPayload{});
+}
+
+llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
+makeFixedVectorValueSelectActor(mlir::MLIRContext &context, mlir::Type element,
+                                std::uint32_t maxPayloadBits) {
+  auto values = makeMaximalVectorType(element, maxPayloadBits);
+  if (!values)
+    return values.takeError();
+  mlir::Type condition = mlir::VectorType::get(
+      values->getShape(), mlir::IntegerType::get(&context, 1));
   return ::dataflow::CanonicalActorSchemaProjection{
-      schema, type, ::dataflow::IntegerOverflowPayload{}};
+      ::dataflow::OperationSchemaId::ArithSelect,
+      mlir::FunctionType::get(&context, {condition, *values, *values},
+                              {*values}),
+      ::dataflow::NoPayload{}};
+}
+
+loom::CanonicalSemanticBytes
+encodeElementWidthConfiguration(llvm::StringRef domain, unsigned elementWidth) {
+  constexpr std::uint32_t kElementWidthComponent = 1U << 0;
+  std::vector<std::uint8_t> bytes;
+  bytes.insert(bytes.end(), domain.bytes_begin(), domain.bytes_end());
+  appendU32(bytes, kConfigurationCodecMajor);
+  appendU32(bytes, kConfigurationCodecMinor);
+  appendU32(bytes, kElementWidthComponent);
+  appendU32(bytes, elementWidth);
+  return loom::CanonicalSemanticBytes(std::move(bytes));
+}
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeIntegerLogicConfiguration(::dataflow::OperationSchemaId schema) {
+  auto operation = integerLogicOperation(schema);
+  if (!operation)
+    return operation.takeError();
+  std::vector<std::uint8_t> bytes;
+  const llvm::StringRef domain(kIntegerLogicConfigurationDomain,
+                               sizeof(kIntegerLogicConfigurationDomain) - 1);
+  bytes.insert(bytes.end(), domain.bytes_begin(), domain.bytes_end());
+  appendU32(bytes, kConfigurationCodecMajor);
+  appendU32(bytes, kConfigurationCodecMinor);
+  appendU32(bytes, static_cast<std::uint32_t>(*operation));
+  return loom::CanonicalSemanticBytes(std::move(bytes));
 }
 
 mlir::FloatType floatType(mlir::MLIRContext &context,
@@ -332,6 +441,21 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
       return reject("concrete operation capability escapes its generated "
                     "implementation family");
 
+  const bool logicFamily =
+      descriptor.typedAdmissionProvider ==
+          TypedAdmissionProviderId::ScalarLogicIntegerAdmission ||
+      descriptor.typedAdmissionProvider ==
+          TypedAdmissionProviderId::FixedVectorLogicIntegerAdmission;
+  if (logicFamily && enabledSchemas.size() > 1) {
+    std::array<bool, 3> selectedOperations{};
+    for (::dataflow::OperationSchemaId schema : enabledSchemas) {
+      auto operation = integerLogicOperation(schema);
+      if (!operation)
+        return operation.takeError();
+      selectedOperations[static_cast<std::size_t>(*operation)] = true;
+    }
+    return llvm::count(selectedOperations, true) > 1;
+  }
   if (enabledSchemas.size() > 1)
     return true;
 
@@ -486,6 +610,14 @@ fabric::encodeImplementationFamilySemanticConfiguration(
       break;
     }
   }
+  if (family == ImplementationFamilyId::ScalarIntegerLogic ||
+      family == ImplementationFamilyId::FixedVectorIntegerLogic) {
+    if (llvm::Error error =
+            verifyImplementationFamilyAdmission(family, &params, actor))
+      return std::move(error);
+    return encodeIntegerLogicConfiguration(actor.schema);
+  }
+
   if (selectionOnly)
     return ::dataflow::encodeOperationSchemaId(actor.schema);
 
@@ -507,6 +639,50 @@ fabric::encodeImplementationFamilySemanticConfiguration(
             verifyImplementationFamilyAdmission(family, &params, actor))
       return std::move(error);
     return ::dataflow::encodeCanonicalType(type);
+  }
+
+  if (family == ImplementationFamilyId::FixedVectorIntegerMultiply) {
+    const auto *parameters = std::get_if<FixedVectorIntegerParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    if (actor.schema != ::dataflow::OperationSchemaId::ArithMulI ||
+        actor.type.getNumInputs() != 2 || actor.type.getNumResults() != 1)
+      return reject("actor is not a fixed-vector integer multiply");
+    auto vector = llvm::dyn_cast<mlir::VectorType>(actor.type.getInput(0));
+    if (!vector || actor.type.getInput(1) != vector ||
+        actor.type.getResult(0) != vector)
+      return reject("fixed-vector integer multiply actor is not uniform");
+    auto element = llvm::dyn_cast<mlir::IntegerType>(vector.getElementType());
+    if (!element)
+      return reject("fixed-vector multiply element is not an integer");
+    if (llvm::Error error =
+            verifyImplementationFamilyAdmission(family, &params, actor))
+      return std::move(error);
+    const llvm::StringRef domain(
+        kFixedVectorIntegerMultiplyConfigurationDomain,
+        sizeof(kFixedVectorIntegerMultiplyConfigurationDomain) - 1);
+    return encodeElementWidthConfiguration(domain, element.getWidth());
+  }
+
+  if (family == ImplementationFamilyId::FixedVectorValueSelect) {
+    const auto *parameters = std::get_if<FixedVectorValueSelectParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    if (actor.schema != ::dataflow::OperationSchemaId::ArithSelect ||
+        actor.type.getNumInputs() != 3 || actor.type.getNumResults() != 1)
+      return reject("actor is not a fixed-vector value select");
+    auto values = llvm::dyn_cast<mlir::VectorType>(actor.type.getInput(1));
+    if (!values || actor.type.getInput(2) != values ||
+        actor.type.getResult(0) != values)
+      return reject("fixed-vector value select actor is not uniform");
+    if (llvm::Error error =
+            verifyImplementationFamilyAdmission(family, &params, actor))
+      return std::move(error);
+    const llvm::StringRef domain(
+        kFixedVectorValueSelectConfigurationDomain,
+        sizeof(kFixedVectorValueSelectConfigurationDomain) - 1);
+    return encodeElementWidthConfiguration(domain,
+                                           values.getElementTypeBitWidth());
   }
 
   if (family == ImplementationFamilyId::FixedVectorIntegerAddSub) {
@@ -649,7 +825,86 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
     return needsConfiguration.takeError();
 
   std::vector<::dataflow::CanonicalActorSchemaProjection> actors;
-  if (family == ImplementationFamilyId::ScalarIntegerCompareMinMax) {
+  if (family == ImplementationFamilyId::ScalarIntegerLogic) {
+    const auto *parameters = std::get_if<ScalarIntegerParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    for (::dataflow::OperationSchemaId schema : enabledSchemas) {
+      for (IntegerWidth width : integerWidthDomain) {
+        if (!parameters->integerWidths.contains(width))
+          continue;
+        auto actor =
+            makeScalarIntegerLogicActor(context, getBitWidth(width), schema);
+        if (!actor)
+          return actor.takeError();
+        actors.push_back(std::move(*actor));
+      }
+    }
+  } else if (family == ImplementationFamilyId::FixedVectorIntegerLogic) {
+    const auto *parameters = std::get_if<FixedVectorIntegerParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    for (::dataflow::OperationSchemaId schema : enabledSchemas) {
+      for (IntegerWidth width : integerWidthDomain) {
+        if (!parameters->elementWidths.contains(width))
+          continue;
+        auto payload = makeIntegerLogicPayload(schema);
+        if (!payload)
+          return payload.takeError();
+        auto actor = makeFixedVectorIntegerActor(context, getBitWidth(width),
+                                                 parameters->maxPayloadBits,
+                                                 schema, std::move(*payload));
+        if (!actor)
+          return actor.takeError();
+        actors.push_back(std::move(*actor));
+      }
+    }
+  } else if (family == ImplementationFamilyId::FixedVectorIntegerMultiply) {
+    const auto *parameters = std::get_if<FixedVectorIntegerParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    if (enabledSchemas.size() != 1 ||
+        enabledSchemas.front() != ::dataflow::OperationSchemaId::ArithMulI)
+      return reject("fixed-vector multiply capability contains a non-multiply "
+                    "schema");
+    for (IntegerWidth width : integerWidthDomain) {
+      if (!parameters->elementWidths.contains(width))
+        continue;
+      auto actor = makeFixedVectorIntegerActor(
+          context, getBitWidth(width), parameters->maxPayloadBits,
+          enabledSchemas.front(), ::dataflow::IntegerOverflowPayload{});
+      if (!actor)
+        return actor.takeError();
+      actors.push_back(std::move(*actor));
+    }
+  } else if (family == ImplementationFamilyId::FixedVectorValueSelect) {
+    const auto *parameters = std::get_if<FixedVectorValueSelectParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    if (enabledSchemas.size() != 1 ||
+        enabledSchemas.front() != ::dataflow::OperationSchemaId::ArithSelect)
+      return reject("fixed-vector select capability contains a non-select "
+                    "schema");
+    for (IntegerWidth width : integerWidthDomain) {
+      if (!parameters->integerElementWidths.contains(width))
+        continue;
+      auto actor = makeFixedVectorValueSelectActor(
+          context, mlir::IntegerType::get(&context, getBitWidth(width)),
+          parameters->maxPayloadBits);
+      if (!actor)
+        return actor.takeError();
+      actors.push_back(std::move(*actor));
+    }
+    for (FloatFormat format : floatFormatDomain) {
+      if (!parameters->floatElementFormats.contains(format))
+        continue;
+      auto actor = makeFixedVectorValueSelectActor(
+          context, floatType(context, format), parameters->maxPayloadBits);
+      if (!actor)
+        return actor.takeError();
+      actors.push_back(std::move(*actor));
+    }
+  } else if (family == ImplementationFamilyId::ScalarIntegerCompareMinMax) {
     const auto *parameters =
         std::get_if<ScalarIntegerCompareMinMaxParams>(&params);
     if (!parameters)
