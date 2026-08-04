@@ -1,0 +1,9 @@
+# REQUIRES: circt, verilator, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-loop-gate-test %t
+# RUN: cd %t && verilator --binary --timing --Wall --Wno-fatal --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench loop_gate.sv testbench.sv --Mdir obj_dir
+# RUN: %t/obj_dir/Vtestbench
+# RUN: cd %t && yosys -q -s portable_loop_gate.ys
+# RUN: cd %t/zero_payload && verilator --binary --timing --Wall --Wno-fatal --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench loop_gate.sv testbench.sv --Mdir obj_dir
+# RUN: %t/zero_payload/obj_dir/Vtestbench
+# RUN: cd %t/zero_payload && yosys -q -s portable_loop_gate.ys

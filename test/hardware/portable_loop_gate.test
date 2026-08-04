@@ -1,0 +1,18 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-loop-gate-test %t
+# RUN: FileCheck %s --check-prefix=RTL < %t/loop_gate.sv
+# RUN: FileCheck %s --check-prefix=ZERO < %t/zero_payload/loop_gate.sv
+
+# RTL: module loop_gate
+# RTL: state_current,
+# RTL: state_next,
+# RTL: state_write
+# RTL-NOT: always_ff
+# RTL-NOT: posedge
+
+# ZERO: module loop_gate
+# ZERO: valid_input_1
+# ZERO: valid_output_1
+# ZERO-NOT: data_input_1
+# ZERO-NOT: data_output_1
