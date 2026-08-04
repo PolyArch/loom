@@ -8,6 +8,7 @@ add_library(LoomHardwareRTL
   Providers/ScalarFloatFma.cpp
   Providers/ScalarIntegerAddSub.cpp
   Providers/ScalarIntegerCompareMinMax.cpp
+  Providers/ScalarIntegerMultiply.cpp
   Specialization.cpp
   Transport.cpp
 )

@@ -1,0 +1,36 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-scalar-integer-multiply-test %t
+# RUN: FileCheck %s --check-prefix=RTL8 < %t/scalar_integer_multiply_8.sv
+# RUN: FileCheck %s --check-prefix=RTL64 < %t/scalar_integer_multiply_64.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_scalar_integer_multiply.ys
+
+# RTL8: module scalar_integer_multiply_8
+# RTL8: input [7:0] data_input_0
+# RTL8: data_input_1,
+# RTL8: output [7:0] data_output_0
+# RTL8: assign data_output_0 = data_input_0 * data_input_1
+# RTL8-NOT: config_
+
+# RTL64: module scalar_integer_multiply_64
+# RTL64: input [63:0] data_input_0
+# RTL64: data_input_1,
+# RTL64: output [63:0] data_output_0
+# RTL64: assign data_output_0 = data_input_0 * data_input_1
+# RTL64-NOT: config_
+
+# TB: module testbench
+# TB: 8-bit zero failed
+# TB: 8-bit identity failed
+# TB: 8-bit ordinary product failed
+# TB: 8-bit overflow failed
+# TB: 64-bit modular product failed
+
+# YOSYS: read_verilog -sv scalar_integer_multiply_8.sv scalar_integer_multiply_64.sv synthesis_top.sv
+# YOSYS: hierarchy -check -top scalar_integer_multiply_synthesis_top
+# YOSYS: proc
+# YOSYS: opt
+# YOSYS: check
+# YOSYS: synth -top scalar_integer_multiply_synthesis_top
+# YOSYS: stat
