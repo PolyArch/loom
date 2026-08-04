@@ -582,11 +582,13 @@ backend advice.
 
 ### Structured Schedule Generator
 
-The schema-1.0 Schedule generator consumes a nonempty finite set of exact
-Structured Program references and one exact finalized Fabric. It emits the
-input set plus every distinct child obtained by one legal atomic schedule
-decision. Its resolved component view contains only the positive
-`scope_expansion_limit` owned by the Resolved Configuration View.
+The schema-1.0 Schedule generator consumes a finite set of exact Structured
+Program references and one exact finalized Fabric. It emits the input set plus
+every distinct child obtained by one legal atomic schedule decision. An empty
+input set produces an empty output set, so an ordered central plan remains
+total when an earlier generator has no candidates. Its resolved component view
+contains only the positive `scope_expansion_limit` owned by the Resolved
+Configuration View.
 
 Loop scopes are `scf.for` operations in the parent's canonical Structured
 operation order. The first `scope_expansion_limit` loop scopes form the finite
@@ -619,6 +621,18 @@ passes it through the sole Structured Program finalizer. Equal children
 deduplicate by Artifact identity. No schedule tree, factor table, hidden pass
 state, or persisted analysis view exists.
 
+When the parent already contains a selected `loom.spatial_region`, the
+generator mechanically lowers each child to D0 before admitting it to the
+output set and queries the shared exact-Fabric capability projection for every
+canonical actor. A child that introduces an actor shape with no admitted
+concrete resource is outside that exact Generate result; for example, tiling
+that creates a five-lane `dataflow.sync` is excluded when the selected Fabric
+admits at most four lanes. This is hard-negative capability pruning, not a
+placement, routing, contention, or QoR conclusion. The invocation may retain
+the sealed child and D0 projection as a reference-keyed read-through cache for
+Evaluation and functional replay, but the Structured and Dataflow Artifacts
+remain the only semantic owners.
+
 ### Workload-Aware Ownership Selection
 
 Ownership promotion is a whole-workload decision. Before a promotion gate
@@ -635,6 +649,12 @@ trip counts, path coverage, and memory traffic may be exposed to generators as
 descriptor-owned typed projections or retained as removable in-memory analysis
 views. They do not form a `ProfileArtifact`, candidate-owned counter table, or
 second workload identity.
+
+Schedule descendants inherit the exact source workload and the ownership
+correspondence of their immutable parent lineage. Evaluation executes the
+descendant Structured candidate against that fixed source workload and replays
+its own mechanically derived D0; it does not synthesize a candidate-specific
+source workload or recover lineage from symbol names or operation positions.
 
 The cost of one ownership candidate is evaluated over the complete workload:
 remaining HostCore and InstructionCore work, logical-thread launch and

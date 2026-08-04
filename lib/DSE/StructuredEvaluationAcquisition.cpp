@@ -1,12 +1,12 @@
 #include "DSE/StructuredEvaluationAcquisition.h"
 
 #include "Common/ArtifactStore.h"
+#include "DSE/StructuredOwnershipInvocationInternal.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/Models/StructuredProgramFunctional.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Simulator/SimulationArtifacts.h"
-#include "StructuredOwnershipInvocationInternal.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -209,6 +209,11 @@ resolveCases(const ResolvedPromotionAcquisitionBinding &,
     if (!llvm::binary_search(inputBindings[CandidateInput].artifacts,
                              task.candidate, artifactRootReferenceLess))
       return invalid("task candidate is outside the bound candidate set");
+    if (model == analytic && ownershipInvocation)
+      if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
+              primeAnalyticCandidate(*ownershipInvocation, task.candidate,
+                                     store))
+        return std::move(error);
     if (model == functional) {
       if (!ownershipInvocation)
         return PromotionAcquisitionResolutionOutcome{

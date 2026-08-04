@@ -1,16 +1,21 @@
 #include "DSE/StructuredScheduleCandidateGenerator.h"
+#include "DSE/StructuredOwnershipInvocationInternal.h"
 
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
+#include "Frontend/IR/LoomOps.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Frontend/Lowering/CanonicalDataflowLowering.h"
 
 #include "llvm/Support/Error.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -31,7 +36,7 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
         {CandidateGeneratorInputSlotRef(StructuredProgramsInput),
          "structured_program", PlanValueRole::CandidateSet,
          &frontend::structuredProgramArtifactSchema,
-         PlanValueCardinality::NonEmptySet},
+         PlanValueCardinality::FiniteSet},
         {CandidateGeneratorInputSlotRef(FabricInput), "fabric",
          PlanValueRole::CandidateSet, &fabric::fabricArtifactSchema,
          PlanValueCardinality::ExactlyOne},
@@ -40,7 +45,7 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
     {CandidateGeneratorOutputSlotRef(0), "structured_program",
      PlanValueRole::CandidateSet, &frontend::structuredProgramArtifactSchema,
-     PlanValueCardinality::NonEmptySet},
+     PlanValueCardinality::FiniteSet},
 }};
 
 constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 2> workUnits = {{
@@ -108,6 +113,16 @@ singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> bindings,
   return bindings[slot].artifacts.front();
 }
 
+bool hasSelectedSpatialRegion(
+    const frontend::StructuredProgramCandidate &candidate) {
+  bool found = false;
+  candidate.module().walk([&](loom::SpatialRegionOp) {
+    found = true;
+    return mlir::WalkResult::interrupt();
+  });
+  return found;
+}
+
 llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
@@ -121,6 +136,7 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
       singleInput(inputBindings, FabricInput), store);
   if (!fabric)
     return fabric.takeError();
+  frontend::FabricCapabilityIndex capabilities(fabric->view());
 
   std::vector<ArtifactRootReference> outputs =
       inputBindings[StructuredProgramsInput].artifacts;
@@ -139,9 +155,36 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
           frontend::materializeStructuredScheduleDecision(*parent, decision);
       if (!child)
         return child.takeError();
-      auto published = frontend::publishStructuredProgram(*child, store);
+      StructuredOwnershipInvocation *invocation =
+          detail::StructuredOwnershipInvocationAccess::current();
+      std::optional<lowering::ProjectedCanonicalDataflow> projected;
+      if (hasSelectedSpatialRegion(child->structuredProgram)) {
+        auto lowered =
+            lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
+                child->structuredProgram);
+        if (!lowered)
+          return lowered.takeError();
+        auto miss = capabilities.firstInadmissibleActor(lowered->artifact);
+        if (!miss)
+          return miss.takeError();
+        if (*miss)
+          continue;
+        projected.emplace(std::move(*lowered));
+      }
+      auto published =
+          frontend::publishStructuredProgram(child->structuredProgram, store);
       if (!published)
         return published.takeError();
+      if (invocation)
+        if (!projected)
+          return invalid(
+              "central Schedule child has no selected Spatial projection");
+      if (invocation)
+        if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
+                recordScheduleCandidate(*invocation, reference, *published,
+                                        decision, std::move(*child),
+                                        std::move(*projected), store))
+          return std::move(error);
       outputs.push_back(std::move(*published));
     }
   }

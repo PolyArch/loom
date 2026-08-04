@@ -6,6 +6,7 @@
 #include "DSE/StructuredEvaluationAcquisition.h"
 #include "DSE/StructuredOwnershipCandidateGenerator.h"
 #include "DSE/StructuredOwnershipInvocation.h"
+#include "DSE/StructuredScheduleCandidateGenerator.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/StandardFindings.h"
@@ -313,6 +314,8 @@ exploreStructuredCompilationToPreMapping(
     return invalid("ownership TopK requires positive k");
   if (llvm::Error error = registerStructuredOwnershipCandidateGenerator())
     return std::move(error);
+  if (llvm::Error error = registerStructuredScheduleCandidateGenerator())
+    return std::move(error);
   if (llvm::Error error = registerStructuredEvaluationPromotionAcquisition())
     return std::move(error);
 
@@ -389,6 +392,10 @@ exploreStructuredCompilationToPreMapping(
           {obligations->analytic, obligations->functional});
   if (!acquisitionConfig)
     return acquisitionConfig.takeError();
+  auto scheduleConfig =
+      projectResolvedStructuredScheduleGeneratorConfigView(config);
+  if (!scheduleConfig)
+    return scheduleConfig.takeError();
 
   ResolvedConfig planConfig = config;
   planConfig.dse.modelAuthorizations = modelAuthorizations(*obligations);
@@ -404,9 +411,14 @@ exploreStructuredCompilationToPreMapping(
            ExactPlanArtifacts{{*runtimeInputReference}}},
           generatorConfig->canonicalViewBytes().vec(),
           generatorConfig->digest()},
+      GeneratePlanNodeDefinition{
+          structuredScheduleCandidateGeneratorDescriptor().reference(),
+          {PlanOutputRef{0, 1}, ExactPlanArtifacts{{fabric.reference()}}},
+          scheduleConfig->canonicalViewBytes().vec(),
+          scheduleConfig->digest()},
       PromotePlanNodeDefinition{
           structuredEvaluationPromotionAcquisitionDescriptor().reference(),
-          {PlanOutputRef{0, 1}, ExactPlanArtifacts{{fabric.reference()}},
+          {PlanOutputRef{1, 0}, ExactPlanArtifacts{{fabric.reference()}},
            ExactPlanArtifacts{{*workloadReference}},
            ExactPlanArtifacts{{*runtimeInputReference}}},
           acquisitionConfig->canonicalViewBytes().vec(),
@@ -427,9 +439,9 @@ exploreStructuredCompilationToPreMapping(
 
   auto &completed = std::get<CompletedDsePlanExecution>(*executed);
   std::vector<ArtifactRootReference> selectedReferences(
-      completed.resolve({1, 0}).begin(), completed.resolve({1, 0}).end());
+      completed.resolve({2, 0}).begin(), completed.resolve({2, 0}).end());
   std::vector<ArtifactRootReference> satisfiedEvidence = baselineEvidence;
-  mergeReferences(satisfiedEvidence, completed.resolve({1, 1}));
+  mergeReferences(satisfiedEvidence, completed.resolve({2, 1}));
   if (selectedReferences.empty()) {
     if (options.ownership.selectionMode ==
         StructuredOwnershipSelectionMode::SemanticConformance)
@@ -452,6 +464,7 @@ exploreStructuredCompilationToPreMapping(
             std::move(candidate->candidate.sourceProvenance),
             std::move(candidate->candidate.canonicalDataflow)},
         std::move(candidate->derivations),
+        std::move(candidate->scheduleDerivations),
         std::move(candidate->functionalReplay)});
   }
   return PreMappingExplorationOutcome{CompletedPreMappingSelection{

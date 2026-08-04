@@ -2,18 +2,19 @@
 
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/StructuredOwnershipInvocationInternal.h"
 #include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/Models/StructuredProgramFunctional.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
 #include "Simulator/NativeSimulationOracle.h"
-#include "StructuredOwnershipInvocationInternal.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <optional>
 #include <utility>
@@ -42,6 +43,16 @@ bool sameRoot(const ArtifactRootReference &reference,
 
 class StructuredOwnershipInvocation::Impl final {
 public:
+  struct ScheduleCandidateState final {
+    frontend::MaterializedStructuredScheduleCandidate candidate;
+    lowering::ProjectedCanonicalDataflow projected;
+  };
+
+  struct ResolvedLineage final {
+    std::vector<StructuredOwnershipDerivation> ownership;
+    std::vector<StructuredScheduleDerivation> schedule;
+  };
+
   Impl(const frontend::StructuredProgramCandidate &sourceProgram,
        const sim::CanonicalSimulationWorkload &workload,
        const sim::CanonicalSimulationRuntimeInput &runtimeInput,
@@ -56,7 +67,9 @@ public:
         lowering(lowering), candidateWorkerCount(candidateWorkerCount),
         functionalReplayLimits(functionalReplayLimits),
         sourceProvenance(sourceProvenance.begin(), sourceProvenance.end()),
-        materialized(&artifactRootReferenceLess) {}
+        materialized(&artifactRootReferenceLess),
+        scheduleLineage(&artifactRootReferenceLess),
+        scheduleCandidates(&artifactRootReferenceLess) {}
 
   const frontend::StructuredProgramCandidate &sourceProgram;
   const sim::CanonicalSimulationWorkload &workload;
@@ -79,7 +92,57 @@ public:
   std::map<ArtifactRootReference, frontend::MaterializedOwnershipCandidate,
            decltype(&artifactRootReferenceLess)>
       materialized;
+  std::map<ArtifactRootReference, std::vector<StructuredScheduleDerivation>,
+           decltype(&artifactRootReferenceLess)>
+      scheduleLineage;
+  std::map<ArtifactRootReference, ScheduleCandidateState,
+           decltype(&artifactRootReferenceLess)>
+      scheduleCandidates;
   std::vector<ArtifactRootReference> primedCandidates;
+
+  llvm::Expected<ResolvedLineage>
+  resolveLineage(const ArtifactRootReference &candidate) const {
+    ResolvedLineage result;
+    std::vector<ArtifactRootReference> visiting;
+    std::vector<ArtifactRootReference> visited;
+    std::function<llvm::Error(const ArtifactRootReference &)> visit =
+        [&](const ArtifactRootReference &reference) -> llvm::Error {
+      if (llvm::is_contained(visited, reference))
+        return llvm::Error::success();
+      if (llvm::is_contained(visiting, reference))
+        return invalid("Structured candidate lineage contains a cycle");
+      visiting.push_back(reference);
+      for (const StructuredOwnershipCandidateDisposition &disposition :
+           dispositions) {
+        const auto *derived =
+            std::get_if<ArtifactRootReference>(&disposition.result);
+        if (!derived || *derived != reference ||
+            !disposition.coordinate.decision)
+          continue;
+        StructuredOwnershipDerivation derivation{
+            disposition.coordinate.scope, *disposition.coordinate.decision};
+        if (!llvm::is_contained(result.ownership, derivation))
+          result.ownership.push_back(std::move(derivation));
+      }
+      auto edges = scheduleLineage.find(reference);
+      if (edges != scheduleLineage.end()) {
+        for (const StructuredScheduleDerivation &edge : edges->second) {
+          if (llvm::Error error = visit(edge.parent))
+            return error;
+          if (!llvm::is_contained(result.schedule, edge))
+            result.schedule.push_back(edge);
+        }
+      }
+      visiting.pop_back();
+      visited.push_back(reference);
+      return llvm::Error::success();
+    };
+    if (llvm::Error error = visit(candidate))
+      return std::move(error);
+    if (result.ownership.empty())
+      return invalid("Structured candidate has no Ownership lineage");
+    return result;
+  }
 };
 
 class StructuredOwnershipInvocationScope::Impl final {
@@ -215,15 +278,13 @@ StructuredOwnershipInvocation::materializeSelectedCandidate(
   }
 
   std::vector<StructuredOwnershipDerivation> derivations;
-  for (const StructuredOwnershipCandidateDisposition &disposition :
-       impl_->dispositions) {
-    const auto *reference =
-        std::get_if<ArtifactRootReference>(&disposition.result);
-    if (!reference || *reference != candidate ||
-        !disposition.coordinate.decision)
-      continue;
-    derivations.push_back(
-        {disposition.coordinate.scope, *disposition.coordinate.decision});
+  std::vector<StructuredScheduleDerivation> scheduleDerivations;
+  if (candidate != *impl_->sourceReference) {
+    auto lineage = impl_->resolveLineage(candidate);
+    if (!lineage)
+      return lineage.takeError();
+    derivations = std::move(lineage->ownership);
+    scheduleDerivations = std::move(lineage->schedule);
   }
 
   std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
@@ -238,9 +299,9 @@ StructuredOwnershipInvocation::materializeSelectedCandidate(
       return invalid("selected accelerator candidate lacks equivalent replay");
     functionalReplay.emplace(std::move(*replay));
   }
-  return SelectedStructuredOwnershipCandidate{std::move(*materialized),
-                                              std::move(derivations),
-                                              std::move(functionalReplay)};
+  return SelectedStructuredOwnershipCandidate{
+      std::move(*materialized), std::move(derivations),
+      std::move(scheduleDerivations), std::move(functionalReplay)};
 }
 
 StructuredOwnershipInvocationScope::StructuredOwnershipInvocationScope(
@@ -350,6 +411,86 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::recordGeneration(
   return llvm::Error::success();
 }
 
+llvm::Error
+detail::StructuredOwnershipInvocationAccess::recordScheduleCandidate(
+    StructuredOwnershipInvocation &invocation,
+    const ArtifactRootReference &parent, const ArtifactRootReference &child,
+    const frontend::StructuredScheduleDecision &decision,
+    frontend::MaterializedStructuredScheduleCandidate candidate,
+    lowering::ProjectedCanonicalDataflow projected,
+    const ArtifactStore &store) {
+  StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
+  if (!impl.generationRecorded || !impl.sourceReference)
+    return invalid("Schedule generation precedes Ownership generation");
+  if (parent.schemaIdentity !=
+          frontend::structuredProgramArtifactSchema.identity ||
+      parent.schemaVersion !=
+          frontend::structuredProgramArtifactSchema.version ||
+      child.schemaIdentity !=
+          frontend::structuredProgramArtifactSchema.identity ||
+      child.schemaVersion !=
+          frontend::structuredProgramArtifactSchema.version ||
+      child.artifact != candidate.structuredProgram.identity())
+    return invalid("Schedule lineage contains a foreign Structured reference");
+  if (parent == child)
+    return llvm::Error::success();
+  if (auto lineage = impl.resolveLineage(parent); !lineage)
+    return lineage.takeError();
+  auto stored = store.get(child);
+  if (!stored)
+    return stored.takeError();
+  if (!stored->bytes().equals(
+          candidate.structuredProgram.canonicalBytes().bytes()))
+    return invalid("Schedule child differs from its published bytes");
+
+  StructuredScheduleDerivation derivation{parent, decision};
+  std::vector<StructuredScheduleDerivation> &edges =
+      impl.scheduleLineage[child];
+  if (!llvm::is_contained(edges, derivation))
+    edges.push_back(derivation);
+
+  auto found = impl.scheduleCandidates.find(child);
+  if (found == impl.scheduleCandidates.end()) {
+    impl.scheduleCandidates.try_emplace(
+        child, StructuredOwnershipInvocation::Impl::ScheduleCandidateState{
+                   std::move(candidate), std::move(projected)});
+  } else if (found->second.candidate.structuredProgram.canonicalBytes()
+                 .bytes() !=
+             candidate.structuredProgram.canonicalBytes().bytes()) {
+    return invalid("deduplicated Schedule child changed canonical bytes");
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error detail::StructuredOwnershipInvocationAccess::primeAnalyticCandidate(
+    StructuredOwnershipInvocation &invocation,
+    const ArtifactRootReference &candidate, const ArtifactStore &store) {
+  StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
+  auto found = impl.scheduleCandidates.find(candidate);
+  if (found == impl.scheduleCandidates.end())
+    return llvm::Error::success();
+  auto &state = found->second;
+  auto observations = sim::executeProfiledSelectedStructuredProgram(
+      state.candidate.structuredProgram, impl.sourceProgram, impl.workload,
+      impl.runtimeInput);
+  if (!observations) {
+    llvm::consumeError(observations.takeError());
+    return llvm::Error::success();
+  }
+  const evaluation::models::StructuredFabricAnalyticInvocation analytic{
+      *impl.workloadReference, *impl.runtimeInputReference,
+      impl.workload,           impl.runtimeInput,
+      impl.sourceProgram,      *impl.sourceObservations};
+  return evaluation::models::primeStructuredFabricAnalyticResult(
+      candidate,
+      {state.candidate.structuredProgram,
+       &state.projected.artifact,
+       state.projected.spatialGraphs,
+       {},
+       &*observations},
+      analytic, impl.fabric, impl.config, store);
+}
+
 llvm::Error detail::StructuredOwnershipInvocationAccess::primeFunctionalReplay(
     StructuredOwnershipInvocation &invocation,
     const ArtifactRootReference &candidate, const ArtifactStore &store) {
@@ -362,23 +503,31 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeFunctionalReplay(
   if (llvm::is_contained(impl.primedCandidates, candidate))
     return llvm::Error::success();
 
-  std::vector<const StructuredOwnershipCandidateDisposition *> derivations;
-  for (const StructuredOwnershipCandidateDisposition &disposition :
-       impl.dispositions) {
-    const auto *reference =
-        std::get_if<ArtifactRootReference>(&disposition.result);
-    if (reference && *reference == candidate && disposition.coordinate.decision)
-      derivations.push_back(&disposition);
-  }
-  if (derivations.empty())
-    return invalid("functional candidate has no Ownership derivation");
+  auto lineage = impl.resolveLineage(candidate);
+  if (!lineage)
+    return lineage.takeError();
 
-  auto materialized = frontend::materializeSpatialOwnershipDecision(
-      impl.sourceProgram, derivations.front()->coordinate.scope,
-      *derivations.front()->coordinate.decision, impl.fabric, impl.lowering,
-      impl.sourceProvenance);
-  if (!materialized)
-    return materialized.takeError();
+  std::optional<frontend::MaterializedOwnershipCandidate> materialized;
+  auto scheduled = impl.scheduleCandidates.find(candidate);
+  if (scheduled != impl.scheduleCandidates.end()) {
+    auto state = std::move(scheduled->second);
+    impl.scheduleCandidates.erase(scheduled);
+    materialized.emplace(frontend::MaterializedOwnershipCandidate{
+        std::move(state.candidate.structuredProgram),
+        std::move(state.projected.artifact),
+        std::move(state.projected.spatialGraphs),
+        {},
+        std::move(state.candidate.sourceProvenance)});
+  } else {
+    const StructuredOwnershipDerivation &derivation =
+        lineage->ownership.front();
+    auto direct = frontend::materializeSpatialOwnershipDecision(
+        impl.sourceProgram, derivation.scope, derivation.decision, impl.fabric,
+        impl.lowering, impl.sourceProvenance);
+    if (!direct)
+      return direct.takeError();
+    materialized.emplace(std::move(*direct));
+  }
   if (materialized->structuredProgram.identity() != candidate.artifact)
     return invalid("rematerialized candidate changed identity");
   auto stored = store.get(candidate);
@@ -392,16 +541,14 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeFunctionalReplay(
       impl.materialized.try_emplace(candidate, std::move(*materialized));
   if (!inserted)
     return invalid("functional candidate was materialized twice");
-  for (const StructuredOwnershipCandidateDisposition *derivation :
-       derivations) {
+  for (const StructuredOwnershipDerivation &derivation : lineage->ownership) {
     if (llvm::Error error =
             evaluation::models::primeStructuredProgramFunctionalReplay(
                 candidate,
                 {*impl.workloadReference, *impl.runtimeInputReference,
-                 impl.sourceProgram, derivation->coordinate.scope,
-                 *derivation->coordinate.decision, found->second, impl.workload,
-                 impl.runtimeInput, *impl.sourceObservations,
-                 impl.functionalReplayLimits},
+                 impl.sourceProgram, derivation.scope, derivation.decision,
+                 found->second, impl.workload, impl.runtimeInput,
+                 *impl.sourceObservations, impl.functionalReplayLimits},
                 store))
       return error;
   }

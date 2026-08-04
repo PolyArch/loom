@@ -14,14 +14,18 @@
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/Models/StructuredProgramFunctional.h"
 #include "Evaluation/StandardFindings.h"
+#include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SourceBackedDfgValidation.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/Parser/Parser.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -142,6 +146,53 @@ parseFunctionallyIncorrectModule(llvm::LLVMContext &context) {
     }
   }
   fail("incorrect candidate found no floating addition");
+}
+
+loom::frontend::StructuredProgramCandidate makeScheduledLoopProgram() {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::LLVM::LLVMDialect,
+                  mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  llvm.func internal @loop_kernel(%out: !llvm.ptr) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    scf.for %index = %c0 to %c8 step %c1 {
+      %wide = arith.index_cast %index : index to i64
+      %address = llvm.getelementptr inbounds %out[%wide]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i32
+      %value = arith.index_cast %index : index to i32
+      llvm.store %value, %address : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+
+  llvm.func @main(%out: !llvm.ptr) -> i32 {
+    llvm.call @loop_kernel(%out) : (!llvm.ptr) -> ()
+    %c0 = arith.constant 0 : i32
+    llvm.return %c0 : i32
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse the central schedule fixture");
+  if (llvm::InitializeNativeTarget() ||
+      llvm::InitializeNativeTargetAsmPrinter())
+    fail("cannot initialize the native target");
+  auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
+  module->getOperation()->setAttr(
+      "llvm.target_triple",
+      mlir::StringAttr::get(&context, "riscv64-unknown-unknown-elf"));
+  module->getOperation()->setAttr(
+      "llvm.data_layout",
+      mlir::StringAttr::get(&context,
+                            take(target.getDefaultDataLayoutForTarget())
+                                .getStringRepresentation()));
+  return take(loom::frontend::finalizeStructuredProgram(module.get()));
 }
 
 std::unique_ptr<llvm::Module>
@@ -317,6 +368,107 @@ SourceSimulationInputs makeSourceSimulationInputs(
   return {std::move(workload), std::move(runtimeInput),
           std::move(workloadReference), std::move(runtimeInputReference),
           std::move(observations)};
+}
+
+SourceSimulationInputs makeScheduledLoopInputs(
+    const loom::frontend::StructuredProgramCandidate &source,
+    const loom::ArtifactStore &store) {
+  auto view = take(source.view());
+  loom::sim::StructuredProgramSimulationWorkload draft{
+      findCallable(source, "main")};
+  draft.argumentPlan = {loom::sim::StructuredRuntimeMemoryInput{}};
+  draft.observableContract.returnValue = true;
+  draft.observableContract.memories.push_back(
+      {loom::sim::EntryPointerArgumentTarget{0},
+       loom::sim::MemoryObservationForm::FullState});
+  auto workload = take(loom::sim::finalizeSimulationWorkload(draft, view));
+
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft runtime{
+      workload.identity()};
+  runtime.memoryObjects = {zeroedMemory(8 * sizeof(std::uint32_t))};
+  runtime.pointerBindings = {{0, 0, 0}};
+  auto runtimeInput =
+      take(loom::sim::finalizeSimulationRuntimeInput(runtime, workload, view));
+  auto workloadReference =
+      take(loom::sim::publishSimulationWorkload(workload, store));
+  auto runtimeInputReference =
+      take(loom::sim::publishSimulationRuntimeInput(runtimeInput, store));
+  auto observations = take(loom::sim::executeNativeStructuredProgram(
+      source, workload, runtimeInput));
+  return {std::move(workload), std::move(runtimeInput),
+          std::move(workloadReference), std::move(runtimeInputReference),
+          std::move(observations)};
+}
+
+void centralPlanEvaluatesScheduleChildren() {
+  llvm::SmallString<128> directory;
+  std::error_code error =
+      llvm::sys::fs::createUniqueDirectory("loom-central-schedule", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Large));
+  auto spatial = take(loom::fabric::importEntireFabricRoot(
+      design.roots().front().directDependencies().front().root, store));
+
+  loom::frontend::StructuredCompilation compilation{
+      spatial.reference(), {}, makeScheduledLoopProgram(), {}};
+  auto inputs = makeScheduledLoopInputs(compilation.structuredProgram, store);
+  loom::ResolvedConfig config = loom::defaultResolvedConfig();
+  config.dse.schedule.scopeExpansionLimit = 8;
+  loom::dse::PreMappingExplorationOptions options{
+      {{},
+       {loom::evaluation::MetricRequestOrdinal(0),
+        loom::ResolvedObjectiveDirection::Minimize, 64}}};
+  options.ownership.selectionMode =
+      loom::dse::StructuredOwnershipSelectionMode::SemanticConformance;
+  options.ownership.protocolCallableRoots = {
+      findCallable(compilation.structuredProgram, "loop_kernel")};
+
+  auto explored = take(loom::dse::exploreStructuredCompilationToPreMapping(
+      std::move(compilation), inputs.workload, inputs.runtimeInput, spatial,
+      config, options, store));
+  const auto *selection =
+      std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
+  if (!selection || selection->selected.empty()) {
+    if (const auto *incomplete =
+            std::get_if<loom::dse::IncompletePreMappingExploration>(&explored))
+      fail("central schedule exploration is incomplete at node " +
+           (incomplete->planNodeOrdinal
+                ? std::to_string(*incomplete->planNodeOrdinal)
+                : std::string("none")) +
+           ": " + loom::dse::toString(incomplete->reason).str());
+    fail("central schedule exploration selected no feasible candidate");
+  }
+
+  bool sawScheduleChild = false;
+  loom::frontend::FabricCapabilityIndex capabilities(spatial.view());
+  for (const loom::dse::SelectedPreMappingCompilation &selected :
+       selection->selected) {
+    std::size_t stores = 0;
+    selected.compilation.structuredProgram.module().walk(
+        [&](mlir::LLVM::StoreOp) { ++stores; });
+    if (stores <= 1)
+      continue;
+    if (!selected.functionalReplay ||
+        selected.functionalReplay->status !=
+            loom::sim::SourceBackedDfgValidationStatus::Equivalent)
+      fail("selected schedule child lacks equivalent source-backed replay");
+    if (selected.scheduleDerivations.empty())
+      fail("selected schedule child lost its typed parent lineage");
+    auto miss = take(capabilities.firstInadmissibleActor(
+        selected.compilation.canonicalDataflow));
+    if (miss)
+      fail("selected schedule child bypassed exact Fabric admission");
+    sawScheduleChild = true;
+  }
+  if (!sawScheduleChild)
+    fail("production central plan did not evaluate a schedule child");
+
+  error = llvm::sys::fs::remove_directories(directory);
+  if (error)
+    fail("cannot remove ArtifactStore directory: " + error.message());
 }
 
 void exactUniformCallArgumentsAreCandidateLocal() {
@@ -1314,6 +1466,7 @@ int main() {
           registerCanonicalDataflowFabricAnalyticModel())
     fail(llvm::toString(std::move(error)));
   exactUniformCallArgumentsAreCandidateLocal();
+  centralPlanEvaluatesScheduleChildren();
   runEvaluationAnchor();
   return EXIT_SUCCESS;
 }

@@ -1,8 +1,9 @@
-#ifndef LOOM_LIB_DSE_STRUCTUREDOWNERSHIPINVOCATIONINTERNAL_H
-#define LOOM_LIB_DSE_STRUCTUREDOWNERSHIPINVOCATIONINTERNAL_H
+#ifndef LOOM_DSE_STRUCTUREDOWNERSHIPINVOCATIONINTERNAL_H
+#define LOOM_DSE_STRUCTUREDOWNERSHIPINVOCATIONINTERNAL_H
 
 #include "DSE/StructuredOwnershipInvocation.h"
 #include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
+#include "Frontend/Compilation/StructuredSchedule.h"
 #include "Simulator/NativeSimulationOracle.h"
 
 namespace loom::dse::detail {
@@ -46,6 +47,20 @@ public:
       ArtifactRootReference runtimeInputReference,
       llvm::ArrayRef<StructuredOwnershipCandidateDisposition> dispositions);
 
+  static llvm::Error recordScheduleCandidate(
+      StructuredOwnershipInvocation &invocation,
+      const ArtifactRootReference &parent,
+      const ArtifactRootReference &child,
+      const frontend::StructuredScheduleDecision &decision,
+      frontend::MaterializedStructuredScheduleCandidate candidate,
+      lowering::ProjectedCanonicalDataflow projected,
+      const ArtifactStore &store);
+
+  static llvm::Error
+  primeAnalyticCandidate(StructuredOwnershipInvocation &invocation,
+                         const ArtifactRootReference &candidate,
+                         const ArtifactStore &store);
+
   static llvm::Error
   primeFunctionalReplay(StructuredOwnershipInvocation &invocation,
                         const ArtifactRootReference &candidate,
@@ -54,4 +69,4 @@ public:
 
 } // namespace loom::dse::detail
 
-#endif // LOOM_LIB_DSE_STRUCTUREDOWNERSHIPINVOCATIONINTERNAL_H
+#endif // LOOM_DSE_STRUCTUREDOWNERSHIPINVOCATIONINTERNAL_H

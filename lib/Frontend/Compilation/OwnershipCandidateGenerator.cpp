@@ -1070,33 +1070,19 @@ llvm::Error requireExactFabricCapabilities(
                   "materialized candidate has no SpatialCore workload");
 
   FabricCapabilityIndex capabilities(fabric.view());
-  for (const dataflow::CanonicalActorView &actor : view->actors()) {
-    auto projection =
-        dataflow::projectRegisteredActorSchemaProjection(actor.op);
-    if (!projection)
-      return projection.takeError();
-    if (actor.kind == dataflow::CanonicalDataflowActorKind::Memory) {
-      auto resources = capabilities.admittingMemoryResources(actor.op);
-      if (!resources)
-        return resources.takeError();
-      if (resources->empty())
-        return reject(
-            SpatialOwnershipCandidateRejectionKind::ExactFabricInadmissible,
-            "exact Fabric admits no memory resource for actor " +
-                dataflow::operationSchemaSpelling(projection->schema));
-      continue;
-    }
-    auto resources = capabilities.admittingOperationResources(actor.op);
-    if (!resources)
-      return resources.takeError();
-    if (resources->empty())
-      return reject(
-          SpatialOwnershipCandidateRejectionKind::ExactFabricInadmissible,
-          "exact Fabric admits no operation resource for actor " +
-              dataflow::operationSchemaSpelling(projection->schema) +
-              " with type " + typeSpelling(projection->type));
-  }
-  return llvm::Error::success();
+  auto miss = capabilities.firstInadmissibleActor(program);
+  if (!miss)
+    return miss.takeError();
+  if (!*miss)
+    return llvm::Error::success();
+  const llvm::StringRef resource =
+      (*miss)->actorKind == dataflow::CanonicalDataflowActorKind::Memory
+          ? "memory resource"
+          : "operation resource";
+  return reject(SpatialOwnershipCandidateRejectionKind::ExactFabricInadmissible,
+                "exact Fabric admits no " + resource + " for actor " +
+                    dataflow::operationSchemaSpelling((*miss)->schema) +
+                    " with type " + typeSpelling((*miss)->type));
 }
 
 /// Resolves the exact parent-local selection, clones the complete parent

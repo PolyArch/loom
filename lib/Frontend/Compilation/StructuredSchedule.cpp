@@ -250,7 +250,7 @@ enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
   return decisions;
 }
 
-llvm::Expected<StructuredProgramCandidate>
+llvm::Expected<MaterializedStructuredScheduleCandidate>
 materializeStructuredScheduleDecision(
     const StructuredProgramCandidate &parent,
     const StructuredScheduleDecision &decision) {
@@ -277,7 +277,11 @@ materializeStructuredScheduleDecision(
   }
   if (mlir::failed(mlir::verify(**clone)))
     return invalid("materialized schedule candidate does not verify");
-  return finalizeStructuredProgram(clone->get());
+  auto finalized = finalizeStructuredProgramWithTrackedBlocks(clone->get(), {});
+  if (!finalized)
+    return finalized.takeError();
+  return MaterializedStructuredScheduleCandidate{
+      std::move(finalized->artifact), std::move(finalized->sourceProvenance)};
 }
 
 } // namespace loom::frontend

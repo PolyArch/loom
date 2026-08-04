@@ -1,6 +1,7 @@
 #ifndef LOOM_FRONTEND_COMPILATION_FABRICCAPABILITYINDEX_H
 #define LOOM_FRONTEND_COMPILATION_FABRICCAPABILITYINDEX_H
 
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Identity/FabricRefImport.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -8,9 +9,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace loom::frontend {
+
+struct ExactFabricCapabilityMiss final {
+  ::dataflow::CanonicalDataflowActorKind actorKind;
+  ::dataflow::OperationSchemaId schema;
+  ::mlir::FunctionType type;
+};
 
 /// A compact invocation-local index over one exact finalized Fabric. It owns
 /// no capability facts: every query resolves the stored typed references back
@@ -63,6 +71,15 @@ public:
   /// concrete service resource.
   llvm::Expected<std::uint64_t>
   admittingMemoryResourceCount(::mlir::Operation *actor) const;
+
+  /// Returns the first canonical actor that no concrete resource in this
+  /// exact Fabric admits. The actor order comes from the sealed Dataflow view;
+  /// an empty result means only that every actor has at least one resource.
+  /// Placement, routing, contention, and performance remain Mapping/Evaluation
+  /// concerns.
+  llvm::Expected<std::optional<ExactFabricCapabilityMiss>>
+  firstInadmissibleActor(
+      const ::dataflow::CanonicalDataflowArtifact &program) const;
 
 private:
   struct OperationResource final {

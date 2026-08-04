@@ -3,6 +3,7 @@
 
 #include "DSE/Promotion.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
+#include "Frontend/Compilation/StructuredSchedule.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SourceBackedDfgValidation.h"
 
@@ -67,6 +68,16 @@ struct StructuredOwnershipDerivation final {
   }
 };
 
+struct StructuredScheduleDerivation final {
+  ArtifactRootReference parent;
+  frontend::StructuredScheduleDecision decision;
+
+  friend bool operator==(const StructuredScheduleDerivation &lhs,
+                         const StructuredScheduleDerivation &rhs) {
+    return lhs.parent == rhs.parent && lhs.decision == rhs.decision;
+  }
+};
+
 /// One exact coordinate in the invocation-local finite ownership domain. An
 /// absent decision denotes a definition-level scope rejection before a typed
 /// decision domain could be derived.
@@ -119,6 +130,7 @@ struct CompletedStructuredOwnershipGeneration final {
 struct SelectedStructuredOwnershipCandidate final {
   frontend::MaterializedOwnershipCandidate candidate;
   std::vector<StructuredOwnershipDerivation> derivations;
+  std::vector<StructuredScheduleDerivation> scheduleDerivations;
   std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
 };
 

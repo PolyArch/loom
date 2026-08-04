@@ -2,12 +2,12 @@
 
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/StructuredOwnershipInvocationInternal.h"
 #include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
-#include "StructuredOwnershipInvocationInternal.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ThreadPool.h"

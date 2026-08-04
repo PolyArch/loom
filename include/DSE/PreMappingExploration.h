@@ -19,6 +19,7 @@ struct PreMappingExplorationOptions final {
 struct SelectedPreMappingCompilation final {
   frontend::PreMappingCompilation compilation;
   std::vector<StructuredOwnershipDerivation> derivations;
+  std::vector<StructuredScheduleDerivation> scheduleDerivations;
   std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
 };
 

@@ -141,6 +141,8 @@ target_link_libraries(loom-structured-ownership-evaluation-test PRIVATE
   LoomNativeSimulationOracle
   LoomSimulator
   LoomStructuredFabricAnalyticModel
+  MLIRArithDialect
+  MLIRParser
 )
 
 add_executable(loom-structured-schedule-generator-test

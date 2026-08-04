@@ -23,6 +23,17 @@ struct StructuredScheduleDecision final {
   StructuredEntityRef loop;
   StructuredScheduleDecisionKind kind;
   std::uint64_t factor = 0;
+
+  friend bool operator==(const StructuredScheduleDecision &lhs,
+                         const StructuredScheduleDecision &rhs) {
+    return lhs.loop == rhs.loop && lhs.kind == rhs.kind &&
+           lhs.factor == rhs.factor;
+  }
+};
+
+struct MaterializedStructuredScheduleCandidate final {
+  StructuredProgramCandidate structuredProgram;
+  std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
 /// Enumerates the finite legal schedule domain in canonical loop order. The
@@ -35,7 +46,7 @@ enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
 
 /// Applies exactly one typed decision to a private clone and finalizes the
 /// complete immutable child. Failure publishes no partial candidate.
-llvm::Expected<StructuredProgramCandidate>
+llvm::Expected<MaterializedStructuredScheduleCandidate>
 materializeStructuredScheduleDecision(
     const StructuredProgramCandidate &parent,
     const StructuredScheduleDecision &decision);

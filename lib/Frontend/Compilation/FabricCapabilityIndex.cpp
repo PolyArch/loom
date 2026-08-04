@@ -335,3 +335,35 @@ frontend::FabricCapabilityIndex::admittingMemoryResourceCount(
   }
   return result;
 }
+
+llvm::Expected<std::optional<frontend::ExactFabricCapabilityMiss>>
+frontend::FabricCapabilityIndex::firstInadmissibleActor(
+    const dataflow::CanonicalDataflowArtifact &program) const {
+  auto view = program.view();
+  if (!view)
+    return view.takeError();
+  for (const dataflow::CanonicalActorView &actor : view->actors()) {
+    auto projection =
+        dataflow::projectRegisteredActorSchemaProjection(actor.op);
+    if (!projection)
+      return projection.takeError();
+    if (actor.kind == dataflow::CanonicalDataflowActorKind::Memory) {
+      auto resources = admittingMemoryResources(actor.op);
+      if (!resources)
+        return resources.takeError();
+      if (resources->empty())
+        return std::optional<frontend::ExactFabricCapabilityMiss>{
+            frontend::ExactFabricCapabilityMiss{actor.kind, projection->schema,
+                                                projection->type}};
+      continue;
+    }
+    auto resources = admittingOperationResources(actor.op);
+    if (!resources)
+      return resources.takeError();
+    if (resources->empty())
+      return std::optional<frontend::ExactFabricCapabilityMiss>{
+          frontend::ExactFabricCapabilityMiss{actor.kind, projection->schema,
+                                              projection->type}};
+  }
+  return std::optional<frontend::ExactFabricCapabilityMiss>{};
+}

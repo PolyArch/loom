@@ -348,6 +348,28 @@ unmodified baseline and every Sn candidate; only exact graph-replay inputs are
 derived after lowering. This is also why corpus harnesses are workload
 providers, not a separate testing semantics.
 
+## Why Schedule Admission Follows Materialization
+
+Aggregate body capacity is a useful early bound for unroll, but it cannot
+predict every actor shape created by a legal SCF transform. Tiling can add an
+inner control frontier and widen a `dataflow.sync` even when each source body
+actor has enough aggregate occurrences. Letting that child enter Evaluation
+would turn a known exact-Fabric hard negative into `Unsupported` Evidence and
+make the entire promotion incomplete.
+
+The Schedule generator therefore applies two complementary checks owned by the
+same Fabric capability projection: cheap aggregate pruning before cloning, and
+complete actor admission after the transformed child is mechanically lowered.
+The second check excludes only children with no concrete capability. It does
+not approximate Mapping feasibility. Retaining the resulting D0 in an
+invocation-local reference-keyed cache avoids a second lowering for analytical
+Evaluation and functional replay without creating another program authority.
+
+An empty candidate set is an ordinary finite result rather than a provider
+failure. This lets independently composable Generate nodes remain total while
+preserving the distinction between no candidates, malformed input, and missing
+Evidence.
+
 ## Why SCF-To-Dataflow Is Mechanical
 
 Once the candidate fixes schedule, shape, reduction, and ownership, lowering
