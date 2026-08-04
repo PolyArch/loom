@@ -417,7 +417,8 @@ void FabricOperationProviderUnsupportedError::log(
     llvm::raw_ostream &stream) const {
   stream << "rtl_operation_provider_unsupported: family '"
          << ::fabric::implementationFamilyKeyword(implementationFamily_)
-         << "' has no '" << backendRecipeKeyword(recipe_) << "' provider";
+         << "' cannot implement the exact capability with recipe '"
+         << backendRecipeKeyword(recipe_) << "'";
 }
 
 std::error_code

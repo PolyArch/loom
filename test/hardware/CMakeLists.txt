@@ -102,6 +102,19 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-fixed-vector-pack-unpack-test
+    PortableFixedVectorPackUnpackTest.cpp
+  )
+
+  target_link_libraries(loom-portable-fixed-vector-pack-unpack-test PRIVATE
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-loop-carry-test
     PortableLoopCarryTest.cpp
   )
@@ -126,11 +139,38 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-scalar-bit-reinterpret-test
+    PortableScalarBitReinterpretTest.cpp
+  )
+
+  target_link_libraries(loom-portable-scalar-bit-reinterpret-test PRIVATE
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-scalar-float-fma-test
     PortableScalarFloatFmaTest.cpp
   )
 
   target_link_libraries(loom-portable-scalar-float-fma-test PRIVATE
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
+  add_executable(loom-portable-scalar-value-select-test
+    PortableScalarValueSelectTest.cpp
+  )
+
+  target_link_libraries(loom-portable-scalar-value-select-test PRIVATE
+    LoomADGBuilder
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric

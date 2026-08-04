@@ -1,0 +1,42 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-scalar-bit-reinterpret-test %t
+# RUN: FileCheck %s --check-prefix=TRUNCATE < %t/scalar_bit_reinterpret_truncate.sv
+# RUN: FileCheck %s --check-prefix=EXTEND < %t/scalar_bit_reinterpret_extend.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_scalar_bit_reinterpret.ys
+
+# TRUNCATE: module scalar_bit_reinterpret_truncate
+# TRUNCATE: input [79:0] data_input_0
+# TRUNCATE: output [71:0] data_output_0
+# TRUNCATE: assign data_output_0 = data_input_0[71:0]
+# TRUNCATE-NOT: config_
+
+# EXTEND: module scalar_bit_reinterpret_extend
+# EXTEND: input [71:0] data_input_0
+# EXTEND: output [79:0] data_output_0
+# EXTEND: assign data_output_0 =
+# EXTEND-NOT: config_
+
+# TB: f16 NaN payload was not preserved
+# TB: f16 negative zero was not preserved
+# TB: bf16 NaN payload was not preserved
+# TB: bf16 negative zero was not preserved
+# TB: f32 NaN payload was not preserved
+# TB: f32 negative zero was not preserved
+# TB: f64 NaN payload was not preserved
+# TB: f64 negative zero was not preserved
+# TB: i8 integer pattern was not preserved
+# TB: i16 integer pattern was not preserved
+# TB: i32 integer pattern was not preserved
+# TB: i64 integer pattern was not preserved
+# TB: physical zero extension was not low aligned
+
+# YOSYS: read_verilog -sv scalar_bit_reinterpret_truncate.sv scalar_bit_reinterpret_extend.sv synthesis_top.sv
+# YOSYS: hierarchy -check -top scalar_bit_reinterpret_synthesis_top
+# YOSYS: proc
+# YOSYS: opt
+# YOSYS: check -assert
+# YOSYS: synth -top scalar_bit_reinterpret_synthesis_top
+# YOSYS: check -assert
+# YOSYS: stat

@@ -1,0 +1,31 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-pack-unpack-test %t
+# RUN: FileCheck %s --check-prefix=PACK < %t/fixed_vector_pack.sv
+# RUN: FileCheck %s --check-prefix=UNPACK < %t/fixed_vector_unpack.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_fixed_vector_pack_unpack.ys
+
+# PACK: module fixed_vector_pack
+# PACK: input [127:0] data_input_0
+# PACK: output [63:0] data_output_0
+# PACK-NOT: config_
+# PACK: data_input_0[63:0]
+
+# UNPACK: module fixed_vector_unpack
+# UNPACK: input [63:0] data_input_0
+# UNPACK: output [127:0] data_output_0
+# UNPACK-NOT: config_
+# UNPACK: 64'h0
+# UNPACK: data_input_0
+
+# TB: pack did not preserve row-major lane-zero-low bits
+# TB: unpack did not zero-extend row-major lane-zero-low bits
+
+# YOSYS: hierarchy -check -top fixed_vector_adapter_synthesis_top
+# YOSYS: proc
+# YOSYS: opt
+# YOSYS: check -assert
+# YOSYS: synth -top fixed_vector_adapter_synthesis_top
+# YOSYS: check -assert
+# YOSYS: stat

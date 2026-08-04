@@ -180,11 +180,14 @@ if(LOOM_HAVE_CIRCT)
     loom-module-boundary-ports-test
     loom-operation-leaf-state-layout-test
     loom-portable-fixed-vector-integer-add-sub-test
+    loom-portable-fixed-vector-pack-unpack-test
     loom-portable-loop-carry-test
+    loom-portable-scalar-bit-reinterpret-test
     loom-portable-scalar-float-fma-test
     loom-portable-scalar-integer-add-sub-test
     loom-portable-scalar-integer-compare-min-max-test
     loom-portable-scalar-integer-multiply-test
+    loom-portable-scalar-value-select-test
     loom-specialization-test
     loom-hw-probe
   )

@@ -3,12 +3,15 @@ add_library(LoomHardwareRTL
   CommonSkeleton.cpp
   OperationLeaf.cpp
   Providers/FixedVectorIntegerAddSub.cpp
+  Providers/FixedVectorPackUnpack.cpp
   Providers/LoopCarry.cpp
   Providers/ProviderSupport.cpp
+  Providers/ScalarBitReinterpret.cpp
   Providers/ScalarFloatFma.cpp
   Providers/ScalarIntegerAddSub.cpp
   Providers/ScalarIntegerCompareMinMax.cpp
   Providers/ScalarIntegerMultiply.cpp
+  Providers/ScalarValueSelect.cpp
   Specialization.cpp
   Transport.cpp
 )

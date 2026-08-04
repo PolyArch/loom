@@ -617,6 +617,11 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
         classifiedUnsupported =
             error.implementationFamily() == capability->implementationFamily &&
             error.recipe() == BackendRecipeKey::PortableSystemVerilog;
+        require(test,
+                llvm::StringRef(error.message())
+                    .contains("cannot implement the exact capability with "
+                              "recipe 'portable_system_verilog'"),
+                "Unsupported diagnostic misclassified the exact capability");
       },
       [&](const llvm::ErrorInfoBase &error) {
         fail(test, "missing provider returned the wrong error class: " +

@@ -1,0 +1,40 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-scalar-value-select-test %t
+# RUN: FileCheck %s --check-prefix=DENSE < %t/scalar_value_select.sv
+# RUN: FileCheck %s --check-prefix=WIDE < %t/scalar_value_select_wide_condition.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_scalar_value_select.ys
+
+# DENSE: module scalar_value_select
+# DENSE: input data_input_0
+# DENSE: input [63:0] data_input_1
+# DENSE: data_input_2,
+# DENSE: output [63:0] data_output_0
+# DENSE: assign data_output_0 = data_input_0 ? data_input_1 : data_input_2
+# DENSE-NOT: config_
+
+# WIDE: module scalar_value_select_wide_condition
+# WIDE: input [63:0] data_input_0
+# WIDE: data_input_1,
+# WIDE: data_input_2,
+# WIDE: output [63:0] data_output_0
+# WIDE: assign data_output_0 = data_input_0[0] ? data_input_1 : data_input_2
+# WIDE-NOT: config_
+
+# TB: module testbench
+# TB: integer 1-bit true branch failed
+# TB: integer 1-bit false branch failed
+# TB: integer 64-bit true branch failed
+# TB: integer 64-bit false branch failed
+# TB: floating 16-bit true pattern failed
+# TB: floating 64-bit false pattern failed
+
+# YOSYS: read_verilog -sv scalar_value_select.sv scalar_value_select_wide_condition.sv synthesis_top.sv
+# YOSYS: hierarchy -check -top scalar_value_select_synthesis_top
+# YOSYS: proc
+# YOSYS: opt
+# YOSYS: check -assert
+# YOSYS: synth -top scalar_value_select_synthesis_top
+# YOSYS: check -assert
+# YOSYS: stat
