@@ -872,7 +872,10 @@ llvm::Expected<SpatialResourceUseView> importResourceUse(
     std::map<std::string, RequiredMemoryUse> &requiredMemory,
     std::map<std::string, detail::RequiredPhysicalTagUse> &requiredTags,
     std::map<::loom::fabric::FabricOrdinal, std::set<std::string>>
-        &assignedDomainValues) {
+        &assignedDomainValues,
+    std::uint64_t resourceUseOrdinal,
+    std::optional<SpatialPhysicalTagSegmentView> &physicalTagSegment) {
+  physicalTagSegment.reset();
   auto pattern =
       decodeFabric<::loom::fabric::FabricUsePatternRef>(record.getUseSite());
   if (!pattern)
@@ -918,6 +921,9 @@ llvm::Expected<SpatialResourceUseView> importResourceUse(
       if (!assignedDomainValues[domain].insert(valueKey).second)
         return invalid(
             "Physical Tag assignments collide in one Fabric match domain");
+    physicalTagSegment = SpatialPhysicalTagSegmentView{
+        tagUse->second.routeTreeOrdinal, tagUse->second.segmentOrdinal,
+        tagUse->second.nodeOrdinals, resourceUseOrdinal};
     requiredTags.erase(tagUse);
     return SpatialResourceUseView{
         std::move(*importedOwner), *pattern,
@@ -1075,6 +1081,7 @@ struct ImportedSpatialView final {
   std::vector<SpatialMemoryBindingView> memoryBindings;
   std::vector<SpatialRouteTreeView> routeTrees;
   std::vector<SpatialResourceUseView> resourceUses;
+  std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments;
 };
 
 llvm::Expected<ImportedSpatialView>
@@ -1168,13 +1175,18 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
   std::map<::loom::fabric::FabricOrdinal, std::set<std::string>>
       assignedTagDomainValues;
   std::vector<SpatialResourceUseView> uses;
+  std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments;
   for (auto record :
        root.getBody().front().getOps<::mapping::ResourceUseOp>()) {
+    std::optional<SpatialPhysicalTagSegmentView> physicalTagSegment;
     auto use = importResourceUse(record, dataflow, fabric, *requiredUses,
                                  *requiredMemoryUses, *requiredTagUses,
-                                 assignedTagDomainValues);
+                                 assignedTagDomainValues, uses.size(),
+                                 physicalTagSegment);
     if (!use)
       return use.takeError();
+    if (physicalTagSegment)
+      physicalTagSegments.push_back(std::move(*physicalTagSegment));
     uses.push_back(std::move(*use));
   }
   if (!requiredUses->empty())
@@ -1183,6 +1195,29 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
     return invalid("SpatialMapping omits a required memory ResourceUse");
   if (!requiredTagUses->empty())
     return invalid("SpatialMapping omits a required Physical Tag ResourceUse");
+  llvm::sort(physicalTagSegments, [](const SpatialPhysicalTagSegmentView &lhs,
+                                     const SpatialPhysicalTagSegmentView &rhs) {
+    return std::tie(lhs.routeTreeOrdinal, lhs.segmentOrdinal) <
+           std::tie(rhs.routeTreeOrdinal, rhs.segmentOrdinal);
+  });
+  std::vector<std::uint64_t> nextSegment(routes.size(), 0);
+  std::vector<std::vector<bool>> taggedNodes;
+  taggedNodes.reserve(routes.size());
+  for (const SpatialRouteTreeView &route : routes)
+    taggedNodes.emplace_back(route.nodes.size(), false);
+  for (const SpatialPhysicalTagSegmentView &segment : physicalTagSegments) {
+    if (segment.routeTreeOrdinal >= routes.size() ||
+        segment.resourceUseOrdinal >= uses.size() ||
+        segment.segmentOrdinal != nextSegment[segment.routeTreeOrdinal]++ ||
+        segment.nodeOrdinals.empty())
+      return invalid("Physical Tag segment projection is not canonical");
+    for (std::uint64_t node : segment.nodeOrdinals) {
+      if (node >= taggedNodes[segment.routeTreeOrdinal].size() ||
+          taggedNodes[segment.routeTreeOrdinal][node])
+        return invalid("Physical Tag segment repeats a RouteTree node");
+      taggedNodes[segment.routeTreeOrdinal][node] = true;
+    }
+  }
 
   auto handshake = deriveSelectedHandshakeSelection(terminalContext, routes);
   if (!handshake)
@@ -1227,7 +1262,8 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
                              std::move(importedMemory->engineBindings),
                              std::move(importedMemory->memoryBindings),
                              std::move(routes),
-                             std::move(uses)};
+                             std::move(uses),
+                             std::move(physicalTagSegments)};
 }
 
 struct PreparedSpatialMapping final {
@@ -1526,7 +1562,8 @@ llvm::Expected<SpatialMappingView> SpatialMappingView::import(
       std::move(imported->fabricIdentity), std::move(imported->computeBindings),
       std::move(imported->memoryEngineBindings),
       std::move(imported->memoryBindings), std::move(imported->routeTrees),
-      std::move(imported->resourceUses));
+      std::move(imported->resourceUses),
+      std::move(imported->physicalTagSegments));
 }
 
 llvm::Error verifySpatialMappingBase(

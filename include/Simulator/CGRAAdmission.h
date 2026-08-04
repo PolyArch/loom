@@ -34,6 +34,8 @@ struct CgraExecutionPlanSummary final {
   std::uint64_t selectedTraversalCount = 0;
   std::uint64_t localTransferCount = 0;
   std::uint64_t localTransferSinkCount = 0;
+  std::uint64_t physicalTagSegmentCount = 0;
+  std::uint64_t taggedRouteNodeCount = 0;
 };
 
 /// Strictly imported, invocation-local execution input for one exact

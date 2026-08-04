@@ -17,6 +17,9 @@ struct RequiredPhysicalTagUse final {
   SpatialActivityEventRef trigger;
   ::loom::fabric::FabricPhysicalTagAssignmentPointView assignmentPoint;
   std::vector<::loom::fabric::FabricOrdinal> matchDomains;
+  std::uint64_t routeTreeOrdinal = 0;
+  std::uint64_t segmentOrdinal = 0;
+  std::vector<std::uint64_t> nodeOrdinals;
 };
 
 llvm::Expected<std::string>

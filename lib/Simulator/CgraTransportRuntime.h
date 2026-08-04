@@ -105,6 +105,7 @@ private:
     TraversalNodeKind kind = TraversalNodeKind::PhysicalAction;
     std::uint64_t physicalUseOrdinal = invalidCgraTransportOrdinal;
     std::uint64_t storageOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
     std::uint64_t successorOffset = 0;
     std::uint32_t successorCount = 0;
     std::uint32_t predecessorCount = 0;

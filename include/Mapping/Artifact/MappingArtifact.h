@@ -446,6 +446,17 @@ struct SpatialResourceUseView final {
   std::vector<::fabric::UsePatternValue> sharingAssignments;
 };
 
+/// Removable route-continuity index derived while strictly importing the
+/// Physical Tag ResourceUse at one maximal tagged segment origin. The tag
+/// value remains owned by `resourceUseOrdinal`; this record only joins it to
+/// the exact RouteTree nodes that carry the value.
+struct SpatialPhysicalTagSegmentView final {
+  std::uint64_t routeTreeOrdinal = 0;
+  std::uint64_t segmentOrdinal = 0;
+  std::vector<std::uint64_t> nodeOrdinals;
+  std::uint64_t resourceUseOrdinal = 0;
+};
+
 /// Immutable projection of one independently verified mapping.spatial object.
 /// Dense PnR indices, search history, selected-edge bitsets, and derived
 /// claims are deliberately absent.
@@ -478,6 +489,9 @@ public:
   llvm::ArrayRef<SpatialResourceUseView> resourceUses() const {
     return resourceUses_;
   }
+  llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments() const {
+    return physicalTagSegments_;
+  }
 
 private:
   SpatialMappingView(
@@ -487,7 +501,8 @@ private:
       std::vector<SpatialMemoryEngineBindingView> memoryEngineBindings,
       std::vector<SpatialMemoryBindingView> memoryBindings,
       std::vector<SpatialRouteTreeView> routeTrees,
-      std::vector<SpatialResourceUseView> resourceUses)
+      std::vector<SpatialResourceUseView> resourceUses,
+      std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments)
       : identity_(std::move(identity)),
         techMappingIdentity_(std::move(techMappingIdentity)),
         dataflowIdentity_(std::move(dataflowIdentity)),
@@ -496,7 +511,8 @@ private:
         memoryEngineBindings_(std::move(memoryEngineBindings)),
         memoryBindings_(std::move(memoryBindings)),
         routeTrees_(std::move(routeTrees)),
-        resourceUses_(std::move(resourceUses)) {}
+        resourceUses_(std::move(resourceUses)),
+        physicalTagSegments_(std::move(physicalTagSegments)) {}
 
   ArtifactIdentity identity_;
   ArtifactIdentity techMappingIdentity_;
@@ -507,6 +523,7 @@ private:
   std::vector<SpatialMemoryBindingView> memoryBindings_;
   std::vector<SpatialRouteTreeView> routeTrees_;
   std::vector<SpatialResourceUseView> resourceUses_;
+  std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments_;
 };
 
 class FinalizedSpatialMapping final {

@@ -49,12 +49,15 @@ enum class TraversalStepKind : std::uint8_t {
 struct TraversalStepKey final {
   TraversalStepKind kind = TraversalStepKind::PhysicalAction;
   std::uint64_t ordinal = 0;
+  std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
 
   bool operator<(const TraversalStepKey &other) const {
-    return std::tie(kind, ordinal) < std::tie(other.kind, other.ordinal);
+    return std::tie(kind, ordinal, physicalTagOrdinal) <
+           std::tie(other.kind, other.ordinal, other.physicalTagOrdinal);
   }
   bool operator==(const TraversalStepKey &other) const {
-    return kind == other.kind && ordinal == other.ordinal;
+    return kind == other.kind && ordinal == other.ordinal &&
+           physicalTagOrdinal == other.physicalTagOrdinal;
   }
 };
 
@@ -252,9 +255,12 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
         route.sinkCount > plan.transport.routeSinks.size() - route.sinkOffset)
       return invalid("CGRA RouteTree execution slice is malformed");
     const auto advanceTraversal =
-        [&](std::uint64_t traversal,
+        [&](std::uint64_t traversal, std::uint64_t physicalTagOrdinal,
             const std::set<TraversalStepKey> &predecessors)
         -> llvm::Expected<std::set<TraversalStepKey>> {
+      if (physicalTagOrdinal != invalidCgraTransportOrdinal &&
+          physicalTagOrdinal >= plan.transport.physicalTags.size())
+        return invalid("CGRA traversal names an unknown Physical Tag");
       if (traversal == invalidCgraTransportOrdinal)
         return predecessors;
       if (traversal >= plan.transport.traversals.size())
@@ -270,7 +276,8 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
         else if (selected.storageKind ==
                  CgraTraversalStorageKind::RegisterFifoRead)
           kind = TraversalStepKind::RegisterStorageRead;
-        const TraversalStepKey step{kind, selected.storageOrdinal};
+        const TraversalStepKey step{kind, selected.storageOrdinal,
+                                    physicalTagOrdinal};
         auto [storagePosition, storageInserted] =
             builder.traversalPredecessors.try_emplace(step, predecessors);
         if (!storageInserted && storagePosition->second != predecessors)
@@ -290,8 +297,8 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
             plan.physicalUseClients[use.physicalUseOrdinal] !=
                 CgraPhysicalUseClientKind::TraversalTransport)
           return invalid("CGRA traversal action has an inconsistent client");
-        actions.insert(
-            {TraversalStepKind::PhysicalAction, use.physicalUseOrdinal});
+        actions.insert({TraversalStepKind::PhysicalAction,
+                        use.physicalUseOrdinal, physicalTagOrdinal});
       }
       if (actions.empty())
         return predecessors;
@@ -306,14 +313,15 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
       }
       return actions;
     };
-    auto rootFrontier = advanceTraversal(route.localTraversalOrdinal,
-                                         std::set<TraversalStepKey>{});
-    if (!rootFrontier)
-      return rootFrontier.takeError();
     const auto routeNodes = llvm::ArrayRef(plan.transport.routeNodes)
                                 .slice(route.nodeOffset, route.nodeCount);
     if (routeNodes.empty())
       return invalid("CGRA RouteTree has no root node");
+    auto rootFrontier = advanceTraversal(route.localTraversalOrdinal,
+                                         routeNodes.front().physicalTagOrdinal,
+                                         std::set<TraversalStepKey>{});
+    if (!rootFrontier)
+      return rootFrontier.takeError();
     std::vector<std::set<TraversalStepKey>> frontiers(routeNodes.size());
     for (auto [ordinal, node] : llvm::enumerate(routeNodes)) {
       if (ordinal == 0) {
@@ -327,6 +335,7 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
           node.incomingTraversalOrdinal == invalidCgraTransportOrdinal)
         return invalid("CGRA RouteTree node is not in canonical preorder");
       auto frontier = advanceTraversal(node.incomingTraversalOrdinal,
+                                       node.physicalTagOrdinal,
                                        frontiers[node.parentOrdinal]);
       if (!frontier)
         return frontier.takeError();
@@ -336,8 +345,10 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
                                 .slice(route.sinkOffset, route.sinkCount)) {
       if (sink.nodeOrdinal >= frontiers.size())
         return invalid("CGRA RouteTree sink names an unknown node");
-      auto frontier = advanceTraversal(sink.localTraversalOrdinal,
-                                       frontiers[sink.nodeOrdinal]);
+      auto frontier =
+          advanceTraversal(sink.localTraversalOrdinal,
+                           routeNodes[sink.nodeOrdinal].physicalTagOrdinal,
+                           frontiers[sink.nodeOrdinal]);
       if (!frontier)
         return frontier.takeError();
       builder.traversalTerminals.insert(frontier->begin(), frontier->end());
@@ -445,8 +456,8 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
         break;
       }
       traversalNodes.push_back(
-          {kind, physicalUseOrdinal, storageOrdinal, successorOffset,
-           static_cast<std::uint32_t>(actionSuccessors.size()),
+          {kind, physicalUseOrdinal, storageOrdinal, action.physicalTagOrdinal,
+           successorOffset, static_cast<std::uint32_t>(actionSuccessors.size()),
            static_cast<std::uint32_t>(predecessors.size()),
            builder.traversalTerminals.count(action) != 0});
     }
@@ -876,15 +887,20 @@ CgraTransportRuntime::acceptPhysicalEvents(
             storage.queue.front().transferSlot != dequeueSlot)
           return invalid("CGRA storage dequeue changed before commit");
         const CgraTransportStorageEntry head = storage.queue.front();
+        if (head.traversalNodeOrdinal >= traversalNodes_.size() ||
+            head.physicalTagOrdinal !=
+                traversalNodes_[head.traversalNodeOrdinal].physicalTagOrdinal)
+          return invalid("CGRA storage queue changed its Physical Tag");
         if (storage.kind == CgraTraversalStorageKind::BufferedFifo &&
             head.traversalNodeOrdinal != dequeueNode)
           return invalid("CGRA buffered storage dequeue changed before commit");
         if (storage.kind != CgraTraversalStorageKind::BufferedFifo &&
-            (head.traversalNodeOrdinal >= traversalNodes_.size() ||
-             traversalNodes_[head.traversalNodeOrdinal].kind !=
+            (traversalNodes_[head.traversalNodeOrdinal].kind !=
                  TraversalNodeKind::RegisterStorageWrite ||
              traversalNodes_[dequeueNode].kind !=
-                 TraversalNodeKind::RegisterStorageRead))
+                 TraversalNodeKind::RegisterStorageRead ||
+             head.physicalTagOrdinal !=
+                 traversalNodes_[dequeueNode].physicalTagOrdinal))
           return invalid("CGRA register storage roles are inconsistent");
         if (commit.expectedDequeue)
           return invalid("CGRA storage frame contains two dequeues");
@@ -920,7 +936,9 @@ CgraTransportRuntime::acceptPhysicalEvents(
         if (llvm::find(storage.pendingEnqueueNodes, enqueueNode) ==
             storage.pendingEnqueueNodes.end())
           return invalid("CGRA storage enqueue request is not pending");
-        commit.enqueue = CgraTransportStorageEntry{enqueueSlot, enqueueNode};
+        commit.enqueue = CgraTransportStorageEntry{
+            enqueueSlot, enqueueNode,
+            traversalNodes_[enqueueNode].physicalTagOrdinal};
         commit.enqueueNode = enqueueNode;
         if (storage.kind != CgraTraversalStorageKind::BufferedFifo)
           if (llvm::Error error =
@@ -1437,6 +1455,8 @@ CgraTransportRuntime::advance() {
             head.traversalNodeOrdinal >= traversalNodes_.size() ||
             traversalNodes_[head.traversalNodeOrdinal].kind !=
                 expectedHeadKind ||
+            head.physicalTagOrdinal !=
+                traversalNodes_[head.traversalNodeOrdinal].physicalTagOrdinal ||
             traversalNodeStates_[head.traversalNodeOrdinal] !=
                 expectedHeadState)
           return invalid("CGRA storage queue head is inconsistent");

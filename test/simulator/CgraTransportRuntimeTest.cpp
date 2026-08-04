@@ -454,6 +454,7 @@ void registerFifoWriteAndReadShareOneDurableQueue() {
   plan.transport.traversals[1].storageKind =
       CgraTraversalStorageKind::RegisterFifoRead;
   plan.transport.traversals[1].storageOrdinal = 0;
+  plan.transport.physicalTags.push_back({llvm::APInt(2, 1)});
   plan.transport.traversalStorages.push_back({});
   CgraTraversalStoragePlan &storage = plan.transport.traversalStorages.front();
   storage.kind = CgraTraversalStorageKind::RegisterFifoWrite;
@@ -462,7 +463,8 @@ void registerFifoWriteAndReadShareOneDurableQueue() {
   storage.dequeuePhysicalUseOrdinal = 1;
   storage.independentReadWriteServices = true;
   plan.transport.routeNodes.push_back(
-      {std::numeric_limits<std::uint32_t>::max(), invalidCgraTransportOrdinal});
+      {std::numeric_limits<std::uint32_t>::max(), invalidCgraTransportOrdinal,
+       0});
   plan.transport.routeSinks.push_back(
       {{dataflow::ActorTokenOperandRef{sync->ref, 1}}, 0, 1});
   plan.transport.routes.push_back({{dataflow::ActorTokenResultRef{add->ref, 0}},

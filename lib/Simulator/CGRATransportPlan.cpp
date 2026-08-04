@@ -3,6 +3,7 @@
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/IR/FifoResourceContract.h"
 #include "Fabric/IR/TemporalPeResourceContract.h"
+#include "Fabric/IR/UsePatternValue.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -197,6 +198,35 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       return invalid("Fabric contains duplicate physical traversal references");
 
   CgraTransportPlan result;
+  std::vector<std::vector<std::uint64_t>> routeNodeTags;
+  routeNodeTags.reserve(spatial.routeTrees().size());
+  for (const auto &route : spatial.routeTrees())
+    routeNodeTags.emplace_back(route.nodes.size(), invalidCgraTransportOrdinal);
+  std::vector<std::uint64_t> nextTagSegment(spatial.routeTrees().size(), 0);
+  result.physicalTags.reserve(spatial.physicalTagSegments().size());
+  for (const auto &segment : spatial.physicalTagSegments()) {
+    if (segment.routeTreeOrdinal >= spatial.routeTrees().size() ||
+        segment.resourceUseOrdinal >= spatial.resourceUses().size() ||
+        segment.segmentOrdinal != nextTagSegment[segment.routeTreeOrdinal]++ ||
+        segment.nodeOrdinals.empty())
+      return invalid("CGRA Physical Tag segment projection is malformed");
+    const auto &use = spatial.resourceUses()[segment.resourceUseOrdinal];
+    if (!use.parameters.empty() || use.sharingAssignments.size() != 1)
+      return invalid("CGRA Physical Tag ResourceUse has the wrong shape");
+    const auto *tag = std::get_if<::fabric::PhysicalTagPatternValue>(
+        &use.sharingAssignments.front());
+    if (!tag || tag->value.getBitWidth() == 0)
+      return invalid("CGRA Physical Tag ResourceUse has no typed value");
+    const std::uint64_t tagOrdinal = result.physicalTags.size();
+    result.physicalTags.push_back({tag->value});
+    for (std::uint64_t node : segment.nodeOrdinals) {
+      if (node >= routeNodeTags[segment.routeTreeOrdinal].size() ||
+          routeNodeTags[segment.routeTreeOrdinal][node] !=
+              invalidCgraTransportOrdinal)
+        return invalid("CGRA Physical Tag segment repeats a RouteTree node");
+      routeNodeTags[segment.routeTreeOrdinal][node] = tagOrdinal;
+    }
+  }
   struct ProducedUseBuilder final {
     ::dataflow::CanonicalGraphProducerEndpointRef endpoint;
     std::vector<std::uint64_t> actions;
@@ -314,7 +344,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
   std::set<EdgeKey> residualEdges;
   std::set<RefBytes> transferProducers;
   std::set<RefBytes> transferConsumers;
-  for (const auto &route : spatial.routeTrees()) {
+  for (auto [routeOrdinal, route] : llvm::enumerate(spatial.routeTrees())) {
     auto graph = resolveGraphOf(dataflow, route.logicalNet);
     if (!graph)
       return graph.takeError();
@@ -333,7 +363,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     if (!producerKey)
       return producerKey.takeError();
     transferProducers.insert(*producerKey);
-    for (const auto &node : route.nodes) {
+    for (auto [nodeOrdinal, node] : llvm::enumerate(route.nodes)) {
       auto traversal = ordinalOf(node.incomingTraversal);
       if (!traversal)
         return traversal.takeError();
@@ -345,7 +375,8 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
           return checkedParent.takeError();
         parent = *checkedParent;
       }
-      result.routeNodes.push_back({parent, *traversal});
+      result.routeNodes.push_back(
+          {parent, *traversal, routeNodeTags[routeOrdinal][nodeOrdinal]});
     }
     for (const auto &sink : route.sinks) {
       auto node = checkedU32(sink.nodeOrdinal, "CGRA route sink node ordinal");

@@ -124,7 +124,9 @@ deriveRequiredPhysicalTagUses(
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialRouteTreeView> routes) {
   std::map<std::string, RequiredPhysicalTagUse> result;
-  for (const SpatialRouteTreeView &route : routes) {
+  for (auto indexedRoute : llvm::enumerate(routes)) {
+    const std::uint64_t routeTreeOrdinal = indexedRoute.index();
+    const SpatialRouteTreeView &route = indexedRoute.value();
     if (route.nodes.empty() || route.nodes.front().ordinal != 0 ||
         route.nodes.front().parentOrdinal ||
         route.nodes.front().endpoint != route.rootEndpoint)
@@ -145,6 +147,9 @@ deriveRequiredPhysicalTagUses(
           RequiredPhysicalTagUse{std::move(owner),
                                  SpatialActivityEventRef(route.logicalNet),
                                  *point,
+                                 {},
+                                 routeTreeOrdinal,
+                                 segments.size(),
                                  {}});
       return segments.size() - 1;
     };
@@ -252,6 +257,10 @@ deriveRequiredPhysicalTagUses(
       if (childSegment)
         addMatchDomain(*childSegment, node);
     }
+
+    for (auto [nodeOrdinal, segment] : llvm::enumerate(nodeSegments))
+      if (segment)
+        segments[*segment].nodeOrdinals.push_back(nodeOrdinal);
 
     for (RequiredPhysicalTagUse &use : segments) {
       llvm::sort(use.matchDomains);

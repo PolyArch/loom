@@ -40,7 +40,7 @@ void loom::test::exerciseCgraAdmission(
     const ArtifactRootReference &fabricReference,
     const ArtifactRootReference &spatialMappingReference,
     const ArtifactRootReference &foreignFabricReference,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, bool expectPhysicalTags) {
   auto dataflow =
       take(::dataflow::importCanonicalDataflow(dataflowReference, store));
   auto view = take(dataflow.view());
@@ -70,7 +70,9 @@ void loom::test::exerciseCgraAdmission(
       summary.physicalUseCount == 0 || summary.resourceOwnerCount == 0 ||
       summary.claimCount == 0 || summary.routeTreeCount == 0 ||
       summary.routeNodeCount == 0 || summary.routeSinkCount == 0 ||
-      summary.selectedTraversalCount == 0)
+      summary.selectedTraversalCount == 0 ||
+      (expectPhysicalTags && (summary.physicalTagSegmentCount == 0 ||
+                              summary.taggedRouteNodeCount == 0)))
     fail("CGRA preparation did not freeze selected compute/transport facts");
   if (summary.computeTransitionPhysicalUseCount +
           summary.memoryTransitionPhysicalUseCount +

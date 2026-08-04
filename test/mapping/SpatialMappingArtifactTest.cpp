@@ -1273,6 +1273,9 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
     for (loom::pnr::PnrIndex net = 0;
          net < problem->transfers().logicalNets().size(); ++net)
       expectedAssignments += candidate->tagSegments(net).size();
+    loom::test::exerciseCgraAdmission(
+        dataflowReference, fabric.reference(), finalized.reference(),
+        buildTemporalFabric(store).reference(), store, true);
     std::size_t observedAssignments = 0;
     for (const auto &use : imported.view().resourceUses())
       for (const auto &value : use.sharingAssignments) {

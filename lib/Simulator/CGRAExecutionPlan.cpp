@@ -617,6 +617,11 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
   result.summary.localTransferCount = result.transport.localTransfers.size();
   result.summary.localTransferSinkCount =
       result.transport.localTransferSinks.size();
+  result.summary.physicalTagSegmentCount = result.transport.physicalTags.size();
+  result.summary.taggedRouteNodeCount = llvm::count_if(
+      result.transport.routeNodes, [](const CgraRouteNodePlan &node) {
+        return node.physicalTagOrdinal != invalidCgraTransportOrdinal;
+      });
   return result;
 }
 

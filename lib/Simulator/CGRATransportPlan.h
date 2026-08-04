@@ -5,6 +5,7 @@
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -59,9 +60,14 @@ struct CgraTraversalStoragePlan final {
   bool independentReadWriteServices = false;
 };
 
+struct CgraPhysicalTagPlan final {
+  llvm::APInt value = llvm::APInt(1, 0);
+};
+
 struct CgraRouteNodePlan final {
   std::uint32_t parentOrdinal = std::numeric_limits<std::uint32_t>::max();
   std::uint64_t incomingTraversalOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
 };
 
 struct CgraRouteSinkPlan final {
@@ -110,6 +116,7 @@ struct CgraTransportPlan final {
   std::vector<CgraSelectedTraversalPlan> traversals;
   std::vector<CgraTraversalUsePlan> traversalUses;
   std::vector<CgraTraversalStoragePlan> traversalStorages;
+  std::vector<CgraPhysicalTagPlan> physicalTags;
   std::vector<CgraRoutePlan> routes;
   std::vector<CgraRouteNodePlan> routeNodes;
   std::vector<CgraRouteSinkPlan> routeSinks;

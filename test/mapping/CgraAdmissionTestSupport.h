@@ -13,7 +13,8 @@ void exerciseCgraAdmission(const ArtifactRootReference &dataflow,
                            const ArtifactRootReference &fabric,
                            const ArtifactRootReference &spatialMapping,
                            const ArtifactRootReference &foreignFabric,
-                           const ArtifactStore &store);
+                           const ArtifactStore &store,
+                           bool expectPhysicalTags = false);
 
 } // namespace loom::test
 
