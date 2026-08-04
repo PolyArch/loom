@@ -128,9 +128,18 @@ integerCastRelation(::fabric::ResolvedIndexWidthSet resolvedIndexWidths) {
       ::fabric::IntegerWidth::I1, ::fabric::IntegerWidth::I8,
       ::fabric::IntegerWidth::I16, ::fabric::IntegerWidth::I32,
       ::fabric::IntegerWidth::I64};
-  for (::fabric::IntegerWidth source : widths)
-    for (::fabric::IntegerWidth destination : widths)
-      relation.insert(source, destination);
+  for (::fabric::IntegerWidth source : widths) {
+    for (::fabric::IntegerWidth destination : widths) {
+      const bool resolvedIndexIdentity =
+          source == destination &&
+          ((source == ::fabric::IntegerWidth::I32 &&
+            resolvedIndexWidths.contains(::fabric::ResolvedIndexWidth::I32)) ||
+           (source == ::fabric::IntegerWidth::I64 &&
+            resolvedIndexWidths.contains(::fabric::ResolvedIndexWidth::I64)));
+      if (source != destination || resolvedIndexIdentity)
+        relation.insert(source, destination);
+    }
+  }
   return {relation, resolvedIndexWidths};
 }
 

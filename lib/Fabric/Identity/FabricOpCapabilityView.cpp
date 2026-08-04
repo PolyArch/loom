@@ -239,7 +239,8 @@ ResolvedFabricOpCapabilityView::encodeSemanticConfiguration(
   }
   return ::fabric::encodeImplementationFamilySemanticConfiguration(
       implementationFamily, parameterizedCapability, enabledOperationSchemas,
-      inputCount, resultCount, actor);
+      inputCount, resultCount, actor,
+      ::fabric::symbolizeResolvedIndexWidth(indexBitWidth));
 }
 
 llvm::Expected<std::vector<::fabric::FiniteImplementationFamilyBehaviorPoint>>
@@ -261,7 +262,15 @@ ResolvedFabricOpCapabilityView::resolveFiniteBehaviorDomain(
   return ::fabric::resolveFiniteImplementationFamilyBehaviorDomain(
       implementationFamily, parameterizedCapability, enabledOperationSchemas,
       inputCount, resultCount, context,
-      [&](const ::dataflow::CanonicalActorSchemaProjection &actor) {
+      [&](const ::dataflow::CanonicalActorSchemaProjection &actor,
+          std::optional<::fabric::ResolvedIndexWidth> resolvedIndexWidth) {
+        if (resolvedIndexWidth) {
+          auto represented = ::fabric::projectResolvedIndexTypes(
+              actor, ::fabric::getResolvedIndexBitWidth(*resolvedIndexWidth));
+          if (!represented)
+            return represented.takeError();
+          return verifyPhysicalPortCapacity(*this, *represented, nullptr);
+        }
         return verifyPhysicalPortCapacity(*this, actor, nullptr);
       });
 }

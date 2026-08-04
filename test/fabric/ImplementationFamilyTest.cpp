@@ -10,6 +10,7 @@
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -842,7 +843,8 @@ bool checkScalarFloatFmaBehaviorDomain(MLIRContext &context) {
   constexpr std::array enabled = {OperationSchemaId::MathFma};
   auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
       ImplementationFamilyId::ScalarFloatFma, params, enabled, 3, 1, context,
-      [](const dataflow::CanonicalActorSchemaProjection &actor) -> llvm::Error {
+      [](const dataflow::CanonicalActorSchemaProjection &actor,
+         std::optional<ResolvedIndexWidth>) -> llvm::Error {
         for (Type type : actor.type.getInputs()) {
           auto floating = dyn_cast<FloatType>(type);
           if (!floating || floating.getWidth() > 64)
@@ -912,8 +914,8 @@ bool checkIntegerLogicBehaviorDomains(MLIRContext &context) {
     unsigned verifiedActors = 0;
     auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
         family, params, enabled, 2, 1, context,
-        [&](const dataflow::CanonicalActorSchemaProjection &actor)
-            -> llvm::Error {
+        [&](const dataflow::CanonicalActorSchemaProjection &actor,
+            std::optional<ResolvedIndexWidth>) -> llvm::Error {
           ++verifiedActors;
           if (actor.schema == OperationSchemaId::LLVMOrDisjoint) {
             const auto *payload =
@@ -982,8 +984,8 @@ bool checkIntegerLogicBehaviorDomains(MLIRContext &context) {
         unsigned verifiedActors = 0;
         auto rejected = resolveFiniteImplementationFamilyBehaviorDomain(
             family, params, equivalentOrSchemas, 2, 1, context,
-            [](const dataflow::CanonicalActorSchemaProjection &actor)
-                -> llvm::Error {
+            [](const dataflow::CanonicalActorSchemaProjection &actor,
+               std::optional<ResolvedIndexWidth>) -> llvm::Error {
               if (actor.schema == OperationSchemaId::LLVMOrDisjoint)
                 return llvm::createStringError(
                     llvm::inconvertibleErrorCode(),
@@ -1004,8 +1006,8 @@ bool checkIntegerLogicBehaviorDomains(MLIRContext &context) {
         }
         auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
             family, params, equivalentOrSchemas, 2, 1, context,
-            [&](const dataflow::CanonicalActorSchemaProjection &)
-                -> llvm::Error {
+            [&](const dataflow::CanonicalActorSchemaProjection &,
+                std::optional<ResolvedIndexWidth>) -> llvm::Error {
               ++verifiedActors;
               return llvm::Error::success();
             });
@@ -1047,7 +1049,8 @@ bool checkFixedVectorMultiplyBehaviorDomain(MLIRContext &context) {
   auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
       ImplementationFamilyId::FixedVectorIntegerMultiply, params, enabled, 2, 1,
       context,
-      [&](const dataflow::CanonicalActorSchemaProjection &) -> llvm::Error {
+      [&](const dataflow::CanonicalActorSchemaProjection &,
+          std::optional<ResolvedIndexWidth>) -> llvm::Error {
         ++verifiedActors;
         return llvm::Error::success();
       });
@@ -1111,7 +1114,8 @@ bool checkFixedVectorValueSelectBehaviorDomain(MLIRContext &context) {
   auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
       ImplementationFamilyId::FixedVectorValueSelect, params, enabled, 3, 1,
       context,
-      [&](const dataflow::CanonicalActorSchemaProjection &) -> llvm::Error {
+      [&](const dataflow::CanonicalActorSchemaProjection &,
+          std::optional<ResolvedIndexWidth>) -> llvm::Error {
         ++verifiedActors;
         return llvm::Error::success();
       });
@@ -1174,6 +1178,258 @@ bool checkFixedVectorValueSelectBehaviorDomain(MLIRContext &context) {
              semanticValues.end();
 }
 
+dataflow::CanonicalActorSchemaProjection
+makeScalarIntegerCastActor(MLIRContext &context, OperationSchemaId schema,
+                           Type source, Type destination) {
+  dataflow::SemanticPayload payload = dataflow::NoPayload{};
+  switch (dataflow::semanticsCase(schema)) {
+  case dataflow::OperationSemanticsCase::NoSemanticPayload:
+    break;
+  case dataflow::OperationSemanticsCase::ArithNonNegative:
+    payload = dataflow::NonNegativePayload{};
+    break;
+  case dataflow::OperationSemanticsCase::ArithIntegerOverflow:
+    payload = dataflow::IntegerOverflowPayload{};
+    break;
+  default:
+    llvm_unreachable("integer cast has an unexpected semantic payload");
+  }
+  return {schema, FunctionType::get(&context, {source}, {destination}),
+          std::move(payload)};
+}
+
+bool checkScalarIntegerCastRelationClosure(MLIRContext &context) {
+  constexpr std::array indexEnabled = {OperationSchemaId::ArithIndexCast};
+  const auto expectOrphanRejected =
+      [&](const FamilyCapabilityParams &orphanParams,
+          llvm::ArrayRef<OperationSchemaId> enabled,
+          llvm::StringRef expectedReason) {
+        auto orphan = resolveFiniteImplementationFamilyBehaviorDomain(
+            ImplementationFamilyId::ScalarIntegerCast, orphanParams, enabled, 1,
+            1, context,
+            [](const dataflow::CanonicalActorSchemaProjection &,
+               std::optional<ResolvedIndexWidth>) {
+              return llvm::Error::success();
+            });
+        if (orphan) {
+          llvm::errs() << "orphan integer cast relation was accepted\n";
+          return false;
+        }
+        const std::string error = llvm::toString(orphan.takeError());
+        return llvm::StringRef(error).contains(expectedReason);
+      };
+
+  const FamilyCapabilityParams orphanIndexWidthParams =
+      ScalarIntegerCastParams{IntegerCastRelation{
+          IntegerWidthRelation::get({{IntegerWidth::I8, IntegerWidth::I32}}),
+          ResolvedIndexWidthSet::get(
+              {ResolvedIndexWidth::I32, ResolvedIndexWidth::I64})}};
+  if (!expectOrphanRejected(orphanIndexWidthParams, indexEnabled,
+                            "orphan resolved index width"))
+    return false;
+
+  const FamilyCapabilityParams orphanWidthPairParams =
+      ScalarIntegerCastParams{IntegerCastRelation{
+          IntegerWidthRelation::get({{IntegerWidth::I8, IntegerWidth::I32},
+                                     {IntegerWidth::I16, IntegerWidth::I64}}),
+          ResolvedIndexWidthSet::get({ResolvedIndexWidth::I32})}};
+  if (!expectOrphanRejected(orphanWidthPairParams, indexEnabled,
+                            "orphan integer cast width pair"))
+    return false;
+
+  constexpr std::array extensionEnabled = {OperationSchemaId::ArithExtSI};
+  const FamilyCapabilityParams extensionWithIndexParams =
+      ScalarIntegerCastParams{IntegerCastRelation{
+          IntegerWidthRelation::get({{IntegerWidth::I8, IntegerWidth::I32}}),
+          ResolvedIndexWidthSet::get({ResolvedIndexWidth::I32})}};
+  return expectOrphanRejected(extensionWithIndexParams, extensionEnabled,
+                              "orphan resolved index width");
+}
+
+bool checkScalarIntegerCastBehaviorDomain(MLIRContext &context) {
+  const FamilyCapabilityParams params =
+      ScalarIntegerCastParams{IntegerCastRelation{
+          IntegerWidthRelation::get({{IntegerWidth::I8, IntegerWidth::I32},
+                                     {IntegerWidth::I8, IntegerWidth::I64},
+                                     {IntegerWidth::I32, IntegerWidth::I8},
+                                     {IntegerWidth::I64, IntegerWidth::I8}}),
+          ResolvedIndexWidthSet::get(
+              {ResolvedIndexWidth::I32, ResolvedIndexWidth::I64})}};
+  constexpr std::array enabled = {
+      OperationSchemaId::ArithExtSI, OperationSchemaId::ArithExtUI,
+      OperationSchemaId::ArithTruncI, OperationSchemaId::ArithIndexCast,
+      OperationSchemaId::ArithIndexCastUI};
+
+  unsigned verifiedActors = 0;
+  unsigned verifiedIndexActors = 0;
+  auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
+      ImplementationFamilyId::ScalarIntegerCast, params, enabled, 1, 1, context,
+      [&](const dataflow::CanonicalActorSchemaProjection &actor,
+          std::optional<ResolvedIndexWidth> resolvedIndexWidth) -> llvm::Error {
+        ++verifiedActors;
+        const bool isIndexCast =
+            actor.schema == OperationSchemaId::ArithIndexCast ||
+            actor.schema == OperationSchemaId::ArithIndexCastUI;
+        if (isIndexCast != resolvedIndexWidth.has_value())
+          return llvm::createStringError(
+              llvm::inconvertibleErrorCode(),
+              "resolved index witness did not match the cast actor");
+        verifiedIndexActors += isIndexCast;
+        auto canonical = dataflow::encodeCanonicalActorSchemaProjection(actor);
+        if (!canonical)
+          return canonical.takeError();
+        return llvm::Error::success();
+      });
+  if (!domain) {
+    llvm::errs() << "scalar integer cast behavior domain did not resolve: "
+                 << llvm::toString(domain.takeError()) << '\n';
+    return false;
+  }
+  if (verifiedActors != 14 || verifiedIndexActors != 8 || domain->size() != 6)
+    return false;
+  for (const auto &point : *domain)
+    if (!point.semanticConfiguration)
+      return false;
+
+  Type i8 = IntegerType::get(&context, 8);
+  Type i32 = IntegerType::get(&context, 32);
+  Type i64 = IntegerType::get(&context, 64);
+  Type index = IndexType::get(&context);
+  const auto encode =
+      [&](OperationSchemaId schema, Type source, Type destination,
+          std::optional<ResolvedIndexWidth> resolved = std::nullopt) {
+        return encodeImplementationFamilySemanticConfiguration(
+            ImplementationFamilyId::ScalarIntegerCast, params, enabled, 1, 1,
+            makeScalarIntegerCastActor(context, schema, source, destination),
+            resolved);
+      };
+  auto signExtend = encode(OperationSchemaId::ArithExtSI, i8, i32);
+  auto indexSignExtend = encode(OperationSchemaId::ArithIndexCast, i8, index,
+                                ResolvedIndexWidth::I32);
+  auto zeroExtend = encode(OperationSchemaId::ArithExtUI, i8, i32);
+  auto indexZeroExtend = encode(OperationSchemaId::ArithIndexCastUI, i8, index,
+                                ResolvedIndexWidth::I32);
+  auto truncate = encode(OperationSchemaId::ArithTruncI, i32, i8);
+  auto indexTruncate = encode(OperationSchemaId::ArithIndexCast, index, i8,
+                              ResolvedIndexWidth::I32);
+  auto indexUiTruncate = encode(OperationSchemaId::ArithIndexCastUI, index, i8,
+                                ResolvedIndexWidth::I32);
+  auto wideSignExtend = encode(OperationSchemaId::ArithExtSI, i8, i64);
+  if (!signExtend || !indexSignExtend || !zeroExtend || !indexZeroExtend ||
+      !truncate || !indexTruncate || !indexUiTruncate || !wideSignExtend) {
+    if (!signExtend)
+      llvm::consumeError(signExtend.takeError());
+    if (!indexSignExtend)
+      llvm::consumeError(indexSignExtend.takeError());
+    if (!zeroExtend)
+      llvm::consumeError(zeroExtend.takeError());
+    if (!indexZeroExtend)
+      llvm::consumeError(indexZeroExtend.takeError());
+    if (!truncate)
+      llvm::consumeError(truncate.takeError());
+    if (!indexTruncate)
+      llvm::consumeError(indexTruncate.takeError());
+    if (!indexUiTruncate)
+      llvm::consumeError(indexUiTruncate.takeError());
+    if (!wideSignExtend)
+      llvm::consumeError(wideSignExtend.takeError());
+    return false;
+  }
+  if (!signExtend->bytes().equals(indexSignExtend->bytes()) ||
+      !zeroExtend->bytes().equals(indexZeroExtend->bytes()) ||
+      !truncate->bytes().equals(indexTruncate->bytes()) ||
+      !truncate->bytes().equals(indexUiTruncate->bytes()) ||
+      signExtend->bytes().equals(zeroExtend->bytes()) ||
+      signExtend->bytes().equals(wideSignExtend->bytes()))
+    return false;
+
+  auto missingIndexWitness = encodeImplementationFamilySemanticConfiguration(
+      ImplementationFamilyId::ScalarIntegerCast, params, enabled, 1, 1,
+      makeScalarIntegerCastActor(context, OperationSchemaId::ArithIndexCast, i8,
+                                 index));
+  if (missingIndexWitness)
+    return false;
+  const std::string missingIndexWitnessError =
+      llvm::toString(missingIndexWitness.takeError());
+  if (!llvm::StringRef(missingIndexWitnessError)
+           .contains("no resolved index width"))
+    return false;
+
+  const FamilyCapabilityParams singletonParams =
+      ScalarIntegerCastParams{IntegerCastRelation{
+          IntegerWidthRelation::get({{IntegerWidth::I8, IntegerWidth::I32}}),
+          ResolvedIndexWidthSet::get({ResolvedIndexWidth::I32})}};
+  constexpr std::array singletonEnabled = {OperationSchemaId::ArithIndexCast};
+  auto singleton = resolveFiniteImplementationFamilyBehaviorDomain(
+      ImplementationFamilyId::ScalarIntegerCast, singletonParams,
+      singletonEnabled, 1, 1, context,
+      [](const dataflow::CanonicalActorSchemaProjection &,
+         std::optional<ResolvedIndexWidth>) { return llvm::Error::success(); });
+  if (!singleton || singleton->size() != 1 ||
+      singleton->front().semanticConfiguration ||
+      singleton->front().resolvedIndexWidth != ResolvedIndexWidth::I32)
+    return false;
+
+  const FamilyCapabilityParams identityParams =
+      ScalarIntegerCastParams{IntegerCastRelation{
+          IntegerWidthRelation::get({{IntegerWidth::I32, IntegerWidth::I32}}),
+          ResolvedIndexWidthSet::get({ResolvedIndexWidth::I32})}};
+  constexpr std::array identityEnabled = {OperationSchemaId::ArithIndexCast,
+                                          OperationSchemaId::ArithIndexCastUI};
+  unsigned identityActors = 0;
+  auto identity = resolveFiniteImplementationFamilyBehaviorDomain(
+      ImplementationFamilyId::ScalarIntegerCast, identityParams,
+      identityEnabled, 1, 1, context,
+      [&](const dataflow::CanonicalActorSchemaProjection &actor,
+          std::optional<ResolvedIndexWidth> resolvedIndexWidth) -> llvm::Error {
+        ++identityActors;
+        if (resolvedIndexWidth != ResolvedIndexWidth::I32)
+          return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                         "identity cast lost index witness");
+        auto canonical = dataflow::encodeCanonicalActorSchemaProjection(actor);
+        if (!canonical)
+          return canonical.takeError();
+        return llvm::Error::success();
+      });
+  if (!identity || identityActors != 4 || identity->size() != 1 ||
+      identity->front().semanticConfiguration ||
+      identity->front().resolvedIndexWidth != ResolvedIndexWidth::I32)
+    return false;
+
+  auto resourceRejected = resolveFiniteImplementationFamilyBehaviorDomain(
+      ImplementationFamilyId::ScalarIntegerCast, params, enabled, 1, 1, context,
+      [](const dataflow::CanonicalActorSchemaProjection &actor,
+         std::optional<ResolvedIndexWidth>) -> llvm::Error {
+        if (actor.schema == OperationSchemaId::ArithIndexCastUI)
+          return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                         "cast resource rejection");
+        return llvm::Error::success();
+      });
+  if (resourceRejected)
+    return false;
+  const std::string resourceRejectedError =
+      llvm::toString(resourceRejected.takeError());
+  if (!llvm::StringRef(resourceRejectedError)
+           .contains("cast resource rejection"))
+    return false;
+
+  const FamilyCapabilityParams missingIndexParams =
+      ScalarIntegerCastParams{IntegerCastRelation{
+          IntegerWidthRelation::get({{IntegerWidth::I8, IntegerWidth::I32}}),
+          ResolvedIndexWidthSet::get({})}};
+  auto missingIndexDomain = resolveFiniteImplementationFamilyBehaviorDomain(
+      ImplementationFamilyId::ScalarIntegerCast, missingIndexParams,
+      singletonEnabled, 1, 1, context,
+      [](const dataflow::CanonicalActorSchemaProjection &,
+         std::optional<ResolvedIndexWidth>) { return llvm::Error::success(); });
+  if (missingIndexDomain)
+    return false;
+  const std::string missingIndexDomainError =
+      llvm::toString(missingIndexDomain.takeError());
+  return llvm::StringRef(missingIndexDomainError)
+      .contains("schema has no admitted finite behavior");
+}
+
 } // namespace
 
 int main() {
@@ -1198,5 +1454,7 @@ int main() {
   ok &= checkIntegerLogicBehaviorDomains(context);
   ok &= checkFixedVectorMultiplyBehaviorDomain(context);
   ok &= checkFixedVectorValueSelectBehaviorDomain(context);
+  ok &= checkScalarIntegerCastRelationClosure(context);
+  ok &= checkScalarIntegerCastBehaviorDomain(context);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

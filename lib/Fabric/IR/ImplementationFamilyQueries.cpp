@@ -73,6 +73,8 @@ constexpr char kFixedVectorValueSelectConfigurationDomain[] =
     "loom.fabric.fixed-vector-value-select-configuration\0";
 constexpr char kIntegerLogicConfigurationDomain[] =
     "loom.fabric.integer-logic-configuration\0";
+constexpr char kScalarIntegerCastConfigurationDomain[] =
+    "loom.fabric.scalar-integer-cast-configuration\0";
 constexpr std::uint32_t kConfigurationCodecMajor = 1;
 constexpr std::uint32_t kConfigurationCodecMinor = 0;
 constexpr std::array<mlir::arith::CmpIPredicate, 4> kSignedIntegerPredicates = {
@@ -103,6 +105,251 @@ bool isSignedIntegerPredicate(mlir::arith::CmpIPredicate predicate) {
 }
 
 enum class IntegerLogicOperation : std::uint32_t { And, Or, Xor };
+
+using fabric::IntegerWidth;
+using fabric::integerWidthDomain;
+using fabric::ResolvedIndexWidth;
+using fabric::resolvedIndexWidthDomain;
+using fabric::ScalarIntegerCastParams;
+
+enum class ScalarIntegerCastOperation : std::uint32_t {
+  Identity = 0,
+  SignExtend = 1,
+  ZeroExtend = 2,
+  Truncate = 3,
+};
+
+struct ScalarIntegerCastBehavior final {
+  ScalarIntegerCastOperation operation;
+  IntegerWidth sourceWidth;
+  IntegerWidth destinationWidth;
+
+  friend bool operator==(const ScalarIntegerCastBehavior &lhs,
+                         const ScalarIntegerCastBehavior &rhs) {
+    return lhs.operation == rhs.operation &&
+           lhs.sourceWidth == rhs.sourceWidth &&
+           lhs.destinationWidth == rhs.destinationWidth;
+  }
+};
+
+struct ScalarIntegerCastCase final {
+  ::dataflow::OperationSchemaId schema;
+  ScalarIntegerCastBehavior behavior;
+  bool sourceIsIndex = false;
+  bool destinationIsIndex = false;
+  std::optional<ResolvedIndexWidth> resolvedIndexWidth;
+};
+
+ScalarIntegerCastOperation
+classifyScalarIntegerCast(::dataflow::OperationSchemaId schema,
+                          IntegerWidth source, IntegerWidth destination) {
+  const unsigned sourceBits = fabric::getBitWidth(source);
+  const unsigned destinationBits = fabric::getBitWidth(destination);
+  if (sourceBits == destinationBits)
+    return ScalarIntegerCastOperation::Identity;
+  if (sourceBits > destinationBits)
+    return ScalarIntegerCastOperation::Truncate;
+  if (schema == ::dataflow::OperationSchemaId::ArithExtSI ||
+      schema == ::dataflow::OperationSchemaId::ArithIndexCast)
+    return ScalarIntegerCastOperation::SignExtend;
+  return ScalarIntegerCastOperation::ZeroExtend;
+}
+
+llvm::Expected<std::vector<ScalarIntegerCastCase>>
+enumerateScalarIntegerCastCases(
+    const ScalarIntegerCastParams &parameters,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas) {
+  if (!parameters.relation.widthPairs.valid() ||
+      !parameters.relation.resolvedIndexWidths.valid())
+    return reject("invalid integer cast relation");
+  if (parameters.relation.widthPairs.empty())
+    return reject("non-empty integer cast relation required");
+
+  std::vector<ScalarIntegerCastCase> cases;
+  for (::dataflow::OperationSchemaId schema : enabledSchemas) {
+    const std::size_t schemaStart = cases.size();
+    using Schema = ::dataflow::OperationSchemaId;
+    const bool isIndexCast =
+        schema == Schema::ArithIndexCast || schema == Schema::ArithIndexCastUI;
+    if (isIndexCast) {
+      for (ResolvedIndexWidth resolved : resolvedIndexWidthDomain) {
+        if (!parameters.relation.resolvedIndexWidths.contains(resolved))
+          continue;
+        const IntegerWidth indexWidth = resolved == ResolvedIndexWidth::I32
+                                            ? IntegerWidth::I32
+                                            : IntegerWidth::I64;
+        for (IntegerWidth source : integerWidthDomain) {
+          for (IntegerWidth destination : integerWidthDomain) {
+            if (!parameters.relation.widthPairs.contains(source, destination))
+              continue;
+            const ScalarIntegerCastBehavior behavior{
+                classifyScalarIntegerCast(schema, source, destination), source,
+                destination};
+            if (source == indexWidth)
+              cases.push_back({schema, behavior, true, false, resolved});
+            if (destination == indexWidth)
+              cases.push_back({schema, behavior, false, true, resolved});
+          }
+        }
+      }
+      if (cases.size() == schemaStart)
+        return reject("integer cast schema has no admitted finite behavior");
+      continue;
+    }
+
+    if (schema != Schema::ArithExtSI && schema != Schema::ArithExtUI &&
+        schema != Schema::ArithTruncI)
+      return reject("integer cast capability contains a non-cast schema");
+    for (IntegerWidth source : integerWidthDomain) {
+      for (IntegerWidth destination : integerWidthDomain) {
+        if (!parameters.relation.widthPairs.contains(source, destination))
+          continue;
+        const unsigned sourceBits = fabric::getBitWidth(source);
+        const unsigned destinationBits = fabric::getBitWidth(destination);
+        const bool admittedPair = schema == Schema::ArithTruncI
+                                      ? sourceBits > destinationBits
+                                      : sourceBits < destinationBits;
+        if (!admittedPair)
+          continue;
+        cases.push_back(
+            {schema,
+             {classifyScalarIntegerCast(schema, source, destination), source,
+              destination},
+             false,
+             false,
+             std::nullopt});
+      }
+    }
+    if (cases.size() == schemaStart)
+      return reject("integer cast schema has no admitted finite behavior");
+  }
+  for (IntegerWidth source : integerWidthDomain) {
+    for (IntegerWidth destination : integerWidthDomain) {
+      if (!parameters.relation.widthPairs.contains(source, destination))
+        continue;
+      const bool interpreted =
+          llvm::any_of(cases, [&](const ScalarIntegerCastCase &castCase) {
+            return castCase.behavior.sourceWidth == source &&
+                   castCase.behavior.destinationWidth == destination;
+          });
+      if (!interpreted)
+        return reject("orphan integer cast width pair");
+    }
+  }
+  for (ResolvedIndexWidth resolved : resolvedIndexWidthDomain) {
+    if (!parameters.relation.resolvedIndexWidths.contains(resolved))
+      continue;
+    const bool interpreted =
+        llvm::any_of(cases, [&](const ScalarIntegerCastCase &castCase) {
+          return castCase.resolvedIndexWidth == resolved;
+        });
+    if (!interpreted)
+      return reject("orphan resolved index width");
+  }
+  if (cases.empty())
+    return reject("integer cast capability has no admitted finite behavior");
+  return cases;
+}
+
+std::vector<ScalarIntegerCastBehavior>
+uniqueScalarIntegerCastBehaviors(llvm::ArrayRef<ScalarIntegerCastCase> cases) {
+  std::vector<ScalarIntegerCastBehavior> behaviors;
+  for (const ScalarIntegerCastCase &castCase : cases)
+    if (!llvm::is_contained(behaviors, castCase.behavior))
+      behaviors.push_back(castCase.behavior);
+  return behaviors;
+}
+
+llvm::Expected<::dataflow::SemanticPayload>
+makeScalarIntegerCastPayload(::dataflow::OperationSchemaId schema) {
+  using Case = ::dataflow::OperationSemanticsCase;
+  switch (::dataflow::semanticsCase(schema)) {
+  case Case::NoSemanticPayload:
+    return ::dataflow::NoPayload{};
+  case Case::ArithNonNegative:
+    return ::dataflow::NonNegativePayload{};
+  case Case::ArithIntegerOverflow:
+    return ::dataflow::IntegerOverflowPayload{};
+  default:
+    return reject("integer cast schema has an unexpected semantic payload");
+  }
+}
+
+llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
+makeScalarIntegerCastActor(mlir::MLIRContext &context,
+                           const ScalarIntegerCastCase &castCase) {
+  auto payload = makeScalarIntegerCastPayload(castCase.schema);
+  if (!payload)
+    return payload.takeError();
+  mlir::Type source =
+      castCase.sourceIsIndex
+          ? mlir::Type(mlir::IndexType::get(&context))
+          : mlir::Type(mlir::IntegerType::get(
+                &context, fabric::getBitWidth(castCase.behavior.sourceWidth)));
+  mlir::Type destination =
+      castCase.destinationIsIndex
+          ? mlir::Type(mlir::IndexType::get(&context))
+          : mlir::Type(mlir::IntegerType::get(
+                &context,
+                fabric::getBitWidth(castCase.behavior.destinationWidth)));
+  return ::dataflow::CanonicalActorSchemaProjection{
+      castCase.schema,
+      mlir::FunctionType::get(&context, {source}, {destination}),
+      std::move(*payload)};
+}
+
+llvm::Expected<IntegerWidth> scalarIntegerCastWidth(mlir::Type type) {
+  auto integer = llvm::dyn_cast<mlir::IntegerType>(type);
+  if (!integer || !integer.isSignless())
+    return reject("integer cast endpoint is not a signless integer");
+  for (IntegerWidth width : integerWidthDomain)
+    if (fabric::getBitWidth(width) == integer.getWidth())
+      return width;
+  return reject("integer cast endpoint width is outside the closed domain");
+}
+
+llvm::Expected<ScalarIntegerCastBehavior> resolveScalarIntegerCastBehavior(
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    std::optional<ResolvedIndexWidth> resolvedIndexWidth) {
+  if (actor.type.getNumInputs() != 1 || actor.type.getNumResults() != 1)
+    return reject("integer cast behavior has wrong arity");
+  using Schema = ::dataflow::OperationSchemaId;
+  const bool isIndexCast = actor.schema == Schema::ArithIndexCast ||
+                           actor.schema == Schema::ArithIndexCastUI;
+  if (!isIndexCast && actor.schema != Schema::ArithExtSI &&
+      actor.schema != Schema::ArithExtUI && actor.schema != Schema::ArithTruncI)
+    return reject("actor is not an integer cast schema");
+
+  mlir::Type sourceType = actor.type.getInput(0);
+  mlir::Type destinationType = actor.type.getResult(0);
+  const bool sourceIsIndex = llvm::isa<mlir::IndexType>(sourceType);
+  const bool destinationIsIndex = llvm::isa<mlir::IndexType>(destinationType);
+  if (isIndexCast) {
+    if (sourceIsIndex == destinationIsIndex)
+      return reject("index cast requires exactly one index endpoint");
+    if (!resolvedIndexWidth)
+      return reject("index cast behavior has no resolved index width");
+  } else if (sourceIsIndex || destinationIsIndex) {
+    return reject("ordinary integer cast has an index endpoint");
+  }
+
+  const IntegerWidth indexWidth =
+      resolvedIndexWidth && *resolvedIndexWidth == ResolvedIndexWidth::I32
+          ? IntegerWidth::I32
+          : IntegerWidth::I64;
+  auto source = sourceIsIndex ? llvm::Expected<IntegerWidth>(indexWidth)
+                              : scalarIntegerCastWidth(sourceType);
+  if (!source)
+    return source.takeError();
+  auto destination = destinationIsIndex
+                         ? llvm::Expected<IntegerWidth>(indexWidth)
+                         : scalarIntegerCastWidth(destinationType);
+  if (!destination)
+    return destination.takeError();
+  return ScalarIntegerCastBehavior{
+      classifyScalarIntegerCast(actor.schema, *source, *destination), *source,
+      *destination};
+}
 
 llvm::Expected<IntegerLogicOperation>
 integerLogicOperation(::dataflow::OperationSchemaId schema) {
@@ -441,6 +688,15 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
       return reject("concrete operation capability escapes its generated "
                     "implementation family");
 
+  if (descriptor.typedAdmissionProvider ==
+      TypedAdmissionProviderId::ScalarIntegerCastAdmission) {
+    auto cases = enumerateScalarIntegerCastCases(
+        std::get<ScalarIntegerCastParams>(params), enabledSchemas);
+    if (!cases)
+      return cases.takeError();
+    return uniqueScalarIntegerCastBehaviors(*cases).size() > 1;
+  }
+
   const bool logicFamily =
       descriptor.typedAdmissionProvider ==
           TypedAdmissionProviderId::ScalarLogicIntegerAdmission ||
@@ -504,8 +760,7 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
            (typed.operandWidths.size() > 1 && hasSignedIntegerBehavior());
   }
   case TypedAdmissionProviderId::ScalarIntegerCastAdmission:
-    return std::get<ScalarIntegerCastParams>(params)
-               .relation.widthPairs.size() > 1;
+    llvm_unreachable("scalar integer cast handled before generic selection");
   case TypedAdmissionProviderId::ScalarUniformFloatAdmission: {
     const auto &typed = std::get<ScalarFloatParams>(params);
     return typed.formats.size() > 1 || floatBehaviorVaries(typed.behavior);
@@ -587,7 +842,8 @@ fabric::encodeImplementationFamilySemanticConfiguration(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,
     llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
     std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
-    const ::dataflow::CanonicalActorSchemaProjection &actor) {
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    std::optional<ResolvedIndexWidth> resolvedIndexWidth) {
   auto needsConfiguration = requiresSemanticConfigurationField(
       family, params, enabledSchemas, physicalInputCount, physicalResultCount);
   if (!needsConfiguration)
@@ -596,6 +852,40 @@ fabric::encodeImplementationFamilySemanticConfiguration(
     return reject("capability has no semantic configuration field");
   if (!llvm::is_contained(enabledSchemas, actor.schema))
     return reject("actor schema is not enabled by the concrete capability");
+
+  if (family == ImplementationFamilyId::ScalarIntegerCast) {
+    const auto *parameters = std::get_if<ScalarIntegerCastParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    const bool isIndexCast =
+        actor.schema == ::dataflow::OperationSchemaId::ArithIndexCast ||
+        actor.schema == ::dataflow::OperationSchemaId::ArithIndexCastUI;
+    if (isIndexCast) {
+      if (!resolvedIndexWidth)
+        return reject("index cast behavior has no resolved index width");
+      if (llvm::Error error = verifyImplementationFamilyAdmission(
+              family, &params, actor,
+              getResolvedIndexBitWidth(*resolvedIndexWidth)))
+        return std::move(error);
+    } else if (llvm::Error error = verifyImplementationFamilyAdmission(
+                   family, &params, actor)) {
+      return std::move(error);
+    }
+    auto behavior = resolveScalarIntegerCastBehavior(actor, resolvedIndexWidth);
+    if (!behavior)
+      return behavior.takeError();
+    std::vector<std::uint8_t> bytes;
+    const llvm::StringRef domain(kScalarIntegerCastConfigurationDomain,
+                                 sizeof(kScalarIntegerCastConfigurationDomain) -
+                                     1);
+    bytes.insert(bytes.end(), domain.bytes_begin(), domain.bytes_end());
+    appendU32(bytes, kConfigurationCodecMajor);
+    appendU32(bytes, kConfigurationCodecMinor);
+    appendU32(bytes, static_cast<std::uint32_t>(behavior->operation));
+    appendU32(bytes, getBitWidth(behavior->sourceWidth));
+    appendU32(bytes, getBitWidth(behavior->destinationWidth));
+    return loom::CanonicalSemanticBytes(std::move(bytes));
+  }
 
   bool selectionOnly = enabledSchemas.size() > 1;
   for (::dataflow::OperationSchemaId enabled : enabledSchemas) {
@@ -817,14 +1107,19 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
     std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
     mlir::MLIRContext &context,
     llvm::function_ref<
-        llvm::Error(const ::dataflow::CanonicalActorSchemaProjection &)>
+        llvm::Error(const ::dataflow::CanonicalActorSchemaProjection &,
+                    std::optional<ResolvedIndexWidth>)>
         verifyConcreteActor) {
   auto needsConfiguration = requiresSemanticConfigurationField(
       family, params, enabledSchemas, physicalInputCount, physicalResultCount);
   if (!needsConfiguration)
     return needsConfiguration.takeError();
 
-  std::vector<::dataflow::CanonicalActorSchemaProjection> actors;
+  struct ResolvedBehaviorActor final {
+    ::dataflow::CanonicalActorSchemaProjection actor;
+    std::optional<ResolvedIndexWidth> resolvedIndexWidth;
+  };
+  std::vector<ResolvedBehaviorActor> actors;
   if (family == ImplementationFamilyId::ScalarIntegerLogic) {
     const auto *parameters = std::get_if<ScalarIntegerParams>(&params);
     if (!parameters)
@@ -837,7 +1132,7 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
             makeScalarIntegerLogicActor(context, getBitWidth(width), schema);
         if (!actor)
           return actor.takeError();
-        actors.push_back(std::move(*actor));
+        actors.push_back({std::move(*actor), std::nullopt});
       }
     }
   } else if (family == ImplementationFamilyId::FixedVectorIntegerLogic) {
@@ -856,7 +1151,7 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
                                                  schema, std::move(*payload));
         if (!actor)
           return actor.takeError();
-        actors.push_back(std::move(*actor));
+        actors.push_back({std::move(*actor), std::nullopt});
       }
     }
   } else if (family == ImplementationFamilyId::FixedVectorIntegerMultiply) {
@@ -875,7 +1170,7 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
           enabledSchemas.front(), ::dataflow::IntegerOverflowPayload{});
       if (!actor)
         return actor.takeError();
-      actors.push_back(std::move(*actor));
+      actors.push_back({std::move(*actor), std::nullopt});
     }
   } else if (family == ImplementationFamilyId::FixedVectorValueSelect) {
     const auto *parameters = std::get_if<FixedVectorValueSelectParams>(&params);
@@ -893,7 +1188,7 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
           parameters->maxPayloadBits);
       if (!actor)
         return actor.takeError();
-      actors.push_back(std::move(*actor));
+      actors.push_back({std::move(*actor), std::nullopt});
     }
     for (FloatFormat format : floatFormatDomain) {
       if (!parameters->floatElementFormats.contains(format))
@@ -902,7 +1197,21 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
           context, floatType(context, format), parameters->maxPayloadBits);
       if (!actor)
         return actor.takeError();
-      actors.push_back(std::move(*actor));
+      actors.push_back({std::move(*actor), std::nullopt});
+    }
+  } else if (family == ImplementationFamilyId::ScalarIntegerCast) {
+    const auto *parameters = std::get_if<ScalarIntegerCastParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    auto cases = enumerateScalarIntegerCastCases(*parameters, enabledSchemas);
+    if (!cases)
+      return cases.takeError();
+    actors.reserve(cases->size());
+    for (const ScalarIntegerCastCase &castCase : *cases) {
+      auto actor = makeScalarIntegerCastActor(context, castCase);
+      if (!actor)
+        return actor.takeError();
+      actors.push_back({std::move(*actor), castCase.resolvedIndexWidth});
     }
   } else if (family == ImplementationFamilyId::ScalarIntegerCompareMinMax) {
     const auto *parameters =
@@ -916,8 +1225,10 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
           for (IntegerWidth width : integerWidthDomain) {
             if (!parameters->operandWidths.contains(width))
               continue;
-            actors.push_back(makeScalarIntegerCompareActor(
-                context, getBitWidth(width), schema, predicate));
+            actors.push_back(
+                {makeScalarIntegerCompareActor(context, getBitWidth(width),
+                                               schema, predicate),
+                 std::nullopt});
           }
         };
     for (::dataflow::OperationSchemaId schema : enabledSchemas) {
@@ -957,7 +1268,7 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
             context, getBitWidth(width), parameters->maxPayloadBits, schema);
         if (!actor)
           return actor.takeError();
-        actors.push_back(std::move(*actor));
+        actors.push_back({std::move(*actor), std::nullopt});
       }
     }
   } else if (family == ImplementationFamilyId::ScalarFloatFma) {
@@ -972,7 +1283,8 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
                     "strict IEEE behavior profile");
     for (FloatFormat format : floatFormatDomain)
       if (parameters->formats.contains(format))
-        actors.push_back(makeScalarFloatFmaActor(context, format));
+        actors.push_back(
+            {makeScalarFloatFmaActor(context, format), std::nullopt});
   } else {
     return reject("finite behavior-domain projection is not implemented for "
                   "the capability family");
@@ -981,20 +1293,29 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
     return reject("capability has no admitted finite behavior");
 
   std::vector<FiniteImplementationFamilyBehaviorPoint> points;
-  for (auto &actor : actors) {
-    if (llvm::Error error =
-            verifyImplementationFamilyAdmission(family, &params, actor))
+  for (ResolvedBehaviorActor &resolvedActor : actors) {
+    auto &actor = resolvedActor.actor;
+    if (resolvedActor.resolvedIndexWidth) {
+      if (llvm::Error error = verifyImplementationFamilyAdmission(
+              family, &params, actor,
+              getResolvedIndexBitWidth(*resolvedActor.resolvedIndexWidth)))
+        return std::move(error);
+    } else if (llvm::Error error = verifyImplementationFamilyAdmission(
+                   family, &params, actor)) {
       return std::move(error);
-    if (llvm::Error error = verifyConcreteActor(actor))
+    }
+    if (llvm::Error error =
+            verifyConcreteActor(actor, resolvedActor.resolvedIndexWidth))
       return std::move(error);
     if (!*needsConfiguration) {
       if (points.empty())
-        points.push_back({std::move(actor), std::nullopt});
+        points.push_back(
+            {std::move(actor), std::nullopt, resolvedActor.resolvedIndexWidth});
       continue;
     }
     auto semantic = encodeImplementationFamilySemanticConfiguration(
         family, params, enabledSchemas, physicalInputCount, physicalResultCount,
-        actor);
+        actor, resolvedActor.resolvedIndexWidth);
     if (!semantic)
       return semantic.takeError();
     const auto duplicate = llvm::find_if(points, [&](const auto &point) {
@@ -1002,7 +1323,8 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
              point.semanticConfiguration->bytes().equals(semantic->bytes());
     });
     if (duplicate == points.end())
-      points.push_back({std::move(actor), std::move(*semantic)});
+      points.push_back({std::move(actor), std::move(*semantic),
+                        resolvedActor.resolvedIndexWidth});
   }
   llvm::sort(points, [](const auto &lhs, const auto &rhs) {
     if (!lhs.semanticConfiguration)

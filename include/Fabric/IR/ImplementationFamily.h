@@ -654,7 +654,8 @@ encodeImplementationFamilySemanticConfiguration(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,
     llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
     std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
-    const ::dataflow::CanonicalActorSchemaProjection &actor);
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    std::optional<ResolvedIndexWidth> resolvedIndexWidth = std::nullopt);
 
 /// One unique configured hardware behavior in a finite concrete capability
 /// domain. The representative actor is a typed witness owned by Fabric; the
@@ -663,16 +664,19 @@ encodeImplementationFamilySemanticConfiguration(
 struct FiniteImplementationFamilyBehaviorPoint final {
   ::dataflow::CanonicalActorSchemaProjection representativeActor;
   std::optional<::loom::CanonicalSemanticBytes> semanticConfiguration;
+  std::optional<ResolvedIndexWidth> resolvedIndexWidth;
 };
 
 /// Resolves a finite concrete capability into unique configured hardware
 /// behaviors. Providers consume this projection instead of reconstructing
-/// exact actor modes from family parameters. `verifyConcreteActor` applies
-/// resource-local constraints to every admitted actor before semantically
-/// equivalent actors collapse to one representative. Families with non-finite
-/// field domains report that no finite projection is available. A family with
-/// an unbounded shape syntax uses maximal witnesses that cover every
-/// behavior-equivalent actor under its monotone resource-local constraints.
+/// exact actor modes from family parameters. `resolvedIndexWidth` is present
+/// exactly when the actor has an index endpoint. `verifyConcreteActor` applies
+/// resource-local constraints to every admitted actor and its exact index
+/// witness before semantically equivalent actors collapse to one
+/// representative. Families with non-finite field domains report that no
+/// finite projection is available. A family with an unbounded shape syntax
+/// uses maximal witnesses that cover every behavior-equivalent actor under its
+/// monotone resource-local constraints.
 llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
 resolveFiniteImplementationFamilyBehaviorDomain(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,
@@ -680,7 +684,8 @@ resolveFiniteImplementationFamilyBehaviorDomain(
     std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
     ::mlir::MLIRContext &context,
     llvm::function_ref<
-        llvm::Error(const ::dataflow::CanonicalActorSchemaProjection &)>
+        llvm::Error(const ::dataflow::CanonicalActorSchemaProjection &,
+                    std::optional<ResolvedIndexWidth>)>
         verifyConcreteActor);
 
 /// Exact flattened payload width used by concrete operation-resource
