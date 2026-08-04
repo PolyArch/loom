@@ -16,6 +16,7 @@ add_executable(loom-hardware-implementation-test
 )
 
 target_link_libraries(loom-hardware-implementation-test PRIVATE
+  LoomADGBuilder
   LoomHardwareImplementation
   LoomHardwareConfiguration
   LoomImplementationPlatform

@@ -1,5 +1,7 @@
 add_library(LoomHardwareImplementation
+  ExternalImplementationContract.cpp
   HardwareImplementation.cpp
+  HardwareImplementationValidation.cpp
 )
 
 target_include_directories(LoomHardwareImplementation PUBLIC

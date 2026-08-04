@@ -10,6 +10,8 @@
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
+#include "HardwareImplementationInternal.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
@@ -27,6 +29,7 @@
 #include <optional>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -50,8 +53,7 @@ namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "hardware_implementation_invalid: " +
-                                     message);
+                                 "hardware_implementation_invalid: " + message);
 }
 
 llvm::StringRef representationSpelling(HardwareRepresentation value) {
@@ -200,6 +202,25 @@ llvm::StringRef objectKindSpelling(RepresentationObjectKind value) {
   llvm_unreachable("validated representation object kind is closed");
 }
 
+llvm::StringRef dependencyKindSpelling(ExternalDependencyKind value) {
+  switch (value) {
+  case ExternalDependencyKind::ExplicitFile:
+    return "explicit_file";
+  case ExternalDependencyKind::ToolBundledResource:
+    return "tool_bundled_resource";
+  }
+  llvm_unreachable("validated external dependency kind is closed");
+}
+
+std::optional<ExternalDependencyKind>
+parseDependencyKind(llvm::StringRef spelling) {
+  if (spelling == "explicit_file")
+    return ExternalDependencyKind::ExplicitFile;
+  if (spelling == "tool_bundled_resource")
+    return ExternalDependencyKind::ToolBundledResource;
+  return std::nullopt;
+}
+
 std::optional<RepresentationObjectKind>
 parseObjectKind(llvm::StringRef spelling) {
   if (spelling == "module")
@@ -267,27 +288,6 @@ llvm::Error validateMediaType(llvm::StringRef value) {
   return llvm::Error::success();
 }
 
-llvm::Error validateLocator(const RepresentationLocator &locator,
-                            HardwareRepresentation representation) {
-  (void)objectKindSpelling(locator.kind);
-  if (locator.canonicalName.empty())
-    return invalid("representation locator name must be nonempty");
-  for (char character : locator.canonicalName) {
-    const unsigned char byte = static_cast<unsigned char>(character);
-    if (byte < 0x21 || byte > 0x7e)
-      return invalid("representation locator name must be printable ASCII");
-  }
-  const bool rtlObject = locator.kind == RepresentationObjectKind::Module ||
-                         locator.kind == RepresentationObjectKind::Instance ||
-                         locator.kind == RepresentationObjectKind::Port ||
-                         locator.kind == RepresentationObjectKind::Net ||
-                         locator.kind == RepresentationObjectKind::Register ||
-                         locator.kind == RepresentationObjectKind::Memory;
-  if (representation == HardwareRepresentation::Rtl && !rtlObject)
-    return invalid("RTL representation uses an incompatible locator kind");
-  return llvm::Error::success();
-}
-
 bool isFpgaRepresentation(HardwareRepresentation representation) {
   return representation == HardwareRepresentation::FpgaPlaced ||
          representation == HardwareRepresentation::FpgaRouted ||
@@ -310,8 +310,7 @@ void writeLocalReference(llvm::json::OStream &json,
     writeArtifactRootReference(json, reference.artifact);
     json.attributeEnd();
     json.attribute("owner_local_kind", reference.ownerLocalKind);
-    json.attribute("payload",
-                   formatArtifactLocalPayloadHex(reference.payload));
+    json.attribute("payload", formatArtifactLocalPayloadHex(reference.payload));
   });
 }
 
@@ -320,6 +319,38 @@ void writeLocator(llvm::json::OStream &json,
   json.object([&] {
     json.attribute("kind", objectKindSpelling(locator.kind));
     json.attribute("name", locator.canonicalName);
+  });
+}
+
+void writeDependencyIdentity(llvm::json::OStream &json,
+                             const ExternalDependencyIdentity &identity) {
+  json.object([&] {
+    std::visit(
+        [&](const auto &dependency) {
+          using Dependency = std::decay_t<decltype(dependency)>;
+          if constexpr (std::is_same_v<Dependency, ExplicitFileDependency>) {
+            json.attribute("kind", dependencyKindSpelling(
+                                       ExternalDependencyKind::ExplicitFile));
+            json.attribute("content_sha256", formatExternalFileFingerprint(
+                                                 dependency.contentSha256));
+          } else {
+            json.attribute("kind",
+                           dependencyKindSpelling(
+                               ExternalDependencyKind::ToolBundledResource));
+            json.attribute("stable_provider_build_identity",
+                           dependency.stableProviderBuildIdentity);
+            json.attribute("resource_key", dependency.resourceKey);
+          }
+        },
+        identity);
+  });
+}
+
+void writePayloadReference(llvm::json::OStream &json,
+                           const HardwarePayloadRef &reference) {
+  json.object([&] {
+    json.attribute("role", payloadRoleSpelling(reference.role));
+    json.attribute("logical_name", reference.logicalName);
   });
 }
 
@@ -392,8 +423,57 @@ std::string serialize(const HardwareImplementation &implementation) {
         });
       }
     });
-    json.attributeArray("memory_macro_bindings", [&] {});
-    json.attributeArray("external_implementation_bindings", [&] {});
+    json.attributeArray("memory_macro_bindings", [&] {
+      for (const MemoryMacroBinding &binding :
+           implementation.memoryMacroBindings()) {
+        json.object([&] {
+          json.attributeBegin("fabric_memory_ref");
+          writeLocalReference(json, fabric::encodeFabricArtifactLocalReference(
+                                        binding.fabricMemoryRef));
+          json.attributeEnd();
+          json.attribute("external_implementation_binding_id",
+                         binding.externalImplementationBindingId);
+          json.attributeBegin("representation_locator");
+          writeLocator(json, binding.representationLocator);
+          json.attributeEnd();
+        });
+      }
+    });
+    json.attributeArray("external_implementation_bindings", [&] {
+      for (const ExternalImplementationBinding &binding :
+           implementation.externalImplementationBindings()) {
+        json.object([&] {
+          json.attribute("binding_id", binding.bindingId);
+          json.attribute("provider_contract_ref", binding.providerContractRef);
+          json.attributeArray("external_inputs", [&] {
+            for (const ExternalInputBinding &input : binding.externalInputs) {
+              json.object([&] {
+                json.attribute("provider_input_slot_ref",
+                               input.providerInputSlotRef);
+                json.attributeBegin("dependency_identity");
+                writeDependencyIdentity(json, input.dependencyIdentity);
+                json.attributeEnd();
+              });
+            }
+          });
+          json.attributeArray("fabric_resource_refs", [&] {
+            for (const EncodedArtifactLocalReference &reference :
+                 binding.fabricResourceRefs)
+              writeLocalReference(json, reference);
+          });
+          json.attributeArray("representation_locators", [&] {
+            for (const RepresentationLocator &locator :
+                 binding.representationLocators)
+              writeLocator(json, locator);
+          });
+          if (binding.blackBoxContractPayloadRef) {
+            json.attributeBegin("black_box_contract_payload_ref");
+            writePayloadReference(json, *binding.blackBoxContractPayloadRef);
+            json.attributeEnd();
+          }
+        });
+      }
+    });
   });
   return output.str().str();
 }
@@ -451,8 +531,7 @@ parseArtifactRootReference(const llvm::json::Object &object,
 }
 
 llvm::Expected<EncodedArtifactLocalReference>
-parseLocalReference(const llvm::json::Object &object,
-                    llvm::StringRef context) {
+parseLocalReference(const llvm::json::Object &object, llvm::StringRef context) {
   if (llvm::Error error = rejectUnknownFields(
           object, context, {"artifact_ref", "owner_local_kind", "payload"}))
     return std::move(error);
@@ -475,8 +554,7 @@ parseLocalReference(const llvm::json::Object &object,
   if (!payload)
     return payload.takeError();
   return EncodedArtifactLocalReference{
-      std::move(*root), static_cast<std::uint32_t>(*kind),
-      std::move(*payload)};
+      std::move(*root), static_cast<std::uint32_t>(*kind), std::move(*payload)};
 }
 
 llvm::Expected<RepresentationLocator>
@@ -496,6 +574,191 @@ parseLocator(const llvm::json::Object &object, llvm::StringRef context) {
   return RepresentationLocator{*kind, name->str()};
 }
 
+llvm::Expected<ExternalDependencyIdentity>
+parseDependencyIdentity(const llvm::json::Object &object,
+                        llvm::StringRef context) {
+  auto kindText = requireString(object, "kind", context);
+  if (!kindText)
+    return kindText.takeError();
+  std::optional<ExternalDependencyKind> kind = parseDependencyKind(*kindText);
+  if (!kind)
+    return invalid(context + " has unknown dependency kind");
+
+  switch (*kind) {
+  case ExternalDependencyKind::ExplicitFile: {
+    if (llvm::Error error =
+            rejectUnknownFields(object, context, {"kind", "content_sha256"}))
+      return std::move(error);
+    auto fingerprintText = requireString(object, "content_sha256", context);
+    if (!fingerprintText)
+      return fingerprintText.takeError();
+    auto fingerprint = parseExternalFileFingerprint(*fingerprintText);
+    if (!fingerprint)
+      return fingerprint.takeError();
+    return ExternalDependencyIdentity(
+        ExplicitFileDependency{std::move(*fingerprint)});
+  }
+  case ExternalDependencyKind::ToolBundledResource: {
+    if (llvm::Error error = rejectUnknownFields(
+            object, context,
+            {"kind", "stable_provider_build_identity", "resource_key"}))
+      return std::move(error);
+    auto build =
+        requireString(object, "stable_provider_build_identity", context);
+    auto resource = requireString(object, "resource_key", context);
+    if (!build)
+      return build.takeError();
+    if (!resource)
+      return resource.takeError();
+    return ExternalDependencyIdentity(
+        ToolBundledResourceDependency{build->str(), resource->str()});
+  }
+  }
+  llvm_unreachable("parsed external dependency kind is closed");
+}
+
+llvm::Expected<HardwarePayloadRef>
+parsePayloadReference(const llvm::json::Object &object,
+                      llvm::StringRef context) {
+  if (llvm::Error error =
+          rejectUnknownFields(object, context, {"role", "logical_name"}))
+    return std::move(error);
+  auto roleText = requireString(object, "role", context);
+  auto logicalName = requireString(object, "logical_name", context);
+  if (!roleText)
+    return roleText.takeError();
+  if (!logicalName)
+    return logicalName.takeError();
+  std::optional<HardwarePayloadRole> role = parsePayloadRole(*roleText);
+  if (!role)
+    return invalid(context + " has unknown payload role");
+  return HardwarePayloadRef{*role, logicalName->str()};
+}
+
+llvm::Expected<ExternalImplementationBinding>
+parseExternalBinding(const llvm::json::Object &object,
+                     llvm::StringRef context) {
+  if (llvm::Error error = rejectUnknownFields(
+          object, context,
+          {"binding_id", "provider_contract_ref", "external_inputs",
+           "fabric_resource_refs", "representation_locators",
+           "black_box_contract_payload_ref"}))
+    return std::move(error);
+  auto bindingId = requireString(object, "binding_id", context);
+  auto contractRef = requireString(object, "provider_contract_ref", context);
+  auto inputArray = requireArray(object, "external_inputs", context);
+  auto fabricArray = requireArray(object, "fabric_resource_refs", context);
+  auto locatorArray = requireArray(object, "representation_locators", context);
+  if (!bindingId)
+    return bindingId.takeError();
+  if (!contractRef)
+    return contractRef.takeError();
+  if (!inputArray)
+    return inputArray.takeError();
+  if (!fabricArray)
+    return fabricArray.takeError();
+  if (!locatorArray)
+    return locatorArray.takeError();
+
+  std::vector<ExternalInputBinding> inputs;
+  for (const llvm::json::Value &value : **inputArray) {
+    const llvm::json::Object *input = value.getAsObject();
+    if (!input)
+      return invalid(context + " input must be an object");
+    if (llvm::Error error = rejectUnknownFields(
+            *input, "external input",
+            {"provider_input_slot_ref", "dependency_identity"}))
+      return std::move(error);
+    auto slot =
+        requireString(*input, "provider_input_slot_ref", "external input");
+    if (!slot)
+      return slot.takeError();
+    const llvm::json::Object *dependency =
+        input->getObject("dependency_identity");
+    if (!dependency)
+      return invalid("external input requires dependency identity");
+    auto identity =
+        parseDependencyIdentity(*dependency, "external dependency identity");
+    if (!identity)
+      return identity.takeError();
+    inputs.push_back(ExternalInputBinding{slot->str(), std::move(*identity)});
+  }
+
+  std::vector<EncodedArtifactLocalReference> fabricRefs;
+  for (const llvm::json::Value &value : **fabricArray) {
+    const llvm::json::Object *reference = value.getAsObject();
+    if (!reference)
+      return invalid(context + " Fabric resource reference must be an object");
+    auto parsed =
+        parseLocalReference(*reference, "external Fabric resource reference");
+    if (!parsed)
+      return parsed.takeError();
+    fabricRefs.push_back(std::move(*parsed));
+  }
+
+  std::vector<RepresentationLocator> locators;
+  for (const llvm::json::Value &value : **locatorArray) {
+    const llvm::json::Object *locator = value.getAsObject();
+    if (!locator)
+      return invalid(context + " representation locator must be an object");
+    auto parsed = parseLocator(*locator, "external representation locator");
+    if (!parsed)
+      return parsed.takeError();
+    locators.push_back(std::move(*parsed));
+  }
+
+  std::optional<HardwarePayloadRef> blackBox;
+  if (const llvm::json::Value *value =
+          object.get("black_box_contract_payload_ref")) {
+    const llvm::json::Object *reference = value->getAsObject();
+    if (!reference)
+      return invalid(context + " BlackBoxContract reference must be an object");
+    auto parsed =
+        parsePayloadReference(*reference, "BlackBoxContract payload reference");
+    if (!parsed)
+      return parsed.takeError();
+    blackBox = std::move(*parsed);
+  }
+
+  return ExternalImplementationBinding{
+      bindingId->str(),      contractRef->str(),  std::move(inputs),
+      std::move(fabricRefs), std::move(locators), std::move(blackBox)};
+}
+
+llvm::Expected<MemoryMacroBinding>
+parseMemoryMacroBinding(const llvm::json::Object &object,
+                        llvm::StringRef context) {
+  if (llvm::Error error = rejectUnknownFields(
+          object, context,
+          {"fabric_memory_ref", "external_implementation_binding_id",
+           "representation_locator"}))
+    return std::move(error);
+  const llvm::json::Object *memoryObject =
+      object.getObject("fabric_memory_ref");
+  const llvm::json::Object *locatorObject =
+      object.getObject("representation_locator");
+  auto bindingId =
+      requireString(object, "external_implementation_binding_id", context);
+  if (!memoryObject || !locatorObject)
+    return invalid(context + " requires memory and locator objects");
+  if (!bindingId)
+    return bindingId.takeError();
+  auto encodedMemory =
+      parseLocalReference(*memoryObject, "memory macro Fabric reference");
+  if (!encodedMemory)
+    return encodedMemory.takeError();
+  auto memory = fabric::decodeFabricArtifactLocalReference<
+      fabric::FabricMemoryOccurrenceRef>(*encodedMemory);
+  if (!memory)
+    return memory.takeError();
+  auto locator =
+      parseLocator(*locatorObject, "memory macro representation locator");
+  if (!locator)
+    return locator.takeError();
+  return MemoryMacroBinding{std::move(*memory), bindingId->str(),
+                            std::move(*locator)};
+}
+
 llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
   llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(body);
   if (!parsed)
@@ -505,10 +768,10 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
     return invalid("root must be an object");
   if (llvm::Error error = rejectUnknownFields(
           *root, "root",
-          {"schema", "schema_version", "fabric_ref",
-           "configuration_abi_ref", "interconnect_implementation_refs",
-           "representation", "implementation_platform_ref", "payloads",
-           "interfaces", "activity_points", "memory_macro_bindings",
+          {"schema", "schema_version", "fabric_ref", "configuration_abi_ref",
+           "interconnect_implementation_refs", "representation",
+           "implementation_platform_ref", "payloads", "interfaces",
+           "activity_points", "memory_macro_bindings",
            "external_implementation_bindings"}))
     return std::move(error);
   auto schema = requireString(*root, "schema", "root");
@@ -533,8 +796,8 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
   if (!abi)
     return abi.takeError();
 
-  auto interconnectArray = requireArray(
-      *root, "interconnect_implementation_refs", "root");
+  auto interconnectArray =
+      requireArray(*root, "interconnect_implementation_refs", "root");
   if (!interconnectArray)
     return interconnectArray.takeError();
   std::vector<ArtifactRootReference> interconnects;
@@ -612,15 +875,14 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
     const llvm::json::Object *object = value.getAsObject();
     if (!object)
       return invalid("implementation interface must be an object");
-    if (llvm::Error error = rejectUnknownFields(
-            *object, "implementation interface",
-            {"interface_key", "role", "semantic_fabric_ref",
-             "representation_locator", "device_pin_ref"}))
+    if (llvm::Error error =
+            rejectUnknownFields(*object, "implementation interface",
+                                {"interface_key", "role", "semantic_fabric_ref",
+                                 "representation_locator", "device_pin_ref"}))
       return std::move(error);
-    auto key = requireString(*object, "interface_key",
-                             "implementation interface");
-    auto roleText = requireString(*object, "role",
-                                  "implementation interface");
+    auto key =
+        requireString(*object, "interface_key", "implementation interface");
+    auto roleText = requireString(*object, "role", "implementation interface");
     if (!key)
       return key.takeError();
     if (!roleText)
@@ -647,9 +909,9 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
     if (std::optional<llvm::StringRef> value =
             object->getString("device_pin_ref"))
       pin = value->str();
-    interfaces.push_back(ImplementationInterface{
-        key->str(), *role, std::move(*semanticRef), std::move(*locator),
-        std::move(pin)});
+    interfaces.push_back(
+        ImplementationInterface{key->str(), *role, std::move(*semanticRef),
+                                std::move(*locator), std::move(pin)});
   }
 
   auto activityArray = requireArray(*root, "activity_points", "root");
@@ -660,10 +922,10 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
     const llvm::json::Object *object = value.getAsObject();
     if (!object)
       return invalid("activity point must be an object");
-    if (llvm::Error error = rejectUnknownFields(
-            *object, "activity point",
-            {"activity_point_id", "representation_locator",
-             "semantic_fabric_ref"}))
+    if (llvm::Error error =
+            rejectUnknownFields(*object, "activity point",
+                                {"activity_point_id", "representation_locator",
+                                 "semantic_fabric_ref"}))
       return std::move(error);
     auto id = requireString(*object, "activity_point_id", "activity point");
     if (!id)
@@ -688,8 +950,8 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
         return reference.takeError();
       semanticRef = std::move(*reference);
     }
-    activityPoints.push_back(ActivityPoint{
-        id->str(), std::move(*locator), std::move(semanticRef)});
+    activityPoints.push_back(
+        ActivityPoint{id->str(), std::move(*locator), std::move(semanticRef)});
   }
 
   auto memoryBindings = requireArray(*root, "memory_macro_bindings", "root");
@@ -699,13 +961,40 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
     return memoryBindings.takeError();
   if (!externalBindings)
     return externalBindings.takeError();
-  if (!(**memoryBindings).empty() || !(**externalBindings).empty())
-    return invalid("external implementation contracts are unavailable");
 
-  return HardwareImplementationDraft{
-      std::move(*fabric), std::move(*abi), std::move(interconnects),
-      *representation, std::move(platform), std::move(payloads),
-      std::move(interfaces), std::move(activityPoints), {}, {}};
+  std::vector<MemoryMacroBinding> parsedMemoryBindings;
+  for (const llvm::json::Value &value : **memoryBindings) {
+    const llvm::json::Object *binding = value.getAsObject();
+    if (!binding)
+      return invalid("memory macro binding must be an object");
+    auto parsed = parseMemoryMacroBinding(*binding, "memory macro binding");
+    if (!parsed)
+      return parsed.takeError();
+    parsedMemoryBindings.push_back(std::move(*parsed));
+  }
+
+  std::vector<ExternalImplementationBinding> parsedExternalBindings;
+  for (const llvm::json::Value &value : **externalBindings) {
+    const llvm::json::Object *binding = value.getAsObject();
+    if (!binding)
+      return invalid("external implementation binding must be an object");
+    auto parsed =
+        parseExternalBinding(*binding, "external implementation binding");
+    if (!parsed)
+      return parsed.takeError();
+    parsedExternalBindings.push_back(std::move(*parsed));
+  }
+
+  return HardwareImplementationDraft{std::move(*fabric),
+                                     std::move(*abi),
+                                     std::move(interconnects),
+                                     *representation,
+                                     std::move(platform),
+                                     std::move(payloads),
+                                     std::move(interfaces),
+                                     std::move(activityPoints),
+                                     std::move(parsedMemoryBindings),
+                                     std::move(parsedExternalBindings)};
 }
 
 llvm::Error validatePayloadClosure(llvm::ArrayRef<HardwarePayload> payloads,
@@ -714,10 +1003,9 @@ llvm::Error validatePayloadClosure(llvm::ArrayRef<HardwarePayload> payloads,
   if (payloads.empty())
     return invalid("payload catalog must be nonempty");
   auto hasRole = [&](HardwarePayloadRole role) {
-    return llvm::any_of(payloads,
-                        [&](const HardwarePayload &payload) {
-                          return payload.role == role;
-                        });
+    return llvm::any_of(payloads, [&](const HardwarePayload &payload) {
+      return payload.role == role;
+    });
   };
   switch (representation) {
   case HardwareRepresentation::Rtl:
@@ -744,7 +1032,8 @@ llvm::Error validatePayloadClosure(llvm::ArrayRef<HardwarePayload> payloads,
     break;
   case HardwareRepresentation::FpgaImage:
     if (!hasRole(HardwarePayloadRole::DeviceImage))
-      return invalid("FPGA image representation requires a DeviceImage payload");
+      return invalid(
+          "FPGA image representation requires a DeviceImage payload");
     break;
   }
 
@@ -763,6 +1052,7 @@ llvm::Error validatePayloadClosure(llvm::ArrayRef<HardwarePayload> payloads,
 
 llvm::Expected<HardwareImplementation>
 canonicalize(HardwareImplementationDraft draft,
+             const ExternalImplementationContractCatalog &contracts,
              const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (draft.fabric.schemaIdentity != fabric::fabricArtifactSchema.identity ||
       draft.fabric.schemaVersion != fabric::fabricArtifactSchema.version)
@@ -799,7 +1089,8 @@ canonicalize(HardwareImplementationDraft draft,
       return invalid("interconnect reference has the wrong Fabric root kind");
     const auto dependencies = interconnect->directDependencies();
     if (dependencies.size() != 1 ||
-        dependencies.front().role != fabric::FabricDependencyRole::RefinedSystem ||
+        dependencies.front().role !=
+            fabric::FabricDependencyRole::RefinedSystem ||
         dependencies.front().root != draft.fabric)
       return invalid("interconnect implementation does not refine fabric_ref");
   }
@@ -813,16 +1104,17 @@ canonicalize(HardwareImplementationDraft draft,
       return imported.takeError();
     platform = std::move(*imported);
   } else if (draft.representation != HardwareRepresentation::Rtl) {
-    return invalid("non-RTL representation requires an implementation platform");
+    return invalid(
+        "non-RTL representation requires an implementation platform");
   }
 
-  llvm::sort(draft.payloads, [](const HardwarePayload &lhs,
-                                const HardwarePayload &rhs) {
-    return std::tie(lhs.role, lhs.logicalName, lhs.mediaType,
-                    lhs.content.bytes()) <
-           std::tie(rhs.role, rhs.logicalName, rhs.mediaType,
-                    rhs.content.bytes());
-  });
+  llvm::sort(draft.payloads,
+             [](const HardwarePayload &lhs, const HardwarePayload &rhs) {
+               return std::tie(lhs.role, lhs.logicalName, lhs.mediaType,
+                               lhs.content.bytes()) <
+                      std::tie(rhs.role, rhs.logicalName, rhs.mediaType,
+                               rhs.content.bytes());
+             });
   for (std::size_t index = 1; index < draft.payloads.size(); ++index)
     if (draft.payloads[index - 1].role == draft.payloads[index].role &&
         draft.payloads[index - 1].logicalName ==
@@ -832,15 +1124,14 @@ canonicalize(HardwareImplementationDraft draft,
           validatePayloadClosure(draft.payloads, draft.representation, blobs))
     return std::move(error);
 
-  llvm::sort(draft.interfaces,
-             [](const ImplementationInterface &lhs,
-                const ImplementationInterface &rhs) {
-               return lhs.interfaceKey < rhs.interfaceKey;
-             });
+  llvm::sort(draft.interfaces, [](const ImplementationInterface &lhs,
+                                  const ImplementationInterface &rhs) {
+    return lhs.interfaceKey < rhs.interfaceKey;
+  });
   for (std::size_t index = 0; index < draft.interfaces.size(); ++index) {
     const ImplementationInterface &interface = draft.interfaces[index];
-    if (index != 0 && draft.interfaces[index - 1].interfaceKey ==
-                          interface.interfaceKey)
+    if (index != 0 &&
+        draft.interfaces[index - 1].interfaceKey == interface.interfaceKey)
       return invalid("interface catalog contains a duplicate key");
     if (llvm::Error error =
             validateKey(interface.interfaceKey, "interface key"))
@@ -849,8 +1140,8 @@ canonicalize(HardwareImplementationDraft draft,
     if (llvm::Error error = fabric::validateFabricArtifactLocalReference(
             importedFabric->view(), interface.semanticFabricRef))
       return std::move(error);
-    if (llvm::Error error = validateLocator(interface.representationLocator,
-                                            draft.representation))
+    if (llvm::Error error = detail::validateRepresentationLocator(
+            interface.representationLocator, draft.representation))
       return std::move(error);
     if (interface.devicePinRef) {
       if (!platform ||
@@ -876,8 +1167,8 @@ canonicalize(HardwareImplementationDraft draft,
     if (llvm::Error error =
             validateKey(point.activityPointId, "activity point ID"))
       return std::move(error);
-    if (llvm::Error error =
-            validateLocator(point.representationLocator, draft.representation))
+    if (llvm::Error error = detail::validateRepresentationLocator(
+            point.representationLocator, draft.representation))
       return std::move(error);
     if (point.semanticFabricRef)
       if (llvm::Error error = fabric::validateFabricArtifactLocalReference(
@@ -885,9 +1176,15 @@ canonicalize(HardwareImplementationDraft draft,
         return std::move(error);
   }
 
-  if (!draft.memoryMacroBindings.empty() ||
-      !draft.externalImplementationBindings.empty())
-    return invalid("external implementation contracts are unavailable");
+  if (llvm::Error error = detail::canonicalizeExternalImplementationBindings(
+          draft.externalImplementationBindings, contracts, draft.representation,
+          platform ? &platform->platform() : nullptr, draft.payloads,
+          importedFabric->view()))
+    return std::move(error);
+  if (llvm::Error error = detail::canonicalizeMemoryMacroBindings(
+          draft.memoryMacroBindings, draft.externalImplementationBindings,
+          contracts, draft.representation, importedFabric->view()))
+    return std::move(error);
 
   return detail::HardwareImplementationBuilder::create(std::move(draft));
 }
@@ -898,13 +1195,14 @@ llvm::StringRef asText(llvm::ArrayRef<std::uint8_t> bytes) {
 }
 
 llvm::Expected<HardwareImplementation>
-decode(llvm::StringRef canonicalJson, const ArtifactStore &artifacts,
-       const BlobStore &blobs) {
+decode(llvm::StringRef canonicalJson,
+       const ExternalImplementationContractCatalog &contracts,
+       const ArtifactStore &artifacts, const BlobStore &blobs) {
   auto draft = parse(canonicalJson);
   if (!draft)
     return draft.takeError();
   auto implementation =
-      canonicalize(std::move(*draft), artifacts, blobs);
+      canonicalize(std::move(*draft), contracts, artifacts, blobs);
   if (!implementation)
     return implementation.takeError();
   if (serialize(*implementation) != canonicalJson)
@@ -918,11 +1216,21 @@ llvm::Expected<FinalizedHardwareImplementation>
 finalizeHardwareImplementation(HardwareImplementationDraft draft,
                                const ArtifactStore &artifacts,
                                const BlobStore &blobs) {
-  auto implementation = canonicalize(std::move(draft), artifacts, blobs);
+  const ExternalImplementationContractCatalog contracts;
+  return finalizeHardwareImplementation(std::move(draft), contracts, artifacts,
+                                        blobs);
+}
+
+llvm::Expected<FinalizedHardwareImplementation> finalizeHardwareImplementation(
+    HardwareImplementationDraft draft,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto implementation =
+      canonicalize(std::move(draft), contracts, artifacts, blobs);
   if (!implementation)
     return implementation.takeError();
   const std::string json = serialize(*implementation);
-  auto strict = decode(json, artifacts, blobs);
+  auto strict = decode(json, contracts, artifacts, blobs);
   if (!strict)
     return strict.takeError();
   CanonicalSemanticBytes bytes(
@@ -933,20 +1241,29 @@ finalizeHardwareImplementation(HardwareImplementationDraft draft,
   return importHardwareImplementation(
       {hardwareImplementationSchema.identity.str(),
        hardwareImplementationSchema.version, *identity},
-      artifacts, blobs);
+      contracts, artifacts, blobs);
 }
 
 llvm::Expected<FinalizedHardwareImplementation>
 importHardwareImplementation(const ArtifactRootReference &reference,
                              const ArtifactStore &artifacts,
                              const BlobStore &blobs) {
+  const ExternalImplementationContractCatalog contracts;
+  return importHardwareImplementation(reference, contracts, artifacts, blobs);
+}
+
+llvm::Expected<FinalizedHardwareImplementation> importHardwareImplementation(
+    const ArtifactRootReference &reference,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (reference.schemaIdentity != hardwareImplementationSchema.identity ||
       reference.schemaVersion != hardwareImplementationSchema.version)
     return invalid("reference requires loom.hardware_implementation 1.0");
   auto bytes = artifacts.get(reference);
   if (!bytes)
     return bytes.takeError();
-  auto implementation = decode(asText(bytes->bytes()), artifacts, blobs);
+  auto implementation =
+      decode(asText(bytes->bytes()), contracts, artifacts, blobs);
   if (!implementation)
     return implementation.takeError();
   if (finalizeArtifactIdentity(hardwareImplementationSchema, *bytes) !=

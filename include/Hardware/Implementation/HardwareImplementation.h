@@ -19,6 +19,10 @@
 namespace loom {
 class ArtifactStore;
 class BlobStore;
+} // namespace loom
+
+namespace loom::platform {
+class ImplementationPlatform;
 }
 
 namespace loom::hardware {
@@ -130,6 +134,11 @@ struct ToolBundledResourceDependency final {
   std::string resourceKey;
 };
 
+enum class ExternalDependencyKind {
+  ExplicitFile,
+  ToolBundledResource,
+};
+
 using ExternalDependencyIdentity =
     std::variant<ExplicitFileDependency, ToolBundledResourceDependency>;
 
@@ -150,6 +159,34 @@ struct ExternalImplementationBinding final {
   std::vector<EncodedArtifactLocalReference> fabricResourceRefs;
   std::vector<RepresentationLocator> representationLocators;
   std::optional<HardwarePayloadRef> blackBoxContractPayloadRef;
+};
+
+struct ExternalInputSlotContract final {
+  std::string providerInputSlotRef;
+  std::vector<ExternalDependencyKind> acceptedDependencyKinds;
+};
+
+using ExternalImplementationBindingValidator = llvm::Error (*)(
+    const ExternalImplementationBinding &, HardwareRepresentation,
+    const platform::ImplementationPlatform *);
+
+struct ExternalImplementationContract final {
+  std::string contractRef;
+  std::vector<ExternalInputSlotContract> inputSlots;
+  std::vector<HardwareRepresentation> supportedRepresentations;
+  bool blackBoxContractRequired = false;
+  bool memoryMacroCapable = false;
+  ExternalImplementationBindingValidator validator = nullptr;
+};
+
+class ExternalImplementationContractCatalog final {
+public:
+  llvm::Error add(ExternalImplementationContract contract);
+  std::optional<ExternalImplementationContract>
+  find(llvm::StringRef contractRef) const;
+
+private:
+  std::vector<ExternalImplementationContract> contracts_;
 };
 
 struct MemoryMacroBinding final {
@@ -213,12 +250,10 @@ private:
       std::vector<ImplementationInterface> interfaces,
       std::vector<ActivityPoint> activityPoints,
       std::vector<MemoryMacroBinding> memoryMacroBindings,
-      std::vector<ExternalImplementationBinding>
-          externalImplementationBindings)
+      std::vector<ExternalImplementationBinding> externalImplementationBindings)
       : fabric_(std::move(fabric)),
         configurationAbi_(std::move(configurationAbi)),
-        interconnectImplementations_(
-            std::move(interconnectImplementations)),
+        interconnectImplementations_(std::move(interconnectImplementations)),
         representation_(representation),
         implementationPlatform_(std::move(implementationPlatform)),
         payloads_(std::move(payloads)), interfaces_(std::move(interfaces)),
@@ -267,7 +302,15 @@ private:
   finalizeHardwareImplementation(HardwareImplementationDraft,
                                  const ArtifactStore &, const BlobStore &);
   friend llvm::Expected<FinalizedHardwareImplementation>
+  finalizeHardwareImplementation(HardwareImplementationDraft,
+                                 const ExternalImplementationContractCatalog &,
+                                 const ArtifactStore &, const BlobStore &);
+  friend llvm::Expected<FinalizedHardwareImplementation>
   importHardwareImplementation(const ArtifactRootReference &,
+                               const ArtifactStore &, const BlobStore &);
+  friend llvm::Expected<FinalizedHardwareImplementation>
+  importHardwareImplementation(const ArtifactRootReference &,
+                               const ExternalImplementationContractCatalog &,
                                const ArtifactStore &, const BlobStore &);
 };
 
@@ -276,10 +319,20 @@ finalizeHardwareImplementation(HardwareImplementationDraft draft,
                                const ArtifactStore &artifacts,
                                const BlobStore &blobs);
 
+llvm::Expected<FinalizedHardwareImplementation> finalizeHardwareImplementation(
+    HardwareImplementationDraft draft,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
+
 llvm::Expected<FinalizedHardwareImplementation>
 importHardwareImplementation(const ArtifactRootReference &reference,
                              const ArtifactStore &artifacts,
                              const BlobStore &blobs);
+
+llvm::Expected<FinalizedHardwareImplementation> importHardwareImplementation(
+    const ArtifactRootReference &reference,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
 
 } // namespace loom::hardware
 
