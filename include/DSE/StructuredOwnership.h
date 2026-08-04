@@ -42,6 +42,13 @@ struct StructuredOwnershipExplorationOptions final {
       StructuredOwnershipSelectionMode::BenefitQualified;
 };
 
+struct StructuredOwnershipGenerationOptions final {
+  lowering::CanonicalDataflowLoweringOptions lowering;
+  std::uint64_t scopeExpansionLimit = 64;
+  std::uint32_t candidateWorkerCount = 1;
+  std::vector<frontend::StructuredEntityRef> protocolCallableRoots{};
+};
+
 /// One exact parent-local ownership decision that produced a child candidate.
 /// This is invocation lineage, not part of either Artifact's identity.
 struct StructuredOwnershipDerivation final {
@@ -95,6 +102,14 @@ struct StructuredOwnershipCandidateDisposition final {
   }
 };
 
+/// Complete finite Generate result. Candidate identity remains the ordinary
+/// Structured Program Artifact identity; dispositions are invocation-local
+/// lineage used by tracing and never become a second candidate authority.
+struct CompletedStructuredOwnershipGeneration final {
+  CandidateSet candidates;
+  std::vector<StructuredOwnershipCandidateDisposition> dispositions;
+};
+
 struct SelectedStructuredOwnershipCandidate final {
   frontend::MaterializedOwnershipCandidate candidate;
   std::vector<StructuredOwnershipDerivation> derivations;
@@ -110,6 +125,19 @@ struct CompletedStructuredOwnershipSelection final {
 using StructuredOwnershipExplorationOutcome =
     std::variant<CompletedStructuredOwnershipSelection,
                  CompletedNoFeasibleCandidate, IncompleteSelection>;
+
+/// Generates and publishes one finite canonical ownership candidate set. It
+/// performs no metric acquisition, quality gate, or candidate promotion.
+llvm::Expected<CompletedStructuredOwnershipGeneration>
+generateStructuredOwnershipCandidates(
+    const frontend::StructuredProgramCandidate &parent,
+    const sim::CanonicalSimulationWorkload &workload,
+    const sim::CanonicalSimulationRuntimeInput &runtimeInput,
+    const fabric::FinalizedFabricRoot &fabric,
+    const StructuredOwnershipGenerationOptions &options,
+    const ArtifactStore &artifactStore,
+    llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
+        sourceProvenance = {});
 
 /// Executes one finite Ownership Generate/Evaluate/Promote composition. Every
 /// generated child is independently materialized from the immutable parent;

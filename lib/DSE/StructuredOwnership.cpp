@@ -47,6 +47,14 @@ using OwnershipAttemptResult =
     std::variant<MaterializedOwnershipWorkItem,
                  StructuredOwnershipCandidateRejectionRecord>;
 
+struct OwnershipGenerationState final {
+  CompletedStructuredOwnershipGeneration completed;
+  ArtifactRootReference parentReference;
+  ArtifactRootReference workloadReference;
+  ArtifactRootReference runtimeInputReference;
+  sim::NativeStructuredProgramObservations sourceObservations;
+};
+
 void mergeEvidenceReferences(std::vector<ArtifactRootReference> &destination,
                              llvm::ArrayRef<ArtifactRootReference> additional) {
   destination.insert(destination.end(), additional.begin(), additional.end());
@@ -62,9 +70,10 @@ llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     const ArtifactRootReference &runtimeInputReference,
     const sim::NativeStructuredProgramObservations &sourceObservations,
-    const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
-    const StructuredOwnershipExplorationOptions &options,
-    const ArtifactStore &artifactStore, const OwnershipWorkItem &workItem,
+    const fabric::FinalizedFabricRoot &fabric,
+    const StructuredOwnershipGenerationOptions &options,
+    const ResolvedConfig *analyticConfig, const ArtifactStore &artifactStore,
+    const OwnershipWorkItem &workItem,
     llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
         sourceProvenance) {
   auto candidate = frontend::materializeSpatialOwnershipDecision(
@@ -89,46 +98,44 @@ llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
       candidate->structuredProgram, artifactStore);
   if (!reference)
     return reference.takeError();
-  const evaluation::models::StructuredFabricAnalyticInvocation invocation{
-      workloadReference, runtimeInputReference, workload, runtimeInput, parent,
-      sourceObservations};
-  if (llvm::Error error =
-          evaluation::models::primeStructuredFabricAnalyticResult(
-              *reference,
-              {candidate->structuredProgram, &candidate->canonicalDataflow,
-               candidate->spatialGraphs, candidate->blockActivityLineage},
-              invocation, fabric, config, artifactStore))
-    return std::move(error);
+  if (analyticConfig) {
+    const evaluation::models::StructuredFabricAnalyticInvocation invocation{
+        workloadReference,
+        runtimeInputReference,
+        workload,
+        runtimeInput,
+        parent,
+        sourceObservations};
+    if (llvm::Error error =
+            evaluation::models::primeStructuredFabricAnalyticResult(
+                *reference,
+                {candidate->structuredProgram, &candidate->canonicalDataflow,
+                 candidate->spatialGraphs, candidate->blockActivityLineage},
+                invocation, fabric, *analyticConfig, artifactStore))
+      return std::move(error);
+  }
   return OwnershipAttemptResult{
       MaterializedOwnershipWorkItem{std::move(*reference)}};
 }
 
 } // namespace
 
-llvm::Expected<StructuredOwnershipExplorationOutcome>
-generateAndPromoteStructuredOwnership(
+static llvm::Expected<OwnershipGenerationState>
+generateStructuredOwnershipCandidatesImpl(
     const frontend::StructuredProgramCandidate &parent,
     const sim::CanonicalSimulationWorkload &workload,
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
-    const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
-    const StructuredOwnershipExplorationOptions &options,
+    const fabric::FinalizedFabricRoot &fabric,
+    const StructuredOwnershipGenerationOptions &options,
     const ArtifactStore &artifactStore,
     llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
-        sourceProvenance) {
+        sourceProvenance,
+    const ResolvedConfig *analyticConfig,
+    evaluation::models::StructuredEvaluationInvocationCache *evaluationCache) {
   if (options.candidateWorkerCount == 0)
     return invalid("candidate worker count must be positive");
-  if (config.dse.structuredOwnership.scopeExpansionLimit == 0)
+  if (options.scopeExpansionLimit == 0)
     return invalid("ownership scope expansion limit must be positive");
-  if (llvm::Error error =
-          evaluation::models::registerStructuredFabricAnalyticModel())
-    return std::move(error);
-  if (llvm::Error error =
-          evaluation::models::registerStructuredProgramFunctionalModel())
-    return std::move(error);
-
-  evaluation::models::StructuredEvaluationInvocationCache evaluationCache;
-  evaluation::models::StructuredEvaluationInvocationCacheScope
-      evaluationCacheScope(evaluationCache);
 
   std::vector<ArtifactRootReference> candidateReferences;
   auto parentReference =
@@ -147,20 +154,22 @@ generateAndPromoteStructuredOwnership(
       sim::executeNativeStructuredProgram(parent, workload, runtimeInput);
   if (!sourceObservations)
     return sourceObservations.takeError();
-  const evaluation::models::StructuredFabricAnalyticInvocation invocation{
-      *workloadReference,
-      *runtimeInputReference,
-      workload,
-      runtimeInput,
-      parent,
-      *sourceObservations};
-  if (llvm::Error error =
-          evaluation::models::primeStructuredFabricAnalyticResult(
-              *parentReference,
-              evaluation::models::StructuredFabricAnalyticCandidateProjection{
-                  parent, nullptr, {}, {}, &*sourceObservations},
-              invocation, fabric, config, artifactStore))
-    return std::move(error);
+  if (analyticConfig) {
+    const evaluation::models::StructuredFabricAnalyticInvocation invocation{
+        *workloadReference,
+        *runtimeInputReference,
+        workload,
+        runtimeInput,
+        parent,
+        *sourceObservations};
+    if (llvm::Error error =
+            evaluation::models::primeStructuredFabricAnalyticResult(
+                *parentReference,
+                evaluation::models::StructuredFabricAnalyticCandidateProjection{
+                    parent, nullptr, {}, {}, &*sourceObservations},
+                invocation, fabric, *analyticConfig, artifactStore))
+      return std::move(error);
+  }
   candidateReferences.push_back(*parentReference);
 
   auto domain = options.protocolCallableRoots.empty()
@@ -227,11 +236,10 @@ generateAndPromoteStructuredOwnership(
     frontier.push(root);
 
   std::vector<std::size_t> plannedScopeOrdinals;
-  plannedScopeOrdinals.reserve(std::min<std::size_t>(
-      config.dse.structuredOwnership.scopeExpansionLimit, domain->size()));
+  plannedScopeOrdinals.reserve(
+      std::min<std::size_t>(options.scopeExpansionLimit, domain->size()));
   while (!frontier.empty() &&
-         plannedScopeOrdinals.size() <
-             config.dse.structuredOwnership.scopeExpansionLimit) {
+         plannedScopeOrdinals.size() < options.scopeExpansionLimit) {
     const std::size_t ordinal = frontier.top();
     frontier.pop();
     plannedScopeOrdinals.push_back(ordinal);
@@ -280,8 +288,8 @@ generateAndPromoteStructuredOwnership(
                      std::size_t index) {
     auto result = materializeOwnershipWorkItem(
         workerParent, workload, *workloadReference, runtimeInput,
-        *runtimeInputReference, *sourceObservations, fabric, config, options,
-        artifactStore, workItems[index], sourceProvenance);
+        *runtimeInputReference, *sourceObservations, fabric, options,
+        analyticConfig, artifactStore, workItems[index], sourceProvenance);
     if (!result) {
       results[index].error.emplace(result.takeError());
       return;
@@ -314,8 +322,11 @@ generateAndPromoteStructuredOwnership(
     std::atomic_size_t nextWorkItem{0};
     for (std::size_t worker = 0; worker < workerCount; ++worker)
       pool.async([&, worker] {
-        evaluation::models::StructuredEvaluationInvocationCacheScope
-            workerEvaluationCacheScope(evaluationCache);
+        std::optional<
+            evaluation::models::StructuredEvaluationInvocationCacheScope>
+            workerEvaluationCacheScope;
+        if (evaluationCache)
+          workerEvaluationCacheScope.emplace(*evaluationCache);
         while (true) {
           const std::size_t index =
               nextWorkItem.fetch_add(1, std::memory_order_relaxed);
@@ -364,6 +375,73 @@ generateAndPromoteStructuredOwnership(
       frontend::structuredProgramArtifactSchema, candidateReferences);
   if (!candidateSet)
     return candidateSet.takeError();
+
+  return OwnershipGenerationState{
+      CompletedStructuredOwnershipGeneration{std::move(*candidateSet),
+                                             std::move(dispositions)},
+      std::move(*parentReference), std::move(*workloadReference),
+      std::move(*runtimeInputReference), std::move(*sourceObservations)};
+}
+
+llvm::Expected<CompletedStructuredOwnershipGeneration>
+generateStructuredOwnershipCandidates(
+    const frontend::StructuredProgramCandidate &parent,
+    const sim::CanonicalSimulationWorkload &workload,
+    const sim::CanonicalSimulationRuntimeInput &runtimeInput,
+    const fabric::FinalizedFabricRoot &fabric,
+    const StructuredOwnershipGenerationOptions &options,
+    const ArtifactStore &artifactStore,
+    llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
+        sourceProvenance) {
+  auto generated = generateStructuredOwnershipCandidatesImpl(
+      parent, workload, runtimeInput, fabric, options, artifactStore,
+      sourceProvenance, nullptr, nullptr);
+  if (!generated)
+    return generated.takeError();
+  return std::move(generated->completed);
+}
+
+llvm::Expected<StructuredOwnershipExplorationOutcome>
+generateAndPromoteStructuredOwnership(
+    const frontend::StructuredProgramCandidate &parent,
+    const sim::CanonicalSimulationWorkload &workload,
+    const sim::CanonicalSimulationRuntimeInput &runtimeInput,
+    const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
+    const StructuredOwnershipExplorationOptions &options,
+    const ArtifactStore &artifactStore,
+    llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
+        sourceProvenance) {
+  if (llvm::Error error =
+          evaluation::models::registerStructuredFabricAnalyticModel())
+    return std::move(error);
+  if (llvm::Error error =
+          evaluation::models::registerStructuredProgramFunctionalModel())
+    return std::move(error);
+
+  evaluation::models::StructuredEvaluationInvocationCache evaluationCache;
+  evaluation::models::StructuredEvaluationInvocationCacheScope
+      evaluationCacheScope(evaluationCache);
+  StructuredOwnershipGenerationOptions generationOptions{
+      options.lowering, config.dse.structuredOwnership.scopeExpansionLimit,
+      options.candidateWorkerCount, options.protocolCallableRoots};
+  auto generation = generateStructuredOwnershipCandidatesImpl(
+      parent, workload, runtimeInput, fabric, generationOptions, artifactStore,
+      sourceProvenance, &config, &evaluationCache);
+  if (!generation)
+    return generation.takeError();
+
+  std::optional<ArtifactRootReference> parentReference{
+      std::move(generation->parentReference)};
+  std::optional<ArtifactRootReference> workloadReference{
+      std::move(generation->workloadReference)};
+  std::optional<ArtifactRootReference> runtimeInputReference{
+      std::move(generation->runtimeInputReference)};
+  std::optional<sim::NativeStructuredProgramObservations> sourceObservations{
+      std::move(generation->sourceObservations)};
+  std::optional<CandidateSet> candidateSet{
+      std::move(generation->completed.candidates)};
+  std::vector<StructuredOwnershipCandidateDisposition> dispositions =
+      std::move(generation->completed.dispositions);
 
   auto analyticInvocation =
       evaluation::models::prepareStructuredFabricAnalyticInvocation(
@@ -460,7 +538,7 @@ generateAndPromoteStructuredOwnership(
                      runtimeInput, *sourceObservations,
                      options.functionalReplayLimits},
                     artifactStore))
-          return error;
+          return llvm::Error(std::move(error));
       }
       if (!hasDerivation)
         return invalid("cost-ranked ownership candidate has no derivation");

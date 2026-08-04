@@ -49,3 +49,4 @@ target_link_libraries(LoomDSE PUBLIC
 )
 
 add_subdirectory(Generators/Mapping)
+add_subdirectory(Generators/Compiler)

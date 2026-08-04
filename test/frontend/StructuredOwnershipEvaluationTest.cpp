@@ -3,6 +3,7 @@
 #include "Common/ResolvedConfig.h"
 #include "DSE/PreMappingExploration.h"
 #include "DSE/Promotion.h"
+#include "DSE/StructuredOwnershipCandidateGenerator.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
@@ -678,6 +679,60 @@ void runEvaluationAnchor() {
                                                     store));
   const loom::ArtifactRootReference dataflowRef = take(
       dataflow::publishCanonicalDataflow(spatial.canonicalDataflow, store));
+
+  auto generatorConfig =
+      take(loom::dse::projectResolvedStructuredOwnershipGeneratorConfigView(
+          loom::defaultResolvedConfig(),
+          {warmScope.selection, spatialScope.selection}));
+  auto reversedGeneratorConfig =
+      take(loom::dse::projectResolvedStructuredOwnershipGeneratorConfigView(
+          loom::defaultResolvedConfig(),
+          {spatialScope.selection, warmScope.selection}));
+  if (generatorConfig.canonicalViewBytes() !=
+          reversedGeneratorConfig.canonicalViewBytes() ||
+      generatorConfig.digest() != reversedGeneratorConfig.digest())
+    fail("ownership generator config retained protocol-root input order");
+  auto adoptedGeneratorConfig =
+      take(loom::dse::adoptResolvedStructuredOwnershipGeneratorConfigView(
+          loom::dse::resolvedStructuredOwnershipGeneratorConfigSchemaBytes(),
+          generatorConfig.canonicalViewBytes(), generatorConfig.digest()));
+  if (adoptedGeneratorConfig.scopeExpansionLimit() !=
+          loom::defaultResolvedConfig()
+              .dse.structuredOwnership.scopeExpansionLimit ||
+      adoptedGeneratorConfig.protocolCallableRoots().size() != 2)
+    fail("ownership generator config did not round-trip typed fields");
+
+  auto generatorBinding =
+      take(loom::dse::resolveStructuredOwnershipCandidateGeneratorBinding(
+          baselineRef, design.roots().front().reference(),
+          inputs.workloadReference, inputs.runtimeInputReference,
+          generatorConfig));
+  auto generated =
+      take(loom::dse::invokeCandidateGenerator(generatorBinding, store));
+  const auto *completedGeneration =
+      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&generated);
+  std::vector<loom::ArtifactRootReference> expectedGenerated = {
+      baselineRef, spatialRef, warmRef};
+  llvm::sort(expectedGenerated, loom::artifactRootReferenceLess);
+  if (!completedGeneration || completedGeneration->outputBindings.size() != 1 ||
+      completedGeneration->outputBindings.front().artifacts !=
+          expectedGenerated)
+    fail("central ownership generator changed the exact candidate set");
+
+  auto foreignGeneratorConfig =
+      take(loom::dse::projectResolvedStructuredOwnershipGeneratorConfigView(
+          loom::defaultResolvedConfig(),
+          {findCallable(incorrect.structuredProgram, "kernel")}));
+  auto foreignBinding =
+      take(loom::dse::resolveStructuredOwnershipCandidateGeneratorBinding(
+          baselineRef, design.roots().front().reference(),
+          inputs.workloadReference, inputs.runtimeInputReference,
+          foreignGeneratorConfig));
+  auto foreignGeneration =
+      loom::dse::invokeCandidateGenerator(foreignBinding, store);
+  if (foreignGeneration)
+    fail("ownership generator accepted a foreign protocol root");
+  llvm::consumeError(foreignGeneration.takeError());
 
   auto analyticInvocation =
       take(loom::evaluation::models::prepareStructuredFabricAnalyticInvocation(
