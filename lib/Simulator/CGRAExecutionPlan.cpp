@@ -1,6 +1,7 @@
 #include "CGRAExecutionPlan.h"
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
@@ -11,6 +12,7 @@
 #include <limits>
 #include <map>
 #include <system_error>
+#include <tuple>
 #include <utility>
 
 namespace loom::sim::detail {
@@ -146,6 +148,133 @@ deriveSummary(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   return summary;
 }
 
+struct ComputeTriggerKey final {
+  std::uint64_t realization = 0;
+  std::vector<std::uint8_t> event;
+
+  friend bool operator<(const ComputeTriggerKey &lhs,
+                        const ComputeTriggerKey &rhs) {
+    return std::tie(lhs.realization, lhs.event) <
+           std::tie(rhs.realization, rhs.event);
+  }
+};
+
+struct SelectedComputeActor final {
+  std::uint64_t realization = 0;
+  ::dataflow::ActorRef actor;
+  ::loom::fabric::FabricFuOccurrenceRef occurrence;
+  ::loom::fabric::InstructionContextRef context;
+};
+
+struct ComputeExecutionProjection final {
+  std::vector<CgraComputeActorPlan> actors;
+  std::vector<CgraComputeTransitionPlan> transitions;
+  std::vector<std::uint64_t> physicalUses;
+};
+
+llvm::Expected<ComputeExecutionProjection> deriveComputeExecutionProjection(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::mapping::TechMappingView &tech,
+    const ::loom::mapping::SpatialMappingView &spatial) {
+  llvm::DenseMap<std::uint64_t,
+                 const ::loom::mapping::TechComputeRealizationView *>
+      realizations;
+  realizations.reserve(tech.computeRealizations().size());
+  for (const auto &realization : tech.computeRealizations())
+    if (!realizations.try_emplace(realization.entityId, &realization).second)
+      return invalid("CGRA compute execution found duplicate realizations");
+
+  std::map<std::vector<std::uint8_t>, SelectedComputeActor> selectedActors;
+  for (const auto &binding : spatial.computeBindings()) {
+    auto realization = realizations.find(binding.realization);
+    if (realization == realizations.end())
+      return invalid("CGRA compute execution found an unknown realization");
+    for (const auto &actor : realization->second->actors) {
+      auto key =
+          ::dataflow::encodeDataflowReference(dataflow.identity(), actor.actor);
+      if (!key)
+        return key.takeError();
+      if (!selectedActors
+               .try_emplace(
+                   std::move(*key),
+                   SelectedComputeActor{binding.realization, actor.actor,
+                                        binding.occurrence, binding.context})
+               .second)
+        return invalid("CGRA compute actor has multiple physical bindings");
+    }
+  }
+
+  std::map<ComputeTriggerKey, std::vector<std::uint64_t>> triggerUses;
+  for (auto [actionOrdinal, use] : llvm::enumerate(spatial.resourceUses())) {
+    const auto *owner =
+        std::get_if<::loom::mapping::SpatialComputeResourceOwnerRef>(
+            &use.owner);
+    const auto *trigger =
+        std::get_if<::loom::mapping::SpatialActorTransitionEventRef>(
+            &use.activation.trigger.event);
+    if (!owner || !trigger)
+      continue;
+    auto event = ::loom::mapping::encodeSpatialActivityEventKey(
+        dataflow.identity(), use.activation.trigger.event);
+    if (!event)
+      return event.takeError();
+    triggerUses[ComputeTriggerKey{owner->realization, std::move(*event)}]
+        .push_back(actionOrdinal);
+  }
+
+  ComputeExecutionProjection result;
+  result.actors.reserve(selectedActors.size());
+  for (const auto &[key, selected] : selectedActors) {
+    (void)key;
+    auto actor = dataflow.resolve(selected.actor);
+    if (!actor)
+      return actor.takeError();
+    auto projection =
+        ::dataflow::projectRegisteredActorSchemaProjection(actor->op);
+    if (!projection)
+      return projection.takeError();
+    auto cases = ::dataflow::semantics::projectActorHandshakeCases(
+        projection->schema, actor->op->getNumOperands(),
+        actor->op->getNumResults());
+    if (!cases)
+      return cases.takeError();
+    if (cases->size() > std::numeric_limits<std::uint32_t>::max())
+      return invalid("CGRA compute actor transition count exceeds u32");
+
+    const std::uint64_t transitionOffset = result.transitions.size();
+    for (const auto &transition : *cases) {
+      const ::loom::mapping::SpatialActivityEventRef event =
+          ::loom::mapping::SpatialActorTransitionEventRef{selected.actor,
+                                                          transition.ordinal};
+      auto encoded = ::loom::mapping::encodeSpatialActivityEventKey(
+          dataflow.identity(), event);
+      if (!encoded)
+        return encoded.takeError();
+      auto uses = triggerUses.find(
+          ComputeTriggerKey{selected.realization, std::move(*encoded)});
+      if (uses == triggerUses.end() || uses->second.empty())
+        return invalid(
+            "CGRA compute transition has no selected physical ResourceUse");
+      if (uses->second.size() > std::numeric_limits<std::uint32_t>::max())
+        return invalid("CGRA compute transition ResourceUse count exceeds u32");
+      const std::uint64_t useOffset = result.physicalUses.size();
+      result.physicalUses.insert(result.physicalUses.end(),
+                                 uses->second.begin(), uses->second.end());
+      result.transitions.push_back(CgraComputeTransitionPlan{
+          transition.ordinal, useOffset,
+          static_cast<std::uint32_t>(uses->second.size())});
+      triggerUses.erase(uses);
+    }
+    result.actors.push_back(CgraComputeActorPlan{
+        selected.actor, actor->graph, selected.occurrence, selected.context,
+        transitionOffset, static_cast<std::uint32_t>(cases->size())});
+  }
+  if (!triggerUses.empty())
+    return invalid(
+        "CGRA compute ResourceUse trigger has no selected actor transition");
+  return result;
+}
+
 } // namespace
 
 llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
@@ -161,6 +290,12 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
                     static_cast<std::uint64_t>(mappedGraphs->size()));
   if (!summary)
     return summary.takeError();
+  auto compute = deriveComputeExecutionProjection(dataflow, tech, spatial);
+  if (!compute)
+    return compute.takeError();
+  if (compute->actors.size() != summary->computeActorCount ||
+      compute->transitions.size() != summary->actorTransitionCount)
+    return invalid("CGRA compute execution projection count drifted");
 
   std::map<std::vector<std::uint8_t>, std::uint64_t> ownerOrdinals;
   std::vector<const ::fabric::ResourceContract *> ownerContracts;
@@ -179,7 +314,11 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
 
   CgraFrozenExecutionPlan result;
   result.summary = *summary;
+  result.summary.actorTriggeredPhysicalUseCount = compute->physicalUses.size();
   result.mappedGraphs = std::move(*mappedGraphs);
+  result.computeActors = std::move(compute->actors);
+  result.computeTransitions = std::move(compute->transitions);
+  result.actorTransitionPhysicalUses = std::move(compute->physicalUses);
   result.physicalUses.reserve(spatial.resourceUses().size());
   result.physicalUseTimings.reserve(spatial.resourceUses().size());
   std::vector<CgraResourcePatternSelection> selectedPatterns;

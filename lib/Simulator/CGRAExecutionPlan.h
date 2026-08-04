@@ -24,9 +24,27 @@ struct CgraPhysicalUsePlan final {
   std::optional<std::uint32_t> transitionOrdinal;
 };
 
+struct CgraComputeTransitionPlan final {
+  std::uint32_t caseOrdinal = 0;
+  std::uint64_t physicalUseOffset = 0;
+  std::uint32_t physicalUseCount = 0;
+};
+
+struct CgraComputeActorPlan final {
+  ::dataflow::ActorRef actor;
+  ::dataflow::GraphRef graph;
+  ::loom::fabric::FabricFuOccurrenceRef occurrence;
+  ::loom::fabric::InstructionContextRef context;
+  std::uint64_t transitionOffset = 0;
+  std::uint32_t transitionCount = 0;
+};
+
 struct CgraFrozenExecutionPlan final {
   CgraExecutionPlanSummary summary;
   std::vector<::dataflow::GraphRef> mappedGraphs;
+  std::vector<CgraComputeActorPlan> computeActors;
+  std::vector<CgraComputeTransitionPlan> computeTransitions;
+  std::vector<std::uint64_t> actorTransitionPhysicalUses;
   std::vector<CgraPhysicalUsePlan> physicalUses;
   std::vector<CgraPhysicalUseTiming> physicalUseTimings;
   CgraResourceRuntimePlan resources;
