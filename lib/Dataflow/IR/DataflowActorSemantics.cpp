@@ -1016,7 +1016,8 @@ dataflow::semantics::evaluateCarryTransition(CarrySemanticState state,
   CarryTransition transition;
   transition.nextState = state;
   if (state == CarrySemanticState::Initial) {
-    const CarryCaseDescriptor descriptor = carryCaseDescriptor(CarryCase::Init);
+    const CarryCaseDescriptor descriptor =
+        carryCaseDescriptor(selectCarryCase(state, false));
     transition.firing = makeSemanticFiringDecision(
         descriptor.consumedInputs,
         initAvailable ? descriptor.consumedInputs : SemanticInputMask{0});
@@ -1031,12 +1032,12 @@ dataflow::semantics::evaluateCarryTransition(CarrySemanticState state,
   // block on that shared head until it arrives.
   if (!phase) {
     transition.firing = makeSemanticFiringDecision(
-        carryCaseDescriptor(CarryCase::Close).consumedInputs,
+        carryCaseDescriptor(selectCarryCase(state, false)).consumedInputs,
         SemanticInputMask{0});
     return transition;
   }
   const CarryCaseDescriptor descriptor =
-      carryCaseDescriptor(*phase ? CarryCase::Next : CarryCase::Close);
+      carryCaseDescriptor(selectCarryCase(state, *phase));
   const SemanticInputMask available =
       semanticInput(CarryInput::Phase) |
       (nextAvailable ? semanticInput(CarryInput::Next) : SemanticInputMask{0});

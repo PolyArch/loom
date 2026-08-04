@@ -34,7 +34,24 @@ bool samePort(const circt::hw::PortInfo &lhs, const circt::hw::PortInfo &rhs) {
          lhs.dir == rhs.dir;
 }
 
+bool hasSelectedContextStateTransform(
+    const fabric::ResolvedFabricOpCapabilityView &capability) {
+  return capability.implementationFamily ==
+         ::fabric::ImplementationFamilyId::LoopCarry;
+}
+
 } // namespace
+
+llvm::APInt encodeLoopCarryOperationLeafState(
+    ::dataflow::semantics::CarrySemanticState state) {
+  switch (state) {
+  case ::dataflow::semantics::CarrySemanticState::Initial:
+    return llvm::APInt(1, 0);
+  case ::dataflow::semantics::CarrySemanticState::Running:
+    return llvm::APInt(1, 1);
+  }
+  llvm_unreachable("unknown carry semantic state");
+}
 
 llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
     mlir::OpBuilder &builder,
@@ -75,8 +92,11 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
       configurationFields.end())
     return invalid("configuration field reference is duplicated");
 
+  const bool stateTransform = hasSelectedContextStateTransform(capability);
   std::vector<circt::hw::PortInfo> result;
-  result.reserve(inputs.size() + configurationFields.size() + outputs.size());
+  result.reserve(
+      inputs.size() + configurationFields.size() + outputs.size() +
+      (stateTransform ? 2 * (inputs.size() + outputs.size()) + 3 : 0));
   for (const auto *input : inputs) {
     if (input->payloadWidthBits == 0)
       continue;
@@ -85,6 +105,22 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
     result.push_back(
         port(builder, "data_input_" + std::to_string(input->reference.ordinal),
              input->payloadWidthBits, circt::hw::ModulePort::Direction::Input));
+  }
+  if (stateTransform) {
+    for (const auto *input : inputs)
+      result.push_back(port(
+          builder, "valid_input_" + std::to_string(input->reference.ordinal), 1,
+          circt::hw::ModulePort::Direction::Input));
+    for (const auto *output : outputs)
+      result.push_back(port(
+          builder, "ready_output_" + std::to_string(output->reference.ordinal),
+          1, circt::hw::ModulePort::Direction::Input));
+    const unsigned stateWidth =
+        encodeLoopCarryOperationLeafState(
+            ::dataflow::semantics::CarrySemanticState::Initial)
+            .getBitWidth();
+    result.push_back(port(builder, "state_current", stateWidth,
+                          circt::hw::ModulePort::Direction::Input));
   }
   for (const fabric::FabricSemanticConfigFieldRef &field :
        configurationFields) {
@@ -105,6 +141,11 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
                           static_cast<unsigned>(width),
                           circt::hw::ModulePort::Direction::Input));
   }
+  if (stateTransform)
+    for (const auto *input : inputs)
+      result.push_back(port(
+          builder, "ready_input_" + std::to_string(input->reference.ordinal), 1,
+          circt::hw::ModulePort::Direction::Output));
   for (const auto *output : outputs) {
     if (output->payloadWidthBits == 0)
       continue;
@@ -113,6 +154,20 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
     result.push_back(port(
         builder, "data_output_" + std::to_string(output->reference.ordinal),
         output->payloadWidthBits, circt::hw::ModulePort::Direction::Output));
+  }
+  if (stateTransform) {
+    for (const auto *output : outputs)
+      result.push_back(port(
+          builder, "valid_output_" + std::to_string(output->reference.ordinal),
+          1, circt::hw::ModulePort::Direction::Output));
+    const unsigned stateWidth =
+        encodeLoopCarryOperationLeafState(
+            ::dataflow::semantics::CarrySemanticState::Initial)
+            .getBitWidth();
+    result.push_back(port(builder, "state_next", stateWidth,
+                          circt::hw::ModulePort::Direction::Output));
+    result.push_back(port(builder, "state_write", 1,
+                          circt::hw::ModulePort::Direction::Output));
   }
   return result;
 }

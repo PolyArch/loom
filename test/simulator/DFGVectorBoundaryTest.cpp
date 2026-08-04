@@ -182,16 +182,17 @@ void actorTransitionDescriptorContract() {
   using sem::CarrySemanticState;
   {
     auto d = sem::carryCaseDescriptor(CarryCase::Init);
-    require(d.requiredState == CarrySemanticState::Initial &&
-                d.consumedInputs ==
-                    consumedMask<CarryInput>({CarryInput::Init}) &&
-                d.forwardedInput == CarryInput::Init &&
-                d.nextState == CarrySemanticState::Running,
-            "carry Init descriptor");
+    require(
+        d.requiredState == CarrySemanticState::Initial && !d.requiredPhase &&
+            d.consumedInputs == consumedMask<CarryInput>({CarryInput::Init}) &&
+            d.forwardedInput == CarryInput::Init &&
+            d.nextState == CarrySemanticState::Running,
+        "carry Init descriptor");
   }
   {
     auto d = sem::carryCaseDescriptor(CarryCase::Next);
     require(d.requiredState == CarrySemanticState::Running &&
+                d.requiredPhase == true &&
                 d.consumedInputs ==
                     consumedMask<CarryInput>(
                         {CarryInput::Phase, CarryInput::Next}) &&
@@ -202,6 +203,7 @@ void actorTransitionDescriptorContract() {
   {
     auto d = sem::carryCaseDescriptor(CarryCase::Close);
     require(d.requiredState == CarrySemanticState::Running &&
+                d.requiredPhase == false &&
                 d.consumedInputs ==
                     consumedMask<CarryInput>({CarryInput::Phase}) &&
                 !d.forwardedInput && d.nextState == CarrySemanticState::Initial,

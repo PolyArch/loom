@@ -193,10 +193,12 @@ CarryTransition evaluateCarryTransition(CarrySemanticState state,
 enum class CarryCase : std::uint8_t { Init, Next, Close };
 
 /// The schema-owned facts of one `dataflow.carry` transition case: the state it
-/// fires from, the operand heads it consumes, the input head forwarded to the
-/// output (absent on close), and the next state.
+/// fires from, its optional phase-value guard, the operand heads it consumes,
+/// the input head forwarded to the output (absent on close), and the next
+/// state. An absent guard does not inspect the phase input.
 struct CarryCaseDescriptor {
   CarrySemanticState requiredState;
+  std::optional<bool> requiredPhase;
   SemanticInputMask consumedInputs;
   std::optional<CarryInput> forwardedInput;
   CarrySemanticState nextState;
@@ -206,17 +208,32 @@ struct CarryCaseDescriptor {
 inline CarryCaseDescriptor carryCaseDescriptor(CarryCase transition) {
   switch (transition) {
   case CarryCase::Init:
-    return {CarrySemanticState::Initial, semanticInputs(CarryInput::Init),
-            CarryInput::Init, CarrySemanticState::Running};
+    return {CarrySemanticState::Initial, std::nullopt,
+            semanticInputs(CarryInput::Init), CarryInput::Init,
+            CarrySemanticState::Running};
   case CarryCase::Next:
-    return {CarrySemanticState::Running,
+    return {CarrySemanticState::Running, true,
             semanticInputs(CarryInput::Phase, CarryInput::Next),
             CarryInput::Next, CarrySemanticState::Running};
   case CarryCase::Close:
-    return {CarrySemanticState::Running, semanticInputs(CarryInput::Phase),
-            std::nullopt, CarrySemanticState::Initial};
+    return {CarrySemanticState::Running, false,
+            semanticInputs(CarryInput::Phase), std::nullopt,
+            CarrySemanticState::Initial};
   }
   llvm_unreachable("unknown dataflow.carry transition case");
+}
+
+/// Selects the unique case whose schema-owned state and phase guards match.
+inline CarryCase selectCarryCase(CarrySemanticState state, bool phase) {
+  constexpr CarryCase cases[] = {CarryCase::Init, CarryCase::Next,
+                                 CarryCase::Close};
+  for (CarryCase candidate : cases) {
+    const CarryCaseDescriptor descriptor = carryCaseDescriptor(candidate);
+    if (descriptor.requiredState == state &&
+        (!descriptor.requiredPhase || *descriptor.requiredPhase == phase))
+      return candidate;
+  }
+  llvm_unreachable("carry semantic state and phase select no case");
 }
 
 enum class InvariantInput : std::uint8_t { Phase, Init };

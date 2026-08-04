@@ -89,6 +89,19 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-loop-carry-test
+    PortableLoopCarryTest.cpp
+  )
+
+  target_link_libraries(loom-portable-loop-carry-test PRIVATE
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-circt-conformance-test
     CirctConformanceTest.cpp
   )

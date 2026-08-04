@@ -3,6 +3,7 @@ add_library(LoomHardwareRTL
   CommonSkeleton.cpp
   OperationLeaf.cpp
   Providers/FixedVectorIntegerAddSub.cpp
+  Providers/LoopCarry.cpp
   Providers/ProviderSupport.cpp
   Providers/ScalarIntegerAddSub.cpp
   Providers/ScalarIntegerCompareMinMax.cpp
@@ -25,6 +26,7 @@ target_link_libraries(LoomHardwareRTL PUBLIC
   LoomFabricIdentity
   LoomHardwareConfiguration
   LoomHardwareImplementation
+  MLIRDataflow
   MLIRIR
   MLIRPass
   LLVMSupport

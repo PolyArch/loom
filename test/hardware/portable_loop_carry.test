@@ -1,0 +1,11 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-loop-carry-test %t
+# RUN: FileCheck %s --check-prefix=RTL < %t/loop_carry.sv
+
+# RTL: module loop_carry
+# RTL: state_current,
+# RTL: state_next,
+# RTL: state_write
+# RTL-NOT: always_ff
+# RTL-NOT: posedge
