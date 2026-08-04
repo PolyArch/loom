@@ -123,7 +123,8 @@ bool pendingLess(const PendingRequest &lhs, const PendingRequest &rhs) {
 
 llvm::Expected<CgraResourceRuntimePlan> freezeCgraResourceRuntimePlan(
     llvm::ArrayRef<const ::fabric::ResourceContract *> ownerContracts,
-    llvm::ArrayRef<CgraResourcePatternSelection> selectedPatterns) {
+    llvm::ArrayRef<CgraResourcePatternSelection> selectedPatterns,
+    llvm::ArrayRef<CgraResourceActivationSelection> activations) {
   CgraResourceRuntimePlan result;
   std::vector<OwnerScratch> owners;
   owners.reserve(ownerContracts.size());
@@ -169,44 +170,78 @@ llvm::Expected<CgraResourceRuntimePlan> freezeCgraResourceRuntimePlan(
   }
 
   std::vector<UseRoot> useRoots;
-  useRoots.reserve(selectedPatterns.size());
+  useRoots.reserve(activations.size());
   std::map<DomainKey, std::set<std::uint32_t>> domainRequesters;
-  result.selectedUses.reserve(selectedPatterns.size());
-  for (const CgraResourcePatternSelection &selected : selectedPatterns) {
-    if (selected.ownerOrdinal >= owners.size())
+  result.selectedUses.reserve(activations.size());
+  std::uint64_t expectedPatternOffset = 0;
+  for (const CgraResourceActivationSelection &activation : activations) {
+    if (activation.patternCount == 0 ||
+        activation.patternOffset != expectedPatternOffset ||
+        activation.patternOffset > selectedPatterns.size() ||
+        activation.patternCount >
+            selectedPatterns.size() - activation.patternOffset)
+      return invalid("CGRA resource activation pattern slices are not a "
+                     "complete canonical partition");
+    expectedPatternOffset += activation.patternCount;
+    const auto patterns = selectedPatterns.slice(activation.patternOffset,
+                                                 activation.patternCount);
+    const CgraResourcePatternSelection &first = patterns.front();
+    if (first.ownerOrdinal >= owners.size())
       return invalid("CGRA selected use has an unknown resource owner");
-    OwnerScratch &owner = owners[selected.ownerOrdinal];
-    if (selected.pattern.ordinal() >= owner.contract->usePatternCount())
-      return invalid("CGRA selected use has an unknown UsePattern");
-    const ::fabric::UsePattern pattern =
-        owner.contract->usePattern(selected.pattern);
-    if (pattern.claims.size() > std::numeric_limits<std::uint32_t>::max())
+    OwnerScratch &owner = owners[first.ownerOrdinal];
+    std::optional<std::uint32_t> requester;
+    std::map<std::uint64_t, std::uint32_t> claims;
+    std::set<std::uint32_t> uniquePatterns;
+    for (const CgraResourcePatternSelection &selected : patterns) {
+      if (selected.ownerOrdinal != first.ownerOrdinal)
+        return invalid("CGRA atomic activation spans resource owners");
+      if (selected.pattern.ordinal() >= owner.contract->usePatternCount())
+        return invalid("CGRA selected use has an unknown UsePattern");
+      if (!uniquePatterns.insert(selected.pattern.ordinal()).second)
+        continue;
+      const ::fabric::UsePattern pattern =
+          owner.contract->usePattern(selected.pattern);
+      if (requester && *requester != pattern.requester.ordinal())
+        return invalid("CGRA atomic activation spans resource requesters");
+      requester = pattern.requester.ordinal();
+      for (const ::fabric::Claim &claim : pattern.claims) {
+        auto local = localDimension(owner, claim);
+        if (!local)
+          return local.takeError();
+        auto [position, inserted] =
+            claims.try_emplace(*local, claim.amount.value());
+        if (!inserted && position->second != claim.amount.value())
+          return invalid("CGRA atomic activation has inconsistent duplicate "
+                         "claims");
+      }
+    }
+    if (!requester)
+      return invalid("CGRA atomic activation has no exact UsePattern");
+    if (claims.size() > std::numeric_limits<std::uint32_t>::max())
       return invalid("CGRA selected use claim count exceeds u32");
-
     CgraResourceUsePlan use;
-    use.ownerOrdinal = selected.ownerOrdinal;
-    use.requesterOrdinal = pattern.requester.ordinal();
+    use.ownerOrdinal = first.ownerOrdinal;
+    use.requesterOrdinal = *requester;
     use.claimOffset = result.claims.size();
-    use.claimCount = static_cast<std::uint32_t>(pattern.claims.size());
+    use.claimCount = static_cast<std::uint32_t>(claims.size());
     std::optional<DomainKey> domain;
-    for (const ::fabric::Claim &claim : pattern.claims) {
-      auto local = localDimension(owner, claim);
-      if (!local)
-        return local.takeError();
-      const DomainKey current{selected.ownerOrdinal, findRoot(owner, *local)};
+    for (const auto &[local, amount] : claims) {
+      const DomainKey current{first.ownerOrdinal, findRoot(owner, local)};
       if (domain &&
           (domain->owner != current.owner || domain->root != current.root))
-        return invalid("CGRA UsePattern claim envelope spans arbitration "
-                       "components");
+        return invalid(
+            "CGRA atomic activation claim envelope spans arbitration "
+            "components");
       domain = current;
-      result.claims.push_back(
-          {owner.dimensionOffset + *local, claim.amount.value()});
+      result.claims.push_back({owner.dimensionOffset + local, amount});
     }
     if (domain)
-      domainRequesters[*domain].insert(pattern.requester.ordinal());
+      domainRequesters[*domain].insert(*requester);
     useRoots.push_back({domain});
     result.selectedUses.push_back(use);
   }
+  if (expectedPatternOffset != selectedPatterns.size())
+    return invalid("CGRA resource activation leaves unowned UsePatterns");
 
   std::map<DomainKey, std::uint64_t> domainOrdinals;
   std::map<std::pair<std::uint64_t, std::uint32_t>, std::uint32_t>
@@ -281,6 +316,17 @@ llvm::Expected<CgraResourceRuntimePlan> freezeCgraResourceRuntimePlan(
     use.requesterPosition = position->second;
   }
   return result;
+}
+
+llvm::Expected<CgraResourceRuntimePlan> freezeCgraResourceRuntimePlan(
+    llvm::ArrayRef<const ::fabric::ResourceContract *> ownerContracts,
+    llvm::ArrayRef<CgraResourcePatternSelection> selectedPatterns) {
+  std::vector<CgraResourceActivationSelection> activations;
+  activations.reserve(selectedPatterns.size());
+  for (std::uint64_t ordinal = 0; ordinal != selectedPatterns.size(); ++ordinal)
+    activations.push_back({ordinal, 1});
+  return freezeCgraResourceRuntimePlan(ownerContracts, selectedPatterns,
+                                       activations);
 }
 
 llvm::Expected<CgraResourceRuntime>

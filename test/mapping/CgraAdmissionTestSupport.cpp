@@ -74,7 +74,8 @@ void loom::test::exerciseCgraAdmission(
     fail("CGRA preparation did not freeze selected compute/transport facts");
   if (summary.computeTransitionPhysicalUseCount +
           summary.memoryTransitionPhysicalUseCount +
-          summary.producedPhysicalUseCount + summary.consumedPhysicalUseCount !=
+          summary.producedPhysicalUseCount + summary.consumedPhysicalUseCount +
+          summary.traversalPhysicalUseCount !=
       summary.physicalUseCount)
     fail("CGRA preparation did not partition every selected ResourceUse");
   const auto graph =

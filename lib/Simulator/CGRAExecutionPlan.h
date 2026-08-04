@@ -18,11 +18,9 @@
 namespace loom::sim::detail {
 
 struct CgraPhysicalUsePlan final {
-  ::loom::fabric::FabricUsePatternRef reference;
+  std::uint64_t patternOffset = 0;
+  std::uint32_t patternCount = 0;
   std::uint64_t resourceOwnerOrdinal = 0;
-  std::uint32_t requesterOrdinal = 0;
-  std::uint32_t eligibilityOrdinal = 0;
-  std::optional<std::uint32_t> transitionOrdinal;
 };
 
 struct CgraComputeTransitionPlan final {
@@ -47,6 +45,7 @@ struct CgraFrozenExecutionPlan final {
   std::vector<CgraComputeTransitionPlan> computeTransitions;
   std::vector<std::uint64_t> actorTransitionPhysicalUses;
   std::vector<CgraPhysicalUsePlan> physicalUses;
+  std::vector<::loom::fabric::FabricUsePatternRef> physicalUsePatterns;
   std::vector<CgraPhysicalUseClientKind> physicalUseClients;
   std::vector<CgraPhysicalUseTiming> physicalUseTimings;
   CgraResourceRuntimePlan resources;

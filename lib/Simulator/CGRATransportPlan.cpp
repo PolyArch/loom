@@ -193,6 +193,8 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       position->second.actions.push_back(actionOrdinal);
       break;
     }
+    case CgraPhysicalUseClientKind::TraversalTransport:
+      return invalid("CGRA derived traversal action appears in Mapping uses");
     }
   }
   std::map<RefBytes, std::uint64_t> selectedOrdinals;
@@ -209,7 +211,8 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
         std::numeric_limits<std::uint32_t>::max())
       return invalid("selected traversal implied-use count exceeds u32");
     for (const auto &use : found->second->impliedUses)
-      result.traversalUses.push_back({use.pattern, use.activationGroup});
+      result.traversalUses.push_back(
+          {use.pattern, use.activationGroup, invalidCgraTransportOrdinal});
     const std::uint64_t ordinal = result.traversals.size();
     selectedOrdinals.emplace(key, ordinal);
     result.traversals.push_back(

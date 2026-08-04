@@ -26,6 +26,14 @@ struct CgraResourcePatternSelection final {
   ::fabric::UsePatternKey pattern = ::fabric::UsePatternKey(0);
 };
 
+/// One derived atomic activation over exact owner-local UsePatterns. Pattern
+/// rows remain the exact Fabric selections; this transient slice only groups
+/// claims that must acquire and release as one envelope.
+struct CgraResourceActivationSelection final {
+  std::uint64_t patternOffset = 0;
+  std::uint32_t patternCount = 0;
+};
+
 struct CgraResourceDimensionPlan final {
   std::uint32_t capacity = 0;
   std::uint32_t initialOccupancy = 0;
@@ -66,6 +74,11 @@ struct CgraResourceRuntimePlan final {
 llvm::Expected<CgraResourceRuntimePlan> freezeCgraResourceRuntimePlan(
     llvm::ArrayRef<const ::fabric::ResourceContract *> ownerContracts,
     llvm::ArrayRef<CgraResourcePatternSelection> selectedPatterns);
+
+llvm::Expected<CgraResourceRuntimePlan> freezeCgraResourceRuntimePlan(
+    llvm::ArrayRef<const ::fabric::ResourceContract *> ownerContracts,
+    llvm::ArrayRef<CgraResourcePatternSelection> selectedPatterns,
+    llvm::ArrayRef<CgraResourceActivationSelection> activations);
 
 struct CgraResourceRequest final {
   std::uint64_t selectedUseOrdinal = 0;

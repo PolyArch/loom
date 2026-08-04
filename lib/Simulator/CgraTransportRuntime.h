@@ -61,8 +61,9 @@ public:
   std::optional<SpatialEventCoordinate> nextCoordinate() const;
 
   bool hasPendingEvents() const {
-    return !arrivalEvents_.empty() || !events_.empty() ||
-           !requestedEvents_.empty() || activeTransferCount_ != 0;
+    return !traversalEvents_.empty() || !arrivalEvents_.empty() ||
+           !events_.empty() || !requestedEvents_.empty() ||
+           activeTransferCount_ != 0;
   }
   bool hasBlockedTransfers() const { return blocked_.any(); }
 
@@ -83,9 +84,11 @@ private:
     std::uint32_t sinkCount = 0;
     std::uint64_t physicalUseOffset = 0;
     std::uint32_t physicalUseCount = 0;
+    std::uint64_t traversalPhysicalUseOffset = 0;
+    std::uint32_t traversalPhysicalUseCount = 0;
     std::uint32_t consumedPhysicalUseCount = 0;
     std::optional<std::uint64_t> actorPlanOrdinal;
-    bool requiresTraversalTransport = false;
+    bool requiresStorageTransport = false;
     bool active = false;
   };
 
@@ -95,16 +98,20 @@ private:
     std::uint64_t occurrenceOrdinal = 0;
     Token token;
     bool arrivalScheduled = false;
+    bool traversalScheduled = false;
+    bool traversalRequested = false;
     bool publicationScheduled = false;
     bool published = false;
     bool consumedRequested = false;
     std::uint32_t producedPermitted = 0;
     std::uint32_t producedRetired = 0;
+    std::uint32_t traversalPermitted = 0;
+    std::uint32_t traversalRetired = 0;
     std::uint32_t consumedPermitted = 0;
     std::uint32_t consumedRetired = 0;
   };
 
-  enum class ActionStage : std::uint8_t { Produced, Consumed };
+  enum class ActionStage : std::uint8_t { Produced, Traversal, Consumed };
 
   enum class ActionLifecycleState : std::uint8_t {
     Requested,
@@ -148,6 +155,8 @@ private:
                  ActionStage stage, const SpatialEventCoordinate &coordinate);
   llvm::Error scheduleArrival(std::uint64_t slot,
                               const SpatialEventCoordinate &coordinate);
+  llvm::Error scheduleTraversal(std::uint64_t slot,
+                                const SpatialEventCoordinate &coordinate);
   llvm::Error schedulePublication(std::uint64_t slot,
                                   const SpatialEventCoordinate &coordinate);
   std::optional<CgraTransportCompletion> maybeRelease(std::uint64_t slot);
@@ -167,6 +176,7 @@ private:
       actorSourceBindings_;
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings_;
   CgraEventQueue events_;
+  CgraEventQueue traversalEvents_;
   CgraEventQueue arrivalEvents_;
   CgraEventQueue requestedEvents_;
   std::vector<InFlight> inFlight_;

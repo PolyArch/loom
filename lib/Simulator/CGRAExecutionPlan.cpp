@@ -172,6 +172,103 @@ struct ComputeExecutionProjection final {
   std::vector<std::uint64_t> physicalUses;
 };
 
+std::vector<std::uint8_t> activationGroupKey(
+    const ::loom::fabric::FabricTraversalActivationGroupView &group) {
+  std::vector<std::uint8_t> result =
+      ::loom::fabric::canonicalFabricBytes(group.owner);
+  const auto kind = static_cast<std::uint32_t>(group.kind);
+  for (int shift = 24; shift >= 0; shift -= 8)
+    result.push_back(static_cast<std::uint8_t>(kind >> shift));
+  for (int shift = 56; shift >= 0; shift -= 8)
+    result.push_back(static_cast<std::uint8_t>(group.ordinal >> shift));
+  return result;
+}
+
+bool sameTiming(const CgraPhysicalUseTiming &lhs,
+                const CgraPhysicalUseTiming &rhs) {
+  return lhs.acquireRank == rhs.acquireRank &&
+         lhs.commitRank == rhs.commitRank &&
+         lhs.releaseRank == rhs.releaseRank &&
+         lhs.acquireEventOrdinal == rhs.acquireEventOrdinal &&
+         lhs.releaseEventOrdinal == rhs.releaseEventOrdinal &&
+         lhs.commitEventOrdinal == rhs.commitEventOrdinal;
+}
+
+llvm::Expected<std::uint64_t> appendPhysicalActivation(
+    llvm::ArrayRef<::loom::fabric::FabricUsePatternRef> inputPatterns,
+    CgraPhysicalUseClientKind client,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const std::map<std::vector<std::uint8_t>, std::uint64_t> &ownerOrdinals,
+    CgraFrozenExecutionPlan &result,
+    std::vector<CgraResourcePatternSelection> &selectedPatterns,
+    std::vector<CgraResourceActivationSelection> &activations,
+    llvm::DenseSet<std::uint64_t> &selectedOwners) {
+  if (inputPatterns.empty())
+    return invalid("CGRA physical activation has no exact UsePattern");
+  std::map<std::vector<std::uint8_t>, ::loom::fabric::FabricUsePatternRef>
+      patterns;
+  for (const auto &reference : inputPatterns)
+    patterns.try_emplace(::loom::fabric::canonicalFabricBytes(reference),
+                         reference);
+  if (patterns.size() > std::numeric_limits<std::uint32_t>::max())
+    return invalid("CGRA physical activation pattern count exceeds u32");
+
+  std::optional<::loom::fabric::FabricInventoryOwnerRef> activationOwner;
+  std::optional<CgraPhysicalUseTiming> timing;
+  std::uint64_t ownerOrdinal = 0;
+  const std::uint64_t actionOrdinal = result.physicalUses.size();
+  const std::uint64_t patternOffset = result.physicalUsePatterns.size();
+  const std::uint64_t selectionOffset = selectedPatterns.size();
+  for (const auto &[key, reference] : patterns) {
+    (void)key;
+    const auto owner = reference.owner.catalog();
+    if (activationOwner && *activationOwner != owner)
+      return invalid("CGRA physical activation spans Fabric owners");
+    if (!activationOwner) {
+      activationOwner = owner;
+      auto found =
+          ownerOrdinals.find(::loom::fabric::canonicalFabricBytes(owner));
+      if (found == ownerOrdinals.end())
+        return invalid("CGRA physical activation owner is absent from Fabric");
+      ownerOrdinal = found->second;
+    }
+    const ::fabric::ResourceContract *contract = fabric.resourceContract(owner);
+    if (!contract || reference.ordinal >= contract->usePatternCount())
+      return invalid("CGRA physical activation has no exact resource contract");
+    const ::fabric::UsePattern pattern =
+        contract->usePattern(::fabric::UsePatternKey(reference.ordinal));
+    const auto ranks = contract->eventOrder(pattern.timingAndProgress);
+    CgraPhysicalUseTiming current{
+        actionOrdinal,
+        ranks[pattern.acquire.ordinal()],
+        pattern.commit ? std::optional<std::uint32_t>(
+                             ranks[pattern.commit->event.ordinal()])
+                       : std::nullopt,
+        ranks[pattern.release.ordinal()],
+        pattern.acquire.ordinal(),
+        pattern.release.ordinal(),
+        pattern.commit
+            ? std::optional<std::uint32_t>(pattern.commit->event.ordinal())
+            : std::nullopt};
+    if (timing && !sameTiming(*timing, current))
+      return invalid("CGRA atomic activation has inconsistent owner timing");
+    timing = current;
+    result.physicalUsePatterns.push_back(reference);
+    selectedPatterns.push_back(
+        {ownerOrdinal, ::fabric::UsePatternKey(reference.ordinal)});
+  }
+
+  result.physicalUses.push_back({patternOffset,
+                                 static_cast<std::uint32_t>(patterns.size()),
+                                 ownerOrdinal});
+  result.physicalUseClients.push_back(client);
+  result.physicalUseTimings.push_back(*timing);
+  activations.push_back(
+      {selectionOffset, static_cast<std::uint32_t>(patterns.size())});
+  selectedOwners.insert(ownerOrdinal);
+  return actionOrdinal;
+}
+
 llvm::Expected<std::vector<CgraPhysicalUseClientKind>> derivePhysicalUseClients(
     llvm::ArrayRef<::loom::mapping::SpatialResourceUseView> uses,
     CgraExecutionPlanSummary &summary) {
@@ -382,51 +479,55 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
   result.computeActors = std::move(compute->actors);
   result.computeTransitions = std::move(compute->transitions);
   result.actorTransitionPhysicalUses = std::move(compute->physicalUses);
-  result.physicalUseClients = std::move(*physicalUseClients);
   result.physicalUses.reserve(spatial.resourceUses().size());
+  result.physicalUsePatterns.reserve(spatial.resourceUses().size());
+  result.physicalUseClients.reserve(spatial.resourceUses().size());
   result.physicalUseTimings.reserve(spatial.resourceUses().size());
   std::vector<CgraResourcePatternSelection> selectedPatterns;
   selectedPatterns.reserve(spatial.resourceUses().size());
+  std::vector<CgraResourceActivationSelection> activations;
+  activations.reserve(spatial.resourceUses().size());
   llvm::DenseSet<std::uint64_t> selectedOwners;
-  for (const auto &use : spatial.resourceUses()) {
-    const auto &owner = use.useSite.owner.catalog();
-    auto ownerOrdinal =
-        ownerOrdinals.find(::loom::fabric::canonicalFabricBytes(owner));
-    if (ownerOrdinal == ownerOrdinals.end())
-      return invalid("CGRA ResourceUse owner is absent from Fabric");
-    const ::fabric::ResourceContract *contract = fabric.resourceContract(owner);
-    if (!contract || use.useSite.ordinal >= contract->usePatternCount())
-      return invalid("CGRA ResourceUse has no exact resource contract");
-    const ::fabric::UsePattern pattern =
-        contract->usePattern(::fabric::UsePatternKey(use.useSite.ordinal));
-    const auto ranks = contract->eventOrder(pattern.timingAndProgress);
-
-    CgraPhysicalUsePlan plan;
-    plan.reference = use.useSite;
-    plan.resourceOwnerOrdinal = ownerOrdinal->second;
-    plan.requesterOrdinal = pattern.requester.ordinal();
-    plan.eligibilityOrdinal = pattern.eligibility.ordinal();
-    if (pattern.commit) {
-      plan.transitionOrdinal = pattern.commit->transition.ordinal();
-    }
-    result.physicalUses.push_back(std::move(plan));
-    result.physicalUseTimings.push_back(CgraPhysicalUseTiming{
-        static_cast<std::uint64_t>(result.physicalUseTimings.size()),
-        ranks[pattern.acquire.ordinal()],
-        pattern.commit ? std::optional<std::uint32_t>(
-                             ranks[pattern.commit->event.ordinal()])
-                       : std::nullopt,
-        ranks[pattern.release.ordinal()], pattern.acquire.ordinal(),
-        pattern.release.ordinal(),
-        pattern.commit
-            ? std::optional<std::uint32_t>(pattern.commit->event.ordinal())
-            : std::nullopt});
-    selectedPatterns.push_back(
-        {ownerOrdinal->second, ::fabric::UsePatternKey(use.useSite.ordinal)});
-    selectedOwners.insert(ownerOrdinal->second);
+  for (auto [ordinal, use] : llvm::enumerate(spatial.resourceUses())) {
+    auto action = appendPhysicalActivation(
+        llvm::ArrayRef<::loom::fabric::FabricUsePatternRef>(&use.useSite, 1),
+        (*physicalUseClients)[ordinal], fabric, ownerOrdinals, result,
+        selectedPatterns, activations, selectedOwners);
+    if (!action)
+      return action.takeError();
+    if (*action != ordinal)
+      return invalid("CGRA Mapping physical-use ordinal drifted");
   }
-  auto resources =
-      freezeCgraResourceRuntimePlan(ownerContracts, selectedPatterns);
+  auto transport =
+      freezeCgraTransportPlan(dataflow, fabric, spatial, result.mappedGraphs,
+                              result.physicalUseClients);
+  if (!transport)
+    return transport.takeError();
+  result.transport = std::move(*transport);
+  std::map<std::vector<std::uint8_t>, std::vector<std::uint64_t>>
+      traversalActivationUses;
+  for (auto [ordinal, use] : llvm::enumerate(result.transport.traversalUses))
+    traversalActivationUses[activationGroupKey(use.activationGroup)].push_back(
+        ordinal);
+  for (const auto &[key, useOrdinals] : traversalActivationUses) {
+    (void)key;
+    std::vector<::loom::fabric::FabricUsePatternRef> patterns;
+    patterns.reserve(useOrdinals.size());
+    for (std::uint64_t ordinal : useOrdinals)
+      patterns.push_back(result.transport.traversalUses[ordinal].pattern);
+    auto action = appendPhysicalActivation(
+        patterns, CgraPhysicalUseClientKind::TraversalTransport, fabric,
+        ownerOrdinals, result, selectedPatterns, activations, selectedOwners);
+    if (!action)
+      return action.takeError();
+    if (llvm::Error error = add(1, result.summary.traversalPhysicalUseCount,
+                                "traversal physical use"))
+      return std::move(error);
+    for (std::uint64_t ordinal : useOrdinals)
+      result.transport.traversalUses[ordinal].physicalUseOrdinal = *action;
+  }
+  auto resources = freezeCgraResourceRuntimePlan(ownerContracts,
+                                                 selectedPatterns, activations);
   if (!resources)
     return resources.takeError();
   result.resources = std::move(*resources);
@@ -436,12 +537,6 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
       static_cast<std::uint64_t>(selectedOwners.size());
   result.summary.claimCount =
       static_cast<std::uint64_t>(result.resources.claims.size());
-  auto transport =
-      freezeCgraTransportPlan(dataflow, fabric, spatial, result.mappedGraphs,
-                              result.physicalUseClients);
-  if (!transport)
-    return transport.takeError();
-  result.transport = std::move(*transport);
   result.summary.routeTreeCount = result.transport.routes.size();
   result.summary.routeNodeCount = result.transport.routeNodes.size();
   result.summary.routeSinkCount = result.transport.routeSinks.size();

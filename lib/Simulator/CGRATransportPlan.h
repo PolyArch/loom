@@ -19,6 +19,7 @@ enum class CgraPhysicalUseClientKind : std::uint8_t {
   MemoryTransition,
   ProducedTransport,
   ConsumedTransport,
+  TraversalTransport,
 };
 
 inline constexpr std::uint64_t invalidCgraTransportOrdinal =
@@ -34,6 +35,7 @@ enum class CgraTraversalStorageKind : std::uint8_t {
 struct CgraTraversalUsePlan final {
   ::loom::fabric::FabricUsePatternRef pattern;
   ::loom::fabric::FabricTraversalActivationGroupView activationGroup;
+  std::uint64_t physicalUseOrdinal = invalidCgraTransportOrdinal;
 };
 
 struct CgraSelectedTraversalPlan final {
