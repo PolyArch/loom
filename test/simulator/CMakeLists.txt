@@ -10,6 +10,19 @@ add_executable(loom-simulator-cgra-resource-runtime-test
   CgraResourceRuntimeTest.cpp
 )
 
+add_executable(loom-simulator-cgra-physical-action-test
+  CgraPhysicalActionRuntimeTest.cpp
+)
+
+target_include_directories(loom-simulator-cgra-physical-action-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Simulator
+)
+
+target_link_libraries(loom-simulator-cgra-physical-action-test PRIVATE
+  LoomSimulator
+  LLVMSupport
+)
+
 target_include_directories(loom-simulator-cgra-resource-runtime-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Simulator
 )

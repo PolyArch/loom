@@ -1,7 +1,7 @@
 #ifndef LOOM_LIB_SIMULATOR_CGRAEXECUTIONPLAN_H
 #define LOOM_LIB_SIMULATOR_CGRAEXECUTIONPLAN_H
 
-#include "CGRAResourceRuntime.h"
+#include "CGRAPhysicalActionRuntime.h"
 #include "Simulator/CGRAAdmission.h"
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -21,9 +21,6 @@ struct CgraPhysicalUsePlan final {
   std::uint64_t resourceOwnerOrdinal = 0;
   std::uint32_t requesterOrdinal = 0;
   std::uint32_t eligibilityOrdinal = 0;
-  std::uint32_t acquireRank = 0;
-  std::uint32_t releaseRank = 0;
-  std::optional<std::uint32_t> commitRank;
   std::optional<std::uint32_t> transitionOrdinal;
 };
 
@@ -31,6 +28,7 @@ struct CgraFrozenExecutionPlan final {
   CgraExecutionPlanSummary summary;
   std::vector<::dataflow::GraphRef> mappedGraphs;
   std::vector<CgraPhysicalUsePlan> physicalUses;
+  std::vector<CgraPhysicalUseTiming> physicalUseTimings;
   CgraResourceRuntimePlan resources;
 };
 

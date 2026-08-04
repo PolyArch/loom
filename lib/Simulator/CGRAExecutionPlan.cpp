@@ -181,6 +181,7 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
   result.summary = *summary;
   result.mappedGraphs = std::move(*mappedGraphs);
   result.physicalUses.reserve(spatial.resourceUses().size());
+  result.physicalUseTimings.reserve(spatial.resourceUses().size());
   std::vector<CgraResourcePatternSelection> selectedPatterns;
   selectedPatterns.reserve(spatial.resourceUses().size());
   llvm::DenseSet<std::uint64_t> selectedOwners;
@@ -202,13 +203,21 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
     plan.resourceOwnerOrdinal = ownerOrdinal->second;
     plan.requesterOrdinal = pattern.requester.ordinal();
     plan.eligibilityOrdinal = pattern.eligibility.ordinal();
-    plan.acquireRank = ranks[pattern.acquire.ordinal()];
-    plan.releaseRank = ranks[pattern.release.ordinal()];
     if (pattern.commit) {
-      plan.commitRank = ranks[pattern.commit->event.ordinal()];
       plan.transitionOrdinal = pattern.commit->transition.ordinal();
     }
     result.physicalUses.push_back(std::move(plan));
+    result.physicalUseTimings.push_back(CgraPhysicalUseTiming{
+        static_cast<std::uint64_t>(result.physicalUseTimings.size()),
+        ranks[pattern.acquire.ordinal()],
+        pattern.commit ? std::optional<std::uint32_t>(
+                             ranks[pattern.commit->event.ordinal()])
+                       : std::nullopt,
+        ranks[pattern.release.ordinal()], pattern.acquire.ordinal(),
+        pattern.release.ordinal(),
+        pattern.commit
+            ? std::optional<std::uint32_t>(pattern.commit->event.ordinal())
+            : std::nullopt});
     selectedPatterns.push_back(
         {ownerOrdinal->second, ::fabric::UsePatternKey(use.useSite.ordinal)});
     selectedOwners.insert(ownerOrdinal->second);
