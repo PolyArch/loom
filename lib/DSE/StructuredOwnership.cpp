@@ -573,9 +573,15 @@ generateAndPromoteStructuredOwnership(
       return invalid(
           "cost-ranked candidate set produced no functional Evidence");
 
-    auto semanticallyPromoted = promoteFindingAbsenceAllPassing(
+    QualityGateClause functionalClause;
+    functionalClause.atoms.push_back(FindingGate{0, *functionalMismatchRequest,
+                                                 RequiredFindingState::Absent});
+    auto functionalGate = QualityGatePolicy::get({std::move(functionalClause)});
+    if (!functionalGate)
+      return functionalGate.takeError();
+    auto semanticallyPromoted = promoteCandidates(
         *semanticCandidateSet, *functionalCandidateRole, functionalEvidence,
-        *functionalMismatchRequest, artifactStore);
+        *functionalGate, {}, AllPassingSelection{}, nullptr, artifactStore);
     if (!semanticallyPromoted)
       return semanticallyPromoted.takeError();
     if (const auto *incomplete =

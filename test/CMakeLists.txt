@@ -64,6 +64,7 @@ set(LOOM_TEST_DEPENDS
   loom-dse-candidate-generator-test
   loom-dse-plan-test
   loom-dse-objective-test
+  loom-dse-promotion-test
   loom-dfg-sim
   loom-dfg-run
   loom-tech-map

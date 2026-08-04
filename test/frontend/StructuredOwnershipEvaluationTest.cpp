@@ -910,12 +910,18 @@ void runEvaluationAnchor() {
   auto semanticCandidates = take(loom::dse::CandidateSet::get(
       loom::frontend::structuredProgramArtifactSchema,
       {baselineRef, spatialRef, incorrectRef}));
-  auto semanticPromotion = take(loom::dse::promoteFindingAbsenceAllPassing(
+  loom::dse::QualityGateClause semanticClause;
+  semanticClause.atoms.push_back(
+      loom::dse::FindingGate{0, baselineFunctional.functionalMismatchRequest,
+                             loom::dse::RequiredFindingState::Absent});
+  const loom::dse::QualityGatePolicy semanticGate =
+      take(loom::dse::QualityGatePolicy::get({std::move(semanticClause)}));
+  auto semanticPromotion = take(loom::dse::promoteCandidates(
       semanticCandidates, loom::evaluation::CaseSubjectRoleRef(0),
       {{baselineFunctional.request, baselineFunctional.evidence},
        {spatialFunctional.request, spatialFunctional.evidence},
        {incorrectFunctional.request, incorrectFunctional.evidence}},
-      baselineFunctional.functionalMismatchRequest, store));
+      semanticGate, {}, loom::dse::AllPassingSelection{}, nullptr, store));
   const auto *semanticSelection =
       std::get_if<loom::dse::CompletedSelection>(&semanticPromotion);
   if (!semanticSelection || semanticSelection->selected.size() != 2 ||
@@ -923,6 +929,19 @@ void runEvaluationAnchor() {
       !llvm::is_contained(semanticSelection->selected, baselineRef) ||
       !llvm::is_contained(semanticSelection->selected, spatialRef))
     fail("AllPassing did not enforce functional finding absence");
+
+  auto inapplicableCandidates = take(loom::dse::CandidateSet::get(
+      loom::frontend::structuredProgramArtifactSchema, {coldRef}));
+  auto inapplicablePromotion = take(loom::dse::promoteCandidates(
+      inapplicableCandidates, loom::evaluation::CaseSubjectRoleRef(0),
+      {{coldFunctional.request, coldFunctional.evidence}}, semanticGate, {},
+      loom::dse::AllPassingSelection{}, nullptr, store));
+  const auto *indeterminate =
+      std::get_if<loom::dse::IncompleteSelection>(&inapplicablePromotion);
+  if (!indeterminate ||
+      indeterminate->reason !=
+          loom::dse::IncompleteSelectionReason::NonComparableEvidence)
+    fail("NotApplicable quality Evidence did not make Promotion incomplete");
 
   auto coldCandidateSet = take(loom::dse::CandidateSet::get(
       loom::frontend::structuredProgramArtifactSchema, {baselineRef, coldRef}));

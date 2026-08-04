@@ -10,6 +10,10 @@ add_executable(loom-dse-plan-test
   PlanTest.cpp
 )
 
+add_executable(loom-dse-promotion-test
+  PromotionTest.cpp
+)
+
 target_link_libraries(loom-dse-objective-test PRIVATE
   LoomDSEObjective
   LLVMSupport
@@ -22,5 +26,10 @@ target_link_libraries(loom-dse-candidate-generator-test PRIVATE
 
 target_link_libraries(loom-dse-plan-test PRIVATE
   LoomDSECandidateGenerator
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-promotion-test PRIVATE
+  LoomDSE
   LLVMSupport
 )
