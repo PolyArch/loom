@@ -19,6 +19,8 @@
 
 namespace loom::mapping {
 
+class SpatialMappingConstraintSetView;
+
 inline constexpr ArtifactSchemaDescriptor mappingArtifactSchema{
     "loom.mapping", SchemaVersion{2, 0}};
 
@@ -524,28 +526,35 @@ private:
   CanonicalSemanticBytes canonicalBytes_;
   SpatialMappingView view_;
 
-  friend llvm::Expected<FinalizedSpatialMapping>
-  finalizeSpatialMapping(::mapping::SpatialOp source,
-                         const ArtifactStore &store);
   friend llvm::Expected<FinalizedSpatialMapping> finalizeSpatialMapping(
       ::mapping::SpatialOp source,
       const ::dataflow::CanonicalDataflowProgramView &dataflow,
       const TechMappingView &techMapping,
       const ::loom::fabric::FabricArtifactView &fabric,
+      const SpatialMappingConstraintSetView &constraints,
       const ArtifactStore &store);
   friend llvm::Expected<FinalizedSpatialMapping>
   importSpatialMapping(const ArtifactRootReference &reference,
                        const ArtifactStore &store);
 };
 
-llvm::Expected<FinalizedSpatialMapping>
-finalizeSpatialMapping(::mapping::SpatialOp source, const ArtifactStore &store);
+/// Runs the intrinsic Spatial Mapping base verifier without publishing the
+/// draft. Constraint admission is deliberately outside this owner.
+llvm::Error verifySpatialMappingBase(
+    ::mapping::SpatialOp source,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric);
 
+/// Production Spatial publication gate. The independently finalized K remains
+/// outside Mapping identity, but its exact owner tuple and admission must hold
+/// before the candidate reaches ArtifactStore::put.
 llvm::Expected<FinalizedSpatialMapping>
 finalizeSpatialMapping(::mapping::SpatialOp source,
                        const ::dataflow::CanonicalDataflowProgramView &dataflow,
                        const TechMappingView &techMapping,
                        const ::loom::fabric::FabricArtifactView &fabric,
+                       const SpatialMappingConstraintSetView &constraints,
                        const ArtifactStore &store);
 
 llvm::Expected<FinalizedSpatialMapping>

@@ -72,6 +72,7 @@ bool allowsEmptyDomain(SpatialConstraintProjection projection) {
   case SpatialConstraintProjection::NetAssignedTagValues:
   case SpatialConstraintProjection::NetSelectedPhysicalTraversals:
   case SpatialConstraintProjection::NetTraversalResourceStates:
+  case SpatialConstraintProjection::MemoryBoundServices:
   case SpatialConstraintProjection::MemoryAddressRegion:
     return true;
   case SpatialConstraintProjection::ComputePlacement:
@@ -81,7 +82,6 @@ bool allowsEmptyDomain(SpatialConstraintProjection projection) {
   case SpatialConstraintProjection::MemoryPlacement:
   case SpatialConstraintProjection::SpatialTransferAttachment:
   case SpatialConstraintProjection::MemoryOperationPort:
-  case SpatialConstraintProjection::MemoryBoundServices:
     return false;
   }
   llvm_unreachable("unknown Spatial constraint projection");

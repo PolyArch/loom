@@ -1,4 +1,5 @@
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingConstraintSet.h"
 
 #include "Common/ArtifactFinalizer.h"
 #include "Common/IndexWidth.h"
@@ -1532,32 +1533,11 @@ llvm::Expected<SpatialMappingView> SpatialMappingView::import(
       std::move(imported->resourceUses));
 }
 
-llvm::Expected<FinalizedSpatialMapping>
-finalizeSpatialMapping(::mapping::SpatialOp source,
-                       const ArtifactStore &store) {
-  auto prepared = prepareSpatialMapping(source);
-  if (!prepared)
-    return prepared.takeError();
-  auto view = strictImport(prepared->reference.artifact,
-                           prepared->canonicalBytes, store);
-  if (!view)
-    return view.takeError();
-  if (llvm::Error error = publishPreparedSpatialMapping(*prepared, store))
-    return std::move(error);
-  return FinalizedSpatialMapping(std::move(prepared->reference),
-                                 std::move(prepared->canonicalBytes),
-                                 std::move(*view));
-}
-
-llvm::Expected<FinalizedSpatialMapping>
-finalizeSpatialMapping(::mapping::SpatialOp source,
-                       const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                       const TechMappingView &techMapping,
-                       const ::loom::fabric::FabricArtifactView &fabric,
-                       const ArtifactStore &store) {
-  if (llvm::Error error =
-          requirePublishedUpstream(dataflow, techMapping, fabric, store))
-    return std::move(error);
+llvm::Error verifySpatialMappingBase(
+    ::mapping::SpatialOp source,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric) {
   auto prepared = prepareSpatialMapping(source);
   if (!prepared)
     return prepared.takeError();
@@ -1567,6 +1547,36 @@ finalizeSpatialMapping(::mapping::SpatialOp source,
       techMapping, fabric);
   if (!view)
     return view.takeError();
+  return llvm::Error::success();
+}
+
+llvm::Expected<FinalizedSpatialMapping>
+finalizeSpatialMapping(::mapping::SpatialOp source,
+                       const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                       const TechMappingView &techMapping,
+                       const ::loom::fabric::FabricArtifactView &fabric,
+                       const SpatialMappingConstraintSetView &constraints,
+                       const ArtifactStore &store) {
+  if (llvm::Error error =
+          requirePublishedUpstream(dataflow, techMapping, fabric, store))
+    return std::move(error);
+  auto constraintBytes =
+      store.get({mappingConstraintSetSchema.identity.str(),
+                 mappingConstraintSetSchema.version, constraints.identity()});
+  if (!constraintBytes)
+    return constraintBytes.takeError();
+  auto prepared = prepareSpatialMapping(source);
+  if (!prepared)
+    return prepared.takeError();
+  auto view = SpatialMappingView::import(
+      prepared->reference.artifact,
+      cast<::mapping::SpatialOp>(prepared->canonicalRoot.get()), dataflow,
+      techMapping, fabric);
+  if (!view)
+    return view.takeError();
+  if (llvm::Error error = admitSpatialMappingConstraints(
+          dataflow, techMapping, fabric, constraints, *view))
+    return std::move(error);
   if (llvm::Error error = publishPreparedSpatialMapping(*prepared, store))
     return std::move(error);
   return FinalizedSpatialMapping(std::move(prepared->reference),

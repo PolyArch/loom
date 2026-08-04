@@ -804,6 +804,7 @@ finalizeSpatialMappingCandidate(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
+    const ::loom::mapping::SpatialMappingConstraintSetView &constraints,
     const ArtifactStore &store) {
   if (llvm::Error error = candidate.verify())
     return std::move(error);
@@ -878,7 +879,7 @@ finalizeSpatialMappingCandidate(
     return std::move(error);
 
   return ::loom::mapping::finalizeSpatialMapping(root, dataflow, techMapping,
-                                                 fabric, store);
+                                                 fabric, constraints, store);
 }
 
 } // namespace loom::pnr

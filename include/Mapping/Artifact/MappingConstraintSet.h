@@ -14,6 +14,8 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -192,6 +194,33 @@ private:
                                     const ArtifactStore &store);
 };
 
+/// Typed negative result of applying one exact Spatial MappingConstraintSet to
+/// an independently base-verified SpatialMapping. Rejection is invocation
+/// state, not intrinsic Mapping invalidity and not persistent artifact content.
+class SpatialMappingConstraintRejection final
+    : public llvm::ErrorInfo<SpatialMappingConstraintRejection> {
+public:
+  static char ID;
+
+  SpatialMappingConstraintRejection(
+      ::mapping::SpatialConstraintProjection projection,
+      std::uint64_t clauseOrdinal, std::string message)
+      : projection_(projection), clauseOrdinal_(clauseOrdinal),
+        message_(std::move(message)) {}
+
+  ::mapping::SpatialConstraintProjection projection() const {
+    return projection_;
+  }
+  std::uint64_t clauseOrdinal() const { return clauseOrdinal_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  ::mapping::SpatialConstraintProjection projection_;
+  std::uint64_t clauseOrdinal_ = 0;
+  std::string message_;
+};
+
 llvm::Expected<FinalizedSpatialMappingConstraintSet>
 finalizeSpatialMappingConstraintSet(::mapping::ConstraintsSpatialOp source,
                                     const ArtifactStore &store);
@@ -207,6 +236,17 @@ finalizeSpatialMappingConstraintSet(
 llvm::Expected<FinalizedSpatialMappingConstraintSet>
 importSpatialMappingConstraintSet(const ArtifactRootReference &reference,
                                   const ArtifactStore &store);
+
+/// Independently projects every closed Spatial constraint carrier from a
+/// sealed, base-valid Mapping and checks the exact canonical K. The routine
+/// builds only invocation-local read indexes and never consumes PnR caches,
+/// CandidateState, solver assignments, or search history.
+llvm::Error admitSpatialMappingConstraints(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const SpatialMappingConstraintSetView &constraints,
+    const SpatialMappingView &spatialMapping);
 
 } // namespace loom::mapping
 

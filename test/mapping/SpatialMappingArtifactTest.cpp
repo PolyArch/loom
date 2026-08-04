@@ -95,6 +95,13 @@ template <typename T> bool rejected(llvm::Expected<T> value) {
   return true;
 }
 
+bool rejected(llvm::Error error) {
+  if (!error)
+    return false;
+  llvm::consumeError(std::move(error));
+  return true;
+}
+
 class TemporaryDirectory final {
 public:
   TemporaryDirectory() {
@@ -116,6 +123,21 @@ public:
 private:
   std::string path_;
 };
+
+std::size_t storedObjectCount(llvm::StringRef root) {
+  std::size_t count = 0;
+  std::error_code error;
+  llvm::sys::fs::recursive_directory_iterator iterator(root, error), end;
+  if (error)
+    fail("cannot inspect ArtifactStore: " + error.message());
+  while (iterator != end) {
+    count += llvm::sys::fs::is_regular_file(iterator->path());
+    iterator.increment(error);
+    if (error)
+      fail("cannot inspect ArtifactStore: " + error.message());
+  }
+  return count;
+}
 
 mlir::MLIRContext makeContext() {
   mlir::DialectRegistry registry;
@@ -634,7 +656,8 @@ buildConstraints(mlir::MLIRContext &context,
                  const loom::mapping::TechMappingView &tech,
                  const loom::fabric::FabricArtifactView &fabric,
                  const loom::ArtifactStore &store,
-                 bool restrictTagsToZero = false) {
+                 bool restrictTagsToZero = false,
+                 bool rejectComputePlacement = false) {
   std::string clauses;
   if (restrictTagsToZero)
     for (const auto &net : tech.residualLogicalNets())
@@ -645,6 +668,12 @@ buildConstraints(mlir::MLIRContext &context,
                  ") admissible_domain(["
                  "#mapping.constraint_unsigned_interval<lower = 0 : ui8, "
                  "upper = 1 : ui8>])\n";
+  if (rejectComputePlacement && !tech.computeRealizations().empty())
+    clauses += "    mapping.constraint.domain_restriction "
+               "projection(compute_placement) subject("
+               "#mapping.compute_realization_ref<" +
+               std::to_string(tech.computeRealizations().front().entityId) +
+               ">) admissible_domain([])\n";
   const std::string text = "module {\n  mapping.constraints.spatial dataflow(" +
                            identityAttr(dataflow.identity()) +
                            ") tech_mapping(" + identityAttr(tech.identity()) +
@@ -856,6 +885,26 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
         generatedView.view().routeTrees().empty() ||
         generatedView.view().resourceUses().empty())
       fail("Spatial PnR generator published an empty Mapping");
+    requireSuccess(loom::mapping::admitSpatialMappingConstraints(
+        dataflow, tech.view(), fabric.view(), constraints.view(),
+        generatedView.view()));
+
+    const auto placementRejectingConstraints = buildConstraints(
+        context, dataflow, tech.view(), fabric.view(), store,
+        /*restrictTagsToZero=*/false, /*rejectComputePlacement=*/true);
+    llvm::Error rejection = loom::mapping::admitSpatialMappingConstraints(
+        dataflow, tech.view(), fabric.view(),
+        placementRejectingConstraints.view(), generatedView.view());
+    bool rejectedByConstraintSet = false;
+    llvm::handleAllErrors(
+        std::move(rejection),
+        [&](const loom::mapping::SpatialMappingConstraintRejection &) {
+          rejectedByConstraintSet = true;
+        },
+        [&](const llvm::ErrorInfoBase &error) { fail(error.message()); });
+    if (!rejectedByConstraintSet)
+      fail("Spatial constraint admission accepted a forbidden compute "
+           "placement");
 
     generatorResolved.dse.systemPnr.search.routing.negotiation =
         loom::ResolvedDualSubgradientPolicy{
@@ -1174,8 +1223,30 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
   if (forceTagConflict)
     return;
 
+  const auto placementRejectingConstraints = buildConstraints(
+      context, dataflow, tech.view(), fabric.view(), store,
+      /*restrictTagsToZero=*/false, /*rejectComputePlacement=*/true);
+  const std::size_t storedBeforeRejection = storedObjectCount(directory.path());
+  auto rejectedFinalization = loom::pnr::finalizeSpatialMappingCandidate(
+      *candidate, dataflow, tech.view(), fabric.view(),
+      placementRejectingConstraints.view(), store);
+  if (rejectedFinalization)
+    fail("constraint-rejected Spatial candidate was published");
+  bool rejectedByConstraintSet = false;
+  llvm::handleAllErrors(
+      rejectedFinalization.takeError(),
+      [&](const loom::mapping::SpatialMappingConstraintRejection &) {
+        rejectedByConstraintSet = true;
+      },
+      [&](const llvm::ErrorInfoBase &error) { fail(error.message()); });
+  if (!rejectedByConstraintSet)
+    fail("Spatial candidate finalization lost typed constraint rejection");
+  if (storedObjectCount(directory.path()) != storedBeforeRejection)
+    fail("constraint-rejected Spatial candidate reached ArtifactStore");
+
   auto finalized = take(loom::pnr::finalizeSpatialMappingCandidate(
-      *candidate, dataflow, tech.view(), fabric.view(), store));
+      *candidate, dataflow, tech.view(), fabric.view(), constraints.view(),
+      store));
   auto imported =
       take(loom::mapping::importSpatialMapping(finalized.reference(), store));
   if (imported.reference() != finalized.reference() ||
@@ -1230,7 +1301,8 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
     if (!tagUse)
       fail("SpatialMapping fixture has no Physical Tag ResourceUse");
     tagUse->erase();
-    if (!rejected(loom::mapping::finalizeSpatialMapping(missingTagRoot, store)))
+    if (!rejected(loom::mapping::verifySpatialMappingBase(
+            missingTagRoot, dataflow, tech.view(), fabric.view())))
       fail("SpatialMapping finalized without a required Physical Tag "
            "assignment");
 
@@ -1254,8 +1326,8 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
         &context, mlir::DenseI8ArrayAttr::get(&context, noncanonical));
     malformedUse->setSharingAssignmentsAttr(
         mlir::ArrayAttr::get(&context, {malformedValue}));
-    if (!rejected(
-            loom::mapping::finalizeSpatialMapping(malformedTagRoot, store)))
+    if (!rejected(loom::mapping::verifySpatialMappingBase(
+            malformedTagRoot, dataflow, tech.view(), fabric.view())))
       fail("SpatialMapping accepted a noncanonical Physical Tag value");
 
     auto collidingTags = parseSpatial(context, finalized.canonicalBytes());
@@ -1275,8 +1347,8 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
         ++rewrittenAssignments;
       }
     if (rewrittenAssignments < 2 ||
-        !rejected(
-            loom::mapping::finalizeSpatialMapping(collidingTagRoot, store)))
+        !rejected(loom::mapping::verifySpatialMappingBase(
+            collidingTagRoot, dataflow, tech.view(), fabric.view())))
       fail("SpatialMapping accepted colliding local Physical Tags");
   }
 
@@ -1286,7 +1358,8 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
   auto root = *missingRoute->getOps<::mapping::SpatialOp>().begin();
   auto routes = root.getBody().front().getOps<::mapping::RouteTreeOp>();
   (*routes.begin()).erase();
-  if (!rejected(loom::mapping::finalizeSpatialMapping(root, store)))
+  if (!rejected(loom::mapping::verifySpatialMappingBase(
+          root, dataflow, tech.view(), fabric.view())))
     fail("SpatialMapping finalized without a required RouteTree");
 
   auto missingUse = parseSpatial(context, finalized.canonicalBytes());
@@ -1295,7 +1368,8 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
   auto useRoot = *missingUse->getOps<::mapping::SpatialOp>().begin();
   auto uses = useRoot.getBody().front().getOps<::mapping::ResourceUseOp>();
   (*uses.begin()).erase();
-  if (!rejected(loom::mapping::finalizeSpatialMapping(useRoot, store)))
+  if (!rejected(loom::mapping::verifySpatialMappingBase(
+          useRoot, dataflow, tech.view(), fabric.view())))
     fail("SpatialMapping finalized without a required ResourceUse");
 }
 
@@ -1573,7 +1647,8 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   requireSuccess(candidate->verify());
 
   auto finalized = take(loom::pnr::finalizeSpatialMappingCandidate(
-      *candidate, dataflow, tech.view(), fabric.view(), store));
+      *candidate, dataflow, tech.view(), fabric.view(), constraints.view(),
+      store));
   auto imported =
       take(loom::mapping::importSpatialMapping(finalized.reference(), store));
   if (imported.view().memoryEngineBindings().size() != 1 ||
@@ -1629,7 +1704,8 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   if (resourceUses.empty())
     fail("memory SpatialMapping fixture has no ResourceUse to remove");
   (*resourceUses.begin()).erase();
-  if (!rejected(loom::mapping::finalizeSpatialMapping(missingUseRoot, store)))
+  if (!rejected(loom::mapping::verifySpatialMappingBase(
+          missingUseRoot, dataflow, tech.view(), fabric.view())))
     fail("SpatialMapping finalized without a required memory ResourceUse");
 
   auto missingExposure = parseSpatial(context, finalized.canonicalBytes());
@@ -1643,8 +1719,8 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   if (!exposureToErase)
     fail("memory SpatialMapping fixture has no ExposureEntry to remove");
   exposureToErase->erase();
-  if (!rejected(
-          loom::mapping::finalizeSpatialMapping(missingExposureRoot, store)))
+  if (!rejected(loom::mapping::verifySpatialMappingBase(
+          missingExposureRoot, dataflow, tech.view(), fabric.view())))
     fail("SpatialMapping finalized without a required memory exposure");
 
   std::optional<loom::fabric::FabricMemoryEndpointRef> managerEndpoint;
@@ -1677,8 +1753,8 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
                 fabricReferenceAttr<::mapping::SubordinateEndpointRefAttr>(
                     &context,
                     loom::fabric::SubordinateEndpointRef(*managerEndpoint)));
-  if (!rejected(
-          loom::mapping::finalizeSpatialMapping(wrongTerminalRoot, store)))
+  if (!rejected(loom::mapping::verifySpatialMappingBase(
+          wrongTerminalRoot, dataflow, tech.view(), fabric.view())))
     fail("SpatialMapping accepted a manager as an exposure terminal");
 
   if (!temporal) {
@@ -1701,7 +1777,8 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
         original.getTarget());
     second.getBody().push_back(new mlir::Block());
     original.erase();
-    if (!rejected(loom::mapping::finalizeSpatialMapping(root, store)))
+    if (!rejected(loom::mapping::verifySpatialMappingBase(
+            root, dataflow, tech.view(), fabric.view())))
       fail("SpatialMapping accepted overlapping local physical intervals");
   }
 }

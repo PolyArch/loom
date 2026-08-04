@@ -2,6 +2,7 @@
 #define LOOM_PNR_SPATIALMAPPINGMATERIALIZER_H
 
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingConstraintSet.h"
 #include "PnR/SpatialCandidateState.h"
 
 #include "llvm/Support/Error.h"
@@ -18,6 +19,7 @@ finalizeSpatialMappingCandidate(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
+    const ::loom::mapping::SpatialMappingConstraintSetView &constraints,
     const ArtifactStore &store);
 
 } // namespace loom::pnr

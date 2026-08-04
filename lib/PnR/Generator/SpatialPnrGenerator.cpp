@@ -363,7 +363,7 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     ++accounting.publicationSlots;
     auto finalized = finalizeSpatialMappingCandidate(
         *seed->candidate, inputs.dataflow, inputs.techMapping, inputs.fabric,
-        inputs.store);
+        inputs.constraints, inputs.store);
     if (!finalized)
       return internal(InternalSpatialPnrGenerationReason::CandidateFinalization,
                       accounting, finalized.takeError());
