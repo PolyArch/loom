@@ -59,7 +59,7 @@ public:
   create(const CgraFrozenExecutionPlan &plan,
          const ::dataflow::CanonicalDataflowProgramView &dataflow,
          ::dataflow::GraphRef graph, const PreparedGraphExecution &execution,
-         SimulatorState &state);
+         SimulatorState &state, CgraPhysicalActionRuntime &physical);
 
   llvm::Expected<std::optional<CgraComputeLifecycleFrame>>
   start(SpatialEventCoordinate coordinate);
@@ -97,7 +97,7 @@ private:
   CgraComputeRuntime(const CgraFrozenExecutionPlan &plan, SimulatorState &state,
                      std::vector<ActorBinding> bindings,
                      std::vector<std::uint64_t> transitionByCase,
-                     CgraPhysicalActionRuntime physical);
+                     CgraPhysicalActionRuntime &physical);
 
   llvm::Error scheduleReady(SpatialEventCoordinate coordinate);
   llvm::Expected<std::uint64_t>
@@ -119,7 +119,7 @@ private:
   SimulatorState *state_ = nullptr;
   std::vector<ActorBinding> bindings_;
   std::vector<std::uint64_t> transitionByCase_;
-  CgraPhysicalActionRuntime physical_;
+  CgraPhysicalActionRuntime *physical_ = nullptr;
   CgraEventQueue requestedEvents_;
   CgraEventQueue actorCommitEvents_;
   llvm::SmallBitVector readyCandidates_;

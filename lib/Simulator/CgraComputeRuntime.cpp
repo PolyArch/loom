@@ -34,28 +34,23 @@ CgraComputeRuntime::CgraComputeRuntime(
     const CgraFrozenExecutionPlan &plan, SimulatorState &state,
     std::vector<ActorBinding> bindings,
     std::vector<std::uint64_t> transitionByCase,
-    CgraPhysicalActionRuntime physical)
+    CgraPhysicalActionRuntime &physical)
     : plan_(&plan), state_(&state), bindings_(std::move(bindings)),
-      transitionByCase_(std::move(transitionByCase)),
-      physical_(std::move(physical)), readyCandidates_(bindings_.size(), true),
+      transitionByCase_(std::move(transitionByCase)), physical_(&physical),
+      readyCandidates_(bindings_.size(), true),
       nextActionOccurrence_(plan.physicalUseTimings.size(), 0) {}
 
 llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
     const CgraFrozenExecutionPlan &plan,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     ::dataflow::GraphRef graph, const PreparedGraphExecution &execution,
-    SimulatorState &state) {
+    SimulatorState &state, CgraPhysicalActionRuntime &physical) {
   if (state.execution != &execution)
     return invalid("CGRA compute state does not use the prepared graph");
   if (plan.physicalUseTimings.size() != plan.resources.selectedUses.size())
     return invalid("CGRA compute physical timing coverage is incomplete");
   if (plan.physicalUseClients.size() != plan.physicalUseTimings.size())
     return invalid("CGRA physical-use client coverage is incomplete");
-  auto physical = CgraPhysicalActionRuntime::create(plan.resources,
-                                                    plan.physicalUseTimings);
-  if (!physical)
-    return physical.takeError();
-
   llvm::DenseMap<mlir::Operation *, std::uint64_t> semanticOrdinals;
   semanticOrdinals.reserve(execution.actorPlans.size());
   for (auto [ordinal, actor] : llvm::enumerate(execution.actorPlans))
@@ -124,7 +119,7 @@ llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
   if (bindings.empty())
     return invalid("CGRA compute graph has no selected compute actor");
   return CgraComputeRuntime(plan, state, std::move(bindings),
-                            std::move(transitionByCase), std::move(*physical));
+                            std::move(transitionByCase), physical);
 }
 
 llvm::Expected<std::uint64_t> CgraComputeRuntime::allocateFiring(
@@ -190,7 +185,8 @@ CgraComputeRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
             std::errc::value_too_large,
             "CGRA physical action occurrence ordinal overflows u64");
       const std::uint64_t occurrence = nextActionOccurrence_[actionOrdinal]++;
-      auto requested = physical_.request(actionOrdinal, occurrence, coordinate);
+      auto requested =
+          physical_->request(actionOrdinal, occurrence, coordinate);
       if (!requested)
         return requested.takeError();
       const auto key = std::make_pair(actionOrdinal, occurrence);
@@ -335,7 +331,7 @@ CgraComputeRuntime::advance() {
     return invalid("CGRA compute runtime has not started");
   std::optional<SpatialEventCoordinate> coordinate;
   selectEarlier(requestedEvents_.nextCoordinate(), coordinate);
-  selectEarlier(physical_.nextCoordinate(), coordinate);
+  selectEarlier(physical_->nextCoordinate(), coordinate);
   selectEarlier(actorCommitEvents_.nextCoordinate(), coordinate);
   if (!coordinate)
     return std::optional<CgraComputeLifecycleFrame>{};
@@ -353,8 +349,8 @@ CgraComputeRuntime::advance() {
   }
 
   llvm::SmallVector<std::uint64_t, 8> affectedFirings;
-  while (isAt(physical_.nextCoordinate(), *coordinate)) {
-    auto physicalFrame = physical_.advance();
+  while (isAt(physical_->nextCoordinate(), *coordinate)) {
+    auto physicalFrame = physical_->advance();
     if (!physicalFrame)
       return physicalFrame.takeError();
     if (!*physicalFrame)
@@ -426,7 +422,7 @@ CgraComputeRuntime::advance() {
 
 bool CgraComputeRuntime::hasPendingEvents() const {
   return !requestedEvents_.empty() || !actorCommitEvents_.empty() ||
-         physical_.hasPendingActions();
+         physical_->hasPendingActions();
 }
 
 } // namespace loom::sim::detail

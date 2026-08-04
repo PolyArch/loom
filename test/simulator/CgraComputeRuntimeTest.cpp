@@ -192,8 +192,10 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
                     take(tokenFromBitPattern(llvm::APInt(32, 9),
                                              entry.getArgument(2).getType())));
 
-  auto runtime = take(
-      CgraComputeRuntime::create(plan, view, add->graph, *prepared, state));
+  auto physical = take(CgraPhysicalActionRuntime::create(
+      plan.resources, plan.physicalUseTimings));
+  auto runtime = take(CgraComputeRuntime::create(plan, view, add->graph,
+                                                 *prepared, state, physical));
   auto frame = take(runtime.start(coordinate(0)));
   require(frame && hasPhysical(*frame, CgraPhysicalLifecycleKind::Requested) &&
               hasPhysical(*frame, CgraPhysicalLifecycleKind::Granted) &&
@@ -266,8 +268,10 @@ void statefulActorCannotBypassUnmodeledTransport() {
                           llvm::APInt(32, ordinal == 2 ? 3 : ordinal - 1),
                           entry.getArgument(ordinal).getType())));
 
-  auto runtime = take(
-      CgraComputeRuntime::create(plan, view, stream->graph, *prepared, state));
+  auto physical = take(CgraPhysicalActionRuntime::create(
+      plan.resources, plan.physicalUseTimings));
+  auto runtime = take(CgraComputeRuntime::create(plan, view, stream->graph,
+                                                 *prepared, state, physical));
   (void)take(runtime.start(coordinate(0)));
   (void)take(runtime.advance());
   auto committed = take(runtime.advance());
