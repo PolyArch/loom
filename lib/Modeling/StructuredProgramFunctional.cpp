@@ -122,7 +122,7 @@ bool haveEquivalentSourceObservations(
       });
 }
 
-llvm::Error primeSourceObservationCache(
+llvm::Error primeSourceObservationCacheImpl(
     const ArtifactRootReference &source,
     const ArtifactRootReference &workloadReference,
     const ArtifactRootReference &runtimeInputReference,
@@ -422,6 +422,14 @@ resolveCase(const ArtifactRootReference &candidate,
 
 } // namespace
 
+llvm::Error primeStructuredProgramSourceObservations(
+    const ArtifactRootReference &source, const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput,
+    const sim::NativeStructuredProgramObservations &observations) {
+  return primeSourceObservationCacheImpl(source, workload, runtimeInput,
+                                         observations);
+}
+
 llvm::Error registerStructuredProgramFunctionalModel() {
   if (llvm::Error error = standard_findings::registerStandardFindings())
     return error;
@@ -485,7 +493,7 @@ llvm::Error primeStructuredProgramFunctionalReplay(
       frontend::structuredProgramArtifactSchema.identity.str(),
       frontend::structuredProgramArtifactSchema.version,
       invocation.sourceProgram.identity()};
-  if (llvm::Error error = primeSourceObservationCache(
+  if (llvm::Error error = primeStructuredProgramSourceObservations(
           sourceReference, invocation.workload, invocation.runtimeInput,
           invocation.sourceObservations))
     return error;

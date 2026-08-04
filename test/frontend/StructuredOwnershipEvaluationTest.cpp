@@ -871,6 +871,16 @@ void runEvaluationAnchor() {
         functionalPlanCompleted->resolve({1, 1}).size() != 2)
       fail(
           "central functional Promote did not replay the generated candidates");
+    if (functionalInvocation.sourceNativeExecutionCount() != 1)
+      fail("central Generate/Promote repeated source native execution");
+    const auto functionalCache =
+        functionalInvocation.evaluationCacheStatistics();
+    if (functionalCache.sourceObservationPrimeCount != 1 ||
+        functionalCache.sourceObservationMissCount != 0)
+      fail("central Generate/Promote source observation cache counts are " +
+           std::to_string(functionalCache.sourceObservationPrimeCount) + "/" +
+           std::to_string(functionalCache.sourceObservationHitCount) + "/" +
+           std::to_string(functionalCache.sourceObservationMissCount));
     auto centrallySelected = take(
         functionalInvocation.materializeSelectedCandidate(spatialRef, store));
     if (centrallySelected.candidate.structuredProgram.identity() !=

@@ -59,6 +59,15 @@ llvm::Error registerStructuredProgramFunctionalModel();
 EvaluationModelDescriptorRef structuredProgramFunctionalModelDescriptorRef();
 CaseSubjectRoleRef structuredProgramFunctionalCandidateRole();
 
+/// Prime the invocation-local source observation shared by functional
+/// comparisons for one exact source/workload/runtime tuple. A conflicting
+/// second value is rejected as nondeterministic source execution.
+llvm::Error primeStructuredProgramSourceObservations(
+    const ::loom::ArtifactRootReference &source,
+    const ::loom::ArtifactRootReference &workload,
+    const ::loom::ArtifactRootReference &runtimeInput,
+    const ::loom::sim::NativeStructuredProgramObservations &observations);
+
 /// Execute and cache the exact source-backed DFG replay for one finalized
 /// ownership candidate. Repeated priming for the same candidate/workload pair
 /// must produce an identical result.

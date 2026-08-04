@@ -2,6 +2,7 @@
 #define LOOM_DSE_STRUCTUREDOWNERSHIPINVOCATION_H
 
 #include "DSE/StructuredOwnership.h"
+#include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -42,6 +43,15 @@ public:
   operator=(const StructuredOwnershipInvocation &) = delete;
 
   llvm::ArrayRef<StructuredOwnershipCandidateDisposition> dispositions() const;
+
+  llvm::Error prepareSource(const ArtifactRootReference &source,
+                            const ArtifactRootReference &workload,
+                            const ArtifactRootReference &runtimeInput,
+                            const ArtifactStore &store);
+
+  std::uint64_t sourceNativeExecutionCount() const;
+  evaluation::models::StructuredEvaluationInvocationCacheStatistics
+  evaluationCacheStatistics() const;
 
   llvm::Expected<SelectedStructuredOwnershipCandidate>
   materializeSelectedCandidate(const ArtifactRootReference &candidate,

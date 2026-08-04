@@ -7,6 +7,13 @@
 
 namespace loom::dse::detail {
 
+struct StructuredOwnershipPreparedSource final {
+  const ArtifactRootReference &sourceReference;
+  const ArtifactRootReference &workloadReference;
+  const ArtifactRootReference &runtimeInputReference;
+  const sim::NativeStructuredProgramObservations &observations;
+};
+
 class StructuredOwnershipInvocationAccess final {
 public:
   static StructuredOwnershipInvocation *current();
@@ -19,7 +26,11 @@ public:
                     const sim::CanonicalSimulationWorkload &workload,
                     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
                     const fabric::FinalizedFabricRoot &fabric,
+                    const ArtifactStore &store,
                     StructuredOwnershipGenerationOptions &options);
+
+  static llvm::Expected<StructuredOwnershipPreparedSource>
+  preparedSource(const StructuredOwnershipInvocation &invocation);
 
   static const ResolvedConfig &
   config(const StructuredOwnershipInvocation &invocation);
@@ -33,7 +44,6 @@ public:
       ArtifactRootReference sourceReference,
       ArtifactRootReference workloadReference,
       ArtifactRootReference runtimeInputReference,
-      sim::NativeStructuredProgramObservations sourceObservations,
       llvm::ArrayRef<StructuredOwnershipCandidateDisposition> dispositions);
 
   static llvm::Error

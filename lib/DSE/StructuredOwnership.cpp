@@ -49,7 +49,6 @@ struct OwnershipGenerationState final {
   ArtifactRootReference parentReference;
   ArtifactRootReference workloadReference;
   ArtifactRootReference runtimeInputReference;
-  sim::NativeStructuredProgramObservations sourceObservations;
 };
 
 llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
@@ -120,30 +119,55 @@ generateStructuredOwnershipCandidatesImpl(
     llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
         sourceProvenance,
     const ResolvedConfig *analyticConfig,
-    evaluation::models::StructuredEvaluationInvocationCache *evaluationCache) {
+    evaluation::models::StructuredEvaluationInvocationCache *evaluationCache,
+    const detail::StructuredOwnershipPreparedSource *preparedSource) {
   if (options.candidateWorkerCount == 0)
     return invalid("candidate worker count must be positive");
   if (options.scopeExpansionLimit == 0)
     return invalid("ownership scope expansion limit must be positive");
 
   std::vector<ArtifactRootReference> candidateReferences;
-  auto parentReference =
-      frontend::publishStructuredProgram(parent, artifactStore);
-  if (!parentReference)
-    return parentReference.takeError();
-  auto workloadReference =
-      sim::publishSimulationWorkload(workload, artifactStore);
-  if (!workloadReference)
-    return workloadReference.takeError();
-  auto runtimeInputReference =
-      sim::publishSimulationRuntimeInput(runtimeInput, artifactStore);
-  if (!runtimeInputReference)
-    return runtimeInputReference.takeError();
-  auto sourceObservations =
-      sim::executeNativeStructuredProgram(parent, workload, runtimeInput);
-  if (!sourceObservations)
-    return sourceObservations.takeError();
-  if (analyticConfig) {
+  std::optional<ArtifactRootReference> ownedParentReference;
+  std::optional<ArtifactRootReference> ownedWorkloadReference;
+  std::optional<ArtifactRootReference> ownedRuntimeInputReference;
+  std::optional<sim::NativeStructuredProgramObservations>
+      ownedSourceObservations;
+  const ArtifactRootReference *parentReference = nullptr;
+  const ArtifactRootReference *workloadReference = nullptr;
+  const ArtifactRootReference *runtimeInputReference = nullptr;
+  const sim::NativeStructuredProgramObservations *sourceObservations = nullptr;
+  if (preparedSource) {
+    parentReference = &preparedSource->sourceReference;
+    workloadReference = &preparedSource->workloadReference;
+    runtimeInputReference = &preparedSource->runtimeInputReference;
+    sourceObservations = &preparedSource->observations;
+  } else {
+    auto publishedParent =
+        frontend::publishStructuredProgram(parent, artifactStore);
+    if (!publishedParent)
+      return publishedParent.takeError();
+    auto publishedWorkload =
+        sim::publishSimulationWorkload(workload, artifactStore);
+    if (!publishedWorkload)
+      return publishedWorkload.takeError();
+    auto publishedRuntimeInput =
+        sim::publishSimulationRuntimeInput(runtimeInput, artifactStore);
+    if (!publishedRuntimeInput)
+      return publishedRuntimeInput.takeError();
+    auto observations =
+        sim::executeNativeStructuredProgram(parent, workload, runtimeInput);
+    if (!observations)
+      return observations.takeError();
+    ownedParentReference.emplace(std::move(*publishedParent));
+    ownedWorkloadReference.emplace(std::move(*publishedWorkload));
+    ownedRuntimeInputReference.emplace(std::move(*publishedRuntimeInput));
+    ownedSourceObservations.emplace(std::move(*observations));
+    parentReference = &*ownedParentReference;
+    workloadReference = &*ownedWorkloadReference;
+    runtimeInputReference = &*ownedRuntimeInputReference;
+    sourceObservations = &*ownedSourceObservations;
+  }
+  if (analyticConfig && !preparedSource) {
     const evaluation::models::StructuredFabricAnalyticInvocation invocation{
         *workloadReference,
         *runtimeInputReference,
@@ -368,8 +392,7 @@ generateStructuredOwnershipCandidatesImpl(
   return OwnershipGenerationState{
       CompletedStructuredOwnershipGeneration{std::move(*candidateSet),
                                              std::move(dispositions)},
-      std::move(*parentReference), std::move(*workloadReference),
-      std::move(*runtimeInputReference), std::move(*sourceObservations)};
+      *parentReference, *workloadReference, *runtimeInputReference};
 }
 
 llvm::Expected<CompletedStructuredOwnershipGeneration>
@@ -386,13 +409,14 @@ generateStructuredOwnershipCandidates(
   const ResolvedConfig *analyticConfig = nullptr;
   evaluation::models::StructuredEvaluationInvocationCache *evaluationCache =
       nullptr;
+  std::optional<detail::StructuredOwnershipPreparedSource> preparedSource;
   StructuredOwnershipInvocation *invocation =
       detail::StructuredOwnershipInvocationAccess::current();
   if (invocation) {
     if (llvm::Error error =
             detail::StructuredOwnershipInvocationAccess::prepareGeneration(
                 *invocation, parent, workload, runtimeInput, fabric,
-                effectiveOptions))
+                artifactStore, effectiveOptions))
       return std::move(error);
     analyticConfig =
         &detail::StructuredOwnershipInvocationAccess::config(*invocation);
@@ -402,10 +426,16 @@ generateStructuredOwnershipCandidates(
     sourceProvenance =
         detail::StructuredOwnershipInvocationAccess::sourceProvenance(
             *invocation);
+    auto source = detail::StructuredOwnershipInvocationAccess::preparedSource(
+        *invocation);
+    if (!source)
+      return source.takeError();
+    preparedSource.emplace(*source);
   }
   auto generated = generateStructuredOwnershipCandidatesImpl(
       parent, workload, runtimeInput, fabric, effectiveOptions, artifactStore,
-      sourceProvenance, analyticConfig, evaluationCache);
+      sourceProvenance, analyticConfig, evaluationCache,
+      preparedSource ? &*preparedSource : nullptr);
   if (!generated)
     return generated.takeError();
   if (invocation)
@@ -413,7 +443,6 @@ generateStructuredOwnershipCandidates(
             detail::StructuredOwnershipInvocationAccess::recordGeneration(
                 *invocation, generated->parentReference,
                 generated->workloadReference, generated->runtimeInputReference,
-                std::move(generated->sourceObservations),
                 generated->completed.dispositions))
       return std::move(error);
   return std::move(generated->completed);

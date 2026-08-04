@@ -334,6 +334,10 @@ exploreStructuredCompilationToPreMapping(
       options.ownership.lowering, options.ownership.candidateWorkerCount,
       options.ownership.functionalReplayLimits, compilation.sourceProvenance);
   StructuredOwnershipInvocationScope invocationScope(invocation);
+  if (llvm::Error error =
+          invocation.prepareSource(*sourceReference, *workloadReference,
+                                   *runtimeInputReference, artifactStore))
+    return std::move(error);
 
   auto analytic = prepareStructuredFabricAnalyticEvidenceObligationTemplate(
       *sourceReference, fabric.reference(), *workloadReference,

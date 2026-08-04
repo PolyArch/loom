@@ -3,9 +3,11 @@
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
+#include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/Models/StructuredProgramFunctional.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
+#include "Simulator/NativeSimulationOracle.h"
 #include "StructuredOwnershipInvocationInternal.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -71,6 +73,8 @@ public:
   std::optional<ArtifactRootReference> workloadReference;
   std::optional<ArtifactRootReference> runtimeInputReference;
   std::optional<sim::NativeStructuredProgramObservations> sourceObservations;
+  std::uint64_t sourceNativeExecutionCount = 0;
+  bool generationRecorded = false;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   std::map<ArtifactRootReference, frontend::MaterializedOwnershipCandidate,
            decltype(&artifactRootReferenceLess)>
@@ -109,6 +113,66 @@ StructuredOwnershipInvocation::StructuredOwnershipInvocation(
           candidateWorkerCount, functionalReplayLimits, sourceProvenance)) {}
 
 StructuredOwnershipInvocation::~StructuredOwnershipInvocation() = default;
+
+llvm::Error StructuredOwnershipInvocation::prepareSource(
+    const ArtifactRootReference &source, const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ArtifactStore &store) {
+  Impl &impl = *impl_;
+  if (impl.sourceReference) {
+    if (!impl.workloadReference || !impl.runtimeInputReference ||
+        !impl.sourceObservations || *impl.sourceReference != source ||
+        *impl.workloadReference != workload ||
+        *impl.runtimeInputReference != runtimeInput)
+      return invalid("prepared source roots differ from the invocation");
+    return llvm::Error::success();
+  }
+  if (impl.workloadReference || impl.runtimeInputReference ||
+      impl.sourceObservations)
+    return invalid("source preparation is partially initialized");
+  if (!sameRoot(source, frontend::structuredProgramArtifactSchema,
+                impl.sourceProgram.identity()) ||
+      !sameRoot(workload, sim::simulationWorkloadSchema,
+                impl.workload.identity()) ||
+      !sameRoot(runtimeInput, sim::simulationRuntimeInputSchema,
+                impl.runtimeInput.identity()))
+    return invalid("prepared roots differ from the bound invocation");
+
+  auto observations = sim::executeNativeStructuredProgram(
+      impl.sourceProgram, impl.workload, impl.runtimeInput);
+  if (!observations)
+    return observations.takeError();
+  evaluation::models::StructuredEvaluationInvocationCacheScope cacheScope(
+      impl.evaluationCache);
+  if (llvm::Error error =
+          evaluation::models::primeStructuredProgramSourceObservations(
+              source, workload, runtimeInput, *observations))
+    return error;
+  const evaluation::models::StructuredFabricAnalyticInvocation invocation{
+      workload,          runtimeInput,       impl.workload,
+      impl.runtimeInput, impl.sourceProgram, *observations};
+  if (llvm::Error error =
+          evaluation::models::primeStructuredFabricAnalyticResult(
+              source, {impl.sourceProgram, nullptr, {}, {}, &*observations},
+              invocation, impl.fabric, impl.config, store))
+    return error;
+
+  impl.sourceReference.emplace(source);
+  impl.workloadReference.emplace(workload);
+  impl.runtimeInputReference.emplace(runtimeInput);
+  impl.sourceObservations.emplace(std::move(*observations));
+  ++impl.sourceNativeExecutionCount;
+  return llvm::Error::success();
+}
+
+std::uint64_t
+StructuredOwnershipInvocation::sourceNativeExecutionCount() const {
+  return impl_->sourceNativeExecutionCount;
+}
+
+evaluation::models::StructuredEvaluationInvocationCacheStatistics
+StructuredOwnershipInvocation::evaluationCacheStatistics() const {
+  return impl_->evaluationCache.statistics();
+}
 
 llvm::ArrayRef<StructuredOwnershipCandidateDisposition>
 StructuredOwnershipInvocation::dispositions() const {
@@ -204,7 +268,7 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::prepareGeneration(
     const frontend::StructuredProgramCandidate &sourceProgram,
     const sim::CanonicalSimulationWorkload &workload,
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
-    const fabric::FinalizedFabricRoot &fabric,
+    const fabric::FinalizedFabricRoot &fabric, const ArtifactStore &store,
     StructuredOwnershipGenerationOptions &options) {
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
   if (impl.candidateWorkerCount == 0)
@@ -216,7 +280,37 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::prepareGeneration(
     return invalid("Generate inputs differ from the bound invocation");
   options.lowering = impl.lowering;
   options.candidateWorkerCount = impl.candidateWorkerCount;
+  if (!impl.sourceReference) {
+    auto sourceReference =
+        frontend::publishStructuredProgram(impl.sourceProgram, store);
+    if (!sourceReference)
+      return sourceReference.takeError();
+    auto workloadReference =
+        sim::publishSimulationWorkload(impl.workload, store);
+    if (!workloadReference)
+      return workloadReference.takeError();
+    auto runtimeInputReference =
+        sim::publishSimulationRuntimeInput(impl.runtimeInput, store);
+    if (!runtimeInputReference)
+      return runtimeInputReference.takeError();
+    if (llvm::Error error =
+            invocation.prepareSource(*sourceReference, *workloadReference,
+                                     *runtimeInputReference, store))
+      return error;
+  }
   return llvm::Error::success();
+}
+
+llvm::Expected<detail::StructuredOwnershipPreparedSource>
+detail::StructuredOwnershipInvocationAccess::preparedSource(
+    const StructuredOwnershipInvocation &invocation) {
+  const StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
+  if (!impl.sourceReference || !impl.workloadReference ||
+      !impl.runtimeInputReference || !impl.sourceObservations)
+    return invalid("source preparation has not completed");
+  return StructuredOwnershipPreparedSource{
+      *impl.sourceReference, *impl.workloadReference,
+      *impl.runtimeInputReference, *impl.sourceObservations};
 }
 
 const ResolvedConfig &detail::StructuredOwnershipInvocationAccess::config(
@@ -241,22 +335,17 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::recordGeneration(
     ArtifactRootReference sourceReference,
     ArtifactRootReference workloadReference,
     ArtifactRootReference runtimeInputReference,
-    sim::NativeStructuredProgramObservations sourceObservations,
     llvm::ArrayRef<StructuredOwnershipCandidateDisposition> dispositions) {
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
-  if (impl.sourceReference)
+  if (impl.generationRecorded)
     return invalid("invocation contains more than one Ownership generation");
-  if (!sameRoot(sourceReference, frontend::structuredProgramArtifactSchema,
-                impl.sourceProgram.identity()) ||
-      !sameRoot(workloadReference, sim::simulationWorkloadSchema,
-                impl.workload.identity()) ||
-      !sameRoot(runtimeInputReference, sim::simulationRuntimeInputSchema,
-                impl.runtimeInput.identity()))
+  if (!impl.sourceReference || !impl.workloadReference ||
+      !impl.runtimeInputReference || !impl.sourceObservations ||
+      *impl.sourceReference != sourceReference ||
+      *impl.workloadReference != workloadReference ||
+      *impl.runtimeInputReference != runtimeInputReference)
     return invalid("generated roots differ from the bound invocation");
-  impl.sourceReference.emplace(std::move(sourceReference));
-  impl.workloadReference.emplace(std::move(workloadReference));
-  impl.runtimeInputReference.emplace(std::move(runtimeInputReference));
-  impl.sourceObservations.emplace(std::move(sourceObservations));
+  impl.generationRecorded = true;
   impl.dispositions.assign(dispositions.begin(), dispositions.end());
   return llvm::Error::success();
 }
