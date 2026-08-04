@@ -1,0 +1,11 @@
+# REQUIRES: circt, verilator, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-integer-multiply-test %t
+# RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
+# RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
+# RUN: cd %t && verilator --binary --timing --Wall --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench fixed_vector_integer_multiply.sv testbench.sv --Mdir obj_dir
+# RUN: %t/obj_dir/Vtestbench
+# RUN: cd %t && yosys -q -s portable_fixed_vector_integer_multiply.ys
+
+# VERILATOR: Verilator 5.050
+# YOSYS: Yosys 0.67

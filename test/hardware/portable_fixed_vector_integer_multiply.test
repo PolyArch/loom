@@ -1,0 +1,30 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-integer-multiply-test %t
+# RUN: FileCheck %s --check-prefix=RTL < %t/fixed_vector_integer_multiply.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_fixed_vector_integer_multiply.ys
+
+# RTL: module fixed_vector_integer_multiply
+# RTL: input [39:0] data_input_0
+# RTL: data_input_1,
+# RTL: input [1:0] config_0
+# RTL: output [39:0] data_output_0
+# RTL: data_input_0[31:24] * data_input_1[31:24]
+# RTL: data_input_0[23:16] * data_input_1[23:16]
+# RTL: data_input_0[15:8] * data_input_1[15:8]
+# RTL: data_input_0[7:0] * data_input_1[7:0]
+# RTL: data_input_0[31:16] * data_input_1[31:16]
+# RTL: data_input_0[15:0] * data_input_1[15:0]
+# RTL-NOT: data_input_0 * data_input_1
+
+# TB: module testbench
+# TB: i8 packed-wide multiplication corrupted independent lanes
+# TB: i16 lane-wise modulo multiplication failed
+# TB: unassigned code did not preserve inactive width behavior
+
+# YOSYS: hierarchy -check -top fixed_vector_integer_multiply
+# YOSYS: check -assert
+# YOSYS: select -assert-count 6 t:$mul
+# YOSYS: synth -top fixed_vector_integer_multiply
+# YOSYS: check -assert
