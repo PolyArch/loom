@@ -38,6 +38,18 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-specialization-test
+    SpecializationTest.cpp
+  )
+
+  target_link_libraries(loom-specialization-test PRIVATE
+    LoomADGBuilder
+    LoomHardwareConfiguration
+    LoomHardwareRTL
+    LoomImplementationPlatform
+    LLVMSupport
+  )
+
   add_executable(loom-circt-conformance-test
     CirctConformanceTest.cpp
   )

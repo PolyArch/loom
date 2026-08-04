@@ -99,9 +99,7 @@ llvm::Error verifyCommonCirctSkeleton(
 
 llvm::Expected<std::string>
 lowerAndExportSpecializedSystemVerilog(mlir::ModuleOp module) {
-  if (mlir::failed(mlir::verify(module)))
-    return skeletonError("specialized CIRCT module does not verify");
-  if (llvm::Error error = verifyNoUnresolvedFabricOperationLeaves(module))
+  if (llvm::Error error = verifySpecializedCirctModule(module))
     return std::move(error);
 
   circt::LowerSeqToSVOptions loweringOptions;
@@ -110,9 +108,7 @@ lowerAndExportSpecializedSystemVerilog(mlir::ModuleOp module) {
   pipeline.addPass(circt::createLowerSeqToSVPass(loweringOptions));
   if (mlir::failed(pipeline.run(module)))
     return skeletonError("Seq-to-SV lowering failed");
-  if (mlir::failed(mlir::verify(module)))
-    return skeletonError("lowered HW/SV module does not verify");
-  if (llvm::Error error = verifyNoUnresolvedFabricOperationLeaves(module))
+  if (llvm::Error error = verifySpecializedCirctModule(module))
     return std::move(error);
 
   llvm::SmallString<1024> storage;
@@ -120,6 +116,12 @@ lowerAndExportSpecializedSystemVerilog(mlir::ModuleOp module) {
   if (mlir::failed(circt::exportVerilog(module, output)))
     return skeletonError("ExportVerilog rejected the specialized module");
   return output.str().str();
+}
+
+llvm::Error verifySpecializedCirctModule(mlir::ModuleOp module) {
+  if (mlir::failed(mlir::verify(module)))
+    return skeletonError("specialized CIRCT module does not verify");
+  return verifyNoUnresolvedFabricOperationLeaves(module);
 }
 
 } // namespace loom::hardware::rtl

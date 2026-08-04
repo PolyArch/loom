@@ -86,6 +86,40 @@ const HardwarePayload *findPayload(llvm::ArrayRef<HardwarePayload> payloads,
   return found == payloads.end() ? nullptr : &*found;
 }
 
+llvm::Error
+validateInputsAgainstContract(std::vector<ExternalInputBinding> &inputs,
+                              const ExternalImplementationContract &contract,
+                              HardwareRepresentation representation) {
+  if (!llvm::is_contained(contract.supportedRepresentations, representation))
+    return invalid("provider contract does not support the representation");
+
+  llvm::sort(inputs, [](const ExternalInputBinding &lhs,
+                        const ExternalInputBinding &rhs) {
+    return lhs.providerInputSlotRef < rhs.providerInputSlotRef;
+  });
+  if (inputs.size() != contract.inputSlots.size())
+    return invalid("provider input slot closure is incomplete");
+  for (std::size_t index = 0; index < inputs.size(); ++index) {
+    ExternalInputBinding &input = inputs[index];
+    const ExternalInputSlotContract &slot = contract.inputSlots[index];
+    if (input.providerInputSlotRef != slot.providerInputSlotRef)
+      return invalid("provider input slot closure does not match contract");
+    if (!llvm::is_contained(slot.acceptedDependencyKinds,
+                            dependencyKind(input.dependencyIdentity)))
+      return invalid("provider input dependency kind is incompatible");
+    if (const auto *bundled = std::get_if<ToolBundledResourceDependency>(
+            &input.dependencyIdentity)) {
+      if (llvm::Error error = validateKey(bundled->stableProviderBuildIdentity,
+                                          "stable provider build identity"))
+        return error;
+      if (llvm::Error error =
+              validateKey(bundled->resourceKey, "provider resource key"))
+        return error;
+    }
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Error ExternalImplementationContractCatalog::add(
@@ -149,13 +183,29 @@ ExternalImplementationContractCatalog::find(llvm::StringRef contractRef) const {
   return *found;
 }
 
-llvm::Error detail::canonicalizeExternalImplementationBindings(
+llvm::Expected<std::vector<ExternalInputBinding>>
+ExternalImplementationContractCatalog::canonicalizeAndValidateInputs(
+    llvm::StringRef contractRef,
+    llvm::ArrayRef<ExternalInputBinding> externalInputs,
+    HardwareRepresentation representation) const {
+  std::optional<ExternalImplementationContract> contract = find(contractRef);
+  if (!contract)
+    return invalid("provider contract is not registered: " + contractRef);
+  std::vector<ExternalInputBinding> canonicalInputs(externalInputs.begin(),
+                                                    externalInputs.end());
+  if (llvm::Error error = validateInputsAgainstContract(
+          canonicalInputs, *contract, representation))
+    return std::move(error);
+  return canonicalInputs;
+}
+
+llvm::Error
+ExternalImplementationContractCatalog::canonicalizeAndValidateBindings(
     std::vector<ExternalImplementationBinding> &bindings,
-    const ExternalImplementationContractCatalog &contracts,
     HardwareRepresentation representation,
     const platform::ImplementationPlatform *implementationPlatform,
     llvm::ArrayRef<HardwarePayload> payloads,
-    const fabric::FabricArtifactView &fabric) {
+    const fabric::FabricArtifactView &fabric) const {
   llvm::sort(bindings, [](const ExternalImplementationBinding &lhs,
                           const ExternalImplementationBinding &rhs) {
     return lhs.bindingId < rhs.bindingId;
@@ -170,39 +220,13 @@ llvm::Error detail::canonicalizeExternalImplementationBindings(
       return error;
 
     std::optional<ExternalImplementationContract> contract =
-        contracts.find(binding.providerContractRef);
+        find(binding.providerContractRef);
     if (!contract)
       return invalid("provider contract is not registered: " +
                      binding.providerContractRef);
-    if (!llvm::is_contained(contract->supportedRepresentations, representation))
-      return invalid("provider contract does not support the representation");
-
-    llvm::sort(binding.externalInputs, [](const ExternalInputBinding &lhs,
-                                          const ExternalInputBinding &rhs) {
-      return lhs.providerInputSlotRef < rhs.providerInputSlotRef;
-    });
-    if (binding.externalInputs.size() != contract->inputSlots.size())
-      return invalid("provider input slot closure is incomplete");
-    for (std::size_t inputIndex = 0; inputIndex < binding.externalInputs.size();
-         ++inputIndex) {
-      ExternalInputBinding &input = binding.externalInputs[inputIndex];
-      const ExternalInputSlotContract &slot = contract->inputSlots[inputIndex];
-      if (input.providerInputSlotRef != slot.providerInputSlotRef)
-        return invalid("provider input slot closure does not match contract");
-      if (!llvm::is_contained(slot.acceptedDependencyKinds,
-                              dependencyKind(input.dependencyIdentity)))
-        return invalid("provider input dependency kind is incompatible");
-      if (const auto *bundled = std::get_if<ToolBundledResourceDependency>(
-              &input.dependencyIdentity)) {
-        if (llvm::Error error =
-                validateKey(bundled->stableProviderBuildIdentity,
-                            "stable provider build identity"))
-          return error;
-        if (llvm::Error error =
-                validateKey(bundled->resourceKey, "provider resource key"))
-          return error;
-      }
-    }
+    if (llvm::Error error = validateInputsAgainstContract(
+            binding.externalInputs, *contract, representation))
+      return error;
 
     llvm::sort(binding.fabricResourceRefs, localReferenceLess);
     if (std::adjacent_find(binding.fabricResourceRefs.begin(),
@@ -222,7 +246,7 @@ llvm::Error detail::canonicalizeExternalImplementationBindings(
       return invalid("external representation locator is duplicated");
     for (const RepresentationLocator &locator : binding.representationLocators)
       if (llvm::Error error =
-              validateRepresentationLocator(locator, representation))
+              detail::validateRepresentationLocator(locator, representation))
         return error;
 
     if (contract->blackBoxContractRequired &&

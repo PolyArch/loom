@@ -29,6 +29,9 @@ llvm::Error verifyCommonCirctSkeleton(
     mlir::ModuleOp module, const fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<FabricOperationLeafAssociation> operationLeaves);
 
+/// Verifies a specialized module and rejects any remaining Loom abstract leaf.
+llvm::Error verifySpecializedCirctModule(mlir::ModuleOp module);
+
 /// Verifies, lowers Seq to SV, verifies again, and exports SystemVerilog.
 /// The input module is consumed by the lowering pipeline and must contain no
 /// unresolved Loom Fabric operation leaf.

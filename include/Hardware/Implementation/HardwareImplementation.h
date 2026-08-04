@@ -25,6 +25,10 @@ namespace loom::platform {
 class ImplementationPlatform;
 }
 
+namespace loom::fabric {
+class FabricArtifactView;
+}
+
 namespace loom::hardware {
 
 inline constexpr ArtifactSchemaDescriptor hardwareImplementationSchema{
@@ -184,6 +188,17 @@ public:
   llvm::Error add(ExternalImplementationContract contract);
   std::optional<ExternalImplementationContract>
   find(llvm::StringRef contractRef) const;
+  llvm::Expected<std::vector<ExternalInputBinding>>
+  canonicalizeAndValidateInputs(
+      llvm::StringRef contractRef,
+      llvm::ArrayRef<ExternalInputBinding> externalInputs,
+      HardwareRepresentation representation) const;
+  llvm::Error canonicalizeAndValidateBindings(
+      std::vector<ExternalImplementationBinding> &bindings,
+      HardwareRepresentation representation,
+      const platform::ImplementationPlatform *implementationPlatform,
+      llvm::ArrayRef<HardwarePayload> payloads,
+      const fabric::FabricArtifactView &fabric) const;
 
 private:
   std::vector<ExternalImplementationContract> contracts_;

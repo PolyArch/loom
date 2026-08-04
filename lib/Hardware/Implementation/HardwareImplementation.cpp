@@ -1176,8 +1176,8 @@ canonicalize(HardwareImplementationDraft draft,
         return std::move(error);
   }
 
-  if (llvm::Error error = detail::canonicalizeExternalImplementationBindings(
-          draft.externalImplementationBindings, contracts, draft.representation,
+  if (llvm::Error error = contracts.canonicalizeAndValidateBindings(
+          draft.externalImplementationBindings, draft.representation,
           platform ? &platform->platform() : nullptr, draft.payloads,
           importedFabric->view()))
     return std::move(error);

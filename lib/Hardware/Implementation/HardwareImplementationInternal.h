@@ -13,14 +13,6 @@ llvm::Error
 validateRepresentationLocator(const RepresentationLocator &locator,
                               HardwareRepresentation representation);
 
-llvm::Error canonicalizeExternalImplementationBindings(
-    std::vector<ExternalImplementationBinding> &bindings,
-    const ExternalImplementationContractCatalog &contracts,
-    HardwareRepresentation representation,
-    const platform::ImplementationPlatform *implementationPlatform,
-    llvm::ArrayRef<HardwarePayload> payloads,
-    const fabric::FabricArtifactView &fabric);
-
 llvm::Error canonicalizeMemoryMacroBindings(
     std::vector<MemoryMacroBinding> &bindings,
     llvm::ArrayRef<ExternalImplementationBinding> externalBindings,
