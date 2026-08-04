@@ -11,26 +11,28 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
 namespace loom::sim::detail {
 
-enum class CgraComputeActorLifecycleKind : std::uint8_t {
+enum class CgraActorLifecycleKind : std::uint8_t {
   Committed,
   Retired,
 };
 
-struct CgraComputeActorLifecycleEvent final {
-  CgraComputeActorLifecycleKind kind = CgraComputeActorLifecycleKind::Committed;
-  std::uint64_t actorPlanOrdinal = 0;
+struct CgraActorLifecycleEvent final {
+  CgraActorLifecycleKind kind = CgraActorLifecycleKind::Committed;
+  std::uint64_t semanticActorOrdinal = 0;
   std::uint64_t occurrenceOrdinal = 0;
   std::uint32_t transitionCaseOrdinal = 0;
+  std::uint32_t expectedTransferCount = 0;
   SpatialEventCoordinate coordinate;
 };
 
-struct CgraComputeActorEmission final {
-  std::uint64_t actorPlanOrdinal = 0;
+struct CgraActorEmission final {
+  std::uint64_t semanticActorOrdinal = 0;
   std::uint64_t occurrenceOrdinal = 0;
   std::uint32_t transitionCaseOrdinal = 0;
   unsigned resultOrdinal = 0;
@@ -39,8 +41,8 @@ struct CgraComputeActorEmission final {
 
 /// Internal handoff from compute/resource execution to transport retirement.
 /// It is a transient dense projection, not a trace event or persistent ref.
-struct CgraTransitionPhysicalCompletion final {
-  std::uint64_t actorPlanOrdinal = 0;
+struct CgraActorPhysicalCompletion final {
+  std::uint64_t semanticActorOrdinal = 0;
   std::uint64_t occurrenceOrdinal = 0;
   std::uint32_t transitionCaseOrdinal = 0;
 };
@@ -48,9 +50,9 @@ struct CgraTransitionPhysicalCompletion final {
 struct CgraComputeLifecycleFrame final {
   SpatialEventCoordinate coordinate;
   std::vector<CgraPhysicalLifecycleEvent> physicalEvents;
-  std::vector<CgraComputeActorLifecycleEvent> actorEvents;
-  std::vector<CgraComputeActorEmission> actorEmissions;
-  std::vector<CgraTransitionPhysicalCompletion> physicalCompletions;
+  std::vector<CgraActorLifecycleEvent> actorEvents;
+  std::vector<CgraActorEmission> actorEmissions;
+  std::vector<CgraActorPhysicalCompletion> physicalCompletions;
 };
 
 /// Execution-local compute/resource state for one mapped graph activation.
@@ -73,7 +75,7 @@ public:
   llvm::Expected<CgraComputeLifecycleFrame>
   acceptPhysicalEvents(const CgraPhysicalLifecycleFrame &physicalFrame);
 
-  llvm::Error retireActor(std::uint64_t actorPlanOrdinal,
+  llvm::Error retireActor(std::uint64_t semanticActorOrdinal,
                           std::uint64_t occurrenceOrdinal,
                           SpatialEventCoordinate coordinate);
 
@@ -83,10 +85,15 @@ public:
 
   bool hasPendingEvents() const;
   bool hasActiveActors() const { return activeActorCount_ != 0; }
+  bool ownsActor(std::uint64_t semanticActorOrdinal) const {
+    return semanticActorOrdinal < bindingBySemanticActor_.size() &&
+           bindingBySemanticActor_[semanticActorOrdinal] !=
+               std::numeric_limits<std::uint64_t>::max();
+  }
 
 private:
   struct ActorBinding final {
-    std::uint64_t actorPlanOrdinal = 0;
+    std::uint64_t semanticActorOrdinal = 0;
     const ActorExecutionPlan *semantic = nullptr;
     std::uint64_t transitionIndexOffset = 0;
     std::uint32_t transitionCount = 0;
@@ -116,7 +123,6 @@ private:
                      std::vector<ActorBinding> bindings,
                      std::vector<std::uint64_t> transitionByCase,
                      std::vector<std::uint64_t> bindingBySemanticActor,
-                     std::vector<std::uint64_t> bindingByActorPlan,
                      CgraPhysicalActionRuntime &physical);
 
   llvm::Error scheduleReady(SpatialEventCoordinate coordinate);
@@ -140,7 +146,6 @@ private:
   std::vector<ActorBinding> bindings_;
   std::vector<std::uint64_t> transitionByCase_;
   std::vector<std::uint64_t> bindingBySemanticActor_;
-  std::vector<std::uint64_t> bindingByActorPlan_;
   CgraPhysicalActionRuntime *physical_ = nullptr;
   CgraEventQueue requestedEvents_;
   CgraEventQueue actorCommitEvents_;

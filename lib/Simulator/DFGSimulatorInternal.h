@@ -1235,6 +1235,20 @@ void writeMemoryElement(const MemoryView &view, std::size_t byteOffset,
                         llvm::ArrayRef<SemanticMemoryByte> bytes);
 void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write);
+std::optional<DataflowMemoryRead>
+preparePlainMemoryRead(const ReadyPlainMemoryAction &ready,
+                       const MemoryActorExecutionPlan &plan,
+                       SimulatorState &state);
+std::optional<DataflowMemoryWrite>
+preparePlainMemoryWrite(const Token &data, const ReadyPlainMemoryAction &ready,
+                        const MemoryActorExecutionPlan &plan,
+                        SimulatorState &state);
+std::optional<MemoryOrderFrontierId>
+linearizePlainMemoryAction(const ReadyPlainMemoryAction &ready,
+                           SimulatorState &state);
+void consumePlainMemoryIssueInputs(const ReadyPlainMemoryAction &ready,
+                                   const MemoryActorExecutionPlan &plan,
+                                   SimulatorState &state);
 
 /// The plain action one candidate would issue, derived from peeked inputs
 /// alone. It answers only what the access covers and what ctrl order it

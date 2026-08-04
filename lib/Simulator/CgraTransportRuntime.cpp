@@ -175,6 +175,11 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
   auto graphOp = mlir::dyn_cast<::dataflow::GraphOp>(resolvedGraph->op);
   if (!graphOp)
     return invalid("CGRA transport graph reference is not a graph");
+  llvm::DenseMap<mlir::Operation *, std::uint64_t> semanticOrdinals;
+  semanticOrdinals.reserve(execution.actorPlans.size());
+  for (auto [ordinal, actor] : llvm::enumerate(execution.actorPlans))
+    if (!semanticOrdinals.try_emplace(actor.operation, ordinal).second)
+      return invalid("prepared graph contains a duplicate actor operation");
 
   std::map<RefBytes, PhysicalUseSlice> producedUses;
   std::map<RefBytes, PhysicalUseSlice> consumedUses;
@@ -356,12 +361,6 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     }
   }
 
-  std::map<std::uint64_t, std::uint64_t> actorPlanByEntity;
-  for (auto [ordinal, actor] : llvm::enumerate(plan.computeActors))
-    if (actor.graph == graph &&
-        !actorPlanByEntity.emplace(actor.actor.entity.value(), ordinal).second)
-      return invalid("CGRA transport found duplicate compute actor bindings");
-
   std::vector<TransferBinding> bindings;
   std::vector<SinkBinding> sinks;
   std::vector<std::uint64_t> physicalUses;
@@ -518,13 +517,18 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     if (builder.sinks.size() > std::numeric_limits<std::uint32_t>::max())
       return invalid("CGRA transport sink count exceeds u32");
     const std::uint64_t bindingOrdinal = bindings.size();
-    std::optional<std::uint64_t> actorPlanOrdinal;
+    std::optional<std::uint64_t> semanticActorOrdinal;
     if (const auto *producer =
             std::get_if<::dataflow::ActorTokenResultRef>(&builder.producer)) {
-      auto actor = actorPlanByEntity.find(producer->actor.entity.value());
-      if (actor == actorPlanByEntity.end())
-        return invalid("CGRA transport producer has no compute actor binding");
-      actorPlanOrdinal = actor->second;
+      auto resolvedActor = dataflow.resolve(producer->actor);
+      if (!resolvedActor)
+        return resolvedActor.takeError();
+      if (resolvedActor->graph != graph)
+        return invalid("CGRA transport producer belongs to another graph");
+      auto actor = semanticOrdinals.find(resolvedActor->op);
+      if (actor == semanticOrdinals.end())
+        return invalid("CGRA transport producer has no semantic actor binding");
+      semanticActorOrdinal = actor->second;
       if (!actorSourceBindings
                .try_emplace({actor->second, producer->ordinal}, bindingOrdinal)
                .second)
@@ -544,7 +548,7 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
                         traversalNodeOffset, traversalNodeCount,
                         traversalTerminalCount,
                         static_cast<std::uint32_t>(consumedPhysicalUseCount),
-                        actorPlanOrdinal, false});
+                        semanticActorOrdinal, false});
   }
 
   std::vector<StorageBinding> storages;
@@ -1254,8 +1258,8 @@ CgraTransportRuntime::acceptPhysicalEvents(
   }
   llvm::sort(completions, [](const CgraTransportCompletion &lhs,
                              const CgraTransportCompletion &rhs) {
-    return std::tie(lhs.actorPlanOrdinal, lhs.occurrenceOrdinal) <
-           std::tie(rhs.actorPlanOrdinal, rhs.occurrenceOrdinal);
+    return std::tie(lhs.semanticActorOrdinal, lhs.occurrenceOrdinal) <
+           std::tie(rhs.semanticActorOrdinal, rhs.occurrenceOrdinal);
   });
   return completions;
 }
@@ -1312,8 +1316,8 @@ CgraTransportRuntime::release(std::uint64_t slot) {
   InFlight &inFlight = inFlight_[slot];
   TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
   std::optional<CgraTransportCompletion> completion;
-  if (binding.actorPlanOrdinal)
-    completion = CgraTransportCompletion{*binding.actorPlanOrdinal,
+  if (binding.semanticActorOrdinal)
+    completion = CgraTransportCompletion{*binding.semanticActorOrdinal,
                                          inFlight.occurrenceOrdinal};
   for (std::uint64_t nodeOrdinal = binding.traversalNodeOffset;
        nodeOrdinal != binding.traversalNodeOffset + binding.traversalNodeCount;

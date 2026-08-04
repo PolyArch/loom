@@ -22,7 +22,7 @@ struct CgraTokenPublication final {
 };
 
 struct CgraTransportCompletion final {
-  std::uint64_t actorPlanOrdinal = 0;
+  std::uint64_t semanticActorOrdinal = 0;
   std::uint64_t occurrenceOrdinal = 0;
 };
 
@@ -45,9 +45,9 @@ public:
          ::dataflow::GraphRef graph, const PreparedGraphExecution &execution,
          SimulatorState &state, CgraPhysicalActionRuntime &physical);
 
-  llvm::Error acceptActorEmissions(
-      const SpatialEventCoordinate &coordinate,
-      llvm::MutableArrayRef<CgraComputeActorEmission> emissions);
+  llvm::Error
+  acceptActorEmissions(const SpatialEventCoordinate &coordinate,
+                       llvm::MutableArrayRef<CgraActorEmission> emissions);
 
   llvm::Error acceptGraphIngressEmissions(
       const SpatialEventCoordinate &coordinate,
@@ -90,7 +90,7 @@ private:
     std::uint32_t traversalNodeCount = 0;
     std::uint32_t traversalTerminalCount = 0;
     std::uint32_t consumedPhysicalUseCount = 0;
-    std::optional<std::uint64_t> actorPlanOrdinal;
+    std::optional<std::uint64_t> semanticActorOrdinal;
     bool active = false;
   };
 

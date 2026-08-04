@@ -138,7 +138,7 @@ void localRealizationEdgePublishesThroughExactConsumer() {
               channelQueue(state, add->op->getOpOperand(0)).size() == 1,
           "graph ingress did not traverse its selected local transfer");
 
-  llvm::SmallVector<CgraComputeActorEmission, 1> emissions;
+  llvm::SmallVector<CgraActorEmission, 1> emissions;
   emissions.push_back(
       {0, 0, 0, 0,
        take(tokenFromBitPattern(llvm::APInt(32, 15),
@@ -488,7 +488,7 @@ void registerFifoWriteAndReadShareOneDurableQueue() {
       plan.resources, plan.physicalUseTimings));
   auto transport = take(CgraTransportRuntime::create(
       plan, view, add->graph, *prepared, state, physical));
-  llvm::SmallVector<CgraComputeActorEmission, 1> emissions;
+  llvm::SmallVector<CgraActorEmission, 1> emissions;
   emissions.push_back(
       {0, 0, 0, 0,
        take(tokenFromBitPattern(llvm::APInt(32, 31),
@@ -610,7 +610,7 @@ void registerFifoWriteAndReadShareOneDurableQueue() {
   require(queueBlocked,
           "full register FIFO did not preserve downstream backpressure");
 
-  llvm::SmallVector<CgraComputeActorEmission, 1> replacement;
+  llvm::SmallVector<CgraActorEmission, 1> replacement;
   replacement.push_back(
       {0, 1, 0, 0,
        take(tokenFromBitPattern(llvm::APInt(32, 43),

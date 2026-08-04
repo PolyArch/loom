@@ -244,7 +244,7 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
                   take(loom::evaluation::ExactRatio::get(1, 1)) &&
               frame->coordinate.delta == 1 && frame->actorEvents.size() == 1 &&
               frame->actorEvents.front().kind ==
-                  CgraComputeActorLifecycleKind::Committed &&
+                  CgraActorLifecycleKind::Committed &&
               frame->actorEmissions.size() == 1 &&
               frame->actorEmissions.front().resultOrdinal == 0 &&
               take(tokenBitPattern(frame->actorEmissions.front().token,

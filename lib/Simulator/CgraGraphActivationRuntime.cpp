@@ -36,8 +36,8 @@ using FiringKey = std::pair<std::uint64_t, std::uint64_t>;
 llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
     const CgraFrozenExecutionPlan &plan,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    ::dataflow::GraphRef graph, const PreparedGraphExecution &execution,
-    SimulatorState &state) {
+    ::dataflow::RootedGraphLaunchRef launch, ::dataflow::GraphRef graph,
+    const PreparedGraphExecution &execution, SimulatorState &state) {
   auto physicalRuntime = CgraPhysicalActionRuntime::create(
       plan.resources, plan.physicalUseTimings);
   if (!physicalRuntime)
@@ -48,6 +48,10 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
                                                    execution, state, *physical);
   if (!computeRuntime)
     return computeRuntime.takeError();
+  auto memoryRuntime = CgraMemoryRuntime::create(plan, dataflow, launch, graph,
+                                                 execution, state, *physical);
+  if (!memoryRuntime)
+    return memoryRuntime.takeError();
   auto transportRuntime = CgraTransportRuntime::create(
       plan, dataflow, graph, execution, state, *physical);
   if (!transportRuntime)
@@ -55,6 +59,7 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
   return CgraGraphActivationRuntime(
       state, std::move(physical),
       std::make_unique<CgraComputeRuntime>(std::move(*computeRuntime)),
+      std::make_unique<CgraMemoryRuntime>(std::move(*memoryRuntime)),
       std::make_unique<CgraTransportRuntime>(std::move(*transportRuntime)));
 }
 
@@ -66,6 +71,8 @@ llvm::Error CgraGraphActivationRuntime::start(
   started_ = true;
   if (llvm::Error error = compute_->start(coordinate))
     return error;
+  if (llvm::Error error = memory_->start(coordinate))
+    return error;
   state_->nextActorCandidates.reset();
   return transport_->acceptGraphIngressEmissions(coordinate, ingress);
 }
@@ -74,6 +81,7 @@ std::optional<SpatialEventCoordinate>
 CgraGraphActivationRuntime::nextCoordinate() const {
   std::optional<SpatialEventCoordinate> coordinate;
   selectEarlier(compute_->nextCoordinate(), coordinate);
+  selectEarlier(memory_->nextCoordinate(), coordinate);
   selectEarlier(transport_->nextCoordinate(), coordinate);
   selectEarlier(physical_->nextCoordinate(), coordinate);
   return coordinate;
@@ -81,14 +89,14 @@ CgraGraphActivationRuntime::nextCoordinate() const {
 
 bool CgraGraphActivationRuntime::hasPendingEvents() const {
   return compute_->hasPendingEvents() || compute_->hasActiveActors() ||
+         memory_->hasPendingEvents() || memory_->hasActiveActors() ||
          transport_->hasPendingEvents() || transport_->hasBlockedTransfers() ||
          physical_->hasPendingActions() || !firingByOccurrence_.empty();
 }
 
 llvm::Expected<std::uint64_t> CgraGraphActivationRuntime::addCommittedFiring(
-    const CgraComputeActorLifecycleEvent &event,
-    std::uint32_t expectedTransfers) {
-  const FiringKey key{event.actorPlanOrdinal, event.occurrenceOrdinal};
+    const CgraActorLifecycleEvent &event) {
+  const FiringKey key{event.semanticActorOrdinal, event.occurrenceOrdinal};
   if (firingByOccurrence_.contains(key))
     return invalid("CGRA actor firing committed twice");
   std::uint64_t slot = 0;
@@ -100,10 +108,10 @@ llvm::Expected<std::uint64_t> CgraGraphActivationRuntime::addCommittedFiring(
     freeFiringSlots_.pop_back();
   }
   firings_[slot] = ActorFiring{true,
-                               event.actorPlanOrdinal,
+                               event.semanticActorOrdinal,
                                event.occurrenceOrdinal,
                                event.transitionCaseOrdinal,
-                               expectedTransfers,
+                               event.expectedTransferCount,
                                0,
                                false};
   firingByOccurrence_.try_emplace(key, slot);
@@ -113,7 +121,7 @@ llvm::Expected<std::uint64_t> CgraGraphActivationRuntime::addCommittedFiring(
 void CgraGraphActivationRuntime::releaseFiring(std::uint64_t firingSlot) {
   ActorFiring &firing = firings_[firingSlot];
   firingByOccurrence_.erase(
-      FiringKey{firing.actorPlanOrdinal, firing.occurrenceOrdinal});
+      FiringKey{firing.semanticActorOrdinal, firing.occurrenceOrdinal});
   firing.active = false;
   freeFiringSlots_.push_back(firingSlot);
 }
@@ -128,21 +136,31 @@ llvm::Error CgraGraphActivationRuntime::maybeRetire(
       firing.completedTransfers != firing.expectedTransfers)
     return llvm::Error::success();
   result.actorEvents.push_back(
-      {CgraComputeActorLifecycleKind::Retired, firing.actorPlanOrdinal,
-       firing.occurrenceOrdinal, firing.transitionCaseOrdinal, coordinate});
-  if (llvm::Error error = compute_->retireActor(
-          firing.actorPlanOrdinal, firing.occurrenceOrdinal, coordinate))
+      {CgraActorLifecycleKind::Retired, firing.semanticActorOrdinal,
+       firing.occurrenceOrdinal, firing.transitionCaseOrdinal, 0, coordinate});
+  const bool computeOwner = compute_->ownsActor(firing.semanticActorOrdinal);
+  const bool memoryOwner = memory_->ownsActor(firing.semanticActorOrdinal);
+  if (computeOwner == memoryOwner)
+    return invalid("CGRA actor retirement has no unique runtime owner");
+  if (computeOwner) {
+    if (llvm::Error error = compute_->retireActor(
+            firing.semanticActorOrdinal, firing.occurrenceOrdinal, coordinate))
+      return error;
+  } else if (llvm::Error error =
+                 memory_->retireActor(firing.semanticActorOrdinal,
+                                      firing.occurrenceOrdinal, coordinate)) {
     return error;
+  }
   releaseFiring(firingSlot);
   return llvm::Error::success();
 }
 
 llvm::Error CgraGraphActivationRuntime::markPhysicalCompletion(
-    const CgraTransitionPhysicalCompletion &completion,
+    const CgraActorPhysicalCompletion &completion,
     const SpatialEventCoordinate &coordinate,
     CgraGraphActivationFrame &result) {
   auto found = firingByOccurrence_.find(
-      {completion.actorPlanOrdinal, completion.occurrenceOrdinal});
+      {completion.semanticActorOrdinal, completion.occurrenceOrdinal});
   if (found == firingByOccurrence_.end())
     return invalid("CGRA physical completion has no committed actor firing");
   ActorFiring &firing = firings_[found->second];
@@ -159,7 +177,7 @@ llvm::Error CgraGraphActivationRuntime::consumeTransportCompletions(
     CgraGraphActivationFrame &result) {
   for (const CgraTransportCompletion &completion : completions) {
     auto found = firingByOccurrence_.find(
-        {completion.actorPlanOrdinal, completion.occurrenceOrdinal});
+        {completion.semanticActorOrdinal, completion.occurrenceOrdinal});
     if (found == firingByOccurrence_.end())
       return invalid("CGRA transfer completion has no committed actor firing");
     ActorFiring &firing = firings_[found->second];
@@ -179,19 +197,21 @@ llvm::Error CgraGraphActivationRuntime::consumeComputeFrame(
                                frame.physicalEvents.end());
 
   llvm::DenseMap<FiringKey, std::uint32_t> emissionsByFiring;
-  for (const CgraComputeActorEmission &emission : frame.actorEmissions) {
-    const FiringKey key{emission.actorPlanOrdinal, emission.occurrenceOrdinal};
+  for (const CgraActorEmission &emission : frame.actorEmissions) {
+    const FiringKey key{emission.semanticActorOrdinal,
+                        emission.occurrenceOrdinal};
     std::uint32_t &count = emissionsByFiring[key];
     if (count == std::numeric_limits<std::uint32_t>::max())
       return invalid("CGRA actor emission count exceeds u32");
     ++count;
   }
-  for (const CgraComputeActorLifecycleEvent &event : frame.actorEvents) {
-    if (event.kind != CgraComputeActorLifecycleKind::Committed)
+  for (const CgraActorLifecycleEvent &event : frame.actorEvents) {
+    if (event.kind != CgraActorLifecycleKind::Committed)
       return invalid("CGRA compute runtime emitted actor retirement");
-    auto added = addCommittedFiring(
-        event, emissionsByFiring.lookup(
-                   {event.actorPlanOrdinal, event.occurrenceOrdinal}));
+    const FiringKey key{event.semanticActorOrdinal, event.occurrenceOrdinal};
+    if (emissionsByFiring.lookup(key) != event.expectedTransferCount)
+      return invalid("CGRA compute emission count disagrees with actor commit");
+    auto added = addCommittedFiring(event);
     if (!added)
       return added.takeError();
     result.actorEvents.push_back(event);
@@ -208,7 +228,39 @@ llvm::Error CgraGraphActivationRuntime::consumeComputeFrame(
   if (!frame.actorEvents.empty())
     if (llvm::Error error = transport_->retryBlocked(frame.coordinate))
       return error;
-  for (const CgraTransitionPhysicalCompletion &completion :
+  for (const CgraActorPhysicalCompletion &completion :
+       frame.physicalCompletions)
+    if (llvm::Error error =
+            markPhysicalCompletion(completion, frame.coordinate, result))
+      return error;
+  return llvm::Error::success();
+}
+
+llvm::Error CgraGraphActivationRuntime::consumeMemoryFrame(
+    CgraMemoryLifecycleFrame frame, CgraGraphActivationFrame &result) {
+  result.physicalEvents.insert(result.physicalEvents.end(),
+                               frame.physicalEvents.begin(),
+                               frame.physicalEvents.end());
+  for (const CgraActorLifecycleEvent &event : frame.actorEvents) {
+    if (event.kind != CgraActorLifecycleKind::Committed)
+      return invalid("CGRA memory runtime emitted actor retirement");
+    auto added = addCommittedFiring(event);
+    if (!added)
+      return added.takeError();
+    result.actorEvents.push_back(event);
+  }
+  for (const CgraActorEmission &emission : frame.actorEmissions)
+    if (!firingByOccurrence_.contains(
+            {emission.semanticActorOrdinal, emission.occurrenceOrdinal}))
+      return invalid("CGRA memory emission has no committed actor firing");
+  if (!frame.actorEmissions.empty())
+    if (llvm::Error error = transport_->acceptActorEmissions(
+            frame.coordinate, frame.actorEmissions))
+      return error;
+  if (!frame.actorEvents.empty())
+    if (llvm::Error error = transport_->retryBlocked(frame.coordinate))
+      return error;
+  for (const CgraActorPhysicalCompletion &completion :
        frame.physicalCompletions)
     if (llvm::Error error =
             markPhysicalCompletion(completion, frame.coordinate, result))
@@ -238,7 +290,9 @@ llvm::Error CgraGraphActivationRuntime::schedulePublishedCandidates(
     return next.takeError();
   llvm::SmallBitVector candidates = state_->nextActorCandidates;
   state_->nextActorCandidates.reset();
-  return compute_->acceptReadyCandidates(std::move(*next), candidates);
+  if (llvm::Error error = compute_->acceptReadyCandidates(*next, candidates))
+    return error;
+  return memory_->acceptReadyCandidates(std::move(*next), candidates);
 }
 
 llvm::Expected<std::optional<CgraGraphActivationFrame>>
@@ -259,6 +313,16 @@ CgraGraphActivationRuntime::advance() {
       if (!*frame)
         return invalid("CGRA compute calendar lost its next frame");
       if (llvm::Error error = consumeComputeFrame(std::move(**frame), result))
+        return std::move(error);
+      progressed = true;
+    }
+    if (isAt(memory_->nextCoordinate(), *coordinate)) {
+      auto frame = memory_->advance();
+      if (!frame)
+        return frame.takeError();
+      if (!*frame)
+        return invalid("CGRA memory calendar lost its next frame");
+      if (llvm::Error error = consumeMemoryFrame(std::move(**frame), result))
         return std::move(error);
       progressed = true;
     }
@@ -288,6 +352,12 @@ CgraGraphActivationRuntime::advance() {
       if (llvm::Error error =
               consumeComputeFrame(std::move(*computeFrame), result))
         return std::move(error);
+      auto memoryFrame = memory_->acceptPhysicalEvents(**physicalFrame);
+      if (!memoryFrame)
+        return memoryFrame.takeError();
+      if (llvm::Error error =
+              consumeMemoryFrame(std::move(*memoryFrame), result))
+        return std::move(error);
       auto completions = transport_->acceptPhysicalEvents(**physicalFrame);
       if (!completions)
         return completions.takeError();
@@ -297,6 +367,7 @@ CgraGraphActivationRuntime::advance() {
       progressed = true;
     }
     if (!progressed || (!isAt(compute_->nextCoordinate(), *coordinate) &&
+                        !isAt(memory_->nextCoordinate(), *coordinate) &&
                         !isAt(transport_->nextCoordinate(), *coordinate) &&
                         !isAt(physical_->nextCoordinate(), *coordinate)))
       break;
@@ -311,11 +382,11 @@ CgraGraphActivationRuntime::advance() {
            std::tie(rhs.actionOrdinal, rhs.occurrenceOrdinal, rhs.kind,
                     rhs.ownerEventOrdinal);
   });
-  llvm::sort(result.actorEvents, [](const CgraComputeActorLifecycleEvent &lhs,
-                                    const CgraComputeActorLifecycleEvent &rhs) {
-    return std::tie(lhs.actorPlanOrdinal, lhs.occurrenceOrdinal, lhs.kind,
+  llvm::sort(result.actorEvents, [](const CgraActorLifecycleEvent &lhs,
+                                    const CgraActorLifecycleEvent &rhs) {
+    return std::tie(lhs.semanticActorOrdinal, lhs.occurrenceOrdinal, lhs.kind,
                     lhs.transitionCaseOrdinal) <
-           std::tie(rhs.actorPlanOrdinal, rhs.occurrenceOrdinal, rhs.kind,
+           std::tie(rhs.semanticActorOrdinal, rhs.occurrenceOrdinal, rhs.kind,
                     rhs.transitionCaseOrdinal);
   });
   return std::optional<CgraGraphActivationFrame>(std::move(result));

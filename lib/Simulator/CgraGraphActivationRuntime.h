@@ -1,6 +1,7 @@
 #ifndef LOOM_LIB_SIMULATOR_CGRAGRAPHACTIVATIONRUNTIME_H
 #define LOOM_LIB_SIMULATOR_CGRAGRAPHACTIVATIONRUNTIME_H
 
+#include "CgraMemoryRuntime.h"
 #include "CgraTransportRuntime.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -16,7 +17,7 @@ namespace loom::sim::detail {
 struct CgraGraphActivationFrame final {
   SpatialEventCoordinate coordinate;
   std::vector<CgraPhysicalLifecycleEvent> physicalEvents;
-  std::vector<CgraComputeActorLifecycleEvent> actorEvents;
+  std::vector<CgraActorLifecycleEvent> actorEvents;
   std::vector<CgraTokenPublication> publications;
 };
 
@@ -28,8 +29,8 @@ public:
   static llvm::Expected<CgraGraphActivationRuntime>
   create(const CgraFrozenExecutionPlan &plan,
          const ::dataflow::CanonicalDataflowProgramView &dataflow,
-         ::dataflow::GraphRef graph, const PreparedGraphExecution &execution,
-         SimulatorState &state);
+         ::dataflow::RootedGraphLaunchRef launch, ::dataflow::GraphRef graph,
+         const PreparedGraphExecution &execution, SimulatorState &state);
 
   llvm::Error start(SpatialEventCoordinate coordinate,
                     llvm::MutableArrayRef<GraphIngressEmission> ingress);
@@ -42,7 +43,7 @@ public:
 private:
   struct ActorFiring final {
     bool active = false;
-    std::uint64_t actorPlanOrdinal = 0;
+    std::uint64_t semanticActorOrdinal = 0;
     std::uint64_t occurrenceOrdinal = 0;
     std::uint32_t transitionCaseOrdinal = 0;
     std::uint32_t expectedTransfers = 0;
@@ -54,12 +55,16 @@ private:
       SimulatorState &state,
       std::unique_ptr<CgraPhysicalActionRuntime> physical,
       std::unique_ptr<CgraComputeRuntime> compute,
+      std::unique_ptr<CgraMemoryRuntime> memory,
       std::unique_ptr<CgraTransportRuntime> transport)
       : state_(&state), physical_(std::move(physical)),
-        compute_(std::move(compute)), transport_(std::move(transport)) {}
+        compute_(std::move(compute)), memory_(std::move(memory)),
+        transport_(std::move(transport)) {}
 
   llvm::Error consumeComputeFrame(CgraComputeLifecycleFrame frame,
                                   CgraGraphActivationFrame &result);
+  llvm::Error consumeMemoryFrame(CgraMemoryLifecycleFrame frame,
+                                 CgraGraphActivationFrame &result);
   llvm::Error consumeTransportFrame(CgraTransportFrame frame,
                                     CgraGraphActivationFrame &result);
   llvm::Error consumeTransportCompletions(
@@ -67,15 +72,14 @@ private:
       const SpatialEventCoordinate &coordinate,
       CgraGraphActivationFrame &result);
   llvm::Error
-  markPhysicalCompletion(const CgraTransitionPhysicalCompletion &completion,
+  markPhysicalCompletion(const CgraActorPhysicalCompletion &completion,
                          const SpatialEventCoordinate &coordinate,
                          CgraGraphActivationFrame &result);
   llvm::Error maybeRetire(std::uint64_t firingSlot,
                           const SpatialEventCoordinate &coordinate,
                           CgraGraphActivationFrame &result);
   llvm::Expected<std::uint64_t>
-  addCommittedFiring(const CgraComputeActorLifecycleEvent &event,
-                     std::uint32_t expectedTransfers);
+  addCommittedFiring(const CgraActorLifecycleEvent &event);
   void releaseFiring(std::uint64_t firingSlot);
   llvm::Error
   schedulePublishedCandidates(const SpatialEventCoordinate &coordinate);
@@ -83,6 +87,7 @@ private:
   SimulatorState *state_ = nullptr;
   std::unique_ptr<CgraPhysicalActionRuntime> physical_;
   std::unique_ptr<CgraComputeRuntime> compute_;
+  std::unique_ptr<CgraMemoryRuntime> memory_;
   std::unique_ptr<CgraTransportRuntime> transport_;
   std::vector<ActorFiring> firings_;
   std::vector<std::uint64_t> freeFiringSlots_;

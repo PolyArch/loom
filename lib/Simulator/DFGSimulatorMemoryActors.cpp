@@ -806,6 +806,40 @@ issueMemoryAction(const MemoryActionRecord &action,
   return state.memoryOrderFrontiers.internCanonical(*effect);
 }
 
+std::optional<DataflowMemoryRead>
+preparePlainMemoryRead(const ReadyPlainMemoryAction &ready,
+                       const MemoryActorExecutionPlan &plan,
+                       SimulatorState &state) {
+  return prepareDataflowMemoryRead(ready.view, ready.activeLanes, ready.slots,
+                                   plan, state);
+}
+
+std::optional<DataflowMemoryWrite>
+preparePlainMemoryWrite(const Token &data, const ReadyPlainMemoryAction &ready,
+                        const MemoryActorExecutionPlan &plan,
+                        SimulatorState &state) {
+  return prepareDataflowMemoryWrite(data, ready.activeLanes, ready.slots, plan,
+                                    state);
+}
+
+std::optional<MemoryOrderFrontierId>
+linearizePlainMemoryAction(const ReadyPlainMemoryAction &ready,
+                           SimulatorState &state) {
+  return issueMemoryAction(ready.action, ready.ctrlFrontier, state);
+}
+
+void consumePlainMemoryIssueInputs(const ReadyPlainMemoryAction &ready,
+                                   const MemoryActorExecutionPlan &plan,
+                                   SimulatorState &state) {
+  consumeMemoryView(state, plan.memoryOperandOrdinal);
+  (void)popInputToken(state, plan.addressOperandOrdinal);
+  if (plan.dataOperandOrdinal)
+    (void)popInputToken(state, *plan.dataOperandOrdinal);
+  (void)popInputToken(state, plan.controlOperandOrdinal);
+  if (ready.maskOperandOrdinal)
+    (void)popInputToken(state, *ready.maskOperandOrdinal);
+}
+
 struct ProjectedMemoryFiring {
   MemoryView view;
   ProjectedDataflowMemoryAccess access;
@@ -924,21 +958,15 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
     return false;
   ReadyPlainMemoryAction &ready = admitted->second;
   const auto &plan = *state.currentActorPlan->memory;
-  auto read = prepareDataflowMemoryRead(ready.view, ready.activeLanes,
-                                        ready.slots, plan, state);
+  auto read = preparePlainMemoryRead(ready, plan, state);
   if (!read)
     return false;
-  auto publication = issueMemoryAction(ready.action, ready.ctrlFrontier, state);
+  auto publication = linearizePlainMemoryAction(ready, state);
   if (!publication)
     return false;
-  std::optional<unsigned> maskOperandOrdinal = ready.maskOperandOrdinal;
   state.admittedPlainMemoryActions.erase(op.getOperation());
 
-  consumeMemoryView(state, plan.memoryOperandOrdinal);
-  (void)popInputToken(state, plan.addressOperandOrdinal);
-  (void)popInputToken(state, plan.controlOperandOrdinal);
-  if (maskOperandOrdinal)
-    (void)popInputToken(state, *maskOperandOrdinal);
+  consumePlainMemoryIssueInputs(ready, plan, state);
   emitResultTokenWithMemoryOrder(state, 0, read->data, MemoryOrderFrontierId());
   emitResultTokenWithMemoryOrder(state, 1, noneToken(), *publication);
   return true;
@@ -952,23 +980,16 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   const auto &plan = *state.currentActorPlan->memory;
   assert(plan.dataOperandOrdinal && "store plan has no data operand");
   Token data = peekInputToken(state, *plan.dataOperandOrdinal);
-  auto write = prepareDataflowMemoryWrite(data, ready.activeLanes, ready.slots,
-                                          plan, state);
+  auto write = preparePlainMemoryWrite(data, ready, plan, state);
   if (!write)
     return false;
-  auto publication = issueMemoryAction(ready.action, ready.ctrlFrontier, state);
+  auto publication = linearizePlainMemoryAction(ready, state);
   if (!publication)
     return false;
   MemoryView view = ready.view;
-  std::optional<unsigned> maskOperandOrdinal = ready.maskOperandOrdinal;
   state.admittedPlainMemoryActions.erase(op.getOperation());
 
-  consumeMemoryView(state, plan.memoryOperandOrdinal);
-  (void)popInputToken(state, plan.addressOperandOrdinal);
-  (void)popInputToken(state, *plan.dataOperandOrdinal);
-  (void)popInputToken(state, plan.controlOperandOrdinal);
-  if (maskOperandOrdinal)
-    (void)popInputToken(state, *maskOperandOrdinal);
+  consumePlainMemoryIssueInputs(ready, plan, state);
   commitDataflowMemoryWrite(view, *write);
   emitResultTokenWithMemoryOrder(state, 0, noneToken(), *publication);
   return true;

@@ -231,15 +231,15 @@ void CgraTransportRuntime::scheduleAt(
 
 llvm::Error CgraTransportRuntime::acceptActorEmissions(
     const SpatialEventCoordinate &coordinate,
-    llvm::MutableArrayRef<CgraComputeActorEmission> emissions) {
+    llvm::MutableArrayRef<CgraActorEmission> emissions) {
   if (emissions.empty())
     return llvm::Error::success();
   llvm::SmallVector<PendingTransfer, 4> transfers;
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueBindings;
   transfers.reserve(emissions.size());
-  for (CgraComputeActorEmission &emission : emissions) {
+  for (CgraActorEmission &emission : emissions) {
     auto binding = actorSourceBindings_.find(
-        {emission.actorPlanOrdinal, emission.resultOrdinal});
+        {emission.semanticActorOrdinal, emission.resultOrdinal});
     if (binding == actorSourceBindings_.end())
       return invalid("CGRA actor emission has no selected transfer binding");
     if (bindings_[binding->second].active ||

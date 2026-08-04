@@ -35,13 +35,11 @@ CgraComputeRuntime::CgraComputeRuntime(
     std::vector<ActorBinding> bindings,
     std::vector<std::uint64_t> transitionByCase,
     std::vector<std::uint64_t> bindingBySemanticActor,
-    std::vector<std::uint64_t> bindingByActorPlan,
     CgraPhysicalActionRuntime &physical)
     : plan_(&plan), state_(&state), bindings_(std::move(bindings)),
       transitionByCase_(std::move(transitionByCase)),
       bindingBySemanticActor_(std::move(bindingBySemanticActor)),
-      bindingByActorPlan_(std::move(bindingByActorPlan)), physical_(&physical),
-      readyCandidates_(bindings_.size(), false),
+      physical_(&physical), readyCandidates_(bindings_.size(), false),
       nextActionOccurrence_(plan.physicalUseTimings.size(), 0) {}
 
 llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
@@ -65,9 +63,7 @@ llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
   std::vector<std::uint64_t> transitionByCase;
   std::vector<std::uint64_t> bindingBySemanticActor(
       execution.actorPlans.size(), std::numeric_limits<std::uint64_t>::max());
-  std::vector<std::uint64_t> bindingByActorPlan(
-      plan.computeActors.size(), std::numeric_limits<std::uint64_t>::max());
-  for (auto [actorPlanOrdinal, actor] : llvm::enumerate(plan.computeActors)) {
+  for (const CgraComputeActorPlan &actor : plan.computeActors) {
     if (actor.graph != graph)
       continue;
     auto resolved = dataflow.resolve(actor.actor);
@@ -122,22 +118,15 @@ llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
     }
     const std::uint64_t bindingOrdinal = bindings.size();
     if (bindingBySemanticActor[semantic->second] !=
-            std::numeric_limits<std::uint64_t>::max() ||
-        bindingByActorPlan[actorPlanOrdinal] !=
-            std::numeric_limits<std::uint64_t>::max())
+        std::numeric_limits<std::uint64_t>::max())
       return invalid("CGRA compute actor has duplicate runtime bindings");
     bindingBySemanticActor[semantic->second] = bindingOrdinal;
-    bindingByActorPlan[actorPlanOrdinal] = bindingOrdinal;
-    bindings.push_back(ActorBinding{
-        static_cast<std::uint64_t>(actorPlanOrdinal), &semanticPlan, caseOffset,
-        actor.transitionCount, 0, false, false, 0});
+    bindings.push_back(ActorBinding{semantic->second, &semanticPlan, caseOffset,
+                                    actor.transitionCount, 0, false, false, 0});
   }
-  if (bindings.empty())
-    return invalid("CGRA compute graph has no selected compute actor");
   return CgraComputeRuntime(plan, state, std::move(bindings),
                             std::move(transitionByCase),
-                            std::move(bindingBySemanticActor),
-                            std::move(bindingByActorPlan), physical);
+                            std::move(bindingBySemanticActor), physical);
 }
 
 llvm::Expected<std::uint64_t> CgraComputeRuntime::allocateFiring(
@@ -262,7 +251,7 @@ llvm::Error CgraComputeRuntime::maybeScheduleCommit(
     return commitCoordinate.takeError();
   const ActorBinding &binding = bindings_[firing.bindingOrdinal];
   actorCommitEvents_.schedule(CgraScheduledEvent{
-      {*commitCoordinate, binding.actorPlanOrdinal,
+      {*commitCoordinate, binding.semanticActorOrdinal,
        firing.actorOccurrenceOrdinal, firing.transitionCaseOrdinal},
       firingSlot});
   firing.commitScheduled = true;
@@ -340,15 +329,17 @@ CgraComputeRuntime::processActorCommit(std::uint64_t firingSlot,
     return invalid("CGRA actor provider failed after physical reservation");
   for (ActorResultEmission &emission : emissions)
     frame.actorEmissions.push_back(
-        {binding.actorPlanOrdinal, firing.actorOccurrenceOrdinal,
+        {binding.semanticActorOrdinal, firing.actorOccurrenceOrdinal,
          firing.transitionCaseOrdinal, emission.resultOrdinal,
          std::move(emission.token)});
+  if (emissions.size() > std::numeric_limits<std::uint32_t>::max())
+    return invalid("CGRA actor result count exceeds u32");
   firing.committed = true;
   binding.commitPending = false;
-  frame.actorEvents.push_back({CgraComputeActorLifecycleKind::Committed,
-                               binding.actorPlanOrdinal,
-                               firing.actorOccurrenceOrdinal,
-                               firing.transitionCaseOrdinal, frame.coordinate});
+  frame.actorEvents.push_back(
+      {CgraActorLifecycleKind::Committed, binding.semanticActorOrdinal,
+       firing.actorOccurrenceOrdinal, firing.transitionCaseOrdinal,
+       static_cast<std::uint32_t>(emissions.size()), frame.coordinate});
   return llvm::Error::success();
 }
 
@@ -358,14 +349,15 @@ void CgraComputeRuntime::releaseFiring(std::uint64_t firingSlot) {
   freeFiringSlots_.push_back(firingSlot);
 }
 
-llvm::Error CgraComputeRuntime::retireActor(std::uint64_t actorPlanOrdinal,
+llvm::Error CgraComputeRuntime::retireActor(std::uint64_t semanticActorOrdinal,
                                             std::uint64_t occurrenceOrdinal,
                                             SpatialEventCoordinate coordinate) {
   if (!started_)
     return invalid("CGRA compute runtime has not started");
-  if (actorPlanOrdinal >= bindingByActorPlan_.size())
-    return invalid("CGRA actor retirement names an unknown actor plan");
-  const std::uint64_t bindingOrdinal = bindingByActorPlan_[actorPlanOrdinal];
+  if (semanticActorOrdinal >= bindingBySemanticActor_.size())
+    return invalid("CGRA actor retirement names an unknown semantic actor");
+  const std::uint64_t bindingOrdinal =
+      bindingBySemanticActor_[semanticActorOrdinal];
   if (bindingOrdinal == std::numeric_limits<std::uint64_t>::max())
     return invalid("CGRA actor retirement names another graph");
   ActorBinding &binding = bindings_[bindingOrdinal];
@@ -390,7 +382,7 @@ void CgraComputeRuntime::maybeComplete(std::uint64_t firingSlot,
       firing.retiredCount != firing.actionCount)
     return;
   const ActorBinding &binding = bindings_[firing.bindingOrdinal];
-  frame.physicalCompletions.push_back({binding.actorPlanOrdinal,
+  frame.physicalCompletions.push_back({binding.semanticActorOrdinal,
                                        firing.actorOccurrenceOrdinal,
                                        firing.transitionCaseOrdinal});
   releaseFiring(firingSlot);
@@ -441,26 +433,26 @@ CgraComputeRuntime::advance() {
            std::tie(rhs.actionOrdinal, rhs.occurrenceOrdinal, rhs.kind,
                     rhs.ownerEventOrdinal);
   });
-  llvm::sort(frame.actorEvents, [](const CgraComputeActorLifecycleEvent &lhs,
-                                   const CgraComputeActorLifecycleEvent &rhs) {
-    return std::tie(lhs.actorPlanOrdinal, lhs.occurrenceOrdinal,
+  llvm::sort(frame.actorEvents, [](const CgraActorLifecycleEvent &lhs,
+                                   const CgraActorLifecycleEvent &rhs) {
+    return std::tie(lhs.semanticActorOrdinal, lhs.occurrenceOrdinal,
                     lhs.transitionCaseOrdinal) <
-           std::tie(rhs.actorPlanOrdinal, rhs.occurrenceOrdinal,
+           std::tie(rhs.semanticActorOrdinal, rhs.occurrenceOrdinal,
                     rhs.transitionCaseOrdinal);
   });
-  llvm::sort(frame.actorEmissions, [](const CgraComputeActorEmission &lhs,
-                                      const CgraComputeActorEmission &rhs) {
-    return std::tie(lhs.actorPlanOrdinal, lhs.occurrenceOrdinal,
-                    lhs.transitionCaseOrdinal, lhs.resultOrdinal) <
-           std::tie(rhs.actorPlanOrdinal, rhs.occurrenceOrdinal,
-                    rhs.transitionCaseOrdinal, rhs.resultOrdinal);
-  });
+  llvm::sort(frame.actorEmissions,
+             [](const CgraActorEmission &lhs, const CgraActorEmission &rhs) {
+               return std::tie(lhs.semanticActorOrdinal, lhs.occurrenceOrdinal,
+                               lhs.transitionCaseOrdinal, lhs.resultOrdinal) <
+                      std::tie(rhs.semanticActorOrdinal, rhs.occurrenceOrdinal,
+                               rhs.transitionCaseOrdinal, rhs.resultOrdinal);
+             });
   llvm::sort(frame.physicalCompletions,
-             [](const CgraTransitionPhysicalCompletion &lhs,
-                const CgraTransitionPhysicalCompletion &rhs) {
-               return std::tie(lhs.actorPlanOrdinal, lhs.occurrenceOrdinal,
+             [](const CgraActorPhysicalCompletion &lhs,
+                const CgraActorPhysicalCompletion &rhs) {
+               return std::tie(lhs.semanticActorOrdinal, lhs.occurrenceOrdinal,
                                lhs.transitionCaseOrdinal) <
-                      std::tie(rhs.actorPlanOrdinal, rhs.occurrenceOrdinal,
+                      std::tie(rhs.semanticActorOrdinal, rhs.occurrenceOrdinal,
                                rhs.transitionCaseOrdinal);
              });
   return std::optional<CgraComputeLifecycleFrame>(std::move(frame));
