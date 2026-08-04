@@ -3,11 +3,13 @@
 
 #include "DSE/CandidateGenerator.h"
 #include "DSE/PlanValue.h"
+#include "DSE/PromotionAcquisition.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -20,6 +22,19 @@ struct GeneratePlanNodeDefinition final {
   std::vector<std::uint8_t> canonicalConfigBytes;
   ComponentViewDigest configDigest;
 };
+
+struct PromotePlanNodeDefinition final {
+  PromotionAcquisitionDescriptorRef acquisition;
+  std::vector<PlanInputBinding> inputBindings;
+  std::vector<std::uint8_t> canonicalConfigBytes;
+  ComponentViewDigest configDigest;
+  QualityGatePolicy qualityGate;
+  CandidateSelectionPolicy selection;
+  ResolvedObjectiveCatalogs objectiveCatalogs;
+};
+
+using DsePlanNodeDefinition =
+    std::variant<GeneratePlanNodeDefinition, PromotePlanNodeDefinition>;
 
 class ResolvedGeneratePlanNode final {
 public:
@@ -46,33 +61,79 @@ private:
   std::vector<std::uint8_t> canonicalConfigBytes_;
   ComponentViewDigest configDigest_;
 
-  friend class ResolvedGeneratePlan;
+  friend class ResolvedDsePlan;
 };
 
-/// Immutable typed use-def resolution for an ordered Generate-node block.
-class ResolvedGeneratePlan final {
+class ResolvedPromotePlanNode final {
 public:
-  static llvm::Expected<ResolvedGeneratePlan>
-  get(std::vector<GeneratePlanNodeDefinition> nodes);
+  PromotionAcquisitionDescriptorRef acquisitionRef() const {
+    return acquisition_;
+  }
+  llvm::ArrayRef<PlanInputBinding> inputBindings() const {
+    return inputBindings_;
+  }
+  llvm::ArrayRef<std::uint8_t> canonicalConfigBytes() const {
+    return canonicalConfigBytes_;
+  }
+  const ComponentViewDigest &configDigest() const { return configDigest_; }
+  const QualityGatePolicy &qualityGate() const { return qualityGate_; }
+  const CandidateSelectionPolicy &selection() const { return selection_; }
+  const ObjectiveProgram *objectiveProgram() const {
+    return objectiveProgram_ ? &*objectiveProgram_ : nullptr;
+  }
 
-  llvm::ArrayRef<ResolvedGeneratePlanNode> nodes() const { return nodes_; }
+private:
+  ResolvedPromotePlanNode(PromotionAcquisitionDescriptorRef acquisition,
+                          std::vector<PlanInputBinding> inputBindings,
+                          std::vector<std::uint8_t> canonicalConfigBytes,
+                          ComponentViewDigest configDigest,
+                          QualityGatePolicy qualityGate,
+                          CandidateSelectionPolicy selection,
+                          std::optional<ObjectiveProgram> objectiveProgram)
+      : acquisition_(acquisition), inputBindings_(std::move(inputBindings)),
+        canonicalConfigBytes_(std::move(canonicalConfigBytes)),
+        configDigest_(configDigest), qualityGate_(std::move(qualityGate)),
+        selection_(std::move(selection)),
+        objectiveProgram_(std::move(objectiveProgram)) {}
+
+  PromotionAcquisitionDescriptorRef acquisition_;
+  std::vector<PlanInputBinding> inputBindings_;
+  std::vector<std::uint8_t> canonicalConfigBytes_;
+  ComponentViewDigest configDigest_;
+  QualityGatePolicy qualityGate_;
+  CandidateSelectionPolicy selection_;
+  std::optional<ObjectiveProgram> objectiveProgram_;
+
+  friend class ResolvedDsePlan;
+};
+
+using ResolvedDsePlanNode =
+    std::variant<ResolvedGeneratePlanNode, ResolvedPromotePlanNode>;
+
+/// Immutable typed use-def resolution for one ordered Generate/Promote block.
+class ResolvedDsePlan final {
+public:
+  static llvm::Expected<ResolvedDsePlan>
+  get(std::vector<DsePlanNodeDefinition> nodes);
+
+  llvm::ArrayRef<ResolvedDsePlanNode> nodes() const { return nodes_; }
   const PlanValueDescriptor *resolve(PlanOutputRef output) const;
 
 private:
-  ResolvedGeneratePlan(std::vector<ResolvedGeneratePlanNode> nodes,
-                       std::vector<std::uint64_t> outputOffsets,
-                       std::vector<PlanValueDescriptor> outputs)
+  ResolvedDsePlan(std::vector<ResolvedDsePlanNode> nodes,
+                  std::vector<std::uint64_t> outputOffsets,
+                  std::vector<PlanValueDescriptor> outputs)
       : nodes_(std::move(nodes)), outputOffsets_(std::move(outputOffsets)),
         outputs_(std::move(outputs)) {}
 
-  std::vector<ResolvedGeneratePlanNode> nodes_;
+  std::vector<ResolvedDsePlanNode> nodes_;
   std::vector<std::uint64_t> outputOffsets_;
   std::vector<PlanValueDescriptor> outputs_;
 };
 
-class CompletedGeneratePlanExecution final {
+class CompletedDsePlanExecution final {
 public:
-  CompletedGeneratePlanExecution(
+  CompletedDsePlanExecution(
       std::vector<std::uint64_t> outputOffsets,
       std::vector<std::vector<ArtifactRootReference>> outputs)
       : outputOffsets_(std::move(outputOffsets)), outputs_(std::move(outputs)) {
@@ -85,20 +146,23 @@ private:
   std::vector<std::vector<ArtifactRootReference>> outputs_;
 };
 
-struct IncompleteGeneratePlanExecution final {
+using DsePlanIncompleteReason =
+    std::variant<CandidateGeneratorIncompleteReason,
+                 PromotionAcquisitionIncompleteReason,
+                 IncompleteSelectionReason>;
+
+struct IncompleteDsePlanExecution final {
   std::uint64_t nodeOrdinal = 0;
-  CandidateGeneratorIncompleteReason reason;
-  CompletedGeneratePlanExecution completedPrefix;
-  std::vector<CandidateGeneratorOutputBinding> retainedOutputBindings;
+  DsePlanIncompleteReason reason;
+  CompletedDsePlanExecution completedPrefix;
+  std::vector<std::vector<ArtifactRootReference>> retainedOutputs;
 };
 
-using GeneratePlanExecutionOutcome =
-    std::variant<CompletedGeneratePlanExecution,
-                 IncompleteGeneratePlanExecution>;
+using DsePlanExecutionOutcome =
+    std::variant<CompletedDsePlanExecution, IncompleteDsePlanExecution>;
 
-llvm::Expected<GeneratePlanExecutionOutcome>
-executeGeneratePlan(const ResolvedGeneratePlan &plan,
-                    const ArtifactStore &store);
+llvm::Expected<DsePlanExecutionOutcome>
+executeDsePlan(const ResolvedDsePlan &plan, const ArtifactStore &store);
 
 } // namespace loom::dse
 

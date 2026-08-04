@@ -25,7 +25,7 @@ target_link_libraries(loom-dse-candidate-generator-test PRIVATE
 )
 
 target_link_libraries(loom-dse-plan-test PRIVATE
-  LoomDSECandidateGenerator
+  LoomDSE
   LLVMSupport
 )
 

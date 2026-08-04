@@ -74,7 +74,7 @@ const CandidateGeneratorDescriptor descriptor{
     "loom.mapping.spatial_pnr.generator.v1",
     inputSlots,
     outputSlots,
-    CandidateGeneratorConfigViewContract{
+    ResolvedDseConfigViewContract{
         ::loom::pnr::resolvedSpatialPnrConfigSchemaDescriptorBytes(),
         validateSpatialConfig},
     CandidateGeneratorDeterminism::Deterministic,

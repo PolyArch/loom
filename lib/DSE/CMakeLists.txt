@@ -13,7 +13,6 @@ target_link_libraries(LoomDSEObjective PUBLIC
 
 add_library(LoomDSECandidateGenerator
   CandidateGenerator.cpp
-  Plan.cpp
 )
 
 target_include_directories(LoomDSECandidateGenerator PUBLIC
@@ -26,8 +25,10 @@ target_link_libraries(LoomDSECandidateGenerator PUBLIC
 )
 
 add_library(LoomDSE
+  Plan.cpp
   PreMappingExploration.cpp
   Promotion.cpp
+  PromotionAcquisition.cpp
   StructuredOwnership.cpp
 )
 
@@ -37,6 +38,7 @@ target_include_directories(LoomDSE PUBLIC
 
 target_link_libraries(LoomDSE PUBLIC
   LoomCommon
+  LoomDSECandidateGenerator
   LoomDSEObjective
   LoomEvaluation
   LoomFrontendCompilation

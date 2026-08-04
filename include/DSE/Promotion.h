@@ -156,7 +156,9 @@ struct CompletedSelection final {
   std::vector<ArtifactRootReference> satisfiedEvidence;
 };
 
-struct CompletedNoFeasibleCandidate final {};
+struct CompletedNoFeasibleCandidate final {
+  std::vector<ArtifactRootReference> satisfiedEvidence;
+};
 
 enum class IncompleteSelectionReason : std::uint8_t {
   MissingEvidence,

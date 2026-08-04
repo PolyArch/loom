@@ -2,6 +2,10 @@
 #define LOOM_DSE_PLANVALUE_H
 
 #include "Common/Artifact.h"
+#include "Common/ComponentViewDigest.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Error.h"
 
 #include <cstdint>
 #include <limits>
@@ -9,6 +13,12 @@
 #include <vector>
 
 namespace loom::dse {
+
+struct ResolvedDseConfigViewContract final {
+  llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes;
+  llvm::Error (*validateCanonical)(llvm::ArrayRef<std::uint8_t> bytes,
+                                   const ComponentViewDigest &digest);
+};
 
 enum class PlanValueRole : std::uint32_t {
   CandidateSet = 0,

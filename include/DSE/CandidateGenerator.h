@@ -135,12 +135,6 @@ struct CandidateGeneratorOutputSlotDescriptor final {
   PlanValueCardinality cardinality;
 };
 
-struct CandidateGeneratorConfigViewContract final {
-  llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes;
-  llvm::Error (*validateCanonical)(llvm::ArrayRef<std::uint8_t> bytes,
-                                   const ComponentViewDigest &digest);
-};
-
 enum class CandidateGeneratorDeterminism : std::uint32_t {
   Deterministic,
   IndependentReplicates,
@@ -203,7 +197,7 @@ struct CandidateGeneratorDescriptor final {
   llvm::StringRef implementationSemanticIdentity;
   llvm::ArrayRef<CandidateGeneratorInputSlotDescriptor> inputSlots;
   llvm::ArrayRef<CandidateGeneratorOutputSlotDescriptor> outputSlots;
-  CandidateGeneratorConfigViewContract resolvedConfigView;
+  ResolvedDseConfigViewContract resolvedConfigView;
   CandidateGeneratorDeterminism determinism;
   llvm::ArrayRef<CandidateGeneratorWorkUnitDescriptor> workUnits;
   llvm::ArrayRef<CandidateGeneratorProjectionSlotDescriptor> projectionSlots;

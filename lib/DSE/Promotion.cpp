@@ -662,7 +662,8 @@ promoteCandidates(const CandidateSet &candidateSet,
   if (!selected)
     return selected.takeError();
   if (selected->empty())
-    return PromotionOutcome{CompletedNoFeasibleCandidate{}};
+    return PromotionOutcome{
+        CompletedNoFeasibleCandidate{std::move(retainedEvidence)}};
   return PromotionOutcome{
       CompletedSelection{std::move(*selected), std::move(retainedEvidence)}};
 }

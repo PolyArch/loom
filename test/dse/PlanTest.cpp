@@ -64,6 +64,10 @@ constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputs = {{{
     &candidateSchema,
     PlanValueCardinality::FiniteSet,
 }}};
+constexpr std::array<PromotionAcquisitionInputSlotDescriptor, 1>
+    promotionInputs = {{{PromotionAcquisitionInputSlotRef(0), "candidate",
+                         PlanValueRole::CandidateSet, &candidateSchema,
+                         PlanValueCardinality::FiniteSet}}};
 
 const CandidateGeneratorDescriptor sourceGenerator{
     CandidateGeneratorKind(0x7fff1000),
@@ -71,7 +75,7 @@ const CandidateGeneratorDescriptor sourceGenerator{
     "loom.test.plan.source.v1",
     sourceInputs,
     outputs,
-    CandidateGeneratorConfigViewContract{configSchema, validateConfig},
+    ResolvedDseConfigViewContract{configSchema, validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
     {},
     {},
@@ -83,7 +87,7 @@ const CandidateGeneratorDescriptor transformGenerator{
     "loom.test.plan.transform.v1",
     candidateInputs,
     outputs,
-    CandidateGeneratorConfigViewContract{configSchema, validateConfig},
+    ResolvedDseConfigViewContract{configSchema, validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
     {},
     {},
@@ -95,10 +99,30 @@ const CandidateGeneratorDescriptor unavailableGenerator{
     "loom.test.plan.unavailable.v1",
     candidateInputs,
     outputs,
-    CandidateGeneratorConfigViewContract{configSchema, validateConfig},
+    ResolvedDseConfigViewContract{configSchema, validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
     {},
     {},
+};
+
+const PromotionAcquisitionDescriptor objectiveAcquisition{
+    PromotionAcquisitionKind(0x7fff2000),
+    "test.plan.objective",
+    "loom.test.plan.objective.v1",
+    promotionInputs,
+    PromotionAcquisitionInputSlotRef(0),
+    evaluation::CaseSubjectRoleRef(0),
+    ResolvedDseConfigViewContract{configSchema, validateConfig},
+};
+
+const PromotionAcquisitionDescriptor unavailableAcquisition{
+    PromotionAcquisitionKind(0x7fff2001),
+    "test.plan.unavailable_objective",
+    "loom.test.plan.unavailable_objective.v1",
+    promotionInputs,
+    PromotionAcquisitionInputSlotRef(0),
+    evaluation::CaseSubjectRoleRef(0),
+    ResolvedDseConfigViewContract{configSchema, validateConfig},
 };
 
 ArtifactRootReference makeReference(const ArtifactSchemaDescriptor &schema,
@@ -116,6 +140,22 @@ GeneratePlanNodeDefinition makeNode(CandidateGeneratorDescriptorRef descriptor,
       descriptor, std::move(inputs), {0x01}, digest};
 }
 
+PromotePlanNodeDefinition
+makePromoteNode(PromotionAcquisitionDescriptorRef descriptor,
+                PlanInputBinding input, const ComponentViewDigest &digest,
+                CandidateSelectionPolicy selection,
+                ResolvedObjectiveCatalogs objectiveCatalogs = {}) {
+  return PromotePlanNodeDefinition{
+      descriptor,
+      {std::move(input)},
+      {0x01},
+      digest,
+      take(QualityGatePolicy::get({})),
+      std::move(selection),
+      std::move(objectiveCatalogs),
+  };
+}
+
 llvm::Expected<CandidateGeneratorInvocationOutcome>
 generateSource(const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &) {
@@ -130,20 +170,34 @@ generateSource(const ResolvedCandidateGeneratorBinding &binding,
   }};
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome>
-transformCandidates(const ResolvedCandidateGeneratorBinding &binding,
-                    const ArtifactStore &) {
-  if (binding.inputBindings().size() != 1 ||
-      binding.inputBindings().front().artifacts.size() != 2)
+llvm::Expected<PromotionAcquisitionOutcome>
+acquireObjectives(const ResolvedPromotionAcquisitionBinding &binding,
+                  const ObjectiveProgram *objectiveProgram,
+                  const ArtifactStore &) {
+  if (!objectiveProgram)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "transform provider did not receive a set");
-  return CompletedCandidateGeneratorInvocation{{
-      {CandidateGeneratorOutputSlotRef(0),
-       {binding.inputBindings().front().artifacts.back()}},
-  }};
+                                   "objective provider requires a program");
+  const PromotionAcquisitionInputBinding *candidates =
+      binding.findInputBinding(PromotionAcquisitionInputSlotRef(0));
+  if (!candidates || candidates->artifacts.size() != 2)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "objective provider received invalid input");
+
+  std::vector<CandidateObjectiveVector> objectives;
+  objectives.reserve(candidates->artifacts.size());
+  for (std::size_t index = 0; index < candidates->artifacts.size(); ++index) {
+    std::vector<std::uint64_t> violations(resolvedPnrViolationKindCount, 0);
+    const std::uint64_t traversal = index == 0 ? 3 : 8;
+    ObjectiveVector objective = objectiveProgram->makeVector();
+    if (llvm::Error error = objectiveProgram->evaluate(
+            {violations, {&traversal, 1}}, objective))
+      return std::move(error);
+    objectives.push_back({candidates->artifacts[index], std::move(objective)});
+  }
+  return CompletedPromotionAcquisition{{}, std::move(objectives)};
 }
 
-void exerciseOrderedTypedUseDef() {
+void registerOwners() {
   if (llvm::Error error = registerCandidateGeneratorDescriptor(sourceGenerator))
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error =
@@ -152,82 +206,127 @@ void exerciseOrderedTypedUseDef() {
   if (llvm::Error error =
           registerCandidateGeneratorDescriptor(unavailableGenerator))
     fail(llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          registerPromotionAcquisitionDescriptor(objectiveAcquisition))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          registerPromotionAcquisitionDescriptor(unavailableAcquisition))
+    fail(llvm::toString(std::move(error)));
+
   const CandidateGeneratorProvider sourceProvider{sourceGenerator.reference(),
                                                   generateSource};
-  const CandidateGeneratorProvider transformProvider{
-      transformGenerator.reference(), transformCandidates};
   if (llvm::Error error = registerCandidateGeneratorProvider(sourceProvider))
     fail(llvm::toString(std::move(error)));
-  if (llvm::Error error = registerCandidateGeneratorProvider(transformProvider))
+  const PromotionAcquisitionProvider objectiveProvider{
+      objectiveAcquisition.reference(), acquireObjectives};
+  if (llvm::Error error =
+          registerPromotionAcquisitionProvider(objectiveProvider))
     fail(llvm::toString(std::move(error)));
+}
+
+void exerciseOrderedTypedUseDef() {
+  registerOwners();
   const ComponentViewDigest digest = take(computeComponentViewDigest(
       configSchema, std::array<std::uint8_t, 1>{0x01}));
   const ArtifactRootReference source = makeReference(sourceSchema, 0x11);
 
-  std::vector<GeneratePlanNodeDefinition> nodes;
+  std::vector<DsePlanNodeDefinition> nodes;
   nodes.push_back(makeNode(sourceGenerator.reference(),
                            {ExactPlanArtifacts{{source, source}}}, digest));
-  nodes.push_back(
-      makeNode(transformGenerator.reference(), {PlanOutputRef{0, 0}}, digest));
-  ResolvedGeneratePlan plan = take(ResolvedGeneratePlan::get(std::move(nodes)));
-  if (plan.nodes().size() != 2 || plan.nodes()[0].inputBindings().size() != 1 ||
-      std::get<ExactPlanArtifacts>(plan.nodes()[0].inputBindings()[0])
+  nodes.push_back(makePromoteNode(
+      objectiveAcquisition.reference(), PlanOutputRef{0, 0}, digest,
+      TopKSelection{0, 1}, resolvedBuiltinObjectiveCatalogs()));
+  ResolvedDsePlan plan = take(ResolvedDsePlan::get(std::move(nodes)));
+  const auto &generate = std::get<ResolvedGeneratePlanNode>(plan.nodes()[0]);
+  const auto &promote = std::get<ResolvedPromotePlanNode>(plan.nodes()[1]);
+  if (plan.nodes().size() != 2 || generate.inputBindings().size() != 1 ||
+      std::get<ExactPlanArtifacts>(generate.inputBindings()[0])
               .artifacts.size() != 1 ||
-      std::get<PlanOutputRef>(plan.nodes()[1].inputBindings()[0]) !=
+      std::get<PlanOutputRef>(promote.inputBindings()[0]) !=
           PlanOutputRef{0, 0})
-    fail("resolved Generate plan did not preserve canonical typed use-def");
+    fail("resolved mixed plan did not preserve canonical typed use-def");
   const PlanValueDescriptor *produced = plan.resolve(PlanOutputRef{1, 0});
   if (!produced || produced->role != PlanValueRole::CandidateSet ||
       produced->schema != candidateSchema ||
       produced->cardinality != PlanValueCardinality::FiniteSet)
-    fail("resolved plan output did not derive the generator slot contract");
+    fail("resolved Promote output did not derive the candidate contract");
+  const PlanValueDescriptor *evidence = plan.resolve(PlanOutputRef{1, 1});
+  if (!evidence || evidence->role != PlanValueRole::EvidenceSet ||
+      evidence->schema != evaluation::EvaluationEvidence::artifactSchema)
+    fail("resolved Promote output did not derive the Evidence contract");
 
   llvm::SmallString<128> storePath;
   if (std::error_code error =
           llvm::sys::fs::createUniqueDirectory("loom-dse-plan", storePath))
     fail("cannot create plan test ArtifactStore: " + error.message());
   ArtifactStore store(storePath);
-  GeneratePlanExecutionOutcome execution =
-      take(executeGeneratePlan(plan, store));
-  const auto *completed =
-      std::get_if<CompletedGeneratePlanExecution>(&execution);
+  DsePlanExecutionOutcome execution = take(executeDsePlan(plan, store));
+  const auto *completed = std::get_if<CompletedDsePlanExecution>(&execution);
   if (!completed)
-    fail("available Generate plan did not complete");
-  llvm::ArrayRef<ArtifactRootReference> finalCandidates =
+    fail("available mixed plan did not complete");
+  llvm::ArrayRef<ArtifactRootReference> generated =
+      completed->resolve(PlanOutputRef{0, 0});
+  llvm::ArrayRef<ArtifactRootReference> selected =
       completed->resolve(PlanOutputRef{1, 0});
-  if (finalCandidates.size() != 1 ||
-      finalCandidates.front() != makeReference(candidateSchema, 0x31))
-    fail("Generate execution did not canonicalize and forward outputs");
+  if (generated.size() != 2 ||
+      generated.front() != makeReference(candidateSchema, 0x22) ||
+      selected.size() != 1 ||
+      selected.front() != makeReference(candidateSchema, 0x22) ||
+      !completed->resolve(PlanOutputRef{1, 1}).empty())
+    fail("mixed execution did not canonicalize and select its candidates");
 
-  ResolvedGeneratePlan unavailablePlan = take(ResolvedGeneratePlan::get({
+  ResolvedDsePlan unavailablePlan = take(ResolvedDsePlan::get({
       makeNode(sourceGenerator.reference(), {ExactPlanArtifacts{{source}}},
                digest),
       makeNode(unavailableGenerator.reference(), {PlanOutputRef{0, 0}}, digest),
   }));
-  GeneratePlanExecutionOutcome unavailable =
-      take(executeGeneratePlan(unavailablePlan, store));
+  DsePlanExecutionOutcome unavailable =
+      take(executeDsePlan(unavailablePlan, store));
   const auto *incomplete =
-      std::get_if<IncompleteGeneratePlanExecution>(&unavailable);
-  if (!incomplete || incomplete->nodeOrdinal != 1 ||
-      incomplete->reason !=
-          CandidateGeneratorIncompleteReason::ProviderUnavailable ||
+      std::get_if<IncompleteDsePlanExecution>(&unavailable);
+  const auto *reason =
+      incomplete
+          ? std::get_if<CandidateGeneratorIncompleteReason>(&incomplete->reason)
+          : nullptr;
+  if (!incomplete || incomplete->nodeOrdinal != 1 || !reason ||
+      *reason != CandidateGeneratorIncompleteReason::ProviderUnavailable ||
       incomplete->completedPrefix.resolve(PlanOutputRef{0, 0}).size() != 2)
-    fail("missing provider did not produce typed Incomplete");
+    fail("missing Generate provider did not produce typed Incomplete");
+
+  ResolvedDsePlan unavailablePromotion = take(ResolvedDsePlan::get({
+      makeNode(sourceGenerator.reference(), {ExactPlanArtifacts{{source}}},
+               digest),
+      makePromoteNode(unavailableAcquisition.reference(), PlanOutputRef{0, 0},
+                      digest, AllPassingSelection{}),
+  }));
+  DsePlanExecutionOutcome unavailablePromotionOutcome =
+      take(executeDsePlan(unavailablePromotion, store));
+  const auto *promotionIncomplete =
+      std::get_if<IncompleteDsePlanExecution>(&unavailablePromotionOutcome);
+  const auto *promotionReason =
+      promotionIncomplete ? std::get_if<PromotionAcquisitionIncompleteReason>(
+                                &promotionIncomplete->reason)
+                          : nullptr;
+  if (!promotionIncomplete || promotionIncomplete->nodeOrdinal != 1 ||
+      !promotionReason ||
+      *promotionReason !=
+          PromotionAcquisitionIncompleteReason::ProviderUnavailable)
+    fail("missing Promote provider did not produce typed Incomplete");
   llvm::sys::fs::remove_directories(storePath);
 
-  std::vector<GeneratePlanNodeDefinition> forward;
+  std::vector<DsePlanNodeDefinition> forward;
   forward.push_back(
       makeNode(transformGenerator.reference(), {PlanOutputRef{1, 0}}, digest));
-  auto rejectedForward = ResolvedGeneratePlan::get(std::move(forward));
+  auto rejectedForward = ResolvedDsePlan::get(std::move(forward));
   if (rejectedForward)
     fail("plan accepted a forward use-def edge");
   requireErrorContains(rejectedForward.takeError(), "earlier node");
 
-  std::vector<GeneratePlanNodeDefinition> foreign;
+  std::vector<DsePlanNodeDefinition> foreign;
   foreign.push_back(makeNode(
       sourceGenerator.reference(),
       {ExactPlanArtifacts{{makeReference(candidateSchema, 0x22)}}}, digest));
-  auto rejectedForeign = ResolvedGeneratePlan::get(std::move(foreign));
+  auto rejectedForeign = ResolvedDsePlan::get(std::move(foreign));
   if (rejectedForeign)
     fail("plan accepted a foreign static artifact schema");
   requireErrorContains(rejectedForeign.takeError(), "artifact schema");

@@ -78,7 +78,7 @@ const CandidateGeneratorDescriptor descriptor{
     "loom.test.generator.v1",
     inputSlots,
     outputSlots,
-    CandidateGeneratorConfigViewContract{configSchema, validateConfig},
+    ResolvedDseConfigViewContract{configSchema, validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
     {},

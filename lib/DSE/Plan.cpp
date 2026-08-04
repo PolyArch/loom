@@ -59,6 +59,14 @@ inputDescriptor(const CandidateGeneratorInputSlotDescriptor &slot) {
 }
 
 llvm::Expected<PlanValueDescriptor>
+inputDescriptor(const PromotionAcquisitionInputSlotDescriptor &slot) {
+  if (!slot.schema || !validRole(slot.role) ||
+      !validCardinality(slot.cardinality))
+    return invalid("promotion acquisition input slot is not plan-typed");
+  return PlanValueDescriptor{slot.role, *slot.schema, slot.cardinality};
+}
+
+llvm::Expected<PlanValueDescriptor>
 outputDescriptor(const CandidateGeneratorOutputSlotDescriptor &slot) {
   if (!slot.schema || !validRole(slot.role) ||
       !validCardinality(slot.cardinality))
@@ -72,11 +80,103 @@ bool compatible(const PlanValueDescriptor &producer,
          planCardinalityCanFlow(producer.cardinality, consumer.cardinality);
 }
 
+llvm::Error resolveInputBindings(std::vector<PlanInputBinding> &bindings,
+                                 llvm::ArrayRef<PlanValueDescriptor> expected,
+                                 std::size_t nodeIndex,
+                                 llvm::ArrayRef<ResolvedDsePlanNode> nodes,
+                                 llvm::ArrayRef<std::uint64_t> outputOffsets,
+                                 llvm::ArrayRef<PlanValueDescriptor> outputs) {
+  if (bindings.size() != expected.size())
+    return invalid("plan node does not bind every input slot");
+  for (std::size_t inputIndex = 0; inputIndex < bindings.size(); ++inputIndex) {
+    PlanInputBinding &binding = bindings[inputIndex];
+    if (auto *exact = std::get_if<ExactPlanArtifacts>(&binding)) {
+      auto canonical =
+          canonicalizeExactArtifacts(std::move(*exact), expected[inputIndex]);
+      if (!canonical)
+        return canonical.takeError();
+      binding = std::move(*canonical);
+      continue;
+    }
+    const PlanOutputRef output = std::get<PlanOutputRef>(binding);
+    if (output.producerNodeOrdinal >= nodeIndex ||
+        output.producerNodeOrdinal >= nodes.size())
+      return invalid("produced input must reference an earlier node");
+    const std::uint64_t begin = outputOffsets[output.producerNodeOrdinal];
+    const std::uint64_t end = outputOffsets[output.producerNodeOrdinal + 1];
+    if (output.outputSlotOrdinal >= end - begin)
+      return invalid("produced input references an unknown output slot");
+    if (!compatible(outputs[begin + output.outputSlotOrdinal],
+                    expected[inputIndex]))
+      return invalid("produced input role, artifact schema, or cardinality "
+                     "does not match its slot");
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::optional<ObjectiveProgram>>
+resolveObjectiveProgram(const PromotePlanNodeDefinition &definition) {
+  if (std::holds_alternative<AllPassingSelection>(definition.selection))
+    return std::optional<ObjectiveProgram>{};
+  auto program = ObjectiveProgram::get(definition.objectiveCatalogs);
+  if (!program)
+    return program.takeError();
+  if (const auto *topK = std::get_if<TopKSelection>(&definition.selection)) {
+    if (topK->k == 0)
+      return invalid("TopK requires positive k");
+    if (topK->totalOrdering >= program->totalOrderingCount())
+      return invalid("TopK total ordering reference is out of range");
+  } else {
+    const auto &dimensions =
+        std::get<ParetoSelection>(definition.selection).objectiveDimensions;
+    if (dimensions.empty() || !llvm::is_sorted(dimensions) ||
+        std::adjacent_find(dimensions.begin(), dimensions.end()) !=
+            dimensions.end())
+      return invalid("Pareto dimensions are not a canonical nonempty set");
+    if (dimensions.back() >= program->dimensionCount())
+      return invalid("Pareto dimension reference is out of range");
+  }
+  return std::optional<ObjectiveProgram>{std::move(*program)};
+}
+
+llvm::Expected<std::vector<ArtifactRootReference>>
+publishEvidence(llvm::ArrayRef<PromotionEvidence> records,
+                const ArtifactStore &store) {
+  std::vector<ArtifactRootReference> references;
+  references.reserve(records.size());
+  for (const PromotionEvidence &record : records) {
+    auto reference =
+        evaluation::publishEvaluationEvidence(record.evidence, store);
+    if (!reference)
+      return reference.takeError();
+    references.push_back(*reference);
+  }
+  llvm::sort(references, artifactRootReferenceLess);
+  references.erase(std::unique(references.begin(), references.end()),
+                   references.end());
+  return references;
+}
+
+llvm::Expected<std::vector<ArtifactRootReference>> resolveRuntimeInput(
+    const PlanInputBinding &input, llvm::ArrayRef<std::uint64_t> outputOffsets,
+    llvm::ArrayRef<std::vector<ArtifactRootReference>> outputs) {
+  if (const auto *exact = std::get_if<ExactPlanArtifacts>(&input))
+    return exact->artifacts;
+  const PlanOutputRef output = std::get<PlanOutputRef>(input);
+  if (output.producerNodeOrdinal >= outputOffsets.size() - 1)
+    return invalid("resolved use-def references an unavailable output");
+  const std::uint64_t begin = outputOffsets[output.producerNodeOrdinal];
+  const std::uint64_t end = outputOffsets[output.producerNodeOrdinal + 1];
+  if (output.outputSlotOrdinal >= end - begin)
+    return invalid("resolved use-def references an unavailable slot");
+  return outputs[begin + output.outputSlotOrdinal];
+}
+
 } // namespace
 
-llvm::Expected<ResolvedGeneratePlan>
-ResolvedGeneratePlan::get(std::vector<GeneratePlanNodeDefinition> definitions) {
-  std::vector<ResolvedGeneratePlanNode> nodes;
+llvm::Expected<ResolvedDsePlan>
+ResolvedDsePlan::get(std::vector<DsePlanNodeDefinition> definitions) {
+  std::vector<ResolvedDsePlanNode> nodes;
   std::vector<std::uint64_t> outputOffsets;
   std::vector<PlanValueDescriptor> outputs;
   nodes.reserve(definitions.size());
@@ -84,70 +184,95 @@ ResolvedGeneratePlan::get(std::vector<GeneratePlanNodeDefinition> definitions) {
   outputOffsets.push_back(0);
 
   for (std::size_t nodeIndex = 0; nodeIndex < definitions.size(); ++nodeIndex) {
-    GeneratePlanNodeDefinition &definition = definitions[nodeIndex];
-    const CandidateGeneratorDescriptor *descriptor =
-        definition.descriptor.descriptor();
+    if (auto *definition =
+            std::get_if<GeneratePlanNodeDefinition>(&definitions[nodeIndex])) {
+      const CandidateGeneratorDescriptor *descriptor =
+          definition->descriptor.descriptor();
+      if (!descriptor)
+        return invalid("Generate node references an unregistered descriptor");
+      if (llvm::Error error = descriptor->resolvedConfigView.validateCanonical(
+              definition->canonicalConfigBytes, definition->configDigest))
+        return std::move(error);
+      std::vector<PlanValueDescriptor> expected;
+      expected.reserve(descriptor->inputSlots.size());
+      for (const CandidateGeneratorInputSlotDescriptor &slot :
+           descriptor->inputSlots) {
+        auto value = inputDescriptor(slot);
+        if (!value)
+          return value.takeError();
+        expected.push_back(*value);
+      }
+      if (llvm::Error error =
+              resolveInputBindings(definition->inputBindings, expected,
+                                   nodeIndex, nodes, outputOffsets, outputs))
+        return std::move(error);
+      if (descriptor->outputSlots.size() >
+          std::numeric_limits<std::uint64_t>::max() - outputs.size())
+        return invalid("plan output count overflows uint64");
+      for (const CandidateGeneratorOutputSlotDescriptor &slot :
+           descriptor->outputSlots) {
+        auto value = outputDescriptor(slot);
+        if (!value)
+          return value.takeError();
+        outputs.push_back(*value);
+      }
+      outputOffsets.push_back(outputs.size());
+      nodes.emplace_back(ResolvedGeneratePlanNode(
+          definition->descriptor, std::move(definition->inputBindings),
+          std::move(definition->canonicalConfigBytes),
+          definition->configDigest));
+      continue;
+    }
+
+    auto &definition =
+        std::get<PromotePlanNodeDefinition>(definitions[nodeIndex]);
+    const PromotionAcquisitionDescriptor *descriptor =
+        definition.acquisition.descriptor();
     if (!descriptor)
-      return invalid("Generate node references an unregistered descriptor");
-    if (definition.inputBindings.size() != descriptor->inputSlots.size())
-      return invalid("Generate node does not bind every input slot");
+      return invalid("Promote node references an unregistered acquisition");
     if (llvm::Error error = descriptor->resolvedConfigView.validateCanonical(
             definition.canonicalConfigBytes, definition.configDigest))
       return std::move(error);
-
-    for (std::size_t inputIndex = 0;
-         inputIndex < definition.inputBindings.size(); ++inputIndex) {
-      auto expected = inputDescriptor(descriptor->inputSlots[inputIndex]);
-      if (!expected)
-        return expected.takeError();
-      PlanInputBinding &binding = definition.inputBindings[inputIndex];
-      if (auto *exact = std::get_if<ExactPlanArtifacts>(&binding)) {
-        auto canonical =
-            canonicalizeExactArtifacts(std::move(*exact), *expected);
-        if (!canonical)
-          return canonical.takeError();
-        binding = std::move(*canonical);
-        continue;
-      }
-
-      const PlanOutputRef output = std::get<PlanOutputRef>(binding);
-      if (output.producerNodeOrdinal >= nodeIndex)
-        return invalid("produced input must reference an earlier node");
-      if (output.producerNodeOrdinal >= nodes.size())
-        return invalid("produced input references an unknown node");
-      const std::uint64_t begin = outputOffsets[output.producerNodeOrdinal];
-      const std::uint64_t end = outputOffsets[output.producerNodeOrdinal + 1];
-      if (output.outputSlotOrdinal >= end - begin)
-        return invalid("produced input references an unknown output slot");
-      const PlanValueDescriptor &produced =
-          outputs[begin + output.outputSlotOrdinal];
-      if (!compatible(produced, *expected))
-        return invalid("produced input role, artifact schema, or cardinality "
-                       "does not match its slot");
+    std::vector<PlanValueDescriptor> expected;
+    expected.reserve(descriptor->inputSlots.size());
+    for (const PromotionAcquisitionInputSlotDescriptor &slot :
+         descriptor->inputSlots) {
+      auto value = inputDescriptor(slot);
+      if (!value)
+        return value.takeError();
+      expected.push_back(*value);
     }
-
-    if (descriptor->outputSlots.size() >
-        std::numeric_limits<std::uint64_t>::max() - outputs.size())
+    if (llvm::Error error =
+            resolveInputBindings(definition.inputBindings, expected, nodeIndex,
+                                 nodes, outputOffsets, outputs))
+      return std::move(error);
+    auto objectiveProgram = resolveObjectiveProgram(definition);
+    if (!objectiveProgram)
+      return objectiveProgram.takeError();
+    const PromotionAcquisitionInputSlotDescriptor *candidateSlot =
+        descriptor->findInputSlot(descriptor->candidateInputSlot);
+    if (!candidateSlot || !candidateSlot->schema)
+      return invalid("Promote candidate input slot is unavailable");
+    if (outputs.size() > std::numeric_limits<std::uint64_t>::max() - 2)
       return invalid("plan output count overflows uint64");
-    for (const CandidateGeneratorOutputSlotDescriptor &slot :
-         descriptor->outputSlots) {
-      auto output = outputDescriptor(slot);
-      if (!output)
-        return output.takeError();
-      outputs.push_back(std::move(*output));
-    }
+    outputs.push_back({PlanValueRole::CandidateSet, *candidateSlot->schema,
+                       PlanValueCardinality::FiniteSet});
+    outputs.push_back({PlanValueRole::EvidenceSet,
+                       evaluation::EvaluationEvidence::artifactSchema,
+                       PlanValueCardinality::FiniteSet});
     outputOffsets.push_back(outputs.size());
-    nodes.push_back(ResolvedGeneratePlanNode(
-        definition.descriptor, std::move(definition.inputBindings),
-        std::move(definition.canonicalConfigBytes), definition.configDigest));
+    nodes.emplace_back(ResolvedPromotePlanNode(
+        definition.acquisition, std::move(definition.inputBindings),
+        std::move(definition.canonicalConfigBytes), definition.configDigest,
+        std::move(definition.qualityGate), std::move(definition.selection),
+        std::move(*objectiveProgram)));
   }
-
-  return ResolvedGeneratePlan(std::move(nodes), std::move(outputOffsets),
-                              std::move(outputs));
+  return ResolvedDsePlan(std::move(nodes), std::move(outputOffsets),
+                         std::move(outputs));
 }
 
 const PlanValueDescriptor *
-ResolvedGeneratePlan::resolve(PlanOutputRef output) const {
+ResolvedDsePlan::resolve(PlanOutputRef output) const {
   if (output.producerNodeOrdinal >= nodes_.size())
     return nullptr;
   const std::uint64_t begin = outputOffsets_[output.producerNodeOrdinal];
@@ -158,7 +283,7 @@ ResolvedGeneratePlan::resolve(PlanOutputRef output) const {
 }
 
 llvm::ArrayRef<ArtifactRootReference>
-CompletedGeneratePlanExecution::resolve(PlanOutputRef output) const {
+CompletedDsePlanExecution::resolve(PlanOutputRef output) const {
   if (outputOffsets_.empty() ||
       output.producerNodeOrdinal >= outputOffsets_.size() - 1)
     return {};
@@ -169,9 +294,8 @@ CompletedGeneratePlanExecution::resolve(PlanOutputRef output) const {
   return outputs_[begin + output.outputSlotOrdinal];
 }
 
-llvm::Expected<GeneratePlanExecutionOutcome>
-executeGeneratePlan(const ResolvedGeneratePlan &plan,
-                    const ArtifactStore &store) {
+llvm::Expected<DsePlanExecutionOutcome>
+executeDsePlan(const ResolvedDsePlan &plan, const ArtifactStore &store) {
   std::vector<std::uint64_t> outputOffsets;
   std::vector<std::vector<ArtifactRootReference>> outputs;
   outputOffsets.reserve(plan.nodes().size() + 1);
@@ -179,58 +303,124 @@ executeGeneratePlan(const ResolvedGeneratePlan &plan,
 
   for (std::size_t nodeIndex = 0; nodeIndex < plan.nodes().size();
        ++nodeIndex) {
-    const ResolvedGeneratePlanNode &node = plan.nodes()[nodeIndex];
-    const CandidateGeneratorDescriptor *descriptor =
-        node.descriptorRef().descriptor();
-    if (!descriptor)
-      return invalid("resolved Generate node lost its descriptor");
-    std::vector<CandidateGeneratorInputBinding> inputs;
-    inputs.reserve(node.inputBindings().size());
-    for (std::size_t inputIndex = 0; inputIndex < node.inputBindings().size();
-         ++inputIndex) {
-      const PlanInputBinding &input = node.inputBindings()[inputIndex];
-      std::vector<ArtifactRootReference> artifacts;
-      if (const auto *exact = std::get_if<ExactPlanArtifacts>(&input)) {
-        artifacts = exact->artifacts;
-      } else {
-        const PlanOutputRef output = std::get<PlanOutputRef>(input);
-        if (output.producerNodeOrdinal >= outputOffsets.size() - 1)
-          return invalid("resolved use-def references an unavailable output");
-        const std::uint64_t begin = outputOffsets[output.producerNodeOrdinal];
-        const std::uint64_t end = outputOffsets[output.producerNodeOrdinal + 1];
-        if (output.outputSlotOrdinal >= end - begin)
-          return invalid("resolved use-def references an unavailable slot");
-        artifacts = outputs[begin + output.outputSlotOrdinal];
+    const ResolvedDsePlanNode &node = plan.nodes()[nodeIndex];
+    if (const auto *generate = std::get_if<ResolvedGeneratePlanNode>(&node)) {
+      std::vector<CandidateGeneratorInputBinding> inputs;
+      inputs.reserve(generate->inputBindings().size());
+      for (std::size_t index = 0; index < generate->inputBindings().size();
+           ++index) {
+        auto artifacts = resolveRuntimeInput(generate->inputBindings()[index],
+                                             outputOffsets, outputs);
+        if (!artifacts)
+          return artifacts.takeError();
+        inputs.push_back(
+            {CandidateGeneratorInputSlotRef(static_cast<std::uint32_t>(index)),
+             std::move(*artifacts)});
       }
-      inputs.push_back({CandidateGeneratorInputSlotRef(
-                            static_cast<std::uint32_t>(inputIndex)),
-                        std::move(artifacts)});
+      auto binding = ResolvedCandidateGeneratorBinding::get(
+          generate->descriptorRef(), std::move(inputs),
+          generate->canonicalConfigBytes(), generate->configDigest());
+      if (!binding)
+        return binding.takeError();
+      auto outcome = invokeCandidateGenerator(*binding, store);
+      if (!outcome)
+        return outcome.takeError();
+      if (auto *incomplete =
+              std::get_if<IncompleteCandidateGeneratorInvocation>(&*outcome)) {
+        std::vector<std::vector<ArtifactRootReference>> retained;
+        retained.reserve(incomplete->retainedOutputBindings.size());
+        for (CandidateGeneratorOutputBinding &output :
+             incomplete->retainedOutputBindings)
+          retained.push_back(std::move(output.artifacts));
+        return DsePlanExecutionOutcome{IncompleteDsePlanExecution{
+            static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
+            CompletedDsePlanExecution(std::move(outputOffsets),
+                                      std::move(outputs)),
+            std::move(retained)}};
+      }
+      auto &completed =
+          std::get<CompletedCandidateGeneratorInvocation>(*outcome);
+      for (CandidateGeneratorOutputBinding &output : completed.outputBindings)
+        outputs.push_back(std::move(output.artifacts));
+      outputOffsets.push_back(outputs.size());
+      continue;
     }
 
-    auto binding = ResolvedCandidateGeneratorBinding::get(
-        node.descriptorRef(), std::move(inputs), node.canonicalConfigBytes(),
-        node.configDigest());
+    const auto &promote = std::get<ResolvedPromotePlanNode>(node);
+    const PromotionAcquisitionDescriptor *descriptor =
+        promote.acquisitionRef().descriptor();
+    if (!descriptor)
+      return invalid("resolved Promote node lost its descriptor");
+    std::vector<PromotionAcquisitionInputBinding> inputs;
+    inputs.reserve(promote.inputBindings().size());
+    for (std::size_t index = 0; index < promote.inputBindings().size();
+         ++index) {
+      auto artifacts = resolveRuntimeInput(promote.inputBindings()[index],
+                                           outputOffsets, outputs);
+      if (!artifacts)
+        return artifacts.takeError();
+      inputs.push_back(
+          {PromotionAcquisitionInputSlotRef(static_cast<std::uint32_t>(index)),
+           std::move(*artifacts)});
+    }
+    auto binding = ResolvedPromotionAcquisitionBinding::get(
+        promote.acquisitionRef(), std::move(inputs),
+        promote.canonicalConfigBytes(), promote.configDigest());
     if (!binding)
       return binding.takeError();
-    auto outcome = invokeCandidateGenerator(*binding, store);
-    if (!outcome)
-      return outcome.takeError();
+    auto acquisition =
+        invokePromotionAcquisition(*binding, promote.objectiveProgram(), store);
+    if (!acquisition)
+      return acquisition.takeError();
     if (auto *incomplete =
-            std::get_if<IncompleteCandidateGeneratorInvocation>(&*outcome))
-      return GeneratePlanExecutionOutcome{IncompleteGeneratePlanExecution{
-          static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
-          CompletedGeneratePlanExecution(std::move(outputOffsets),
-                                         std::move(outputs)),
-          std::move(incomplete->retainedOutputBindings)}};
+            std::get_if<IncompletePromotionAcquisition>(&*acquisition)) {
+      auto retained = publishEvidence(incomplete->retainedEvidence, store);
+      if (!retained)
+        return retained.takeError();
+      return DsePlanExecutionOutcome{IncompleteDsePlanExecution{
+          static_cast<std::uint64_t>(nodeIndex),
+          incomplete->reason,
+          CompletedDsePlanExecution(std::move(outputOffsets),
+                                    std::move(outputs)),
+          {{}, std::move(*retained)}}};
+    }
 
-    auto &completed = std::get<CompletedCandidateGeneratorInvocation>(*outcome);
-    for (CandidateGeneratorOutputBinding &output : completed.outputBindings)
-      outputs.push_back(std::move(output.artifacts));
+    auto &completed = std::get<CompletedPromotionAcquisition>(*acquisition);
+    const PromotionAcquisitionInputBinding *candidateInput =
+        binding->findInputBinding(descriptor->candidateInputSlot);
+    const PromotionAcquisitionInputSlotDescriptor *candidateSlot =
+        descriptor->findInputSlot(descriptor->candidateInputSlot);
+    if (!candidateInput || !candidateSlot || !candidateSlot->schema)
+      return invalid("Promote candidate input is unavailable");
+    auto candidateSet =
+        CandidateSet::get(*candidateSlot->schema, candidateInput->artifacts);
+    if (!candidateSet)
+      return candidateSet.takeError();
+    auto promotion = promoteCandidates(
+        *candidateSet, descriptor->candidateRole, completed.evidence,
+        promote.qualityGate(), completed.objectives, promote.selection(),
+        promote.objectiveProgram(), store);
+    if (!promotion)
+      return promotion.takeError();
+    if (auto *incomplete = std::get_if<IncompleteSelection>(&*promotion))
+      return DsePlanExecutionOutcome{IncompleteDsePlanExecution{
+          static_cast<std::uint64_t>(nodeIndex),
+          incomplete->reason,
+          CompletedDsePlanExecution(std::move(outputOffsets),
+                                    std::move(outputs)),
+          {{}, std::move(incomplete->retainedEvidence)}}};
+    if (auto *none = std::get_if<CompletedNoFeasibleCandidate>(&*promotion)) {
+      outputs.push_back({});
+      outputs.push_back(std::move(none->satisfiedEvidence));
+    } else {
+      auto &selected = std::get<CompletedSelection>(*promotion);
+      outputs.push_back(std::move(selected.selected));
+      outputs.push_back(std::move(selected.satisfiedEvidence));
+    }
     outputOffsets.push_back(outputs.size());
   }
-
-  return GeneratePlanExecutionOutcome{CompletedGeneratePlanExecution(
-      std::move(outputOffsets), std::move(outputs))};
+  return DsePlanExecutionOutcome{
+      CompletedDsePlanExecution(std::move(outputOffsets), std::move(outputs))};
 }
 
 } // namespace loom::dse
