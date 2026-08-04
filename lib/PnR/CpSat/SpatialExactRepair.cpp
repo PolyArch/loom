@@ -107,6 +107,8 @@ SpatialExactRepairScratch::repairCapacityOveruse(
   for (std::size_t cursor = 0; cursor < decisionQueue_.size(); ++cursor) {
     const PnrIndex decision = decisionQueue_[cursor];
     for (PnrIndex relation : bindings.decisionRelations(decision)) {
+      if (!bindings.relationIsConstraint(relation))
+        continue;
       if (relation >= relationIncluded_.size())
         return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
                       "binding relation reverse index is invalid");

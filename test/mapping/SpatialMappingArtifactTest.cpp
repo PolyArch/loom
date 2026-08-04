@@ -629,64 +629,6 @@ void temporalPeTagMatchDomainsAreIngressLocal() {
     fail("two temporal PE ingresses share a tag match domain");
 }
 
-std::string byteList(llvm::ArrayRef<std::uint8_t> bytes) {
-  std::string text = "[";
-  for (auto [ordinal, byte] : llvm::enumerate(bytes)) {
-    if (ordinal)
-      text += ", ";
-    text += std::to_string(static_cast<std::int8_t>(byte));
-  }
-  return text + "]";
-}
-
-std::string identityAttr(const loom::ArtifactIdentity &identity) {
-  return "#mapping.artifact_identity<" + byteList(identity.bytes()) + ">";
-}
-
-template <typename Ref>
-std::string dataflowAttr(llvm::StringRef spelling,
-                         const loom::ArtifactIdentity &owner, const Ref &ref) {
-  return "#mapping." + spelling.str() + "<" +
-         byteList(take(dataflow::encodeDataflowReference(owner, ref))) + ">";
-}
-
-loom::mapping::FinalizedSpatialMappingConstraintSet
-buildConstraints(mlir::MLIRContext &context,
-                 const dataflow::CanonicalDataflowProgramView &dataflow,
-                 const loom::mapping::TechMappingView &tech,
-                 const loom::fabric::FabricArtifactView &fabric,
-                 const loom::ArtifactStore &store,
-                 bool restrictTagsToZero = false,
-                 bool rejectComputePlacement = false) {
-  std::string clauses;
-  if (restrictTagsToZero)
-    for (const auto &net : tech.residualLogicalNets())
-      clauses += "    mapping.constraint.domain_restriction "
-                 "projection(net_assigned_tag_values) subject(" +
-                 dataflowAttr("graph_producer_endpoint_ref",
-                              dataflow.identity(), net.producer) +
-                 ") admissible_domain(["
-                 "#mapping.constraint_unsigned_interval<lower = 0 : ui8, "
-                 "upper = 1 : ui8>])\n";
-  if (rejectComputePlacement && !tech.computeRealizations().empty())
-    clauses += "    mapping.constraint.domain_restriction "
-               "projection(compute_placement) subject("
-               "#mapping.compute_realization_ref<" +
-               std::to_string(tech.computeRealizations().front().entityId) +
-               ">) admissible_domain([])\n";
-  const std::string text = "module {\n  mapping.constraints.spatial dataflow(" +
-                           identityAttr(dataflow.identity()) +
-                           ") tech_mapping(" + identityAttr(tech.identity()) +
-                           ") fabric(" + identityAttr(fabric.identity()) +
-                           ") {\n" + clauses + "  }\n}\n";
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
-  if (!module)
-    fail("cannot parse MappingConstraintSet fixture");
-  auto roots = module->getOps<::mapping::ConstraintsSpatialOp>();
-  return take(loom::mapping::finalizeSpatialMappingConstraintSet(
-      *roots.begin(), dataflow, tech, fabric, store));
-}
-
 mlir::OwningOpRef<mlir::ModuleOp>
 parseSpatial(mlir::MLIRContext &context,
              const loom::CanonicalSemanticBytes &bytes) {
@@ -840,8 +782,11 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
     fail("TechMapping fixture did not produce one candidate");
   const auto tech = take(
       loom::mapping::importTechMapping(candidates->candidates.front(), store));
-  const auto constraints = buildConstraints(
+  const auto constraints = loom::test::buildSpatialMappingConstraints(
       context, dataflow, tech.view(), fabric.view(), store, forceTagConflict);
+  if (!temporal && !boundaryWrapped && !forceTagConflict)
+    loom::test::exerciseSpatialAttachmentConstraintRelations(
+        context, dataflow, tech.view(), fabric.view(), store);
   if (!temporal && !boundaryWrapped && !forceTagConflict) {
     loom::ResolvedConfig generatorResolved =
         loom::test::buildSpatialPnrTestResolvedConfig();
@@ -889,9 +834,10 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
         dataflow, tech.view(), fabric.view(), constraints.view(),
         generatedView.view()));
 
-    const auto placementRejectingConstraints = buildConstraints(
-        context, dataflow, tech.view(), fabric.view(), store,
-        /*restrictTagsToZero=*/false, /*rejectComputePlacement=*/true);
+    const auto placementRejectingConstraints =
+        loom::test::buildSpatialMappingConstraints(
+            context, dataflow, tech.view(), fabric.view(), store,
+            /*restrictTagsToZero=*/false, /*rejectComputePlacement=*/true);
     llvm::Error rejection = loom::mapping::admitSpatialMappingConstraints(
         dataflow, tech.view(), fabric.view(),
         placementRejectingConstraints.view(), generatedView.view());
@@ -1223,9 +1169,10 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
   if (forceTagConflict)
     return;
 
-  const auto placementRejectingConstraints = buildConstraints(
-      context, dataflow, tech.view(), fabric.view(), store,
-      /*restrictTagsToZero=*/false, /*rejectComputePlacement=*/true);
+  const auto placementRejectingConstraints =
+      loom::test::buildSpatialMappingConstraints(
+          context, dataflow, tech.view(), fabric.view(), store,
+          /*restrictTagsToZero=*/false, /*rejectComputePlacement=*/true);
   const std::size_t storedBeforeRejection = storedObjectCount(directory.path());
   auto rejectedFinalization = loom::pnr::finalizeSpatialMappingCandidate(
       *candidate, dataflow, tech.view(), fabric.view(),
@@ -1400,8 +1347,8 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   if (tech.view().memoryRealizations().size() != 1)
     fail("memory TechMapping fixture did not select one realization");
 
-  const auto constraints =
-      buildConstraints(context, dataflow, tech.view(), fabric.view(), store);
+  const auto constraints = loom::test::buildSpatialMappingConstraints(
+      context, dataflow, tech.view(), fabric.view(), store);
   const auto pnrConfig = take(loom::pnr::projectResolvedSpatialPnrConfigView(
       loom::test::buildSpatialPnrTestResolvedConfig()));
   auto problem = take(loom::pnr::freezeSpatialPnrProblem(

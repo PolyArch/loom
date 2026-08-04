@@ -3,9 +3,13 @@
 #include "ADG/FuLibrary.h"
 #include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/TemporalPeResourceContract.h"
+#include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/Artifact/MappingConstraintSet.h"
+#include "Mapping/IR/MappingDialect.h"
 #include "PnR/HandshakeCandidateState.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/SpatialActionDomain.h"
@@ -16,6 +20,10 @@
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialObjective.h"
 #include "SpatialMappingCapacityVerification.h"
+
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -50,6 +58,33 @@ void requireSuccess(llvm::Error error) {
     fail(llvm::toString(std::move(error)));
 }
 
+std::string byteList(llvm::ArrayRef<std::uint8_t> bytes) {
+  std::string text = "[";
+  for (auto [ordinal, byte] : llvm::enumerate(bytes)) {
+    if (ordinal)
+      text += ", ";
+    text += std::to_string(static_cast<std::int8_t>(byte));
+  }
+  return text + "]";
+}
+
+std::string identityAttr(const loom::ArtifactIdentity &identity) {
+  return "#mapping.artifact_identity<" + byteList(identity.bytes()) + ">";
+}
+
+template <typename Ref>
+std::string dataflowAttr(llvm::StringRef spelling,
+                         const loom::ArtifactIdentity &owner, const Ref &ref) {
+  return "#mapping." + spelling.str() + "<" +
+         byteList(take(dataflow::encodeDataflowReference(owner, ref))) + ">";
+}
+
+template <typename Ref>
+std::string fabricAttr(llvm::StringRef spelling, const Ref &ref) {
+  return "#mapping." + spelling.str() + "<" +
+         byteList(loom::fabric::canonicalFabricBytes(ref)) + ">";
+}
+
 loom::ResolvedObjectiveCatalogs availableSpatialObjectiveCatalogs() {
   loom::ResolvedObjectiveCatalogs catalogs;
   constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
@@ -75,6 +110,43 @@ loom::ResolvedObjectiveCatalogs availableSpatialObjectiveCatalogs() {
 }
 
 } // namespace
+
+loom::mapping::FinalizedSpatialMappingConstraintSet
+loom::test::buildSpatialMappingConstraints(
+    mlir::MLIRContext &context,
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const fabric::FabricArtifactView &fabric, const ArtifactStore &store,
+    bool restrictTagsToZero, bool rejectComputePlacement) {
+  std::string clauses;
+  if (restrictTagsToZero)
+    for (const auto &net : techMapping.residualLogicalNets())
+      clauses += "    mapping.constraint.domain_restriction "
+                 "projection(net_assigned_tag_values) subject(" +
+                 dataflowAttr("graph_producer_endpoint_ref",
+                              dataflow.identity(), net.producer) +
+                 ") admissible_domain(["
+                 "#mapping.constraint_unsigned_interval<lower = 0 : ui8, "
+                 "upper = 1 : ui8>])\n";
+  if (rejectComputePlacement && !techMapping.computeRealizations().empty())
+    clauses +=
+        "    mapping.constraint.domain_restriction "
+        "projection(compute_placement) subject("
+        "#mapping.compute_realization_ref<" +
+        std::to_string(techMapping.computeRealizations().front().entityId) +
+        ">) admissible_domain([])\n";
+  const std::string text =
+      "module {\n  mapping.constraints.spatial dataflow(" +
+      identityAttr(dataflow.identity()) + ") tech_mapping(" +
+      identityAttr(techMapping.identity()) + ") fabric(" +
+      identityAttr(fabric.identity()) + ") {\n" + clauses + "  }\n}\n";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+  if (!module)
+    fail("cannot parse MappingConstraintSet fixture");
+  auto roots = module->getOps<::mapping::ConstraintsSpatialOp>();
+  return take(mapping::finalizeSpatialMappingConstraintSet(
+      *roots.begin(), dataflow, techMapping, fabric, store));
+}
 
 loom::ResolvedConfig loom::test::buildSpatialPnrTestResolvedConfig() {
   ResolvedConfig config = defaultResolvedConfig();
@@ -1006,4 +1078,149 @@ void loom::test::exerciseCanonicalCandidateInitialization(
   if (foreignSeed)
     fail("Spatial annealing accepted an out-of-range seed ordinal");
   llvm::consumeError(foreignSeed.takeError());
+}
+
+void loom::test::exerciseSpatialAttachmentConstraintRelations(
+    mlir::MLIRContext &context,
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const fabric::FabricArtifactView &fabric, const ArtifactStore &store) {
+  std::vector<pnr::PnrIndex> sourceNets;
+  std::vector<dataflow::CanonicalGraphProducerEndpointRef> sources;
+  for (auto [ordinal, net] :
+       llvm::enumerate(techMapping.residualLogicalNets())) {
+    if (!std::holds_alternative<dataflow::GraphIngressTokenRef>(net.producer))
+      continue;
+    sourceNets.push_back(static_cast<pnr::PnrIndex>(ordinal));
+    sources.push_back(net.producer);
+    if (sources.size() == 2)
+      break;
+  }
+  if (sources.size() != 2)
+    fail("attachment relation fixture has fewer than two graph sources");
+
+  const auto config = take(pnr::projectResolvedSpatialPnrConfigView(
+      buildSpatialPnrTestResolvedConfig()));
+  const auto emptyConstraints = buildSpatialMappingConstraints(
+      context, dataflow, techMapping, fabric, store);
+  const auto unconstrained = take(pnr::freezeSpatialPnrProblem(
+      dataflow, techMapping, fabric, config, emptyConstraints.view()));
+  std::array<pnr::PnrIndex, 2> boundaries;
+  for (std::size_t index = 0; index < sourceNets.size(); ++index) {
+    const auto binding = unconstrained->transfers()
+                             .logicalNetSourceBindings()[sourceNets[index]];
+    if (binding.kind != pnr::FrozenSpatialTerminalBindingKind::GraphBoundary)
+      fail("attachment relation fixture source is not a graph boundary");
+    boundaries[index] = binding.index;
+  }
+  const auto &firstBoundary =
+      unconstrained->ports().graphBoundaries()[boundaries[0]];
+  const auto &secondBoundary =
+      unconstrained->ports().graphBoundaries()[boundaries[1]];
+  std::optional<pnr::PnrIndex> requiredEndpoint;
+  for (pnr::PnrIndex first = firstBoundary.attachmentOptionOffset;
+       first != firstBoundary.attachmentOptionOffset +
+                    firstBoundary.attachmentOptionCount;
+       ++first) {
+    const pnr::PnrIndex endpoint =
+        unconstrained->ports().attachmentOptions()[first].endpoint;
+    bool shared = false;
+    bool secondHasAlternative = false;
+    for (pnr::PnrIndex second = secondBoundary.attachmentOptionOffset;
+         second != secondBoundary.attachmentOptionOffset +
+                       secondBoundary.attachmentOptionCount;
+         ++second) {
+      const pnr::PnrIndex other =
+          unconstrained->ports().attachmentOptions()[second].endpoint;
+      shared |= other == endpoint;
+      secondHasAlternative |= other != endpoint;
+    }
+    if (shared && secondHasAlternative) {
+      requiredEndpoint = endpoint;
+      break;
+    }
+  }
+  if (!requiredEndpoint)
+    fail("attachment relation fixture has no restricted shared endpoint");
+
+  const auto terminal = [&](const auto &producer) {
+    return "#mapping.spatial_transfer_terminal<producer = " +
+           dataflowAttr("graph_producer_endpoint_ref", dataflow.identity(),
+                        producer) +
+           ">";
+  };
+  const std::string text =
+      "module {\n  mapping.constraints.spatial dataflow(" +
+      identityAttr(dataflow.identity()) + ") tech_mapping(" +
+      identityAttr(techMapping.identity()) + ") fabric(" +
+      identityAttr(fabric.identity()) +
+      ") {\n    mapping.constraint.domain_restriction "
+      "projection(spatial_transfer_attachment) subject(" +
+      terminal(sources[0]) + ") admissible_domain([" +
+      fabricAttr("fabric_transport_endpoint_ref",
+                 unconstrained->routing()
+                     .routingEndpoints()[*requiredEndpoint]
+                     .reference) +
+      "])\n    mapping.constraint.equal "
+      "projection(spatial_transfer_attachment) subjects([" +
+      terminal(sources[0]) + ", " + terminal(sources[1]) + "])\n  }\n}\n";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+  if (!module)
+    fail("cannot parse attachment relation constraint fixture");
+  auto roots = module->getOps<::mapping::ConstraintsSpatialOp>();
+  auto constraints = take(mapping::finalizeSpatialMappingConstraintSet(
+      *roots.begin(), dataflow, techMapping, fabric, store));
+  auto problem = take(pnr::freezeSpatialPnrProblem(
+      dataflow, techMapping, fabric, config, constraints.view()));
+  auto candidate = take(pnr::createCanonicalSpatialCandidate(problem));
+  const pnr::PnrIndex selected =
+      candidate->logicalNetSourceEndpoint(sourceNets[0]);
+  if (selected != *requiredEndpoint ||
+      selected != candidate->logicalNetSourceEndpoint(sourceNets[1]))
+    fail("initializer violated a Spatial attachment restriction or equality");
+
+  const auto binding =
+      problem->transfers().logicalNetSourceBindings()[sourceNets[1]];
+  if (binding.kind != pnr::FrozenSpatialTerminalBindingKind::GraphBoundary)
+    fail("attachment relation fixture source is not a graph boundary");
+  const auto &boundary = problem->ports().graphBoundaries()[binding.index];
+  std::optional<pnr::PnrIndex> forbidden;
+  for (pnr::PnrIndex option = boundary.attachmentOptionOffset;
+       option !=
+       boundary.attachmentOptionOffset + boundary.attachmentOptionCount;
+       ++option)
+    if (problem->ports().attachmentOptions()[option].endpoint != selected) {
+      forbidden = option;
+      break;
+    }
+  if (!forbidden)
+    fail("attachment relation fixture has no violating alternative");
+
+  pnr::SpatialCandidateScratch candidateScratch;
+  requireSuccess(candidateScratch.prepare(*problem));
+  auto move = take(candidate->beginMove(candidateScratch));
+  llvm::Error rejectedAttachment =
+      move.setGraphBoundaryAttachment(binding.index, *forbidden);
+  if (!rejectedAttachment)
+    fail("candidate move accepted a restricted Spatial attachment");
+  const std::string failure = llvm::toString(std::move(rejectedAttachment));
+  if (!llvm::StringRef(failure).contains("relation-domain choice"))
+    fail("attachment restriction failed for the wrong reason");
+  move.rollback();
+  requireSuccess(candidate->verify());
+
+  pnr::SpatialActionDomainScratch actionDomain;
+  requireSuccess(actionDomain.prepare(*problem));
+  requireSuccess(actionDomain.rebuild(*candidate));
+  for (const pnr::SpatialResourceAllocationAction &action :
+       actionDomain.view().resourceChoices) {
+    const auto *attachment =
+        std::get_if<pnr::SpatialGraphBoundaryAttachmentAction>(&action);
+    if (!attachment || attachment->boundary != binding.index)
+      continue;
+    if (problem->ports()
+            .attachmentOptions()[attachment->attachmentOption]
+            .endpoint != selected)
+      fail("Action domain exposed an attachment relation violation");
+  }
 }

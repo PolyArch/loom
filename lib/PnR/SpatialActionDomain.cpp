@@ -44,8 +44,11 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
 
   const auto decisionOffsets = relations.relations().decisionChoiceOffsets();
   const std::size_t realizationChoiceCapacity =
-      decisionOffsets.empty() ? 0 : decisionOffsets.back();
-  const std::size_t realizationAnchorCapacity = relations.decisionCount();
+      decisionOffsets.empty()
+          ? 0
+          : decisionOffsets[relations.realizationDecisionCount()];
+  const std::size_t realizationAnchorCapacity =
+      relations.realizationDecisionCount();
   const std::size_t logicalNetCount = problem.transfers().logicalNets().size();
   auto transportChoiceCapacity =
       checkedPnrIndexAdd({"SpatialActionDomain", "transportChoices", "Action",
@@ -134,17 +137,19 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     ++movableDecisionCount_;
     return llvm::Error::success();
   };
-  const auto relationChoiceIsLegal = [&](PnrIndex decision,
-                                         PnrIndex localChoice) {
-    const PnrIndex oldChoice = relationChoices_[decision];
-    relationChoices_[decision] = localChoice;
-    const bool legal = llvm::all_of(
-        relations.decisionRelations(decision), [&](PnrIndex relation) {
-          return relations.relationSatisfied(relation, relationChoices_);
-        });
-    relationChoices_[decision] = oldChoice;
-    return legal;
-  };
+  const auto relationChoiceIsLegal =
+      [&](PnrIndex decision, PnrIndex localChoice, bool constraintsOnly) {
+        const PnrIndex oldChoice = relationChoices_[decision];
+        relationChoices_[decision] = localChoice;
+        const bool legal = llvm::all_of(
+            relations.decisionRelations(decision), [&](PnrIndex relation) {
+              if (constraintsOnly && !relations.relationIsConstraint(relation))
+                return true;
+              return relations.relationSatisfied(relation, relationChoices_);
+            });
+        relationChoices_[decision] = oldChoice;
+        return legal;
+      };
 
   const auto &realizations = preparedProblem_->realizations();
   for (PnrIndex realization = 0;
@@ -156,7 +161,7 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
       if ((current.placement == choice.placement &&
            current.instructionContext == choice.instructionContext) ||
           !relationChoiceIsLegal(realization,
-                                 static_cast<PnrIndex>(localChoice)))
+                                 static_cast<PnrIndex>(localChoice), true))
         continue;
       realizationChoices_.emplace_back(SpatialComputeBindingAction{
           realization, choice.placement, choice.instructionContext});
@@ -172,7 +177,7 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     for (auto [localChoice, choice] : llvm::enumerate(choices)) {
       if (candidate.memoryBinding(realization).placement == choice.placement ||
           !relationChoiceIsLegal(memoryDecisionOffset + realization,
-                                 static_cast<PnrIndex>(localChoice)))
+                                 static_cast<PnrIndex>(localChoice), true))
         continue;
       realizationChoices_.emplace_back(
           SpatialMemoryBindingAction{realization, choice.placement});
@@ -245,7 +250,11 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
                                  ownerOffset];
     for (PnrIndex local = 0; local < domain.attachmentOptionCount; ++local) {
       const PnrIndex option = domain.attachmentOptionOffset + local;
-      if (candidate.portAttachment(demand) != option)
+      const auto localChoice =
+          relations.portAttachmentChoiceOrdinal(demand, option);
+      if (candidate.portAttachment(demand) != option && localChoice &&
+          relationChoiceIsLegal(relations.portDecisionOffset() + demand,
+                                *localChoice, false))
         resourceChoices_.emplace_back(
             SpatialPortAttachmentAction{demand, option});
     }
@@ -259,7 +268,13 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
         ports.graphBoundaries()[boundary];
     for (PnrIndex local = 0; local < record.attachmentOptionCount; ++local) {
       const PnrIndex option = record.attachmentOptionOffset + local;
-      if (candidate.graphBoundaryAttachment(boundary) != option)
+      const auto localChoice =
+          relations.graphBoundaryAttachmentChoiceOrdinal(boundary, option);
+      if (candidate.graphBoundaryAttachment(boundary) != option &&
+          localChoice &&
+          relationChoiceIsLegal(relations.graphBoundaryDecisionOffset() +
+                                    boundary,
+                                *localChoice, false))
         resourceChoices_.emplace_back(
             SpatialGraphBoundaryAttachmentAction{boundary, option});
     }

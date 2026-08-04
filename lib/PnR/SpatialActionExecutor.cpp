@@ -1,5 +1,8 @@
 #include "PnR/SpatialActionExecutor.h"
 
+#include "InitializerRelationSolver.h"
+#include "SpatialBindingRelationModel.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -100,7 +103,27 @@ llvm::Error classifyTransitionFailure(llvm::Error failure) {
       });
 }
 
+llvm::Error classifyRelationFailure(llvm::Error failure) {
+  return llvm::handleErrors(
+      std::move(failure),
+      [&](const detail::InitializerRelationSolveFailure &relationFailure)
+          -> llvm::Error {
+        std::string message;
+        llvm::raw_string_ostream stream(message);
+        relationFailure.log(stream);
+        return llvm::make_error<SpatialActionTransitionFailure>(
+            relationFailure.kind() ==
+                    detail::InitializerRelationSolveFailureKind::WorkLimit
+                ? SpatialActionTransitionFailureKind::WorkLimit
+                : SpatialActionTransitionFailureKind::IntrinsicInvalid,
+            stream.str());
+      });
+}
+
 } // namespace
+
+SpatialActionExecutorScratch::SpatialActionExecutorScratch() = default;
+SpatialActionExecutorScratch::~SpatialActionExecutorScratch() = default;
 
 SpatialActionProbe::SpatialActionProbe(
     SpatialActionExecutorScratch &owner, SpatialMoveTransaction move,
@@ -182,6 +205,17 @@ SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate) {
     return objective.takeError();
 
   routeCosts_.emplace(std::move(*routeCosts));
+  const detail::SpatialBindingRelationModel &bindings =
+      candidate.problem().bindingRelations();
+  relationSolver_ =
+      std::make_unique<detail::InitializerRelationSolver>(bindings.relations());
+  fixedRelationChoices_.resize(bindings.decisionCount());
+  relationDecisionMarks_.resize(bindings.decisionCount());
+  explicitAttachmentMarks_.resize(bindings.decisionCount());
+  relationDecisionQueue_.clear();
+  relationDecisionQueue_.reserve(bindings.decisionCount());
+  changedBindingRoots_.clear();
+  changedBindingRoots_.reserve(bindings.realizationDecisionCount());
   currentObjective_.emplace(std::move(*objective));
   netMarks_.assign(candidate.problem().transfers().logicalNets().size(), 0);
   affectedNets_.clear();
@@ -208,7 +242,25 @@ void SpatialActionExecutorScratch::beginDependencyClosure() {
   }
   affectedNets_.clear();
   routeCostTraversals_.clear();
+  std::fill(relationDecisionMarks_.begin(), relationDecisionMarks_.end(), 0);
+  std::fill(explicitAttachmentMarks_.begin(), explicitAttachmentMarks_.end(),
+            0);
+  relationDecisionQueue_.clear();
+  changedBindingRoots_.clear();
   globalRouting_ = false;
+}
+
+void SpatialActionExecutorScratch::markChangedBindingRoot(PnrIndex decision) {
+  if (decision >= relationDecisionMarks_.size() ||
+      relationDecisionMarks_[decision])
+    return;
+  relationDecisionMarks_[decision] = 1;
+  changedBindingRoots_.push_back(decision);
+}
+
+void SpatialActionExecutorScratch::markExplicitAttachment(PnrIndex decision) {
+  if (decision < explicitAttachmentMarks_.size())
+    explicitAttachmentMarks_[decision] = 1;
 }
 
 llvm::Error SpatialActionExecutorScratch::markNet(PnrIndex logicalNet) {
@@ -229,33 +281,24 @@ llvm::Error SpatialActionExecutorScratch::applyComputeBinding(
     return executorError("compute realization is out of range");
   const PnrIndex oldPlacement =
       candidate.computeBinding(action.realization).placement;
+  const PnrIndex oldContext =
+      candidate.computeBinding(action.realization).instructionContext;
   if (llvm::Error error = move.setComputeBinding(
           action.realization, action.placement, action.instructionContext))
     return error;
+  if (oldPlacement != action.placement ||
+      oldContext != action.instructionContext)
+    markChangedBindingRoot(action.realization);
   if (oldPlacement == action.placement)
     return llvm::Error::success();
 
   const auto &problem = candidate.problem();
   const auto &ports = problem.ports();
-  const auto &realizations = problem.realizations();
-  const FrozenSpatialComputeRealization &owner =
-      realizations.computeRealizations()[action.realization];
   const auto offsets = ports.computeRealizationDemandOffsets();
   for (PnrIndex demand : ports.computeRealizationDemands().slice(
            offsets[action.realization],
            offsets[action.realization + 1] - offsets[action.realization])) {
     const FrozenSpatialPortDemand &record = ports.portDemands()[demand];
-    const PnrIndex localPlacement = action.placement - owner.placementOffset;
-    const FrozenSpatialPortPlacementDomain &domain =
-        ports.placementDomains()[record.placementDomainOffset + localPlacement];
-    const PnrIndex current = candidate.portAttachment(demand);
-    const PnrIndex replacement =
-        rangeContains(domain.attachmentOptionOffset,
-                      domain.attachmentOptionCount, current)
-            ? current
-            : domain.attachmentOptionOffset;
-    if (llvm::Error error = move.setPortAttachment(demand, replacement))
-      return error;
     if (llvm::Error error = markNet(record.logicalNet))
       return error;
   }
@@ -273,6 +316,10 @@ llvm::Error SpatialActionExecutorScratch::applyMemoryBinding(
   if (llvm::Error error =
           move.setMemoryBinding(action.realization, action.placement))
     return error;
+  if (oldPlacement != action.placement)
+    markChangedBindingRoot(
+        candidate.problem().bindingRelations().computeDecisionCount() +
+        action.realization);
   if (oldPlacement == action.placement)
     return llvm::Error::success();
 
@@ -287,17 +334,6 @@ llvm::Error SpatialActionExecutorScratch::applyMemoryBinding(
            demandOffsets[action.realization + 1] -
                demandOffsets[action.realization])) {
     const FrozenSpatialPortDemand &record = ports.portDemands()[demand];
-    const PnrIndex localPlacement = action.placement - owner.placementOffset;
-    const FrozenSpatialPortPlacementDomain &domain =
-        ports.placementDomains()[record.placementDomainOffset + localPlacement];
-    const PnrIndex current = candidate.portAttachment(demand);
-    const PnrIndex replacement =
-        rangeContains(domain.attachmentOptionOffset,
-                      domain.attachmentOptionCount, current)
-            ? current
-            : domain.attachmentOptionOffset;
-    if (llvm::Error error = move.setPortAttachment(demand, replacement))
-      return error;
     if (llvm::Error error = markNet(record.logicalNet))
       return error;
   }
@@ -386,6 +422,10 @@ SpatialActionExecutorScratch::apply(SpatialMoveTransaction &move,
                   if (llvm::Error error = move.setPortAttachment(
                           choice.demand, choice.attachmentOption))
                     return error;
+                  markExplicitAttachment(candidate.problem()
+                                             .bindingRelations()
+                                             .portDecisionOffset() +
+                                         choice.demand);
                   return markNet(candidate.problem()
                                      .ports()
                                      .portDemands()[choice.demand]
@@ -400,6 +440,10 @@ SpatialActionExecutorScratch::apply(SpatialMoveTransaction &move,
                   if (llvm::Error error = move.setGraphBoundaryAttachment(
                           choice.boundary, choice.attachmentOption))
                     return error;
+                  markExplicitAttachment(candidate.problem()
+                                             .bindingRelations()
+                                             .graphBoundaryDecisionOffset() +
+                                         choice.boundary);
                   return markNet(candidate.problem()
                                      .ports()
                                      .graphBoundaries()[choice.boundary]
@@ -428,6 +472,80 @@ SpatialActionExecutorScratch::apply(SpatialMoveTransaction &move,
         }
       },
       action);
+}
+
+llvm::Error SpatialActionExecutorScratch::reconcileBindingRelations(
+    SpatialMoveTransaction &move, SpatialCandidateState &candidate) {
+  if (changedBindingRoots_.empty())
+    return llvm::Error::success();
+  if (!relationSolver_)
+    return executorError("binding relation solver is not prepared");
+
+  const detail::SpatialBindingRelationModel &bindings =
+      candidate.problem().bindingRelations();
+  relationDecisionQueue_ = changedBindingRoots_;
+  for (std::size_t cursor = 0; cursor < relationDecisionQueue_.size();
+       ++cursor) {
+    const PnrIndex decision = relationDecisionQueue_[cursor];
+    for (PnrIndex relation : bindings.decisionRelations(decision))
+      for (const detail::InitializerRelationMember &member :
+           bindings.relations().members(
+               bindings.relations().relations()[relation])) {
+        if (member.decision >= relationDecisionMarks_.size())
+          return executorError("binding relation member is out of range");
+        if (relationDecisionMarks_[member.decision])
+          continue;
+        relationDecisionMarks_[member.decision] = 1;
+        relationDecisionQueue_.push_back(member.decision);
+      }
+  }
+
+  fixedRelationChoices_ = candidate.bindingRelationChoices_;
+  for (PnrIndex decision : relationDecisionQueue_)
+    if (decision >= bindings.portDecisionOffset() &&
+        !explicitAttachmentMarks_[decision])
+      fixedRelationChoices_[decision] = getInvalidPnrIndex();
+  auto solved = relationSolver_->solveCanonicalWithFixedChoices(
+      candidate.problem()
+          .config()
+          .policy()
+          .search.initializer.assignmentAttemptLimitPerSeed,
+      fixedRelationChoices_);
+  if (!solved)
+    return classifyRelationFailure(solved.takeError());
+
+  for (PnrIndex demand = 0; demand < bindings.portDecisionCount(); ++demand) {
+    const PnrIndex selected =
+        solved->choices[bindings.portDecisionOffset() + demand];
+    const auto choices = bindings.portAttachmentChoices(demand);
+    if (selected >= choices.size())
+      return executorError("relation solver returned a foreign attachment");
+    if (candidate.portAttachment(demand) == choices[selected])
+      continue;
+    if (llvm::Error error = move.setPortAttachment(demand, choices[selected]))
+      return error;
+    if (llvm::Error error = markNet(
+            candidate.problem().ports().portDemands()[demand].logicalNet))
+      return error;
+  }
+  for (PnrIndex boundary = 0; boundary < bindings.graphBoundaryDecisionCount();
+       ++boundary) {
+    const PnrIndex selected =
+        solved->choices[bindings.graphBoundaryDecisionOffset() + boundary];
+    const auto choices = bindings.graphBoundaryAttachmentChoices(boundary);
+    if (selected >= choices.size())
+      return executorError(
+          "relation solver returned a foreign graph-boundary attachment");
+    if (candidate.graphBoundaryAttachment(boundary) == choices[selected])
+      continue;
+    if (llvm::Error error =
+            move.setGraphBoundaryAttachment(boundary, choices[selected]))
+      return error;
+    if (llvm::Error error = markNet(
+            candidate.problem().ports().graphBoundaries()[boundary].logicalNet))
+      return error;
+  }
+  return llvm::Error::success();
 }
 
 llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
@@ -499,6 +617,8 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
   for (const SpatialMappingAction &action : actions)
     if (llvm::Error error = apply(move, candidate, action))
       return restoreAfterFailure(move, std::move(error));
+  if (llvm::Error error = reconcileBindingRelations(move, candidate))
+    return restoreAfterFailure(move, std::move(error));
 
   if (globalRouting_) {
     const auto &routing = candidate.problem().config().policy().search.routing;
@@ -544,5 +664,11 @@ std::size_t SpatialActionExecutorScratch::retainedStorageBytes() const {
          router_.retainedStorageBytes() +
          (routeCosts_ ? routeCosts_->retainedStorageBytes() : 0) +
          retainedBytes(netMarks_) + retainedBytes(affectedNets_) +
-         retainedBytes(routeCostTraversals_);
+         retainedBytes(routeCostTraversals_) +
+         retainedBytes(fixedRelationChoices_) +
+         retainedBytes(relationDecisionMarks_) +
+         retainedBytes(explicitAttachmentMarks_) +
+         retainedBytes(relationDecisionQueue_) +
+         retainedBytes(changedBindingRoots_) +
+         (relationSolver_ ? relationSolver_->retainedStorageBytes() : 0);
 }

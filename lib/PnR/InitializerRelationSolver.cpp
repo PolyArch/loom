@@ -504,6 +504,46 @@ InitializerRelationSolver::solveCanonical(std::uint64_t assignmentLimit) {
 }
 
 llvm::Expected<InitializerRelationSolveResult>
+InitializerRelationSolver::solveCanonicalWithFixedChoices(
+    std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices) {
+  if (fixedChoices.size() != domainCounts_.size())
+    return assignmentError(
+        "fixed choice count does not match the decision domain");
+  reset();
+  for (PnrIndex decision = 0; decision < fixedChoices.size(); ++decision) {
+    const PnrIndex fixed = fixedChoices[decision];
+    if (fixed == getInvalidPnrIndex())
+      continue;
+    const PnrIndex choiceCount =
+        decisionChoiceOffsets_[decision + 1] - decisionChoiceOffsets_[decision];
+    if (fixed >= choiceCount)
+      return assignmentError("a fixed choice is outside its decision domain");
+    for (PnrIndex choice = 0; choice < choiceCount; ++choice)
+      if (choice != fixed && !removeChoice(decision, choice))
+        return llvm::make_error<InitializerRelationSolveFailure>(
+            InitializerRelationSolveFailureKind::FixedRootInfeasible,
+            "Spatial initializer fixed choices are infeasible");
+  }
+
+  const SearchResult result = search(assignmentLimit, nullptr);
+  if (result == SearchResult::WorkLimit)
+    return llvm::make_error<InitializerRelationSolveFailure>(
+        InitializerRelationSolveFailureKind::WorkLimit,
+        "Spatial initializer exhausted its assignment work limit");
+  if (result == SearchResult::Contradiction)
+    return llvm::make_error<InitializerRelationSolveFailure>(
+        InitializerRelationSolveFailureKind::FixedRootInfeasible,
+        "Spatial initializer fixed choices are infeasible");
+
+  InitializerRelationSolveResult solved;
+  solved.choices.reserve(domainCounts_.size());
+  for (PnrIndex decision = 0; decision < domainCounts_.size(); ++decision)
+    solved.choices.push_back(soleChoice(decision));
+  solved.assignmentAttempts = assignmentAttempts_;
+  return solved;
+}
+
+llvm::Expected<InitializerRelationSolveResult>
 InitializerRelationSolver::solveDiversified(
     std::uint64_t assignmentLimit,
     DeterministicPnrRandomStream &diversificationStream) {

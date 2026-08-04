@@ -54,6 +54,25 @@ llvm::Error SpatialCandidateState::verifyBindingRelations() const {
       return candidateError(
           "memory binding diverges from its relation-domain choice");
   }
+  for (auto [demand, attachment] : llvm::enumerate(portAttachments_)) {
+    const auto expected = model.portAttachmentChoiceOrdinal(
+        static_cast<PnrIndex>(demand), attachment);
+    if (!expected ||
+        bindingRelationChoices_[model.portDecisionOffset() + demand] !=
+            *expected)
+      return candidateError(
+          "PortAttachment diverges from its relation-domain choice");
+  }
+  for (auto [boundary, attachment] :
+       llvm::enumerate(graphBoundaryAttachments_)) {
+    const auto expected = model.graphBoundaryAttachmentChoiceOrdinal(
+        static_cast<PnrIndex>(boundary), attachment);
+    if (!expected ||
+        bindingRelationChoices_[model.graphBoundaryDecisionOffset() +
+                                boundary] != *expected)
+      return candidateError(
+          "graph-boundary attachment diverges from its relation-domain choice");
+  }
   for (PnrIndex relation = 0; relation < model.relations().relations().size();
        ++relation)
     if (llvm::Error error = verifyBindingRelation(relation))

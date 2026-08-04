@@ -7,6 +7,10 @@
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialPnrProblem.h"
 
+namespace mlir {
+class MLIRContext;
+}
+
 namespace loom::test {
 
 void exerciseHandshakeCandidateRefcounts(
@@ -16,6 +20,13 @@ adg::FinalizedFabricDesign
 buildTemporalCapacityFabric(const ArtifactStore &store);
 
 ResolvedConfig buildSpatialPnrTestResolvedConfig();
+
+mapping::FinalizedSpatialMappingConstraintSet buildSpatialMappingConstraints(
+    mlir::MLIRContext &context,
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const fabric::FabricArtifactView &fabric, const ArtifactStore &store,
+    bool restrictTagsToZero = false, bool rejectComputePlacement = false);
 
 void exerciseCapacityOveruseCandidate(
     const dataflow::CanonicalDataflowProgramView &dataflow,
@@ -35,6 +46,12 @@ void exerciseTemporalComputeUseProjection(
 
 void exerciseCanonicalCandidateInitialization(
     const pnr::FrozenSpatialPnrProblemHandle &problem);
+
+void exerciseSpatialAttachmentConstraintRelations(
+    mlir::MLIRContext &context,
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const fabric::FabricArtifactView &fabric, const ArtifactStore &store);
 
 } // namespace loom::test
 

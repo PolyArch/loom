@@ -127,12 +127,14 @@ public:
       std::uint64_t assignmentLimit, std::uint64_t assignmentAttempts,
       std::vector<SpatialComputeBindingSelection> computeBindings,
       std::vector<SpatialMemoryBindingSelection> memoryBindings,
+      std::vector<PnrIndex> portAttachments,
       std::vector<PnrIndex> graphBoundaryAttachments)
       : problem_(problem), diversificationStream_(diversificationStream),
         assignmentLimit_(assignmentLimit),
         assignmentAttempts_(assignmentAttempts),
         computeBindings_(std::move(computeBindings)),
         memoryBindings_(std::move(memoryBindings)),
+        portAttachments_(std::move(portAttachments)),
         graphBoundaryAttachments_(std::move(graphBoundaryAttachments)) {}
 
   llvm::Error build() {
@@ -159,7 +161,6 @@ public:
 
 private:
   enum class DecisionKind : std::uint8_t {
-    PortAttachment,
     MemoryOperationPlan,
     LogicalMemoryBinding,
     MemoryUseDispatch,
@@ -167,34 +168,11 @@ private:
   };
 
   struct DecisionRecord final {
-    DecisionKind kind = DecisionKind::PortAttachment;
+    DecisionKind kind = DecisionKind::MemoryOperationPlan;
     PnrIndex index = 0;
     std::size_t choiceOffset = 0;
     PnrIndex choiceCapacity = 0;
   };
-
-  const FrozenSpatialPortPlacementDomain *
-  portDomain(PnrIndex demandOrdinal) const {
-    const auto &ports = problem_.ports();
-    const auto &realizations = problem_.realizations();
-    if (demandOrdinal >= ports.portDemands().size())
-      return nullptr;
-    const auto &demand = ports.portDemands()[demandOrdinal];
-    const bool compute = demand.kind == FrozenSpatialPortDemandKind::Compute;
-    const PnrIndex placement =
-        compute ? computeBindings_[demand.realization].placement
-                : memoryBindings_[demand.realization].placement;
-    const PnrIndex ownerOffset =
-        compute ? realizations.computeRealizations()[demand.realization]
-                      .placementOffset
-                : realizations.memoryRealizations()[demand.realization]
-                      .placementOffset;
-    if (placement < ownerOffset ||
-        placement - ownerOffset >= demand.placementDomainCount)
-      return nullptr;
-    return &ports.placementDomains()[demand.placementDomainOffset + placement -
-                                     ownerOffset];
-  }
 
   const FrozenSpatialMemoryOperationHandshakeDomain *
   memoryPlanDomain(PnrIndex actor) const {
@@ -228,7 +206,8 @@ private:
     const auto &realizations = problem_.realizations();
     const auto &memory = problem_.memory();
 
-    portAttachments_.assign(ports.portDemands().size(), getInvalidPnrIndex());
+    if (portAttachments_.size() != ports.portDemands().size())
+      return initializerError("root decision solver omitted PortAttachments");
     if (graphBoundaryAttachments_.size() != ports.graphBoundaries().size())
       return initializerError(
           "root decision solver omitted graph-boundary attachments");
@@ -243,16 +222,6 @@ private:
                                      getInvalidPnrIndex());
     targetNextOffset_.assign(memory.bindingTargets().size(), 0);
 
-    for (PnrIndex demand = 0; demand < ports.portDemands().size(); ++demand) {
-      const auto *domain = portDomain(demand);
-      if (!domain)
-        return initializerError(
-            "PortDemand has no domain for its selected placement");
-      if (llvm::Error error =
-              appendDecision(DecisionKind::PortAttachment, demand,
-                             domain->attachmentOptionCount))
-        return error;
-    }
     for (PnrIndex actor = 0; actor < realizations.memoryActors().size();
          ++actor) {
       const auto *domain = memoryPlanDomain(actor);
@@ -341,8 +310,6 @@ private:
 
   bool decisionAssigned(const DecisionRecord &decision) const {
     switch (decision.kind) {
-    case DecisionKind::PortAttachment:
-      return portAttachments_[decision.index] != getInvalidPnrIndex();
     case DecisionKind::MemoryOperationPlan:
       return memoryOperationPlans_[decision.index] != getInvalidPnrIndex();
     case DecisionKind::LogicalMemoryBinding:
@@ -382,14 +349,6 @@ private:
                        .slice(decision.choiceOffset, decision.choiceCapacity);
     PnrIndex count = 0;
     switch (decision.kind) {
-    case DecisionKind::PortAttachment: {
-      const auto *domain = portDomain(decision.index);
-      if (!domain)
-        return initializerError("PortDemand placement domain disappeared");
-      for (PnrIndex local = 0; local < domain->attachmentOptionCount; ++local)
-        choices[count++] = domain->attachmentOptionOffset + local;
-      break;
-    }
     case DecisionKind::MemoryOperationPlan: {
       const auto *domain = memoryPlanDomain(decision.index);
       if (!domain)
@@ -455,9 +414,6 @@ private:
   void assignDecision(std::size_t decisionOrdinal, PnrIndex choice) {
     const auto &decision = decisions_[decisionOrdinal];
     switch (decision.kind) {
-    case DecisionKind::PortAttachment:
-      portAttachments_[decision.index] = choice;
-      break;
     case DecisionKind::MemoryOperationPlan:
       memoryOperationPlans_[decision.index] = choice;
       break;
@@ -490,9 +446,6 @@ private:
       assignmentJournal_.pop_back();
       const auto &decision = decisions_[ordinal];
       switch (decision.kind) {
-      case DecisionKind::PortAttachment:
-        portAttachments_[decision.index] = getInvalidPnrIndex();
-        break;
       case DecisionKind::MemoryOperationPlan:
         memoryOperationPlans_[decision.index] = getInvalidPnrIndex();
         break;
@@ -636,8 +589,7 @@ loom::pnr::createSpatialCandidateInitializerAttempt(
         "' requires its owning decision model");
 
   detail::InitializerRelationSolver relationSolver(
-      bindingRelations.relations(),
-      bindingRelations.initializerIndependentChoiceCounts());
+      bindingRelations.relations());
   std::optional<DeterministicPnrRandomStream> diversificationStream;
   if (attemptOrdinal != 0)
     diversificationStream.emplace(DeterministicPnrRandomStream::create(
@@ -681,26 +633,42 @@ loom::pnr::createSpatialCandidateInitializerAttempt(
     memoryBindings.push_back({choices[selected].placement});
   }
 
+  std::vector<PnrIndex> portAttachments;
+  portAttachments.reserve(problem->ports().portDemands().size());
+  for (PnrIndex demand = 0; demand < problem->ports().portDemands().size();
+       ++demand) {
+    const auto choices = bindingRelations.portAttachmentChoices(demand);
+    const PnrIndex selected =
+        relationChoices
+            ->choices[bindingRelations.portDecisionOffset() + demand];
+    if (selected >= choices.size())
+      return initializerError(
+          "relation solver returned a foreign PortAttachment choice");
+    portAttachments.push_back(choices[selected]);
+  }
+
   std::vector<PnrIndex> graphBoundaryAttachments;
   graphBoundaryAttachments.reserve(problem->ports().graphBoundaries().size());
-  const PnrIndex boundaryDecisionOffset = bindingRelations.decisionCount();
   for (PnrIndex boundary = 0;
        boundary < problem->ports().graphBoundaries().size(); ++boundary) {
-    const auto &record = problem->ports().graphBoundaries()[boundary];
+    const auto choices =
+        bindingRelations.graphBoundaryAttachmentChoices(boundary);
     const PnrIndex selected =
-        relationChoices->choices[boundaryDecisionOffset + boundary];
-    if (selected >= record.attachmentOptionCount)
+        relationChoices
+            ->choices[bindingRelations.graphBoundaryDecisionOffset() +
+                      boundary];
+    if (selected >= choices.size())
       return initializerError(
           "relation solver returned a foreign graph-boundary choice");
-    graphBoundaryAttachments.push_back(record.attachmentOptionOffset +
-                                       selected);
+    graphBoundaryAttachments.push_back(choices[selected]);
   }
 
   SpatialInitializerAttemptBuilder builder(
       *problem, diversificationStream ? &*diversificationStream : nullptr,
       policy.search.initializer.assignmentAttemptLimitPerSeed,
       relationChoices->assignmentAttempts, std::move(computeBindings),
-      std::move(memoryBindings), std::move(graphBoundaryAttachments));
+      std::move(memoryBindings), std::move(portAttachments),
+      std::move(graphBoundaryAttachments));
   if (llvm::Error error = builder.build())
     return std::move(error);
   auto candidate =

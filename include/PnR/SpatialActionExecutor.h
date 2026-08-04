@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -20,6 +21,10 @@
 #include <vector>
 
 namespace loom::pnr {
+
+namespace detail {
+class InitializerRelationSolver;
+}
 
 class SpatialActionExecutorScratch;
 
@@ -96,6 +101,9 @@ private:
 /// one removable route-cost projection for the exact candidate.
 class SpatialActionExecutorScratch final {
 public:
+  SpatialActionExecutorScratch();
+  ~SpatialActionExecutorScratch();
+
   llvm::Error prepare(SpatialCandidateState &candidate);
   llvm::Expected<SpatialActionProbe> probe(SpatialCandidateState &candidate,
                                            const SpatialMappingAction &action);
@@ -118,6 +126,10 @@ private:
                                  SpatialMemoryBindingAction action);
   llvm::Error routeAffectedNets(SpatialMoveTransaction &move,
                                 SpatialCandidateState &candidate);
+  llvm::Error reconcileBindingRelations(SpatialMoveTransaction &move,
+                                        SpatialCandidateState &candidate);
+  void markChangedBindingRoot(PnrIndex decision);
+  void markExplicitAttachment(PnrIndex decision);
   llvm::Error markNet(PnrIndex logicalNet);
   void beginDependencyClosure();
   llvm::Error restoreAfterFailure(SpatialMoveTransaction &move,
@@ -130,6 +142,12 @@ private:
   std::vector<std::uint64_t> netMarks_;
   std::vector<PnrIndex> affectedNets_;
   std::vector<PnrIndex> routeCostTraversals_;
+  std::unique_ptr<detail::InitializerRelationSolver> relationSolver_;
+  std::vector<PnrIndex> fixedRelationChoices_;
+  std::vector<std::uint8_t> relationDecisionMarks_;
+  std::vector<std::uint8_t> explicitAttachmentMarks_;
+  std::vector<PnrIndex> relationDecisionQueue_;
+  std::vector<PnrIndex> changedBindingRoots_;
   std::uint64_t netEpoch_ = 0;
   SpatialCandidateState *candidate_ = nullptr;
   bool activeProbe_ = false;

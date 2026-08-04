@@ -110,6 +110,40 @@ void fixedRootFailureIsNotGlobalInfeasibility() {
     fail("fixed-root rejection became a whole-domain infeasibility proof");
 }
 
+void fixedChoicesConstrainTheSharedRelationModel() {
+  InitializerRelationModel model =
+      makeModel({2, 2, 2},
+                {{InitializerRelationKind::Equal, {{0, {0, 1}}, {1, {0, 1}}}},
+                 {InitializerRelationKind::Equal, {{1, {0, 1}}, {2, {0, 1}}}}});
+  InitializerRelationSolver solver(model);
+  const std::size_t retainedBytes = solver.retainedStorageBytes();
+  const std::vector<PnrIndex> fixed{1, loom::pnr::getInvalidPnrIndex(),
+                                    loom::pnr::getInvalidPnrIndex()};
+  const auto result = take(
+      solver.solveCanonicalWithFixedChoices(/*assignmentLimit=*/16, fixed));
+  if (result.choices != std::vector<PnrIndex>({1, 1, 1}) ||
+      result.assignmentAttempts != 0)
+    fail("fixed root did not propagate through the relation model");
+  if (solver.retainedStorageBytes() != retainedBytes)
+    fail("warm fixed-root solve expanded retained solver storage");
+
+  const std::vector<PnrIndex> contradictory{1, 0,
+                                            loom::pnr::getInvalidPnrIndex()};
+  auto rejected = solver.solveCanonicalWithFixedChoices(
+      /*assignmentLimit=*/16, contradictory);
+  if (rejected)
+    fail("contradictory fixed choices produced an assignment");
+  bool observedFixedRootFailure = false;
+  llvm::handleAllErrors(
+      rejected.takeError(), [&](const InitializerRelationSolveFailure &error) {
+        observedFixedRootFailure =
+            error.kind() ==
+            InitializerRelationSolveFailureKind::FixedRootInfeasible;
+      });
+  if (!observedFixedRootFailure)
+    fail("contradictory fixed choices became global infeasibility");
+}
+
 void sparseDomainsReusePreparedStorage() {
   constexpr PnrIndex decisionCount = 4096;
   InitializerRelationModel model =
@@ -207,6 +241,7 @@ int main() {
   canonicalSearchBacktracksWithoutCopyingState();
   workLimitDoesNotBecomeInfeasibility();
   fixedRootFailureIsNotGlobalInfeasibility();
+  fixedChoicesConstrainTheSharedRelationModel();
   sparseDomainsReusePreparedStorage();
   diversifiedSearchUsesExactWithoutReplacementOrder();
   independentRootDecisionsParticipateInMrvOrdering();

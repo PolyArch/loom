@@ -26,6 +26,7 @@ add_mlir_library(LoomPnR
   SpatialCandidateState.cpp
   SpatialGlobalRoutingClosure.cpp
   SpatialMappingMaterializer.cpp
+  SpatialMoveTransaction.cpp
   SpatialNetRouter.cpp
   SpatialObjective.cpp
   SpatialPnrCapacityIndex.cpp

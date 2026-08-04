@@ -1,5 +1,6 @@
 #include "SpatialBindingRelationModel.h"
 
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <utility>
 #include <variant>
 
@@ -44,7 +46,15 @@ bool isComputeProjection(Projection projection) {
 
 bool isBindingProjection(Projection projection) {
   return isComputeProjection(projection) ||
-         projection == Projection::MemoryPlacement;
+         projection == Projection::MemoryPlacement ||
+         projection == Projection::SpatialTransferAttachment;
+}
+
+llvm::Error infeasible(Projection projection, const llvm::Twine &message) {
+  return llvm::make_error<SpatialPnrFreezeFailure>(
+      SpatialPnrFreezeFailureKind::ProvenInfeasible,
+      ("infeasible Spatial binding relation projection: " + message).str(),
+      projection);
 }
 
 void appendU32Be(ProjectionKey &bytes, std::uint32_t value) {
@@ -97,10 +107,62 @@ memoryProjectionKey(const FrozenSpatialRealizationIndex &realizations,
       realizations.memoryPlacements()[choice.placement].memory);
 }
 
+llvm::Expected<ProjectionKey>
+transferTerminalKey(const ArtifactIdentity &dataflowIdentity,
+                    const SpatialConstraintTransferTerminal &terminal) {
+  auto producer =
+      dataflow::encodeDataflowReference(dataflowIdentity, terminal.producer);
+  if (!producer)
+    return invalid(Projection::SpatialTransferAttachment,
+                   "cannot encode the transfer producer: " +
+                       llvm::toString(producer.takeError()));
+  ProjectionKey key;
+  appendComponent(key, *producer);
+  key.push_back(terminal.consumer ? 1 : 0);
+  if (terminal.consumer) {
+    auto consumer =
+        dataflow::encodeDataflowReference(dataflowIdentity, *terminal.consumer);
+    if (!consumer)
+      return invalid(Projection::SpatialTransferAttachment,
+                     "cannot encode the transfer consumer: " +
+                         llvm::toString(consumer.takeError()));
+    appendComponent(key, *consumer);
+  }
+  return key;
+}
+
+llvm::Expected<std::vector<PnrIndex>> restrictedAttachmentEndpoints(
+    const FrozenConstraintShard &shard,
+    const SpatialConstraintTransferTerminal &subject,
+    const std::map<ProjectionKey, PnrIndex> &endpointOrdinals) {
+  const auto restricted = shard.restrictedDomain(subject);
+  if (!restricted)
+    return std::vector<PnrIndex>{};
+  std::vector<PnrIndex> endpoints;
+  endpoints.reserve(restricted->size());
+  for (const SpatialConstraintDomainValue &value : *restricted) {
+    const auto *endpoint = std::get_if<FabricTransportEndpointRef>(&value);
+    if (!endpoint)
+      return invalid(Projection::SpatialTransferAttachment,
+                     "attachment restriction contains a non-endpoint value");
+    const auto found = endpointOrdinals.find(canonicalFabricBytes(*endpoint));
+    if (found == endpointOrdinals.end())
+      return invalid(Projection::SpatialTransferAttachment,
+                     "attachment restriction names a foreign endpoint");
+    endpoints.push_back(found->second);
+  }
+  llvm::sort(endpoints);
+  endpoints.erase(std::unique(endpoints.begin(), endpoints.end()),
+                  endpoints.end());
+  return endpoints;
+}
+
 llvm::Expected<PnrIndex> relationDecision(
     Projection projection, const SpatialConstraintSubject &subject,
     const llvm::DenseMap<std::uint64_t, PnrIndex> &computeDecisions,
-    const llvm::DenseMap<std::uint64_t, PnrIndex> &memoryDecisions) {
+    const llvm::DenseMap<std::uint64_t, PnrIndex> &memoryDecisions,
+    const std::map<ProjectionKey, PnrIndex> &attachmentDecisions,
+    const ArtifactIdentity &dataflowIdentity) {
   if (isComputeProjection(projection)) {
     const auto *compute = std::get_if<TechComputeRealizationRef>(&subject);
     if (!compute)
@@ -122,6 +184,21 @@ llvm::Expected<PnrIndex> relationDecision(
                      "memory projection names a foreign realization");
     return found->second;
   }
+  if (projection == Projection::SpatialTransferAttachment) {
+    const auto *terminal =
+        std::get_if<SpatialConstraintTransferTerminal>(&subject);
+    if (!terminal)
+      return invalid(projection,
+                     "attachment projection has a non-terminal subject");
+    auto key = transferTerminalKey(dataflowIdentity, *terminal);
+    if (!key)
+      return key.takeError();
+    const auto found = attachmentDecisions.find(*key);
+    if (found == attachmentDecisions.end())
+      return invalid(projection,
+                     "attachment projection names a foreign terminal");
+    return found->second;
+  }
   llvm_unreachable("deferred projection requested a binding decision");
 }
 
@@ -129,9 +206,12 @@ llvm::Expected<PnrIndex> relationDecision(
 
 llvm::Expected<std::shared_ptr<const SpatialBindingRelationModel>>
 SpatialBindingRelationModel::create(
+    const ArtifactIdentity &dataflowIdentity,
     const FrozenSpatialRealizationIndex &realizations,
     const FrozenConstraintIndex &constraints,
-    const FrozenSpatialPortIndex &ports) {
+    const FrozenSpatialTransferIndex &transfers,
+    const FrozenSpatialPortIndex &ports,
+    const FrozenSpatialRoutingGraph &routing) {
   std::vector<PnrIndex> computeChoiceOffsets;
   std::vector<SpatialComputeBindingChoice> computeChoices;
   std::vector<PnrIndex> computeContextChoiceOrdinals(
@@ -140,6 +220,11 @@ SpatialBindingRelationModel::create(
   std::vector<SpatialMemoryBindingChoice> memoryChoices;
   std::vector<PnrIndex> memoryPlacementChoiceOrdinals(
       realizations.memoryPlacements().size(), getInvalidPnrIndex());
+  std::vector<PnrIndex> portAttachmentChoiceOffsets;
+  std::vector<PnrIndex> graphBoundaryAttachmentChoiceOffsets;
+  std::vector<PnrIndex> attachmentChoices;
+  std::vector<PnrIndex> attachmentOptionChoiceOrdinals(
+      ports.attachmentOptions().size(), getInvalidPnrIndex());
   std::vector<PnrIndex> decisionChoiceCounts;
 
   computeChoiceOffsets.reserve(realizations.computeRealizations().size() + 1);
@@ -198,6 +283,203 @@ SpatialBindingRelationModel::create(
     memoryChoiceOffsets.push_back(static_cast<PnrIndex>(memoryChoices.size()));
   }
 
+  const PnrIndex computeDecisionCount =
+      static_cast<PnrIndex>(realizations.computeRealizations().size());
+  const PnrIndex memoryDecisionCount =
+      static_cast<PnrIndex>(realizations.memoryRealizations().size());
+  const PnrIndex portDecisionOffset =
+      computeDecisionCount + memoryDecisionCount;
+  const PnrIndex graphBoundaryDecisionOffset =
+      portDecisionOffset + static_cast<PnrIndex>(ports.portDemands().size());
+
+  std::map<ProjectionKey, PnrIndex> endpointOrdinals;
+  for (auto [ordinal, endpoint] : llvm::enumerate(routing.routingEndpoints())) {
+    const bool inserted =
+        endpointOrdinals
+            .try_emplace(canonicalFabricBytes(endpoint.reference),
+                         static_cast<PnrIndex>(ordinal))
+            .second;
+    if (!inserted)
+      return invalid(Projection::SpatialTransferAttachment,
+                     "routing endpoint reference is not unique");
+  }
+
+  std::map<ProjectionKey, PnrIndex> attachmentDecisions;
+  std::vector<std::optional<SpatialConstraintTransferTerminal>>
+      attachmentSubjects(ports.portDemands().size() +
+                         ports.graphBoundaries().size());
+  const auto rememberTerminal =
+      [&](const SpatialConstraintTransferTerminal &terminal,
+          FrozenSpatialTerminalBinding binding) -> llvm::Error {
+    PnrIndex decision = 0;
+    PnrIndex subjectOrdinal = 0;
+    if (binding.kind == FrozenSpatialTerminalBindingKind::PortDemand) {
+      if (binding.index >= ports.portDemands().size())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "terminal names a foreign PortDemand");
+      decision = portDecisionOffset + binding.index;
+      subjectOrdinal = binding.index;
+    } else {
+      if (binding.index >= ports.graphBoundaries().size())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "terminal names a foreign graph boundary");
+      decision = graphBoundaryDecisionOffset + binding.index;
+      subjectOrdinal =
+          static_cast<PnrIndex>(ports.portDemands().size()) + binding.index;
+    }
+    auto key = transferTerminalKey(dataflowIdentity, terminal);
+    if (!key)
+      return key.takeError();
+    if (!attachmentDecisions.try_emplace(std::move(*key), decision).second)
+      return invalid(Projection::SpatialTransferAttachment,
+                     "transfer terminal ownership is not unique");
+    if (attachmentSubjects[subjectOrdinal])
+      return invalid(Projection::SpatialTransferAttachment,
+                     "attachment decision owns multiple transfer terminals");
+    attachmentSubjects[subjectOrdinal] = terminal;
+    return llvm::Error::success();
+  };
+  if (transfers.logicalNetSourceBindings().size() !=
+      transfers.logicalNets().size())
+    return invalid(Projection::SpatialTransferAttachment,
+                   "logical-net source binding index is incomplete");
+  for (PnrIndex net = 0; net < transfers.logicalNets().size(); ++net) {
+    const FrozenSpatialLogicalNet &record = transfers.logicalNets()[net];
+    if (record.sinkOffset + record.sinkCount >
+            transfers.logicalNetSinks().size() ||
+        record.sinkOffset + record.sinkCount >
+            transfers.logicalNetSinkBindings().size())
+      return invalid(Projection::SpatialTransferAttachment,
+                     "logical-net sink binding index is incomplete");
+    if (llvm::Error error =
+            rememberTerminal({record.producer, std::nullopt},
+                             transfers.logicalNetSourceBindings()[net]))
+      return std::move(error);
+    for (PnrIndex sink = 0; sink < record.sinkCount; ++sink)
+      if (llvm::Error error = rememberTerminal(
+              {record.producer,
+               transfers.logicalNetSinks()[record.sinkOffset + sink]},
+              transfers.logicalNetSinkBindings()[record.sinkOffset + sink]))
+        return std::move(error);
+  }
+  if (llvm::any_of(attachmentSubjects,
+                   [](const auto &subject) { return !subject.has_value(); }))
+    return invalid(Projection::SpatialTransferAttachment,
+                   "an attachment decision has no exact transfer terminal");
+
+  const FrozenConstraintShard &attachmentShard =
+      constraints.shard(Projection::SpatialTransferAttachment);
+  const auto appendAttachmentChoice = [&](PnrIndex option,
+                                          PnrIndex localChoice) -> llvm::Error {
+    if (option >= ports.attachmentOptions().size() ||
+        attachmentOptionChoiceOrdinals[option] != getInvalidPnrIndex())
+      return invalid(Projection::SpatialTransferAttachment,
+                     "attachment option ownership is invalid");
+    attachmentOptionChoiceOrdinals[option] = localChoice;
+    attachmentChoices.push_back(option);
+    return llvm::Error::success();
+  };
+  portAttachmentChoiceOffsets.reserve(ports.portDemands().size() + 1);
+  portAttachmentChoiceOffsets.push_back(0);
+  for (PnrIndex demand = 0; demand < ports.portDemands().size(); ++demand) {
+    auto restricted = restrictedAttachmentEndpoints(
+        attachmentShard, *attachmentSubjects[demand], endpointOrdinals);
+    if (!restricted)
+      return restricted.takeError();
+    const bool hasRestriction =
+        attachmentShard.restrictedDomain(*attachmentSubjects[demand])
+            .has_value();
+    const std::size_t begin = attachmentChoices.size();
+    const FrozenSpatialPortDemand &record = ports.portDemands()[demand];
+    for (PnrIndex localDomain = 0; localDomain < record.placementDomainCount;
+         ++localDomain) {
+      const PnrIndex domainOrdinal = record.placementDomainOffset + localDomain;
+      if (domainOrdinal >= ports.placementDomains().size())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "PortDemand placement domain is out of range");
+      const FrozenSpatialPortPlacementDomain &domain =
+          ports.placementDomains()[domainOrdinal];
+      for (PnrIndex local = 0; local < domain.attachmentOptionCount; ++local) {
+        const PnrIndex option = domain.attachmentOptionOffset + local;
+        if (option >= ports.attachmentOptions().size())
+          return invalid(Projection::SpatialTransferAttachment,
+                         "PortDemand attachment option is out of range");
+        const auto &choice = ports.attachmentOptions()[option];
+        if (choice.ownerKind !=
+                FrozenSpatialAttachmentOwnerKind::PlacementDomain ||
+            choice.owner != domainOrdinal)
+          return invalid(Projection::SpatialTransferAttachment,
+                         "PortDemand attachment owner is malformed");
+        if (hasRestriction &&
+            !std::binary_search(restricted->begin(), restricted->end(),
+                                choice.endpoint))
+          continue;
+        if (llvm::Error error = appendAttachmentChoice(
+                option,
+                static_cast<PnrIndex>(attachmentChoices.size() - begin)))
+          return std::move(error);
+      }
+    }
+    const std::size_t count = attachmentChoices.size() - begin;
+    if (count == 0)
+      return infeasible(Projection::SpatialTransferAttachment,
+                        "a PortDemand has no admissible attachment");
+    if (count > getPnrIndexMax() || attachmentChoices.size() > getPnrIndexMax())
+      return invalid(Projection::SpatialTransferAttachment,
+                     "PortDemand attachment domain overflows PnrIndex");
+    decisionChoiceCounts.push_back(static_cast<PnrIndex>(count));
+    portAttachmentChoiceOffsets.push_back(
+        static_cast<PnrIndex>(attachmentChoices.size()));
+  }
+
+  graphBoundaryAttachmentChoiceOffsets.reserve(ports.graphBoundaries().size() +
+                                               1);
+  graphBoundaryAttachmentChoiceOffsets.push_back(
+      static_cast<PnrIndex>(attachmentChoices.size()));
+  for (PnrIndex boundary = 0; boundary < ports.graphBoundaries().size();
+       ++boundary) {
+    const PnrIndex subjectOrdinal =
+        static_cast<PnrIndex>(ports.portDemands().size()) + boundary;
+    auto restricted = restrictedAttachmentEndpoints(
+        attachmentShard, *attachmentSubjects[subjectOrdinal], endpointOrdinals);
+    if (!restricted)
+      return restricted.takeError();
+    const bool hasRestriction =
+        attachmentShard.restrictedDomain(*attachmentSubjects[subjectOrdinal])
+            .has_value();
+    const std::size_t begin = attachmentChoices.size();
+    const FrozenSpatialGraphBoundary &record =
+        ports.graphBoundaries()[boundary];
+    for (PnrIndex local = 0; local < record.attachmentOptionCount; ++local) {
+      const PnrIndex option = record.attachmentOptionOffset + local;
+      if (option >= ports.attachmentOptions().size())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "graph-boundary attachment option is out of range");
+      const auto &choice = ports.attachmentOptions()[option];
+      if (choice.ownerKind != FrozenSpatialAttachmentOwnerKind::GraphBoundary ||
+          choice.owner != boundary)
+        return invalid(Projection::SpatialTransferAttachment,
+                       "graph-boundary attachment owner is malformed");
+      if (hasRestriction &&
+          !std::binary_search(restricted->begin(), restricted->end(),
+                              choice.endpoint))
+        continue;
+      if (llvm::Error error = appendAttachmentChoice(
+              option, static_cast<PnrIndex>(attachmentChoices.size() - begin)))
+        return std::move(error);
+    }
+    const std::size_t count = attachmentChoices.size() - begin;
+    if (count == 0)
+      return infeasible(Projection::SpatialTransferAttachment,
+                        "a graph boundary has no admissible attachment");
+    if (count > getPnrIndexMax() || attachmentChoices.size() > getPnrIndexMax())
+      return invalid(Projection::SpatialTransferAttachment,
+                     "graph-boundary attachment domain overflows PnrIndex");
+    decisionChoiceCounts.push_back(static_cast<PnrIndex>(count));
+    graphBoundaryAttachmentChoiceOffsets.push_back(
+        static_cast<PnrIndex>(attachmentChoices.size()));
+  }
+
   llvm::DenseMap<std::uint64_t, PnrIndex> computeDecisions;
   llvm::DenseMap<std::uint64_t, PnrIndex> memoryDecisions;
   for (auto [ordinal, realization] :
@@ -210,8 +492,7 @@ SpatialBindingRelationModel::create(
       return invalid(Projection::ComputePlacement,
                      "compute realization reference is not unique");
   }
-  const PnrIndex memoryDecisionOffset =
-      static_cast<PnrIndex>(realizations.computeRealizations().size());
+  const PnrIndex memoryDecisionOffset = computeDecisionCount;
   for (auto [ordinal, realization] :
        llvm::enumerate(realizations.memoryRealizations())) {
     const bool inserted =
@@ -225,6 +506,7 @@ SpatialBindingRelationModel::create(
   }
 
   std::vector<InitializerRelationInput> relationInputs;
+  std::vector<std::uint8_t> constraintRelations;
   std::optional<Projection> deferredProjection;
   for (std::size_t projectionOrdinal = 0;
        projectionOrdinal != FrozenConstraintIndex::projectionCount;
@@ -259,9 +541,9 @@ SpatialBindingRelationModel::create(
           if (subjectOrdinal >= shard.subjects().size())
             return invalid(*projection,
                            "relation contains an out-of-range subject");
-          auto decision =
-              relationDecision(*projection, shard.subjects()[subjectOrdinal],
-                               computeDecisions, memoryDecisions);
+          auto decision = relationDecision(
+              *projection, shard.subjects()[subjectOrdinal], computeDecisions,
+              memoryDecisions, attachmentDecisions, dataflowIdentity);
           if (!decision)
             return decision.takeError();
 
@@ -277,7 +559,7 @@ SpatialBindingRelationModel::create(
             for (const SpatialComputeBindingChoice &choice : choices)
               keys.push_back(
                   computeProjectionKey(*projection, realizations, choice));
-          } else {
+          } else if (*projection == Projection::MemoryPlacement) {
             const PnrIndex realization = *decision - memoryDecisionOffset;
             const auto choices =
                 llvm::ArrayRef(memoryChoices)
@@ -287,6 +569,36 @@ SpatialBindingRelationModel::create(
             keys.reserve(choices.size());
             for (const SpatialMemoryBindingChoice &choice : choices)
               keys.push_back(memoryProjectionKey(realizations, choice));
+          } else {
+            llvm::ArrayRef<PnrIndex> choices;
+            if (*decision < graphBoundaryDecisionOffset) {
+              const PnrIndex demand = *decision - portDecisionOffset;
+              choices = llvm::ArrayRef(attachmentChoices)
+                            .slice(portAttachmentChoiceOffsets[demand],
+                                   portAttachmentChoiceOffsets[demand + 1] -
+                                       portAttachmentChoiceOffsets[demand]);
+            } else {
+              const PnrIndex boundary = *decision - graphBoundaryDecisionOffset;
+              choices =
+                  llvm::ArrayRef(attachmentChoices)
+                      .slice(
+                          graphBoundaryAttachmentChoiceOffsets[boundary],
+                          graphBoundaryAttachmentChoiceOffsets[boundary + 1] -
+                              graphBoundaryAttachmentChoiceOffsets[boundary]);
+            }
+            keys.reserve(choices.size());
+            for (PnrIndex option : choices) {
+              if (option >= ports.attachmentOptions().size() ||
+                  ports.attachmentOptions()[option].endpoint >=
+                      routing.routingEndpoints().size())
+                return invalid(*projection,
+                               "attachment relation choice is malformed");
+              keys.push_back(canonicalFabricBytes(
+                  routing
+                      .routingEndpoints()[ports.attachmentOptions()[option]
+                                              .endpoint]
+                      .reference));
+            }
           }
           relationUniverse.insert(relationUniverse.end(), keys.begin(),
                                   keys.end());
@@ -312,6 +624,7 @@ SpatialBindingRelationModel::create(
           }
         }
         relationInputs.push_back(std::move(input));
+        constraintRelations.push_back(1);
       }
       return llvm::Error::success();
     };
@@ -324,39 +637,75 @@ SpatialBindingRelationModel::create(
       return std::move(error);
   }
 
+  for (PnrIndex demand = 0; demand < ports.portDemands().size(); ++demand) {
+    const FrozenSpatialPortDemand &record = ports.portDemands()[demand];
+    const PnrIndex rootDecision =
+        record.kind == FrozenSpatialPortDemandKind::Compute
+            ? record.realization
+            : memoryDecisionOffset + record.realization;
+    if (rootDecision >= portDecisionOffset)
+      return invalid(Projection::SpatialTransferAttachment,
+                     "PortDemand realization owner is out of range");
+    InitializerRelationInput compatibility;
+    compatibility.kind = InitializerRelationKind::Equal;
+    InitializerRelationMemberInput root;
+    root.decision = rootDecision;
+    if (record.kind == FrozenSpatialPortDemandKind::Compute) {
+      for (const SpatialComputeBindingChoice &choice :
+           llvm::ArrayRef(computeChoices)
+               .slice(computeChoiceOffsets[record.realization],
+                      computeChoiceOffsets[record.realization + 1] -
+                          computeChoiceOffsets[record.realization]))
+        root.projectedValues.push_back(choice.placement);
+    } else {
+      for (const SpatialMemoryBindingChoice &choice :
+           llvm::ArrayRef(memoryChoices)
+               .slice(memoryChoiceOffsets[record.realization],
+                      memoryChoiceOffsets[record.realization + 1] -
+                          memoryChoiceOffsets[record.realization]))
+        root.projectedValues.push_back(choice.placement);
+    }
+    InitializerRelationMemberInput attachment;
+    attachment.decision = portDecisionOffset + demand;
+    for (PnrIndex option :
+         llvm::ArrayRef(attachmentChoices)
+             .slice(portAttachmentChoiceOffsets[demand],
+                    portAttachmentChoiceOffsets[demand + 1] -
+                        portAttachmentChoiceOffsets[demand])) {
+      const FrozenSpatialAttachmentOption &choice =
+          ports.attachmentOptions()[option];
+      if (choice.ownerKind !=
+              FrozenSpatialAttachmentOwnerKind::PlacementDomain ||
+          choice.owner >= ports.placementDomains().size())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "attachment compatibility owner is malformed");
+      attachment.projectedValues.push_back(
+          ports.placementDomains()[choice.owner].placement);
+    }
+    compatibility.members.push_back(std::move(root));
+    compatibility.members.push_back(std::move(attachment));
+    relationInputs.push_back(std::move(compatibility));
+    constraintRelations.push_back(0);
+  }
+
   auto relations = InitializerRelationModel::create(
       std::move(decisionChoiceCounts), std::move(relationInputs));
   if (!relations)
     return relations.takeError();
-  std::vector<PnrIndex> graphBoundaryChoiceCounts;
-  graphBoundaryChoiceCounts.reserve(ports.graphBoundaries().size());
-  PnrIndex flattenedInitializerChoiceCount =
-      relations->decisionChoiceOffsets().back();
-  for (const FrozenSpatialGraphBoundary &boundary : ports.graphBoundaries()) {
-    if (boundary.attachmentOptionCount == 0)
-      return llvm::make_error<SpatialPnrFreezeFailure>(
-          SpatialPnrFreezeFailureKind::Invalid,
-          "Spatial graph boundary has an empty attachment domain");
-    if (boundary.attachmentOptionCount >
-        getPnrIndexMax() - flattenedInitializerChoiceCount)
-      return llvm::make_error<SpatialPnrFreezeFailure>(
-          SpatialPnrFreezeFailureKind::Invalid,
-          "Spatial initializer choice domain overflows PnrIndex");
-    flattenedInitializerChoiceCount += boundary.attachmentOptionCount;
-    graphBoundaryChoiceCounts.push_back(boundary.attachmentOptionCount);
-  }
-  if (graphBoundaryChoiceCounts.size() >
-      getPnrIndexMax() - relations->decisionCount())
-    return llvm::make_error<SpatialPnrFreezeFailure>(
-        SpatialPnrFreezeFailureKind::Invalid,
-        "Spatial initializer decision domain overflows PnrIndex");
+  if (constraintRelations.size() != relations->relations().size())
+    return invalid(Projection::SpatialTransferAttachment,
+                   "relation ownership projection is incomplete");
   return std::shared_ptr<const SpatialBindingRelationModel>(
       new SpatialBindingRelationModel(
-          std::move(*relations), std::move(graphBoundaryChoiceCounts),
-          std::move(computeChoiceOffsets), std::move(computeChoices),
-          std::move(computeContextChoiceOrdinals),
+          std::move(*relations), std::move(computeChoiceOffsets),
+          std::move(computeChoices), std::move(computeContextChoiceOrdinals),
           std::move(memoryChoiceOffsets), std::move(memoryChoices),
-          std::move(memoryPlacementChoiceOrdinals), deferredProjection));
+          std::move(memoryPlacementChoiceOrdinals),
+          std::move(portAttachmentChoiceOffsets),
+          std::move(graphBoundaryAttachmentChoiceOffsets),
+          std::move(attachmentChoices),
+          std::move(attachmentOptionChoiceOrdinals),
+          std::move(constraintRelations), deferredProjection));
 }
 
 llvm::ArrayRef<SpatialComputeBindingChoice>
@@ -406,6 +755,51 @@ SpatialBindingRelationModel::memoryChoiceOrdinal(PnrIndex realization,
   if (local >= choices.size())
     return std::nullopt;
   if (choices[local].placement != placement)
+    return std::nullopt;
+  return local;
+}
+
+llvm::ArrayRef<PnrIndex>
+SpatialBindingRelationModel::portAttachmentChoices(PnrIndex demand) const {
+  assert(demand + 1 < portAttachmentChoiceOffsets_.size());
+  return llvm::ArrayRef(attachmentChoices_)
+      .slice(portAttachmentChoiceOffsets_[demand],
+             portAttachmentChoiceOffsets_[demand + 1] -
+                 portAttachmentChoiceOffsets_[demand]);
+}
+
+llvm::ArrayRef<PnrIndex>
+SpatialBindingRelationModel::graphBoundaryAttachmentChoices(
+    PnrIndex boundary) const {
+  assert(boundary + 1 < graphBoundaryAttachmentChoiceOffsets_.size());
+  return llvm::ArrayRef(attachmentChoices_)
+      .slice(graphBoundaryAttachmentChoiceOffsets_[boundary],
+             graphBoundaryAttachmentChoiceOffsets_[boundary + 1] -
+                 graphBoundaryAttachmentChoiceOffsets_[boundary]);
+}
+
+std::optional<PnrIndex>
+SpatialBindingRelationModel::portAttachmentChoiceOrdinal(
+    PnrIndex demand, PnrIndex option) const {
+  if (demand >= portDecisionCount() ||
+      option >= attachmentOptionChoiceOrdinals_.size())
+    return std::nullopt;
+  const PnrIndex local = attachmentOptionChoiceOrdinals_[option];
+  const auto choices = portAttachmentChoices(demand);
+  if (local >= choices.size() || choices[local] != option)
+    return std::nullopt;
+  return local;
+}
+
+std::optional<PnrIndex>
+SpatialBindingRelationModel::graphBoundaryAttachmentChoiceOrdinal(
+    PnrIndex boundary, PnrIndex option) const {
+  if (boundary >= graphBoundaryDecisionCount() ||
+      option >= attachmentOptionChoiceOrdinals_.size())
+    return std::nullopt;
+  const PnrIndex local = attachmentOptionChoiceOrdinals_[option];
+  const auto choices = graphBoundaryAttachmentChoices(boundary);
+  if (local >= choices.size() || choices[local] != option)
     return std::nullopt;
   return local;
 }

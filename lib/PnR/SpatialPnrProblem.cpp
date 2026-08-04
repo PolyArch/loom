@@ -328,7 +328,8 @@ public:
     if (!ports)
       return ports.takeError();
     auto bindingRelations = detail::SpatialBindingRelationModel::create(
-        *realizations, *constraints, *ports);
+        dataflow.identity(), *realizations, *constraints, *transfers, *ports,
+        *routing);
     if (!bindingRelations)
       return bindingRelations.takeError();
     auto handshake = detail::buildFrozenSpatialHandshakeIndex(

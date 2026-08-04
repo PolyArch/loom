@@ -27,16 +27,35 @@ struct SpatialMemoryBindingChoice final {
 class SpatialBindingRelationModel final {
 public:
   static llvm::Expected<std::shared_ptr<const SpatialBindingRelationModel>>
-  create(const FrozenSpatialRealizationIndex &realizations,
+  create(const ArtifactIdentity &dataflowIdentity,
+         const FrozenSpatialRealizationIndex &realizations,
          const FrozenConstraintIndex &constraints,
-         const FrozenSpatialPortIndex &ports);
+         const FrozenSpatialTransferIndex &transfers,
+         const FrozenSpatialPortIndex &ports,
+         const FrozenSpatialRoutingGraph &routing);
 
   const InitializerRelationModel &relations() const { return relations_; }
-  llvm::ArrayRef<PnrIndex> initializerIndependentChoiceCounts() const {
-    return initializerIndependentChoiceCounts_;
-  }
   PnrIndex computeDecisionCount() const {
     return static_cast<PnrIndex>(computeChoiceOffsets_.size() - 1);
+  }
+  PnrIndex memoryDecisionCount() const {
+    return static_cast<PnrIndex>(memoryChoiceOffsets_.size() - 1);
+  }
+  PnrIndex portDecisionOffset() const {
+    return computeDecisionCount() + memoryDecisionCount();
+  }
+  PnrIndex graphBoundaryDecisionOffset() const {
+    return portDecisionOffset() + portDecisionCount();
+  }
+  PnrIndex portDecisionCount() const {
+    return static_cast<PnrIndex>(portAttachmentChoiceOffsets_.size() - 1);
+  }
+  PnrIndex graphBoundaryDecisionCount() const {
+    return static_cast<PnrIndex>(graphBoundaryAttachmentChoiceOffsets_.size() -
+                                 1);
+  }
+  PnrIndex realizationDecisionCount() const {
+    return computeDecisionCount() + memoryDecisionCount();
   }
   PnrIndex decisionCount() const { return relations_.decisionCount(); }
   llvm::ArrayRef<SpatialComputeBindingChoice>
@@ -48,7 +67,18 @@ public:
                        PnrIndex instructionContext) const;
   std::optional<PnrIndex> memoryChoiceOrdinal(PnrIndex realization,
                                               PnrIndex placement) const;
+  llvm::ArrayRef<PnrIndex> portAttachmentChoices(PnrIndex demand) const;
+  llvm::ArrayRef<PnrIndex>
+  graphBoundaryAttachmentChoices(PnrIndex boundary) const;
+  std::optional<PnrIndex> portAttachmentChoiceOrdinal(PnrIndex demand,
+                                                      PnrIndex option) const;
+  std::optional<PnrIndex>
+  graphBoundaryAttachmentChoiceOrdinal(PnrIndex boundary,
+                                       PnrIndex option) const;
   llvm::ArrayRef<PnrIndex> decisionRelations(PnrIndex decision) const;
+  bool relationIsConstraint(PnrIndex relation) const {
+    return constraintRelations_[relation] != 0;
+  }
   bool relationSatisfied(PnrIndex relation,
                          llvm::ArrayRef<PnrIndex> choices) const {
     return relations_.relationSatisfied(relation, choices);
@@ -64,17 +94,19 @@ public:
 private:
   SpatialBindingRelationModel(
       InitializerRelationModel relations,
-      std::vector<PnrIndex> initializerIndependentChoiceCounts,
       std::vector<PnrIndex> computeChoiceOffsets,
       std::vector<SpatialComputeBindingChoice> computeChoices,
       std::vector<PnrIndex> computeContextChoiceOrdinals,
       std::vector<PnrIndex> memoryChoiceOffsets,
       std::vector<SpatialMemoryBindingChoice> memoryChoices,
       std::vector<PnrIndex> memoryPlacementChoiceOrdinals,
+      std::vector<PnrIndex> portAttachmentChoiceOffsets,
+      std::vector<PnrIndex> graphBoundaryAttachmentChoiceOffsets,
+      std::vector<PnrIndex> attachmentChoices,
+      std::vector<PnrIndex> attachmentOptionChoiceOrdinals,
+      std::vector<std::uint8_t> constraintRelations,
       std::optional<::mapping::SpatialConstraintProjection> deferredProjection)
       : relations_(std::move(relations)),
-        initializerIndependentChoiceCounts_(
-            std::move(initializerIndependentChoiceCounts)),
         computeChoiceOffsets_(std::move(computeChoiceOffsets)),
         computeChoices_(std::move(computeChoices)),
         computeContextChoiceOrdinals_(std::move(computeContextChoiceOrdinals)),
@@ -82,16 +114,27 @@ private:
         memoryChoices_(std::move(memoryChoices)),
         memoryPlacementChoiceOrdinals_(
             std::move(memoryPlacementChoiceOrdinals)),
+        portAttachmentChoiceOffsets_(std::move(portAttachmentChoiceOffsets)),
+        graphBoundaryAttachmentChoiceOffsets_(
+            std::move(graphBoundaryAttachmentChoiceOffsets)),
+        attachmentChoices_(std::move(attachmentChoices)),
+        attachmentOptionChoiceOrdinals_(
+            std::move(attachmentOptionChoiceOrdinals)),
+        constraintRelations_(std::move(constraintRelations)),
         deferredProjection_(deferredProjection) {}
 
   InitializerRelationModel relations_;
-  std::vector<PnrIndex> initializerIndependentChoiceCounts_;
   std::vector<PnrIndex> computeChoiceOffsets_;
   std::vector<SpatialComputeBindingChoice> computeChoices_;
   std::vector<PnrIndex> computeContextChoiceOrdinals_;
   std::vector<PnrIndex> memoryChoiceOffsets_;
   std::vector<SpatialMemoryBindingChoice> memoryChoices_;
   std::vector<PnrIndex> memoryPlacementChoiceOrdinals_;
+  std::vector<PnrIndex> portAttachmentChoiceOffsets_;
+  std::vector<PnrIndex> graphBoundaryAttachmentChoiceOffsets_;
+  std::vector<PnrIndex> attachmentChoices_;
+  std::vector<PnrIndex> attachmentOptionChoiceOrdinals_;
+  std::vector<std::uint8_t> constraintRelations_;
   std::optional<::mapping::SpatialConstraintProjection> deferredProjection_;
 };
 
