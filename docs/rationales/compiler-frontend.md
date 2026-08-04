@@ -222,6 +222,16 @@ Requiring one explicit decision for every Spatial ownership shape avoids an
 ambient default and lets proof-backed narrowing reject only the infeasible
 candidate rather than silently truncating source addresses.
 
+Schedule factors are derived from the exact loop rather than copied from a
+global tuning table. Proper divisors give schema 1.0 a compact, deterministic
+domain with no cleanup tail; aggregate typed Fabric occurrence counts remove
+only replication factors already proved impossible. Adjacent interchange is
+the primitive relation because repeated lineage edges can express any legal
+permutation without a factorial one-invocation domain. These choices keep
+schedule semantics in the transformed Structured Program and leave quality,
+placement, routing, and contention to their existing Evaluation and Mapping
+owners.
+
 Direct-call constant specialization follows the same rule. Treating each
 formal as an independent switch would create an argument-subset powerset and a
 second call-profile authority. The SCF specification therefore defines one

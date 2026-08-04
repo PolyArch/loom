@@ -121,6 +121,7 @@ set(LOOM_TEST_DEPENDS
   loom-structured-address-index-narrowing-test
   loom-structured-program-artifact-test
   loom-structured-thread-domain-test
+  loom-structured-schedule-generator-test
   loom-pre-mapping-compilation-test
   loom-pointer-service-boundary-test
   loom-frontend-payload-framing-test

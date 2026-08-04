@@ -580,6 +580,45 @@ consume only the typed Evidence projections declared by the central plan; they
 do not scan an Artifact Store, choose the latest result, or accept free-form
 backend advice.
 
+### Structured Schedule Generator
+
+The schema-1.0 Schedule generator consumes a nonempty finite set of exact
+Structured Program references and one exact finalized Fabric. It emits the
+input set plus every distinct child obtained by one legal atomic schedule
+decision. Its resolved component view contains only the positive
+`scope_expansion_limit` owned by the Resolved Configuration View.
+
+Loop scopes are `scf.for` operations in the parent's canonical Structured
+operation order. The first `scope_expansion_limit` loop scopes form the finite
+Generate domain; later loops are outside that invocation domain. Static tile
+and unroll factors are the sorted proper divisors of the exact static trip
+count. Factor one is a no-op and the full trip count is not emitted by this
+generator. Dynamic, non-host-representable, prime, and unit trip counts have no
+tile or unroll decision in schema 1.0; other generator families or later
+invocations may still transform their enclosing structure.
+
+Unroll is hard-pruned only when exact aggregate Fabric capacity proves the
+replicated body impossible. Actor instances are grouped by the canonical
+typed OperationSchema projection. For each group, the generator divides the
+number of admitted concrete Fabric occurrences by the group's body
+multiplicity; the minimum quotient bounds the unroll factor. This projection
+does not prove placement, routing, contention freedom, or performance.
+
+Interchange is one adjacent swap of a perfect two-loop nest. Both loops must
+have no loop-carried results, inner bounds and step must be invariant to the
+outer loop, and the common dependence/effect analysis must prove independent
+iterations for both dimensions. Unknown dependence rejects the decision.
+Arbitrary permutations are composed through immutable lineage rather than
+enumerated factorially. Tile and unroll use the pinned upstream SCF utilities;
+interchange preserves the exact loop bounds, comparison convention,
+attributes, body, and induction-variable uses while exchanging dimensions.
+
+Each generated decision resolves its parent-local `StructuredEntityRef`,
+clones the complete parent, applies one transform, verifies the result, and
+passes it through the sole Structured Program finalizer. Equal children
+deduplicate by Artifact identity. No schedule tree, factor table, hidden pass
+state, or persisted analysis view exists.
+
 ### Workload-Aware Ownership Selection
 
 Ownership promotion is a whole-workload decision. Before a promotion gate

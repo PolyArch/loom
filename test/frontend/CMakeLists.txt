@@ -143,6 +143,26 @@ target_link_libraries(loom-structured-ownership-evaluation-test PRIVATE
   LoomStructuredFabricAnalyticModel
 )
 
+add_executable(loom-structured-schedule-generator-test
+  StructuredScheduleGeneratorTest.cpp
+)
+
+target_link_libraries(loom-structured-schedule-generator-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomDSECompilerGenerator
+  LoomFrontendCompilation
+  MLIRArithDialect
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRMemRefDialect
+  MLIRParser
+  MLIRSCFDialect
+  MLIRSupport
+  LLVMSupport
+)
+
 add_executable(loom-frontend-dfg-integration-test
   FrontendDfgIntegrationTest.cpp
 )

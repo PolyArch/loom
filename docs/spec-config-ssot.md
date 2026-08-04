@@ -121,6 +121,7 @@ ResolvedConfig {
   hardware_target
   dse {
     structured_ownership
+    schedule
     tech_mapping
     spatial_pnr
     system_pnr
@@ -155,7 +156,18 @@ The Structured ownership generator policy owns:
 dse.structured_ownership.scope_expansion_limit: positive uint32 = 64
 ```
 
-Its TechMapping generator policy owns:
+The Structured Schedule generator policy owns:
+
+```text
+dse.schedule.scope_expansion_limit: positive uint32 = 64
+```
+
+This is the number of `scf.for` scopes admitted from canonical Structured
+operation order into one invocation's finite domain. Every admitted scope
+retains its complete owner-derived decision domain. The value is a semantic
+work limit, not a worker count or wall-time budget.
+
+The TechMapping generator policy owns:
 
 ```text
 dse.tech_mapping.match_row_attempt_limit: positive uint64 = 65536

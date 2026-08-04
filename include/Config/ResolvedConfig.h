@@ -25,6 +25,10 @@ struct ResolvedStructuredOwnershipConfig {
   std::uint32_t scopeExpansionLimit = 64;
 };
 
+struct ResolvedStructuredScheduleConfig {
+  std::uint32_t scopeExpansionLimit = 64;
+};
+
 struct ResolvedTechMappingConfig {
   std::uint64_t matchRowAttemptLimit = 65536;
   std::uint64_t partialCoverExpansionLimit = 262144;
@@ -33,6 +37,7 @@ struct ResolvedTechMappingConfig {
 
 struct ResolvedDseConfig {
   ResolvedStructuredOwnershipConfig structuredOwnership;
+  ResolvedStructuredScheduleConfig schedule;
   ResolvedTechMappingConfig techMapping;
   std::vector<dse::ModelAuthorization> modelAuthorizations;
   std::vector<dse::EvidenceObligationTemplate> evidenceObligationTemplates;

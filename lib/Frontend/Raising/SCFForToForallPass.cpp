@@ -805,6 +805,10 @@ struct SCFForToForallPass
 namespace loom {
 namespace raising {
 
+bool hasProvenIndependentIterations(::mlir::scf::ForOp loop) {
+  return ::mlir::succeeded(checkBodyParallel(loop));
+}
+
 std::unique_ptr<::mlir::Pass> createSCFForToForallPass() {
   return std::make_unique<SCFForToForallPass>();
 }

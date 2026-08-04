@@ -222,6 +222,7 @@ llvm::Expected<std::uint64_t> requirePositiveU64(const ConfigSyntax *node,
 struct ConfigPatch {
   std::optional<loom::ResolvedHardwareTargetConfig> hardwareTarget;
   std::optional<std::uint32_t> ownershipScopeExpansionLimit;
+  std::optional<std::uint32_t> scheduleScopeExpansionLimit;
   std::optional<std::uint64_t> techMappingMatchRowAttemptLimit;
   std::optional<std::uint64_t> techMappingPartialCoverExpansionLimit;
   std::optional<std::uint64_t> techMappingCandidatePublicationLimit;
@@ -297,6 +298,9 @@ void applyPatch(loom::ResolvedConfig &config, const ConfigPatch &patch) {
   if (patch.ownershipScopeExpansionLimit)
     config.dse.structuredOwnership.scopeExpansionLimit =
         *patch.ownershipScopeExpansionLimit;
+  if (patch.scheduleScopeExpansionLimit)
+    config.dse.schedule.scopeExpansionLimit =
+        *patch.scheduleScopeExpansionLimit;
   if (patch.techMappingMatchRowAttemptLimit)
     config.dse.techMapping.matchRowAttemptLimit =
         *patch.techMappingMatchRowAttemptLimit;
@@ -1225,6 +1229,23 @@ llvm::Error parseStructuredOwnership(ConfigPatch &patch,
   return llvm::Error::success();
 }
 
+llvm::Error parseStructuredSchedule(ConfigPatch &patch,
+                                    const ConfigSyntax *node) {
+  auto fieldsOrErr =
+      ClosedMapping::parse(node, "dse.schedule", {}, {"scope_expansion_limit"});
+  if (!fieldsOrErr)
+    return fieldsOrErr.takeError();
+  if (const ConfigSyntax *value = fieldsOrErr->at("scope_expansion_limit")) {
+    constexpr llvm::StringLiteral key = "dse.schedule.scope_expansion_limit";
+    auto valueOrErr = requireUnsigned(value, key);
+    if (!valueOrErr)
+      return valueOrErr.takeError();
+    patch.scheduleScopeExpansionLimit = *valueOrErr;
+    return touch(patch, key);
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error parseTechMapping(ConfigPatch &patch, const ConfigSyntax *node) {
   auto fieldsOrErr = ClosedMapping::parse(node, "dse.tech_mapping", {},
                                           {"match_row_attempt_limit",
@@ -1262,12 +1283,15 @@ llvm::Error parseTechMapping(ConfigPatch &patch, const ConfigSyntax *node) {
 llvm::Error parseDse(ConfigPatch &patch, const ConfigSyntax *node) {
   auto fieldsOrErr = ClosedMapping::parse(
       node, "dse", {},
-      {"structured_ownership", "tech_mapping",
+      {"structured_ownership", "schedule", "tech_mapping",
        "evaluation_and_objective_catalogs", "spatial_pnr", "system_pnr"});
   if (!fieldsOrErr)
     return fieldsOrErr.takeError();
   if (const ConfigSyntax *structured = fieldsOrErr->at("structured_ownership"))
     if (llvm::Error error = parseStructuredOwnership(patch, structured))
+      return error;
+  if (const ConfigSyntax *schedule = fieldsOrErr->at("schedule"))
+    if (llvm::Error error = parseStructuredSchedule(patch, schedule))
       return error;
   if (const ConfigSyntax *tech = fieldsOrErr->at("tech_mapping"))
     if (llvm::Error error = parseTechMapping(patch, tech))
@@ -1375,6 +1399,7 @@ llvm::Error validateResolvedConfig(const loom::ResolvedConfig &config) {
     return diagnostic("config_range_violation", "hardware_target.parameters",
                       "all target scale values must be positive");
   if (config.dse.structuredOwnership.scopeExpansionLimit == 0 ||
+      config.dse.schedule.scopeExpansionLimit == 0 ||
       config.dse.techMapping.matchRowAttemptLimit == 0 ||
       config.dse.techMapping.partialCoverExpansionLimit == 0 ||
       config.dse.techMapping.candidatePublicationLimit == 0)

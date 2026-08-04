@@ -8,6 +8,9 @@
 namespace mlir {
 class Operation;
 class PassManager;
+namespace scf {
+class ForOp;
+}
 } // namespace mlir
 
 namespace loom {
@@ -127,6 +130,11 @@ createMaterializeFMulAddPass(FMulAddExecutionShape shape);
 // This development-only transformation is registered for explicit pass
 // runners. The standard raising pipeline does not invoke it.
 std::unique_ptr<::mlir::Pass> createSCFForToForallPass();
+
+/// Proves that iterations of one exact scf.for are independent using the same
+/// conservative memory, control, and effect analysis consumed by the
+/// parallelization transform. Unknown facts return false.
+bool hasProvenIndependentIterations(::mlir::scf::ForOp loop);
 
 // Register all raising passes with the global pass registry. Lets
 // `mlir-opt` style drivers expose them via --loom-llvm-cf-to-cf,

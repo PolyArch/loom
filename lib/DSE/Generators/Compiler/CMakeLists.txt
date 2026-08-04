@@ -1,6 +1,7 @@
 add_library(LoomDSECompilerGenerator
   PreMappingExploration.cpp
   StructuredOwnershipCandidateGenerator.cpp
+  StructuredScheduleCandidateGenerator.cpp
 )
 
 target_include_directories(LoomDSECompilerGenerator PUBLIC

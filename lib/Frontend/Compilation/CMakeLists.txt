@@ -6,6 +6,7 @@ add_library(LoomFrontendCompilation
   StaticMemoryBinding.cpp
   StructuredAddressIndexNarrowing.cpp
   StructuredCallSpecialization.cpp
+  StructuredSchedule.cpp
 )
 
 target_include_directories(LoomFrontendCompilation PUBLIC
@@ -27,5 +28,6 @@ mlir_target_link_libraries(LoomFrontendCompilation PUBLIC
   MLIRIR
   MLIRLLVMDialect
   MLIRSCFDialect
+  MLIRSCFTransforms
   MLIRTransforms
 )
