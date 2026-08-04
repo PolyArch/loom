@@ -84,12 +84,21 @@ private:
     std::uint32_t sinkCount = 0;
     std::uint64_t physicalUseOffset = 0;
     std::uint32_t physicalUseCount = 0;
-    std::uint64_t traversalPhysicalUseOffset = 0;
-    std::uint32_t traversalPhysicalUseCount = 0;
+    std::uint64_t traversalNodeOffset = 0;
+    std::uint32_t traversalNodeCount = 0;
+    std::uint32_t traversalTerminalCount = 0;
     std::uint32_t consumedPhysicalUseCount = 0;
     std::optional<std::uint64_t> actorPlanOrdinal;
     bool requiresStorageTransport = false;
     bool active = false;
+  };
+
+  struct TraversalNodeBinding final {
+    std::uint64_t physicalUseOrdinal = 0;
+    std::uint64_t successorOffset = 0;
+    std::uint32_t successorCount = 0;
+    std::uint32_t predecessorCount = 0;
+    bool terminal = false;
   };
 
   struct InFlight final {
@@ -98,8 +107,6 @@ private:
     std::uint64_t occurrenceOrdinal = 0;
     Token token;
     bool arrivalScheduled = false;
-    bool traversalScheduled = false;
-    bool traversalRequested = false;
     bool publicationScheduled = false;
     bool published = false;
     bool consumedRequested = false;
@@ -107,6 +114,7 @@ private:
     std::uint32_t producedRetired = 0;
     std::uint32_t traversalPermitted = 0;
     std::uint32_t traversalRetired = 0;
+    std::uint32_t traversalTerminalsPermitted = 0;
     std::uint32_t consumedPermitted = 0;
     std::uint32_t consumedRetired = 0;
   };
@@ -122,6 +130,7 @@ private:
 
   struct ActionOwner final {
     std::uint64_t transferSlot = 0;
+    std::uint64_t traversalNodeOrdinal = invalidCgraTransportOrdinal;
     ActionStage stage = ActionStage::Produced;
     ActionLifecycleState state = ActionLifecycleState::Requested;
   };
@@ -135,6 +144,14 @@ private:
   struct PendingActionTransfer final {
     std::uint64_t transferSlot = 0;
     std::uint64_t bindingOrdinal = 0;
+    std::uint64_t traversalNodeOrdinal = invalidCgraTransportOrdinal;
+  };
+
+  enum class TraversalNodeState : std::uint8_t {
+    Idle,
+    Scheduled,
+    Requested,
+    Permitted,
   };
 
   CgraTransportRuntime(
@@ -142,6 +159,8 @@ private:
       CgraPhysicalActionRuntime &physical,
       std::vector<TransferBinding> bindings, std::vector<SinkBinding> sinks,
       std::vector<std::uint64_t> physicalUses,
+      std::vector<TraversalNodeBinding> traversalNodes,
+      std::vector<std::uint64_t> traversalSuccessors,
       llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
           actorSourceBindings,
       llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings);
@@ -155,8 +174,9 @@ private:
                  ActionStage stage, const SpatialEventCoordinate &coordinate);
   llvm::Error scheduleArrival(std::uint64_t slot,
                               const SpatialEventCoordinate &coordinate);
-  llvm::Error scheduleTraversal(std::uint64_t slot,
-                                const SpatialEventCoordinate &coordinate);
+  llvm::Expected<bool>
+  scheduleReadyTraversals(std::uint64_t slot,
+                          const SpatialEventCoordinate &coordinate);
   llvm::Error schedulePublication(std::uint64_t slot,
                                   const SpatialEventCoordinate &coordinate);
   std::optional<CgraTransportCompletion> maybeRelease(std::uint64_t slot);
@@ -172,6 +192,11 @@ private:
   std::vector<TransferBinding> bindings_;
   std::vector<SinkBinding> sinks_;
   std::vector<std::uint64_t> physicalUses_;
+  std::vector<TraversalNodeBinding> traversalNodes_;
+  std::vector<std::uint64_t> traversalSuccessors_;
+  std::vector<std::uint32_t> traversalRemainingPredecessors_;
+  std::vector<TraversalNodeState> traversalNodeStates_;
+  std::vector<std::uint64_t> traversalNodeTransferSlots_;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
       actorSourceBindings_;
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings_;

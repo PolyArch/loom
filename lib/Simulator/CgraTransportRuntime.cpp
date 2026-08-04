@@ -71,7 +71,8 @@ resolveObservation(const PreparedGraphExecution &execution,
 struct BindingBuilder final {
   ::dataflow::CanonicalGraphProducerEndpointRef producer;
   std::vector<::dataflow::CanonicalGraphConsumerEndpointRef> sinks;
-  std::set<std::uint64_t> traversalActions;
+  std::map<std::uint64_t, std::set<std::uint64_t>> traversalPredecessors;
+  std::set<std::uint64_t> traversalTerminals;
   bool requiresStorageTransport = false;
 };
 
@@ -118,16 +119,25 @@ CgraTransportRuntime::CgraTransportRuntime(
     const CgraFrozenExecutionPlan &plan, SimulatorState &state,
     CgraPhysicalActionRuntime &physical, std::vector<TransferBinding> bindings,
     std::vector<SinkBinding> sinks, std::vector<std::uint64_t> physicalUses,
+    std::vector<TraversalNodeBinding> traversalNodes,
+    std::vector<std::uint64_t> traversalSuccessors,
     llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
         actorSourceBindings,
     llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings)
     : plan_(&plan), state_(&state), physical_(&physical),
       bindings_(std::move(bindings)), sinks_(std::move(sinks)),
       physicalUses_(std::move(physicalUses)),
+      traversalNodes_(std::move(traversalNodes)),
+      traversalSuccessors_(std::move(traversalSuccessors)),
       actorSourceBindings_(std::move(actorSourceBindings)),
       ingressSourceBindings_(std::move(ingressSourceBindings)),
       blocked_(bindings_.size()),
-      nextActionOccurrence_(plan.physicalUseTimings.size(), 0) {}
+      nextActionOccurrence_(plan.physicalUseTimings.size(), 0) {
+  traversalRemainingPredecessors_.resize(traversalNodes_.size());
+  traversalNodeStates_.resize(traversalNodes_.size(), TraversalNodeState::Idle);
+  traversalNodeTransferSlots_.resize(traversalNodes_.size(),
+                                     invalidCgraTransportOrdinal);
+}
 
 llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     const CgraFrozenExecutionPlan &plan,
@@ -186,7 +196,7 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     if (!key)
       return key.takeError();
     auto [position, inserted] = builders.try_emplace(
-        *key, BindingBuilder{transfer.producer, {}, {}, false});
+        *key, BindingBuilder{transfer.producer, {}, {}, {}, false});
     (void)inserted;
     position->second.sinks.push_back(sink);
     return llvm::Error::success();
@@ -211,7 +221,7 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     if (!key)
       return key.takeError();
     auto [position, inserted] = builders.try_emplace(
-        *key, BindingBuilder{route.producer, {}, {}, false});
+        *key, BindingBuilder{route.producer, {}, {}, {}, false});
     (void)inserted;
     BindingBuilder &builder = position->second;
     if (route.nodeOffset > plan.transport.routeNodes.size() ||
@@ -219,9 +229,12 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
         route.sinkOffset > plan.transport.routeSinks.size() ||
         route.sinkCount > plan.transport.routeSinks.size() - route.sinkOffset)
       return invalid("CGRA RouteTree execution slice is malformed");
-    const auto addTraversal = [&](std::uint64_t traversal) -> llvm::Error {
+    const auto advanceTraversal =
+        [&](std::uint64_t traversal,
+            const std::set<std::uint64_t> &predecessors)
+        -> llvm::Expected<std::set<std::uint64_t>> {
       if (traversal == invalidCgraTransportOrdinal)
-        return llvm::Error::success();
+        return predecessors;
       if (traversal >= plan.transport.traversals.size())
         return invalid("CGRA route selects an unknown traversal");
       const CgraSelectedTraversalPlan &selected =
@@ -232,6 +245,7 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
           selected.impliedUseCount >
               plan.transport.traversalUses.size() - selected.impliedUseOffset)
         return invalid("CGRA traversal implied-use slice is malformed");
+      std::set<std::uint64_t> actions;
       for (const CgraTraversalUsePlan &use :
            llvm::ArrayRef(plan.transport.traversalUses)
                .slice(selected.impliedUseOffset, selected.impliedUseCount)) {
@@ -239,20 +253,56 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
             plan.physicalUseClients[use.physicalUseOrdinal] !=
                 CgraPhysicalUseClientKind::TraversalTransport)
           return invalid("CGRA traversal action has an inconsistent client");
-        builder.traversalActions.insert(use.physicalUseOrdinal);
+        actions.insert(use.physicalUseOrdinal);
       }
-      return llvm::Error::success();
+      if (actions.empty())
+        return predecessors;
+      for (std::uint64_t action : actions) {
+        std::set<std::uint64_t> causalPredecessors = predecessors;
+        causalPredecessors.erase(action);
+        auto [position, inserted] = builder.traversalPredecessors.try_emplace(
+            action, causalPredecessors);
+        if (!inserted && position->second != causalPredecessors)
+          return invalid("CGRA route reuses one traversal activation at "
+                         "incompatible causal positions");
+      }
+      return actions;
     };
-    if (llvm::Error error = addTraversal(route.localTraversalOrdinal))
-      return std::move(error);
-    for (const auto &node : llvm::ArrayRef(plan.transport.routeNodes)
-                                .slice(route.nodeOffset, route.nodeCount))
-      if (llvm::Error error = addTraversal(node.incomingTraversalOrdinal))
-        return std::move(error);
+    auto rootFrontier = advanceTraversal(route.localTraversalOrdinal,
+                                         std::set<std::uint64_t>{});
+    if (!rootFrontier)
+      return rootFrontier.takeError();
+    const auto routeNodes = llvm::ArrayRef(plan.transport.routeNodes)
+                                .slice(route.nodeOffset, route.nodeCount);
+    if (routeNodes.empty())
+      return invalid("CGRA RouteTree has no root node");
+    std::vector<std::set<std::uint64_t>> frontiers(routeNodes.size());
+    for (auto [ordinal, node] : llvm::enumerate(routeNodes)) {
+      if (ordinal == 0) {
+        if (node.parentOrdinal != std::numeric_limits<std::uint32_t>::max() ||
+            node.incomingTraversalOrdinal != invalidCgraTransportOrdinal)
+          return invalid("CGRA RouteTree root has an incoming edge");
+        frontiers.front() = *rootFrontier;
+        continue;
+      }
+      if (node.parentOrdinal >= ordinal ||
+          node.incomingTraversalOrdinal == invalidCgraTransportOrdinal)
+        return invalid("CGRA RouteTree node is not in canonical preorder");
+      auto frontier = advanceTraversal(node.incomingTraversalOrdinal,
+                                       frontiers[node.parentOrdinal]);
+      if (!frontier)
+        return frontier.takeError();
+      frontiers[ordinal] = std::move(*frontier);
+    }
     for (const auto &sink : llvm::ArrayRef(plan.transport.routeSinks)
                                 .slice(route.sinkOffset, route.sinkCount)) {
-      if (llvm::Error error = addTraversal(sink.localTraversalOrdinal))
-        return std::move(error);
+      if (sink.nodeOrdinal >= frontiers.size())
+        return invalid("CGRA RouteTree sink names an unknown node");
+      auto frontier = advanceTraversal(sink.localTraversalOrdinal,
+                                       frontiers[sink.nodeOrdinal]);
+      if (!frontier)
+        return frontier.takeError();
+      builder.traversalTerminals.insert(frontier->begin(), frontier->end());
       builder.sinks.push_back(sink.sink);
     }
   }
@@ -266,15 +316,13 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
   std::vector<TransferBinding> bindings;
   std::vector<SinkBinding> sinks;
   std::vector<std::uint64_t> physicalUses;
+  std::vector<TraversalNodeBinding> traversalNodes;
+  std::vector<std::uint64_t> traversalSuccessors;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
       actorSourceBindings;
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings;
   bindings.reserve(builders.size());
   for (auto &[key, builder] : builders) {
-    if (builder.traversalActions.size() > 1)
-      return llvm::createStringError(
-          std::errc::not_supported,
-          "CGRA selected route requires multi-stage traversal sequencing");
     const auto produced = producedUses.find(key);
     const std::uint64_t producedUseOffset = physicalUses.size();
     std::uint32_t producedUseCount = 0;
@@ -287,14 +335,67 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
                               slice.offset + slice.count);
       producedUseCount = slice.count;
     }
-    if (builder.traversalActions.size() >
+    if (builder.traversalPredecessors.size() >
         std::numeric_limits<std::uint32_t>::max())
-      return invalid("CGRA traversal physical-use count exceeds u32");
-    const std::uint64_t traversalUseOffset = physicalUses.size();
-    physicalUses.insert(physicalUses.end(), builder.traversalActions.begin(),
-                        builder.traversalActions.end());
-    const std::uint32_t traversalUseCount =
-        static_cast<std::uint32_t>(builder.traversalActions.size());
+      return invalid("CGRA traversal node count exceeds u32");
+    if (!builder.traversalPredecessors.empty() &&
+        builder.traversalTerminals.empty())
+      return invalid("CGRA traversal DAG has no terminal action");
+    if (builder.traversalTerminals.size() >
+        std::numeric_limits<std::uint32_t>::max())
+      return invalid("CGRA traversal terminal count exceeds u32");
+
+    std::set<std::uint64_t> terminalClosure = builder.traversalTerminals;
+    std::vector<std::uint64_t> closureWork(builder.traversalTerminals.begin(),
+                                           builder.traversalTerminals.end());
+    while (!closureWork.empty()) {
+      const std::uint64_t action = closureWork.back();
+      closureWork.pop_back();
+      auto found = builder.traversalPredecessors.find(action);
+      if (found == builder.traversalPredecessors.end())
+        return invalid("CGRA traversal terminal has no selected action");
+      for (std::uint64_t predecessor : found->second)
+        if (terminalClosure.insert(predecessor).second)
+          closureWork.push_back(predecessor);
+    }
+    if (terminalClosure.size() != builder.traversalPredecessors.size())
+      return invalid("CGRA traversal DAG contains an unused action");
+
+    const std::uint64_t traversalNodeOffset = traversalNodes.size();
+    std::map<std::uint64_t, std::uint64_t> nodeOrdinalByAction;
+    for (const auto &[action, predecessors] : builder.traversalPredecessors) {
+      (void)predecessors;
+      nodeOrdinalByAction.emplace(action, traversalNodeOffset +
+                                              nodeOrdinalByAction.size());
+    }
+    std::map<std::uint64_t, std::set<std::uint64_t>> successors;
+    for (const auto &[action, predecessors] : builder.traversalPredecessors) {
+      successors.try_emplace(action);
+      for (std::uint64_t predecessor : predecessors) {
+        if (builder.traversalPredecessors.find(predecessor) ==
+            builder.traversalPredecessors.end())
+          return invalid("CGRA traversal predecessor is not selected");
+        successors[predecessor].insert(action);
+      }
+    }
+    for (const auto &[action, predecessors] : builder.traversalPredecessors) {
+      const auto &actionSuccessors = successors[action];
+      if (predecessors.size() > std::numeric_limits<std::uint32_t>::max() ||
+          actionSuccessors.size() > std::numeric_limits<std::uint32_t>::max())
+        return invalid("CGRA traversal DAG degree exceeds u32");
+      const std::uint64_t successorOffset = traversalSuccessors.size();
+      for (std::uint64_t successor : actionSuccessors)
+        traversalSuccessors.push_back(nodeOrdinalByAction.at(successor));
+      traversalNodes.push_back(
+          {action, successorOffset,
+           static_cast<std::uint32_t>(actionSuccessors.size()),
+           static_cast<std::uint32_t>(predecessors.size()),
+           builder.traversalTerminals.count(action) != 0});
+    }
+    const std::uint32_t traversalNodeCount =
+        static_cast<std::uint32_t>(builder.traversalPredecessors.size());
+    const std::uint32_t traversalTerminalCount =
+        static_cast<std::uint32_t>(builder.traversalTerminals.size());
     std::set<RefBytes> uniqueSinks;
     const std::uint64_t sinkOffset = sinks.size();
     std::uint64_t consumedPhysicalUseCount = 0;
@@ -371,14 +472,16 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     bindings.push_back(
         {builder.producer, sinkOffset,
          static_cast<std::uint32_t>(builder.sinks.size()), producedUseOffset,
-         producedUseCount, traversalUseOffset, traversalUseCount,
+         producedUseCount, traversalNodeOffset, traversalNodeCount,
+         traversalTerminalCount,
          static_cast<std::uint32_t>(consumedPhysicalUseCount), actorPlanOrdinal,
          builder.requiresStorageTransport, false});
   }
-  return CgraTransportRuntime(plan, state, physical, std::move(bindings),
-                              std::move(sinks), std::move(physicalUses),
-                              std::move(actorSourceBindings),
-                              std::move(ingressSourceBindings));
+  return CgraTransportRuntime(
+      plan, state, physical, std::move(bindings), std::move(sinks),
+      std::move(physicalUses), std::move(traversalNodes),
+      std::move(traversalSuccessors), std::move(actorSourceBindings),
+      std::move(ingressSourceBindings));
 }
 
 std::uint64_t CgraTransportRuntime::allocate(std::uint64_t bindingOrdinal,
@@ -399,7 +502,16 @@ std::uint64_t CgraTransportRuntime::allocate(std::uint64_t bindingOrdinal,
   }
   inFlight_[slot] =
       InFlight{true, bindingOrdinal, occurrenceOrdinal, std::move(token)};
-  bindings_[bindingOrdinal].active = true;
+  TransferBinding &binding = bindings_[bindingOrdinal];
+  for (std::uint64_t nodeOrdinal = binding.traversalNodeOffset;
+       nodeOrdinal != binding.traversalNodeOffset + binding.traversalNodeCount;
+       ++nodeOrdinal) {
+    traversalRemainingPredecessors_[nodeOrdinal] =
+        traversalNodes_[nodeOrdinal].predecessorCount;
+    traversalNodeStates_[nodeOrdinal] = TraversalNodeState::Idle;
+    traversalNodeTransferSlots_[nodeOrdinal] = slot;
+  }
+  binding.active = true;
   ++activeTransferCount_;
   return slot;
 }
@@ -425,6 +537,7 @@ CgraTransportRuntime::requestActions(
     break;
   }
   const auto appendAction = [&](std::uint64_t transferSlot,
+                                std::uint64_t traversalNodeOrdinal,
                                 std::uint64_t action) -> llvm::Error {
     if (action >= nextActionOccurrence_.size() ||
         action >= plan_->physicalUseClients.size() ||
@@ -438,7 +551,8 @@ CgraTransportRuntime::requestActions(
           std::errc::value_too_large,
           "CGRA transport action occurrence ordinal overflows u64");
     requests.push_back({action, next + increment});
-    owners.push_back({transferSlot, stage, ActionLifecycleState::Requested});
+    owners.push_back({transferSlot, traversalNodeOrdinal, stage,
+                      ActionLifecycleState::Requested});
     increments[action] = increment + 1;
     return llvm::Error::success();
   };
@@ -451,16 +565,21 @@ CgraTransportRuntime::requestActions(
       for (std::uint64_t action :
            llvm::ArrayRef(physicalUses_)
                .slice(binding.physicalUseOffset, binding.physicalUseCount))
-        if (llvm::Error error = appendAction(transfer.transferSlot, action))
+        if (llvm::Error error = appendAction(
+                transfer.transferSlot, invalidCgraTransportOrdinal, action))
           return error;
       continue;
     }
     if (stage == ActionStage::Traversal) {
-      for (std::uint64_t action : llvm::ArrayRef(physicalUses_)
-                                      .slice(binding.traversalPhysicalUseOffset,
-                                             binding.traversalPhysicalUseCount))
-        if (llvm::Error error = appendAction(transfer.transferSlot, action))
-          return error;
+      if (transfer.traversalNodeOrdinal < binding.traversalNodeOffset ||
+          transfer.traversalNodeOrdinal >=
+              binding.traversalNodeOffset + binding.traversalNodeCount)
+        return invalid("CGRA traversal action names another transfer DAG");
+      const std::uint64_t action =
+          traversalNodes_[transfer.traversalNodeOrdinal].physicalUseOrdinal;
+      if (llvm::Error error = appendAction(
+              transfer.transferSlot, transfer.traversalNodeOrdinal, action))
+        return error;
       continue;
     }
     for (const SinkBinding &sink :
@@ -468,7 +587,8 @@ CgraTransportRuntime::requestActions(
       for (std::uint64_t action :
            llvm::ArrayRef(physicalUses_)
                .slice(sink.physicalUseOffset, sink.physicalUseCount))
-        if (llvm::Error error = appendAction(transfer.transferSlot, action))
+        if (llvm::Error error = appendAction(
+                transfer.transferSlot, invalidCgraTransportOrdinal, action))
           return error;
   }
 
@@ -506,19 +626,29 @@ llvm::Error CgraTransportRuntime::scheduleArrival(
   return llvm::Error::success();
 }
 
-llvm::Error CgraTransportRuntime::scheduleTraversal(
+llvm::Expected<bool> CgraTransportRuntime::scheduleReadyTraversals(
     std::uint64_t slot, const SpatialEventCoordinate &coordinate) {
   if (slot >= inFlight_.size() || !inFlight_[slot].active)
     return invalid("CGRA traversal event names an inactive token");
-  InFlight &inFlight = inFlight_[slot];
-  if (inFlight.traversalScheduled || inFlight.traversalRequested ||
-      inFlight.arrivalScheduled)
-    return invalid("CGRA traversal event was scheduled twice");
-  traversalEvents_.schedule(
-      {{coordinate, inFlight.bindingOrdinal, inFlight.occurrenceOrdinal, 0},
-       slot});
-  inFlight.traversalScheduled = true;
-  return llvm::Error::success();
+  const InFlight &inFlight = inFlight_[slot];
+  const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+  bool scheduled = false;
+  for (std::uint64_t nodeOrdinal = binding.traversalNodeOffset;
+       nodeOrdinal != binding.traversalNodeOffset + binding.traversalNodeCount;
+       ++nodeOrdinal) {
+    if (traversalNodeStates_[nodeOrdinal] != TraversalNodeState::Idle ||
+        traversalRemainingPredecessors_[nodeOrdinal] != 0)
+      continue;
+    const TraversalNodeBinding &node = traversalNodes_[nodeOrdinal];
+    traversalEvents_.schedule(
+        {{coordinate, node.physicalUseOrdinal, inFlight.occurrenceOrdinal,
+          static_cast<std::uint32_t>(nodeOrdinal -
+                                     binding.traversalNodeOffset)},
+         nodeOrdinal});
+    traversalNodeStates_[nodeOrdinal] = TraversalNodeState::Scheduled;
+    scheduled = true;
+  }
+  return scheduled;
 }
 
 llvm::Error CgraTransportRuntime::schedulePublication(
@@ -591,11 +721,16 @@ llvm::Error CgraTransportRuntime::acceptTransfers(
   for (std::uint64_t slot : slots) {
     const TransferBinding &binding = bindings_[inFlight_[slot].bindingOrdinal];
     if (binding.physicalUseCount == 0) {
-      llvm::Error error = binding.traversalPhysicalUseCount == 0
-                              ? scheduleArrival(slot, *arrival)
-                              : scheduleTraversal(slot, *arrival);
-      if (error)
-        return error;
+      if (binding.traversalNodeCount == 0) {
+        if (llvm::Error error = scheduleArrival(slot, *arrival))
+          return error;
+      } else {
+        auto scheduled = scheduleReadyTraversals(slot, *arrival);
+        if (!scheduled)
+          return scheduled.takeError();
+        if (!*scheduled)
+          return invalid("CGRA traversal DAG has no ready root action");
+      }
     }
   }
   return llvm::Error::success();
@@ -662,12 +797,15 @@ CgraTransportRuntime::acceptPhysicalEvents(
     std::uint32_t producedRetired = 0;
     std::uint32_t traversalPermitted = 0;
     std::uint32_t traversalRetired = 0;
+    std::uint32_t traversalTerminalsPermitted = 0;
     std::uint32_t consumedPermitted = 0;
     std::uint32_t consumedRetired = 0;
   };
   using ActionKey = std::pair<std::uint64_t, std::uint64_t>;
   llvm::DenseMap<ActionKey, ActionLifecycleState> projectedStates;
   llvm::DenseMap<std::uint64_t, CountDelta> countDeltas;
+  llvm::SmallVector<std::pair<std::uint64_t, std::uint64_t>, 8>
+      newlyPermittedTraversals;
 
   for (const CgraPhysicalLifecycleEvent &event : physicalFrame.events) {
     if (compareSpatialEventCoordinates(event.coordinate,
@@ -701,6 +839,18 @@ CgraTransportRuntime::acceptPhysicalEvents(
          client == CgraPhysicalUseClientKind::ConsumedTransport);
     if (!matchingClient)
       return invalid("CGRA physical lifecycle disagrees with transport stage");
+    if (owner.stage == ActionStage::Traversal) {
+      const InFlight &inFlight = inFlight_[owner.transferSlot];
+      const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+      if (owner.traversalNodeOrdinal < binding.traversalNodeOffset ||
+          owner.traversalNodeOrdinal >=
+              binding.traversalNodeOffset + binding.traversalNodeCount ||
+          traversalNodeTransferSlots_[owner.traversalNodeOrdinal] !=
+              owner.transferSlot)
+        return invalid("CGRA traversal lifecycle names another transfer DAG");
+    } else if (owner.traversalNodeOrdinal != invalidCgraTransportOrdinal) {
+      return invalid("CGRA endpoint lifecycle carries a traversal node");
+    }
 
     auto projected = projectedStates.find(key);
     ActionLifecycleState state =
@@ -744,6 +894,19 @@ CgraTransportRuntime::acceptPhysicalEvents(
     case ActionStage::Traversal:
       permittedDelta = &delta.traversalPermitted;
       retiredDelta = &delta.traversalRetired;
+      if (permitted) {
+        if (traversalNodeStates_[owner.traversalNodeOrdinal] !=
+            TraversalNodeState::Requested)
+          return invalid("CGRA traversal permission preceded its request");
+        newlyPermittedTraversals.emplace_back(owner.transferSlot,
+                                              owner.traversalNodeOrdinal);
+        if (traversalNodes_[owner.traversalNodeOrdinal].terminal) {
+          if (delta.traversalTerminalsPermitted ==
+              std::numeric_limits<std::uint32_t>::max())
+            return invalid("CGRA traversal terminal count exceeds u32");
+          ++delta.traversalTerminalsPermitted;
+        }
+      }
       break;
     case ActionStage::Consumed:
       permittedDelta = &delta.consumedPermitted;
@@ -759,6 +922,29 @@ CgraTransportRuntime::acceptPhysicalEvents(
     *retiredDelta += retired;
   }
 
+  llvm::DenseMap<std::uint64_t, std::uint32_t> successorDeltas;
+  for (const auto &[slot, nodeOrdinal] : newlyPermittedTraversals) {
+    const TraversalNodeBinding &node = traversalNodes_[nodeOrdinal];
+    if (node.successorOffset > traversalSuccessors_.size() ||
+        node.successorCount >
+            traversalSuccessors_.size() - node.successorOffset)
+      return invalid("CGRA traversal successor slice is malformed");
+    for (std::uint64_t successor :
+         llvm::ArrayRef(traversalSuccessors_)
+             .slice(node.successorOffset, node.successorCount)) {
+      if (successor >= traversalNodes_.size() ||
+          traversalNodeTransferSlots_[successor] != slot ||
+          traversalNodeStates_[successor] != TraversalNodeState::Idle)
+        return invalid("CGRA traversal successor has inconsistent state");
+      std::uint32_t &delta = successorDeltas[successor];
+      if (delta == std::numeric_limits<std::uint32_t>::max())
+        return invalid("CGRA traversal predecessor count exceeds u32");
+      ++delta;
+      if (delta > traversalRemainingPredecessors_[successor])
+        return invalid("CGRA traversal predecessor count underflows");
+    }
+  }
+
   bool needsNextDelta = false;
   std::vector<CgraTransportCompletion> completions;
   for (const auto &[slot, delta] : countDeltas) {
@@ -766,8 +952,9 @@ CgraTransportRuntime::acceptPhysicalEvents(
     const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
     if (inFlight.producedPermitted > binding.physicalUseCount ||
         inFlight.producedRetired > binding.physicalUseCount ||
-        inFlight.traversalPermitted > binding.traversalPhysicalUseCount ||
-        inFlight.traversalRetired > binding.traversalPhysicalUseCount ||
+        inFlight.traversalPermitted > binding.traversalNodeCount ||
+        inFlight.traversalRetired > binding.traversalNodeCount ||
+        inFlight.traversalTerminalsPermitted > binding.traversalTerminalCount ||
         inFlight.consumedPermitted > binding.consumedPhysicalUseCount ||
         inFlight.consumedRetired > binding.consumedPhysicalUseCount ||
         delta.producedPermitted >
@@ -775,29 +962,27 @@ CgraTransportRuntime::acceptPhysicalEvents(
         delta.producedRetired >
             binding.physicalUseCount - inFlight.producedRetired ||
         delta.traversalPermitted >
-            binding.traversalPhysicalUseCount - inFlight.traversalPermitted ||
+            binding.traversalNodeCount - inFlight.traversalPermitted ||
         delta.traversalRetired >
-            binding.traversalPhysicalUseCount - inFlight.traversalRetired ||
+            binding.traversalNodeCount - inFlight.traversalRetired ||
+        delta.traversalTerminalsPermitted >
+            binding.traversalTerminalCount -
+                inFlight.traversalTerminalsPermitted ||
         delta.consumedPermitted >
             binding.consumedPhysicalUseCount - inFlight.consumedPermitted ||
         delta.consumedRetired >
             binding.consumedPhysicalUseCount - inFlight.consumedRetired)
       return invalid("CGRA transport lifecycle count exceeds selected uses");
-    if (delta.traversalPermitted != 0 && !inFlight.traversalRequested)
-      return invalid("CGRA traversal action preceded route traversal");
     if (delta.consumedPermitted != 0 && !inFlight.consumedRequested)
       return invalid("CGRA consumed action preceded transfer arrival");
     needsNextDelta |=
-        (!inFlight.traversalScheduled && !inFlight.traversalRequested &&
-         !inFlight.arrivalScheduled && !inFlight.consumedRequested &&
+        (!inFlight.arrivalScheduled && !inFlight.consumedRequested &&
+         delta.producedPermitted != 0 &&
          inFlight.producedPermitted + delta.producedPermitted ==
              binding.physicalUseCount) ||
-        (!inFlight.arrivalScheduled && !inFlight.consumedRequested &&
-         inFlight.traversalRequested &&
-         inFlight.traversalPermitted + delta.traversalPermitted ==
-             binding.traversalPhysicalUseCount) ||
+        delta.traversalPermitted != 0 ||
         (!inFlight.publicationScheduled && !inFlight.published &&
-         inFlight.consumedRequested &&
+         inFlight.consumedRequested && delta.consumedPermitted != 0 &&
          inFlight.consumedPermitted + delta.consumedPermitted ==
              binding.consumedPhysicalUseCount);
   }
@@ -860,28 +1045,49 @@ CgraTransportRuntime::acceptPhysicalEvents(
       break;
     }
   }
+
+  for (const auto &[slot, nodeOrdinal] : newlyPermittedTraversals) {
+    InFlight &inFlight = inFlight_[slot];
+    traversalNodeStates_[nodeOrdinal] = TraversalNodeState::Permitted;
+    if (traversalNodes_[nodeOrdinal].terminal)
+      ++inFlight.traversalTerminalsPermitted;
+  }
+  for (const auto &[successor, delta] : successorDeltas)
+    traversalRemainingPredecessors_[successor] -= delta;
+
   for (const auto &[slot, delta] : countDeltas) {
-    (void)delta;
     InFlight &inFlight = inFlight_[slot];
     const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
-    if (!inFlight.traversalScheduled && !inFlight.traversalRequested &&
-        !inFlight.arrivalScheduled && !inFlight.consumedRequested &&
+    if (!inFlight.arrivalScheduled && !inFlight.consumedRequested &&
+        delta.producedPermitted != 0 &&
         inFlight.producedPermitted == binding.physicalUseCount) {
       if (!next)
         return invalid("CGRA traversal request lost its next delta");
-      llvm::Error error = binding.traversalPhysicalUseCount == 0
-                              ? scheduleArrival(slot, *next)
-                              : scheduleTraversal(slot, *next);
-      if (error)
-        return error;
+      if (binding.traversalNodeCount == 0) {
+        if (llvm::Error error = scheduleArrival(slot, *next))
+          return error;
+      } else {
+        auto scheduled = scheduleReadyTraversals(slot, *next);
+        if (!scheduled)
+          return scheduled.takeError();
+        if (!*scheduled)
+          return invalid("CGRA traversal DAG has no ready root action");
+      }
     }
     if (!inFlight.arrivalScheduled && !inFlight.consumedRequested &&
-        inFlight.traversalRequested &&
-        inFlight.traversalPermitted == binding.traversalPhysicalUseCount) {
+        delta.traversalPermitted != 0 &&
+        inFlight.traversalTerminalsPermitted ==
+            binding.traversalTerminalCount) {
       if (!next)
         return invalid("CGRA transport arrival lost its next delta");
       if (llvm::Error error = scheduleArrival(slot, *next))
         return error;
+    } else if (delta.traversalPermitted != 0) {
+      if (!next)
+        return invalid("CGRA traversal successor lost its next delta");
+      auto scheduled = scheduleReadyTraversals(slot, *next);
+      if (!scheduled)
+        return scheduled.takeError();
     }
     if (!inFlight.publicationScheduled && !inFlight.published &&
         inFlight.consumedRequested &&
@@ -943,7 +1149,7 @@ CgraTransportRuntime::maybeRelease(std::uint64_t slot) {
   const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
   if (inFlight.published &&
       inFlight.producedRetired == binding.physicalUseCount &&
-      inFlight.traversalRetired == binding.traversalPhysicalUseCount &&
+      inFlight.traversalRetired == binding.traversalNodeCount &&
       inFlight.consumedRetired == binding.consumedPhysicalUseCount)
     return release(slot);
   return std::nullopt;
@@ -957,6 +1163,13 @@ CgraTransportRuntime::release(std::uint64_t slot) {
   if (binding.actorPlanOrdinal)
     completion = CgraTransportCompletion{*binding.actorPlanOrdinal,
                                          inFlight.occurrenceOrdinal};
+  for (std::uint64_t nodeOrdinal = binding.traversalNodeOffset;
+       nodeOrdinal != binding.traversalNodeOffset + binding.traversalNodeCount;
+       ++nodeOrdinal) {
+    traversalRemainingPredecessors_[nodeOrdinal] = 0;
+    traversalNodeStates_[nodeOrdinal] = TraversalNodeState::Idle;
+    traversalNodeTransferSlots_[nodeOrdinal] = invalidCgraTransportOrdinal;
+  }
   binding.active = false;
   blocked_.reset(inFlight.bindingOrdinal);
   inFlight.active = false;
@@ -990,19 +1203,27 @@ CgraTransportRuntime::advance() {
     if (!traversals)
       return traversals.takeError();
     llvm::SmallVector<PendingActionTransfer, 4> transfers;
-    llvm::SmallVector<std::uint64_t, 4> slots;
     transfers.reserve((**traversals).events.size());
-    slots.reserve((**traversals).events.size());
     for (const CgraScheduledEvent &event : (**traversals).events) {
-      if (event.payload >= inFlight_.size() || !inFlight_[event.payload].active)
+      const std::uint64_t nodeOrdinal = event.payload;
+      if (nodeOrdinal >= traversalNodes_.size() ||
+          traversalNodeStates_[nodeOrdinal] != TraversalNodeState::Scheduled)
+        return invalid("CGRA traversal event names an unscheduled action");
+      const std::uint64_t slot = traversalNodeTransferSlots_[nodeOrdinal];
+      if (slot >= inFlight_.size() || !inFlight_[slot].active)
         return invalid("CGRA traversal event names an inactive token");
-      InFlight &inFlight = inFlight_[event.payload];
-      if (!inFlight.traversalScheduled || inFlight.traversalRequested ||
-          inFlight.bindingOrdinal != event.order.structuralActionOrdinal ||
-          inFlight.occurrenceOrdinal != event.order.occurrenceOrdinal)
+      InFlight &inFlight = inFlight_[slot];
+      const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+      const TraversalNodeBinding &node = traversalNodes_[nodeOrdinal];
+      if (nodeOrdinal < binding.traversalNodeOffset ||
+          nodeOrdinal >=
+              binding.traversalNodeOffset + binding.traversalNodeCount ||
+          node.physicalUseOrdinal != event.order.structuralActionOrdinal ||
+          inFlight.occurrenceOrdinal != event.order.occurrenceOrdinal ||
+          event.order.ownerEventOrdinal !=
+              nodeOrdinal - binding.traversalNodeOffset)
         return invalid("CGRA traversal event key is inconsistent");
-      transfers.push_back({event.payload, inFlight.bindingOrdinal});
-      slots.push_back(event.payload);
+      transfers.push_back({slot, inFlight.bindingOrdinal, nodeOrdinal});
     }
     auto requested = requestActions(transfers, ActionStage::Traversal,
                                     (**traversals).coordinate);
@@ -1010,11 +1231,9 @@ CgraTransportRuntime::advance() {
       return requested.takeError();
     frame.physicalEvents.insert(frame.physicalEvents.end(), requested->begin(),
                                 requested->end());
-    for (std::uint64_t slot : slots) {
-      InFlight &inFlight = inFlight_[slot];
-      inFlight.traversalScheduled = false;
-      inFlight.traversalRequested = true;
-    }
+    for (const PendingActionTransfer &transfer : transfers)
+      traversalNodeStates_[transfer.traversalNodeOrdinal] =
+          TraversalNodeState::Requested;
   }
 
   if (isAt(arrivalEvents_.nextCoordinate(), *coordinate)) {

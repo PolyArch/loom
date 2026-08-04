@@ -181,24 +181,30 @@ void localRealizationEdgePublishesThroughExactConsumer() {
   CgraFrozenExecutionPlan physicalPlan = plan;
   physicalPlan.transport.localTransfers.pop_back();
   physicalPlan.transport.localTransferSinks.pop_back();
-  physicalPlan.transport.traversals.resize(1);
+  physicalPlan.transport.traversals.resize(2);
   physicalPlan.transport.traversals.front().kind =
       loom::fabric::FabricPhysicalTraversalKind::BoundaryTraversal;
   physicalPlan.transport.traversals.front().impliedUseOffset = 0;
   physicalPlan.transport.traversals.front().impliedUseCount = 1;
+  physicalPlan.transport.traversals[1].kind =
+      loom::fabric::FabricPhysicalTraversalKind::SwitchTraversal;
+  physicalPlan.transport.traversals[1].impliedUseOffset = 1;
+  physicalPlan.transport.traversals[1].impliedUseCount = 1;
   physicalPlan.transport.traversalUses.push_back({{}, {}, 2});
+  physicalPlan.transport.traversalUses.push_back({{}, {}, 3});
   physicalPlan.transport.routeNodes.push_back(
       {std::numeric_limits<std::uint32_t>::max(), invalidCgraTransportOrdinal});
+  physicalPlan.transport.routeNodes.push_back({0, 1});
   physicalPlan.transport.routeSinks.push_back(
       {{dataflow::ActorTokenOperandRef{sync->ref, 1}},
-       0,
+       1,
        invalidCgraTransportOrdinal});
   physicalPlan.transport.routes.push_back(
       {{dataflow::ActorTokenResultRef{add->ref, 0}},
        add->graph,
        0,
        0,
-       1,
+       2,
        0,
        1});
   physicalPlan.physicalUseClients.push_back(
@@ -207,6 +213,9 @@ void localRealizationEdgePublishesThroughExactConsumer() {
       CgraPhysicalUseClientKind::ConsumedTransport);
   physicalPlan.physicalUseClients.push_back(
       CgraPhysicalUseClientKind::TraversalTransport);
+  physicalPlan.physicalUseClients.push_back(
+      CgraPhysicalUseClientKind::TraversalTransport);
+  physicalPlan.resources.selectedUses.push_back({});
   physicalPlan.resources.selectedUses.push_back({});
   physicalPlan.resources.selectedUses.push_back({});
   physicalPlan.resources.selectedUses.push_back({});
@@ -216,6 +225,8 @@ void localRealizationEdgePublishesThroughExactConsumer() {
       {1, 0, std::nullopt, 1, 0, 1, std::nullopt});
   physicalPlan.physicalUseTimings.push_back(
       {2, 0, std::nullopt, 1, 0, 1, std::nullopt});
+  physicalPlan.physicalUseTimings.push_back(
+      {3, 0, std::nullopt, 1, 0, 1, std::nullopt});
   physicalPlan.transport.endpointPhysicalUses.push_back(0);
   physicalPlan.transport.endpointPhysicalUses.push_back(1);
   physicalPlan.transport.producedUses.push_back(
@@ -262,6 +273,24 @@ void localRealizationEdgePublishesThroughExactConsumer() {
               traversalGrant->events.front().actionOrdinal == 2,
           "selected traversal use did not grant");
   (void)take(selectedTransport.acceptPhysicalEvents(*traversalGrant));
+  auto childTraversalRequest = take(selectedTransport.advance());
+  require(childTraversalRequest &&
+              childTraversalRequest->physicalEvents.size() == 1 &&
+              childTraversalRequest->physicalEvents.front().kind ==
+                  CgraPhysicalLifecycleKind::Requested &&
+              childTraversalRequest->physicalEvents.front().actionOrdinal ==
+                  3 &&
+              childTraversalRequest->publications.empty() &&
+              loom::sim::compareSpatialEventCoordinates(
+                  childTraversalRequest->coordinate, coordinate(4, 2)) == 0,
+          "child traversal did not wait for its selected parent traversal");
+  auto childTraversalGrant = take(selectedPhysical.advance());
+  require(childTraversalGrant && childTraversalGrant->events.size() == 1 &&
+              childTraversalGrant->events.front().kind ==
+                  CgraPhysicalLifecycleKind::Granted &&
+              childTraversalGrant->events.front().actionOrdinal == 3,
+          "child traversal use did not grant");
+  (void)take(selectedTransport.acceptPhysicalEvents(*childTraversalGrant));
   auto consumedRequest = take(selectedTransport.advance());
   require(consumedRequest && consumedRequest->physicalEvents.size() == 1 &&
               consumedRequest->physicalEvents.front().kind ==
@@ -269,7 +298,7 @@ void localRealizationEdgePublishesThroughExactConsumer() {
               consumedRequest->physicalEvents.front().actionOrdinal == 1 &&
               consumedRequest->publications.empty() &&
               loom::sim::compareSpatialEventCoordinates(
-                  consumedRequest->coordinate, coordinate(4, 2)) == 0,
+                  consumedRequest->coordinate, coordinate(4, 3)) == 0,
           "selected Consumed use did not gate sink publication");
   auto consumedGrant = take(selectedPhysical.advance());
   require(consumedGrant && consumedGrant->events.size() == 1 &&
@@ -282,7 +311,7 @@ void localRealizationEdgePublishesThroughExactConsumer() {
   require(selectedPublication &&
               selectedPublication->publications.size() == 1 &&
               loom::sim::compareSpatialEventCoordinates(
-                  selectedPublication->coordinate, coordinate(4, 3)) == 0,
+                  selectedPublication->coordinate, coordinate(4, 4)) == 0,
           "selected endpoint uses did not gate token publication");
 }
 
