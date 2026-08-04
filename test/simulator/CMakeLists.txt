@@ -2,6 +2,15 @@ add_executable(loom-simulator-atomic-order-test
   MemoryAtomicOrderTest.cpp
 )
 
+add_executable(loom-simulator-cgra-event-queue-test
+  CgraEventQueueTest.cpp
+)
+
+target_link_libraries(loom-simulator-cgra-event-queue-test PRIVATE
+  LoomSimulator
+  LLVMSupport
+)
+
 target_link_libraries(loom-simulator-atomic-order-test PRIVATE
   LoomSimulator
   LLVMSupport

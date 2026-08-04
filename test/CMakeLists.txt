@@ -122,6 +122,7 @@ set(LOOM_TEST_DEPENDS
   loom-pnr-cp-sat-exact-protocol-test
   loom-relocatable-payload-test
   loom-simulator-atomic-order-test
+  loom-simulator-cgra-event-queue-test
   loom-simulator-dynamic-work-test
   loom-simulator-dfg-evaluation-test
   loom-simulator-dfg-pointer-execution-test

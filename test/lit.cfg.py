@@ -95,6 +95,7 @@ tools = [
     "loom-raise",
     "loom-raise-opt",
     "loom-simulator-atomic-order-test",
+    "loom-simulator-cgra-event-queue-test",
     "loom-simulator-dynamic-work-test",
     "loom-simulator-dfg-evaluation-test",
     "loom-simulator-dfg-execution-session-test",

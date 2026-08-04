@@ -13,13 +13,9 @@
 #include <vector>
 
 namespace loom::sim {
-namespace {
 
-using detail::WireReader;
-using detail::WireWriter;
-
-int compareCoordinates(const SpatialEventCoordinate &lhs,
-                       const SpatialEventCoordinate &rhs) {
+int compareSpatialEventCoordinates(const SpatialEventCoordinate &lhs,
+                                   const SpatialEventCoordinate &rhs) {
   using u128 = unsigned __int128;
   const u128 lhsScaled = static_cast<u128>(lhs.referenceCycle.numerator()) *
                          rhs.referenceCycle.denominator();
@@ -32,17 +28,22 @@ int compareCoordinates(const SpatialEventCoordinate &lhs,
   return lhs.delta < rhs.delta ? -1 : 1;
 }
 
+namespace {
+
+using detail::WireReader;
+using detail::WireWriter;
+
 llvm::Error validateProgress(const SpatialProgressObservations &progress,
                              const ExecutionTerminal &terminal) {
-  if (compareCoordinates(progress.launchAccepted, progress.terminalObserved) >
-      0)
+  if (compareSpatialEventCoordinates(progress.launchAccepted,
+                                     progress.terminalObserved) > 0)
     return detail::invalid("simulation execution: launch coordinate follows "
                            "the terminal coordinate");
   if (progress.graphRetirementVisible) {
-    if (compareCoordinates(progress.launchAccepted,
-                           *progress.graphRetirementVisible) > 0 ||
-        compareCoordinates(*progress.graphRetirementVisible,
-                           progress.terminalObserved) > 0)
+    if (compareSpatialEventCoordinates(progress.launchAccepted,
+                                       *progress.graphRetirementVisible) > 0 ||
+        compareSpatialEventCoordinates(*progress.graphRetirementVisible,
+                                       progress.terminalObserved) > 0)
       return detail::invalid("simulation execution: graph-retirement "
                              "coordinate is out of order");
   }
