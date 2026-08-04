@@ -1,16 +1,13 @@
 #include "Config/ResolvedConfig.h"
 
-#include "Common/ArtifactFinalizer.h"
+#include "Common/ArtifactText.h"
 
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ErrorOr.h"
-#include "llvm/Support/FormatVariadic.h"
-#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/YAMLParser.h"
@@ -19,7 +16,6 @@
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
-#include <numeric>
 #include <optional>
 #include <set>
 #include <string>
@@ -229,7 +225,12 @@ struct ConfigPatch {
   std::optional<std::uint64_t> techMappingMatchRowAttemptLimit;
   std::optional<std::uint64_t> techMappingPartialCoverExpansionLimit;
   std::optional<std::uint64_t> techMappingCandidatePublicationLimit;
+  std::optional<std::vector<loom::dse::ModelAuthorization>> modelAuthorizations;
+  std::optional<std::vector<loom::dse::EvidenceObligationTemplate>>
+      evidenceObligationTemplates;
   std::optional<loom::ResolvedObjectiveCatalogs> objectiveCatalogs;
+  std::optional<std::vector<loom::dse::QualityGatePolicy>> qualityGatePolicies;
+  std::optional<std::vector<loom::dse::DsePlanNodeDefinition>> planNodes;
   std::optional<loom::ResolvedPnrPolicyConfig> spatialPnr;
   std::optional<loom::ResolvedPnrPolicyConfig> systemPnr;
   std::set<std::string> touchedKeys;
@@ -305,8 +306,16 @@ void applyPatch(loom::ResolvedConfig &config, const ConfigPatch &patch) {
   if (patch.techMappingCandidatePublicationLimit)
     config.dse.techMapping.candidatePublicationLimit =
         *patch.techMappingCandidatePublicationLimit;
+  if (patch.modelAuthorizations)
+    config.dse.modelAuthorizations = *patch.modelAuthorizations;
+  if (patch.evidenceObligationTemplates)
+    config.dse.evidenceObligationTemplates = *patch.evidenceObligationTemplates;
   if (patch.objectiveCatalogs)
     config.dse.objectiveCatalogs = *patch.objectiveCatalogs;
+  if (patch.qualityGatePolicies)
+    config.dse.qualityGatePolicies = *patch.qualityGatePolicies;
+  if (patch.planNodes)
+    config.dse.planNodes = *patch.planNodes;
   if (patch.spatialPnr)
     config.dse.spatialPnr = *patch.spatialPnr;
   if (patch.systemPnr)
@@ -470,25 +479,112 @@ parseObjectiveDirection(const ConfigSyntax *node, const llvm::Twine &key) {
   return diagnostic("config_unknown_enum", key, *valueOrErr);
 }
 
-llvm::Expected<loom::ResolvedObjectiveCatalogs>
+struct ParsedDsePolicyCatalogs final {
+  std::vector<loom::dse::ModelAuthorization> modelAuthorizations;
+  std::vector<loom::dse::EvidenceObligationTemplate>
+      evidenceObligationTemplates;
+  loom::ResolvedObjectiveCatalogs objectives;
+  std::vector<loom::dse::QualityGatePolicy> qualityGatePolicies;
+  std::vector<loom::dse::DsePlanNodeDefinition> planNodes;
+};
+
+template <typename T, typename Adopter>
+llvm::Expected<std::vector<T>>
+parseCanonicalRecordSequence(const ConfigSyntax *node, const llvm::Twine &key,
+                             Adopter adopter) {
+  auto entriesOrErr = requireSequence(node, key);
+  if (!entriesOrErr)
+    return entriesOrErr.takeError();
+  std::vector<T> records;
+  records.reserve((*entriesOrErr)->size());
+  std::uint64_t ordinal = 0;
+  for (const ConfigSyntax &entry : **entriesOrErr) {
+    const std::string entryKey = (key + "[" + llvm::Twine(ordinal) + "]").str();
+    auto spelling = requireScalarString(&entry, entryKey);
+    if (!spelling)
+      return spelling.takeError();
+    auto bytes = loom::parseArtifactLocalPayloadHex(*spelling);
+    if (!bytes)
+      return diagnostic("config_type_mismatch", entryKey,
+                        llvm::toString(bytes.takeError()));
+    auto record = adopter(*bytes);
+    if (!record)
+      return record.takeError();
+    records.push_back(std::move(*record));
+    ++ordinal;
+  }
+  return records;
+}
+
+llvm::Expected<ParsedDsePolicyCatalogs>
 parseObjectiveCatalogs(const ConfigSyntax *node) {
   constexpr llvm::StringLiteral prefix =
       "dse.evaluation_and_objective_catalogs";
   auto fieldsOrErr = ClosedMapping::parse(
       node, prefix,
-      {"evidence_obligation_templates", "objective_dimensions",
-       "weighted_levels", "total_orderings"});
+      {"model_authorizations", "evidence_obligation_templates",
+       "objective_dimensions", "weighted_levels", "total_orderings",
+       "quality_gate_policies", "resolved_plan_nodes"});
   if (!fieldsOrErr)
     return fieldsOrErr.takeError();
 
-  auto templatesOrErr =
-      requireSequence(fieldsOrErr->at("evidence_obligation_templates"),
-                      prefix + ".evidence_obligation_templates");
-  if (!templatesOrErr)
-    return templatesOrErr.takeError();
-  if (!(*templatesOrErr)->empty())
-    return diagnostic("config_owner_contract_unavailable",
-                      prefix + ".evidence_obligation_templates");
+  ParsedDsePolicyCatalogs parsed;
+  auto authorizations = requireSequence(fieldsOrErr->at("model_authorizations"),
+                                        prefix + ".model_authorizations");
+  if (!authorizations)
+    return authorizations.takeError();
+  std::uint64_t authorizationOrdinal = 0;
+  for (const ConfigSyntax &entry : **authorizations) {
+    const std::string entryKey = (prefix + ".model_authorizations[" +
+                                  llvm::Twine(authorizationOrdinal) + "]")
+                                     .str();
+    auto authorization = ClosedMapping::parse(
+        &entry, entryKey, {"schema_major", "schema_minor", "model_kind"});
+    if (!authorization)
+      return authorization.takeError();
+    auto major = requireU32(authorization->at("schema_major"),
+                            entryKey + ".schema_major");
+    auto minor = requireU32(authorization->at("schema_minor"),
+                            entryKey + ".schema_minor");
+    auto kind =
+        requireU32(authorization->at("model_kind"), entryKey + ".model_kind");
+    if (!major)
+      return major.takeError();
+    if (!minor)
+      return minor.takeError();
+    if (!kind)
+      return kind.takeError();
+    auto descriptor = loom::evaluation::EvaluationModelDescriptorRef::get(
+        {*major, *minor}, loom::evaluation::EvaluationModelKind(*kind));
+    if (!descriptor)
+      return descriptor.takeError();
+    parsed.modelAuthorizations.push_back({*descriptor});
+    ++authorizationOrdinal;
+  }
+
+  auto templates =
+      parseCanonicalRecordSequence<loom::dse::EvidenceObligationTemplate>(
+          fieldsOrErr->at("evidence_obligation_templates"),
+          prefix + ".evidence_obligation_templates",
+          loom::dse::adoptEvidenceObligationTemplate);
+  if (!templates)
+    return templates.takeError();
+  parsed.evidenceObligationTemplates = std::move(*templates);
+
+  auto gates = parseCanonicalRecordSequence<loom::dse::QualityGatePolicy>(
+      fieldsOrErr->at("quality_gate_policies"),
+      prefix + ".quality_gate_policies", loom::dse::adoptQualityGatePolicy);
+  if (!gates)
+    return gates.takeError();
+  parsed.qualityGatePolicies = std::move(*gates);
+
+  auto planNodes =
+      parseCanonicalRecordSequence<loom::dse::DsePlanNodeDefinition>(
+          fieldsOrErr->at("resolved_plan_nodes"),
+          prefix + ".resolved_plan_nodes", loom::dse::adoptDsePlanNode);
+  if (!planNodes)
+    return planNodes.takeError();
+  parsed.planNodes = std::move(*planNodes);
 
   loom::ResolvedObjectiveCatalogs catalogs;
   auto dimensionsOrErr =
@@ -638,7 +734,8 @@ parseObjectiveCatalogs(const ConfigSyntax *node) {
 
   if (llvm::Error error = loom::validateResolvedObjectiveCatalogs(catalogs))
     return std::move(error);
-  return catalogs;
+  parsed.objectives = std::move(catalogs);
+  return parsed;
 }
 
 llvm::Expected<loom::ResolvedPathFinderPriceKernel>
@@ -1180,7 +1277,12 @@ llvm::Error parseDse(ConfigPatch &patch, const ConfigSyntax *node) {
     auto catalogsOrErr = parseObjectiveCatalogs(catalogs);
     if (!catalogsOrErr)
       return catalogsOrErr.takeError();
-    patch.objectiveCatalogs = std::move(*catalogsOrErr);
+    patch.modelAuthorizations = std::move(catalogsOrErr->modelAuthorizations);
+    patch.evidenceObligationTemplates =
+        std::move(catalogsOrErr->evidenceObligationTemplates);
+    patch.objectiveCatalogs = std::move(catalogsOrErr->objectives);
+    patch.qualityGatePolicies = std::move(catalogsOrErr->qualityGatePolicies);
+    patch.planNodes = std::move(catalogsOrErr->planNodes);
     if (llvm::Error error =
             touch(patch, "dse.evaluation_and_objective_catalogs"))
       return error;
@@ -1208,8 +1310,7 @@ llvm::Expected<ConfigPatch>
 parseConfigPatchFromMapping(const ConfigSyntax &topMap,
                             llvm::StringRef sourceName);
 
-llvm::Expected<ConfigPatch>
-parseConfigFilePatch(llvm::StringRef path) {
+llvm::Expected<ConfigPatch> parseConfigFilePatch(llvm::StringRef path) {
   auto bufferOrErr = llvm::MemoryBuffer::getFile(path);
   if (std::error_code ec = bufferOrErr.getError())
     return makeErr("config_parse_failed: " + path + ": " + ec.message());
@@ -1262,305 +1363,6 @@ parseConfigPatchFromMapping(const ConfigSyntax &topMap,
   return local;
 }
 
-llvm::StringRef violationName(loom::ResolvedPnrViolationKind violation) {
-  using Kind = loom::ResolvedPnrViolationKind;
-  switch (violation) {
-#define LOOM_MAPPING_VIOLATION(Name, Ordinal, DisplayName, ConfigSpelling)     \
-  case Kind::Name:                                                             \
-    return ConfigSpelling;
-#include "Common/MappingObjectiveKinds.def"
-  }
-  llvm_unreachable("all PnR violation kinds are handled");
-}
-
-llvm::json::Object ratioJson(const loom::ResolvedExactRatio &ratio) {
-  return llvm::json::Object{{"numerator", ratio.numerator},
-                            {"denominator", ratio.denominator}};
-}
-
-llvm::json::Object
-routingNegotiationJson(const loom::ResolvedRoutingNegotiationPolicy &policy) {
-  if (const auto *pathFinder =
-          std::get_if<loom::ResolvedPathFinderPolicy>(&policy)) {
-    return llvm::json::Object{
-        {"kind", "pathfinder"},
-        {"price_kernel",
-         pathFinder->priceKernel ==
-                 loom::ResolvedPathFinderPriceKernel::Multiplicative
-             ? "multiplicative"
-             : "additive"},
-        {"present_pressure_initial", pathFinder->presentPressureInitial},
-        {"present_pressure_growth",
-         ratioJson(pathFinder->presentPressureGrowth)},
-        {"history_pressure_increment", pathFinder->historyPressureIncrement}};
-  }
-
-  const auto &dual = std::get<loom::ResolvedDualSubgradientPolicy>(policy);
-  llvm::json::Object direction;
-  switch (dual.directionKernel) {
-  case loom::ResolvedDualDirectionKernel::ProjectedSigned:
-    direction = llvm::json::Object{{"kind", "projected_signed"}};
-    break;
-  case loom::ResolvedDualDirectionKernel::PositiveViolationOnly:
-    direction = llvm::json::Object{{"kind", "positive_violation_only"}};
-    break;
-  case loom::ResolvedDualDirectionKernel::MomentumDeflected:
-    direction = llvm::json::Object{{"kind", "momentum_deflected"},
-                                   {"beta", ratioJson(*dual.momentum)}};
-    break;
-  }
-
-  const loom::ResolvedDualStepSchedule &schedule = dual.stepSchedule;
-  llvm::json::Object scheduleJson;
-  switch (schedule.kind) {
-  case loom::ResolvedDualStepScheduleKind::Constant:
-    scheduleJson =
-        llvm::json::Object{{"kind", "constant"}, {"step", schedule.first}};
-    break;
-  case loom::ResolvedDualStepScheduleKind::GeometricDecay:
-    scheduleJson = llvm::json::Object{
-        {"kind", "geometric_decay"},
-        {"initial_step", schedule.first},
-        {"minimum_step", schedule.second},
-        {"decay", ratioJson({schedule.third, schedule.fourth})}};
-    break;
-  case loom::ResolvedDualStepScheduleKind::HarmonicDecay:
-    scheduleJson = llvm::json::Object{{"kind", "harmonic_decay"},
-                                      {"numerator", schedule.first},
-                                      {"offset", schedule.second},
-                                      {"minimum_step", schedule.third}};
-    break;
-  }
-  return llvm::json::Object{{"kind", "dual_subgradient"},
-                            {"direction_kernel", std::move(direction)},
-                            {"step_schedule", std::move(scheduleJson)}};
-}
-
-llvm::json::Object pnrPolicyJson(const loom::ResolvedPnrPolicyConfig &policy) {
-  const loom::ResolvedPnrSearchPolicy &search = policy.search;
-  llvm::json::Array temporaryViolations;
-  for (loom::ResolvedPnrViolationKind violation :
-       policy.temporaryViolations.admitted)
-    temporaryViolations.push_back(violationName(violation));
-
-  llvm::json::Array focusedDimensions;
-  for (std::uint32_t dimension :
-       policy.objectiveSelection.focusedClosureDimensions)
-    focusedDimensions.push_back(dimension);
-
-  llvm::json::Array evaluationBindings;
-  for (const loom::ResolvedPnrEvaluationBindingSelection &binding :
-       policy.evaluationBindings)
-    evaluationBindings.push_back(
-        llvm::json::Object{{"obligation_template", binding.obligationTemplate},
-                           {"interaction_domain", binding.interactionDomain}});
-
-  llvm::json::Object exactRepair;
-  if (search.exactRepair.kind == loom::ResolvedPnrExactRepairKind::Disabled) {
-    exactRepair = llvm::json::Object{{"kind", "disabled"}};
-  } else {
-    exactRepair = llvm::json::Object{
-        {"kind", "cp_sat"},
-        {"max_region_decisions", search.exactRepair.maxRegionDecisions},
-        {"max_solver_calls", search.exactRepair.maxSolverCalls}};
-  }
-
-  return llvm::json::Object{
-      {"search_policy",
-       llvm::json::Object{
-           {"initializer",
-            llvm::json::Object{
-                {"seed_attempt_count", search.initializer.seedAttemptCount},
-                {"assignment_attempt_limit_per_seed",
-                 search.initializer.assignmentAttemptLimitPerSeed}}},
-           {"action_proposal",
-            llvm::json::Object{
-                {"realization_binding_weight",
-                 search.actionProposal.realizationBindingWeight},
-                {"transport_routing_weight",
-                 search.actionProposal.transportRoutingWeight},
-                {"resource_allocation_weight",
-                 search.actionProposal.resourceAllocationWeight}}},
-           {"routing",
-            llvm::json::Object{
-                {"endpoint_expansion_limit",
-                 search.routing.endpointExpansionLimit},
-                {"negotiation_iteration_limit",
-                 search.routing.negotiationIterationLimit},
-                {"negotiation_policy",
-                 routingNegotiationJson(search.routing.negotiation)},
-                {"route_guidance_binding",
-                 search.routing.routeGuidanceBinding
-                     ? llvm::json::Value(*search.routing.routeGuidanceBinding)
-                     : llvm::json::Value(nullptr)}}},
-           {"annealing",
-            llvm::json::Object{
-                {"calibration_proposal_count",
-                 search.annealing.calibrationProposalCount},
-                {"positive_delta_quantile",
-                 ratioJson(search.annealing.positiveDeltaQuantile)},
-                {"target_initial_acceptance",
-                 ratioJson(search.annealing.targetInitialAcceptance)},
-                {"fallback_temperature", search.annealing.fallbackTemperature},
-                {"minimum_temperature", search.annealing.minimumTemperature},
-                {"cooling_ratio", ratioJson(search.annealing.coolingRatio)},
-                {"proposals_per_level_base",
-                 search.annealing.proposalsPerLevelBase},
-                {"proposals_per_movable_decision",
-                 search.annealing.proposalsPerMovableDecision}}},
-           {"focused_closure",
-            llvm::json::Object{
-                {"proposal_limit", search.focusedClosureProposalLimit}}},
-           {"exact_repair", std::move(exactRepair)}}},
-      {"determinism_policy",
-       llvm::json::Object{
-           {"master_seed", policy.determinism.masterSeed},
-           {"prng_protocol", "sha256_seeded_xoshiro256starstar_1_0"},
-           {"acceptance_protocol", "exp_negative_q64_table_1_0"}}},
-      {"temporary_violation_policy", std::move(temporaryViolations)},
-      {"selected_total_ordering",
-       policy.objectiveSelection.selectedTotalOrdering},
-      {"selected_search_energy",
-       policy.objectiveSelection.selectedSearchEnergy},
-      {"focused_closure_dimensions", std::move(focusedDimensions)},
-      {"evaluation_interaction_bindings", std::move(evaluationBindings)}};
-}
-
-llvm::StringRef
-objectiveSourceName(const loom::ResolvedObjectiveScalarSource &source) {
-  if (std::holds_alternative<loom::ResolvedMappingViolationObjectiveSource>(
-          source))
-    return "mapping_violation";
-  if (std::holds_alternative<loom::ResolvedMappingMeasureObjectiveSource>(
-          source))
-    return "mapping_measure";
-  return "evaluation_metric";
-}
-
-llvm::StringRef
-objectiveDirectionName(loom::ResolvedObjectiveDirection direction) {
-  return direction == loom::ResolvedObjectiveDirection::Minimize ? "minimize"
-                                                                 : "maximize";
-}
-
-llvm::json::Value
-objectiveScalarJson(const loom::ResolvedObjectiveScalar &value) {
-  if (const auto *integer =
-          std::get_if<loom::ResolvedObjectiveInteger>(&value)) {
-    if (!integer->negative)
-      return llvm::json::Value(integer->magnitude);
-    if (integer->magnitude == (UINT64_C(1) << 63))
-      return llvm::json::Value(std::numeric_limits<std::int64_t>::min());
-    return llvm::json::Value(-static_cast<std::int64_t>(integer->magnitude));
-  }
-  const auto &decimal = std::get<loom::ResolvedObjectiveDecimal>(value);
-  return llvm::json::Value(
-      llvm::json::Object{{"coefficient", decimal.coefficient},
-                         {"base10_exponent", decimal.base10Exponent}});
-}
-
-llvm::json::Object
-objectiveCatalogsJson(const loom::ResolvedObjectiveCatalogs &catalogs) {
-  llvm::json::Array dimensions;
-  for (const loom::ResolvedObjectiveDimension &dimension :
-       catalogs.dimensions) {
-    llvm::json::Object object{
-        {"source_kind", objectiveSourceName(dimension.source)},
-        {"direction", objectiveDirectionName(dimension.direction)},
-        {"origin", objectiveScalarJson(dimension.origin)},
-        {"quantum", objectiveScalarJson(dimension.quantum)},
-        {"lower_index", dimension.lowerIndex},
-        {"upper_index", dimension.upperIndex}};
-    if (const auto *violation =
-            std::get_if<loom::ResolvedMappingViolationObjectiveSource>(
-                &dimension.source)) {
-      object.insert(
-          {"source_ordinal", static_cast<std::uint32_t>(violation->kind)});
-    } else if (const auto *measure =
-                   std::get_if<loom::ResolvedMappingMeasureObjectiveSource>(
-                       &dimension.source)) {
-      object.insert({"source_ordinal", measure->ordinal});
-    } else {
-      const auto &metric =
-          std::get<loom::ResolvedEvaluationMetricObjectiveSource>(
-              dimension.source);
-      object.insert(
-          {"evidence_obligation_template", metric.evidenceObligationTemplate});
-      object.insert({"metric_request_ordinal", metric.metricRequestOrdinal});
-    }
-    dimensions.push_back(std::move(object));
-  }
-
-  llvm::json::Array levels;
-  for (const loom::ResolvedWeightedObjectiveLevel &level :
-       catalogs.weightedLevels) {
-    llvm::json::Array terms;
-    for (const loom::ResolvedWeightedObjectiveTerm &term : level.terms)
-      terms.push_back(llvm::json::Object{{"dimension", term.dimension},
-                                         {"weight", term.weight}});
-    levels.push_back(llvm::json::Object{{"terms", std::move(terms)}});
-  }
-
-  llvm::json::Array orderings;
-  for (const loom::ResolvedTotalOrdering &ordering : catalogs.totalOrderings) {
-    llvm::json::Array levelRefs;
-    for (std::uint32_t level : ordering.weightedLevels)
-      levelRefs.push_back(level);
-    orderings.push_back(
-        llvm::json::Object{{"weighted_levels", std::move(levelRefs)}});
-  }
-  return llvm::json::Object{
-      {"evidence_obligation_templates", llvm::json::Array{}},
-      {"objective_dimensions", std::move(dimensions)},
-      {"weighted_levels", std::move(levels)},
-      {"total_orderings", std::move(orderings)}};
-}
-
-llvm::json::Object
-resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
-  const loom::adg::BuiltinTargetScale &scale = config.hardwareTarget.parameters;
-  return llvm::json::Object{
-      {"hardware_target",
-       llvm::json::Object{
-           {"template_identity", config.hardwareTarget.templateIdentity},
-           {"schema_major", config.hardwareTarget.schemaVersion.major},
-           {"schema_minor", config.hardwareTarget.schemaVersion.minor},
-           {"parameters",
-            llvm::json::Object{
-                {"acc_core_count", scale.accCoreCount},
-                {"spatial_pe_count", scale.spatialPeCount},
-                {"temporal_pe_count", scale.temporalPeCount},
-                {"spatial_memory_count", scale.spatialMemoryCount},
-                {"temporal_memory_count", scale.temporalMemoryCount},
-                {"temporal_resident_contexts", scale.temporalResidentContexts},
-                {"gateway_count", scale.gatewayCount},
-                {"memory_capacity_bytes", scale.memoryCapacityBytes}}},
-       }},
-      {"dse",
-       llvm::json::Object{
-           {"structured_ownership",
-            llvm::json::Object{
-                {"scope_expansion_limit",
-                 static_cast<int64_t>(
-                     config.dse.structuredOwnership.scopeExpansionLimit)},
-            }},
-           {"tech_mapping",
-            llvm::json::Object{
-                {"match_row_attempt_limit",
-                 config.dse.techMapping.matchRowAttemptLimit},
-                {"partial_cover_expansion_limit",
-                 config.dse.techMapping.partialCoverExpansionLimit},
-                {"candidate_publication_limit",
-                 config.dse.techMapping.candidatePublicationLimit},
-            }},
-           {"evaluation_and_objective_catalogs",
-            objectiveCatalogsJson(config.dse.objectiveCatalogs)},
-           {"spatial_pnr", pnrPolicyJson(config.dse.spatialPnr)},
-           {"system_pnr", pnrPolicyJson(config.dse.systemPnr)},
-       }},
-  };
-}
-
 llvm::Error validateResolvedConfig(const loom::ResolvedConfig &config) {
   if (config.hardwareTarget.templateIdentity.empty())
     return diagnostic("config_missing_required_profile",
@@ -1578,6 +1380,9 @@ llvm::Error validateResolvedConfig(const loom::ResolvedConfig &config) {
       config.dse.techMapping.candidatePublicationLimit == 0)
     return diagnostic("config_range_violation", "dse",
                       "semantic work limits must be positive");
+  auto dseView = loom::dse::projectResolvedDseConfigView(config);
+  if (!dseView)
+    return dseView.takeError();
   if (llvm::Error error = loom::validateResolvedPnrPolicyConfig(
           config.dse.spatialPnr, config.dse.objectiveCatalogs))
     return error;
@@ -1679,24 +1484,4 @@ loom::loadResolvedConfig(llvm::StringRef path) {
   if (llvm::Error error = validateResolvedConfig(config))
     return std::move(error);
   return config;
-}
-
-std::string
-loom::canonicalResolvedConfigJson(const loom::ResolvedConfig &config) {
-  return llvm::formatv("{0:2}",
-                       llvm::json::Value(resolvedConfigJsonObject(config)))
-      .str();
-}
-
-loom::CanonicalSemanticBytes
-loom::canonicalResolvedConfigBytes(const loom::ResolvedConfig &config) {
-  const std::string json = canonicalResolvedConfigJson(config);
-  return CanonicalSemanticBytes(
-      std::vector<std::uint8_t>(json.begin(), json.end()));
-}
-
-loom::ArtifactIdentity
-loom::resolvedConfigIdentity(const loom::ResolvedConfig &config) {
-  return finalizeArtifactIdentity(ResolvedConfig::artifactSchema,
-                                  canonicalResolvedConfigBytes(config));
 }

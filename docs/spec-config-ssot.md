@@ -129,6 +129,19 @@ ResolvedConfig {
 }
 ```
 
+`dse.evaluation_and_objective_catalogs` materializes exactly the owner tables
+of the [Resolved Configuration View](spec-dse-feedback.md#resolved-configuration-view):
+model authorizations, Evidence obligation templates, objective dimensions,
+weighted levels, total orderings, quality gates, and resolved plan nodes. The
+canonical JSON uses structured fields for model authorizations and objective
+records. Records whose schema is owned by DSE or Evaluation use lowercase
+hexadecimal text of that owner's canonical bytes; parsing must immediately
+invoke the exact typed adopter and require canonical re-encoding. These byte
+fields are not generic extension payloads, and an unknown, malformed, stale,
+noncanonical, or unregistered owner record is invalid. The
+`ResolvedDseConfigView` projector consumes these typed records from the complete
+`ResolvedConfig`; callers cannot construct a parallel view directly.
+
 `hardware_target` resolves the authoring selection described above. It is not
 part of either PnR component view: Spatial and System PnR consume the exact
 finalized Fabric identity as a separate input. The two PnR policy domains use

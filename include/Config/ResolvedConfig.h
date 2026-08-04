@@ -4,6 +4,7 @@
 #include "ADG/BuiltinDescriptor.h"
 #include "Common/Artifact.h"
 #include "Common/ResolvedPnrPolicy.h"
+#include "DSE/ResolvedConfigView.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -33,7 +34,11 @@ struct ResolvedTechMappingConfig {
 struct ResolvedDseConfig {
   ResolvedStructuredOwnershipConfig structuredOwnership;
   ResolvedTechMappingConfig techMapping;
+  std::vector<dse::ModelAuthorization> modelAuthorizations;
+  std::vector<dse::EvidenceObligationTemplate> evidenceObligationTemplates;
   ResolvedObjectiveCatalogs objectiveCatalogs;
+  std::vector<dse::QualityGatePolicy> qualityGatePolicies;
+  std::vector<dse::DsePlanNodeDefinition> planNodes;
   ResolvedPnrPolicyConfig spatialPnr;
   ResolvedPnrPolicyConfig systemPnr;
 };

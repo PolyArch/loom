@@ -2,6 +2,7 @@
 
 #include "Common/Artifact.h"
 #include "Common/ComponentViewDigest.h"
+#include "Config/ResolvedConfig.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -99,15 +100,23 @@ PromotePlanNodeDefinition promoteNode(QualityGatePolicyRef gate) {
   };
 }
 
+ResolvedConfig configWithPolicy(std::vector<QualityGatePolicy> gates,
+                                std::vector<DsePlanNodeDefinition> nodes) {
+  ResolvedConfig config = defaultResolvedConfig();
+  config.dse.qualityGatePolicies = std::move(gates);
+  config.dse.planNodes = std::move(nodes);
+  return config;
+}
+
 void canonicalRoundTripOwnsThePlanPolicy() {
   if (llvm::Error error = registerPromotionAcquisitionDescriptor(acquisition))
     fail(llvm::toString(std::move(error)));
 
   std::vector<QualityGatePolicy> gates;
   gates.push_back(take(QualityGatePolicy::get({})));
-  ResolvedDseConfigView view = take(ResolvedDseConfigView::get(
-      {}, {}, resolvedBuiltinObjectiveCatalogs(), std::move(gates),
-      {promoteNode(QualityGatePolicyRef(0))}));
+  const ResolvedConfig config = configWithPolicy(
+      std::move(gates), {promoteNode(QualityGatePolicyRef(0))});
+  ResolvedDseConfigView view = take(projectResolvedDseConfigView(config));
   ResolvedDseConfigView adopted = take(adoptResolvedDseConfigView(
       view.schemaDescriptorBytes(), view.canonicalViewBytes(), view.digest()));
 
@@ -120,28 +129,50 @@ void canonicalRoundTripOwnsThePlanPolicy() {
       promote.purpose() != PromotePurpose::CandidateSelection ||
       !adopted.plan().resolve(promote.qualityGateRef()))
     fail("Promote did not resolve its view-owned quality gate");
+
+  const std::string canonicalConfig = canonicalResolvedConfigJson(config);
+  const ResolvedConfig reparsed =
+      take(parseResolvedConfig(canonicalConfig, "resolved-dse-round-trip"));
+  const ResolvedDseConfigView reparsedView =
+      take(projectResolvedDseConfigView(reparsed));
+  if (reparsedView.canonicalViewBytes() != view.canonicalViewBytes() ||
+      resolvedConfigIdentity(reparsed) != resolvedConfigIdentity(config))
+    fail("ResolvedConfig round-trip changed the DSE policy owner");
+
+  ResolvedConfig hardwareChange = config;
+  ++hardwareChange.hardwareTarget.parameters.gatewayCount;
+  if (take(projectResolvedDseConfigView(hardwareChange)).digest() !=
+      view.digest())
+    fail("hardware-only change polluted the DSE component view");
+  if (resolvedConfigIdentity(hardwareChange) == resolvedConfigIdentity(config))
+    fail("hardware target change did not affect ResolvedConfig identity");
+
+  ResolvedConfig policyChange = config;
+  policyChange.dse.planNodes.clear();
+  if (take(projectResolvedDseConfigView(policyChange)).digest() ==
+          view.digest() ||
+      resolvedConfigIdentity(policyChange) == resolvedConfigIdentity(config))
+    fail("DSE policy change did not affect its view and config identities");
 }
 
 void malformedAndForeignReferencesFailClosed() {
   std::vector<QualityGatePolicy> gates;
   gates.push_back(take(QualityGatePolicy::get({})));
-  requireRejected(ResolvedDseConfigView::get(
-                      {}, {}, resolvedBuiltinObjectiveCatalogs(),
-                      std::move(gates), {promoteNode(QualityGatePolicyRef(1))}),
-                  "quality gate reference is out of range");
+  requireRejected(
+      projectResolvedDseConfigView(configWithPolicy(
+          std::move(gates), {promoteNode(QualityGatePolicyRef(1))})),
+      "quality gate reference is out of range");
 
   std::vector<QualityGatePolicy> duplicateGates;
   duplicateGates.push_back(take(QualityGatePolicy::get({})));
   duplicateGates.push_back(take(QualityGatePolicy::get({})));
-  requireRejected(ResolvedDseConfigView::get({}, {},
-                                             resolvedBuiltinObjectiveCatalogs(),
-                                             std::move(duplicateGates), {}),
+  requireRejected(projectResolvedDseConfigView(
+                      configWithPolicy(std::move(duplicateGates), {})),
                   "quality gate policies are not canonical and unique");
 
-  ResolvedDseConfigView view = take(
-      ResolvedDseConfigView::get({}, {}, resolvedBuiltinObjectiveCatalogs(),
-                                 {take(QualityGatePolicy::get({}))},
-                                 {promoteNode(QualityGatePolicyRef(0))}));
+  ResolvedDseConfigView view = take(projectResolvedDseConfigView(
+      configWithPolicy({take(QualityGatePolicy::get({}))},
+                       {promoteNode(QualityGatePolicyRef(0))})));
   std::vector<std::uint8_t> trailing(view.canonicalViewBytes().begin(),
                                      view.canonicalViewBytes().end());
   trailing.push_back(0);

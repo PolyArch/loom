@@ -907,6 +907,52 @@ ResolvedDseConfigView::schemaDescriptorBytes() const {
       sizeof(schemaDescriptor) - 1);
 }
 
+std::vector<std::uint8_t>
+canonicalQualityGatePolicyBytes(const QualityGatePolicy &policy) {
+  Encoder encoder;
+  encodeQualityGate(encoder, policy);
+  return encoder.take();
+}
+
+llvm::Expected<QualityGatePolicy>
+adoptQualityGatePolicy(llvm::ArrayRef<std::uint8_t> bytes) {
+  Decoder decoder(bytes);
+  auto policy = decodeQualityGate(decoder);
+  if (!policy)
+    return policy.takeError();
+  if (decoder.remaining() != 0)
+    return invalid("quality gate policy has trailing bytes");
+  const std::vector<std::uint8_t> canonical =
+      canonicalQualityGatePolicyBytes(*policy);
+  if (llvm::ArrayRef<std::uint8_t>(canonical) != bytes)
+    return invalid("quality gate policy bytes are not canonical");
+  return policy;
+}
+
+std::vector<std::uint8_t>
+canonicalDsePlanNodeBytes(const DsePlanNodeDefinition &node) {
+  Encoder encoder;
+  encodePlanNodes(encoder, llvm::ArrayRef<DsePlanNodeDefinition>(&node, 1));
+  return encoder.take();
+}
+
+llvm::Expected<DsePlanNodeDefinition>
+adoptDsePlanNode(llvm::ArrayRef<std::uint8_t> bytes) {
+  Decoder decoder(bytes);
+  auto nodes = decodePlanNodes(decoder);
+  if (!nodes)
+    return nodes.takeError();
+  if (nodes->size() != 1)
+    return invalid("plan-node payload must contain exactly one node");
+  if (decoder.remaining() != 0)
+    return invalid("plan-node payload has trailing bytes");
+  const std::vector<std::uint8_t> canonical =
+      canonicalDsePlanNodeBytes(nodes->front());
+  if (llvm::ArrayRef<std::uint8_t>(canonical) != bytes)
+    return invalid("plan-node bytes are not canonical");
+  return std::move(nodes->front());
+}
+
 llvm::Expected<ResolvedDseConfigView>
 adoptResolvedDseConfigView(llvm::ArrayRef<std::uint8_t> suppliedDescriptor,
                            llvm::ArrayRef<std::uint8_t> canonicalViewBytes,

@@ -1,5 +1,7 @@
 add_library(LoomConfig
+  DseConfigProjection.cpp
   ResolvedConfig.cpp
+  ResolvedConfigJson.cpp
 )
 
 target_include_directories(LoomConfig PUBLIC

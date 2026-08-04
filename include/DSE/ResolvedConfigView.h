@@ -12,6 +12,10 @@
 #include <utility>
 #include <vector>
 
+namespace loom {
+struct ResolvedConfig;
+}
+
 namespace loom::dse {
 
 struct ModelAuthorization final {
@@ -23,13 +27,6 @@ struct ModelAuthorization final {
 /// derived and remain outside the view.
 class ResolvedDseConfigView final {
 public:
-  static llvm::Expected<ResolvedDseConfigView>
-  get(std::vector<ModelAuthorization> modelAuthorizations,
-      std::vector<EvidenceObligationTemplate> evidenceObligationTemplates,
-      ResolvedObjectiveCatalogs objectiveCatalogs,
-      std::vector<QualityGatePolicy> qualityGatePolicies,
-      std::vector<DsePlanNodeDefinition> planNodes);
-
   llvm::ArrayRef<ModelAuthorization> modelAuthorizations() const {
     return modelAuthorizations_;
   }
@@ -51,6 +48,13 @@ public:
   const ComponentViewDigest &digest() const { return digest_; }
 
 private:
+  static llvm::Expected<ResolvedDseConfigView>
+  get(std::vector<ModelAuthorization> modelAuthorizations,
+      std::vector<EvidenceObligationTemplate> evidenceObligationTemplates,
+      ResolvedObjectiveCatalogs objectiveCatalogs,
+      std::vector<QualityGatePolicy> qualityGatePolicies,
+      std::vector<DsePlanNodeDefinition> planNodes);
+
   ResolvedDseConfigView(
       std::vector<ModelAuthorization> modelAuthorizations,
       std::vector<EvidenceObligationTemplate> evidenceObligationTemplates,
@@ -68,12 +72,32 @@ private:
   ResolvedDsePlan plan_;
   std::vector<std::uint8_t> canonicalBytes_;
   ComponentViewDigest digest_;
+
+  friend llvm::Expected<ResolvedDseConfigView>
+  projectResolvedDseConfigView(const ResolvedConfig &config);
+  friend llvm::Expected<ResolvedDseConfigView>
+  adoptResolvedDseConfigView(llvm::ArrayRef<std::uint8_t>,
+                             llvm::ArrayRef<std::uint8_t>,
+                             const ComponentViewDigest &);
 };
+
+llvm::Expected<ResolvedDseConfigView>
+projectResolvedDseConfigView(const ResolvedConfig &config);
 
 llvm::Expected<ResolvedDseConfigView>
 adoptResolvedDseConfigView(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
                            llvm::ArrayRef<std::uint8_t> canonicalViewBytes,
                            const ComponentViewDigest &digest);
+
+std::vector<std::uint8_t>
+canonicalQualityGatePolicyBytes(const QualityGatePolicy &policy);
+llvm::Expected<QualityGatePolicy>
+adoptQualityGatePolicy(llvm::ArrayRef<std::uint8_t> bytes);
+
+std::vector<std::uint8_t>
+canonicalDsePlanNodeBytes(const DsePlanNodeDefinition &node);
+llvm::Expected<DsePlanNodeDefinition>
+adoptDsePlanNode(llvm::ArrayRef<std::uint8_t> bytes);
 
 } // namespace loom::dse
 
