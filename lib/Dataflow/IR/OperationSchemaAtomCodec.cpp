@@ -15,6 +15,8 @@
 
 namespace {
 
+constexpr char kIntegerPredicateDomain[] =
+    "loom.dataflow.integer-compare-predicate\0";
 constexpr char kServiceRoleDomain[] = "loom.dataflow.service-value-role\0";
 constexpr char kServiceKindDomain[] = "loom.dataflow.service-kind\0";
 constexpr char kMemoryAccessFormDomain[] = "loom.dataflow.memory-access-form\0";
@@ -29,6 +31,8 @@ constexpr char kSyncScopeRefDomain[] = "loom.dataflow.sync-scope-ref\0";
 constexpr char kCanonicalBooleanDomain[] = "loom.dataflow.canonical-boolean\0";
 constexpr std::uint32_t kCodecMajor = 1;
 constexpr std::uint32_t kCodecMinor = 0;
+
+static_assert(mlir::arith::getMaxEnumValForCmpIPredicate() == 9);
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -201,7 +205,63 @@ llvm::StringRef asString(llvm::ArrayRef<std::uint8_t> bytes) {
 namespace dataflow::detail {
 
 llvm::Expected<std::uint32_t>
-serviceKindWireTag(semantics::ServiceKind kind) {
+integerPredicateWireTag(mlir::arith::CmpIPredicate predicate) {
+  using Predicate = mlir::arith::CmpIPredicate;
+  switch (predicate) {
+  case Predicate::eq:
+    return 1;
+  case Predicate::ne:
+    return 2;
+  case Predicate::slt:
+    return 3;
+  case Predicate::sle:
+    return 4;
+  case Predicate::sgt:
+    return 5;
+  case Predicate::sge:
+    return 6;
+  case Predicate::ult:
+    return 7;
+  case Predicate::ule:
+    return 8;
+  case Predicate::ugt:
+    return 9;
+  case Predicate::uge:
+    return 10;
+  }
+  return invalid("unknown integer predicate");
+}
+
+llvm::Expected<mlir::arith::CmpIPredicate>
+integerPredicateFromWireTag(std::uint32_t wireTag) {
+  using Predicate = mlir::arith::CmpIPredicate;
+  switch (wireTag) {
+  case 1:
+    return Predicate::eq;
+  case 2:
+    return Predicate::ne;
+  case 3:
+    return Predicate::slt;
+  case 4:
+    return Predicate::sle;
+  case 5:
+    return Predicate::sgt;
+  case 6:
+    return Predicate::sge;
+  case 7:
+    return Predicate::ult;
+  case 8:
+    return Predicate::ule;
+  case 9:
+    return Predicate::ugt;
+  case 10:
+    return Predicate::uge;
+  default:
+    return invalid("unknown integer predicate wire tag");
+  }
+}
+
+llvm::Expected<std::uint32_t> serviceKindWireTag(semantics::ServiceKind kind) {
   using Kind = semantics::ServiceKind;
   switch (kind) {
   case Kind::MessageTransfer:
@@ -548,6 +608,20 @@ llvm::Expected<AtomicRmwKind> atomicRmwKindFromWireTag(std::uint32_t wireTag) {
 }
 
 } // namespace dataflow::detail
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+dataflow::encodeIntegerComparePredicate(mlir::arith::CmpIPredicate predicate) {
+  return encodeVocabulary(predicate, kIntegerPredicateDomain,
+                          detail::integerPredicateWireTag);
+}
+
+llvm::Expected<mlir::arith::CmpIPredicate>
+dataflow::decodeIntegerComparePredicate(llvm::ArrayRef<std::uint8_t> bytes) {
+  return decodeVocabulary<sizeof(kIntegerPredicateDomain),
+                          mlir::arith::CmpIPredicate>(
+      bytes, kIntegerPredicateDomain, detail::integerPredicateFromWireTag,
+      "integer predicate");
+}
 
 llvm::Expected<loom::CanonicalSemanticBytes>
 dataflow::encodeServiceKind(semantics::ServiceKind kind) {

@@ -1,0 +1,23 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-scalar-integer-compare-min-max-test %t
+# RUN: FileCheck %s --check-prefix=RTL < %t/scalar_integer_compare_min_max.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_scalar_integer_compare_min_max.ys
+
+# RTL: module scalar_integer_compare_min_max
+# RTL: input [31:0] data_input_0
+# RTL: data_input_1,
+# RTL: input [2:0] config_0
+# RTL: output [31:0] data_output_0
+# RTL: $signed
+# RTL: config_0
+
+# TB: module testbench
+# TB: config_0 = 3'b001
+# TB: config_0 = 3'b111
+# TB: config_0 = 3'b000
+# TB: unassigned code did not preserve inactive behavior
+
+# YOSYS: hierarchy -check -top scalar_integer_compare_min_max
+# YOSYS: synth -top scalar_integer_compare_min_max

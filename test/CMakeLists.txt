@@ -167,6 +167,7 @@ if(LOOM_HAVE_CIRCT)
     loom-circt-conformance-test
     loom-common-skeleton-test
     loom-portable-scalar-integer-add-sub-test
+    loom-portable-scalar-integer-compare-min-max-test
     loom-specialization-test
     loom-hw-probe
   )

@@ -9,18 +9,23 @@
 
 #include "Common/IndexWidth.h"
 #include "Common/VectorWidth.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -56,6 +61,53 @@ familyTable() {
 
 llvm::Error reject(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
+}
+
+constexpr char kScalarIntegerCompareConfigurationDomain[] =
+    "loom.fabric.scalar-integer-compare-min-max-configuration\0";
+constexpr std::uint32_t kConfigurationCodecMajor = 1;
+constexpr std::uint32_t kConfigurationCodecMinor = 0;
+constexpr std::array<mlir::arith::CmpIPredicate, 4> kSignedIntegerPredicates = {
+    mlir::arith::CmpIPredicate::slt, mlir::arith::CmpIPredicate::sle,
+    mlir::arith::CmpIPredicate::sgt, mlir::arith::CmpIPredicate::sge};
+
+void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
+  bytes.push_back(static_cast<std::uint8_t>(value >> 24));
+  bytes.push_back(static_cast<std::uint8_t>(value >> 16));
+  bytes.push_back(static_cast<std::uint8_t>(value >> 8));
+  bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
+  for (unsigned shift = 56; shift != 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+  bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+void appendFramed(std::vector<std::uint8_t> &bytes,
+                  llvm::ArrayRef<std::uint8_t> value) {
+  appendU64(bytes, value.size());
+  bytes.insert(bytes.end(), value.begin(), value.end());
+}
+
+bool isSignedIntegerPredicate(mlir::arith::CmpIPredicate predicate) {
+  return llvm::is_contained(kSignedIntegerPredicates, predicate);
+}
+
+::dataflow::CanonicalActorSchemaProjection makeScalarIntegerCompareActor(
+    mlir::MLIRContext &context, unsigned width,
+    ::dataflow::OperationSchemaId schema,
+    std::optional<mlir::arith::CmpIPredicate> predicate = std::nullopt) {
+  mlir::Type operand = mlir::IntegerType::get(&context, width);
+  const bool comparison = schema == ::dataflow::OperationSchemaId::ArithCmpI;
+  mlir::FunctionType type = mlir::FunctionType::get(
+      &context, {operand, operand},
+      {comparison ? mlir::IntegerType::get(&context, 1) : operand});
+  if (comparison)
+    return {schema, type,
+            ::dataflow::IntegerComparePayload{
+                predicate.value_or(mlir::arith::CmpIPredicate::eq)}};
+  return {schema, type, ::dataflow::NoPayload{}};
 }
 
 mlir::FailureOr<unsigned>
@@ -242,11 +294,9 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
     if (!hasSchema(OperationSchemaId::ArithCmpI))
       return false;
     const auto &compare = std::get<ScalarIntegerCompareMinMaxParams>(params);
-    using Predicate = ::mlir::arith::CmpIPredicate;
-    return compare.predicates.contains(Predicate::slt) ||
-           compare.predicates.contains(Predicate::sle) ||
-           compare.predicates.contains(Predicate::sgt) ||
-           compare.predicates.contains(Predicate::sge);
+    return llvm::any_of(kSignedIntegerPredicates, [&](auto predicate) {
+      return compare.predicates.contains(predicate);
+    });
   };
 
   using ::dataflow::OperationSchemaId;
@@ -264,7 +314,8 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
     return false;
   case TypedAdmissionProviderId::ScalarIntegerCompareAdmission: {
     const auto &typed = std::get<ScalarIntegerCompareMinMaxParams>(params);
-    return typed.predicates.size() > 1 ||
+    return (hasSchema(OperationSchemaId::ArithCmpI) &&
+            typed.predicates.size() > 1) ||
            (typed.operandWidths.size() > 1 && hasSignedIntegerBehavior());
   }
   case TypedAdmissionProviderId::ScalarIntegerCastAdmission:
@@ -307,10 +358,7 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
       if (!llvm::is_contained(elementWidths, width))
         elementWidths.push_back(width);
     };
-    constexpr IntegerWidth integerWidths[] = {
-        IntegerWidth::I1, IntegerWidth::I8, IntegerWidth::I16,
-        IntegerWidth::I32, IntegerWidth::I64};
-    for (IntegerWidth width : integerWidths)
+    for (IntegerWidth width : integerWidthDomain)
       if (typed.integerElementWidths.contains(width))
         addWidth(getBitWidth(width));
     constexpr FloatFormat floatFormats[] = {FloatFormat::F16, FloatFormat::BF16,
@@ -349,6 +397,211 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
     return physicalResultCount > 2;
   }
   return reject("typed admission provider is not registered");
+}
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+fabric::encodeImplementationFamilySemanticConfiguration(
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
+    std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
+    const ::dataflow::CanonicalActorSchemaProjection &actor) {
+  auto needsConfiguration = requiresSemanticConfigurationField(
+      family, params, enabledSchemas, physicalInputCount, physicalResultCount);
+  if (!needsConfiguration)
+    return needsConfiguration.takeError();
+  if (!*needsConfiguration)
+    return reject("capability has no semantic configuration field");
+  if (!llvm::is_contained(enabledSchemas, actor.schema))
+    return reject("actor schema is not enabled by the concrete capability");
+
+  bool selectionOnly = enabledSchemas.size() > 1;
+  for (::dataflow::OperationSchemaId enabled : enabledSchemas) {
+    auto singletonNeedsConfiguration = requiresSemanticConfigurationField(
+        family, params,
+        llvm::ArrayRef<::dataflow::OperationSchemaId>(&enabled, 1),
+        physicalInputCount, physicalResultCount);
+    if (!singletonNeedsConfiguration)
+      return singletonNeedsConfiguration.takeError();
+    if (*singletonNeedsConfiguration) {
+      selectionOnly = false;
+      break;
+    }
+  }
+  if (selectionOnly)
+    return ::dataflow::encodeOperationSchemaId(actor.schema);
+
+  if (family != ImplementationFamilyId::ScalarIntegerCompareMinMax)
+    return reject("semantic field-domain codec is not implemented for the "
+                  "capability family");
+  const auto *parameters =
+      std::get_if<ScalarIntegerCompareMinMaxParams>(&params);
+  if (!parameters)
+    return reject("capability has the wrong parameter schema");
+
+  std::optional<mlir::arith::CmpIPredicate> predicate;
+  bool signedBehavior = false;
+  using Schema = ::dataflow::OperationSchemaId;
+  switch (actor.schema) {
+  case Schema::ArithCmpI: {
+    const auto *payload =
+        std::get_if<::dataflow::IntegerComparePayload>(&actor.payload);
+    if (!payload)
+      return reject("integer comparison has no typed predicate");
+    predicate = payload->predicate;
+    signedBehavior = isSignedIntegerPredicate(*predicate);
+    break;
+  }
+  case Schema::ArithMinSI:
+  case Schema::ArithMaxSI:
+    signedBehavior = true;
+    break;
+  case Schema::ArithMinUI:
+  case Schema::ArithMaxUI:
+    break;
+  default:
+    return reject("actor is not an integer compare/min/max schema");
+  }
+
+  auto schemaBytes = ::dataflow::encodeOperationSchemaId(actor.schema);
+  if (!schemaBytes)
+    return schemaBytes.takeError();
+  std::optional<loom::CanonicalSemanticBytes> predicateBytes;
+  if (predicate) {
+    auto encoded = ::dataflow::encodeIntegerComparePredicate(*predicate);
+    if (!encoded)
+      return encoded.takeError();
+    predicateBytes.emplace(std::move(*encoded));
+  }
+
+  std::optional<std::uint32_t> signedOperandWidth;
+  if (signedBehavior && parameters->operandWidths.size() > 1) {
+    if (actor.type.getNumInputs() != 2)
+      return reject("signed comparison has no binary operand type");
+    auto operand = llvm::dyn_cast<mlir::IntegerType>(actor.type.getInput(0));
+    if (!operand)
+      return reject("signed comparison operand is not an integer");
+    signedOperandWidth = operand.getWidth();
+  }
+
+  const bool encodeSchema = enabledSchemas.size() > 1;
+  const bool encodePredicate =
+      actor.schema == Schema::ArithCmpI && parameters->predicates.size() > 1;
+  constexpr std::uint32_t kSchemaComponent = 1U << 0;
+  constexpr std::uint32_t kPredicateComponent = 1U << 1;
+  constexpr std::uint32_t kSignedWidthComponent = 1U << 2;
+  const std::uint32_t componentMask =
+      (encodeSchema ? kSchemaComponent : 0U) |
+      (encodePredicate ? kPredicateComponent : 0U) |
+      (signedOperandWidth ? kSignedWidthComponent : 0U);
+
+  std::vector<std::uint8_t> bytes;
+  const llvm::StringRef domain(
+      kScalarIntegerCompareConfigurationDomain,
+      sizeof(kScalarIntegerCompareConfigurationDomain) - 1);
+  bytes.insert(bytes.end(), domain.bytes_begin(), domain.bytes_end());
+  appendU32(bytes, kConfigurationCodecMajor);
+  appendU32(bytes, kConfigurationCodecMinor);
+  appendU32(bytes, componentMask);
+  if (encodeSchema)
+    appendFramed(bytes, schemaBytes->bytes());
+  if (encodePredicate)
+    appendFramed(bytes, predicateBytes->bytes());
+  if (signedOperandWidth)
+    appendU32(bytes, *signedOperandWidth);
+  return loom::CanonicalSemanticBytes(std::move(bytes));
+}
+
+llvm::Expected<std::vector<fabric::FiniteImplementationFamilyBehaviorPoint>>
+fabric::resolveFiniteImplementationFamilyBehaviorDomain(
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
+    std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
+    mlir::MLIRContext &context,
+    llvm::function_ref<
+        llvm::Error(const ::dataflow::CanonicalActorSchemaProjection &)>
+        verifyConcreteActor) {
+  auto needsConfiguration = requiresSemanticConfigurationField(
+      family, params, enabledSchemas, physicalInputCount, physicalResultCount);
+  if (!needsConfiguration)
+    return needsConfiguration.takeError();
+  if (family != ImplementationFamilyId::ScalarIntegerCompareMinMax)
+    return reject("finite behavior-domain projection is not implemented for "
+                  "the capability family");
+  const auto *parameters =
+      std::get_if<ScalarIntegerCompareMinMaxParams>(&params);
+  if (!parameters)
+    return reject("capability has the wrong parameter schema");
+
+  std::vector<::dataflow::CanonicalActorSchemaProjection> actors;
+  const auto appendWidthDomain =
+      [&](::dataflow::OperationSchemaId schema,
+          std::optional<mlir::arith::CmpIPredicate> predicate = std::nullopt) {
+        for (IntegerWidth width : integerWidthDomain) {
+          if (!parameters->operandWidths.contains(width))
+            continue;
+          actors.push_back(makeScalarIntegerCompareActor(
+              context, getBitWidth(width), schema, predicate));
+        }
+      };
+  for (::dataflow::OperationSchemaId schema : enabledSchemas) {
+    switch (schema) {
+    case ::dataflow::OperationSchemaId::ArithCmpI:
+      for (std::uint32_t ordinal = 0;
+           ordinal <= mlir::arith::getMaxEnumValForCmpIPredicate(); ++ordinal) {
+        const auto predicate = static_cast<mlir::arith::CmpIPredicate>(ordinal);
+        if (parameters->predicates.contains(predicate))
+          appendWidthDomain(schema, predicate);
+      }
+      break;
+    case ::dataflow::OperationSchemaId::ArithMinSI:
+    case ::dataflow::OperationSchemaId::ArithMaxSI:
+    case ::dataflow::OperationSchemaId::ArithMinUI:
+    case ::dataflow::OperationSchemaId::ArithMaxUI:
+      appendWidthDomain(schema);
+      break;
+    default:
+      return reject("capability contains a non-compare/min-max schema");
+    }
+  }
+  if (actors.empty())
+    return reject("capability has no admitted compare/min-max behavior");
+
+  std::vector<FiniteImplementationFamilyBehaviorPoint> points;
+  for (auto &actor : actors) {
+    if (llvm::Error error =
+            verifyImplementationFamilyAdmission(family, &params, actor))
+      return std::move(error);
+    if (llvm::Error error = verifyConcreteActor(actor))
+      return std::move(error);
+    if (!*needsConfiguration) {
+      if (points.empty())
+        points.push_back({std::move(actor), std::nullopt});
+      continue;
+    }
+    auto semantic = encodeImplementationFamilySemanticConfiguration(
+        family, params, enabledSchemas, physicalInputCount, physicalResultCount,
+        actor);
+    if (!semantic)
+      return semantic.takeError();
+    const auto duplicate = llvm::find_if(points, [&](const auto &point) {
+      return point.semanticConfiguration &&
+             point.semanticConfiguration->bytes().equals(semantic->bytes());
+    });
+    if (duplicate == points.end())
+      points.push_back({std::move(actor), std::move(*semantic)});
+  }
+  llvm::sort(points, [](const auto &lhs, const auto &rhs) {
+    if (!lhs.semanticConfiguration)
+      return rhs.semanticConfiguration.has_value();
+    if (!rhs.semanticConfiguration)
+      return false;
+    return std::lexicographical_compare(
+        lhs.semanticConfiguration->bytes().begin(),
+        lhs.semanticConfiguration->bytes().end(),
+        rhs.semanticConfiguration->bytes().begin(),
+        rhs.semanticConfiguration->bytes().end());
+  });
+  return points;
 }
 
 mlir::FailureOr<unsigned> fabric::getSemanticPayloadWidth(mlir::Type type,

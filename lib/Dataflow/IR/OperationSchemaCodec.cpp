@@ -36,7 +36,6 @@ constexpr std::uint32_t kCodecMajor = 1;
 constexpr std::uint32_t kCodecMinor = 0;
 constexpr unsigned kMaximumTypeDepth = 64;
 
-static_assert(arith::getMaxEnumValForCmpIPredicate() == 9);
 static_assert(arith::getMaxEnumValForCmpFPredicate() == 15);
 static_assert(arith::getMaxEnumValForRoundingMode() == 4);
 static_assert(dataflow::getMaxEnumValForStreamStepKind() == 7);
@@ -255,34 +254,6 @@ semanticsFromWireTag(std::uint32_t wireTag) {
 
 llvm::Expected<std::uint32_t> unknownEnum(llvm::StringRef name) {
   return invalid(llvm::Twine("unknown ") + name);
-}
-
-llvm::Expected<std::uint32_t>
-integerPredicateWireTag(arith::CmpIPredicate predicate) {
-  using Predicate = arith::CmpIPredicate;
-  switch (predicate) {
-  case Predicate::eq:
-    return 1;
-  case Predicate::ne:
-    return 2;
-  case Predicate::slt:
-    return 3;
-  case Predicate::sle:
-    return 4;
-  case Predicate::sgt:
-    return 5;
-  case Predicate::sge:
-    return 6;
-  case Predicate::ult:
-    return 7;
-  case Predicate::ule:
-    return 8;
-  case Predicate::ugt:
-    return 9;
-  case Predicate::uge:
-    return 10;
-  }
-  return unknownEnum("integer predicate");
 }
 
 llvm::Expected<std::uint32_t>
@@ -1399,7 +1370,8 @@ llvm::Error encodePayload(Writer &writer,
         std::get_if<dataflow::IntegerComparePayload>(&payload);
     if (!compare)
       break;
-    return writeMappedTag(writer, integerPredicateWireTag(compare->predicate));
+    return writeMappedTag(
+        writer, dataflow::detail::integerPredicateWireTag(compare->predicate));
   }
   case Case::ArithFloatCompare: {
     const auto *compare = std::get_if<dataflow::FloatComparePayload>(&payload);
@@ -1430,7 +1402,8 @@ llvm::Error encodePayload(Writer &writer,
     if (llvm::Error error =
             writeMappedTag(writer, streamStepWireTag(stream->stepKind)))
       return error;
-    return writeMappedTag(writer, integerPredicateWireTag(stream->predicate));
+    return writeMappedTag(
+        writer, dataflow::detail::integerPredicateWireTag(stream->predicate));
   }
   case Case::MemoryContract: {
     const auto *memory = std::get_if<dataflow::MemoryContractPayload>(&payload);

@@ -1,11 +1,13 @@
 #ifndef FABRIC_IR_IMPLEMENTATIONFAMILY_H
 #define FABRIC_IR_IMPLEMENTATIONFAMILY_H
 
+#include "Common/Artifact.h"
 #include "Common/PointerLayout.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/IR/FabricEnums.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -160,7 +162,11 @@ static_assert(static_cast<std::uint8_t>(IntegerWidth::I8) == 1);
 static_assert(static_cast<std::uint8_t>(IntegerWidth::I16) == 2);
 static_assert(static_cast<std::uint8_t>(IntegerWidth::I32) == 3);
 static_assert(static_cast<std::uint8_t>(IntegerWidth::I64) == 4);
-using IntegerWidthSet = detail::ClosedEnumSet<IntegerWidth, 5>;
+inline constexpr std::array integerWidthDomain = {
+    IntegerWidth::I1, IntegerWidth::I8, IntegerWidth::I16, IntegerWidth::I32,
+    IntegerWidth::I64};
+using IntegerWidthSet =
+    detail::ClosedEnumSet<IntegerWidth, integerWidthDomain.size()>;
 
 /// Closed scalar floating-point formats admitted by the initial schemas.
 enum class FloatFormat : std::uint8_t { F16, BF16, F32, F64 };
@@ -301,11 +307,13 @@ symbolizeResolvedIndexWidth(unsigned bitWidth);
 unsigned getResolvedIndexBitWidth(ResolvedIndexWidth width);
 
 using IntegerWidthRelation =
-    detail::ClosedPairRelation<IntegerWidth, 5, IntegerWidth, 5>;
+    detail::ClosedPairRelation<IntegerWidth, integerWidthDomain.size(),
+                               IntegerWidth, integerWidthDomain.size()>;
 using FloatFormatRelation =
     detail::ClosedPairRelation<FloatFormat, 4, FloatFormat, 4>;
 using IntegerFloatFormatRelation =
-    detail::ClosedPairRelation<IntegerWidth, 5, FloatFormat, 4>;
+    detail::ClosedPairRelation<IntegerWidth, integerWidthDomain.size(),
+                               FloatFormat, 4>;
 
 /// Typed finite-domain relation for integer and resolved-index casts.
 struct IntegerCastRelation {
@@ -632,6 +640,42 @@ llvm::Expected<bool> requiresSemanticConfigurationField(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,
     llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
     std::uint32_t physicalInputCount, std::uint32_t physicalResultCount);
+
+/// Encodes one admitted actor into the concrete family's minimal semantic
+/// configuration value. The projection retains only facts that select
+/// different configured hardware behavior; ConfigurationABI separately owns
+/// the physical code assigned to the returned value.
+llvm::Expected<::loom::CanonicalSemanticBytes>
+encodeImplementationFamilySemanticConfiguration(
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
+    std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
+    const ::dataflow::CanonicalActorSchemaProjection &actor);
+
+/// One unique configured hardware behavior in a finite concrete capability
+/// domain. The representative actor is a typed witness owned by Fabric; the
+/// semantic value is present exactly when the capability exposes a semantic
+/// configuration field.
+struct FiniteImplementationFamilyBehaviorPoint final {
+  ::dataflow::CanonicalActorSchemaProjection representativeActor;
+  std::optional<::loom::CanonicalSemanticBytes> semanticConfiguration;
+};
+
+/// Resolves a finite concrete capability into unique configured hardware
+/// behaviors. Providers consume this projection instead of reconstructing
+/// exact actor modes from family parameters. `verifyConcreteActor` applies
+/// resource-local constraints to every admitted actor before semantically
+/// equivalent actors collapse to one representative. Families with non-finite
+/// field domains report that no finite projection is available.
+llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
+resolveFiniteImplementationFamilyBehaviorDomain(
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
+    std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
+    ::mlir::MLIRContext &context,
+    llvm::function_ref<
+        llvm::Error(const ::dataflow::CanonicalActorSchemaProjection &)>
+        verifyConcreteActor);
 
 /// Exact flattened payload width used by concrete operation-resource
 /// admission. Equal widths do not imply equal actor semantics.

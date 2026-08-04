@@ -29,6 +29,14 @@ encodeOperationSemanticsCase(OperationSemanticsCase semanticCase);
 llvm::Expected<OperationSemanticsCase>
 decodeOperationSemanticsCase(llvm::ArrayRef<std::uint8_t> bytes);
 
+/// Stable codec for the Dataflow-owned integer comparison predicate atom.
+/// Downstream field domains embed these bytes instead of persisting MLIR enum
+/// ordinals or copying the predicate wire table.
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeIntegerComparePredicate(::mlir::arith::CmpIPredicate predicate);
+llvm::Expected<::mlir::arith::CmpIPredicate>
+decodeIntegerComparePredicate(llvm::ArrayRef<std::uint8_t> bytes);
+
 /// Stable codecs for closed Dataflow-owned atoms embedded by downstream
 /// capability records. Decoders reject wrong domains, unknown tags, malformed
 /// payloads, truncation, and trailing bytes.

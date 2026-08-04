@@ -27,6 +27,8 @@ namespace {
 constexpr char kSchemaDomain[] = "loom.dataflow.operation-schema-id\0";
 constexpr char kSemanticsDomain[] = "loom.dataflow.operation-semantics-case\0";
 constexpr char kProjectionDomain[] = "loom.dataflow.actor-schema-projection\0";
+constexpr char kIntegerPredicateDomain[] =
+    "loom.dataflow.integer-compare-predicate\0";
 constexpr char kServiceKindDomain[] = "loom.dataflow.service-kind\0";
 constexpr char kServiceRoleDomain[] = "loom.dataflow.service-value-role\0";
 constexpr char kMemoryAccessFormDomain[] = "loom.dataflow.memory-access-form\0";
@@ -231,6 +233,17 @@ bool checkOwnedAtomCodecs(MLIRContext &context) {
   using semantics::ServiceValueRole;
 
   bool ok = true;
+  ok &= checkOwnedEnumCodec(
+      arith::CmpIPredicate::sge,
+      [](arith::CmpIPredicate value) {
+        return encodeIntegerComparePredicate(value);
+      },
+      [](llvm::ArrayRef<std::uint8_t> bytes) {
+        return decodeIntegerComparePredicate(bytes);
+      },
+      llvm::StringRef(kIntegerPredicateDomain,
+                      sizeof(kIntegerPredicateDomain) - 1),
+      6, "integer compare predicate");
   ok &= checkOwnedEnumCodec(
       ServiceKind::MemoryCompareExchange,
       [](ServiceKind value) { return encodeServiceKind(value); },

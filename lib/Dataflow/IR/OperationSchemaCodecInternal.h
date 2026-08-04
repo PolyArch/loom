@@ -11,6 +11,11 @@
 namespace dataflow::detail {
 
 llvm::Expected<std::uint32_t>
+integerPredicateWireTag(::mlir::arith::CmpIPredicate predicate);
+llvm::Expected<::mlir::arith::CmpIPredicate>
+integerPredicateFromWireTag(std::uint32_t wireTag);
+
+llvm::Expected<std::uint32_t>
 serviceValueRoleWireTag(semantics::ServiceValueRole role);
 llvm::Expected<semantics::ServiceValueRole>
 serviceValueRoleFromWireTag(std::uint32_t wireTag);

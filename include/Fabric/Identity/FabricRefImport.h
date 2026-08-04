@@ -92,6 +92,22 @@ struct ResolvedFabricOpCapabilityView {
   llvm::Expected<CanonicalSemanticBytes>
   encodeOperationSelection(const FabricSemanticConfigFieldRef &field,
                            ::dataflow::OperationSchemaId schema) const;
+
+  /// Encodes one admitted actor through this resource's exact semantic field
+  /// domain. Actor identity facts that do not change configured hardware
+  /// behavior are intentionally projected out. ConfigurationABI remains the
+  /// sole owner of the resulting value's physical code.
+  llvm::Expected<CanonicalSemanticBytes> encodeSemanticConfiguration(
+      const FabricSemanticConfigFieldRef &field,
+      const ::dataflow::CanonicalActorSchemaProjection &actor,
+      unsigned indexBitWidth,
+      const ::loom::PointerLayout *pointerLayout = nullptr) const;
+
+  /// Resolves the exact finite configured behavior domain through Fabric's
+  /// typed implementation-family owner. No program index-width guess or
+  /// backend-local mode inventory participates in this projection.
+  llvm::Expected<std::vector<::fabric::FiniteImplementationFamilyBehaviorPoint>>
+  resolveFiniteBehaviorDomain(::mlir::MLIRContext &context) const;
 };
 
 /// One boundary's exact role in Physical Tag continuity. The point is a

@@ -3,6 +3,7 @@ add_library(LoomHardwareRTL
   CommonSkeleton.cpp
   OperationLeaf.cpp
   Providers/ScalarIntegerAddSub.cpp
+  Providers/ScalarIntegerCompareMinMax.cpp
   Specialization.cpp
   Transport.cpp
 )
