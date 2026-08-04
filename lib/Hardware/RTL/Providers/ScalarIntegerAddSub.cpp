@@ -1,12 +1,12 @@
 #include "Hardware/RTL/Providers/ScalarIntegerAddSub.h"
 
 #include "Hardware/RTL/OperationLeaf.h"
+#include "ProviderSupport.h"
 
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 
@@ -24,40 +24,6 @@ llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "portable_scalar_integer_add_sub_invalid: " +
                                      message);
-}
-
-llvm::APInt physicalCode(llvm::ArrayRef<std::uint8_t> bytes,
-                         std::uint64_t bitCount) {
-  llvm::APInt result(static_cast<unsigned>(bitCount), 0);
-  for (std::uint64_t bit = 0; bit < bitCount; ++bit)
-    if (((bytes[static_cast<std::size_t>(bit / 8)] >> (bit % 8)) & 1U) != 0)
-      result.setBit(static_cast<unsigned>(bit));
-  return result;
-}
-
-const FiniteCodebookEntry *
-findSemanticValue(const FiniteCodebookEncoding &codebook,
-                  llvm::ArrayRef<std::uint8_t> semanticValue) {
-  const auto found =
-      llvm::find_if(codebook.entries, [&](const FiniteCodebookEntry &entry) {
-        return llvm::ArrayRef<std::uint8_t>(entry.semanticValue)
-            .equals(semanticValue);
-      });
-  return found == codebook.entries.end() ? nullptr : &*found;
-}
-
-mlir::Value resizeUnsigned(mlir::OpBuilder &builder, mlir::Location location,
-                           mlir::Value value, unsigned width) {
-  const unsigned current =
-      mlir::cast<mlir::IntegerType>(value.getType()).getWidth();
-  if (current == width)
-    return value;
-  if (current > width)
-    return circt::comb::ExtractOp::create(builder, location, value, 0, width);
-  mlir::Value highZeros = circt::hw::ConstantOp::create(
-      builder, location, llvm::APInt(width - current, 0));
-  return circt::comb::ConcatOp::create(builder, location,
-                                       mlir::ValueRange{highZeros, value});
 }
 
 llvm::Expected<FabricOperationProviderOutput>
@@ -112,7 +78,8 @@ materializePortableScalarIntegerAddSub(FabricOperationProviderRequest request) {
     return std::move(error);
 
   const ConfigurationFieldEncoding *field = nullptr;
-  const FiniteCodebookEntry *subtractEntry = nullptr;
+  const FiniteCodebookEntry *nonInactiveEntry = nullptr;
+  bool inactiveSubtract = hasSubtract && !hasAdd;
   if (hasAdd && hasSubtract) {
     if (request.capability.configurationFieldSchema.size() != 1)
       return invalid("configured add/sub capability requires one field");
@@ -136,11 +103,25 @@ materializePortableScalarIntegerAddSub(FabricOperationProviderRequest request) {
         field->field, ::dataflow::OperationSchemaId::ArithSubI);
     if (!subtractValue)
       return subtractValue.takeError();
-    if (!findSemanticValue(*codebook, addValue->bytes()))
+    const FiniteCodebookEntry *addEntry =
+        detail::findFiniteCodebookEntry(*codebook, addValue->bytes());
+    if (!addEntry)
       return invalid("codebook has no add semantic value");
-    subtractEntry = findSemanticValue(*codebook, subtractValue->bytes());
+    const FiniteCodebookEntry *subtractEntry =
+        detail::findFiniteCodebookEntry(*codebook, subtractValue->bytes());
     if (!subtractEntry)
       return invalid("codebook has no subtract semantic value");
+    if (llvm::ArrayRef<std::uint8_t>(field->inactiveValue)
+            .equals(addValue->bytes())) {
+      nonInactiveEntry = subtractEntry;
+      inactiveSubtract = false;
+    } else if (llvm::ArrayRef<std::uint8_t>(field->inactiveValue)
+                   .equals(subtractValue->bytes())) {
+      nonInactiveEntry = addEntry;
+      inactiveSubtract = true;
+    } else {
+      return invalid("ABI inactive value is outside the add/sub domain");
+    }
   } else if (!request.capability.configurationFieldSchema.empty()) {
     return invalid("singleton add/sub capability has a selector field");
   }
@@ -156,40 +137,37 @@ materializePortableScalarIntegerAddSub(FabricOperationProviderRequest request) {
         const unsigned arithmeticWidth =
             std::max({inputs[0]->payloadWidthBits, inputs[1]->payloadWidthBits,
                       outputs[0]->payloadWidthBits});
-        mlir::Value lhs =
-            resizeUnsigned(bodyBuilder, location,
-                           accessor.getInput("data_input_0"), arithmeticWidth);
-        mlir::Value rhs =
-            resizeUnsigned(bodyBuilder, location,
-                           accessor.getInput("data_input_1"), arithmeticWidth);
-        mlir::Value result;
-        if (hasAdd)
-          result = circt::comb::AddOp::create(bodyBuilder, location, lhs, rhs);
-        if (hasSubtract) {
-          mlir::Value difference =
-              circt::comb::SubOp::create(bodyBuilder, location, lhs, rhs);
-          if (!hasAdd) {
-            result = difference;
-          } else {
-            const auto &codebook =
-                std::get<FiniteCodebookEncoding>(field->semanticEncoding);
-            mlir::Value code = circt::hw::ConstantOp::create(
-                bodyBuilder, location,
-                physicalCode(subtractEntry->physicalCode,
-                             codebook.encodedBitCount));
-            mlir::Value selectSubtract = circt::comb::ICmpOp::create(
-                bodyBuilder, location, circt::comb::ICmpPredicate::eq,
-                accessor.getInput("config_" +
-                                  std::to_string(field->field.ordinal)),
-                code, true);
-            result = circt::comb::MuxOp::create(bodyBuilder, location,
-                                                selectSubtract, difference,
-                                                result, true);
-          }
+        mlir::Value lhs = detail::resizeUnsigned(
+            bodyBuilder, location, accessor.getInput("data_input_0"),
+            arithmeticWidth);
+        mlir::Value rhs = detail::resizeUnsigned(
+            bodyBuilder, location, accessor.getInput("data_input_1"),
+            arithmeticWidth);
+        mlir::Value subtract = circt::hw::ConstantOp::create(
+            bodyBuilder, location, llvm::APInt(1, inactiveSubtract));
+        if (hasAdd && hasSubtract) {
+          const auto &codebook =
+              std::get<FiniteCodebookEncoding>(field->semanticEncoding);
+          mlir::Value code = circt::hw::ConstantOp::create(
+              bodyBuilder, location,
+              detail::decodePhysicalCode(nonInactiveEntry->physicalCode,
+                                         codebook.encodedBitCount));
+          mlir::Value selected = circt::comb::ICmpOp::create(
+              bodyBuilder, location, circt::comb::ICmpPredicate::eq,
+              accessor.getInput("config_" +
+                                std::to_string(field->field.ordinal)),
+              code, true);
+          mlir::Value selectedSubtract = circt::hw::ConstantOp::create(
+              bodyBuilder, location, llvm::APInt(1, !inactiveSubtract));
+          subtract =
+              circt::comb::MuxOp::create(bodyBuilder, location, selected,
+                                         selectedSubtract, subtract, true);
         }
-        accessor.setOutput("data_output_0",
-                           resizeUnsigned(bodyBuilder, location, result,
-                                          outputs[0]->payloadWidthBits));
+        mlir::Value result =
+            detail::addOrSubtract(bodyBuilder, location, lhs, rhs, subtract);
+        accessor.setOutput("data_output_0", detail::resizeUnsigned(
+                                                bodyBuilder, location, result,
+                                                outputs[0]->payloadWidthBits));
       },
       request.leaf.getParametersAttr());
   request.leaf.erase();

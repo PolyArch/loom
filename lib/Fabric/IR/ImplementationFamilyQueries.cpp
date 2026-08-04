@@ -65,6 +65,8 @@ llvm::Error reject(const llvm::Twine &message) {
 
 constexpr char kScalarIntegerCompareConfigurationDomain[] =
     "loom.fabric.scalar-integer-compare-min-max-configuration\0";
+constexpr char kFixedVectorIntegerAddSubConfigurationDomain[] =
+    "loom.fabric.fixed-vector-integer-add-sub-configuration\0";
 constexpr std::uint32_t kConfigurationCodecMajor = 1;
 constexpr std::uint32_t kConfigurationCodecMinor = 0;
 constexpr std::array<mlir::arith::CmpIPredicate, 4> kSignedIntegerPredicates = {
@@ -108,6 +110,25 @@ bool isSignedIntegerPredicate(mlir::arith::CmpIPredicate predicate) {
             ::dataflow::IntegerComparePayload{
                 predicate.value_or(mlir::arith::CmpIPredicate::eq)}};
   return {schema, type, ::dataflow::NoPayload{}};
+}
+
+llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
+makeFixedVectorIntegerAddSubActor(mlir::MLIRContext &context,
+                                  unsigned elementWidth,
+                                  std::uint32_t maxPayloadBits,
+                                  ::dataflow::OperationSchemaId schema) {
+  // Port capacity is monotone in flattened width. The largest reachable
+  // one-dimensional vector therefore covers every shape with this behavior.
+  const std::uint32_t laneCount = maxPayloadBits / elementWidth;
+  if (laneCount == 0)
+    return reject("fixed-vector element width exceeds payload capacity");
+  mlir::Type element = mlir::IntegerType::get(&context, elementWidth);
+  mlir::Type vector =
+      mlir::VectorType::get({static_cast<std::int64_t>(laneCount)}, element);
+  mlir::FunctionType type =
+      mlir::FunctionType::get(&context, {vector, vector}, {vector});
+  return ::dataflow::CanonicalActorSchemaProjection{
+      schema, type, ::dataflow::IntegerOverflowPayload{}};
 }
 
 mlir::FailureOr<unsigned>
@@ -430,6 +451,50 @@ fabric::encodeImplementationFamilySemanticConfiguration(
   if (selectionOnly)
     return ::dataflow::encodeOperationSchemaId(actor.schema);
 
+  if (family == ImplementationFamilyId::FixedVectorIntegerAddSub) {
+    const auto *parameters = std::get_if<FixedVectorIntegerParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    using Schema = ::dataflow::OperationSchemaId;
+    if (actor.schema != Schema::ArithAddI && actor.schema != Schema::ArithSubI)
+      return reject("actor is not a fixed-vector integer add/sub schema");
+    if (actor.type.getNumInputs() != 2 || actor.type.getNumResults() != 1)
+      return reject("fixed-vector integer add/sub actor has wrong arity");
+    auto vector = llvm::dyn_cast<mlir::VectorType>(actor.type.getInput(0));
+    if (!vector || actor.type.getInput(1) != vector ||
+        actor.type.getResult(0) != vector)
+      return reject("fixed-vector integer add/sub actor is not uniform");
+    auto element = llvm::dyn_cast<mlir::IntegerType>(vector.getElementType());
+    if (!element)
+      return reject("fixed-vector add/sub element is not an integer");
+
+    const bool encodeSchema = enabledSchemas.size() > 1;
+    const bool encodeElementWidth = parameters->elementWidths.size() > 1;
+    constexpr std::uint32_t kSchemaComponent = 1U << 0;
+    constexpr std::uint32_t kElementWidthComponent = 1U << 1;
+    const std::uint32_t componentMask =
+        (encodeSchema ? kSchemaComponent : 0U) |
+        (encodeElementWidth ? kElementWidthComponent : 0U);
+
+    std::vector<std::uint8_t> bytes;
+    const llvm::StringRef domain(
+        kFixedVectorIntegerAddSubConfigurationDomain,
+        sizeof(kFixedVectorIntegerAddSubConfigurationDomain) - 1);
+    bytes.insert(bytes.end(), domain.bytes_begin(), domain.bytes_end());
+    appendU32(bytes, kConfigurationCodecMajor);
+    appendU32(bytes, kConfigurationCodecMinor);
+    appendU32(bytes, componentMask);
+    if (encodeSchema) {
+      auto schemaBytes = ::dataflow::encodeOperationSchemaId(actor.schema);
+      if (!schemaBytes)
+        return schemaBytes.takeError();
+      appendFramed(bytes, schemaBytes->bytes());
+    }
+    if (encodeElementWidth)
+      appendU32(bytes, element.getWidth());
+    return loom::CanonicalSemanticBytes(std::move(bytes));
+  }
+
   if (family != ImplementationFamilyId::ScalarIntegerCompareMinMax)
     return reject("semantic field-domain codec is not implemented for the "
                   "capability family");
@@ -524,47 +589,70 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
       family, params, enabledSchemas, physicalInputCount, physicalResultCount);
   if (!needsConfiguration)
     return needsConfiguration.takeError();
-  if (family != ImplementationFamilyId::ScalarIntegerCompareMinMax)
-    return reject("finite behavior-domain projection is not implemented for "
-                  "the capability family");
-  const auto *parameters =
-      std::get_if<ScalarIntegerCompareMinMaxParams>(&params);
-  if (!parameters)
-    return reject("capability has the wrong parameter schema");
 
   std::vector<::dataflow::CanonicalActorSchemaProjection> actors;
-  const auto appendWidthDomain =
-      [&](::dataflow::OperationSchemaId schema,
-          std::optional<mlir::arith::CmpIPredicate> predicate = std::nullopt) {
-        for (IntegerWidth width : integerWidthDomain) {
-          if (!parameters->operandWidths.contains(width))
-            continue;
-          actors.push_back(makeScalarIntegerCompareActor(
-              context, getBitWidth(width), schema, predicate));
+  if (family == ImplementationFamilyId::ScalarIntegerCompareMinMax) {
+    const auto *parameters =
+        std::get_if<ScalarIntegerCompareMinMaxParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    const auto appendWidthDomain =
+        [&](::dataflow::OperationSchemaId schema,
+            std::optional<mlir::arith::CmpIPredicate> predicate =
+                std::nullopt) {
+          for (IntegerWidth width : integerWidthDomain) {
+            if (!parameters->operandWidths.contains(width))
+              continue;
+            actors.push_back(makeScalarIntegerCompareActor(
+                context, getBitWidth(width), schema, predicate));
+          }
+        };
+    for (::dataflow::OperationSchemaId schema : enabledSchemas) {
+      switch (schema) {
+      case ::dataflow::OperationSchemaId::ArithCmpI:
+        for (std::uint32_t ordinal = 0;
+             ordinal <= mlir::arith::getMaxEnumValForCmpIPredicate();
+             ++ordinal) {
+          const auto predicate =
+              static_cast<mlir::arith::CmpIPredicate>(ordinal);
+          if (parameters->predicates.contains(predicate))
+            appendWidthDomain(schema, predicate);
         }
-      };
-  for (::dataflow::OperationSchemaId schema : enabledSchemas) {
-    switch (schema) {
-    case ::dataflow::OperationSchemaId::ArithCmpI:
-      for (std::uint32_t ordinal = 0;
-           ordinal <= mlir::arith::getMaxEnumValForCmpIPredicate(); ++ordinal) {
-        const auto predicate = static_cast<mlir::arith::CmpIPredicate>(ordinal);
-        if (parameters->predicates.contains(predicate))
-          appendWidthDomain(schema, predicate);
+        break;
+      case ::dataflow::OperationSchemaId::ArithMinSI:
+      case ::dataflow::OperationSchemaId::ArithMaxSI:
+      case ::dataflow::OperationSchemaId::ArithMinUI:
+      case ::dataflow::OperationSchemaId::ArithMaxUI:
+        appendWidthDomain(schema);
+        break;
+      default:
+        return reject("capability contains a non-compare/min-max schema");
       }
-      break;
-    case ::dataflow::OperationSchemaId::ArithMinSI:
-    case ::dataflow::OperationSchemaId::ArithMaxSI:
-    case ::dataflow::OperationSchemaId::ArithMinUI:
-    case ::dataflow::OperationSchemaId::ArithMaxUI:
-      appendWidthDomain(schema);
-      break;
-    default:
-      return reject("capability contains a non-compare/min-max schema");
     }
+  } else if (family == ImplementationFamilyId::FixedVectorIntegerAddSub) {
+    const auto *parameters = std::get_if<FixedVectorIntegerParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    for (::dataflow::OperationSchemaId schema : enabledSchemas) {
+      if (schema != ::dataflow::OperationSchemaId::ArithAddI &&
+          schema != ::dataflow::OperationSchemaId::ArithSubI)
+        return reject("capability contains a non-add/sub schema");
+      for (IntegerWidth width : integerWidthDomain) {
+        if (!parameters->elementWidths.contains(width))
+          continue;
+        auto actor = makeFixedVectorIntegerAddSubActor(
+            context, getBitWidth(width), parameters->maxPayloadBits, schema);
+        if (!actor)
+          return actor.takeError();
+        actors.push_back(std::move(*actor));
+      }
+    }
+  } else {
+    return reject("finite behavior-domain projection is not implemented for "
+                  "the capability family");
   }
   if (actors.empty())
-    return reject("capability has no admitted compare/min-max behavior");
+    return reject("capability has no admitted finite behavior");
 
   std::vector<FiniteImplementationFamilyBehaviorPoint> points;
   for (auto &actor : actors) {

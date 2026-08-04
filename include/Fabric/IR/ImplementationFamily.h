@@ -666,7 +666,9 @@ struct FiniteImplementationFamilyBehaviorPoint final {
 /// exact actor modes from family parameters. `verifyConcreteActor` applies
 /// resource-local constraints to every admitted actor before semantically
 /// equivalent actors collapse to one representative. Families with non-finite
-/// field domains report that no finite projection is available.
+/// field domains report that no finite projection is available. A family with
+/// an unbounded shape syntax uses maximal witnesses that cover every
+/// behavior-equivalent actor under its monotone resource-local constraints.
 llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
 resolveFiniteImplementationFamilyBehaviorDomain(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,

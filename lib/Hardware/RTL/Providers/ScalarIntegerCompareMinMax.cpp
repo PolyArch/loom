@@ -1,6 +1,7 @@
 #include "Hardware/RTL/Providers/ScalarIntegerCompareMinMax.h"
 
 #include "Hardware/RTL/OperationLeaf.h"
+#include "ProviderSupport.h"
 
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
@@ -106,40 +107,6 @@ llvm::Expected<std::optional<unsigned>> signedOperandWidth(const Mode &mode) {
       llvm::cast<mlir::IntegerType>(mode.actor.type.getInput(0)).getWidth());
 }
 
-llvm::APInt physicalCode(llvm::ArrayRef<std::uint8_t> bytes,
-                         std::uint64_t bitCount) {
-  llvm::APInt result(static_cast<unsigned>(bitCount), 0);
-  for (std::uint64_t bit = 0; bit < bitCount; ++bit)
-    if (((bytes[static_cast<std::size_t>(bit / 8)] >> (bit % 8)) & 1U) != 0)
-      result.setBit(static_cast<unsigned>(bit));
-  return result;
-}
-
-const FiniteCodebookEntry *
-findSemanticValue(const FiniteCodebookEncoding &codebook,
-                  llvm::ArrayRef<std::uint8_t> semanticValue) {
-  const auto found =
-      llvm::find_if(codebook.entries, [&](const FiniteCodebookEntry &entry) {
-        return llvm::ArrayRef<std::uint8_t>(entry.semanticValue)
-            .equals(semanticValue);
-      });
-  return found == codebook.entries.end() ? nullptr : &*found;
-}
-
-mlir::Value resizeUnsigned(mlir::OpBuilder &builder, mlir::Location location,
-                           mlir::Value value, unsigned width) {
-  const unsigned current =
-      mlir::cast<mlir::IntegerType>(value.getType()).getWidth();
-  if (current == width)
-    return value;
-  if (current > width)
-    return circt::comb::ExtractOp::create(builder, location, value, 0, width);
-  mlir::Value highZeros = circt::hw::ConstantOp::create(
-      builder, location, llvm::APInt(width - current, 0));
-  return circt::comb::ConcatOp::create(builder, location,
-                                       mlir::ValueRange{highZeros, value});
-}
-
 mlir::Value signExtendLow(mlir::OpBuilder &builder, mlir::Location location,
                           mlir::Value value, unsigned semanticWidth,
                           unsigned physicalWidth) {
@@ -219,8 +186,8 @@ materializePortableScalarIntegerCompareMinMax(
     for (auto &point : *domain) {
       if (!point.semanticConfiguration)
         return invalid("configured behavior has no semantic value");
-      const FiniteCodebookEntry *entry =
-          findSemanticValue(*codebook, point.semanticConfiguration->bytes());
+      const FiniteCodebookEntry *entry = detail::findFiniteCodebookEntry(
+          *codebook, point.semanticConfiguration->bytes());
       if (!entry)
         return invalid("codebook has no entry for an admitted semantic value");
       modes.push_back({std::move(point.representativeActor), entry});
@@ -266,12 +233,12 @@ materializePortableScalarIntegerCompareMinMax(
       circt::hw::ModulePortInfo(request.leaf.getPortList()),
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
-        mlir::Value lhs =
-            resizeUnsigned(bodyBuilder, location,
-                           accessor.getInput("data_input_0"), arithmeticWidth);
-        mlir::Value rhs =
-            resizeUnsigned(bodyBuilder, location,
-                           accessor.getInput("data_input_1"), arithmeticWidth);
+        mlir::Value lhs = detail::resizeUnsigned(
+            bodyBuilder, location, accessor.getInput("data_input_0"),
+            arithmeticWidth);
+        mlir::Value rhs = detail::resizeUnsigned(
+            bodyBuilder, location, accessor.getInput("data_input_1"),
+            arithmeticWidth);
         std::vector<mlir::Value> results;
         results.reserve(modes.size());
         for (auto [index, mode] : llvm::enumerate(modes)) {
@@ -290,8 +257,8 @@ materializePortableScalarIntegerCompareMinMax(
           if (mode.actor.schema != Schema::ArithCmpI)
             result = circt::comb::MuxOp::create(bodyBuilder, location,
                                                 condition, lhs, rhs, true);
-          results.push_back(resizeUnsigned(bodyBuilder, location, result,
-                                           outputs[0]->payloadWidthBits));
+          results.push_back(detail::resizeUnsigned(
+              bodyBuilder, location, result, outputs[0]->payloadWidthBits));
         }
 
         mlir::Value result = results[inactiveMode];
@@ -303,8 +270,9 @@ materializePortableScalarIntegerCompareMinMax(
               continue;
             mlir::Value code = circt::hw::ConstantOp::create(
                 bodyBuilder, location,
-                physicalCode(modes[index].codebookEntry->physicalCode,
-                             codebook->encodedBitCount));
+                detail::decodePhysicalCode(
+                    modes[index].codebookEntry->physicalCode,
+                    codebook->encodedBitCount));
             mlir::Value selected = circt::comb::ICmpOp::create(
                 bodyBuilder, location, circt::comb::ICmpPredicate::eq,
                 configuration, code, true);

@@ -101,6 +101,7 @@ enum class ConfigurationAbiKind {
   Complete,
   MissingSubtract,
   ExtraSemanticValue,
+  SubtractInactive,
 };
 
 enum class FabricFixtureKind {
@@ -246,15 +247,18 @@ FinalizedConfigurationABI makeConfigurationAbi(
   require(test, capability->configurationFieldSchema.size() == 1,
           "add/sub fixture has an unexpected configuration field count");
   const auto fieldReference = capability->configurationFieldSchema.front();
+  const std::vector<std::uint8_t> addValue =
+      operationValue(test, *capability, fieldReference,
+                     dataflow::OperationSchemaId::ArithAddI);
+  const std::vector<std::uint8_t> subtractValue =
+      operationValue(test, *capability, fieldReference,
+                     dataflow::OperationSchemaId::ArithSubI);
 
   std::vector<FiniteCodebookEntry> entries{
-      {operationValue(test, *capability, fieldReference,
-                      dataflow::OperationSchemaId::ArithAddI),
-       {0x02}},
+      {addValue, {0x02}},
       {kind == ConfigurationAbiKind::MissingSubtract
            ? std::vector<std::uint8_t>{0xff}
-           : operationValue(test, *capability, fieldReference,
-                            dataflow::OperationSchemaId::ArithSubI),
+           : subtractValue,
        {0x01}}};
   if (kind == ConfigurationAbiKind::ExtraSemanticValue)
     entries.push_back({{0xfe}, {0x03}});
@@ -262,8 +266,8 @@ FinalizedConfigurationABI makeConfigurationAbi(
       fieldReference,
       FiniteCodebookEncoding{2, std::move(entries)},
       {{0, 0, 2}},
-      operationValue(test, *capability, fieldReference,
-                     dataflow::OperationSchemaId::ArithAddI)};
+      kind == ConfigurationAbiKind::SubtractInactive ? subtractValue
+                                                     : addValue};
   ProgrammingUnitDraft unit{{field.field.owner.catalog()}, 2, {field}};
   return take(test, finalizeConfigurationABI(
                         ConfigurationABIDraft{fixture.fabric.reference(),
@@ -372,10 +376,9 @@ void configuredCodebookAndDeterminism(const std::filesystem::path &root) {
           "identical add/sub inputs produced different SystemVerilog");
   const llvm::StringRef rtl(first);
   require(test,
-          rtl.contains("data_input_0 + data_input_1") &&
-              rtl.contains("data_input_0 - data_input_1") &&
-              rtl.contains("config_0"),
-          "portable provider omitted configured add/sub logic");
+          rtl.contains("config_0") && rtl.contains(" + ") &&
+              !rtl.contains(" - "),
+          "portable provider did not share its configured add/sub datapath");
 
   std::ofstream(root / "scalar_integer_add_sub.sv") << first;
   std::ofstream(root / "testbench.sv") << R"sv(
@@ -419,6 +422,8 @@ hierarchy -check -top scalar_integer_add_sub
 proc
 opt
 check
+select -assert-none t:$sub
+select -assert-count 2 t:$add
 synth -top scalar_integer_add_sub
 check
 stat
@@ -438,10 +443,69 @@ void singletonNeedsNoSelector(const std::filesystem::path &root) {
           "singleton add leaf retained a redundant selector");
   const std::string rtl = specialize(test, skeleton, fabric, abi);
   require(test,
-          llvm::StringRef(rtl).contains("data_input_0 + data_input_1") &&
-              !llvm::StringRef(rtl).contains("data_input_0 - data_input_1") &&
+          llvm::StringRef(rtl).contains(" + ") &&
+              !llvm::StringRef(rtl).contains(" - ") &&
               !llvm::StringRef(rtl).contains("config_0"),
           "singleton add provider emitted configurable subtract logic");
+}
+
+void subtractInactiveControlsUnassignedCode(const std::filesystem::path &root) {
+  const llvm::StringRef test = __func__;
+  std::filesystem::create_directories(root);
+  ArtifactStore store(root.string());
+  FabricFixture fabric = makeFabric(test, store);
+  FinalizedConfigurationABI abi = makeConfigurationAbi(
+      test, store, fabric, ConfigurationAbiKind::SubtractInactive);
+  std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
+  SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi());
+  const std::string rtl = specialize(test, skeleton, fabric, abi);
+  require(test,
+          llvm::StringRef(rtl).contains("config_0") &&
+              llvm::StringRef(rtl).contains(" + ") &&
+              !llvm::StringRef(rtl).contains(" - "),
+          "subtract-inactive provider did not share its add/sub datapath");
+
+  std::ofstream(root / "scalar_integer_add_sub.sv") << rtl;
+  std::ofstream(root / "testbench.sv") << R"sv(
+module testbench;
+  logic [7:0] data_input_0;
+  logic [7:0] data_input_1;
+  logic [1:0] config_0;
+  logic [7:0] data_output_0;
+
+  scalar_integer_add_sub dut(.*);
+
+  initial begin
+    data_input_0 = 8'h37;
+    data_input_1 = 8'h12;
+    config_0 = 2'b00;
+    #1;
+    if (data_output_0 !== 8'h25)
+      $fatal(1, "unassigned code did not preserve subtract inactive behavior");
+
+    config_0 = 2'b10;
+    #1;
+    if (data_output_0 !== 8'h49) $fatal(1, "add codebook entry failed");
+
+    config_0 = 2'b01;
+    #1;
+    if (data_output_0 !== 8'h25) $fatal(1, "subtract codebook entry failed");
+    $finish;
+  end
+endmodule
+)sv";
+  std::ofstream(root / "portable_scalar_integer_add_sub.ys") << R"ys(
+read_verilog scalar_integer_add_sub.sv
+hierarchy -check -top scalar_integer_add_sub
+proc
+opt
+check
+select -assert-none t:$sub
+select -assert-count 2 t:$add
+synth -top scalar_integer_add_sub
+check
+stat
+)ys";
 }
 
 void pointerCapabilityIsTypedUnsupported(const std::filesystem::path &root) {
@@ -555,6 +619,7 @@ int main(int argc, char **argv) {
   const std::filesystem::path root(argv[1]);
   configuredCodebookAndDeterminism(root);
   singletonNeedsNoSelector(root / "singleton");
+  subtractInactiveControlsUnassignedCode(root / "subtract_inactive");
   pointerCapabilityIsTypedUnsupported(root / "pointer");
   malformedInputsFailClosed(root / "malformed");
   return 0;

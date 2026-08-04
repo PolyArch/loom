@@ -1,0 +1,23 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-integer-add-sub-test %t
+# RUN: FileCheck %s --check-prefix=RTL < %t/fixed_vector_integer_add_sub.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_fixed_vector_integer_add_sub.ys
+
+# RTL: module fixed_vector_integer_add_sub
+# RTL: input [127:0] data_input_0
+# RTL: data_input_1,
+# RTL: input [2:0] config_0
+# RTL: output [127:0] data_output_0
+# RTL: config_0
+
+# TB: module testbench
+# TB: i8 add leaked carry across lanes
+# TB: i16 add did not retain an intra-lane carry
+# TB: unassigned code did not preserve inactive behavior
+
+# YOSYS: hierarchy -check -top fixed_vector_integer_add_sub
+# YOSYS: select -assert-none t:$sub
+# YOSYS: select -assert-count 48 t:$add
+# YOSYS: synth -top fixed_vector_integer_add_sub

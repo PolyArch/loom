@@ -2,6 +2,8 @@ add_library(LoomHardwareRTL
   CirctConformance.cpp
   CommonSkeleton.cpp
   OperationLeaf.cpp
+  Providers/FixedVectorIntegerAddSub.cpp
+  Providers/ProviderSupport.cpp
   Providers/ScalarIntegerAddSub.cpp
   Providers/ScalarIntegerCompareMinMax.cpp
   Specialization.cpp
