@@ -320,16 +320,13 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     if (builder.sinks.size() > std::numeric_limits<std::uint32_t>::max())
       return invalid("CGRA transport sink count exceeds u32");
     const std::uint64_t bindingOrdinal = bindings.size();
-    bindings.push_back({builder.producer, sinkOffset,
-                        static_cast<std::uint32_t>(builder.sinks.size()),
-                        producedUseOffset, producedUseCount,
-                        static_cast<std::uint32_t>(consumedPhysicalUseCount),
-                        builder.requiresTraversalTransport, false});
+    std::optional<std::uint64_t> actorPlanOrdinal;
     if (const auto *producer =
             std::get_if<::dataflow::ActorTokenResultRef>(&builder.producer)) {
       auto actor = actorPlanByEntity.find(producer->actor.entity.value());
       if (actor == actorPlanByEntity.end())
         return invalid("CGRA transport producer has no compute actor binding");
+      actorPlanOrdinal = actor->second;
       if (!actorSourceBindings
                .try_emplace({actor->second, producer->ordinal}, bindingOrdinal)
                .second)
@@ -343,6 +340,11 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
       if (!ingressSourceBindings.try_emplace(*argument, bindingOrdinal).second)
         return invalid("CGRA transport ingress has duplicate bindings");
     }
+    bindings.push_back(
+        {builder.producer, sinkOffset,
+         static_cast<std::uint32_t>(builder.sinks.size()), producedUseOffset,
+         producedUseCount, static_cast<std::uint32_t>(consumedPhysicalUseCount),
+         actorPlanOrdinal, builder.requiresTraversalTransport, false});
   }
   return CgraTransportRuntime(plan, state, physical, std::move(bindings),
                               std::move(sinks), std::move(physicalUses),
@@ -356,6 +358,8 @@ std::uint64_t CgraTransportRuntime::allocate(std::uint64_t bindingOrdinal,
   assert(bindingOrdinal < bindings_.size() &&
          !bindings_[bindingOrdinal].active &&
          "CGRA transport allocation requires a validated source");
+  assert(activeTransferCount_ != std::numeric_limits<std::uint64_t>::max() &&
+         "preflighted active transfer count must fit u64");
   std::uint64_t slot = 0;
   if (freeSlots_.empty()) {
     slot = inFlight_.size();
@@ -367,6 +371,7 @@ std::uint64_t CgraTransportRuntime::allocate(std::uint64_t bindingOrdinal,
   inFlight_[slot] =
       InFlight{true, bindingOrdinal, occurrenceOrdinal, std::move(token)};
   bindings_[bindingOrdinal].active = true;
+  ++activeTransferCount_;
   return slot;
 }
 
@@ -479,6 +484,9 @@ llvm::Error CgraTransportRuntime::acceptTransfers(
   if (transfers.size() >
       std::numeric_limits<std::uint64_t>::max() - inFlight_.size())
     return invalid("CGRA in-flight transport slot count exceeds u64");
+  if (transfers.size() >
+      std::numeric_limits<std::uint64_t>::max() - activeTransferCount_)
+    return invalid("CGRA active transport count exceeds u64");
 
   llvm::SmallVector<std::uint64_t, 4> prospectiveSlots;
   prospectiveSlots.reserve(transfers.size());
@@ -582,7 +590,8 @@ llvm::Error CgraTransportRuntime::acceptGraphIngressEmissions(
   return acceptTransfers(coordinate, transfers);
 }
 
-llvm::Error CgraTransportRuntime::acceptPhysicalEvents(
+llvm::Expected<std::vector<CgraTransportCompletion>>
+CgraTransportRuntime::acceptPhysicalEvents(
     const CgraPhysicalLifecycleFrame &physicalFrame) {
   struct CountDelta final {
     std::uint32_t producedPermitted = 0;
@@ -668,6 +677,7 @@ llvm::Error CgraTransportRuntime::acceptPhysicalEvents(
   }
 
   bool needsNextDelta = false;
+  std::vector<CgraTransportCompletion> completions;
   for (const auto &[slot, delta] : countDeltas) {
     InFlight &inFlight = inFlight_[slot];
     const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
@@ -758,9 +768,15 @@ llvm::Error CgraTransportRuntime::acceptPhysicalEvents(
       if (llvm::Error error = schedulePublication(slot, *next))
         return error;
     }
-    maybeRelease(slot);
+    if (auto completion = maybeRelease(slot))
+      completions.push_back(*completion);
   }
-  return llvm::Error::success();
+  llvm::sort(completions, [](const CgraTransportCompletion &lhs,
+                             const CgraTransportCompletion &rhs) {
+    return std::tie(lhs.actorPlanOrdinal, lhs.occurrenceOrdinal) <
+           std::tie(rhs.actorPlanOrdinal, rhs.occurrenceOrdinal);
+  });
+  return completions;
 }
 
 bool CgraTransportRuntime::canPublish(const TransferBinding &binding) const {
@@ -794,24 +810,37 @@ void CgraTransportRuntime::publish(std::uint64_t slot,
   frame.publications.push_back({binding.producer, inFlight.occurrenceOrdinal,
                                 std::move(inFlight.token)});
   inFlight.published = true;
-  maybeRelease(slot);
+  if (auto completion = maybeRelease(slot))
+    frame.completions.push_back(*completion);
 }
 
-void CgraTransportRuntime::maybeRelease(std::uint64_t slot) {
+std::optional<CgraTransportCompletion>
+CgraTransportRuntime::maybeRelease(std::uint64_t slot) {
   InFlight &inFlight = inFlight_[slot];
   const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
   if (inFlight.published &&
       inFlight.producedRetired == binding.physicalUseCount &&
       inFlight.consumedRetired == binding.consumedPhysicalUseCount)
-    release(slot);
+    return release(slot);
+  return std::nullopt;
 }
 
-void CgraTransportRuntime::release(std::uint64_t slot) {
+std::optional<CgraTransportCompletion>
+CgraTransportRuntime::release(std::uint64_t slot) {
   InFlight &inFlight = inFlight_[slot];
-  bindings_[inFlight.bindingOrdinal].active = false;
+  TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+  std::optional<CgraTransportCompletion> completion;
+  if (binding.actorPlanOrdinal)
+    completion = CgraTransportCompletion{*binding.actorPlanOrdinal,
+                                         inFlight.occurrenceOrdinal};
+  binding.active = false;
   blocked_.reset(inFlight.bindingOrdinal);
   inFlight.active = false;
+  assert(activeTransferCount_ != 0 &&
+         "active CGRA transfer count must not underflow");
+  --activeTransferCount_;
   freeSlots_.push_back(slot);
+  return completion;
 }
 
 llvm::Expected<std::optional<CgraTransportFrame>>
@@ -820,7 +849,7 @@ CgraTransportRuntime::advance() {
   if (!coordinate)
     return std::optional<CgraTransportFrame>{};
 
-  CgraTransportFrame frame{*coordinate, {}, {}, {}};
+  CgraTransportFrame frame{*coordinate, {}, {}, {}, {}};
   if (isAt(requestedEvents_.nextCoordinate(), *coordinate)) {
     auto requested = requestedEvents_.popNextFrame();
     if (!requested)

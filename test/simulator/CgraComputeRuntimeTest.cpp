@@ -203,26 +203,40 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
   (void)take(physical.request(transportAction, 0, coordinate(0)));
   auto runtime = take(CgraComputeRuntime::create(plan, view, add->graph,
                                                  *prepared, state, physical));
-  auto frame = take(runtime.start(coordinate(0)));
+  if (llvm::Error error = runtime.start(coordinate(0)))
+    fail(llvm::toString(std::move(error)));
+  auto frame = take(runtime.advance());
   require(frame && hasPhysical(*frame, CgraPhysicalLifecycleKind::Requested) &&
-              hasPhysical(*frame, CgraPhysicalLifecycleKind::Granted) &&
-              llvm::any_of(
-                  frame->physicalEvents,
-                  [transportAction](const CgraPhysicalLifecycleEvent &event) {
-                    return event.actionOrdinal == transportAction;
-                  }) &&
               frame->actorEvents.empty(),
-          "shared physical runtime did not preserve each client lifecycle");
+          "compute action did not expose its request lifecycle");
 
-  frame = take(runtime.advance());
-  require(frame &&
-              frame->coordinate.referenceCycle ==
-                  take(loom::evaluation::ExactRatio::get(1, 1)) &&
-              frame->coordinate.delta == 0 &&
-              hasPhysical(*frame, CgraPhysicalLifecycleKind::Committed) &&
-              frame->actorEvents.empty() &&
-              state.pendingChannelOrdinals.empty(),
-          "software actor committed before the owner resource transition");
+  auto physicalFrame = take(physical.advance());
+  require(physicalFrame && physicalFrame->events.size() == 2,
+          "shared physical calendar did not retain both clients");
+  auto computePhysical = take(runtime.acceptPhysicalEvents(*physicalFrame));
+  require(hasPhysical(computePhysical, CgraPhysicalLifecycleKind::Granted) &&
+              computePhysical.actorEvents.empty(),
+          "compute client did not receive its exact grant");
+
+  physicalFrame = take(physical.advance());
+  require(physicalFrame && loom::sim::compareSpatialEventCoordinates(
+                               physicalFrame->coordinate, coordinate(0)) == 0,
+          "zero-hold transport action did not retire at its grant coordinate");
+  computePhysical = take(runtime.acceptPhysicalEvents(*physicalFrame));
+  require(computePhysical.physicalEvents.empty(),
+          "compute client consumed another client's retirement");
+
+  physicalFrame = take(physical.advance());
+  require(physicalFrame.has_value(), "physical commit frame is missing");
+  computePhysical = take(runtime.acceptPhysicalEvents(*physicalFrame));
+  require(
+      computePhysical.coordinate.referenceCycle ==
+              take(loom::evaluation::ExactRatio::get(1, 1)) &&
+          computePhysical.coordinate.delta == 0 &&
+          hasPhysical(computePhysical, CgraPhysicalLifecycleKind::Committed) &&
+          computePhysical.actorEvents.empty() &&
+          state.pendingChannelOrdinals.empty(),
+      "software actor committed before the owner resource transition");
 
   frame = take(runtime.advance());
   require(frame &&
@@ -239,15 +253,21 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
               state.pendingChannelOrdinals.empty(),
           "actor commit did not hand its shared-provider token to transport");
 
-  frame = take(runtime.advance());
-  require(frame &&
-              frame->coordinate.referenceCycle ==
-                  take(loom::evaluation::ExactRatio::get(2, 1)) &&
-              hasPhysical(*frame, CgraPhysicalLifecycleKind::Retired) &&
-              frame->actorEvents.empty() &&
-              frame->physicalCompletions.size() == 1 &&
-              !runtime.hasPendingEvents(),
-          "physical retirement fabricated actor retirement or stayed active");
+  physicalFrame = take(physical.advance());
+  require(physicalFrame.has_value(), "physical retirement frame is missing");
+  computePhysical = take(runtime.acceptPhysicalEvents(*physicalFrame));
+  require(
+      computePhysical.coordinate.referenceCycle ==
+              take(loom::evaluation::ExactRatio::get(2, 1)) &&
+          hasPhysical(computePhysical, CgraPhysicalLifecycleKind::Retired) &&
+          computePhysical.actorEvents.empty() &&
+          computePhysical.physicalCompletions.size() == 1 &&
+          !runtime.hasPendingEvents(),
+      "physical retirement fabricated actor retirement or stayed active");
+  if (llvm::Error error = runtime.retireActor(0, 0, coordinate(2)))
+    fail(llvm::toString(std::move(error)));
+  require(!runtime.hasActiveActors(),
+          "coordinated actor retirement did not release the firing");
 }
 
 void statefulActorCannotBypassUnmodeledTransport() {
@@ -284,16 +304,28 @@ void statefulActorCannotBypassUnmodeledTransport() {
       plan.resources, plan.physicalUseTimings));
   auto runtime = take(CgraComputeRuntime::create(plan, view, stream->graph,
                                                  *prepared, state, physical));
-  (void)take(runtime.start(coordinate(0)));
+  if (llvm::Error error = runtime.start(coordinate(0)))
+    fail(llvm::toString(std::move(error)));
   (void)take(runtime.advance());
+  auto physicalFrame = take(physical.advance());
+  require(physicalFrame.has_value(), "stream grant frame is missing");
+  (void)take(runtime.acceptPhysicalEvents(*physicalFrame));
+  physicalFrame = take(physical.advance());
+  require(physicalFrame.has_value(), "stream commit frame is missing");
+  (void)take(runtime.acceptPhysicalEvents(*physicalFrame));
   auto committed = take(runtime.advance());
   require(committed && committed->actorEvents.size() == 1,
           "stream transition did not commit");
-  auto next = take(runtime.advance());
-  require(next &&
-              next->coordinate.referenceCycle ==
-                  take(loom::evaluation::ExactRatio::get(2, 1)) &&
-              !hasPhysical(*next, CgraPhysicalLifecycleKind::Requested),
+  physicalFrame = take(physical.advance());
+  require(physicalFrame.has_value(), "stream retirement frame is missing");
+  auto retired = take(runtime.acceptPhysicalEvents(*physicalFrame));
+  require(retired.physicalCompletions.size() == 1,
+          "stream physical execution did not complete");
+  llvm::SmallBitVector candidates(prepared->actorPlans.size(), true);
+  if (llvm::Error error =
+          runtime.acceptReadyCandidates(coordinate(2), candidates))
+    fail(llvm::toString(std::move(error)));
+  require(!runtime.hasPendingEvents() && runtime.hasActiveActors(),
           "stateful actor bypassed its pending transport obligation");
 }
 

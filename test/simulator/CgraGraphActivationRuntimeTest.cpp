@@ -1,0 +1,266 @@
+#include "CgraGraphActivationRuntime.h"
+
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Evaluation/NumericValue.h"
+#include "Fabric/IR/ResourceContract.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <cstdlib>
+#include <utility>
+
+namespace {
+
+using namespace loom::sim::detail;
+
+[[noreturn]] void fail(llvm::StringRef message) {
+  llvm::errs() << "CGRA graph activation test: " << message << '\n';
+  std::exit(EXIT_FAILURE);
+}
+
+template <typename T> T take(llvm::Expected<T> value) {
+  if (!value)
+    fail(llvm::toString(value.takeError()));
+  return std::move(*value);
+}
+
+void require(bool condition, llvm::StringRef message) {
+  if (!condition)
+    fail(message);
+}
+
+mlir::MLIRContext &context() {
+  static mlir::MLIRContext *instance = [] {
+    mlir::DialectRegistry registry;
+    registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect>();
+    auto *result =
+        new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
+    result->loadAllAvailableDialects();
+    return result;
+  }();
+  return *instance;
+}
+
+dataflow::CanonicalDataflowArtifact program() {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.graph private @local(
+      %start: none, %lhs: i32, %rhs: i32) -> (i32)
+      attributes {
+        input_segments = array<i32: 2, 0, 0>,
+        result_segments = array<i32: 1, 0, 0>
+      } {
+    %sum = arith.addi %lhs, %rhs : i32
+    %published:2 = dataflow.sync %start, %sum
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%published#1 : i32) streams() memories()
+        complete(%published#0 : none)
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail("failed to parse graph activation fixture");
+  return take(dataflow::finalizeCanonicalDataflow(module.get()));
+}
+
+fabric::ResourceContract resourceContract() {
+  using namespace fabric;
+  ResourceContractDeclaration declaration;
+  declaration.states = {
+      {StateKey(0),
+       {{CapacityDimensionKey(0), CapacityUnits(1), CapacityUnits(0)}}}};
+  declaration.resourceTransitions = {ResourceTransitionKey(0)};
+  declaration.timingContracts = {{TimingContractKey(0), {0, 1, 2}}};
+  declaration.requesters = {RequesterKey(0)};
+  declaration.eligibilityCount = 1;
+  declaration.eventCount = 3;
+  declaration.usePatterns = {
+      {UsePatternKey(0),
+       RequesterKey(0),
+       EligibilityKey(0),
+       EventKey(0),
+       EventKey(2),
+       CommitDeclaration{EventKey(1), ResourceTransitionKey(0)},
+       TimingContractKey(0),
+       {{ClaimKey(0), StateKey(0), CapacityDimensionKey(0), CapacityUnits(1)}},
+       {}}};
+  return take(ResourceContract::create(declaration));
+}
+
+loom::sim::SpatialEventCoordinate coordinate(std::uint64_t cycle,
+                                             std::uint64_t delta = 0) {
+  return {take(loom::evaluation::ExactRatio::get(cycle, 1)), delta};
+}
+
+ActorExecutionPlan &semanticActor(PreparedGraphExecution &execution,
+                                  mlir::Operation *operation) {
+  for (ActorExecutionPlan &actor : execution.actorPlans)
+    if (actor.operation == operation)
+      return actor;
+  fail("canonical actor is absent from prepared graph execution");
+}
+
+void appendTransfer(CgraFrozenExecutionPlan &plan,
+                    dataflow::CanonicalGraphProducerEndpointRef producer,
+                    dataflow::CanonicalGraphConsumerEndpointRef consumer,
+                    dataflow::GraphRef graph) {
+  const std::uint64_t sink = plan.transport.localTransferSinks.size();
+  plan.transport.localTransferSinks.push_back({std::move(consumer)});
+  plan.transport.localTransfers.push_back(
+      {std::move(producer), graph, sink, 1});
+}
+
+void graphActivationCoordinatesComputeAndTransport() {
+  auto artifact = program();
+  auto view = take(artifact.view());
+  const dataflow::CanonicalActorView *add = nullptr;
+  const dataflow::CanonicalActorView *sync = nullptr;
+  for (const dataflow::CanonicalActorView &actor : view.actors()) {
+    const auto schema = dataflow::operationSchemaOf(actor.op);
+    if (schema == dataflow::OperationSchemaId::ArithAddI)
+      add = &actor;
+    if (schema == dataflow::OperationSchemaId::DataflowSync)
+      sync = &actor;
+  }
+  require(add && sync, "fixture lacks add or sync actor");
+  auto graphView = take(view.resolve(add->graph));
+  auto graph = mlir::cast<dataflow::GraphOp>(graphView.op);
+  GraphPreparationResult preparedResult =
+      take(prepareGraphExecution(artifact.module(), graph));
+  auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
+  require(prepared, "graph activation preparation failed");
+
+  CgraFrozenExecutionPlan plan;
+  std::vector<CgraResourcePatternSelection> selections;
+  const fabric::ResourceContract contract = resourceContract();
+  for (const dataflow::CanonicalActorView *actor : {add, sync}) {
+    ActorExecutionPlan &semantic = semanticActor(*prepared, actor->op);
+    const std::uint64_t transitionOffset = plan.computeTransitions.size();
+    for (const auto &handshake : semantic.handshakeCases) {
+      const std::uint64_t action = plan.physicalUseTimings.size();
+      plan.computeTransitions.push_back({handshake.ordinal, action, 1});
+      plan.actorTransitionPhysicalUses.push_back(action);
+      plan.physicalUseClients.push_back(
+          CgraPhysicalUseClientKind::ComputeTransition);
+      plan.physicalUseTimings.push_back({action, 0, 1, 2, 0, 2, 1});
+      selections.push_back({0, fabric::UsePatternKey(0)});
+    }
+    plan.computeActors.push_back(
+        {actor->ref,
+         actor->graph,
+         {},
+         {},
+         transitionOffset,
+         static_cast<std::uint32_t>(semantic.handshakeCases.size())});
+  }
+
+  const std::uint64_t producedAction = plan.physicalUseTimings.size();
+  plan.physicalUseClients.push_back(
+      CgraPhysicalUseClientKind::ProducedTransport);
+  plan.physicalUseTimings.push_back({producedAction, 0, 1, 2, 0, 2, 1});
+  selections.push_back({0, fabric::UsePatternKey(0)});
+  const std::uint64_t consumedAction = plan.physicalUseTimings.size();
+  plan.physicalUseClients.push_back(
+      CgraPhysicalUseClientKind::ConsumedTransport);
+  plan.physicalUseTimings.push_back({consumedAction, 0, 1, 2, 0, 2, 1});
+  selections.push_back({0, fabric::UsePatternKey(0)});
+  plan.transport.endpointPhysicalUses = {producedAction, consumedAction};
+  plan.transport.producedUses.push_back(
+      {{dataflow::ActorTokenResultRef{add->ref, 0}}, 0, 1});
+  plan.transport.consumedUses.push_back(
+      {{dataflow::ActorTokenOperandRef{sync->ref, 1}}, 1, 1});
+
+  appendTransfer(
+      plan,
+      dataflow::GraphIngressTokenRef{dataflow::GraphStartTokenRef{add->graph}},
+      dataflow::ActorTokenOperandRef{sync->ref, 0}, add->graph);
+  appendTransfer(plan,
+                 dataflow::GraphIngressTokenRef{
+                     dataflow::GraphValueInputTokenRef{add->graph, 0}},
+                 dataflow::ActorTokenOperandRef{add->ref, 0}, add->graph);
+  appendTransfer(plan,
+                 dataflow::GraphIngressTokenRef{
+                     dataflow::GraphValueInputTokenRef{add->graph, 1}},
+                 dataflow::ActorTokenOperandRef{add->ref, 1}, add->graph);
+  appendTransfer(plan, dataflow::ActorTokenResultRef{add->ref, 0},
+                 dataflow::ActorTokenOperandRef{sync->ref, 1}, add->graph);
+  appendTransfer(plan, dataflow::ActorTokenResultRef{sync->ref, 0},
+                 dataflow::GraphEgressTokenRef{
+                     dataflow::GraphCompletionFrontierTokenRef{add->graph, 0}},
+                 add->graph);
+  appendTransfer(plan, dataflow::ActorTokenResultRef{sync->ref, 1},
+                 dataflow::GraphEgressTokenRef{
+                     dataflow::GraphValueOutputTokenRef{add->graph, 0}},
+                 add->graph);
+
+  const fabric::ResourceContract *contracts[] = {&contract};
+  plan.resources = take(freezeCgraResourceRuntimePlan(contracts, selections));
+
+  SimulatorState state;
+  state.graphScope = graph.getOperation();
+  initializeRunState(state, *prepared);
+  llvm::SmallVector<GraphIngressEmission, 3> ingress;
+  state.graphIngressCapture = &ingress;
+  mlir::Block &entry = graph.getBody().front();
+  seedBlockArgument(state, entry.getArgument(0), noneToken());
+  seedBlockArgument(state, entry.getArgument(1),
+                    take(tokenFromBitPattern(llvm::APInt(32, 7),
+                                             entry.getArgument(1).getType())));
+  seedBlockArgument(state, entry.getArgument(2),
+                    take(tokenFromBitPattern(llvm::APInt(32, 9),
+                                             entry.getArgument(2).getType())));
+  state.graphIngressCapture = nullptr;
+
+  auto runtime = take(CgraGraphActivationRuntime::create(plan, view, add->graph,
+                                                         *prepared, state));
+  if (llvm::Error error = runtime.start(coordinate(0), ingress))
+    fail(llvm::toString(std::move(error)));
+
+  std::uint64_t committed = 0;
+  std::uint64_t retired = 0;
+  std::uint64_t publications = 0;
+  std::uint64_t physicalEvents = 0;
+  for (unsigned iteration = 0; iteration != 64 && runtime.hasPendingEvents();
+       ++iteration) {
+    auto frame = take(runtime.advance());
+    require(frame.has_value(), "pending activation lost its next frame");
+    for (const auto &event : frame->actorEvents)
+      if (event.kind == CgraComputeActorLifecycleKind::Committed)
+        ++committed;
+      else
+        ++retired;
+    publications += frame->publications.size();
+    physicalEvents += frame->physicalEvents.size();
+  }
+
+  require(!runtime.hasPendingEvents(), "graph activation did not quiesce");
+  require(committed == 2 && retired == 2,
+          "graph activation did not commit and retire both actors once");
+  require(publications == 6,
+          "graph activation did not publish every ingress and actor result");
+  require(physicalEvents >= 12,
+          "graph activation bypassed selected physical lifecycles");
+  auto output =
+      state.observedOutputs.find(graph.getBody().front().back().getOperand(0));
+  require(output != state.observedOutputs.end() && output->second.size() == 1 &&
+              take(tokenBitPattern(output->second.front(),
+                                   mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 16),
+          "graph activation produced the wrong functional value");
+}
+
+} // namespace
+
+int main() {
+  graphActivationCoordinatesComputeAndTransport();
+  return EXIT_SUCCESS;
+}

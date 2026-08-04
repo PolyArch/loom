@@ -217,8 +217,7 @@ void localRealizationEdgePublishesThroughExactConsumer() {
               granted->events.front().kind ==
                   CgraPhysicalLifecycleKind::Granted,
           "selected Produced use did not grant");
-  if (llvm::Error error = selectedTransport.acceptPhysicalEvents(*granted))
-    fail(llvm::toString(std::move(error)));
+  (void)take(selectedTransport.acceptPhysicalEvents(*granted));
   auto consumedRequest = take(selectedTransport.advance());
   require(consumedRequest && consumedRequest->physicalEvents.size() == 1 &&
               consumedRequest->physicalEvents.front().kind ==
@@ -234,9 +233,7 @@ void localRealizationEdgePublishesThroughExactConsumer() {
                   CgraPhysicalLifecycleKind::Granted &&
               consumedGrant->events.front().actionOrdinal == 1,
           "selected Consumed use did not grant");
-  if (llvm::Error error =
-          selectedTransport.acceptPhysicalEvents(*consumedGrant))
-    fail(llvm::toString(std::move(error)));
+  (void)take(selectedTransport.acceptPhysicalEvents(*consumedGrant));
   auto selectedPublication = take(selectedTransport.advance());
   require(selectedPublication &&
               selectedPublication->publications.size() == 1 &&

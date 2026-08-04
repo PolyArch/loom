@@ -16,7 +16,10 @@
 
 namespace loom::sim::detail {
 
-enum class CgraComputeActorLifecycleKind : std::uint8_t { Committed };
+enum class CgraComputeActorLifecycleKind : std::uint8_t {
+  Committed,
+  Retired,
+};
 
 struct CgraComputeActorLifecycleEvent final {
   CgraComputeActorLifecycleKind kind = CgraComputeActorLifecycleKind::Committed;
@@ -61,12 +64,25 @@ public:
          ::dataflow::GraphRef graph, const PreparedGraphExecution &execution,
          SimulatorState &state, CgraPhysicalActionRuntime &physical);
 
-  llvm::Expected<std::optional<CgraComputeLifecycleFrame>>
-  start(SpatialEventCoordinate coordinate);
+  llvm::Error start(SpatialEventCoordinate coordinate);
+
+  llvm::Error
+  acceptReadyCandidates(SpatialEventCoordinate coordinate,
+                        const llvm::SmallBitVector &semanticCandidates);
+
+  llvm::Expected<CgraComputeLifecycleFrame>
+  acceptPhysicalEvents(const CgraPhysicalLifecycleFrame &physicalFrame);
+
+  llvm::Error retireActor(std::uint64_t actorPlanOrdinal,
+                          std::uint64_t occurrenceOrdinal,
+                          SpatialEventCoordinate coordinate);
 
   llvm::Expected<std::optional<CgraComputeLifecycleFrame>> advance();
 
+  std::optional<SpatialEventCoordinate> nextCoordinate() const;
+
   bool hasPendingEvents() const;
+  bool hasActiveActors() const { return activeActorCount_ != 0; }
 
 private:
   struct ActorBinding final {
@@ -76,6 +92,8 @@ private:
     std::uint32_t transitionCount = 0;
     std::uint64_t nextOccurrenceOrdinal = 0;
     bool commitPending = false;
+    bool retirementPending = false;
+    std::uint64_t activeOccurrenceOrdinal = 0;
   };
 
   struct Firing final {
@@ -97,6 +115,8 @@ private:
   CgraComputeRuntime(const CgraFrozenExecutionPlan &plan, SimulatorState &state,
                      std::vector<ActorBinding> bindings,
                      std::vector<std::uint64_t> transitionByCase,
+                     std::vector<std::uint64_t> bindingBySemanticActor,
+                     std::vector<std::uint64_t> bindingByActorPlan,
                      CgraPhysicalActionRuntime &physical);
 
   llvm::Error scheduleReady(SpatialEventCoordinate coordinate);
@@ -119,6 +139,8 @@ private:
   SimulatorState *state_ = nullptr;
   std::vector<ActorBinding> bindings_;
   std::vector<std::uint64_t> transitionByCase_;
+  std::vector<std::uint64_t> bindingBySemanticActor_;
+  std::vector<std::uint64_t> bindingByActorPlan_;
   CgraPhysicalActionRuntime *physical_ = nullptr;
   CgraEventQueue requestedEvents_;
   CgraEventQueue actorCommitEvents_;
@@ -128,6 +150,7 @@ private:
   std::vector<std::uint64_t> freeFiringSlots_;
   llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, FiringActionIndex>
       actionToFiring_;
+  std::uint64_t activeActorCount_ = 0;
   bool started_ = false;
 };
 

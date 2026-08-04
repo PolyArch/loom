@@ -19,10 +19,16 @@ struct CgraTokenPublication final {
   Token token;
 };
 
+struct CgraTransportCompletion final {
+  std::uint64_t actorPlanOrdinal = 0;
+  std::uint64_t occurrenceOrdinal = 0;
+};
+
 struct CgraTransportFrame final {
   SpatialEventCoordinate coordinate;
   std::vector<CgraPhysicalLifecycleEvent> physicalEvents;
   std::vector<CgraTokenPublication> publications;
+  std::vector<CgraTransportCompletion> completions;
   std::vector<std::uint64_t> blockedTransfers;
 };
 
@@ -45,7 +51,7 @@ public:
       const SpatialEventCoordinate &coordinate,
       llvm::MutableArrayRef<GraphIngressEmission> emissions);
 
-  llvm::Error
+  llvm::Expected<std::vector<CgraTransportCompletion>>
   acceptPhysicalEvents(const CgraPhysicalLifecycleFrame &physicalFrame);
 
   llvm::Expected<std::optional<CgraTransportFrame>> advance();
@@ -56,7 +62,7 @@ public:
 
   bool hasPendingEvents() const {
     return !arrivalEvents_.empty() || !events_.empty() ||
-           !requestedEvents_.empty();
+           !requestedEvents_.empty() || activeTransferCount_ != 0;
   }
   bool hasBlockedTransfers() const { return blocked_.any(); }
 
@@ -78,6 +84,7 @@ private:
     std::uint64_t physicalUseOffset = 0;
     std::uint32_t physicalUseCount = 0;
     std::uint32_t consumedPhysicalUseCount = 0;
+    std::optional<std::uint64_t> actorPlanOrdinal;
     bool requiresTraversalTransport = false;
     bool active = false;
   };
@@ -143,12 +150,12 @@ private:
                               const SpatialEventCoordinate &coordinate);
   llvm::Error schedulePublication(std::uint64_t slot,
                                   const SpatialEventCoordinate &coordinate);
-  void maybeRelease(std::uint64_t slot);
+  std::optional<CgraTransportCompletion> maybeRelease(std::uint64_t slot);
   void scheduleAt(std::uint64_t slot,
                   const SpatialEventCoordinate &publicationCoordinate);
   bool canPublish(const TransferBinding &binding) const;
   void publish(std::uint64_t slot, CgraTransportFrame &frame);
-  void release(std::uint64_t slot);
+  std::optional<CgraTransportCompletion> release(std::uint64_t slot);
 
   const CgraFrozenExecutionPlan *plan_ = nullptr;
   SimulatorState *state_ = nullptr;
@@ -168,6 +175,7 @@ private:
   std::vector<std::uint64_t> nextActionOccurrence_;
   llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, ActionOwner>
       actionOwners_;
+  std::uint64_t activeTransferCount_ = 0;
 };
 
 } // namespace loom::sim::detail

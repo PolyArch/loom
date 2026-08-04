@@ -34,10 +34,14 @@ CgraComputeRuntime::CgraComputeRuntime(
     const CgraFrozenExecutionPlan &plan, SimulatorState &state,
     std::vector<ActorBinding> bindings,
     std::vector<std::uint64_t> transitionByCase,
+    std::vector<std::uint64_t> bindingBySemanticActor,
+    std::vector<std::uint64_t> bindingByActorPlan,
     CgraPhysicalActionRuntime &physical)
     : plan_(&plan), state_(&state), bindings_(std::move(bindings)),
-      transitionByCase_(std::move(transitionByCase)), physical_(&physical),
-      readyCandidates_(bindings_.size(), true),
+      transitionByCase_(std::move(transitionByCase)),
+      bindingBySemanticActor_(std::move(bindingBySemanticActor)),
+      bindingByActorPlan_(std::move(bindingByActorPlan)), physical_(&physical),
+      readyCandidates_(bindings_.size(), false),
       nextActionOccurrence_(plan.physicalUseTimings.size(), 0) {}
 
 llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
@@ -59,6 +63,10 @@ llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
 
   std::vector<ActorBinding> bindings;
   std::vector<std::uint64_t> transitionByCase;
+  std::vector<std::uint64_t> bindingBySemanticActor(
+      execution.actorPlans.size(), std::numeric_limits<std::uint64_t>::max());
+  std::vector<std::uint64_t> bindingByActorPlan(
+      plan.computeActors.size(), std::numeric_limits<std::uint64_t>::max());
   for (auto [actorPlanOrdinal, actor] : llvm::enumerate(plan.computeActors)) {
     if (actor.graph != graph)
       continue;
@@ -112,14 +120,24 @@ llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
           return invalid("CGRA compute transition names another client action");
       transitionByCase[caseOffset + transition.caseOrdinal] = transitionOrdinal;
     }
+    const std::uint64_t bindingOrdinal = bindings.size();
+    if (bindingBySemanticActor[semantic->second] !=
+            std::numeric_limits<std::uint64_t>::max() ||
+        bindingByActorPlan[actorPlanOrdinal] !=
+            std::numeric_limits<std::uint64_t>::max())
+      return invalid("CGRA compute actor has duplicate runtime bindings");
+    bindingBySemanticActor[semantic->second] = bindingOrdinal;
+    bindingByActorPlan[actorPlanOrdinal] = bindingOrdinal;
     bindings.push_back(ActorBinding{
         static_cast<std::uint64_t>(actorPlanOrdinal), &semanticPlan, caseOffset,
-        actor.transitionCount, 0, false});
+        actor.transitionCount, 0, false, false, 0});
   }
   if (bindings.empty())
     return invalid("CGRA compute graph has no selected compute actor");
   return CgraComputeRuntime(plan, state, std::move(bindings),
-                            std::move(transitionByCase), physical);
+                            std::move(transitionByCase),
+                            std::move(bindingBySemanticActor),
+                            std::move(bindingByActorPlan), physical);
 }
 
 llvm::Expected<std::uint64_t> CgraComputeRuntime::allocateFiring(
@@ -130,6 +148,9 @@ llvm::Expected<std::uint64_t> CgraComputeRuntime::allocateFiring(
     return llvm::createStringError(
         std::errc::value_too_large,
         "CGRA actor transition occurrence ordinal overflows u64");
+  if (activeActorCount_ == std::numeric_limits<std::uint64_t>::max())
+    return llvm::createStringError(std::errc::value_too_large,
+                                   "CGRA active actor count exceeds u64");
   std::uint64_t slot = 0;
   if (freeFiringSlots_.empty()) {
     slot = firings_.size();
@@ -149,6 +170,9 @@ llvm::Expected<std::uint64_t> CgraComputeRuntime::allocateFiring(
   firing.permittedCount = 0;
   firing.retiredCount = 0;
   binding.commitPending = true;
+  binding.retirementPending = true;
+  binding.activeOccurrenceOrdinal = firing.actorOccurrenceOrdinal;
+  ++activeActorCount_;
   return slot;
 }
 
@@ -156,10 +180,10 @@ llvm::Error
 CgraComputeRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
   for (int candidate = readyCandidates_.find_first(); candidate >= 0;
        candidate = readyCandidates_.find_next(candidate)) {
-    readyCandidates_.reset(candidate);
     ActorBinding &binding = bindings_[candidate];
-    if (binding.commitPending)
-      return invalid("CGRA compute actor has two uncommitted transitions");
+    if (binding.retirementPending)
+      continue;
+    readyCandidates_.reset(candidate);
     auto selected = probeActorTransition(*binding.semantic, *state_);
     if (!selected)
       return selected.takeError();
@@ -202,14 +226,29 @@ CgraComputeRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
   return llvm::Error::success();
 }
 
-llvm::Expected<std::optional<CgraComputeLifecycleFrame>>
-CgraComputeRuntime::start(SpatialEventCoordinate coordinate) {
+llvm::Error CgraComputeRuntime::start(SpatialEventCoordinate coordinate) {
   if (started_)
     return invalid("CGRA compute runtime was already started");
   started_ = true;
-  if (llvm::Error error = scheduleReady(std::move(coordinate)))
-    return std::move(error);
-  return advance();
+  readyCandidates_.set();
+  return scheduleReady(std::move(coordinate));
+}
+
+llvm::Error CgraComputeRuntime::acceptReadyCandidates(
+    SpatialEventCoordinate coordinate,
+    const llvm::SmallBitVector &semanticCandidates) {
+  if (!started_)
+    return invalid("CGRA compute runtime has not started");
+  if (semanticCandidates.size() != bindingBySemanticActor_.size())
+    return invalid(
+        "CGRA ready-candidate domain disagrees with graph execution");
+  for (int semantic = semanticCandidates.find_first(); semantic >= 0;
+       semantic = semanticCandidates.find_next(semantic)) {
+    const std::uint64_t binding = bindingBySemanticActor_[semantic];
+    if (binding != std::numeric_limits<std::uint64_t>::max())
+      readyCandidates_.set(binding);
+  }
+  return scheduleReady(std::move(coordinate));
 }
 
 llvm::Error CgraComputeRuntime::maybeScheduleCommit(
@@ -240,7 +279,6 @@ llvm::Error CgraComputeRuntime::processPhysicalEvent(
     return invalid("CGRA physical lifecycle names an unknown action");
   if (plan_->physicalUseClients[event.actionOrdinal] !=
       CgraPhysicalUseClientKind::ComputeTransition) {
-    frame.physicalEvents.push_back(event);
     return llvm::Error::success();
   }
   auto indexed =
@@ -320,6 +358,31 @@ void CgraComputeRuntime::releaseFiring(std::uint64_t firingSlot) {
   freeFiringSlots_.push_back(firingSlot);
 }
 
+llvm::Error CgraComputeRuntime::retireActor(std::uint64_t actorPlanOrdinal,
+                                            std::uint64_t occurrenceOrdinal,
+                                            SpatialEventCoordinate coordinate) {
+  if (!started_)
+    return invalid("CGRA compute runtime has not started");
+  if (actorPlanOrdinal >= bindingByActorPlan_.size())
+    return invalid("CGRA actor retirement names an unknown actor plan");
+  const std::uint64_t bindingOrdinal = bindingByActorPlan_[actorPlanOrdinal];
+  if (bindingOrdinal == std::numeric_limits<std::uint64_t>::max())
+    return invalid("CGRA actor retirement names another graph");
+  ActorBinding &binding = bindings_[bindingOrdinal];
+  if (!binding.retirementPending || binding.commitPending ||
+      binding.activeOccurrenceOrdinal != occurrenceOrdinal)
+    return invalid("CGRA actor retirement disagrees with its active firing");
+  binding.retirementPending = false;
+  if (activeActorCount_ == 0)
+    return invalid("CGRA active actor count underflow");
+  --activeActorCount_;
+  readyCandidates_.set(bindingOrdinal);
+  auto next = nextSpatialDelta(coordinate);
+  if (!next)
+    return next.takeError();
+  return scheduleReady(std::move(*next));
+}
+
 void CgraComputeRuntime::maybeComplete(std::uint64_t firingSlot,
                                        CgraComputeLifecycleFrame &frame) {
   Firing &firing = firings_[firingSlot];
@@ -339,7 +402,6 @@ CgraComputeRuntime::advance() {
     return invalid("CGRA compute runtime has not started");
   std::optional<SpatialEventCoordinate> coordinate;
   selectEarlier(requestedEvents_.nextCoordinate(), coordinate);
-  selectEarlier(physical_->nextCoordinate(), coordinate);
   selectEarlier(actorCommitEvents_.nextCoordinate(), coordinate);
   if (!coordinate)
     return std::optional<CgraComputeLifecycleFrame>{};
@@ -356,27 +418,6 @@ CgraComputeRuntime::advance() {
            event.order.ownerEventOrdinal, event.order.coordinate});
   }
 
-  llvm::SmallVector<std::uint64_t, 8> affectedFirings;
-  while (isAt(physical_->nextCoordinate(), *coordinate)) {
-    auto physicalFrame = physical_->advance();
-    if (!physicalFrame)
-      return physicalFrame.takeError();
-    if (!*physicalFrame)
-      return invalid("CGRA physical calendar lost its next frame");
-    for (const CgraPhysicalLifecycleEvent &event : (**physicalFrame).events)
-      if (llvm::Error error =
-              processPhysicalEvent(event, frame, affectedFirings))
-        return std::move(error);
-  }
-  llvm::sort(affectedFirings);
-  affectedFirings.erase(
-      std::unique(affectedFirings.begin(), affectedFirings.end()),
-      affectedFirings.end());
-  for (std::uint64_t firing : affectedFirings)
-    if (firings_[firing].active)
-      if (llvm::Error error = maybeScheduleCommit(firing, *coordinate))
-        return std::move(error);
-
   llvm::SmallVector<std::uint64_t, 4> committedFirings;
   if (isAt(actorCommitEvents_.nextCoordinate(), *coordinate)) {
     auto commits = actorCommitEvents_.popNextFrame();
@@ -389,9 +430,6 @@ CgraComputeRuntime::advance() {
     }
   }
 
-  for (std::uint64_t firing : affectedFirings)
-    if (firing < firings_.size() && firings_[firing].active)
-      maybeComplete(firing, frame);
   for (std::uint64_t firing : committedFirings)
     if (firing < firings_.size() && firings_[firing].active)
       maybeComplete(firing, frame);
@@ -428,9 +466,45 @@ CgraComputeRuntime::advance() {
   return std::optional<CgraComputeLifecycleFrame>(std::move(frame));
 }
 
+llvm::Expected<CgraComputeLifecycleFrame>
+CgraComputeRuntime::acceptPhysicalEvents(
+    const CgraPhysicalLifecycleFrame &physicalFrame) {
+  if (!started_)
+    return invalid("CGRA compute runtime has not started");
+  CgraComputeLifecycleFrame frame{physicalFrame.coordinate, {}, {}, {}, {}};
+  llvm::SmallVector<std::uint64_t, 8> affectedFirings;
+  for (const CgraPhysicalLifecycleEvent &event : physicalFrame.events) {
+    if (compareSpatialEventCoordinates(event.coordinate,
+                                       physicalFrame.coordinate) != 0)
+      return invalid("CGRA physical frame contains another coordinate");
+    if (llvm::Error error = processPhysicalEvent(event, frame, affectedFirings))
+      return std::move(error);
+  }
+  llvm::sort(affectedFirings);
+  affectedFirings.erase(
+      std::unique(affectedFirings.begin(), affectedFirings.end()),
+      affectedFirings.end());
+  for (std::uint64_t firing : affectedFirings) {
+    if (!firings_[firing].active)
+      continue;
+    if (llvm::Error error =
+            maybeScheduleCommit(firing, physicalFrame.coordinate))
+      return std::move(error);
+    maybeComplete(firing, frame);
+  }
+  return frame;
+}
+
+std::optional<SpatialEventCoordinate>
+CgraComputeRuntime::nextCoordinate() const {
+  std::optional<SpatialEventCoordinate> coordinate;
+  selectEarlier(requestedEvents_.nextCoordinate(), coordinate);
+  selectEarlier(actorCommitEvents_.nextCoordinate(), coordinate);
+  return coordinate;
+}
+
 bool CgraComputeRuntime::hasPendingEvents() const {
-  return !requestedEvents_.empty() || !actorCommitEvents_.empty() ||
-         physical_->hasPendingActions();
+  return !requestedEvents_.empty() || !actorCommitEvents_.empty();
 }
 
 } // namespace loom::sim::detail

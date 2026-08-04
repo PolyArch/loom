@@ -124,6 +124,7 @@ set(LOOM_TEST_DEPENDS
   loom-simulator-atomic-order-test
   loom-simulator-cgra-event-queue-test
   loom-simulator-cgra-compute-runtime-test
+  loom-simulator-cgra-graph-activation-test
   loom-simulator-cgra-physical-action-test
   loom-simulator-cgra-resource-runtime-test
   loom-simulator-cgra-transport-runtime-test
