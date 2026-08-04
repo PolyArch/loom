@@ -73,11 +73,14 @@ const CandidateGeneratorDescriptor &
 structuredOwnershipCandidateGeneratorDescriptor();
 llvm::Error registerStructuredOwnershipCandidateGenerator();
 
-llvm::Expected<ResolvedCandidateGeneratorBinding>
-resolveStructuredOwnershipCandidateGeneratorBinding(
+llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
+bindStructuredOwnershipCandidateGeneratorInputs(
     const ArtifactRootReference &structuredProgram,
     const ArtifactRootReference &fabric, const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput,
+    const ArtifactRootReference &runtimeInput);
+
+llvm::Expected<ResolvedCandidateGeneratorBinding>
+resolveStructuredOwnershipCandidateGeneratorBinding(
     const ResolvedStructuredOwnershipGeneratorConfigView &config);
 
 } // namespace loom::dse

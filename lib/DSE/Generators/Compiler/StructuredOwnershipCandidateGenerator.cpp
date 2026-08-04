@@ -203,36 +203,38 @@ std::uint32_t defaultWorkerCount() {
 }
 
 const ArtifactRootReference &
-singleInput(const ResolvedCandidateGeneratorBinding &binding, InputSlot slot) {
-  return binding.inputBindings()[slot].artifacts.front();
+singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+            InputSlot slot) {
+  return inputBindings[slot].artifacts.front();
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome>
-invokeOwnershipProvider(const ResolvedCandidateGeneratorBinding &binding,
-                        const ArtifactStore &store) {
+llvm::Expected<CandidateGeneratorInvocationOutcome> invokeOwnershipProvider(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store) {
   auto config = adoptResolvedStructuredOwnershipGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
   if (!config)
     return config.takeError();
 
-  auto inputs = sim::importStructuredProgramSimulationInputs(
-      singleInput(binding, WorkloadInput), singleInput(binding, RuntimeInput),
-      store);
-  if (!inputs)
-    return inputs.takeError();
+  auto simulationInputs = sim::importStructuredProgramSimulationInputs(
+      singleInput(inputBindings, WorkloadInput),
+      singleInput(inputBindings, RuntimeInput), store);
+  if (!simulationInputs)
+    return simulationInputs.takeError();
   const ArtifactRootReference &structured =
-      singleInput(binding, StructuredProgramInput);
-  if (structured.artifact != inputs->structuredProgram.identity())
+      singleInput(inputBindings, StructuredProgramInput);
+  if (structured.artifact != simulationInputs->structuredProgram.identity())
     return invalid("workload owner differs from the Structured input");
 
-  auto fabric =
-      fabric::importEntireFabricRoot(singleInput(binding, FabricInput), store);
+  auto fabric = fabric::importEntireFabricRoot(
+      singleInput(inputBindings, FabricInput), store);
   if (!fabric)
     return fabric.takeError();
   for (const frontend::StructuredEntityRef &root :
        config->protocolCallableRoots())
-    if (root.parent != inputs->structuredProgram.identity())
+    if (root.parent != simulationInputs->structuredProgram.identity())
       return invalid("protocol root belongs to a foreign Structured owner");
 
   StructuredOwnershipGenerationOptions options;
@@ -241,8 +243,8 @@ invokeOwnershipProvider(const ResolvedCandidateGeneratorBinding &binding,
   options.protocolCallableRoots.assign(config->protocolCallableRoots().begin(),
                                        config->protocolCallableRoots().end());
   auto generated = generateStructuredOwnershipCandidates(
-      inputs->structuredProgram, inputs->workload, inputs->runtimeInput,
-      *fabric, options, store);
+      simulationInputs->structuredProgram, simulationInputs->workload,
+      simulationInputs->runtimeInput, *fabric, options, store);
   if (!generated)
     return generated.takeError();
   return CandidateGeneratorInvocationOutcome{
@@ -316,12 +318,11 @@ llvm::Error registerStructuredOwnershipCandidateGenerator() {
   return registerCandidateGeneratorProvider(provider);
 }
 
-llvm::Expected<ResolvedCandidateGeneratorBinding>
-resolveStructuredOwnershipCandidateGeneratorBinding(
+llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
+bindStructuredOwnershipCandidateGeneratorInputs(
     const ArtifactRootReference &structuredProgram,
     const ArtifactRootReference &fabric, const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput,
-    const ResolvedStructuredOwnershipGeneratorConfigView &config) {
+    const ArtifactRootReference &runtimeInput) {
   if (llvm::Error error = registerStructuredOwnershipCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings = {
@@ -331,9 +332,19 @@ resolveStructuredOwnershipCandidateGeneratorBinding(
       {CandidateGeneratorInputSlotRef(WorkloadInput), {workload}},
       {CandidateGeneratorInputSlotRef(RuntimeInput), {runtimeInput}},
   };
+  if (llvm::Error error = validateCandidateGeneratorInputBindings(
+          descriptor.reference(), bindings))
+    return std::move(error);
+  return bindings;
+}
+
+llvm::Expected<ResolvedCandidateGeneratorBinding>
+resolveStructuredOwnershipCandidateGeneratorBinding(
+    const ResolvedStructuredOwnershipGeneratorConfigView &config) {
+  if (llvm::Error error = registerStructuredOwnershipCandidateGenerator())
+    return std::move(error);
   return ResolvedCandidateGeneratorBinding::get(
-      descriptor.reference(), std::move(bindings), config.canonicalViewBytes(),
-      config.digest());
+      descriptor.reference(), config.canonicalViewBytes(), config.digest());
 }
 
 } // namespace loom::dse

@@ -702,13 +702,15 @@ void runEvaluationAnchor() {
       adoptedGeneratorConfig.protocolCallableRoots().size() != 2)
     fail("ownership generator config did not round-trip typed fields");
 
+  auto generatorInputs =
+      take(loom::dse::bindStructuredOwnershipCandidateGeneratorInputs(
+          baselineRef, design.roots().front().reference(),
+          inputs.workloadReference, inputs.runtimeInputReference));
   auto generatorBinding =
       take(loom::dse::resolveStructuredOwnershipCandidateGeneratorBinding(
-          baselineRef, design.roots().front().reference(),
-          inputs.workloadReference, inputs.runtimeInputReference,
           generatorConfig));
-  auto generated =
-      take(loom::dse::invokeCandidateGenerator(generatorBinding, store));
+  auto generated = take(loom::dse::invokeCandidateGenerator(
+      generatorInputs, generatorBinding, store));
   const auto *completedGeneration =
       std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&generated);
   std::vector<loom::ArtifactRootReference> expectedGenerated = {
@@ -725,11 +727,9 @@ void runEvaluationAnchor() {
           {findCallable(incorrect.structuredProgram, "kernel")}));
   auto foreignBinding =
       take(loom::dse::resolveStructuredOwnershipCandidateGeneratorBinding(
-          baselineRef, design.roots().front().reference(),
-          inputs.workloadReference, inputs.runtimeInputReference,
           foreignGeneratorConfig));
-  auto foreignGeneration =
-      loom::dse::invokeCandidateGenerator(foreignBinding, store);
+  auto foreignGeneration = loom::dse::invokeCandidateGenerator(
+      generatorInputs, foreignBinding, store);
   if (foreignGeneration)
     fail("ownership generator accepted a foreign protocol root");
   llvm::consumeError(foreignGeneration.takeError());
