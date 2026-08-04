@@ -57,9 +57,44 @@ explicit value. An operation that may trap or has effects requires explicit
 predication. A mask is never hidden state attached to a vector value.
 
 The canonical functional result is independent of a physical realization.
-TechMapping may realize one vector actor with a vector FU, several scalar
-actors, or a hybrid implementation, but it must preserve shape, lane order,
-mask behavior, and token publication.
+TechMapping may select a vector FU whose declared internal implementation uses
+several lanes or beats, but it preserves one actor and every complete actor
+port. Several canonical scalar or narrower-vector actors exist only after an
+explicit Dataflow-to-Dataflow candidate rewrite. Both forms must preserve
+shape, lane order, mask behavior, and token publication.
+
+### Fixed-Vector Structural Operations
+
+Canonical Dataflow admits the standard MLIR `vector.extract`,
+`vector.insert`, and `vector.shuffle` operations directly. They are typed
+compute actors, not bit casts, stream-cardinality adapters, memory operations,
+or aliases for target instructions.
+
+`vector.extract` selects one scalar or one complete trailing subvector from a
+source vector using a position over its leading dimensions. `vector.insert`
+is the inverse update: it preserves every destination lane outside the
+selected trailing block and replaces that block with the supplied scalar or
+subvector. Static and dynamic position components retain the exact MLIR
+semantics. A poison position produces a poison result; an out-of-range dynamic
+position has the source operation's undefined result semantics rather than a
+simulator- or hardware-defined wraparound.
+
+`vector.shuffle` treats each leading-dimension element as one complete block.
+It selects blocks from its two operands in mask order, may duplicate a source
+block, and produces a poison block for a mask entry of `-1`. The operands and
+result retain their exact standard vector types, including common trailing
+shape and element type. A poison block poisons only its result lanes; it does
+not relax defined sibling blocks.
+
+The registered OperationSchema projection is the sole owner of static
+positions and shuffle masks. Dynamic positions remain ordered actor operands.
+No flattened byte offset, lane selector table, hardware mode, or scalarized
+replacement is stored beside that projection in Canonical Dataflow.
+
+A structural actor over `vector<index>` retains `index` as its canonical
+semantic element type. Physical admission resolves every index lane and every
+dynamic position through the exact target index-width projection; it may not
+admit the actor as an arbitrary equal-width integer vector.
 
 ### Exceptional Lane State
 
@@ -338,14 +373,15 @@ vector behavior.
 ## Mapping Boundary
 
 The Canonical Dataflow Program preserves semantic vector shape and lane order.
-TechMapping may flatten lanes into a declared physical representation and may
-select a Fabric realization that internally decomposes lane or beat work. Each
-external actor port still corresponds to one endpoint capable of carrying the
-complete token unless the Canonical Dataflow Program contains an explicit
-semantic adapter. SpatialMapping routes only the residual edges after a
-realization has absorbed its internal dependencies. The Mapping Artifact
-records every physical representation and endpoint binding needed to
-reconstruct the selected realization.
+TechMapping may place the row-major flattened bits in one declared complete
+physical-port representation and may select a Fabric realization that
+internally decomposes lane or beat work. Each external actor port still
+corresponds to one endpoint capable of carrying the complete token unless the
+Canonical Dataflow Program contains an explicit semantic adapter.
+SpatialMapping routes only the residual edges after a realization has absorbed
+its internal dependencies. The Mapping Artifact records every physical
+representation and endpoint binding needed to reconstruct the selected
+realization.
 
 A vector memory actor remains one firing, one address token, at most one mask
 token, one data token for load or store, and one retirement event. The address
@@ -367,6 +403,16 @@ Physical adaptation is never represented by silently changing a semantic
 vector type, inserting semantic `pack` or `serialize` actors, or deriving
 meaning from an equal total bit width. A `vector<4xf32>` and a `vector<2xf64>`
 remain different requirements even though both occupy 128 bits.
+
+Every routed vector operand or result is one complete semantic token. Mapping
+may not stripe its lanes across unrelated endpoints, create one RouteTree per
+lane, or recover high bits after a narrower transport segment. If no selected
+physical realization and route can carry an actor's complete token, a
+Dataflow-to-Dataflow candidate transform may explicitly split or scalarize the
+actor only after proving values, exceptional lanes, firing atomicity, memory
+effects, ordering, and backpressure equivalent. The transformed actors then
+form a different immutable Canonical Dataflow candidate. Mapping itself never
+performs that rewrite.
 
 ## Verification
 
@@ -394,6 +440,8 @@ Stable anchor tests cover:
 
 * per-lane poison and undef propagation, lazy vector selection, and inactive
   masked-lane non-observation;
+* static and dynamic extract/insert of scalar and trailing-subvector values,
+  plus shuffle selection, duplication, and poison blocks;
 * rejection of a selected SpatialRegion whose scalable vector has not been
   materialized to fixed structured semantics;
 * rank-one partial-group `parallelize` and `serialize` behavior;

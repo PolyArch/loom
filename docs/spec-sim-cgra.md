@@ -113,6 +113,14 @@ Buffered and bypassed `fabric.fifo` occurrences use the exact cycle and
 backpressure contract in `docs/spec-fabric-fifo.md`; the simulator does not
 invent fall-through or hidden storage.
 
+For fixed-vector arithmetic and structural resources, physical admission,
+claims, timing, and publication come from the selected Fabric family and
+Mapping, while the functional lane result comes from the same typed vector
+semantic kernel used by DFG-sim. Extract/insert dynamic positions remain
+runtime tokens. Static positions and shuffle selectors are decoded only from
+the selected ConfigurationABI projection. One vector token traverses and
+retires as one token; lane indices are neither events nor Physical Tags.
+
 The shared CGRA case signature exposes that unique domain to cycle-based
 metrics through an `ExactSubjectCycle` anchored at the exact SpatialMapping
 root. This anchor identifies the complete derivation above; it does not make
@@ -304,6 +312,8 @@ Stable anchor tests cover:
   2;
 * contiguous, indexed, masked, and multi-transaction memory execution with one
   logical retirement and one Tag per vector token;
+* mapped extract/insert and shuffle execution with exact resource timing and
+  the same mixed-lane result as DFG-sim;
 * local atomic and fence execution through one exact Fabric consistency
   domain;
 * repeated-address `PerLane` atomics and at-most-once volatile MMIO service;

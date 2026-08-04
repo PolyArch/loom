@@ -92,6 +92,16 @@ one charged seed rejection. Implementations must obtain both membership
 relations from the sealed OperationSchema/HSG/Fabric projections and cannot
 reproduce them with operation names or private port rules.
 
+For fixed-vector arithmetic and structural actors, that exact correspondence
+uses the actor's standard vector types and registered semantic payload. Slice
+extract maps source, ordered dynamic-position operands, and result roles;
+slice insert maps inserted value, destination, ordered dynamic positions, and
+result roles; shuffle maps its two operands and result. The family projector
+validates element domain, resolved index width, block geometry, complete token
+widths, and concrete resource capacity. TechMapping does not flatten a vector
+into lane identities, infer a shuffle from equal widths, or scalarize an actor
+that lacks a compatible row.
+
 The prospective memory-seed domain begins with the exact relation returned by
 the selected Fabric memory operation port's canonical capability matcher. A
 port or capability alternative whose actor-contract domain, access domain,

@@ -664,6 +664,47 @@ actor schema that lacks that direction. An absent mask pairs exactly with
 `NotApplicable`. These schema rules are validated before domain membership is
 queried and prevent enum products from admitting nonsensical combinations.
 
+### Endpoint Width Ownership And Vector Admission
+
+There is no Fabric-wide data, address, vector, mask, or service-beat width.
+Each physical operation endpoint type owns its exact payload width, and each
+memory service contract independently owns its exact beat width. One
+capability alternative binds every active Canonical Service role to one of
+those endpoints and admits only accesses in its complete typed actor/access
+relation.
+
+For one exact `CanonicalMemoryAccessView`, the role requirements are derived
+without a memory-local type system:
+
+```text
+data requirement    = data_bits
+address requirement = address_bits
+mask requirement    = mask_bits when the mask is dynamic
+```
+
+The selected endpoint must carry the complete corresponding token and satisfy
+the alternative's exact subword guarantee. Element and contiguous accesses
+use one scalar address token. Indexed accesses use one complete flattened
+address-vector token, so its address requirement is `lane_count * index_bits`
+and is independent of the data width. Alternatives may bind scalar and indexed
+address forms to different physical endpoints. A narrower endpoint cannot be
+repaired by a wider endpoint later in the route.
+
+Equal total data width never substitutes for the actor/access relation. An
+element access to `memref<?xvector<4xf32>>`, a contiguous four-lane access to
+`memref<?xf32>`, and an indexed four-lane access may each carry 128 data bits
+but have different address, mask, child-transaction, and retirement
+requirements. A 128-bit data endpoint also does not admit
+`vector<16xi8>` indexed by 64-bit indices unless an address endpoint can carry
+the complete 1024-bit address token and the exact access domain admits it.
+
+An operation endpoint wider than a software token uses only the declared
+low-bit-aligned compatibility and subword guarantees. An operation endpoint
+wider than the selected service beat does not imply automatic beat splitting.
+Only the selected `Direct` or `ActiveLanesRowMajor` projection together with
+the exact service contract may derive child transactions, and all children
+remain under one parent firing and one logical retirement.
+
 ### Typed C++ Projection
 
 Strict import exposes immutable typed views, never raw `ArrayAttr`, integer
@@ -1643,6 +1684,9 @@ Anchor-level tests should cover:
   capacity differences and no persistent derived geometry class;
 * distinct element, contiguous, and indexed access compatibility, including
   rejection of equal-width but incompatible element or lane geometry;
+* independent data, scalar-address, indexed-address, mask, and service-beat
+  widths, including two equal-data-width indexed views where only one complete
+  address vector fits;
 * dynamic-mask routing, inactive-lane suppression, zero-fill for masked loads,
   all-zero-mask completion without a service request, and absence of a mask
   selector for an unmasked actor;

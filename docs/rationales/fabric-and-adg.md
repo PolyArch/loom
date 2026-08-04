@@ -74,6 +74,27 @@ backend installation alter whether the same hardware description exists.
 Provider closure is therefore checked by the requested realization stage and
 reported as typed `Unsupported` without changing Fabric identity.
 
+## Why Width Is Not A Fabric-Root Property
+
+A heterogeneous SpatialCore may combine a narrow scalar network, wider vector
+units, a still wider memory endpoint, and a narrower service beat. One root
+`datapath_width` would either reject that architecture or duplicate the exact
+width already owned by every physical endpoint. It would also encourage
+Mapping and backends to infer compatibility from a global number rather than
+the selected path and capability relation.
+
+ADG catalog helpers therefore receive transient typed width parameters and
+emit ordinary Fabric endpoint types. The parameters disappear after
+construction. Small, Default, and Large may intentionally pass the same
+128-bit ordinary-payload policy, but that is one builtin recipe choice rather
+than an ADG Builder default or Loom limit. Custom helpers can compose different
+widths without introducing another persistent hardware model.
+
+Keeping the policy transient also preserves the purpose of the builtins: they
+are reproducible public examples, not a hidden global architecture profile.
+The finalized Fabric remains sufficient for Mapping, simulation, RTL, and EDA;
+none of those consumers needs the helper inputs that produced it.
+
 ## Why Module And System Are Separate Fabric Roots
 
 `fabric.module` is a reusable SpatialCore template. `fabric.system` is the

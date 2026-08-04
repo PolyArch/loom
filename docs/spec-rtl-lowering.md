@@ -195,6 +195,23 @@ contract of its concrete resource, including multi-cycle recurrence updates
 when declared. Provider-local mode tables and a universal stateful-machine
 wrapper are not semantic authorities.
 
+`FixedVectorSliceAlignMerge` lowers to the exact position decode, alignment,
+slice, and merge network admitted by its resolved capability. Dynamic indices
+are runtime ports; static offsets, strides, and any programmable shape or mode
+are decoded from the exact ConfigurationABI fields. `FixedVectorShuffle`
+lowers to the admitted two-input block-selection network and its ordered
+selectors. A poison selector may choose any type-correct output bits for only
+that block under the non-defined refinement rule. Neither provider may
+scalarize the mapped actor, add lane handshakes, or use a backend-local mask or
+width table.
+
+All operation providers derive their signal widths from resolved physical
+ports and their supported semantic payload from the family capability. There
+is no portable-, vendor-, or target-specific 128-bit default. A provider may
+return typed `Unsupported` for a width outside its exact implementation
+binding, but cannot substitute a narrower implementation or silently split
+the token.
+
 ## Implementation Recipes
 
 Implementation choices are classified by their first observable difference:
@@ -375,6 +392,14 @@ result assembly, and one logical retirement event. Endpoint payload width and
 service beat width are independent facts; the backend cannot infer
 decomposition from their ratio or reinterpret Physical Tags as vector lanes.
 
+Data, scalar-address, indexed-address, and mask endpoints may all have
+different widths. The generated interface follows each selected endpoint type
+independently. LSB truncation or zero-fill occurs only on an explicit
+same-kind Fabric connection; the selected Mapping has already proved that the
+complete semantic token fits every traversed segment. The memory provider may
+derive narrower service transactions only from the selected owner-defined
+transaction projection and service contract.
+
 An implementation of a `MemoryConsistencyDomain` must preserve its exact
 release-visibility point, fixed linearization and retirement rules,
 `BoundedCompletion` or `FairEventual` progress contract, ResourceStates, and
@@ -501,6 +526,10 @@ Stable anchors cover:
   contract and external implementation binding;
 * one regular and one arbitrary-topology Fabric lowering;
 * exact replication/arbitration and width/tag behavior;
+* fixed-vector slice/merge and shuffle providers at one non-power-of-two
+  physical payload width, including lane-local poison refinement;
+* one narrow and one wide custom Fabric proving that operation and memory
+  providers contain no 128-bit datapath default;
 * atomic two-input `s2t` and two-output `t2s` handshakes with no partial
   transfer or hidden holding;
 * dispatch of one operation schema through two implementation families and

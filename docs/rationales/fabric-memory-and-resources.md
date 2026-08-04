@@ -61,6 +61,27 @@ providers. Dense local ordinals and reverse incidence tables can therefore
 update memory moves without decoding persistent references or scanning the
 system service catalog.
 
+## Why Memory Owns Several Independent Widths
+
+Data, scalar address, indexed address, lane mask, and service beat represent
+different information. A contiguous vector carries one scalar base address,
+while an indexed vector of the same data width may carry many resolved-index
+values. A memory service may also accept a logical operation endpoint wider
+than one physical beat. Collapsing these facts into one bus width would admit
+impossible gathers and would make beat splitting an undocumented convention.
+
+Each endpoint and service therefore owns its exact width. The actor-derived
+memory access view supplies complete data, address, and mask requirements, and
+the Fabric capability relation decides whether each role fits. Internal lane
+or beat work exists only through the declared transaction projection and
+service contract. This permits a useful wide endpoint over a narrower service
+without letting Mapping invent a transaction protocol.
+
+The same separation explains why equal data payloads remain different memory
+capabilities. An element load of a vector-valued memref and a contiguous load
+of scalar elements need different address and child-transaction behavior even
+when both return the same vector type.
+
 ## Why Service And Operation Ports Are Separate
 
 An addressed memory actor is a software service request with data, address,

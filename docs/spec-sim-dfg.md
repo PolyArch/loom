@@ -289,6 +289,20 @@ Graph outputs may carry poison or undef. A consuming operation schema decides
 whether it propagates, masks, freezes, or triggers undefined behavior. DFG-sim
 has no global "terminal poison" failure rule.
 
+The production vector semantic kernel represents every lane independently,
+including mixtures of Defined, Poison, and Undef in one token. Its packed
+fully-defined representation is only a removable execution fast path. It must
+not reject, zero-fill, or collapse a mixed-lane token accepted by the
+Canonical Dataflow contract.
+
+The registered providers for `vector.extract`, `vector.insert`, and
+`vector.shuffle` consume the exact standard vector types and OperationSchema
+payload. Extract returns the selected scalar or trailing block. Insert
+preserves unselected lanes and replaces the selected block. Shuffle selects or
+duplicates complete leading blocks and creates poison lanes only for `-1`
+blocks. DFG-sim and CGRA-sim call the same functional evaluator; neither owns a
+second selector, position, or exceptional-lane table.
+
 ## Control And Stateful Actors
 
 `dataflow.stream`, `carry`, `invariant`, and `gate` follow the canonical phase
@@ -458,6 +472,8 @@ Stable anchor tests cover:
 * lazy poison through selection, deterministic `freeze`, active memory
   poison round trip, per-lane exceptional vector state, and legal terminal
   poison or undef;
+* static and dynamic extract/insert plus shuffle duplication and poison blocks
+  through the shared mixed-lane vector evaluator;
 * exact token cardinality and state reset for canonical control actors;
 * `ctrl`/`done` memory order and terminal memory diffs;
 * contiguous, indexed, and masked vector-memory semantics with one actor

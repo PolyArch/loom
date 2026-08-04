@@ -72,6 +72,28 @@ support for either four `f32` lanes or two `f64` lanes; element representation,
 lane geometry, operation semantics, and policy must be admitted by the typed
 capability relation.
 
+## Why Vector Hardware Has Several Physical Owners
+
+One universal vector engine would combine elementwise arithmetic, slice
+alignment, arbitrary shuffle, memory transactions, and stream adaptation into
+one mode product. Those functions have different ports, state, timing,
+resource use, and implementation cost. Combining them would make a convenient
+FU name rather than a truthful hardware-sharing relation.
+
+Elementwise arithmetic therefore remains in its existing typed vector
+families. Extract and insert share one slice-align-merge family because one
+real unit can reuse position decode, alignment, and merge logic. Shuffle uses
+a separate two-input block-selection family because requiring every slice unit
+to contain a full permutation network would overstate its circuit. Vector
+load/store remains a `fabric.mem` responsibility because it owns requests,
+mask suppression, child transactions, consistency, and retirement.
+
+This split does not create several vector semantics. Standard Dataflow/MLIR
+actors remain the sole semantic owner, and each physical family consumes the
+same exact actor projection. A custom architecture can add another family only
+when a provider implements that real circuit; equal width or FU co-location is
+not evidence of sharing.
+
 ## Why FU Topology Is Explicit
 
 A `fabric.fu` contains real operations and configurable mux/demux topology. An

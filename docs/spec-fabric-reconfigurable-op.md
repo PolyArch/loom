@@ -461,6 +461,28 @@ semantic projection used by graph admission and simulation.
   interpreted by their registered operation schemas and matched as exact
   actor semantics.
 
+The fixed-vector structural families use this same mechanism. For
+`vector.extract` and `vector.insert`, the family-owned typed projector derives
+the row-major slice width, static bit offset, and compile-time stride of every
+dynamic position from the exact actor types and registered position payload.
+Dynamic positions remain runtime operands. For `vector.shuffle`, the projector
+derives one ordered selector per result leading block from the registered mask;
+each selector is exactly `Poison` or one source-block ordinal.
+
+Only a choice implemented by programmable hardware becomes an `sw_configs`
+field. A hardwired type, position, or mask produces no duplicate field. A
+reconfigurable occurrence may expose an extract/insert mode, static offset,
+shape mode, or shuffle selectors through its one Fabric configuration-field
+schema. The projector mechanically re-encodes those fields from the actor;
+the Fabric record never copies the actor's vector type, position array, or
+mask as another semantic authority.
+
+`ConfigurationABI` encodes each resulting typed field with `FiniteCodebook`
+when the physical domain is small and finite or `DirectBits` when the field is
+a fixed-width direct selector or offset. It does not enumerate all vector
+shapes, positions, or shuffle masks. An unsupported projection is a typed
+capability mismatch, not permission for a backend-private mode table.
+
 The software `dataflow.mux` and `dataflow.demux` actors are runtime operations.
 FU-local `fabric.mux` and `fabric.demux` are static configurable physical
 routing resources. They share the generic typed finalization framework but not
@@ -609,6 +631,9 @@ Anchor tests should pin only the stable semantic boundaries:
   no redundant operation-selector field;
 * mutually exclusive branches require explicit FU demux/mux topology, and
   co-location does not absorb an external edge; and
+* static and dynamic vector slice actors plus one poison-containing shuffle
+  derive the exact typed physical fields without a mask table, shape table, or
+  redundant field for a hardwired fact;
 * one stateless scalar firing obeys its exact one-cycle elastic contract while
   one stateful transition is governed by its operation-specific state and use
   patterns; and

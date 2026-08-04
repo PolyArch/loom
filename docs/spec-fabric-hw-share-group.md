@@ -223,10 +223,35 @@ payload width; it has no independent lane-count field.
 | `FixedVectorFloatCompareMinMax` | `arith.cmpf`, floating min/max schemas |
 | `FixedVectorFloatMultiply` | `arith.mulf` |
 | `FixedVectorFloatFma` | `math.fma` |
+| `FixedVectorSliceAlignMerge` | `vector.extract`, `vector.insert` |
+| `FixedVectorShuffle` | `vector.shuffle` |
 
 Scalar and fixed-vector families reject one another's actor shapes even when
 the flattened physical width agrees. Fixed-vector comparison results and
 select conditions have the exact operand shape with `i1` elements.
+
+`FixedVectorSliceAlignMerge` is one real position-decode, alignment, slice,
+and masked-merge datapath. Its closed `FixedVectorSliceAlignMergeParams`
+record owns integer-element widths, floating-element formats, positive maximum
+container and slice payload widths, a nonnegative maximum dynamic-position rank,
+and the admitted resolved index widths. `vector.extract` uses the selected
+slice as its result. `vector.insert` preserves unselected destination bits and
+merges the selected slice. A concrete resource may enable either or both
+schemas through `op_list`; family membership does not manufacture an absent
+extract or merge path.
+
+`FixedVectorShuffle` is a real two-input leading-block selection and
+duplication network. Its closed `FixedVectorShuffleParams` record owns
+integer-element widths, floating-element formats, positive maximum operand,
+result, and block payload widths, and positive maximum source- and
+result-block counts. Admission derives block geometry from the exact actor
+types and requires both operands, the result, and every selector domain to fit
+the concrete physical ports and these capacities.
+
+Neither parameter record owns vector shape, static position, shuffle mask, or
+lane count. Those remain exact OperationSchema facts. A custom architecture
+may register another physically justified family containing one of these
+schemas, but FU co-location or equal flattened width is not sufficient.
 
 ### Initial Adapter And Token Families
 

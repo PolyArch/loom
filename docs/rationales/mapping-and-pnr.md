@@ -277,6 +277,15 @@ replication resources. A broadcast branch that reconverges without logical
 work is redundant program structure to optimize, not a reason to relax tag or
 endpoint constraints.
 
+One scalar or vector actor port is likewise one routing demand. Routing lanes
+independently would add lane identities absent from Dataflow, multiply route
+trees, and let Mapping change firing atomicity. Every selected segment must
+therefore carry the complete semantic token. For a connection between
+different physical widths, the smaller endpoint width is the usable capacity;
+a later wider segment cannot recover discarded high bits. This derives route
+legality from the existing endpoint types without adding an adapter or a
+second width field to Mapping.
+
 ## Why Placement And Routing Are Coupled
 
 Greedy placement followed by one routing pass cannot escape congestion,

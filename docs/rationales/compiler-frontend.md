@@ -489,6 +489,14 @@ types and vector memory operations before graph lowering.
 width adaptation belongs to Mapping and Fabric. These distinctions prevent a
 packed integer from becoming Loom's vector type system.
 
+A narrow target does not authorize Mapping to split a wide vector implicitly.
+Splitting can change floating reduction order, poison observation, memory
+firing atomicity, masks, and backpressure. It is therefore an explicit
+Dataflow-to-Dataflow candidate transform with its own immutable result and
+functional proof. This preserves a simple Mapping contract: either every
+complete actor token fits one admitted realization and route, or that Mapping
+candidate is invalid.
+
 ## Why Representative Kernels Are Structural Anchors
 
 The frontend anchors were selected to force interaction among decisions:

@@ -134,6 +134,14 @@ sim for reasons unrelated to hardware. Shared memory consistency is especially
 important: local CGRA and external gem5 providers add timing and contention but
 cannot redefine reads-from, atomicity, or visibility.
 
+The same rule applies to vector structure and exceptional lanes. A shuffle can
+produce Defined and Poison blocks in one token, so collapsing the whole token
+to one state would either lose defined siblings or invent values for poison.
+The shared semantic kernel therefore represents lane state exactly. A packed
+fully-defined token or an execution-local arena handle is an implementation
+choice, not another value model. CGRA execution adds only the selected physical
+resource and timing behavior around that same functional result.
+
 CGRA cycle metrics use the exact SpatialMapping root as the case-level cycle
 anchor because the reference domain is a relation of Mapping, Fabric, Dataflow,
 and launch facts rather than a new persistent clock choice. Copying one clock

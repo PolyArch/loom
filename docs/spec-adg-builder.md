@@ -437,6 +437,7 @@ capability registry. Expansion produces only ordinary `fabric.fu`,
 | `CoreAluFu`          | Scalar integer and floating-point arithmetic, including saturating integer add/subtract, leading/trailing-zero count, logic, shifts, comparisons, min/max, selection, and casts. |
 | `MacFu`              | Integer and floating-point multiply, floating-point fused multiply-add, and explicit multiply-add or accumulate configured graphs. |
 | `VectorComputeFu`    | Fixed-ranked elementwise arithmetic, including saturating integer add/subtract, leading/trailing-zero count, comparison, selection, and multiply-add capabilities. |
+| `VectorStructuralFu` | Fixed-ranked extract/insert slice alignment and leading-block shuffle capabilities. |
 | `VectorAdapterFu`    | `dataflow.pack`, `dataflow.unpack`, `dataflow.parallelize`, and `dataflow.serialize` capabilities. |
 | `LoopControlFu`      | `dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, and `dataflow.gate` capabilities. |
 | `TokenControlFu`     | `dataflow.constant`, `dataflow.sync`, `dataflow.mux`, and `dataflow.demux` capabilities. |
@@ -462,20 +463,54 @@ implementation family proves otherwise.
 Memory actors, including load, store, atomic, compare-exchange, and fence, are
 implemented by `fabric.mem` and never enter this FU library.
 
+#### Typed Width Recipe Parameters
+
+Catalog helper parameters are transient typed construction inputs. They emit
+ordinary Fabric endpoint types and family capability records, then disappear;
+they are not persisted, hashed, or consulted by Mapping. No Fabric root or
+Builder session has a global datapath width.
+
+Each FU helper receives an exact typed interface record containing its outer
+payload width, its constituent resources' inner payload and control widths,
+and the generated family-specific capability records used by those resources.
+The vector structural helper additionally receives the exact
+`FixedVectorSliceAlignMergeParams` and `FixedVectorShuffleParams`. A local
+memory recipe receives distinct data, scalar-address, optional
+indexed-address, mask, and service-beat widths together with its exact
+actor/access domains. A System memory-service recipe receives its independent
+service-beat width and the matching exact service capability domain; it does
+not invent operation endpoints. Transport helpers receive explicit endpoint
+types. A missing, zero, or inconsistent required width is `Invalid`; no helper
+supplies an implicit 128-bit fallback.
+
+For a helper placed in a PE with ordinary outer payload width `O`, every inner
+data, control, or resolved-index payload width must be no greater than `O`, as
+required by the PE's existing input-narrowing and result-widening contract.
+This is a local construction relation, not a root-wide width. Different PEs,
+switches, memories, and System endpoints may still own different exact
+widths.
+
+These records are typed recipe inputs rather than a generic property bag. A
+helper may offer a named catalog policy that constructs them, but the emitted
+Fabric ports and capabilities remain the only hardware authority. Custom ADGs
+may use 32-, 64-, 128-, 256-, 512-, 1024-, or other provider-representable
+positive payload widths, including different widths in one SpatialCore.
+
 #### Hybrid32LocalMemory Recipe
 
 `makeHybrid32LocalMemory` is the initial public memory recipe. It returns one
 ordinary `MemorySpec`; the helper name and parameter object are authoring
 convenience and do not enter Fabric identity. The recipe has two independent
 physical operation ports, one for plain load and one for plain store, and one
-shared Local Memory Service. Both ports use 64-bit address channels and the
-maximal 128-bit data interface from `docs/spec-fabric-mem.md`. They admit
-scalar 8-, 16-, and 32-bit elements and contiguous four-lane 32-bit elements,
-including `i8`, `i16`, `i32`, `f32`, `vector<4xi32>`, and `vector<4xf32>`,
-with an absent or dynamic four-lane mask where that form permits it. Scalar
-subword reads use the declared zero-extension guarantee and scalar subword
-writes use the declared byte-enable guarantee. Equal-width `vector<2xf64>` is
-not admitted because its element width is 64 bits.
+shared Local Memory Service. The caller supplies one typed memory-interface
+record with data, scalar-address, mask, and service-beat widths. This recipe
+has no indexed-address endpoint. It admits scalar 8-, 16-, and 32-bit elements
+and a closed contiguous vector relation whose element width is at most 32,
+whose complete payload fits the data endpoint, and whose dynamic mask fits the
+mask endpoint. Scalar subword reads use the declared zero-extension guarantee
+and scalar subword writes use the declared byte-enable guarantee.
+Equal-payload `vector<2xf64>` is not admitted because its 64-bit element lies
+outside this recipe's exact element domain.
 
 The spatial form uses untagged operation-channel ports. Supplying the typed
 temporal parameters replaces every operation-channel port with the exact
@@ -493,30 +528,41 @@ connectivity types directly; there is no parallel recipe schema.
 `makeHybrid32SystemMemory` is the matching System-level convenience recipe.
 It returns one `SystemMemorySpec` containing the exact System
 `MemoryServiceContractRecord` and its matching Serve endpoint capability set.
-It admits the same scalar 8-, 16-, and 32-bit and contiguous four-lane 32-bit
-plain read/write domain with a 128-bit service beat. The caller supplies one
-absolute address range and one domain-owned `ServiceRateContractRecord`, then
-passes the two returned records to `SystemBuilder::addMemoryService` and
+It admits the same exact scalar and contiguous-vector relation and uses the
+caller-supplied service-beat width. The caller also supplies one absolute
+address range and one domain-owned `ServiceRateContractRecord`, then passes the
+two returned records to `SystemBuilder::addMemoryService` and
 `SystemBuilder::addServiceEndpoint`. The pair is ordinary Fabric data; the
 helper owns no persistent memory kind, endpoint inventory, or identity.
 
 #### General64 Memory Recipe
 
-`makeGeneral64LocalMemory` and `makeGeneral64SystemMemory` use the same public
-parameter and result records as the Hybrid32 recipes. They retain the exact
-128-bit physical data endpoint and contiguous four-lane 32-bit vector domain,
-and extend only the scalar element-width domain to include 64 bits. Scalar
-64-bit reads and writes therefore use the same declared zero-extension and
-byte-enable guarantees as narrower scalar accesses. This does not admit
-`vector<2xf64>`: vector element width and lane geometry remain separate typed
-facts from total payload width.
+`makeGeneral64LocalMemory` and `makeGeneral64SystemMemory` use the corresponding
+public parameter and result records of the Hybrid32 local and System recipes.
+The local recipe may receive an indexed-address endpoint; the System recipe
+instead receives the matching service capability. They admit scalar and
+contiguous fixed-vector plain accesses over 8-, 16-, 32-, and 64-bit integer
+or registered floating elements when the complete data and mask tokens fit
+their bound endpoints. When the local indexed endpoint is present, both
+matching contracts admit the exact indexed subset whose complete
+resolved-index vector fits that endpoint. Scalar 64-bit reads and writes use
+the same declared zero-extension and byte-enable guarantees as narrower
+scalar accesses. A `vector<2xf64>` is therefore admitted when its exact
+contiguous or indexed relation fits; equal total width alone still admits
+nothing.
 
 Small, Default, and Large use the General64 recipes for every local and System
 memory. This makes the preset-wide common scalar type floor truthful for
-memory actors as well as FU actors. Hybrid32 remains available when a hardware
-author intends the narrower exact memory contract. Both helpers construct the
-same ordinary `MemorySpec` and `MemoryServiceContractRecord`; helper selection
-is not persisted as a Fabric classification or capability authority.
+memory actors as well as FU actors. Their version 1 catalog policy supplies
+128-bit data, scalar-address, and indexed-address endpoints, a 16-bit mask
+endpoint, and a 128-bit service beat. Under the exact 32/64-bit resolved-index
+domain, the indexed endpoint carries at most four 32-bit or two 64-bit
+addresses per actor token; wider gathers or scatters require an explicit D*
+split or a custom wider endpoint. Hybrid32 remains available when a hardware
+author intends the narrower exact memory contract. Both helpers construct the same
+ordinary `MemorySpec` and `MemoryServiceContractRecord`; helper selection and
+the transient policy are not persisted as Fabric classifications or
+capability authorities.
 
 The built-in catalog explicitly admits stable-integral address-space-zero P32
 and P64 pointer formats on its pointer-capable integer and memory resources.
@@ -631,29 +677,30 @@ distribution below. Every stream resource supports integer widths
 `{8, 16, 32, 64}` and every registered schema-valid integer continuation
 predicate.
 
-The fixed helper boundary is:
+The helper boundary is parameterized by the exact outer payload width `O` and
+loop-data payload width `D`:
 
 ```text
 outer:
-  bits<128>, bits<128>, bits<128>, bits<128>
-    -> bits<128>, bits<128>, bits<128>
+  bits<O>, bits<O>, bits<O>, bits<O>
+    -> bits<O>, bits<O>, bits<O>
 
 inner roles:
-  d0: bits<128>
-  d1: bits<128>
-  d2: bits<128>
+  d0: bits<D>
+  d1: bits<D>
+  d2: bits<D>
   c0: bits<1>
-    -> r0: bits<128>
-       r1: bits<128>
+    -> r0: bits<D>
+       r1: bits<D>
        p0: bits<1>
 ```
 
-Builtin expansion uses the ordinary anonymous-FU boundary rule to truncate
-the low bit of the fourth outer input into `c0` and zero-extend `p0` into the
-third outer result. The data roles retain the full 128-bit payload floor.
+Expansion uses the ordinary anonymous-FU boundary rule to truncate the low bit
+of the fourth outer input into `c0`, adapt `O` and `D` by the canonical LSB
+rule, and zero-extend `p0` into the third outer result.
 `LoopStream` actors use only their selected exact low 8, 16, 32, or 64 bits;
 the transparent payload resources may carry an exact supported scalar or
-fixed-ranked vector up to 128 bits. The role names above are stable catalog
+fixed-ranked vector up to `D` bits. The role names above are stable catalog
 ordinals, not software operand names or additional Fabric attributes.
 
 The active structural template is exactly one member of this closed set:
@@ -740,16 +787,17 @@ converter with an enabled clamp extension, not two independently routed
 resources. A custom ADG may omit the saturating schemas from that resource
 when the physical converter omits the clamp and NaN-to-zero logic.
 
-Each concrete operation uses 64-bit untagged scalar data ports. Conditions are
-one-bit ports. A comparison result occupies the low bit of a 64-bit physical
-result and zero-fills the remaining bits. The helper boundary shapes are:
+Each concrete operation uses the recipe's positive scalar width `S` on
+untagged data ports. Conditions are one-bit ports. A comparison result occupies
+the low bit of the physical result and zero-fills the remaining bits. The
+helper boundary shapes use the exact outer width `O`:
 
 ```text
-CoreAluFu outer:  bits<128>, bits<128>, bits<128> -> bits<128>
-CoreAluFu inner:  bits<64>,  bits<64>,  bits<1>   -> bits<64>
+CoreAluFu outer:  bits<O>, bits<O>, bits<O> -> bits<O>
+CoreAluFu inner:  bits<S>, bits<S>, bits<1> -> bits<S>
 
-MacFu outer:      bits<128>, bits<128>, bits<128>, bits<128> -> bits<128>
-MacFu inner:      bits<64>,  bits<64>,  bits<64>,  bits<1>   -> bits<64>
+MacFu outer:      bits<O>, bits<O>, bits<O>, bits<O> -> bits<O>
+MacFu inner:      bits<S>, bits<S>, bits<S>, bits<1> -> bits<S>
 ```
 
 The third Core input is the condition source for value selection. The fourth
@@ -759,11 +807,11 @@ listed order is the stable helper role order, not a change to software
 operation syntax. Unused helper ports have no token, production, or
 backpressure obligation in a configured template.
 
-Builtin expansion constructs anonymous concrete FUs so the existing FU input
-truncation and output widening rules explicitly connect the 128-bit PE
-transport boundary to the 64-bit data and one-bit condition network. Internal
-data `fabric.mux` and `fabric.demux` resources use 64-bit ports. No implicit
-adapter, hidden drain, or 128-bit arithmetic datapath is inferred.
+Expansion constructs anonymous concrete FUs so the existing FU input
+truncation and output widening rules explicitly connect `O` to the `S`-bit
+data and one-bit condition network. Internal data `fabric.mux` and
+`fabric.demux` resources use `S`-bit ports. No implicit adapter, hidden drain,
+or outer-width arithmetic datapath is inferred.
 
 Every stateless scalar compute resource in these two helpers has one
 registered elastic result stage; that stage is its sole result holding slot.
@@ -798,31 +846,60 @@ HSG registry. It obtains every
 operation-member list from that registry and does not maintain a Builder-local
 operation table.
 
-Its stable helper boundary is:
+Its helper boundary uses the exact outer width `O` and vector datapath width
+`V` supplied by the recipe:
 
 ```text
-VectorComputeFu outer: bits<128>, bits<128>, bits<128>, bits<128>
-                    -> bits<128>
-VectorComputeFu inner: bits<128>, bits<128>, bits<128>, bits<128>
-                    -> bits<128>
+VectorComputeFu outer: bits<O>, bits<O>, bits<O>, bits<O> -> bits<O>
+VectorComputeFu inner: bits<V>, bits<V>, bits<V>, bits<V> -> bits<V>
 ```
 
 The input roles are data0, data1, data2, and condition. Exact software types,
 including element type and fixed lane geometry, remain part of the typed
-capability match; equal 128-bit physical width does not make two vector types
+capability match; equal physical width does not make two vector types
 interchangeable. Explicit coherent demux and mux topology selects the active
 physical resource.
+
+#### VectorStructuralFu Resource Inventory
+
+`VectorStructuralFu` contains one `FixedVectorSliceAlignMerge` resource and
+one `FixedVectorShuffle` resource. It is an FU container with explicit coherent
+demux and mux topology, not a third implementation family. The exact family
+members and typed capability records are owned by the HSG registry.
+
+Its ordered inputs are two vector/value roles followed by `R` dynamic-position
+roles, where `R` is the slice family's declared maximum dynamic-position rank.
+It has one result role. Vector/value ports use the recipe's vector width `V`;
+position ports use the recipe's resolved index carrier width `I`; the outer FU
+ports use `O`. Extract consumes the first vector and its active position
+prefix. Insert consumes the inserted value, destination vector, and active
+position prefix. Shuffle consumes both vectors and no position input. Inactive
+roles create no token or backpressure obligation through the selected complete
+FU template.
+
+The helper requires at least `2 + R` PE input ports. A custom PE may therefore
+raise `R` only by exposing the corresponding physical inputs; the helper never
+packs several dynamic positions into one untyped value.
+
+The version 1 builtin policy uses `O = V = 128`, `I = 64`, and `R = 3`, which
+fits the five-input builtin PE boundary.
+Its slice resource admits 32- and 64-bit resolved indices and container/slice
+payloads no wider than 128 bits. Its shuffle resource admits operands and a
+result no wider than 128 bits, at most 32 combined source leading blocks, at
+most 16 result leading blocks, and a trailing block no wider than 128 bits.
+These are builtin capacities, not limits on a custom Fabric.
 
 #### SpecialMathFu Resource Inventory
 
 `SpecialMathFu` constructs distinct scalar signed and unsigned integer
 divide/remainder resources, floating divide and remainder resources, and the
 registered unary root, exponential, logarithmic, trigonometric, hyperbolic,
-rounding, reciprocal-root, and error-function resources. Its boundary is:
+rounding, reciprocal-root, and error-function resources. Its boundary uses the
+recipe's outer width `O` and scalar width `S`:
 
 ```text
-SpecialMathFu outer: bits<128>, bits<128> -> bits<128>
-SpecialMathFu inner: bits<64>,  bits<64>  -> bits<64>
+SpecialMathFu outer: bits<O>, bits<O> -> bits<O>
+SpecialMathFu inner: bits<S>, bits<S> -> bits<S>
 ```
 
 Binary resources consume both stable input roles; unary resources consume the
@@ -835,13 +912,12 @@ implementation family.
 
 `VectorAdapterFu` contains one resource from each of `FixedVectorPack`,
 `FixedVectorUnpack`, `FixedVectorParallelize`, and `FixedVectorSerialize`.
-Its fixed boundary is:
+Its boundary uses the exact outer width `O` and vector/mask width `V`:
 
 ```text
-outer: bits<128>, bits<128>, bits<128>
-    -> bits<128>, bits<128>, bits<128>
-inner: data/vector bits<128>, mask bits<128>, phase bits<1>
-    -> data/vector bits<128>, mask bits<128>, phase bits<1>
+outer: bits<O>, bits<O>, bits<O> -> bits<O>, bits<O>, bits<O>
+inner: data/vector bits<V>, mask bits<V>, phase bits<1>
+    -> data/vector bits<V>, mask bits<V>, phase bits<1>
 ```
 
 Pack and unpack use the first data role and first result role. Parallelize
@@ -853,10 +929,11 @@ configurations.
 #### TokenControlFu Resource Inventory
 
 `TokenControlFu` contains one resource from each of `TokenConstant`,
-`TokenSync`, `TokenMux`, and `TokenDemux`. Its fixed boundary has one 64-bit
-inner selector/control role followed by four 128-bit payload roles and exposes
-four 128-bit result roles. All outer ports are 128-bit payload ports; the FU
-boundary truncates the selector/control input to its low 64 bits.
+`TokenSync`, `TokenMux`, and `TokenDemux`. Its boundary has one `C`-bit inner
+selector/control role followed by four `P`-bit payload roles and exposes four
+`P`-bit result roles. All outer ports use the exact recipe width `O`; the FU
+boundary adapts the selector/control input and every payload by the canonical
+LSB rule. `C`, `P`, and `O` are positive typed recipe values.
 
 The initial runtime mux and demux fan capacity is four. Sync consumes and
 publishes all four payload roles, mux consumes selector plus all payload roles,
@@ -865,10 +942,12 @@ and constant consumes the control role and publishes the first result role.
 These are four distinct physical operation families and exactly four complete
 structural templates, not one shared token-control circuit.
 
-### Payload And Type Floor
+### Builtin Payload And Type Floor
 
-Every preset in the initial family uses a 128-bit ordinary PE and
-intra-SpatialCore data-transport payload capacity. Narrower scalar values
+The version 1 Small, Default, and Large policy explicitly passes a 128-bit
+ordinary PE and intra-SpatialCore data-transport payload capacity to the typed
+recipes above. This shared catalog value is not a Fabric-root field, ADG
+Builder default, or Loom-wide maximum. Narrower scalar values
 occupy the low payload bits under the Fabric width rules. Physical Tags remain
 a separate field and never contribute payload capacity.
 
@@ -916,6 +995,7 @@ constructs:
 | `LoopControlFu`    |               `ceil(n / 4)`  |              2 |
 | `TokenControlFu`   |               `ceil(n / 4)`  |              3 |
 | `VectorAdapterFu`  |       `max(1, ceil(n / 8))`  |              4 |
+| `VectorStructuralFu` |     `max(1, ceil(n / 8))`  |              5 |
 | `SpecialMathFu`    |      `max(1, ceil(n / 16))`  |              7 |
 
 For a non-core family with count `k`, occurrence `j` selects the schedule-local
@@ -956,8 +1036,8 @@ kind is represented in both schedule kinds. Exact operation-resource
 multiplicity may intentionally differ between those kinds; the common
 software capability floor belongs to the complete SpatialCore rather than
 being duplicated in each schedule kind. For example, the Small preset has
-`12/6/3/3/3/2/1` occurrences across its 12 Spatial PEs and
-`4/2/1/1/1/1/1` occurrences across its four Temporal PEs in the table's FU
+`12/6/3/3/3/2/2/1` occurrences across its 12 Spatial PEs and
+`4/2/1/1/1/1/1/1` occurrences across its four Temporal PEs in the table's FU
 order.
 
 A builtin descriptor may claim this catalog version only when every listed
@@ -1097,9 +1177,9 @@ The stable Builder anchors are deliberately small:
    and rejects an equal-width semantic type outside that capability.
 9. FU materialization and reverse synthesis satisfy the configured-function
    round-trip contract for both equality and strict-superset outcomes.
-10. The scalar helper boundary preserves the 128-bit PE interface while its
-    internal 64-bit data and one-bit condition roles obey low-bit
-    normalization.
+10. The version 1 scalar helper policy preserves its explicit 128-bit outer
+    and 64-bit inner interface while a custom helper using different widths
+    obeys the same low-bit normalization.
 11. A stateless scalar resource exhibits the declared one-cycle elastic
     timing, while an imported `LoopCarry` preserves that one-cycle recurrence
     path through elastic-transparent forwarding.
@@ -1108,6 +1188,12 @@ The stable Builder anchors are deliberately small:
     admitting incoherent selector products.
 13. Every preset SpatialCore derives the same eight-step stream capability
     from the canonical `LoopControlFu` occurrence order.
+14. Every preset contains real slice/merge and shuffle occurrences, and one
+    custom recipe proves that neither family nor the Builder assumes a
+    128-bit or power-of-two payload.
+15. General64 admits one exact contiguous `vector<2xf64>` point, admits one
+    indexed point whose complete address vector fits, and rejects an
+    equal-data-width indexed point whose address vector does not fit.
 
 These anchors test the public boundary and determinism. They do not require a
 fixture for every helper, topology, operation ordering, generated name, or
