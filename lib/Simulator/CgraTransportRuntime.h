@@ -58,12 +58,16 @@ private:
     SinkKind kind = SinkKind::Channel;
     ChannelOrdinal channel = 0;
     mlir::Value observation;
+    std::uint64_t physicalUseOffset = 0;
+    std::uint32_t physicalUseCount = 0;
   };
 
   struct TransferBinding final {
     ::dataflow::CanonicalGraphProducerEndpointRef producer;
     std::uint64_t sinkOffset = 0;
     std::uint32_t sinkCount = 0;
+    std::uint64_t physicalUseOffset = 0;
+    std::uint32_t physicalUseCount = 0;
     bool requiresPhysicalTransport = false;
     bool active = false;
   };
@@ -77,7 +81,7 @@ private:
 
   CgraTransportRuntime(
       SimulatorState &state, std::vector<TransferBinding> bindings,
-      std::vector<SinkBinding> sinks,
+      std::vector<SinkBinding> sinks, std::vector<std::uint64_t> physicalUses,
       llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
           actorSourceBindings,
       llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings);
@@ -93,6 +97,7 @@ private:
   SimulatorState *state_ = nullptr;
   std::vector<TransferBinding> bindings_;
   std::vector<SinkBinding> sinks_;
+  std::vector<std::uint64_t> physicalUses_;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
       actorSourceBindings_;
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings_;

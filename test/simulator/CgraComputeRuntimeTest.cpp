@@ -147,6 +147,8 @@ CgraFrozenExecutionPlan selectedPlan(const dataflow::CanonicalActorView &actor,
     const std::uint64_t action = plan.physicalUseTimings.size();
     plan.computeTransitions.push_back({transition.ordinal, action, 1});
     plan.actorTransitionPhysicalUses.push_back(action);
+    plan.physicalUseClients.push_back(
+        CgraPhysicalUseClientKind::ComputeTransition);
     plan.physicalUseTimings.push_back({action, 0, 1, 2, 0, 2, 1});
     selections.push_back({0, fabric::UsePatternKey(0)});
   }

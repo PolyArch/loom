@@ -66,12 +66,17 @@ void loom::test::exerciseCgraAdmission(
   const sim::CgraExecutionPlanSummary summary = prepared.summary();
   if (summary.mappedGraphCount != 1 || summary.computeActorCount != 1 ||
       summary.actorTransitionCount == 0 ||
-      summary.actorTriggeredPhysicalUseCount == 0 ||
+      summary.computeTransitionPhysicalUseCount == 0 ||
       summary.physicalUseCount == 0 || summary.resourceOwnerCount == 0 ||
       summary.claimCount == 0 || summary.routeTreeCount == 0 ||
       summary.routeNodeCount == 0 || summary.routeSinkCount == 0 ||
       summary.selectedTraversalCount == 0)
     fail("CGRA preparation did not freeze selected compute/transport facts");
+  if (summary.computeTransitionPhysicalUseCount +
+          summary.memoryTransitionPhysicalUseCount +
+          summary.producedPhysicalUseCount + summary.consumedPhysicalUseCount !=
+      summary.physicalUseCount)
+    fail("CGRA preparation did not partition every selected ResourceUse");
   const auto graph =
       take(sim::admitCgraSpatialSimulation(prepared, workload, runtime));
   if (graph != view.graphs().front().ref)

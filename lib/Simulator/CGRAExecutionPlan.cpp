@@ -172,10 +172,62 @@ struct ComputeExecutionProjection final {
   std::vector<std::uint64_t> physicalUses;
 };
 
+llvm::Expected<std::vector<CgraPhysicalUseClientKind>> derivePhysicalUseClients(
+    llvm::ArrayRef<::loom::mapping::SpatialResourceUseView> uses,
+    CgraExecutionPlanSummary &summary) {
+  std::vector<CgraPhysicalUseClientKind> result;
+  result.reserve(uses.size());
+  for (const auto &use : uses) {
+    if (std::holds_alternative<::loom::mapping::SpatialActorTransitionEventRef>(
+            use.activation.trigger.event)) {
+      if (std::holds_alternative<
+              ::loom::mapping::SpatialComputeResourceOwnerRef>(use.owner)) {
+        result.push_back(CgraPhysicalUseClientKind::ComputeTransition);
+        if (llvm::Error error =
+                add(1, summary.computeTransitionPhysicalUseCount,
+                    "compute-transition physical use"))
+          return std::move(error);
+        continue;
+      }
+      if (std::holds_alternative<
+              ::loom::mapping::SpatialMemoryEngineResourceOwnerRef>(
+              use.owner) ||
+          std::holds_alternative<
+              ::loom::mapping::SpatialMemoryBindingResourceOwnerRef>(
+              use.owner)) {
+        result.push_back(CgraPhysicalUseClientKind::MemoryTransition);
+        if (llvm::Error error = add(1, summary.memoryTransitionPhysicalUseCount,
+                                    "memory-transition physical use"))
+          return std::move(error);
+        continue;
+      }
+      return invalid(
+          "CGRA actor-transition ResourceUse has no execution owner");
+    }
+    if (std::holds_alternative<::dataflow::CanonicalGraphProducerEndpointRef>(
+            use.activation.trigger.event)) {
+      result.push_back(CgraPhysicalUseClientKind::ProducedTransport);
+      if (llvm::Error error =
+              add(1, summary.producedPhysicalUseCount, "produced physical use"))
+        return std::move(error);
+      continue;
+    }
+    if (!std::holds_alternative<::dataflow::CanonicalGraphConsumerEndpointRef>(
+            use.activation.trigger.event))
+      return invalid("CGRA ResourceUse has an unknown activity event");
+    result.push_back(CgraPhysicalUseClientKind::ConsumedTransport);
+    if (llvm::Error error =
+            add(1, summary.consumedPhysicalUseCount, "consumed physical use"))
+      return std::move(error);
+  }
+  return result;
+}
+
 llvm::Expected<ComputeExecutionProjection> deriveComputeExecutionProjection(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::TechMappingView &tech,
-    const ::loom::mapping::SpatialMappingView &spatial) {
+    const ::loom::mapping::SpatialMappingView &spatial,
+    llvm::ArrayRef<CgraPhysicalUseClientKind> physicalUseClients) {
   llvm::DenseMap<std::uint64_t,
                  const ::loom::mapping::TechComputeRealizationView *>
       realizations;
@@ -206,6 +258,11 @@ llvm::Expected<ComputeExecutionProjection> deriveComputeExecutionProjection(
 
   std::map<ComputeTriggerKey, std::vector<std::uint64_t>> triggerUses;
   for (auto [actionOrdinal, use] : llvm::enumerate(spatial.resourceUses())) {
+    if (actionOrdinal >= physicalUseClients.size())
+      return invalid("CGRA physical-use client projection is incomplete");
+    if (physicalUseClients[actionOrdinal] !=
+        CgraPhysicalUseClientKind::ComputeTransition)
+      continue;
     const auto *owner =
         std::get_if<::loom::mapping::SpatialComputeResourceOwnerRef>(
             &use.owner);
@@ -290,11 +347,18 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
                     static_cast<std::uint64_t>(mappedGraphs->size()));
   if (!summary)
     return summary.takeError();
-  auto compute = deriveComputeExecutionProjection(dataflow, tech, spatial);
+  auto physicalUseClients =
+      derivePhysicalUseClients(spatial.resourceUses(), *summary);
+  if (!physicalUseClients)
+    return physicalUseClients.takeError();
+  auto compute = deriveComputeExecutionProjection(dataflow, tech, spatial,
+                                                  *physicalUseClients);
   if (!compute)
     return compute.takeError();
   if (compute->actors.size() != summary->computeActorCount ||
-      compute->transitions.size() != summary->actorTransitionCount)
+      compute->transitions.size() != summary->actorTransitionCount ||
+      compute->physicalUses.size() !=
+          summary->computeTransitionPhysicalUseCount)
     return invalid("CGRA compute execution projection count drifted");
 
   std::map<std::vector<std::uint8_t>, std::uint64_t> ownerOrdinals;
@@ -314,11 +378,11 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
 
   CgraFrozenExecutionPlan result;
   result.summary = *summary;
-  result.summary.actorTriggeredPhysicalUseCount = compute->physicalUses.size();
   result.mappedGraphs = std::move(*mappedGraphs);
   result.computeActors = std::move(compute->actors);
   result.computeTransitions = std::move(compute->transitions);
   result.actorTransitionPhysicalUses = std::move(compute->physicalUses);
+  result.physicalUseClients = std::move(*physicalUseClients);
   result.physicalUses.reserve(spatial.resourceUses().size());
   result.physicalUseTimings.reserve(spatial.resourceUses().size());
   std::vector<CgraResourcePatternSelection> selectedPatterns;
@@ -373,7 +437,8 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
   result.summary.claimCount =
       static_cast<std::uint64_t>(result.resources.claims.size());
   auto transport =
-      freezeCgraTransportPlan(dataflow, fabric, spatial, result.mappedGraphs);
+      freezeCgraTransportPlan(dataflow, fabric, spatial, result.mappedGraphs,
+                              result.physicalUseClients);
   if (!transport)
     return transport.takeError();
   result.transport = std::move(*transport);

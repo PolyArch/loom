@@ -61,6 +61,11 @@ struct BindingBuilder final {
   bool requiresPhysicalTransport = false;
 };
 
+struct PhysicalUseSlice final {
+  std::uint64_t offset = 0;
+  std::uint32_t count = 0;
+};
+
 llvm::Expected<unsigned>
 ingressArgumentOrdinal(const ::dataflow::GraphIngressTokenRef &ingress,
                        ::dataflow::GraphRef graphRef,
@@ -97,11 +102,12 @@ ingressArgumentOrdinal(const ::dataflow::GraphIngressTokenRef &ingress,
 
 CgraTransportRuntime::CgraTransportRuntime(
     SimulatorState &state, std::vector<TransferBinding> bindings,
-    std::vector<SinkBinding> sinks,
+    std::vector<SinkBinding> sinks, std::vector<std::uint64_t> physicalUses,
     llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
         actorSourceBindings,
     llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings)
     : state_(&state), bindings_(std::move(bindings)), sinks_(std::move(sinks)),
+      physicalUses_(std::move(physicalUses)),
       actorSourceBindings_(std::move(actorSourceBindings)),
       ingressSourceBindings_(std::move(ingressSourceBindings)),
       blocked_(bindings_.size()) {}
@@ -117,6 +123,45 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
   auto graphOp = mlir::dyn_cast<::dataflow::GraphOp>(resolvedGraph->op);
   if (!graphOp)
     return invalid("CGRA transport graph reference is not a graph");
+
+  std::map<RefBytes, PhysicalUseSlice> producedUses;
+  std::map<RefBytes, PhysicalUseSlice> consumedUses;
+  const auto addPhysicalUseSlice =
+      [&](const auto &record, CgraPhysicalUseClientKind expected, auto &catalog,
+          const auto &endpoint) -> llvm::Error {
+    if (record.physicalUseOffset > plan.transport.endpointPhysicalUses.size() ||
+        record.physicalUseCount > plan.transport.endpointPhysicalUses.size() -
+                                      record.physicalUseOffset)
+      return invalid("CGRA endpoint physical-use slice is malformed");
+    for (std::uint64_t action :
+         llvm::ArrayRef(plan.transport.endpointPhysicalUses)
+             .slice(record.physicalUseOffset, record.physicalUseCount)) {
+      if (action >= plan.physicalUseClients.size() ||
+          plan.physicalUseClients[action] != expected)
+        return invalid("CGRA endpoint physical-use client is inconsistent");
+    }
+    auto key = dataflowBytes(dataflow, endpoint);
+    if (!key)
+      return key.takeError();
+    if (!catalog
+             .try_emplace(std::move(*key),
+                          PhysicalUseSlice{record.physicalUseOffset,
+                                           record.physicalUseCount})
+             .second)
+      return invalid("CGRA endpoint has duplicate physical-use slices");
+    return llvm::Error::success();
+  };
+  for (const CgraProducedPhysicalUsePlan &use : plan.transport.producedUses)
+    if (llvm::Error error = addPhysicalUseSlice(
+            use, CgraPhysicalUseClientKind::ProducedTransport, producedUses,
+            use.producer))
+      return std::move(error);
+  for (const CgraConsumedPhysicalUsePlan &use : plan.transport.consumedUses)
+    if (llvm::Error error = addPhysicalUseSlice(
+            use, CgraPhysicalUseClientKind::ConsumedTransport, consumedUses,
+            use.consumer))
+      return std::move(error);
+
   std::map<RefBytes, BindingBuilder> builders;
   const auto addSink = [&](const auto &transfer,
                            const auto &sink) -> llvm::Error {
@@ -188,20 +233,46 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
 
   std::vector<TransferBinding> bindings;
   std::vector<SinkBinding> sinks;
+  std::vector<std::uint64_t> physicalUses;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
       actorSourceBindings;
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings;
   bindings.reserve(builders.size());
   for (auto &[key, builder] : builders) {
-    (void)key;
+    const auto produced = producedUses.find(key);
+    const std::uint64_t producedUseOffset = physicalUses.size();
+    std::uint32_t producedUseCount = 0;
+    if (produced != producedUses.end()) {
+      const PhysicalUseSlice slice = produced->second;
+      physicalUses.insert(physicalUses.end(),
+                          plan.transport.endpointPhysicalUses.begin() +
+                              slice.offset,
+                          plan.transport.endpointPhysicalUses.begin() +
+                              slice.offset + slice.count);
+      producedUseCount = slice.count;
+      builder.requiresPhysicalTransport = true;
+    }
     std::set<RefBytes> uniqueSinks;
     const std::uint64_t sinkOffset = sinks.size();
     for (const auto &sink : builder.sinks) {
       auto sinkKey = dataflowBytes(dataflow, sink);
       if (!sinkKey)
         return sinkKey.takeError();
-      if (!uniqueSinks.insert(std::move(*sinkKey)).second)
+      if (!uniqueSinks.insert(*sinkKey).second)
         return invalid("CGRA transport contains a duplicate software sink");
+      const auto consumed = consumedUses.find(*sinkKey);
+      const std::uint64_t consumedUseOffset = physicalUses.size();
+      std::uint32_t consumedUseCount = 0;
+      if (consumed != consumedUses.end()) {
+        const PhysicalUseSlice slice = consumed->second;
+        physicalUses.insert(physicalUses.end(),
+                            plan.transport.endpointPhysicalUses.begin() +
+                                slice.offset,
+                            plan.transport.endpointPhysicalUses.begin() +
+                                slice.offset + slice.count);
+        consumedUseCount = slice.count;
+        builder.requiresPhysicalTransport = true;
+      }
       if (const auto *operand =
               std::get_if<::dataflow::ActorTokenOperandRef>(&sink)) {
         auto actor = dataflow.resolve(operand->actor);
@@ -213,13 +284,18 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
             &actor->op->getOpOperand(operand->ordinal));
         if (channel == execution.channelOrdinals.end())
           return invalid("CGRA transport actor operand has no channel slot");
-        sinks.push_back({SinkKind::Channel, channel->second, {}});
+        sinks.push_back({SinkKind::Channel,
+                         channel->second,
+                         {},
+                         consumedUseOffset,
+                         consumedUseCount});
       } else {
         auto observed = resolveObservation(
             execution, std::get<::dataflow::GraphEgressTokenRef>(sink));
         if (!observed)
           return observed.takeError();
-        sinks.push_back({SinkKind::Observation, 0, *observed});
+        sinks.push_back({SinkKind::Observation, 0, *observed, consumedUseOffset,
+                         consumedUseCount});
       }
     }
     if (builder.sinks.size() > std::numeric_limits<std::uint32_t>::max())
@@ -227,6 +303,7 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     const std::uint64_t bindingOrdinal = bindings.size();
     bindings.push_back({builder.producer, sinkOffset,
                         static_cast<std::uint32_t>(builder.sinks.size()),
+                        producedUseOffset, producedUseCount,
                         builder.requiresPhysicalTransport, false});
     if (const auto *producer =
             std::get_if<::dataflow::ActorTokenResultRef>(&builder.producer)) {
@@ -247,9 +324,9 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
         return invalid("CGRA transport ingress has duplicate bindings");
     }
   }
-  return CgraTransportRuntime(state, std::move(bindings), std::move(sinks),
-                              std::move(actorSourceBindings),
-                              std::move(ingressSourceBindings));
+  return CgraTransportRuntime(
+      state, std::move(bindings), std::move(sinks), std::move(physicalUses),
+      std::move(actorSourceBindings), std::move(ingressSourceBindings));
 }
 
 std::uint64_t CgraTransportRuntime::allocate(std::uint64_t bindingOrdinal,

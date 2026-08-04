@@ -173,6 +173,24 @@ void localRealizationEdgePublishesThroughExactConsumer() {
               channelQueue(state, sync->op->getOpOperand(1)).front(),
               mlir::IntegerType::get(&context(), 32))) == llvm::APInt(32, 16),
       "FU-local transfer did not publish one exact consumer token");
+
+  CgraFrozenExecutionPlan physicalPlan = plan;
+  physicalPlan.physicalUseClients.push_back(
+      CgraPhysicalUseClientKind::ProducedTransport);
+  physicalPlan.transport.endpointPhysicalUses.push_back(0);
+  physicalPlan.transport.producedUses.push_back(
+      {{dataflow::ActorTokenResultRef{add->ref, 0}}, 0, 1});
+  auto physicalRuntime = take(CgraTransportRuntime::create(
+      physicalPlan, view, add->graph, *prepared, state));
+  emissions.clear();
+  emissions.push_back(
+      {0, 1, 0, 0,
+       take(tokenFromBitPattern(llvm::APInt(32, 17),
+                                mlir::IntegerType::get(&context(), 32)))});
+  rejected = physicalRuntime.acceptActorEmissions(coordinate(4), emissions);
+  require(static_cast<bool>(rejected),
+          "selected Produced ResourceUse bypassed physical coordination");
+  llvm::consumeError(std::move(rejected));
 }
 
 } // namespace

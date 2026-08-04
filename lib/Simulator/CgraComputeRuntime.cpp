@@ -49,6 +49,8 @@ llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
     return invalid("CGRA compute state does not use the prepared graph");
   if (plan.physicalUseTimings.size() != plan.resources.selectedUses.size())
     return invalid("CGRA compute physical timing coverage is incomplete");
+  if (plan.physicalUseClients.size() != plan.physicalUseTimings.size())
+    return invalid("CGRA physical-use client coverage is incomplete");
   auto physical = CgraPhysicalActionRuntime::create(plan.resources,
                                                     plan.physicalUseTimings);
   if (!physical)
@@ -110,6 +112,9 @@ llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
                       transition.physicalUseCount))
         if (action >= plan.physicalUseTimings.size())
           return invalid("CGRA compute transition names an unknown action");
+        else if (plan.physicalUseClients[action] !=
+                 CgraPhysicalUseClientKind::ComputeTransition)
+          return invalid("CGRA compute transition names another client action");
       transitionByCase[caseOffset + transition.caseOrdinal] = transitionOrdinal;
     }
     bindings.push_back(ActorBinding{

@@ -5,6 +5,8 @@
 #include "Fabric/IR/TemporalPeResourceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
+#include "llvm/ADT/STLExtras.h"
+
 #include <limits>
 #include <map>
 #include <set>
@@ -122,7 +124,10 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricArtifactView &fabric,
     const ::loom::mapping::SpatialMappingView &spatial,
-    llvm::ArrayRef<::dataflow::GraphRef> mappedGraphs) {
+    llvm::ArrayRef<::dataflow::GraphRef> mappedGraphs,
+    llvm::ArrayRef<CgraPhysicalUseClientKind> physicalUseClients) {
+  if (physicalUseClients.size() != spatial.resourceUses().size())
+    return invalid("CGRA transport physical-use client coverage is incomplete");
   std::map<RefBytes, ::loom::fabric::FabricPhysicalTraversalRef> selected;
   for (const auto &route : spatial.routeTrees()) {
     collect(route.localTraversal, selected);
@@ -139,6 +144,57 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       return invalid("Fabric contains duplicate physical traversal references");
 
   CgraTransportPlan result;
+  struct ProducedUseBuilder final {
+    ::dataflow::CanonicalGraphProducerEndpointRef endpoint;
+    std::vector<std::uint64_t> actions;
+  };
+  struct ConsumedUseBuilder final {
+    ::dataflow::CanonicalGraphConsumerEndpointRef endpoint;
+    std::vector<std::uint64_t> actions;
+  };
+  std::map<RefBytes, ProducedUseBuilder> producedUses;
+  std::map<RefBytes, ConsumedUseBuilder> consumedUses;
+  for (auto [actionOrdinal, use] : llvm::enumerate(spatial.resourceUses())) {
+    switch (physicalUseClients[actionOrdinal]) {
+    case CgraPhysicalUseClientKind::ComputeTransition:
+    case CgraPhysicalUseClientKind::MemoryTransition:
+      if (!std::holds_alternative<
+              ::loom::mapping::SpatialActorTransitionEventRef>(
+              use.activation.trigger.event))
+        return invalid("CGRA transition action has an endpoint trigger");
+      break;
+    case CgraPhysicalUseClientKind::ProducedTransport: {
+      const auto *endpoint =
+          std::get_if<::dataflow::CanonicalGraphProducerEndpointRef>(
+              &use.activation.trigger.event);
+      if (!endpoint)
+        return invalid("CGRA Produced action has another trigger kind");
+      auto key = dataflowBytes(dataflow, *endpoint);
+      if (!key)
+        return key.takeError();
+      auto [position, inserted] =
+          producedUses.try_emplace(*key, ProducedUseBuilder{*endpoint, {}});
+      (void)inserted;
+      position->second.actions.push_back(actionOrdinal);
+      break;
+    }
+    case CgraPhysicalUseClientKind::ConsumedTransport: {
+      const auto *endpoint =
+          std::get_if<::dataflow::CanonicalGraphConsumerEndpointRef>(
+              &use.activation.trigger.event);
+      if (!endpoint)
+        return invalid("CGRA Consumed action has another trigger kind");
+      auto key = dataflowBytes(dataflow, *endpoint);
+      if (!key)
+        return key.takeError();
+      auto [position, inserted] =
+          consumedUses.try_emplace(*key, ConsumedUseBuilder{*endpoint, {}});
+      (void)inserted;
+      position->second.actions.push_back(actionOrdinal);
+      break;
+    }
+    }
+  }
   std::map<RefBytes, std::uint64_t> selectedOrdinals;
   result.traversals.reserve(selected.size());
   for (const auto &[key, reference] : selected) {
@@ -175,6 +231,8 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
 
   result.routes.reserve(spatial.routeTrees().size());
   std::set<EdgeKey> residualEdges;
+  std::set<RefBytes> transferProducers;
+  std::set<RefBytes> transferConsumers;
   for (const auto &route : spatial.routeTrees()) {
     auto graph = resolveGraphOf(dataflow, route.logicalNet);
     if (!graph)
@@ -190,6 +248,10 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       return sinkCount.takeError();
     const std::uint64_t nodeOffset = result.routeNodes.size();
     const std::uint64_t sinkOffset = result.routeSinks.size();
+    auto producerKey = dataflowBytes(dataflow, route.logicalNet);
+    if (!producerKey)
+      return producerKey.takeError();
+    transferProducers.insert(*producerKey);
     for (const auto &node : route.nodes) {
       auto traversal = ordinalOf(node.incomingTraversal);
       if (!traversal)
@@ -212,14 +274,11 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       if (!traversal)
         return traversal.takeError();
       result.routeSinks.push_back({sink.sink, *node, *traversal});
-      auto producerKey = dataflowBytes(dataflow, route.logicalNet);
-      if (!producerKey)
-        return producerKey.takeError();
       auto sinkKey = dataflowBytes(dataflow, sink.sink);
       if (!sinkKey)
         return sinkKey.takeError();
-      if (!residualEdges.emplace(std::move(*producerKey), std::move(*sinkKey))
-               .second)
+      transferConsumers.insert(*sinkKey);
+      if (!residualEdges.emplace(*producerKey, std::move(*sinkKey)).second)
         return invalid("selected RouteTrees contain a duplicate residual edge");
     }
     result.routes.push_back({route.logicalNet, *graph, *sourceTraversal,
@@ -252,6 +311,8 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
               return consumerKey.takeError();
             if (residualEdges.count({*producerKey, *consumerKey}))
               return llvm::Error::success();
+            transferProducers.insert(*producerKey);
+            transferConsumers.insert(*consumerKey);
             auto [position, inserted] = localTransfers.try_emplace(
                 *producerKey, LocalTransferBuilder{producer, *graph, {}});
             (void)inserted;
@@ -271,6 +332,33 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       result.localTransferSinks.push_back({std::move(sink)});
     result.localTransfers.push_back(
         {transfer.producer, transfer.graph, sinkOffset, *sinkCount});
+  }
+
+  result.producedUses.reserve(producedUses.size());
+  for (auto &[key, use] : producedUses) {
+    if (!transferProducers.count(key))
+      return invalid("CGRA Produced action has no selected transfer source");
+    auto count =
+        checkedU32(use.actions.size(), "CGRA Produced physical-use count");
+    if (!count)
+      return count.takeError();
+    const std::uint64_t offset = result.endpointPhysicalUses.size();
+    result.endpointPhysicalUses.insert(result.endpointPhysicalUses.end(),
+                                       use.actions.begin(), use.actions.end());
+    result.producedUses.push_back({use.endpoint, offset, *count});
+  }
+  result.consumedUses.reserve(consumedUses.size());
+  for (auto &[key, use] : consumedUses) {
+    if (!transferConsumers.count(key))
+      return invalid("CGRA Consumed action has no selected transfer sink");
+    auto count =
+        checkedU32(use.actions.size(), "CGRA Consumed physical-use count");
+    if (!count)
+      return count.takeError();
+    const std::uint64_t offset = result.endpointPhysicalUses.size();
+    result.endpointPhysicalUses.insert(result.endpointPhysicalUses.end(),
+                                       use.actions.begin(), use.actions.end());
+    result.consumedUses.push_back({use.endpoint, offset, *count});
   }
   return result;
 }

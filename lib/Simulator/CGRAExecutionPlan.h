@@ -47,6 +47,7 @@ struct CgraFrozenExecutionPlan final {
   std::vector<CgraComputeTransitionPlan> computeTransitions;
   std::vector<std::uint64_t> actorTransitionPhysicalUses;
   std::vector<CgraPhysicalUsePlan> physicalUses;
+  std::vector<CgraPhysicalUseClientKind> physicalUseClients;
   std::vector<CgraPhysicalUseTiming> physicalUseTimings;
   CgraResourceRuntimePlan resources;
   CgraTransportPlan transport;
