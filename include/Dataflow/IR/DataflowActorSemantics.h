@@ -257,11 +257,13 @@ InvariantTransition evaluateInvariantTransition(InvariantSemanticState state,
 enum class InvariantCase : std::uint8_t { Init, Replay, Close };
 
 /// The schema-owned facts of one `dataflow.invariant` transition case: the
-/// state it fires from, the operand heads it consumes, the source of its output
-/// value, the input head it latches (absent unless it records one), whether it
-/// clears the latch, and the next state.
+/// state it fires from, its optional phase-value guard, the operand heads it
+/// consumes, the source of its output value, the input head it latches (absent
+/// unless it records one), whether it clears the latch, and the next state. An
+/// absent guard does not inspect the phase input.
 struct InvariantCaseDescriptor {
   InvariantSemanticState requiredState;
+  std::optional<bool> requiredPhase;
   SemanticInputMask consumedInputs;
   InvariantOutputSource output;
   std::optional<InvariantInput> latchInput;
@@ -275,6 +277,7 @@ invariantCaseDescriptor(InvariantCase transition) {
   switch (transition) {
   case InvariantCase::Init:
     return {InvariantSemanticState::Initial,
+            std::nullopt,
             semanticInputs(InvariantInput::Init),
             InvariantOutputSource::InitInput,
             InvariantInput::Init,
@@ -282,6 +285,7 @@ invariantCaseDescriptor(InvariantCase transition) {
             InvariantSemanticState::Running};
   case InvariantCase::Replay:
     return {InvariantSemanticState::Running,
+            true,
             semanticInputs(InvariantInput::Phase),
             InvariantOutputSource::Latched,
             std::nullopt,
@@ -289,6 +293,7 @@ invariantCaseDescriptor(InvariantCase transition) {
             InvariantSemanticState::Running};
   case InvariantCase::Close:
     return {InvariantSemanticState::Running,
+            false,
             semanticInputs(InvariantInput::Phase),
             InvariantOutputSource::None,
             std::nullopt,
@@ -296,6 +301,21 @@ invariantCaseDescriptor(InvariantCase transition) {
             InvariantSemanticState::Initial};
   }
   llvm_unreachable("unknown dataflow.invariant transition case");
+}
+
+/// Selects the unique case whose schema-owned state and phase guards match.
+inline InvariantCase selectInvariantCase(InvariantSemanticState state,
+                                         bool phase) {
+  constexpr InvariantCase cases[] = {InvariantCase::Init, InvariantCase::Replay,
+                                     InvariantCase::Close};
+  for (InvariantCase candidate : cases) {
+    const InvariantCaseDescriptor descriptor =
+        invariantCaseDescriptor(candidate);
+    if (descriptor.requiredState == state &&
+        (!descriptor.requiredPhase || *descriptor.requiredPhase == phase))
+      return candidate;
+  }
+  llvm_unreachable("invariant semantic state and phase select no case");
 }
 
 enum class GateInput : std::uint8_t { Phase, Value };
@@ -323,12 +343,14 @@ enum class GateCase : std::uint8_t {
 };
 
 /// The schema-owned facts of one `dataflow.gate` transition case: the state it
-/// fires from, the operand heads it consumes (a gate always consumes both its
-/// condition and its value together), whether it publishes the region close
-/// phase and that phase value, the input head forwarded to the value output
-/// (absent when it drops or closes), and the next state.
+/// fires from, the phase-value guard, the operand heads it consumes (a gate
+/// always consumes both its condition and its value together), whether it
+/// publishes the region close phase and that phase value, the input head
+/// forwarded to the value output (absent when it drops or closes), and the next
+/// state.
 struct GateCaseDescriptor {
   GateSemanticState requiredState;
+  bool requiredPhase;
   SemanticInputMask consumedInputs;
   bool emitPhase;
   bool phase;
@@ -342,22 +364,37 @@ inline GateCaseDescriptor gateCaseDescriptor(GateCase transition) {
       semanticInputs(GateInput::Phase, GateInput::Value);
   switch (transition) {
   case GateCase::ClosedDrop:
-    return {GateSemanticState::Closed, heads,        /*emitPhase=*/false,
-            /*phase=*/false,           std::nullopt, GateSemanticState::Closed};
+    return {GateSemanticState::Closed, /*requiredPhase=*/false, heads,
+            /*emitPhase=*/false,       /*phase=*/false,         std::nullopt,
+            GateSemanticState::Closed};
   case GateCase::FirstTrue:
-    return {GateSemanticState::Closed, heads,
+    return {GateSemanticState::Closed,
+            /*requiredPhase=*/true,    heads,
             /*emitPhase=*/false,
             /*phase=*/false,           GateInput::Value,
             GateSemanticState::Open};
   case GateCase::ContinueTrue:
-    return {GateSemanticState::Open, heads,
-            /*emitPhase=*/true,      /*phase=*/true,
-            GateInput::Value,        GateSemanticState::Open};
+    return {GateSemanticState::Open, /*requiredPhase=*/true, heads,
+            /*emitPhase=*/true,      /*phase=*/true,         GateInput::Value,
+            GateSemanticState::Open};
   case GateCase::Close:
-    return {GateSemanticState::Open, heads,        /*emitPhase=*/true,
-            /*phase=*/false,         std::nullopt, GateSemanticState::Closed};
+    return {GateSemanticState::Open,  /*requiredPhase=*/false, heads,
+            /*emitPhase=*/true,       /*phase=*/false,         std::nullopt,
+            GateSemanticState::Closed};
   }
   llvm_unreachable("unknown dataflow.gate transition case");
+}
+
+/// Selects the unique case whose schema-owned state and phase guards match.
+inline GateCase selectGateCase(GateSemanticState state, bool phase) {
+  constexpr GateCase cases[] = {GateCase::ClosedDrop, GateCase::FirstTrue,
+                                GateCase::ContinueTrue, GateCase::Close};
+  for (GateCase candidate : cases) {
+    const GateCaseDescriptor descriptor = gateCaseDescriptor(candidate);
+    if (descriptor.requiredState == state && descriptor.requiredPhase == phase)
+      return candidate;
+  }
+  llvm_unreachable("gate semantic state and phase select no case");
 }
 
 enum class ParallelizeInput : std::uint8_t { Phase, Data };

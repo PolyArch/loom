@@ -217,6 +217,7 @@ void actorTransitionDescriptorContract() {
   {
     auto d = sem::invariantCaseDescriptor(InvariantCase::Init);
     require(d.requiredState == InvariantSemanticState::Initial &&
+                !d.requiredPhase &&
                 d.consumedInputs ==
                     consumedMask<InvariantInput>({InvariantInput::Init}) &&
                 d.output == InvariantOutputSource::InitInput &&
@@ -227,6 +228,7 @@ void actorTransitionDescriptorContract() {
   {
     auto d = sem::invariantCaseDescriptor(InvariantCase::Replay);
     require(d.requiredState == InvariantSemanticState::Running &&
+                d.requiredPhase == true &&
                 d.consumedInputs ==
                     consumedMask<InvariantInput>({InvariantInput::Phase}) &&
                 d.output == InvariantOutputSource::Latched && !d.latchInput &&
@@ -236,12 +238,22 @@ void actorTransitionDescriptorContract() {
   {
     auto d = sem::invariantCaseDescriptor(InvariantCase::Close);
     require(d.requiredState == InvariantSemanticState::Running &&
+                d.requiredPhase == false &&
                 d.consumedInputs ==
                     consumedMask<InvariantInput>({InvariantInput::Phase}) &&
                 d.output == InvariantOutputSource::None && !d.latchInput &&
                 d.clearLatch && d.nextState == InvariantSemanticState::Initial,
             "invariant Close descriptor");
   }
+  require(sem::selectInvariantCase(InvariantSemanticState::Initial, false) ==
+                  InvariantCase::Init &&
+              sem::selectInvariantCase(InvariantSemanticState::Initial, true) ==
+                  InvariantCase::Init &&
+              sem::selectInvariantCase(InvariantSemanticState::Running, true) ==
+                  InvariantCase::Replay &&
+              sem::selectInvariantCase(InvariantSemanticState::Running,
+                                       false) == InvariantCase::Close,
+          "invariant state and phase select one descriptor");
 
   using sem::GateCase;
   using sem::GateInput;
@@ -250,14 +262,14 @@ void actorTransitionDescriptorContract() {
       consumedMask<GateInput>({GateInput::Phase, GateInput::Value});
   {
     auto d = sem::gateCaseDescriptor(GateCase::ClosedDrop);
-    require(d.requiredState == GateSemanticState::Closed &&
+    require(d.requiredState == GateSemanticState::Closed && !d.requiredPhase &&
                 d.consumedInputs == gateHeads && !d.emitPhase &&
                 !d.forwardedInput && d.nextState == GateSemanticState::Closed,
             "gate ClosedDrop descriptor");
   }
   {
     auto d = sem::gateCaseDescriptor(GateCase::FirstTrue);
-    require(d.requiredState == GateSemanticState::Closed &&
+    require(d.requiredState == GateSemanticState::Closed && d.requiredPhase &&
                 d.consumedInputs == gateHeads && !d.emitPhase &&
                 d.forwardedInput == GateInput::Value &&
                 d.nextState == GateSemanticState::Open,
@@ -265,7 +277,7 @@ void actorTransitionDescriptorContract() {
   }
   {
     auto d = sem::gateCaseDescriptor(GateCase::ContinueTrue);
-    require(d.requiredState == GateSemanticState::Open &&
+    require(d.requiredState == GateSemanticState::Open && d.requiredPhase &&
                 d.consumedInputs == gateHeads && d.emitPhase && d.phase &&
                 d.forwardedInput == GateInput::Value &&
                 d.nextState == GateSemanticState::Open,
@@ -273,11 +285,20 @@ void actorTransitionDescriptorContract() {
   }
   {
     auto d = sem::gateCaseDescriptor(GateCase::Close);
-    require(d.requiredState == GateSemanticState::Open &&
+    require(d.requiredState == GateSemanticState::Open && !d.requiredPhase &&
                 d.consumedInputs == gateHeads && d.emitPhase && !d.phase &&
                 !d.forwardedInput && d.nextState == GateSemanticState::Closed,
             "gate Close descriptor");
   }
+  require(sem::selectGateCase(GateSemanticState::Closed, false) ==
+                  GateCase::ClosedDrop &&
+              sem::selectGateCase(GateSemanticState::Closed, true) ==
+                  GateCase::FirstTrue &&
+              sem::selectGateCase(GateSemanticState::Open, true) ==
+                  GateCase::ContinueTrue &&
+              sem::selectGateCase(GateSemanticState::Open, false) ==
+                  GateCase::Close,
+          "gate state and phase select one descriptor");
 
   // Blocked readiness: an unsatisfied case is not another transition case. Each
   // evaluator consumes nothing and holds its logical state.

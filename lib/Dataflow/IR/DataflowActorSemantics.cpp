@@ -1058,7 +1058,7 @@ dataflow::semantics::evaluateInvariantTransition(InvariantSemanticState state,
   transition.nextState = state;
   if (state == InvariantSemanticState::Initial) {
     const InvariantCaseDescriptor descriptor =
-        invariantCaseDescriptor(InvariantCase::Init);
+        invariantCaseDescriptor(selectInvariantCase(state, false));
     transition.firing = makeSemanticFiringDecision(
         descriptor.consumedInputs,
         initAvailable ? descriptor.consumedInputs : SemanticInputMask{0});
@@ -1075,12 +1075,13 @@ dataflow::semantics::evaluateInvariantTransition(InvariantSemanticState state,
   // block on that shared head until it arrives.
   if (!phase) {
     transition.firing = makeSemanticFiringDecision(
-        invariantCaseDescriptor(InvariantCase::Close).consumedInputs,
+        invariantCaseDescriptor(selectInvariantCase(state, false))
+            .consumedInputs,
         SemanticInputMask{0});
     return transition;
   }
-  const InvariantCaseDescriptor descriptor = invariantCaseDescriptor(
-      *phase ? InvariantCase::Replay : InvariantCase::Close);
+  const InvariantCaseDescriptor descriptor =
+      invariantCaseDescriptor(selectInvariantCase(state, *phase));
   transition.firing = makeSemanticFiringDecision(descriptor.consumedInputs,
                                                  descriptor.consumedInputs);
   transition.output = descriptor.output;
@@ -1099,10 +1100,7 @@ dataflow::semantics::GateTransition dataflow::semantics::evaluateGateTransition(
   // both, as the state's control-only case states, before the condition selects
   // the case.
   const SemanticInputMask required =
-      gateCaseDescriptor(state == GateSemanticState::Closed
-                             ? GateCase::ClosedDrop
-                             : GateCase::Close)
-          .consumedInputs;
+      gateCaseDescriptor(selectGateCase(state, false)).consumedInputs;
   SemanticInputMask available =
       valueAvailable ? semanticInput(GateInput::Value) : SemanticInputMask{0};
   if (phase)
@@ -1111,10 +1109,8 @@ dataflow::semantics::GateTransition dataflow::semantics::evaluateGateTransition(
   if (!transition.firing.ready)
     return transition;
 
-  const GateCaseDescriptor descriptor = gateCaseDescriptor(
-      state == GateSemanticState::Closed
-          ? (*phase ? GateCase::FirstTrue : GateCase::ClosedDrop)
-          : (*phase ? GateCase::ContinueTrue : GateCase::Close));
+  const GateCaseDescriptor descriptor =
+      gateCaseDescriptor(selectGateCase(state, *phase));
   transition.emitPhase = descriptor.emitPhase;
   transition.phase = descriptor.phase;
   transition.forwardedInput = descriptor.forwardedInput;
