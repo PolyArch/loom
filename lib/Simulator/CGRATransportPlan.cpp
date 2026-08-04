@@ -1,11 +1,13 @@
 #include "CGRATransportPlan.h"
 
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/IR/FifoResourceContract.h"
 #include "Fabric/IR/TemporalPeResourceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include <limits>
 #include <map>
+#include <set>
 #include <system_error>
 #include <utility>
 #include <variant>
@@ -42,9 +44,17 @@ resolveGraphOf(const ::dataflow::CanonicalDataflowProgramView &dataflow,
 }
 
 using RefBytes = std::vector<std::uint8_t>;
+using EdgeKey = std::pair<RefBytes, RefBytes>;
 
 RefBytes bytes(const ::loom::fabric::FabricPhysicalTraversalRef &reference) {
   return ::loom::fabric::canonicalFabricBytes(reference);
+}
+
+template <typename Ref>
+llvm::Expected<RefBytes>
+dataflowBytes(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+              const Ref &reference) {
+  return ::dataflow::encodeDataflowReference(dataflow.identity(), reference);
 }
 
 void collect(
@@ -111,7 +121,8 @@ storageContract(const ::loom::fabric::FabricArtifactView &fabric,
 llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricArtifactView &fabric,
-    const ::loom::mapping::SpatialMappingView &spatial) {
+    const ::loom::mapping::SpatialMappingView &spatial,
+    llvm::ArrayRef<::dataflow::GraphRef> mappedGraphs) {
   std::map<RefBytes, ::loom::fabric::FabricPhysicalTraversalRef> selected;
   for (const auto &route : spatial.routeTrees()) {
     collect(route.localTraversal, selected);
@@ -163,6 +174,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
   };
 
   result.routes.reserve(spatial.routeTrees().size());
+  std::set<EdgeKey> residualEdges;
   for (const auto &route : spatial.routeTrees()) {
     auto graph = resolveGraphOf(dataflow, route.logicalNet);
     if (!graph)
@@ -200,9 +212,65 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       if (!traversal)
         return traversal.takeError();
       result.routeSinks.push_back({sink.sink, *node, *traversal});
+      auto producerKey = dataflowBytes(dataflow, route.logicalNet);
+      if (!producerKey)
+        return producerKey.takeError();
+      auto sinkKey = dataflowBytes(dataflow, sink.sink);
+      if (!sinkKey)
+        return sinkKey.takeError();
+      if (!residualEdges.emplace(std::move(*producerKey), std::move(*sinkKey))
+               .second)
+        return invalid("selected RouteTrees contain a duplicate residual edge");
     }
     result.routes.push_back({route.logicalNet, *graph, *sourceTraversal,
                              nodeOffset, *nodeCount, sinkOffset, *sinkCount});
+  }
+
+  std::set<std::uint64_t> coveredGraphs;
+  for (const auto &graph : mappedGraphs)
+    coveredGraphs.insert(graph.entity.value());
+  struct LocalTransferBuilder final {
+    ::dataflow::CanonicalGraphProducerEndpointRef producer;
+    ::dataflow::GraphRef graph;
+    std::vector<::dataflow::CanonicalGraphConsumerEndpointRef> sinks;
+  };
+  std::map<RefBytes, LocalTransferBuilder> localTransfers;
+  if (llvm::Error error = dataflow.forEachGraphEdge(
+          [&](const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
+              const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer)
+              -> llvm::Error {
+            auto graph = resolveGraphOf(dataflow, producer);
+            if (!graph)
+              return graph.takeError();
+            if (!coveredGraphs.count(graph->entity.value()))
+              return llvm::Error::success();
+            auto producerKey = dataflowBytes(dataflow, producer);
+            if (!producerKey)
+              return producerKey.takeError();
+            auto consumerKey = dataflowBytes(dataflow, consumer);
+            if (!consumerKey)
+              return consumerKey.takeError();
+            if (residualEdges.count({*producerKey, *consumerKey}))
+              return llvm::Error::success();
+            auto [position, inserted] = localTransfers.try_emplace(
+                *producerKey, LocalTransferBuilder{producer, *graph, {}});
+            (void)inserted;
+            position->second.sinks.push_back(consumer);
+            return llvm::Error::success();
+          }))
+    return std::move(error);
+  result.localTransfers.reserve(localTransfers.size());
+  for (auto &[key, transfer] : localTransfers) {
+    (void)key;
+    auto sinkCount =
+        checkedU32(transfer.sinks.size(), "CGRA local-transfer sink count");
+    if (!sinkCount)
+      return sinkCount.takeError();
+    const std::uint64_t sinkOffset = result.localTransferSinks.size();
+    for (auto &sink : transfer.sinks)
+      result.localTransferSinks.push_back({std::move(sink)});
+    result.localTransfers.push_back(
+        {transfer.producer, transfer.graph, sinkOffset, *sinkCount});
   }
   return result;
 }

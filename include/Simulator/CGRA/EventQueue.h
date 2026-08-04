@@ -12,6 +12,9 @@
 
 namespace loom::sim {
 
+llvm::Expected<SpatialEventCoordinate>
+nextSpatialDelta(const SpatialEventCoordinate &coordinate);
+
 /// Complete execution-local order key. structuralActionOrdinal is assigned by
 /// sorting the exact canonical typed action keys during preparation; it is a
 /// removable dense cache and never replaces those persistent references.

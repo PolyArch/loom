@@ -3,7 +3,6 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
-#include <limits>
 #include <system_error>
 #include <tuple>
 #include <utility>
@@ -14,15 +13,6 @@ namespace {
 llvm::Error invalid(llvm::Twine message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument), message);
-}
-
-llvm::Expected<SpatialEventCoordinate>
-nextDelta(const SpatialEventCoordinate &coordinate) {
-  if (coordinate.delta == std::numeric_limits<std::uint64_t>::max())
-    return llvm::createStringError(std::errc::value_too_large,
-                                   "CGRA delta cycle overflows u64");
-  return SpatialEventCoordinate{coordinate.referenceCycle,
-                                coordinate.delta + 1};
 }
 
 void selectEarlier(std::optional<SpatialEventCoordinate> candidate,
@@ -227,7 +217,7 @@ llvm::Error CgraComputeRuntime::maybeScheduleCommit(
   if (!firing.active || firing.commitScheduled ||
       firing.permittedCount != firing.actionCount)
     return llvm::Error::success();
-  auto commitCoordinate = nextDelta(coordinate);
+  auto commitCoordinate = nextSpatialDelta(coordinate);
   if (!commitCoordinate)
     return commitCoordinate.takeError();
   const ActorBinding &binding = bindings_[firing.bindingOrdinal];

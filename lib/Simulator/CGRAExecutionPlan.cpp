@@ -372,7 +372,8 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
       static_cast<std::uint64_t>(selectedOwners.size());
   result.summary.claimCount =
       static_cast<std::uint64_t>(result.resources.claims.size());
-  auto transport = freezeCgraTransportPlan(dataflow, fabric, spatial);
+  auto transport =
+      freezeCgraTransportPlan(dataflow, fabric, spatial, result.mappedGraphs);
   if (!transport)
     return transport.takeError();
   result.transport = std::move(*transport);
@@ -380,6 +381,9 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
   result.summary.routeNodeCount = result.transport.routeNodes.size();
   result.summary.routeSinkCount = result.transport.routeSinks.size();
   result.summary.selectedTraversalCount = result.transport.traversals.size();
+  result.summary.localTransferCount = result.transport.localTransfers.size();
+  result.summary.localTransferSinkCount =
+      result.transport.localTransferSinks.size();
   return result;
 }
 

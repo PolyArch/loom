@@ -59,6 +59,17 @@ struct CgraRoutePlan final {
   std::uint32_t sinkCount = 0;
 };
 
+struct CgraLocalTransferSinkPlan final {
+  ::dataflow::CanonicalGraphConsumerEndpointRef sink;
+};
+
+struct CgraLocalTransferPlan final {
+  ::dataflow::CanonicalGraphProducerEndpointRef producer;
+  ::dataflow::GraphRef graph;
+  std::uint64_t sinkOffset = 0;
+  std::uint32_t sinkCount = 0;
+};
+
 /// Removable dense projection of the exact selected Spatial RouteTrees and
 /// Fabric traversal contracts. Persistent references remain only in this cold
 /// plan; dynamic execution indexes the flat arrays by ordinal.
@@ -68,12 +79,15 @@ struct CgraTransportPlan final {
   std::vector<CgraRoutePlan> routes;
   std::vector<CgraRouteNodePlan> routeNodes;
   std::vector<CgraRouteSinkPlan> routeSinks;
+  std::vector<CgraLocalTransferPlan> localTransfers;
+  std::vector<CgraLocalTransferSinkPlan> localTransferSinks;
 };
 
 llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricArtifactView &fabric,
-    const ::loom::mapping::SpatialMappingView &spatial);
+    const ::loom::mapping::SpatialMappingView &spatial,
+    llvm::ArrayRef<::dataflow::GraphRef> mappedGraphs);
 
 } // namespace loom::sim::detail
 

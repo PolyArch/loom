@@ -1,6 +1,7 @@
 #include "Simulator/CGRA/EventQueue.h"
 
 #include <algorithm>
+#include <limits>
 #include <system_error>
 #include <utility>
 
@@ -36,6 +37,15 @@ CgraScheduledEvent popMinimum(std::vector<CgraScheduledEvent> &heap) {
 }
 
 } // namespace
+
+llvm::Expected<SpatialEventCoordinate>
+nextSpatialDelta(const SpatialEventCoordinate &coordinate) {
+  if (coordinate.delta == std::numeric_limits<std::uint64_t>::max())
+    return llvm::createStringError(std::errc::value_too_large,
+                                   "CGRA delta cycle overflows u64");
+  return SpatialEventCoordinate{coordinate.referenceCycle,
+                                coordinate.delta + 1};
+}
 
 void CgraEventQueue::schedule(CgraScheduledEvent event) {
   heap_.push_back(std::move(event));

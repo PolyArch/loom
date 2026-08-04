@@ -18,6 +18,10 @@ add_executable(loom-simulator-cgra-compute-runtime-test
   CgraComputeRuntimeTest.cpp
 )
 
+add_executable(loom-simulator-cgra-transport-runtime-test
+  CgraTransportRuntimeTest.cpp
+)
+
 add_executable(loom-simulator-dfg-actor-transition-probe-test
   DFGActorTransitionProbeTest.cpp
 )
@@ -43,7 +47,21 @@ target_include_directories(loom-simulator-cgra-compute-runtime-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Simulator
 )
 
+target_include_directories(loom-simulator-cgra-transport-runtime-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Simulator
+)
+
 target_link_libraries(loom-simulator-cgra-compute-runtime-test PRIVATE
+  LoomSimulator
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
+target_link_libraries(loom-simulator-cgra-transport-runtime-test PRIVATE
   LoomSimulator
   MLIRArithDialect
   MLIRDataflow
