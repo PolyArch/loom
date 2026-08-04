@@ -1,0 +1,44 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-integer-logic-test %t
+# RUN: FileCheck %s --check-prefix=SCALAR < %t/scalar_integer_logic.sv
+# RUN: FileCheck %s --check-prefix=VECTOR < %t/fixed_vector_integer_logic.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_integer_logic.ys
+
+# SCALAR: module scalar_integer_logic
+# SCALAR: input [63:0] data_input_0
+# SCALAR: data_input_1,
+# SCALAR: input [2:0] config_0
+# SCALAR: output [63:0] data_output_0
+# SCALAR-NOT: poison
+# SCALAR-NOT: trap
+# SCALAR-NOT: stall
+# SCALAR-NOT: valid_
+# SCALAR-NOT: ready_
+
+# VECTOR: module fixed_vector_integer_logic
+# VECTOR: input [127:0] data_input_0
+# VECTOR: data_input_1,
+# VECTOR: input [2:0] config_0
+# VECTOR: output [127:0] data_output_0
+# VECTOR-NOT: poison
+# VECTOR-NOT: trap
+# VECTOR-NOT: stall
+# VECTOR-NOT: valid_
+# VECTOR-NOT: ready_
+
+# TB: module testbench
+# TB: AND oracle mismatch
+# TB: shared OR oracle mismatch
+# TB: XOR oracle mismatch
+# TB: inactive OR fallback mismatch
+
+# YOSYS: hierarchy -check -top integer_logic_synthesis_top
+# YOSYS: check -assert
+# YOSYS: select -assert-count 2 t:$and
+# YOSYS: select -assert-count 2 t:$or
+# YOSYS: select -assert-count 2 t:$xor
+# YOSYS: synth -top integer_logic_synthesis_top
+# YOSYS: check -assert
+# YOSYS: stat
