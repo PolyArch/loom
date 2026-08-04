@@ -9,13 +9,37 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace loom::dse {
 
+class ObjectiveUnavailableError final
+    : public llvm::ErrorInfo<ObjectiveUnavailableError> {
+public:
+  static char ID;
+
+  explicit ObjectiveUnavailableError(std::string detail)
+      : detail_(std::move(detail)) {}
+
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  std::string detail_;
+};
+
+struct EvaluationMetricObjectiveValue final {
+  std::uint32_t evidenceObligationTemplate;
+  std::uint64_t metricRequestOrdinal;
+  ResolvedObjectiveScalar value;
+};
+
 struct ObjectiveSourceValues final {
   llvm::ArrayRef<std::uint64_t> mappingViolations;
   llvm::ArrayRef<std::uint64_t> mappingMeasures;
+  llvm::ArrayRef<EvaluationMetricObjectiveValue> evaluationMetrics;
 };
 
 class ObjectiveVector final {
@@ -108,11 +132,10 @@ public:
 
 private:
   struct CompiledDimension final {
-    ResolvedObjectiveSourceKind sourceKind;
-    std::uint32_t sourceOrdinal;
+    ResolvedObjectiveScalarSource source;
     ResolvedObjectiveDirection direction;
-    std::uint64_t origin;
-    std::uint64_t quantum;
+    ResolvedObjectiveScalar origin;
+    ResolvedObjectiveScalar quantum;
     std::uint64_t lowerIndex;
     std::uint64_t upperIndex;
   };

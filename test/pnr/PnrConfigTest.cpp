@@ -97,9 +97,11 @@ void selectedAndUnselectedRecordsHaveExactDependencies() {
 
   loom::ResolvedConfig unselectedChange = base;
   auto &catalogs = unselectedChange.dse.objectiveCatalogs;
-  catalogs.dimensions.push_back(
-      {loom::ResolvedObjectiveSourceKind::MappingMeasure, 0,
-       loom::ResolvedObjectiveDirection::Maximize, 0, 1, 0, UINT64_MAX});
+  catalogs.dimensions.push_back({loom::ResolvedMappingMeasureObjectiveSource{0},
+                                 loom::ResolvedObjectiveDirection::Maximize,
+                                 loom::resolvedObjectiveInteger(0),
+                                 loom::resolvedObjectiveInteger(1), 0,
+                                 UINT64_MAX});
   const std::uint32_t unselectedDimension =
       static_cast<std::uint32_t>(catalogs.dimensions.size() - 1);
   catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 1,
@@ -210,6 +212,20 @@ void objectiveArithmeticIsPreflightedByThePnrView() {
                   "weighted level domain overflows uint128");
 }
 
+void evaluationObjectiveRequiresItsObligationOwner() {
+  loom::ResolvedConfig config = loom::defaultResolvedConfig();
+  auto &catalogs = config.dse.objectiveCatalogs;
+  catalogs.dimensions.push_back(
+      {loom::ResolvedEvaluationMetricObjectiveSource{0, 0},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveDecimal(0, 0),
+       loom::resolvedObjectiveDecimal(1, 0), 0, 100});
+  config.dse.spatialPnr.objectiveSelection.focusedClosureDimensions = {
+      static_cast<std::uint32_t>(catalogs.dimensions.size() - 1)};
+  requireRejected(loom::pnr::projectResolvedSpatialPnrConfigView(config),
+                  "Evaluation metric objective owner is unavailable");
+}
+
 void malformedWireFailsClosed() {
   const loom::pnr::ResolvedPnrConfigView view =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(
@@ -244,6 +260,7 @@ int main() {
   mappingObjectiveRegistryIsClosedAndTyped();
   resolvedConfigUsesTheIndependentViolationCatalog();
   objectiveArithmeticIsPreflightedByThePnrView();
+  evaluationObjectiveRequiresItsObligationOwner();
   malformedWireFailsClosed();
   static_assert(
       !std::is_default_constructible_v<loom::pnr::ResolvedPnrConfigView>);

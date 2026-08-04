@@ -93,10 +93,52 @@ constexpr std::uint32_t mappingMeasureKindCount = 0
 #include "Common/MappingObjectiveKinds.def"
     ;
 
+auto sourceKey(const ResolvedObjectiveScalarSource &source) {
+  if (const auto *violation =
+          std::get_if<ResolvedMappingViolationObjectiveSource>(&source))
+    return std::make_tuple(std::uint32_t{0},
+                           static_cast<std::uint32_t>(violation->kind),
+                           std::uint64_t{0});
+  if (const auto *measure =
+          std::get_if<ResolvedMappingMeasureObjectiveSource>(&source))
+    return std::make_tuple(std::uint32_t{1}, measure->ordinal,
+                           std::uint64_t{0});
+  const auto &metric =
+      std::get<ResolvedEvaluationMetricObjectiveSource>(source);
+  return std::make_tuple(std::uint32_t{2}, metric.evidenceObligationTemplate,
+                         metric.metricRequestOrdinal);
+}
+
+auto scalarKey(const ResolvedObjectiveScalar &value) {
+  if (const auto *integer = std::get_if<ResolvedObjectiveInteger>(&value))
+    return std::make_tuple(std::uint32_t{0}, integer->negative,
+                           integer->magnitude, std::int64_t{0},
+                           std::int64_t{0});
+  const auto &decimal = std::get<ResolvedObjectiveDecimal>(value);
+  return std::make_tuple(std::uint32_t{1}, false, std::uint64_t{0},
+                         decimal.coefficient, decimal.base10Exponent);
+}
+
+bool isCanonicalScalar(const ResolvedObjectiveScalar &value) {
+  if (const auto *integer = std::get_if<ResolvedObjectiveInteger>(&value))
+    return !integer->negative || (integer->magnitude != 0 &&
+                                  integer->magnitude <= (UINT64_C(1) << 63));
+  const auto &decimal = std::get<ResolvedObjectiveDecimal>(value);
+  if (decimal.coefficient == 0)
+    return decimal.base10Exponent == 0;
+  return decimal.coefficient % 10 != 0;
+}
+
+bool isPositiveScalar(const ResolvedObjectiveScalar &value) {
+  if (const auto *integer = std::get_if<ResolvedObjectiveInteger>(&value))
+    return !integer->negative && integer->magnitude != 0;
+  return std::get<ResolvedObjectiveDecimal>(value).coefficient > 0;
+}
+
 auto dimensionKey(const ResolvedObjectiveDimension &dimension) {
-  return std::make_tuple(dimension.sourceKind, dimension.sourceOrdinal,
-                         dimension.direction, dimension.origin,
-                         dimension.quantum, dimension.lowerIndex,
+  return std::make_tuple(sourceKey(dimension.source), dimension.direction,
+                         scalarKey(dimension.origin),
+                         scalarKey(dimension.quantum), dimension.lowerIndex,
                          dimension.upperIndex);
 }
 
@@ -156,11 +198,15 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   for (std::uint32_t ordinal = 0; ordinal != resolvedPnrViolationKindCount;
        ++ordinal)
     catalogs.dimensions.push_back(
-        {ResolvedObjectiveSourceKind::MappingViolation, ordinal,
-         ResolvedObjectiveDirection::Minimize, 0, 1, 0,
+        {ResolvedMappingViolationObjectiveSource{
+             static_cast<ResolvedPnrViolationKind>(ordinal)},
+         ResolvedObjectiveDirection::Minimize, resolvedObjectiveInteger(0),
+         resolvedObjectiveInteger(1), 0,
          std::numeric_limits<std::uint64_t>::max()});
-  catalogs.dimensions.push_back({ResolvedObjectiveSourceKind::MappingMeasure, 0,
-                                 ResolvedObjectiveDirection::Minimize, 0, 1, 0,
+  catalogs.dimensions.push_back({ResolvedMappingMeasureObjectiveSource{0},
+                                 ResolvedObjectiveDirection::Minimize,
+                                 resolvedObjectiveInteger(0),
+                                 resolvedObjectiveInteger(1), 0,
                                  std::numeric_limits<std::uint64_t>::max()});
 
   ResolvedWeightedObjectiveLevel closure;
@@ -182,24 +228,38 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
 llvm::Error
 validateResolvedObjectiveCatalogs(const ResolvedObjectiveCatalogs &catalogs) {
   for (const ResolvedObjectiveDimension &dimension : catalogs.dimensions) {
-    if (static_cast<std::uint32_t>(dimension.sourceKind) >
-        static_cast<std::uint32_t>(ResolvedObjectiveSourceKind::MappingMeasure))
-      return invalid("objective source kind is unknown");
-    switch (dimension.sourceKind) {
-    case ResolvedObjectiveSourceKind::MappingViolation:
-      if (dimension.sourceOrdinal >= resolvedPnrViolationKindCount)
+    if (const auto *violation =
+            std::get_if<ResolvedMappingViolationObjectiveSource>(
+                &dimension.source)) {
+      if (static_cast<std::uint32_t>(violation->kind) >=
+          resolvedPnrViolationKindCount)
         return invalid("Mapping violation source ordinal is out of range");
-      break;
-    case ResolvedObjectiveSourceKind::MappingMeasure:
-      if (dimension.sourceOrdinal >= mappingMeasureKindCount)
+    } else if (const auto *measure =
+                   std::get_if<ResolvedMappingMeasureObjectiveSource>(
+                       &dimension.source)) {
+      if (measure->ordinal >= mappingMeasureKindCount)
         return invalid("Mapping measure source ordinal is out of range");
-      break;
     }
+    const bool mappingSource =
+        !std::holds_alternative<ResolvedEvaluationMetricObjectiveSource>(
+            dimension.source);
+    if (mappingSource &&
+        (!std::holds_alternative<ResolvedObjectiveInteger>(dimension.origin) ||
+         !std::holds_alternative<ResolvedObjectiveInteger>(dimension.quantum)))
+      return invalid("Mapping objective quantization must use integers");
+    if (dimension.origin.index() != dimension.quantum.index())
+      return invalid("objective origin and quantum have different domains");
+    if (!isCanonicalScalar(dimension.origin) ||
+        !isCanonicalScalar(dimension.quantum))
+      return invalid("objective quantization scalar is not canonical");
+    if (mappingSource &&
+        std::get<ResolvedObjectiveInteger>(dimension.origin).negative)
+      return invalid("Mapping objective origin must be nonnegative");
+    if (!isPositiveScalar(dimension.quantum))
+      return invalid("objective quantum must be positive");
     if (static_cast<std::uint32_t>(dimension.direction) >
         static_cast<std::uint32_t>(ResolvedObjectiveDirection::Maximize))
       return invalid("objective direction is unknown");
-    if (dimension.quantum == 0)
-      return invalid("objective quantum must be positive");
     if (dimension.lowerIndex > dimension.upperIndex)
       return invalid("objective bounds are reversed");
   }
@@ -429,10 +489,14 @@ validateResolvedPnrPolicyConfig(const ResolvedPnrPolicyConfig &policy,
         [&](const ResolvedWeightedObjectiveTerm &term) {
           const ResolvedObjectiveDimension &dimension =
               catalogs.dimensions[term.dimension];
-          return dimension.sourceKind ==
-                     ResolvedObjectiveSourceKind::MappingViolation &&
-                 dimension.sourceOrdinal == sourceOrdinal &&
-                 dimension.direction == ResolvedObjectiveDirection::Minimize;
+          const auto *source =
+              std::get_if<ResolvedMappingViolationObjectiveSource>(
+                  &dimension.source);
+          return source &&
+                 static_cast<std::uint32_t>(source->kind) == sourceOrdinal &&
+                 dimension.direction == ResolvedObjectiveDirection::Minimize &&
+                 dimension.origin == resolvedObjectiveInteger(0) &&
+                 dimension.quantum == resolvedObjectiveInteger(1);
         });
     if (!visible)
       return invalid("temporary violation is absent from search energy");

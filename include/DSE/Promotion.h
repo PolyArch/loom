@@ -166,6 +166,7 @@ enum class IncompleteSelectionReason : std::uint8_t {
   ExecutionFailedEvidence,
   CancelledOrTimeoutEvidence,
   NonComparableEvidence,
+  ObjectiveUnavailable,
 };
 
 llvm::StringRef toString(IncompleteSelectionReason reason);
@@ -188,7 +189,6 @@ promoteCandidates(const CandidateSet &candidateSet,
                   evaluation::CaseSubjectRoleRef candidateRole,
                   llvm::ArrayRef<PromotionEvidence> evidence,
                   const QualityGatePolicy &qualityGate,
-                  llvm::ArrayRef<CandidateObjectiveVector> objectives,
                   const CandidateSelectionPolicy &selection,
                   const ObjectiveProgram *objectiveProgram,
                   const ArtifactStore &artifactStore);

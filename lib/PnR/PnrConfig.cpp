@@ -69,6 +69,8 @@ public:
     bytes_.push_back(static_cast<std::uint8_t>(value));
   }
 
+  void i64(std::int64_t value) { u64(static_cast<std::uint64_t>(value)); }
+
   void ratio(const ResolvedExactRatio &value) {
     u64(value.numerator);
     u64(value.denominator);
@@ -100,6 +102,13 @@ public:
     for (unsigned ordinal = 0; ordinal != 8; ++ordinal)
       value = (value << 8) | bytes_[offset_++];
     return value;
+  }
+
+  llvm::Expected<std::int64_t> i64() {
+    auto value = u64();
+    if (!value)
+      return value.takeError();
+    return static_cast<std::int64_t>(*value);
   }
 
   llvm::Expected<std::size_t> count() {
@@ -202,11 +211,38 @@ void encodeClosure(Encoder &encoder, const ResolvedPnrPolicyConfig &policy,
   encoder.u64(0);
   encoder.u64(catalogs.dimensions.size());
   for (const ResolvedObjectiveDimension &dimension : catalogs.dimensions) {
-    encoder.u32(static_cast<std::uint32_t>(dimension.sourceKind));
-    encoder.u32(dimension.sourceOrdinal);
+    if (const auto *violation =
+            std::get_if<ResolvedMappingViolationObjectiveSource>(
+                &dimension.source)) {
+      encoder.u32(0);
+      encoder.u32(static_cast<std::uint32_t>(violation->kind));
+    } else if (const auto *measure =
+                   std::get_if<ResolvedMappingMeasureObjectiveSource>(
+                       &dimension.source)) {
+      encoder.u32(1);
+      encoder.u32(measure->ordinal);
+    } else {
+      const auto &metric =
+          std::get<ResolvedEvaluationMetricObjectiveSource>(dimension.source);
+      encoder.u32(2);
+      encoder.u32(metric.evidenceObligationTemplate);
+      encoder.u64(metric.metricRequestOrdinal);
+    }
     encoder.u32(static_cast<std::uint32_t>(dimension.direction));
-    encoder.u64(dimension.origin);
-    encoder.u64(dimension.quantum);
+    const auto encodeScalar = [&](const ResolvedObjectiveScalar &value) {
+      if (const auto *integer = std::get_if<ResolvedObjectiveInteger>(&value)) {
+        encoder.u32(0);
+        encoder.u32(integer->negative ? 1 : 0);
+        encoder.u64(integer->magnitude);
+      } else {
+        const auto &decimal = std::get<ResolvedObjectiveDecimal>(value);
+        encoder.u32(1);
+        encoder.i64(decimal.coefficient);
+        encoder.i64(decimal.base10Exponent);
+      }
+    };
+    encodeScalar(dimension.origin);
+    encodeScalar(dimension.quantum);
     encoder.u64(dimension.lowerIndex);
     encoder.u64(dimension.upperIndex);
   }
@@ -478,20 +514,64 @@ decodeClosure(Decoder &decoder,
     return dimensionCount.takeError();
   catalogs.dimensions.reserve(*dimensionCount);
   for (std::size_t ordinal = 0; ordinal != *dimensionCount; ++ordinal) {
-    auto source = decoder.u32();
-    auto sourceOrdinal = decoder.u32();
+    auto sourceTag = decoder.u32();
+    if (!sourceTag)
+      return sourceTag.takeError();
+    ResolvedObjectiveScalarSource source =
+        ResolvedMappingMeasureObjectiveSource{0};
+    if (*sourceTag == 0) {
+      auto kind = decoder.u32();
+      if (!kind)
+        return kind.takeError();
+      source = ResolvedMappingViolationObjectiveSource{
+          static_cast<ResolvedPnrViolationKind>(*kind)};
+    } else if (*sourceTag == 1) {
+      auto kind = decoder.u32();
+      if (!kind)
+        return kind.takeError();
+      source = ResolvedMappingMeasureObjectiveSource{*kind};
+    } else if (*sourceTag == 2) {
+      auto obligation = decoder.u32();
+      auto metricRequest = decoder.u64();
+      if (!obligation)
+        return obligation.takeError();
+      if (!metricRequest)
+        return metricRequest.takeError();
+      source =
+          ResolvedEvaluationMetricObjectiveSource{*obligation, *metricRequest};
+    } else {
+      return invalid("unknown objective source kind");
+    }
     auto direction = decoder.u32();
-    auto origin = decoder.u64();
-    auto quantum = decoder.u64();
+    const auto decodeScalar = [&]() -> llvm::Expected<ResolvedObjectiveScalar> {
+      auto tag = decoder.u32();
+      if (!tag)
+        return tag.takeError();
+      if (*tag == 0) {
+        auto negative = decoder.u32();
+        auto magnitude = decoder.u64();
+        if (!negative)
+          return negative.takeError();
+        if (*negative > 1)
+          return invalid("invalid objective integer sign");
+        if (!magnitude)
+          return magnitude.takeError();
+        return resolvedObjectiveInteger(*magnitude, *negative != 0);
+      }
+      if (*tag != 1)
+        return invalid("unknown objective scalar kind");
+      auto coefficient = decoder.i64();
+      auto exponent = decoder.i64();
+      if (!coefficient)
+        return coefficient.takeError();
+      if (!exponent)
+        return exponent.takeError();
+      return resolvedObjectiveDecimal(*coefficient, *exponent);
+    };
+    auto origin = decodeScalar();
+    auto quantum = decodeScalar();
     auto lower = decoder.u64();
     auto upper = decoder.u64();
-    if (!source)
-      return source.takeError();
-    if (*source >
-        static_cast<std::uint32_t>(ResolvedObjectiveSourceKind::MappingMeasure))
-      return invalid("unknown objective source kind");
-    if (!sourceOrdinal)
-      return sourceOrdinal.takeError();
     if (!direction)
       return direction.takeError();
     if (*direction >
@@ -506,9 +586,8 @@ decodeClosure(Decoder &decoder,
     if (!upper)
       return upper.takeError();
     catalogs.dimensions.push_back(
-        {static_cast<ResolvedObjectiveSourceKind>(*source), *sourceOrdinal,
-         static_cast<ResolvedObjectiveDirection>(*direction), *origin, *quantum,
-         *lower, *upper});
+        {std::move(source), static_cast<ResolvedObjectiveDirection>(*direction),
+         std::move(*origin), std::move(*quantum), *lower, *upper});
   }
 
   auto levelCount = decoder.count();

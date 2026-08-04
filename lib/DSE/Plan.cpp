@@ -368,8 +368,7 @@ executeDsePlan(const ResolvedDsePlan &plan, const ArtifactStore &store) {
         promote.canonicalConfigBytes(), promote.configDigest());
     if (!binding)
       return binding.takeError();
-    auto acquisition =
-        invokePromotionAcquisition(*binding, promote.objectiveProgram(), store);
+    auto acquisition = invokePromotionAcquisition(*binding, store);
     if (!acquisition)
       return acquisition.takeError();
     if (auto *incomplete =
@@ -398,8 +397,8 @@ executeDsePlan(const ResolvedDsePlan &plan, const ArtifactStore &store) {
       return candidateSet.takeError();
     auto promotion = promoteCandidates(
         *candidateSet, descriptor->candidateRole, completed.evidence,
-        promote.qualityGate(), completed.objectives, promote.selection(),
-        promote.objectiveProgram(), store);
+        promote.qualityGate(), promote.selection(), promote.objectiveProgram(),
+        store);
     if (!promotion)
       return promotion.takeError();
     if (auto *incomplete = std::get_if<IncompleteSelection>(&*promotion))

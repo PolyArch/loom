@@ -980,7 +980,7 @@ void runEvaluationAnchor() {
       {{baselineFunctional.request, baselineFunctional.evidence},
        {spatialFunctional.request, spatialFunctional.evidence},
        {incorrectFunctional.request, incorrectFunctional.evidence}},
-      semanticGate, {}, loom::dse::AllPassingSelection{}, nullptr, store));
+      semanticGate, loom::dse::AllPassingSelection{}, nullptr, store));
   const auto *semanticSelection =
       std::get_if<loom::dse::CompletedSelection>(&semanticPromotion);
   if (!semanticSelection || semanticSelection->selected.size() != 2 ||
@@ -993,7 +993,7 @@ void runEvaluationAnchor() {
       loom::frontend::structuredProgramArtifactSchema, {coldRef}));
   auto inapplicablePromotion = take(loom::dse::promoteCandidates(
       inapplicableCandidates, loom::evaluation::CaseSubjectRoleRef(0),
-      {{coldFunctional.request, coldFunctional.evidence}}, semanticGate, {},
+      {{coldFunctional.request, coldFunctional.evidence}}, semanticGate,
       loom::dse::AllPassingSelection{}, nullptr, store));
   const auto *indeterminate =
       std::get_if<loom::dse::IncompleteSelection>(&inapplicablePromotion);

@@ -172,29 +172,14 @@ generateSource(const ResolvedCandidateGeneratorBinding &binding,
 
 llvm::Expected<PromotionAcquisitionOutcome>
 acquireObjectives(const ResolvedPromotionAcquisitionBinding &binding,
-                  const ObjectiveProgram *objectiveProgram,
                   const ArtifactStore &) {
-  if (!objectiveProgram)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "objective provider requires a program");
   const PromotionAcquisitionInputBinding *candidates =
       binding.findInputBinding(PromotionAcquisitionInputSlotRef(0));
   if (!candidates || candidates->artifacts.size() != 2)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "objective provider received invalid input");
 
-  std::vector<CandidateObjectiveVector> objectives;
-  objectives.reserve(candidates->artifacts.size());
-  for (std::size_t index = 0; index < candidates->artifacts.size(); ++index) {
-    std::vector<std::uint64_t> violations(resolvedPnrViolationKindCount, 0);
-    const std::uint64_t traversal = index == 0 ? 3 : 8;
-    ObjectiveVector objective = objectiveProgram->makeVector();
-    if (llvm::Error error = objectiveProgram->evaluate(
-            {violations, {&traversal, 1}}, objective))
-      return std::move(error);
-    objectives.push_back({candidates->artifacts[index], std::move(objective)});
-  }
-  return CompletedPromotionAcquisition{{}, std::move(objectives)};
+  return CompletedPromotionAcquisition{};
 }
 
 void registerOwners() {
@@ -233,9 +218,9 @@ void exerciseOrderedTypedUseDef() {
   std::vector<DsePlanNodeDefinition> nodes;
   nodes.push_back(makeNode(sourceGenerator.reference(),
                            {ExactPlanArtifacts{{source, source}}}, digest));
-  nodes.push_back(makePromoteNode(
-      objectiveAcquisition.reference(), PlanOutputRef{0, 0}, digest,
-      TopKSelection{0, 1}, resolvedBuiltinObjectiveCatalogs()));
+  nodes.push_back(makePromoteNode(objectiveAcquisition.reference(),
+                                  PlanOutputRef{0, 0}, digest,
+                                  AllPassingSelection{}));
   ResolvedDsePlan plan = take(ResolvedDsePlan::get(std::move(nodes)));
   const auto &generate = std::get<ResolvedGeneratePlanNode>(plan.nodes()[0]);
   const auto &promote = std::get<ResolvedPromotePlanNode>(plan.nodes()[1]);
@@ -270,8 +255,9 @@ void exerciseOrderedTypedUseDef() {
       completed->resolve(PlanOutputRef{1, 0});
   if (generated.size() != 2 ||
       generated.front() != makeReference(candidateSchema, 0x22) ||
-      selected.size() != 1 ||
+      selected.size() != 2 ||
       selected.front() != makeReference(candidateSchema, 0x22) ||
+      selected.back() != makeReference(candidateSchema, 0x31) ||
       !completed->resolve(PlanOutputRef{1, 1}).empty())
     fail("mixed execution did not canonicalize and select its candidates");
 

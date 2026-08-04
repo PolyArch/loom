@@ -7,14 +7,31 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <system_error>
+#include <tuple>
 
 using namespace loom;
 using namespace loom::dse;
 
+char ObjectiveUnavailableError::ID;
+
+void ObjectiveUnavailableError::log(llvm::raw_ostream &stream) const {
+  stream << "objective_unavailable: " << detail_;
+}
+
+std::error_code ObjectiveUnavailableError::convertToErrorCode() const {
+  return std::make_error_code(std::errc::operation_not_supported);
+}
+
 namespace {
 
 using Wide = unsigned __int128;
+constexpr std::uint64_t decimalLimbBase = UINT64_C(1000000000);
+
+struct SparseDecimalMagnitude final {
+  std::map<std::int64_t, Wide> limbs;
+};
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(
@@ -23,9 +40,7 @@ llvm::Error invalid(const llvm::Twine &detail) {
 }
 
 llvm::Error unavailable(const llvm::Twine &detail) {
-  return llvm::createStringError(
-      std::make_error_code(std::errc::operation_not_supported),
-      "objective_unavailable: " + detail);
+  return llvm::make_error<ObjectiveUnavailableError>(detail.str());
 }
 
 llvm::Error contractFailure(const llvm::Twine &detail) {
@@ -56,6 +71,147 @@ llvm::Expected<std::uint32_t> checkedU32(std::size_t value,
   return static_cast<std::uint32_t>(value);
 }
 
+Wide signedMagnitude(std::int64_t value) {
+  if (value >= 0)
+    return static_cast<std::uint64_t>(value);
+  return static_cast<std::uint64_t>(-(value + 1)) + 1;
+}
+
+void addMonomial(SparseDecimalMagnitude &value, Wide coefficient,
+                 std::int64_t exponent) {
+  if (coefficient == 0)
+    return;
+  std::int64_t limb = exponent / 9;
+  int remainder = static_cast<int>(exponent % 9);
+  if (remainder < 0) {
+    remainder += 9;
+    --limb;
+  }
+  std::uint64_t factor = 1;
+  for (int index = 0; index != remainder; ++index)
+    factor *= 10;
+  while (coefficient != 0) {
+    const Wide digit = coefficient % decimalLimbBase;
+    coefficient /= decimalLimbBase;
+    value.limbs[limb++] += digit * factor;
+  }
+}
+
+void normalize(SparseDecimalMagnitude &value) {
+  for (auto current = value.limbs.begin(); current != value.limbs.end();
+       ++current) {
+    const Wide carry = current->second / decimalLimbBase;
+    current->second %= decimalLimbBase;
+    if (carry != 0)
+      value.limbs[current->first + 1] += carry;
+  }
+  for (auto current = value.limbs.begin(); current != value.limbs.end();) {
+    if (current->second == 0)
+      current = value.limbs.erase(current);
+    else
+      ++current;
+  }
+}
+
+int compareSparse(SparseDecimalMagnitude left, SparseDecimalMagnitude right) {
+  normalize(left);
+  normalize(right);
+  auto leftIt = left.limbs.rbegin();
+  auto rightIt = right.limbs.rbegin();
+  while (leftIt != left.limbs.rend() || rightIt != right.limbs.rend()) {
+    if (rightIt == right.limbs.rend() ||
+        (leftIt != left.limbs.rend() && leftIt->first > rightIt->first))
+      return 1;
+    if (leftIt == left.limbs.rend() || rightIt->first > leftIt->first)
+      return -1;
+    if (leftIt->second != rightIt->second)
+      return leftIt->second < rightIt->second ? -1 : 1;
+    ++leftIt;
+    ++rightIt;
+  }
+  return 0;
+}
+
+void addScalar(SparseDecimalMagnitude &positive,
+               SparseDecimalMagnitude &negative,
+               const ResolvedObjectiveScalar &scalar, bool negate,
+               Wide multiplier = 1) {
+  bool isNegative = false;
+  Wide magnitude = 0;
+  std::int64_t exponent = 0;
+  if (const auto *integer = std::get_if<ResolvedObjectiveInteger>(&scalar)) {
+    isNegative = integer->negative;
+    magnitude = integer->magnitude;
+  } else {
+    const auto &decimal = std::get<ResolvedObjectiveDecimal>(scalar);
+    isNegative = decimal.coefficient < 0;
+    magnitude = signedMagnitude(decimal.coefficient);
+    exponent = decimal.base10Exponent;
+  }
+  isNegative ^= negate;
+  addMonomial(isNegative ? negative : positive, magnitude * multiplier,
+              exponent);
+}
+
+int compareAffine(const ResolvedObjectiveScalar &source,
+                  const ResolvedObjectiveScalar &origin,
+                  const ResolvedObjectiveScalar &quantum, Wide multiplier) {
+  SparseDecimalMagnitude positive;
+  SparseDecimalMagnitude negative;
+  addScalar(positive, negative, source, false);
+  addScalar(positive, negative, origin, true);
+  addScalar(positive, negative, quantum, true, multiplier);
+  return compareSparse(std::move(positive), std::move(negative));
+}
+
+llvm::Expected<std::uint64_t>
+quantize(const ResolvedObjectiveScalar &source,
+         const ResolvedObjectiveScalar &originValue,
+         const ResolvedObjectiveScalar &quantumValue, std::uint64_t lowerIndex,
+         std::uint64_t upperIndex) {
+  if (source.index() != originValue.index())
+    return contractFailure("source and quantization domains differ");
+
+  if (const auto *sourceInteger =
+          std::get_if<ResolvedObjectiveInteger>(&source)) {
+    const auto &origin = std::get<ResolvedObjectiveInteger>(originValue);
+    const auto &quantum = std::get<ResolvedObjectiveInteger>(quantumValue);
+    if (!sourceInteger->negative && !origin.negative && !quantum.negative) {
+      if (sourceInteger->magnitude < origin.magnitude)
+        return contractFailure("source value is below quantization origin");
+      const std::uint64_t index =
+          (sourceInteger->magnitude - origin.magnitude) / quantum.magnitude;
+      if (index < lowerIndex || index > upperIndex)
+        return contractFailure("source value is outside quantization bounds");
+      return index;
+    }
+  }
+
+  if (compareAffine(source, originValue, quantumValue, 0) < 0)
+    return contractFailure("source value is below quantization origin");
+  const Wide beyondUpper = static_cast<Wide>(upperIndex) + 1;
+  if (compareAffine(source, originValue, quantumValue, beyondUpper) >= 0)
+    return contractFailure("source value is outside quantization bounds");
+
+  std::uint64_t lower = 0;
+  std::uint64_t upper = upperIndex;
+  while (lower < upper) {
+    const std::uint64_t midpoint =
+        lower + (upper - lower) / 2 + (upper - lower) % 2;
+    if (compareAffine(source, originValue, quantumValue, midpoint) >= 0)
+      lower = midpoint;
+    else
+      upper = midpoint - 1;
+  }
+  if (lower < lowerIndex)
+    return contractFailure("source value is outside quantization bounds");
+  return lower;
+}
+
+auto metricKey(const EvaluationMetricObjectiveValue &value) {
+  return std::tie(value.evidenceObligationTemplate, value.metricRequestOrdinal);
+}
+
 } // namespace
 
 llvm::Expected<ObjectiveProgram>
@@ -66,10 +222,9 @@ ObjectiveProgram::get(const ResolvedObjectiveCatalogs &catalogs) {
   ObjectiveProgram result;
   result.dimensions_.reserve(catalogs.dimensions.size());
   for (const ResolvedObjectiveDimension &dimension : catalogs.dimensions) {
-    result.dimensions_.push_back({dimension.sourceKind, dimension.sourceOrdinal,
-                                  dimension.direction, dimension.origin,
-                                  dimension.quantum, dimension.lowerIndex,
-                                  dimension.upperIndex});
+    result.dimensions_.push_back({dimension.source, dimension.direction,
+                                  dimension.origin, dimension.quantum,
+                                  dimension.lowerIndex, dimension.upperIndex});
   }
 
   const Wide wideMaximum = ~static_cast<Wide>(0);
@@ -116,31 +271,63 @@ llvm::Error ObjectiveProgram::evaluate(ObjectiveSourceValues sources,
                                        ObjectiveVector &result) const {
   if (result.codes_.size() != dimensions_.size())
     return invalid("ObjectiveVector has the wrong dimension count");
+  if (!llvm::is_sorted(sources.evaluationMetrics,
+                       [](const EvaluationMetricObjectiveValue &left,
+                          const EvaluationMetricObjectiveValue &right) {
+                         return metricKey(left) < metricKey(right);
+                       }) ||
+      std::adjacent_find(sources.evaluationMetrics.begin(),
+                         sources.evaluationMetrics.end(),
+                         [](const EvaluationMetricObjectiveValue &left,
+                            const EvaluationMetricObjectiveValue &right) {
+                           return metricKey(left) == metricKey(right);
+                         }) != sources.evaluationMetrics.end())
+    return invalid("Evaluation metric objective values are not canonical");
 
   for (std::size_t ordinal = 0; ordinal != dimensions_.size(); ++ordinal) {
     const CompiledDimension &dimension = dimensions_[ordinal];
-    llvm::ArrayRef<std::uint64_t> ownerValues;
-    switch (dimension.sourceKind) {
-    case ResolvedObjectiveSourceKind::MappingViolation:
-      ownerValues = sources.mappingViolations;
-      break;
-    case ResolvedObjectiveSourceKind::MappingMeasure:
-      ownerValues = sources.mappingMeasures;
-      break;
+    ResolvedObjectiveScalar source = resolvedObjectiveInteger(0);
+    if (const auto *violation =
+            std::get_if<ResolvedMappingViolationObjectiveSource>(
+                &dimension.source)) {
+      const std::uint32_t sourceOrdinal =
+          static_cast<std::uint32_t>(violation->kind);
+      if (sourceOrdinal >= sources.mappingViolations.size())
+        return unavailable("required source ordinal is absent");
+      source =
+          resolvedObjectiveInteger(sources.mappingViolations[sourceOrdinal]);
+    } else if (const auto *measure =
+                   std::get_if<ResolvedMappingMeasureObjectiveSource>(
+                       &dimension.source)) {
+      if (measure->ordinal >= sources.mappingMeasures.size())
+        return unavailable("required source ordinal is absent");
+      source =
+          resolvedObjectiveInteger(sources.mappingMeasures[measure->ordinal]);
+    } else {
+      const auto &metric =
+          std::get<ResolvedEvaluationMetricObjectiveSource>(dimension.source);
+      EvaluationMetricObjectiveValue key{metric.evidenceObligationTemplate,
+                                         metric.metricRequestOrdinal,
+                                         resolvedObjectiveInteger(0)};
+      auto found =
+          llvm::lower_bound(sources.evaluationMetrics, key,
+                            [](const EvaluationMetricObjectiveValue &left,
+                               const EvaluationMetricObjectiveValue &right) {
+                              return metricKey(left) < metricKey(right);
+                            });
+      if (found == sources.evaluationMetrics.end() ||
+          metricKey(*found) != metricKey(key))
+        return unavailable("required Evaluation metric is absent");
+      source = found->value;
     }
-    if (dimension.sourceOrdinal >= ownerValues.size())
-      return unavailable("required source ordinal is absent");
-
-    const std::uint64_t source = ownerValues[dimension.sourceOrdinal];
-    if (source < dimension.origin)
-      return contractFailure("source value is below quantization origin");
-    const std::uint64_t index = (source - dimension.origin) / dimension.quantum;
-    if (index < dimension.lowerIndex || index > dimension.upperIndex)
-      return contractFailure("source value is outside quantization bounds");
+    auto index = quantize(source, dimension.origin, dimension.quantum,
+                          dimension.lowerIndex, dimension.upperIndex);
+    if (!index)
+      return index.takeError();
     result.codes_[ordinal] =
         dimension.direction == ResolvedObjectiveDirection::Minimize
-            ? index - dimension.lowerIndex
-            : dimension.upperIndex - index;
+            ? *index - dimension.lowerIndex
+            : dimension.upperIndex - *index;
   }
   return llvm::Error::success();
 }

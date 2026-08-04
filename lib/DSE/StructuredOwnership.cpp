@@ -666,7 +666,7 @@ generateAndPromoteStructuredOwnership(
       return functionalGate.takeError();
     auto semanticallyPromoted = promoteCandidates(
         *semanticCandidateSet, *functionalCandidateRole, functionalEvidence,
-        *functionalGate, {}, AllPassingSelection{}, nullptr, artifactStore);
+        *functionalGate, AllPassingSelection{}, nullptr, artifactStore);
     if (!semanticallyPromoted)
       return semanticallyPromoted.takeError();
     if (const auto *incomplete =

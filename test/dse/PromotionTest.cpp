@@ -1,16 +1,22 @@
 #include "DSE/Promotion.h"
 
 #include "Common/Artifact.h"
+#include "Common/ArtifactStore.h"
+#include "Common/ResolvedConfig.h"
 #include "Common/ResolvedPnrPolicy.h"
 #include "Evaluation/Metric.h"
+#include "Evaluation/ModelDescriptor.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,6 +53,114 @@ ArtifactRootReference makeReference(std::uint8_t fill) {
   bytes.fill(fill);
   return {"loom.test.promotion_candidate", SchemaVersion{1, 0},
           take(ArtifactIdentity::fromBytes(bytes))};
+}
+
+constexpr ArtifactSchemaDescriptor evidenceCandidateSchema{
+    "loom.test.promotion_evidence_candidate", SchemaVersion{1, 0}};
+constexpr EvaluationCaseKind evidenceCaseKind(0x7fff3000);
+constexpr EvaluationModelKind evidenceModelKind(0x7fff3000);
+constexpr CaseSubjectRoleRef evidenceCandidateRole(0);
+
+EvaluationCaseSignatureRef evidenceSignatureRef() {
+  return llvm::cantFail(EvaluationCaseSignatureRef::get(
+      evaluationSchemaVersion(), evidenceCaseKind));
+}
+
+const ArtifactSchemaDescriptor *const evidenceCandidateSchemas[] = {
+    &evidenceCandidateSchema};
+const CaseSubjectRoleDescriptor evidenceSubjectRoles[] = {
+    {evidenceCandidateRole, "candidate", SubjectRoleCardinality::ExactlyOne,
+     evidenceCandidateSchemas, nullptr}};
+const EvaluationCaseSignatureDescriptor evidenceCaseSignature{
+    evidenceCaseKind,
+    "promotion_evidence_case",
+    "One exact candidate ranked only through persistent Evaluation Evidence.",
+    evidenceSubjectRoles,
+    ArtifactRequirement::Forbidden,
+    {},
+    ArtifactRequirement::Forbidden,
+    {},
+    nullptr,
+    AbsentReferenceCycle{},
+    {}};
+
+struct EmptyPromotionModelConfig final {};
+
+llvm::ArrayRef<std::uint8_t> promotionConfigSchema() {
+  static constexpr llvm::StringLiteral descriptor =
+      "loom.test.promotion.model_config.1.0";
+  return {reinterpret_cast<const std::uint8_t *>(descriptor.data()),
+          descriptor.size()};
+}
+
+llvm::Expected<OwnerValue> projectPromotionConfig(const ResolvedConfig &) {
+  return OwnerValue::get(EmptyPromotionModelConfig{});
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodePromotionConfig(const OwnerValue &value) {
+  if (!value.getIf<EmptyPromotionModelConfig>())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "promotion config has the wrong type");
+  return std::vector<std::uint8_t>{};
+}
+
+llvm::Expected<OwnerValue>
+adoptPromotionConfig(llvm::ArrayRef<std::uint8_t> bytes,
+                     const ComponentViewDigest &) {
+  if (!bytes.empty())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "promotion config is not empty");
+  return OwnerValue::get(EmptyPromotionModelConfig{});
+}
+
+const ScopeFormRef promotionScopeForms[] = {ScopeFormRef(0)};
+const MetricCapability promotionMetricCapabilities[] = {
+    {MetricKind::Runtime, promotionScopeForms, allObservationFormsMask()}};
+const EvaluationModelDescriptor promotionModelDescriptor{
+    evidenceModelKind,
+    "promotion_evidence_model",
+    "loom.test.promotion.evidence_model.v1",
+    evidenceSignatureRef(),
+    {},
+    promotionMetricCapabilities,
+    {},
+    {},
+    {},
+    {promotionConfigSchema(), &projectPromotionConfig, &encodePromotionConfig,
+     &adoptPromotionConfig},
+    {},
+    EvaluationExecutionMethod::Analytic,
+    {},
+    DeterminismContract::Deterministic,
+    {}};
+
+PromotionEvidence makeRuntimeEvidence(const ArtifactRootReference &candidate,
+                                      MetricObservationValue observation,
+                                      const ArtifactStore &store) {
+  CaseArtifactResolution resolution =
+      take(CaseArtifactResolution::get({{candidate, {}}}));
+  EvaluationSubjectBindings subjects = take(
+      EvaluationSubjectBindings::get({{evidenceCandidateRole, {candidate}}}));
+  EvaluationCase evaluationCase = take(
+      EvaluationCase::get(evidenceSignatureRef(), std::move(subjects),
+                          std::nullopt, std::nullopt, {}, resolution, store));
+  MetricRequest metric = take(MetricRequest::get(
+      {MetricKind::Runtime, EvaluationScope{ScopeFormRef(0), {}}}, {},
+      evaluationCase, resolution, store));
+  ResolvedModelBinding model = take(ResolvedModelBinding::project(
+      promotionModelDescriptor.reference(), {}, defaultResolvedConfig()));
+  EvaluationRequest request = take(EvaluationRequest::get(
+      evaluationCase, {metric}, {}, std::move(model), 0, resolution, store));
+  take(publishEvaluationRequest(request, store));
+  EvaluationEvidence evidence = take(EvaluationEvidence::get(
+      request, {},
+      CompletedEvidence{{MetricResult{UncertaintyKind::ExactWithinModel,
+                                      std::move(observation),
+                                      {}}},
+                        {}},
+      resolution, store));
+  return PromotionEvidence(std::move(request), std::move(evidence));
 }
 
 void metricGateUsesRepresentedSetProof() {
@@ -113,7 +227,7 @@ void paretoRetainsEveryNondominatedCandidate() {
     std::vector<std::uint64_t> violations(resolvedPnrViolationKindCount, 0);
     violations[0] = violation;
     ObjectiveVector vector = program.makeVector();
-    requireSuccess(program.evaluate({violations, {&traversal, 1}}, vector));
+    requireSuccess(program.evaluate({violations, {&traversal, 1}, {}}, vector));
     return CandidateObjectiveVector{candidate, std::move(vector)};
   };
   std::vector<CandidateObjectiveVector> objectives;
@@ -131,11 +245,69 @@ void paretoRetainsEveryNondominatedCandidate() {
           "Pareto selection did not return the canonical nondominated set");
 }
 
+void promotionDerivesObjectivesOnlyFromPointEvidence() {
+  requireSuccess(registerEvaluationCaseSignature(evidenceCaseSignature));
+  requireSuccess(registerEvaluationModelDescriptor(promotionModelDescriptor));
+  llvm::SmallString<128> storePath;
+  if (std::error_code error = llvm::sys::fs::createUniqueDirectory(
+          "loom-promotion-objective", storePath))
+    fail(error.message());
+  ArtifactStore store(storePath);
+  const auto putCandidate = [&](std::uint8_t byte) {
+    ArtifactIdentity identity = take(
+        store.put(evidenceCandidateSchema,
+                  CanonicalSemanticBytes(std::vector<std::uint8_t>{byte})));
+    return ArtifactRootReference{evidenceCandidateSchema.identity.str(),
+                                 evidenceCandidateSchema.version, identity};
+  };
+  const ArtifactRootReference faster = putCandidate(0x11);
+  const ArtifactRootReference slower = putCandidate(0x22);
+  CandidateSet candidates =
+      take(CandidateSet::get(evidenceCandidateSchema, {slower, faster}));
+
+  ResolvedObjectiveCatalogs catalogs;
+  catalogs.dimensions = {{ResolvedEvaluationMetricObjectiveSource{0, 0},
+                          ResolvedObjectiveDirection::Minimize,
+                          resolvedObjectiveDecimal(0, 0),
+                          resolvedObjectiveDecimal(1, 0), 0, 100}};
+  catalogs.weightedLevels = {{{{0, 1}}}};
+  catalogs.totalOrderings = {{{0}}};
+  ObjectiveProgram program = take(ObjectiveProgram::get(catalogs));
+  QualityGatePolicy gate = take(QualityGatePolicy::get({}));
+
+  PromotionEvidence fastEvidence = makeRuntimeEvidence(
+      faster, PointObservation{take(DecimalValue::get(3, 0))}, store);
+  PromotionEvidence slowEvidence = makeRuntimeEvidence(
+      slower, PointObservation{take(DecimalValue::get(8, 0))}, store);
+  PromotionOutcome promoted = take(promoteCandidates(
+      candidates, evidenceCandidateRole, {slowEvidence, fastEvidence}, gate,
+      TopKSelection{0, 1}, &program, store));
+  const auto *selection = std::get_if<CompletedSelection>(&promoted);
+  require(selection &&
+              selection->selected == std::vector<ArtifactRootReference>{faster},
+          "Promotion did not derive TopK from exact Evidence metrics");
+
+  PromotionEvidence intervalEvidence =
+      makeRuntimeEvidence(slower,
+                          IntervalObservation{take(DecimalValue::get(7, 0)),
+                                              take(DecimalValue::get(9, 0))},
+                          store);
+  PromotionOutcome unavailable = take(promoteCandidates(
+      candidates, evidenceCandidateRole, {fastEvidence, intervalEvidence}, gate,
+      TopKSelection{0, 1}, &program, store));
+  const auto *incomplete = std::get_if<IncompleteSelection>(&unavailable);
+  require(incomplete && incomplete->reason ==
+                            IncompleteSelectionReason::ObjectiveUnavailable,
+          "Promotion assigned a numeric value to non-Point Evidence");
+  llvm::sys::fs::remove_directories(storePath);
+}
+
 } // namespace
 
 int main() {
   metricGateUsesRepresentedSetProof();
   indeterminateAtomPrecedesBooleanSelection();
   paretoRetainsEveryNondominatedCandidate();
+  promotionDerivesObjectivesOnlyFromPointEvidence();
   return 0;
 }

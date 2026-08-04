@@ -220,7 +220,6 @@ llvm::Error registerPromotionAcquisitionProvider(
 
 llvm::Expected<PromotionAcquisitionOutcome>
 invokePromotionAcquisition(const ResolvedPromotionAcquisitionBinding &binding,
-                           const ObjectiveProgram *objectiveProgram,
                            const ArtifactStore &store) {
   if (!binding.descriptorRef().descriptor())
     return invalid("binding references an unregistered descriptor");
@@ -241,7 +240,7 @@ invokePromotionAcquisition(const ResolvedPromotionAcquisitionBinding &binding,
     return PromotionAcquisitionOutcome{IncompletePromotionAcquisition{
         PromotionAcquisitionIncompleteReason::ProviderUnavailable, {}}};
 
-  auto outcome = acquire(binding, objectiveProgram, store);
+  auto outcome = acquire(binding, store);
   if (!outcome)
     return outcome.takeError();
   if (auto *incomplete =

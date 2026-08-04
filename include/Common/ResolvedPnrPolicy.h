@@ -134,10 +134,74 @@ struct ResolvedPnrTemporaryViolationPolicy final {
   std::vector<ResolvedPnrViolationKind> admitted;
 };
 
-enum class ResolvedObjectiveSourceKind : std::uint32_t {
-  MappingViolation,
-  MappingMeasure,
+struct ResolvedMappingViolationObjectiveSource final {
+  ResolvedPnrViolationKind kind;
+
+  friend bool operator==(ResolvedMappingViolationObjectiveSource lhs,
+                         ResolvedMappingViolationObjectiveSource rhs) {
+    return lhs.kind == rhs.kind;
+  }
 };
+
+struct ResolvedMappingMeasureObjectiveSource final {
+  std::uint32_t ordinal;
+
+  friend bool operator==(ResolvedMappingMeasureObjectiveSource lhs,
+                         ResolvedMappingMeasureObjectiveSource rhs) {
+    return lhs.ordinal == rhs.ordinal;
+  }
+};
+
+struct ResolvedEvaluationMetricObjectiveSource final {
+  std::uint32_t evidenceObligationTemplate;
+  std::uint64_t metricRequestOrdinal;
+
+  friend bool operator==(ResolvedEvaluationMetricObjectiveSource lhs,
+                         ResolvedEvaluationMetricObjectiveSource rhs) {
+    return lhs.evidenceObligationTemplate == rhs.evidenceObligationTemplate &&
+           lhs.metricRequestOrdinal == rhs.metricRequestOrdinal;
+  }
+};
+
+using ResolvedObjectiveScalarSource =
+    std::variant<ResolvedMappingViolationObjectiveSource,
+                 ResolvedMappingMeasureObjectiveSource,
+                 ResolvedEvaluationMetricObjectiveSource>;
+
+struct ResolvedObjectiveInteger final {
+  bool negative;
+  std::uint64_t magnitude;
+
+  friend bool operator==(ResolvedObjectiveInteger lhs,
+                         ResolvedObjectiveInteger rhs) {
+    return lhs.negative == rhs.negative && lhs.magnitude == rhs.magnitude;
+  }
+};
+
+struct ResolvedObjectiveDecimal final {
+  std::int64_t coefficient;
+  std::int64_t base10Exponent;
+
+  friend bool operator==(ResolvedObjectiveDecimal lhs,
+                         ResolvedObjectiveDecimal rhs) {
+    return lhs.coefficient == rhs.coefficient &&
+           lhs.base10Exponent == rhs.base10Exponent;
+  }
+};
+
+using ResolvedObjectiveScalar =
+    std::variant<ResolvedObjectiveInteger, ResolvedObjectiveDecimal>;
+
+inline ResolvedObjectiveScalar resolvedObjectiveInteger(std::uint64_t magnitude,
+                                                        bool negative = false) {
+  return ResolvedObjectiveInteger{negative && magnitude != 0, magnitude};
+}
+
+inline ResolvedObjectiveScalar
+resolvedObjectiveDecimal(std::int64_t coefficient,
+                         std::int64_t base10Exponent) {
+  return ResolvedObjectiveDecimal{coefficient, base10Exponent};
+}
 
 enum class ResolvedObjectiveDirection : std::uint32_t {
   Minimize,
@@ -145,11 +209,10 @@ enum class ResolvedObjectiveDirection : std::uint32_t {
 };
 
 struct ResolvedObjectiveDimension final {
-  ResolvedObjectiveSourceKind sourceKind;
-  std::uint32_t sourceOrdinal;
+  ResolvedObjectiveScalarSource source;
   ResolvedObjectiveDirection direction;
-  std::uint64_t origin;
-  std::uint64_t quantum;
+  ResolvedObjectiveScalar origin;
+  ResolvedObjectiveScalar quantum;
   std::uint64_t lowerIndex;
   std::uint64_t upperIndex;
 };

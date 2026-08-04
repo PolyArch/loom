@@ -38,6 +38,21 @@ bool containsCandidate(const CandidateSet &candidateSet,
                             artifactRootReferenceLess);
 }
 
+std::uint64_t signedMagnitude(std::int64_t value) {
+  if (value >= 0)
+    return static_cast<std::uint64_t>(value);
+  return static_cast<std::uint64_t>(-(value + 1)) + 1;
+}
+
+ResolvedObjectiveScalar objectiveScalar(const evaluation::MetricValue &value) {
+  if (const auto *integer = std::get_if<evaluation::IntegerValue>(&value))
+    return resolvedObjectiveInteger(signedMagnitude(integer->value()),
+                                    integer->value() < 0);
+  const auto decimal = std::get<evaluation::DecimalValue>(value);
+  return resolvedObjectiveDecimal(decimal.coefficient(),
+                                  decimal.base10Exponent());
+}
+
 int compareMetricValues(const evaluation::MetricValue &lhs,
                         const evaluation::MetricValue &rhs) {
   assert(lhs.index() == rhs.index() &&
@@ -354,6 +369,8 @@ llvm::StringRef toString(IncompleteSelectionReason reason) {
     return "cancelled_or_timeout_evidence";
   case IncompleteSelectionReason::NonComparableEvidence:
     return "non_comparable_evidence";
+  case IncompleteSelectionReason::ObjectiveUnavailable:
+    return "objective_unavailable";
   }
   llvm_unreachable("unknown IncompleteSelectionReason");
 }
@@ -490,7 +507,6 @@ promoteCandidates(const CandidateSet &candidateSet,
                   evaluation::CaseSubjectRoleRef candidateRole,
                   llvm::ArrayRef<PromotionEvidence> evidence,
                   const QualityGatePolicy &qualityGate,
-                  llvm::ArrayRef<CandidateObjectiveVector> objectives,
                   const CandidateSelectionPolicy &selection,
                   const ObjectiveProgram *objectiveProgram,
                   const ArtifactStore &artifactStore) {
@@ -644,17 +660,50 @@ promoteCandidates(const CandidateSet &candidateSet,
     return PromotionOutcome{IncompleteSelection{
         incomplete->first, incomplete->second, std::move(retainedEvidence)}};
 
+  std::vector<CandidateObjectiveVector> objectives;
   if (!std::holds_alternative<AllPassingSelection>(selection)) {
-    std::map<ArtifactRootReference, std::uint8_t,
-             decltype(&artifactRootReferenceLess)>
-        available(&artifactRootReferenceLess);
-    for (const CandidateObjectiveVector &objective : objectives)
-      available.emplace(objective.candidate, 0);
-    for (const ArtifactRootReference &candidate : gateQualified)
-      if (available.find(candidate) == available.end())
-        return PromotionOutcome{IncompleteSelection{
-            IncompleteSelectionReason::NonComparableEvidence, candidate,
-            std::move(retainedEvidence)}};
+    objectives.reserve(gateQualified.size());
+    for (const ArtifactRootReference &candidate : gateQualified) {
+      std::vector<EvaluationMetricObjectiveValue> metrics;
+      auto record = records.lower_bound(EvidenceKey{candidate, 0});
+      while (record != records.end() && record->first.candidate == candidate) {
+        const PromotionEvidence &evidenceRecord = *record->second;
+        const auto *completed = std::get_if<evaluation::CompletedEvidence>(
+            &evidenceRecord.evidence.outcome());
+        if (completed) {
+          for (std::size_t ordinal = 0;
+               ordinal != completed->metricResults.size(); ++ordinal) {
+            const auto *point = std::get_if<evaluation::PointObservation>(
+                &completed->metricResults[ordinal].observation);
+            if (!point)
+              continue;
+            metrics.push_back({record->first.obligationTemplate,
+                               static_cast<std::uint64_t>(ordinal),
+                               objectiveScalar(point->value)});
+          }
+        }
+        ++record;
+      }
+      ObjectiveVector vector = objectiveProgram->makeVector();
+      llvm::Error evaluationError =
+          objectiveProgram->evaluate({{}, {}, metrics}, vector);
+      if (evaluationError) {
+        bool unavailable = false;
+        llvm::Error remaining = llvm::handleErrors(
+            std::move(evaluationError),
+            [&](const ObjectiveUnavailableError &) -> llvm::Error {
+              unavailable = true;
+              return llvm::Error::success();
+            });
+        if (remaining)
+          return std::move(remaining);
+        if (unavailable)
+          return PromotionOutcome{IncompleteSelection{
+              IncompleteSelectionReason::ObjectiveUnavailable, candidate,
+              std::move(retainedEvidence)}};
+      }
+      objectives.push_back({candidate, std::move(vector)});
+    }
   }
 
   auto selected = applyCandidateSelection(

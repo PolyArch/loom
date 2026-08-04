@@ -158,7 +158,6 @@ private:
 
 struct CompletedPromotionAcquisition final {
   std::vector<PromotionEvidence> evidence;
-  std::vector<CandidateObjectiveVector> objectives;
 };
 
 enum class PromotionAcquisitionIncompleteReason : std::uint8_t {
@@ -179,7 +178,7 @@ using PromotionAcquisitionOutcome =
 using PromotionAcquisitionProviderFunction =
     llvm::Expected<PromotionAcquisitionOutcome> (*)(
         const ResolvedPromotionAcquisitionBinding &binding,
-        const ObjectiveProgram *objectiveProgram, const ArtifactStore &store);
+        const ArtifactStore &store);
 
 struct PromotionAcquisitionProvider final {
   PromotionAcquisitionDescriptorRef descriptor;
@@ -191,7 +190,6 @@ llvm::Error registerPromotionAcquisitionProvider(
 
 llvm::Expected<PromotionAcquisitionOutcome>
 invokePromotionAcquisition(const ResolvedPromotionAcquisitionBinding &binding,
-                           const ObjectiveProgram *objectiveProgram,
                            const ArtifactStore &store);
 
 } // namespace loom::dse

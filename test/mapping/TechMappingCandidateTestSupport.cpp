@@ -91,18 +91,21 @@ loom::ResolvedObjectiveCatalogs availableSpatialObjectiveCatalogs() {
   loom::ResolvedObjectiveCatalogs catalogs;
   constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
   catalogs.dimensions = {
-      {loom::ResolvedObjectiveSourceKind::MappingViolation,
-       static_cast<std::uint32_t>(
-           loom::ResolvedPnrViolationKind::UnroutedObligation),
-       loom::ResolvedObjectiveDirection::Minimize, 0, 1, 0, maximum},
-      {loom::ResolvedObjectiveSourceKind::MappingViolation,
-       static_cast<std::uint32_t>(
-           loom::ResolvedPnrViolationKind::CapacityOveruse),
-       loom::ResolvedObjectiveDirection::Minimize, 0, 1, 0, maximum},
-      {loom::ResolvedObjectiveSourceKind::MappingMeasure,
-       static_cast<std::uint32_t>(
-           loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim),
-       loom::ResolvedObjectiveDirection::Minimize, 0, 1, 0, maximum},
+      {loom::ResolvedMappingViolationObjectiveSource{
+           loom::ResolvedPnrViolationKind::UnroutedObligation},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
+       maximum},
+      {loom::ResolvedMappingViolationObjectiveSource{
+           loom::ResolvedPnrViolationKind::CapacityOveruse},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
+       maximum},
+      {loom::ResolvedMappingMeasureObjectiveSource{static_cast<std::uint32_t>(
+           loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim)},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
+       maximum},
   };
   catalogs.weightedLevels = {
       {{{0, 1}, {1, 1}, {2, 1}}},

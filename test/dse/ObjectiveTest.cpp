@@ -54,27 +54,64 @@ void requireRejected(llvm::Error error, llvm::StringRef fragment) {
 void exactAffineQuantizationIsCheckedAndDirected() {
   loom::ResolvedObjectiveCatalogs catalogs;
   catalogs.dimensions = {
-      {loom::ResolvedObjectiveSourceKind::MappingViolation, 0,
-       loom::ResolvedObjectiveDirection::Minimize, 10, 3, 2, 5},
-      {loom::ResolvedObjectiveSourceKind::MappingViolation, 0,
-       loom::ResolvedObjectiveDirection::Maximize, 10, 3, 2, 5},
+      {loom::ResolvedMappingViolationObjectiveSource{
+           loom::ResolvedPnrViolationKind::UnroutedObligation},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(10), loom::resolvedObjectiveInteger(3), 2,
+       5},
+      {loom::ResolvedMappingViolationObjectiveSource{
+           loom::ResolvedPnrViolationKind::UnroutedObligation},
+       loom::ResolvedObjectiveDirection::Maximize,
+       loom::resolvedObjectiveInteger(10), loom::resolvedObjectiveInteger(3), 2,
+       5},
   };
   const loom::dse::ObjectiveProgram program =
       take(loom::dse::ObjectiveProgram::get(catalogs));
   loom::dse::ObjectiveVector vector = program.makeVector();
 
   const std::uint64_t values[] = {20};
-  requireSuccess(program.evaluate({values, {}}, vector));
+  requireSuccess(program.evaluate({values, {}, {}}, vector));
   require(vector.codes() == llvm::ArrayRef<std::uint64_t>({1, 2}),
           "directed affine codes are incorrect");
 
   const std::uint64_t belowOrigin[] = {9};
-  requireRejected(program.evaluate({belowOrigin, {}}, vector),
+  requireRejected(program.evaluate({belowOrigin, {}, {}}, vector),
                   "objective_contract_failure");
   const std::uint64_t aboveUpperBound[] = {28};
-  requireRejected(program.evaluate({aboveUpperBound, {}}, vector),
+  requireRejected(program.evaluate({aboveUpperBound, {}, {}}, vector),
                   "objective_contract_failure");
-  requireRejected(program.evaluate({{}, {}}, vector), "objective_unavailable");
+  requireRejected(program.evaluate({{}, {}, {}}, vector),
+                  "objective_unavailable");
+}
+
+void evaluationDecimalQuantizationIsExactAndSparse() {
+  loom::ResolvedObjectiveCatalogs catalogs;
+  catalogs.dimensions = {
+      {loom::ResolvedEvaluationMetricObjectiveSource{3, 5},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveDecimal(25, -2),
+       loom::resolvedObjectiveDecimal(5, -2), 0, 20},
+      {loom::ResolvedEvaluationMetricObjectiveSource{7, 11},
+       loom::ResolvedObjectiveDirection::Maximize,
+       loom::resolvedObjectiveDecimal(0, 0),
+       loom::resolvedObjectiveDecimal(1, 1000000000), 0, 1},
+  };
+  const loom::dse::ObjectiveProgram program =
+      take(loom::dse::ObjectiveProgram::get(catalogs));
+  loom::dse::ObjectiveVector vector = program.makeVector();
+  const loom::dse::EvaluationMetricObjectiveValue metrics[] = {
+      {3, 5, loom::resolvedObjectiveDecimal(124, -2)},
+      {7, 11, loom::resolvedObjectiveDecimal(1, 1000000000)},
+  };
+  requireSuccess(program.evaluate({{}, {}, metrics}, vector));
+  require(vector.codes() == llvm::ArrayRef<std::uint64_t>({19, 0}),
+          "decimal affine quantization rounded or expanded a huge exponent");
+
+  const loom::dse::EvaluationMetricObjectiveValue missing[] = {
+      {3, 5, loom::resolvedObjectiveDecimal(124, -2)},
+  };
+  requireRejected(program.evaluate({{}, {}, missing}, vector),
+                  "objective_unavailable");
 }
 
 void builtinOrderingEnergyAndParetoUseOneVector() {
@@ -88,14 +125,14 @@ void builtinOrderingEnergyAndParetoUseOneVector() {
   leftViolations[0] = 1;
   const std::uint64_t leftMeasures[] = {0};
   loom::dse::ObjectiveVector left = program.makeVector();
-  requireSuccess(program.evaluate({leftViolations, leftMeasures}, left));
+  requireSuccess(program.evaluate({leftViolations, leftMeasures, {}}, left));
 
   std::vector<std::uint64_t> rightViolations(
       loom::resolvedPnrViolationKindCount, 0);
   const std::uint64_t rightMeasures[] = {
       std::numeric_limits<std::uint64_t>::max()};
   loom::dse::ObjectiveVector right = program.makeVector();
-  requireSuccess(program.evaluate({rightViolations, rightMeasures}, right));
+  requireSuccess(program.evaluate({rightViolations, rightMeasures, {}}, right));
 
   const std::uint8_t leftKey[] = {0};
   const std::uint8_t rightKey[] = {1};
@@ -120,7 +157,7 @@ void builtinOrderingEnergyAndParetoUseOneVector() {
 
   loom::dse::ObjectiveVector zero = program.makeVector();
   const std::uint64_t zeroMeasures[] = {0};
-  requireSuccess(program.evaluate({rightViolations, zeroMeasures}, zero));
+  requireSuccess(program.evaluate({rightViolations, zeroMeasures, {}}, zero));
   require(take(program.comparePareto(zero, left, paretoDimensions)) ==
               loom::dse::ParetoRelation::Dominates,
           "componentwise lower code did not dominate");
@@ -133,10 +170,16 @@ void completeDeclaredLevelDomainMustFitUint128() {
   loom::ResolvedObjectiveCatalogs catalogs;
   const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
   catalogs.dimensions = {
-      {loom::ResolvedObjectiveSourceKind::MappingViolation, 0,
-       loom::ResolvedObjectiveDirection::Minimize, 0, 1, 0, maximum},
-      {loom::ResolvedObjectiveSourceKind::MappingViolation, 1,
-       loom::ResolvedObjectiveDirection::Minimize, 0, 1, 0, maximum},
+      {loom::ResolvedMappingViolationObjectiveSource{
+           loom::ResolvedPnrViolationKind::UnroutedObligation},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
+       maximum},
+      {loom::ResolvedMappingViolationObjectiveSource{
+           loom::ResolvedPnrViolationKind::CapacityOveruse},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
+       maximum},
   };
   catalogs.weightedLevels = {{{{0, maximum}, {1, maximum - 1}}}};
   catalogs.totalOrderings = {{{0}}};
@@ -147,20 +190,16 @@ void completeDeclaredLevelDomainMustFitUint128() {
 void malformedOwnerReferencesFailAtPreflight() {
   loom::ResolvedObjectiveCatalogs stale;
   stale.dimensions = {
-      {loom::ResolvedObjectiveSourceKind::MappingMeasure, 1,
-       loom::ResolvedObjectiveDirection::Minimize, 0, 1, 0, 1},
+      {loom::ResolvedMappingMeasureObjectiveSource{1},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
+       1},
   };
   requireRejected(loom::dse::ObjectiveProgram::get(stale),
                   "Mapping measure source ordinal is out of range");
 
-  stale.dimensions.front().sourceKind =
-      static_cast<loom::ResolvedObjectiveSourceKind>(99);
-  stale.dimensions.front().sourceOrdinal = 0;
-  requireRejected(loom::dse::ObjectiveProgram::get(stale),
-                  "objective source kind is unknown");
-
-  stale.dimensions.front().sourceKind =
-      loom::ResolvedObjectiveSourceKind::MappingMeasure;
+  stale.dimensions.front().source =
+      loom::ResolvedMappingMeasureObjectiveSource{0};
   stale.dimensions.front().direction =
       static_cast<loom::ResolvedObjectiveDirection>(99);
   requireRejected(loom::dse::ObjectiveProgram::get(stale),
@@ -171,6 +210,7 @@ void malformedOwnerReferencesFailAtPreflight() {
 
 int main() {
   exactAffineQuantizationIsCheckedAndDirected();
+  evaluationDecimalQuantizationIsExactAndSparse();
   builtinOrderingEnergyAndParetoUseOneVector();
   completeDeclaredLevelDomainMustFitUint128();
   malformedOwnerReferencesFailAtPreflight();

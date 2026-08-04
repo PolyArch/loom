@@ -184,6 +184,20 @@ llvm::Expected<std::uint64_t> requireU64(const ConfigSyntax *node,
   return value;
 }
 
+llvm::Expected<std::int64_t> requireI64(const ConfigSyntax *node,
+                                        const llvm::Twine &key) {
+  if (node && node->quoted)
+    return diagnostic("config_type_mismatch", key,
+                      "expected integer, got string");
+  auto valueOrErr = requireScalarString(node, key);
+  if (!valueOrErr)
+    return valueOrErr.takeError();
+  std::int64_t value = 0;
+  if (StringRef(*valueOrErr).getAsInteger(10, value))
+    return diagnostic("config_type_mismatch", key, "expected integer");
+  return value;
+}
+
 llvm::Expected<std::uint32_t> requireU32(const ConfigSyntax *node,
                                          const llvm::Twine &key) {
   auto valueOrErr = requireU64(node, key);
@@ -414,16 +428,62 @@ parseHardwareTarget(const ConfigSyntax *node) {
        *temporalMemories, *residentContexts, *gateways, *memoryCapacity}};
 }
 
-llvm::Expected<loom::ResolvedObjectiveSourceKind>
+enum class ParsedObjectiveSourceKind {
+  MappingViolation,
+  MappingMeasure,
+  EvaluationMetric,
+};
+
+llvm::Expected<ParsedObjectiveSourceKind>
 parseObjectiveSourceKind(const ConfigSyntax *node, const llvm::Twine &key) {
   auto valueOrErr = requireScalarString(node, key);
   if (!valueOrErr)
     return valueOrErr.takeError();
   if (*valueOrErr == "mapping_violation")
-    return loom::ResolvedObjectiveSourceKind::MappingViolation;
+    return ParsedObjectiveSourceKind::MappingViolation;
   if (*valueOrErr == "mapping_measure")
-    return loom::ResolvedObjectiveSourceKind::MappingMeasure;
+    return ParsedObjectiveSourceKind::MappingMeasure;
+  if (*valueOrErr == "evaluation_metric")
+    return ParsedObjectiveSourceKind::EvaluationMetric;
   return diagnostic("config_unknown_enum", key, *valueOrErr);
+}
+
+llvm::Expected<loom::ResolvedObjectiveScalar>
+parseObjectiveScalar(const ConfigSyntax *node, const llvm::Twine &key) {
+  if (!node)
+    return diagnostic("config_missing_required_profile", key);
+  if (node->kind == ConfigSyntax::Kind::Mapping) {
+    auto fields =
+        ClosedMapping::parse(node, key, {"coefficient", "base10_exponent"});
+    if (!fields)
+      return fields.takeError();
+    auto coefficient =
+        requireI64(fields->at("coefficient"), key + ".coefficient");
+    auto exponent =
+        requireI64(fields->at("base10_exponent"), key + ".base10_exponent");
+    if (!coefficient)
+      return coefficient.takeError();
+    if (!exponent)
+      return exponent.takeError();
+    return loom::resolvedObjectiveDecimal(*coefficient, *exponent);
+  }
+  if (node->quoted || node->kind != ConfigSyntax::Kind::Scalar)
+    return diagnostic("config_type_mismatch", key,
+                      "expected integer or DecimalValue");
+  const StringRef spelling(node->scalar);
+  if (spelling.starts_with("-")) {
+    auto value = requireI64(node, key);
+    if (!value)
+      return value.takeError();
+    const std::uint64_t magnitude =
+        *value < 0 ? static_cast<std::uint64_t>(-(*value + 1)) + 1
+                   : static_cast<std::uint64_t>(*value);
+    return loom::resolvedObjectiveInteger(magnitude, *value < 0);
+  }
+  auto value = requireU64(node, key);
+  if (!value)
+    return value.takeError();
+  return loom::resolvedObjectiveInteger(*value);
 }
 
 llvm::Expected<loom::ResolvedObjectiveDirection>
@@ -468,30 +528,28 @@ parseObjectiveCatalogs(const ConfigSyntax *node) {
   for (const ConfigSyntax &entry : **dimensionsOrErr) {
     const std::string entryKey =
         (prefix + ".objective_dimensions[" + llvm::Twine(ordinal) + "]").str();
-    auto dimensionOrErr = ClosedMapping::parse(
-        &entry, entryKey,
-        {"source_kind", "source_ordinal", "direction", "origin", "quantum",
-         "lower_index", "upper_index"});
+    auto dimensionOrErr =
+        ClosedMapping::parse(&entry, entryKey,
+                             {"source_kind", "direction", "origin", "quantum",
+                              "lower_index", "upper_index"},
+                             {"source_ordinal", "evidence_obligation_template",
+                              "metric_request_ordinal"});
     if (!dimensionOrErr)
       return dimensionOrErr.takeError();
     auto sourceKind = parseObjectiveSourceKind(
         dimensionOrErr->at("source_kind"), entryKey + ".source_kind");
-    auto sourceOrdinal = requireU32(dimensionOrErr->at("source_ordinal"),
-                                    entryKey + ".source_ordinal");
     auto direction = parseObjectiveDirection(dimensionOrErr->at("direction"),
                                              entryKey + ".direction");
-    auto origin =
-        requireU64(dimensionOrErr->at("origin"), entryKey + ".origin");
-    auto quantum =
-        requireU64(dimensionOrErr->at("quantum"), entryKey + ".quantum");
+    auto origin = parseObjectiveScalar(dimensionOrErr->at("origin"),
+                                       entryKey + ".origin");
+    auto quantum = parseObjectiveScalar(dimensionOrErr->at("quantum"),
+                                        entryKey + ".quantum");
     auto lower = requireU64(dimensionOrErr->at("lower_index"),
                             entryKey + ".lower_index");
     auto upper = requireU64(dimensionOrErr->at("upper_index"),
                             entryKey + ".upper_index");
     if (!sourceKind)
       return sourceKind.takeError();
-    if (!sourceOrdinal)
-      return sourceOrdinal.takeError();
     if (!direction)
       return direction.takeError();
     if (!origin)
@@ -502,8 +560,41 @@ parseObjectiveCatalogs(const ConfigSyntax *node) {
       return lower.takeError();
     if (!upper)
       return upper.takeError();
-    catalogs.dimensions.push_back({*sourceKind, *sourceOrdinal, *direction,
-                                   *origin, *quantum, *lower, *upper});
+    loom::ResolvedObjectiveScalarSource source =
+        loom::ResolvedMappingMeasureObjectiveSource{0};
+    if (*sourceKind == ParsedObjectiveSourceKind::EvaluationMetric) {
+      if (dimensionOrErr->at("source_ordinal"))
+        return diagnostic("config_unknown_key", entryKey + ".source_ordinal");
+      auto obligation =
+          requireU32(dimensionOrErr->at("evidence_obligation_template"),
+                     entryKey + ".evidence_obligation_template");
+      auto metricRequest =
+          requireU64(dimensionOrErr->at("metric_request_ordinal"),
+                     entryKey + ".metric_request_ordinal");
+      if (!obligation)
+        return obligation.takeError();
+      if (!metricRequest)
+        return metricRequest.takeError();
+      source = loom::ResolvedEvaluationMetricObjectiveSource{*obligation,
+                                                             *metricRequest};
+    } else {
+      if (dimensionOrErr->at("evidence_obligation_template") ||
+          dimensionOrErr->at("metric_request_ordinal"))
+        return diagnostic("config_unknown_key", entryKey,
+                          "Evaluation metric source fields");
+      auto sourceOrdinal = requireU32(dimensionOrErr->at("source_ordinal"),
+                                      entryKey + ".source_ordinal");
+      if (!sourceOrdinal)
+        return sourceOrdinal.takeError();
+      if (*sourceKind == ParsedObjectiveSourceKind::MappingViolation)
+        source = loom::ResolvedMappingViolationObjectiveSource{
+            static_cast<loom::ResolvedPnrViolationKind>(*sourceOrdinal)};
+      else
+        source = loom::ResolvedMappingMeasureObjectiveSource{*sourceOrdinal};
+    }
+    catalogs.dimensions.push_back({std::move(source), *direction,
+                                   std::move(*origin), std::move(*quantum),
+                                   *lower, *upper});
     ++ordinal;
   }
 
@@ -1449,14 +1540,15 @@ llvm::json::Object pnrPolicyJson(const loom::ResolvedPnrPolicyConfig &policy) {
       {"evaluation_interaction_bindings", std::move(evaluationBindings)}};
 }
 
-llvm::StringRef objectiveSourceName(loom::ResolvedObjectiveSourceKind source) {
-  switch (source) {
-  case loom::ResolvedObjectiveSourceKind::MappingViolation:
+llvm::StringRef
+objectiveSourceName(const loom::ResolvedObjectiveScalarSource &source) {
+  if (std::holds_alternative<loom::ResolvedMappingViolationObjectiveSource>(
+          source))
     return "mapping_violation";
-  case loom::ResolvedObjectiveSourceKind::MappingMeasure:
+  if (std::holds_alternative<loom::ResolvedMappingMeasureObjectiveSource>(
+          source))
     return "mapping_measure";
-  }
-  llvm_unreachable("all objective source kinds are handled");
+  return "evaluation_metric";
 }
 
 llvm::StringRef
@@ -1465,18 +1557,53 @@ objectiveDirectionName(loom::ResolvedObjectiveDirection direction) {
                                                                  : "maximize";
 }
 
+llvm::json::Value
+objectiveScalarJson(const loom::ResolvedObjectiveScalar &value) {
+  if (const auto *integer =
+          std::get_if<loom::ResolvedObjectiveInteger>(&value)) {
+    if (!integer->negative)
+      return llvm::json::Value(integer->magnitude);
+    if (integer->magnitude == (UINT64_C(1) << 63))
+      return llvm::json::Value(std::numeric_limits<std::int64_t>::min());
+    return llvm::json::Value(-static_cast<std::int64_t>(integer->magnitude));
+  }
+  const auto &decimal = std::get<loom::ResolvedObjectiveDecimal>(value);
+  return llvm::json::Value(
+      llvm::json::Object{{"coefficient", decimal.coefficient},
+                         {"base10_exponent", decimal.base10Exponent}});
+}
+
 llvm::json::Object
 objectiveCatalogsJson(const loom::ResolvedObjectiveCatalogs &catalogs) {
   llvm::json::Array dimensions;
-  for (const loom::ResolvedObjectiveDimension &dimension : catalogs.dimensions)
-    dimensions.push_back(llvm::json::Object{
-        {"source_kind", objectiveSourceName(dimension.sourceKind)},
-        {"source_ordinal", dimension.sourceOrdinal},
+  for (const loom::ResolvedObjectiveDimension &dimension :
+       catalogs.dimensions) {
+    llvm::json::Object object{
+        {"source_kind", objectiveSourceName(dimension.source)},
         {"direction", objectiveDirectionName(dimension.direction)},
-        {"origin", dimension.origin},
-        {"quantum", dimension.quantum},
+        {"origin", objectiveScalarJson(dimension.origin)},
+        {"quantum", objectiveScalarJson(dimension.quantum)},
         {"lower_index", dimension.lowerIndex},
-        {"upper_index", dimension.upperIndex}});
+        {"upper_index", dimension.upperIndex}};
+    if (const auto *violation =
+            std::get_if<loom::ResolvedMappingViolationObjectiveSource>(
+                &dimension.source)) {
+      object.insert(
+          {"source_ordinal", static_cast<std::uint32_t>(violation->kind)});
+    } else if (const auto *measure =
+                   std::get_if<loom::ResolvedMappingMeasureObjectiveSource>(
+                       &dimension.source)) {
+      object.insert({"source_ordinal", measure->ordinal});
+    } else {
+      const auto &metric =
+          std::get<loom::ResolvedEvaluationMetricObjectiveSource>(
+              dimension.source);
+      object.insert(
+          {"evidence_obligation_template", metric.evidenceObligationTemplate});
+      object.insert({"metric_request_ordinal", metric.metricRequestOrdinal});
+    }
+    dimensions.push_back(std::move(object));
+  }
 
   llvm::json::Array levels;
   for (const loom::ResolvedWeightedObjectiveLevel &level :

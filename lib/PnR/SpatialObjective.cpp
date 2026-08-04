@@ -50,15 +50,22 @@ SpatialObjectiveProgram::get(const ResolvedObjectiveCatalogs &catalogs,
   std::uint64_t selectedMeasures = 0;
   const auto violations = mappingViolationDescriptors();
   for (const ResolvedObjectiveDimension &dimension : catalogs.dimensions) {
-    if (dimension.sourceKind == ResolvedObjectiveSourceKind::MappingViolation) {
-      const auto kind =
-          static_cast<ResolvedPnrViolationKind>(dimension.sourceOrdinal);
+    if (const auto *source =
+            std::get_if<ResolvedMappingViolationObjectiveSource>(
+                &dimension.source)) {
+      const auto kind = source->kind;
+      const std::uint32_t ordinal = static_cast<std::uint32_t>(kind);
       if (!spatialMappingViolationAvailable(kind))
-        return unavailable(violations[dimension.sourceOrdinal].spelling);
-      selectedViolations |= UINT64_C(1) << dimension.sourceOrdinal;
+        return unavailable(violations[ordinal].spelling);
+      selectedViolations |= UINT64_C(1) << ordinal;
       continue;
     }
-    selectedMeasures |= UINT64_C(1) << dimension.sourceOrdinal;
+    if (const auto *source = std::get_if<ResolvedMappingMeasureObjectiveSource>(
+            &dimension.source)) {
+      selectedMeasures |= UINT64_C(1) << source->ordinal;
+      continue;
+    }
+    return unavailable("Evaluation metric interaction");
   }
   return SpatialObjectiveProgram(
       std::move(*program), selectedViolations, selectedMeasures,
@@ -85,7 +92,7 @@ llvm::Expected<dse::ObjectiveVector> SpatialObjectiveProgram::evaluate(
           candidate, static_cast<MappingMeasureKind>(ordinal));
 
   dse::ObjectiveVector result = program_.makeVector();
-  if (llvm::Error error = program_.evaluate({violations, measures}, result))
+  if (llvm::Error error = program_.evaluate({violations, measures, {}}, result))
     return std::move(error);
   return result;
 }
