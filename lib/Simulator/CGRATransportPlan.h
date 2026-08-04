@@ -1,0 +1,80 @@
+#ifndef LOOM_LIB_SIMULATOR_CGRATRANSPORTPLAN_H
+#define LOOM_LIB_SIMULATOR_CGRATRANSPORTPLAN_H
+
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/Identity/FabricRefImport.h"
+#include "Mapping/Artifact/MappingArtifact.h"
+
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <vector>
+
+namespace loom::sim::detail {
+
+inline constexpr std::uint64_t invalidCgraTransportOrdinal =
+    std::numeric_limits<std::uint64_t>::max();
+
+enum class CgraTraversalStorageKind : std::uint8_t {
+  None,
+  BufferedFifo,
+  RegisterFifoWrite,
+  RegisterFifoRead,
+};
+
+struct CgraTraversalUsePlan final {
+  ::loom::fabric::FabricUsePatternRef pattern;
+  ::loom::fabric::FabricTraversalActivationGroupView activationGroup;
+};
+
+struct CgraSelectedTraversalPlan final {
+  ::loom::fabric::FabricPhysicalTraversalRef reference;
+  ::loom::fabric::FabricPhysicalTraversalKind kind;
+  CgraTraversalStorageKind storageKind = CgraTraversalStorageKind::None;
+  std::uint32_t storageCapacity = 0;
+  std::uint64_t impliedUseOffset = 0;
+  std::uint32_t impliedUseCount = 0;
+};
+
+struct CgraRouteNodePlan final {
+  std::uint32_t parentOrdinal = std::numeric_limits<std::uint32_t>::max();
+  std::uint64_t incomingTraversalOrdinal = invalidCgraTransportOrdinal;
+};
+
+struct CgraRouteSinkPlan final {
+  ::dataflow::CanonicalGraphConsumerEndpointRef sink;
+  std::uint32_t nodeOrdinal = 0;
+  std::uint64_t localTraversalOrdinal = invalidCgraTransportOrdinal;
+};
+
+struct CgraRoutePlan final {
+  ::dataflow::CanonicalGraphProducerEndpointRef producer;
+  ::dataflow::GraphRef graph;
+  std::uint64_t localTraversalOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t nodeOffset = 0;
+  std::uint32_t nodeCount = 0;
+  std::uint64_t sinkOffset = 0;
+  std::uint32_t sinkCount = 0;
+};
+
+/// Removable dense projection of the exact selected Spatial RouteTrees and
+/// Fabric traversal contracts. Persistent references remain only in this cold
+/// plan; dynamic execution indexes the flat arrays by ordinal.
+struct CgraTransportPlan final {
+  std::vector<CgraSelectedTraversalPlan> traversals;
+  std::vector<CgraTraversalUsePlan> traversalUses;
+  std::vector<CgraRoutePlan> routes;
+  std::vector<CgraRouteNodePlan> routeNodes;
+  std::vector<CgraRouteSinkPlan> routeSinks;
+};
+
+llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ::loom::mapping::SpatialMappingView &spatial);
+
+} // namespace loom::sim::detail
+
+#endif // LOOM_LIB_SIMULATOR_CGRATRANSPORTPLAN_H

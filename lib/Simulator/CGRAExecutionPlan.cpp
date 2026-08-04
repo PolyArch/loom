@@ -372,6 +372,14 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
       static_cast<std::uint64_t>(selectedOwners.size());
   result.summary.claimCount =
       static_cast<std::uint64_t>(result.resources.claims.size());
+  auto transport = freezeCgraTransportPlan(dataflow, fabric, spatial);
+  if (!transport)
+    return transport.takeError();
+  result.transport = std::move(*transport);
+  result.summary.routeTreeCount = result.transport.routes.size();
+  result.summary.routeNodeCount = result.transport.routeNodes.size();
+  result.summary.routeSinkCount = result.transport.routeSinks.size();
+  result.summary.selectedTraversalCount = result.transport.traversals.size();
   return result;
 }
 

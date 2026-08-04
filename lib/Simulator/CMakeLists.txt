@@ -3,6 +3,7 @@ add_mlir_library(LoomSimulator
   CgraComputeRuntime.cpp
   CGRAEventQueue.cpp
   CGRAExecutionPlan.cpp
+  CGRATransportPlan.cpp
   CGRAPhysicalActionRuntime.cpp
   CGRAResourceRuntime.cpp
   DeterministicTranscendental.cpp

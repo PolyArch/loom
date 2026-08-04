@@ -537,7 +537,12 @@ importRouteTree(::mapping::RouteTreeOp record,
   if (!payloadWidth)
     return payloadWidth.takeError();
 
-  SpatialRouteTreeView result{*logicalNet, *rootEndpoint, {}, {}};
+  auto rootLocalTraversal =
+      selectedLocalTraversal(context, *logicalNet, *rootEndpoint);
+  if (!rootLocalTraversal)
+    return rootLocalTraversal.takeError();
+  SpatialRouteTreeView result{
+      *logicalNet, *rootEndpoint, std::move(*rootLocalTraversal), {}, {}};
   std::set<std::vector<std::uint8_t>> endpoints;
   result.nodes.reserve(std::distance(
       record.getBody().front().getOps<::mapping::RouteNodeOp>().begin(),
@@ -609,8 +614,12 @@ importRouteTree(::mapping::RouteTreeOp record,
     if (llvm::Error error = requireTerminalEndpoint(
             context, *sink, result.nodes[attachment.getNodeOrdinal()].endpoint))
       return std::move(error);
-    result.sinks.push_back(
-        SpatialRouteSinkView{*sink, attachment.getNodeOrdinal()});
+    auto localTraversal = selectedLocalTraversal(
+        context, *sink, result.nodes[attachment.getNodeOrdinal()].endpoint);
+    if (!localTraversal)
+      return localTraversal.takeError();
+    result.sinks.push_back(SpatialRouteSinkView{
+        *sink, attachment.getNodeOrdinal(), std::move(*localTraversal)});
     requiredSinks.erase(required);
   }
   if (!requiredSinks.empty())
@@ -1018,26 +1027,13 @@ deriveSelectedHandshakeSelection(const TerminalProjectionContext &context,
     selection.fuCapabilities.push_back(std::move(*fuSelection));
   }
 
-  const auto appendLocal =
-      [&](const auto &terminal,
-          const ::loom::fabric::FabricTransportEndpointRef &endpoint,
-          std::vector<::loom::fabric::FabricPhysicalTraversalRef> &traversals)
-      -> llvm::Error {
-    auto traversal = selectedLocalTraversal(context, terminal, endpoint);
-    if (!traversal)
-      return traversal.takeError();
-    if (*traversal) {
-      selection.traversals.push_back(**traversal);
-      traversals.push_back(**traversal);
-    }
-    return llvm::Error::success();
-  };
   for (const SpatialRouteTreeView &route : routes) {
     result.routeTraversals.emplace_back();
     auto &routeTraversal = result.routeTraversals.back();
-    if (llvm::Error error =
-            appendLocal(route.logicalNet, route.rootEndpoint, routeTraversal))
-      return std::move(error);
+    if (route.localTraversal) {
+      selection.traversals.push_back(*route.localTraversal);
+      routeTraversal.push_back(*route.localTraversal);
+    }
     for (const SpatialRouteNodeView &node : route.nodes) {
       if (node.incomingTraversal) {
         selection.traversals.push_back(*node.incomingTraversal);
@@ -1047,10 +1043,10 @@ deriveSelectedHandshakeSelection(const TerminalProjectionContext &context,
     for (const SpatialRouteSinkView &sink : route.sinks) {
       if (sink.nodeOrdinal >= route.nodes.size())
         return invalid("selected handshake sink names an absent route node");
-      if (llvm::Error error =
-              appendLocal(sink.sink, route.nodes[sink.nodeOrdinal].endpoint,
-                          routeTraversal))
-        return std::move(error);
+      if (sink.localTraversal) {
+        selection.traversals.push_back(*sink.localTraversal);
+        routeTraversal.push_back(*sink.localTraversal);
+      }
     }
     llvm::sort(routeTraversal, [](const auto &lhs, const auto &rhs) {
       return ::loom::fabric::canonicalFabricBytes(lhs) <

@@ -24,6 +24,10 @@ struct CgraExecutionPlanSummary final {
   std::uint64_t physicalUseCount = 0;
   std::uint64_t resourceOwnerCount = 0;
   std::uint64_t claimCount = 0;
+  std::uint64_t routeTreeCount = 0;
+  std::uint64_t routeNodeCount = 0;
+  std::uint64_t routeSinkCount = 0;
+  std::uint64_t selectedTraversalCount = 0;
 };
 
 /// Strictly imported, invocation-local execution input for one exact

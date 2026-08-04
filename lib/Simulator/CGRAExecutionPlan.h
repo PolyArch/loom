@@ -2,6 +2,7 @@
 #define LOOM_LIB_SIMULATOR_CGRAEXECUTIONPLAN_H
 
 #include "CGRAPhysicalActionRuntime.h"
+#include "CGRATransportPlan.h"
 #include "Simulator/CGRAAdmission.h"
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -48,6 +49,7 @@ struct CgraFrozenExecutionPlan final {
   std::vector<CgraPhysicalUsePlan> physicalUses;
   std::vector<CgraPhysicalUseTiming> physicalUseTimings;
   CgraResourceRuntimePlan resources;
+  CgraTransportPlan transport;
 };
 
 llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(

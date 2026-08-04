@@ -396,11 +396,13 @@ struct SpatialRouteNodeView final {
 struct SpatialRouteSinkView final {
   ::dataflow::CanonicalGraphConsumerEndpointRef sink;
   std::uint64_t nodeOrdinal = 0;
+  std::optional<::loom::fabric::FabricPhysicalTraversalRef> localTraversal;
 };
 
 struct SpatialRouteTreeView final {
   ::dataflow::CanonicalGraphProducerEndpointRef logicalNet;
   ::loom::fabric::FabricTransportEndpointRef rootEndpoint;
+  std::optional<::loom::fabric::FabricPhysicalTraversalRef> localTraversal;
   std::vector<SpatialRouteNodeView> nodes;
   std::vector<SpatialRouteSinkView> sinks;
 };
