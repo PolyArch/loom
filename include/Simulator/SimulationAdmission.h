@@ -15,10 +15,8 @@ class CanonicalDataflowProgramView;
 // input, owned by docs/spec-sim-dfg.md `Admission`. The adapter validates
 // both artifacts through the same rooted launch against the exact Dataflow
 // owner view and keeps no persistent simulator-local catalog; it runs before
-// any execution state exists. CGRA-sim shares this workload admission stage;
-// its exact SpatialMapping coupling stage remains blocked on the typed
-// SpatialMapping artifact, which has no implementation on this branch, so no
-// CGRA owner-coupling entry point exists here.
+// any execution state exists. CGRA-sim shares this workload admission stage
+// after its exact D/F/SpatialMapping closure has been strictly prepared.
 namespace loom::sim {
 
 /// DFG-sim admission: the workload's exact RootedGraphLaunchRef resolves

@@ -35,6 +35,7 @@ add_executable(loom-spatial-mapping-wire-test
 )
 
 add_executable(loom-spatial-mapping-artifact-test
+  CgraAdmissionTestSupport.cpp
   SpatialMappingArtifactTest.cpp
   TechMappingCandidateTestSupport.cpp
 )
@@ -129,6 +130,7 @@ target_link_libraries(loom-spatial-mapping-artifact-test PRIVATE
   LoomPnRCpSat
   LoomPnRGenerator
   LoomTechMapping
+  LoomSimulator
   MLIRArithDialect
   MLIRDataflow
   MLIRDLTIDialect

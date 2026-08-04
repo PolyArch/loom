@@ -1,4 +1,5 @@
 add_mlir_library(LoomSimulator
+  CGRAAdmission.cpp
   DeterministicTranscendental.cpp
   DFGSimulator.cpp
   DFGSimulatorActors.cpp
@@ -34,6 +35,8 @@ add_mlir_library(LoomSimulator
   LINK_LIBS PUBLIC
   LoomCommon
   LoomEvaluation
+  LoomFabricArtifact
+  LoomMappingInspection
   MLIRLoom
   MLIRArithDialect
   MLIRDataflow

@@ -1,6 +1,7 @@
 #include "ADG/Builder.h"
 #include "ADG/Builtin.h"
 #include "ADG/MemoryLibrary.h"
+#include "CgraAdmissionTestSupport.h"
 #include "TechMappingCandidateTestSupport.h"
 
 #include "Common/ArtifactLocalReference.h"
@@ -301,6 +302,19 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
         : (none, i32) -> (none, i32)
     dataflow.graph.return values(%result#1 : i32) streams() memories()
         complete(%result#0 : none)
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
+      %value: i32) ctrl (%ctrl: none) {
+    %result, %done = dataflow.graph.launch @sync deps(%ctrl)
+        values(%value) stream_inputs() memories() stream_outputs()
+        : (none, i32) -> (i32, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host() {
+    %value = arith.constant 7 : i32
+    %thread = dataflow.thread.launch @worker(%value)
+        : (i32) -> !dataflow.thread_token
+    return
   }
 }
 )mlir",
@@ -859,6 +873,9 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
         inspection.computeOccupancy.empty() || inspection.routes.empty())
       fail("Spatial Mapping inspection projected an empty physical mapping");
     const auto foreignFabric = buildTemporalFabric(store);
+    loom::test::exerciseCgraAdmission(dataflowReference, fabric.reference(),
+                                      generated->candidates.front(),
+                                      foreignFabric.reference(), store);
     auto wrongInspection = loom::mapping::inspectSpatialMapping(
         dataflow, tech.view(), foreignFabric.view(), generatedView.view());
     if (wrongInspection)
