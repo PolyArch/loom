@@ -6,8 +6,37 @@
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <string>
+#include <system_error>
+#include <utility>
 
 namespace loom::pnr {
+
+enum class SpatialGlobalRoutingClosureFailureKind : std::uint8_t {
+  UnroutedObligation,
+  RouteCapacityOveruse,
+  TagUnassigned,
+  TagConflict,
+};
+
+class SpatialGlobalRoutingClosureFailure final
+    : public llvm::ErrorInfo<SpatialGlobalRoutingClosureFailure> {
+public:
+  static char ID;
+
+  SpatialGlobalRoutingClosureFailure(
+      SpatialGlobalRoutingClosureFailureKind kind, std::string message)
+      : kind_(kind), message_(std::move(message)) {}
+
+  SpatialGlobalRoutingClosureFailureKind kind() const { return kind_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  SpatialGlobalRoutingClosureFailureKind kind_;
+  std::string message_;
+};
 
 /// Executes one final Global TransportRoutingAction through the ordinary
 /// Spatial Action transaction. This owner closes only route, route-capacity,

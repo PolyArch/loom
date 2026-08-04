@@ -59,3 +59,4 @@ target_include_directories(LoomPnR PRIVATE
 )
 
 add_subdirectory(CpSat)
+add_subdirectory(Generator)

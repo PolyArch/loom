@@ -86,6 +86,7 @@ private:
 
 enum class InitializerRelationSolveFailureKind : std::uint8_t {
   ProvenInfeasible,
+  FixedRootInfeasible,
   WorkLimit,
 };
 

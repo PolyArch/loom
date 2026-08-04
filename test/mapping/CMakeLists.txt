@@ -122,6 +122,7 @@ target_link_libraries(loom-spatial-mapping-artifact-test PRIVATE
   LoomMappingArtifact
   LoomPnR
   LoomPnRCpSat
+  LoomPnRGenerator
   LoomTechMapping
   MLIRArithDialect
   MLIRDataflow

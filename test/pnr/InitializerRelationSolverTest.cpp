@@ -95,6 +95,21 @@ void workLimitDoesNotBecomeInfeasibility() {
     fail("bounded initializer classified work exhaustion as infeasibility");
 }
 
+void fixedRootFailureIsNotGlobalInfeasibility() {
+  llvm::Error failure = llvm::make_error<InitializerRelationSolveFailure>(
+      InitializerRelationSolveFailureKind::FixedRootInfeasible,
+      "fixed root has no dependent assignment");
+  bool observedFixedRootFailure = false;
+  llvm::handleAllErrors(
+      std::move(failure), [&](const InitializerRelationSolveFailure &error) {
+        observedFixedRootFailure =
+            error.kind() ==
+            InitializerRelationSolveFailureKind::FixedRootInfeasible;
+      });
+  if (!observedFixedRootFailure)
+    fail("fixed-root rejection became a whole-domain infeasibility proof");
+}
+
 void sparseDomainsReusePreparedStorage() {
   constexpr PnrIndex decisionCount = 4096;
   InitializerRelationModel model =
@@ -191,6 +206,7 @@ int main() {
   equalityAndDisjointnessReachFixedPoint();
   canonicalSearchBacktracksWithoutCopyingState();
   workLimitDoesNotBecomeInfeasibility();
+  fixedRootFailureIsNotGlobalInfeasibility();
   sparseDomainsReusePreparedStorage();
   diversifiedSearchUsesExactWithoutReplacementOrder();
   independentRootDecisionsParticipateInMrvOrdering();

@@ -143,7 +143,7 @@ public:
       return completed.takeError();
     if (!*completed)
       return initializerFailure(
-          InitializerRelationSolveFailureKind::ProvenInfeasible,
+          InitializerRelationSolveFailureKind::FixedRootInfeasible,
           "has no complete dependent-decision assignment");
     return llvm::Error::success();
   }

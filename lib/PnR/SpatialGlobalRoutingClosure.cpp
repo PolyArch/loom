@@ -8,6 +8,16 @@
 
 using namespace loom::pnr;
 
+char SpatialGlobalRoutingClosureFailure::ID;
+
+void SpatialGlobalRoutingClosureFailure::log(llvm::raw_ostream &stream) const {
+  stream << message_;
+}
+
+std::error_code SpatialGlobalRoutingClosureFailure::convertToErrorCode() const {
+  return std::make_error_code(std::errc::resource_unavailable_try_again);
+}
+
 namespace {
 
 llvm::Error closureError(const llvm::Twine &message) {
@@ -18,13 +28,21 @@ llvm::Error closureError(const llvm::Twine &message) {
 
 llvm::Error verifyRoutingClosure(const SpatialCandidateState &candidate) {
   if (candidate.unroutedObligationCount() != 0)
-    return closureError("Global Action left an unrouted sink obligation");
+    return llvm::make_error<SpatialGlobalRoutingClosureFailure>(
+        SpatialGlobalRoutingClosureFailureKind::UnroutedObligation,
+        "Global Action left an unrouted sink obligation");
   if (candidate.routeCapacityOveruse() != 0)
-    return closureError("Global Action left route-resource overuse");
+    return llvm::make_error<SpatialGlobalRoutingClosureFailure>(
+        SpatialGlobalRoutingClosureFailureKind::RouteCapacityOveruse,
+        "Global Action left route-resource overuse");
   if (candidate.tagUnassignedCount() != 0)
-    return closureError("Global Action left an unassigned Physical Tag");
+    return llvm::make_error<SpatialGlobalRoutingClosureFailure>(
+        SpatialGlobalRoutingClosureFailureKind::TagUnassigned,
+        "Global Action left an unassigned Physical Tag");
   if (candidate.tagConflictCount() != 0)
-    return closureError("Global Action left a conflicting Physical Tag");
+    return llvm::make_error<SpatialGlobalRoutingClosureFailure>(
+        SpatialGlobalRoutingClosureFailureKind::TagConflict,
+        "Global Action left a conflicting Physical Tag");
   return llvm::Error::success();
 }
 

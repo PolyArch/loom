@@ -3,6 +3,7 @@
 #include "ADG/MemoryLibrary.h"
 #include "TechMappingCandidateTestSupport.h"
 
+#include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -29,6 +30,7 @@
 #include "PnR/SpatialGlobalRoutingClosure.h"
 #include "PnR/SpatialMappingMaterializer.h"
 #include "PnR/SpatialPathFinderRouter.h"
+#include "PnR/SpatialPnrGenerator.h"
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/SpatialRouteCostState.h"
 #include "PnR/SpatialTagAssignment.h"
@@ -811,6 +813,72 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
       loom::mapping::importTechMapping(candidates->candidates.front(), store));
   const auto constraints = buildConstraints(
       context, dataflow, tech.view(), fabric.view(), store, forceTagConflict);
+  if (!temporal && !boundaryWrapped && !forceTagConflict) {
+    loom::ResolvedConfig generatorResolved =
+        loom::test::buildSpatialPnrTestResolvedConfig();
+    auto &search = generatorResolved.dse.spatialPnr.search;
+    search.initializer.seedAttemptCount = 2;
+    search.actionProposal = {0, 1, 0};
+    search.annealing.calibrationProposalCount = 1;
+    search.annealing.fallbackTemperature = 1;
+    search.annealing.minimumTemperature = 1;
+    search.annealing.coolingRatio = {1, 2};
+    search.annealing.proposalsPerLevelBase = 1;
+    search.annealing.proposalsPerMovableDecision = 0;
+    search.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
+    const auto generatorConfig =
+        take(loom::pnr::projectResolvedSpatialPnrConfigView(generatorResolved));
+    const loom::pnr::SpatialPnrGenerationInputs generatorInputs{
+        dataflow,        tech.view(),        fabric.view(),
+        generatorConfig, constraints.view(), store};
+    auto generatedSpatial = loom::pnr::generateSpatialMappings(generatorInputs);
+    const auto *generated =
+        std::get_if<loom::pnr::GeneratedSpatialMappings>(&generatedSpatial);
+    if (!generated || generated->candidates.size() != 1 ||
+        generated->accounting.seedAttemptSlots != 2 ||
+        generated->accounting.preparedSeeds != 1 ||
+        generated->accounting.finalizedRestarts != 1 ||
+        generated->accounting.publicationSlots != 1)
+      fail("Spatial PnR generator refilled or lost a fixed restart slot");
+    if (!std::is_sorted(generated->candidates.begin(),
+                        generated->candidates.end(),
+                        loom::artifactRootReferenceLess))
+      fail("Spatial PnR generator did not return a canonical candidate set");
+    auto repeatedSpatial = loom::pnr::generateSpatialMappings(generatorInputs);
+    const auto *repeated =
+        std::get_if<loom::pnr::GeneratedSpatialMappings>(&repeatedSpatial);
+    if (!repeated || repeated->candidates != generated->candidates ||
+        !(repeated->accounting == generated->accounting))
+      fail("Spatial PnR generator is not deterministic for exact inputs");
+    auto generatedView = take(loom::mapping::importSpatialMapping(
+        generated->candidates.front(), store));
+    if (generatedView.view().computeBindings().empty() ||
+        generatedView.view().routeTrees().empty() ||
+        generatedView.view().resourceUses().empty())
+      fail("Spatial PnR generator published an empty Mapping");
+
+    generatorResolved.dse.systemPnr.search.routing.negotiation =
+        loom::ResolvedDualSubgradientPolicy{
+            loom::ResolvedDualDirectionKernel::ProjectedSigned,
+            std::nullopt,
+            {loom::ResolvedDualStepScheduleKind::Constant, 1, 0, 0, 0}};
+    const auto wrongDomainConfig =
+        take(loom::pnr::projectResolvedSystemPnrConfigView(generatorResolved));
+    const loom::pnr::SpatialPnrGenerationInputs wrongDomainInputs{
+        dataflow,          tech.view(),        fabric.view(),
+        wrongDomainConfig, constraints.view(), store};
+    const auto wrongDomainOutcome =
+        loom::pnr::generateSpatialMappings(wrongDomainInputs);
+    const auto *invalid = std::get_if<loom::pnr::InvalidSpatialPnrGeneration>(
+        &wrongDomainOutcome);
+    if (!invalid ||
+        invalid->reason !=
+            loom::pnr::InvalidSpatialPnrGenerationReason::FrozenInput ||
+        invalid->accounting.seedAttemptSlots != 0 ||
+        invalid->accounting.publicationSlots != 0)
+      fail("Spatial PnR generator checked provider support before exact input "
+           "coupling");
+  }
   const auto pnrConfig = take(loom::pnr::projectResolvedSpatialPnrConfigView(
       loom::test::buildSpatialPnrTestResolvedConfig()));
   auto problem = take(loom::pnr::freezeSpatialPnrProblem(
@@ -883,7 +951,16 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
     llvm::Error rejectedClosure = globalRoutingClosure.run(*candidate);
     if (!rejectedClosure)
       fail("global routing closure accepted conflicting Physical Tags");
-    llvm::consumeError(std::move(rejectedClosure));
+    bool observedTagConflict = false;
+    llvm::handleAllErrors(
+        std::move(rejectedClosure),
+        [&](const loom::pnr::SpatialGlobalRoutingClosureFailure &failure) {
+          observedTagConflict =
+              failure.kind() ==
+              loom::pnr::SpatialGlobalRoutingClosureFailureKind::TagConflict;
+        });
+    if (!observedTagConflict)
+      fail("global routing closure lost its typed TagConflict witness");
     if (candidate->totalSelectedTraversalClaim() != selectedTraversalClaim ||
         candidate->unroutedObligationCount() != unroutedObligations ||
         candidate->tagConflictCount() != tagConflicts)
