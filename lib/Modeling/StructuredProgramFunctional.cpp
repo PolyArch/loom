@@ -1,4 +1,5 @@
 #include "Evaluation/Models/StructuredProgramFunctional.h"
+#include "StructuredEvaluationInvocationCacheInternal.h"
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
@@ -16,7 +17,7 @@
 
 #include <algorithm>
 #include <map>
-#include <mutex>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -106,18 +107,6 @@ const ModeledPhenomenon kModeledPhenomena[] = {
 
 struct EmptyFunctionalConfig final {};
 
-struct SourceObservationCacheEntry final {
-  ArtifactRootReference source;
-  ArtifactRootReference workload;
-  ArtifactRootReference runtimeInput;
-  sim::NativeStructuredProgramObservations observations;
-};
-
-std::optional<SourceObservationCacheEntry> &sourceObservationCache() {
-  thread_local std::optional<SourceObservationCacheEntry> cache;
-  return cache;
-}
-
 bool haveEquivalentSourceObservations(
     const sim::NativeStructuredProgramObservations &lhs,
     const sim::NativeStructuredProgramObservations &rhs) {
@@ -138,72 +127,41 @@ llvm::Error primeSourceObservationCache(
     const ArtifactRootReference &workloadReference,
     const ArtifactRootReference &runtimeInputReference,
     const sim::NativeStructuredProgramObservations &observations) {
-  std::optional<SourceObservationCacheEntry> &cache = sourceObservationCache();
-  if (cache && cache->source == source &&
-      cache->workload == workloadReference &&
-      cache->runtimeInput == runtimeInputReference) {
-    if (!haveEquivalentSourceObservations(cache->observations, observations))
+  StructuredEvaluationInvocationCache *cache =
+      detail::currentStructuredEvaluationCache();
+  if (!cache)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_functional_model_invalid: source observation priming "
+        "requires an active invocation cache");
+  auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+  const detail::StructuredSourceObservationCacheKey key{
+      source, workloadReference, runtimeInputReference};
+  auto value = std::make_shared<const sim::NativeStructuredProgramObservations>(
+      observations);
+  std::lock_guard<std::mutex> lock(impl.mutex);
+  auto [found, inserted] =
+      impl.sourceObservations.try_emplace(key, std::move(value));
+  if (!inserted) {
+    if (!haveEquivalentSourceObservations(*found->second, observations))
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "structured_functional_model_invalid: nondeterministic source "
           "observations");
     return llvm::Error::success();
   }
-  cache.emplace(SourceObservationCacheEntry{
-      source, workloadReference, runtimeInputReference, observations});
+  impl.sourceObservationPrimeCount.fetch_add(1, std::memory_order_relaxed);
   return llvm::Error::success();
 }
 
-enum class ReplayResultKind : std::uint8_t {
-  Equivalent,
-  Mismatch,
-  Inapplicable,
-  Unsupported,
-};
+using ReplayResultKind = detail::StructuredReplayResultKind;
+using CachedReplayResult = detail::StructuredCachedReplayResult;
 
-struct CachedReplayResult final {
-  ReplayResultKind kind = ReplayResultKind::Unsupported;
-  std::optional<sim::SourceBackedDfgValidationResult> replay;
-
-  friend bool operator==(const CachedReplayResult &lhs,
-                         const CachedReplayResult &rhs) {
-    if (lhs.kind != rhs.kind ||
-        lhs.replay.has_value() != rhs.replay.has_value())
-      return false;
-    if (!lhs.replay)
-      return true;
-    const auto &left = *lhs.replay;
-    const auto &right = *rhs.replay;
-    return left.status == right.status &&
-           left.dynamicActivations == right.dynamicActivations &&
-           left.valueLanesCompared == right.valueLanesCompared &&
-           left.memoryBytesCompared == right.memoryBytesCompared &&
-           left.wavefrontSteps == right.wavefrontSteps &&
-           left.eventCount == right.eventCount &&
-           left.operationFireCounts == right.operationFireCounts;
-  }
-};
-
-std::map<std::vector<std::uint8_t>, CachedReplayResult> &replayCache() {
-  static std::map<std::vector<std::uint8_t>, CachedReplayResult> cache;
-  return cache;
-}
-
-std::mutex &replayCacheMutex() {
-  static std::mutex mutex;
-  return mutex;
-}
-
-std::vector<std::uint8_t>
+detail::StructuredFunctionalCacheKey
 replayCacheKey(const ArtifactRootReference &candidate,
                const ArtifactRootReference &workload,
                const ArtifactRootReference &runtimeInput) {
-  std::vector<std::uint8_t> key = encodeArtifactRootReference(candidate);
-  for (const ArtifactRootReference *reference : {&workload, &runtimeInput}) {
-    std::vector<std::uint8_t> bytes = encodeArtifactRootReference(*reference);
-    key.insert(key.end(), bytes.begin(), bytes.end());
-  }
-  return key;
+  return {candidate, workload, runtimeInput};
 }
 
 llvm::Expected<CachedReplayResult> classifyReplayResult(
@@ -308,26 +266,46 @@ llvm::Expected<EvaluationModelResult> classifyNativeFailure(llvm::Error error) {
                                  "%s", message.c_str());
 }
 
-llvm::Expected<const sim::NativeStructuredProgramObservations *>
+llvm::Expected<std::shared_ptr<const sim::NativeStructuredProgramObservations>>
 sourceObservationsFor(
     const ArtifactRootReference &source,
     const ArtifactRootReference &workloadReference,
     const ArtifactRootReference &runtimeInputReference,
     const sim::ImportedStructuredProgramSimulationInputs &inputs) {
-  std::optional<SourceObservationCacheEntry> &cache = sourceObservationCache();
-  if (cache && cache->source == source &&
-      cache->workload == workloadReference &&
-      cache->runtimeInput == runtimeInputReference)
-    return &cache->observations;
+  StructuredEvaluationInvocationCache *cache =
+      detail::currentStructuredEvaluationCache();
+  detail::StructuredSourceObservationCacheKey key{source, workloadReference,
+                                                  runtimeInputReference};
+  if (cache) {
+    auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+    std::lock_guard<std::mutex> lock(impl.mutex);
+    auto found = impl.sourceObservations.find(key);
+    if (found != impl.sourceObservations.end()) {
+      impl.sourceObservationHitCount.fetch_add(1, std::memory_order_relaxed);
+      return found->second;
+    }
+    impl.sourceObservationMissCount.fetch_add(1, std::memory_order_relaxed);
+  }
 
   auto observations = sim::executeNativeStructuredProgram(
       inputs.structuredProgram, inputs.workload, inputs.runtimeInput);
   if (!observations)
     return observations.takeError();
-  cache.emplace(SourceObservationCacheEntry{source, workloadReference,
-                                            runtimeInputReference,
-                                            std::move(*observations)});
-  return &cache->observations;
+  auto value = std::make_shared<const sim::NativeStructuredProgramObservations>(
+      std::move(*observations));
+  if (!cache)
+    return value;
+  auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+  std::lock_guard<std::mutex> lock(impl.mutex);
+  auto [found, inserted] = impl.sourceObservations.try_emplace(key, value);
+  if (!inserted && !haveEquivalentSourceObservations(*found->second, *value))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_functional_model_invalid: nondeterministic source "
+        "observations");
+  if (inserted)
+    impl.sourceObservationPrimeCount.fetch_add(1, std::memory_order_relaxed);
+  return found->second;
 }
 
 llvm::Expected<EvaluationModelResult>
@@ -353,15 +331,21 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       frontend::structuredProgramArtifactSchema.version,
       inputs->structuredProgram.identity()};
   bool mismatch = false;
-  std::optional<CachedReplayResult> replay;
+  std::shared_ptr<const CachedReplayResult> replay;
   if (candidate->identity() != inputs->structuredProgram.identity()) {
-    const std::vector<std::uint8_t> key = replayCacheKey(
+    const detail::StructuredFunctionalCacheKey key = replayCacheKey(
         candidates.front(), *request.workload(), *request.runtimeInput());
-    {
-      std::lock_guard<std::mutex> lock(replayCacheMutex());
-      auto found = replayCache().find(key);
-      if (found != replayCache().end())
+    if (StructuredEvaluationInvocationCache *cache =
+            detail::currentStructuredEvaluationCache()) {
+      auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+      std::lock_guard<std::mutex> lock(impl.mutex);
+      auto found = impl.functionalResults.find(key);
+      if (found != impl.functionalResults.end()) {
         replay = found->second;
+        impl.functionalHitCount.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        impl.functionalMissCount.fetch_add(1, std::memory_order_relaxed);
+      }
     }
     if (replay) {
       if (replay->kind == ReplayResultKind::Unsupported)
@@ -454,6 +438,13 @@ llvm::Error primeStructuredProgramFunctionalReplay(
     const ArtifactStore &artifactStore) {
   if (llvm::Error error = registerStructuredProgramFunctionalModel())
     return error;
+  StructuredEvaluationInvocationCache *cache =
+      detail::currentStructuredEvaluationCache();
+  if (!cache)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_functional_model_invalid: replay priming requires an "
+        "active invocation cache");
   if (candidateReference.schemaIdentity !=
           frontend::structuredProgramArtifactSchema.identity ||
       candidateReference.schemaVersion !=
@@ -498,14 +489,19 @@ llvm::Error primeStructuredProgramFunctionalReplay(
       &invocation.sourceObservations));
   if (!classified)
     return classified.takeError();
-  const std::vector<std::uint8_t> key = replayCacheKey(
+  const detail::StructuredFunctionalCacheKey key = replayCacheKey(
       candidateReference, invocation.workload, invocation.runtimeInput);
-  std::lock_guard<std::mutex> lock(replayCacheMutex());
-  auto [found, inserted] = replayCache().try_emplace(key, *classified);
-  if (!inserted && !(found->second == *classified))
+  auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+  auto value =
+      std::make_shared<const CachedReplayResult>(std::move(*classified));
+  std::lock_guard<std::mutex> lock(impl.mutex);
+  auto [found, inserted] = impl.functionalResults.try_emplace(key, value);
+  if (!inserted && !(*found->second == *value))
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_functional_model_invalid: nondeterministic replay");
+  if (inserted)
+    impl.functionalPrimeCount.fetch_add(1, std::memory_order_relaxed);
   return llvm::Error::success();
 }
 
@@ -514,19 +510,30 @@ getPrimedStructuredProgramFunctionalReplay(
     const ArtifactRootReference &candidate,
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput) {
-  const std::vector<std::uint8_t> key =
+  StructuredEvaluationInvocationCache *cache =
+      detail::currentStructuredEvaluationCache();
+  if (!cache)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_functional_model_invalid: replay lookup requires an "
+        "active invocation cache");
+  const detail::StructuredFunctionalCacheKey key =
       replayCacheKey(candidate, workload, runtimeInput);
-  std::lock_guard<std::mutex> lock(replayCacheMutex());
-  auto found = replayCache().find(key);
-  if (found == replayCache().end())
+  auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+  std::lock_guard<std::mutex> lock(impl.mutex);
+  auto found = impl.functionalResults.find(key);
+  if (found == impl.functionalResults.end()) {
+    impl.functionalMissCount.fetch_add(1, std::memory_order_relaxed);
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_functional_model_invalid: replay was not primed");
-  if (!found->second.replay)
+  }
+  impl.functionalHitCount.fetch_add(1, std::memory_order_relaxed);
+  if (!found->second->replay)
     return llvm::createStringError(
         std::make_error_code(std::errc::not_supported),
         "structured_functional_model_unsupported: replay provider unavailable");
-  return *found->second.replay;
+  return *found->second->replay;
 }
 
 llvm::Expected<PreparedStructuredProgramFunctionalEvaluation>

@@ -4,6 +4,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/ResolvedConfig.h"
 #include "Evaluation/ModelProvider.h"
+#include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/Models/StructuredProgramFunctional.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
@@ -124,6 +125,10 @@ generateAndPromoteStructuredOwnership(
   if (llvm::Error error =
           evaluation::models::registerStructuredProgramFunctionalModel())
     return std::move(error);
+
+  evaluation::models::StructuredEvaluationInvocationCache evaluationCache;
+  evaluation::models::StructuredEvaluationInvocationCacheScope
+      evaluationCacheScope(evaluationCache);
 
   std::vector<ArtifactRootReference> candidateReferences;
   auto parentReference =
@@ -309,6 +314,8 @@ generateAndPromoteStructuredOwnership(
     std::atomic_size_t nextWorkItem{0};
     for (std::size_t worker = 0; worker < workerCount; ++worker)
       pool.async([&, worker] {
+        evaluation::models::StructuredEvaluationInvocationCacheScope
+            workerEvaluationCacheScope(evaluationCache);
         while (true) {
           const std::size_t index =
               nextWorkItem.fetch_add(1, std::memory_order_relaxed);

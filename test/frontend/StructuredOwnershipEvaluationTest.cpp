@@ -6,6 +6,7 @@
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
+#include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/Models/StructuredProgramFunctional.h"
 #include "Evaluation/StandardFindings.h"
@@ -583,6 +584,9 @@ void verifyStagedOwnershipEvidence(
 }
 
 void runEvaluationAnchor() {
+  loom::evaluation::models::StructuredEvaluationInvocationCache evaluationCache;
+  loom::evaluation::models::StructuredEvaluationInvocationCacheScope
+      evaluationCacheScope(evaluationCache);
   llvm::SmallString<128> directory;
   std::error_code error = llvm::sys::fs::createUniqueDirectory(
       "loom-structured-fabric-evaluation", directory);
@@ -1113,6 +1117,33 @@ void runEvaluationAnchor() {
           exploredSelection->satisfiedEvidence ||
       parallelSelection->dispositions != exploredSelection->dispositions)
     fail("candidate worker count changed the formal DSE result");
+
+  {
+    loom::evaluation::models::StructuredEvaluationInvocationCache isolatedCache;
+    loom::evaluation::models::StructuredEvaluationInvocationCacheScope
+        isolatedScope(isolatedCache);
+    auto leaked =
+        loom::evaluation::models::getPrimedStructuredProgramFunctionalReplay(
+            spatialRef, inputs.workloadReference, inputs.runtimeInputReference);
+    if (leaked)
+      fail("a fresh Evaluation invocation observed a prior replay result");
+    llvm::consumeError(leaked.takeError());
+    if (isolatedCache.statistics().functionalMissCount != 1)
+      fail("fresh Evaluation invocation did not account its exact cache miss");
+  }
+  auto restoredReplay =
+      take(loom::evaluation::models::getPrimedStructuredProgramFunctionalReplay(
+          spatialRef, inputs.workloadReference, inputs.runtimeInputReference));
+  if (restoredReplay.status !=
+      loom::sim::SourceBackedDfgValidationStatus::Equivalent)
+    fail("nested Evaluation cache scope did not restore its parent binding");
+
+  const auto cacheStatistics = evaluationCache.statistics();
+  if (cacheStatistics.analyticPrimeCount == 0 ||
+      cacheStatistics.analyticHitCount == 0 ||
+      cacheStatistics.functionalPrimeCount == 0 ||
+      cacheStatistics.functionalHitCount == 0)
+    fail("invocation-local Evaluation cache did not reuse exact typed results");
 
   if (evaluateCanonicalDataflowRuntime(
           dataflowRef, design.roots().front().reference(), store)

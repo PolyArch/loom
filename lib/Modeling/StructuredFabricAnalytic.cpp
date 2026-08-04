@@ -1,6 +1,7 @@
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 
 #include "AnalyticModelSupport.h"
+#include "StructuredEvaluationInvocationCacheInternal.h"
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
@@ -26,8 +27,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
-#include <map>
-#include <mutex>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -171,36 +171,14 @@ struct ResolvedScopeActivity final {
 
 using CachedMetrics = std::optional<detail::LowConfidenceMetricSet>;
 
-std::map<std::vector<std::uint8_t>, CachedMetrics> &metricCache() {
-  static std::map<std::vector<std::uint8_t>, CachedMetrics> cache;
-  return cache;
-}
-
-std::mutex &metricCacheMutex() {
-  static std::mutex mutex;
-  return mutex;
-}
-
-std::vector<std::uint8_t>
+detail::StructuredAnalyticCacheKey
 metricCacheKey(const ArtifactRootReference &structuredProgram,
                const ArtifactRootReference &fabricReference,
                const ArtifactRootReference &workload,
                const ArtifactRootReference &runtimeInput,
                const ComponentViewDigest &configDigest) {
-  std::vector<std::uint8_t> key =
-      encodeArtifactRootReference(structuredProgram);
-  std::vector<std::uint8_t> fabricBytes =
-      encodeArtifactRootReference(fabricReference);
-  key.insert(key.end(), fabricBytes.begin(), fabricBytes.end());
-  std::vector<std::uint8_t> workloadBytes =
-      encodeArtifactRootReference(workload);
-  key.insert(key.end(), workloadBytes.begin(), workloadBytes.end());
-  std::vector<std::uint8_t> runtimeInputBytes =
-      encodeArtifactRootReference(runtimeInput);
-  key.insert(key.end(), runtimeInputBytes.begin(), runtimeInputBytes.end());
-  key.insert(key.end(), configDigest.bytes().begin(),
-             configDigest.bytes().end());
-  return key;
+  return {structuredProgram, fabricReference, workload, runtimeInput,
+          configDigest};
 }
 
 mlir::LLVM::LLVMFuncOp enclosingDefinedLlvmFunction(mlir::Block *block) {
@@ -580,23 +558,27 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
         llvm::inconvertibleErrorCode(),
         "structured_fabric_model_invalid: exact case inputs are not total");
 
-  const std::vector<std::uint8_t> cacheKey =
+  const detail::StructuredAnalyticCacheKey cacheKey =
       metricCacheKey(structured.front(), fabric.front(), *request.workload(),
                      *request.runtimeInput(),
                      request.modelBinding().resolvedModelConfig().digest());
-  bool cacheHit = false;
-  CachedMetrics cachedMetrics;
-  {
-    std::lock_guard<std::mutex> lock(metricCacheMutex());
-    auto found = metricCache().find(cacheKey);
-    if (found != metricCache().end()) {
-      cacheHit = true;
+  StructuredEvaluationInvocationCache *cache =
+      detail::currentStructuredEvaluationCache();
+  std::shared_ptr<const CachedMetrics> cachedMetrics;
+  if (cache) {
+    auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+    std::lock_guard<std::mutex> lock(impl.mutex);
+    auto found = impl.analyticResults.find(cacheKey);
+    if (found != impl.analyticResults.end()) {
       cachedMetrics = found->second;
+      impl.analyticHitCount.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      impl.analyticMissCount.fetch_add(1, std::memory_order_relaxed);
     }
   }
 
   CachedMetrics metrics;
-  if (cacheHit) {
+  if (cachedMetrics) {
     if (auto stored = artifactStore.get(structured.front()); !stored)
       return stored.takeError();
     if (auto stored = artifactStore.get(fabric.front()); !stored)
@@ -605,7 +587,7 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       return stored.takeError();
     if (auto stored = artifactStore.get(*request.runtimeInput()); !stored)
       return stored.takeError();
-    metrics = std::move(cachedMetrics);
+    metrics = *cachedMetrics;
   } else {
     auto program =
         frontend::importStructuredProgram(structured.front(), artifactStore);
@@ -676,8 +658,20 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
     if (!computed)
       return computed.takeError();
     metrics = std::move(*computed);
-    std::lock_guard<std::mutex> lock(metricCacheMutex());
-    metricCache().try_emplace(cacheKey, metrics);
+    if (cache) {
+      auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+      auto cached = std::make_shared<const CachedMetrics>(metrics);
+      std::lock_guard<std::mutex> lock(impl.mutex);
+      auto [found, inserted] =
+          impl.analyticResults.try_emplace(cacheKey, std::move(cached));
+      if (!inserted && *found->second != metrics)
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "structured_fabric_model_invalid: nondeterministic cached "
+            "result");
+      if (inserted)
+        impl.analyticPrimeCount.fetch_add(1, std::memory_order_relaxed);
+    }
   }
   if (!metrics)
     return EvaluationModelResult{
@@ -864,6 +858,13 @@ llvm::Error primeStructuredFabricAnalyticResult(
     const ArtifactStore &artifactStore) {
   if (llvm::Error error = registerStructuredFabricAnalyticModel())
     return error;
+  StructuredEvaluationInvocationCache *cache =
+      detail::currentStructuredEvaluationCache();
+  if (!cache)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: analytic priming requires an "
+        "active invocation cache");
   if (structuredProgramReference.schemaIdentity !=
           frontend::structuredProgramArtifactSchema.identity ||
       structuredProgramReference.schemaVersion !=
@@ -943,15 +944,20 @@ llvm::Error primeStructuredFabricAnalyticResult(
   if (!metrics)
     return metrics.takeError();
 
-  const std::vector<std::uint8_t> key = metricCacheKey(
+  const detail::StructuredAnalyticCacheKey key = metricCacheKey(
       structuredProgramReference, fabricRoot.reference(), invocation.workload,
       invocation.runtimeInput, configView->digest());
-  std::lock_guard<std::mutex> lock(metricCacheMutex());
-  auto [found, inserted] = metricCache().try_emplace(key, *metrics);
-  if (!inserted && found->second != *metrics)
+  auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+  auto cached = std::make_shared<const CachedMetrics>(*metrics);
+  std::lock_guard<std::mutex> lock(impl.mutex);
+  auto [found, inserted] =
+      impl.analyticResults.try_emplace(key, std::move(cached));
+  if (!inserted && *found->second != *metrics)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_fabric_model_invalid: nondeterministic cached result");
+  if (inserted)
+    impl.analyticPrimeCount.fetch_add(1, std::memory_order_relaxed);
   return llvm::Error::success();
 }
 
