@@ -3,6 +3,7 @@ add_library(LoomHardwareRTL
   CommonSkeleton.cpp
   OperationLeaf.cpp
   Providers/FixedVectorIntegerAddSub.cpp
+  Providers/FixedVectorIntegerMultiply.cpp
   Providers/FixedVectorPackUnpack.cpp
   Providers/IntegerLogic.cpp
   Providers/LoopCarry.cpp

@@ -181,6 +181,7 @@ if(LOOM_HAVE_CIRCT)
     loom-module-boundary-ports-test
     loom-operation-leaf-state-layout-test
     loom-portable-fixed-vector-integer-add-sub-test
+    loom-portable-fixed-vector-integer-multiply-test
     loom-portable-fixed-vector-pack-unpack-test
     loom-portable-integer-logic-test
     loom-portable-loop-carry-test
