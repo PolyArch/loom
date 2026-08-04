@@ -2,10 +2,13 @@
 
 #include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Fabric/IR/MemoryServiceContract.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialCandidateInitializer.h"
+#include "PnR/SpatialCandidateState.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Parser/Parser.h"
@@ -49,6 +52,12 @@ std::string dataflowAttr(llvm::StringRef spelling,
                          const loom::ArtifactIdentity &owner, const Ref &ref) {
   return "#mapping." + spelling.str() + "<" +
          byteList(take(dataflow::encodeDataflowReference(owner, ref))) + ">";
+}
+
+template <typename Ref>
+std::string fabricAttr(llvm::StringRef spelling, const Ref &ref) {
+  return "#mapping." + spelling.str() + "<" +
+         byteList(loom::fabric::canonicalFabricBytes(ref)) + ">";
 }
 
 } // namespace
@@ -101,4 +110,107 @@ void loom::test::exerciseSpatialMemoryOperationPortRelations(
   if (impossible)
     fail("contradictory memory operation-port relation produced a candidate");
   llvm::consumeError(impossible.takeError());
+
+  if (dataflow.logicalMemoryRoots().size() != 2)
+    fail("fixture does not expose two independent logical memory roots");
+  const auto memories = fabric.memoryOccurrences();
+  if (memories.empty())
+    fail("fixture Fabric has no local memory occurrence");
+  const auto *service = fabric.localMemoryService(memories.front());
+  if (!service || service->regions().empty())
+    fail("fixture Fabric has no local memory service region");
+  const fabric::FabricMemoryServiceRef serviceRef =
+      fabric::FabricMemoryServiceRef::local(memories.front());
+  const auto &region = service->regions().front();
+  const std::uint64_t regionEnd = region.addressBaseBytes + region.sizeBytes;
+  const std::string roots =
+      dataflowAttr("logical_memory_root_ref", dataflow.identity(),
+                   dataflow.logicalMemoryRoots()[0].ref) +
+      ", " +
+      dataflowAttr("logical_memory_root_ref", dataflow.identity(),
+                   dataflow.logicalMemoryRoots()[1].ref);
+  const std::string serviceValue =
+      fabricAttr("fabric_memory_service_ref", serviceRef);
+  const std::string addressValue =
+      "#mapping.constraint_address_region<service = " + serviceValue +
+      ", intervals = [#mapping.constraint_unsigned_interval<lower = " +
+      std::to_string(region.addressBaseBytes) +
+      " : ui64, upper = " + std::to_string(regionEnd) + " : ui64>]>";
+  const auto buildMemoryRootConstraints = [&](llvm::StringRef serviceRelation,
+                                              llvm::StringRef addressRelation) {
+    std::string clauses;
+    for (const auto &root : dataflow.logicalMemoryRoots()) {
+      const std::string subject = dataflowAttr("logical_memory_root_ref",
+                                               dataflow.identity(), root.ref);
+      clauses += "    mapping.constraint.domain_restriction "
+                 "projection(memory_bound_services) subject(" +
+                 subject + ") admissible_domain([" + serviceValue + "])\n";
+      clauses += "    mapping.constraint.domain_restriction "
+                 "projection(memory_address_region) subject(" +
+                 subject + ") admissible_domain([" + addressValue + "])\n";
+    }
+    clauses += "    mapping.constraint." + serviceRelation.str() +
+               " projection(memory_bound_services) subjects([" + roots + "])\n";
+    clauses += "    mapping.constraint." + addressRelation.str() +
+               " projection(memory_address_region) subjects([" + roots + "])\n";
+    const std::string text =
+        "module {\n  mapping.constraints.spatial dataflow(" +
+        identityAttr(dataflow.identity()) + ") tech_mapping(" +
+        identityAttr(techMapping.identity()) + ") fabric(" +
+        identityAttr(fabric.identity()) + ") {\n" + clauses + "  }\n}\n";
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    if (!module)
+      fail("cannot parse memory-root relation fixture");
+    auto roots = module->getOps<::mapping::ConstraintsSpatialOp>();
+    return take(mapping::finalizeSpatialMappingConstraintSet(
+        *roots.begin(), dataflow, techMapping, fabric, store));
+  };
+
+  const auto feasibleMemoryRoots =
+      buildMemoryRootConstraints("equal", "disjoint");
+  auto feasibleMemoryProblem = take(pnr::freezeSpatialPnrProblem(
+      dataflow, techMapping, fabric, pnrConfig, feasibleMemoryRoots.view()));
+  auto feasibleMemoryCandidate =
+      take(pnr::createCanonicalSpatialCandidate(feasibleMemoryProblem));
+  if (llvm::Error error = feasibleMemoryCandidate->verify())
+    fail("memory service/address relations failed cold verification: " +
+         llvm::toString(std::move(error)));
+  for (pnr::PnrIndex binding = 0; binding < 2; ++binding) {
+    const auto target =
+        feasibleMemoryCandidate->logicalMemoryBinding(binding).target;
+    if (target >= feasibleMemoryProblem->memory().bindingTargets().size() ||
+        !std::holds_alternative<fabric::FabricMemoryServiceRegionRef>(
+            feasibleMemoryProblem->memory().bindingTargets()[target].target))
+      fail("feasible memory-root relation escaped through BoundaryProxy");
+  }
+
+  const auto impossibleMemoryRoots =
+      buildMemoryRootConstraints("disjoint", "equal");
+  auto impossibleMemoryProblem = take(pnr::freezeSpatialPnrProblem(
+      dataflow, techMapping, fabric, pnrConfig, impossibleMemoryRoots.view()));
+  auto emptyMemoryCandidate =
+      take(pnr::createCanonicalSpatialCandidate(impossibleMemoryProblem));
+  if (llvm::Error error = emptyMemoryCandidate->verify())
+    fail("empty zero-or-more memory projections failed verification: " +
+         llvm::toString(std::move(error)));
+  pnr::PnrIndex localTarget = pnr::getInvalidPnrIndex();
+  for (auto [ordinal, target] :
+       llvm::enumerate(impossibleMemoryProblem->memory().bindingTargets()))
+    if (std::holds_alternative<fabric::FabricMemoryServiceRegionRef>(
+            target.target)) {
+      localTarget = static_cast<pnr::PnrIndex>(ordinal);
+      break;
+    }
+  if (localTarget == pnr::getInvalidPnrIndex())
+    fail("memory relation fixture has no local target");
+  pnr::SpatialCandidateScratch scratch;
+  if (llvm::Error error = scratch.prepare(*impossibleMemoryProblem))
+    fail(llvm::toString(std::move(error)));
+  auto move = take(emptyMemoryCandidate->beginMove(scratch));
+  if (llvm::Error error = move.setLogicalMemoryBinding(0, localTarget, 0))
+    fail(llvm::toString(std::move(error)));
+  auto closed = move.close();
+  if (closed)
+    fail("memory service/address relation accepted an unequal local move");
+  llvm::consumeError(closed.takeError());
 }

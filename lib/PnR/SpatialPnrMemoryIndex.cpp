@@ -330,8 +330,12 @@ llvm::Expected<FrozenSpatialMemoryIndex> FrozenSpatialMemoryIndexBuilder::build(
     endpointInventories.emplace(fabricKey(occurrence), std::move(*endpoints));
   }
 
-  std::map<std::string, std::pair<FabricMemoryServiceRegionRef, std::uint64_t>>
-      localTargets;
+  struct LocalTarget final {
+    FabricMemoryServiceRegionRef reference;
+    std::uint64_t sizeBytes = 0;
+    std::uint64_t addressBaseBytes = 0;
+  };
+  std::map<std::string, LocalTarget> localTargets;
   for (FabricMemoryOccurrenceRef occurrence : fabric.memoryOccurrences()) {
     const auto *service = fabric.localMemoryService(occurrence);
     if (!service)
@@ -341,8 +345,11 @@ llvm::Expected<FrozenSpatialMemoryIndex> FrozenSpatialMemoryIndexBuilder::build(
           FabricMemoryServiceRef::local(occurrence), ordinal};
       const std::string key = fabricKey(reference);
       auto [iterator, inserted] =
-          localTargets.try_emplace(key, reference, region.sizeBytes);
-      if (!inserted && iterator->second.second != region.sizeBytes)
+          localTargets.try_emplace(key, LocalTarget{reference, region.sizeBytes,
+                                                    region.addressBaseBytes});
+      if (!inserted &&
+          (iterator->second.sizeBytes != region.sizeBytes ||
+           iterator->second.addressBaseBytes != region.addressBaseBytes))
         return invalid("one local service region has inconsistent capacity");
     }
   }
@@ -352,9 +359,10 @@ llvm::Expected<FrozenSpatialMemoryIndex> FrozenSpatialMemoryIndexBuilder::build(
   result.bindingTargets_.reserve(localTargets.size() + 1);
   for (const auto &[key, target] : localTargets)
     result.bindingTargets_.push_back(
-        {FrozenSpatialMemoryBindingTarget(target.first), target.second});
+        {FrozenSpatialMemoryBindingTarget(target.reference), target.sizeBytes,
+         target.addressBaseBytes});
   result.bindingTargets_.push_back(
-      {FrozenSpatialMemoryBindingTarget(FrozenSpatialMemoryBoundaryProxy{}),
+      {FrozenSpatialMemoryBindingTarget(FrozenSpatialMemoryBoundaryProxy{}), 0,
        0});
 
   std::map<std::string, std::vector<::dataflow::RootedGraphLaunchRef>>

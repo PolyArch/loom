@@ -2,6 +2,7 @@
 #include "PnR/RoutingNegotiation.h"
 
 #include "SpatialBindingRelationModel.h"
+#include "SpatialMemoryConstraintModel.h"
 #include "SpatialPnrCapacityIndex.h"
 #include "SpatialPnrHandshakeIndex.h"
 #include "SpatialPnrMemoryIndex.h"
@@ -118,12 +119,12 @@ constexpr PnrCapacityContext arcCountContext{
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.10\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.11\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 10;
+constexpr std::uint32_t cacheSchemaMinor = 11;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.10";
+    "loom.spatial_pnr.freeze.2.11";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
@@ -333,6 +334,10 @@ public:
         *routing);
     if (!bindingRelations)
       return bindingRelations.takeError();
+    auto memoryConstraints =
+        detail::SpatialMemoryConstraintModel::create(*memory, *constraints);
+    if (!memoryConstraints)
+      return memoryConstraints.takeError();
     auto routeConstraints = detail::SpatialRouteConstraintModel::create(
         dataflow.identity(), *constraints, *transfers, *resources, *routing);
     if (!routeConstraints)
@@ -367,7 +372,8 @@ public:
         std::move(*realizations), std::move(*memory), std::move(*transfers),
         std::move(*ports), std::move(*resources), std::move(*capacity),
         std::move(*routing), std::move(*handshake), std::move(*progressClosure),
-        std::move(*bindingRelations), std::move(*routeConstraints), cacheKey));
+        std::move(*bindingRelations), std::move(*memoryConstraints),
+        std::move(*routeConstraints), cacheKey));
   }
 
   static FrozenSpatialPnrCacheKey

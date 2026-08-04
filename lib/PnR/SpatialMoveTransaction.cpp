@@ -2,6 +2,7 @@
 
 #include "SpatialBindingRelationModel.h"
 #include "SpatialCandidateStateInternal.h"
+#include "SpatialMemoryConstraintModel.h"
 #include "SpatialRouteConstraintModel.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -715,6 +716,10 @@ llvm::Error SpatialMoveTransaction::validateAffectedState() const {
       return error;
   for (PnrIndex relation : scratch_->affectedBindingRelations_)
     if (llvm::Error error = state_->verifyBindingRelation(relation))
+      return error;
+  if (!scratch_->affectedLogicalMemories_.empty())
+    if (llvm::Error error = state_->problem_->memoryConstraints().verify(
+            state_->logicalMemoryBindings_))
       return error;
 
   for (PnrIndex logicalNet : scratch_->affectedNets_) {

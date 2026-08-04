@@ -17,6 +17,7 @@ add_mlir_library(LoomPnR
   SpatialActionExecutor.cpp
   SpatialAnnealingSearch.cpp
   SpatialBindingRelationModel.cpp
+  SpatialMemoryConstraintModel.cpp
   SpatialCanonicalSeed.cpp
   SpatialCandidateInitializer.cpp
   SpatialCandidateMemory.cpp

@@ -594,7 +594,9 @@ SpatialBindingRelationModel::create(
     if (shard.equalityClasses().empty() && shard.disjointGroups().empty())
       continue;
     if (!isBindingProjection(*projection)) {
-      if (isRouteProjection(*projection))
+      if (isRouteProjection(*projection) ||
+          *projection == Projection::MemoryBoundServices ||
+          *projection == Projection::MemoryAddressRegion)
         continue;
       if (!deferredProjection)
         deferredProjection = *projection;

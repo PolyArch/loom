@@ -372,9 +372,9 @@ intersectDomains(MLIRContext *context,
       if (rightRegion == rightByService.end())
         continue;
       const std::vector<UnsignedRange> leftRanges =
-          normalizeRanges(leftRegion.getIntervals());
+          normalizeRanges(leftRegion.getIntervals().getValue());
       const std::vector<UnsignedRange> rightRanges =
-          normalizeRanges(rightRegion->second.getIntervals());
+          normalizeRanges(rightRegion->second.getIntervals().getValue());
       std::vector<Attribute> intervals =
           rangeAttributes(context, intersectRanges(leftRanges, rightRanges));
       if (!intervals.empty())

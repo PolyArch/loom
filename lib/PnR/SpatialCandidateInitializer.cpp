@@ -3,6 +3,7 @@
 #include "InitializerChoiceOrder.h"
 #include "InitializerRelationSolver.h"
 #include "SpatialBindingRelationModel.h"
+#include "SpatialMemoryConstraintModel.h"
 
 #include "llvm/Support/Error.h"
 
@@ -220,7 +221,6 @@ private:
                                 getInvalidPnrIndex());
     memoryExposureSelections_.assign(memory.exposures().size(),
                                      getInvalidPnrIndex());
-    targetNextOffset_.assign(memory.bindingTargets().size(), 0);
 
     for (PnrIndex actor = 0; actor < realizations.memoryActors().size();
          ++actor) {
@@ -234,11 +234,12 @@ private:
     }
     for (PnrIndex binding = 0; binding < memory.logicalBindings().size();
          ++binding) {
-      if (memory.bindingTargets().size() > getPnrIndexMax())
-        return initializerError("logical-memory target domain is too large");
-      if (llvm::Error error = appendDecision(
-              DecisionKind::LogicalMemoryBinding, binding,
-              static_cast<PnrIndex>(memory.bindingTargets().size())))
+      auto capacity =
+          problem_.memoryConstraints().logicalBindingChoiceCapacity(binding);
+      if (!capacity)
+        return capacity.takeError();
+      if (llvm::Error error = appendDecision(DecisionKind::LogicalMemoryBinding,
+                                             binding, *capacity))
         return error;
     }
     for (PnrIndex use = 0; use < memory.rootedUses().size(); ++use) {
@@ -264,6 +265,7 @@ private:
     canonicalChoices_.resize(choiceStorageSize_);
     choiceOrder_.resize(choiceStorageSize_);
     choiceFenwick_.resize(choiceStorageSize_);
+    logicalMemoryChoices_.resize(choiceStorageSize_);
     assignmentJournal_.reserve(decisions_.size());
     compatibilityChoices_.reserve(memory.dispatchOptions().size());
     return llvm::Error::success();
@@ -359,19 +361,24 @@ private:
     }
     case DecisionKind::LogicalMemoryBinding: {
       const auto &memory = problem_.memory();
-      const auto extent =
-          memory.logicalBindings()[decision.index].staticExtentBytes;
-      for (PnrIndex targetOrdinal = 0;
-           targetOrdinal < memory.bindingTargets().size(); ++targetOrdinal) {
-        const auto &target = memory.bindingTargets()[targetOrdinal];
-        const bool local = std::holds_alternative<
-            ::loom::fabric::FabricMemoryServiceRegionRef>(target.target);
-        if (local &&
-            (!extent || targetNextOffset_[targetOrdinal] > target.sizeBytes ||
-             *extent > target.sizeBytes - targetNextOffset_[targetOrdinal]))
+      auto values = llvm::MutableArrayRef(logicalMemoryChoices_)
+                        .slice(decision.choiceOffset, decision.choiceCapacity);
+      auto generated =
+          problem_.memoryConstraints().collectLogicalBindingChoices(
+              decision.index, logicalMemoryBindings_, values);
+      if (!generated)
+        return generated.takeError();
+      for (PnrIndex choice = 0; choice < *generated; ++choice) {
+        const auto value = values[choice];
+        if (value.target >= memory.bindingTargets().size())
+          return initializerError(
+              "memory constraint owner produced a foreign target");
+        if (!targetSupportsBinding(decision.index,
+                                   memory.bindingTargets()[value.target]))
           continue;
-        if (targetSupportsBinding(decision.index, target))
-          choices[count++] = targetOrdinal;
+        values[count] = value;
+        choices[count] = count;
+        ++count;
       }
       break;
     }
@@ -418,16 +425,8 @@ private:
       memoryOperationPlans_[decision.index] = choice;
       break;
     case DecisionKind::LogicalMemoryBinding: {
-      const auto &memory = problem_.memory();
-      const auto &target = memory.bindingTargets()[choice];
-      const bool local =
-          std::holds_alternative<::loom::fabric::FabricMemoryServiceRegionRef>(
-              target.target);
-      const std::uint64_t offset = local ? targetNextOffset_[choice] : 0;
-      logicalMemoryBindings_[decision.index] = {choice, offset};
-      if (local)
-        targetNextOffset_[choice] +=
-            *memory.logicalBindings()[decision.index].staticExtentBytes;
+      logicalMemoryBindings_[decision.index] =
+          logicalMemoryChoices_[decision.choiceOffset + choice];
       break;
     }
     case DecisionKind::MemoryUseDispatch:
@@ -450,13 +449,6 @@ private:
         memoryOperationPlans_[decision.index] = getInvalidPnrIndex();
         break;
       case DecisionKind::LogicalMemoryBinding: {
-        const auto &memory = problem_.memory();
-        const PnrIndex target = logicalMemoryBindings_[decision.index].target;
-        const auto &record = memory.bindingTargets()[target];
-        if (std::holds_alternative<
-                ::loom::fabric::FabricMemoryServiceRegionRef>(record.target))
-          targetNextOffset_[target] -=
-              *memory.logicalBindings()[decision.index].staticExtentBytes;
         logicalMemoryBindings_[decision.index] = {};
         logicalMemoryBindings_[decision.index].target = getInvalidPnrIndex();
         break;
@@ -493,8 +485,14 @@ private:
           break;
         }
       }
-      if (allAssigned)
+      if (allAssigned) {
+        if (llvm::Error error =
+                problem_.memoryConstraints().verify(logicalMemoryBindings_)) {
+          llvm::consumeError(std::move(error));
+          return false;
+        }
         return true;
+      }
       if (!propagated)
         break;
     }
@@ -564,7 +562,7 @@ private:
   std::vector<PnrIndex> choiceOrder_;
   std::vector<PnrIndex> choiceFenwick_;
   std::vector<PnrIndex> compatibilityChoices_;
-  std::vector<std::uint64_t> targetNextOffset_;
+  std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryChoices_;
   std::vector<std::size_t> assignmentJournal_;
   std::size_t choiceStorageSize_ = 0;
 };

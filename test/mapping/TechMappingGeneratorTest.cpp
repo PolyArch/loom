@@ -272,31 +272,35 @@ buildMemoryChainDataflow(mlir::MLIRContext &context) {
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   dataflow.graph private @load_then_store(
       %start: none, %load_index: index, %store_index: index,
-      %memory: memref<4xi32>) -> ()
-      attributes {input_segments = array<i32: 2, 0, 1>,
+      %load_memory: memref<4xi32>, %store_memory: memref<4xi32>) -> ()
+      attributes {input_segments = array<i32: 2, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %value, %load_done =
-        dataflow.load %memory[%load_index] %start : memref<4xi32>
-    %store_done = dataflow.store %memory[%store_index] %value %load_done
+        dataflow.load %load_memory[%load_index] %start : memref<4xi32>
+    %store_done = dataflow.store %store_memory[%store_index] %value %load_done
         : memref<4xi32>
     dataflow.graph.return values() streams() memories()
         complete(%store_done : none)
   }
   dataflow.thread private @memory_worker
       domain(#dataflow.thread_domain<dense>)(
-          %load_index: index, %store_index: index, %memory: memref<4xi32>)
+          %load_index: index, %store_index: index,
+          %load_memory: memref<4xi32>, %store_memory: memref<4xi32>)
       ctrl (%ctrl: none) {
     %done = dataflow.graph.launch @load_then_store deps(%ctrl)
-        values(%load_index, %store_index) stream_inputs() memories(%memory)
+        values(%load_index, %store_index) stream_inputs()
+        memories(%load_memory, %store_memory)
         stream_outputs()
-        : (none, index, index, memref<4xi32>) -> none
+        : (none, index, index, memref<4xi32>, memref<4xi32>) -> none
     dataflow.thread.yield %done : none
   }
   func.func private @memory_host(
-      %load_index: index, %store_index: index, %memory: memref<4xi32>) {
+      %load_index: index, %store_index: index,
+      %load_memory: memref<4xi32>, %store_memory: memref<4xi32>) {
     %token = dataflow.thread.launch @memory_worker(
-        %load_index, %store_index, %memory)
-        : (index, index, memref<4xi32>) -> !dataflow.thread_token
+        %load_index, %store_index, %load_memory, %store_memory)
+        : (index, index, memref<4xi32>, memref<4xi32>)
+          -> !dataflow.thread_token
     return
   }
 }

@@ -28,6 +28,7 @@ namespace loom::pnr {
 
 namespace detail {
 class SpatialBindingRelationModel;
+class SpatialMemoryConstraintModel;
 class SpatialRouteConstraintModel;
 } // namespace detail
 
@@ -126,6 +127,7 @@ using FrozenSpatialMemoryBindingTarget =
 struct FrozenSpatialMemoryBindingTargetOption final {
   FrozenSpatialMemoryBindingTarget target;
   std::uint64_t sizeBytes = 0;
+  std::uint64_t addressBaseBytes = 0;
 };
 
 struct FrozenSpatialLogicalMemoryBinding final {
@@ -985,6 +987,9 @@ public:
   const detail::SpatialRouteConstraintModel &routeConstraints() const {
     return *routeConstraints_;
   }
+  const detail::SpatialMemoryConstraintModel &memoryConstraints() const {
+    return *memoryConstraints_;
+  }
   const FrozenSpatialPnrCacheKey &cacheKey() const { return cacheKey_; }
 
 private:
@@ -1002,6 +1007,8 @@ private:
       ::loom::mapping::SpatialProgressClosure progressClosure,
       std::shared_ptr<const detail::SpatialBindingRelationModel>
           bindingRelations,
+      std::shared_ptr<const detail::SpatialMemoryConstraintModel>
+          memoryConstraints,
       std::shared_ptr<const detail::SpatialRouteConstraintModel>
           routeConstraints,
       FrozenSpatialPnrCacheKey cacheKey)
@@ -1019,6 +1026,7 @@ private:
         routing_(std::move(routing)), handshake_(std::move(handshake)),
         progressClosure_(progressClosure),
         bindingRelations_(std::move(bindingRelations)),
+        memoryConstraints_(std::move(memoryConstraints)),
         routeConstraints_(std::move(routeConstraints)), cacheKey_(cacheKey) {}
 
   ArtifactIdentity dataflowIdentity_;
@@ -1039,6 +1047,8 @@ private:
   FrozenSpatialHandshakeIndex handshake_;
   ::loom::mapping::SpatialProgressClosure progressClosure_;
   std::shared_ptr<const detail::SpatialBindingRelationModel> bindingRelations_;
+  std::shared_ptr<const detail::SpatialMemoryConstraintModel>
+      memoryConstraints_;
   std::shared_ptr<const detail::SpatialRouteConstraintModel> routeConstraints_;
   FrozenSpatialPnrCacheKey cacheKey_;
 

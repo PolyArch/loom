@@ -2,6 +2,7 @@
 
 #include "SpatialBindingRelationModel.h"
 #include "SpatialCandidateStateInternal.h"
+#include "SpatialMemoryConstraintModel.h"
 #include "SpatialRouteConstraintModel.h"
 
 #include "llvm/ADT/DenseSet.h"
@@ -886,6 +887,9 @@ llvm::Error SpatialCandidateState::verify() const {
     if (llvm::Error error = validateMemoryOperationPlan(index))
       return error;
   if (llvm::Error error = verifyMemorySelections())
+    return error;
+  if (llvm::Error error =
+          problem_->memoryConstraints().verify(logicalMemoryBindings_))
     return error;
   for (PnrIndex index = 0; index < routeTrees_.size(); ++index)
     if (llvm::Error error = validateLogicalNet(index))
