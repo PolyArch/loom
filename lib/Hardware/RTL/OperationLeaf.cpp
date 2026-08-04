@@ -34,12 +34,6 @@ bool samePort(const circt::hw::PortInfo &lhs, const circt::hw::PortInfo &rhs) {
          lhs.dir == rhs.dir;
 }
 
-bool hasSelectedContextStateTransform(
-    const fabric::ResolvedFabricOpCapabilityView &capability) {
-  return capability.implementationFamily ==
-         ::fabric::ImplementationFamilyId::LoopCarry;
-}
-
 } // namespace
 
 llvm::APInt encodeLoopCarryOperationLeafState(
@@ -51,6 +45,53 @@ llvm::APInt encodeLoopCarryOperationLeafState(
     return llvm::APInt(1, 1);
   }
   llvm_unreachable("unknown carry semantic state");
+}
+
+llvm::Expected<std::optional<TransparentLoopOperationLeafStateLayout>>
+deriveTransparentLoopOperationLeafStateLayout(
+    const fabric::ResolvedFabricOpCapabilityView &capability) {
+  using ::fabric::ImplementationFamilyId;
+  switch (capability.implementationFamily) {
+  case ImplementationFamilyId::LoopCarry:
+  case ImplementationFamilyId::LoopGate:
+    return TransparentLoopOperationLeafStateLayout{};
+  case ImplementationFamilyId::LoopInvariant:
+    break;
+  default:
+    return std::nullopt;
+  }
+
+  const fabric::ResolvedFabricOpPhysicalPortView *payloadInput = nullptr;
+  const fabric::ResolvedFabricOpPhysicalPortView *payloadOutput = nullptr;
+  for (const fabric::ResolvedFabricOpPhysicalPortView &port :
+       capability.physicalPorts) {
+    const bool isInput =
+        port.reference.direction == fabric::FabricPortDirection::Input &&
+        port.reference.ordinal == 1;
+    const bool isOutput =
+        port.reference.direction == fabric::FabricPortDirection::Output &&
+        port.reference.ordinal == 0;
+    if (isInput) {
+      if (payloadInput)
+        return invalid("loop invariant state layout repeats its payload input");
+      payloadInput = &port;
+    }
+    if (isOutput) {
+      if (payloadOutput)
+        return invalid(
+            "loop invariant state layout repeats its payload output");
+      payloadOutput = &port;
+    }
+  }
+  if (!payloadInput || !payloadOutput)
+    return invalid("loop invariant state layout is missing a payload port");
+
+  const unsigned payloadWidth =
+      std::min(payloadInput->payloadWidthBits, payloadOutput->payloadWidthBits);
+  if (payloadWidth >= mlir::IntegerType::kMaxWidth)
+    return invalid(
+        "transparent loop state width exceeds the CIRCT integer limit");
+  return TransparentLoopOperationLeafStateLayout{payloadWidth};
 }
 
 llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
@@ -92,7 +133,10 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
       configurationFields.end())
     return invalid("configuration field reference is duplicated");
 
-  const bool stateTransform = hasSelectedContextStateTransform(capability);
+  auto stateLayout = deriveTransparentLoopOperationLeafStateLayout(capability);
+  if (!stateLayout)
+    return stateLayout.takeError();
+  const bool stateTransform = stateLayout->has_value();
   std::vector<circt::hw::PortInfo> result;
   result.reserve(
       inputs.size() + configurationFields.size() + outputs.size() +
@@ -115,10 +159,7 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
       result.push_back(port(
           builder, "ready_output_" + std::to_string(output->reference.ordinal),
           1, circt::hw::ModulePort::Direction::Input));
-    const unsigned stateWidth =
-        encodeLoopCarryOperationLeafState(
-            ::dataflow::semantics::CarrySemanticState::Initial)
-            .getBitWidth();
+    const unsigned stateWidth = stateLayout->value().encodedBitCount();
     result.push_back(port(builder, "state_current", stateWidth,
                           circt::hw::ModulePort::Direction::Input));
   }
@@ -160,10 +201,7 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
       result.push_back(port(
           builder, "valid_output_" + std::to_string(output->reference.ordinal),
           1, circt::hw::ModulePort::Direction::Output));
-    const unsigned stateWidth =
-        encodeLoopCarryOperationLeafState(
-            ::dataflow::semantics::CarrySemanticState::Initial)
-            .getBitWidth();
+    const unsigned stateWidth = stateLayout->value().encodedBitCount();
     result.push_back(port(builder, "state_next", stateWidth,
                           circt::hw::ModulePort::Direction::Output));
     result.push_back(port(builder, "state_write", 1,

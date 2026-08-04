@@ -178,6 +178,7 @@ if(LOOM_HAVE_CIRCT)
     loom-common-skeleton-test
     loom-hardware-transport-test
     loom-module-boundary-ports-test
+    loom-operation-leaf-state-layout-test
     loom-portable-fixed-vector-integer-add-sub-test
     loom-portable-loop-carry-test
     loom-portable-scalar-float-fma-test

@@ -9,6 +9,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
 
+#include <optional>
 #include <vector>
 
 namespace mlir {
@@ -22,12 +23,37 @@ namespace loom::hardware::rtl {
 llvm::APInt encodeLoopCarryOperationLeafState(
     ::dataflow::semantics::CarrySemanticState state);
 
+/// The transient selected-context state boundary shared only by the initial
+/// elastic-transparent loop providers. Bit zero is the logical mode. An
+/// invariant appends its retained payload at the next bit; carry and gate have
+/// no retained payload in this boundary.
+struct TransparentLoopOperationLeafStateLayout final {
+  static constexpr unsigned modeBit = 0;
+  static constexpr unsigned invariantPayloadOffset = 1;
+
+  unsigned payloadWidthBits = 0;
+
+  unsigned encodedBitCount() const {
+    return invariantPayloadOffset + payloadWidthBits;
+  }
+
+  llvm::APInt resetValue() const { return llvm::APInt(encodedBitCount(), 0); }
+};
+
+/// Derives the selected-context state shape from one exact sealed capability.
+/// Stateless operations and stateful families with a different boundary return
+/// no layout. The result is transient and never participates in Fabric or
+/// HardwareImplementation identity.
+llvm::Expected<std::optional<TransparentLoopOperationLeafStateLayout>>
+deriveTransparentLoopOperationLeafStateLayout(
+    const fabric::ResolvedFabricOpCapabilityView &capability);
+
 /// Derives the transient provider boundary from the exact Fabric capability
 /// and ConfigurationABI. Nonzero physical payloads and encoded configuration
-/// fields form the ordinary combinational boundary. The LoopCarry provider
-/// additionally exposes ready/valid and a selected-context state transform.
-/// Context selection, state storage, clock, and reset remain structural-owner
-/// responsibilities.
+/// fields form the ordinary combinational boundary. The initial transparent
+/// loop providers additionally expose ready/valid and a selected-context state
+/// transform. Context selection, state storage, clock, and reset remain
+/// structural-owner responsibilities.
 llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
     mlir::OpBuilder &builder,
     const fabric::ResolvedFabricOpCapabilityView &capability,

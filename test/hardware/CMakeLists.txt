@@ -115,6 +115,17 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-operation-leaf-state-layout-test
+    OperationLeafStateLayoutTest.cpp
+  )
+
+  target_link_libraries(loom-operation-leaf-state-layout-test PRIVATE
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRIR
+    LLVMSupport
+  )
+
   add_executable(loom-portable-scalar-float-fma-test
     PortableScalarFloatFmaTest.cpp
   )
