@@ -822,15 +822,17 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
     search.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
     const auto generatorConfig =
         take(loom::pnr::projectResolvedSpatialPnrConfigView(generatorResolved));
-    const auto generatorBinding =
-        take(loom::dse::resolveSpatialPnrCandidateGeneratorBinding(
+    const auto typedGeneratorInputs =
+        take(loom::dse::bindSpatialPnrCandidateGeneratorInputs(
             dataflowReference, candidates->candidates.front(),
-            fabric.reference(), constraints.reference(), generatorConfig));
+            fabric.reference(), constraints.reference()));
+    const auto generatorBinding = take(
+        loom::dse::resolveSpatialPnrCandidateGeneratorBinding(generatorConfig));
     const loom::pnr::SpatialPnrGenerationInputs generatorInputs{
         dataflow,        tech.view(),        fabric.view(),
         generatorConfig, constraints.view(), store};
-    auto generatedSpatial =
-        loom::dse::invokeSpatialPnrCandidateGenerator(generatorBinding, store);
+    auto generatedSpatial = loom::dse::invokeSpatialPnrCandidateGenerator(
+        typedGeneratorInputs, generatorBinding, store);
     const auto *generated =
         std::get_if<loom::pnr::GeneratedSpatialMappings>(&generatedSpatial);
     if (!generated || generated->candidates.size() != 1 ||
@@ -843,8 +845,8 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
                         generated->candidates.end(),
                         loom::artifactRootReferenceLess))
       fail("Spatial PnR generator did not return a canonical candidate set");
-    auto genericSpatial =
-        take(loom::dse::invokeCandidateGenerator(generatorBinding, store));
+    auto genericSpatial = take(loom::dse::invokeCandidateGenerator(
+        typedGeneratorInputs, generatorBinding, store));
     const auto *genericCompleted =
         std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(
             &genericSpatial);
@@ -852,8 +854,8 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
         genericCompleted->outputBindings.front().artifacts !=
             generated->candidates)
       fail("typed Generate provider diverged from its Spatial PnR owner");
-    auto repeatedSpatial =
-        loom::dse::invokeSpatialPnrCandidateGenerator(generatorBinding, store);
+    auto repeatedSpatial = loom::dse::invokeSpatialPnrCandidateGenerator(
+        typedGeneratorInputs, generatorBinding, store);
     const auto *repeated =
         std::get_if<loom::pnr::GeneratedSpatialMappings>(&repeatedSpatial);
     if (!repeated || repeated->candidates != generated->candidates ||

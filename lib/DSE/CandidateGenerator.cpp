@@ -235,17 +235,31 @@ findCandidateGeneratorDescriptor(CandidateGeneratorKind kind) {
 llvm::Expected<ResolvedCandidateGeneratorBinding>
 ResolvedCandidateGeneratorBinding::get(
     CandidateGeneratorDescriptorRef descriptorRef,
-    std::vector<CandidateGeneratorInputBinding> inputBindings,
     llvm::ArrayRef<std::uint8_t> canonicalConfigBytes,
     const ComponentViewDigest &configDigest) {
   const CandidateGeneratorDescriptor *descriptor = descriptorRef.descriptor();
   if (!descriptor)
     return invalid("binding references an unregistered descriptor");
+
+  if (llvm::Error error = descriptor->resolvedConfigView.validateCanonical(
+          canonicalConfigBytes, configDigest))
+    return std::move(error);
+
+  return ResolvedCandidateGeneratorBinding(
+      descriptorRef, canonicalConfigBytes.vec(), configDigest);
+}
+
+llvm::Error validateCandidateGeneratorInputBindings(
+    CandidateGeneratorDescriptorRef descriptorRef,
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings) {
+  const CandidateGeneratorDescriptor *descriptor = descriptorRef.descriptor();
+  if (!descriptor)
+    return invalid("input bindings reference an unregistered descriptor");
   if (inputBindings.size() != descriptor->inputSlots.size())
     return invalid("binding does not provide every descriptor input slot");
 
   for (std::size_t index = 0; index < inputBindings.size(); ++index) {
-    CandidateGeneratorInputBinding &binding = inputBindings[index];
+    const CandidateGeneratorInputBinding &binding = inputBindings[index];
     const CandidateGeneratorInputSlotDescriptor &slot =
         descriptor->inputSlots[index];
     if (binding.slot.ordinal() != index)
@@ -255,29 +269,14 @@ ResolvedCandidateGeneratorBinding::get(
         return invalid("input slot '" + slot.semanticRole +
                        "' does not accept artifact schema '" +
                        artifact.schemaIdentity + "'");
-    llvm::sort(binding.artifacts, artifactRootReferenceLess);
-    binding.artifacts.erase(
-        std::unique(binding.artifacts.begin(), binding.artifacts.end()),
-        binding.artifacts.end());
+    if (!llvm::is_sorted(binding.artifacts, artifactRootReferenceLess) ||
+        std::adjacent_find(binding.artifacts.begin(),
+                           binding.artifacts.end()) != binding.artifacts.end())
+      return invalid("input artifact sets must be canonical");
     if (!planCardinalityContains(slot.cardinality, binding.artifacts.size()))
       return invalid("canonical input set violates descriptor cardinality");
   }
-
-  if (llvm::Error error = descriptor->resolvedConfigView.validateCanonical(
-          canonicalConfigBytes, configDigest))
-    return std::move(error);
-
-  return ResolvedCandidateGeneratorBinding(
-      descriptorRef, std::move(inputBindings), canonicalConfigBytes.vec(),
-      configDigest);
-}
-
-const CandidateGeneratorInputBinding *
-ResolvedCandidateGeneratorBinding::findInputBinding(
-    CandidateGeneratorInputSlotRef slot) const {
-  if (slot.ordinal() >= inputBindings_.size())
-    return nullptr;
-  return &inputBindings_[slot.ordinal()];
+  return llvm::Error::success();
 }
 
 llvm::Error
@@ -300,13 +299,17 @@ registerCandidateGeneratorProvider(const CandidateGeneratorProvider &provider) {
   return llvm::Error::success();
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome>
-invokeCandidateGenerator(const ResolvedCandidateGeneratorBinding &binding,
-                         const ArtifactStore &store) {
+llvm::Expected<CandidateGeneratorInvocationOutcome> invokeCandidateGenerator(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store) {
   const CandidateGeneratorDescriptor *descriptor =
       binding.descriptorRef().descriptor();
   if (!descriptor)
     return invalid("binding references an unregistered descriptor");
+  if (llvm::Error error = validateCandidateGeneratorInputBindings(
+          binding.descriptorRef(), inputBindings))
+    return std::move(error);
 
   CandidateGeneratorProviderFunction invoke = nullptr;
   {
@@ -333,7 +336,7 @@ invokeCandidateGenerator(const ResolvedCandidateGeneratorBinding &binding,
             std::move(outputs)}};
   }
 
-  auto outcome = invoke(binding, store);
+  auto outcome = invoke(inputBindings, binding, store);
   if (!outcome)
     return outcome.takeError();
   if (auto *completed =

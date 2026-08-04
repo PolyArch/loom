@@ -318,11 +318,11 @@ executeDsePlan(const ResolvedDsePlan &plan, const ArtifactStore &store) {
              std::move(*artifacts)});
       }
       auto binding = ResolvedCandidateGeneratorBinding::get(
-          generate->descriptorRef(), std::move(inputs),
-          generate->canonicalConfigBytes(), generate->configDigest());
+          generate->descriptorRef(), generate->canonicalConfigBytes(),
+          generate->configDigest());
       if (!binding)
         return binding.takeError();
-      auto outcome = invokeCandidateGenerator(*binding, store);
+      auto outcome = invokeCandidateGenerator(inputs, *binding, store);
       if (!outcome)
         return outcome.takeError();
       if (auto *incomplete =

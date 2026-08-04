@@ -214,38 +214,33 @@ llvm::Error registerCandidateGeneratorDescriptor(
 const CandidateGeneratorDescriptor *
 findCandidateGeneratorDescriptor(CandidateGeneratorKind kind);
 
+llvm::Error validateCandidateGeneratorInputBindings(
+    CandidateGeneratorDescriptorRef descriptor,
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings);
+
 class ResolvedCandidateGeneratorBinding final {
 public:
   static llvm::Expected<ResolvedCandidateGeneratorBinding>
   get(CandidateGeneratorDescriptorRef descriptor,
-      std::vector<CandidateGeneratorInputBinding> inputBindings,
       llvm::ArrayRef<std::uint8_t> canonicalConfigBytes,
       const ComponentViewDigest &configDigest);
 
   CandidateGeneratorDescriptorRef descriptorRef() const { return descriptor_; }
-  llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings() const {
-    return inputBindings_;
-  }
   llvm::ArrayRef<std::uint8_t> canonicalConfigBytes() const {
     return canonicalConfigBytes_;
   }
   const ComponentViewDigest &configDigest() const { return configDigest_; }
 
-  const CandidateGeneratorInputBinding *
-  findInputBinding(CandidateGeneratorInputSlotRef slot) const;
-
 private:
   ResolvedCandidateGeneratorBinding(
       CandidateGeneratorDescriptorRef descriptor,
-      std::vector<CandidateGeneratorInputBinding> inputBindings,
       std::vector<std::uint8_t> canonicalConfigBytes,
       ComponentViewDigest configDigest)
-      : descriptor_(descriptor), inputBindings_(std::move(inputBindings)),
+      : descriptor_(descriptor),
         canonicalConfigBytes_(std::move(canonicalConfigBytes)),
         configDigest_(configDigest) {}
 
   CandidateGeneratorDescriptorRef descriptor_;
-  std::vector<CandidateGeneratorInputBinding> inputBindings_;
   std::vector<std::uint8_t> canonicalConfigBytes_;
   ComponentViewDigest configDigest_;
 };
@@ -277,6 +272,7 @@ using CandidateGeneratorInvocationOutcome =
 
 using CandidateGeneratorProviderFunction =
     llvm::Expected<CandidateGeneratorInvocationOutcome> (*)(
+        llvm::ArrayRef<CandidateGeneratorInputBinding>,
         const ResolvedCandidateGeneratorBinding &, const ArtifactStore &);
 
 struct CandidateGeneratorProvider final {
@@ -290,7 +286,8 @@ registerCandidateGeneratorProvider(const CandidateGeneratorProvider &provider);
 /// Invokes the exact registered provider and canonicalizes every typed output
 /// set. Missing implementation is a typed Incomplete outcome.
 llvm::Expected<CandidateGeneratorInvocationOutcome>
-invokeCandidateGenerator(const ResolvedCandidateGeneratorBinding &binding,
+invokeCandidateGenerator(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+                         const ResolvedCandidateGeneratorBinding &binding,
                          const ArtifactStore &store);
 
 } // namespace loom::dse

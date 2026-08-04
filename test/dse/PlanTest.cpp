@@ -157,10 +157,12 @@ makePromoteNode(PromotionAcquisitionDescriptorRef descriptor,
 }
 
 llvm::Expected<CandidateGeneratorInvocationOutcome>
-generateSource(const ResolvedCandidateGeneratorBinding &binding,
+generateSource(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+               const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &) {
-  if (binding.inputBindings().size() != 1 ||
-      binding.inputBindings().front().artifacts.size() != 1)
+  if (inputBindings.size() != 1 ||
+      inputBindings.front().artifacts.size() != 1 ||
+      binding.descriptorRef() != sourceGenerator.reference())
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "source provider received invalid inputs");
   const ArtifactRootReference first = makeReference(candidateSchema, 0x31);

@@ -83,10 +83,11 @@ const CandidateGeneratorDescriptor descriptor{
 };
 
 llvm::Expected<CandidateGeneratorInvocationOutcome>
-invokeSpatialProvider(const ResolvedCandidateGeneratorBinding &binding,
+invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+                      const ResolvedCandidateGeneratorBinding &binding,
                       const ArtifactStore &store) {
   ::loom::pnr::SpatialPnrGenerationOutcome outcome =
-      invokeSpatialPnrCandidateGenerator(binding, store);
+      invokeSpatialPnrCandidateGenerator(inputs, binding, store);
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSpatialMappings>(&outcome))
     return CompletedCandidateGeneratorInvocation{{
@@ -136,8 +137,9 @@ const CandidateGeneratorProvider provider{descriptor.reference(),
 }
 
 const ArtifactRootReference &
-singleInput(const ResolvedCandidateGeneratorBinding &binding, InputSlot slot) {
-  return binding.inputBindings()[slot].artifacts.front();
+singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+            InputSlot slot) {
+  return inputBindings[slot].artifacts.front();
 }
 
 } // namespace
@@ -152,13 +154,12 @@ llvm::Error registerSpatialPnrCandidateGenerator() {
   return registerCandidateGeneratorProvider(provider);
 }
 
-llvm::Expected<ResolvedCandidateGeneratorBinding>
-resolveSpatialPnrCandidateGeneratorBinding(
+llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
+bindSpatialPnrCandidateGeneratorInputs(
     const ArtifactRootReference &dataflow,
     const ArtifactRootReference &techMapping,
     const ArtifactRootReference &fabric,
-    const ArtifactRootReference &constraints,
-    const ::loom::pnr::ResolvedPnrConfigView &config) {
+    const ArtifactRootReference &constraints) {
   if (llvm::Error error = registerSpatialPnrCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings = {
@@ -167,16 +168,30 @@ resolveSpatialPnrCandidateGeneratorBinding(
       {CandidateGeneratorInputSlotRef(FabricInput), {fabric}},
       {CandidateGeneratorInputSlotRef(ConstraintInput), {constraints}},
   };
+  if (llvm::Error error = validateCandidateGeneratorInputBindings(
+          descriptor.reference(), bindings))
+    return std::move(error);
+  return bindings;
+}
+
+llvm::Expected<ResolvedCandidateGeneratorBinding>
+resolveSpatialPnrCandidateGeneratorBinding(
+    const ::loom::pnr::ResolvedPnrConfigView &config) {
+  if (llvm::Error error = registerSpatialPnrCandidateGenerator())
+    return std::move(error);
   return ResolvedCandidateGeneratorBinding::get(
-      descriptor.reference(), std::move(bindings), config.canonicalViewBytes(),
-      config.digest());
+      descriptor.reference(), config.canonicalViewBytes(), config.digest());
 }
 
 ::loom::pnr::SpatialPnrGenerationOutcome invokeSpatialPnrCandidateGenerator(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store) {
   if (binding.descriptorRef() != descriptor.reference())
     return invalidOutcome("binding does not select the Spatial PnR generator");
+  if (llvm::Error error = validateCandidateGeneratorInputBindings(
+          descriptor.reference(), inputBindings))
+    return invalidOutcome(llvm::toString(std::move(error)));
 
   auto config = ::loom::pnr::adoptResolvedSpatialPnrConfigView(
       ::loom::pnr::resolvedSpatialPnrConfigSchemaDescriptorBytes(),
@@ -185,7 +200,7 @@ resolveSpatialPnrCandidateGeneratorBinding(
     return invalidOutcome(llvm::toString(config.takeError()));
 
   auto dataflowArtifact = ::dataflow::importCanonicalDataflow(
-      singleInput(binding, DataflowInput), store);
+      singleInput(inputBindings, DataflowInput), store);
   if (!dataflowArtifact)
     return invalidOutcome(llvm::toString(dataflowArtifact.takeError()));
   auto dataflow = dataflowArtifact->view();
@@ -193,15 +208,15 @@ resolveSpatialPnrCandidateGeneratorBinding(
     return invalidOutcome(llvm::toString(dataflow.takeError()));
 
   auto fabric = ::loom::fabric::importEntireFabricRoot(
-      singleInput(binding, FabricInput), store);
+      singleInput(inputBindings, FabricInput), store);
   if (!fabric)
     return invalidOutcome(llvm::toString(fabric.takeError()));
   auto tech = ::loom::mapping::importTechMapping(
-      singleInput(binding, TechMappingInput), store);
+      singleInput(inputBindings, TechMappingInput), store);
   if (!tech)
     return invalidOutcome(llvm::toString(tech.takeError()));
   auto constraints = ::loom::mapping::importSpatialMappingConstraintSet(
-      singleInput(binding, ConstraintInput), store);
+      singleInput(inputBindings, ConstraintInput), store);
   if (!constraints)
     return invalidOutcome(llvm::toString(constraints.takeError()));
 

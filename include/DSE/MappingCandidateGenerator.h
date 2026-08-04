@@ -11,18 +11,22 @@ inline constexpr CandidateGeneratorKind spatialPnrCandidateGeneratorKind(0);
 const CandidateGeneratorDescriptor &spatialPnrCandidateGeneratorDescriptor();
 llvm::Error registerSpatialPnrCandidateGenerator();
 
-llvm::Expected<ResolvedCandidateGeneratorBinding>
-resolveSpatialPnrCandidateGeneratorBinding(
+llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
+bindSpatialPnrCandidateGeneratorInputs(
     const ArtifactRootReference &dataflow,
     const ArtifactRootReference &techMapping,
     const ArtifactRootReference &fabric,
-    const ArtifactRootReference &constraints,
+    const ArtifactRootReference &constraints);
+
+llvm::Expected<ResolvedCandidateGeneratorBinding>
+resolveSpatialPnrCandidateGeneratorBinding(
     const ::loom::pnr::ResolvedPnrConfigView &config);
 
 /// Strictly imports one exact D/T/F/C/K binding and invokes the Spatial PnR
 /// owner. Import or coupling failures are returned through the owner's Invalid
 /// outcome; no partial candidate set is exposed.
 ::loom::pnr::SpatialPnrGenerationOutcome invokeSpatialPnrCandidateGenerator(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store);
 

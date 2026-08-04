@@ -105,33 +105,33 @@ void exerciseRegistryAndBinding() {
   const std::array<std::uint8_t, 2> canonicalConfig = {0x01, 0x02};
   const ComponentViewDigest digest =
       take(loom::computeComponentViewDigest(configSchema, canonicalConfig));
-  const ArtifactRootReference subject = makeReference(inputSchema, 0x11);
   std::vector<CandidateGeneratorInputBinding> inputs = {
-      {CandidateGeneratorInputSlotRef(0), {subject, subject}}};
+      {CandidateGeneratorInputSlotRef(0), {makeReference(inputSchema, 0x11)}}};
+  requireSuccess(
+      validateCandidateGeneratorInputBindings(descriptor.reference(), inputs));
+  std::vector<CandidateGeneratorInputBinding> duplicateInputs = {
+      {CandidateGeneratorInputSlotRef(0),
+       {makeReference(inputSchema, 0x11), makeReference(inputSchema, 0x11)}}};
+  requireErrorContains(validateCandidateGeneratorInputBindings(
+                           descriptor.reference(), duplicateInputs),
+                       "canonical");
   auto binding = take(ResolvedCandidateGeneratorBinding::get(
-      descriptor.reference(), std::move(inputs), canonicalConfig, digest));
+      descriptor.reference(), canonicalConfig, digest));
   if (binding.descriptorRef() != descriptor.reference() ||
-      binding.inputBindings().size() != 1 ||
-      binding.inputBindings().front().artifacts.size() != 1 ||
       !llvm::equal(binding.canonicalConfigBytes(), canonicalConfig) ||
       binding.configDigest() != digest)
-    fail("resolved binding did not preserve exact descriptor-owned inputs");
+    fail("resolved binding did not preserve exact descriptor-owned config");
 
   std::vector<CandidateGeneratorInputBinding> wrongSchema = {
       {CandidateGeneratorInputSlotRef(0), {makeReference(outputSchema, 0x22)}}};
-  auto rejected = ResolvedCandidateGeneratorBinding::get(
-      descriptor.reference(), std::move(wrongSchema), canonicalConfig, digest);
-  if (rejected)
-    fail("binding accepted a foreign input schema");
-  requireErrorContains(rejected.takeError(), "does not accept artifact schema");
+  requireErrorContains(validateCandidateGeneratorInputBindings(
+                           descriptor.reference(), wrongSchema),
+                       "does not accept artifact schema");
 
   const ComponentViewDigest wrongDigest = take(loom::computeComponentViewDigest(
       configSchema, std::array<std::uint8_t, 1>{0x03}));
-  std::vector<CandidateGeneratorInputBinding> validInputs = {
-      {CandidateGeneratorInputSlotRef(0), {makeReference(inputSchema, 0x33)}}};
   auto stale = ResolvedCandidateGeneratorBinding::get(
-      descriptor.reference(), std::move(validInputs), canonicalConfig,
-      wrongDigest);
+      descriptor.reference(), canonicalConfig, wrongDigest);
   if (stale)
     fail("binding accepted a stale config digest");
   requireErrorContains(stale.takeError(), "digest");
