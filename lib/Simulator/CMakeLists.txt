@@ -5,6 +5,7 @@ add_mlir_library(LoomSimulator
   CGRAPhysicalActionRuntime.cpp
   CGRAResourceRuntime.cpp
   DeterministicTranscendental.cpp
+  DFGActorTransition.cpp
   DFGSimulator.cpp
   DFGSimulatorActors.cpp
   DFGSimulatorFunctionalObservations.cpp

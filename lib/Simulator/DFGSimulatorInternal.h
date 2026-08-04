@@ -6,6 +6,7 @@
 #include "Simulator/SimulationArtifacts.h"
 
 #include "Common/PointerLayout.h"
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -40,6 +41,7 @@ namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 struct ResolvedLaunchContext;
 struct MemoryValue;
 struct SimulatorState;
+struct ActorExecutionPlan;
 
 struct MemoryView {
   std::shared_ptr<MemoryValue> memory;
@@ -793,6 +795,35 @@ using ActorProvider = bool (*)(mlir::Operation *,
                                const dataflow::CanonicalActorSchemaProjection &,
                                SimulatorState &);
 
+/// The dynamic input/result shape selected by one non-mutating actor probe.
+/// OperationSchema remains the authority for valid cases; this value is only
+/// matched against the actor's cached canonical case table.
+struct ActorTransitionShape {
+  llvm::SmallVector<std::uint32_t, 4> consumedInputs;
+  llvm::SmallVector<std::uint32_t, 4> activeResults;
+};
+
+enum class ActorTransitionProbeKind : std::uint8_t {
+  Unavailable,
+  AllInputs,
+  OneShot,
+  Primitive,
+  GetElementPtr,
+  Stream,
+  Carry,
+  Invariant,
+  Gate,
+  Mux,
+  Demux,
+  Parallelize,
+  Serialize,
+};
+
+struct ActorRuntimeProvider {
+  ActorProvider commit = nullptr;
+  ActorTransitionProbeKind probe = ActorTransitionProbeKind::Unavailable;
+};
+
 /// Immutable, admission-derived execution cache for one canonical actor.
 /// Persistent identity and semantics remain owned by Canonical Dataflow and
 /// OperationSchema; this record only removes MLIR pointer-map reconstruction
@@ -813,6 +844,9 @@ struct ActorExecutionPlan {
   std::optional<PrimitiveOperationDescriptor> primitive;
   std::optional<MemoryActorExecutionPlan> memory;
   std::optional<GepExecutionPlan> gep;
+  llvm::SmallVector<dataflow::semantics::ActorHandshakeCase, 4> handshakeCases;
+  ActorTransitionProbeKind transitionProbe =
+      ActorTransitionProbeKind::Unavailable;
 
   bool isPlainMemory() const { return memory.has_value(); }
 };
@@ -1123,6 +1157,8 @@ void emitResultTokenWithMemoryOrder(SimulatorState &state,
                                     MemoryOrderFrontierId memoryOrder);
 bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema);
 void flushPendingTokens(SimulatorState &state);
+void initializeRunState(SimulatorState &state,
+                        const PreparedGraphExecution &execution);
 void seedBlockArgument(SimulatorState &state, mlir::BlockArgument argument,
                        const Token &token);
 std::int64_t integerToken(const Token &token);
@@ -1251,7 +1287,12 @@ evaluatePrimitiveToken(mlir::Operation *op,
 
 bool fireLoad(dataflow::LoadOp op, SimulatorState &state);
 bool fireStore(dataflow::StoreOp op, SimulatorState &state);
+std::optional<ActorRuntimeProvider>
+actorRuntimeProvider(dataflow::OperationSchemaId schema);
 ActorProvider actorProvider(dataflow::OperationSchemaId schema);
+llvm::Expected<std::optional<std::uint32_t>>
+probeActorTransition(const ActorExecutionPlan &plan,
+                     const SimulatorState &state);
 bool fireActorOperation(const ActorExecutionPlan &plan, SimulatorState &state);
 std::optional<UnsupportedOperation> unsupportedActorProvider(
     mlir::Operation *op,

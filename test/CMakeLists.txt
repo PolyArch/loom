@@ -125,6 +125,7 @@ set(LOOM_TEST_DEPENDS
   loom-simulator-cgra-event-queue-test
   loom-simulator-cgra-physical-action-test
   loom-simulator-cgra-resource-runtime-test
+  loom-simulator-dfg-actor-transition-probe-test
   loom-simulator-dynamic-work-test
   loom-simulator-dfg-evaluation-test
   loom-simulator-dfg-pointer-execution-test

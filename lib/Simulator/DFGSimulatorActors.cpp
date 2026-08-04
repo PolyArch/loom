@@ -817,47 +817,67 @@ firePrimitiveActor(mlir::Operation *op,
   return firePrimitiveOperation(op, op->getResult(0), state);
 }
 
-ActorProvider actorProvider(dataflow::OperationSchemaId schema) {
+std::optional<ActorRuntimeProvider>
+actorRuntimeProvider(dataflow::OperationSchemaId schema) {
+  using Probe = ActorTransitionProbeKind;
   if (isSupportedPrimitiveOperation(schema))
-    return firePrimitiveActor;
+    return ActorRuntimeProvider{firePrimitiveActor, Probe::Primitive};
 
   using Schema = dataflow::OperationSchemaId;
   switch (schema) {
   case Schema::LLVMGetElementPtr:
-    return fireGetElementPtr;
+    return ActorRuntimeProvider{fireGetElementPtr, Probe::GetElementPtr};
   case Schema::ArithConstant:
-    return fireArithConstantActor;
+    return ActorRuntimeProvider{fireArithConstantActor, Probe::OneShot};
   case Schema::DataflowStream:
-    return fireStreamActor;
+    return ActorRuntimeProvider{fireStreamActor, Probe::Stream};
   case Schema::DataflowConstant:
-    return fireDataflowConstantActor;
+    return ActorRuntimeProvider{fireDataflowConstantActor, Probe::AllInputs};
   case Schema::DataflowCarry:
-    return fireTypedActor<dataflow::CarryOp, fireCarry>;
+    return ActorRuntimeProvider{fireTypedActor<dataflow::CarryOp, fireCarry>,
+                                Probe::Carry};
   case Schema::DataflowInvariant:
-    return fireTypedActor<dataflow::InvariantOp, fireInvariant>;
+    return ActorRuntimeProvider{
+        fireTypedActor<dataflow::InvariantOp, fireInvariant>, Probe::Invariant};
   case Schema::DataflowGate:
-    return fireTypedActor<dataflow::GateOp, fireGate>;
+    return ActorRuntimeProvider{fireTypedActor<dataflow::GateOp, fireGate>,
+                                Probe::Gate};
   case Schema::DataflowSync:
-    return fireTypedActor<dataflow::SyncOp, fireSync>;
+    return ActorRuntimeProvider{fireTypedActor<dataflow::SyncOp, fireSync>,
+                                Probe::AllInputs};
   case Schema::DataflowMux:
-    return fireTypedActor<dataflow::MuxOp, fireMux>;
+    return ActorRuntimeProvider{fireTypedActor<dataflow::MuxOp, fireMux>,
+                                Probe::Mux};
   case Schema::DataflowDemux:
-    return fireTypedActor<dataflow::DemuxOp, fireDemux>;
+    return ActorRuntimeProvider{fireTypedActor<dataflow::DemuxOp, fireDemux>,
+                                Probe::Demux};
   case Schema::DataflowParallelize:
-    return fireTypedActor<dataflow::ParallelizeOp, fireParallelize>;
+    return ActorRuntimeProvider{
+        fireTypedActor<dataflow::ParallelizeOp, fireParallelize>,
+        Probe::Parallelize};
   case Schema::DataflowPack:
-    return fireTypedActor<dataflow::PackOp, firePack>;
+    return ActorRuntimeProvider{fireTypedActor<dataflow::PackOp, firePack>,
+                                Probe::AllInputs};
   case Schema::DataflowUnpack:
-    return fireTypedActor<dataflow::UnpackOp, fireUnpack>;
+    return ActorRuntimeProvider{fireTypedActor<dataflow::UnpackOp, fireUnpack>,
+                                Probe::AllInputs};
   case Schema::DataflowSerialize:
-    return fireTypedActor<dataflow::SerializeOp, fireSerialize>;
+    return ActorRuntimeProvider{
+        fireTypedActor<dataflow::SerializeOp, fireSerialize>, Probe::Serialize};
   case Schema::DataflowLoad:
-    return fireTypedActor<dataflow::LoadOp, fireLoad>;
+    return ActorRuntimeProvider{fireTypedActor<dataflow::LoadOp, fireLoad>,
+                                Probe::Unavailable};
   case Schema::DataflowStore:
-    return fireTypedActor<dataflow::StoreOp, fireStore>;
+    return ActorRuntimeProvider{fireTypedActor<dataflow::StoreOp, fireStore>,
+                                Probe::Unavailable};
   default:
-    return nullptr;
+    return std::nullopt;
   }
+}
+
+ActorProvider actorProvider(dataflow::OperationSchemaId schema) {
+  auto runtime = actorRuntimeProvider(schema);
+  return runtime ? runtime->commit : nullptr;
 }
 
 static bool hasUnsupportedMemoryContract(

@@ -418,12 +418,18 @@ ActorExecutionPlan &installActorPlan(TestSimulatorState &state,
   if (mlir::isa<dataflow::LoadOp, dataflow::StoreOp>(operation))
     memory =
         takeExpected(memoryActorExecutionPlan(operation, state.graphScope));
-  ActorProvider provider = actorProvider(projection->schema);
+  auto runtimeProvider = actorRuntimeProvider(projection->schema);
+  if (!runtimeProvider)
+    fail("actor runtime provider is unavailable");
+  auto handshakeCases =
+      takeExpected(dataflow::semantics::projectActorHandshakeCases(
+          projection->schema, operation->getNumOperands(),
+          operation->getNumResults()));
   state.prepared.actorPlans.push_back(ActorExecutionPlan{
-      operation, std::move(*projection), provider, firstInput,
+      operation, std::move(*projection), runtimeProvider->commit, firstInput,
       static_cast<std::uint32_t>(operation->getNumOperands()),
-      std::move(outputs), std::move(primitive), std::move(memory),
-      std::nullopt});
+      std::move(outputs), std::move(primitive), std::move(memory), std::nullopt,
+      std::move(handshakeCases), runtimeProvider->probe});
   return state.prepared.actorPlans.back();
 }
 

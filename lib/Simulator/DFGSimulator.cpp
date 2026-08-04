@@ -537,8 +537,8 @@ static GraphReturnObservation observeReturnOperands(dataflow::GraphOp graph) {
   return observation;
 }
 
-static void initializeRunState(SimulatorState &state,
-                               const PreparedGraphExecution &execution) {
+void initializeRunState(SimulatorState &state,
+                        const PreparedGraphExecution &execution) {
   state.execution = &execution;
   state.channelSlots.reserve(execution.channels.size());
   for (const PreparedGraphExecution::Channel &channel : execution.channels)
@@ -649,8 +649,16 @@ prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph) {
                    firstInput + inputOrdinal &&
                "actor input channels are not contiguous");
     }
-    const ActorProvider provider = actorProvider(projection->schema);
-    assert(provider && "admitted actor has no simulator provider");
+    const auto runtimeProvider = actorRuntimeProvider(projection->schema);
+    assert(runtimeProvider && runtimeProvider->commit &&
+           "admitted actor has no simulator provider");
+    auto handshakeCases = dataflow::semantics::projectActorHandshakeCases(
+        projection->schema, op.getNumOperands(), op.getNumResults());
+    if (!handshakeCases)
+      return GraphPreparationResult{GraphPreparationFailure{
+          "invalid",
+          {"invalid actor handshake projection: " +
+           llvm::toString(handshakeCases.takeError())}}};
     llvm::SmallVector<ActorExecutionPlan::Output, 2> outputs;
     outputs.reserve(op.getNumResults());
     for (mlir::Value result : op.getResults()) {
@@ -668,9 +676,10 @@ prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph) {
     const unsigned actorOrdinal = execution.actorPlans.size();
     actorOrdinals.try_emplace(&op, actorOrdinal);
     execution.actorPlans.push_back(ActorExecutionPlan{
-        &op, std::move(*projection), provider, firstInput,
+        &op, std::move(*projection), runtimeProvider->commit, firstInput,
         static_cast<std::uint32_t>(op.getNumOperands()), std::move(outputs),
-        std::move(primitive), std::move(memoryActor), std::move(gepActor)});
+        std::move(primitive), std::move(memoryActor), std::move(gepActor),
+        std::move(*handshakeCases), runtimeProvider->probe});
   }
   if (!unsupported.empty()) {
     GraphPreparationFailure failure{"unsupported", {}};

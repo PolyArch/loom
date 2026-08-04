@@ -14,6 +14,23 @@ add_executable(loom-simulator-cgra-physical-action-test
   CgraPhysicalActionRuntimeTest.cpp
 )
 
+add_executable(loom-simulator-dfg-actor-transition-probe-test
+  DFGActorTransitionProbeTest.cpp
+)
+
+target_include_directories(loom-simulator-dfg-actor-transition-probe-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Simulator
+)
+
+target_link_libraries(loom-simulator-dfg-actor-transition-probe-test PRIVATE
+  LoomSimulator
+  MLIRDataflow
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
 target_include_directories(loom-simulator-cgra-physical-action-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Simulator
 )
