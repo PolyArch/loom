@@ -164,6 +164,23 @@ FabricRootKind FabricArtifactView::rootKind() const {
   return storage_->data.rootKind;
 }
 
+std::optional<FabricModuleTemplateRef>
+FabricArtifactView::moduleRootTemplate() const {
+  if (rootKind() != FabricRootKind::Module)
+    return std::nullopt;
+
+  std::optional<FabricModuleTemplateRef> result;
+  for (FabricEntityId id = 0; id < storage_->data.entities.size(); ++id) {
+    if (storage_->data.entities[id].kind !=
+        FabricEntityKind::FabricModuleTemplate)
+      continue;
+    if (result)
+      return std::nullopt;
+    result = FabricModuleTemplateRef(id);
+  }
+  return result;
+}
+
 llvm::ArrayRef<FabricArtifactView> FabricArtifactView::importedModules() const {
   return storage_->data.importedModules;
 }
@@ -541,6 +558,17 @@ llvm::ArrayRef<std::uint8_t> FabricArtifactView::moduleBoundaryEndpointType(
                 : llvm::ArrayRef<std::uint8_t>();
 }
 
+std::optional<::fabric::DataPathType>
+FabricArtifactView::moduleBoundaryEndpointDataPath(
+    const FabricModuleBoundaryEndpointRef &endpoint) const {
+  const detail::FabricModuleBoundaryEndpointViewData *record =
+      storage_->moduleBoundaryEndpoint(endpoint);
+  if (!record ||
+      record->plane != FabricSpatialAttachmentEndpointRef::Plane::Transport)
+    return std::nullopt;
+  return decodeTransportDataPath(record->canonicalType);
+}
+
 llvm::ArrayRef<FabricModuleBoundaryTransportAttachmentView>
 FabricArtifactView::moduleBoundaryTransportAttachments() const {
   return storage_->data.moduleBoundaryTransportAttachments;
@@ -870,6 +898,15 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
   auto validClosedValue = [](auto value) {
     return static_cast<std::uint32_t>(value) < fabricClosedBound(value);
   };
+
+  const std::size_t moduleTemplateCount =
+      llvm::count_if(data.entities, [](const FabricEntityViewData &entity) {
+        return entity.kind == FabricEntityKind::FabricModuleTemplate;
+      });
+  if (data.rootKind == FabricRootKind::Module && moduleTemplateCount != 1)
+    return invalidView("Module root must own exactly one Module template");
+  if (data.rootKind != FabricRootKind::Module && moduleTemplateCount != 0)
+    return invalidView("only a Module root may own a Module template");
 
   for (std::size_t index = 0; index < data.entities.size(); ++index) {
     FabricEntityViewData &entity = data.entities[index];

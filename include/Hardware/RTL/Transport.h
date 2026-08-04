@@ -2,15 +2,22 @@
 #define LOOM_HARDWARE_RTL_TRANSPORT_H
 
 #include "Fabric/IR/BoundaryDataPath.h"
+#include "Fabric/Identity/FabricRefs.h"
 
+#include "circt/Dialect/HW/PortImplementation.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Value.h"
 #include "llvm/Support/Error.h"
 
 #include <optional>
+#include <vector>
 
 namespace mlir {
 class OpBuilder;
+}
+
+namespace loom::fabric {
+class FabricArtifactView;
 }
 
 namespace loom::hardware::rtl {
@@ -22,6 +29,25 @@ struct ForwardTransportSignals final {
   std::optional<mlir::Value> payload;
   std::optional<mlir::Value> tag;
 };
+
+/// The transient CIRCT port projection of one token-plane Module boundary.
+/// The Fabric reference remains the authority for endpoint identity and type;
+/// port names are emission details only.
+struct ModuleBoundaryTransportPortProjection final {
+  loom::fabric::FabricModuleBoundaryEndpointRef boundary;
+  std::optional<circt::hw::PortInfo> data;
+  std::optional<circt::hw::PortInfo> tag;
+  circt::hw::PortInfo valid;
+  circt::hw::PortInfo ready;
+};
+
+/// Projects every token-plane endpoint of one finalized Module root in input
+/// signature order followed by output signature order. Memory-plane endpoints
+/// are not RTL token ports. The complete boundary is validated before any
+/// result is produced.
+llvm::Expected<std::vector<ModuleBoundaryTransportPortProjection>>
+deriveModuleBoundaryTransportPorts(
+    mlir::OpBuilder &builder, const loom::fabric::FabricArtifactView &artifact);
 
 llvm::Expected<ForwardTransportSignals>
 adaptForwardTransportSignals(mlir::OpBuilder &builder, mlir::Location location,

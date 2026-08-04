@@ -283,6 +283,10 @@ public:
   const ArtifactIdentity &identity() const;
   FabricRootKind rootKind() const;
 
+  /// The unique canonical Module template owned by a Module root. Other root
+  /// kinds return no value.
+  std::optional<FabricModuleTemplateRef> moduleRootTemplate() const;
+
   /// Strictly imported direct Module dependencies of a System root. Module
   /// roots have an empty range. These views retain their own Artifact identity;
   /// owner-local references are never rebound into the System root.
@@ -398,6 +402,10 @@ public:
   std::optional<FabricOrdinal> moduleBoundaryEndpointOccurrenceOrdinal(
       const FabricModuleBoundaryEndpointRef &endpoint) const;
   llvm::ArrayRef<std::uint8_t> moduleBoundaryEndpointType(
+      const FabricModuleBoundaryEndpointRef &endpoint) const;
+  /// Decodes the same canonical type for a token-plane endpoint. Memory-plane
+  /// and invalid references have no token data path.
+  std::optional<::fabric::DataPathType> moduleBoundaryEndpointDataPath(
       const FabricModuleBoundaryEndpointRef &endpoint) const;
 
   /// Complete canonical relation for connected token-plane Module boundary

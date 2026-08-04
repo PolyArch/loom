@@ -132,4 +132,14 @@ if(LOOM_HAVE_CIRCT)
     LoomHardwareRTL
     LLVMSupport
   )
+
+  add_executable(loom-module-boundary-ports-test
+    ModuleBoundaryPortsTest.cpp
+  )
+
+  target_link_libraries(loom-module-boundary-ports-test PRIVATE
+    LoomADGBuilder
+    LoomHardwareRTL
+    LLVMSupport
+  )
 endif()
