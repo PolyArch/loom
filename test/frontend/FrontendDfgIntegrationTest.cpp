@@ -218,54 +218,6 @@ entry:
   return module;
 }
 
-std::unique_ptr<llvm::Module> parseFmuladd(const char *test,
-                                           llvm::LLVMContext &context,
-                                           bool riscvTarget = true) {
-  constexpr llvm::StringLiteral source = R"llvm(
-declare float @llvm.fmuladd.f32(float, float, float)
-
-define void @fma_kernel(ptr %a, ptr %b, ptr %c, ptr %output) {
-entry:
-  %av = load float, ptr %a, align 4
-  %bv = load float, ptr %b, align 4
-  %cv = load float, ptr %c, align 4
-  %result = call float @llvm.fmuladd.f32(float %av, float %bv, float %cv)
-  store float %result, ptr %output, align 4
-  ret void
-}
-
-define i32 @main() {
-entry:
-  %a = alloca float, align 4
-  %b = alloca float, align 4
-  %c = alloca float, align 4
-  %output = alloca float, align 4
-  %one_plus_epsilon = bitcast i32 1065353217 to float
-  %negative_rounded_product = bitcast i32 -1082130430 to float
-  store float %one_plus_epsilon, ptr %a, align 4
-  store float %one_plus_epsilon, ptr %b, align 4
-  store float %negative_rounded_product, ptr %c, align 4
-  store float 0.000000e+00, ptr %output, align 4
-  call void @fma_kernel(ptr %a, ptr %b, ptr %c, ptr %output)
-  ret i32 0
-}
-)llvm";
-  llvm::SMDiagnostic diagnostic;
-  auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<fmuladd>");
-  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
-  if (!module) {
-    std::string message;
-    llvm::raw_string_ostream stream(message);
-    diagnostic.print(test, stream);
-    fail(test, stream.str());
-  }
-  if (riscvTarget) {
-    module->setDataLayout("e-m:e-p:64:64-i64:64-n32:64-S128");
-    module->setTargetTriple(llvm::Triple("riscv64-unknown-unknown-elf"));
-  }
-  return module;
-}
-
 std::unique_ptr<llvm::Module> parseScalarReduction(const char *test,
                                                    llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
@@ -730,85 +682,6 @@ applyMemoryDiff(const char *test,
     previousEnd = run.byteOffset + run.changedBytes.size();
   }
   return result;
-}
-
-void selectedFmuladdShapesRemainObservable() {
-  const char *test = "selectedFmuladdShapesRemainObservable";
-  llvm::SmallString<128> directory;
-  std::error_code error =
-      llvm::sys::fs::createUniqueDirectory("loom-fmuladd-oracle", directory);
-  if (error)
-    fail(test, "cannot create artifact store: " + error.message());
-  loom::ArtifactStore store(directory);
-  auto design = take(test, loom::adg::buildBuiltinTarget(
-                               store, loom::adg::BuiltinTargetPreset::Small));
-
-  llvm::LLVMContext targetContext;
-  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
-                                 parseFmuladd(test, targetContext),
-                                 design.roots().front().reference(), store));
-  loom::frontend::SpatialOwnershipOptions ownership;
-  ownership.fmuladdExecutionShape = loom::raising::FMulAddExecutionShape::Fused;
-  auto candidate = take(
-      test, loom::frontend::materializeSpatialOwnership(
-                compiled.structuredProgram,
-                findCallable(test, compiled.structuredProgram, "fma_kernel"),
-                design.roots().front(), ownership));
-  auto view = take(test, candidate.canonicalDataflow.view());
-  dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
-  auto plan = take(test, loom::sim::deriveSimulationInputCapturePlan(
-                             view, launch,
-                             findHostCall(test, candidate.canonicalDataflow,
-                                          "main", "fma_kernel")));
-  const auto &outputBinding =
-      captureBinding(test, plan.input, memoryRoot(test, view, 3));
-  if (outputBinding.floatingWriteLaneType !=
-      mlir::Float32Type::get(candidate.canonicalDataflow.module().getContext()))
-    fail(test, "fmuladd output is not a uniform floating write root");
-
-  llvm::LLVMContext hostContext;
-  std::unique_ptr<llvm::Module> hostModule =
-      parseFmuladd(test, hostContext, false);
-  configureHostModule(test, *hostModule);
-  auto host = take(test, loom::raising::raiseLlvmModuleToStructuredProgram(
-                             std::move(hostModule)));
-  loom::frontend::SpatialOwnershipScope hostScope{
-      findCallable(test, host, "fma_kernel")};
-  auto captureShape = [&](loom::raising::FMulAddExecutionShape shape) {
-    auto prepared =
-        take(test, loom::frontend::prepareSpatialOwnershipSelection(
-                       host, hostScope,
-                       loom::frontend::SpatialOwnershipDecisionPoint{
-                           shape, std::nullopt}));
-    auto nativeContext = std::make_unique<llvm::LLVMContext>();
-    std::unique_ptr<llvm::Module> nativeModule =
-        parseFmuladd(test, *nativeContext, false);
-    configureHostModule(test, *nativeModule);
-    return take(test,
-                loom::sim::executeStructuredDirectCallSimulationInputCapture(
-                    llvm::orc::ThreadSafeModule(std::move(nativeModule),
-                                                std::move(nativeContext)),
-                    std::move(prepared.module), plan));
-  };
-  loom::sim::NativeSimulationInputCapture fused =
-      captureShape(loom::raising::FMulAddExecutionShape::Fused);
-  loom::sim::NativeSimulationInputCapture split =
-      captureShape(loom::raising::FMulAddExecutionShape::Split);
-  if (fused.entryResult != 0 || split.entryResult != 0 ||
-      fused.calls.size() != 1 || split.calls.size() != 1 ||
-      outputBinding.objectIndex >= fused.calls.front().objects.size() ||
-      outputBinding.objectIndex >= split.calls.front().objects.size())
-    fail(test, "fmuladd native captures are malformed");
-  const auto &fusedOutput =
-      fused.calls.front().objects[outputBinding.objectIndex];
-  const auto &splitOutput =
-      split.calls.front().objects[outputBinding.objectIndex];
-  if (fusedOutput.finalBytes == splitOutput.finalBytes)
-    fail(test, "typed fmuladd decisions did not produce distinct results");
-
-  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
-  if (cleanup)
-    fail(test, "cannot remove artifact store: " + cleanup.message());
 }
 
 void scalarLiveOutExecutesWithoutMemoryObjects() {
@@ -1785,7 +1658,6 @@ void staticTableExecutesThroughTypedDfgInput() {
 } // namespace
 
 int main() {
-  selectedFmuladdShapesRemainObservable();
   scalarLiveOutExecutesWithoutMemoryObjects();
   operationCandidateCapturesCallerOwnedMemory();
   nestedOperationCandidateUsesExactCallPath();

@@ -4,7 +4,6 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
-#include "Frontend/Raising/Passes.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -28,6 +27,14 @@ namespace loom::frontend {
 struct StructuredBlockActivityLineage final {
   StructuredEntityRef childBlock;
   StructuredEntityRef parentBlock;
+};
+
+/// One complete Structured child after ownership materialization and before
+/// later compiler generators have resolved every Dataflow-facing choice.
+struct MaterializedStructuredOwnershipCandidate final {
+  StructuredProgramCandidate structuredProgram;
+  std::vector<StructuredBlockActivityLineage> blockActivityLineage;
+  std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
 /// One ordinary child Structured Program and its mechanically derived D0
@@ -85,7 +92,6 @@ using SpatialAddressProjection =
 /// fails canonical publication.
 struct SpatialOwnershipOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
-  std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
   std::optional<SpatialAddressProjection> addressProjection;
   std::optional<ForallOwnershipShape> forallOwnershipShape = std::nullopt;
   std::optional<DirectCallSpecializationShape> directCallSpecializationShape =
@@ -97,7 +103,6 @@ struct SpatialOwnershipOptions final {
 /// record. Applying it may still fail semantic materialization or exact-Fabric
 /// admission.
 struct SpatialOwnershipDecisionPoint final {
-  std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
   std::optional<SpatialAddressProjection> addressProjection;
   std::optional<ForallOwnershipShape> forallOwnershipShape = std::nullopt;
   std::optional<DirectCallSpecializationShape> directCallSpecializationShape =
@@ -120,8 +125,7 @@ struct SpatialOwnershipDecisionPoint final {
 
   friend bool operator==(const SpatialOwnershipDecisionPoint &lhs,
                          const SpatialOwnershipDecisionPoint &rhs) {
-    return lhs.fmuladdExecutionShape == rhs.fmuladdExecutionShape &&
-           lhs.addressProjection == rhs.addressProjection &&
+    return lhs.addressProjection == rhs.addressProjection &&
            lhs.forallOwnershipShape == rhs.forallOwnershipShape &&
            lhs.directCallSpecializationShape ==
                rhs.directCallSpecializationShape;
@@ -289,11 +293,10 @@ enumerateSpatialOwnershipScopeDomain(
 /// Root-relative widths come from the closed Fabric index-width schema, while
 /// an exact pointer-addressed choice retains the source LLVM representation;
 /// exact concrete target admission remains part of candidate materialization.
-/// Fmuladd alternatives are exposed only when the selected scope contains the
-/// corresponding unresolved LLVM operation. A callable whose exact closed
-/// call graph proves uniformly constant arguments exposes one additional
-/// all-bindings specialization choice rather than an argument-subset
-/// Cartesian product. The result is deterministic and performs no ranking or
+/// A callable whose exact closed call graph proves uniformly constant
+/// arguments exposes one additional all-bindings specialization choice rather
+/// than an argument-subset Cartesian product. Execution-shape decisions are
+/// owned separately. The result is deterministic and performs no ranking or
 /// implicit default selection.
 llvm::Expected<std::vector<SpatialOwnershipDecisionPoint>>
 enumerateSpatialOwnershipDecisionDomain(
@@ -308,6 +311,24 @@ prepareSpatialOwnershipSelection(
     const SpatialOwnershipScope &scope,
     const SpatialOwnershipDecisionPoint &decision,
     llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance = {});
+
+/// Materializes ownership into a complete immutable Structured child without
+/// prematurely deriving D0. Later compiler generators consume this ordinary
+/// Artifact and resolve their own decisions.
+llvm::Expected<MaterializedStructuredOwnershipCandidate>
+materializeStructuredSpatialOwnershipDecision(
+    const StructuredProgramCandidate &parent,
+    const SpatialOwnershipScope &scope,
+    const SpatialOwnershipDecisionPoint &decision,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance = {});
+
+/// Mechanically derives D0 and applies exact-Fabric hard-negative admission
+/// after all required Structured decisions are explicit.
+llvm::Expected<MaterializedOwnershipCandidate>
+finalizeSpatialOwnershipCandidate(
+    MaterializedStructuredOwnershipCandidate candidate,
+    const ::loom::fabric::FinalizedFabricRoot &fabric,
+    const lowering::CanonicalDataflowLoweringOptions &lowering = {});
 
 /// Materializes one explicit point from one exact scope-local decision domain.
 /// This performs semantic finalization and exact-Fabric hard pruning, but no

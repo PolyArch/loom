@@ -387,6 +387,32 @@ failure. This lets independently composable Generate nodes remain total while
 preserving the distinction between no candidates, malformed input, and missing
 Evidence.
 
+## Why Execution Shape Is Separate From Ownership
+
+Ownership answers which dependency-closed region belongs to a SpatialCore;
+FMA shape answers how one already selected arithmetic semantic choice is
+materialized. Combining both domains makes every address, call, thread-domain,
+and ownership alternative multiply by the Fused/Split choice before either
+owner can prune its own decisions. It also lets a region-selection API acquire
+an accidental arithmetic default.
+
+Keeping ExecutionShape as the next independent Generate owner removes that
+Cartesian coupling. Ownership publishes one complete immutable Structured
+candidate, ExecutionShape produces only the two uniform semantic policies when
+needed, and downstream Schedule sees only shape-closed candidates. Applying
+one policy to the selected ownership rather than one Boolean per operation
+keeps the domain finite without a hidden heuristic: Fused and Split remain
+ordinary candidates whose whole-workload Evidence can distinguish their
+resource use and numerical behavior.
+
+The invocation retains the just-materialized typed candidate because throwing
+it away and immediately importing the same Artifact repeats canonical parsing
+and loses removable activity lineage. This retained object is not another
+program record: its key is the exact Artifact reference, its bytes must equal
+the published object, and deleting it only causes deterministic reconstruction.
+The architecture therefore keeps one persistent authority while avoiding work
+at the publication boundary.
+
 ## Why SCF-To-Dataflow Is Mechanical
 
 Once the candidate fixes schedule, shape, reduction, and ownership, lowering

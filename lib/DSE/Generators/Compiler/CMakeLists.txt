@@ -1,5 +1,6 @@
 add_library(LoomDSECompilerGenerator
   PreMappingExploration.cpp
+  StructuredExecutionShapeCandidateGenerator.cpp
   StructuredOwnershipCandidateGenerator.cpp
   StructuredScheduleCandidateGenerator.cpp
 )

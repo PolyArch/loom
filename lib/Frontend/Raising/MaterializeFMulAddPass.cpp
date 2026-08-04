@@ -186,6 +186,22 @@ struct MaterializeFMulAddPass
 namespace loom {
 namespace raising {
 
+bool canMaterializeFMulAdd(::mlir::Operation &operation) {
+  auto fmuladd = ::mlir::dyn_cast<::mlir::LLVM::FMulAddOp>(&operation);
+  return fmuladd && restatesExactly(fmuladd.getOperation(),
+                                    /*floating=*/true);
+}
+
+::mlir::LogicalResult materializeFMulAdd(::mlir::Operation &operation,
+                                         FMulAddExecutionShape shape) {
+  auto fmuladd = ::mlir::dyn_cast<::mlir::LLVM::FMulAddOp>(&operation);
+  if (!fmuladd || !canMaterializeFMulAdd(operation))
+    return ::mlir::failure();
+  ::mlir::IRRewriter rewriter(operation.getContext());
+  materializeOne(fmuladd, shape, rewriter);
+  return ::mlir::success();
+}
+
 void materializeFMulAddInOperation(::mlir::Operation &root,
                                    FMulAddExecutionShape shape) {
   ::llvm::SmallVector<::mlir::LLVM::FMulAddOp> selected;

@@ -45,6 +45,8 @@ struct StructuredProgramFunctionalReplayInvocation final {
   const ::loom::frontend::StructuredProgramCandidate &sourceProgram;
   const ::loom::frontend::SpatialOwnershipScope &scope;
   const ::loom::frontend::SpatialOwnershipDecisionPoint &decision;
+  llvm::ArrayRef<::loom::frontend::StructuredExecutionShapeDecision>
+      executionShapeDecisions;
   const ::loom::frontend::MaterializedOwnershipCandidate &candidate;
   const ::loom::sim::CanonicalSimulationWorkload &simulationWorkload;
   const ::loom::sim::CanonicalSimulationRuntimeInput &simulationRuntimeInput;

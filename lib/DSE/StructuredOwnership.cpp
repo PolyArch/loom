@@ -38,6 +38,7 @@ struct OwnershipWorkItem final {
 
 struct MaterializedOwnershipWorkItem final {
   ArtifactRootReference reference;
+  frontend::MaterializedStructuredOwnershipCandidate candidate;
 };
 
 using OwnershipAttemptResult =
@@ -49,24 +50,17 @@ struct OwnershipGenerationState final {
   ArtifactRootReference parentReference;
   ArtifactRootReference workloadReference;
   ArtifactRootReference runtimeInputReference;
+  std::vector<detail::StructuredOwnershipCandidateState> candidates;
 };
 
 llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
     const frontend::StructuredProgramCandidate &parent,
-    const sim::CanonicalSimulationWorkload &workload,
-    const ArtifactRootReference &workloadReference,
-    const sim::CanonicalSimulationRuntimeInput &runtimeInput,
-    const ArtifactRootReference &runtimeInputReference,
-    const sim::NativeStructuredProgramObservations &sourceObservations,
-    const fabric::FinalizedFabricRoot &fabric,
     const StructuredOwnershipGenerationOptions &options,
-    const ResolvedConfig *analyticConfig, const ArtifactStore &artifactStore,
-    const OwnershipWorkItem &workItem,
+    const ArtifactStore &artifactStore, const OwnershipWorkItem &workItem,
     llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
         sourceProvenance) {
-  auto candidate = frontend::materializeSpatialOwnershipDecision(
-      parent, workItem.scope, workItem.decision, fabric, options.lowering,
-      sourceProvenance);
+  auto candidate = frontend::materializeStructuredSpatialOwnershipDecision(
+      parent, workItem.scope, workItem.decision, sourceProvenance);
   if (!candidate) {
     std::optional<StructuredOwnershipCandidateRejectionRecord> rejection;
     llvm::Error unhandled = llvm::handleErrors(
@@ -86,24 +80,8 @@ llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
       candidate->structuredProgram, artifactStore);
   if (!reference)
     return reference.takeError();
-  if (analyticConfig) {
-    const evaluation::models::StructuredFabricAnalyticInvocation invocation{
-        workloadReference,
-        runtimeInputReference,
-        workload,
-        runtimeInput,
-        parent,
-        sourceObservations};
-    if (llvm::Error error =
-            evaluation::models::primeStructuredFabricAnalyticResult(
-                *reference,
-                {candidate->structuredProgram, &candidate->canonicalDataflow,
-                 candidate->spatialGraphs, candidate->blockActivityLineage},
-                invocation, fabric, *analyticConfig, artifactStore))
-      return std::move(error);
-  }
-  return OwnershipAttemptResult{
-      MaterializedOwnershipWorkItem{std::move(*reference)}};
+  return OwnershipAttemptResult{MaterializedOwnershipWorkItem{
+      std::move(*reference), std::move(*candidate)}};
 }
 
 } // namespace
@@ -299,10 +277,9 @@ generateStructuredOwnershipCandidatesImpl(
   std::vector<WorkResult> results(workItems.size());
   auto execute = [&](const frontend::StructuredProgramCandidate &workerParent,
                      std::size_t index) {
-    auto result = materializeOwnershipWorkItem(
-        workerParent, workload, *workloadReference, runtimeInput,
-        *runtimeInputReference, *sourceObservations, fabric, options,
-        analyticConfig, artifactStore, workItems[index], sourceProvenance);
+    auto result =
+        materializeOwnershipWorkItem(workerParent, options, artifactStore,
+                                     workItems[index], sourceProvenance);
     if (!result) {
       results[index].error.emplace(result.takeError());
       return;
@@ -362,6 +339,8 @@ generateStructuredOwnershipCandidatesImpl(
 
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   dispositions.reserve(plannedDispositions.size());
+  std::vector<detail::StructuredOwnershipCandidateState> materializedCandidates;
+  materializedCandidates.reserve(workItems.size());
   for (const PlannedDisposition &planned : plannedDispositions) {
     if (const auto *rejection =
             std::get_if<StructuredOwnershipCandidateRejectionRecord>(
@@ -377,6 +356,8 @@ generateStructuredOwnershipCandidatesImpl(
             std::get_if<MaterializedOwnershipWorkItem>(&attempt)) {
       candidateReferences.push_back(materialized->reference);
       dispositions.push_back({planned.coordinate, materialized->reference});
+      materializedCandidates.push_back(
+          {materialized->reference, std::move(materialized->candidate)});
     } else {
       dispositions.push_back(
           {planned.coordinate,
@@ -392,7 +373,8 @@ generateStructuredOwnershipCandidatesImpl(
   return OwnershipGenerationState{
       CompletedStructuredOwnershipGeneration{std::move(*candidateSet),
                                              std::move(dispositions)},
-      *parentReference, *workloadReference, *runtimeInputReference};
+      *parentReference, *workloadReference, *runtimeInputReference,
+      std::move(materializedCandidates)};
 }
 
 llvm::Expected<CompletedStructuredOwnershipGeneration>
@@ -443,7 +425,8 @@ generateStructuredOwnershipCandidates(
             detail::StructuredOwnershipInvocationAccess::recordGeneration(
                 *invocation, generated->parentReference,
                 generated->workloadReference, generated->runtimeInputReference,
-                generated->completed.dispositions))
+                generated->completed.dispositions,
+                std::move(generated->candidates), artifactStore))
       return std::move(error);
   return std::move(generated->completed);
 }

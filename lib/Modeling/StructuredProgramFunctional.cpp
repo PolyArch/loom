@@ -500,9 +500,9 @@ llvm::Error primeStructuredProgramFunctionalReplay(
 
   auto classified = classifyReplayResult(sim::validateSourceBackedDfgReplay(
       invocation.sourceProgram, invocation.scope, invocation.decision,
-      invocation.candidate, invocation.simulationWorkload,
-      invocation.simulationRuntimeInput, invocation.limits,
-      &invocation.sourceObservations));
+      invocation.executionShapeDecisions, invocation.candidate,
+      invocation.simulationWorkload, invocation.simulationRuntimeInput,
+      invocation.limits, &invocation.sourceObservations));
   if (!classified)
     return classified.takeError();
   const detail::StructuredFunctionalCacheKey key = replayCacheKey(

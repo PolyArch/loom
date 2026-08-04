@@ -215,8 +215,8 @@ void pointerServiceBoundary() {
   auto runtimeInput = take(loom::sim::finalizeSimulationRuntimeInput(
       runtimeDraft, workload, sourceView));
   auto replay = take(loom::sim::validateSourceBackedDfgReplay(
-      compiled.structuredProgram, scope, domain.front(), candidate, workload,
-      runtimeInput,
+      compiled.structuredProgram, scope, domain.front(), {}, candidate,
+      workload, runtimeInput,
       {/*maxWavefrontSteps=*/1000, /*maxEventCount=*/10000,
        /*maxRetainedCaptureBytes=*/1024 * 1024}));
   if (replay.status != loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
@@ -314,8 +314,8 @@ void exactPointerAddressingFallback() {
   auto runtimeInput = take(loom::sim::finalizeSimulationRuntimeInput(
       runtimeDraft, workload, sourceView));
   auto replay = take(loom::sim::validateSourceBackedDfgReplay(
-      compiled.structuredProgram, scope, *pointerAddressed, candidate, workload,
-      runtimeInput,
+      compiled.structuredProgram, scope, *pointerAddressed, {}, candidate,
+      workload, runtimeInput,
       {/*maxWavefrontSteps=*/1000, /*maxEventCount=*/10000,
        /*maxRetainedCaptureBytes=*/1024 * 1024}));
   if (replay.status != loom::sim::SourceBackedDfgValidationStatus::Equivalent ||

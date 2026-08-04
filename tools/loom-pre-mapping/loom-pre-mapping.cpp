@@ -31,6 +31,7 @@
 #include "DSE/PreMappingExploration.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
+#include "Frontend/Compilation/StructuredExecutionShape.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -438,15 +439,42 @@ int main(int argc, char **argv) {
     else if (pointerAddressed)
       ownershipOptions.addressProjection =
           loom::frontend::PointerAddressedAddressProjection{};
-    if (fmuladdShape == FMulAddShapeOption::Fused)
-      ownershipOptions.fmuladdExecutionShape =
-          loom::raising::FMulAddExecutionShape::Fused;
-    else if (fmuladdShape == FMulAddShapeOption::Split)
-      ownershipOptions.fmuladdExecutionShape =
-          loom::raising::FMulAddExecutionShape::Split;
-    auto materialized = loom::frontend::materializeSpatialOwnership(
-        explicitInput->structuredProgram, *callable, design->roots().front(),
-        ownershipOptions);
+    loom::frontend::SpatialOwnershipDecisionPoint ownershipDecision{
+        ownershipOptions.addressProjection,
+        ownershipOptions.forallOwnershipShape,
+        ownershipOptions.directCallSpecializationShape};
+    auto owned = loom::frontend::materializeStructuredSpatialOwnershipDecision(
+        explicitInput->structuredProgram, {*callable}, ownershipDecision);
+    if (!owned)
+      return reportError(owned.takeError());
+    auto executionShapes =
+        loom::frontend::enumerateStructuredExecutionShapeDecisions(
+            owned->structuredProgram);
+    if (!executionShapes)
+      return reportError(executionShapes.takeError());
+    if (executionShapes->empty() &&
+        fmuladdShape != FMulAddShapeOption::Unspecified)
+      return reportError(::llvm::createStringError(
+          ::llvm::inconvertibleErrorCode(),
+          "fmuladd shape was supplied for a selection with no unresolved "
+          "fmuladd"));
+    if (!executionShapes->empty()) {
+      if (fmuladdShape == FMulAddShapeOption::Unspecified)
+        return reportError(::llvm::createStringError(
+            ::llvm::inconvertibleErrorCode(),
+            "selected Spatial region requires --fmuladd-shape"));
+      const loom::raising::FMulAddExecutionShape shape =
+          fmuladdShape == FMulAddShapeOption::Fused
+              ? loom::raising::FMulAddExecutionShape::Fused
+              : loom::raising::FMulAddExecutionShape::Split;
+      auto shaped = loom::frontend::materializeStructuredExecutionShapeDecision(
+          std::move(*owned), {shape});
+      if (!shaped)
+        return reportError(shaped.takeError());
+      owned = std::move(*shaped);
+    }
+    auto materialized = loom::frontend::finalizeSpatialOwnershipCandidate(
+        std::move(*owned), design->roots().front(), ownershipOptions.lowering);
     if (!materialized)
       return reportError(materialized.takeError());
     selected.emplace(std::move(*materialized));
@@ -466,15 +494,42 @@ int main(int argc, char **argv) {
     else if (pointerAddressed)
       ownershipOptions.addressProjection =
           loom::frontend::PointerAddressedAddressProjection{};
-    if (fmuladdShape == FMulAddShapeOption::Fused)
-      ownershipOptions.fmuladdExecutionShape =
-          loom::raising::FMulAddExecutionShape::Fused;
-    else if (fmuladdShape == FMulAddShapeOption::Split)
-      ownershipOptions.fmuladdExecutionShape =
-          loom::raising::FMulAddExecutionShape::Split;
-    auto materialized = loom::frontend::materializeSpatialOwnership(
-        explicitInput->structuredProgram, *operation, design->roots().front(),
-        ownershipOptions);
+    loom::frontend::SpatialOwnershipDecisionPoint ownershipDecision{
+        ownershipOptions.addressProjection,
+        ownershipOptions.forallOwnershipShape,
+        ownershipOptions.directCallSpecializationShape};
+    auto owned = loom::frontend::materializeStructuredSpatialOwnershipDecision(
+        explicitInput->structuredProgram, {*operation}, ownershipDecision);
+    if (!owned)
+      return reportError(owned.takeError());
+    auto executionShapes =
+        loom::frontend::enumerateStructuredExecutionShapeDecisions(
+            owned->structuredProgram);
+    if (!executionShapes)
+      return reportError(executionShapes.takeError());
+    if (executionShapes->empty() &&
+        fmuladdShape != FMulAddShapeOption::Unspecified)
+      return reportError(::llvm::createStringError(
+          ::llvm::inconvertibleErrorCode(),
+          "fmuladd shape was supplied for a selection with no unresolved "
+          "fmuladd"));
+    if (!executionShapes->empty()) {
+      if (fmuladdShape == FMulAddShapeOption::Unspecified)
+        return reportError(::llvm::createStringError(
+            ::llvm::inconvertibleErrorCode(),
+            "selected Spatial region requires --fmuladd-shape"));
+      const loom::raising::FMulAddExecutionShape shape =
+          fmuladdShape == FMulAddShapeOption::Fused
+              ? loom::raising::FMulAddExecutionShape::Fused
+              : loom::raising::FMulAddExecutionShape::Split;
+      auto shaped = loom::frontend::materializeStructuredExecutionShapeDecision(
+          std::move(*owned), {shape});
+      if (!shaped)
+        return reportError(shaped.takeError());
+      owned = std::move(*shaped);
+    }
+    auto materialized = loom::frontend::finalizeSpatialOwnershipCandidate(
+        std::move(*owned), design->roots().front(), ownershipOptions.lowering);
     if (!materialized)
       return reportError(materialized.takeError());
     selected.emplace(std::move(*materialized));

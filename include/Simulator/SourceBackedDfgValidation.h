@@ -3,6 +3,7 @@
 
 #include "Dataflow/IR/OperationSchema.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
+#include "Frontend/Compilation/StructuredExecutionShape.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/Support/Error.h"
@@ -58,6 +59,8 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     const frontend::StructuredProgramCandidate &sourceProgram,
     const frontend::SpatialOwnershipScope &scope,
     const frontend::SpatialOwnershipDecisionPoint &decision,
+    llvm::ArrayRef<frontend::StructuredExecutionShapeDecision>
+        executionShapeDecisions,
     const frontend::MaterializedOwnershipCandidate &candidate,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,

@@ -153,9 +153,11 @@ becomes `math.fma`. `llvm.intr.fmuladd` remains unchanged in S0 until one typed
 `ExecutionShape` decision materializes either `Fused` or
 `Split(arith.mulf, arith.addf)` under the exact floating environment and
 fast-math contract. That decision is candidate lineage and may be evaluated as
-a performance choice; target code generation cannot choose it implicitly.
-After materialization, no `fmuladd` operation may remain in a finalizable Sn or
-be registered as a Canonical Dataflow actor.
+a performance choice; target code generation cannot choose it implicitly. The
+Ownership generator selects the Spatial region but does not own this decision.
+The ExecutionShape generator resolves it before Schedule or Dataflow lowering
+may consume the candidate. After materialization, no `fmuladd` operation may
+remain in a finalizable Sn or be registered as a Canonical Dataflow actor.
 
 Ordinary calls are never expanded from a symbol-name or arity match. A call
 remains a call, becomes visible through LLVM linking or LTO, or is handled by a
@@ -648,6 +650,42 @@ placement, routing, contention, or QoR conclusion. The invocation may retain
 the sealed child and D0 projection as a reference-keyed read-through cache for
 Evaluation and functional replay, but the Structured and Dataflow Artifacts
 remain the only semantic owners.
+
+### Structured ExecutionShape Generator
+
+The schema-1.0 ExecutionShape generator consumes a finite set of exact
+Structured Program references and one exact finalized Fabric. An empty input
+set produces an empty output set. A parent with no unresolved selected-Spatial
+execution-shape choice passes through only after mechanical D0 lowering and
+exact actor admission. A parent containing an unresolved, exactly
+representable `llvm.intr.fmuladd` emits the canonical pair of complete
+Structured children:
+
+```text
+Fused -> math.fma
+Split -> arith.mulf followed by arith.addf
+```
+
+One decision applies uniformly to every unresolved `fmuladd` in the selected
+Spatial ownership of that complete parent. It never rewrites residual
+InstructionCore operations or operations owned by nested callables. This is a
+two-element semantic policy domain, not one independent Boolean dimension per
+operation. Distinct per-operation combinations are not part of schema 1.0.
+
+Each child preserves the exact floating type, fast-math contract, source
+location, Ownership lineage, and source-provenance projection. It is verified,
+finalized through the sole Structured Program finalizer, mechanically lowered
+to D0, and admitted against the exact concrete Fabric before publication to the
+output set. A shape whose resulting canonical actors have no concrete admitted
+capability is excluded. No unresolved parent, mixed Fused/Split child, hidden
+backend default, or target-code-generation choice may cross this boundary.
+
+The resolved schema-1.0 component view is empty. Worker count, lowering
+verification controls, cached typed candidates, and cached D0 projections are
+invocation-local execution policy and do not change the finite semantic
+domain. A cache entry is keyed by the exact Structured Artifact reference and
+must match its already validated canonical bytes; it is removable and cannot
+serve as a second candidate authority.
 
 ### Workload-Aware Ownership Selection
 

@@ -1049,7 +1049,7 @@ void runEvaluationAnchor() {
       store));
 
   auto spatialReplay = take(loom::sim::validateSourceBackedDfgReplay(
-      compiled.structuredProgram, spatialScope, spatialDecision, spatial,
+      compiled.structuredProgram, spatialScope, spatialDecision, {}, spatial,
       inputs.workload, inputs.runtimeInput,
       {100000, 1000000, 256ULL * 1024ULL * 1024ULL}, &inputs.observations));
   if (spatialReplay.status !=
@@ -1058,7 +1058,7 @@ void runEvaluationAnchor() {
       spatialReplay.wavefrontSteps == 0 || spatialReplay.eventCount == 0)
     fail("functional replay did not execute the selected graph activation");
   auto coldReplay = take(loom::sim::validateSourceBackedDfgReplay(
-      compiled.structuredProgram, coldScope, coldDecision, cold,
+      compiled.structuredProgram, coldScope, coldDecision, {}, cold,
       inputs.workload, inputs.runtimeInput,
       {100000, 1000000, 256ULL * 1024ULL * 1024ULL}, &inputs.observations));
   if (coldReplay.status !=
@@ -1074,6 +1074,7 @@ void runEvaluationAnchor() {
            compiled.structuredProgram,
            spatialScope,
            spatialDecision,
+           {},
            spatial,
            inputs.workload,
            inputs.runtimeInput,
@@ -1093,6 +1094,7 @@ void runEvaluationAnchor() {
                compiled.structuredProgram,
                spatialScope,
                spatialDecision,
+               {},
                spatial,
                inputs.workload,
                inputs.runtimeInput,
@@ -1108,6 +1110,7 @@ void runEvaluationAnchor() {
                compiled.structuredProgram,
                tinyScope,
                tinyDecision,
+               {},
                tiny,
                inputs.workload,
                inputs.runtimeInput,
@@ -1123,6 +1126,7 @@ void runEvaluationAnchor() {
                compiled.structuredProgram,
                coldScope,
                coldDecision,
+               {},
                cold,
                inputs.workload,
                inputs.runtimeInput,

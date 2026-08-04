@@ -349,7 +349,7 @@ void requireThreadDomainChoice(
       fail("logical thread-domain activity lineage lost the Spatial body");
 
     auto replay = take(loom::sim::validateSourceBackedDfgReplay(
-        source, {selected}, threadDecision, threadDomain, workload, input,
+        source, {selected}, threadDecision, {}, threadDomain, workload, input,
         {10000, 1000000, 1024 * 1024}));
     if (replay.status !=
             loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
@@ -384,8 +384,8 @@ void requireThreadDomainChoice(
           {},
           {}};
       auto nonRetiringReplay = take(loom::sim::validateSourceBackedDfgReplay(
-          source, {selected}, threadDecision, nonRetiringCandidate, workload,
-          input, {10000, 1000000, 1024 * 1024}));
+          source, {selected}, threadDecision, {}, nonRetiringCandidate,
+          workload, input, {10000, 1000000, 1024 * 1024}));
       if (nonRetiringReplay.status !=
           loom::sim::SourceBackedDfgValidationStatus::Mismatch)
         fail("non-retiring candidate was not classified as a mismatch");
@@ -413,7 +413,7 @@ void requireThreadDomainChoice(
 
       auto shortened = withExtent(7);
       auto mismatched = take(loom::sim::validateSourceBackedDfgReplay(
-          source, {selected}, threadDecision, shortened, workload, input,
+          source, {selected}, threadDecision, {}, shortened, workload, input,
           {10000, 1000000, 1024 * 1024}));
       if (mismatched.status !=
               loom::sim::SourceBackedDfgValidationStatus::Mismatch ||
@@ -422,7 +422,7 @@ void requireThreadDomainChoice(
 
       auto expanded = withExtent(9);
       auto mismatchBeforeReplay = take(loom::sim::validateSourceBackedDfgReplay(
-          source, {selected}, threadDecision, expanded, workload, input,
+          source, {selected}, threadDecision, {}, expanded, workload, input,
           {1, 1, 1024 * 1024}));
       if (mismatchBeforeReplay.status !=
               loom::sim::SourceBackedDfgValidationStatus::Mismatch ||
@@ -467,7 +467,7 @@ void requireThreadDomainChoice(
       loom::frontend::MaterializedOwnershipCandidate repeated{
           std::move(repeatedProgram), std::move(repeatedDataflow), {}, {}, {}};
       auto repeatedMismatch = take(loom::sim::validateSourceBackedDfgReplay(
-          source, {selected}, threadDecision, repeated, workload, input,
+          source, {selected}, threadDecision, {}, repeated, workload, input,
           {1, 1, 1024 * 1024}));
       if (repeatedMismatch.status !=
               loom::sim::SourceBackedDfgValidationStatus::Mismatch ||
@@ -477,7 +477,7 @@ void requireThreadDomainChoice(
         fail("repeated coordinates were not rejected before graph replay");
 
       auto limited = loom::sim::validateSourceBackedDfgReplay(
-          source, {selected}, threadDecision, threadDomain, workload, input,
+          source, {selected}, threadDecision, {}, threadDomain, workload, input,
           {10000, 1000000, 32});
       if (limited)
         fail("capture retained bytes exceeded an ignored execution limit");
@@ -489,7 +489,7 @@ void requireThreadDomainChoice(
           [&](loom::sim::SourceBackedDfgValidationLimits limits,
               llvm::StringRef description) {
             auto result = loom::sim::validateSourceBackedDfgReplay(
-                source, {selected}, threadDecision, threadDomain, workload,
+                source, {selected}, threadDecision, {}, threadDomain, workload,
                 input, limits);
             if (result)
               fail((description + " was ignored").str());
@@ -692,7 +692,7 @@ void requireWidenedCoordinateRecovery(
   auto input = take(loom::sim::finalizeSimulationRuntimeInput(
       inputDraft, workload, sourceView));
   auto replay = take(loom::sim::validateSourceBackedDfgReplay(
-      source, {selected}, decision, candidate, workload, input,
+      source, {selected}, decision, {}, candidate, workload, input,
       {10000, 1000000, 1024 * 1024}));
   if (replay.status != loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
       replay.dynamicActivations != 3)
@@ -793,7 +793,7 @@ void requireDynamicThreadDomain(
   auto input = take(loom::sim::finalizeSimulationRuntimeInput(
       inputDraft, workload, sourceView));
   auto replay = take(loom::sim::validateSourceBackedDfgReplay(
-      source, {selected}, decision, candidate, workload, input,
+      source, {selected}, decision, {}, candidate, workload, input,
       {10000, 1000000, 1024 * 1024}));
   if (replay.status != loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
       replay.dynamicActivations != 4)

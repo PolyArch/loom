@@ -626,6 +626,8 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     const frontend::StructuredProgramCandidate &sourceProgram,
     const frontend::SpatialOwnershipScope &scope,
     const frontend::SpatialOwnershipDecisionPoint &decision,
+    llvm::ArrayRef<frontend::StructuredExecutionShapeDecision>
+        executionShapeDecisions,
     const frontend::MaterializedOwnershipCandidate &candidate,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
@@ -640,6 +642,11 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
                                                              scope, decision);
   if (!prepared)
     return prepared.takeError();
+  if (executionShapeDecisions.size() > 1)
+    return invalid("source replay has multiple fmuladd shape decisions");
+  if (!executionShapeDecisions.empty())
+    raising::materializeFMulAddInOperation(
+        *prepared->operation, executionShapeDecisions.front().fmuladdShape);
   auto view = candidate.canonicalDataflow.view();
   if (!view)
     return view.takeError();

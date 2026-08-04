@@ -5,6 +5,7 @@
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StaticMemoryBinding.h"
+#include "Frontend/Compilation/StructuredExecutionShape.h"
 
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
@@ -196,36 +197,6 @@ entry:
   llvm::SMDiagnostic diagnostic;
   auto buffer =
       llvm::MemoryBuffer::getMemBuffer(source, "<undef-boundary-owner>");
-  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
-  if (!module) {
-    std::string message;
-    llvm::raw_string_ostream stream(message);
-    diagnostic.print(test, stream);
-    fail(test, stream.str());
-  }
-  return module;
-}
-
-std::unique_ptr<llvm::Module>
-parseFmulAddSpatialModule(const char *test, llvm::LLVMContext &context) {
-  constexpr llvm::StringLiteral source = R"llvm(
-target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
-target triple = "riscv32-unknown-unknown"
-
-define void @kernel(ptr %a, ptr %b, ptr %c) {
-entry:
-  %lhs = load float, ptr %a, align 4
-  %rhs = load float, ptr %b, align 4
-  %acc = load float, ptr %c, align 4
-  %result = call float @llvm.fmuladd.f32(float %lhs, float %rhs, float %acc)
-  store float %result, ptr %c, align 4
-  ret void
-}
-
-declare float @llvm.fmuladd.f32(float, float, float)
-)llvm";
-  llvm::SMDiagnostic diagnostic;
-  auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<fmuladd-owner>");
   auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
   if (!module) {
     std::string message;
@@ -793,8 +764,7 @@ void explicitWholeCallableSpatialOwnership() {
   auto decisionDomain =
       take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
                      compiled.structuredProgram, callable));
-  if (decisionDomain.size() != 1 || decisionDomain.front().addressProjection ||
-      decisionDomain.front().fmuladdExecutionShape)
+  if (decisionDomain.size() != 1 || decisionDomain.front().addressProjection)
     fail(test, "constant GEP invented a dynamic ownership decision");
   auto selected = take(
       test, loom::frontend::materializeSpatialOwnership(
@@ -943,44 +913,6 @@ void wholeCallableExternalizesUndefValue() {
   for (const dataflow::CanonicalActorView &actor : view.actors())
     if (actor.op->getName().getStringRef() == "llvm.mlir.undef")
       fail(test, "undef remained a canonical actor");
-
-  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
-  if (cleanup)
-    fail(test, "cannot remove artifact store directory: " + cleanup.message());
-}
-
-void explicitFmulAddExecutionShape() {
-  const char *test = "explicitFmulAddExecutionShape";
-  llvm::SmallString<128> directory;
-  std::error_code error =
-      llvm::sys::fs::createUniqueDirectory("loom-fmuladd-owner", directory);
-  if (error)
-    fail(test, "cannot create artifact store directory: " + error.message());
-  loom::ArtifactStore store(directory);
-  auto design = take(test, loom::adg::buildBuiltinTarget(
-                               store, loom::adg::BuiltinTargetPreset::Small));
-
-  llvm::LLVMContext context;
-  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
-                                 parseFmulAddSpatialModule(test, context),
-                                 design.roots().front().reference(), store));
-  loom::frontend::StructuredEntityRef callable =
-      findCallable(test, compiled.structuredProgram, "kernel");
-
-  loom::frontend::SpatialOwnershipOptions options;
-  options.fmuladdExecutionShape = loom::raising::FMulAddExecutionShape::Fused;
-  auto selected = take(test, loom::frontend::materializeSpatialOwnership(
-                                 compiled.structuredProgram, callable,
-                                 design.roots().front(), options));
-  auto view = take(test, selected.canonicalDataflow.view());
-  bool sawFma = false;
-  for (const dataflow::CanonicalActorView &actor : view.actors()) {
-    auto projection =
-        take(test, dataflow::projectRegisteredActorSchemaProjection(actor.op));
-    sawFma |= projection.schema == dataflow::OperationSchemaId::MathFma;
-  }
-  if (!sawFma)
-    fail(test, "selected Fused shape did not publish math.fma");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -1556,15 +1488,19 @@ void operationFmulAddDecisionIsCandidateLocal() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseOperationFmulAddModule(test, context),
                                  design.roots().front().reference(), store));
-  loom::frontend::SpatialOwnershipOptions options;
-  options.addressProjection = loom::frontend::RootRelativeAddressProjection{32};
-  options.fmuladdExecutionShape = loom::raising::FMulAddExecutionShape::Fused;
-  auto selected = take(
-      test,
-      loom::frontend::materializeSpatialOwnership(
-          compiled.structuredProgram,
-          findStructuredLoop(test, compiled.structuredProgram, "fmuladd_loop"),
-          design.roots().front(), options));
+  const loom::frontend::StructuredEntityRef loop =
+      findStructuredLoop(test, compiled.structuredProgram, "fmuladd_loop");
+  loom::frontend::SpatialOwnershipDecisionPoint ownershipDecision{
+      loom::frontend::RootRelativeAddressProjection{32}};
+  auto owned =
+      take(test, loom::frontend::materializeStructuredSpatialOwnershipDecision(
+                     compiled.structuredProgram, {loop}, ownershipDecision));
+  auto shaped =
+      take(test, loom::frontend::materializeStructuredExecutionShapeDecision(
+                     std::move(owned),
+                     {loom::raising::FMulAddExecutionShape::Fused}));
+  auto selected = take(test, loom::frontend::finalizeSpatialOwnershipCandidate(
+                                 std::move(shaped), design.roots().front()));
 
   auto graph = take(test, selected.canonicalDataflow.view());
   bool sawFma = false;
@@ -1613,14 +1549,10 @@ void ownershipDecisionDomainIsScopeLocalAndTyped() {
       take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
                      compiled.structuredProgram, scope));
 
-  using Shape = loom::raising::FMulAddExecutionShape;
   const std::vector<loom::frontend::SpatialOwnershipDecisionPoint> expected = {
-      {Shape::Fused, loom::frontend::RootRelativeAddressProjection{32}},
-      {Shape::Split, loom::frontend::RootRelativeAddressProjection{32}},
-      {Shape::Fused, loom::frontend::RootRelativeAddressProjection{64}},
-      {Shape::Split, loom::frontend::RootRelativeAddressProjection{64}},
-      {Shape::Fused, loom::frontend::PointerAddressedAddressProjection{}},
-      {Shape::Split, loom::frontend::PointerAddressedAddressProjection{}},
+      {loom::frontend::RootRelativeAddressProjection{32}},
+      {loom::frontend::RootRelativeAddressProjection{64}},
+      {loom::frontend::PointerAddressedAddressProjection{}},
   };
   if (domain != expected)
     fail(test, "scope-local decision domain is incomplete or noncanonical");
@@ -1670,12 +1602,16 @@ void unifiedOwnershipDomainMaterializesExplicitDecision() {
     fail(test, "unified domain omitted the operation ownership scope");
 
   loom::frontend::SpatialOwnershipDecisionPoint decision{
-      loom::raising::FMulAddExecutionShape::Fused,
       loom::frontend::RootRelativeAddressProjection{32}};
-  auto selected =
-      take(test, loom::frontend::materializeSpatialOwnershipDecision(
-                     compiled.structuredProgram, *operationScope, decision,
-                     design.roots().front()));
+  auto owned =
+      take(test, loom::frontend::materializeStructuredSpatialOwnershipDecision(
+                     compiled.structuredProgram, *operationScope, decision));
+  auto shaped =
+      take(test, loom::frontend::materializeStructuredExecutionShapeDecision(
+                     std::move(owned),
+                     {loom::raising::FMulAddExecutionShape::Fused}));
+  auto selected = take(test, loom::frontend::finalizeSpatialOwnershipCandidate(
+                                 std::move(shaped), design.roots().front()));
   auto view = take(test, selected.canonicalDataflow.view());
   if (view.graphs().size() != 1 || view.actors().empty())
     fail(test, "unified materialization did not produce Spatial workload");
@@ -1776,7 +1712,6 @@ int main() {
   explicitWholeCallableSpatialOwnership();
   wholeCallableExternalizesGlobalMemoryCapability();
   wholeCallableExternalizesUndefValue();
-  explicitFmulAddExecutionShape();
   wholeCallableRequiresCanonicalAddressIndexDecision();
   wholeCallableNormalizesPointerInduction();
   wholeCallableNormalizesNestedPointerInduction();

@@ -4,6 +4,7 @@
 #include "Config/ResolvedConfig.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/StructuredEvaluationAcquisition.h"
+#include "DSE/StructuredExecutionShapeCandidateGenerator.h"
 #include "DSE/StructuredOwnershipCandidateGenerator.h"
 #include "DSE/StructuredOwnershipInvocation.h"
 #include "DSE/StructuredScheduleCandidateGenerator.h"
@@ -314,6 +315,8 @@ exploreStructuredCompilationToPreMapping(
     return invalid("ownership TopK requires positive k");
   if (llvm::Error error = registerStructuredOwnershipCandidateGenerator())
     return std::move(error);
+  if (llvm::Error error = registerStructuredExecutionShapeCandidateGenerator())
+    return std::move(error);
   if (llvm::Error error = registerStructuredScheduleCandidateGenerator())
     return std::move(error);
   if (llvm::Error error = registerStructuredEvaluationPromotionAcquisition())
@@ -396,6 +399,10 @@ exploreStructuredCompilationToPreMapping(
       projectResolvedStructuredScheduleGeneratorConfigView(config);
   if (!scheduleConfig)
     return scheduleConfig.takeError();
+  auto executionShapeConfig =
+      projectResolvedStructuredExecutionShapeGeneratorConfigView();
+  if (!executionShapeConfig)
+    return executionShapeConfig.takeError();
 
   ResolvedConfig planConfig = config;
   planConfig.dse.modelAuthorizations = modelAuthorizations(*obligations);
@@ -412,13 +419,18 @@ exploreStructuredCompilationToPreMapping(
           generatorConfig->canonicalViewBytes().vec(),
           generatorConfig->digest()},
       GeneratePlanNodeDefinition{
-          structuredScheduleCandidateGeneratorDescriptor().reference(),
+          structuredExecutionShapeCandidateGeneratorDescriptor().reference(),
           {PlanOutputRef{0, 1}, ExactPlanArtifacts{{fabric.reference()}}},
+          executionShapeConfig->canonicalViewBytes().vec(),
+          executionShapeConfig->digest()},
+      GeneratePlanNodeDefinition{
+          structuredScheduleCandidateGeneratorDescriptor().reference(),
+          {PlanOutputRef{1, 0}, ExactPlanArtifacts{{fabric.reference()}}},
           scheduleConfig->canonicalViewBytes().vec(),
           scheduleConfig->digest()},
       PromotePlanNodeDefinition{
           structuredEvaluationPromotionAcquisitionDescriptor().reference(),
-          {PlanOutputRef{1, 0}, ExactPlanArtifacts{{fabric.reference()}},
+          {PlanOutputRef{2, 0}, ExactPlanArtifacts{{fabric.reference()}},
            ExactPlanArtifacts{{*workloadReference}},
            ExactPlanArtifacts{{*runtimeInputReference}}},
           acquisitionConfig->canonicalViewBytes().vec(),
@@ -439,9 +451,9 @@ exploreStructuredCompilationToPreMapping(
 
   auto &completed = std::get<CompletedDsePlanExecution>(*executed);
   std::vector<ArtifactRootReference> selectedReferences(
-      completed.resolve({2, 0}).begin(), completed.resolve({2, 0}).end());
+      completed.resolve({3, 0}).begin(), completed.resolve({3, 0}).end());
   std::vector<ArtifactRootReference> satisfiedEvidence = baselineEvidence;
-  mergeReferences(satisfiedEvidence, completed.resolve({2, 1}));
+  mergeReferences(satisfiedEvidence, completed.resolve({3, 1}));
   if (selectedReferences.empty()) {
     if (options.ownership.selectionMode ==
         StructuredOwnershipSelectionMode::SemanticConformance)
@@ -464,6 +476,7 @@ exploreStructuredCompilationToPreMapping(
             std::move(candidate->candidate.sourceProvenance),
             std::move(candidate->candidate.canonicalDataflow)},
         std::move(candidate->derivations),
+        std::move(candidate->executionShapeDerivations),
         std::move(candidate->scheduleDerivations),
         std::move(candidate->functionalReplay)});
   }

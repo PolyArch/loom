@@ -167,6 +167,13 @@ operation order into one invocation's finite domain. Every admitted scope
 retains its complete owner-derived decision domain. The value is a semantic
 work limit, not a worker count or wall-time budget.
 
+The schema-1.0 Structured ExecutionShape generator has no configurable semantic
+field. Its exact Fused/Split domain is owned by the
+[Structured ExecutionShape Generator](spec-compiler-part-2-scf.md#structured-executionshape-generator)
+contract. An empty canonical component view and its digest therefore select the
+complete schema-1.0 policy; process-local worker or cache settings cannot alter
+it.
+
 The TechMapping generator policy owns:
 
 ```text

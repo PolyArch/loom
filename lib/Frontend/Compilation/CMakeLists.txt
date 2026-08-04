@@ -6,6 +6,7 @@ add_library(LoomFrontendCompilation
   StaticMemoryBinding.cpp
   StructuredAddressIndexNarrowing.cpp
   StructuredCallSpecialization.cpp
+  StructuredExecutionShape.cpp
   StructuredSchedule.cpp
 )
 

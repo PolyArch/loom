@@ -165,6 +165,26 @@ target_link_libraries(loom-structured-schedule-generator-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-structured-execution-shape-generator-test
+  StructuredExecutionShapeGeneratorTest.cpp
+)
+
+target_link_libraries(loom-structured-execution-shape-generator-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomDSECompilerGenerator
+  LoomFrontendCompilation
+  LoomNativeSimulationOracle
+  LoomSimulator
+  MLIRArithDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRMathDialect
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
 add_executable(loom-frontend-dfg-integration-test
   FrontendDfgIntegrationTest.cpp
 )

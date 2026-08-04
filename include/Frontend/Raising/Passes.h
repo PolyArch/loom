@@ -103,6 +103,15 @@ enum class FMulAddExecutionShape {
   Split,
 };
 
+/// Returns true exactly when `operation` is llvm.intr.fmuladd and the selected
+/// standard forms can restate its complete type and floating environment.
+bool canMaterializeFMulAdd(::mlir::Operation &operation);
+
+/// Materializes one exactly representable llvm.intr.fmuladd. A non-fmuladd or
+/// unrepresentable operation fails without changing the IR.
+::mlir::LogicalResult materializeFMulAdd(::mlir::Operation &operation,
+                                         FMulAddExecutionShape shape);
+
 // Materialize the selected execution shape only within `root` and the
 // operations it owns. Nested callables are separate ownership domains and are
 // not traversed. This is the production operation-scoped entry point used by

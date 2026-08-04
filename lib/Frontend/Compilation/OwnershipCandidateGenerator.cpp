@@ -1181,10 +1181,9 @@ llvm::Error retainLiveBlockLineage(PrivateSelection &selection) {
   return llvm::Error::success();
 }
 
-llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
-    PreparedSpatialOwnershipSelection &prepared,
-    const fabric::FinalizedFabricRoot &fabric,
-    const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
+llvm::Expected<MaterializedStructuredOwnershipCandidate>
+finalizeStructuredOwnershipCandidate(
+    PreparedSpatialOwnershipSelection &prepared) {
   mlir::ModuleOp module = prepared.module.get();
   if (mlir::failed(mlir::verify(module)))
     return invalid("materialized Structured Program does not verify");
@@ -1223,18 +1222,8 @@ llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
   for (auto [child, parent] :
        llvm::zip_equal(structured->trackedBlocks, parentBlocks))
     blockActivityLineage.push_back({child, parent});
-  auto projected =
-      lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
-          structured->artifact, loweringOptions);
-  if (!projected)
-    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                  projected.takeError());
-  if (llvm::Error error =
-          requireExactFabricCapabilities(projected->artifact, fabric))
-    return std::move(error);
-  return MaterializedOwnershipCandidate{
-      std::move(structured->artifact), std::move(projected->artifact),
-      std::move(projected->spatialGraphs), std::move(blockActivityLineage),
+  return MaterializedStructuredOwnershipCandidate{
+      std::move(structured->artifact), std::move(blockActivityLineage),
       std::move(structured->sourceProvenance)};
 }
 
@@ -1452,17 +1441,6 @@ enumerateSpatialOwnershipDecisionDomain(
     return callable.takeError();
   }
 
-  bool containsFmuladd = false;
-  operation->walk([&](mlir::Operation *nested) {
-    if (nested != operation && llvm::isa<mlir::FunctionOpInterface>(nested))
-      return mlir::WalkResult::skip();
-    if (llvm::isa<mlir::LLVM::FMulAddOp>(nested)) {
-      containsFmuladd = true;
-      return mlir::WalkResult::interrupt();
-    }
-    return mlir::WalkResult::advance();
-  });
-
   llvm::SmallVector<std::optional<SpatialAddressProjection>, 3>
       addressProjections;
   if (detail::requiresCanonicalAddressIndexDecision(operation)) {
@@ -1477,15 +1455,6 @@ enumerateSpatialOwnershipDecisionDomain(
     addressProjections.push_back(PointerAddressedAddressProjection{});
   } else {
     addressProjections.push_back(std::nullopt);
-  }
-
-  llvm::SmallVector<std::optional<raising::FMulAddExecutionShape>, 2>
-      executionShapes;
-  if (containsFmuladd) {
-    executionShapes.push_back(raising::FMulAddExecutionShape::Fused);
-    executionShapes.push_back(raising::FMulAddExecutionShape::Split);
-  } else {
-    executionShapes.push_back(std::nullopt);
   }
 
   llvm::SmallVector<std::optional<ForallOwnershipShape>, 2> forallShapes;
@@ -1509,26 +1478,23 @@ enumerateSpatialOwnershipDecisionDomain(
         DirectCallSpecializationShape::UniformExactConstants);
 
   std::vector<SpatialOwnershipDecisionPoint> result;
-  result.reserve(addressProjections.size() * executionShapes.size() *
-                 forallShapes.size() * callSpecializations.size());
+  result.reserve(addressProjections.size() * forallShapes.size() *
+                 callSpecializations.size());
   for (const std::optional<SpatialAddressProjection> &addressProjection :
        addressProjections)
-    for (std::optional<raising::FMulAddExecutionShape> shape : executionShapes)
-      for (std::optional<ForallOwnershipShape> forallShape : forallShapes)
-        for (std::optional<DirectCallSpecializationShape> callSpecialization :
-             callSpecializations)
-          result.push_back(SpatialOwnershipDecisionPoint{
-              shape, addressProjection, forallShape, callSpecialization});
+    for (std::optional<ForallOwnershipShape> forallShape : forallShapes)
+      for (std::optional<DirectCallSpecializationShape> callSpecialization :
+           callSpecializations)
+        result.push_back(SpatialOwnershipDecisionPoint{
+            addressProjection, forallShape, callSpecialization});
   return result;
 }
 
-llvm::Expected<MaterializedOwnershipCandidate>
-materializeSpatialOwnershipDecision(
+llvm::Expected<MaterializedStructuredOwnershipCandidate>
+materializeStructuredSpatialOwnershipDecision(
     const StructuredProgramCandidate &parent,
     const SpatialOwnershipScope &scope,
     const SpatialOwnershipDecisionPoint &decision,
-    const fabric::FinalizedFabricRoot &fabric,
-    const lowering::CanonicalDataflowLoweringOptions &lowering,
     llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
   auto prepared = prepareSpatialOwnershipSelection(parent, scope, decision,
                                                    sourceProvenance);
@@ -1554,7 +1520,7 @@ materializeSpatialOwnershipDecision(
       return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                     std::move(error));
   }
-  return finalizeOwnershipCandidate(*prepared, fabric, lowering);
+  return finalizeStructuredOwnershipCandidate(*prepared);
 }
 
 llvm::Expected<PreparedSpatialOwnershipSelection>
@@ -1573,12 +1539,6 @@ prepareSpatialOwnershipSelection(
           return point.addressProjection.has_value();
         }))
       return invalid("selected scope requires an explicit address projection");
-    if (!decision.fmuladdExecutionShape &&
-        llvm::all_of(*domain, [](const SpatialOwnershipDecisionPoint &point) {
-          return point.fmuladdExecutionShape.has_value();
-        }))
-      return invalid(
-          "selected scope requires an explicit fmuladd execution shape");
     if (!decision.forallOwnershipShape &&
         llvm::all_of(*domain, [](const SpatialOwnershipDecisionPoint &point) {
           return point.forallOwnershipShape.has_value();
@@ -1674,9 +1634,6 @@ prepareSpatialOwnershipSelection(
                     normalized.takeError());
     operation = *normalized;
   }
-  if (decision.fmuladdExecutionShape)
-    raising::materializeFMulAddInOperation(*operation,
-                                           *decision.fmuladdExecutionShape);
   std::vector<mlir::Value> liveIns;
   std::vector<mlir::Value> liveOuts;
   std::vector<mlir::Operation *> callableSpatialBody;
@@ -1744,14 +1701,51 @@ prepareSpatialOwnershipSelection(
 }
 
 llvm::Expected<MaterializedOwnershipCandidate>
+finalizeSpatialOwnershipCandidate(
+    MaterializedStructuredOwnershipCandidate candidate,
+    const fabric::FinalizedFabricRoot &fabric,
+    const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
+  auto projected =
+      lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
+          candidate.structuredProgram, loweringOptions);
+  if (!projected)
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  projected.takeError());
+  if (llvm::Error error =
+          requireExactFabricCapabilities(projected->artifact, fabric))
+    return std::move(error);
+  return MaterializedOwnershipCandidate{
+      std::move(candidate.structuredProgram), std::move(projected->artifact),
+      std::move(projected->spatialGraphs),
+      std::move(candidate.blockActivityLineage),
+      std::move(candidate.sourceProvenance)};
+}
+
+llvm::Expected<MaterializedOwnershipCandidate>
+materializeSpatialOwnershipDecision(
+    const StructuredProgramCandidate &parent,
+    const SpatialOwnershipScope &scope,
+    const SpatialOwnershipDecisionPoint &decision,
+    const fabric::FinalizedFabricRoot &fabric,
+    const lowering::CanonicalDataflowLoweringOptions &lowering,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
+  auto structured = materializeStructuredSpatialOwnershipDecision(
+      parent, scope, decision, sourceProvenance);
+  if (!structured)
+    return structured.takeError();
+  return finalizeSpatialOwnershipCandidate(std::move(*structured), fabric,
+                                           lowering);
+}
+
+llvm::Expected<MaterializedOwnershipCandidate>
 materializeSpatialOwnership(const StructuredProgramCandidate &parent,
                             const StructuredEntityRef &selection,
                             const fabric::FinalizedFabricRoot &fabric,
                             const SpatialOwnershipOptions &options) {
   return materializeSpatialOwnershipDecision(
       parent, {selection},
-      {options.fmuladdExecutionShape, options.addressProjection,
-       options.forallOwnershipShape, options.directCallSpecializationShape},
+      {options.addressProjection, options.forallOwnershipShape,
+       options.directCallSpecializationShape},
       fabric, options.lowering);
 }
 

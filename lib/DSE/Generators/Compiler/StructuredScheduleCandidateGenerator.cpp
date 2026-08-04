@@ -132,11 +132,28 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
       binding.configDigest());
   if (!config)
     return config.takeError();
-  auto fabric = fabric::importEntireFabricRoot(
-      singleInput(inputBindings, FabricInput), store);
-  if (!fabric)
-    return fabric.takeError();
-  frontend::FabricCapabilityIndex capabilities(fabric->view());
+  StructuredOwnershipInvocation *invocation =
+      detail::StructuredOwnershipInvocationAccess::current();
+  std::optional<fabric::FinalizedFabricRoot> importedFabric;
+  const fabric::FinalizedFabricRoot *exactFabric = nullptr;
+  if (invocation) {
+    exactFabric =
+        &detail::StructuredOwnershipInvocationAccess::fabric(*invocation);
+    if (singleInput(inputBindings, FabricInput) != exactFabric->reference())
+      return invalid("Fabric input differs from the bound invocation");
+  } else {
+    auto imported = fabric::importEntireFabricRoot(
+        singleInput(inputBindings, FabricInput), store);
+    if (!imported)
+      return imported.takeError();
+    importedFabric.emplace(std::move(*imported));
+    exactFabric = &*importedFabric;
+  }
+  frontend::FabricCapabilityIndex capabilities(exactFabric->view());
+  const lowering::CanonicalDataflowLoweringOptions loweringOptions =
+      invocation ? detail::StructuredOwnershipInvocationAccess::loweringOptions(
+                       *invocation)
+                 : lowering::CanonicalDataflowLoweringOptions{};
 
   std::vector<ArtifactRootReference> outputs =
       inputBindings[StructuredProgramsInput].artifacts;
@@ -146,7 +163,7 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
     if (!parent)
       return parent.takeError();
     auto decisions = frontend::enumerateStructuredScheduleDecisions(
-        *parent, *fabric, config->scopeExpansionLimit());
+        *parent, *exactFabric, config->scopeExpansionLimit());
     if (!decisions)
       return decisions.takeError();
     outputs.reserve(outputs.size() + decisions->size());
@@ -155,13 +172,11 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
           frontend::materializeStructuredScheduleDecision(*parent, decision);
       if (!child)
         return child.takeError();
-      StructuredOwnershipInvocation *invocation =
-          detail::StructuredOwnershipInvocationAccess::current();
       std::optional<lowering::ProjectedCanonicalDataflow> projected;
       if (hasSelectedSpatialRegion(child->structuredProgram)) {
         auto lowered =
             lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
-                child->structuredProgram);
+                child->structuredProgram, loweringOptions);
         if (!lowered)
           return lowered.takeError();
         auto miss = capabilities.firstInadmissibleActor(lowered->artifact);

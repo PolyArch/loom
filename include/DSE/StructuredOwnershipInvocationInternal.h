@@ -15,6 +15,11 @@ struct StructuredOwnershipPreparedSource final {
   const sim::NativeStructuredProgramObservations &observations;
 };
 
+struct StructuredOwnershipCandidateState final {
+  ArtifactRootReference reference;
+  frontend::MaterializedStructuredOwnershipCandidate candidate;
+};
+
 class StructuredOwnershipInvocationAccess final {
 public:
   static StructuredOwnershipInvocation *current();
@@ -35,6 +40,11 @@ public:
 
   static const ResolvedConfig &
   config(const StructuredOwnershipInvocation &invocation);
+  static const lowering::CanonicalDataflowLoweringOptions &
+  loweringOptions(const StructuredOwnershipInvocation &invocation);
+
+  static const fabric::FinalizedFabricRoot &
+  fabric(const StructuredOwnershipInvocation &invocation);
   static evaluation::models::StructuredEvaluationInvocationCache &
   evaluationCache(StructuredOwnershipInvocation &invocation);
   static llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
@@ -45,14 +55,27 @@ public:
       ArtifactRootReference sourceReference,
       ArtifactRootReference workloadReference,
       ArtifactRootReference runtimeInputReference,
-      llvm::ArrayRef<StructuredOwnershipCandidateDisposition> dispositions);
+      llvm::ArrayRef<StructuredOwnershipCandidateDisposition> dispositions,
+      std::vector<StructuredOwnershipCandidateState> candidates,
+      const ArtifactStore &store);
+
+  static llvm::Expected<frontend::MaterializedStructuredOwnershipCandidate>
+  cloneOwnershipCandidate(StructuredOwnershipInvocation &invocation,
+                          const ArtifactRootReference &reference);
 
   static llvm::Error recordScheduleCandidate(
       StructuredOwnershipInvocation &invocation,
-      const ArtifactRootReference &parent,
-      const ArtifactRootReference &child,
+      const ArtifactRootReference &parent, const ArtifactRootReference &child,
       const frontend::StructuredScheduleDecision &decision,
       frontend::MaterializedStructuredScheduleCandidate candidate,
+      lowering::ProjectedCanonicalDataflow projected,
+      const ArtifactStore &store);
+
+  static llvm::Error recordExecutionShapeCandidate(
+      StructuredOwnershipInvocation &invocation,
+      const ArtifactRootReference &parent, const ArtifactRootReference &child,
+      std::optional<frontend::StructuredExecutionShapeDecision> decision,
+      frontend::MaterializedStructuredOwnershipCandidate candidate,
       lowering::ProjectedCanonicalDataflow projected,
       const ArtifactStore &store);
 
