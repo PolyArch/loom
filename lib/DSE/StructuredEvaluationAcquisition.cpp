@@ -6,6 +6,7 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Simulator/SimulationArtifacts.h"
+#include "StructuredOwnershipInvocationInternal.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -195,6 +196,8 @@ resolveCases(const ResolvedPromotionAcquisitionBinding &,
       evaluation::models::structuredFabricAnalyticModelDescriptorRef();
   const evaluation::EvaluationModelDescriptorRef functional =
       evaluation::models::structuredProgramFunctionalModelDescriptorRef();
+  StructuredOwnershipInvocation *ownershipInvocation =
+      detail::StructuredOwnershipInvocationAccess::current();
   std::vector<ResolvedPromotionEvidenceAcquisitionTask> resolved;
   resolved.reserve(tasks.size());
   for (const PromotionEvidenceAcquisitionTask &task : tasks) {
@@ -206,6 +209,16 @@ resolveCases(const ResolvedPromotionAcquisitionBinding &,
     if (!llvm::binary_search(inputBindings[CandidateInput].artifacts,
                              task.candidate, artifactRootReferenceLess))
       return invalid("task candidate is outside the bound candidate set");
+    if (model == functional) {
+      if (!ownershipInvocation)
+        return PromotionAcquisitionResolutionOutcome{
+            IncompletePromotionAcquisitionResolution{
+                PromotionAcquisitionIncompleteReason::Unsupported}};
+      if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
+              primeFunctionalReplay(*ownershipInvocation, task.candidate,
+                                    store))
+        return std::move(error);
+    }
     resolved.push_back({0, resolution});
   }
   return PromotionAcquisitionResolutionOutcome{

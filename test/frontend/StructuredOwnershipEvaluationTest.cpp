@@ -6,6 +6,7 @@
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/StructuredEvaluationAcquisition.h"
 #include "DSE/StructuredOwnershipCandidateGenerator.h"
+#include "DSE/StructuredOwnershipInvocation.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
@@ -804,6 +805,80 @@ void runEvaluationAnchor() {
         fabricSubjects.front() != design.roots().front().reference())
       fail("Structured acquisition changed the exact analytic Request");
   }
+
+  auto functionalObligation = take(
+      loom::dse::prepareStructuredProgramFunctionalEvidenceObligationTemplate(
+          baselineRef, inputs.workloadReference, inputs.runtimeInputReference,
+          loom::defaultResolvedConfig(), store));
+  auto functionalAcquisitionConfig =
+      take(loom::dse::projectResolvedStructuredEvaluationAcquisitionConfigView(
+          {loom::dse::EvidenceObligationTemplateRef(0)}));
+  auto functionalGeneratorConfig =
+      take(loom::dse::projectResolvedStructuredOwnershipGeneratorConfigView(
+          loom::defaultResolvedConfig(), {spatialScope.selection}));
+  auto functionalGate = take(loom::dse::QualityGatePolicy::get(
+      {{{loom::dse::FindingGate{0, loom::evaluation::FindingRequestOrdinal(0),
+                                loom::dse::RequiredFindingState::Absent}}}}));
+  loom::ResolvedConfig functionalPlanConfig = loom::defaultResolvedConfig();
+  functionalPlanConfig.dse.modelAuthorizations = {
+      {functionalObligation.modelBinding().descriptorRef()}};
+  functionalPlanConfig.dse.evidenceObligationTemplates = {functionalObligation};
+  functionalPlanConfig.dse.qualityGatePolicies = {functionalGate};
+  functionalPlanConfig.dse.planNodes = {
+      loom::dse::GeneratePlanNodeDefinition{
+          loom::dse::structuredOwnershipCandidateGeneratorDescriptor()
+              .reference(),
+          {loom::dse::ExactPlanArtifacts{{baselineRef}},
+           loom::dse::ExactPlanArtifacts{{design.roots().front().reference()}},
+           loom::dse::ExactPlanArtifacts{{inputs.workloadReference}},
+           loom::dse::ExactPlanArtifacts{{inputs.runtimeInputReference}}},
+          functionalGeneratorConfig.canonicalViewBytes().vec(),
+          functionalGeneratorConfig.digest()},
+      loom::dse::PromotePlanNodeDefinition{
+          loom::dse::structuredEvaluationPromotionAcquisitionDescriptor()
+              .reference(),
+          {loom::dse::PlanOutputRef{0, 0},
+           loom::dse::ExactPlanArtifacts{{design.roots().front().reference()}},
+           loom::dse::ExactPlanArtifacts{{inputs.workloadReference}},
+           loom::dse::ExactPlanArtifacts{{inputs.runtimeInputReference}}},
+          functionalAcquisitionConfig.canonicalViewBytes().vec(),
+          functionalAcquisitionConfig.digest(),
+          loom::dse::QualityGatePolicyRef(0),
+          loom::dse::AllPassingSelection{},
+          loom::dse::PromotePurpose::CandidateSelection}};
+  auto functionalPlanView =
+      take(loom::dse::projectResolvedDseConfigView(functionalPlanConfig));
+  {
+    loom::dse::StructuredOwnershipInvocation functionalInvocation(
+        compiled.structuredProgram, inputs.workload, inputs.runtimeInput,
+        design.roots().front(), loom::defaultResolvedConfig(), {}, 1,
+        {100000, 1000000, 256ULL * 1024ULL * 1024ULL},
+        compiled.sourceProvenance);
+    loom::dse::StructuredOwnershipInvocationScope functionalInvocationScope(
+        functionalInvocation);
+    auto functionalPlanOutcome =
+        take(loom::dse::executeDsePlan(functionalPlanView, store));
+    const auto *functionalPlanCompleted =
+        std::get_if<loom::dse::CompletedDsePlanExecution>(
+            &functionalPlanOutcome);
+    if (!functionalPlanCompleted ||
+        functionalPlanCompleted->resolve({1, 0}) !=
+            llvm::ArrayRef<loom::ArtifactRootReference>(
+                {baselineRef, spatialRef}) ||
+        functionalPlanCompleted->resolve({1, 1}).size() != 2)
+      fail(
+          "central functional Promote did not replay the generated candidates");
+    auto centrallySelected = take(
+        functionalInvocation.materializeSelectedCandidate(spatialRef, store));
+    if (centrallySelected.candidate.structuredProgram.identity() !=
+            spatialRef.artifact ||
+        centrallySelected.derivations.size() != 1 ||
+        !centrallySelected.functionalReplay ||
+        centrallySelected.functionalReplay->status !=
+            loom::sim::SourceBackedDfgValidationStatus::Equivalent)
+      fail("central functional Promote lost replay or ownership lineage");
+  }
+
   auto coldSpatialEvidence = take(loom::evaluation::evaluateRequest(
       strictSpatialEvaluation.request, strictSpatialEvaluation.resolution,
       store));

@@ -2,6 +2,7 @@ add_library(LoomDSE
   PreMappingExploration.cpp
   StructuredEvaluationAcquisition.cpp
   StructuredOwnership.cpp
+  StructuredOwnershipInvocation.cpp
 )
 
 target_include_directories(LoomDSE PUBLIC

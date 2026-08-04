@@ -10,6 +10,7 @@
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
+#include "StructuredOwnershipInvocationInternal.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ThreadPool.h"
@@ -393,11 +394,40 @@ generateStructuredOwnershipCandidates(
     const ArtifactStore &artifactStore,
     llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
         sourceProvenance) {
+  StructuredOwnershipGenerationOptions effectiveOptions = options;
+  const ResolvedConfig *analyticConfig = nullptr;
+  evaluation::models::StructuredEvaluationInvocationCache *evaluationCache =
+      nullptr;
+  StructuredOwnershipInvocation *invocation =
+      detail::StructuredOwnershipInvocationAccess::current();
+  if (invocation) {
+    if (llvm::Error error =
+            detail::StructuredOwnershipInvocationAccess::prepareGeneration(
+                *invocation, parent, workload, runtimeInput, fabric,
+                effectiveOptions))
+      return std::move(error);
+    analyticConfig =
+        &detail::StructuredOwnershipInvocationAccess::config(*invocation);
+    evaluationCache =
+        &detail::StructuredOwnershipInvocationAccess::evaluationCache(
+            *invocation);
+    sourceProvenance =
+        detail::StructuredOwnershipInvocationAccess::sourceProvenance(
+            *invocation);
+  }
   auto generated = generateStructuredOwnershipCandidatesImpl(
-      parent, workload, runtimeInput, fabric, options, artifactStore,
-      sourceProvenance, nullptr, nullptr);
+      parent, workload, runtimeInput, fabric, effectiveOptions, artifactStore,
+      sourceProvenance, analyticConfig, evaluationCache);
   if (!generated)
     return generated.takeError();
+  if (invocation)
+    if (llvm::Error error =
+            detail::StructuredOwnershipInvocationAccess::recordGeneration(
+                *invocation, generated->parentReference,
+                generated->workloadReference, generated->runtimeInputReference,
+                std::move(generated->sourceObservations),
+                generated->completed.dispositions))
+      return std::move(error);
   return std::move(generated->completed);
 }
 
