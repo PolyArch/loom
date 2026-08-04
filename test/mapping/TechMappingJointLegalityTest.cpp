@@ -141,6 +141,8 @@ loom::fabric::FinalizedFabricRoot buildMemoryFabric(loom::ArtifactStore &store,
                                                     bool temporal) {
   loom::adg::LocalMemoryParameters parameters;
   parameters.capacityBytes = 4096;
+  parameters.interface = {loom::adg::MemoryAccessDomainParameters{128, 128, 16},
+                          128, 128};
   if (temporal)
     parameters.temporal = loom::adg::TemporalMemoryParameters{4, 1};
   auto memory = take(loom::adg::makeGeneral64LocalMemory(parameters));

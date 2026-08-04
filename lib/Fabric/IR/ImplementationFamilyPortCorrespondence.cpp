@@ -58,6 +58,26 @@ llvm::Error fabric::verifyImplementationFamilyPortCorrespondence(
       return reject(
           "token demux must preserve selector, data, and choice roles");
     return llvm::Error::success();
+  case TypedAdmissionProviderId::FixedVectorSliceAlignMergeAdmission:
+    if (resultPorts.size() != 1 || resultPorts.front() != 0)
+      return reject("vector slice result must use physical result role zero");
+    if (actor.schema == ::dataflow::OperationSchemaId::VectorExtract) {
+      if (operandPorts.empty() || operandPorts.front() != 0)
+        return reject(
+            "vector extract source must use physical input role zero");
+      for (auto [ordinal, port] : llvm::enumerate(operandPorts.drop_front()))
+        if (port != ordinal + 2)
+          return reject("vector extract positions must use the ordered "
+                        "physical position roles");
+      return llvm::Error::success();
+    }
+    if (actor.schema == ::dataflow::OperationSchemaId::VectorInsert) {
+      for (auto [ordinal, port] : llvm::enumerate(operandPorts))
+        if (port != ordinal)
+          return reject("vector insert changes a fixed physical input role");
+      return llvm::Error::success();
+    }
+    return reject("vector slice correspondence has an unknown schema");
   default:
     break;
   }

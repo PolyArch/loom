@@ -155,6 +155,7 @@ struct FuDistribution final {
   std::vector<bool> loopControl;
   std::vector<bool> tokenControl;
   std::vector<bool> vectorAdapter;
+  std::vector<bool> vectorStructural;
   std::vector<bool> specialMath;
   std::vector<std::optional<std::uint32_t>> loopOrdinal;
 };
@@ -172,12 +173,35 @@ FuDistribution makeFuDistribution(std::uint32_t count,
       distributedSites(count, ceilDiv(count, 4), 2),
       distributedSites(count, ceilDiv(count, 4), 3),
       distributedSites(count, std::max(1u, ceilDiv(count, 8)), 4),
+      distributedSites(count, std::max(1u, ceilDiv(count, 8)), 5),
       distributedSites(count, std::max(1u, ceilDiv(count, 16)), 7),
       std::vector<std::optional<std::uint32_t>>(count)};
   for (std::uint32_t site = 0; site != count; ++site)
     if (distribution.loopControl[site])
       distribution.loopOrdinal[site] = nextLoopOrdinal++;
   return distribution;
+}
+
+VectorStructuralFuParameters builtinVectorStructuralParameters() {
+  const ::fabric::IntegerWidthSet integerWidths =
+      ::fabric::IntegerWidthSet::get(
+          {::fabric::IntegerWidth::I8, ::fabric::IntegerWidth::I16,
+           ::fabric::IntegerWidth::I32, ::fabric::IntegerWidth::I64});
+  const ::fabric::FloatFormatSet floatFormats = ::fabric::FloatFormatSet::get(
+      {::fabric::FloatFormat::F16, ::fabric::FloatFormat::BF16,
+       ::fabric::FloatFormat::F32, ::fabric::FloatFormat::F64});
+  return {128, 128, 64,
+          ::fabric::FixedVectorSliceAlignMergeParams{
+              integerWidths, floatFormats, 128, 128, 3,
+              ::fabric::ResolvedIndexWidthSet::get(
+                  {::fabric::ResolvedIndexWidth::I32,
+                   ::fabric::ResolvedIndexWidth::I64})},
+          ::fabric::FixedVectorShuffleParams{integerWidths, floatFormats, 128,
+                                             128, 128, 32, 16}};
+}
+
+MemoryInterfaceParameters builtinMemoryInterface() {
+  return {MemoryAccessDomainParameters{128, 128, 16}, 128, 128};
 }
 
 llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
@@ -228,6 +252,10 @@ llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
     if (llvm::Error error =
             addVectorAdapterFu(pe, {inputs[0], inputs[1], inputs[3]}))
       return error;
+  if (distribution.vectorStructural[site])
+    if (llvm::Error error = addVectorStructuralFu(
+            pe, inputs, builtinVectorStructuralParameters()))
+      return error;
   if (distribution.specialMath[site])
     if (llvm::Error error = addSpecialMathFu(pe, {inputs[0], inputs[1]}))
       return error;
@@ -274,11 +302,12 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     return spatial.takeError();
 
   auto spatialMemory =
-      makeGeneral64LocalMemory({scale.memoryCapacityBytes, std::nullopt, true});
+      makeGeneral64LocalMemory({scale.memoryCapacityBytes,
+                                builtinMemoryInterface(), std::nullopt, true});
   if (!spatialMemory)
     return spatialMemory.takeError();
   auto temporalMemory = makeGeneral64LocalMemory(
-      {scale.memoryCapacityBytes,
+      {scale.memoryCapacityBytes, builtinMemoryInterface(),
        TemporalMemoryParameters{scale.temporalResidentContexts,
                                 scale.temporalResidentContexts},
        true});
@@ -702,8 +731,10 @@ expandBuiltinSystemImpl(DesignBuilder &design,
       descriptor.scale.memoryCapacityBytes, descriptor.scale.accCoreCount);
   if (!systemMemoryCapacity)
     return invalid("builtin System memory capacity overflows u64");
-  auto systemMemory = makeGeneral64SystemMemory({0, *systemMemoryCapacity},
-                                                std::move(*serviceRate));
+  auto systemMemory = makeGeneral64SystemMemory(
+      {0, *systemMemoryCapacity, MemoryAccessDomainParameters{128, 128, 16},
+       128},
+      std::move(*serviceRate));
   if (!systemMemory)
     return systemMemory.takeError();
   auto memoryService = system->addMemoryService(systemMemory->contract);

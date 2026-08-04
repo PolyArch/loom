@@ -167,19 +167,27 @@ void builtinPresetsExpandThroughPublicBuilder() {
       const loom::fabric::FabricMemoryOccurrenceRef memory(id);
       for (const loom::fabric::FabricMemoryOperationPortRef port :
            module.view().memoryOperationPorts(memory)) {
-        const auto *alternative =
-            module.view().memoryCapabilityAlternative({port, 0});
-        require(test, alternative && alternative->accessDomain,
-                "builtin memory lost its typed access domain");
-        const auto element = llvm::find_if(
-            alternative->accessDomain->accessClasses(), [](const auto &access) {
-              return access.accessForm() ==
-                     ::dataflow::semantics::MemoryAccessForm::Element;
-            });
-        require(test,
-                element != alternative->accessDomain->accessClasses().end() &&
-                    element->elementWidths().contains(64),
+        const auto *record = module.view().memoryOperationPort(port);
+        require(test, record != nullptr,
+                "builtin memory lost its operation-port record");
+        bool sawScalar64 = false;
+        bool sawIndexed = false;
+        for (const auto &alternative : record->capabilityAlternatives()) {
+          require(test, alternative.accessDomain.has_value(),
+                  "builtin memory lost its typed access domain");
+          for (const auto &access : alternative.accessDomain->accessClasses()) {
+            sawScalar64 |=
+                access.accessForm() ==
+                    ::dataflow::semantics::MemoryAccessForm::Element &&
+                access.elementWidths().contains(64);
+            sawIndexed |= access.accessForm() ==
+                          ::dataflow::semantics::MemoryAccessForm::Indexed;
+          }
+        }
+        require(test, sawScalar64,
                 "builtin memory does not cover the common 64-bit scalar floor");
+        require(test, sawIndexed,
+                "builtin memory does not expose its indexed access domain");
         ++wideScalarPorts;
       }
     }
@@ -403,6 +411,91 @@ void publicFuLibraryBuildsTypedGraphs() {
           "public FU helpers lost generated implementation-family bindings");
 }
 
+void vectorStructuralFuUsesTypedRecipeWidths() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const PortType outer = take(test, PortType::bits(257));
+
+  std::vector<PortType> boundary(5, outer);
+  auto spatial = take(
+      test, design.createSpatialCore("vector-structure", boundary, {outer}));
+  std::vector<SpatialValue> spatialInputs;
+  for (std::size_t ordinal = 0; ordinal != boundary.size(); ++ordinal)
+    spatialInputs.push_back(take(test, spatial.input(ordinal)));
+  auto pe = take(
+      test, spatial.addPe(spatialInputs, PeSpec::spatial(boundary, {outer})));
+  std::vector<PeValue> peInputs;
+  for (std::size_t ordinal = 0; ordinal != boundary.size(); ++ordinal)
+    peInputs.push_back(take(test, pe.input(ordinal)));
+
+  const loom::adg::VectorStructuralFuParameters parameters{
+      257, 192, 64,
+      ::fabric::FixedVectorSliceAlignMergeParams{
+          ::fabric::IntegerWidthSet::get(
+              {::fabric::IntegerWidth::I8, ::fabric::IntegerWidth::I16,
+               ::fabric::IntegerWidth::I32, ::fabric::IntegerWidth::I64}),
+          ::fabric::FloatFormatSet::get(
+              {::fabric::FloatFormat::F16, ::fabric::FloatFormat::BF16,
+               ::fabric::FloatFormat::F32, ::fabric::FloatFormat::F64}),
+          192, 96, 3,
+          ::fabric::ResolvedIndexWidthSet::get(
+              {::fabric::ResolvedIndexWidth::I32,
+               ::fabric::ResolvedIndexWidth::I64})},
+      ::fabric::FixedVectorShuffleParams{
+          ::fabric::IntegerWidthSet::get(
+              {::fabric::IntegerWidth::I8, ::fabric::IntegerWidth::I16,
+               ::fabric::IntegerWidth::I32, ::fabric::IntegerWidth::I64}),
+          ::fabric::FloatFormatSet::get(
+              {::fabric::FloatFormat::F16, ::fabric::FloatFormat::BF16,
+               ::fabric::FloatFormat::F32, ::fabric::FloatFormat::F64}),
+          192, 192, 96, 12, 6}};
+  if (llvm::Error error =
+          loom::adg::addVectorStructuralFu(pe, peInputs, parameters))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = pe.close())
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = spatial.close({take(test, pe.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto finalized = take(test, std::move(design).finalize());
+  bool sawSlice = false;
+  bool sawShuffle = false;
+  for (std::uint64_t id = 0;; ++id) {
+    const auto kind = finalized.roots().front().view().entityKind(id);
+    if (!kind)
+      break;
+    if (*kind != loom::fabric::FabricEntityKind::FabricFuTemplate)
+      continue;
+    const loom::fabric::FabricFuTemplateRef fu(id);
+    for (const auto &capability :
+         finalized.roots().front().view().resolvedFabricOpCapabilities(fu)) {
+      std::vector<std::uint32_t> inputs;
+      std::vector<std::uint32_t> outputs;
+      for (const auto &port : capability.physicalPorts)
+        (port.reference.direction == loom::fabric::FabricPortDirection::Input
+             ? inputs
+             : outputs)
+            .push_back(port.payloadWidthBits);
+      if (capability.implementationFamily ==
+          ::fabric::ImplementationFamilyId::FixedVectorSliceAlignMerge) {
+        sawSlice = inputs == std::vector<std::uint32_t>{192, 192, 64, 64, 64} &&
+                   outputs == std::vector<std::uint32_t>{192} &&
+                   capability.configurationFieldSchema.size() == 1;
+      }
+      if (capability.implementationFamily ==
+          ::fabric::ImplementationFamilyId::FixedVectorShuffle) {
+        sawShuffle = inputs == std::vector<std::uint32_t>{192, 192} &&
+                     outputs == std::vector<std::uint32_t>{192} &&
+                     capability.configurationFieldSchema.size() == 1;
+      }
+    }
+  }
+  require(test, sawSlice && sawShuffle,
+          "VectorStructuralFu did not preserve its exact typed recipe widths");
+}
+
 void resolvedCapabilityPreservesTypedVectorGeometry() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -587,6 +680,30 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
       test,
       !index.admittingOperationResources(vectorCountLeadingZeros, 32).empty(),
       "builtin Fabric has no fixed-vector zero-count resource");
+
+  mlir::Type container =
+      mlir::VectorType::get({4, 2}, mlir::IntegerType::get(&context, 16));
+  mlir::Type slice =
+      mlir::VectorType::get({2}, mlir::IntegerType::get(&context, 16));
+  const auto vectorExtract = ::dataflow::CanonicalActorSchemaProjection{
+      ::dataflow::OperationSchemaId::VectorExtract,
+      mlir::FunctionType::get(&context, {container}, {slice}),
+      ::dataflow::VectorStaticPositionPayload{{2}}};
+  require(test, !index.admittingOperationResources(vectorExtract, 64).empty(),
+          "builtin Fabric has no fixed-vector slice resource");
+
+  mlir::Type lhs =
+      mlir::VectorType::get({2, 2}, mlir::IntegerType::get(&context, 16));
+  mlir::Type rhs =
+      mlir::VectorType::get({1, 2}, mlir::IntegerType::get(&context, 16));
+  mlir::Type shuffled =
+      mlir::VectorType::get({3, 2}, mlir::IntegerType::get(&context, 16));
+  const auto vectorShuffle = ::dataflow::CanonicalActorSchemaProjection{
+      ::dataflow::OperationSchemaId::VectorShuffle,
+      mlir::FunctionType::get(&context, {lhs, rhs}, {shuffled}),
+      ::dataflow::VectorShuffleMaskPayload{{0, 2, -1}}};
+  require(test, !index.admittingOperationResources(vectorShuffle, 64).empty(),
+          "builtin Fabric has no fixed-vector shuffle resource");
 }
 
 void builtinMemoryCapabilitiesAdmitScalarAccess() {
@@ -622,35 +739,109 @@ module attributes {
         : memref<?xi32>, !llvm.ptr
     return %value, %done : i32, none
   }
+
+  func.func @contiguous_f64(%memory: memref<?xf64>, %address: index,
+                            %ctrl: none) -> (vector<2xf64>, none) {
+    %value, %done = dataflow.load %memory[%address] %ctrl
+        : memref<?xf64>, vector<2xf64>
+    return %value, %done : vector<2xf64>, none
+  }
+
+  func.func @indexed_f64(%memory: memref<?xf64>,
+                         %address: vector<2xindex>, %ctrl: none)
+      -> (vector<2xf64>, none) {
+    %value, %done = dataflow.load %memory[%address] %ctrl
+        : memref<?xf64>, vector<2xindex>, vector<2xf64>
+    return %value, %done : vector<2xf64>, none
+  }
+
+  func.func @indexed_f32(%memory: memref<?xf32>,
+                         %address: vector<4xindex>, %ctrl: none)
+      -> (vector<4xf32>, none) {
+    %value, %done = dataflow.load %memory[%address] %ctrl
+        : memref<?xf32>, vector<4xindex>, vector<4xf32>
+    return %value, %done : vector<4xf32>, none
+  }
 }
 )mlir";
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceString<mlir::ModuleOp>(source, &context);
   require(test, static_cast<bool>(module),
           "cannot parse the scalar memory actor anchor");
-  llvm::SmallVector<mlir::Operation *, 2> loads;
-  module->walk([&](::dataflow::LoadOp actor) { loads.push_back(actor); });
-  require(test, loads.size() == 2,
-          "scalar memory actor anchor does not have both loads");
+  const auto findLoad = [&](mlir::ModuleOp owner,
+                            llvm::StringRef symbol) -> mlir::Operation * {
+    mlir::Operation *result = nullptr;
+    owner.walk([&](mlir::func::FuncOp function) {
+      if (function.getSymName() != symbol)
+        return;
+      function.walk([&](::dataflow::LoadOp actor) { result = actor; });
+    });
+    require(test, result != nullptr,
+            "builtin memory anchor omitted its load actor");
+    return result;
+  };
 
   loom::frontend::FabricCapabilityIndex index(system.roots().front().view());
-  auto indexed = take(test, index.admittingMemoryResources(loads[0]));
+  auto indexed =
+      take(test, index.admittingMemoryResources(findLoad(*module, "load")));
   require(test, !indexed.empty(),
           "builtin Fabric has no scalar load memory resource");
-  auto pointer = take(test, index.admittingMemoryResources(loads[1]));
+  auto pointer = take(
+      test, index.admittingMemoryResources(findLoad(*module, "pointer_load")));
   require(test, !pointer.empty(),
           "builtin Fabric has no P64 pointer-addressed load resource");
+  require(test,
+          !take(test, index.admittingMemoryResources(
+                          findLoad(*module, "contiguous_f64")))
+               .empty(),
+          "builtin Fabric rejected contiguous vector<2xf64>");
+  require(test,
+          !take(test, index.admittingMemoryResources(
+                          findLoad(*module, "indexed_f64")))
+               .empty(),
+          "builtin Fabric rejected a fitting indexed address token");
+  require(test,
+          take(test,
+               index.admittingMemoryResources(findLoad(*module, "indexed_f32")))
+              .empty(),
+          "builtin Fabric admitted an indexed address token wider than its "
+          "endpoint");
 
   (*module)->setAttr("llvm.data_layout",
                      mlir::StringAttr::get(&context, "e-p:32:32"));
-  auto narrowPointer = take(test, index.admittingMemoryResources(loads[1]));
+  auto narrowPointer = take(
+      test, index.admittingMemoryResources(findLoad(*module, "pointer_load")));
   require(test, !narrowPointer.empty(),
           "builtin Fabric has no P32 pointer-addressed load resource");
+
+  constexpr llvm::StringLiteral narrowIndexSource = R"mlir(
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<index = 32 : i32>
+} {
+  func.func @indexed_f32(%memory: memref<?xf32>,
+                         %address: vector<4xindex>, %ctrl: none)
+      -> (vector<4xf32>, none) {
+    %value, %done = dataflow.load %memory[%address] %ctrl
+        : memref<?xf32>, vector<4xindex>, vector<4xf32>
+    return %value, %done : vector<4xf32>, none
+  }
+}
+)mlir";
+  mlir::OwningOpRef<mlir::ModuleOp> narrowIndexModule =
+      mlir::parseSourceString<mlir::ModuleOp>(narrowIndexSource, &context);
+  require(test, static_cast<bool>(narrowIndexModule),
+          "cannot parse the 32-bit indexed memory anchor");
+  require(test,
+          !take(test, index.admittingMemoryResources(
+                          findLoad(*narrowIndexModule, "indexed_f32")))
+               .empty(),
+          "builtin Fabric rejected a fitting 32-bit indexed address token");
 }
 
 void runBuiltinTests() {
   builtinPresetsExpandThroughPublicBuilder();
   publicFuLibraryBuildsTypedGraphs();
+  vectorStructuralFuUsesTypedRecipeWidths();
   resolvedCapabilityPreservesTypedVectorGeometry();
   builtinCoreCapabilitiesCoverTypedDomains();
   builtinMemoryCapabilitiesAdmitScalarAccess();

@@ -140,6 +140,10 @@ std::uint64_t familyComplexity(::fabric::ImplementationFamilyId family,
     return 24;
   case Family::ScalarMathPow:
     return 36;
+  case Family::FixedVectorSliceAlignMerge:
+    return 6;
+  case Family::FixedVectorShuffle:
+    return 10;
   default:
     break;
   }
@@ -163,6 +167,10 @@ std::uint64_t familyComplexity(::fabric::ImplementationFamilyId family,
   case Schema::FixedVectorValueSelectParams:
   case Schema::FixedVectorAdapterParams:
     return 4;
+  case Schema::FixedVectorSliceAlignMergeParams:
+    return 6;
+  case Schema::FixedVectorShuffleParams:
+    return 10;
   case Schema::ScalarIntegerParams:
   case Schema::ScalarIntegerCompareMinMaxParams:
   case Schema::ScalarValueSelectParams:

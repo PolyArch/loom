@@ -695,6 +695,83 @@ parseParams(CapabilityParamsSchemaId schema, DictionaryAttr params) {
     return FamilyCapabilityParams(
         FixedVectorAdapterParams{*widths, *formats, *capacity});
   }
+  case Schema::FixedVectorSliceAlignMergeParams: {
+    if (llvm::Error error = checkFields(
+            params, {"integer_element_widths", "float_element_formats",
+                     "max_container_payload_bits", "max_slice_payload_bits",
+                     "max_dynamic_position_rank", "resolved_index_widths"}))
+      return std::move(error);
+    auto widths = parseIntegerWidths(params, "integer_element_widths",
+                                     /*allowEmpty=*/true);
+    if (!widths)
+      return widths.takeError();
+    auto formats = parseFloatFormats(params, "float_element_formats");
+    if (!formats)
+      return formats.takeError();
+    if (widths->empty() && formats->empty())
+      return reject("hw_params vector slice element domain must not be empty");
+    auto container = requirePositiveU32(params, "max_container_payload_bits");
+    if (!container)
+      return container.takeError();
+    auto slice = requirePositiveU32(params, "max_slice_payload_bits");
+    if (!slice)
+      return slice.takeError();
+    if (*slice > *container)
+      return reject("hw_params vector slice capacity exceeds its container");
+    auto dynamicRank = requireU32(params, "max_dynamic_position_rank");
+    if (!dynamicRank)
+      return dynamicRank.takeError();
+    auto indexWidths =
+        parseResolvedIndexWidths(params, "resolved_index_widths");
+    if (!indexWidths)
+      return indexWidths.takeError();
+    if ((*dynamicRank == 0) != indexWidths->empty())
+      return reject("hw_params vector slice dynamic rank and resolved index "
+                    "domain disagree");
+    return FamilyCapabilityParams(FixedVectorSliceAlignMergeParams{
+        *widths, *formats, *container, *slice, *dynamicRank, *indexWidths});
+  }
+  case Schema::FixedVectorShuffleParams: {
+    if (llvm::Error error = checkFields(
+            params, {"integer_element_widths", "float_element_formats",
+                     "max_operand_payload_bits", "max_result_payload_bits",
+                     "max_block_payload_bits", "max_source_blocks",
+                     "max_result_blocks"}))
+      return std::move(error);
+    auto widths = parseIntegerWidths(params, "integer_element_widths",
+                                     /*allowEmpty=*/true);
+    if (!widths)
+      return widths.takeError();
+    auto formats = parseFloatFormats(params, "float_element_formats");
+    if (!formats)
+      return formats.takeError();
+    if (widths->empty() && formats->empty())
+      return reject(
+          "hw_params vector shuffle element domain must not be empty");
+    auto operand = requirePositiveU32(params, "max_operand_payload_bits");
+    if (!operand)
+      return operand.takeError();
+    auto result = requirePositiveU32(params, "max_result_payload_bits");
+    if (!result)
+      return result.takeError();
+    auto block = requirePositiveU32(params, "max_block_payload_bits");
+    if (!block)
+      return block.takeError();
+    auto sourceBlocks = requirePositiveU32(params, "max_source_blocks");
+    if (!sourceBlocks)
+      return sourceBlocks.takeError();
+    auto resultBlocks = requirePositiveU32(params, "max_result_blocks");
+    if (!resultBlocks)
+      return resultBlocks.takeError();
+    if (*block > *operand || *block > *result)
+      return reject(
+          "hw_params vector shuffle block capacity exceeds its payload");
+    if (*sourceBlocks < 2)
+      return reject("hw_params vector shuffle requires two source blocks");
+    return FamilyCapabilityParams(
+        FixedVectorShuffleParams{*widths, *formats, *operand, *result, *block,
+                                 *sourceBlocks, *resultBlocks});
+  }
   case Schema::PayloadCapacityParams: {
     if (llvm::Error error = checkFields(params, {"max_payload_bits"}))
       return std::move(error);
@@ -1133,6 +1210,54 @@ fabric::getFamilyCapabilityParamsAttr(MLIRContext *context,
                   floatFormatsAttr(builder, typed.floatElementFormats)),
               builder.getNamedAttr("max_payload_bits",
                                    integerAttr(builder, typed.maxPayloadBits)),
+          });
+        } else if constexpr (std::is_same_v<T,
+                                            FixedVectorSliceAlignMergeParams>) {
+          llvm::SmallVector<Attribute, 2> indexWidths;
+          for (ResolvedIndexWidth width : resolvedIndexWidthDomain)
+            if (typed.resolvedIndexWidths.contains(width))
+              indexWidths.push_back(
+                  integerAttr(builder, getResolvedIndexBitWidth(width)));
+          return builder.getDictionaryAttr({
+              builder.getNamedAttr(
+                  "integer_element_widths",
+                  integerWidthsAttr(builder, typed.integerElementWidths)),
+              builder.getNamedAttr(
+                  "float_element_formats",
+                  floatFormatsAttr(builder, typed.floatElementFormats)),
+              builder.getNamedAttr(
+                  "max_container_payload_bits",
+                  integerAttr(builder, typed.maxContainerPayloadBits)),
+              builder.getNamedAttr(
+                  "max_slice_payload_bits",
+                  integerAttr(builder, typed.maxSlicePayloadBits)),
+              builder.getNamedAttr(
+                  "max_dynamic_position_rank",
+                  integerAttr(builder, typed.maxDynamicPositionRank)),
+              builder.getNamedAttr("resolved_index_widths",
+                                   builder.getArrayAttr(indexWidths)),
+          });
+        } else if constexpr (std::is_same_v<T, FixedVectorShuffleParams>) {
+          return builder.getDictionaryAttr({
+              builder.getNamedAttr(
+                  "integer_element_widths",
+                  integerWidthsAttr(builder, typed.integerElementWidths)),
+              builder.getNamedAttr(
+                  "float_element_formats",
+                  floatFormatsAttr(builder, typed.floatElementFormats)),
+              builder.getNamedAttr(
+                  "max_operand_payload_bits",
+                  integerAttr(builder, typed.maxOperandPayloadBits)),
+              builder.getNamedAttr(
+                  "max_result_payload_bits",
+                  integerAttr(builder, typed.maxResultPayloadBits)),
+              builder.getNamedAttr(
+                  "max_block_payload_bits",
+                  integerAttr(builder, typed.maxBlockPayloadBits)),
+              builder.getNamedAttr("max_source_blocks",
+                                   integerAttr(builder, typed.maxSourceBlocks)),
+              builder.getNamedAttr("max_result_blocks",
+                                   integerAttr(builder, typed.maxResultBlocks)),
           });
         } else if constexpr (std::is_same_v<T, PayloadCapacityParams>) {
           return builder.getDictionaryAttr({builder.getNamedAttr(

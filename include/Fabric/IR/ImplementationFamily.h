@@ -534,6 +534,29 @@ struct RoutedTokenParams {
   std::uint32_t maxFan;
 };
 
+struct FixedVectorSliceAlignMergeParams {
+  static constexpr CapabilityParamsSchemaId schemaId =
+      CapabilityParamsSchemaId::FixedVectorSliceAlignMergeParams;
+  IntegerWidthSet integerElementWidths;
+  FloatFormatSet floatElementFormats;
+  std::uint32_t maxContainerPayloadBits;
+  std::uint32_t maxSlicePayloadBits;
+  std::uint32_t maxDynamicPositionRank;
+  ResolvedIndexWidthSet resolvedIndexWidths;
+};
+
+struct FixedVectorShuffleParams {
+  static constexpr CapabilityParamsSchemaId schemaId =
+      CapabilityParamsSchemaId::FixedVectorShuffleParams;
+  IntegerWidthSet integerElementWidths;
+  FloatFormatSet floatElementFormats;
+  std::uint32_t maxOperandPayloadBits;
+  std::uint32_t maxResultPayloadBits;
+  std::uint32_t maxBlockPayloadBits;
+  std::uint32_t maxSourceBlocks;
+  std::uint32_t maxResultBlocks;
+};
+
 using FamilyCapabilityParams =
     std::variant<ScalarIntegerParams, ScalarIntegerCompareMinMaxParams,
                  ScalarValueSelectParams, ScalarIntegerCastParams,
@@ -544,7 +567,47 @@ using FamilyCapabilityParams =
                  FixedVectorIntegerCompareMinMaxParams,
                  FixedVectorValueSelectParams, FixedVectorFloatParams,
                  FixedVectorFloatCompareMinMaxParams, FixedVectorAdapterParams,
-                 PayloadCapacityParams, RoutedTokenParams>;
+                 PayloadCapacityParams, RoutedTokenParams,
+                 FixedVectorSliceAlignMergeParams, FixedVectorShuffleParams>;
+
+/// Bit positions of the direct semantic field for one structural slice
+/// resource. Every value is mechanically derived from the actor projection;
+/// dynamic positions themselves remain runtime operands.
+struct FixedVectorSliceAlignMergeConfigurationLayout final {
+  bool encodesMode = false;
+  std::uint32_t modeBitOffset = 0;
+  std::uint32_t staticOffsetBitOffset = 0;
+  std::uint32_t offsetBitCount = 0;
+  std::uint32_t sliceWidthBitOffset = 0;
+  std::uint32_t sliceWidthBitCount = 0;
+  std::uint32_t dynamicStrideBitOffset = 0;
+  std::uint32_t dynamicStrideBitCount = 0;
+  std::uint32_t dynamicStrideCount = 0;
+  std::uint32_t encodedBitCount = 0;
+};
+
+/// Bit positions of the direct semantic field for one shuffle resource.
+/// Selector slots beyond the actor result are encoded as Poison.
+struct FixedVectorShuffleConfigurationLayout final {
+  std::uint32_t blockWidthBitOffset = 0;
+  std::uint32_t blockWidthBitCount = 0;
+  std::uint32_t leftBlockCountBitOffset = 0;
+  std::uint32_t blockCountBitCount = 0;
+  std::uint32_t selectorBitOffset = 0;
+  std::uint32_t selectorBitCount = 0;
+  std::uint32_t selectorCount = 0;
+  std::uint32_t poisonSelector = 0;
+  std::uint32_t encodedBitCount = 0;
+};
+
+llvm::Expected<FixedVectorSliceAlignMergeConfigurationLayout>
+resolveFixedVectorSliceAlignMergeConfigurationLayout(
+    const FixedVectorSliceAlignMergeParams &params,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas);
+
+llvm::Expected<FixedVectorShuffleConfigurationLayout>
+resolveFixedVectorShuffleConfigurationLayout(
+    const FixedVectorShuffleParams &params);
 
 /// Count of registered families. Every family id is in `[0, count)`.
 std::uint32_t implementationFamilyCount();

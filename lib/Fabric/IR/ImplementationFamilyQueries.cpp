@@ -9,20 +9,24 @@
 
 #include "Common/IndexWidth.h"
 #include "Common/VectorWidth.h"
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -98,6 +102,110 @@ void appendFramed(std::vector<std::uint8_t> &bytes,
                   llvm::ArrayRef<std::uint8_t> value) {
   appendU64(bytes, value.size());
   bytes.insert(bytes.end(), value.begin(), value.end());
+}
+
+std::uint32_t bitsForCardinality(std::uint32_t cardinality) {
+  return cardinality <= 1 ? 0 : llvm::Log2_32_Ceil(cardinality);
+}
+
+std::uint32_t bitsForInclusiveMaximum(std::uint32_t maximum) {
+  return maximum == std::numeric_limits<std::uint32_t>::max()
+             ? 32
+             : bitsForCardinality(maximum + 1);
+}
+
+llvm::Error appendField(std::uint32_t &cursor, std::uint32_t width) {
+  auto next = llvm::checkedAddUnsigned(cursor, width);
+  if (!next)
+    return reject("semantic configuration layout exceeds uint32");
+  cursor = *next;
+  return llvm::Error::success();
+}
+
+void setPackedField(std::vector<std::uint8_t> &bytes, std::uint32_t offset,
+                    std::uint32_t width, std::uint64_t value) {
+  for (std::uint32_t bit = 0; bit != width; ++bit) {
+    const std::size_t byte = (offset + bit) / 8;
+    const std::uint8_t mask = std::uint8_t(1U << ((offset + bit) % 8));
+    if (((value >> bit) & 1U) != 0)
+      bytes[byte] |= mask;
+  }
+}
+
+std::vector<std::uint8_t> emptyPackedValue(std::uint32_t bitCount) {
+  return std::vector<std::uint8_t>(
+      bitCount / 8 + static_cast<std::uint32_t>((bitCount % 8) != 0), 0);
+}
+
+llvm::Expected<std::uint64_t> vectorStructuralWidth(mlir::Type type) {
+  if (auto vector = llvm::dyn_cast<mlir::VectorType>(type))
+    return ::dataflow::semantics::getFlattenedVectorBitWidth(vector);
+  if (auto integer = llvm::dyn_cast<mlir::IntegerType>(type))
+    return integer.getWidth();
+  if (auto floating = llvm::dyn_cast<mlir::FloatType>(type))
+    return floating.getWidth();
+  return reject("vector structural value has no fixed payload width");
+}
+
+struct FixedVectorSliceProjection final {
+  std::uint64_t staticOffsetBits = 0;
+  std::uint64_t sliceWidthBits = 0;
+  std::vector<std::uint64_t> dynamicStrideBits;
+};
+
+llvm::Expected<FixedVectorSliceProjection> projectFixedVectorSlice(
+    const ::dataflow::CanonicalActorSchemaProjection &actor) {
+  const auto *payload =
+      std::get_if<::dataflow::VectorStaticPositionPayload>(&actor.payload);
+  if (!payload)
+    return reject("vector slice actor has the wrong semantic payload");
+  mlir::VectorType container;
+  mlir::Type slice;
+  if (actor.schema == ::dataflow::OperationSchemaId::VectorExtract) {
+    if (actor.type.getNumInputs() == 0 || actor.type.getNumResults() != 1)
+      return reject("vector extract projector has incomplete actor ports");
+    container = llvm::dyn_cast<mlir::VectorType>(actor.type.getInput(0));
+    slice = actor.type.getResult(0);
+  } else if (actor.schema == ::dataflow::OperationSchemaId::VectorInsert) {
+    if (actor.type.getNumInputs() < 2 || actor.type.getNumResults() != 1)
+      return reject("vector insert projector has incomplete actor ports");
+    slice = actor.type.getInput(0);
+    container = llvm::dyn_cast<mlir::VectorType>(actor.type.getInput(1));
+  } else {
+    return reject("vector slice projector received a different schema");
+  }
+  if (!container)
+    return reject("vector slice projector has no container vector");
+  auto sliceWidth = vectorStructuralWidth(slice);
+  if (!sliceWidth)
+    return sliceWidth.takeError();
+
+  FixedVectorSliceProjection projection;
+  projection.sliceWidthBits = *sliceWidth;
+  for (auto [dimension, position] : llvm::enumerate(payload->position)) {
+    std::uint64_t stride = container.getElementTypeBitWidth();
+    for (std::int64_t extent : container.getShape().drop_front(dimension + 1)) {
+      auto next =
+          llvm::checkedMulUnsigned(stride, static_cast<std::uint64_t>(extent));
+      if (!next)
+        return reject("vector slice stride overflows uint64");
+      stride = *next;
+    }
+    if (position == mlir::ShapedType::kDynamic) {
+      projection.dynamicStrideBits.push_back(stride);
+      continue;
+    }
+    auto contribution =
+        llvm::checkedMulUnsigned(stride, static_cast<std::uint64_t>(position));
+    if (!contribution)
+      return reject("vector slice static offset overflows uint64");
+    auto next =
+        llvm::checkedAddUnsigned(projection.staticOffsetBits, *contribution);
+    if (!next)
+      return reject("vector slice static offset overflows uint64");
+    projection.staticOffsetBits = *next;
+  }
+  return projection;
 }
 
 bool isSignedIntegerPredicate(mlir::arith::CmpIPredicate predicate) {
@@ -669,6 +777,108 @@ unsigned fabric::getBitWidth(FloatFormat format) {
   llvm_unreachable("invalid floating format");
 }
 
+llvm::Expected<fabric::FixedVectorSliceAlignMergeConfigurationLayout>
+fabric::resolveFixedVectorSliceAlignMergeConfigurationLayout(
+    const FixedVectorSliceAlignMergeParams &params,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas) {
+  if (params.maxContainerPayloadBits == 0 || params.maxSlicePayloadBits == 0 ||
+      params.maxSlicePayloadBits > params.maxContainerPayloadBits)
+    return reject("vector slice payload capacities are invalid");
+  if (!params.integerElementWidths.valid() ||
+      !params.floatElementFormats.valid() ||
+      (params.integerElementWidths.empty() &&
+       params.floatElementFormats.empty()))
+    return reject("vector slice element domain is invalid");
+  if (!params.resolvedIndexWidths.valid() ||
+      ((params.maxDynamicPositionRank == 0) !=
+       params.resolvedIndexWidths.empty()))
+    return reject("vector slice dynamic rank and index domain disagree");
+
+  bool extract = false;
+  bool insert = false;
+  for (::dataflow::OperationSchemaId schema : enabledSchemas) {
+    bool *selected = nullptr;
+    if (schema == ::dataflow::OperationSchemaId::VectorExtract)
+      selected = &extract;
+    else if (schema == ::dataflow::OperationSchemaId::VectorInsert)
+      selected = &insert;
+    else
+      return reject("vector slice capability enables a foreign schema");
+    if (*selected)
+      return reject("vector slice capability enables a schema twice");
+    *selected = true;
+  }
+  if (!extract && !insert)
+    return reject("vector slice capability has no enabled schema");
+
+  FixedVectorSliceAlignMergeConfigurationLayout layout;
+  std::uint32_t cursor = 0;
+  layout.encodesMode = extract && insert;
+  layout.modeBitOffset = cursor;
+  if (layout.encodesMode)
+    if (llvm::Error error = appendField(cursor, 1))
+      return std::move(error);
+  layout.staticOffsetBitOffset = cursor;
+  layout.offsetBitCount = bitsForCardinality(params.maxContainerPayloadBits);
+  if (llvm::Error error = appendField(cursor, layout.offsetBitCount))
+    return std::move(error);
+  layout.sliceWidthBitOffset = cursor;
+  layout.sliceWidthBitCount = bitsForCardinality(params.maxSlicePayloadBits);
+  if (llvm::Error error = appendField(cursor, layout.sliceWidthBitCount))
+    return std::move(error);
+  layout.dynamicStrideBitOffset = cursor;
+  layout.dynamicStrideCount = params.maxDynamicPositionRank;
+  layout.dynamicStrideBitCount =
+      bitsForInclusiveMaximum(params.maxContainerPayloadBits);
+  auto strideFieldBits = llvm::checkedMulUnsigned(
+      layout.dynamicStrideBitCount, params.maxDynamicPositionRank);
+  if (!strideFieldBits)
+    return reject("vector slice stride layout exceeds uint32");
+  if (llvm::Error error = appendField(cursor, *strideFieldBits))
+    return std::move(error);
+  layout.encodedBitCount = cursor;
+  return layout;
+}
+
+llvm::Expected<fabric::FixedVectorShuffleConfigurationLayout>
+fabric::resolveFixedVectorShuffleConfigurationLayout(
+    const FixedVectorShuffleParams &params) {
+  if (!params.integerElementWidths.valid() ||
+      !params.floatElementFormats.valid() ||
+      (params.integerElementWidths.empty() &&
+       params.floatElementFormats.empty()))
+    return reject("vector shuffle element domain is invalid");
+  if (params.maxOperandPayloadBits == 0 || params.maxResultPayloadBits == 0 ||
+      params.maxBlockPayloadBits == 0 ||
+      params.maxBlockPayloadBits > params.maxOperandPayloadBits ||
+      params.maxBlockPayloadBits > params.maxResultPayloadBits ||
+      params.maxSourceBlocks < 2 || params.maxResultBlocks == 0)
+    return reject("vector shuffle capacities are invalid");
+
+  FixedVectorShuffleConfigurationLayout layout;
+  std::uint32_t cursor = 0;
+  layout.blockWidthBitOffset = cursor;
+  layout.blockWidthBitCount = bitsForCardinality(params.maxBlockPayloadBits);
+  if (llvm::Error error = appendField(cursor, layout.blockWidthBitCount))
+    return std::move(error);
+  layout.leftBlockCountBitOffset = cursor;
+  layout.blockCountBitCount = bitsForCardinality(params.maxSourceBlocks);
+  if (llvm::Error error = appendField(cursor, layout.blockCountBitCount))
+    return std::move(error);
+  layout.selectorBitOffset = cursor;
+  layout.selectorBitCount = bitsForInclusiveMaximum(params.maxSourceBlocks);
+  layout.selectorCount = params.maxResultBlocks;
+  layout.poisonSelector = params.maxSourceBlocks;
+  auto selectorFieldBits =
+      llvm::checkedMulUnsigned(layout.selectorBitCount, layout.selectorCount);
+  if (!selectorFieldBits)
+    return reject("vector shuffle selector layout exceeds uint32");
+  if (llvm::Error error = appendField(cursor, *selectorFieldBits))
+    return std::move(error);
+  layout.encodedBitCount = cursor;
+  return layout;
+}
+
 llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,
     llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
@@ -695,6 +905,29 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
     if (!cases)
       return cases.takeError();
     return uniqueScalarIntegerCastBehaviors(*cases).size() > 1;
+  }
+
+  if (descriptor.typedAdmissionProvider ==
+      TypedAdmissionProviderId::FixedVectorSliceAlignMergeAdmission) {
+    const auto &typed = std::get<FixedVectorSliceAlignMergeParams>(params);
+    if (physicalInputCount < 2 + typed.maxDynamicPositionRank ||
+        physicalResultCount < 1)
+      return reject("vector slice physical role inventory is incomplete");
+    auto layout = resolveFixedVectorSliceAlignMergeConfigurationLayout(
+        typed, enabledSchemas);
+    if (!layout)
+      return layout.takeError();
+    return layout->encodedBitCount != 0;
+  }
+  if (descriptor.typedAdmissionProvider ==
+      TypedAdmissionProviderId::FixedVectorShuffleAdmission) {
+    if (physicalInputCount < 2 || physicalResultCount < 1)
+      return reject("vector shuffle physical role inventory is incomplete");
+    auto layout = resolveFixedVectorShuffleConfigurationLayout(
+        std::get<FixedVectorShuffleParams>(params));
+    if (!layout)
+      return layout.takeError();
+    return layout->encodedBitCount != 0;
   }
 
   const bool logicFamily =
@@ -833,6 +1066,9 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
     return physicalInputCount > 3;
   case TypedAdmissionProviderId::DemuxTokenAdmission:
     return physicalResultCount > 2;
+  case TypedAdmissionProviderId::FixedVectorSliceAlignMergeAdmission:
+  case TypedAdmissionProviderId::FixedVectorShuffleAdmission:
+    llvm_unreachable("structural vector families handled before selection");
   }
   return reject("typed admission provider is not registered");
 }
@@ -852,6 +1088,106 @@ fabric::encodeImplementationFamilySemanticConfiguration(
     return reject("capability has no semantic configuration field");
   if (!llvm::is_contained(enabledSchemas, actor.schema))
     return reject("actor schema is not enabled by the concrete capability");
+
+  if (family == ImplementationFamilyId::FixedVectorSliceAlignMerge) {
+    const auto *parameters =
+        std::get_if<FixedVectorSliceAlignMergeParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    const auto *position =
+        std::get_if<::dataflow::VectorStaticPositionPayload>(&actor.payload);
+    if (!position)
+      return reject("vector slice actor has the wrong semantic payload");
+    const bool hasDynamicPosition =
+        llvm::is_contained(position->position, mlir::ShapedType::kDynamic);
+    if (hasDynamicPosition) {
+      if (!resolvedIndexWidth)
+        return reject("vector slice has no resolved dynamic index width");
+      if (llvm::Error error = verifyImplementationFamilyAdmission(
+              family, &params, actor,
+              getResolvedIndexBitWidth(*resolvedIndexWidth)))
+        return std::move(error);
+    } else if (llvm::Error error = verifyImplementationFamilyAdmission(
+                   family, &params, actor)) {
+      return std::move(error);
+    }
+    auto projected = projectFixedVectorSlice(actor);
+    if (!projected)
+      return projected.takeError();
+    auto layout = resolveFixedVectorSliceAlignMergeConfigurationLayout(
+        *parameters, enabledSchemas);
+    if (!layout)
+      return layout.takeError();
+    if (layout->encodedBitCount == 0)
+      return reject("vector slice capability has no semantic field");
+    if (projected->staticOffsetBits >= parameters->maxContainerPayloadBits ||
+        projected->sliceWidthBits == 0 ||
+        projected->sliceWidthBits > parameters->maxSlicePayloadBits ||
+        projected->dynamicStrideBits.size() >
+            parameters->maxDynamicPositionRank)
+      return reject("vector slice projection exceeds configured capacity");
+
+    std::vector<std::uint8_t> bytes = emptyPackedValue(layout->encodedBitCount);
+    if (layout->encodesMode)
+      setPackedField(
+          bytes, layout->modeBitOffset, 1,
+          actor.schema == ::dataflow::OperationSchemaId::VectorInsert ? 1 : 0);
+    setPackedField(bytes, layout->staticOffsetBitOffset, layout->offsetBitCount,
+                   projected->staticOffsetBits);
+    setPackedField(bytes, layout->sliceWidthBitOffset,
+                   layout->sliceWidthBitCount, projected->sliceWidthBits - 1);
+    for (auto [ordinal, stride] :
+         llvm::enumerate(projected->dynamicStrideBits)) {
+      if (stride > parameters->maxContainerPayloadBits)
+        return reject("vector slice stride exceeds configured capacity");
+      setPackedField(bytes,
+                     layout->dynamicStrideBitOffset +
+                         ordinal * layout->dynamicStrideBitCount,
+                     layout->dynamicStrideBitCount, stride);
+    }
+    return loom::CanonicalSemanticBytes(std::move(bytes));
+  }
+
+  if (family == ImplementationFamilyId::FixedVectorShuffle) {
+    const auto *parameters = std::get_if<FixedVectorShuffleParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    if (llvm::Error error =
+            verifyImplementationFamilyAdmission(family, &params, actor))
+      return std::move(error);
+    auto layout = resolveFixedVectorShuffleConfigurationLayout(*parameters);
+    if (!layout)
+      return layout.takeError();
+    auto left = llvm::dyn_cast<mlir::VectorType>(actor.type.getInput(0));
+    auto result = llvm::dyn_cast<mlir::VectorType>(actor.type.getResult(0));
+    const auto *payload =
+        std::get_if<::dataflow::VectorShuffleMaskPayload>(&actor.payload);
+    if (!left || !result || !payload)
+      return reject("vector shuffle projector received a malformed actor");
+    auto resultWidth =
+        ::dataflow::semantics::getFlattenedVectorBitWidth(result);
+    if (!resultWidth || result.getDimSize(0) <= 0)
+      return reject("vector shuffle has no finite block width");
+    const std::uint64_t blockWidth =
+        *resultWidth / static_cast<std::uint64_t>(result.getDimSize(0));
+    std::vector<std::uint8_t> bytes = emptyPackedValue(layout->encodedBitCount);
+    setPackedField(bytes, layout->blockWidthBitOffset,
+                   layout->blockWidthBitCount, blockWidth - 1);
+    setPackedField(bytes, layout->leftBlockCountBitOffset,
+                   layout->blockCountBitCount,
+                   static_cast<std::uint64_t>(left.getDimSize(0) - 1));
+    for (std::uint32_t ordinal = 0; ordinal != layout->selectorCount;
+         ++ordinal) {
+      const std::uint64_t selector =
+          ordinal < payload->mask.size() && payload->mask[ordinal] >= 0
+              ? static_cast<std::uint64_t>(payload->mask[ordinal])
+              : layout->poisonSelector;
+      setPackedField(
+          bytes, layout->selectorBitOffset + ordinal * layout->selectorBitCount,
+          layout->selectorBitCount, selector);
+    }
+    return loom::CanonicalSemanticBytes(std::move(bytes));
+  }
 
   if (family == ImplementationFamilyId::ScalarIntegerCast) {
     const auto *parameters = std::get_if<ScalarIntegerCastParams>(&params);
@@ -1285,6 +1621,10 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
       if (parameters->formats.contains(format))
         actors.push_back(
             {makeScalarFloatFmaActor(context, format), std::nullopt});
+  } else if (family == ImplementationFamilyId::FixedVectorSliceAlignMerge ||
+             family == ImplementationFamilyId::FixedVectorShuffle) {
+    return reject("direct structural vector configuration has no finite "
+                  "behavior-domain enumeration");
   } else {
     return reject("finite behavior-domain projection is not implemented for "
                   "the capability family");

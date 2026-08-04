@@ -159,7 +159,8 @@ bool checkDescriptorRelations() {
   const std::uint32_t families = implementationFamilyCount();
   const std::uint32_t schemas = dataflow::operationSchemaCount();
   const std::uint32_t expectedFamilies =
-      static_cast<std::uint32_t>(ImplementationFamilyId::ScalarMathPow) + 1;
+      static_cast<std::uint32_t>(ImplementationFamilyId::FixedVectorShuffle) +
+      1;
   if (families != expectedFamilies) {
     llvm::errs() << "the generated family registry is not dense, found "
                  << families << " entries through ordinal "
@@ -211,6 +212,10 @@ bool checkMembership() {
       findImplementationFamily("ScalarIntegerCountZeros");
   const std::optional<ImplementationFamilyId> vectorCountZeros =
       findImplementationFamily("FixedVectorIntegerCountZeros");
+  const std::optional<ImplementationFamilyId> vectorSlice =
+      findImplementationFamily("FixedVectorSliceAlignMerge");
+  const std::optional<ImplementationFamilyId> vectorShuffle =
+      findImplementationFamily("FixedVectorShuffle");
   const std::array saturatingSpellings = {
       "llvm.intr.sadd.sat", "llvm.intr.uadd.sat", "llvm.intr.ssub.sat",
       "llvm.intr.usub.sat"};
@@ -253,6 +258,16 @@ bool checkMembership() {
                    << " is not owned exclusively by the zero-count families\n";
       ok = false;
     }
+  }
+  if (!vectorSlice || !vectorShuffle ||
+      !admitsOperationSchema(*vectorSlice, OperationSchemaId::VectorExtract) ||
+      !admitsOperationSchema(*vectorSlice, OperationSchemaId::VectorInsert) ||
+      admitsOperationSchema(*vectorSlice, OperationSchemaId::VectorShuffle) ||
+      !admitsOperationSchema(*vectorShuffle,
+                             OperationSchemaId::VectorShuffle) ||
+      admitsOperationSchema(*vectorShuffle, OperationSchemaId::VectorExtract)) {
+    llvm::errs() << "the fixed-vector structural families are incorrect\n";
+    ok = false;
   }
   if (!admitsOperationSchema(ImplementationFamilyId::ScalarIntegerAddSub,
                              OperationSchemaId::ArithAddI) ||
@@ -332,6 +347,45 @@ bool checkCapabilityCodec(MLIRContext &context) {
     llvm::errs() << "fixed-vector typed hw_params did not round-trip\n";
     return false;
   }
+
+  FamilyCapabilityParams structuralCapability =
+      FixedVectorSliceAlignMergeParams{
+          IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16}),
+          FloatFormatSet::get({FloatFormat::F16, FloatFormat::F32}),
+          130,
+          64,
+          3,
+          ResolvedIndexWidthSet::get(
+              {ResolvedIndexWidth::I32, ResolvedIndexWidth::I64})};
+  DictionaryAttr encodedStructural =
+      getFamilyCapabilityParamsAttr(&context, structuralCapability);
+  auto decodedStructural = parseFamilyCapabilityParams(
+      ImplementationFamilyId::FixedVectorSliceAlignMerge, encodedStructural);
+  if (!decodedStructural ||
+      getFamilyCapabilityParamsAttr(&context, *decodedStructural) !=
+          encodedStructural) {
+    if (!decodedStructural)
+      llvm::errs() << llvm::toString(decodedStructural.takeError()) << '\n';
+    llvm::errs() << "fixed-vector structural hw_params did not round-trip\n";
+    return false;
+  }
+
+  FamilyCapabilityParams malformedShuffle =
+      FixedVectorShuffleParams{IntegerWidthSet::get({IntegerWidth::I16}),
+                               FloatFormatSet{},
+                               64,
+                               64,
+                               65,
+                               2,
+                               1};
+  auto rejectedShuffle = parseFamilyCapabilityParams(
+      ImplementationFamilyId::FixedVectorShuffle,
+      getFamilyCapabilityParamsAttr(&context, malformedShuffle));
+  if (rejectedShuffle) {
+    llvm::errs() << "accepted malformed fixed-vector shuffle hw_params\n";
+    return false;
+  }
+  llvm::consumeError(rejectedShuffle.takeError());
 
   OpBuilder builder(&context);
   DictionaryAttr duplicateDomain =
@@ -792,6 +846,163 @@ bool checkFixedVectorAdmission(MLIRContext &context) {
         false, "scalar");
   check(wideVectorAdd, ImplementationFamilyId::FixedVectorIntegerAddSub,
         vectorParams, false, "payload capacity");
+  return ok;
+}
+
+std::uint64_t readPackedBits(llvm::ArrayRef<std::uint8_t> bytes,
+                             std::uint32_t offset, std::uint32_t count) {
+  std::uint64_t value = 0;
+  for (std::uint32_t bit = 0; bit != count; ++bit)
+    value |=
+        std::uint64_t((bytes[(offset + bit) / 8] >> ((offset + bit) % 8)) & 1U)
+        << bit;
+  return value;
+}
+
+bool checkFixedVectorStructuralAdmission(MLIRContext &context) {
+  Type i16 = IntegerType::get(&context, 16);
+  Type index = IndexType::get(&context);
+  VectorType container = VectorType::get({4, 2}, i16);
+  VectorType slice = VectorType::get({2}, i16);
+  VectorType lhs = VectorType::get({2, 2}, i16);
+  VectorType rhs = VectorType::get({1, 2}, i16);
+  VectorType shuffled = VectorType::get({3, 2}, i16);
+
+  const FamilyCapabilityParams sliceParams = FixedVectorSliceAlignMergeParams{
+      IntegerWidthSet::get({IntegerWidth::I16}),
+      FloatFormatSet{},
+      130,
+      64,
+      3,
+      ResolvedIndexWidthSet::get(
+          {ResolvedIndexWidth::I32, ResolvedIndexWidth::I64})};
+  const FamilyCapabilityParams shuffleParams =
+      FixedVectorShuffleParams{IntegerWidthSet::get({IntegerWidth::I16}),
+                               FloatFormatSet{},
+                               130,
+                               130,
+                               32,
+                               4,
+                               4};
+
+  const dataflow::CanonicalActorSchemaProjection staticExtract{
+      OperationSchemaId::VectorExtract,
+      FunctionType::get(&context, {container}, {slice}),
+      dataflow::VectorStaticPositionPayload{{2}}};
+  const dataflow::CanonicalActorSchemaProjection dynamicExtract{
+      OperationSchemaId::VectorExtract,
+      FunctionType::get(&context, {container, index}, {slice}),
+      dataflow::VectorStaticPositionPayload{{ShapedType::kDynamic}}};
+  const dataflow::CanonicalActorSchemaProjection dynamicInsert{
+      OperationSchemaId::VectorInsert,
+      FunctionType::get(&context, {slice, container, index}, {container}),
+      dataflow::VectorStaticPositionPayload{{ShapedType::kDynamic}}};
+  const dataflow::CanonicalActorSchemaProjection shuffle{
+      OperationSchemaId::VectorShuffle,
+      FunctionType::get(&context, {lhs, rhs}, {shuffled}),
+      dataflow::VectorShuffleMaskPayload{{0, 2, -1}}};
+
+  bool ok = true;
+  ok &= expectAdmission(ImplementationFamilyId::FixedVectorSliceAlignMerge,
+                        &sliceParams, staticExtract, true, {});
+  ok &= expectAdmissionAtIndexWidth(
+      ImplementationFamilyId::FixedVectorSliceAlignMerge, &sliceParams,
+      dynamicExtract, 64, true, {});
+  ok &= expectAdmissionAtIndexWidth(
+      ImplementationFamilyId::FixedVectorSliceAlignMerge, &sliceParams,
+      dynamicInsert, 32, true, {});
+  ok &= expectAdmission(ImplementationFamilyId::FixedVectorShuffle,
+                        &shuffleParams, shuffle, true, {});
+
+  const std::array<std::uint64_t, 2> extractPorts = {0, 2};
+  const std::array<std::uint64_t, 3> insertPorts = {0, 1, 2};
+  const std::array<std::uint64_t, 1> resultPort = {0};
+  if (llvm::Error error = verifyImplementationFamilyPortCorrespondence(
+          ImplementationFamilyId::FixedVectorSliceAlignMerge, dynamicExtract,
+          extractPorts, resultPort)) {
+    llvm::errs() << llvm::toString(std::move(error)) << '\n';
+    ok = false;
+  }
+  if (llvm::Error error = verifyImplementationFamilyPortCorrespondence(
+          ImplementationFamilyId::FixedVectorSliceAlignMerge, dynamicInsert,
+          insertPorts, resultPort)) {
+    llvm::errs() << llvm::toString(std::move(error)) << '\n';
+    ok = false;
+  }
+
+  constexpr std::array structuralSchemas = {OperationSchemaId::VectorExtract,
+                                            OperationSchemaId::VectorInsert};
+  auto sliceLayout = resolveFixedVectorSliceAlignMergeConfigurationLayout(
+      std::get<FixedVectorSliceAlignMergeParams>(sliceParams),
+      structuralSchemas);
+  auto shuffleLayout = resolveFixedVectorShuffleConfigurationLayout(
+      std::get<FixedVectorShuffleParams>(shuffleParams));
+  if (!sliceLayout || !shuffleLayout) {
+    if (!sliceLayout)
+      llvm::errs() << llvm::toString(sliceLayout.takeError()) << '\n';
+    if (!shuffleLayout)
+      llvm::errs() << llvm::toString(shuffleLayout.takeError()) << '\n';
+    return false;
+  }
+
+  auto staticConfiguration = encodeImplementationFamilySemanticConfiguration(
+      ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
+      structuralSchemas, 5, 1, staticExtract, ResolvedIndexWidth::I64);
+  auto dynamicConfiguration = encodeImplementationFamilySemanticConfiguration(
+      ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
+      structuralSchemas, 5, 1, dynamicExtract, ResolvedIndexWidth::I64);
+  constexpr std::array shuffleSchema = {OperationSchemaId::VectorShuffle};
+  auto shuffleConfiguration = encodeImplementationFamilySemanticConfiguration(
+      ImplementationFamilyId::FixedVectorShuffle, shuffleParams, shuffleSchema,
+      2, 1, shuffle);
+  if (!staticConfiguration || !dynamicConfiguration || !shuffleConfiguration) {
+    if (!staticConfiguration)
+      llvm::errs() << llvm::toString(staticConfiguration.takeError()) << '\n';
+    if (!dynamicConfiguration)
+      llvm::errs() << llvm::toString(dynamicConfiguration.takeError()) << '\n';
+    if (!shuffleConfiguration)
+      llvm::errs() << llvm::toString(shuffleConfiguration.takeError()) << '\n';
+    return false;
+  }
+
+  const auto staticBytes = staticConfiguration->bytes();
+  const auto dynamicBytes = dynamicConfiguration->bytes();
+  const auto shuffleBytes = shuffleConfiguration->bytes();
+  ok &= readPackedBits(staticBytes, sliceLayout->modeBitOffset, 1) == 0;
+  ok &= readPackedBits(staticBytes, sliceLayout->staticOffsetBitOffset,
+                       sliceLayout->offsetBitCount) == 64;
+  ok &= readPackedBits(staticBytes, sliceLayout->sliceWidthBitOffset,
+                       sliceLayout->sliceWidthBitCount) == 31;
+  ok &= readPackedBits(dynamicBytes, sliceLayout->dynamicStrideBitOffset,
+                       sliceLayout->dynamicStrideBitCount) == 32;
+  auto powerOfTwoLayout = resolveFixedVectorSliceAlignMergeConfigurationLayout(
+      FixedVectorSliceAlignMergeParams{
+          IntegerWidthSet::get({IntegerWidth::I16}), FloatFormatSet{}, 128, 64,
+          1, ResolvedIndexWidthSet::get({ResolvedIndexWidth::I64})},
+      structuralSchemas);
+  if (!powerOfTwoLayout) {
+    llvm::errs() << llvm::toString(powerOfTwoLayout.takeError()) << '\n';
+    return false;
+  }
+  ok &= powerOfTwoLayout->offsetBitCount == 7 &&
+        powerOfTwoLayout->dynamicStrideBitCount == 8;
+  ok &= readPackedBits(shuffleBytes, shuffleLayout->blockWidthBitOffset,
+                       shuffleLayout->blockWidthBitCount) == 31;
+  ok &= readPackedBits(shuffleBytes, shuffleLayout->leftBlockCountBitOffset,
+                       shuffleLayout->blockCountBitCount) == 1;
+  ok &= readPackedBits(shuffleBytes, shuffleLayout->selectorBitOffset,
+                       shuffleLayout->selectorBitCount) == 0;
+  ok &= readPackedBits(shuffleBytes,
+                       shuffleLayout->selectorBitOffset +
+                           shuffleLayout->selectorBitCount,
+                       shuffleLayout->selectorBitCount) == 2;
+  ok &= readPackedBits(shuffleBytes,
+                       shuffleLayout->selectorBitOffset +
+                           2 * shuffleLayout->selectorBitCount,
+                       shuffleLayout->selectorBitCount) ==
+        shuffleLayout->poisonSelector;
+  if (!ok)
+    llvm::errs() << "fixed-vector structural projection is incorrect\n";
   return ok;
 }
 
@@ -1449,6 +1660,7 @@ int main() {
   ok &= checkCastRelations(context);
   ok &= checkLoopAndTokenAdmission(context);
   ok &= checkFixedVectorAdmission(context);
+  ok &= checkFixedVectorStructuralAdmission(context);
   ok &= checkAdapterAndTokenAdmission(context);
   ok &= checkScalarFloatFmaBehaviorDomain(context);
   ok &= checkIntegerLogicBehaviorDomains(context);

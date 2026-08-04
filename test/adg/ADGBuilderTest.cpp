@@ -987,11 +987,14 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
   TemporaryDirectory directory(test);
   loom::ArtifactStore store(directory.path());
   DesignBuilder design(store);
+  const loom::adg::MemoryInterfaceParameters interface{
+      loom::adg::MemoryAccessDomainParameters{128, std::nullopt, 4}, 64, 128};
 
-  expectError(test,
-              loom::adg::makeHybrid32LocalMemory(
-                  {(std::uint64_t(1) << 32) + 1, std::nullopt}),
-              "32-bit address capacity");
+  expectError(
+      test,
+      loom::adg::makeHybrid32LocalMemory(
+          {(std::uint64_t(1) << 32) + 1, interface, std::nullopt, false}),
+      "32-bit address capacity");
 
   auto addMemoryRoot = [&](llvm::StringRef name,
                            LocalMemoryParameters parameters) {
@@ -1013,12 +1016,14 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
       fail(test, llvm::toString(std::move(error)));
   };
 
-  addMemoryRoot("spatial-hybrid-memory", {4096, std::nullopt});
-  addMemoryRoot("temporal-hybrid-memory",
-                {8192, loom::adg::TemporalMemoryParameters{4, 4}});
+  addMemoryRoot("spatial-hybrid-memory",
+                {4096, interface, std::nullopt, false});
+  addMemoryRoot(
+      "temporal-hybrid-memory",
+      {8192, interface, loom::adg::TemporalMemoryParameters{4, 4}, false});
 
-  MemorySpec tiered = take(
-      test, loom::adg::makeHybrid32LocalMemory({4096, std::nullopt, true}));
+  MemorySpec tiered = take(test, loom::adg::makeHybrid32LocalMemory(
+                                     {4096, interface, std::nullopt, true}));
   require(test,
           tiered.inputTypes().size() == 8 &&
               tiered.inputTypes().front().kind() == PortType::Kind::Memory,
@@ -1111,6 +1116,93 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
           "memory library did not preserve the requested manager form");
 }
 
+void publicMemoryRecipeKeepsIndependentEndpointWidths() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+
+  const loom::adg::MemoryInterfaceParameters interface{
+      loom::adg::MemoryAccessDomainParameters{192, 256, 8}, 64, 96};
+  LocalMemoryParameters parameters;
+  parameters.capacityBytes = 4096;
+  parameters.interface = interface;
+  MemorySpec memory =
+      take(test, loom::adg::makeGeneral64LocalMemory(parameters));
+  const std::vector<std::uint32_t> expectedInputWidths = {64,  256, 8, 0, 64,
+                                                          256, 192, 8, 0};
+  require(test,
+          memory.inputTypes().size() == expectedInputWidths.size() &&
+              memory.outputTypes().size() == 3,
+          "general memory did not expose its independent typed endpoints");
+  for (auto [type, width] :
+       llvm::zip_equal(memory.inputTypes(), expectedInputWidths))
+    require(test, type.kind() == PortType::Kind::Bits && type.width() == width,
+            "general memory changed an input endpoint width");
+  require(test,
+          memory.outputTypes()[0].width() == 192 &&
+              memory.outputTypes()[1].width() == 0 &&
+              memory.outputTypes()[2].width() == 0,
+          "general memory changed an output endpoint width");
+
+  auto spatial =
+      take(test,
+           design.createSpatialCore("independent-memory-widths",
+                                    memory.inputTypes(), memory.outputTypes()));
+  std::vector<SpatialValue> inputs;
+  for (std::size_t ordinal = 0; ordinal != memory.inputTypes().size();
+       ++ordinal)
+    inputs.push_back(take(test, spatial.input(ordinal)));
+  auto outputs = take(test, spatial.addMemory(inputs, memory));
+  if (llvm::Error error = spatial.close(outputs))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto finalized = take(test, std::move(design).finalize());
+  const auto &view = finalized.roots().front().view();
+  const loom::fabric::FabricMemoryOccurrenceRef occurrence(uniqueEntity(
+      test, view, loom::fabric::FabricEntityKind::FabricMemoryOccurrence));
+  const auto definition = view.memoryEngineTemplateOf(occurrence);
+  require(test, definition.has_value(),
+          "general memory lost its operation-engine definition");
+  const auto *engine = view.memoryEngineTemplate(*definition);
+  require(test, engine && engine->operationPorts.size() == 2,
+          "general memory lost its load/store operation ports");
+  for (const auto &port : engine->operationPorts) {
+    bool sawDirect = false;
+    bool sawIndexed = false;
+    for (const auto &alternative : port.capabilityAlternatives()) {
+      require(test, alternative.accessDomain.has_value(),
+              "general memory capability lost its access domain");
+      bool hasIndexed = false;
+      for (const auto &access : alternative.accessDomain->accessClasses())
+        hasIndexed |= access.accessForm() ==
+                      ::dataflow::semantics::MemoryAccessForm::Indexed;
+      require(test, alternative.admissibleUsePatterns.size() == 1,
+              "general memory capability has ambiguous use patterns");
+      const std::uint32_t pattern =
+          alternative.admissibleUsePatterns.front().ordinal();
+      sawDirect |= !hasIndexed && pattern == 0;
+      sawIndexed |= hasIndexed && pattern == 1;
+    }
+    require(test, sawDirect && sawIndexed,
+            "general memory did not separate direct and indexed access");
+    require(test,
+            port.resourceContract()
+                        .usePattern(::fabric::UsePatternKey(0))
+                        .internalTransactionCount == 1 &&
+                port.resourceContract()
+                        .usePattern(::fabric::UsePatternKey(1))
+                        .internalTransactionCount == 8,
+            "general memory did not derive its exact transaction capacities");
+  }
+  const auto *service = view.localMemoryService(occurrence);
+  require(test, service && !service->capabilities().empty(),
+          "general memory lost its local service contract");
+  for (const auto &capability : service->capabilities())
+    require(test, capability.serviceBeatWidthBits == 96,
+            "general memory changed its independent service beat width");
+}
+
 void runBuilderTests() {
   regularAndIrregularSpatialCoresFinalize();
   foreignHandlesAndIncompleteRootsFailClosed();
@@ -1120,6 +1212,7 @@ void runBuilderTests() {
   fuCapabilityRowsCorrelateRoutes();
   typedMemoryFormsFinalize();
   publicMemoryLibraryBuildsHybridLocalMemories();
+  publicMemoryRecipeKeepsIndependentEndpointWidths();
 }
 
 } // namespace loom::adg::test

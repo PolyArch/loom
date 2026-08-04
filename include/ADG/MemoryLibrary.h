@@ -17,20 +17,40 @@ struct TemporalMemoryParameters final {
   std::uint64_t residentContextCount = 0;
 };
 
-/// Parameters shared by the catalog's local 128-bit load/store recipes. The
-/// selected recipe owns its exact typed scalar and vector access domains. The
-/// optional manager endpoint admits the same operation requests through an
-/// external service while retaining the local storage target.
+/// Transient typed bounds used to construct one exact memory access domain.
+/// They are projected into ordinary operation endpoints and service
+/// capabilities and do not become a separate persistent authority.
+struct MemoryAccessDomainParameters final {
+  std::uint32_t dataPayloadBits = 0;
+  std::optional<std::uint32_t> indexedAddressPayloadBits;
+  std::uint32_t maskPayloadBits = 0;
+};
+
+/// Independent physical widths of one local memory interface.
+struct MemoryInterfaceParameters final {
+  MemoryAccessDomainParameters accessDomain;
+  std::uint32_t scalarAddressPayloadBits = 0;
+  std::uint32_t serviceBeatWidthBits = 0;
+};
+
+/// Parameters shared by the catalog's local load/store recipes. The selected
+/// recipe owns its exact typed scalar and vector access domains. The optional
+/// manager endpoint admits the same operation requests through an external
+/// service while retaining the local storage target.
 struct LocalMemoryParameters final {
   std::uint64_t capacityBytes = 0;
+  MemoryInterfaceParameters interface;
   std::optional<TemporalMemoryParameters> temporal;
   bool managerEndpoint = false;
 };
 
-/// Address range shared by the catalog's System memory-service recipes.
+/// Exact address range, access domain, and independent beat width of one
+/// catalog System memory-service recipe.
 struct SystemMemoryParameters final {
   std::uint64_t addressBaseBytes = 0;
   std::uint64_t capacityBytes = 0;
+  MemoryAccessDomainParameters accessDomain;
+  std::uint32_t serviceBeatWidthBits = 0;
 };
 
 /// Matching owner and endpoint contracts for one typed System memory service.
@@ -47,9 +67,9 @@ struct SystemMemorySpec final {
 llvm::Expected<MemorySpec>
 makeHybrid32LocalMemory(LocalMemoryParameters parameters);
 
-/// Builds the general-purpose builtin memory domain. It retains the exact
-/// contiguous four-lane 32-bit vector geometry of Hybrid32 and additionally
-/// admits common scalar 64-bit accesses through the same 128-bit datapath.
+/// Builds the general-purpose catalog memory domain. Its exact operation
+/// endpoint and service widths come only from `parameters`; the recipe adds
+/// the registered 64-bit element domain and optional indexed-address form.
 llvm::Expected<MemorySpec>
 makeGeneral64LocalMemory(LocalMemoryParameters parameters);
 
@@ -59,7 +79,7 @@ makeHybrid32SystemMemory(SystemMemoryParameters parameters,
 
 llvm::Expected<SystemMemorySpec>
 makeGeneral64SystemMemory(SystemMemoryParameters parameters,
-                         loom::fabric::ServiceRateContractRecord serviceRate);
+                          loom::fabric::ServiceRateContractRecord serviceRate);
 
 } // namespace loom::adg
 

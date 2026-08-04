@@ -87,6 +87,8 @@ def FixedVectorFloatCompareMinMaxParams : CapabilityParamsSchema<15>;
 def FixedVectorAdapterParams : CapabilityParamsSchema<16>;
 def PayloadCapacityParams : CapabilityParamsSchema<17>;
 def RoutedTokenParams : CapabilityParamsSchema<18>;
+def FixedVectorSliceAlignMergeParams : CapabilityParamsSchema<19>;
+def FixedVectorShuffleParams : CapabilityParamsSchema<20>;
 
 //===----------------------------------------------------------------------===//
 // Closed typed admission providers
@@ -117,6 +119,8 @@ def MuxTokenAdmission : TypedAdmissionProvider<21>;
 def DemuxTokenAdmission : TypedAdmissionProvider<22>;
 def ScalarUnaryIntegerAdmission : TypedAdmissionProvider<23>;
 def FixedVectorUnaryIntegerAdmission : TypedAdmissionProvider<24>;
+def FixedVectorSliceAlignMergeAdmission : TypedAdmissionProvider<25>;
+def FixedVectorShuffleAdmission : TypedAdmissionProvider<26>;
 
 //===----------------------------------------------------------------------===//
 // Standard integer, floating-point, and cast compute schemas
@@ -578,5 +582,10 @@ def FixedVectorIntegerCountZeros : ImplementationFamily<67,
     FixedVectorUnaryIntegerAdmission>;
 def ScalarMathPow : ImplementationFamily<68, [MathPowF],
     ScalarFloatParams, ScalarUniformFloatAdmission>;
+def FixedVectorSliceAlignMerge : ImplementationFamily<69,
+    [VectorExtract, VectorInsert], FixedVectorSliceAlignMergeParams,
+    FixedVectorSliceAlignMergeAdmission>;
+def FixedVectorShuffle : ImplementationFamily<70, [VectorShuffle],
+    FixedVectorShuffleParams, FixedVectorShuffleAdmission>;
 
 #endif // LOOM_OPERATION_SCHEMAS_TD

@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Fabric/IR/ImplementationFamily.h"
+#include "ImplementationFamilyVectorStructure.h"
 
 #include "Common/IndexWidth.h"
 #include "Common/VectorWidth.h"
@@ -41,6 +42,8 @@ using fabric::FloatSubnormalBehavior;
 using fabric::IntegerPredicateSet;
 using fabric::IntegerWidth;
 using fabric::IntegerWidthSet;
+using fabric::detail::admitFixedVectorShuffleAdmission;
+using fabric::detail::admitFixedVectorSliceAlignMergeAdmission;
 
 llvm::Error reject(const llvm::Twine &message);
 IntegerWidthSet ordinaryIntegerWidths();

@@ -1024,6 +1024,84 @@ llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
                          *bits128, *bits128, resources);
 }
 
+llvm::Error
+addVectorStructuralFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+                      const VectorStructuralFuParameters &parameters) {
+  const std::uint32_t dynamicRank =
+      parameters.sliceCapability.maxDynamicPositionRank;
+  if (inputs.size() != 2 + static_cast<std::size_t>(dynamicRank))
+    return invalid("VectorStructuralFu input count does not match its dynamic "
+                   "position rank");
+  if (parameters.outerPayloadBits == 0 || parameters.vectorPayloadBits == 0 ||
+      parameters.indexPayloadBits == 0)
+    return invalid("VectorStructuralFu widths must be positive");
+  if (parameters.vectorPayloadBits > parameters.outerPayloadBits ||
+      parameters.indexPayloadBits > parameters.outerPayloadBits)
+    return invalid("VectorStructuralFu inner width exceeds its outer width");
+  if (parameters.sliceCapability.maxContainerPayloadBits >
+          parameters.vectorPayloadBits ||
+      parameters.sliceCapability.maxSlicePayloadBits >
+          parameters.vectorPayloadBits ||
+      parameters.shuffleCapability.maxOperandPayloadBits >
+          parameters.vectorPayloadBits ||
+      parameters.shuffleCapability.maxResultPayloadBits >
+          parameters.vectorPayloadBits ||
+      parameters.shuffleCapability.maxBlockPayloadBits >
+          parameters.vectorPayloadBits)
+    return invalid("VectorStructuralFu capability exceeds its vector width");
+  if ((parameters.sliceCapability.resolvedIndexWidths.contains(
+           ::fabric::ResolvedIndexWidth::I32) &&
+       parameters.indexPayloadBits < 32) ||
+      (parameters.sliceCapability.resolvedIndexWidths.contains(
+           ::fabric::ResolvedIndexWidth::I64) &&
+       parameters.indexPayloadBits < 64))
+    return invalid("VectorStructuralFu index width cannot carry its resolved "
+                   "index domain");
+
+  auto sliceLayout =
+      ::fabric::resolveFixedVectorSliceAlignMergeConfigurationLayout(
+          parameters.sliceCapability,
+          {OperationSchemaId::VectorExtract, OperationSchemaId::VectorInsert});
+  if (!sliceLayout)
+    return sliceLayout.takeError();
+  auto shuffleLayout = ::fabric::resolveFixedVectorShuffleConfigurationLayout(
+      parameters.shuffleCapability);
+  if (!shuffleLayout)
+    return shuffleLayout.takeError();
+
+  auto outer = PortType::bits(parameters.outerPayloadBits);
+  if (!outer)
+    return outer.takeError();
+  auto vector = PortType::bits(parameters.vectorPayloadBits);
+  if (!vector)
+    return vector.takeError();
+  auto index = PortType::bits(parameters.indexPayloadBits);
+  if (!index)
+    return index.takeError();
+
+  std::vector<PortType> innerInputs = {*vector, *vector};
+  std::vector<std::uint32_t> sliceRoles = {0, 1};
+  innerInputs.reserve(inputs.size());
+  sliceRoles.reserve(inputs.size());
+  for (std::uint32_t role = 0; role != dynamicRank; ++role) {
+    innerInputs.push_back(*index);
+    sliceRoles.push_back(role + 2);
+  }
+  std::vector<RoutedResource> resources = {
+      {ImplementationFamilyId::FixedVectorSliceAlignMerge,
+       parameters.sliceCapability,
+       std::move(sliceRoles),
+       {*vector},
+       {0}},
+      {ImplementationFamilyId::FixedVectorShuffle,
+       parameters.shuffleCapability,
+       {0, 1},
+       {*vector},
+       {0}},
+  };
+  return addRoutedFu(pe, inputs, std::move(innerInputs), {*outer}, resources);
+}
+
 llvm::Error addVectorAdapterFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
   if (inputs.size() != 3)
     return invalid("VectorAdapterFu requires data, mask, and phase inputs");

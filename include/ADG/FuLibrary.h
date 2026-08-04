@@ -7,6 +7,8 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
+
 namespace loom::adg {
 
 /// Adds the catalog's scalar ALU FU to one PE. Inputs are data0, data1, and
@@ -29,6 +31,23 @@ llvm::Error addLoopControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
 /// Adds the fixed-vector compute FU. Inputs are data0, data1, data2, and
 /// vector condition, in that order.
 llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);
+
+/// Transient typed inputs for one vector-structure FU expansion. The emitted
+/// Fabric ports and capability records are the only persistent authority.
+struct VectorStructuralFuParameters final {
+  std::uint32_t outerPayloadBits;
+  std::uint32_t vectorPayloadBits;
+  std::uint32_t indexPayloadBits;
+  ::fabric::FixedVectorSliceAlignMergeParams sliceCapability;
+  ::fabric::FixedVectorShuffleParams shuffleCapability;
+};
+
+/// Adds fixed-vector leading-slice alignment/merge and shuffle resources.
+/// Inputs are two vector/value roles followed by the slice capability's
+/// maximum number of dynamic-position roles.
+llvm::Error
+addVectorStructuralFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+                      const VectorStructuralFuParameters &parameters);
 
 /// Adds fixed-vector representation and stream-group adapters. Inputs are
 /// data/vector, mask, and phase. Results are data/vector, mask, and phase.
