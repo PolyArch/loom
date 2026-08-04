@@ -157,4 +157,80 @@ ResolvedGeneratePlan::resolve(PlanOutputRef output) const {
   return &outputs_[begin + output.outputSlotOrdinal];
 }
 
+llvm::ArrayRef<ArtifactRootReference>
+CompletedGeneratePlanExecution::resolve(PlanOutputRef output) const {
+  if (outputOffsets_.empty() ||
+      output.producerNodeOrdinal >= outputOffsets_.size() - 1)
+    return {};
+  const std::uint64_t begin = outputOffsets_[output.producerNodeOrdinal];
+  const std::uint64_t end = outputOffsets_[output.producerNodeOrdinal + 1];
+  if (output.outputSlotOrdinal >= end - begin)
+    return {};
+  return outputs_[begin + output.outputSlotOrdinal];
+}
+
+llvm::Expected<GeneratePlanExecutionOutcome>
+executeGeneratePlan(const ResolvedGeneratePlan &plan,
+                    const ArtifactStore &store) {
+  std::vector<std::uint64_t> outputOffsets;
+  std::vector<std::vector<ArtifactRootReference>> outputs;
+  outputOffsets.reserve(plan.nodes().size() + 1);
+  outputOffsets.push_back(0);
+
+  for (std::size_t nodeIndex = 0; nodeIndex < plan.nodes().size();
+       ++nodeIndex) {
+    const ResolvedGeneratePlanNode &node = plan.nodes()[nodeIndex];
+    const CandidateGeneratorDescriptor *descriptor =
+        node.descriptorRef().descriptor();
+    if (!descriptor)
+      return invalid("resolved Generate node lost its descriptor");
+    std::vector<CandidateGeneratorInputBinding> inputs;
+    inputs.reserve(node.inputBindings().size());
+    for (std::size_t inputIndex = 0; inputIndex < node.inputBindings().size();
+         ++inputIndex) {
+      const PlanInputBinding &input = node.inputBindings()[inputIndex];
+      std::vector<ArtifactRootReference> artifacts;
+      if (const auto *exact = std::get_if<ExactPlanArtifacts>(&input)) {
+        artifacts = exact->artifacts;
+      } else {
+        const PlanOutputRef output = std::get<PlanOutputRef>(input);
+        if (output.producerNodeOrdinal >= outputOffsets.size() - 1)
+          return invalid("resolved use-def references an unavailable output");
+        const std::uint64_t begin = outputOffsets[output.producerNodeOrdinal];
+        const std::uint64_t end = outputOffsets[output.producerNodeOrdinal + 1];
+        if (output.outputSlotOrdinal >= end - begin)
+          return invalid("resolved use-def references an unavailable slot");
+        artifacts = outputs[begin + output.outputSlotOrdinal];
+      }
+      inputs.push_back({CandidateGeneratorInputSlotRef(
+                            static_cast<std::uint32_t>(inputIndex)),
+                        std::move(artifacts)});
+    }
+
+    auto binding = ResolvedCandidateGeneratorBinding::get(
+        node.descriptorRef(), std::move(inputs), node.canonicalConfigBytes(),
+        node.configDigest());
+    if (!binding)
+      return binding.takeError();
+    auto outcome = invokeCandidateGenerator(*binding, store);
+    if (!outcome)
+      return outcome.takeError();
+    if (auto *incomplete =
+            std::get_if<IncompleteCandidateGeneratorInvocation>(&*outcome))
+      return GeneratePlanExecutionOutcome{IncompleteGeneratePlanExecution{
+          static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
+          CompletedGeneratePlanExecution(std::move(outputOffsets),
+                                         std::move(outputs)),
+          std::move(incomplete->retainedOutputBindings)}};
+
+    auto &completed = std::get<CompletedCandidateGeneratorInvocation>(*outcome);
+    for (CandidateGeneratorOutputBinding &output : completed.outputBindings)
+      outputs.push_back(std::move(output.artifacts));
+    outputOffsets.push_back(outputs.size());
+  }
+
+  return GeneratePlanExecutionOutcome{CompletedGeneratePlanExecution(
+      std::move(outputOffsets), std::move(outputs))};
+}
+
 } // namespace loom::dse

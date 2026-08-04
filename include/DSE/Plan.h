@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom::dse {
@@ -68,6 +69,36 @@ private:
   std::vector<std::uint64_t> outputOffsets_;
   std::vector<PlanValueDescriptor> outputs_;
 };
+
+class CompletedGeneratePlanExecution final {
+public:
+  CompletedGeneratePlanExecution(
+      std::vector<std::uint64_t> outputOffsets,
+      std::vector<std::vector<ArtifactRootReference>> outputs)
+      : outputOffsets_(std::move(outputOffsets)), outputs_(std::move(outputs)) {
+  }
+
+  llvm::ArrayRef<ArtifactRootReference> resolve(PlanOutputRef output) const;
+
+private:
+  std::vector<std::uint64_t> outputOffsets_;
+  std::vector<std::vector<ArtifactRootReference>> outputs_;
+};
+
+struct IncompleteGeneratePlanExecution final {
+  std::uint64_t nodeOrdinal = 0;
+  CandidateGeneratorIncompleteReason reason;
+  CompletedGeneratePlanExecution completedPrefix;
+  std::vector<CandidateGeneratorOutputBinding> retainedOutputBindings;
+};
+
+using GeneratePlanExecutionOutcome =
+    std::variant<CompletedGeneratePlanExecution,
+                 IncompleteGeneratePlanExecution>;
+
+llvm::Expected<GeneratePlanExecutionOutcome>
+executeGeneratePlan(const ResolvedGeneratePlan &plan,
+                    const ArtifactStore &store);
 
 } // namespace loom::dse
 

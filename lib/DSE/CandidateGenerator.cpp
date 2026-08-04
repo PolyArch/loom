@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -17,8 +18,18 @@ std::vector<const CandidateGeneratorDescriptor *> &descriptors() {
   return records;
 }
 
-std::mutex &descriptorMutex() {
-  static std::mutex mutex;
+std::shared_mutex &descriptorMutex() {
+  static std::shared_mutex mutex;
+  return mutex;
+}
+
+std::vector<CandidateGeneratorProvider> &providers() {
+  static std::vector<CandidateGeneratorProvider> records;
+  return records;
+}
+
+std::shared_mutex &providerMutex() {
+  static std::shared_mutex mutex;
   return mutex;
 }
 
@@ -37,6 +48,41 @@ bool acceptsSchema(const CandidateGeneratorInputSlotDescriptor &slot,
                    const ArtifactRootReference &artifact) {
   return slot.schema && slot.schema->identity == artifact.schemaIdentity &&
          slot.schema->version == artifact.schemaVersion;
+}
+
+bool matchesSchema(const CandidateGeneratorOutputSlotDescriptor &slot,
+                   const ArtifactRootReference &artifact) {
+  return slot.schema && slot.schema->identity == artifact.schemaIdentity &&
+         slot.schema->version == artifact.schemaVersion;
+}
+
+llvm::Error canonicalizeOutputBindings(
+    const CandidateGeneratorDescriptor &descriptor,
+    std::vector<CandidateGeneratorOutputBinding> &bindings,
+    bool requireFinalCardinality) {
+  if (bindings.size() != descriptor.outputSlots.size())
+    return invalid("provider does not bind every output slot");
+  for (std::size_t index = 0; index < bindings.size(); ++index) {
+    CandidateGeneratorOutputBinding &binding = bindings[index];
+    const CandidateGeneratorOutputSlotDescriptor &slot =
+        descriptor.outputSlots[index];
+    if (binding.slot.ordinal() != index)
+      return invalid("provider output bindings must be dense and canonical");
+    for (const ArtifactRootReference &artifact : binding.artifacts)
+      if (!matchesSchema(slot, artifact))
+        return invalid("provider output artifact schema does not match slot '" +
+                       slot.semanticRole + "'");
+    llvm::sort(binding.artifacts, artifactRootReferenceLess);
+    binding.artifacts.erase(
+        std::unique(binding.artifacts.begin(), binding.artifacts.end()),
+        binding.artifacts.end());
+    const PlanCardinalityBounds bounds =
+        planCardinalityBounds(slot.cardinality);
+    if (binding.artifacts.size() > bounds.maximum ||
+        (requireFinalCardinality && binding.artifacts.size() < bounds.minimum))
+      return invalid("provider output violates slot cardinality");
+  }
+  return llvm::Error::success();
 }
 
 llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
@@ -152,7 +198,7 @@ llvm::Error registerCandidateGeneratorDescriptor(
   if (llvm::Error error = validateDescriptor(descriptor))
     return error;
 
-  std::lock_guard<std::mutex> lock(descriptorMutex());
+  std::unique_lock<std::shared_mutex> lock(descriptorMutex());
   for (const CandidateGeneratorDescriptor *existing : descriptors()) {
     if (existing == &descriptor)
       return llvm::Error::success();
@@ -174,7 +220,7 @@ llvm::Error registerCandidateGeneratorDescriptor(
 
 const CandidateGeneratorDescriptor *
 findCandidateGeneratorDescriptor(CandidateGeneratorKind kind) {
-  std::lock_guard<std::mutex> lock(descriptorMutex());
+  std::shared_lock<std::shared_mutex> lock(descriptorMutex());
   auto found =
       std::lower_bound(descriptors().begin(), descriptors().end(), kind,
                        [](const CandidateGeneratorDescriptor *descriptor,
@@ -232,6 +278,81 @@ ResolvedCandidateGeneratorBinding::findInputBinding(
   if (slot.ordinal() >= inputBindings_.size())
     return nullptr;
   return &inputBindings_[slot.ordinal()];
+}
+
+llvm::Error
+registerCandidateGeneratorProvider(const CandidateGeneratorProvider &provider) {
+  if (!provider.invoke || !provider.descriptor.descriptor())
+    return invalid("provider requires a registered descriptor and callback");
+  std::unique_lock<std::shared_mutex> lock(providerMutex());
+  for (const CandidateGeneratorProvider &existing : providers()) {
+    if (existing.descriptor != provider.descriptor)
+      continue;
+    if (existing.invoke == provider.invoke)
+      return llvm::Error::success();
+    return invalid("conflicting provider registration for candidate generator");
+  }
+  providers().push_back(provider);
+  llvm::sort(providers(), [](const CandidateGeneratorProvider &lhs,
+                             const CandidateGeneratorProvider &rhs) {
+    return lhs.descriptor.kind() < rhs.descriptor.kind();
+  });
+  return llvm::Error::success();
+}
+
+llvm::Expected<CandidateGeneratorInvocationOutcome>
+invokeCandidateGenerator(const ResolvedCandidateGeneratorBinding &binding,
+                         const ArtifactStore &store) {
+  const CandidateGeneratorDescriptor *descriptor =
+      binding.descriptorRef().descriptor();
+  if (!descriptor)
+    return invalid("binding references an unregistered descriptor");
+
+  CandidateGeneratorProviderFunction invoke = nullptr;
+  {
+    std::shared_lock<std::shared_mutex> lock(providerMutex());
+    auto found =
+        llvm::lower_bound(providers(), binding.descriptorRef().kind(),
+                          [](const CandidateGeneratorProvider &provider,
+                             CandidateGeneratorKind kind) {
+                            return provider.descriptor.kind() < kind;
+                          });
+    if (found != providers().end() &&
+        found->descriptor == binding.descriptorRef())
+      invoke = found->invoke;
+  }
+  if (!invoke) {
+    std::vector<CandidateGeneratorOutputBinding> outputs;
+    outputs.reserve(descriptor->outputSlots.size());
+    for (const CandidateGeneratorOutputSlotDescriptor &slot :
+         descriptor->outputSlots)
+      outputs.push_back({slot.slot, {}});
+    return CandidateGeneratorInvocationOutcome{
+        IncompleteCandidateGeneratorInvocation{
+            CandidateGeneratorIncompleteReason::ProviderUnavailable,
+            std::move(outputs)}};
+  }
+
+  auto outcome = invoke(binding, store);
+  if (!outcome)
+    return outcome.takeError();
+  if (auto *completed =
+          std::get_if<CompletedCandidateGeneratorInvocation>(&*outcome)) {
+    if (llvm::Error error = canonicalizeOutputBindings(
+            *descriptor, completed->outputBindings, true))
+      return std::move(error);
+  } else {
+    auto &incomplete =
+        std::get<IncompleteCandidateGeneratorInvocation>(*outcome);
+    if (static_cast<std::uint32_t>(incomplete.reason) >
+        static_cast<std::uint32_t>(
+            CandidateGeneratorIncompleteReason::Unsupported))
+      return invalid("provider returned an invalid Incomplete reason");
+    if (llvm::Error error = canonicalizeOutputBindings(
+            *descriptor, incomplete.retainedOutputBindings, false))
+      return std::move(error);
+  }
+  return outcome;
 }
 
 } // namespace loom::dse

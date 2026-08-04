@@ -10,7 +10,12 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <variant>
 #include <vector>
+
+namespace loom {
+class ArtifactStore;
+}
 
 namespace loom::dse {
 
@@ -250,6 +255,49 @@ private:
   std::vector<std::uint8_t> canonicalConfigBytes_;
   ComponentViewDigest configDigest_;
 };
+
+struct CandidateGeneratorOutputBinding final {
+  CandidateGeneratorOutputSlotRef slot;
+  std::vector<ArtifactRootReference> artifacts;
+};
+
+struct CompletedCandidateGeneratorInvocation final {
+  std::vector<CandidateGeneratorOutputBinding> outputBindings;
+};
+
+enum class CandidateGeneratorIncompleteReason : std::uint32_t {
+  ProofNotEstablished = 0,
+  SemanticLimitReached = 1,
+  ProviderUnavailable = 2,
+  Unsupported = 3,
+};
+
+struct IncompleteCandidateGeneratorInvocation final {
+  CandidateGeneratorIncompleteReason reason;
+  std::vector<CandidateGeneratorOutputBinding> retainedOutputBindings;
+};
+
+using CandidateGeneratorInvocationOutcome =
+    std::variant<CompletedCandidateGeneratorInvocation,
+                 IncompleteCandidateGeneratorInvocation>;
+
+using CandidateGeneratorProviderFunction =
+    llvm::Expected<CandidateGeneratorInvocationOutcome> (*)(
+        const ResolvedCandidateGeneratorBinding &, const ArtifactStore &);
+
+struct CandidateGeneratorProvider final {
+  CandidateGeneratorDescriptorRef descriptor;
+  CandidateGeneratorProviderFunction invoke;
+};
+
+llvm::Error
+registerCandidateGeneratorProvider(const CandidateGeneratorProvider &provider);
+
+/// Invokes the exact registered provider and canonicalizes every typed output
+/// set. Missing implementation is a typed Incomplete outcome.
+llvm::Expected<CandidateGeneratorInvocationOutcome>
+invokeCandidateGenerator(const ResolvedCandidateGeneratorBinding &binding,
+                         const ArtifactStore &store);
 
 } // namespace loom::dse
 

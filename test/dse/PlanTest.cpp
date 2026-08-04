@@ -1,8 +1,11 @@
 #include "DSE/Plan.h"
 
+#include "Common/ArtifactStore.h"
 #include "Common/ComponentViewDigest.h"
 
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 
 #include <array>
 #include <cstdint>
@@ -86,6 +89,18 @@ const CandidateGeneratorDescriptor transformGenerator{
     {},
 };
 
+const CandidateGeneratorDescriptor unavailableGenerator{
+    CandidateGeneratorKind(0x7fff1002),
+    "test.plan.unavailable",
+    "loom.test.plan.unavailable.v1",
+    candidateInputs,
+    outputs,
+    CandidateGeneratorConfigViewContract{configSchema, validateConfig},
+    CandidateGeneratorDeterminism::Deterministic,
+    {},
+    {},
+};
+
 ArtifactRootReference makeReference(const ArtifactSchemaDescriptor &schema,
                                     std::uint8_t fill) {
   std::array<std::uint8_t, ArtifactIdentity::byteSize> bytes{};
@@ -101,11 +116,49 @@ GeneratePlanNodeDefinition makeNode(CandidateGeneratorDescriptorRef descriptor,
       descriptor, std::move(inputs), {0x01}, digest};
 }
 
+llvm::Expected<CandidateGeneratorInvocationOutcome>
+generateSource(const ResolvedCandidateGeneratorBinding &binding,
+               const ArtifactStore &) {
+  if (binding.inputBindings().size() != 1 ||
+      binding.inputBindings().front().artifacts.size() != 1)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "source provider received invalid inputs");
+  const ArtifactRootReference first = makeReference(candidateSchema, 0x31);
+  const ArtifactRootReference second = makeReference(candidateSchema, 0x22);
+  return CompletedCandidateGeneratorInvocation{{
+      {CandidateGeneratorOutputSlotRef(0), {first, second, first}},
+  }};
+}
+
+llvm::Expected<CandidateGeneratorInvocationOutcome>
+transformCandidates(const ResolvedCandidateGeneratorBinding &binding,
+                    const ArtifactStore &) {
+  if (binding.inputBindings().size() != 1 ||
+      binding.inputBindings().front().artifacts.size() != 2)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "transform provider did not receive a set");
+  return CompletedCandidateGeneratorInvocation{{
+      {CandidateGeneratorOutputSlotRef(0),
+       {binding.inputBindings().front().artifacts.back()}},
+  }};
+}
+
 void exerciseOrderedTypedUseDef() {
   if (llvm::Error error = registerCandidateGeneratorDescriptor(sourceGenerator))
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error =
           registerCandidateGeneratorDescriptor(transformGenerator))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          registerCandidateGeneratorDescriptor(unavailableGenerator))
+    fail(llvm::toString(std::move(error)));
+  const CandidateGeneratorProvider sourceProvider{sourceGenerator.reference(),
+                                                  generateSource};
+  const CandidateGeneratorProvider transformProvider{
+      transformGenerator.reference(), transformCandidates};
+  if (llvm::Error error = registerCandidateGeneratorProvider(sourceProvider))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = registerCandidateGeneratorProvider(transformProvider))
     fail(llvm::toString(std::move(error)));
   const ComponentViewDigest digest = take(computeComponentViewDigest(
       configSchema, std::array<std::uint8_t, 1>{0x01}));
@@ -128,6 +181,39 @@ void exerciseOrderedTypedUseDef() {
       produced->schema != candidateSchema ||
       produced->cardinality != PlanValueCardinality::FiniteSet)
     fail("resolved plan output did not derive the generator slot contract");
+
+  llvm::SmallString<128> storePath;
+  if (std::error_code error =
+          llvm::sys::fs::createUniqueDirectory("loom-dse-plan", storePath))
+    fail("cannot create plan test ArtifactStore: " + error.message());
+  ArtifactStore store(storePath);
+  GeneratePlanExecutionOutcome execution =
+      take(executeGeneratePlan(plan, store));
+  const auto *completed =
+      std::get_if<CompletedGeneratePlanExecution>(&execution);
+  if (!completed)
+    fail("available Generate plan did not complete");
+  llvm::ArrayRef<ArtifactRootReference> finalCandidates =
+      completed->resolve(PlanOutputRef{1, 0});
+  if (finalCandidates.size() != 1 ||
+      finalCandidates.front() != makeReference(candidateSchema, 0x31))
+    fail("Generate execution did not canonicalize and forward outputs");
+
+  ResolvedGeneratePlan unavailablePlan = take(ResolvedGeneratePlan::get({
+      makeNode(sourceGenerator.reference(), {ExactPlanArtifacts{{source}}},
+               digest),
+      makeNode(unavailableGenerator.reference(), {PlanOutputRef{0, 0}}, digest),
+  }));
+  GeneratePlanExecutionOutcome unavailable =
+      take(executeGeneratePlan(unavailablePlan, store));
+  const auto *incomplete =
+      std::get_if<IncompleteGeneratePlanExecution>(&unavailable);
+  if (!incomplete || incomplete->nodeOrdinal != 1 ||
+      incomplete->reason !=
+          CandidateGeneratorIncompleteReason::ProviderUnavailable ||
+      incomplete->completedPrefix.resolve(PlanOutputRef{0, 0}).size() != 2)
+    fail("missing provider did not produce typed Incomplete");
+  llvm::sys::fs::remove_directories(storePath);
 
   std::vector<GeneratePlanNodeDefinition> forward;
   forward.push_back(
