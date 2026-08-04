@@ -8,6 +8,7 @@
 #include "SpatialPnrPortIndex.h"
 #include "SpatialPnrResourceIndex.h"
 #include "SpatialPnrTransferIndex.h"
+#include "SpatialRouteConstraintModel.h"
 
 #include "Common/ComponentViewDigest.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -117,16 +118,16 @@ constexpr PnrCapacityContext arcCountContext{
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.8\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.9\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 8;
+constexpr std::uint32_t cacheSchemaMinor = 9;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.8";
+    "loom.spatial_pnr.freeze.2.9";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
-    "loom.spatial_pnr.native_layout.2.7";
+    "loom.spatial_pnr.native_layout.2.8";
 
 enum class CacheField : std::uint32_t {
   DataflowIdentity = 1,
@@ -332,6 +333,10 @@ public:
         *routing);
     if (!bindingRelations)
       return bindingRelations.takeError();
+    auto routeConstraints = detail::SpatialRouteConstraintModel::create(
+        dataflow.identity(), *constraints, *transfers, *resources, *routing);
+    if (!routeConstraints)
+      return routeConstraints.takeError();
     auto handshake = detail::buildFrozenSpatialHandshakeIndex(
         dataflow, techMapping, fabric, *realizations, *resources, *routing);
     if (!handshake)
@@ -362,7 +367,7 @@ public:
         std::move(*realizations), std::move(*memory), std::move(*transfers),
         std::move(*ports), std::move(*resources), std::move(*capacity),
         std::move(*routing), std::move(*handshake), std::move(*progressClosure),
-        std::move(*bindingRelations), cacheKey));
+        std::move(*bindingRelations), std::move(*routeConstraints), cacheKey));
   }
 
   static FrozenSpatialPnrCacheKey

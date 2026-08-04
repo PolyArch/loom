@@ -21,6 +21,10 @@
 
 namespace loom::pnr {
 
+namespace detail {
+class SpatialRouteConstraintScratch;
+}
+
 struct SpatialComputeBindingSelection final {
   PnrIndex placement = getInvalidPnrIndex();
   PnrIndex instructionContext = getInvalidPnrIndex();
@@ -56,7 +60,7 @@ using SpatialCandidateStateHandle = std::shared_ptr<SpatialCandidateState>;
 
 class SpatialCandidateScratch final {
 public:
-  SpatialCandidateScratch() = default;
+  SpatialCandidateScratch();
   SpatialCandidateScratch(const SpatialCandidateScratch &) = delete;
   SpatialCandidateScratch &operator=(const SpatialCandidateScratch &) = delete;
   SpatialCandidateScratch(SpatialCandidateScratch &&) = delete;
@@ -140,6 +144,9 @@ private:
   std::uint64_t traversalEpoch_ = 0;
   std::size_t resourceFullyAppliedRouteCount_ = 0;
   std::size_t resourcePartiallyAppliedDeltaCount_ = 0;
+
+  std::unique_ptr<detail::SpatialRouteConstraintScratch>
+      routeConstraintScratch_;
 
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
   SpatialMoveTransaction *activeTransaction_ = nullptr;

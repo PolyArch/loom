@@ -1,5 +1,7 @@
 #include "PnR/SpatialNetRouter.h"
 
+#include "SpatialRouteConstraintModel.h"
+
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
@@ -29,6 +31,12 @@ template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
 
 } // namespace
 
+SpatialNetRouterScratch::SpatialNetRouterScratch()
+    : routeConstraints_(
+          std::make_unique<detail::SpatialRouteConstraintScratch>()) {}
+
+SpatialNetRouterScratch::~SpatialNetRouterScratch() = default;
+
 llvm::Error
 SpatialNetRouterScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   if (llvm::Error error =
@@ -57,8 +65,19 @@ SpatialNetRouterScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   unresolvedSinks_.assign(maximumSinkCount, 0);
   prospectiveClaimBits_.assign(
       (problem.routing().routeClaims().size() + 63) / 64, 0);
+  if (llvm::Error error = routeConstraints_->prepare(problem))
+    return error;
   preparedProblem_ = &problem;
   return llvm::Error::success();
+}
+
+llvm::Error SpatialNetRouterScratch::beginConstraintSweep(
+    llvm::ArrayRef<PnrIndex> logicalNets) {
+  return routeConstraints_->beginSweep(logicalNets);
+}
+
+llvm::Error SpatialNetRouterScratch::finishConstraintNet(PnrIndex logicalNet) {
+  return routeConstraints_->finishNet(logicalNet);
 }
 
 llvm::Error
@@ -172,6 +191,10 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeWholeNet(
       candidate.problem().transfers().logicalNets()[logicalNet];
   if (net.sinkCount == 0 || net.sinkCount > unresolvedSinks_.size())
     return netRouterError("logical net has no prepared sink domain");
+  auto eligibleTraversals =
+      routeConstraints_->eligibleTraversals(candidate, logicalNet);
+  if (!eligibleTraversals)
+    return eligibleTraversals.takeError();
 
   std::fill(unresolvedSinks_.begin(), unresolvedSinks_.begin() + net.sinkCount,
             1);
@@ -220,7 +243,7 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeWholeNet(
         {sourceEndpoints_, sourceReplicationGroups_, targetEndpoints_,
          targetPreferenceRanks_, costs.lowerBoundArcCosts(),
          costs.currentArcCosts(), candidate.logicalNetPayloadWidth(logicalNet),
-         0, endpointExpansionLimit});
+         0, endpointExpansionLimit, *eligibleTraversals});
     if (!result)
       return result.takeError();
 
@@ -272,5 +295,7 @@ std::size_t SpatialNetRouterScratch::retainedStorageBytes() const {
          retainedBytes(targetCandidates_) + retainedBytes(targetEndpoints_) +
          retainedBytes(targetPreferenceRanks_) +
          retainedBytes(targetObligationByEndpoint_) +
-         retainedBytes(unresolvedSinks_) + retainedBytes(prospectiveClaimBits_);
+         retainedBytes(unresolvedSinks_) +
+         retainedBytes(prospectiveClaimBits_) +
+         routeConstraints_->retainedStorageBytes();
 }

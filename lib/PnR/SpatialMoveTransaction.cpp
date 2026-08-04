@@ -2,6 +2,7 @@
 
 #include "SpatialBindingRelationModel.h"
 #include "SpatialCandidateStateInternal.h"
+#include "SpatialRouteConstraintModel.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -739,6 +740,9 @@ llvm::Error SpatialMoveTransaction::validateAffectedState() const {
         return candidateError(
             "route sink disagrees with its selected attachment");
   }
+  if (llvm::Error error = scratch_->routeConstraintScratch_->verifyAffected(
+          *state_, scratch_->affectedNets_))
+    return error;
   return llvm::Error::success();
 }
 

@@ -6,6 +6,7 @@ add_executable(loom-tech-mapping-artifact-test
   TechMappingArtifactTest.cpp
   TechMappingComputeBoundaryTest.cpp
   TechMappingCandidateTestSupport.cpp
+  SpatialRouteConstraintTestSupport.cpp
 )
 
 target_include_directories(loom-tech-mapping-artifact-test PRIVATE

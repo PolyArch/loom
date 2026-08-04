@@ -2,6 +2,7 @@
 
 #include "InitializerRelationSolver.h"
 #include "SpatialBindingRelationModel.h"
+#include "SpatialRouteConstraintModel.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -266,10 +267,15 @@ void SpatialActionExecutorScratch::markExplicitAttachment(PnrIndex decision) {
 llvm::Error SpatialActionExecutorScratch::markNet(PnrIndex logicalNet) {
   if (logicalNet >= netMarks_.size())
     return executorError("Action dependency net is out of range");
-  if (netMarks_[logicalNet] == netEpoch_)
-    return llvm::Error::success();
-  netMarks_[logicalNet] = netEpoch_;
-  affectedNets_.push_back(logicalNet);
+  for (PnrIndex member :
+       candidate_->problem().routeConstraints().equalityClosure(logicalNet)) {
+    if (member >= netMarks_.size())
+      return executorError("route equality closure net is out of range");
+    if (netMarks_[member] == netEpoch_)
+      continue;
+    netMarks_[member] = netEpoch_;
+    affectedNets_.push_back(member);
+  }
   return llvm::Error::success();
 }
 
@@ -559,6 +565,8 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
           .config()
           .policy()
           .search.routing.endpointExpansionLimit;
+  if (llvm::Error error = router_.beginConstraintSweep(affectedNets_))
+    return error;
   for (PnrIndex logicalNet : affectedNets_) {
     if (llvm::Error error = routeCosts_->selectLogicalNet(logicalNet))
       return error;
@@ -578,6 +586,8 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
         return error;
     }
     if (llvm::Error error = routeCosts_->acceptSelectedLogicalNet())
+      return error;
+    if (llvm::Error error = router_.finishConstraintNet(logicalNet))
       return error;
   }
   return llvm::Error::success();

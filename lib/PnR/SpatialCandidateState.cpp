@@ -2,6 +2,7 @@
 
 #include "SpatialBindingRelationModel.h"
 #include "SpatialCandidateStateInternal.h"
+#include "SpatialRouteConstraintModel.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -93,6 +94,8 @@ SpatialCandidateScratch::~SpatialCandidateScratch() {
     activeTransaction_->rollback();
 }
 
+SpatialCandidateScratch::SpatialCandidateScratch() = default;
+
 llvm::Error
 SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   if (activeTransaction_)
@@ -111,6 +114,11 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   if (llvm::Error error = tagScratch_.prepare(problem))
     return error;
   if (llvm::Error error = handshakeScratch_.prepare(problem.handshake()))
+    return error;
+  if (!routeConstraintScratch_)
+    routeConstraintScratch_ =
+        std::make_unique<detail::SpatialRouteConstraintScratch>();
+  if (llvm::Error error = routeConstraintScratch_->prepare(problem))
     return error;
 
   const auto &realizations = problem.realizations();
@@ -181,10 +189,12 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
 }
 
 std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
-  std::size_t bytes = retainedBytes(routeScratch_) +
-                      retainedBytes(routeTransactions_) +
-                      tagScratch_.retainedStorageBytes() +
-                      handshakeScratch_.retainedStorageBytes();
+  std::size_t bytes =
+      retainedBytes(routeScratch_) + retainedBytes(routeTransactions_) +
+      tagScratch_.retainedStorageBytes() +
+      handshakeScratch_.retainedStorageBytes() +
+      (routeConstraintScratch_ ? routeConstraintScratch_->retainedStorageBytes()
+                               : 0);
   for (const auto &scratch : routeScratch_)
     bytes += scratch->retainedLookupRollbackStorageBytes();
   bytes +=
@@ -880,6 +890,11 @@ llvm::Error SpatialCandidateState::verify() const {
   for (PnrIndex index = 0; index < routeTrees_.size(); ++index)
     if (llvm::Error error = validateLogicalNet(index))
       return error;
+  detail::SpatialRouteConstraintScratch routeConstraints;
+  if (llvm::Error error = routeConstraints.prepare(*problem_))
+    return error;
+  if (llvm::Error error = routeConstraints.verifyAll(*this))
+    return error;
   std::uint64_t expectedUnroutedObligationCount = 0;
   const auto logicalNets = problem_->transfers().logicalNets();
   for (PnrIndex index = 0; index < routeTrees_.size(); ++index) {
@@ -934,7 +949,8 @@ SpatialCandidateState::beginMove(SpatialCandidateScratch &scratch) & {
       scratch.traversalDeltaMarks_.size() !=
           problem_->routing().traversals().size() ||
       scratch.affectedBindingRelationMarks_.size() !=
-          problem_->bindingRelations().relations().relations().size())
+          problem_->bindingRelations().relations().relations().size() ||
+      !scratch.routeConstraintScratch_)
     return candidateError("scratch was not prepared for this candidate");
 
   scratch.beginTransaction();

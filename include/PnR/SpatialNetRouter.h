@@ -9,9 +9,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace loom::pnr {
+
+namespace detail {
+class SpatialRouteConstraintScratch;
+}
 
 /// Worker-local whole-net routing scratch. The selected logical net must
 /// already be excluded from the supplied cost state. RouteTree and resource
@@ -20,14 +25,16 @@ namespace loom::pnr {
 /// to restore the cost overlay.
 class SpatialNetRouterScratch final {
 public:
-  SpatialNetRouterScratch() = default;
+  SpatialNetRouterScratch();
   SpatialNetRouterScratch(const SpatialNetRouterScratch &) = delete;
   SpatialNetRouterScratch &operator=(const SpatialNetRouterScratch &) = delete;
   SpatialNetRouterScratch(SpatialNetRouterScratch &&) = delete;
   SpatialNetRouterScratch &operator=(SpatialNetRouterScratch &&) = delete;
-  ~SpatialNetRouterScratch() = default;
+  ~SpatialNetRouterScratch();
 
   llvm::Error prepare(const FrozenSpatialPnrProblem &problem);
+  llvm::Error beginConstraintSweep(llvm::ArrayRef<PnrIndex> logicalNets);
+  llvm::Error finishConstraintNet(PnrIndex logicalNet);
 
   llvm::Expected<RouteCost>
   routeWholeNet(SpatialMoveTransaction &move,
@@ -65,6 +72,7 @@ private:
   std::vector<PnrIndex> targetObligationByEndpoint_;
   std::vector<std::uint8_t> unresolvedSinks_;
   std::vector<std::uint64_t> prospectiveClaimBits_;
+  std::unique_ptr<detail::SpatialRouteConstraintScratch> routeConstraints_;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
 };
 

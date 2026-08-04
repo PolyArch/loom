@@ -720,6 +720,9 @@ void artifactRoundTripAndReferenceValidation() {
           finalizedConstraints.canonicalBytes().bytes()))
     fail("strict Spatial MappingConstraintSet import changed the artifact");
 
+  loom::test::exerciseSpatialRouteConstraintRelations(
+      context, dataflowView, finalized.view(), fabricRoot.view(), store);
+
   const loom::pnr::ResolvedPnrConfigView defaultSpatialConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(
           loom::defaultResolvedConfig()));
@@ -1030,7 +1033,8 @@ void artifactRoundTripAndReferenceValidation() {
          routeCosts,
          spatialCandidate->logicalNetPayloadWidth(*routedNet),
          0,
-         262144});
+         262144,
+         {}});
     if (!prefix) {
       llvm::consumeError(prefix.takeError());
       continue;
@@ -1046,7 +1050,8 @@ void artifactRoundTripAndReferenceValidation() {
          routeCosts,
          spatialCandidate->logicalNetPayloadWidth(*routedNet),
          0,
-         262144});
+         262144,
+         {}});
     if (!suffix) {
       llvm::consumeError(suffix.takeError());
       continue;
@@ -1242,10 +1247,12 @@ void artifactRoundTripAndReferenceValidation() {
   requireSuccess(routedCostState.selectLogicalNet(*multicastNet));
   loom::pnr::SpatialNetRouterScratch netRouter;
   requireSuccess(netRouter.prepare(*frozen));
+  requireSuccess(netRouter.beginConstraintSweep({&*multicastNet, 1}));
   auto wholeNetMove = take(routedCandidate->beginMove(routedCandidateScratch));
   const loom::pnr::RouteCost wholeNetCost = take(netRouter.routeWholeNet(
       wholeNetMove, *routedCandidate, routedCostState, *multicastNet,
       spatialConfig.policy().search.routing.endpointExpansionLimit));
+  requireSuccess(netRouter.finishConstraintNet(*multicastNet));
   if (wholeNetCost == loom::pnr::routeCostInfinity)
     fail("whole-net routing returned the infinity sentinel");
   if (!take(wholeNetMove.close()))
@@ -1265,10 +1272,12 @@ void artifactRoundTripAndReferenceValidation() {
       routedCostState.currentArcCosts().begin(),
       routedCostState.currentArcCosts().end());
   requireSuccess(routedCostState.selectLogicalNet(*multicastNet));
+  requireSuccess(netRouter.beginConstraintSweep({&*multicastNet, 1}));
   auto limitedWholeNet =
       take(routedCandidate->beginMove(routedCandidateScratch));
   auto limitedResult = netRouter.routeWholeNet(
       limitedWholeNet, *routedCandidate, routedCostState, *multicastNet, 1);
+  requireSuccess(netRouter.finishConstraintNet(*multicastNet));
   bool observedWorkLimit = false;
   if (limitedResult) {
     fail("whole-net routing ignored its endpoint work limit");

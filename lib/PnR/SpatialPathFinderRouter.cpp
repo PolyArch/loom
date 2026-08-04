@@ -71,6 +71,8 @@ llvm::Error SpatialPathFinderRouterScratch::prepare(
   capacityNetQCosts_.assign(capacityCount, 0);
   touchedCapacities_.clear();
   touchedCapacities_.reserve(capacityCount);
+  constraintSweepNets_.clear();
+  constraintSweepNets_.reserve(logicalNetCount);
   projectionEpoch_ = 0;
   preparedProblem_ = &problem;
   return llvm::Error::success();
@@ -250,6 +252,13 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
             buildCanonicalNetOrder(candidate, costs, evaluationPriorities))
       return std::move(error);
 
+    constraintSweepNets_.clear();
+    for (const NetOrderEntry &entry : netOrder_)
+      constraintSweepNets_.push_back(entry.logicalNet);
+    if (llvm::Error error =
+            netRouter_.beginConstraintSweep(constraintSweepNets_))
+      return std::move(error);
+
     for (const NetOrderEntry &entry : netOrder_) {
       auto projection = projectLogicalNet(candidate, costs, entry.logicalNet);
       if (!projection)
@@ -263,6 +272,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       if (!route)
         return route.takeError();
       if (llvm::Error error = costs.acceptSelectedLogicalNet())
+        return std::move(error);
+      if (llvm::Error error = netRouter_.finishConstraintNet(entry.logicalNet))
         return std::move(error);
     }
 
@@ -293,9 +304,20 @@ llvm::Expected<RouteCost> SpatialPathFinderRouterScratch::routeWholeNetInMove(
                                   endpointExpansionLimit);
 }
 
+llvm::Error SpatialPathFinderRouterScratch::beginConstraintSweep(
+    llvm::ArrayRef<PnrIndex> logicalNets) {
+  return netRouter_.beginConstraintSweep(logicalNets);
+}
+
+llvm::Error
+SpatialPathFinderRouterScratch::finishConstraintNet(PnrIndex logicalNet) {
+  return netRouter_.finishConstraintNet(logicalNet);
+}
+
 std::size_t SpatialPathFinderRouterScratch::retainedStorageBytes() const {
   return netRouter_.retainedStorageBytes() + retainedBytes(netOrder_) +
          retainedBytes(activeClaimBits_) + retainedBytes(claimEpochs_) +
          retainedBytes(capacityEpochs_) + retainedBytes(capacityNetQCosts_) +
-         retainedBytes(touchedCapacities_);
+         retainedBytes(touchedCapacities_) +
+         retainedBytes(constraintSweepNets_);
 }

@@ -310,6 +310,12 @@ bool EndpointRouteSearchScratch::arcEligible(
   if (graph_.arcs[arc].payloadCapacityBits < request.requiredPayloadWidthBits ||
       graph_.arcs[arc].tagCapacityBits < request.requiredTagWidthBits)
     return false;
+  const PnrIndex traversal = graph_.arcs[arc].traversal;
+  if (!request.eligibleTraversalBits.empty() &&
+      (traversal / 64 >= request.eligibleTraversalBits.size() ||
+       (request.eligibleTraversalBits[traversal / 64] &
+        (std::uint64_t{1} << (traversal % 64))) == 0))
+    return false;
   const PnrIndex source = graph_.arcSources[arc];
   if (!enforceSourceReplication || !isSource(source))
     return true;
@@ -373,6 +379,19 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
   if (request.lowerBoundArcCosts.size() != graph_.arcs.size() ||
       request.currentArcCosts.size() != graph_.arcs.size())
     return invalid("lower-bound and current cost arrays must contain E rows");
+  const std::size_t traversalWords =
+      (graph_.traversalReplicationGroups.size() + 63) / 64;
+  if (!request.eligibleTraversalBits.empty() &&
+      request.eligibleTraversalBits.size() != traversalWords)
+    return invalid("eligible traversal mask has the wrong width");
+  if (!request.eligibleTraversalBits.empty() &&
+      graph_.traversalReplicationGroups.size() % 64 != 0) {
+    const std::uint64_t paddingMask = ~(
+        (std::uint64_t{1} << (graph_.traversalReplicationGroups.size() % 64)) -
+        1);
+    if ((request.eligibleTraversalBits.back() & paddingMask) != 0)
+      return invalid("eligible traversal mask has nonzero padding");
+  }
   if (request.endpointExpansionLimit == 0)
     return invalid("endpoint expansion limit must be positive");
   for (PnrIndex endpoint : request.sourceEndpoints)

@@ -83,6 +83,9 @@ public:
                       SpatialRouteCostState &costs, PnrIndex logicalNet,
                       std::uint64_t endpointExpansionLimit);
 
+  llvm::Error beginConstraintSweep(llvm::ArrayRef<PnrIndex> logicalNets);
+  llvm::Error finishConstraintNet(PnrIndex logicalNet);
+
   std::size_t retainedStorageBytes() const;
 
 private:
@@ -114,6 +117,7 @@ private:
   std::vector<std::uint64_t> capacityEpochs_;
   std::vector<RouteCost> capacityNetQCosts_;
   std::vector<PnrIndex> touchedCapacities_;
+  std::vector<PnrIndex> constraintSweepNets_;
   std::uint64_t projectionEpoch_ = 0;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
 };

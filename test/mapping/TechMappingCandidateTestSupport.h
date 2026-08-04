@@ -53,6 +53,12 @@ void exerciseSpatialAttachmentConstraintRelations(
     const mapping::TechMappingView &techMapping,
     const fabric::FabricArtifactView &fabric, const ArtifactStore &store);
 
+void exerciseSpatialRouteConstraintRelations(
+    mlir::MLIRContext &context,
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const fabric::FabricArtifactView &fabric, const ArtifactStore &store);
+
 } // namespace loom::test
 
 #endif // LOOM_TEST_MAPPING_TECHMAPPINGCANDIDATETESTSUPPORT_H

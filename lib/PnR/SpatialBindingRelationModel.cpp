@@ -50,6 +50,11 @@ bool isBindingProjection(Projection projection) {
          projection == Projection::SpatialTransferAttachment;
 }
 
+bool isRouteProjection(Projection projection) {
+  return projection == Projection::NetSelectedPhysicalTraversals ||
+         projection == Projection::NetTraversalResourceStates;
+}
+
 llvm::Error infeasible(Projection projection, const llvm::Twine &message) {
   return llvm::make_error<SpatialPnrFreezeFailure>(
       SpatialPnrFreezeFailureKind::ProvenInfeasible,
@@ -521,6 +526,8 @@ SpatialBindingRelationModel::create(
     if (shard.equalityClasses().empty() && shard.disjointGroups().empty())
       continue;
     if (!isBindingProjection(*projection)) {
+      if (isRouteProjection(*projection))
+        continue;
       if (!deferredProjection)
         deferredProjection = *projection;
       continue;

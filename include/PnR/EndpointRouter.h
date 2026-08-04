@@ -62,6 +62,9 @@ struct EndpointRouteSearchRequest final {
   std::uint32_t requiredPayloadWidthBits = 0;
   std::uint32_t requiredTagWidthBits = 0;
   std::uint64_t endpointExpansionLimit = 0;
+  /// Empty means every traversal is eligible beyond width/replication checks.
+  /// Otherwise this is the worker-local dense mask for the exact route probe.
+  llvm::ArrayRef<std::uint64_t> eligibleTraversalBits;
 };
 
 struct EndpointRouteSearchResult final {

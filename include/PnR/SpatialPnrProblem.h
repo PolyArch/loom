@@ -28,7 +28,8 @@ namespace loom::pnr {
 
 namespace detail {
 class SpatialBindingRelationModel;
-}
+class SpatialRouteConstraintModel;
+} // namespace detail
 
 struct FrozenSpatialComputePlacement final {
   PnrIndex realization = 0;
@@ -981,6 +982,9 @@ public:
   const detail::SpatialBindingRelationModel &bindingRelations() const {
     return *bindingRelations_;
   }
+  const detail::SpatialRouteConstraintModel &routeConstraints() const {
+    return *routeConstraints_;
+  }
   const FrozenSpatialPnrCacheKey &cacheKey() const { return cacheKey_; }
 
 private:
@@ -998,6 +1002,8 @@ private:
       ::loom::mapping::SpatialProgressClosure progressClosure,
       std::shared_ptr<const detail::SpatialBindingRelationModel>
           bindingRelations,
+      std::shared_ptr<const detail::SpatialRouteConstraintModel>
+          routeConstraints,
       FrozenSpatialPnrCacheKey cacheKey)
       : dataflowIdentity_(std::move(dataflowIdentity)),
         techMappingIdentity_(std::move(techMappingIdentity)),
@@ -1012,7 +1018,8 @@ private:
         resources_(std::move(resources)), capacity_(std::move(capacity)),
         routing_(std::move(routing)), handshake_(std::move(handshake)),
         progressClosure_(progressClosure),
-        bindingRelations_(std::move(bindingRelations)), cacheKey_(cacheKey) {}
+        bindingRelations_(std::move(bindingRelations)),
+        routeConstraints_(std::move(routeConstraints)), cacheKey_(cacheKey) {}
 
   ArtifactIdentity dataflowIdentity_;
   ArtifactIdentity techMappingIdentity_;
@@ -1032,6 +1039,7 @@ private:
   FrozenSpatialHandshakeIndex handshake_;
   ::loom::mapping::SpatialProgressClosure progressClosure_;
   std::shared_ptr<const detail::SpatialBindingRelationModel> bindingRelations_;
+  std::shared_ptr<const detail::SpatialRouteConstraintModel> routeConstraints_;
   FrozenSpatialPnrCacheKey cacheKey_;
 
   friend class FrozenSpatialPnrProblemBuilder;

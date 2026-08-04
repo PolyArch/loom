@@ -104,7 +104,8 @@ request(const Fixture &fixture, llvm::ArrayRef<PnrIndex> sources,
           fixture.currentCosts,
           payloadWidth,
           0,
-          expansionLimit};
+          expansionLimit,
+          {}};
 }
 
 void arbitraryTopologyAndCanonicalTieBreak() {
