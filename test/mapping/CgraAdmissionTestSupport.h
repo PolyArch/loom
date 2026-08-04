@@ -16,6 +16,11 @@ void exerciseCgraAdmission(const ArtifactRootReference &dataflow,
                            const ArtifactStore &store,
                            bool expectPhysicalTags = false);
 
+void exerciseCgraMemoryAdmission(const ArtifactRootReference &dataflow,
+                                 const ArtifactRootReference &fabric,
+                                 const ArtifactRootReference &spatialMapping,
+                                 const ArtifactStore &store);
+
 } // namespace loom::test
 
 #endif // LOOM_TEST_MAPPING_CGRAADMISSIONTESTSUPPORT_H

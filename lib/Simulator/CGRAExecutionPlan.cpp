@@ -457,6 +457,10 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
       compute->physicalUses.size() !=
           summary->computeTransitionPhysicalUseCount)
     return invalid("CGRA compute execution projection count drifted");
+  auto memory = freezeCgraMemoryPlan(dataflow, tech, fabric, spatial,
+                                     *physicalUseClients);
+  if (!memory)
+    return memory.takeError();
 
   std::map<std::vector<std::uint8_t>, std::uint64_t> ownerOrdinals;
   std::vector<const ::fabric::ResourceContract *> ownerContracts;
@@ -479,6 +483,7 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
   result.computeActors = std::move(compute->actors);
   result.computeTransitions = std::move(compute->transitions);
   result.actorTransitionPhysicalUses = std::move(compute->physicalUses);
+  result.memory = std::move(*memory);
   result.physicalUses.reserve(spatial.resourceUses().size());
   result.physicalUsePatterns.reserve(spatial.resourceUses().size());
   result.physicalUseClients.reserve(spatial.resourceUses().size());
@@ -622,6 +627,12 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
       result.transport.routeNodes, [](const CgraRouteNodePlan &node) {
         return node.physicalTagOrdinal != invalidCgraTransportOrdinal;
       });
+  result.summary.memoryActorCount = result.memory.actors.size();
+  result.summary.memoryRootedUseCount = result.memory.rootedUses.size();
+  result.summary.memoryChildTransactionCount =
+      result.memory.childTransactions.size();
+  result.summary.memoryResultAssemblyCount =
+      result.memory.resultAssemblies.size();
   return result;
 }
 

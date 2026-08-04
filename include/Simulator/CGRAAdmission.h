@@ -20,6 +20,10 @@ struct CgraExecutionPlanSummary final {
   std::uint64_t mappedGraphCount = 0;
   std::uint64_t computeActorCount = 0;
   std::uint64_t actorTransitionCount = 0;
+  std::uint64_t memoryActorCount = 0;
+  std::uint64_t memoryRootedUseCount = 0;
+  std::uint64_t memoryChildTransactionCount = 0;
+  std::uint64_t memoryResultAssemblyCount = 0;
   std::uint64_t computeTransitionPhysicalUseCount = 0;
   std::uint64_t memoryTransitionPhysicalUseCount = 0;
   std::uint64_t producedPhysicalUseCount = 0;

@@ -90,3 +90,19 @@ void loom::test::exerciseCgraAdmission(
                                           spatialMappingReference, store)))
     fail("CGRA preparation accepted a foreign Fabric");
 }
+
+void loom::test::exerciseCgraMemoryAdmission(
+    const ArtifactRootReference &dataflowReference,
+    const ArtifactRootReference &fabricReference,
+    const ArtifactRootReference &spatialMappingReference,
+    const ArtifactStore &store) {
+  auto prepared = take(sim::prepareCgraExecution(
+      dataflowReference, fabricReference, spatialMappingReference, store));
+  const sim::CgraExecutionPlanSummary summary = prepared.summary();
+  if (summary.mappedGraphCount != 1 || summary.memoryActorCount != 1 ||
+      summary.memoryRootedUseCount != 2 ||
+      summary.memoryChildTransactionCount == 0 ||
+      summary.memoryResultAssemblyCount == 0 ||
+      summary.memoryTransitionPhysicalUseCount != 2)
+    fail("CGRA preparation did not freeze selected memory execution facts");
+}

@@ -1,6 +1,7 @@
 #ifndef LOOM_LIB_SIMULATOR_CGRAEXECUTIONPLAN_H
 #define LOOM_LIB_SIMULATOR_CGRAEXECUTIONPLAN_H
 
+#include "CGRAMemoryPlan.h"
 #include "CGRAPhysicalActionRuntime.h"
 #include "CGRATransportPlan.h"
 #include "Simulator/CGRAAdmission.h"
@@ -49,6 +50,7 @@ struct CgraFrozenExecutionPlan final {
   std::vector<CgraPhysicalUseClientKind> physicalUseClients;
   std::vector<CgraPhysicalUseTiming> physicalUseTimings;
   CgraResourceRuntimePlan resources;
+  CgraMemoryPlan memory;
   CgraTransportPlan transport;
 };
 

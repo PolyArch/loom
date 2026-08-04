@@ -1378,9 +1378,9 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
-
   auto dataflowArtifact = buildMemoryDataflow(context);
-  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  const auto dataflowReference =
+      take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
   const auto fabric = buildMemoryFabric(store, temporal);
 
@@ -1646,7 +1646,6 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   if (!closed)
     fail("memory SpatialMapping fixture has no closed operation plan");
   requireSuccess(candidate->verify());
-
   auto finalized = take(loom::pnr::finalizeSpatialMappingCandidate(
       *candidate, dataflow, tech.view(), fabric.view(), constraints.view(),
       store));
@@ -1695,7 +1694,8 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
                  operation.placement)) {
     fail("Spatial memory placement gained a resident context");
   }
-
+  loom::test::exerciseCgraMemoryAdmission(dataflowReference, fabric.reference(),
+                                          finalized.reference(), store);
   auto missingUse = parseSpatial(context, finalized.canonicalBytes());
   if (!missingUse)
     fail("cannot reparse memory ResourceUse fixture");
