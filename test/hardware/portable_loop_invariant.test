@@ -1,0 +1,11 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-loop-invariant-test %t
+# RUN: FileCheck %s --check-prefix=RTL < %t/loop_invariant.sv
+
+# RTL: module loop_invariant
+# RTL: input [8:0] state_current
+# RTL: output [8:0] state_next
+# RTL: output state_write
+# RTL-NOT: always_ff
+# RTL-NOT: posedge
