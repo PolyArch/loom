@@ -175,7 +175,8 @@ void statefulProbeTracksSchemaCasesWithoutMutation(
               state.streamStates.empty(),
           "stream probe did not select StartTrue without creating state");
 
-  require(fireActorOperation(stream, state),
+  require(commitActorTransition(stream, state) ==
+              ActorTransitionCommitOutcome::Committed,
           "stream provider did not commit the probed transition");
   const auto current = state.streamStates.find(stream.operation);
   require(current != state.streamStates.end() &&
@@ -191,11 +192,32 @@ void statefulProbeTracksSchemaCasesWithoutMutation(
           "stream probe did not select ContinueTrue without mutation");
 }
 
+void blockedCommitDoesNotMutate(dataflow::CanonicalDataflowArtifact &artifact) {
+  dataflow::GraphOp graph =
+      findGraph(artifact.module(), dataflow::OperationSchemaId::DataflowMux);
+  PreparedGraphExecution execution = prepare(artifact.module(), graph);
+  ActorExecutionPlan &mux =
+      findActor(execution, dataflow::OperationSchemaId::DataflowMux);
+  SimulatorState state;
+  initializeRunState(state, execution);
+
+  mlir::Block &entry = graph.getBody().front();
+  seedBlockArgument(state, entry.getArgument(1),
+                    indexToken(llvm::APInt(64, 1)));
+  seedBlockArgument(state, entry.getArgument(2), i32(11));
+  const std::size_t before = readyTokenCount(state);
+  require(commitActorTransition(mux, state) ==
+                  ActorTransitionCommitOutcome::NotReady &&
+              readyTokenCount(state) == before && state.diagnostics.empty(),
+          "blocked commit mutated tokens or diagnostics");
+}
+
 } // namespace
 
 int main() {
   auto artifact = program();
   selectiveProbeIsExactAndNonMutating(artifact);
   statefulProbeTracksSchemaCasesWithoutMutation(artifact);
+  blockedCommitDoesNotMutate(artifact);
   return EXIT_SUCCESS;
 }

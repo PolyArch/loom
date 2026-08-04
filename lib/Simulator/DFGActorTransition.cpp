@@ -355,5 +355,22 @@ probeActorTransition(const ActorExecutionPlan &plan,
   return selected;
 }
 
+ActorTransitionCommitOutcome
+commitActorTransition(const ActorExecutionPlan &plan, SimulatorState &state) {
+  const std::uint64_t mutationEpoch = state.actorMutationEpoch;
+  const std::size_t diagnosticCount = state.diagnostics.size();
+  // A failed attempt cannot lend consumed memory order to another actor.
+  state.firingMemoryOrderFrontier.clear();
+  state.currentActorPlan = &plan;
+  const bool committed = fireActorOperation(plan, state);
+  state.currentActorPlan = nullptr;
+  if (committed)
+    return ActorTransitionCommitOutcome::Committed;
+  if (state.actorMutationEpoch != mutationEpoch ||
+      state.diagnostics.size() != diagnosticCount)
+    return ActorTransitionCommitOutcome::Failed;
+  return ActorTransitionCommitOutcome::NotReady;
+}
+
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail
 } // namespace loom::sim

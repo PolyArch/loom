@@ -445,30 +445,6 @@ static bool isSupportedNonEvent(mlir::Operation *op) {
                    mlir::memref::CastOp>(op);
 }
 
-enum class FireOutcome {
-  NotReady,
-  Fired,
-  Failed,
-};
-
-static FireOutcome fireOperation(const ActorExecutionPlan &plan,
-                                 SimulatorState &state) {
-  const std::uint64_t mutationEpoch = state.actorMutationEpoch;
-  const std::size_t diagnosticCount = state.diagnostics.size();
-  // One attempt owns one frontier. Clearing it here keeps a NotReady or Failed
-  // attempt from lending its consumed order to the next actor.
-  state.firingMemoryOrderFrontier.clear();
-  state.currentActorPlan = &plan;
-  bool fired = fireActorOperation(plan, state);
-  state.currentActorPlan = nullptr;
-  if (fired)
-    return FireOutcome::Fired;
-  if (state.actorMutationEpoch != mutationEpoch ||
-      state.diagnostics.size() != diagnosticCount)
-    return FireOutcome::Failed;
-  return FireOutcome::NotReady;
-}
-
 std::string unsupportedOperationLabel(mlir::Operation *op) {
   if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(op)) {
     auto callee = call.getCallee();
@@ -1031,22 +1007,24 @@ DfgAdvanceStop advanceDfgRun(
       }
       const ActorExecutionPlan &plan = run.execution.actorPlans[ordinal];
       mlir::Operation *operation = plan.operation;
-      FireOutcome outcome = fireOperation(plan, run.state);
-      if (outcome == FireOutcome::Fired)
+      ActorTransitionCommitOutcome outcome =
+          commitActorTransition(plan, run.state);
+      if (outcome == ActorTransitionCommitOutcome::Committed)
         scheduleActor(run.state, static_cast<unsigned>(ordinal));
       if (run.state.failure != RunFailure::None)
         return DfgAdvanceStop::Stopped;
-      if (run.retirementObserved && outcome != FireOutcome::NotReady) {
+      if (run.retirementObserved &&
+          outcome != ActorTransitionCommitOutcome::NotReady) {
         run.report.status = "invalid";
         run.report.diagnostics.push_back(
             ("actor '" + operation->getName().getStringRef() +
-             (outcome == FireOutcome::Fired
+             (outcome == ActorTransitionCommitOutcome::Committed
                   ? "' fired after graph retirement"
                   : "' failed after graph retirement"))
                 .str());
         return DfgAdvanceStop::Stopped;
       }
-      fired |= outcome == FireOutcome::Fired;
+      fired |= outcome == ActorTransitionCommitOutcome::Committed;
     }
     if (run.report.status != "pass" || run.state.failure != RunFailure::None)
       return DfgAdvanceStop::Stopped;

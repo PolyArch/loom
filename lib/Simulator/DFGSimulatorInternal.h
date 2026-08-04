@@ -1293,6 +1293,13 @@ ActorProvider actorProvider(dataflow::OperationSchemaId schema);
 llvm::Expected<std::optional<std::uint32_t>>
 probeActorTransition(const ActorExecutionPlan &plan,
                      const SimulatorState &state);
+enum class ActorTransitionCommitOutcome : std::uint8_t {
+  NotReady,
+  Committed,
+  Failed,
+};
+ActorTransitionCommitOutcome
+commitActorTransition(const ActorExecutionPlan &plan, SimulatorState &state);
 bool fireActorOperation(const ActorExecutionPlan &plan, SimulatorState &state);
 std::optional<UnsupportedOperation> unsupportedActorProvider(
     mlir::Operation *op,
