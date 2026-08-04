@@ -1,6 +1,7 @@
 add_mlir_library(LoomSimulator
   CGRAAdmission.cpp
   CGRAEventQueue.cpp
+  CGRAExecutionPlan.cpp
   DeterministicTranscendental.cpp
   DFGSimulator.cpp
   DFGSimulatorActors.cpp

@@ -63,6 +63,11 @@ void loom::test::exerciseCgraAdmission(
 
   auto prepared = take(sim::prepareCgraExecution(
       dataflowReference, fabricReference, spatialMappingReference, store));
+  const sim::CgraExecutionPlanSummary summary = prepared.summary();
+  if (summary.mappedGraphCount != 1 || summary.computeActorCount != 1 ||
+      summary.actorTransitionCount == 0 || summary.physicalUseCount == 0 ||
+      summary.resourceOwnerCount == 0 || summary.claimCount == 0)
+    fail("CGRA preparation did not freeze selected compute/resource facts");
   const auto graph =
       take(sim::admitCgraSpatialSimulation(prepared, workload, runtime));
   if (graph != view.graphs().front().ref)

@@ -1,19 +1,18 @@
 #include "Simulator/CGRAAdmission.h"
 
+#include "CGRAExecutionPlan.h"
+
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Inspection/SpatialMappingInspection.h"
 #include "Simulator/SimulationAdmission.h"
 
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <cstdint>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 namespace loom::sim {
 namespace {
@@ -21,77 +20,6 @@ namespace {
 llvm::Error invalid(llvm::Twine message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument), message);
-}
-
-template <typename Realization>
-llvm::Expected<std::uint64_t>
-realizationGraph(const Realization &realization,
-                 const ::dataflow::CanonicalDataflowProgramView &dataflow) {
-  if (realization.actors.empty())
-    return invalid("CGRA admission found an empty Tech realization");
-  std::optional<std::uint64_t> graph;
-  for (const auto &actor : realization.actors) {
-    auto resolved = dataflow.resolve(actor.actor);
-    if (!resolved)
-      return resolved.takeError();
-    const std::uint64_t current = resolved->graph.entity.value();
-    if (graph && *graph != current)
-      return invalid("CGRA admission found a cross-graph Tech realization");
-    graph = current;
-  }
-  return *graph;
-}
-
-llvm::Expected<std::vector<::dataflow::GraphRef>>
-deriveMappedGraphs(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                   const ::loom::mapping::TechMappingView &tech,
-                   const ::loom::mapping::SpatialMappingView &spatial) {
-  llvm::DenseMap<std::uint64_t, std::uint64_t> computeGraphs;
-  computeGraphs.reserve(tech.computeRealizations().size());
-  for (const auto &realization : tech.computeRealizations()) {
-    auto graph = realizationGraph(realization, dataflow);
-    if (!graph)
-      return graph.takeError();
-    if (!computeGraphs.try_emplace(realization.entityId, *graph).second)
-      return invalid("CGRA admission found duplicate compute realizations");
-  }
-
-  llvm::DenseMap<std::uint64_t, std::uint64_t> memoryGraphs;
-  memoryGraphs.reserve(tech.memoryRealizations().size());
-  for (const auto &realization : tech.memoryRealizations()) {
-    auto graph = realizationGraph(realization, dataflow);
-    if (!graph)
-      return graph.takeError();
-    if (!memoryGraphs.try_emplace(realization.entityId, *graph).second)
-      return invalid("CGRA admission found duplicate memory realizations");
-  }
-
-  llvm::DenseSet<std::uint64_t> selectedGraphs;
-  selectedGraphs.reserve(tech.covers().size());
-  for (const auto &binding : spatial.computeBindings()) {
-    auto graph = computeGraphs.find(binding.realization);
-    if (graph == computeGraphs.end())
-      return invalid("CGRA admission found an unknown compute realization");
-    selectedGraphs.insert(graph->second);
-  }
-  for (const auto &binding : spatial.memoryEngineBindings()) {
-    auto graph = memoryGraphs.find(binding.realization);
-    if (graph == memoryGraphs.end())
-      return invalid("CGRA admission found an unknown memory realization");
-    selectedGraphs.insert(graph->second);
-  }
-
-  std::vector<::dataflow::GraphRef> result;
-  result.reserve(tech.covers().size());
-  for (::dataflow::GraphRef graph : tech.covers()) {
-    if (!selectedGraphs.contains(graph.entity.value()))
-      return invalid("CGRA admission found a covered graph without a selected "
-                     "physical realization");
-    result.push_back(graph);
-  }
-  if (result.empty())
-    return invalid("CGRA admission requires a nonempty covered graph set");
-  return result;
 }
 
 } // namespace
@@ -103,7 +31,7 @@ struct PreparedCgraExecution::Impl final {
   ::loom::mapping::FinalizedTechMapping tech;
   ::loom::mapping::FinalizedSpatialMapping spatial;
   ::loom::mapping::SpatialMappingInspection inspection;
-  std::vector<::dataflow::GraphRef> mappedGraphs;
+  detail::CgraFrozenExecutionPlan executionPlan;
 
   Impl(::dataflow::CanonicalDataflowArtifact dataflow,
        ::dataflow::CanonicalDataflowProgramView dataflowView,
@@ -111,11 +39,11 @@ struct PreparedCgraExecution::Impl final {
        ::loom::mapping::FinalizedTechMapping tech,
        ::loom::mapping::FinalizedSpatialMapping spatial,
        ::loom::mapping::SpatialMappingInspection inspection,
-       std::vector<::dataflow::GraphRef> mappedGraphs)
+       detail::CgraFrozenExecutionPlan executionPlan)
       : dataflow(std::move(dataflow)), dataflowView(std::move(dataflowView)),
         fabric(std::move(fabric)), tech(std::move(tech)),
         spatial(std::move(spatial)), inspection(std::move(inspection)),
-        mappedGraphs(std::move(mappedGraphs)) {}
+        executionPlan(std::move(executionPlan)) {}
 };
 
 PreparedCgraExecution::PreparedCgraExecution(std::unique_ptr<Impl> impl)
@@ -125,6 +53,12 @@ PreparedCgraExecution::PreparedCgraExecution(
 PreparedCgraExecution &
 PreparedCgraExecution::operator=(PreparedCgraExecution &&) noexcept = default;
 PreparedCgraExecution::~PreparedCgraExecution() = default;
+
+CgraExecutionPlanSummary PreparedCgraExecution::summary() const {
+  if (!impl_)
+    return {};
+  return impl_->executionPlan.summary;
+}
 
 llvm::Expected<PreparedCgraExecution>
 prepareCgraExecution(const ArtifactRootReference &dataflowReference,
@@ -166,15 +100,15 @@ prepareCgraExecution(const ArtifactRootReference &dataflowReference,
   if (inspection->summary.selectedActorCount == 0 ||
       inspection->summary.resourceUseCount == 0)
     return invalid("CGRA admission requires selected actors and resources");
-  auto mappedGraphs =
-      deriveMappedGraphs(*dataflowView, tech->view(), spatial->view());
-  if (!mappedGraphs)
-    return mappedGraphs.takeError();
+  auto executionPlan = detail::freezeCgraExecutionPlan(
+      *dataflowView, tech->view(), fabric->view(), spatial->view());
+  if (!executionPlan)
+    return executionPlan.takeError();
 
   return PreparedCgraExecution(std::make_unique<PreparedCgraExecution::Impl>(
       std::move(*dataflow), std::move(*dataflowView), std::move(*fabric),
       std::move(*tech), std::move(*spatial), std::move(*inspection),
-      std::move(*mappedGraphs)));
+      std::move(*executionPlan)));
 }
 
 llvm::Expected<::dataflow::GraphRef> admitCgraSpatialSimulation(
@@ -187,7 +121,7 @@ llvm::Expected<::dataflow::GraphRef> admitCgraSpatialSimulation(
                                          prepared.impl_->dataflowView);
   if (!graph)
     return graph.takeError();
-  if (!llvm::is_contained(prepared.impl_->mappedGraphs, *graph))
+  if (!llvm::is_contained(prepared.impl_->executionPlan.mappedGraphs, *graph))
     return invalid("CGRA workload graph has no selected physical mapping");
   return *graph;
 }

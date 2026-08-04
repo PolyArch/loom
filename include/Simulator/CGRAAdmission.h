@@ -7,6 +7,7 @@
 
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <memory>
 
 namespace loom {
@@ -14,6 +15,15 @@ class ArtifactStore;
 }
 
 namespace loom::sim {
+
+struct CgraExecutionPlanSummary final {
+  std::uint64_t mappedGraphCount = 0;
+  std::uint64_t computeActorCount = 0;
+  std::uint64_t actorTransitionCount = 0;
+  std::uint64_t physicalUseCount = 0;
+  std::uint64_t resourceOwnerCount = 0;
+  std::uint64_t claimCount = 0;
+};
 
 /// Strictly imported, invocation-local execution input for one exact
 /// D/F/SpatialMapping tuple. The cache is removable and owns no persistent
@@ -26,6 +36,8 @@ public:
 
   PreparedCgraExecution(const PreparedCgraExecution &) = delete;
   PreparedCgraExecution &operator=(const PreparedCgraExecution &) = delete;
+
+  CgraExecutionPlanSummary summary() const;
 
 private:
   struct Impl;
