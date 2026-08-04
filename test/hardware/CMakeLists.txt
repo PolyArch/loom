@@ -117,6 +117,20 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-fixed-vector-value-select-test
+    PortableFixedVectorValueSelectTest.cpp
+  )
+
+  target_link_libraries(loom-portable-fixed-vector-value-select-test PRIVATE
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-integer-logic-test
     PortableIntegerLogicTest.cpp
   )
