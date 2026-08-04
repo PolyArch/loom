@@ -128,6 +128,32 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-loop-gate-test
+    PortableLoopGateTest.cpp
+  )
+
+  target_link_libraries(loom-portable-loop-gate-test PRIVATE
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
+  add_executable(loom-portable-loop-invariant-test
+    PortableLoopInvariantTest.cpp
+  )
+
+  target_link_libraries(loom-portable-loop-invariant-test PRIVATE
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-operation-leaf-state-layout-test
     OperationLeafStateLayoutTest.cpp
   )

@@ -183,6 +183,8 @@ if(LOOM_HAVE_CIRCT)
     loom-portable-fixed-vector-integer-add-sub-test
     loom-portable-fixed-vector-pack-unpack-test
     loom-portable-loop-carry-test
+    loom-portable-loop-gate-test
+    loom-portable-loop-invariant-test
     loom-portable-scalar-bit-reinterpret-test
     loom-portable-scalar-float-fma-test
     loom-portable-scalar-integer-add-sub-test

@@ -5,6 +5,8 @@ add_library(LoomHardwareRTL
   Providers/FixedVectorIntegerAddSub.cpp
   Providers/FixedVectorPackUnpack.cpp
   Providers/LoopCarry.cpp
+  Providers/LoopGate.cpp
+  Providers/LoopInvariant.cpp
   Providers/ProviderSupport.cpp
   Providers/ScalarBitReinterpret.cpp
   Providers/ScalarFloatFma.cpp
