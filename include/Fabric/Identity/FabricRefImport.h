@@ -242,6 +242,26 @@ struct FabricModuleBoundaryTransportAttachmentView final {
   }
 };
 
+/// One direct token-plane connection from a Module input to a Module output.
+/// Both references remain boundary correspondence: the relation creates no
+/// transport endpoint, traversal, resource, or persistent identity. It is
+/// rebuilt mechanically from canonical Module SSA during strict import.
+struct FabricModuleBoundaryTransportPassthroughView final {
+  FabricModuleBoundaryEndpointRef input;
+  FabricModuleBoundaryEndpointRef output;
+
+  friend bool
+  operator==(const FabricModuleBoundaryTransportPassthroughView &lhs,
+             const FabricModuleBoundaryTransportPassthroughView &rhs) {
+    return lhs.input == rhs.input && lhs.output == rhs.output;
+  }
+  friend bool
+  operator!=(const FabricModuleBoundaryTransportPassthroughView &lhs,
+             const FabricModuleBoundaryTransportPassthroughView &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
 /// One occurrence-local routing terminal reachable from an exact FU port
 /// through a Fabric-owned PE selector traversal. This sealed projection is
 /// indexed by the fixed occurrence port and is never persisted separately.
@@ -414,6 +434,12 @@ public:
   /// endpoint or traversal inventories.
   llvm::ArrayRef<FabricModuleBoundaryTransportAttachmentView>
   moduleBoundaryTransportAttachments() const;
+
+  /// Complete canonical output-order relation for direct token-plane Module
+  /// input-to-output connections. The relation is disjoint from resource
+  /// attachments and has no row for memory-plane endpoints.
+  llvm::ArrayRef<FabricModuleBoundaryTransportPassthroughView>
+  moduleBoundaryTransportPassthroughs() const;
 
   /// The declared kind of one hardware domain entity.
   std::optional<FabricHardwareDomainKind>

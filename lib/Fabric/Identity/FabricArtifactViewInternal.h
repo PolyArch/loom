@@ -104,6 +104,8 @@ struct FabricArtifactViewData {
   std::vector<FabricPhysicalTraversalRef> admittedTraversals;
   std::vector<FabricModuleBoundaryTransportAttachmentView>
       moduleBoundaryTransportAttachments;
+  std::vector<FabricModuleBoundaryTransportPassthroughView>
+      moduleBoundaryTransportPassthroughs;
   std::vector<FabricArtifactView> importedModules;
   std::vector<FabricSpatialAttachmentRecordView> spatialAttachments;
   std::vector<HardwareDomainRef> hardwareDomains;

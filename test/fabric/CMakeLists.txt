@@ -234,6 +234,10 @@ add_executable(loom-fabric-artifact-finalizer-test
   FabricArtifactFinalizerTest.cpp
 )
 
+add_executable(loom-fabric-module-boundary-transport-passthrough-test
+  ModuleBoundaryTransportPassthroughTest.cpp
+)
+
 add_executable(loom-fabric-handshake-model-test
   FabricHandshakeModelTest.cpp
 )
@@ -312,6 +316,15 @@ target_link_libraries(loom-fabric-artifact-finalizer-test PRIVATE
   LoomCommon
   LoomFabricArtifact
   MLIRDataflow
+  MLIRFabric
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-module-boundary-transport-passthrough-test PRIVATE
+  LoomCommon
+  LoomFabricArtifact
   MLIRFabric
   MLIRIR
   MLIRParser
