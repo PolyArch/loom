@@ -134,6 +134,14 @@ sim for reasons unrelated to hardware. Shared memory consistency is especially
 important: local CGRA and external gem5 providers add timing and contention but
 cannot redefine reads-from, atomicity, or visibility.
 
+CGRA cycle metrics use the exact SpatialMapping root as the case-level cycle
+anchor because the reference domain is a relation of Mapping, Fabric, Dataflow,
+and launch facts rather than a new persistent clock choice. Copying one clock
+reference into Request or Mapping would create a competing authority, while a
+DFG-style abstract tick would discard the hardware relation. The root anchor
+keeps the projection reproducible and permits the case-signature owner to
+reject a non-unique or non-integral result without rounding.
+
 ## Why Gem5 Owns System Time
 
 An in-process bridge integrates the reusable SpatialCore simulator as an

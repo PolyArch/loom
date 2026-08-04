@@ -288,6 +288,8 @@ pre-Mapping, DFG-simulation, FPA, and system-simulation flows described here:
 | 4 | `fpa_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with an FPA prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
 | 5 | `hardware_implementation_physical` | `0: HardwareImplementation` | both forbidden |
 | 6 | `system_simulation` | `0: Deployment`, `1: Gem5 Simulation Binding` | both required; the workload and runtime input are System roots coupled to the exact Deployment |
+| 7 | `cgra_simulation` | `0: Canonical Dataflow Program`, `1: Fabric`, `2: SpatialMapping` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
+| 8 | `simulation_execution_comparison` | `0: reference SimulationExecution`, `1: candidate SimulationExecution` | both forbidden; each execution's exact Request closure must resolve the same workload and runtime input |
 
 The matching initial model descriptors are:
 
@@ -300,6 +302,8 @@ The matching initial model descriptors are:
 | 6 | `fpa_model_parameter_calibration` | 4 | deterministic Analytic calibration-error quantiles over one exact FPA parameter bundle and one exact ground-truth Evidence set |
 | 7 | `structured_fabric_calibrated_fpa` | 0 | deterministic Analytic point estimates for limiting clock frequency, total area, dynamic power, and leakage power using one exact FPA parameter bundle |
 | 8 | `canonical_dataflow_fabric_calibrated_fpa` | 1 | the same calibrated FPA predictions for one Canonical Dataflow/Fabric pair |
+| 9 | `cgra_simulator` | 7 | deterministic Simulation of the exact mapped Spatial workload, with one `SimulationExecution` output and exact whole-case CycleCount |
+| 10 | `simulation_execution_comparison` | 8 | deterministic comparison of compatible execution observations for the whole-case `functional_mismatch` finding |
 
 Model kinds 2 and 3 consume the exact shared low-confidence config-view
 contract. Model kinds 4, 5, and 6 each consume a distinct zero-field config
@@ -323,6 +327,17 @@ or an attempt limit cannot publish a fabricated retired execution. The first
 provider does not emit `Halted`, because no complete terminal-witness owner is
 registered for it; a non-retired run without such a proof is an execution
 failure rather than a guessed deadlock.
+
+Model kind 9 uses case kind 7's exact SpatialMapping-rooted reference-cycle
+projection. The cycle resolver returns the exact SpatialMapping subject root;
+the case signature then derives the unique reference domain mechanically from
+that Mapping, its exact Dataflow and Fabric owners, and the mapped launch. The
+Mapping does not persist another clock selector. A provider may emit integer
+CycleCount only when graph retirement lies on an integral reference-cycle
+coordinate; otherwise that metric implementation is unavailable rather than
+rounded. Model kind 10 has no cycle basis and compares no timing metric. It
+requires exact workload/runtime-input identity through each execution's
+Request closure and emits only the ordinary `functional_mismatch` result.
 
 Case kinds 0 and 1 admit the exact Fabric-anchored target patterns owned by
 `ProcessCorner`, `SupplyVoltage`, `Temperature`, `RequiredClockPeriod`,

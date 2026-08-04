@@ -265,11 +265,10 @@ struct EvaluationCaseSignatureDescriptor;
 /// Validates one descriptor-owned pattern collection: canonical order, no
 /// duplicates, registered exact case signatures, and signature-local roles.
 /// The optional descriptor admits its own exact reference during registration.
-llvm::Error
-validateOrderedTargetPatternSet(llvm::StringRef owner,
-                                llvm::ArrayRef<OrderedTargetPattern> patterns,
-                                const EvaluationCaseSignatureDescriptor *
-                                    selfRegisteringSignature = nullptr);
+llvm::Error validateOrderedTargetPatternSet(
+    llvm::StringRef owner, llvm::ArrayRef<OrderedTargetPattern> patterns,
+    const EvaluationCaseSignatureDescriptor *selfRegisteringSignature =
+        nullptr);
 
 //===----------------------------------------------------------------------===//
 // Subject bindings and resolved case artifacts
@@ -335,6 +334,7 @@ public:
   static llvm::Expected<CaseArtifactResolution> get(std::vector<Entry> entries);
 
   const Entry *find(const ArtifactRootReference &artifact) const;
+  llvm::ArrayRef<Entry> entries() const { return entries_; }
   /// True when the dependency is the Artifact itself or occurs in its exact
   /// semantic dependency closure.
   static bool reaches(const Entry &entry,

@@ -40,6 +40,7 @@ add_mlir_library(LoomSimulator
   SimulationInputCapture.cpp
   SimulationPointerCapture.cpp
   SimulationRuntimeInput.cpp
+  SpatialObservationComparison.cpp
   SpatialTrace.cpp
   SimulationWireSupport.cpp
   SimulationWorkload.cpp

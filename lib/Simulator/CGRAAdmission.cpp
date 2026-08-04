@@ -41,6 +41,18 @@ CgraExecutionPlanSummary PreparedCgraExecution::summary() const {
   return impl_->executionPlan.summary;
 }
 
+llvm::Expected<CgraExecutionOwnerReferences>
+PreparedCgraExecution::ownerReferences() const {
+  if (!impl_)
+    return invalid("CGRA admission received a moved-from preparation");
+  return CgraExecutionOwnerReferences{
+      {::dataflow::canonicalDataflowSchema.identity.str(),
+       ::dataflow::canonicalDataflowSchema.version, impl_->dataflow.identity()},
+      impl_->fabric.reference(),
+      impl_->tech.reference(),
+      impl_->spatial.reference()};
+}
+
 llvm::Expected<PreparedCgraExecution>
 prepareCgraExecution(const ArtifactRootReference &dataflowReference,
                      const ArtifactRootReference &fabricReference,

@@ -148,6 +148,13 @@ importSimulationExecution(const ArtifactRootReference &reference,
                           const evaluation::CaseArtifactResolution &resolution,
                           const ArtifactStore &store);
 
+/// Resolves the exact Request root carried by one stored execution. This is
+/// the owner-level dependency projection used to assemble an import closure;
+/// full execution validation still occurs through importSimulationExecution.
+llvm::Expected<ArtifactRootReference>
+simulationExecutionRequestReference(const ArtifactRootReference &reference,
+                                    const ArtifactStore &store);
+
 } // namespace loom::sim
 
 #endif // LOOM_SIMULATOR_SIMULATIONEXECUTION_H

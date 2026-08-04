@@ -138,6 +138,7 @@ set(LOOM_TEST_DEPENDS
   loom-simulator-simulation-execution-test
   loom-simulator-simulation-wire-test
   loom-simulator-spatial-trace-test
+  loom-simulator-spatial-observation-comparison-test
   loom-simulator-structured-program-native-execution-test
   loom-simulator-synchronization-test
   loom-simulator-vector-boundary-test

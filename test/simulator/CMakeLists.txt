@@ -10,6 +10,10 @@ add_executable(loom-simulator-spatial-trace-test
   SpatialTraceTest.cpp
 )
 
+add_executable(loom-simulator-spatial-observation-comparison-test
+  SpatialObservationComparisonTest.cpp
+)
+
 add_executable(loom-simulator-cgra-resource-runtime-test
   CgraResourceRuntimeTest.cpp
 )
@@ -127,6 +131,11 @@ target_link_libraries(loom-simulator-cgra-event-queue-test PRIVATE
 
 target_link_libraries(loom-simulator-spatial-trace-test PRIVATE
   LoomCommon
+  LoomSimulator
+  LLVMSupport
+)
+
+target_link_libraries(loom-simulator-spatial-observation-comparison-test PRIVATE
   LoomSimulator
   LLVMSupport
 )

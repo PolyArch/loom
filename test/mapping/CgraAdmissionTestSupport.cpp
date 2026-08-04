@@ -1,7 +1,11 @@
 #include "CgraAdmissionTestSupport.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Evaluation/Models/CgraSimulation.h"
+#include "Evaluation/Models/DfgSimulation.h"
+#include "Evaluation/Models/SimulationComparison.h"
 #include "Simulator/CGRAAdmission.h"
 #include "Simulator/CGRASimulator.h"
 #include "Simulator/SimulationArtifacts.h"
@@ -92,6 +96,10 @@ void loom::test::exerciseCgraAdmission(
       {0, {1, {sim::SemanticLane::defined(llvm::APInt(32, 7))}}}};
   auto runtime =
       take(sim::finalizeSimulationRuntimeInput(runtimeDraft, workload, view));
+  const ArtifactRootReference workloadReference =
+      take(sim::publishSimulationWorkload(workload, store));
+  const ArtifactRootReference runtimeReference =
+      take(sim::publishSimulationRuntimeInput(runtime, store));
 
   auto prepared = take(sim::prepareCgraExecution(
       dataflowReference, fabricReference, spatialMappingReference, store));
@@ -218,6 +226,77 @@ void loom::test::exerciseCgraAdmission(
                                                 /*maxEventFrames=*/1));
   if (limited.state != sim::SpatialExecutionSessionState::StoppedByLimit)
     fail("CGRA event budget did not produce StoppedByLimit");
+
+  auto preparedDfg = take(evaluation::models::prepareDfgSimulationEvaluation(
+      dataflowReference, workloadReference, runtimeReference,
+      defaultResolvedConfig(), store));
+  auto dfgEvidence = take(evaluation::models::evaluateDfgSimulation(
+      preparedDfg, {128, std::nullopt}, store));
+  if (dfgEvidence.outcomeKind() != evaluation::EvidenceOutcomeKind::Completed ||
+      dfgEvidence.outputBindings().size() != 1 ||
+      dfgEvidence.outputBindings().front().artifacts.size() != 1)
+    fail("DFG comparison reference did not produce one execution");
+
+  auto preparedCgra = take(evaluation::models::prepareCgraSimulationEvaluation(
+      dataflowReference, fabricReference, spatialMappingReference,
+      workloadReference, runtimeReference, defaultResolvedConfig(), store));
+  auto cgraEvidence = take(evaluation::models::evaluateCgraSimulation(
+      preparedCgra, {128, std::nullopt}, store));
+  if (cgraEvidence.outcomeKind() !=
+          evaluation::EvidenceOutcomeKind::Completed ||
+      cgraEvidence.outputBindings().size() != 1 ||
+      cgraEvidence.outputBindings().front().artifacts.size() != 1)
+    fail("CGRA Evaluation did not produce one execution");
+
+  auto comparison =
+      take(evaluation::models::prepareSimulationComparisonEvaluation(
+          dfgEvidence.outputBindings().front().artifacts.front(),
+          preparedDfg.resolution,
+          cgraEvidence.outputBindings().front().artifacts.front(),
+          preparedCgra.resolution, defaultResolvedConfig(), store));
+  auto comparisonEvidence =
+      take(evaluation::models::evaluateSimulationComparison(comparison, store));
+  const auto *completed =
+      std::get_if<evaluation::CompletedEvidence>(&comparisonEvidence.outcome());
+  if (!completed || completed->findingResults.size() != 1 ||
+      !std::holds_alternative<evaluation::AbsentFinding>(
+          completed->findingResults.front().result))
+    fail("exact DFG/CGRA observations did not compare equal");
+
+  const ArtifactRootReference cgraExecutionReference =
+      cgraEvidence.outputBindings().front().artifacts.front();
+  auto importedCgra = take(sim::importSimulationExecution(
+      cgraExecutionReference, preparedCgra.resolution, store));
+  sim::SpatialFunctionalObservations changed =
+      importedCgra.functionalObservations();
+  auto *changedValue =
+      std::get_if<sim::PublishedValueResult>(&changed.valueResults.front());
+  if (!changedValue)
+    fail("CGRA comparison fixture has no published result");
+  changedValue->value.lanes.front().bits = llvm::APInt(32, 8);
+  sim::SpatialSimulationExecution mismatched{
+      importedCgra.request(),
+      sim::RetiredExecution{},
+      std::move(changed),
+      importedCgra.progressObservations(),
+      {}};
+  auto finalizedMismatch = take(sim::finalizeSimulationExecution(
+      mismatched, preparedCgra.resolution, store));
+  const ArtifactRootReference mismatchReference =
+      take(sim::publishSimulationExecution(finalizedMismatch, store));
+  auto mismatchComparison =
+      take(evaluation::models::prepareSimulationComparisonEvaluation(
+          dfgEvidence.outputBindings().front().artifacts.front(),
+          preparedDfg.resolution, mismatchReference, preparedCgra.resolution,
+          defaultResolvedConfig(), store));
+  auto mismatchEvidence = take(evaluation::models::evaluateSimulationComparison(
+      mismatchComparison, store));
+  const auto *mismatchCompleted =
+      std::get_if<evaluation::CompletedEvidence>(&mismatchEvidence.outcome());
+  if (!mismatchCompleted || mismatchCompleted->findingResults.size() != 1 ||
+      !std::holds_alternative<evaluation::PresentFinding>(
+          mismatchCompleted->findingResults.front().result))
+    fail("deterministic DFG/CGRA mismatch was not reported");
 
   if (!rejected(sim::prepareCgraExecution(dataflowReference,
                                           foreignFabricReference,

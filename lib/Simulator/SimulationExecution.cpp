@@ -380,4 +380,19 @@ importSimulationExecution(const ArtifactRootReference &reference,
                                       std::move(canonical));
 }
 
+llvm::Expected<ArtifactRootReference>
+simulationExecutionRequestReference(const ArtifactRootReference &reference,
+                                    const ArtifactStore &store) {
+  if (reference.schemaIdentity != simulationExecutionSchema.identity ||
+      reference.schemaVersion != simulationExecutionSchema.version)
+    return detail::invalid("foreign SimulationExecution reference schema");
+  auto bytes = store.get(reference);
+  if (!bytes)
+    return bytes.takeError();
+  auto prefix = decodeArtifactRootReferencePrefix(bytes->bytes());
+  if (!prefix)
+    return prefix.takeError();
+  return std::move(prefix->reference);
+}
+
 } // namespace loom::sim

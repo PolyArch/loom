@@ -46,6 +46,13 @@ struct CgraExecutionPlanSummary final {
   std::uint64_t taggedRouteNodeCount = 0;
 };
 
+struct CgraExecutionOwnerReferences final {
+  ArtifactRootReference dataflow;
+  ArtifactRootReference fabric;
+  ArtifactRootReference techMapping;
+  ArtifactRootReference spatialMapping;
+};
+
 /// Strictly imported, invocation-local execution input for one exact
 /// D/F/SpatialMapping tuple. The cache is removable and owns no persistent
 /// identity; all semantic facts remain in the imported Artifacts.
@@ -59,6 +66,7 @@ public:
   PreparedCgraExecution &operator=(const PreparedCgraExecution &) = delete;
 
   CgraExecutionPlanSummary summary() const;
+  llvm::Expected<CgraExecutionOwnerReferences> ownerReferences() const;
 
 private:
   struct Impl;

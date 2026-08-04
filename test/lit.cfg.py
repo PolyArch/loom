@@ -103,6 +103,7 @@ tools = [
     "loom-simulator-cgra-transport-storage-runtime-test",
     "loom-simulator-cgra-transport-runtime-test",
     "loom-simulator-spatial-trace-test",
+    "loom-simulator-spatial-observation-comparison-test",
     "loom-simulator-dfg-actor-transition-probe-test",
     "loom-simulator-dynamic-work-test",
     "loom-simulator-dfg-evaluation-test",

@@ -113,6 +113,13 @@ Buffered and bypassed `fabric.fifo` occurrences use the exact cycle and
 backpressure contract in `docs/spec-fabric-fifo.md`; the simulator does not
 invent fall-through or hidden storage.
 
+The shared CGRA case signature exposes that unique domain to cycle-based
+metrics through an `ExactSubjectCycle` anchored at the exact SpatialMapping
+root. This anchor identifies the complete derivation above; it does not make
+the Mapping a second clock owner or serialize a clock selector. An integer
+CycleCount result is available only when the selected graph-retirement anchor
+is an integral number of reference cycles.
+
 ## Tags, Contexts, And Ordered Dataflow
 
 Physical Tags are local encodings used only inside their declared Fabric tag

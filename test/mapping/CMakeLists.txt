@@ -126,6 +126,7 @@ target_link_libraries(loom-spatial-mapping-artifact-test PRIVATE
   LoomDSEMappingGenerator
   LoomMappingArtifact
   LoomMappingInspection
+  LoomStructuredFabricAnalyticModel
   LoomPnR
   LoomPnRCpSat
   LoomPnRGenerator
