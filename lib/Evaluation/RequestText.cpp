@@ -172,9 +172,9 @@ void writeModelBinding(llvm::json::OStream &json,
       json.attribute("canonical_view_bytes",
                      formatArtifactLocalPayloadHex(
                          binding.resolvedModelConfig().canonicalViewBytes()));
-      json.attribute("component_view_digest",
-                     formatComponentViewDigestHex(
-                         binding.resolvedModelConfig().digest()));
+      json.attribute(
+          "component_view_digest",
+          formatComponentViewDigestHex(binding.resolvedModelConfig().digest()));
     });
   });
 }
@@ -259,23 +259,22 @@ parseModelBinding(const llvm::json::Object &root) {
           **config, "resolved model config",
           {"canonical_view_bytes", "component_view_digest"}))
     return std::move(error);
-  auto viewBytes = requireString(**config, "canonical_view_bytes",
-                                 "resolved model config");
+  auto viewBytes =
+      requireString(**config, "canonical_view_bytes", "resolved model config");
   if (!viewBytes)
     return viewBytes.takeError();
   auto canonicalViewBytes = parseArtifactLocalPayloadHex(*viewBytes);
   if (!canonicalViewBytes)
     return canonicalViewBytes.takeError();
-  auto digestSpelling = requireString(**config, "component_view_digest",
-                                      "resolved model config");
+  auto digestSpelling =
+      requireString(**config, "component_view_digest", "resolved model config");
   if (!digestSpelling)
     return digestSpelling.takeError();
   auto digest = parseComponentViewDigestHex(*digestSpelling);
   if (!digest)
     return digest.takeError();
-  return ResolvedModelBinding::adopt(
-      *descriptorRef, std::move(inputs), std::move(*canonicalViewBytes),
-      *digest);
+  return ResolvedModelBinding::adopt(*descriptorRef, std::move(inputs),
+                                     std::move(*canonicalViewBytes), *digest);
 }
 
 llvm::Expected<std::vector<MetricRequest>>
@@ -298,8 +297,8 @@ parseMetricRequests(const llvm::json::Object &root,
     auto queryObject = requireObject(*object, "query", "metric request");
     if (!queryObject)
       return queryObject.takeError();
-    auto query = detail::parseMetricQueryPayload(**queryObject,
-                                                 "metric request query");
+    auto query =
+        detail::parseMetricQueryPayload(**queryObject, "metric request query");
     if (!query)
       return query.takeError();
     auto conditions = parseConditions(*object, "conditions", "metric request");
@@ -355,14 +354,79 @@ parseFindingRequests(const llvm::json::Object &root,
 
 } // namespace
 
+std::string serializeResolvedModelBinding(const ResolvedModelBinding &binding) {
+  llvm::SmallString<512> storage;
+  llvm::raw_svector_ostream output(storage);
+  llvm::json::OStream json(output);
+  json.object([&] {
+    json.attributeBegin("model_binding");
+    writeModelBinding(json, binding);
+    json.attributeEnd();
+  });
+  return output.str().str();
+}
+
+llvm::Expected<ResolvedModelBinding>
+parseResolvedModelBinding(llvm::StringRef jsonText) {
+  auto value = llvm::json::parse(jsonText);
+  if (!value)
+    return value.takeError();
+  const llvm::json::Object *root = value->getAsObject();
+  if (!root)
+    return evaluationError("resolved model binding root must be an object");
+  if (llvm::Error error = rejectUnknownFields(
+          *root, "resolved model binding root", {"model_binding"}))
+    return std::move(error);
+  auto binding = parseModelBinding(*root);
+  if (!binding)
+    return binding.takeError();
+  if (serializeResolvedModelBinding(*binding) != jsonText)
+    return evaluationError("resolved model binding JSON is not canonical");
+  return binding;
+}
+
+std::string
+serializeEvaluationConditions(llvm::ArrayRef<EvaluationCondition> conditions) {
+  llvm::SmallString<512> storage;
+  llvm::raw_svector_ostream output(storage);
+  llvm::json::OStream json(output);
+  json.object([&] {
+    json.attributeBegin("conditions");
+    writeConditions(json, conditions);
+    json.attributeEnd();
+  });
+  return output.str().str();
+}
+
+llvm::Expected<std::vector<EvaluationCondition>>
+parseEvaluationConditions(llvm::StringRef jsonText) {
+  auto value = llvm::json::parse(jsonText);
+  if (!value)
+    return value.takeError();
+  const llvm::json::Object *root = value->getAsObject();
+  if (!root)
+    return evaluationError("evaluation conditions root must be an object");
+  if (llvm::Error error = rejectUnknownFields(
+          *root, "evaluation conditions root", {"conditions"}))
+    return std::move(error);
+  auto conditions =
+      parseConditions(*root, "conditions", "evaluation conditions root");
+  if (!conditions)
+    return conditions.takeError();
+  if (serializeEvaluationConditions(*conditions) != jsonText)
+    return evaluationError("evaluation conditions JSON is not canonical");
+  return conditions;
+}
+
 std::string serializeEvaluationRequest(const EvaluationRequest &request) {
   llvm::SmallString<1024> storage;
   llvm::raw_svector_ostream output(storage);
   llvm::json::OStream json(output);
   json.object([&] {
     json.attribute("schema", EvaluationRequest::artifactSchema.identity);
-    json.attribute("schema_version",
-                   formatSchemaVersion(EvaluationRequest::artifactSchema.version));
+    json.attribute(
+        "schema_version",
+        formatSchemaVersion(EvaluationRequest::artifactSchema.version));
     json.attributeBegin("subject_bindings");
     writeSubjectBindings(json, request.subjectBindings());
     json.attributeEnd();
@@ -379,9 +443,8 @@ std::string serializeEvaluationRequest(const EvaluationRequest &request) {
       for (const MetricRequest &metric : request.metricRequests()) {
         json.object([&] {
           json.attributeBegin("query");
-          json.object([&] {
-            detail::writeMetricQueryPayload(json, metric.query());
-          });
+          json.object(
+              [&] { detail::writeMetricQueryPayload(json, metric.query()); });
           json.attributeEnd();
           json.attributeBegin("conditions");
           writeConditions(json, metric.conditions());
@@ -393,9 +456,8 @@ std::string serializeEvaluationRequest(const EvaluationRequest &request) {
       for (const FindingRequest &finding : request.findingRequests()) {
         json.object([&] {
           json.attributeBegin("query");
-          json.object([&] {
-            detail::writeFindingQueryPayload(json, finding.query());
-          });
+          json.object(
+              [&] { detail::writeFindingQueryPayload(json, finding.query()); });
           json.attributeEnd();
           json.attributeBegin("conditions");
           writeConditions(json, finding.conditions());

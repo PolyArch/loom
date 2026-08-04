@@ -200,6 +200,21 @@ resolveEvaluationModelDescriptor(const EvaluationRequest &request);
 
 CanonicalSemanticBytes
 canonicalEvaluationRequestBytes(const EvaluationRequest &request);
+
+/// Canonical standalone text for the exact descriptor-owned model binding.
+/// This is the same production codec used by EvaluationRequest; DSE and other
+/// owners must reuse it rather than copying descriptor/config-view framing.
+std::string serializeResolvedModelBinding(const ResolvedModelBinding &binding);
+llvm::Expected<ResolvedModelBinding>
+parseResolvedModelBinding(llvm::StringRef json);
+
+/// Canonical standalone text for an ordered condition sequence. Individual
+/// condition payloads remain owned by the Evaluation condition registry.
+std::string
+serializeEvaluationConditions(llvm::ArrayRef<EvaluationCondition> conditions);
+llvm::Expected<std::vector<EvaluationCondition>>
+parseEvaluationConditions(llvm::StringRef json);
+
 std::string serializeEvaluationRequest(const EvaluationRequest &request);
 llvm::Expected<EvaluationRequest>
 parseEvaluationRequest(llvm::StringRef json,

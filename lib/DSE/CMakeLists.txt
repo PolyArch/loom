@@ -25,6 +25,7 @@ target_link_libraries(LoomDSECandidateGenerator PUBLIC
 )
 
 add_library(LoomDSE
+  EvidenceObligation.cpp
   Plan.cpp
   PreMappingExploration.cpp
   Promotion.cpp
