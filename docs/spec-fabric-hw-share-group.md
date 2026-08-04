@@ -356,8 +356,10 @@ Adding an HSG is a code and backend change, not a configuration escape hatch:
 
 Semantic Fabric verification and backend availability remain distinct. A
 well-formed custom Fabric may be valid while the selected backend reports typed
-`Unsupported` for a missing provider. A published builtin target must have
-provider closure for every implementation family it advertises.
+`Unsupported` for a missing provider. A separately declared backend-ready
+qualification of a builtin, independent of Fabric publication, requires
+provider closure for every implementation family in the qualification's exact
+realization scope.
 
 No broader test matrix is normative. The anchor must not preserve a
 member-name string bag, duplicate the registry, require exact-domain
