@@ -1,0 +1,2 @@
+# REQUIRES: circt
+# RUN: %loom-common-skeleton-test

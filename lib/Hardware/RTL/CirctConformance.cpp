@@ -1,7 +1,6 @@
 #include "Hardware/RTL/CirctConformance.h"
+#include "Hardware/RTL/CommonSkeleton.h"
 
-#include "circt/Conversion/ExportVerilog.h"
-#include "circt/Conversion/SeqToSV.h"
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWDialect.h"
@@ -13,27 +12,13 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
-#include "mlir/IR/Verifier.h"
-#include "mlir/Pass/PassManager.h"
 
 #include "llvm/ADT/APInt.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/Twine.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include <string>
 
 namespace loom::hardware::rtl {
-namespace {
-
-llvm::Error conformanceError(const llvm::Twine &message) {
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "circt_conformance_failed: " + message);
-}
-
-} // namespace
-
 llvm::Expected<std::string> emitCirctConformanceSystemVerilog() {
   mlir::MLIRContext context;
   context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
@@ -165,21 +150,7 @@ llvm::Expected<std::string> emitCirctConformanceSystemVerilog() {
         accessor.setOutput("memory_result_data", input("memory_response_data"));
       });
 
-  if (mlir::failed(mlir::verify(*top)))
-    return conformanceError("constructed HW module did not verify");
-  circt::LowerSeqToSVOptions loweringOptions;
-  loweringOptions.disableRegRandomization = true;
-  mlir::PassManager pipeline(&context);
-  pipeline.addPass(circt::createLowerSeqToSVPass(loweringOptions));
-  if (mlir::failed(pipeline.run(*top)))
-    return conformanceError("Seq-to-SV lowering failed");
-  if (mlir::failed(mlir::verify(*top)))
-    return conformanceError("lowered HW/SV module did not verify");
-  llvm::SmallString<1024> storage;
-  llvm::raw_svector_ostream output(storage);
-  if (mlir::failed(circt::exportVerilog(*top, output)))
-    return conformanceError("ExportVerilog rejected the constructed module");
-  return output.str().str();
+  return lowerAndExportSpecializedSystemVerilog(*top);
 }
 
 } // namespace loom::hardware::rtl

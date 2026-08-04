@@ -1,5 +1,6 @@
 add_library(LoomHardwareRTL
   CirctConformance.cpp
+  CommonSkeleton.cpp
   Transport.cpp
 )
 
@@ -15,6 +16,7 @@ target_link_libraries(LoomHardwareRTL PUBLIC
   CIRCTSeqToSV
   CIRCTSV
   CIRCTSupport
+  LoomFabricIdentity
   MLIRIR
   MLIRPass
   LLVMSupport

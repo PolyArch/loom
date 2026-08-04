@@ -28,6 +28,16 @@ target_link_libraries(loom-hardware-implementation-test PRIVATE
 )
 
 if(LOOM_HAVE_CIRCT)
+  add_executable(loom-common-skeleton-test
+    CommonSkeletonTest.cpp
+  )
+
+  target_link_libraries(loom-common-skeleton-test PRIVATE
+    LoomADGBuilder
+    LoomHardwareRTL
+    LLVMSupport
+  )
+
   add_executable(loom-circt-conformance-test
     CirctConformanceTest.cpp
   )
