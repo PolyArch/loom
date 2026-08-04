@@ -215,8 +215,13 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
               frame->coordinate.delta == 1 && frame->actorEvents.size() == 1 &&
               frame->actorEvents.front().kind ==
                   CgraComputeActorLifecycleKind::Committed &&
-              state.pendingChannelOrdinals.size() == 1,
-          "actor commit did not use the shared provider at the next delta");
+              frame->actorEmissions.size() == 1 &&
+              frame->actorEmissions.front().resultOrdinal == 0 &&
+              take(tokenBitPattern(frame->actorEmissions.front().token,
+                                   mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 16) &&
+              state.pendingChannelOrdinals.empty(),
+          "actor commit did not hand its shared-provider token to transport");
 
   frame = take(runtime.advance());
   require(frame &&

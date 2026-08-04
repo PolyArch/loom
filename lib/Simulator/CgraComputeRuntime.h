@@ -26,6 +26,14 @@ struct CgraComputeActorLifecycleEvent final {
   SpatialEventCoordinate coordinate;
 };
 
+struct CgraComputeActorEmission final {
+  std::uint64_t actorPlanOrdinal = 0;
+  std::uint64_t occurrenceOrdinal = 0;
+  std::uint32_t transitionCaseOrdinal = 0;
+  unsigned resultOrdinal = 0;
+  Token token;
+};
+
 /// Internal handoff from compute/resource execution to transport retirement.
 /// It is a transient dense projection, not a trace event or persistent ref.
 struct CgraTransitionPhysicalCompletion final {
@@ -38,6 +46,7 @@ struct CgraComputeLifecycleFrame final {
   SpatialEventCoordinate coordinate;
   std::vector<CgraPhysicalLifecycleEvent> physicalEvents;
   std::vector<CgraComputeActorLifecycleEvent> actorEvents;
+  std::vector<CgraComputeActorEmission> actorEmissions;
   std::vector<CgraTransitionPhysicalCompletion> physicalCompletions;
 };
 

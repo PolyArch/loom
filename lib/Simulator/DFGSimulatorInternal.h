@@ -705,6 +705,14 @@ struct ChannelSlot {
   TokenQueue pending;
 };
 
+/// One result emitted by the shared actor provider before an execution model
+/// chooses its transport. DFG execution publishes it directly; CGRA execution
+/// captures it until the selected RouteTree permits publication.
+struct ActorResultEmission final {
+  unsigned resultOrdinal = 0;
+  Token token;
+};
+
 using OutputMap = llvm::DenseMap<mlir::Value, llvm::SmallVector<Token>>;
 
 struct LoopState {
@@ -997,6 +1005,7 @@ struct SimulatorState {
   std::vector<ChannelSlot> channelSlots;
   llvm::SmallVector<ChannelOrdinal, 16> pendingChannelOrdinals;
   const ActorExecutionPlan *currentActorPlan = nullptr;
+  llvm::SmallVectorImpl<ActorResultEmission> *actorEmissionCapture = nullptr;
   // Values whose complete publication sequence is an explicit graph
   // observation. Internal SSA token history is represented by the edge
   // queues alone and is not retained as an implicit trace.

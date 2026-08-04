@@ -290,12 +290,22 @@ CgraComputeRuntime::processActorCommit(std::uint64_t firingSlot,
     return selected.takeError();
   if (!*selected || **selected != firing.transitionCaseOrdinal)
     return invalid("CGRA actor readiness changed after physical reservation");
+  if (state_->actorEmissionCapture)
+    return invalid("CGRA actor commit found a nested emission capture");
+  llvm::SmallVector<ActorResultEmission, 4> emissions;
+  state_->actorEmissionCapture = &emissions;
   const ActorTransitionCommitOutcome outcome =
       commitActorTransition(*binding.semantic, *state_);
+  state_->actorEmissionCapture = nullptr;
   if (outcome == ActorTransitionCommitOutcome::NotReady)
     return invalid("CGRA actor became blocked after physical reservation");
   if (outcome == ActorTransitionCommitOutcome::Failed)
     return invalid("CGRA actor provider failed after physical reservation");
+  for (ActorResultEmission &emission : emissions)
+    frame.actorEmissions.push_back(
+        {binding.actorPlanOrdinal, firing.actorOccurrenceOrdinal,
+         firing.transitionCaseOrdinal, emission.resultOrdinal,
+         std::move(emission.token)});
   firing.committed = true;
   binding.commitPending = false;
   frame.actorEvents.push_back({CgraComputeActorLifecycleKind::Committed,
@@ -335,7 +345,7 @@ CgraComputeRuntime::advance() {
   if (!coordinate)
     return std::optional<CgraComputeLifecycleFrame>{};
 
-  CgraComputeLifecycleFrame frame{*coordinate, {}, {}, {}};
+  CgraComputeLifecycleFrame frame{*coordinate, {}, {}, {}, {}};
   if (isAt(requestedEvents_.nextCoordinate(), *coordinate)) {
     auto requested = requestedEvents_.popNextFrame();
     if (!requested)
@@ -400,6 +410,13 @@ CgraComputeRuntime::advance() {
                     lhs.transitionCaseOrdinal) <
            std::tie(rhs.actorPlanOrdinal, rhs.occurrenceOrdinal,
                     rhs.transitionCaseOrdinal);
+  });
+  llvm::sort(frame.actorEmissions, [](const CgraComputeActorEmission &lhs,
+                                      const CgraComputeActorEmission &rhs) {
+    return std::tie(lhs.actorPlanOrdinal, lhs.occurrenceOrdinal,
+                    lhs.transitionCaseOrdinal, lhs.resultOrdinal) <
+           std::tie(rhs.actorPlanOrdinal, rhs.occurrenceOrdinal,
+                    rhs.transitionCaseOrdinal, rhs.resultOrdinal);
   });
   llvm::sort(frame.physicalCompletions,
              [](const CgraTransitionPhysicalCompletion &lhs,

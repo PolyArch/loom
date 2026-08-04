@@ -265,6 +265,12 @@ static void publishToken(SimulatorState &state, unsigned resultOrdinal,
          "token publication requires an active execution plan");
   assert(resultOrdinal < state.currentActorPlan->outputs.size() &&
          "token publication does not match the active actor result");
+  if (state.actorEmissionCapture) {
+    state.actorEmissionCapture->push_back(
+        ActorResultEmission{resultOrdinal, std::move(token)});
+    ++state.actorMutationEpoch;
+    return;
+  }
   const ActorExecutionPlan::Output &output =
       state.currentActorPlan->outputs[resultOrdinal];
   if (output.observed) {
