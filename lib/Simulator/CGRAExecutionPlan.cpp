@@ -163,18 +163,26 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
     return summary.takeError();
 
   std::map<std::vector<std::uint8_t>, std::uint64_t> ownerOrdinals;
+  std::vector<const ::fabric::ResourceContract *> ownerContracts;
+  ownerContracts.reserve(fabric.moduleResourceOwners().size());
   for (auto [ordinal, owner] : llvm::enumerate(fabric.moduleResourceOwners())) {
     if (!ownerOrdinals
              .try_emplace(::loom::fabric::canonicalFabricBytes(owner),
                           static_cast<std::uint64_t>(ordinal))
              .second)
       return invalid("CGRA preparation found duplicate resource owners");
+    const ::fabric::ResourceContract *contract = fabric.resourceContract(owner);
+    if (!contract)
+      return invalid("CGRA resource owner has no ResourceContract");
+    ownerContracts.push_back(contract);
   }
 
   CgraFrozenExecutionPlan result;
   result.summary = *summary;
   result.mappedGraphs = std::move(*mappedGraphs);
   result.physicalUses.reserve(spatial.resourceUses().size());
+  std::vector<CgraResourcePatternSelection> selectedPatterns;
+  selectedPatterns.reserve(spatial.resourceUses().size());
   llvm::DenseSet<std::uint64_t> selectedOwners;
   for (const auto &use : spatial.resourceUses()) {
     const auto &owner = use.useSite.owner.catalog();
@@ -200,22 +208,22 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
       plan.commitRank = ranks[pattern.commit->event.ordinal()];
       plan.transitionOrdinal = pattern.commit->transition.ordinal();
     }
-    plan.claimOffset = static_cast<std::uint64_t>(result.claims.size());
-    if (pattern.claims.size() > std::numeric_limits<std::uint32_t>::max())
-      return invalid("CGRA ResourceUse claim count exceeds u32");
-    plan.claimCount = static_cast<std::uint32_t>(pattern.claims.size());
-    for (const ::fabric::Claim &claim : pattern.claims)
-      result.claims.push_back(CgraResourceClaimPlan{claim.state.ordinal(),
-                                                    claim.dimension.ordinal(),
-                                                    claim.amount.value()});
     result.physicalUses.push_back(std::move(plan));
+    selectedPatterns.push_back(
+        {ownerOrdinal->second, ::fabric::UsePatternKey(use.useSite.ordinal)});
     selectedOwners.insert(ownerOrdinal->second);
   }
+  auto resources =
+      freezeCgraResourceRuntimePlan(ownerContracts, selectedPatterns);
+  if (!resources)
+    return resources.takeError();
+  result.resources = std::move(*resources);
   result.summary.physicalUseCount =
       static_cast<std::uint64_t>(result.physicalUses.size());
   result.summary.resourceOwnerCount =
       static_cast<std::uint64_t>(selectedOwners.size());
-  result.summary.claimCount = static_cast<std::uint64_t>(result.claims.size());
+  result.summary.claimCount =
+      static_cast<std::uint64_t>(result.resources.claims.size());
   return result;
 }
 

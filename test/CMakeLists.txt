@@ -123,6 +123,7 @@ set(LOOM_TEST_DEPENDS
   loom-relocatable-payload-test
   loom-simulator-atomic-order-test
   loom-simulator-cgra-event-queue-test
+  loom-simulator-cgra-resource-runtime-test
   loom-simulator-dynamic-work-test
   loom-simulator-dfg-evaluation-test
   loom-simulator-dfg-pointer-execution-test
