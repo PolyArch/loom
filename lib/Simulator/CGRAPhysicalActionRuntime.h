@@ -73,6 +73,10 @@ public:
   /// event when every acquisition attempt at that coordinate remains blocked.
   llvm::Expected<std::optional<CgraPhysicalLifecycleFrame>> advance();
 
+  std::optional<SpatialEventCoordinate> nextCoordinate() const {
+    return events_.nextCoordinate();
+  }
+
   bool hasPendingActions() const { return activeActionCount_ != 0; }
 
 private:

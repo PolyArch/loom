@@ -46,6 +46,13 @@ void exactCoordinatesAndStructuralKeysDetermineOrder() {
   queue.schedule(event(coordinate(1, 2), 1, 2, 0, 1));
   queue.schedule(event(coordinate(1, 2, 1), 0, 0, 0, 6));
 
+  const auto firstCoordinate = queue.nextCoordinate();
+  if (!firstCoordinate ||
+      firstCoordinate->referenceCycle !=
+          take(loom::evaluation::ExactRatio::get(1, 2)) ||
+      firstCoordinate->delta != 0 || queue.size() != 6)
+    fail("next-coordinate projection consumed or reordered the queue");
+
   auto first = take(queue.popNextFrame());
   if (!first || first->events.size() != 4 ||
       first->coordinate.referenceCycle !=

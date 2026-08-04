@@ -42,6 +42,12 @@ void CgraEventQueue::schedule(CgraScheduledEvent event) {
   std::push_heap(heap_.begin(), heap_.end(), LaterEvent{});
 }
 
+std::optional<SpatialEventCoordinate> CgraEventQueue::nextCoordinate() const {
+  if (heap_.empty())
+    return std::nullopt;
+  return heap_.front().order.coordinate;
+}
+
 llvm::Expected<std::optional<CgraEventFrame>> CgraEventQueue::popNextFrame() {
   if (heap_.empty())
     return std::optional<CgraEventFrame>{};

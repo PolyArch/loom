@@ -39,6 +39,8 @@ class CgraEventQueue final {
 public:
   void schedule(CgraScheduledEvent event);
 
+  std::optional<SpatialEventCoordinate> nextCoordinate() const;
+
   llvm::Expected<std::optional<CgraEventFrame>> popNextFrame();
 
   bool empty() const { return heap_.empty(); }
