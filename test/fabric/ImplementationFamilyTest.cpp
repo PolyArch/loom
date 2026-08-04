@@ -833,6 +833,75 @@ bool checkAdapterAndTokenAdmission(MLIRContext &context) {
   return ok;
 }
 
+bool checkScalarFloatFmaBehaviorDomain(MLIRContext &context) {
+  const FamilyCapabilityParams params = ScalarFloatParams{
+      FloatFormatSet::get({FloatFormat::F16, FloatFormat::BF16,
+                           FloatFormat::F32, FloatFormat::F64}),
+      FloatBehaviorProfile::strictIEEE()};
+  constexpr std::array enabled = {OperationSchemaId::MathFma};
+  auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
+      ImplementationFamilyId::ScalarFloatFma, params, enabled, 3, 1, context,
+      [](const dataflow::CanonicalActorSchemaProjection &actor) -> llvm::Error {
+        for (Type type : actor.type.getInputs()) {
+          auto floating = dyn_cast<FloatType>(type);
+          if (!floating || floating.getWidth() > 64)
+            return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                           "FMA input exceeds its port");
+        }
+        for (Type type : actor.type.getResults()) {
+          auto floating = dyn_cast<FloatType>(type);
+          if (!floating || floating.getWidth() > 64)
+            return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                           "FMA result exceeds its port");
+        }
+        return llvm::Error::success();
+      });
+  if (!domain) {
+    llvm::errs() << "scalar FMA behavior domain did not resolve: "
+                 << llvm::toString(domain.takeError()) << '\n';
+    return false;
+  }
+  if (domain->size() != 4) {
+    llvm::errs() << "scalar FMA behavior domain has " << domain->size()
+                 << " points instead of four formats\n";
+    return false;
+  }
+
+  bool sawF16 = false;
+  bool sawBF16 = false;
+  bool sawF32 = false;
+  bool sawF64 = false;
+  std::vector<std::vector<std::uint8_t>> semanticValues;
+  for (const auto &point : *domain) {
+    if (!point.semanticConfiguration) {
+      llvm::errs() << "configured scalar FMA behavior has no semantic value\n";
+      return false;
+    }
+    semanticValues.emplace_back(point.semanticConfiguration->bytes().begin(),
+                                point.semanticConfiguration->bytes().end());
+    if (point.representativeActor.schema != OperationSchemaId::MathFma ||
+        point.representativeActor.type.getNumInputs() != 3 ||
+        point.representativeActor.type.getNumResults() != 1) {
+      llvm::errs() << "scalar FMA behavior has the wrong actor shape\n";
+      return false;
+    }
+    Type type = point.representativeActor.type.getInput(0);
+    sawF16 |= isa<Float16Type>(type);
+    sawBF16 |= isa<BFloat16Type>(type);
+    sawF32 |= isa<Float32Type>(type);
+    sawF64 |= isa<Float64Type>(type);
+  }
+  llvm::sort(semanticValues);
+  const bool unique =
+      std::adjacent_find(semanticValues.begin(), semanticValues.end()) ==
+      semanticValues.end();
+  if (!sawF16 || !sawBF16 || !sawF32 || !sawF64 || !unique) {
+    llvm::errs() << "scalar FMA formats did not remain semantically distinct\n";
+    return false;
+  }
+  return true;
+}
+
 } // namespace
 
 int main() {
@@ -853,5 +922,6 @@ int main() {
   ok &= checkLoopAndTokenAdmission(context);
   ok &= checkFixedVectorAdmission(context);
   ok &= checkAdapterAndTokenAdmission(context);
+  ok &= checkScalarFloatFmaBehaviorDomain(context);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -176,7 +176,10 @@ static_assert(static_cast<std::uint8_t>(FloatFormat::F16) == 0);
 static_assert(static_cast<std::uint8_t>(FloatFormat::BF16) == 1);
 static_assert(static_cast<std::uint8_t>(FloatFormat::F32) == 2);
 static_assert(static_cast<std::uint8_t>(FloatFormat::F64) == 3);
-using FloatFormatSet = detail::ClosedEnumSet<FloatFormat, 4>;
+inline constexpr std::array floatFormatDomain = {
+    FloatFormat::F16, FloatFormat::BF16, FloatFormat::F32, FloatFormat::F64};
+using FloatFormatSet =
+    detail::ClosedEnumSet<FloatFormat, floatFormatDomain.size()>;
 
 static_assert(static_cast<std::uint32_t>(
                   ::mlir::arith::RoundingMode::to_nearest_even) == 0);
@@ -310,10 +313,11 @@ using IntegerWidthRelation =
     detail::ClosedPairRelation<IntegerWidth, integerWidthDomain.size(),
                                IntegerWidth, integerWidthDomain.size()>;
 using FloatFormatRelation =
-    detail::ClosedPairRelation<FloatFormat, 4, FloatFormat, 4>;
+    detail::ClosedPairRelation<FloatFormat, floatFormatDomain.size(),
+                               FloatFormat, floatFormatDomain.size()>;
 using IntegerFloatFormatRelation =
     detail::ClosedPairRelation<IntegerWidth, integerWidthDomain.size(),
-                               FloatFormat, 4>;
+                               FloatFormat, floatFormatDomain.size()>;
 
 /// Typed finite-domain relation for integer and resolved-index casts.
 struct IntegerCastRelation {

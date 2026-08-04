@@ -131,6 +131,46 @@ makeFixedVectorIntegerAddSubActor(mlir::MLIRContext &context,
       schema, type, ::dataflow::IntegerOverflowPayload{}};
 }
 
+mlir::FloatType floatType(mlir::MLIRContext &context,
+                          fabric::FloatFormat format) {
+  switch (format) {
+  case fabric::FloatFormat::F16:
+    return mlir::Float16Type::get(&context);
+  case fabric::FloatFormat::BF16:
+    return mlir::BFloat16Type::get(&context);
+  case fabric::FloatFormat::F32:
+    return mlir::Float32Type::get(&context);
+  case fabric::FloatFormat::F64:
+    return mlir::Float64Type::get(&context);
+  }
+  llvm_unreachable("unknown floating format");
+}
+
+::dataflow::CanonicalActorSchemaProjection
+makeScalarFloatFmaActor(mlir::MLIRContext &context,
+                        fabric::FloatFormat format) {
+  mlir::Type type = floatType(context, format);
+  return {::dataflow::OperationSchemaId::MathFma,
+          mlir::FunctionType::get(&context, {type, type, type}, {type}),
+          ::dataflow::FloatingPointPayload{}};
+}
+
+bool isStrictIEEE(const fabric::FloatBehaviorProfile &behavior) {
+  using mlir::arith::FastMathFlags;
+  using mlir::arith::RoundingMode;
+  return behavior.roundingModes.size() == 1 &&
+         behavior.roundingModes.contains(RoundingMode::to_nearest_even) &&
+         behavior.nanBehaviors.size() == 1 &&
+         behavior.nanBehaviors.contains(fabric::FloatNaNBehavior::IEEE) &&
+         behavior.subnormalBehaviors.size() == 1 &&
+         behavior.subnormalBehaviors.contains(
+             fabric::FloatSubnormalBehavior::Preserve) &&
+         behavior.signedZeroBehaviors.size() == 1 &&
+         behavior.signedZeroBehaviors.contains(
+             fabric::FloatSignedZeroBehavior::Preserve) &&
+         behavior.requiredFastMath == FastMathFlags::none;
+}
+
 mlir::FailureOr<unsigned>
 semanticPayloadWidth(mlir::Type type, std::optional<unsigned> indexBitWidth,
                      const ::loom::PointerLayout *pointerLayout,
@@ -382,9 +422,7 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
     for (IntegerWidth width : integerWidthDomain)
       if (typed.integerElementWidths.contains(width))
         addWidth(getBitWidth(width));
-    constexpr FloatFormat floatFormats[] = {FloatFormat::F16, FloatFormat::BF16,
-                                            FloatFormat::F32, FloatFormat::F64};
-    for (FloatFormat format : floatFormats)
+    for (FloatFormat format : floatFormatDomain)
       if (typed.floatElementFormats.contains(format))
         addWidth(getBitWidth(format));
     return elementWidths.size() > 1;
@@ -450,6 +488,26 @@ fabric::encodeImplementationFamilySemanticConfiguration(
   }
   if (selectionOnly)
     return ::dataflow::encodeOperationSchemaId(actor.schema);
+
+  if (family == ImplementationFamilyId::ScalarFloatFma) {
+    const auto *parameters = std::get_if<ScalarFloatParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    if (!isStrictIEEE(parameters->behavior))
+      return reject("scalar FMA semantic codec supports only the strict IEEE "
+                    "behavior profile");
+    if (actor.schema != ::dataflow::OperationSchemaId::MathFma ||
+        actor.type.getNumInputs() != 3 || actor.type.getNumResults() != 1)
+      return reject("actor is not a scalar floating FMA");
+    mlir::Type type = actor.type.getInput(0);
+    if (actor.type.getInput(1) != type || actor.type.getInput(2) != type ||
+        actor.type.getResult(0) != type)
+      return reject("scalar FMA actor is not uniform");
+    if (llvm::Error error =
+            verifyImplementationFamilyAdmission(family, &params, actor))
+      return std::move(error);
+    return ::dataflow::encodeCanonicalType(type);
+  }
 
   if (family == ImplementationFamilyId::FixedVectorIntegerAddSub) {
     const auto *parameters = std::get_if<FixedVectorIntegerParams>(&params);
@@ -647,6 +705,19 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
         actors.push_back(std::move(*actor));
       }
     }
+  } else if (family == ImplementationFamilyId::ScalarFloatFma) {
+    const auto *parameters = std::get_if<ScalarFloatParams>(&params);
+    if (!parameters)
+      return reject("capability has the wrong parameter schema");
+    if (enabledSchemas.size() != 1 ||
+        enabledSchemas.front() != ::dataflow::OperationSchemaId::MathFma)
+      return reject("scalar FMA capability contains a non-FMA schema");
+    if (!isStrictIEEE(parameters->behavior))
+      return reject("scalar FMA behavior-domain projection supports only the "
+                    "strict IEEE behavior profile");
+    for (FloatFormat format : floatFormatDomain)
+      if (parameters->formats.contains(format))
+        actors.push_back(makeScalarFloatFmaActor(context, format));
   } else {
     return reject("finite behavior-domain projection is not implemented for "
                   "the capability family");

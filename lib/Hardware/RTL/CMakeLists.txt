@@ -5,6 +5,7 @@ add_library(LoomHardwareRTL
   Providers/FixedVectorIntegerAddSub.cpp
   Providers/LoopCarry.cpp
   Providers/ProviderSupport.cpp
+  Providers/ScalarFloatFma.cpp
   Providers/ScalarIntegerAddSub.cpp
   Providers/ScalarIntegerCompareMinMax.cpp
   Specialization.cpp
