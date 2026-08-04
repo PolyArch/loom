@@ -2,7 +2,7 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"

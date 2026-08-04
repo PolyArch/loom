@@ -3,7 +3,7 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/StandardFindings.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"

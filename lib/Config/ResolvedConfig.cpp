@@ -1,4 +1,4 @@
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 
 #include "Common/ArtifactFinalizer.h"
 

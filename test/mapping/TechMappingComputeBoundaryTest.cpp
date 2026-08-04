@@ -2,7 +2,7 @@
 
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialPnrProblem.h"

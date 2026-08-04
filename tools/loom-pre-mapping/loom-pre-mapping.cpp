@@ -27,7 +27,7 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "DSE/PreMappingExploration.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"

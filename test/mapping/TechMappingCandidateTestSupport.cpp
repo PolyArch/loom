@@ -1,7 +1,7 @@
 #include "TechMappingCandidateTestSupport.h"
 
 #include "ADG/FuLibrary.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/OperationSchema.h"

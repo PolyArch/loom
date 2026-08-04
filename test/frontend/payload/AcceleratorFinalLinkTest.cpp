@@ -1,6 +1,6 @@
 #include "Frontend/Payload/AcceleratorFinalLink.h"
 #include "Common/Artifact.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "Frontend/Payload/FrontendConfigView.h"
 #include "Frontend/Payload/PayloadCarrier.h"
 #include "Frontend/Payload/RelocatableAcceleratorPayload.h"

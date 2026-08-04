@@ -3,7 +3,7 @@
 
 #include "ADG/Builder.h"
 #include "Common/ArtifactStore.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialPnrProblem.h"
 

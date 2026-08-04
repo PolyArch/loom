@@ -12,7 +12,6 @@ add_mlir_library(LoomCommon
   ExternalFileFingerprint.cpp
   IndexWidth.cpp
   PointerLayout.cpp
-  ResolvedConfig.cpp
   ResolvedPnrPolicy.cpp
   VectorWidth.cpp
 

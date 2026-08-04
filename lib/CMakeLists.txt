@@ -1,5 +1,7 @@
 add_subdirectory(Common)
 add_subdirectory(Evaluation)
+add_subdirectory(DSE/Policy)
+add_subdirectory(Config)
 add_subdirectory(ExternalTool)
 add_subdirectory(EDA)
 add_subdirectory(ADG)

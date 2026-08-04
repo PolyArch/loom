@@ -83,6 +83,7 @@ add_mlir_library(LoomFrontendPayload
 
   LINK_LIBS PUBLIC
   LoomCommon
+  LoomConfig
   ${loom_payload_llvm_libs}
 )
 

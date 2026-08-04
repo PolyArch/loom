@@ -18,6 +18,7 @@ target_include_directories(LoomTechMapping PRIVATE
 
 target_link_libraries(LoomTechMapping PUBLIC
   LoomCommon
+  LoomConfig
   LoomMappingArtifact
   LoomFabricArtifact
   MLIRDataflow

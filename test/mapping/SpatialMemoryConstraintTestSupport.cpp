@@ -1,6 +1,6 @@
 #include "SpatialMemoryConstraintTestSupport.h"
 
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"

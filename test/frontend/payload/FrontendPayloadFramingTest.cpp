@@ -1,5 +1,5 @@
 #include "Common/ComponentViewDigest.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "Frontend/Payload/AbiCompatibilityKey.h"
 #include "Frontend/Payload/FrontendConfigView.h"
 #include "Frontend/Payload/RelocatableAcceleratorPayload.h"

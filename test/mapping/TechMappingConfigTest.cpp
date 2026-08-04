@@ -1,6 +1,6 @@
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Common/ComponentViewDigest.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"

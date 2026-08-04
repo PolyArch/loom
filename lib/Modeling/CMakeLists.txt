@@ -14,6 +14,7 @@ target_include_directories(LoomStructuredFabricAnalyticModel PUBLIC
 )
 
 target_link_libraries(LoomStructuredFabricAnalyticModel PUBLIC
+  LoomConfig
   LoomEvaluation
   LoomFabricArtifact
   LoomFrontendCompilation

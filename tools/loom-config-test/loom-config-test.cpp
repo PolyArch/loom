@@ -2,7 +2,7 @@
 //
 // Usage: loom-config-test [output option] [--loom-accel-profile=<selector>]
 
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 
 #include "Common/ArtifactText.h"
 

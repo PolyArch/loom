@@ -2,7 +2,7 @@
 
 #include "Common/Artifact.h"
 #include "Common/ArtifactStore.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "Common/ResolvedPnrPolicy.h"
 #include "Evaluation/Metric.h"
 #include "Evaluation/ModelDescriptor.h"

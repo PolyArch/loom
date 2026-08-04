@@ -3,7 +3,7 @@
 #include "PnR/RoutingNegotiation.h"
 
 #include "Common/ComponentViewDigest.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"

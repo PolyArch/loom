@@ -1,7 +1,7 @@
 #include "DSE/StructuredOwnershipCandidateGenerator.h"
 
 #include "Common/ArtifactStore.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "DSE/StructuredOwnership.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"

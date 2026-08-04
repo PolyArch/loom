@@ -2,7 +2,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/IndexWidth.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "Common/VectorWidth.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowOps.h"

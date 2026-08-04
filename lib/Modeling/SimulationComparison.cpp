@@ -1,7 +1,7 @@
 #include "Evaluation/Models/SimulationComparison.h"
 
 #include "Common/ArtifactStore.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/CgraSimulation.h"

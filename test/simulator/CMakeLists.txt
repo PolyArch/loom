@@ -295,6 +295,7 @@ add_executable(loom-simulator-simulation-execution-test
 
 target_link_libraries(loom-simulator-simulation-execution-test PRIVATE
   LoomCommon
+  LoomConfig
   LoomEvaluation
   LoomSimulator
   MLIRArithDialect

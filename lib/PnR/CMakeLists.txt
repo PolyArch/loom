@@ -50,6 +50,7 @@ add_mlir_library(LoomPnR
   ${LOOM_SOURCE_DIR}/include/PnR
 
   LINK_LIBS PUBLIC
+  LoomConfig
   LoomFabricIdentity
   LoomFabricPhysicalTag
   LoomFabricTemporalOperandBuffer

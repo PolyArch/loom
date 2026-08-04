@@ -1,7 +1,7 @@
 #include "DSE/PreMappingExploration.h"
 
 #include "Common/ArtifactStore.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 
 #include <utility>
 #include <vector>

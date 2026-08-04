@@ -4,7 +4,7 @@
 
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactStore.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"

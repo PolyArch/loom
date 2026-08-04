@@ -1,7 +1,7 @@
 #include "Evaluation/Models/CgraSimulation.h"
 
 #include "Common/ArtifactStore.h"
-#include "Common/ResolvedConfig.h"
+#include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/ModelProvider.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"

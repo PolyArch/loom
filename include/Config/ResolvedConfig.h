@@ -1,5 +1,5 @@
-#ifndef LOOM_COMMON_RESOLVEDCONFIG_H
-#define LOOM_COMMON_RESOLVEDCONFIG_H
+#ifndef LOOM_CONFIG_RESOLVEDCONFIG_H
+#define LOOM_CONFIG_RESOLVEDCONFIG_H
 
 #include "ADG/BuiltinDescriptor.h"
 #include "Common/Artifact.h"
@@ -61,4 +61,4 @@ ArtifactIdentity resolvedConfigIdentity(const ResolvedConfig &config);
 
 } // namespace loom
 
-#endif // LOOM_COMMON_RESOLVEDCONFIG_H
+#endif // LOOM_CONFIG_RESOLVEDCONFIG_H

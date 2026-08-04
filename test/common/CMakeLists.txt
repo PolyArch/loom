@@ -4,6 +4,7 @@ add_executable(loom-common-artifact-test
 
 target_link_libraries(loom-common-artifact-test PRIVATE
   LoomCommon
+  LoomConfig
   LLVMSupport
 )
 

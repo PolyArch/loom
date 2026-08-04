@@ -7,6 +7,7 @@ target_include_directories(loom-evaluation-case-test PRIVATE
 )
 
 target_link_libraries(loom-evaluation-case-test PRIVATE
+  LoomConfig
   LoomEvaluation
   LoomImplementationPlatform
   LLVMSupport
@@ -26,6 +27,7 @@ add_executable(loom-evaluation-evidence-test
 )
 
 target_link_libraries(loom-evaluation-evidence-test PRIVATE
+  LoomConfig
   LoomEvaluation
   LLVMSupport
 )
