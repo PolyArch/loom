@@ -22,6 +22,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
+#include "Mapping/Inspection/SpatialMappingInspection.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
 #include "PnR/MappingObjective.h"
@@ -847,6 +848,22 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
         generatedView.view().routeTrees().empty() ||
         generatedView.view().resourceUses().empty())
       fail("Spatial PnR generator published an empty Mapping");
+    const auto inspection = take(loom::mapping::inspectSpatialMapping(
+        dataflow, tech.view(), fabric.view(), generatedView.view()));
+    if (inspection.summary.computeRealizationCount == 0 ||
+        inspection.summary.selectedActorCount == 0 ||
+        inspection.summary.routeTreeCount == 0 ||
+        inspection.summary.routeNodeCount == 0 ||
+        inspection.summary.routeSinkCount == 0 ||
+        inspection.summary.resourceUseCount == 0 ||
+        inspection.computeOccupancy.empty() || inspection.routes.empty())
+      fail("Spatial Mapping inspection projected an empty physical mapping");
+    const auto foreignFabric = buildTemporalFabric(store);
+    auto wrongInspection = loom::mapping::inspectSpatialMapping(
+        dataflow, tech.view(), foreignFabric.view(), generatedView.view());
+    if (wrongInspection)
+      fail("Spatial Mapping inspection accepted a foreign Fabric");
+    llvm::consumeError(wrongInspection.takeError());
     requireSuccess(loom::mapping::admitSpatialMappingConstraints(
         dataflow, tech.view(), fabric.view(), constraints.view(),
         generatedView.view()));
