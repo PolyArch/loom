@@ -15,8 +15,11 @@
 #include "Fabric/IR/UsePatternValue.h"
 #include "Fabric/Identity/FabricHandshake.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricRefText.h"
+#include "Mapping/Artifact/SpatialProgressAnalysis.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "MappingAssemblyInternal.h"
+#include "SpatialMappingCapacityVerification.h"
 #include "SpatialMappingMemoryImport.h"
 #include "SpatialMappingTagAssignments.h"
 
@@ -51,6 +54,12 @@ namespace {
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "mapping_artifact_invalid: " + message);
+}
+
+llvm::Error incomplete(const llvm::Twine &message) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::operation_not_supported),
+      "spatial_mapping_incomplete: " + message);
 }
 
 std::vector<std::uint8_t> unsignedBytes(DenseI8ArrayAttr record) {
@@ -962,10 +971,17 @@ pointerLayoutFor(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   return std::optional<::loom::PointerLayout>(*layout);
 }
 
-llvm::Expected<::loom::fabric::FabricHandshakeSelection>
+struct SelectedHandshakeProjection final {
+  ::loom::fabric::FabricHandshakeSelection selection;
+  std::vector<std::vector<::loom::fabric::FabricPhysicalTraversalRef>>
+      routeTraversals;
+};
+
+llvm::Expected<SelectedHandshakeProjection>
 deriveSelectedHandshakeSelection(const TerminalProjectionContext &context,
                                  llvm::ArrayRef<SpatialRouteTreeView> routes) {
-  ::loom::fabric::FabricHandshakeSelection selection;
+  SelectedHandshakeProjection result;
+  auto &selection = result.selection;
   for (const auto &realization : context.techMapping.computeRealizations()) {
     const auto *binding =
         findComputeBinding(context.computeBindings, realization.entityId);
@@ -1003,28 +1019,45 @@ deriveSelectedHandshakeSelection(const TerminalProjectionContext &context,
 
   const auto appendLocal =
       [&](const auto &terminal,
-          const ::loom::fabric::FabricTransportEndpointRef &endpoint)
+          const ::loom::fabric::FabricTransportEndpointRef &endpoint,
+          std::vector<::loom::fabric::FabricPhysicalTraversalRef> &traversals)
       -> llvm::Error {
     auto traversal = selectedLocalTraversal(context, terminal, endpoint);
     if (!traversal)
       return traversal.takeError();
-    if (*traversal)
+    if (*traversal) {
       selection.traversals.push_back(**traversal);
+      traversals.push_back(**traversal);
+    }
     return llvm::Error::success();
   };
   for (const SpatialRouteTreeView &route : routes) {
-    if (llvm::Error error = appendLocal(route.logicalNet, route.rootEndpoint))
+    result.routeTraversals.emplace_back();
+    auto &routeTraversal = result.routeTraversals.back();
+    if (llvm::Error error =
+            appendLocal(route.logicalNet, route.rootEndpoint, routeTraversal))
       return std::move(error);
-    for (const SpatialRouteNodeView &node : route.nodes)
-      if (node.incomingTraversal)
+    for (const SpatialRouteNodeView &node : route.nodes) {
+      if (node.incomingTraversal) {
         selection.traversals.push_back(*node.incomingTraversal);
+        routeTraversal.push_back(*node.incomingTraversal);
+      }
+    }
     for (const SpatialRouteSinkView &sink : route.sinks) {
       if (sink.nodeOrdinal >= route.nodes.size())
         return invalid("selected handshake sink names an absent route node");
       if (llvm::Error error =
-              appendLocal(sink.sink, route.nodes[sink.nodeOrdinal].endpoint))
+              appendLocal(sink.sink, route.nodes[sink.nodeOrdinal].endpoint,
+                          routeTraversal))
         return std::move(error);
     }
+    llvm::sort(routeTraversal, [](const auto &lhs, const auto &rhs) {
+      return ::loom::fabric::canonicalFabricBytes(lhs) <
+             ::loom::fabric::canonicalFabricBytes(rhs);
+    });
+    routeTraversal.erase(
+        std::unique(routeTraversal.begin(), routeTraversal.end()),
+        routeTraversal.end());
   }
   llvm::sort(selection.traversals, [](const auto &lhs, const auto &rhs) {
     return ::loom::fabric::canonicalFabricBytes(lhs) <
@@ -1033,7 +1066,7 @@ deriveSelectedHandshakeSelection(const TerminalProjectionContext &context,
   selection.traversals.erase(
       std::unique(selection.traversals.begin(), selection.traversals.end()),
       selection.traversals.end());
-  return selection;
+  return result;
 }
 
 struct ImportedSpatialView final {
@@ -1159,8 +1192,36 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
     return handshake.takeError();
   if (llvm::Error error =
           ::loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
-              fabric, *handshake))
+              fabric, handshake->selection))
     return std::move(error);
+
+  auto capacityOveruse = detail::deriveSpatialCapacityOveruse(
+      fabric, dataflow.identity(), uses, handshake->routeTraversals);
+  if (!capacityOveruse)
+    return capacityOveruse.takeError();
+  if (capacityOveruse->total != 0) {
+    if (!capacityOveruse->firstWitness)
+      return invalid("CapacityOveruse has no canonical witness");
+    const auto &witness = *capacityOveruse->firstWitness;
+    return invalid(llvm::Twine("CapacityOveruse at ") +
+                   ::loom::fabric::printFabricRef(witness.owner) + " state " +
+                   llvm::Twine(witness.state.ordinal()) + " dimension " +
+                   llvm::Twine(witness.dimension.ordinal()) + " uses " +
+                   llvm::Twine(witness.usage) + " of " +
+                   llvm::Twine(witness.capacity));
+  }
+
+  auto progress = deriveSpatialProgressClosure(dataflow);
+  if (!progress)
+    return progress.takeError();
+  switch (progress->kind) {
+  case SpatialProgressClosureKind::ProvenNoClosedWaitSet:
+    break;
+  case SpatialProgressClosureKind::ProvenClosedWaitSet:
+    return invalid("HardProgressViolation");
+  case SpatialProgressClosureKind::ProofNotEstablished:
+    return incomplete("proof_not_established");
+  }
 
   return ImportedSpatialView{*techIdentity,
                              *dataflowIdentity,

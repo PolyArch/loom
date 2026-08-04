@@ -24,6 +24,7 @@
 #include "PnR/SpatialRouteCostState.h"
 #include "PnR/SpatialTagContinuity.h"
 
+#include "SpatialMappingCapacityVerification.h"
 #include "TechMappingArtifactTestSupport.h"
 #include "TechMappingCandidateTestSupport.h"
 
@@ -41,6 +42,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -197,6 +199,33 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   if (!module)
     fail("cannot parse the compute Dataflow fixture");
   return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+void cyclicProgressFailsClosed() {
+  mlir::MLIRContext context = makeContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.graph private @feedback(%start: none, %phase: i1) -> ()
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %carried = dataflow.carry %phase, %start, %lanes#1 : none
+    %lanes:2 = dataflow.demux %phase, %carried
+        : (i1, none) -> (none, none)
+    dataflow.graph.return values() streams() memories()
+        complete(%lanes#0 : none)
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse cyclic progress fixture");
+  auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
+  const auto view = take(artifact.view());
+  const auto closure = take(loom::mapping::deriveSpatialProgressClosure(view));
+  if (closure.kind !=
+      loom::mapping::SpatialProgressClosureKind::ProofNotEstablished)
+    fail(
+        "cyclic actor dependencies were guessed to prove progress or deadlock");
 }
 
 dataflow::CanonicalActorView
@@ -694,18 +723,12 @@ void artifactRoundTripAndReferenceValidation() {
   const loom::pnr::ResolvedPnrConfigView defaultSpatialConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(
           loom::defaultResolvedConfig()));
-  auto unavailableObjective = loom::pnr::freezeSpatialPnrProblem(
+  auto defaultObjective = loom::pnr::freezeSpatialPnrProblem(
       dataflowView, finalized.view(), fabricRoot.view(), defaultSpatialConfig,
       importedConstraints.view());
-  if (unavailableObjective)
-    fail("Spatial freeze accepted an objective with absent source owners");
-  const std::string unavailableObjectiveMessage =
-      llvm::toString(unavailableObjective.takeError());
-  if (!llvm::StringRef(unavailableObjectiveMessage)
-           .contains("objective_unavailable") ||
-      !llvm::StringRef(unavailableObjectiveMessage)
-           .contains("ResourceTimeOverbooking"))
-    fail("Spatial freeze returned the wrong unavailable objective source");
+  if (!defaultObjective)
+    fail("Spatial freeze rejected the complete five-violation objective: " +
+         llvm::toString(defaultObjective.takeError()));
 
   const loom::pnr::ResolvedPnrConfigView spatialConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(
@@ -958,6 +981,10 @@ void artifactRoundTripAndReferenceValidation() {
           *spatialCandidate,
           loom::ResolvedPnrViolationKind::CapacityOveruse)) != 0)
     fail("legal builtin resource envelopes gained capacity overuse");
+  if (take(loom::pnr::spatialMappingViolationValue(
+          *spatialCandidate,
+          loom::ResolvedPnrViolationKind::HardProgressViolation)) != 0)
+    fail("acyclic actor dependencies gained a hard progress violation");
   std::optional<loom::pnr::PnrIndex> routedNet;
   for (auto [netOrdinal, net] :
        llvm::enumerate(frozen->transfers().logicalNets())) {
@@ -1097,6 +1124,32 @@ void artifactRoundTripAndReferenceValidation() {
           spatialCandidate->atomicCapacityOveruse() +
               expectedRouteCapacityOveruse)
     fail("Mapping CapacityOveruse lost atomic or route occupancy");
+  std::vector<std::vector<loom::fabric::FabricPhysicalTraversalRef>>
+      persistedRouteTraversals(frozen->transfers().logicalNets().size());
+  for (loom::pnr::PnrIndex net = 0;
+       net < frozen->transfers().logicalNets().size(); ++net) {
+    auto &selected = persistedRouteTraversals[net];
+    for (const auto &node : spatialCandidate->routeTree(net).nodeStorage()) {
+      if (!node.isActive() || node.parentArc == loom::pnr::getInvalidPnrIndex())
+        continue;
+      const auto traversal =
+          frozen->routing().routingArcs()[node.parentArc].traversal;
+      selected.push_back(frozen->routing().traversals()[traversal].reference);
+    }
+    std::sort(selected.begin(), selected.end(),
+              [](const auto &lhs, const auto &rhs) {
+                return loom::fabric::canonicalFabricBytes(lhs) <
+                       loom::fabric::canonicalFabricBytes(rhs);
+              });
+    selected.erase(std::unique(selected.begin(), selected.end()),
+                   selected.end());
+  }
+  auto coldRouteCapacity =
+      take(loom::mapping::detail::deriveSpatialCapacityOveruse(
+          fabricRoot.view(), dataflowView.identity(), {},
+          persistedRouteTraversals));
+  if (coldRouteCapacity.total != expectedRouteCapacityOveruse)
+    fail("strict route-capacity reconstruction disagrees with Candidate state");
   const std::uint64_t committedTraversalClaim =
       spatialCandidate->totalSelectedTraversalClaim();
   requireSuccess(spatialCandidate->verify());
@@ -1715,6 +1768,7 @@ void artifactRoundTripAndReferenceValidation() {
 } // namespace
 
 int main() {
+  cyclicProgressFailsClosed();
   artifactRoundTripAndReferenceValidation();
   loom::test::tech_mapping_artifact::computeBoundaryClosure();
   llvm::outs() << "tech mapping artifact tests passed\n";

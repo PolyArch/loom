@@ -827,6 +827,12 @@ finalizeSpatialMappingCandidate(
     return invalid("candidate still has unassigned Physical Tags");
   if (candidate.tagConflictCount() != 0)
     return invalid("candidate still has conflicting Physical Tags");
+  auto hardProgress = spatialMappingViolationValue(
+      candidate, ResolvedPnrViolationKind::HardProgressViolation);
+  if (!hardProgress)
+    return hardProgress.takeError();
+  if (*hardProgress != 0)
+    return invalid("candidate has a hard progress violation");
   mlir::DialectRegistry registry;
   registry.insert<::mapping::MappingDialect>();
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);

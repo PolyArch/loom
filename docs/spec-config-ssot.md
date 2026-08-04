@@ -96,16 +96,25 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 2.0`. Version 2.0 is an
-incompatible replacement for the earlier provisional schema: it removes the
+The current schema is `loom.config.resolved 3.0`. Version 2.0 was an
+incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
-`ResolvedDseObjective` list. A 2.0 parser rejects those fields rather than
-adopting or translating them. Hardware widths remain inputs to the exact
+`ResolvedDseObjective` list. Hardware widths remain inputs to the exact
 hardware target and are recovered from the finalized Fabric; objective facts
 use the typed records owned by [DSE Feedback](spec-dse-feedback.md#objectives-and-quality-gates).
 
-The 2.0 schema composes these active policy domains:
+Version 3.0 replaces the provisional eight-entry Mapping violation catalog
+with the five independent facts owned by
+[Place And Route](spec-pnr.md#objective-projection). Event-relative resource
+occupancy, buffer occupancy, and service capacity are projections of the one
+Fabric-owned capacity relation; service compatibility and quality remain typed
+admission or Evaluation facts. Removing the three competing enum values and
+rewriting objective ordinals is incompatible. A 3.0 parser rejects old fields
+and retired violation spellings rather than adopting, translating, or aliasing
+them.
+
+The 3.0 schema composes these active policy domains:
 
 ```text
 ResolvedConfig {
@@ -176,7 +185,7 @@ before `TotalSelectedTraversalClaim`, selects no focused-closure metric or
 route-guidance binding, and enables bounded `CpSat` repair. All numeric values,
 including seeds, proposal weights, semantic work limits, cooling parameters,
 PathFinder pressure parameters, and repair bounds, are emitted explicitly by
-the 2.0 resolver. No PnR kernel supplies a missing value or chooses a profile
+the 3.0 resolver. No PnR kernel supplies a missing value or chooses a profile
 default.
 
 The limit counts complete ownership-scope expansions. Expanding one scope

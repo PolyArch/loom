@@ -14,7 +14,7 @@ using namespace loom::pnr;
 namespace {
 
 constexpr MappingObjectiveRegistryDescriptor registry{
-    "loom.mapping.pnr.objective", 1, 0};
+    "loom.mapping.pnr.objective", 2, 0};
 
 constexpr std::array<MappingViolationDescriptor, resolvedPnrViolationKindCount>
     violations{{
@@ -54,12 +54,8 @@ bool loom::pnr::spatialMappingViolationAvailable(
   case ResolvedPnrViolationKind::CapacityOveruse:
   case ResolvedPnrViolationKind::TagUnassigned:
   case ResolvedPnrViolationKind::TagConflict:
-    return true;
-  case ResolvedPnrViolationKind::ResourceTimeOverbooking:
-  case ResolvedPnrViolationKind::BufferOveruse:
   case ResolvedPnrViolationKind::HardProgressViolation:
-  case ResolvedPnrViolationKind::HardServiceContractShortfall:
-    return false;
+    return true;
   }
   llvm_unreachable("unknown Mapping violation kind");
 }
@@ -93,11 +89,18 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
     return candidate.tagUnassignedCount();
   case ResolvedPnrViolationKind::TagConflict:
     return candidate.tagConflictCount();
-  case ResolvedPnrViolationKind::ResourceTimeOverbooking:
-  case ResolvedPnrViolationKind::BufferOveruse:
   case ResolvedPnrViolationKind::HardProgressViolation:
-  case ResolvedPnrViolationKind::HardServiceContractShortfall:
-    llvm_unreachable("unavailable Spatial violation passed preflight");
+    switch (candidate.problem().progressClosure().kind) {
+    case ::loom::mapping::SpatialProgressClosureKind::ProvenNoClosedWaitSet:
+      return 0;
+    case ::loom::mapping::SpatialProgressClosureKind::ProvenClosedWaitSet:
+      return 1;
+    case ::loom::mapping::SpatialProgressClosureKind::ProofNotEstablished:
+      return llvm::createStringError(
+          std::make_error_code(std::errc::operation_not_supported),
+          "proof_not_established: Spatial progress closure is unavailable");
+    }
+    llvm_unreachable("unknown Spatial progress closure kind");
   }
   llvm_unreachable("unknown Mapping violation kind");
 }

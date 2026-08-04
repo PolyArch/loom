@@ -117,16 +117,16 @@ constexpr PnrCapacityContext arcCountContext{
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.7\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.8\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 7;
+constexpr std::uint32_t cacheSchemaMinor = 8;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.7";
+    "loom.spatial_pnr.freeze.2.8";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
-    "loom.spatial_pnr.native_layout.2.6";
+    "loom.spatial_pnr.native_layout.2.7";
 
 enum class CacheField : std::uint32_t {
   DataflowIdentity = 1,
@@ -340,6 +340,10 @@ public:
         *routing, *handshake);
     if (!capacity)
       return capacity.takeError();
+    auto progressClosure =
+        ::loom::mapping::deriveSpatialProgressClosure(dataflow);
+    if (!progressClosure)
+      return progressClosure.takeError();
     if (llvm::Error error =
             verifyAggregate(*realizations, *memory, *transfers, *ports,
                             *resources, *capacity, *routing, *handshake))
@@ -356,7 +360,7 @@ public:
         std::move(workBudget), std::move(*constraints),
         std::move(*realizations), std::move(*memory), std::move(*transfers),
         std::move(*ports), std::move(*resources), std::move(*capacity),
-        std::move(*routing), std::move(*handshake),
+        std::move(*routing), std::move(*handshake), std::move(*progressClosure),
         std::move(*bindingRelations), cacheKey));
   }
 

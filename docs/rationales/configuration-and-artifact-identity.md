@@ -48,6 +48,22 @@ field from its declared view or recovers hardware facts from its exact Artifact
 input. It never translates an old string or floating value into the new typed
 model, because that translation would itself become an undocumented policy.
 
+## Why ResolvedConfig 3.0 Shrinks The Mapping Violation Catalog
+
+The provisional Mapping objective registry named resource-time overbooking,
+buffer overuse, and hard service shortfall independently from generic capacity
+overuse. Fabric's typed `ResourceContract` subsequently established that time
+determines the overlap query, buffers are owner-defined durable capacity state,
+and service slots are ordinary capacity dimensions. The three names therefore
+did not own independent facts.
+
+Keeping them as aliases would make one Fabric counterexample selectable several
+times in an objective and would preserve obsolete ordinals indefinitely.
+ResolvedConfig 3.0 instead selects the five independent Mapping violations and
+projects the corresponding version-2 PnR views. Old spellings are rejected;
+typed owner witnesses preserve detailed diagnostics without becoming another
+configuration authority.
+
 ## Why Selected Component Closures Are Materialized
 
 An ordinal into the complete DSE view is compact, but it is not self-contained:

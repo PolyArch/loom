@@ -55,6 +55,16 @@ void projectionAndAdoptionAreDomainTyped() {
           "System projector returned the wrong domain");
   require(spatial.schemaDescriptorBytes() != system.schemaDescriptorBytes(),
           "Spatial and System descriptors are not distinct");
+  require(llvm::StringRef(reinterpret_cast<const char *>(
+                              spatial.schemaDescriptorBytes().data()),
+                          spatial.schemaDescriptorBytes().size()) ==
+              "loom.spatial_pnr.config.2.0",
+          "Spatial PnR view has the wrong schema descriptor");
+  require(llvm::StringRef(reinterpret_cast<const char *>(
+                              system.schemaDescriptorBytes().data()),
+                          system.schemaDescriptorBytes().size()) ==
+              "loom.system_pnr.config.2.0",
+          "System PnR view has the wrong schema descriptor");
   require(spatial.digest() != system.digest(),
           "domain-distinct views have the same digest");
 
@@ -90,8 +100,10 @@ void selectedAndUnselectedRecordsHaveExactDependencies() {
   catalogs.dimensions.push_back(
       {loom::ResolvedObjectiveSourceKind::MappingMeasure, 0,
        loom::ResolvedObjectiveDirection::Maximize, 0, 1, 0, UINT64_MAX});
+  const std::uint32_t unselectedDimension =
+      static_cast<std::uint32_t>(catalogs.dimensions.size() - 1);
   catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 1,
-                                 {{{9, 1}}});
+                                 {{{unselectedDimension, 1}}});
   catalogs.totalOrderings.front().weightedLevels = {2, 0};
   unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 3;
   unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 3;
@@ -153,22 +165,40 @@ void routingKernelsConsumeTheProjectedOwnerRecord() {
 void mappingObjectiveRegistryIsClosedAndTyped() {
   const auto &registry = loom::pnr::mappingObjectiveRegistryDescriptor();
   require(registry.identity == "loom.mapping.pnr.objective" &&
-              registry.schemaMajor == 1 && registry.schemaMinor == 0,
+              registry.schemaMajor == 2 && registry.schemaMinor == 0,
           "Mapping objective registry has the wrong identity");
 
   const auto violations = loom::pnr::mappingViolationDescriptors();
-  require(violations.size() == 8 &&
+  require(violations.size() == 5 &&
               violations.front().kind ==
                   loom::ResolvedPnrViolationKind::UnroutedObligation &&
               violations.back().kind ==
-                  loom::ResolvedPnrViolationKind::HardServiceContractShortfall,
+                  loom::ResolvedPnrViolationKind::HardProgressViolation,
           "Mapping violation registry does not own the closed catalog");
+  require(
+      violations[1].kind == loom::ResolvedPnrViolationKind::CapacityOveruse &&
+          violations[2].kind == loom::ResolvedPnrViolationKind::TagUnassigned &&
+          violations[3].kind == loom::ResolvedPnrViolationKind::TagConflict,
+      "Mapping violation registry changed the canonical catalog order");
 
   const auto measures = loom::pnr::mappingMeasureDescriptors();
   require(measures.size() == 1 &&
               measures.front().kind ==
                   loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim,
           "Mapping measure registry does not own the closed catalog");
+}
+
+void resolvedConfigUsesTheIndependentViolationCatalog() {
+  require(loom::ResolvedConfig::artifactSchema.version.major == 3 &&
+              loom::ResolvedConfig::artifactSchema.version.minor == 0,
+          "ResolvedConfig has the wrong schema version");
+  const std::string canonical =
+      loom::canonicalResolvedConfigJson(loom::defaultResolvedConfig());
+  require(!llvm::StringRef(canonical).contains("resource_time_overbooking") &&
+              !llvm::StringRef(canonical).contains("buffer_overuse") &&
+              !llvm::StringRef(canonical).contains(
+                  "hard_service_contract_shortfall"),
+          "ResolvedConfig retained a retired Mapping violation spelling");
 }
 
 void objectiveArithmeticIsPreflightedByThePnrView() {
@@ -212,6 +242,7 @@ int main() {
   workBudgetIsDerivedFromTheSelectedPolicy();
   routingKernelsConsumeTheProjectedOwnerRecord();
   mappingObjectiveRegistryIsClosedAndTyped();
+  resolvedConfigUsesTheIndependentViolationCatalog();
   objectiveArithmeticIsPreflightedByThePnrView();
   malformedWireFailsClosed();
   static_assert(

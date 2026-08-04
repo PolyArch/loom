@@ -590,8 +590,8 @@ public:
     }
 
     // A traversal activation group is one owner-normalized physical use. It
-    // must be individually feasible, while contention between independent
-    // message events remains negotiated routing or ResourceTimeOverbooking.
+    // must be individually feasible; cross-event contention contributes to
+    // the one CapacityOveruse owner.
     for (const FrozenSpatialRouteClaim &claim : routing.routeClaims()) {
       if (claim.capacityDimension >= resources.capacityDimensions().size())
         return invalid("route claim names an invalid capacity dimension");

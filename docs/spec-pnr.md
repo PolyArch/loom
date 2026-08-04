@@ -1479,6 +1479,18 @@ counterexample is `Incomplete(proof_not_established)`. These outcomes cannot
 be collapsed into one penalty, persistent `deadlock_free` flag, or generic
 diagnostic authority.
 
+The initial exact Spatial provider proves absence of a closed wait set when
+the Canonical Dataflow actor-dependency relation is acyclic, selected
+combinational handshake closure is acyclic, every required `ResourceUse` is
+present, and every selected Fabric contract supplies its validated atomic
+progress guarantee. Topological induction then establishes that some enabled
+actor can retire under fair execution. A feedback cycle is not itself a
+deadlock witness; until a supported typed token, finite-buffer, and initial
+occupancy analysis proves or refutes that cyclic case, Mapping returns
+`Incomplete(proof_not_established)`. The actor projection and topological
+proof are linear in the canonical actor and dependency counts and are rebuilt
+independently by final verification.
+
 Physical Tag is local to Fabric-owned interpretation domains. A selected value
 is stored exactly once in the sharing assignment of a real temporal writer or
 tagged ingress. Route trees and Fabric writer, rewriter, and remover points
@@ -1538,8 +1550,8 @@ selection remain SystemMapping decisions.
 Spatial and System PnR have distinct component-view descriptors:
 
 ```text
-loom.spatial_pnr.config.1.0
-loom.system_pnr.config.1.0
+loom.spatial_pnr.config.2.0
+loom.system_pnr.config.2.0
 ```
 
 They use the same field types and codecs but project the independently selected
@@ -1728,7 +1740,7 @@ execution controls and cannot change the formal candidate sequence.
 
 ### Initial Builtin Policies
 
-ResolvedConfig 2.0 emits every field; the values below are schema data, not
+ResolvedConfig 3.0 emits every field; the values below are schema data, not
 PnR-kernel defaults. All initial builtin profiles use Action weights
 `1:3:2` for realization, routing, and resource Actions; PathFinder
 `Multiplicative` with initial pressure `1`, reduced growth ratio `3/2`, and
@@ -1763,8 +1775,8 @@ strict_implementation  CpSat(2048, 16384)
 ```
 
 The two `CpSat` values are `max_region_decisions` and `max_solver_calls`.
-Every initial profile admits all eight Mapping violation descriptors as
-temporary and requires all eight to be zero at finalization. Its selected
+Every initial profile admits all five Mapping violation descriptors as
+temporary and requires all five to be zero at finalization. Its selected
 closure contains one Minimize dimension per violation and one for
 `TotalSelectedTraversalClaim`, each with origin `0`, quantum `1`, and bounds
 `[0, UINT64_MAX]`. Final total ordering first compares one equal-weight level
@@ -1873,16 +1885,13 @@ Mapping owns the closed `V` descriptors:
 ```text
 UnroutedObligation
 CapacityOveruse
-ResourceTimeOverbooking
-BufferOveruse
 TagUnassigned
 TagConflict
 HardProgressViolation
-HardServiceContractShortfall
 ```
 
 The typed static registry descriptor identity is
-`loom.mapping.pnr.objective`, version 1.0. A
+`loom.mapping.pnr.objective`, version 2.0. A
 `MappingViolationDescriptorRef` is that descriptor plus the zero-based ordinal
 in the closed catalog order shown above; it is not a string key. Each
 descriptor owns one exact nonnegative integer magnitude. Mapping also owns the
@@ -1893,12 +1902,55 @@ TotalSelectedTraversalClaim
 ```
 
 `MappingMeasureDescriptorRef` uses the same registry descriptor and a
-zero-based owner-local ordinal in this separate typed catalog. Version 1.0 has
+zero-based owner-local ordinal in this separate typed catalog. Version 2.0 has
 the single ordinal zero.
 
-Its value is the checked sum of `q_cost` over every unique selected traversal
-claim envelope in the candidate. One shared Route Tree prefix contributes
-once, regardless of sink count. A selected traversal with no claim contributes
+The five violation magnitudes have these exact owners:
+
+* `UnroutedObligation` is the checked count of residual logical sink
+  obligations that are not covered by their selected complete Route Tree.
+* `CapacityOveruse` is the checked sum of exact raw overuse over the canonical
+  unique concurrent occupancy queries derived from selected Mapping facts and
+  Fabric-owned resource contracts. One query combines all claims and durable
+  state occupancy that may coexist for one exact owner state and capacity
+  dimension. Pipeline or result holding, event-relative claim overlap, FIFO or
+  operand-buffer occupancy, enqueue or dequeue service slots, memory-service
+  outstanding capacity, context capacity, and route-resource capacity are not
+  separate Mapping violation kinds. Their exact Fabric owner and typed witness
+  remain available for diagnostics and focused repair.
+* `TagUnassigned` is the checked count of required Physical Tag assignment
+  origins without a selected canonical value.
+* `TagConflict` is the checked count of exact local interference relations
+  whose endpoints select the same Physical Tag value.
+* `HardProgressViolation` is zero when the supported exact progress analysis
+  proves no reachable closed wait set and one when it proves at least one.
+  The verifier retains the canonical first typed witness for focused repair and
+  diagnostics rather than turning witness count into another objective. When
+  the supported analysis can establish neither progress nor a counterexample,
+  the source is unavailable and the invocation is
+  `Incomplete(proof_not_established)`; it is never zero by default.
+
+Raw capacity legality is evaluated before any normalized search projection.
+For each canonical occupancy query and capacity dimension, the contribution is
+`max(0, usage_raw - capacity)`. The query partition must be disjoint for the
+same owner state and event-relative occupancy cell, so a use cannot contribute
+again under a route, time, buffer, or service label. Q-scaled pressure remains
+search-only guidance and cannot create, erase, or replace this exact raw
+violation.
+
+An incompatible operation or service capability, malformed `ResourceUse`,
+missing provider, or structurally impossible choice is rejected by typed
+domain construction or base verification rather than converted into a
+capacity magnitude. A service latency, throughput, power, or quality shortfall
+belongs to exact `K` admission or Evaluation. A proven permanent wait belongs
+only to `HardProgressViolation`. There is no `ResourceTimeOverbooking`,
+`BufferOveruse`, or `HardServiceContractShortfall` alias or compatibility
+projection in registry 2.0.
+
+`TotalSelectedTraversalClaim` is the checked sum of `q_cost` over every unique
+selected traversal claim envelope in the candidate. One shared Route Tree
+prefix contributes once, regardless of sink count. A selected traversal with
+no claim contributes
 zero. PathFinder pressure, history, dual price, A* queue state, proposal count,
 and search order are scratch and never enter `G`.
 
@@ -2355,6 +2407,13 @@ tag-field representability; memory binding, access, exposure, and Canonical
 Service Schema legs; derived configuration; `ResourceUse`, capacity, buffers,
 and tags;
 ordered dataflow; and progress/deadlock closure.
+It reconstructs the same five Mapping violation facts from exact owner inputs,
+requires all five to be zero, and compares no cached Candidate aggregate. A
+capacity diagnostic identifies the exact Fabric resource-state owner, capacity
+dimension, raw usage, raw capacity, and canonical occupancy witness; buffer,
+service, route, and pipeline wording is diagnostic context only. A progress
+diagnostic identifies the canonical first proven closed wait set. The verifier
+does not recreate the retired registry-1.0 categories.
 Its artifact outcome is only `Valid` or `Invalid(typed diagnostics)`; search
 infeasibility and budget outcomes are not artifact states.
 If a supported verifier cannot establish the required progress proof, the

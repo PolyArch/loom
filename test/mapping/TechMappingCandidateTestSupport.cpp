@@ -15,6 +15,7 @@
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialObjective.h"
+#include "SpatialMappingCapacityVerification.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -198,6 +199,9 @@ void loom::test::exerciseHandshakeCandidateRefcounts(
 }
 
 void loom::test::exerciseCapacityOveruseCandidate(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const fabric::FabricArtifactView &fabric,
     const pnr::FrozenSpatialPnrProblemHandle &problem) {
   const auto &realizations = problem->realizations();
   if (realizations.computeRealizations().size() != 1 ||
@@ -289,14 +293,36 @@ void loom::test::exerciseCapacityOveruseCandidate(
       take(pnr::spatialMappingViolationValue(
           *candidate, ResolvedPnrViolationKind::CapacityOveruse)) != 1)
     fail("shared temporal operand service lost its exact overuse");
-  auto resourceTime = pnr::spatialMappingViolationValue(
-      *candidate, ResolvedPnrViolationKind::ResourceTimeOverbooking);
-  if (resourceTime)
-    fail("selected envelopes exposed an incomplete resource-time objective");
-  const std::string resourceTimeFailure =
-      llvm::toString(resourceTime.takeError());
-  if (!llvm::StringRef(resourceTimeFailure).contains("objective_unavailable"))
-    fail("resource-time objective returned the wrong failure class");
+
+  const auto &placement =
+      problem->realizations().computePlacements()[overused->placement];
+  const mapping::SpatialComputeBindingView selected{
+      techMapping.computeRealizations().front().entityId,
+      placement.fu,
+      problem->realizations()
+          .computeInstructionContexts()[overused->instructionContext],
+      {}};
+  const auto requirements =
+      take(mapping::deriveSpatialComputeBindingUseRequirements(
+          dataflow, techMapping.computeRealizations().front(), fabric,
+          selected));
+  std::vector<mapping::SpatialResourceUseView> persistentUses;
+  persistentUses.reserve(requirements.size());
+  for (const auto &requirement : requirements)
+    persistentUses.push_back(
+        {mapping::SpatialComputeResourceOwnerRef{requirement.realization},
+         requirement.pattern,
+         mapping::SpatialRelativeActivationView{
+             mapping::SpatialEventPointView{requirement.trigger, std::nullopt},
+             std::nullopt},
+         {},
+         {}});
+  const auto coldOveruse = take(mapping::detail::deriveSpatialCapacityOveruse(
+      fabric, dataflow.identity(), persistentUses, {}));
+  if (coldOveruse.total != candidate->atomicCapacityOveruse() ||
+      !coldOveruse.firstWitness ||
+      coldOveruse.firstWitness->usage <= coldOveruse.firstWitness->capacity)
+    fail("strict capacity reconstruction disagrees with Candidate state");
   const auto envelopeOffsets =
       problem->capacity().computeInstructionContextEnvelopeOffsets();
   const auto requireContextEnvelopeState =

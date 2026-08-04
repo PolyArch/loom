@@ -8,6 +8,10 @@ add_executable(loom-tech-mapping-artifact-test
   TechMappingCandidateTestSupport.cpp
 )
 
+target_include_directories(loom-tech-mapping-artifact-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
+)
+
 add_executable(loom-tech-mapping-config-test
   TechMappingConfigTest.cpp
 )
@@ -31,6 +35,10 @@ add_executable(loom-spatial-mapping-wire-test
 add_executable(loom-spatial-mapping-artifact-test
   SpatialMappingArtifactTest.cpp
   TechMappingCandidateTestSupport.cpp
+)
+
+target_include_directories(loom-spatial-mapping-artifact-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
 )
 
 target_link_libraries(loom-mapping-artifact-test PRIVATE

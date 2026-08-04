@@ -381,6 +381,47 @@ useful for comparing pressure across unlike resources, but rounding each claim
 up can make several individually small claims appear to exceed capacity. Those
 values therefore order search only; they cannot create a capacity violation.
 
+## Why Mapping Has One Capacity Violation
+
+A pipeline slot, FIFO entry, operand queue, enqueue port, memory-service
+outstanding slot, and routed transport reservation have different physical
+meanings, but each concrete Fabric owner already expresses its exact integer
+capacity, state transition, atomic use, and event-relative lifetime through one
+`ResourceContract`. Mapping selects those uses and derives their canonical
+concurrent occupancy. A second Mapping taxonomy of timed, buffered, and service
+resources would therefore classify a fact that Fabric already owns.
+
+The classification also has no total physical meaning. A registered result
+slot is both pipeline state and holding storage. A temporal operand-buffer
+enqueue claims a per-cycle service slot while atomically changing durable queue
+occupancy. A memory `UsePattern` may claim request tracking, a port, and
+response holding in one indivisible envelope. Assigning one global label is
+arbitrary; assigning several labels counts the same atomic use several times.
+
+Mapping consequently owns one `CapacityOveruse` magnitude over exact raw
+capacity queries. Owner-typed witnesses retain the detail required to report or
+repair an operand queue, service slot, route, or operation stage without making
+those diagnostic names independent objective sources. Search guidance may use
+Q-scaled pressure or Evaluation metrics, but only raw Fabric capacity decides
+legality. Permanent closed waits remain a separate progress proof because a
+design can respect every capacity and still deadlock.
+
+For progress, an acyclic canonical actor dependency graph gives a small exact
+base case: after selected handshake closure and Fabric atomic progress are
+verified, topological induction always exposes a next actor under fair
+execution. Extending that proof to feedback requires typed initial tokens,
+finite-buffer occupancy, and wait-for relations. Treating every cycle as a
+deadlock would reject ordinary streaming loops, while treating it as safe
+would hide real closed waits. Failing closed for unsupported cyclic proofs
+therefore preserves one progress authority without inventing either answer.
+
+The earlier eight-entry objective registry was removed rather than retained as
+aliases. Aliases would allow central DSE to weight one physical counterexample
+several times and would force Candidate state and final verification to agree
+through reconciliation code. A major schema transition is smaller and more
+honest than preserving unimplemented categories as permanent compatibility
+surface.
+
 ## Why Routing Cost Uses One Q-Scaled Algebra
 
 Raw claim sizes cannot rank unlike Fabric resources. A claim of 32 units from

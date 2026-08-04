@@ -106,7 +106,8 @@ void computeBoundaryClosure() {
       handshake.computePlacementFragments().empty())
     fail("compute freeze omitted exact placement handshake fragments");
   loom::test::exerciseHandshakeCandidateRefcounts(frozen);
-  loom::test::exerciseCapacityOveruseCandidate(frozen);
+  loom::test::exerciseCapacityOveruseCandidate(dataflowView, finalized.view(),
+                                               fabricRoot.view(), frozen);
   loom::test::exerciseTemporalComputeUseProjection(
       dataflowView, finalized.view(), fabricRoot.view(), frozen);
   loom::test::exerciseCanonicalCandidateInitialization(frozen);

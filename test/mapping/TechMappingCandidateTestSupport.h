@@ -18,6 +18,9 @@ buildTemporalCapacityFabric(const ArtifactStore &store);
 ResolvedConfig buildSpatialPnrTestResolvedConfig();
 
 void exerciseCapacityOveruseCandidate(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const fabric::FabricArtifactView &fabric,
     const pnr::FrozenSpatialPnrProblemHandle &problem);
 
 void exerciseCapacityExactRepairNoMutation(

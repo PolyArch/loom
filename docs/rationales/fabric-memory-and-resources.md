@@ -174,6 +174,13 @@ prove separation. Untagged ports cannot. Deterministic round-robin resolves
 contention where several queues share one service; a private backend scheduler
 would be a second execution authority.
 
+The entry pool, per-cycle enqueue and dequeue services, and any operation or
+memory-service holding slots remain distinct owner-typed states inside that one
+contract. Mapping reports an exact capacity excess through its single
+`CapacityOveruse` fact and carries the owner reference as diagnostic context;
+it does not reinterpret these states through global buffer, time, or service
+violation categories.
+
 ## Why Boundary Is An Atomic Rendezvous
 
 Spatial-to-temporal and temporal-to-spatial boundaries expose separate data

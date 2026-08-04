@@ -83,13 +83,15 @@ void builtinOrderingEnergyAndParetoUseOneVector() {
   const loom::dse::ObjectiveProgram program =
       take(loom::dse::ObjectiveProgram::get(catalogs));
 
-  std::vector<std::uint64_t> leftViolations(8, 0);
+  std::vector<std::uint64_t> leftViolations(loom::resolvedPnrViolationKindCount,
+                                            0);
   leftViolations[0] = 1;
   const std::uint64_t leftMeasures[] = {0};
   loom::dse::ObjectiveVector left = program.makeVector();
   requireSuccess(program.evaluate({leftViolations, leftMeasures}, left));
 
-  std::vector<std::uint64_t> rightViolations(8, 0);
+  std::vector<std::uint64_t> rightViolations(
+      loom::resolvedPnrViolationKindCount, 0);
   const std::uint64_t rightMeasures[] = {
       std::numeric_limits<std::uint64_t>::max()};
   loom::dse::ObjectiveVector right = program.makeVector();
@@ -110,7 +112,8 @@ void builtinOrderingEnergyAndParetoUseOneVector() {
   require(delta.sign == loom::dse::ObjectiveDifferenceSign::Negative,
           "energy difference has the wrong sign");
 
-  const std::uint32_t paretoDimensions[] = {0, 8};
+  const std::uint32_t paretoDimensions[] = {
+      0, loom::resolvedPnrViolationKindCount};
   require(take(program.comparePareto(left, right, paretoDimensions)) ==
               loom::dse::ParetoRelation::Incomparable,
           "crossing objective dimensions must remain incomparable");

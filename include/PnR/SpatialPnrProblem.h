@@ -6,6 +6,7 @@
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
+#include "Mapping/Artifact/SpatialProgressAnalysis.h"
 #include "PnR/FrozenConstraintIndex.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrIndex.h"
@@ -974,6 +975,9 @@ public:
   const FrozenSpatialCapacityIndex &capacity() const { return capacity_; }
   const FrozenSpatialRoutingGraph &routing() const { return routing_; }
   const FrozenSpatialHandshakeIndex &handshake() const { return handshake_; }
+  const ::loom::mapping::SpatialProgressClosure &progressClosure() const {
+    return progressClosure_;
+  }
   const detail::SpatialBindingRelationModel &bindingRelations() const {
     return *bindingRelations_;
   }
@@ -991,6 +995,7 @@ private:
       FrozenSpatialPortIndex ports, FrozenSpatialResourceIndex resources,
       FrozenSpatialCapacityIndex capacity, FrozenSpatialRoutingGraph routing,
       FrozenSpatialHandshakeIndex handshake,
+      ::loom::mapping::SpatialProgressClosure progressClosure,
       std::shared_ptr<const detail::SpatialBindingRelationModel>
           bindingRelations,
       FrozenSpatialPnrCacheKey cacheKey)
@@ -1006,6 +1011,7 @@ private:
         transfers_(std::move(transfers)), ports_(std::move(ports)),
         resources_(std::move(resources)), capacity_(std::move(capacity)),
         routing_(std::move(routing)), handshake_(std::move(handshake)),
+        progressClosure_(progressClosure),
         bindingRelations_(std::move(bindingRelations)), cacheKey_(cacheKey) {}
 
   ArtifactIdentity dataflowIdentity_;
@@ -1024,6 +1030,7 @@ private:
   FrozenSpatialCapacityIndex capacity_;
   FrozenSpatialRoutingGraph routing_;
   FrozenSpatialHandshakeIndex handshake_;
+  ::loom::mapping::SpatialProgressClosure progressClosure_;
   std::shared_ptr<const detail::SpatialBindingRelationModel> bindingRelations_;
   FrozenSpatialPnrCacheKey cacheKey_;
 
