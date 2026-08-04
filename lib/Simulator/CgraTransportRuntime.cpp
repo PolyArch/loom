@@ -641,7 +641,7 @@ llvm::Expected<bool> CgraTransportRuntime::scheduleReadyTraversals(
       continue;
     }
     traversalEvents_.schedule(
-        {{coordinate, node.physicalUseOrdinal, inFlight.occurrenceOrdinal,
+        {{coordinate, nodeOrdinal, inFlight.occurrenceOrdinal,
           static_cast<std::uint32_t>(nodeOrdinal -
                                      binding.traversalNodeOffset)},
          nodeOrdinal});
@@ -1370,11 +1370,10 @@ CgraTransportRuntime::advance() {
         return invalid("CGRA traversal event names an inactive token");
       InFlight &inFlight = inFlight_[slot];
       const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
-      const TraversalNodeBinding &node = traversalNodes_[nodeOrdinal];
       if (nodeOrdinal < binding.traversalNodeOffset ||
           nodeOrdinal >=
               binding.traversalNodeOffset + binding.traversalNodeCount ||
-          node.physicalUseOrdinal != event.order.structuralActionOrdinal ||
+          nodeOrdinal != event.order.structuralActionOrdinal ||
           inFlight.occurrenceOrdinal != event.order.occurrenceOrdinal ||
           event.order.ownerEventOrdinal !=
               nodeOrdinal - binding.traversalNodeOffset)

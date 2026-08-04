@@ -39,6 +39,9 @@ public:
 
   std::optional<SpatialEventCoordinate> nextCoordinate() const;
   bool hasPendingEvents() const;
+  std::uint64_t pendingActorFiringCount() const;
+  std::uint64_t pendingTransferCount() const;
+  std::uint64_t pendingPhysicalActionCount() const;
 
 private:
   struct ActorFiring final {

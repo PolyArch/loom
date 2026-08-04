@@ -3,6 +3,7 @@
 
 #include "Simulator/OperationSemantics.h"
 #include "Simulator/SimulationArtifacts.h"
+#include "Simulator/SpatialExecutionSession.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -131,8 +132,8 @@ private:
 
 /// Transient lifecycle of one exact DFG activation. Runnable means the
 /// activation can be advanced without reconstructing prior dynamic state.
-/// Retired and Stopped are terminal and idempotent under further advances.
-enum class DfgExecutionSessionState { Runnable, Retired, Stopped };
+/// Every non-Runnable state is terminal and idempotent under further advances.
+using DfgExecutionSessionState = SpatialExecutionSessionState;
 
 /// One pausable activation of a prepared rooted graph. This is an ephemeral
 /// execution object shared by standalone DFG-sim and system adapters; it is

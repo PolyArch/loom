@@ -1,6 +1,7 @@
 #include "Simulator/CGRAAdmission.h"
 
 #include "CGRAExecutionPlan.h"
+#include "CGRAPreparedExecutionInternal.h"
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -23,28 +24,6 @@ llvm::Error invalid(llvm::Twine message) {
 }
 
 } // namespace
-
-struct PreparedCgraExecution::Impl final {
-  ::dataflow::CanonicalDataflowArtifact dataflow;
-  ::dataflow::CanonicalDataflowProgramView dataflowView;
-  ::loom::fabric::FinalizedFabricRoot fabric;
-  ::loom::mapping::FinalizedTechMapping tech;
-  ::loom::mapping::FinalizedSpatialMapping spatial;
-  ::loom::mapping::SpatialMappingInspection inspection;
-  detail::CgraFrozenExecutionPlan executionPlan;
-
-  Impl(::dataflow::CanonicalDataflowArtifact dataflow,
-       ::dataflow::CanonicalDataflowProgramView dataflowView,
-       ::loom::fabric::FinalizedFabricRoot fabric,
-       ::loom::mapping::FinalizedTechMapping tech,
-       ::loom::mapping::FinalizedSpatialMapping spatial,
-       ::loom::mapping::SpatialMappingInspection inspection,
-       detail::CgraFrozenExecutionPlan executionPlan)
-      : dataflow(std::move(dataflow)), dataflowView(std::move(dataflowView)),
-        fabric(std::move(fabric)), tech(std::move(tech)),
-        spatial(std::move(spatial)), inspection(std::move(inspection)),
-        executionPlan(std::move(executionPlan)) {}
-};
 
 PreparedCgraExecution::PreparedCgraExecution(std::unique_ptr<Impl> impl)
     : impl_(std::move(impl)) {}
@@ -105,10 +84,34 @@ prepareCgraExecution(const ArtifactRootReference &dataflowReference,
   if (!executionPlan)
     return executionPlan.takeError();
 
+  std::vector<detail::PreparedCgraGraph> graphs;
+  graphs.reserve(executionPlan->mappedGraphs.size());
+  for (const ::dataflow::GraphRef &graphRef : executionPlan->mappedGraphs) {
+    auto graphView = dataflowView->resolve(graphRef);
+    if (!graphView)
+      return graphView.takeError();
+    auto prepared = detail::prepareGraphExecution(
+        dataflow->module(), mlir::cast<::dataflow::GraphOp>(graphView->op));
+    if (!prepared)
+      return prepared.takeError();
+    if (auto *failure =
+            std::get_if<detail::GraphPreparationFailure>(&*prepared)) {
+      const std::string diagnostic =
+          failure->diagnostics.empty()
+              ? "mapped graph has no CGRA semantic provider"
+              : failure->diagnostics.front();
+      return llvm::createStringError(std::errc::not_supported, "%s",
+                                     diagnostic.c_str());
+    }
+    graphs.push_back(
+        {graphRef,
+         std::move(std::get<detail::PreparedGraphExecution>(*prepared))});
+  }
+
   return PreparedCgraExecution(std::make_unique<PreparedCgraExecution::Impl>(
       std::move(*dataflow), std::move(*dataflowView), std::move(*fabric),
       std::move(*tech), std::move(*spatial), std::move(*inspection),
-      std::move(*executionPlan)));
+      std::move(*executionPlan), std::move(graphs)));
 }
 
 llvm::Expected<::dataflow::GraphRef> admitCgraSpatialSimulation(

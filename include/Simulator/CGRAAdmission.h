@@ -16,6 +16,8 @@ class ArtifactStore;
 
 namespace loom::sim {
 
+class CgraExecutionSession;
+
 struct CgraExecutionPlanSummary final {
   std::uint64_t mappedGraphCount = 0;
   std::uint64_t computeActorCount = 0;
@@ -62,6 +64,7 @@ private:
 
   std::unique_ptr<Impl> impl_;
 
+  friend class CgraExecutionSession;
   friend llvm::Expected<PreparedCgraExecution>
   prepareCgraExecution(const ArtifactRootReference &,
                        const ArtifactRootReference &,
@@ -70,6 +73,10 @@ private:
   admitCgraSpatialSimulation(const PreparedCgraExecution &,
                              const CanonicalSimulationWorkload &,
                              const CanonicalSimulationRuntimeInput &);
+  friend llvm::Expected<CgraExecutionSession>
+  startCgraExecutionSession(const PreparedCgraExecution &,
+                            const CanonicalSimulationWorkload &,
+                            const CanonicalSimulationRuntimeInput &);
 };
 
 /// Strictly imports and couples one Canonical Dataflow, Fabric, TechMapping,

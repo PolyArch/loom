@@ -3,11 +3,13 @@
 
 #include "Simulator/SimulationExecution.h"
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace loom::sim {
@@ -40,6 +42,9 @@ struct CgraEventFrame final {
 /// pointers, strings, or reference byte vectors in the hot queue.
 class CgraEventQueue final {
 public:
+  explicit CgraEventQueue(llvm::StringRef owner = "CGRA event")
+      : owner_(owner.str()) {}
+
   void schedule(CgraScheduledEvent event);
 
   std::optional<SpatialEventCoordinate> nextCoordinate() const;
@@ -50,6 +55,7 @@ public:
   std::size_t size() const { return heap_.size(); }
 
 private:
+  std::string owner_;
   std::vector<CgraScheduledEvent> heap_;
 };
 

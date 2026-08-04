@@ -94,6 +94,18 @@ bool CgraGraphActivationRuntime::hasPendingEvents() const {
          physical_->hasPendingActions() || !firingByOccurrence_.empty();
 }
 
+std::uint64_t CgraGraphActivationRuntime::pendingActorFiringCount() const {
+  return compute_->activeActorCount() + memory_->activeActorCount();
+}
+
+std::uint64_t CgraGraphActivationRuntime::pendingTransferCount() const {
+  return transport_->activeTransferCount();
+}
+
+std::uint64_t CgraGraphActivationRuntime::pendingPhysicalActionCount() const {
+  return physical_->pendingActionCount();
+}
+
 llvm::Expected<std::uint64_t> CgraGraphActivationRuntime::addCommittedFiring(
     const CgraActorLifecycleEvent &event) {
   const FiringKey key{event.semanticActorOrdinal, event.occurrenceOrdinal};

@@ -72,10 +72,18 @@ llvm::Expected<std::optional<CgraEventFrame>> CgraEventQueue::popNextFrame() {
 
   for (std::size_t ordinal = 1; ordinal < frame.events.size(); ++ordinal)
     if (compareEventKeys(frame.events[ordinal - 1].order,
-                         frame.events[ordinal].order) == 0)
+                         frame.events[ordinal].order) == 0) {
+      const CgraEventOrderKey &key = frame.events[ordinal].order;
       return llvm::createStringError(
           std::errc::invalid_argument,
-          "CGRA event queue contains a duplicate canonical event key");
+          "%s queue contains duplicate key action=%llu "
+          "occurrence=%llu owner_event=%u delta=%llu",
+          owner_.c_str(),
+          static_cast<unsigned long long>(key.structuralActionOrdinal),
+          static_cast<unsigned long long>(key.occurrenceOrdinal),
+          key.ownerEventOrdinal,
+          static_cast<unsigned long long>(key.coordinate.delta));
+    }
   return std::optional<CgraEventFrame>(std::move(frame));
 }
 

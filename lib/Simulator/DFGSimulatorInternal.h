@@ -897,6 +897,17 @@ struct PreparedGraphExecution {
   llvm::SmallBitVector initialPlainMemoryCandidates;
 };
 
+bool graphCompletionReady(const PreparedGraphExecution &execution,
+                          const SimulatorState &state);
+
+/// Validates the one semantic graph-retirement boundary shared by DFG and
+/// CGRA execution. The caller remains responsible for proving that all
+/// provider-specific physical obligations have also retired.
+llvm::Error
+validateGraphRetirementBoundary(dataflow::GraphOp graph,
+                                const PreparedGraphExecution &execution,
+                                SimulatorState &state);
+
 struct GraphPreparationFailure {
   std::string status;
   llvm::SmallVector<std::string> diagnostics;

@@ -703,102 +703,14 @@ struct DfgRun {
   bool finalized = false;
 };
 
-std::size_t outputCount(const DfgRun &run, mlir::Value value) {
-  auto it = run.state.observedOutputs.find(value);
-  return it == run.state.observedOutputs.end() ? 0 : it->second.size();
-}
-
-bool completionReady(const DfgRun &run) {
-  const GraphReturnObservation &observation = run.execution.returnObservation;
-  return !observation.complete.empty() &&
-         llvm::all_of(observation.complete, [&](mlir::Value witness) {
-           return outputCount(run, witness) != 0;
-         });
-}
-
-mlir::Operation *unclosedStatefulActor(DfgRun &run) {
-  mlir::Block &entry = run.graph.getBody().front();
-  for (mlir::Operation &op : entry.without_terminator()) {
-    if (auto stream = mlir::dyn_cast<dataflow::StreamOp>(op)) {
-      auto it = run.state.streamStates.find(stream.getOperation());
-      if (it != run.state.streamStates.end() &&
-          it->second.mode != StreamMode::Idle)
-        return &op;
-      continue;
-    }
-    if (auto carry = mlir::dyn_cast<dataflow::CarryOp>(op)) {
-      auto it = run.state.carryStates.find(carry.getOperation());
-      if (it != run.state.carryStates.end() &&
-          it->second.semanticState != PhaseSemanticState::Initial)
-        return &op;
-      continue;
-    }
-    if (auto invariant = mlir::dyn_cast<dataflow::InvariantOp>(op)) {
-      auto it = run.state.invariantStates.find(invariant.getOperation());
-      if (it != run.state.invariantStates.end() &&
-          (it->second.semanticState != PhaseSemanticState::Initial ||
-           it->second.latched.has_value()))
-        return &op;
-      continue;
-    }
-    if (auto gate = mlir::dyn_cast<dataflow::GateOp>(op))
-      if (run.state.gateContinueStates.contains(gate.getOperation()))
-        return &op;
-  }
-  return nullptr;
-}
-
-bool streamInputsCommitted(DfgRun &run) {
-  mlir::Block &entry = run.graph.getBody().front();
-  for (unsigned index = 0; index < run.execution.applicationInputCount;
-       ++index) {
-    if (run.graph.getInputPortKind(index) != dataflow::GraphPortKind::Stream)
-      continue;
-    mlir::BlockArgument argument = entry.getArgument(index + 1);
-    for (mlir::OpOperand &use : argument.getUses())
-      if (hasToken(run.state, use))
-        return false;
-  }
-  return true;
-}
-
 void observeRetirement(DfgRun &run) {
-  if (run.retirementObserved || !completionReady(run))
+  if (run.retirementObserved || !graphCompletionReady(run.execution, run.state))
     return;
   run.retirementObserved = true;
-  for (mlir::Value witness : run.execution.returnObservation.complete) {
-    if (outputCount(run, witness) != 1) {
-      run.report.status = "invalid";
-      run.report.diagnostics.push_back(
-          "completion witness produced multiple tokens before retirement");
-      return;
-    }
-  }
-  if (!streamInputsCommitted(run)) {
+  if (llvm::Error error = validateGraphRetirementBoundary(
+          run.graph, run.execution, run.state)) {
     run.report.status = "invalid";
-    run.report.diagnostics.push_back(
-        "graph retired before all stream input tokens were committed");
-    return;
-  }
-  if (mlir::Operation *actor = unclosedStatefulActor(run)) {
-    run.report.status = "invalid";
-    run.report.diagnostics.push_back(
-        ("graph retired before stateful actor close/reset: " +
-         actor->getName().getStringRef())
-            .str());
-    return;
-  }
-  for (auto [index, value] :
-       llvm::enumerate(run.execution.returnObservation.values)) {
-    const std::size_t count = outputCount(run, value);
-    if (count == 1)
-      continue;
-    run.report.status = "invalid";
-    run.report.diagnostics.push_back(
-        llvm::formatv("value output #{0} produced {1} tokens at retirement",
-                      index, count)
-            .str());
-    return;
+    run.report.diagnostics.push_back(llvm::toString(std::move(error)));
   }
 }
 
@@ -1005,7 +917,7 @@ loom::sim::DfgExecutionSession::~DfgExecutionSession() = default;
 
 loom::sim::DfgExecutionSessionState
 loom::sim::DfgExecutionSession::state() const {
-  return impl_ ? impl_->lifecycle : DfgExecutionSessionState::Stopped;
+  return impl_ ? impl_->lifecycle : DfgExecutionSessionState::Failed;
 }
 
 std::uint64_t loom::sim::DfgExecutionSession::wavefrontSteps() const {
@@ -1036,10 +948,10 @@ loom::sim::DfgExecutionSession::advance(
     impl_->lifecycle = DfgExecutionSessionState::Retired;
     return impl_->lifecycle;
   case DfgAdvanceStop::Stopped:
-    impl_->lifecycle = DfgExecutionSessionState::Stopped;
+    impl_->lifecycle = DfgExecutionSessionState::Failed;
     return impl_->lifecycle;
   case DfgAdvanceStop::ExecutionLimit:
-    impl_->lifecycle = DfgExecutionSessionState::Stopped;
+    impl_->lifecycle = DfgExecutionSessionState::StoppedByLimit;
     return llvm::createStringError(std::errc::timed_out,
                                    "DFG execution wall-time limit reached");
   }
@@ -1094,7 +1006,7 @@ loom::sim::startDfgExecutionSession(
     return std::move(error);
   observeRetirement(impl->run);
   if (impl->report.status != "pass")
-    impl->lifecycle = DfgExecutionSessionState::Stopped;
+    impl->lifecycle = DfgExecutionSessionState::Failed;
   return DfgExecutionSession(std::move(impl));
 }
 
@@ -1594,7 +1506,7 @@ llvm::Expected<RetiredDFGSimulation> loom::sim::simulateRetiredDfgWorkload(
   if (*state == DfgExecutionSessionState::Runnable) {
     session->impl_->report.status = "blocked";
     session->impl_->report.diagnostics.push_back("maximum event steps reached");
-    session->impl_->lifecycle = DfgExecutionSessionState::Stopped;
+    session->impl_->lifecycle = DfgExecutionSessionState::StoppedByLimit;
   }
   auto report =
       finalizeDfgRun(session->impl_->run, session->impl_->workload,

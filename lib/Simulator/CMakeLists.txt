@@ -1,5 +1,6 @@
 add_mlir_library(LoomSimulator
   CGRAAdmission.cpp
+  CGRASimulator.cpp
   CgraComputeRuntime.cpp
   CgraGraphActivationRuntime.cpp
   CgraMemoryRuntime.cpp
@@ -14,6 +15,7 @@ add_mlir_library(LoomSimulator
   CGRAResourceRuntime.cpp
   DeterministicTranscendental.cpp
   DFGActorTransition.cpp
+  DFGExecutionCompletion.cpp
   DFGExecutionState.cpp
   DFGSimulator.cpp
   DFGSimulatorActors.cpp

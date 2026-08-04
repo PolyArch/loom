@@ -59,6 +59,7 @@ public:
     return !requestedEvents_.empty() || activeActorCount_ != 0;
   }
   bool hasActiveActors() const { return activeActorCount_ != 0; }
+  std::uint64_t activeActorCount() const { return activeActorCount_; }
   bool ownsActor(std::uint64_t semanticActorOrdinal) const;
 
 private:
@@ -131,7 +132,7 @@ private:
   std::vector<ActorBinding> bindings_;
   std::vector<std::uint64_t> bindingBySemanticActor_;
   CgraPhysicalActionRuntime *physical_ = nullptr;
-  CgraEventQueue requestedEvents_;
+  CgraEventQueue requestedEvents_{"CGRA memory request"};
   std::vector<std::uint64_t> nextActionOccurrence_;
   std::vector<Firing> firings_;
   std::vector<std::uint64_t> freeFiringSlots_;

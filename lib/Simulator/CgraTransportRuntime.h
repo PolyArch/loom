@@ -68,6 +68,7 @@ public:
            !requestedEvents_.empty() || activeTransferCount_ != 0;
   }
   bool hasBlockedTransfers() const { return blocked_.any(); }
+  std::uint64_t activeTransferCount() const { return activeTransferCount_; }
 
 private:
   enum class SinkKind : std::uint8_t { Channel, Observation };
@@ -263,11 +264,11 @@ private:
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
       actorSourceBindings_;
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings_;
-  CgraEventQueue events_;
-  CgraEventQueue traversalEvents_;
-  CgraEventQueue storageEvents_;
-  CgraEventQueue arrivalEvents_;
-  CgraEventQueue requestedEvents_;
+  CgraEventQueue events_{"CGRA transport publication"};
+  CgraEventQueue traversalEvents_{"CGRA traversal"};
+  CgraEventQueue storageEvents_{"CGRA transport storage"};
+  CgraEventQueue arrivalEvents_{"CGRA transport arrival"};
+  CgraEventQueue requestedEvents_{"CGRA transport request"};
   std::vector<InFlight> inFlight_;
   std::vector<std::uint64_t> freeSlots_;
   llvm::SmallBitVector blocked_;

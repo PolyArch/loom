@@ -87,6 +87,7 @@ public:
   }
 
   bool hasPendingActions() const { return activeActionCount_ != 0; }
+  std::uint64_t pendingActionCount() const { return activeActionCount_; }
 
 private:
   enum class ActionState : std::uint8_t { Requested, Granted, Retired };
@@ -108,7 +109,7 @@ private:
 
   std::vector<CgraPhysicalUseTiming> uses_;
   CgraResourceRuntime resources_;
-  CgraEventQueue events_;
+  CgraEventQueue events_{"CGRA physical action"};
   std::vector<Action> actions_;
   std::vector<std::uint64_t> freeActionSlots_;
   llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, std::uint64_t>

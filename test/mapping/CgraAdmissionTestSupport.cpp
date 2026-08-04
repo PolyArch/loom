@@ -3,6 +3,7 @@
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Simulator/CGRAAdmission.h"
+#include "Simulator/CGRASimulator.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/ADT/APInt.h"
@@ -84,6 +85,35 @@ void loom::test::exerciseCgraAdmission(
       take(sim::admitCgraSpatialSimulation(prepared, workload, runtime));
   if (graph != view.graphs().front().ref)
     fail("CGRA admission resolved a different graph");
+
+  auto session =
+      take(sim::startCgraExecutionSession(prepared, workload, runtime));
+  while (session.state() == sim::SpatialExecutionSessionState::Runnable)
+    take(session.advance(/*maxEventFrames=*/1));
+  if (session.state() != sim::SpatialExecutionSessionState::Retired)
+    fail("CGRA session did not retire the mapped graph");
+  auto retired = take(session.takeRetiredSimulation());
+  if (retired.counters.actorCommitCount == 0 ||
+      retired.counters.actorRetirementCount == 0 ||
+      retired.counters.tokenPublicationCount == 0 ||
+      retired.counters.physicalRequestCount == 0 ||
+      retired.counters.physicalGrantCount == 0 ||
+      retired.counters.physicalRetirementCount == 0)
+    fail("CGRA session bypassed selected execution lifecycles");
+  if (retired.observations.valueResults.size() != 1)
+    fail("CGRA session projected the wrong value-result count");
+  const auto *published = std::get_if<sim::PublishedValueResult>(
+      &retired.observations.valueResults.front());
+  if (!published || published->value.tokenCount != 1 ||
+      published->value.lanes.size() != 1 ||
+      published->value.lanes.front().state != sim::SemanticState::Defined ||
+      published->value.lanes.front().bits != llvm::APInt(32, 7))
+    fail("CGRA session projected the wrong functional value");
+
+  auto limited = take(sim::simulateCgraWorkload(prepared, workload, runtime,
+                                                /*maxEventFrames=*/1));
+  if (limited.state != sim::SpatialExecutionSessionState::StoppedByLimit)
+    fail("CGRA event budget did not produce StoppedByLimit");
 
   if (!rejected(sim::prepareCgraExecution(dataflowReference,
                                           foreignFabricReference,

@@ -85,6 +85,7 @@ public:
 
   bool hasPendingEvents() const;
   bool hasActiveActors() const { return activeActorCount_ != 0; }
+  std::uint64_t activeActorCount() const { return activeActorCount_; }
   bool ownsActor(std::uint64_t semanticActorOrdinal) const {
     return semanticActorOrdinal < bindingBySemanticActor_.size() &&
            bindingBySemanticActor_[semanticActorOrdinal] !=
@@ -147,8 +148,8 @@ private:
   std::vector<std::uint64_t> transitionByCase_;
   std::vector<std::uint64_t> bindingBySemanticActor_;
   CgraPhysicalActionRuntime *physical_ = nullptr;
-  CgraEventQueue requestedEvents_;
-  CgraEventQueue actorCommitEvents_;
+  CgraEventQueue requestedEvents_{"CGRA compute request"};
+  CgraEventQueue actorCommitEvents_{"CGRA actor commit"};
   llvm::SmallBitVector readyCandidates_;
   std::vector<std::uint64_t> nextActionOccurrence_;
   std::vector<Firing> firings_;
