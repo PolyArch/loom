@@ -226,11 +226,16 @@ struct PromotionAcquisitionProvider final {
 llvm::Error registerPromotionAcquisitionProvider(
     const PromotionAcquisitionProvider &provider);
 
+struct PromotionAcquisitionTaskDomain final {
+  llvm::ArrayRef<ArtifactRootReference> candidates;
+  llvm::ArrayRef<EvidenceObligationTemplateRef> evidenceObligations;
+};
+
 llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings,
     const ResolvedPromotionAcquisitionBinding &binding,
     llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligationTemplates,
-    const ArtifactStore &store);
+    PromotionAcquisitionTaskDomain taskDomain, const ArtifactStore &store);
 
 } // namespace loom::dse
 

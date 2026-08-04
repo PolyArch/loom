@@ -90,6 +90,9 @@ public:
   }
   QualityGatePolicyRef qualityGateRef() const { return qualityGate_; }
   const CandidateSelectionPolicy &selection() const { return selection_; }
+  llvm::ArrayRef<EvidenceObligationTemplateRef> objectiveObligations() const {
+    return objectiveObligations_;
+  }
   PromotePurpose purpose() const { return purpose_; }
 
 private:
@@ -97,16 +100,19 @@ private:
       ResolvedPromotionAcquisitionBinding acquisitionBinding,
       std::vector<PlanInputBinding> inputBindings,
       QualityGatePolicyRef qualityGate, CandidateSelectionPolicy selection,
+      std::vector<EvidenceObligationTemplateRef> objectiveObligations,
       PromotePurpose purpose)
       : acquisitionBinding_(std::move(acquisitionBinding)),
         inputBindings_(std::move(inputBindings)),
         qualityGate_(std::move(qualityGate)), selection_(std::move(selection)),
+        objectiveObligations_(std::move(objectiveObligations)),
         purpose_(purpose) {}
 
   ResolvedPromotionAcquisitionBinding acquisitionBinding_;
   std::vector<PlanInputBinding> inputBindings_;
   QualityGatePolicyRef qualityGate_;
   CandidateSelectionPolicy selection_;
+  std::vector<EvidenceObligationTemplateRef> objectiveObligations_;
   PromotePurpose purpose_;
 
   friend class ResolvedDsePlan;

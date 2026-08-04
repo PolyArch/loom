@@ -204,6 +204,121 @@ bool sameObligationShape(const evaluation::EvaluationRequest &lhs,
          lhs.replicateIndex() == rhs.replicateIndex();
 }
 
+struct EvidenceKey final {
+  ArtifactRootReference candidate;
+  std::uint32_t obligationTemplate;
+};
+
+struct EvidenceKeyLess final {
+  bool operator()(const EvidenceKey &lhs, const EvidenceKey &rhs) const {
+    if (artifactRootReferenceLess(lhs.candidate, rhs.candidate))
+      return true;
+    if (artifactRootReferenceLess(rhs.candidate, lhs.candidate))
+      return false;
+    return lhs.obligationTemplate < rhs.obligationTemplate;
+  }
+};
+
+using PromotionEvidenceRecords =
+    std::map<EvidenceKey, const PromotionEvidence *, EvidenceKeyLess>;
+
+llvm::Expected<PromotionEvidenceRecords>
+indexPromotionEvidence(const CandidateSet &candidateSet,
+                       evaluation::CaseSubjectRoleRef candidateRole,
+                       llvm::ArrayRef<PromotionEvidence> evidence) {
+  PromotionEvidenceRecords records;
+  std::map<std::uint32_t, const evaluation::EvaluationRequest *>
+      obligationShapes;
+  for (const PromotionEvidence &record : evidence) {
+    if (record.evidence.requestRef() !=
+        evaluation::evaluationRequestReference(record.request))
+      return invalid("Evidence does not reference its supplied Request");
+    const llvm::ArrayRef<ArtifactRootReference> subjects =
+        record.request.subjectBindings().subjects(candidateRole);
+    if (subjects.size() != 1)
+      return invalid("candidate role is not bound to exactly one Artifact");
+    if (!containsCandidate(candidateSet, subjects.front()))
+      return invalid("Evidence names a candidate outside the input set");
+    if (!records
+             .emplace(EvidenceKey{subjects.front(), record.obligationTemplate},
+                      &record)
+             .second)
+      return invalid("candidate has duplicate Evidence obligations");
+    const auto shape = obligationShapes.find(record.obligationTemplate);
+    if (shape == obligationShapes.end()) {
+      obligationShapes.emplace(record.obligationTemplate, &record.request);
+    } else if (!sameObligationShape(*shape->second, record.request,
+                                    candidateRole)) {
+      return invalid("candidate Evidence obligations are not same-shaped");
+    }
+  }
+  return records;
+}
+
+llvm::Expected<std::vector<ArtifactRootReference>>
+publishPromotionEvidence(const PromotionEvidenceRecords &records,
+                         const ArtifactStore &artifactStore) {
+  std::vector<ArtifactRootReference> references;
+  references.reserve(records.size());
+  for (const auto &[key, record] : records) {
+    (void)key;
+    auto reference =
+        evaluation::publishEvaluationEvidence(record->evidence, artifactStore);
+    if (!reference)
+      return reference.takeError();
+    references.push_back(*reference);
+  }
+  llvm::sort(references, artifactRootReferenceLess);
+  references.erase(std::unique(references.begin(), references.end()),
+                   references.end());
+  return references;
+}
+
+IncompleteSelectionReason
+incompleteReason(const evaluation::EvaluationEvidence &value) {
+  switch (value.outcomeKind()) {
+  case evaluation::EvidenceOutcomeKind::Completed:
+    llvm_unreachable("completed Evidence has no incomplete reason");
+  case evaluation::EvidenceOutcomeKind::Unsupported:
+    return IncompleteSelectionReason::UnsupportedEvidence;
+  case evaluation::EvidenceOutcomeKind::ExecutionFailed:
+    return IncompleteSelectionReason::ExecutionFailedEvidence;
+  case evaluation::EvidenceOutcomeKind::CancelledOrTimeout:
+    return IncompleteSelectionReason::CancelledOrTimeoutEvidence;
+  }
+  llvm_unreachable("unknown Evidence outcome");
+}
+
+llvm::Expected<ObjectiveVector>
+deriveObjectiveVector(const ArtifactRootReference &candidate,
+                      const PromotionEvidenceRecords &records,
+                      const ObjectiveProgram &objectiveProgram) {
+  std::vector<EvaluationMetricObjectiveValue> metrics;
+  auto record = records.lower_bound(EvidenceKey{candidate, 0});
+  while (record != records.end() && record->first.candidate == candidate) {
+    const PromotionEvidence &evidenceRecord = *record->second;
+    const auto *completed = std::get_if<evaluation::CompletedEvidence>(
+        &evidenceRecord.evidence.outcome());
+    if (completed) {
+      for (std::size_t ordinal = 0; ordinal != completed->metricResults.size();
+           ++ordinal) {
+        const auto *point = std::get_if<evaluation::PointObservation>(
+            &completed->metricResults[ordinal].observation);
+        if (!point)
+          continue;
+        metrics.push_back({record->first.obligationTemplate,
+                           static_cast<std::uint64_t>(ordinal),
+                           objectiveScalar(point->value)});
+      }
+    }
+    ++record;
+  }
+  ObjectiveVector vector = objectiveProgram.makeVector();
+  if (llvm::Error error = objectiveProgram.evaluate({{}, {}, metrics}, vector))
+    return std::move(error);
+  return vector;
+}
+
 struct RankedCandidate final {
   ArtifactRootReference candidate;
   evaluation::MetricValue value;
@@ -502,6 +617,94 @@ llvm::Expected<std::vector<ArtifactRootReference>> applyCandidateSelection(
   return eligible;
 }
 
+llvm::Expected<CandidateObjectiveRankingOutcome> rankCandidatesByObjective(
+    const CandidateSet &candidateSet,
+    evaluation::CaseSubjectRoleRef candidateRole,
+    llvm::ArrayRef<PromotionEvidence> evidence,
+    llvm::ArrayRef<std::uint32_t> objectiveObligationTemplates,
+    std::uint32_t totalOrdering, const ObjectiveProgram &objectiveProgram,
+    const ArtifactStore &artifactStore) {
+  if (objectiveObligationTemplates.empty())
+    return invalid("objective ranking requires an Evidence obligation");
+  if (!llvm::is_sorted(objectiveObligationTemplates) ||
+      std::adjacent_find(objectiveObligationTemplates.begin(),
+                         objectiveObligationTemplates.end()) !=
+          objectiveObligationTemplates.end())
+    return invalid("objective Evidence obligations are not canonical");
+  if (totalOrdering >= objectiveProgram.totalOrderingCount())
+    return invalid("objective ranking total ordering is out of range");
+
+  auto indexed = indexPromotionEvidence(candidateSet, candidateRole, evidence);
+  if (!indexed)
+    return indexed.takeError();
+  auto retained = publishPromotionEvidence(*indexed, artifactStore);
+  if (!retained)
+    return retained.takeError();
+
+  struct RankingRecord final {
+    ArtifactRootReference candidate;
+    ObjectiveVector objective;
+    std::vector<std::uint8_t> candidateKey;
+  };
+  std::vector<RankingRecord> ranking;
+  ranking.reserve(candidateSet.candidates().size());
+  for (const ArtifactRootReference &candidate : candidateSet.candidates()) {
+    for (std::uint32_t obligation : objectiveObligationTemplates) {
+      const auto found = indexed->find(EvidenceKey{candidate, obligation});
+      if (found == indexed->end())
+        return CandidateObjectiveRankingOutcome{
+            IncompleteSelection{IncompleteSelectionReason::MissingEvidence,
+                                candidate, std::move(*retained)}};
+      if (found->second->evidence.outcomeKind() !=
+          evaluation::EvidenceOutcomeKind::Completed)
+        return CandidateObjectiveRankingOutcome{
+            IncompleteSelection{incompleteReason(found->second->evidence),
+                                candidate, std::move(*retained)}};
+    }
+
+    auto objective =
+        deriveObjectiveVector(candidate, *indexed, objectiveProgram);
+    if (!objective) {
+      bool unavailable = false;
+      llvm::Error remaining = llvm::handleErrors(
+          objective.takeError(),
+          [&](const ObjectiveUnavailableError &) -> llvm::Error {
+            unavailable = true;
+            return llvm::Error::success();
+          });
+      if (remaining)
+        return std::move(remaining);
+      if (unavailable)
+        return CandidateObjectiveRankingOutcome{
+            IncompleteSelection{IncompleteSelectionReason::ObjectiveUnavailable,
+                                candidate, std::move(*retained)}};
+      llvm_unreachable("handled objective error had no classification");
+    }
+    ranking.push_back({candidate, std::move(*objective),
+                       encodeArtifactRootReference(candidate)});
+  }
+
+  for (const RankingRecord &record : ranking) {
+    auto validated = objectiveProgram.compareTotalOrdering(
+        record.objective, record.candidateKey, record.objective,
+        record.candidateKey, totalOrdering);
+    if (!validated)
+      return validated.takeError();
+  }
+  llvm::sort(ranking, [&](const RankingRecord &lhs, const RankingRecord &rhs) {
+    return llvm::cantFail(objectiveProgram.compareTotalOrdering(
+               lhs.objective, lhs.candidateKey, rhs.objective, rhs.candidateKey,
+               totalOrdering)) < 0;
+  });
+
+  std::vector<ArtifactRootReference> rankedCandidates;
+  rankedCandidates.reserve(ranking.size());
+  for (RankingRecord &record : ranking)
+    rankedCandidates.push_back(std::move(record.candidate));
+  return CandidateObjectiveRankingOutcome{CompletedCandidateObjectiveRanking{
+      std::move(rankedCandidates), std::move(*retained)}};
+}
+
 llvm::Expected<PromotionOutcome>
 promoteCandidates(const CandidateSet &candidateSet,
                   evaluation::CaseSubjectRoleRef candidateRole,
@@ -516,74 +719,14 @@ promoteCandidates(const CandidateSet &candidateSet,
       !objectiveProgram)
     return invalid("objective selection has no ObjectiveProgram");
 
-  struct EvidenceKey final {
-    ArtifactRootReference candidate;
-    std::uint32_t obligationTemplate;
-  };
-  struct EvidenceKeyLess final {
-    bool operator()(const EvidenceKey &lhs, const EvidenceKey &rhs) const {
-      if (artifactRootReferenceLess(lhs.candidate, rhs.candidate))
-        return true;
-      if (artifactRootReferenceLess(rhs.candidate, lhs.candidate))
-        return false;
-      return lhs.obligationTemplate < rhs.obligationTemplate;
-    }
-  };
-  std::map<EvidenceKey, const PromotionEvidence *, EvidenceKeyLess> records;
-  std::map<std::uint32_t, const evaluation::EvaluationRequest *>
-      obligationShapes;
-  for (const PromotionEvidence &record : evidence) {
-    if (record.evidence.requestRef() !=
-        evaluation::evaluationRequestReference(record.request))
-      return invalid("Evidence does not reference its supplied Request");
-    const llvm::ArrayRef<ArtifactRootReference> subjects =
-        record.request.subjectBindings().subjects(candidateRole);
-    if (subjects.size() != 1)
-      return invalid("candidate role is not bound to exactly one Artifact");
-    if (!containsCandidate(candidateSet, subjects.front()))
-      return invalid("Evidence names a candidate outside the input set");
-    if (!records
-             .emplace(EvidenceKey{subjects.front(), record.obligationTemplate},
-                      &record)
-             .second)
-      return invalid("candidate has duplicate Evidence obligations");
-    const auto shape = obligationShapes.find(record.obligationTemplate);
-    if (shape == obligationShapes.end()) {
-      obligationShapes.emplace(record.obligationTemplate, &record.request);
-    } else if (!sameObligationShape(*shape->second, record.request,
-                                    candidateRole)) {
-      return invalid("candidate Evidence obligations are not same-shaped");
-    }
-  }
-
-  std::vector<ArtifactRootReference> retainedEvidence;
-  retainedEvidence.reserve(records.size());
-  for (const auto &[key, record] : records) {
-    (void)key;
-    auto reference =
-        evaluation::publishEvaluationEvidence(record->evidence, artifactStore);
-    if (!reference)
-      return reference.takeError();
-    retainedEvidence.push_back(*reference);
-  }
-  llvm::sort(retainedEvidence, artifactRootReferenceLess);
-  retainedEvidence.erase(
-      std::unique(retainedEvidence.begin(), retainedEvidence.end()),
-      retainedEvidence.end());
-
-  auto incompleteReason = [](const evaluation::EvaluationEvidence &value) {
-    switch (value.outcomeKind()) {
-    case evaluation::EvidenceOutcomeKind::Completed:
-      llvm_unreachable("completed Evidence has no incomplete reason");
-    case evaluation::EvidenceOutcomeKind::Unsupported:
-      return IncompleteSelectionReason::UnsupportedEvidence;
-    case evaluation::EvidenceOutcomeKind::ExecutionFailed:
-      return IncompleteSelectionReason::ExecutionFailedEvidence;
-    case evaluation::EvidenceOutcomeKind::CancelledOrTimeout:
-      return IncompleteSelectionReason::CancelledOrTimeoutEvidence;
-    }
-    llvm_unreachable("unknown Evidence outcome");
-  };
+  auto indexed = indexPromotionEvidence(candidateSet, candidateRole, evidence);
+  if (!indexed)
+    return indexed.takeError();
+  const PromotionEvidenceRecords &records = *indexed;
+  auto retained = publishPromotionEvidence(records, artifactStore);
+  if (!retained)
+    return retained.takeError();
+  std::vector<ArtifactRootReference> retainedEvidence = std::move(*retained);
 
   std::optional<std::pair<IncompleteSelectionReason, ArtifactRootReference>>
       incomplete;
@@ -664,33 +807,12 @@ promoteCandidates(const CandidateSet &candidateSet,
   if (!std::holds_alternative<AllPassingSelection>(selection)) {
     objectives.reserve(gateQualified.size());
     for (const ArtifactRootReference &candidate : gateQualified) {
-      std::vector<EvaluationMetricObjectiveValue> metrics;
-      auto record = records.lower_bound(EvidenceKey{candidate, 0});
-      while (record != records.end() && record->first.candidate == candidate) {
-        const PromotionEvidence &evidenceRecord = *record->second;
-        const auto *completed = std::get_if<evaluation::CompletedEvidence>(
-            &evidenceRecord.evidence.outcome());
-        if (completed) {
-          for (std::size_t ordinal = 0;
-               ordinal != completed->metricResults.size(); ++ordinal) {
-            const auto *point = std::get_if<evaluation::PointObservation>(
-                &completed->metricResults[ordinal].observation);
-            if (!point)
-              continue;
-            metrics.push_back({record->first.obligationTemplate,
-                               static_cast<std::uint64_t>(ordinal),
-                               objectiveScalar(point->value)});
-          }
-        }
-        ++record;
-      }
-      ObjectiveVector vector = objectiveProgram->makeVector();
-      llvm::Error evaluationError =
-          objectiveProgram->evaluate({{}, {}, metrics}, vector);
-      if (evaluationError) {
+      auto vector =
+          deriveObjectiveVector(candidate, records, *objectiveProgram);
+      if (!vector) {
         bool unavailable = false;
         llvm::Error remaining = llvm::handleErrors(
-            std::move(evaluationError),
+            vector.takeError(),
             [&](const ObjectiveUnavailableError &) -> llvm::Error {
               unavailable = true;
               return llvm::Error::success();
@@ -701,8 +823,9 @@ promoteCandidates(const CandidateSet &candidateSet,
           return PromotionOutcome{IncompleteSelection{
               IncompleteSelectionReason::ObjectiveUnavailable, candidate,
               std::move(retainedEvidence)}};
+        llvm_unreachable("handled objective error had no classification");
       }
-      objectives.push_back({candidate, std::move(vector)});
+      objectives.push_back({candidate, std::move(*vector)});
     }
   }
 

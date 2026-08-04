@@ -6,9 +6,12 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -291,6 +294,191 @@ publishEvidence(llvm::ArrayRef<PromotionEvidence> records,
   return references;
 }
 
+void appendReferences(std::vector<ArtifactRootReference> &destination,
+                      llvm::ArrayRef<ArtifactRootReference> additional) {
+  destination.insert(destination.end(), additional.begin(), additional.end());
+}
+
+void canonicalizeReferences(std::vector<ArtifactRootReference> &references) {
+  llvm::sort(references, artifactRootReferenceLess);
+  references.erase(std::unique(references.begin(), references.end()),
+                   references.end());
+}
+
+struct CompletedStagedTopK final {
+  std::vector<ArtifactRootReference> selected;
+  std::vector<ArtifactRootReference> evidence;
+};
+
+struct IncompleteStagedTopK final {
+  DsePlanIncompleteReason reason;
+  std::vector<ArtifactRootReference> evidence;
+};
+
+using StagedTopKOutcome =
+    std::variant<CompletedStagedTopK, IncompleteStagedTopK>;
+
+llvm::Expected<StagedTopKOutcome> executeStagedTopK(
+    const ResolvedPromotePlanNode &promote,
+    const PromotionAcquisitionDescriptor &descriptor,
+    llvm::ArrayRef<PromotionAcquisitionInputBinding> inputs,
+    const CandidateSet &candidateSet,
+    llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligations,
+    const QualityGatePolicy &qualityGate, const ObjectiveProgram &objectives,
+    const TopKSelection &selection, const ArtifactStore &store) {
+  std::vector<std::uint32_t> objectiveOrdinals;
+  objectiveOrdinals.reserve(promote.objectiveObligations().size());
+  for (EvidenceObligationTemplateRef ref : promote.objectiveObligations())
+    objectiveOrdinals.push_back(ref.ordinal());
+
+  auto objectiveAcquisition = invokePromotionAcquisition(
+      inputs, promote.acquisitionBinding(), evidenceObligations,
+      {candidateSet.candidates(), promote.objectiveObligations()}, store);
+  if (!objectiveAcquisition)
+    return objectiveAcquisition.takeError();
+  if (auto *incomplete =
+          std::get_if<IncompletePromotionAcquisition>(&*objectiveAcquisition)) {
+    auto retained = publishEvidence(incomplete->retainedEvidence, store);
+    if (!retained)
+      return retained.takeError();
+    return StagedTopKOutcome{IncompleteStagedTopK{
+        DsePlanIncompleteReason{incomplete->reason}, std::move(*retained)}};
+  }
+  std::vector<PromotionEvidence> objectiveEvidence = std::move(
+      std::get<CompletedPromotionAcquisition>(*objectiveAcquisition).evidence);
+  auto ranking = rankCandidatesByObjective(
+      candidateSet, descriptor.candidateRole, objectiveEvidence,
+      objectiveOrdinals, selection.totalOrdering, objectives, store);
+  if (!ranking)
+    return ranking.takeError();
+  if (auto *incomplete = std::get_if<IncompleteSelection>(&*ranking))
+    return StagedTopKOutcome{
+        IncompleteStagedTopK{DsePlanIncompleteReason{incomplete->reason},
+                             std::move(incomplete->retainedEvidence)}};
+
+  auto &ranked = std::get<CompletedCandidateObjectiveRanking>(*ranking);
+  std::vector<ArtifactRootReference> retainedEvidence =
+      std::move(ranked.retainedEvidence);
+  const auto obligationLess = [](EvidenceObligationTemplateRef lhs,
+                                 EvidenceObligationTemplateRef rhs) {
+    return lhs.ordinal() < rhs.ordinal();
+  };
+  std::vector<EvidenceObligationTemplateRef> deferredObligations;
+  std::set_difference(
+      promote.acquisitionBinding().evidenceObligations().begin(),
+      promote.acquisitionBinding().evidenceObligations().end(),
+      promote.objectiveObligations().begin(),
+      promote.objectiveObligations().end(),
+      std::back_inserter(deferredObligations), obligationLess);
+
+  std::vector<ArtifactRootReference> selected;
+  selected.reserve(static_cast<std::size_t>(
+      std::min<std::uint64_t>(selection.k, ranked.rankedCandidates.size())));
+  const std::size_t objectiveCount = promote.objectiveObligations().size();
+  if (objectiveCount != 0 &&
+      objectiveEvidence.size() !=
+          candidateSet.candidates().size() * objectiveCount)
+    return invalid("objective acquisition lost its positional task shape");
+
+  std::size_t cursor = 0;
+  while (cursor < ranked.rankedCandidates.size() &&
+         selected.size() < selection.k) {
+    const std::uint64_t missing = selection.k - selected.size();
+    const std::size_t batchSize =
+        static_cast<std::size_t>(std::min<std::uint64_t>(
+            missing, ranked.rankedCandidates.size() - cursor));
+    llvm::ArrayRef<ArtifactRootReference> rankedBatch(
+        ranked.rankedCandidates.data() + cursor, batchSize);
+    std::vector<ArtifactRootReference> candidateDomain(rankedBatch.begin(),
+                                                       rankedBatch.end());
+    llvm::sort(candidateDomain, artifactRootReferenceLess);
+    PromotionAcquisitionOutcome deferred = CompletedPromotionAcquisition{{}};
+    if (!deferredObligations.empty()) {
+      auto acquired = invokePromotionAcquisition(
+          inputs, promote.acquisitionBinding(), evidenceObligations,
+          {candidateDomain, deferredObligations}, store);
+      if (!acquired)
+        return acquired.takeError();
+      deferred = std::move(*acquired);
+    }
+    if (auto *incomplete =
+            std::get_if<IncompletePromotionAcquisition>(&deferred)) {
+      auto references = publishEvidence(incomplete->retainedEvidence, store);
+      if (!references)
+        return references.takeError();
+      appendReferences(retainedEvidence, *references);
+      canonicalizeReferences(retainedEvidence);
+      return StagedTopKOutcome{
+          IncompleteStagedTopK{DsePlanIncompleteReason{incomplete->reason},
+                               std::move(retainedEvidence)}};
+    }
+
+    auto &completedDeferred = std::get<CompletedPromotionAcquisition>(deferred);
+    std::map<ArtifactRootReference, std::vector<const PromotionEvidence *>,
+             decltype(&artifactRootReferenceLess)>
+        deferredByCandidate(&artifactRootReferenceLess);
+    for (const PromotionEvidence &record : completedDeferred.evidence) {
+      const llvm::ArrayRef<ArtifactRootReference> subjects =
+          record.request.subjectBindings().subjects(descriptor.candidateRole);
+      if (subjects.size() != 1)
+        return invalid("deferred Evidence lost its candidate association");
+      deferredByCandidate[subjects.front()].push_back(&record);
+    }
+
+    for (const ArtifactRootReference &candidate : rankedBatch) {
+      const auto canonicalCandidate = llvm::lower_bound(
+          candidateSet.candidates(), candidate, artifactRootReferenceLess);
+      if (canonicalCandidate == candidateSet.candidates().end() ||
+          *canonicalCandidate != candidate)
+        return invalid("ranked candidate is outside the canonical input set");
+      const std::size_t candidateOrdinal = static_cast<std::size_t>(
+          canonicalCandidate - candidateSet.candidates().begin());
+      std::vector<PromotionEvidence> candidateEvidence;
+      candidateEvidence.reserve(
+          promote.acquisitionBinding().evidenceObligations().size());
+      const std::size_t objectiveBegin = candidateOrdinal * objectiveCount;
+      for (std::size_t index = 0; index < objectiveCount; ++index)
+        candidateEvidence.push_back(objectiveEvidence[objectiveBegin + index]);
+      const auto deferredRecords = deferredByCandidate.find(candidate);
+      if (deferredRecords != deferredByCandidate.end())
+        for (const PromotionEvidence *record : deferredRecords->second)
+          candidateEvidence.push_back(*record);
+
+      const std::array<ArtifactRootReference, 1> singletonDomain = {candidate};
+      auto singleton =
+          CandidateSet::get(candidateSet.schema(), singletonDomain);
+      if (!singleton)
+        return singleton.takeError();
+      auto gate = promoteCandidates(*singleton, descriptor.candidateRole,
+                                    candidateEvidence, qualityGate,
+                                    AllPassingSelection{}, nullptr, store);
+      if (!gate)
+        return gate.takeError();
+      if (auto *incomplete = std::get_if<IncompleteSelection>(&*gate)) {
+        appendReferences(retainedEvidence, incomplete->retainedEvidence);
+        canonicalizeReferences(retainedEvidence);
+        return StagedTopKOutcome{
+            IncompleteStagedTopK{DsePlanIncompleteReason{incomplete->reason},
+                                 std::move(retainedEvidence)}};
+      }
+      if (auto *passed = std::get_if<CompletedSelection>(&*gate)) {
+        selected.push_back(candidate);
+        appendReferences(retainedEvidence, passed->satisfiedEvidence);
+      } else {
+        appendReferences(
+            retainedEvidence,
+            std::get<CompletedNoFeasibleCandidate>(*gate).satisfiedEvidence);
+      }
+    }
+    cursor += batchSize;
+  }
+
+  llvm::sort(selected, artifactRootReferenceLess);
+  canonicalizeReferences(retainedEvidence);
+  return StagedTopKOutcome{
+      CompletedStagedTopK{std::move(selected), std::move(retainedEvidence)}};
+}
+
 llvm::Expected<std::vector<ArtifactRootReference>> resolveRuntimeInput(
     const PlanInputBinding &input, llvm::ArrayRef<std::uint64_t> outputOffsets,
     llvm::ArrayRef<std::vector<ArtifactRootReference>> outputs) {
@@ -414,6 +602,17 @@ llvm::Expected<ResolvedDsePlan> ResolvedDsePlan::get(
             qualityGates[definition.qualityGate.ordinal()],
             definition.selection, objectiveCatalogs))
       return std::move(error);
+    std::vector<std::uint32_t> objectiveOrdinals;
+    collectSelectionObligations(definition.selection, objectiveCatalogs,
+                                objectiveOrdinals);
+    llvm::sort(objectiveOrdinals);
+    objectiveOrdinals.erase(
+        std::unique(objectiveOrdinals.begin(), objectiveOrdinals.end()),
+        objectiveOrdinals.end());
+    std::vector<EvidenceObligationTemplateRef> objectiveObligations;
+    objectiveObligations.reserve(objectiveOrdinals.size());
+    for (std::uint32_t ordinal : objectiveOrdinals)
+      objectiveObligations.emplace_back(ordinal);
     const PromotionAcquisitionInputSlotDescriptor *candidateSlot =
         descriptor->findInputSlot(descriptor->candidateInputSlot);
     if (!candidateSlot || !candidateSlot->schema)
@@ -428,7 +627,8 @@ llvm::Expected<ResolvedDsePlan> ResolvedDsePlan::get(
     outputOffsets.push_back(outputs.size());
     nodes.emplace_back(ResolvedPromotePlanNode(
         std::move(*acquisitionBinding), std::move(inputBindings),
-        definition.qualityGate, definition.selection, definition.purpose));
+        definition.qualityGate, definition.selection,
+        std::move(objectiveObligations), definition.purpose));
   }
   return ResolvedDsePlan(std::move(nodes), std::move(outputOffsets),
                          std::move(outputs), qualityGates.vec(),
@@ -535,9 +735,53 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
           {PromotionAcquisitionInputSlotRef(static_cast<std::uint32_t>(index)),
            std::move(*artifacts)});
     }
-    auto acquisition =
-        invokePromotionAcquisition(inputs, promote.acquisitionBinding(),
-                                   view.evidenceObligationTemplates(), store);
+    const PromotionAcquisitionInputBinding *candidateInput =
+        descriptor->candidateInputSlot.ordinal() < inputs.size()
+            ? &inputs[descriptor->candidateInputSlot.ordinal()]
+            : nullptr;
+    const PromotionAcquisitionInputSlotDescriptor *candidateSlot =
+        descriptor->findInputSlot(descriptor->candidateInputSlot);
+    if (!candidateInput || !candidateSlot || !candidateSlot->schema)
+      return invalid("Promote candidate input is unavailable");
+    auto candidateSet =
+        CandidateSet::get(*candidateSlot->schema, candidateInput->artifacts);
+    if (!candidateSet)
+      return candidateSet.takeError();
+    const QualityGatePolicy *qualityGate =
+        plan.resolve(promote.qualityGateRef());
+    if (!qualityGate)
+      return invalid("resolved Promote node lost its quality gate");
+
+    if (const auto *topK = std::get_if<TopKSelection>(&promote.selection());
+        topK && !promote.objectiveObligations().empty()) {
+      if (!plan.objectiveProgram())
+        return invalid("resolved TopK node lost its ObjectiveProgram");
+      auto staged =
+          executeStagedTopK(promote, *descriptor, inputs, *candidateSet,
+                            view.evidenceObligationTemplates(), *qualityGate,
+                            *plan.objectiveProgram(), *topK, store);
+      if (!staged)
+        return staged.takeError();
+      if (auto *incomplete = std::get_if<IncompleteStagedTopK>(&*staged))
+        return DsePlanExecutionOutcome{IncompleteDsePlanExecution{
+            static_cast<std::uint64_t>(nodeIndex),
+            incomplete->reason,
+            CompletedDsePlanExecution(std::move(outputOffsets),
+                                      std::move(outputs)),
+            {{}, std::move(incomplete->evidence)}}};
+      auto &completed = std::get<CompletedStagedTopK>(*staged);
+      outputs.push_back(std::move(completed.selected));
+      outputs.push_back(std::move(completed.evidence));
+      outputOffsets.push_back(outputs.size());
+      continue;
+    }
+
+    auto acquisition = invokePromotionAcquisition(
+        inputs, promote.acquisitionBinding(),
+        view.evidenceObligationTemplates(),
+        {candidateSet->candidates(),
+         promote.acquisitionBinding().evidenceObligations()},
+        store);
     if (!acquisition)
       return acquisition.takeError();
     if (auto *incomplete =
@@ -554,22 +798,9 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
     }
 
     auto &completed = std::get<CompletedPromotionAcquisition>(*acquisition);
-    const PromotionAcquisitionInputBinding *candidateInput =
-        descriptor->candidateInputSlot.ordinal() < inputs.size()
-            ? &inputs[descriptor->candidateInputSlot.ordinal()]
-            : nullptr;
-    const PromotionAcquisitionInputSlotDescriptor *candidateSlot =
-        descriptor->findInputSlot(descriptor->candidateInputSlot);
-    if (!candidateInput || !candidateSlot || !candidateSlot->schema)
-      return invalid("Promote candidate input is unavailable");
-    auto candidateSet =
-        CandidateSet::get(*candidateSlot->schema, candidateInput->artifacts);
-    if (!candidateSet)
-      return candidateSet.takeError();
     auto promotion = promoteCandidates(
         *candidateSet, descriptor->candidateRole, completed.evidence,
-        *plan.resolve(promote.qualityGateRef()), promote.selection(),
-        plan.objectiveProgram(), store);
+        *qualityGate, promote.selection(), plan.objectiveProgram(), store);
     if (!promotion)
       return promotion.takeError();
     if (auto *incomplete = std::get_if<IncompleteSelection>(&*promotion))

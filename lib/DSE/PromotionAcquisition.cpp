@@ -238,7 +238,7 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings,
     const ResolvedPromotionAcquisitionBinding &binding,
     llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligationTemplates,
-    const ArtifactStore &store) {
+    PromotionAcquisitionTaskDomain taskDomain, const ArtifactStore &store) {
   const PromotionAcquisitionDescriptor *descriptor =
       binding.descriptorRef().descriptor();
   if (!descriptor)
@@ -249,19 +249,49 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
   if (descriptor->candidateInputSlot.ordinal() >= inputBindings.size())
     return invalid("candidate input slot is unavailable");
 
-  std::vector<PromotionEvidenceAcquisitionTask> tasks;
-  const PromotionAcquisitionInputBinding &candidates =
+  if (!llvm::is_sorted(taskDomain.candidates, artifactRootReferenceLess) ||
+      std::adjacent_find(taskDomain.candidates.begin(),
+                         taskDomain.candidates.end()) !=
+          taskDomain.candidates.end())
+    return invalid("task-domain candidates are not canonical and unique");
+  const PromotionAcquisitionInputBinding &boundCandidates =
       inputBindings[descriptor->candidateInputSlot.ordinal()];
-  const std::size_t obligationCount = binding.evidenceObligations().size();
+  for (const ArtifactRootReference &candidate : taskDomain.candidates)
+    if (!llvm::binary_search(boundCandidates.artifacts, candidate,
+                             artifactRootReferenceLess))
+      return invalid("task-domain candidate is outside the bound input");
+
+  const auto obligationLess = [](EvidenceObligationTemplateRef lhs,
+                                 EvidenceObligationTemplateRef rhs) {
+    return lhs.ordinal() < rhs.ordinal();
+  };
+  if (!llvm::is_sorted(taskDomain.evidenceObligations, obligationLess) ||
+      std::adjacent_find(taskDomain.evidenceObligations.begin(),
+                         taskDomain.evidenceObligations.end()) !=
+          taskDomain.evidenceObligations.end())
+    return invalid("task-domain obligations are not canonical and unique");
+  for (EvidenceObligationTemplateRef obligation :
+       taskDomain.evidenceObligations)
+    if (!llvm::binary_search(binding.evidenceObligations(), obligation,
+                             obligationLess))
+      return invalid("task-domain obligation is outside the resolved binding");
+
+  std::vector<PromotionAcquisitionInputBinding> providerInputs(
+      inputBindings.begin(), inputBindings.end());
+  providerInputs[descriptor->candidateInputSlot.ordinal()].artifacts.assign(
+      taskDomain.candidates.begin(), taskDomain.candidates.end());
+
+  std::vector<PromotionEvidenceAcquisitionTask> tasks;
+  const std::size_t obligationCount = taskDomain.evidenceObligations.size();
   if (obligationCount != 0 &&
-      candidates.artifacts.size() >
+      taskDomain.candidates.size() >
           std::numeric_limits<std::size_t>::max() / obligationCount)
     return invalid("acquisition task count overflows size_t");
 
   std::vector<std::vector<EvidenceAcquisitionInputBinding>> obligationInputs;
   obligationInputs.reserve(obligationCount);
   for (EvidenceObligationTemplateRef obligationRef :
-       binding.evidenceObligations()) {
+       taskDomain.evidenceObligations) {
     if (obligationRef.ordinal() >= evidenceObligationTemplates.size())
       return invalid("acquisition references a foreign Evidence obligation");
     const EvidenceObligationTemplate &obligation =
@@ -279,16 +309,16 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
       if (slot >= inputBindings.size())
         return invalid("template references an unavailable acquisition slot");
       taskInputs.push_back({EvidenceAcquisitionInputSlotRef(slot),
-                            inputBindings[slot].artifacts});
+                            providerInputs[slot].artifacts});
     }
     obligationInputs.push_back(std::move(taskInputs));
   }
 
-  tasks.reserve(candidates.artifacts.size() * obligationCount);
-  for (const ArtifactRootReference &candidate : candidates.artifacts) {
+  tasks.reserve(taskDomain.candidates.size() * obligationCount);
+  for (const ArtifactRootReference &candidate : taskDomain.candidates) {
     for (std::size_t index = 0; index < obligationCount; ++index) {
       const EvidenceObligationTemplateRef obligationRef =
-          binding.evidenceObligations()[index];
+          taskDomain.evidenceObligations[index];
       tasks.push_back({obligationRef,
                        &evidenceObligationTemplates[obligationRef.ordinal()],
                        candidate, obligationInputs[index]});
@@ -312,7 +342,7 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     return PromotionAcquisitionOutcome{IncompletePromotionAcquisition{
         PromotionAcquisitionIncompleteReason::ProviderUnavailable, {}}};
 
-  auto resolution = resolve(binding, inputBindings, tasks, store);
+  auto resolution = resolve(binding, providerInputs, tasks, store);
   if (!resolution)
     return resolution.takeError();
   if (auto *incomplete =

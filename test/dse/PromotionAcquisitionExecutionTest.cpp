@@ -2,6 +2,7 @@
 #include "Config/ResolvedConfig.h"
 #include "DSE/ResolvedConfigView.h"
 #include "Evaluation/ModelProvider.h"
+#include "Evaluation/StandardFindings.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -114,6 +115,10 @@ const ScopeFormRef scopeForms[] = {ScopeFormRef(0)};
 const MetricCapability metricCapabilities[] = {
     {MetricKind::Runtime, scopeForms,
      observationFormMask(ObservationForm::Point)}};
+const FindingCapability findingCapabilities[] = {
+    {standard_findings::FunctionalMismatch, scopeForms,
+     findingResultFormMask(FindingResultForm::Absent) |
+         findingResultFormMask(FindingResultForm::Present)}};
 const EvaluationModelDescriptor modelDescriptor{
     modelKind,
     "promotion_acquisition_execution_model",
@@ -121,7 +126,7 @@ const EvaluationModelDescriptor modelDescriptor{
     signatureRef(),
     {},
     metricCapabilities,
-    {},
+    findingCapabilities,
     {},
     {},
     {modelConfigSchema(), &projectModelConfig, &encodeModelConfig,
@@ -134,18 +139,47 @@ const EvaluationModelDescriptor modelDescriptor{
 
 llvm::Expected<EvaluationModelResult> evaluate(const EvaluationRequest &request,
                                                const CaseArtifactResolution &,
-                                               const ArtifactStore &) {
-  if (request.subjectBindings().subjects(candidateRole).size() != 1 ||
+                                               const ArtifactStore &store) {
+  llvm::ArrayRef<ArtifactRootReference> candidates =
+      request.subjectBindings().subjects(candidateRole);
+  if (candidates.size() != 1 ||
       request.subjectBindings().subjects(contextRole).size() != 1)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "model received incomplete subjects");
+  auto candidateBytes = store.get(candidates.front());
+  if (!candidateBytes)
+    return candidateBytes.takeError();
+  if (candidateBytes->bytes().size() != 1)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "candidate bytes are malformed");
+  const std::uint8_t value = candidateBytes->bytes().front();
+
+  std::vector<MetricResult> metrics;
+  metrics.reserve(request.metricRequests().size());
+  for (const MetricRequest &metric : request.metricRequests()) {
+    if (metric.query().metric != MetricKind::Runtime)
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "model received an unknown metric");
+    metrics.push_back(
+        MetricResult{UncertaintyKind::ExactWithinModel,
+                     PointObservation{take(DecimalValue::get(value, 0))},
+                     {}});
+  }
+  std::vector<FindingResult> findings;
+  findings.reserve(request.findingRequests().size());
+  for (const FindingRequest &finding : request.findingRequests()) {
+    if (finding.query().kind != standard_findings::FunctionalMismatch)
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "model received an unknown finding");
+    if (value == 0x11) {
+      findings.push_back(FindingResult{PresentFinding{{FindingOccurrence::get(
+          standard_findings::FunctionalMismatchOccurrence{})}}});
+    } else {
+      findings.push_back(FindingResult{AbsentFinding{}});
+    }
+  }
   return EvaluationModelResult{
-      {},
-      CompletedEvidence{
-          {MetricResult{UncertaintyKind::ExactWithinModel,
-                        PointObservation{take(DecimalValue::get(17, 0))},
-                        {}}},
-          {}}};
+      {}, CompletedEvidence{std::move(metrics), std::move(findings)}};
 }
 
 const EvaluationModelProvider modelProvider{modelDescriptor.reference(),
@@ -164,7 +198,7 @@ constexpr std::array<PromotionAcquisitionInputSlotDescriptor, 2> inputSlots = {{
 
 llvm::Error validateAcquisitionConfig(llvm::ArrayRef<std::uint8_t> bytes,
                                       const ComponentViewDigest &digest) {
-  if (bytes.size() != 1 || (bytes.front() != 0x00 && bytes.front() != 0x01))
+  if (bytes.size() != 1 || bytes.front() > 0x02)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "acquisition config is not canonical");
   return validateComponentViewDigest(acquisitionConfigSchema, bytes, digest);
@@ -172,11 +206,14 @@ llvm::Error validateAcquisitionConfig(llvm::ArrayRef<std::uint8_t> bytes,
 
 llvm::Expected<std::vector<EvidenceObligationTemplateRef>>
 resolveEvidenceObligations(llvm::ArrayRef<std::uint8_t> bytes) {
-  if (bytes.size() != 1 || (bytes.front() != 0x00 && bytes.front() != 0x01))
+  if (bytes.size() != 1 || bytes.front() > 0x02)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "acquisition config is not canonical");
   if (bytes.front() == 0x01)
     return std::vector<EvidenceObligationTemplateRef>{};
+  if (bytes.front() == 0x02)
+    return std::vector<EvidenceObligationTemplateRef>{
+        EvidenceObligationTemplateRef(0), EvidenceObligationTemplateRef(1)};
   return std::vector<EvidenceObligationTemplateRef>{
       EvidenceObligationTemplateRef(0)};
 }
@@ -193,6 +230,8 @@ const PromotionAcquisitionDescriptor acquisitionDescriptor{
     &resolveEvidenceObligations,
 };
 
+std::array<std::uint64_t, 2> resolvedTaskCounts{};
+
 llvm::Expected<PromotionAcquisitionResolutionOutcome>
 resolveCases(const ResolvedPromotionAcquisitionBinding &,
              llvm::ArrayRef<PromotionAcquisitionInputBinding>,
@@ -201,12 +240,13 @@ resolveCases(const ResolvedPromotionAcquisitionBinding &,
   std::vector<ResolvedPromotionEvidenceAcquisitionTask> resolved;
   resolved.reserve(tasks.size());
   for (const PromotionEvidenceAcquisitionTask &task : tasks) {
-    if (!task.obligation || task.obligationTemplate.ordinal() != 0 ||
+    if (!task.obligation || task.obligationTemplate.ordinal() > 1 ||
         task.inputBindings.size() != 1 ||
         task.inputBindings.front().slot != EvidenceAcquisitionInputSlotRef(1) ||
         task.inputBindings.front().artifacts.size() != 1)
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                      "central task projection is malformed");
+    ++resolvedTaskCounts[task.obligationTemplate.ordinal()];
     const ArtifactRootReference &context =
         task.inputBindings.front().artifacts.front();
     auto candidateBytes = store.get(task.candidate);
@@ -252,7 +292,27 @@ EvaluationRequest makePrototype(const ArtifactRootReference &candidate,
                                      std::move(model), 0, resolution, store));
 }
 
+EvaluationRequest makeFindingPrototype(const ArtifactRootReference &candidate,
+                                       const ArtifactRootReference &context,
+                                       const CaseArtifactResolution &resolution,
+                                       const ArtifactStore &store) {
+  EvaluationSubjectBindings subjects = take(EvaluationSubjectBindings::get(
+      {{candidateRole, {candidate}}, {contextRole, {context}}}));
+  EvaluationCase evaluationCase = take(
+      EvaluationCase::get(signatureRef(), std::move(subjects), std::nullopt,
+                          std::nullopt, {}, resolution, store));
+  FindingRequest finding =
+      take(FindingRequest::get({standard_findings::FunctionalMismatch,
+                                EvaluationScope{ScopeFormRef(0), {}}},
+                               {}, evaluationCase, resolution, store));
+  ResolvedModelBinding model = take(ResolvedModelBinding::project(
+      modelDescriptor.reference(), {}, defaultResolvedConfig()));
+  return take(EvaluationRequest::get(evaluationCase, {}, {finding},
+                                     std::move(model), 0, resolution, store));
+}
+
 void exactTemplateDrivesProductionAcquisition() {
+  requireSuccess(standard_findings::registerStandardFindings());
   requireSuccess(registerEvaluationCaseSignature(caseDescriptor));
   requireSuccess(registerEvaluationModelDescriptor(modelDescriptor));
   requireSuccess(registerEvaluationModelProvider(modelProvider));
@@ -337,9 +397,103 @@ void exactTemplateDrivesProductionAcquisition() {
     fail(error.message());
 }
 
+void topKAcquiresOnlyTheRequiredFunctionalPrefix() {
+  llvm::SmallString<128> directory;
+  if (std::error_code error = llvm::sys::fs::createUniqueDirectory(
+          "loom-staged-promotion-acquisition", directory))
+    fail(error.message());
+  ArtifactStore store(directory);
+  const ArtifactRootReference first =
+      storeArtifact(store, candidateSchema, 0x11);
+  const ArtifactRootReference second =
+      storeArtifact(store, candidateSchema, 0x22);
+  const ArtifactRootReference third =
+      storeArtifact(store, candidateSchema, 0x33);
+  const ArtifactRootReference fourth =
+      storeArtifact(store, candidateSchema, 0x44);
+  const ArtifactRootReference context =
+      storeArtifact(store, contextSchema, 0x55);
+  std::vector<ArtifactRootReference> candidates{first, second, third, fourth};
+  std::sort(candidates.begin(), candidates.end(), artifactRootReferenceLess);
+  const CaseArtifactResolution resolution = take(CaseArtifactResolution::get(
+      {{first, {}}, {second, {}}, {third, {}}, {fourth, {}}, {context, {}}}));
+  EvidenceObligationTemplate runtime = take(EvidenceObligationTemplate::get(
+      makePrototype(first, context, resolution, store), candidateRole,
+      {{contextRole, EvidenceAcquisitionInputSlotRef(1)}}));
+  EvidenceObligationTemplate functional = take(EvidenceObligationTemplate::get(
+      makeFindingPrototype(first, context, resolution, store), candidateRole,
+      {{contextRole, EvidenceAcquisitionInputSlotRef(1)}}));
+  std::vector<EvidenceObligationTemplate> obligations;
+  obligations.push_back(std::move(runtime));
+  obligations.push_back(std::move(functional));
+  llvm::sort(obligations, [](const EvidenceObligationTemplate &lhs,
+                             const EvidenceObligationTemplate &rhs) {
+    return std::lexicographical_compare(
+        lhs.canonicalBytes().begin(), lhs.canonicalBytes().end(),
+        rhs.canonicalBytes().begin(), rhs.canonicalBytes().end());
+  });
+  std::optional<std::uint32_t> runtimeOrdinal;
+  std::optional<std::uint32_t> functionalOrdinal;
+  for (std::uint32_t ordinal = 0; ordinal != obligations.size(); ++ordinal) {
+    if (!obligations[ordinal].metricRequests().empty())
+      runtimeOrdinal = ordinal;
+    if (!obligations[ordinal].findingRequests().empty())
+      functionalOrdinal = ordinal;
+  }
+  if (!runtimeOrdinal || !functionalOrdinal)
+    fail("canonical obligation roles were not recovered");
+
+  ResolvedObjectiveCatalogs objectives;
+  objectives.dimensions = {
+      {ResolvedEvaluationMetricObjectiveSource{*runtimeOrdinal, 0},
+       ResolvedObjectiveDirection::Minimize, resolvedObjectiveDecimal(0, 0),
+       resolvedObjectiveDecimal(1, 0), 0, 255}};
+  objectives.weightedLevels = {{{{0, 1}}}};
+  objectives.totalOrderings = {{{0}}};
+  QualityGatePolicy gate = take(QualityGatePolicy::get(
+      {{{FindingGate{*functionalOrdinal, FindingRequestOrdinal(0),
+                     RequiredFindingState::Absent}}}}));
+  const std::array<std::uint8_t, 1> configBytes = {0x02};
+  const ComponentViewDigest configDigest =
+      take(computeComponentViewDigest(acquisitionConfigSchema, configBytes));
+  ResolvedConfig config = defaultResolvedConfig();
+  config.dse.modelAuthorizations = {{modelDescriptor.reference()}};
+  config.dse.evidenceObligationTemplates = std::move(obligations);
+  config.dse.objectiveCatalogs = std::move(objectives);
+  config.dse.qualityGatePolicies = {std::move(gate)};
+  config.dse.planNodes = {PromotePlanNodeDefinition{
+      acquisitionDescriptor.reference(),
+      {ExactPlanArtifacts{candidates}, ExactPlanArtifacts{{context}}},
+      {configBytes.begin(), configBytes.end()},
+      configDigest,
+      QualityGatePolicyRef(0),
+      TopKSelection{0, 2},
+      PromotePurpose::CandidateSelection}};
+
+  resolvedTaskCounts = {};
+  ResolvedDseConfigView view = take(projectResolvedDseConfigView(config));
+  DsePlanExecutionOutcome outcome = take(executeDsePlan(view, store));
+  const auto *completed = std::get_if<CompletedDsePlanExecution>(&outcome);
+  if (!completed)
+    fail("TopK execution did not complete");
+  std::array<ArtifactRootReference, 2> expected = {second, third};
+  std::sort(expected.begin(), expected.end(), artifactRootReferenceLess);
+  if (completed->resolve({0, 0}) !=
+      llvm::ArrayRef<ArtifactRootReference>(expected))
+    fail("TopK did not refill its semantically valid candidate set");
+  if (completed->resolve({0, 1}).size() != 7)
+    fail("TopK retained evidence outside the required functional prefix");
+  if (resolvedTaskCounts[*runtimeOrdinal] != 4 ||
+      resolvedTaskCounts[*functionalOrdinal] != 3)
+    fail("TopK did not acquire the deterministic minimal gate prefix");
+  if (std::error_code error = llvm::sys::fs::remove_directories(directory))
+    fail(error.message());
+}
+
 } // namespace
 
 int main() {
   exactTemplateDrivesProductionAcquisition();
+  topKAcquiresOnlyTheRequiredFunctionalPrefix();
   return 0;
 }

@@ -197,6 +197,27 @@ struct IncompleteSelection final {
   std::vector<ArtifactRootReference> retainedEvidence;
 };
 
+struct CompletedCandidateObjectiveRanking final {
+  /// Best-first total order. This is an invocation-local projection and is not
+  /// a canonical candidate set representation.
+  std::vector<ArtifactRootReference> rankedCandidates;
+  std::vector<ArtifactRootReference> retainedEvidence;
+};
+
+using CandidateObjectiveRankingOutcome =
+    std::variant<CompletedCandidateObjectiveRanking, IncompleteSelection>;
+
+/// Derives every candidate ObjectiveVector from exact completed Point Evidence
+/// and returns the requested best-first total order. The expected obligation
+/// set must be canonical and complete for each candidate.
+llvm::Expected<CandidateObjectiveRankingOutcome> rankCandidatesByObjective(
+    const CandidateSet &candidateSet,
+    evaluation::CaseSubjectRoleRef candidateRole,
+    llvm::ArrayRef<PromotionEvidence> evidence,
+    llvm::ArrayRef<std::uint32_t> objectiveObligationTemplates,
+    std::uint32_t totalOrdering, const ObjectiveProgram &objectiveProgram,
+    const ArtifactStore &artifactStore);
+
 using PromotionOutcome =
     std::variant<CompletedSelection, CompletedNoFeasibleCandidate,
                  IncompleteSelection>;
