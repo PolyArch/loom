@@ -117,7 +117,7 @@ resolveCases(const ResolvedPromotionAcquisitionBinding &,
             std::make_shared<const evaluation::CaseArtifactResolution>(
                 std::move(*resolution));
       }
-      resolved.push_back({0, analyticResolution});
+      resolved.push_back({0, analyticResolution, std::nullopt});
       continue;
     }
     if (model != functional)
@@ -141,7 +141,7 @@ resolveCases(const ResolvedPromotionAcquisitionBinding &,
           std::make_shared<const evaluation::CaseArtifactResolution>(
               std::move(*resolution));
     }
-    resolved.push_back({0, functionalResolution});
+    resolved.push_back({0, functionalResolution, std::nullopt});
   }
   return PromotionAcquisitionResolutionOutcome{
       CompletedPromotionAcquisitionResolution{std::move(resolved)}};

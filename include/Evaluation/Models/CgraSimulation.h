@@ -16,6 +16,12 @@ struct ResolvedConfig;
 
 namespace loom::evaluation::models {
 
+struct ResolvedCgraSimulationCase final {
+  ArtifactRootReference canonicalDataflow;
+  ArtifactRootReference fabric;
+  CaseArtifactResolution resolution;
+};
+
 struct PreparedCgraSimulationEvaluation final {
   EvaluationRequest request;
   CaseArtifactResolution resolution;
@@ -30,6 +36,20 @@ struct CgraSimulationAttemptLimits final {
 };
 
 llvm::Error registerCgraSimulationModel();
+
+EvaluationModelDescriptorRef cgraSimulationModelDescriptorRef();
+CaseSubjectRoleRef cgraSimulationProgramRole();
+CaseSubjectRoleRef cgraSimulationHardwareRole();
+CaseSubjectRoleRef cgraSimulationSpatialMappingRole();
+
+/// Strictly resolves one SpatialMapping-rooted CGRA case from owner lineage.
+/// The returned references are ordinary Artifact roots reconstructed from the
+/// imported Mapping owners; no caller-provided D/F participates.
+llvm::Expected<ResolvedCgraSimulationCase>
+resolveCgraSimulationCase(const ArtifactRootReference &spatialMapping,
+                          const ArtifactRootReference &workload,
+                          const ArtifactRootReference &runtimeInput,
+                          const ArtifactStore &artifactStore);
 
 llvm::Expected<PreparedCgraSimulationEvaluation>
 prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,

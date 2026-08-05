@@ -103,6 +103,12 @@ public:
   const evaluation::ResolvedModelBinding &modelBinding() const {
     return modelBinding_;
   }
+  const std::optional<ArtifactRootReference> &workload() const {
+    return workload_;
+  }
+  const std::optional<ArtifactRootReference> &runtimeInput() const {
+    return runtimeInput_;
+  }
   llvm::ArrayRef<MetricRequestTemplate> metricRequests() const {
     return metricRequests_;
   }

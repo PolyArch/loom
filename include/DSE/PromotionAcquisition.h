@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -195,6 +196,11 @@ struct ResolvedPromotionEvidenceAcquisitionTask final {
   /// Read-only invocation-local closure. Providers may share one exact
   /// resolution across every task whose case inputs are identical.
   std::shared_ptr<const evaluation::CaseArtifactResolution> resolution;
+  /// Optional candidate-local subsets of the task's already bound inputs.
+  /// The controller verifies exact slot coverage, canonical ordering, and
+  /// subset membership before Request construction. Absence reuses the full
+  /// task input bindings.
+  std::optional<std::vector<EvidenceAcquisitionInputBinding>> selectedInputs;
 };
 
 struct CompletedPromotionAcquisitionResolution final {

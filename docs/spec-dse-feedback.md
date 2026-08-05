@@ -1321,6 +1321,17 @@ Artifacts. A constrained invocation remains a direct five-authority Spatial
 PnR call; the central plan does not interpret absent constraints as empty and
 does not acquire a constraint language, Mapping state, or search algorithm.
 
+The built-in SpatialMapping CGRA acquisition consumes a finite SpatialMapping
+candidate set, a nonempty Canonical Dataflow owner set, one exact Fabric, one
+exact Spatial workload, and one exact runtime input. For each candidate it
+strictly imports the SpatialMapping, recovers its unique Dataflow and Fabric
+owners through the Mapping owner, and task-locally selects that one Dataflow
+from the already bound set. The recovered Fabric must equal the exact Fabric
+input. The CGRA Simulation model remains the sole owner of the case signature,
+lineage resolution, cycle metric, execution, and Evidence. A foreign owner,
+workload, or runtime relation is invalid; acquisition cannot scan the
+ArtifactStore, infer a similar owner, or copy a private Mapping relation.
+
 ### Objectives and Quality Gates
 
 One central dimension type owns the fact being optimized, its direction, and
@@ -1540,12 +1551,28 @@ distinguished candidate role and the explicitly listed input-bound roles
 unresolved; every other case role is fixed exactly in the template.
 Instantiation fills the candidate role from the candidate set or ephemeral
 candidate view, fills each listed role from the consuming policy's ordinary
-typed input binding, then runs the ordinary Request verifier. Role cardinality
-and schema must match the input slot, a role cannot be both fixed and
-input-bound, and the candidate role cannot appear in the table. Promotion
+typed input binding, then runs the ordinary Request verifier. The input slot
+schema must be accepted by the role, and the selected task value must satisfy
+the role cardinality. A role cannot be both fixed and input-bound, and the
+candidate role cannot appear in the table. Promotion
 recovers candidate association only through the distinguished role. It cannot
 bind a model input, construct a partial `ResolvedModelBinding`, merge a
 candidate into a collection, or persist a parallel candidate-to-Evidence map.
+
+An acquisition input slot describes the complete invocation-level Artifact
+set, while one Evaluation case may require a candidate-local subset of that
+set. The acquisition provider may therefore return one optional task-local
+input selection. When present, it must contain every input slot referenced by
+the exact template exactly once, retain the same slot ordinals, use canonical
+unique Artifact order, and select only Artifacts already present in the
+corresponding bound input. Absence selects the complete bound input. The
+central controller validates this subset relation before instantiation, and
+the ordinary Request verifier still validates exact role cardinality, schema,
+lineage, and compatibility. Plan resolution requires the input slot to
+guarantee the role's nonempty minimum; it does not require the invocation set's
+upper bound to equal one case role's upper bound. A provider cannot invent an
+Artifact, move one between slots, change fixed workload or runtime facts, or
+persist a candidate-to-input association.
 
 `input_subject_bindings` sorts by `CaseSubjectRoleRef`, rejects duplicate roles,
 and encodes each pair as two `u32be` ordinals after a

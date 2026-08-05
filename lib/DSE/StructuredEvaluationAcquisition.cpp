@@ -118,7 +118,7 @@ resolveCases(const ResolvedPromotionAcquisitionBinding &,
                                     store))
         return std::move(error);
     }
-    resolved.push_back({0, resolution});
+    resolved.push_back({0, resolution, std::nullopt});
   }
   return PromotionAcquisitionResolutionOutcome{
       CompletedPromotionAcquisitionResolution{std::move(resolved)}};

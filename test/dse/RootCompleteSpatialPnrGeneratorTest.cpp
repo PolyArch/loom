@@ -5,8 +5,10 @@
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
+#include "DSE/SpatialMappingEvaluationAcquisition.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Evaluation/Models/CgraSimulation.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
@@ -14,6 +16,7 @@
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -21,6 +24,7 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
@@ -192,6 +196,18 @@ buildSpatialCore(loom::ArtifactStore &store, std::uint32_t payloadWidth = 128) {
   return design.roots().front();
 }
 
+loom::fabric::FinalizedFabricRoot
+buildBuiltinSpatialCore(loom::ArtifactStore &store) {
+  loom::adg::DesignBuilder builder(store);
+  auto expansion = take(loom::adg::expandBuiltinSpatialCore(
+      builder, loom::adg::BuiltinTargetPreset::Small));
+  requireSuccess(expansion.spatialCore.close(expansion.outputs));
+  auto design = take(std::move(builder).finalize());
+  if (design.roots().size() != 1)
+    fail("builtin SpatialCore fixture did not publish exactly one Fabric root");
+  return design.roots().front();
+}
+
 loom::ResolvedObjectiveCatalogs availableSpatialObjectiveCatalogs() {
   loom::ResolvedObjectiveCatalogs catalogs;
   constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
@@ -269,6 +285,30 @@ generateTechMapping(const loom::ArtifactRootReference &dataflow,
   return completed->outputBindings.front().artifacts.front();
 }
 
+std::vector<loom::ArtifactRootReference>
+generateTechMappingSet(const loom::ArtifactRootReference &dataflow,
+                       const loom::ArtifactRootReference &fabric,
+                       loom::ArtifactStore &store) {
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.techMapping.candidatePublicationLimit = 4;
+  auto config =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
+  auto inputs =
+      take(loom::dse::bindRootCompleteTechMappingCandidateGeneratorInputs(
+          {dataflow}, fabric));
+  auto binding =
+      take(loom::dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
+          config));
+  auto outcome =
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+  const auto *completed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+  if (!completed || completed->outputBindings.size() != 1 ||
+      completed->outputBindings.front().artifacts.size() < 2)
+    fail("TechMapping fixture did not publish two distinct candidates");
+  return completed->outputBindings.front().artifacts;
+}
+
 struct Fixture final {
   dataflow::CanonicalDataflowArtifact dataflow;
   loom::ArtifactRootReference dataflowReference;
@@ -285,6 +325,82 @@ Fixture buildFixture(mlir::MLIRContext &context, loom::ArtifactStore &store) {
       generateTechMapping(dataflowReference, fabric.reference(), store);
   return {std::move(dataflow), std::move(dataflowReference), std::move(fabric),
           std::move(techMappingReference)};
+}
+
+loom::ArtifactRootReference
+generateSpatialMapping(const loom::ArtifactRootReference &techMapping,
+                       const loom::ArtifactRootReference &fabric,
+                       loom::ArtifactStore &store) {
+  auto inputs =
+      take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
+          {techMapping}, fabric));
+  auto binding =
+      take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
+          buildSpatialConfig()));
+  auto outcome =
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+  const auto *completed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+  if (!completed || completed->outputBindings.size() != 1 ||
+      completed->outputBindings.front().artifacts.size() != 1)
+    fail("SpatialMapping fixture did not publish one candidate");
+  return completed->outputBindings.front().artifacts.front();
+}
+
+std::vector<loom::ArtifactRootReference> generateSpatialMappingSet(
+    llvm::ArrayRef<loom::ArtifactRootReference> techMappings,
+    const loom::ArtifactRootReference &fabric, loom::ArtifactStore &store) {
+  loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
+  resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 1;
+  resolved.dse.spatialPnr.search.routing.negotiationIterationLimit = 8;
+  resolved.dse.spatialPnr.search.routing.negotiation =
+      loom::ResolvedPathFinderPolicy{
+          loom::ResolvedPathFinderPriceKernel::Additive, 1, {3, 2}, 1};
+  auto config = take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
+  auto inputs =
+      take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
+          techMappings, fabric));
+  auto binding =
+      take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
+          config));
+  auto outcome =
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+  const auto *completed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+  if (!completed || completed->outputBindings.size() != 1)
+    fail("SpatialMapping fixture did not complete one output binding");
+  if (completed->outputBindings.front().artifacts.size() < 2)
+    fail("SpatialMapping fixture published " +
+         llvm::Twine(completed->outputBindings.front().artifacts.size()) +
+         " distinct candidates instead of two");
+  return completed->outputBindings.front().artifacts;
+}
+
+struct PublishedSpatialInputs final {
+  loom::ArtifactRootReference workload;
+  loom::ArtifactRootReference runtimeInput;
+};
+
+PublishedSpatialInputs
+publishSpatialInputs(const dataflow::CanonicalDataflowArtifact &dataflow,
+                     loom::ArtifactStore &store) {
+  const auto view = take(dataflow.view());
+  const dataflow::RootedGraphLaunchRef launch{
+      view.rootThreadLaunches().front().ref,
+      view.staticGraphLaunches().front().ref};
+  loom::sim::SpatialSimulationWorkload workloadDraft{launch};
+  workloadDraft.valueInputPlan = {loom::sim::RuntimeValueInput{}};
+  workloadDraft.observableContract.valueResults = {0};
+  auto workload =
+      take(loom::sim::finalizeSimulationWorkload(workloadDraft, view));
+  loom::sim::SpatialSimulationRuntimeInputDraft runtimeDraft{
+      workload.identity()};
+  runtimeDraft.runtimeValues = {
+      {0, {1, {loom::sim::SemanticLane::defined(llvm::APInt(32, 7))}}}};
+  auto runtime = take(
+      loom::sim::finalizeSimulationRuntimeInput(runtimeDraft, workload, view));
+  return {take(loom::sim::publishSimulationWorkload(workload, store)),
+          take(loom::sim::publishSimulationRuntimeInput(runtime, store))};
 }
 
 void emptyConstraintOwnerPublishesExactArtifact() {
@@ -584,6 +700,182 @@ void foreignFabricIsRejectedBeforeSearch() {
     fail("foreign Fabric rejection lost its exact-owner diagnostic");
 }
 
+void spatialMappingPromotionExecutesExactCgraCase() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  Fixture fixture = buildFixture(context, store);
+  const loom::ArtifactRootReference spatialMapping = generateSpatialMapping(
+      fixture.techMappingReference, fixture.fabric.reference(), store);
+  const PublishedSpatialInputs simulationInputs =
+      publishSpatialInputs(fixture.dataflow, store);
+  const loom::ArtifactRootReference &workloadReference =
+      simulationInputs.workload;
+  const loom::ArtifactRootReference &runtimeReference =
+      simulationInputs.runtimeInput;
+
+  auto obligation =
+      take(loom::dse::prepareCgraSimulationEvidenceObligationTemplate(
+          fixture.dataflowReference, fixture.fabric.reference(), spatialMapping,
+          workloadReference, runtimeReference, loom::defaultResolvedConfig(),
+          store));
+  const std::array<loom::dse::EvidenceObligationTemplateRef, 1> obligationRefs =
+      {loom::dse::EvidenceObligationTemplateRef(0)};
+  auto acquisitionConfig =
+      take(loom::dse::projectResolvedEvidenceObligationSetConfigView(
+          obligationRefs));
+  auto acquisitionBinding = take(
+      loom::dse::resolveSpatialMappingEvaluationPromotionAcquisitionBinding(
+          acquisitionConfig));
+  auto alternate = buildAlternateDataflow(context);
+  const loom::ArtifactRootReference alternateReference =
+      take(dataflow::publishCanonicalDataflow(alternate, store));
+  std::array<loom::ArtifactRootReference, 2> dataflows = {
+      fixture.dataflowReference, alternateReference};
+  llvm::sort(dataflows, loom::artifactRootReferenceLess);
+  auto inputs = take(loom::dse::bindSpatialMappingEvaluationPromotionInputs(
+      {spatialMapping}, dataflows, fixture.fabric.reference(),
+      workloadReference, runtimeReference));
+  auto outcome = take(loom::dse::invokePromotionAcquisition(
+      inputs, acquisitionBinding, {obligation},
+      {{spatialMapping}, obligationRefs}, store));
+  const auto *completed =
+      std::get_if<loom::dse::CompletedPromotionAcquisition>(&outcome);
+  if (!completed || completed->evidence.size() != 1)
+    fail("SpatialMapping promotion did not acquire one CGRA Evidence");
+  const loom::dse::PromotionEvidence &evidence = completed->evidence.front();
+  const auto programs = evidence.request.subjectBindings().subjects(
+      loom::evaluation::models::cgraSimulationProgramRole());
+  const auto mappings = evidence.request.subjectBindings().subjects(
+      loom::evaluation::models::cgraSimulationSpatialMappingRole());
+  if (programs.size() != 1 || programs.front() != fixture.dataflowReference ||
+      mappings.size() != 1 || mappings.front() != spatialMapping ||
+      evidence.evidence.outcomeKind() !=
+          loom::evaluation::EvidenceOutcomeKind::Completed ||
+      evidence.evidence.outputBindings().size() != 1 ||
+      evidence.evidence.outputBindings().front().artifacts.size() != 1)
+    fail("SpatialMapping promotion lost exact CGRA execution evidence");
+
+  auto wrongInputs =
+      take(loom::dse::bindSpatialMappingEvaluationPromotionInputs(
+          {spatialMapping}, {alternateReference}, fixture.fabric.reference(),
+          workloadReference, runtimeReference));
+  auto wrong = loom::dse::invokePromotionAcquisition(
+      wrongInputs, acquisitionBinding, {obligation},
+      {{spatialMapping}, obligationRefs}, store);
+  if (wrong)
+    fail("SpatialMapping promotion accepted a foreign Dataflow owner set");
+  const std::string message = llvm::toString(wrong.takeError());
+  if (!llvm::StringRef(message).contains("Dataflow owner"))
+    fail("foreign Dataflow owner rejection lost its typed diagnostic");
+
+  loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
+  resolved.dse.techMapping.candidatePublicationLimit = 1;
+  auto techConfig =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
+  auto spatialConfig =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
+  resolved.dse.modelAuthorizations = {
+      {loom::evaluation::models::cgraSimulationModelDescriptorRef()}};
+  resolved.dse.evidenceObligationTemplates = {obligation};
+  resolved.dse.qualityGatePolicies = {
+      take(loom::dse::QualityGatePolicy::get({}))};
+  resolved.dse.planNodes = {
+      loom::dse::GeneratePlanNodeDefinition{
+          loom::dse::rootCompleteTechMappingCandidateGeneratorDescriptor()
+              .reference(),
+          {loom::dse::ExactPlanArtifacts{{fixture.dataflowReference}},
+           loom::dse::ExactPlanArtifacts{{fixture.fabric.reference()}}},
+          techConfig.canonicalViewBytes().vec(),
+          techConfig.digest()},
+      loom::dse::GeneratePlanNodeDefinition{
+          loom::dse::rootCompleteSpatialPnrCandidateGeneratorDescriptor()
+              .reference(),
+          {loom::dse::PlanOutputRef{0, 0},
+           loom::dse::ExactPlanArtifacts{{fixture.fabric.reference()}}},
+          spatialConfig.canonicalViewBytes().vec(),
+          spatialConfig.digest()},
+      loom::dse::PromotePlanNodeDefinition{
+          loom::dse::spatialMappingEvaluationPromotionAcquisitionDescriptor()
+              .reference(),
+          {loom::dse::PlanOutputRef{1, 0},
+           loom::dse::ExactPlanArtifacts{
+               std::vector<loom::ArtifactRootReference>(dataflows.begin(),
+                                                        dataflows.end())},
+           loom::dse::ExactPlanArtifacts{{fixture.fabric.reference()}},
+           loom::dse::ExactPlanArtifacts{{workloadReference}},
+           loom::dse::ExactPlanArtifacts{{runtimeReference}}},
+          acquisitionConfig.canonicalViewBytes().vec(),
+          acquisitionConfig.digest(),
+          loom::dse::QualityGatePolicyRef(0),
+          loom::dse::AllPassingSelection{},
+          loom::dse::PromotePurpose::CandidateSelection},
+  };
+  auto planView = take(loom::dse::projectResolvedDseConfigView(resolved));
+  auto planOutcome = take(loom::dse::executeDsePlan(planView, store));
+  const auto *planCompleted =
+      std::get_if<loom::dse::CompletedDsePlanExecution>(&planOutcome);
+  if (!planCompleted || planCompleted->generateInvocations().size() != 2 ||
+      planCompleted->resolve({1, 0}).size() != 1 ||
+      planCompleted->resolve({2, 0}) != planCompleted->resolve({1, 0}) ||
+      planCompleted->resolve({2, 1}).size() != 1)
+    fail("central Mapping plan did not close M to CGRA Evidence");
+}
+
+void spatialMappingPromotionKeepsEveryCandidateLineage() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  auto dataflow = buildDataflow(context);
+  const loom::ArtifactRootReference dataflowReference =
+      take(dataflow::publishCanonicalDataflow(dataflow, store));
+  auto fabric = buildBuiltinSpatialCore(store);
+  const std::vector<loom::ArtifactRootReference> techMappings =
+      generateTechMappingSet(dataflowReference, fabric.reference(), store);
+  std::vector<loom::ArtifactRootReference> mappings =
+      generateSpatialMappingSet(techMappings, fabric.reference(), store);
+  mappings.erase(mappings.begin() + 2, mappings.end());
+  const PublishedSpatialInputs simulationInputs =
+      publishSpatialInputs(dataflow, store);
+
+  auto obligation =
+      take(loom::dse::prepareCgraSimulationEvidenceObligationTemplate(
+          dataflowReference, fabric.reference(), mappings.front(),
+          simulationInputs.workload, simulationInputs.runtimeInput,
+          loom::defaultResolvedConfig(), store));
+  const std::array<loom::dse::EvidenceObligationTemplateRef, 1> obligations = {
+      loom::dse::EvidenceObligationTemplateRef(0)};
+  auto acquisitionConfig = take(
+      loom::dse::projectResolvedEvidenceObligationSetConfigView(obligations));
+  auto binding = take(
+      loom::dse::resolveSpatialMappingEvaluationPromotionAcquisitionBinding(
+          acquisitionConfig));
+  auto inputs = take(loom::dse::bindSpatialMappingEvaluationPromotionInputs(
+      mappings, {dataflowReference}, fabric.reference(),
+      simulationInputs.workload, simulationInputs.runtimeInput));
+  auto outcome = take(loom::dse::invokePromotionAcquisition(
+      inputs, binding, {obligation}, {mappings, obligations}, store));
+  const auto *completed =
+      std::get_if<loom::dse::CompletedPromotionAcquisition>(&outcome);
+  if (!completed || completed->evidence.size() != mappings.size())
+    fail("multi-candidate Spatial promotion lost CGRA Evidence");
+  std::vector<loom::ArtifactRootReference> observedMappings;
+  for (const loom::dse::PromotionEvidence &record : completed->evidence) {
+    const auto programs = record.request.subjectBindings().subjects(
+        loom::evaluation::models::cgraSimulationProgramRole());
+    const auto selectedMappings = record.request.subjectBindings().subjects(
+        loom::evaluation::models::cgraSimulationSpatialMappingRole());
+    if (programs.size() != 1 || programs.front() != dataflowReference)
+      fail("multi-candidate Spatial promotion selected a foreign Dataflow");
+    if (selectedMappings.size() != 1)
+      fail("multi-candidate Spatial promotion lost its Mapping subject");
+    observedMappings.push_back(selectedMappings.front());
+  }
+  llvm::sort(observedMappings, loom::artifactRootReferenceLess);
+  if (observedMappings != mappings)
+    fail("multi-candidate Spatial promotion reused another candidate");
+}
+
 } // namespace
 
 int main() {
@@ -594,5 +886,7 @@ int main() {
   unavailableNegotiationIsTypedIncomplete();
   initializerSemanticLimitIsTypedIncomplete();
   foreignFabricIsRejectedBeforeSearch();
+  spatialMappingPromotionExecutesExactCgraCase();
+  spatialMappingPromotionKeepsEveryCandidateLineage();
   return EXIT_SUCCESS;
 }

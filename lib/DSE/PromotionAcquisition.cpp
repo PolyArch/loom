@@ -41,6 +41,30 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "promotion_acquisition_invalid: " + message);
 }
 
+llvm::Error validateSelectedTaskInputs(
+    llvm::ArrayRef<EvidenceAcquisitionInputBinding> bound,
+    llvm::ArrayRef<EvidenceAcquisitionInputBinding> selected) {
+  if (selected.size() != bound.size())
+    return invalid("provider did not select every bound task input slot");
+  for (std::size_t index = 0; index < selected.size(); ++index) {
+    const EvidenceAcquisitionInputBinding &source = bound[index];
+    const EvidenceAcquisitionInputBinding &choice = selected[index];
+    if (choice.slot != source.slot)
+      return invalid("provider changed a bound task input slot");
+    if (!llvm::is_sorted(choice.artifacts, artifactRootReferenceLess) ||
+        std::adjacent_find(choice.artifacts.begin(), choice.artifacts.end()) !=
+            choice.artifacts.end())
+      return invalid(
+          "provider task input selection is not canonical and unique");
+    for (const ArtifactRootReference &artifact : choice.artifacts)
+      if (!llvm::binary_search(source.artifacts, artifact,
+                               artifactRootReferenceLess))
+        return invalid(
+            "provider selected an artifact outside the bound task input");
+  }
+  return llvm::Error::success();
+}
+
 bool isCanonicalAscii(llvm::StringRef value) {
   return !value.empty() && llvm::all_of(value, [](unsigned char character) {
     return character >= 0x21 && character <= 0x7e;
@@ -369,8 +393,16 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     ResolvedPromotionEvidenceAcquisitionTask &resolved = completed.tasks[index];
     if (!resolved.resolution)
       return invalid("provider returned an absent case resolution");
+    llvm::ArrayRef<EvidenceAcquisitionInputBinding> requestInputs =
+        task.inputBindings;
+    if (resolved.selectedInputs) {
+      if (llvm::Error error = validateSelectedTaskInputs(
+              task.inputBindings, *resolved.selectedInputs))
+        return std::move(error);
+      requestInputs = *resolved.selectedInputs;
+    }
     auto request = instantiateEvidenceObligation(
-        *task.obligation, task.candidate, task.inputBindings,
+        *task.obligation, task.candidate, requestInputs,
         resolved.replicateIndex, *resolved.resolution, store);
     if (!request)
       return request.takeError();

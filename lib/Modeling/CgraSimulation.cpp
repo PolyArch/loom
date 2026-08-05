@@ -335,6 +335,59 @@ llvm::Error registerCgraSimulationModel() {
   return registerEvaluationModelProvider(kProvider);
 }
 
+EvaluationModelDescriptorRef cgraSimulationModelDescriptorRef() {
+  return kModelDescriptor.reference();
+}
+
+CaseSubjectRoleRef cgraSimulationProgramRole() { return kProgramRole; }
+
+CaseSubjectRoleRef cgraSimulationHardwareRole() { return kHardwareRole; }
+
+CaseSubjectRoleRef cgraSimulationSpatialMappingRole() {
+  return kSpatialMappingRole;
+}
+
+llvm::Expected<ResolvedCgraSimulationCase>
+resolveCgraSimulationCase(const ArtifactRootReference &spatialMapping,
+                          const ArtifactRootReference &workload,
+                          const ArtifactRootReference &runtimeInput,
+                          const ArtifactStore &artifactStore) {
+  if (llvm::Error error = registerCgraSimulationModel())
+    return std::move(error);
+  auto importedMapping =
+      mapping::importSpatialMapping(spatialMapping, artifactStore);
+  if (!importedMapping)
+    return importedMapping.takeError();
+  const ArtifactRootReference dataflowReference{
+      dataflow::canonicalDataflowSchema.identity.str(),
+      dataflow::canonicalDataflowSchema.version,
+      importedMapping->view().dataflowIdentity()};
+  const ArtifactRootReference fabricReference{
+      fabric::fabricArtifactSchema.identity.str(),
+      fabric::fabricArtifactSchema.version,
+      importedMapping->view().fabricIdentity()};
+  const ArtifactRootReference techMappingReference{
+      mapping::mappingArtifactSchema.identity.str(),
+      mapping::mappingArtifactSchema.version,
+      importedMapping->view().techMappingIdentity()};
+  auto inputs =
+      sim::importSpatialSimulationInputs(workload, runtimeInput, artifactStore);
+  if (!inputs)
+    return inputs.takeError();
+  if (inputs->dataflow.identity() != dataflowReference.artifact)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "cgra_simulation_model_invalid: workload names a foreign Dataflow "
+        "owner");
+  auto resolution = buildResolution({dataflowReference, fabricReference,
+                                     techMappingReference, spatialMapping},
+                                    workload, runtimeInput);
+  if (!resolution)
+    return resolution.takeError();
+  return ResolvedCgraSimulationCase{dataflowReference, fabricReference,
+                                    std::move(*resolution)};
+}
+
 llvm::Expected<PreparedCgraSimulationEvaluation>
 prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
                                 const ArtifactRootReference &fabric,

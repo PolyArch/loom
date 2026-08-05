@@ -167,6 +167,29 @@ ArtifactStore publication: immutable objects can survive a failed attempt,
 while only a successful or explicitly incomplete controller invocation owns a
 formal output set.
 
+### Why Candidate-Local Input Selection Is Narrowing
+
+A plan value and an Evaluation case do not always have the same cardinality.
+For example, one Mapping promotion may receive two Canonical Dataflow roots
+`D0` and `D1` plus SpatialMappings `M0` and `M1`, where strict Mapping lineage
+proves `M0 -> D0` and `M1 -> D1`. The CGRA case signature still requires one
+exact Dataflow root for each Mapping candidate. Requiring the complete
+invocation set in every case would create invalid two-program cases; adding a
+second candidate-to-program table would duplicate Mapping lineage.
+
+Loom instead permits the acquisition provider to narrow an already bound
+typed input for one task. The controller proves that the selected value is a
+canonical subset of the original slot, then the ordinary Request verifier
+proves case cardinality and lineage. The provider can recover `D0` from `M0`,
+but it cannot supply `D2`, move a Fabric into the Dataflow slot, or change the
+template's workload. The selection is invocation-local and removable.
+
+This keeps each fact with its existing owner: the plan owns available input
+sets, Mapping owns `M -> D/F`, the acquisition policy owns mechanical task
+resolution, and Evaluation owns the case and Evidence. It also avoids one
+Promote node per runtime-generated candidate without introducing a dynamic
+workflow or persistent association map.
+
 ## Why Invocation Output And Lineage Are Separate
 
 A generator invocation may retain an input unchanged, return several Artifacts

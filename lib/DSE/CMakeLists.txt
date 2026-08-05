@@ -1,6 +1,7 @@
 add_library(LoomDSE
   DataflowEvaluationAcquisition.cpp
   EvidenceObligationSetConfig.cpp
+  SpatialMappingEvaluationAcquisition.cpp
   StructuredEvaluationAcquisition.cpp
   StructuredOwnership.cpp
   StructuredOwnershipInvocation.cpp
@@ -18,6 +19,7 @@ target_link_libraries(LoomDSE PUBLIC
   LoomDSEPolicy
   LoomEvaluation
   LoomFrontendCompilation
+  LoomMappingArtifact
   LoomNativeSimulationOracle
   LoomSimulator
   LoomStructuredFabricAnalyticModel

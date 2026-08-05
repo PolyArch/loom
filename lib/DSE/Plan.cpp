@@ -210,7 +210,8 @@ llvm::Error validateObligationRole(
       role->cardinality == evaluation::SubjectRoleCardinality::ExactlyOne
           ? PlanValueCardinality::ExactlyOne
           : PlanValueCardinality::NonEmptySet;
-  if (!planCardinalityCanFlow(slot.cardinality, required))
+  if (planCardinalityBounds(slot.cardinality).minimum <
+      planCardinalityBounds(required).minimum)
     return invalid("Evidence obligation role and acquisition slot cardinality "
                    "do not match");
   return llvm::Error::success();

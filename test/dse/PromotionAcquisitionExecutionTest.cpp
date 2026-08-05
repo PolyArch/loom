@@ -55,6 +55,7 @@ constexpr EvaluationModelKind modelKind(0x7fff4100);
 constexpr CaseSubjectRoleRef candidateRole(0);
 constexpr CaseSubjectRoleRef contextRole(1);
 constexpr PromotionAcquisitionKind acquisitionKind(0x7fff4100);
+constexpr PromotionAcquisitionKind emptyContextAcquisitionKind(0x7fff4101);
 
 EvaluationCaseSignatureRef signatureRef() {
   return llvm::cantFail(
@@ -193,12 +194,12 @@ constexpr std::array<PromotionAcquisitionInputSlotDescriptor, 2> inputSlots = {{
      PlanValueCardinality::NonEmptySet},
     {PromotionAcquisitionInputSlotRef(1), "context",
      PlanValueRole::CandidateSet, &contextSchema,
-     PlanValueCardinality::ExactlyOne},
+     PlanValueCardinality::NonEmptySet},
 }};
 
 llvm::Error validateAcquisitionConfig(llvm::ArrayRef<std::uint8_t> bytes,
                                       const ComponentViewDigest &digest) {
-  if (bytes.size() != 1 || bytes.front() > 0x02)
+  if (bytes.size() != 1 || bytes.front() > 0x08)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "acquisition config is not canonical");
   return validateComponentViewDigest(acquisitionConfigSchema, bytes, digest);
@@ -206,7 +207,7 @@ llvm::Error validateAcquisitionConfig(llvm::ArrayRef<std::uint8_t> bytes,
 
 llvm::Expected<std::vector<EvidenceObligationTemplateRef>>
 resolveEvidenceObligations(llvm::ArrayRef<std::uint8_t> bytes) {
-  if (bytes.size() != 1 || bytes.front() > 0x02)
+  if (bytes.size() != 1 || bytes.front() > 0x08)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "acquisition config is not canonical");
   if (bytes.front() == 0x01)
@@ -230,10 +231,32 @@ const PromotionAcquisitionDescriptor acquisitionDescriptor{
     &resolveEvidenceObligations,
 };
 
+constexpr std::array<PromotionAcquisitionInputSlotDescriptor, 2>
+    emptyContextInputSlots = {{
+        {PromotionAcquisitionInputSlotRef(0), "candidates",
+         PlanValueRole::CandidateSet, &candidateSchema,
+         PlanValueCardinality::NonEmptySet},
+        {PromotionAcquisitionInputSlotRef(1), "context",
+         PlanValueRole::CandidateSet, &contextSchema,
+         PlanValueCardinality::FiniteSet},
+    }};
+
+const PromotionAcquisitionDescriptor emptyContextAcquisitionDescriptor{
+    emptyContextAcquisitionKind,
+    "test.empty_context_evaluation",
+    "loom.test.empty_context_acquisition.v1",
+    emptyContextInputSlots,
+    PromotionAcquisitionInputSlotRef(0),
+    candidateRole,
+    ResolvedDseConfigViewContract{acquisitionConfigSchema,
+                                  validateAcquisitionConfig},
+    &resolveEvidenceObligations,
+};
+
 std::array<std::uint64_t, 2> resolvedTaskCounts{};
 
 llvm::Expected<PromotionAcquisitionResolutionOutcome>
-resolveCases(const ResolvedPromotionAcquisitionBinding &,
+resolveCases(const ResolvedPromotionAcquisitionBinding &binding,
              llvm::ArrayRef<PromotionAcquisitionInputBinding>,
              llvm::ArrayRef<PromotionEvidenceAcquisitionTask> tasks,
              const ArtifactStore &store) {
@@ -243,21 +266,75 @@ resolveCases(const ResolvedPromotionAcquisitionBinding &,
     if (!task.obligation || task.obligationTemplate.ordinal() > 1 ||
         task.inputBindings.size() != 1 ||
         task.inputBindings.front().slot != EvidenceAcquisitionInputSlotRef(1) ||
-        task.inputBindings.front().artifacts.size() != 1)
+        task.inputBindings.front().artifacts.empty())
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                      "central task projection is malformed");
     ++resolvedTaskCounts[task.obligationTemplate.ordinal()];
-    const ArtifactRootReference &context =
-        task.inputBindings.front().artifacts.front();
     auto candidateBytes = store.get(task.candidate);
     if (!candidateBytes)
       return candidateBytes.takeError();
-    auto contextBytes = store.get(context);
+    const bool taskLocalSelection =
+        task.inputBindings.front().artifacts.size() > 1;
+    const ArtifactRootReference *context = nullptr;
+    if (taskLocalSelection) {
+      const std::uint8_t expected =
+          candidateBytes->bytes().front() == 0x11 ? 0x33 : 0x44;
+      for (const ArtifactRootReference &candidateContext :
+           task.inputBindings.front().artifacts) {
+        auto contextBytes = store.get(candidateContext);
+        if (!contextBytes)
+          return contextBytes.takeError();
+        if (contextBytes->bytes().front() == expected) {
+          context = &candidateContext;
+          break;
+        }
+      }
+    } else {
+      context = &task.inputBindings.front().artifacts.front();
+    }
+    if (!context)
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "candidate context is unavailable");
+    auto contextBytes = store.get(*context);
     if (!contextBytes)
       return contextBytes.takeError();
-    resolved.push_back({0, std::make_shared<const CaseArtifactResolution>(
-                               take(CaseArtifactResolution::get(
-                                   {{task.candidate, {}}, {context, {}}})))});
+    std::optional<std::vector<EvidenceAcquisitionInputBinding>> selectedInputs;
+    if (taskLocalSelection) {
+      switch (binding.canonicalConfigBytes().front()) {
+      case 0x04:
+        selectedInputs = std::vector<EvidenceAcquisitionInputBinding>{
+            {EvidenceAcquisitionInputSlotRef(1), {task.candidate}}};
+        break;
+      case 0x05:
+        selectedInputs = std::vector<EvidenceAcquisitionInputBinding>{};
+        break;
+      case 0x06:
+        selectedInputs = std::vector<EvidenceAcquisitionInputBinding>{
+            {EvidenceAcquisitionInputSlotRef(0), {*context}}};
+        break;
+      case 0x07: {
+        std::vector<ArtifactRootReference> reversed =
+            task.inputBindings.front().artifacts;
+        std::reverse(reversed.begin(), reversed.end());
+        selectedInputs = std::vector<EvidenceAcquisitionInputBinding>{
+            {EvidenceAcquisitionInputSlotRef(1), std::move(reversed)}};
+        break;
+      }
+      case 0x08:
+        selectedInputs = std::vector<EvidenceAcquisitionInputBinding>{
+            {EvidenceAcquisitionInputSlotRef(1), {*context, *context}}};
+        break;
+      default:
+        selectedInputs = std::vector<EvidenceAcquisitionInputBinding>{
+            {EvidenceAcquisitionInputSlotRef(1), {*context}}};
+        break;
+      }
+    }
+    resolved.push_back({0,
+                        std::make_shared<const CaseArtifactResolution>(
+                            take(CaseArtifactResolution::get(
+                                {{task.candidate, {}}, {*context, {}}}))),
+                        std::move(selectedInputs)});
   }
   return PromotionAcquisitionResolutionOutcome{
       CompletedPromotionAcquisitionResolution{std::move(resolved)}};
@@ -317,6 +394,8 @@ void exactTemplateDrivesProductionAcquisition() {
   requireSuccess(registerEvaluationModelDescriptor(modelDescriptor));
   requireSuccess(registerEvaluationModelProvider(modelProvider));
   requireSuccess(registerPromotionAcquisitionDescriptor(acquisitionDescriptor));
+  requireSuccess(registerPromotionAcquisitionDescriptor(
+      emptyContextAcquisitionDescriptor));
   requireSuccess(registerPromotionAcquisitionProvider(acquisitionProvider));
 
   llvm::SmallString<128> directory;
@@ -337,6 +416,24 @@ void exactTemplateDrivesProductionAcquisition() {
   EvidenceObligationTemplate obligation = take(EvidenceObligationTemplate::get(
       makePrototype(first, context, prototypeResolution, store), candidateRole,
       {{contextRole, EvidenceAcquisitionInputSlotRef(1)}}));
+
+  const ComponentViewDigest cardinalityDigest = take(computeComponentViewDigest(
+      acquisitionConfigSchema, llvm::ArrayRef<std::uint8_t>({0x00})));
+  const std::vector<DsePlanNodeDefinition> emptyContextNodes = {
+      PromotePlanNodeDefinition{
+          emptyContextAcquisitionDescriptor.reference(),
+          {ExactPlanArtifacts{candidates}, ExactPlanArtifacts{{context}}},
+          {0x00},
+          cardinalityDigest,
+          QualityGatePolicyRef(0),
+          AllPassingSelection{},
+          PromotePurpose::CandidateSelection}};
+  auto emptyContextPlan = ResolvedDsePlan::get(
+      emptyContextNodes, {obligation}, {}, {take(QualityGatePolicy::get({}))});
+  if (emptyContextPlan)
+    fail("plan accepted a case role from a possibly empty input slot");
+  requireErrorContains(emptyContextPlan.takeError(),
+                       "slot cardinality do not match");
 
   QualityGatePolicy requiredGate = take(QualityGatePolicy::get({{
       {MetricGate{0, MetricRequestOrdinal(0), MetricGateComparator::LE,
@@ -490,10 +587,87 @@ void topKAcquiresOnlyTheRequiredFunctionalPrefix() {
     fail(error.message());
 }
 
+void taskLocalInputSelectionIsVerified() {
+  llvm::SmallString<128> directory;
+  if (std::error_code error = llvm::sys::fs::createUniqueDirectory(
+          "loom-task-local-acquisition-input", directory))
+    fail(error.message());
+  ArtifactStore store(directory);
+  const ArtifactRootReference first =
+      storeArtifact(store, candidateSchema, 0x11);
+  const ArtifactRootReference second =
+      storeArtifact(store, candidateSchema, 0x22);
+  const ArtifactRootReference firstContext =
+      storeArtifact(store, contextSchema, 0x33);
+  const ArtifactRootReference secondContext =
+      storeArtifact(store, contextSchema, 0x44);
+  std::vector<ArtifactRootReference> candidates{first, second};
+  std::vector<ArtifactRootReference> contexts{firstContext, secondContext};
+  llvm::sort(candidates, artifactRootReferenceLess);
+  llvm::sort(contexts, artifactRootReferenceLess);
+  const CaseArtifactResolution resolution = take(CaseArtifactResolution::get(
+      {{first, {}}, {second, {}}, {firstContext, {}}, {secondContext, {}}}));
+  EvidenceObligationTemplate obligation = take(EvidenceObligationTemplate::get(
+      makePrototype(first, firstContext, resolution, store), candidateRole,
+      {{contextRole, EvidenceAcquisitionInputSlotRef(1)}}));
+
+  const std::array<std::uint8_t, 1> configBytes = {0x03};
+  const ComponentViewDigest configDigest =
+      take(computeComponentViewDigest(acquisitionConfigSchema, configBytes));
+  auto binding = take(ResolvedPromotionAcquisitionBinding::get(
+      acquisitionDescriptor.reference(), configBytes, configDigest));
+  const std::vector<PromotionAcquisitionInputBinding> inputs = {
+      {PromotionAcquisitionInputSlotRef(0), candidates},
+      {PromotionAcquisitionInputSlotRef(1), contexts},
+  };
+  const std::array<EvidenceObligationTemplateRef, 1> obligations = {
+      EvidenceObligationTemplateRef(0)};
+  auto outcome = take(invokePromotionAcquisition(
+      inputs, binding, {obligation}, {candidates, obligations}, store));
+  const auto *completed = std::get_if<CompletedPromotionAcquisition>(&outcome);
+  if (!completed || completed->evidence.size() != 2)
+    fail("task-local input selection did not acquire every candidate");
+  for (const PromotionEvidence &evidence : completed->evidence) {
+    const auto candidate =
+        evidence.request.subjectBindings().subjects(candidateRole);
+    const auto context =
+        evidence.request.subjectBindings().subjects(contextRole);
+    if (candidate.size() != 1 || context.size() != 1)
+      fail("task-local input selection changed case cardinality");
+    auto candidateBytes = take(store.get(candidate.front()));
+    auto contextBytes = take(store.get(context.front()));
+    const std::uint8_t expected =
+        candidateBytes.bytes().front() == 0x11 ? 0x33 : 0x44;
+    if (contextBytes.bytes().front() != expected)
+      fail("task-local input selection crossed candidate lineage");
+  }
+
+  auto requireInvalidSelection = [&](std::uint8_t mode, llvm::StringRef error) {
+    const std::array<std::uint8_t, 1> invalidConfigBytes = {mode};
+    const ComponentViewDigest invalidDigest = take(computeComponentViewDigest(
+        acquisitionConfigSchema, invalidConfigBytes));
+    auto invalidBinding = take(ResolvedPromotionAcquisitionBinding::get(
+        acquisitionDescriptor.reference(), invalidConfigBytes, invalidDigest));
+    auto invalid = invokePromotionAcquisition(
+        inputs, invalidBinding, {obligation}, {candidates, obligations}, store);
+    if (invalid)
+      fail("provider malformed task input selection was accepted");
+    requireErrorContains(invalid.takeError(), error);
+  };
+  requireInvalidSelection(0x04, "outside the bound task input");
+  requireInvalidSelection(0x05, "did not select every bound task input slot");
+  requireInvalidSelection(0x06, "changed a bound task input slot");
+  requireInvalidSelection(0x07, "not canonical and unique");
+  requireInvalidSelection(0x08, "not canonical and unique");
+  if (std::error_code error = llvm::sys::fs::remove_directories(directory))
+    fail(error.message());
+}
+
 } // namespace
 
 int main() {
   exactTemplateDrivesProductionAcquisition();
   topKAcquiresOnlyTheRequiredFunctionalPrefix();
+  taskLocalInputSelectionIsVerified();
   return 0;
 }
