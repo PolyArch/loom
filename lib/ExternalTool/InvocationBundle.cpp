@@ -1627,7 +1627,7 @@ importExternalToolInvocationBundle(
   for (const ManifestMaterializedFile &file : manifest->materializedFiles)
     if (file.sourceArtifact)
       semanticInputs.push_back(ExternalToolInvocationSemanticInput{
-          file.relativePath, *file.sourceArtifact});
+          file.relativePath, *file.sourceArtifact, file.contentDigest});
   if (semanticInputs != expectation.semanticInputs)
     return bundleError("invocation semantic inputs do not match importer");
   std::vector<ExternalToolInvocationExternalInput> externalInputs;

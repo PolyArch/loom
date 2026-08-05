@@ -61,11 +61,13 @@ struct InvocationCompletion {
 struct ExternalToolInvocationSemanticInput final {
   std::string relativePath;
   ArtifactRootReference sourceArtifact;
+  BlobDigest contentDigest;
 
   friend bool operator==(const ExternalToolInvocationSemanticInput &lhs,
                          const ExternalToolInvocationSemanticInput &rhs) {
     return lhs.relativePath == rhs.relativePath &&
-           lhs.sourceArtifact == rhs.sourceArtifact;
+           lhs.sourceArtifact == rhs.sourceArtifact &&
+           lhs.contentDigest == rhs.contentDigest;
   }
 };
 

@@ -152,7 +152,7 @@ importExpectation(const ExternalToolInvocationBundleSpec &spec) {
   for (const MaterializedBundleFile &file : spec.files)
     if (file.sourceArtifact)
       expectation.semanticInputs.push_back(
-          {file.relativePath, *file.sourceArtifact});
+          {file.relativePath, *file.sourceArtifact, blobDigest(file.contents)});
   for (const ResolvedExternalFile &file : spec.externalFiles)
     expectation.externalInputs.push_back(
         {file.providerInputSlot, file.fingerprint});
@@ -559,6 +559,28 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
   requireFailure(__func__,
                  importExternalToolInvocationBundle(bundle.string(), wrong),
                  "a wrong semantic input Artifact reference was accepted");
+  wrong = expected;
+  wrong.semanticInputs.front().contentDigest = blobDigest("other-input-bytes");
+  requireFailure(__func__,
+                 importExternalToolInvocationBundle(bundle.string(), wrong),
+                 "a wrong semantic input content digest was accepted");
+
+  const std::filesystem::path substituted = root / "strict-import-substituted";
+  ExternalToolInvocationBundleSpec substitutedSpec = spec;
+  for (MaterializedBundleFile &file : substitutedSpec.files)
+    if (file.sourceArtifact)
+      file.contents = "substituted-input-bytes";
+  take(__func__, finalizeExternalToolInvocationBundle(substituted.string(),
+                                                      substitutedSpec));
+  require(__func__,
+          take(__func__,
+               executeExternalToolInvocationBundle(substituted.string())) == 0,
+          "content-substituted bundle did not execute");
+  requireFailure(
+      __func__,
+      importExternalToolInvocationBundle(substituted.string(), expected),
+      "same-ref semantic input content substitution was accepted");
+
   wrong = expected;
   wrong.declaredOutputs.push_back("outputs/unexpected.txt");
   requireFailure(__func__,
