@@ -93,6 +93,154 @@ static bool verifyDomainBindingRelation() {
          acceptsDomainBindings({0, 0}, {0, 0}, {});
 }
 
+static bool acceptsModuleDomainRelation(
+    loom::fabric::FabricModuleTemplateRef module,
+    ArrayRef<loom::fabric::FabricModuleDomainSlotRef> slots,
+    ArrayRef<loom::fabric::FabricModuleDomainMemberRef> members,
+    ArrayRef<loom::fabric::ModuleDomainAssignment> assignments,
+    fabric::ModuleDomainSlotCounts expectedCounts) {
+  auto counts =
+      fabric::validateModuleDomainRelation(module, slots, members, assignments);
+  if (!counts) {
+    llvm::consumeError(counts.takeError());
+    return false;
+  }
+  return counts->clocks == expectedCounts.clocks &&
+         counts->resets == expectedCounts.resets;
+}
+
+static bool rejectsModuleDomainRelation(
+    loom::fabric::FabricModuleTemplateRef module,
+    ArrayRef<loom::fabric::FabricModuleDomainSlotRef> slots,
+    ArrayRef<loom::fabric::FabricModuleDomainMemberRef> members,
+    ArrayRef<loom::fabric::ModuleDomainAssignment> assignments) {
+  auto counts =
+      fabric::validateModuleDomainRelation(module, slots, members, assignments);
+  if (counts)
+    return false;
+  llvm::consumeError(counts.takeError());
+  return true;
+}
+
+static bool verifyModuleDomainRelation() {
+  using loom::fabric::FabricClockResetKind;
+  using loom::fabric::FabricModuleBoundaryEndpointRef;
+  using loom::fabric::FabricModuleDomainMemberRef;
+  using loom::fabric::FabricModuleDomainSlotRef;
+  using loom::fabric::FabricModulePhysicalOwnerRef;
+  using loom::fabric::FabricModuleTemplateRef;
+  using loom::fabric::FabricPeOccurrenceRef;
+  using loom::fabric::FabricPortDirection;
+  using loom::fabric::ModuleDomainAssignment;
+
+  const FabricModuleTemplateRef module(10);
+  const FabricModuleDomainSlotRef clock0{module, FabricClockResetKind::Clock,
+                                         0};
+  const FabricModuleDomainSlotRef clock1{module, FabricClockResetKind::Clock,
+                                         1};
+  const FabricModuleDomainSlotRef reset0{module, FabricClockResetKind::Reset,
+                                         0};
+  const FabricModuleDomainSlotRef slots[] = {clock0, clock1, reset0};
+
+  const FabricModuleDomainMemberRef boundary = FabricModuleDomainMemberRef::of(
+      FabricModuleBoundaryEndpointRef{module, FabricPortDirection::Input, 0});
+  auto owner = FabricModulePhysicalOwnerRef::create(FabricPeOccurrenceRef(11));
+  if (!owner)
+    return false;
+  const FabricModuleDomainMemberRef internal =
+      FabricModuleDomainMemberRef::of(*owner);
+  const FabricModuleDomainMemberRef members[] = {boundary, internal};
+  const ModuleDomainAssignment assignments[] = {
+      {boundary, clock1},
+      {boundary, reset0},
+      {internal, clock0},
+      {internal, reset0},
+  };
+  if (!acceptsModuleDomainRelation(module, slots, members, assignments, {2, 1}))
+    return false;
+
+  const FabricModuleDomainSlotRef sparseSlots[] = {
+      clock0,
+      FabricModuleDomainSlotRef{module, FabricClockResetKind::Clock, 2},
+      reset0,
+  };
+  const FabricModuleDomainSlotRef foreignSlots[] = {
+      FabricModuleDomainSlotRef{FabricModuleTemplateRef(99),
+                                FabricClockResetKind::Clock, 0},
+      reset0,
+  };
+  const FabricModuleDomainSlotRef duplicateSlots[] = {clock0, clock0, reset0};
+  const FabricModuleDomainSlotRef crossKindUnsortedSlots[] = {clock0, reset0,
+                                                              clock1};
+  const FabricModuleDomainSlotRef unknownKindSlots[] = {
+      FabricModuleDomainSlotRef{module, static_cast<FabricClockResetKind>(2),
+                                0},
+  };
+  const FabricModuleDomainMemberRef foreignBoundary =
+      FabricModuleDomainMemberRef::of(FabricModuleBoundaryEndpointRef{
+          FabricModuleTemplateRef(99), FabricPortDirection::Input, 0});
+  const FabricModuleDomainMemberRef unsortedMembers[] = {internal, boundary};
+  const FabricModuleDomainMemberRef duplicateMembers[] = {boundary, boundary};
+  const ModuleDomainAssignment missingReset[] = {
+      {boundary, clock1},
+      {internal, clock0},
+      {internal, reset0},
+  };
+  const ModuleDomainAssignment duplicateClock[] = {
+      {boundary, clock0},
+      {boundary, clock1},
+      {internal, clock0},
+      {internal, reset0},
+  };
+  const ModuleDomainAssignment wrongModule[] = {
+      {boundary, clock1},
+      {boundary, FabricModuleDomainSlotRef{FabricModuleTemplateRef(99),
+                                           FabricClockResetKind::Reset, 0}},
+      {internal, clock0},
+      {internal, reset0},
+  };
+  const ModuleDomainAssignment outOfRangeSlot[] = {
+      {boundary,
+       FabricModuleDomainSlotRef{module, FabricClockResetKind::Clock, 2}},
+      {boundary, reset0},
+      {internal, clock0},
+      {internal, reset0},
+  };
+  const ModuleDomainAssignment unknownMember[] = {
+      {boundary, clock1},
+      {boundary, reset0},
+      {foreignBoundary, clock0},
+      {foreignBoundary, reset0},
+  };
+  const ModuleDomainAssignment unsortedAssignments[] = {
+      {boundary, reset0},
+      {boundary, clock1},
+      {internal, clock0},
+      {internal, reset0},
+  };
+
+  return rejectsModuleDomainRelation(module, sparseSlots, members,
+                                     assignments) &&
+         rejectsModuleDomainRelation(module, foreignSlots, members,
+                                     assignments) &&
+         rejectsModuleDomainRelation(module, duplicateSlots, {}, {}) &&
+         rejectsModuleDomainRelation(module, crossKindUnsortedSlots, {}, {}) &&
+         rejectsModuleDomainRelation(module, unknownKindSlots, {}, {}) &&
+         rejectsModuleDomainRelation(module, slots, unsortedMembers,
+                                     assignments) &&
+         rejectsModuleDomainRelation(module, slots, duplicateMembers,
+                                     assignments) &&
+         rejectsModuleDomainRelation(module, slots, {foreignBoundary}, {}) &&
+         rejectsModuleDomainRelation(module, slots, members, missingReset) &&
+         rejectsModuleDomainRelation(module, slots, members, duplicateClock) &&
+         rejectsModuleDomainRelation(module, slots, members, wrongModule) &&
+         rejectsModuleDomainRelation(module, slots, members, outOfRangeSlot) &&
+         rejectsModuleDomainRelation(module, slots, members, unknownMember) &&
+         rejectsModuleDomainRelation(module, slots, members,
+                                     unsortedAssignments) &&
+         acceptsModuleDomainRelation(module, slots, {}, {}, {2, 1});
+}
+
 static constexpr StringLiteral input = R"mlir(
 module {
   fabric.module @producer(%arg : !fabric.bits<8>) -> (!fabric.bits<8>) {
@@ -207,7 +355,7 @@ static bool verifyFailureAtomicity(MLIRContext &context) {
 }
 
 int main() {
-  if (!verifyDomainBindingRelation())
+  if (!verifyDomainBindingRelation() || !verifyModuleDomainRelation())
     return 1;
 
   MLIRContext context(MLIRContext::Threading::DISABLED);

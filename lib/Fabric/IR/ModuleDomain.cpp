@@ -1,11 +1,14 @@
 #include "Fabric/IR/ModuleDomain.h"
 
+#include "Fabric/Identity/FabricRefBytes.h"
+
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 
 #include <cstddef>
 #include <limits>
 #include <system_error>
+#include <variant>
 
 namespace fabric {
 namespace {
@@ -27,7 +30,92 @@ std::uint32_t slotCount(ModuleDomainSlotCounts counts,
   return 0;
 }
 
+template <typename Ref>
+bool isCanonicalStrictlyIncreasing(llvm::ArrayRef<Ref> values) {
+  if (values.empty())
+    return true;
+  std::vector<std::uint8_t> previous =
+      loom::fabric::canonicalFabricBytes(values.front());
+  for (const Ref &value : values.drop_front()) {
+    std::vector<std::uint8_t> current =
+        loom::fabric::canonicalFabricBytes(value);
+    if (!(previous < current))
+      return false;
+    previous = std::move(current);
+  }
+  return true;
+}
+
 } // namespace
+
+llvm::Expected<ModuleDomainSlotCounts> validateModuleDomainRelation(
+    loom::fabric::FabricModuleTemplateRef module,
+    llvm::ArrayRef<loom::fabric::FabricModuleDomainSlotRef> slots,
+    llvm::ArrayRef<loom::fabric::FabricModuleDomainMemberRef> members,
+    llvm::ArrayRef<loom::fabric::ModuleDomainAssignment> assignments) {
+  for (const loom::fabric::FabricModuleDomainSlotRef &slot : slots)
+    if (static_cast<std::uint32_t>(slot.kind) >=
+        loom::fabric::fabricClosedBound(loom::fabric::FabricClockResetKind{}))
+      return invalid("slot inventory contains an unknown kind");
+  if (!isCanonicalStrictlyIncreasing(slots))
+    return invalid("slot inventory is not canonical sorted-unique");
+  if (!isCanonicalStrictlyIncreasing(members))
+    return invalid("derived member inventory is not canonical sorted-unique");
+  if (!isCanonicalStrictlyIncreasing(assignments))
+    return invalid("assignment relation is not canonical sorted-unique");
+
+  ModuleDomainSlotCounts counts;
+  for (loom::fabric::FabricClockResetKind kind :
+       {loom::fabric::FabricClockResetKind::Clock,
+        loom::fabric::FabricClockResetKind::Reset}) {
+    std::uint32_t ordinal = 0;
+    for (const loom::fabric::FabricModuleDomainSlotRef &slot : slots) {
+      if (slot.kind != kind)
+        continue;
+      if (slot.module != module)
+        return invalid("slot inventory names a foreign Module");
+      if (slot.ordinal != ordinal)
+        return invalid("slot inventory is not dense within its kind");
+      if (ordinal == std::numeric_limits<std::uint32_t>::max())
+        return invalid("slot inventory exceeds the supported cardinality");
+      ++ordinal;
+    }
+    if (kind == loom::fabric::FabricClockResetKind::Clock)
+      counts.clocks = ordinal;
+    else
+      counts.resets = ordinal;
+  }
+
+  for (const loom::fabric::FabricModuleDomainMemberRef &member : members) {
+    if (member.kind() != loom::fabric::FabricModuleDomainMemberKind::Boundary)
+      continue;
+    const auto &boundary =
+        std::get<loom::fabric::FabricModuleBoundaryEndpointRef>(member.payload);
+    if (boundary.module != module)
+      return invalid("derived boundary member names a foreign Module");
+  }
+
+  if (members.size() > std::numeric_limits<std::size_t>::max() / 2 ||
+      assignments.size() != members.size() * 2)
+    return invalid("assignment count is not total over Module members");
+
+  for (auto [index, member] : llvm::enumerate(members)) {
+    const loom::fabric::ModuleDomainAssignment &clock = assignments[index * 2];
+    const loom::fabric::ModuleDomainAssignment &reset =
+        assignments[index * 2 + 1];
+    if (clock.member != member || reset.member != member)
+      return invalid("assignment relation does not match the member inventory");
+    if (clock.slot.module != module || reset.slot.module != module)
+      return invalid("assignment selects a foreign Module slot");
+    if (clock.slot.kind != loom::fabric::FabricClockResetKind::Clock ||
+        reset.slot.kind != loom::fabric::FabricClockResetKind::Reset)
+      return invalid("each member must have one Clock and one Reset row");
+    if (clock.slot.ordinal >= counts.clocks ||
+        reset.slot.ordinal >= counts.resets)
+      return invalid("assignment selects an out-of-range Module slot");
+  }
+  return counts;
+}
 
 llvm::Error validateModuleInstanceDomainSlotBindings(
     ModuleDomainSlotCounts child, ModuleDomainSlotCounts parent,

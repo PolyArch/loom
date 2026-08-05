@@ -38,6 +38,16 @@ struct ModuleInstanceDomainSlotBinding final {
   }
 };
 
+/// Validates one finalized Module's only symbolic domain relation and returns
+/// the dense slot counts consumed by instance-edge validation. `members` is a
+/// transient projection mechanically derived from the Module boundary and
+/// canonical physical topology; it is not a second persistent inventory.
+llvm::Expected<ModuleDomainSlotCounts> validateModuleDomainRelation(
+    loom::fabric::FabricModuleTemplateRef module,
+    llvm::ArrayRef<loom::fabric::FabricModuleDomainSlotRef> slots,
+    llvm::ArrayRef<loom::fabric::FabricModuleDomainMemberRef> members,
+    llvm::ArrayRef<loom::fabric::ModuleDomainAssignment> assignments);
+
 /// Validates the exact canonical total relation for one Module instance.
 /// Rows are ordered and unique by (kind, childSlotOrdinal). Several child
 /// slots may select the same parent slot.
