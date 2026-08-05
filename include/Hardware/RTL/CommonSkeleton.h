@@ -12,6 +12,8 @@
 #include "llvm/Support/Error.h"
 
 #include <string>
+#include <system_error>
+#include <utility>
 
 namespace loom::hardware::rtl {
 
@@ -32,6 +34,26 @@ struct FabricOperationLeafAssociation final {
 struct ModuleRootCirctSkeleton final {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::vector<FabricOperationLeafAssociation> operationLeaves;
+};
+
+/// A valid finalized Fabric whose structural requirements are outside the
+/// target-independent lowerer's supported domain. This is distinct from an
+/// invalid Fabric, ABI mismatch, or malformed CIRCT module.
+class FabricStructuralLoweringUnsupportedError final
+    : public llvm::ErrorInfo<FabricStructuralLoweringUnsupportedError> {
+public:
+  static char ID;
+
+  explicit FabricStructuralLoweringUnsupportedError(std::string reason)
+      : reason_(std::move(reason)) {}
+
+  llvm::StringRef reason() const { return reason_; }
+
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  std::string reason_;
 };
 
 /// Builds one target-independent CIRCT module from a finalized Fabric Module

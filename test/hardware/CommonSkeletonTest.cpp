@@ -78,6 +78,26 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value,
   expectError(test, value.takeError(), expected);
 }
 
+template <typename T>
+void expectStructuralUnsupported(llvm::StringRef test,
+                                 llvm::Expected<T> value) {
+  if (value)
+    fail(test, "accepted unsupported Fabric structural topology");
+  std::string reason;
+  std::string unexpected;
+  llvm::handleAllErrors(
+      value.takeError(),
+      [&](const loom::hardware::rtl::FabricStructuralLoweringUnsupportedError
+              &error) { reason = error.reason().str(); },
+      [&](const llvm::ErrorInfoBase &error) {
+        llvm::raw_string_ostream stream(unexpected);
+        error.log(stream);
+      });
+  require(test, unexpected.empty(),
+          "unsupported topology returned the wrong typed error: " + unexpected);
+  require(test, !reason.empty(), "unsupported topology has no diagnostic");
+}
+
 class TemporaryDirectory final {
 public:
   explicit TemporaryDirectory(llvm::StringRef test) : test_(test.str()) {
@@ -312,6 +332,35 @@ void commonSkeletonRejectsUnresolvedOrUnboundLeaves() {
           *module, fabric.view(), abi.abi(), association))
     fail(test, llvm::toString(std::move(error)));
 
+  const circt::hw::PortInfo unresolvedInput{
+      {builder.getStringAttr("input"), builder.getI1Type(),
+       circt::hw::ModulePort::Direction::Input}};
+  const circt::hw::PortInfo unresolvedOutput{
+      {builder.getStringAttr("output"), builder.getI1Type(),
+       circt::hw::ModulePort::Direction::Output}};
+  auto unresolvedTop = circt::hw::HWModuleOp::create(
+      builder, location, builder.getStringAttr("unresolved_structural_top"),
+      circt::hw::ModulePortInfo({unresolvedInput}, {unresolvedOutput}),
+      [&](mlir::OpBuilder &bodyBuilder,
+          circt::hw::HWModulePortAccessor &accessor) {
+        llvm::SmallVector<mlir::Type> resultTypes{bodyBuilder.getI1Type()};
+        llvm::SmallVector<mlir::Value> operands{accessor.getInput("input")};
+        auto unresolved = mlir::UnrealizedConversionCastOp::create(
+            bodyBuilder, location, resultTypes, operands);
+        accessor.setOutput("output", unresolved.getResult(0));
+      });
+  expectError(test,
+              loom::hardware::rtl::verifyCommonCirctSkeleton(
+                  *module, fabric.view(), abi.abi(), association),
+              "unresolved structural lowering");
+  expectError(test, loom::hardware::rtl::verifySpecializedCirctModule(*module),
+              "unresolved structural lowering");
+  expectError(
+      test,
+      loom::hardware::rtl::lowerAndExportSpecializedSystemVerilog(*module),
+      "unresolved structural lowering");
+  unresolvedTop.erase();
+
   const circt::hw::ModuleType exactLeafType = leaf.getModuleType();
   std::vector<circt::hw::ModulePort> wrongLeafPorts;
   wrongLeafPorts.reserve(operationPorts.size());
@@ -489,6 +538,9 @@ std::string moduleBoundaryPassthroughBuildsDeterministicSkeleton() {
   FinalizedFabricRoot operationFabric = makeOperationFabric(test, store);
   FinalizedConfigurationABI operationAbi =
       makeEmptyConfigurationAbi(test, store, operationFabric);
+  expectStructuralUnsupported(
+      test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                secondContext, operationFabric.view(), operationAbi.abi()));
   expectError(test,
               loom::hardware::rtl::buildModuleRootCirctSkeleton(
                   secondContext, fabric.view(), operationAbi.abi()),

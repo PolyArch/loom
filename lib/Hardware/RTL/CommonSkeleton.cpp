@@ -19,6 +19,18 @@
 #include <vector>
 
 namespace loom::hardware::rtl {
+char FabricStructuralLoweringUnsupportedError::ID = 0;
+
+void FabricStructuralLoweringUnsupportedError::log(
+    llvm::raw_ostream &stream) const {
+  stream << "rtl_structural_lowering_unsupported: " << reason_;
+}
+
+std::error_code
+FabricStructuralLoweringUnsupportedError::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
+}
+
 namespace {
 
 llvm::Error skeletonError(const llvm::Twine &message) {
@@ -81,6 +93,15 @@ llvm::Error verifyNoUnresolvedFabricOperationLeaves(mlir::ModuleOp module) {
   return llvm::Error::success();
 }
 
+llvm::Error verifyNoUnresolvedStructuralLowering(mlir::ModuleOp module) {
+  bool unresolved = false;
+  module.walk([&](mlir::UnrealizedConversionCastOp) { unresolved = true; });
+  if (unresolved)
+    return skeletonError("unresolved structural lowering remains in CIRCT "
+                         "module");
+  return llvm::Error::success();
+}
+
 struct BoundaryPassthroughPlan final {
   const ModuleBoundaryTransportPortProjection *input;
   const ModuleBoundaryTransportPortProjection *output;
@@ -123,8 +144,8 @@ buildModuleRootCirctSkeleton(mlir::MLIRContext &context,
       !fabric.switchOccurrences().empty() ||
       !fabric.fifoOccurrences().empty() ||
       !fabric.boundaryOccurrences().empty())
-    return skeletonError(
-        "Module boundary constructor accepts no internal resource structure");
+    return llvm::make_error<FabricStructuralLoweringUnsupportedError>(
+        "internal Fabric structure has no complete structural lowering");
 
   mlir::OpBuilder builder(&context);
   auto projections = deriveModuleBoundaryTransportPorts(builder, fabric);
@@ -255,6 +276,8 @@ llvm::Error verifyCommonCirctSkeleton(
     return error;
   if (mlir::failed(mlir::verify(module)))
     return skeletonError("common CIRCT module does not verify");
+  if (llvm::Error error = verifyNoUnresolvedStructuralLowering(module))
+    return error;
 
   std::set<mlir::Operation *> declaredLeaves;
   bool hasInvalidSchema = false;
@@ -346,6 +369,8 @@ lowerAndExportSpecializedSystemVerilog(mlir::ModuleOp module) {
 llvm::Error verifySpecializedCirctModule(mlir::ModuleOp module) {
   if (mlir::failed(mlir::verify(module)))
     return skeletonError("specialized CIRCT module does not verify");
+  if (llvm::Error error = verifyNoUnresolvedStructuralLowering(module))
+    return error;
   return verifyNoUnresolvedFabricOperationLeaves(module);
 }
 
