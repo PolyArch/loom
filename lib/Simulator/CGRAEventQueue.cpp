@@ -58,22 +58,23 @@ std::optional<SpatialEventCoordinate> CgraEventQueue::nextCoordinate() const {
   return heap_.front().order.coordinate;
 }
 
-llvm::Expected<std::optional<CgraEventFrame>> CgraEventQueue::popNextFrame() {
+llvm::Expected<std::optional<CgraEventFrameView>>
+CgraEventQueue::popNextFrameView() {
+  frameEvents_.clear();
   if (heap_.empty())
-    return std::optional<CgraEventFrame>{};
+    return std::optional<CgraEventFrameView>{};
 
   CgraScheduledEvent first = popMinimum(heap_);
-  CgraEventFrame frame{first.order.coordinate, {}};
-  frame.events.push_back(std::move(first));
-  while (!heap_.empty() &&
-         compareSpatialEventCoordinates(heap_.front().order.coordinate,
-                                        frame.coordinate) == 0)
-    frame.events.push_back(popMinimum(heap_));
+  const SpatialEventCoordinate coordinate = first.order.coordinate;
+  frameEvents_.push_back(std::move(first));
+  while (!heap_.empty() && compareSpatialEventCoordinates(
+                               heap_.front().order.coordinate, coordinate) == 0)
+    frameEvents_.push_back(popMinimum(heap_));
 
-  for (std::size_t ordinal = 1; ordinal < frame.events.size(); ++ordinal)
-    if (compareEventKeys(frame.events[ordinal - 1].order,
-                         frame.events[ordinal].order) == 0) {
-      const CgraEventOrderKey &key = frame.events[ordinal].order;
+  for (std::size_t ordinal = 1; ordinal < frameEvents_.size(); ++ordinal)
+    if (compareEventKeys(frameEvents_[ordinal - 1].order,
+                         frameEvents_[ordinal].order) == 0) {
+      const CgraEventOrderKey &key = frameEvents_[ordinal].order;
       return llvm::createStringError(
           std::errc::invalid_argument,
           "%s queue contains duplicate key action=%llu "
@@ -84,7 +85,8 @@ llvm::Expected<std::optional<CgraEventFrame>> CgraEventQueue::popNextFrame() {
           key.ownerEventOrdinal,
           static_cast<unsigned long long>(key.coordinate.delta));
     }
-  return std::optional<CgraEventFrame>(std::move(frame));
+  return std::optional<CgraEventFrameView>(
+      CgraEventFrameView{coordinate, frameEvents_});
 }
 
 } // namespace loom::sim

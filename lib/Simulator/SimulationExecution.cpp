@@ -16,6 +16,15 @@ namespace loom::sim {
 
 int compareSpatialEventCoordinates(const SpatialEventCoordinate &lhs,
                                    const SpatialEventCoordinate &rhs) {
+  if (lhs.referenceCycle.denominator() == rhs.referenceCycle.denominator()) {
+    if (lhs.referenceCycle.numerator() != rhs.referenceCycle.numerator())
+      return lhs.referenceCycle.numerator() < rhs.referenceCycle.numerator()
+                 ? -1
+                 : 1;
+    if (lhs.delta == rhs.delta)
+      return 0;
+    return lhs.delta < rhs.delta ? -1 : 1;
+  }
   using u128 = unsigned __int128;
   const u128 lhsScaled = static_cast<u128>(lhs.referenceCycle.numerator()) *
                          rhs.referenceCycle.denominator();

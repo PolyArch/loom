@@ -44,8 +44,9 @@ struct SpatialEventCoordinate {
   std::uint64_t delta = 0;
 };
 
-/// Exact numeric and delta order: negative, zero, or positive. Products are
-/// evaluated in unsigned 128-bit arithmetic, which exactly contains u64*u64.
+/// Exact numeric and delta order: negative, zero, or positive. Equal
+/// denominators compare their canonical numerators directly; other products
+/// use unsigned 128-bit arithmetic, which exactly contains u64*u64.
 int compareSpatialEventCoordinates(const SpatialEventCoordinate &lhs,
                                    const SpatialEventCoordinate &rhs);
 

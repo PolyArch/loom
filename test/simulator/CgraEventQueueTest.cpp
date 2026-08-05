@@ -53,7 +53,7 @@ void exactCoordinatesAndStructuralKeysDetermineOrder() {
       firstCoordinate->delta != 0 || queue.size() != 6)
     fail("next-coordinate projection consumed or reordered the queue");
 
-  auto first = take(queue.popNextFrame());
+  auto first = take(queue.popNextFrameView());
   if (!first || first->events.size() != 4 ||
       first->coordinate.referenceCycle !=
           take(loom::evaluation::ExactRatio::get(1, 2)) ||
@@ -63,13 +63,14 @@ void exactCoordinatesAndStructuralKeysDetermineOrder() {
     if (first->events[ordinal].payload != ordinal + 1)
       fail("same-coordinate events ignored structural ordering");
 
-  auto second = take(queue.popNextFrame());
-  auto third = take(queue.popNextFrame());
+  auto second = take(queue.popNextFrameView());
   if (!second || second->events.size() != 1 ||
-      second->events.front().payload != 6 || !third ||
-      third->events.size() != 1 || third->events.front().payload != 5)
-    fail("delta or exact rational order changed");
-  if (take(queue.popNextFrame()))
+      second->events.front().payload != 6)
+    fail("delta order changed");
+  auto third = take(queue.popNextFrameView());
+  if (!third || third->events.size() != 1 || third->events.front().payload != 5)
+    fail("exact rational order changed");
+  if (take(queue.popNextFrameView()))
     fail("empty event queue returned a frame");
 }
 
@@ -77,7 +78,7 @@ void duplicateCanonicalEventKeyIsRejected() {
   loom::sim::CgraEventQueue queue;
   queue.schedule(event(coordinate(7, 1), 4, 9, 2, 1));
   queue.schedule(event(coordinate(7, 1), 4, 9, 2, 2));
-  auto frame = queue.popNextFrame();
+  auto frame = queue.popNextFrameView();
   if (frame)
     fail("duplicate canonical event key was accepted");
   llvm::consumeError(frame.takeError());

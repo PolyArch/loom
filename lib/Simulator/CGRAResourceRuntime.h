@@ -4,6 +4,7 @@
 #include "Fabric/IR/ResourceContract.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -103,8 +104,8 @@ public:
   static llvm::Expected<CgraResourceRuntime>
   create(const CgraResourceRuntimePlan &plan);
 
-  llvm::Expected<std::vector<CgraResourceGrant>>
-  grant(llvm::ArrayRef<CgraResourceRequest> requests);
+  llvm::Error grant(llvm::ArrayRef<CgraResourceRequest> requests,
+                    llvm::SmallVectorImpl<CgraResourceGrant> &grants);
 
   llvm::Error release(CgraClaimEnvelope envelope);
 

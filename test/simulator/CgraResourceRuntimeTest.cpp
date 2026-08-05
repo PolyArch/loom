@@ -2,6 +2,7 @@
 
 #include "Fabric/IR/ResourceContract.h"
 
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -97,21 +98,31 @@ void atomicClaimsAndRoundRobinAreExecutedExactly() {
 
   const loom::sim::detail::CgraResourceRequest firstRequests[] = {{0, 0},
                                                                   {1, 0}};
-  const auto first = take(runtime.grant(firstRequests));
+  llvm::SmallVector<loom::sim::detail::CgraResourceGrant, 4> grants;
+  if (llvm::Error error = runtime.grant(firstRequests, grants))
+    fail(llvm::toString(std::move(error)));
+  const auto first = grants;
   if (first.size() != 1 || first.front().selectedUseOrdinal != 1 ||
       runtime.occupancy(0) != 1 || runtime.occupancy(1) != 1)
     fail("round-robin reset or atomic claim envelope changed");
 
   const loom::sim::detail::CgraResourceRequest blockedRequest{0, 0};
-  if (!take(runtime.grant({blockedRequest})).empty())
+  const std::size_t reusableCapacity = grants.capacity();
+  if (llvm::Error error = runtime.grant({blockedRequest}, grants))
+    fail(llvm::toString(std::move(error)));
+  if (!grants.empty())
     fail("an unavailable claim envelope was partially granted");
+  if (grants.capacity() != reusableCapacity)
+    fail("grant discarded caller-owned result storage");
 
   if (llvm::Error error = runtime.release(first.front().claimEnvelope))
     fail(llvm::toString(std::move(error)));
   if (runtime.occupancy(0) != 0 || runtime.occupancy(1) != 0)
     fail("release did not return the complete claim envelope");
 
-  const auto second = take(runtime.grant({blockedRequest}));
+  if (llvm::Error error = runtime.grant({blockedRequest}, grants))
+    fail(llvm::toString(std::move(error)));
+  const auto second = grants;
   if (second.size() != 1 || second.front().selectedUseOrdinal != 0)
     fail("round-robin did not advance after the successful grant");
 }
@@ -130,7 +141,9 @@ void derivedActivationAcquiresSharedClaimsOnce() {
     fail("derived activation did not union its exact claim envelope");
 
   auto runtime = take(loom::sim::detail::CgraResourceRuntime::create(plan));
-  const auto grants = take(runtime.grant({{0, 0}}));
+  llvm::SmallVector<loom::sim::detail::CgraResourceGrant, 4> grants;
+  if (llvm::Error error = runtime.grant({{0, 0}}, grants))
+    fail(llvm::toString(std::move(error)));
   if (grants.size() != 1 || runtime.occupancy(0) != 1 ||
       runtime.occupancy(1) != 1 || runtime.occupancy(2) != 1)
     fail("derived activation was partially acquired");

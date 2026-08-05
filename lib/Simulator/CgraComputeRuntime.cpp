@@ -431,7 +431,7 @@ CgraComputeRuntime::advance() {
 
   CgraComputeLifecycleFrame frame{*coordinate, {}, {}, {}, {}};
   if (isAt(requestedEvents_.nextCoordinate(), *coordinate)) {
-    auto requested = requestedEvents_.popNextFrame();
+    auto requested = requestedEvents_.popNextFrameView();
     if (!requested)
       return requested.takeError();
     for (const CgraScheduledEvent &event : (**requested).events)
@@ -443,7 +443,7 @@ CgraComputeRuntime::advance() {
 
   llvm::SmallVector<std::uint64_t, 4> committedFirings;
   if (isAt(actorCommitEvents_.nextCoordinate(), *coordinate)) {
-    auto commits = actorCommitEvents_.popNextFrame();
+    auto commits = actorCommitEvents_.popNextFrameView();
     if (!commits)
       return commits.takeError();
     for (const CgraScheduledEvent &event : (**commits).events) {

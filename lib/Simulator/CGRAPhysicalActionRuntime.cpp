@@ -176,13 +176,13 @@ CgraPhysicalActionRuntime::requestBatch(
 
 llvm::Expected<std::optional<CgraPhysicalLifecycleFrame>>
 CgraPhysicalActionRuntime::advance() {
-  auto next = events_.popNextFrame();
+  auto next = events_.popNextFrameView();
   if (!next)
     return next.takeError();
   if (!*next)
     return std::optional<CgraPhysicalLifecycleFrame>{};
 
-  CgraEventFrame internal = std::move(**next);
+  const CgraEventFrameView internal = **next;
   lastCoordinate_ = internal.coordinate;
   CgraPhysicalLifecycleFrame result{internal.coordinate, {}};
 
@@ -262,13 +262,13 @@ CgraPhysicalActionRuntime::advance() {
   }
 
   if (!requests.empty()) {
-    auto grants = resources_.grant(requests);
-    if (!grants)
-      return grants.takeError();
+    llvm::SmallVector<CgraResourceGrant, 8> grants;
+    if (llvm::Error error = resources_.grant(requests, grants))
+      return std::move(error);
     llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, CgraClaimEnvelope>
         granted;
-    granted.reserve(grants->size());
-    for (const CgraResourceGrant &grant : *grants)
+    granted.reserve(grants.size());
+    for (const CgraResourceGrant &grant : grants)
       granted.try_emplace(
           std::make_pair(grant.selectedUseOrdinal, grant.occurrenceOrdinal),
           grant.claimEnvelope);

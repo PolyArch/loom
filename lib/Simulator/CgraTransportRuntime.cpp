@@ -1373,7 +1373,7 @@ CgraTransportRuntime::advance() {
 
   CgraTransportFrame frame{*coordinate, {}, {}, {}, {}};
   if (isAt(requestedEvents_.nextCoordinate(), *coordinate)) {
-    auto requested = requestedEvents_.popNextFrame();
+    auto requested = requestedEvents_.popNextFrameView();
     if (!requested)
       return requested.takeError();
     for (const CgraScheduledEvent &event : (**requested).events)
@@ -1384,7 +1384,7 @@ CgraTransportRuntime::advance() {
   }
 
   if (isAt(traversalEvents_.nextCoordinate(), *coordinate)) {
-    auto traversals = traversalEvents_.popNextFrame();
+    auto traversals = traversalEvents_.popNextFrameView();
     if (!traversals)
       return traversals.takeError();
     llvm::SmallVector<PendingActionTransfer, 4> transfers;
@@ -1421,7 +1421,7 @@ CgraTransportRuntime::advance() {
   }
 
   if (isAt(storageEvents_.nextCoordinate(), *coordinate)) {
-    auto storageFrame = storageEvents_.popNextFrame();
+    auto storageFrame = storageEvents_.popNextFrameView();
     if (!storageFrame)
       return storageFrame.takeError();
     for (const CgraScheduledEvent &event : (**storageFrame).events) {
@@ -1669,7 +1669,7 @@ CgraTransportRuntime::advance() {
   }
 
   if (isAt(arrivalEvents_.nextCoordinate(), *coordinate)) {
-    auto arrivals = arrivalEvents_.popNextFrame();
+    auto arrivals = arrivalEvents_.popNextFrameView();
     if (!arrivals)
       return arrivals.takeError();
     llvm::SmallVector<PendingActionTransfer, 4> transfers;
@@ -1705,7 +1705,7 @@ CgraTransportRuntime::advance() {
   }
 
   if (isAt(events_.nextCoordinate(), *coordinate)) {
-    auto publications = events_.popNextFrame();
+    auto publications = events_.popNextFrameView();
     if (!publications)
       return publications.takeError();
     for (const CgraScheduledEvent &event : (**publications).events) {

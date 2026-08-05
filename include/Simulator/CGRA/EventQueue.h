@@ -3,6 +3,7 @@
 
 #include "Simulator/SimulationExecution.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
@@ -32,9 +33,9 @@ struct CgraScheduledEvent final {
   std::uint64_t payload = 0;
 };
 
-struct CgraEventFrame final {
+struct CgraEventFrameView final {
   SpatialEventCoordinate coordinate;
-  std::vector<CgraScheduledEvent> events;
+  llvm::ArrayRef<CgraScheduledEvent> events;
 };
 
 /// Min-heap event calendar with exact rational coordinates. Equal-coordinate
@@ -49,7 +50,8 @@ public:
 
   std::optional<SpatialEventCoordinate> nextCoordinate() const;
 
-  llvm::Expected<std::optional<CgraEventFrame>> popNextFrame();
+  /// The returned event view remains valid until the next pop on this queue.
+  llvm::Expected<std::optional<CgraEventFrameView>> popNextFrameView();
 
   bool empty() const { return heap_.empty(); }
   std::size_t size() const { return heap_.size(); }
@@ -57,6 +59,7 @@ public:
 private:
   std::string owner_;
   std::vector<CgraScheduledEvent> heap_;
+  std::vector<CgraScheduledEvent> frameEvents_;
 };
 
 } // namespace loom::sim

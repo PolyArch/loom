@@ -350,11 +350,13 @@ CgraResourceRuntime::create(const CgraResourceRuntimePlan &plan) {
   return result;
 }
 
-llvm::Expected<std::vector<CgraResourceGrant>>
-CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests) {
+llvm::Error
+CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests,
+                           llvm::SmallVectorImpl<CgraResourceGrant> &grants) {
   if (!plan_)
     return invalid("CGRA resource runtime has no static plan");
-  std::vector<PendingRequest> pending;
+  grants.clear();
+  llvm::SmallVector<PendingRequest, 8> pending;
   pending.reserve(requests.size());
   for (const CgraResourceRequest &request : requests) {
     if (request.selectedUseOrdinal >= plan_->selectedUses.size())
@@ -425,7 +427,6 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests) {
                              {slot, 1}};
   };
 
-  std::vector<CgraResourceGrant> grants;
   grants.reserve(requests.size());
   std::size_t first = 0;
   while (first != pending.size()) {
@@ -443,8 +444,8 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests) {
     if (domainOrdinal >= plan_->domains.size())
       return invalid("CGRA resource request has an unknown domain");
     const CgraResourceDomainPlan &domain = plan_->domains[domainOrdinal];
-    std::vector<std::size_t> begins(domain.requesterCount, last);
-    std::vector<std::size_t> ends(domain.requesterCount, last);
+    llvm::SmallVector<std::size_t, 8> begins(domain.requesterCount, last);
+    llvm::SmallVector<std::size_t, 8> ends(domain.requesterCount, last);
     for (std::size_t ordinal = first; ordinal != last; ++ordinal) {
       const std::uint32_t requester = pending[ordinal].requesterPosition;
       if (requester >= domain.requesterCount)
@@ -453,12 +454,12 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests) {
         begins[requester] = ordinal;
       ends[requester] = ordinal + 1;
     }
-    std::vector<std::size_t> current = begins;
+    llvm::SmallVector<std::size_t, 8> current = begins;
 
     if (domain.policy == CgraGrantPolicyKind::None &&
         domain.requesterCount > 1) {
-      std::vector<std::uint64_t> added(plan_->dimensions.size(), 0);
-      std::vector<std::uint64_t> touched;
+      llvm::SmallVector<std::uint64_t, 8> added(plan_->dimensions.size(), 0);
+      llvm::SmallVector<std::uint64_t, 8> touched;
       for (std::size_t ordinal = first; ordinal != last; ++ordinal) {
         const CgraResourceUsePlan &use =
             plan_->selectedUses[pending[ordinal].request.selectedUseOrdinal];
@@ -493,7 +494,7 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests) {
         }
     } else {
       std::uint32_t &cursor = domainCursors_[domainOrdinal];
-      std::vector<bool> blocked(domain.requesterCount, false);
+      llvm::SmallVector<bool, 8> blocked(domain.requesterCount, false);
       while (true) {
         bool granted = false;
         for (std::uint32_t scanned = 0; scanned != domain.requesterCount;
@@ -519,7 +520,7 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests) {
     }
     first = last;
   }
-  return grants;
+  return llvm::Error::success();
 }
 
 llvm::Error CgraResourceRuntime::release(CgraClaimEnvelope envelope) {

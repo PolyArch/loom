@@ -607,7 +607,7 @@ llvm::Expected<std::optional<CgraMemoryLifecycleFrame>>
 CgraMemoryRuntime::advance() {
   if (!started_)
     return invalid("CGRA memory runtime has not started");
-  auto requested = requestedEvents_.popNextFrame();
+  auto requested = requestedEvents_.popNextFrameView();
   if (!requested)
     return requested.takeError();
   if (!*requested)
