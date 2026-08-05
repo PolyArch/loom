@@ -42,6 +42,38 @@ The property is canonical: it is empty if every destination input type
 equals its SSA operand type. A non-empty property has one entry per
 operand and must contain at least one actual endpoint-type difference.
 
+An instantiate whose resolved target is a `fabric.module` additionally owns
+one required typed, authoring-only domain-slot correspondence property:
+
+```text
+ModuleInstanceDomainSlotBinding = {
+  kind : Clock | Reset
+  child_slot_ordinal : uint32
+  parent_slot_ordinal : uint32
+}
+
+domain_slot_bindings :
+  canonical array<ModuleInstanceDomainSlotBinding>
+```
+
+The resolved callee supplies the child Module context and the enclosing
+`fabric.module` supplies the parent Module context. A record therefore denotes
+the exact correspondence
+`(callee, kind, child_slot_ordinal) ->
+ (parent, kind, parent_slot_ordinal)` without copying either Module identity.
+The sequence is ordered and unique by `(kind, child_slot_ordinal)` and contains
+exactly one row for every child Clock and Reset slot. Every selected parent
+ordinal must exist in the same kind. Several child slots may deliberately map
+to one parent slot, but one child slot cannot split across several parent
+slots.
+
+The property is empty for every non-Module target and for a Module target with
+no slots. There is no omitted-property default, name matching, ordinal
+matching, connectivity inference, containment inheritance, or parent-wide
+Clock/Reset shortcut. The correspondence belongs only to this instance edge;
+it is not a persistent Fabric local reference or a second slot-assignment
+catalog.
+
 ## Allowed instantiation sites and targets
 
 | Parent of `fabric.instantiate` | Legal target kinds                                |
@@ -179,6 +211,8 @@ Local shape verification checks:
 
 * Per-operand outer/inner kind agreement.
 * memref operands cannot use the `to <inner-type>` clause.
+* Domain-slot bindings use only the closed Clock and Reset kinds and are
+  sorted-unique by child slot.
 
 Cross-symbol verification checks:
 
@@ -190,6 +224,9 @@ Cross-symbol verification checks:
    declared input port type.
 6. For each output port, the result SSA type equals the target's
    declared output port type (strict).
+7. A non-Module target has no domain-slot binding.
+8. A Module target binds every callee Clock and Reset slot exactly once to an
+   existing same-kind slot of the enclosing Module, with no extra row.
 
 Whole-root elaboration additionally rejects every direct or indirect cycle in
 the resolved instantiation graph.
@@ -220,6 +257,21 @@ independent occurrence identity and physical state for every use. Named
 templates remain declarations and do not themselves count as physical
 resources. Nested references resolve in the source template's symbol context
 before fresh occurrences are placed in the destination root.
+
+Before a Module boundary is removed, elaboration composes the callee's exact
+slot assignments with this instance's domain-slot correspondence. Every fresh
+child internal owner is assigned directly to the selected parent slot. A child
+boundary face obtains its effective parent slot through the same composition;
+the adjacent parent-side connection must have that same effective Clock and
+Reset assignment. Child boundary assignments disappear with the boundary, and
+the binding property disappears with `fabric.instantiate`. Elaboration never
+creates a fresh parent slot or retains an expanded instance-domain table.
+
+Nested correspondences compose transitively. Thus two uses of the same child
+Module may bind its slots differently, while equivalent inline and instantiated
+authoring forms still produce the same flat Module relation. A missing,
+duplicate, wrong-kind, foreign, or out-of-range binding rejects the complete
+elaboration before any root is published.
 
 Elaboration copies only immutable hardware capability and declared exact
 implementation refinement. Workload-selected route, memory operation,
@@ -272,7 +324,11 @@ Anchor-level validation covers one nested module instance, one fresh PE/FU
 instance pair, one named FU template instantiated once and counted as exactly
 one concrete occurrence, rejection of a concrete FU whose ports exceed its PE,
 rejection of a top-level instantiate, rejection of recursive or out-of-scope
-references, preservation of a legal physical feedback cycle, rejection of an
+references, exact total child-to-parent Clock/Reset slot binding, two instances
+of one child with different bindings, many-to-one slot binding, transitive
+nested binding composition, equivalence between inline and instantiated forms,
+rejection of a missing, duplicate, wrong-kind, foreign, or out-of-range
+binding, preservation of a legal physical feedback cycle, rejection of an
 alias-only cycle, equivalent width-composition acceptance, and failure
 atomicity. Tests do not freeze diagnostic wording, implementation API names,
 every symbol-table nesting, or parser formatting.

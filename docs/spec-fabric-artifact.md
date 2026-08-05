@@ -203,7 +203,8 @@ do not enter dependency identity.
 Artifact identity is computed from one canonical semantic relation, not from
 authoring order or raw source text. Canonicalization:
 
-1. expands every `fabric.instantiate` needed by the root;
+1. validates and composes every Module-instance domain-slot binding while
+   expanding every `fabric.instantiate` needed by the root;
 2. resolves typed direct references;
 3. strips nonsemantic names, locations, and visualization metadata;
 4. constructs one private, identifier-free, structurally root-complete
@@ -224,6 +225,13 @@ System root, it includes the canonical occurrence-slot domain memberships.
 The effective domain of an occurrence-qualified internal target is derived
 from those two relations and is not serialized as a second expanded member
 list.
+
+A nested Module's authoring-only slot binding is consumed during expansion.
+Its child boundary and slot inventory disappear, and its fresh internal owners
+are assigned directly to the selected slots of the enclosing Module. The
+binding itself is not a dependency, local reference, canonical root field, or
+separate identity input. Consequently, equivalent inline and instantiated
+forms converge on the same complete flat relation.
 
 The exact Fabric canonical semantic bytes passed to the Common Artifact
 SHA-256 v1 finalizer are:
@@ -282,6 +290,7 @@ authoring draft
   -> get and strict-import every already-published direct dependency
   -> recursively validate the exact dependency closure
   -> decode every typed external use and reject missing or unused rows
+  -> validate and compose every Module-instance domain-slot binding
   -> expand instantiations
   -> reject every residual fabric.instantiate
   -> build a private identifier-free root-complete candidate

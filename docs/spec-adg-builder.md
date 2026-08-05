@@ -158,6 +158,15 @@ SpatialCoreBuilder::declareDomainSlot(Clock | Reset)
 SpatialCoreBuilder::assignDomainSlot(ModulePhysicalMemberHandle,
                                      ModuleDomainSlotHandle)
   -> Error
+ModuleInstanceDomainSlotBinding = {
+  child_slot : ModuleDomainSlotHandle
+  parent_slot : ModuleDomainSlotHandle
+}
+SpatialCoreBuilder::instantiate(
+    const SpatialCoreBuilder &target,
+    canonical range<SpatialValue> inputs,
+    canonical range<ModuleInstanceDomainSlotBinding> domain_bindings)
+  -> Expected<canonical range<SpatialValue>>
 ImportedSpatialCore::domainSlots(Clock | Reset)
   -> Expected<canonical range<ImportedModuleDomainSlotHandle>>
 SystemBuilder::spatialCoreDomainSlotMember(
@@ -174,11 +183,20 @@ domain-membership relations owned by Fabric. The Builder stores no shadow
 domain graph, applies no AccCore-wide inheritance, and supplies no implicit
 Clock or Reset default.
 
+For `instantiate`, each child handle must belong to `target` and each parent
+handle must belong to the receiving builder. The bindings must form the exact
+total same-kind correspondence required by `docs/spec-fabric-instantiate.md`.
+The two-argument overload is not retained for `loom.fabric 2.0`; a target with
+no slots is expressed by an explicit empty range rather than an implicit
+default.
+
 `ModuleDomainSlotHandle` is local to the open SpatialCoreBuilder and cannot
-cross root publication. `ImportedModuleDomainSlotHandle` is recovered only
-from the exact finalized Module view held by `ImportedSpatialCore`; combining
-it with an `AccCore` proves the occurrence before producing the ordinary
-`HardwareDomainMember`. A stale handle, a slot from another imported Module, a
+cross root publication. Its position as a child or parent handle in one
+`instantiate` call supplies the exact builder context; the handle alone never
+binds by ordinal. `ImportedModuleDomainSlotHandle` is recovered only from the
+exact finalized Module view held by `ImportedSpatialCore`; combining it with an
+`AccCore` proves the occurrence before producing the ordinary
+`HardwareDomainMember`. A stale handle, a handle from the wrong builder, a
 wrong-kind domain, `AccCore::domainMember()`, or an AccCore-wide SpatialCore
 membership is rejected rather than used as a slot shortcut.
 

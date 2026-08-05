@@ -140,6 +140,17 @@ repeated per-resource System table and an implicit connectivity inference while
 remaining explicit enough to validate multi-clock reuse and to derive RTL ports
 and constraints mechanically.
 
+When a Module instantiates another Module, the instance edge is the only place
+that knows both symbolic slot contexts. Giving that edge one explicit total
+child-to-parent correspondence records the essential relationship without
+turning containment, names, ordinals, or connectivity into hidden domain
+semantics. Several child slots may intentionally converge on one parent slot;
+the reverse relation is not required. Keeping the correspondence authoring-only
+lets elaboration rewrite child assignments directly into the enclosing flat
+Module and then delete the instance. Persisting a nested instance or expanded
+domain table would duplicate the final assignments and break equivalence with
+inline authoring.
+
 Imported Module identifiers remain definition-local because cloning or
 renumbering them would make physical identity depend on how many times a
 template is used. Qualifying an exact Module-local target by its SpatialCore

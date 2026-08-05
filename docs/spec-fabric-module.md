@@ -68,6 +68,14 @@ closed resource-contract variant and a Fabric major revision. Hierarchy,
 containment, insertion order, and a parent owner's assignment never imply an
 assignment for a child owner.
 
+When one Module instantiates another Module, only the instance edge's explicit
+`domain_slot_bindings` relation from `docs/spec-fabric-instantiate.md` relates
+the callee slots to this Module's slots. It is a total child-slot-to-parent-slot
+function, not inheritance. Elaboration composes the callee assignments through
+that function and publishes only the resulting flat assignments; the child
+slot inventory, Module boundary, and instance binding do not survive in the
+finalized parent Module.
+
 The source and destination of every ordinary Module-local physical connection
 must resolve to equal symbolic Clock and Reset slots. A cross-slot relation is
 legal only through an explicit typed crossing resource whose contract owns
@@ -547,6 +555,10 @@ Fabric identity contract.
 * Every ordinary physical connection remains within equal symbolic Clock and
   Reset slots. A cross-slot connection is rejected while no explicit
   Module-local crossing resource exists.
+* Every Module-target `fabric.instantiate` binds the callee's complete Clock
+  and Reset slot inventory exactly once to existing same-kind slots of this
+  Module. The composed effective slots of its boundary faces must match the
+  adjacent parent-side assignments.
 * `fabric.yield` inside `fabric.module` must have exactly as many
   operands as the module's declared result count, and each yield value
   must satisfy the physical connection compatibility rule against the
@@ -564,6 +576,8 @@ The `fabric.module` target universe includes:
   boundary ops;
 * named and anonymous forms for supported module-body constructs;
 * template instantiation rules for module, PE, switch, memory, and FU symbols;
+* explicit Module-instance Clock/Reset slot correspondence with no inherited
+  or inferred binding;
 * point-to-point Graph-region SSA connectivity and same-kind
   width-normalization points;
 * explicit symbolic Clock and Reset slots with complete boundary and physical-
@@ -583,9 +597,11 @@ Anchor-level validation covers one legal mixed token/memory module, rejection
 of an unlisted body op, point-to-point fanout rejection, same-kind LSB width
 normalization, a required explicit tagged-domain boundary, complete symbolic
 Clock/Reset assignment, rejection of a missing or duplicate assignment,
-rejection of a hidden cross-slot connection, and rejection of a manager import
-exported as a subordinate capability. Downstream consumers resolve the exact
-finalized Fabric artifact and typed module reference.
+rejection of a hidden cross-slot connection, exact nested-Module slot
+composition, rejection of an incomplete or wrong-kind instance binding, and
+rejection of a manager import exported as a subordinate capability. Downstream
+consumers resolve the exact finalized Fabric artifact and typed module
+reference.
 
 Tests do not freeze diagnostic wording, parser formatting, every port-width
 combination, every whitelist member, or downstream cache layout.

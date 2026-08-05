@@ -254,6 +254,12 @@ ModuleDomainAssignment = {
 }
 ```
 
+The edge-relative correspondence used only while one Module instantiates
+another is owned by `docs/spec-fabric-instantiate.md`. It contextually selects
+callee and parent slots and allocates no owner-local kind, entity, hierarchical
+path, or persistent reference. After elaboration, only the enclosing Module's
+ordinary slot inventory and remapped `ModuleDomainAssignment` relation remain.
+
 `FabricModulePhysicalTargetRef` is the exact closed target union used when a
 System consumer must name state inside one imported Module occurrence:
 
