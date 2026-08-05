@@ -384,12 +384,22 @@ and cache dependencies. Every cross-model dependency is an explicit plan edge
 with exact upstream Evidence. Shared pure kernels and parameter bundles remain
 libraries, not fake evaluator nodes.
 
-The common in-process model interface provides exact artifacts, immutable
-configuration views, scratch ownership, cancellation observation, resource
-leases, and structured logging. An external model instead prepares an exact
-invocation bundle and imports its declared result. Neither interface gives a
-model mutable DSE state, objective weights, or permission to promote or replace
-candidates.
+The common in-process model interface provides exact artifacts and immutable
+configuration views. Scratch placement, cancellation, resource scheduling,
+and operational logging remain caller-owned execution concerns; they are not
+semantic model inputs or ambient provider authority. An external model instead
+prepares an exact invocation bundle and imports its declared result. Neither
+interface gives a model mutable DSE state, objective weights, or permission to
+promote or replace candidates.
+
+External Candidate Generators use the same ownership split without becoming
+Evaluators. Their descriptor binds exact typed inputs and resolved generator
+configuration, preparation emits only an attempt bundle, and import publishes
+only descriptor-owned candidate outputs and returns their dense output bindings
+plus typed lineage contributions to the central manifest owner. Reusing one generic
+callback for both in-process computation and long-lived external execution
+would hide the prepared-but-not-run state and encourage implicit process
+launch; a descriptor-owned provider form keeps that distinction explicit.
 
 ## Why External Tools Are Script Driven
 
@@ -405,6 +415,16 @@ provenance; generated Bash is only their executable projection. This keeps
 tool-specific drivers reviewable and lets the same material run under a local
 shell, Make, Ninja, Slurm, or site orchestration without changing compiler
 semantics.
+
+Separating prepare from import is the smallest lifecycle that supports that
+execution boundary. The exact descriptor and semantic closure derive the
+bundle and importer identity; callers cannot name them independently. An
+interrupted bundle without completion is simply incomplete. Loom cannot infer
+whether an external process still lives, so retry and concurrency remain with
+the caller or site scheduler; another authorized attempt may retain the same
+logical WorkUnitKey. Adding execution claims or mutable Job states would repeat
+facts already owned by the bundle completion record, ExecutionJournal, and
+external scheduler.
 
 Discovery belongs before bundle finalization. Explicit configuration has
 priority over the current environment, and module discovery is only a final

@@ -28,7 +28,52 @@ not a token stream or a physical storage identity.
 `sym_name` is an authoring and intra-MLIR reference aid, not persistent
 hardware identity. `docs/spec-fabric-artifact.md` owns root finalization,
 canonical semantic bytes, dependency framing, and ArtifactIdentity;
-`docs/spec-fabric-identity.md` owns Mapping-visible local references.
+`docs/spec-fabric-identity.md` owns the persistent Fabric local-reference
+catalog. Each consuming schema separately declares which of those references
+are visible to Mapping.
+
+## Clock And Reset Slots
+
+A reusable Module owns symbolic Clock and Reset roles, never concrete System
+domain contracts. `docs/spec-fabric-identity.md` uniquely defines the closed
+`FabricModuleDomainSlotRef`, `FabricModuleDomainMemberRef`, and
+`ModuleDomainAssignment` wires. The `fabric.module` root carries them as two
+required typed properties:
+
+```text
+domain_slots : canonical sorted-unique array<FabricModuleDomainSlotRef>
+domain_assignments : canonical sorted-unique array<ModuleDomainAssignment>
+```
+
+These properties are part of the root operation rather than Module-body child
+operations, so the body whitelist does not gain a second domain schema. Slot
+references are dense within `Clock` and `Reset`. A slot name is authoring
+metadata and does not enter identity. A Module slot owns no period, phase,
+polarity, synchronization, initial state, or release latency. A Module cannot
+declare or reference a concrete `HardwareDomainRef`.
+
+Every Module boundary face is assigned to exactly one Clock slot and exactly
+one Reset slot. Every `FabricModulePhysicalOwnerRef` is also assigned to exactly
+one Clock slot and exactly one Reset slot. These total assignments express
+topological domain association, including for a combinational owner; they do
+not imply that every owner has Clock or Reset signal ports.
+
+An internal owner with a nonempty canonical `ResourceState` inventory is
+stateful, consumes the Clock and Reset signals of its assigned slots, and must
+define every state's canonical reset value. An owner with no state inventory is
+combinational and consumes neither signal. Hidden registered state, a clocked
+owner without Fabric-owned state, and state without Reset are invalid in
+`loom.fabric 2.0`. A later resetless stateful contract requires an explicit
+closed resource-contract variant and a Fabric major revision. Hierarchy,
+containment, insertion order, and a parent owner's assignment never imply an
+assignment for a child owner.
+
+The source and destination of every ordinary Module-local physical connection
+must resolve to equal symbolic Clock and Reset slots. A cross-slot relation is
+legal only through an explicit typed crossing resource whose contract owns
+both faces. `loom.fabric 2.0` defines no Module-local Clock or Reset crossing
+carrier, so a Module containing such a relation fails closed. A backend cannot
+repair it by inserting a synchronizer, FIFO, reset bridge, or timing exception.
 
 ## Inputs (entry-block arguments)
 
@@ -494,6 +539,14 @@ Fabric identity contract.
   linearity check is applied to `memref` values.
 * Existing operation and `fabric.yield` verifiers own operand/result shape,
   exact type matching, and `to`-clause legality.
+* Clock and Reset slot inventories are canonical and each assignment targets a
+  same-kind slot owned by this Module.
+* Every boundary face and every `FabricModulePhysicalOwnerRef` has exactly one
+  Clock and one Reset assignment; no extra assignment targets a foreign owner.
+  ResourceState presence, not assignment presence, determines signal use.
+* Every ordinary physical connection remains within equal symbolic Clock and
+  Reset slots. A cross-slot connection is rejected while no explicit
+  Module-local crossing resource exists.
 * `fabric.yield` inside `fabric.module` must have exactly as many
   operands as the module's declared result count, and each yield value
   must satisfy the physical connection compatibility rule against the
@@ -513,6 +566,9 @@ The `fabric.module` target universe includes:
 * template instantiation rules for module, PE, switch, memory, and FU symbols;
 * point-to-point Graph-region SSA connectivity and same-kind
   width-normalization points;
+* explicit symbolic Clock and Reset slots with complete boundary and physical-
+  owner association, while ResourceState presence alone determines which
+  owners consume Clock and Reset signals;
 * endpoint-relative manager/subordinate memory roles, complementary
   provider-to-requester connections, sparse Mapping-owned endpoint bindings,
   and module export provenance.
@@ -525,9 +581,11 @@ endpoints, and directed connectivity owned by `fabric.system`.
 
 Anchor-level validation covers one legal mixed token/memory module, rejection
 of an unlisted body op, point-to-point fanout rejection, same-kind LSB width
-normalization, a required explicit tagged-domain boundary, and rejection of a
-manager import exported as a subordinate capability. Downstream consumers
-resolve the exact finalized Fabric artifact and typed module reference.
+normalization, a required explicit tagged-domain boundary, complete symbolic
+Clock/Reset assignment, rejection of a missing or duplicate assignment,
+rejection of a hidden cross-slot connection, and rejection of a manager import
+exported as a subordinate capability. Downstream consumers resolve the exact
+finalized Fabric artifact and typed module reference.
 
 Tests do not freeze diagnostic wording, parser formatting, every port-width
 combination, every whitelist member, or downstream cache layout.

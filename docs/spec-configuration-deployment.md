@@ -43,8 +43,8 @@ A `HardwareImplementation` references the exact Fabric and ConfigurationABI it
 implements. The ABI does not refer back to a final implementation.
 
 An implementation-only backend recipe is selected by the exact hardware
-candidate-generator binding per `FabricEntityRef`. `InvocationManifest` records
-that selection on the derivation edge. The recipe affects
+candidate-generator binding per `FabricPhysicalOccurrenceOwnerRef`.
+`InvocationManifest` records that selection on the derivation edge. The recipe affects
 HardwareImplementation identity only through its materialized payloads,
 platform reference, or implementation bindings, and is legal only when every
 Fabric-observable semantic, timing, capacity, progress, and ABI fact is
@@ -64,10 +64,15 @@ same semantic configuration encodes to the same
 The complete Artifact families have these fixed schema descriptors:
 
 ```text
-loom.configuration_abi             1.0
-loom.hardware_configuration_image  1.0
-loom.deployment                    1.0
+loom.configuration_abi             2.0
+loom.hardware_configuration_image  2.0
+loom.deployment                    2.0
 ```
+
+The image and Deployment major versions change because their exact accepted
+ConfigurationABI and HardwareImplementation child schemas change to 2.0. Their
+root shapes otherwise retain the contracts below; an old validator cannot
+reinterpret the new references under a 1.0 descriptor.
 
 The frontend relocatable accelerator payload is an input to final linking, not
 a Deployment child. `CompilerTargetBinding`, `InstructionCoreBinary`, host
@@ -108,6 +113,24 @@ ConfigurationABI {
 }
 ```
 
+In `loom.configuration_abi 2.0`, `fabric_ref` is an exact
+`loom.fabric 2.0` System root. A complete implementation cannot bind an
+uninstantiated Module root. The physical references used by the two nested
+fields above are closed unions:
+
+```text
+FabricPhysicalOccurrenceOwnerRef
+FabricPhysicalConfigurationFieldRef
+```
+
+`exact_fabric_resource_closure` contains
+`FabricPhysicalOccurrenceOwnerRef`; `fabric_config_field_ref` contains
+`FabricPhysicalConfigurationFieldRef`. Their closed variants are owned by
+`docs/spec-fabric-identity.md`. A bare imported Module-local owner or
+configuration-field reference is invalid because it would alias two physical
+SpatialCore occurrences. These unions only qualify existing Fabric facts and
+do not copy topology, capability, selected values, or configuration domains.
+
 The ABI describes how every Fabric-owned semantic field is represented and
 installed. It does not select a field value, reference a Mapping, or constitute
 a configured hardware state. A selected value exists only in the transient
@@ -136,7 +159,7 @@ that realizes the ABI; the ABI does not contain a command-script language.
 
 ### Complete-Image Programming Model
 
-Version 1.0 has one closed programming model:
+Version 2.0 has one closed programming model:
 
 ```text
 CompleteImageAtomic {
@@ -165,8 +188,10 @@ identity.
 
 ### Field Encoding
 
-Composite semantic configuration is flattened into typed leaves during ABI
-finalization. A leaf uses one of two atoms:
+Each referenced Fabric configuration field remains one opaque canonical
+semantic carrier during ABI finalization. The ABI never splits a composite
+Fabric field into independently authoritative leaves. A field uses one of two
+encoding atoms:
 
 * `DirectBits`: encode one fixed-width bit vector directly.
 * `FiniteCodebook`: map each allowed typed value to one unique physical code.
@@ -201,20 +226,42 @@ uses that same representation with `encoded_bit_count`; semantic values and
 physical codes are each unique. `inactive_value` uses the same semantic carrier
 and must be encodable by the selected atom.
 
+Each operation field validates against the exact sealed
+`FabricOpSemanticFieldRelation` owned by its Fabric resource:
+
+* `None` admits no ABI field;
+* `Finite` requires the set of `semantic_value` entries to equal the Fabric
+  relation's canonical behavior-key domain exactly, with no missing or extra
+  key, and requires every value to round-trip through that relation's codec;
+* `Direct` requires `DirectBits`, exact equality of `encoded_bit_count`, the
+  same canonical fixed-width carrier, and acceptance by the Fabric-owned
+  direct-domain validator; and
+* no other pairing is legal.
+
+The ABI owns physical codes, destination slices, padding, and inactive bits.
+Fabric owns semantic field need, the one joint behavior domain, its projector,
+and semantic codec. Mapping owns the authoritative actor and refinement
+selections; `ConfiguredHardwareProjection` carries the value mechanically
+derived by the Fabric projector and is not another selection authority. Entry
+order or code assignment cannot become a backend behavior key.
+
 `destination_slices` may cross words or be non-contiguous. Every destination
 bit has exactly one source, slices are in range and non-overlapping, and all
 reserved or padding bits are zero. An unselected hardware field uses the
-ABI-declared `inactive_value`; Fabric must prove that value functionally inert.
-The encoder may not invent a default. RTL providers consume these fields and
-their codebooks; they cannot create an independent exact-mode index or decoder
-authority.
+ABI-declared `inactive_value`, which must be an encodable member of the exact
+Fabric relation domain. The disabled resource or topology contract proves that
+the encoded active-domain value is unobservable; the value need not denote an
+inert active behavior. The encoder may not invent a default. RTL providers
+consume these fields and their codebooks; they cannot create an independent
+exact-mode index or decoder authority.
 
 The slices of one field cover every source bit exactly once. Fields and slices
 are sorted by canonical Fabric reference bytes and destination position.
 Encoding starts from an all-zero payload, substitutes `inactive_value` for an
 omitted semantic field, and then applies the slices. Decoding first rejects a
-nonzero reserved bit, reconstructs every encoded field, and rejects a
-FiniteCodebook pattern with no entry. Re-encoding a decoded complete image must
+nonzero reserved bit, reconstructs every encoded field, rejects a
+FiniteCodebook pattern with no entry, and rejects a DirectBits value outside
+the Fabric-owned direct domain. Re-encoding a decoded complete image must
 return identical bytes.
 
 ## HardwareConfigurationImage
@@ -251,14 +298,14 @@ the ABI. Bits beyond `payload_bit_count` are zero and no trailing bytes are
 allowed. Common ArtifactIdentity SHA-256 v1 covers the entire framed value.
 The raw payload is not a second Artifact family.
 
-Image finalization reconstructs a temporary `ConfiguredHardwareProjection`
-from exact Fabric and complete Mapping through the Mapping-owned derivation
-specified by [Fabric Reconfigurable Operations](spec-fabric-reconfigurable-op.md),
-encodes it through the ABI, and verifies the resulting bytes. It must not
-reimplement field projection or accept simulator-produced values. That
-projection is derived data and is never persisted as another authority. Images
-are bound to exact hardware occurrences; equal bytes may share blob storage but
-do not permit implicit rebinding.
+Image finalization consumes the Mapping verifier's validated temporary
+`ConfiguredHardwareProjection` specified by
+[Fabric Reconfigurable Operations](spec-fabric-reconfigurable-op.md), encodes
+it through the ABI, and verifies the resulting bytes. It does not reconstruct
+actor or refinement selections, invoke a second semantic projector, or accept
+simulator-produced values. That projection is derived data and is never
+persisted as another authority. Images are bound to exact hardware occurrences;
+equal bytes may share blob storage but do not permit implicit rebinding.
 
 ## Deployment
 
@@ -507,7 +554,7 @@ exact Fabric + ConfigurationABI
 verified SystemMapping closure
   + ConfigurationABI + selected HardwareImplementation
   -> verify their exact common Fabric and ABI closure
-  -> derive temporary ConfiguredHardwareProjection
+  -> consume the Mapping verifier's validated ConfiguredHardwareProjection
   -> encode and verify every required HardwareConfigurationImage
 
 verified SystemMapping closure
@@ -622,6 +669,11 @@ Tests protect only stable boundaries:
 * harmless ABI field ordering does not change identity;
 * invalid slices, foreign fields, invalid codebooks, and invented inactive
   values are rejected;
+* a System-rooted programming unit distinguishes two occurrences importing the
+  same Module and rejects a bare Module-local owner or field;
+* `None` rejects an ABI field, a finite codebook has exact set equality with
+  its Fabric behavior-key domain, and `DirectBits` matches the Fabric carrier
+  width exactly;
 * one known vector is shared by the encoder and RTL/runtime decoder;
 * image ABI, programming-unit, Mapping, padding, and payload mismatches fail;
 * Deployment requires `ThreadDispatchImage` and `AdmissionImage`, and requires

@@ -25,6 +25,16 @@ hard-coded semantic table would compete with OperationSchema, HSG, and the
 concrete resource. Missing provider support is typed Unsupported and produces
 no successful RTL artifact.
 
+The sealed semantic-field relation is needed because family membership alone
+does not say which admitted actor differences require physical control. If
+each provider independently grouped operations, chose width-sensitive keys,
+or numbered modes, Fabric verification, ConfigurationABI, portable RTL, and
+vendor RTL could disagree while each looked locally consistent. Deriving field
+need, behavior equivalence, domain, and codec once from the concrete Fabric
+capability removes those competing tables. `None`, finite, and direct carriers
+are the three essential cases; adding per-family selector mechanisms would only
+rename them and enlarge the semantic surface.
+
 This boundary also exposes the backend's natural implementation parallelism.
 Providers for independent implementation families or provider ecosystems share
 only the stable capability-view, ConfigurationABI, RTL protocol, and recipe
@@ -51,6 +61,21 @@ rendezvous point between one exact Fabric occurrence and its resolved
 implementation-family binding. The selected provider replaces it with portable
 logic, a vendor primitive, or a contract-bound external module. Every Loom
 abstract generated leaf must be gone before SystemVerilog export.
+
+The export-complete skeleton is System-rooted because only the System closes
+physical occurrences, concrete clock/reset contracts, external interfaces,
+and interconnect. Lowering a Module definition remains useful, but it is a
+slot-parameterized internal fragment. Publishing it as a complete
+implementation would force the backend to invent the concrete domains and
+would alias state when the same definition is instantiated twice.
+
+Reuse is therefore decided by one derived complete specialization key rather
+than by Module identity alone or by pessimistically cloning every occurrence.
+Two occurrences may share a definition only when their ABI projection, bound
+domain contracts, recipes, external implementations, and memory choices are
+equal. This preserves occurrence identity at the instances, avoids recompiling
+genuinely equal implementations, and prevents a shared HDL definition from
+hiding per-occurrence choices.
 
 Lowering the complete design through Handshake or DC-SC would add another
 authority for scheduling, buffering, progress, and resource sharing that Fabric
@@ -108,6 +133,14 @@ states reached through different paths. The output instead materializes every
 fact needed by a consumer. Identical canonical states converge, while the
 manifest may preserve every valid derivation.
 
+A typed representation root is necessary because a flat representation tag,
+payload bag, and caller-supplied top leave three parties able to disagree about
+what the implementation actually represents. Making the variant own its root
+locator and payload closure turns that into one invariant and lets finalization
+reject incomplete or mismatched state. Downstream flows read those exact
+BlobDigests through BlobStore so a work-directory path or duplicate RTL string
+cannot silently substitute different hardware.
+
 QoR, pass/fail status, logs, and reports do not enter that artifact. They are
 Evaluation observations or attempt material. This prevents a tool result from
 changing implementation identity and lets several evaluations query the same
@@ -145,18 +178,38 @@ inputs and produce a new HardwareImplementation. A choice that changes a
 Fabric-visible timing or capacity fact must instead produce a new Fabric
 candidate; the backend cannot hide it as an implementation option.
 
-## Why EDA Is Evaluation
+## Why EDA Generation And Evaluation Are Separate
 
-Synthesis, placement, routing, timing, power, area, and FPGA implementation are
-expensive providers that create implementation artifacts and Evidence. The
-tool adapter emits an independently executable invocation bundle from the exact
-implementation, target, provider inputs, and conditions, then imports declared
-results through shared metric/finding registries. It does not publish a private
-status or metric schema or manage the EDA environment in C++.
+Synthesis, placement, routing, extraction, and FPGA implementation create new
+immutable hardware state, so they are Candidate Generators. Timing, power,
+area, correctness, and physical checks observe one exact finalized state, so
+they are Evaluations. Some tools emit both products in one run, but allowing
+one importer to publish a half-finalized implementation and its reports as one
+result would make tool completion the semantic owner of both hardware and
+Evidence.
 
-An unmet timing target is completed adverse Evidence, not an invalid design
-artifact. Tool crash, license failure, timeout, unsupported primitive, and
-structural invalidity remain distinct outcomes.
+The generator therefore finalizes HardwareImplementation first. The baseline
+then constructs a subsequent exact EvaluationRequest and prepares a separate
+evaluation bundle over that immutable state. It deliberately does not adopt a
+generation attempt's reports: when several derivations converge to one
+HardwareImplementation, choosing one nonsemantic attempt would otherwise make
+the same Request depend on hidden history. A later optimization may reuse a run
+only after a versioned typed cross-attempt contract owns that choice. The
+baseline still permits a lightweight evaluator to load the finalized database
+rather than repeat placement or routing. This preserves adverse completed
+Evidence, while tool crash, license failure, timeout, unsupported primitive,
+and structurally incomplete output remain distinct failures that cannot create
+either partial hardware or partial Evidence.
+
+External generation and Evaluation use two necessary calls: preparation asks
+the existing semantic owners to validate their portions and writes a
+deterministic bundle; import validates the exact completed bundle and returns
+the typed result to its central finalizer. The caller executes `run.sh` between
+them. A synchronous callback would
+make compiler workers own long-lived EDA execution, while a generic persistent
+Job model would duplicate bundle completion, the execution journal, and site
+schedulers. The two-call boundary provides parallelism and recovery without
+either extra authority.
 
 Generated scripts are part of the compiler output because they make the exact
 tool translation inspectable and reusable. The optional execution path merely

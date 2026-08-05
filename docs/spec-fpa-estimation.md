@@ -143,7 +143,7 @@ direct EDA products remain local under the disclosure boundary in
 [EDA Tooling](spec-eda-tooling.md).
 
 The initial FPA parameter contract is exactly
-`ModelParameterContractRef("loom.fpa", 1.0, 0)`. Its prediction case signatures
+`ModelParameterContractRef("loom.fpa", 2.0, 0)`. Its prediction case signatures
 are `structured_program_with_fabric` and
 `canonical_dataflow_with_fabric`; its ground-truth signature is
 `hardware_implementation_physical`. It projects typed structural and condition
@@ -155,6 +155,12 @@ feature projector, inference kernel, prediction finalization, and sample-group
 projection are one registry entry shared by every trainer, predictor, and
 calibration validator. A model input slot references this exact contract and
 never owns a copied coefficient layout or inference formula.
+
+Contract major 2 is required because its exact Evaluation registry refs and
+ground-truth feature projector admit `loom.hardware_implementation 2.0`.
+`FpaMetricPredictionView 1.0` remains the output payload schema because its
+metric tuple and codec do not change; the versioned contract ref, not the
+payload shape, owns subject admission.
 
 For every accepted source case, the projector consumes process corner, supply
 voltage, temperature, activity binding, and any present required-clock or

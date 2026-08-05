@@ -63,6 +63,13 @@ ImplementationFamilyDescriptor {
 }
 ```
 
+The descriptor remains exactly these four fields. The derived
+`FabricOpSemanticFieldRelation` in
+`docs/spec-fabric-reconfigurable-op.md` belongs to a
+concrete resource after its enabled members, `hw_params`, ports, and
+constraints are known. It is not a fifth HSG descriptor fact and is never
+copied into this registry.
+
 This is one generated descriptor, not a second runtime registry. The admission
 provider interprets the declared parameter schema against a registered actor
 projection and concrete physical ports. A hand-written family-shape switch,

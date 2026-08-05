@@ -21,9 +21,14 @@ record or completion domain.
 The persistent runtime-owned families are:
 
 ```text
-loom.runtime_platform_binding 1.0
-loom.gem5_simulation_binding  1.0
+loom.runtime_platform_binding 2.0
+loom.gem5_simulation_binding  2.0
 ```
+
+The major versions change because the first root admits an exact
+`loom.hardware_implementation 2.0` and the second admits exact
+`loom.fabric 2.0` roots. Their record shapes remain as specified below; no 1.0
+reference is reinterpreted with a different accepted dependency schema.
 
 Concrete device handles, leases, addresses, queues, and process state remain
 transient. There is no generic runtime manifest or public manual-launch schema.

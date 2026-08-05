@@ -37,7 +37,8 @@ Builtin Small, Default, and Large targets are complete hardware examples, not
 size knobs or capability summaries. Their FU distribution, memory, transport,
 InstructionCore, clocks, resets, and semantic capabilities must be
 deterministic so the same public API can reproduce and teach the exact
-hardware.
+hardware. Expanding their Reset contract into ordinary Fabric facts prevents
+the backend from becoming a second, target-dependent reset-policy owner.
 
 The general builtin memory is broader than the initial Hybrid32 convenience
 recipe because a preset-wide scalar type floor is meaningful only when both
@@ -118,6 +119,40 @@ coherence, resources, and externally visible grant guarantees are architecture
 facts. AXI, TileLink, CXL, packet formats, arbitration microstate, and protocol
 components are implementation facts. Mapping selects use of the architecture;
 it does not choose a hidden protocol interpretation.
+
+## Why Module Domains Are Symbolic And System Domains Are Concrete
+
+A reusable Module can appear several times in one System and can eventually
+contain more than one clocked island. Giving it concrete clock periods or Reset
+release policy would make those System facts part of a reusable definition.
+Conversely, assigning one domain to an entire SpatialCore or AccCore would
+create implicit inheritance, erase independently typed InstructionCore
+semantics, and require exceptions as soon as a Module has two domains.
+
+Symbolic Module slots express exactly the missing reusable fact: which
+boundaries and physical owners occupy the same clock or Reset topology.
+Association is total even for combinational owners so an ordinary connection
+never needs to infer a domain through neighboring state. Whether an owner
+actually consumes Clock and Reset signals is the separate, mechanically
+derived ResourceState fact. System domain membership then supplies the concrete
+contract for each physical occurrence. One slot relation replaces both a
+repeated per-resource System table and an implicit connectivity inference while
+remaining explicit enough to validate multi-clock reuse and to derive RTL ports
+and constraints mechanically.
+
+Imported Module identifiers remain definition-local because cloning or
+renumbering them would make physical identity depend on how many times a
+template is used. Qualifying an exact Module-local target by its SpatialCore
+occurrence adds only the essential physical distinction. It separates state,
+configuration, recipes, memory bindings, and activity without copying the
+Module or creating a generic hierarchical path.
+
+Crossings stay explicit because hierarchy cannot prove synchronization or
+buffering behavior. An asynchronous carrier also needs exact source and
+destination Reset authorities; otherwise "released on both sides" has no
+meaning. Until a Module-local crossing resource owns that behavior, rejecting a
+cross-slot connection is smaller and safer than inserting a hidden
+synchronizer. The same reasoning excludes AccCore-wide Clock/Reset defaults.
 
 ## Why Topology Is Explicit And Fully Elaborated
 
@@ -261,7 +296,7 @@ its efficient projection.
 An ordinal alone does not define the owner, schema, root kind, local target,
 or use of an implementation input. Reusing HardwareImplementation would create
 a dependency cycle, while broadening ImplementationPlatform would make it a
-generic IP container. Fabric 1.0 therefore recognizes the stable wire ordinal
+generic IP container. Fabric 2.0 therefore recognizes the stable wire ordinal
 but rejects authoring and import before any store lookup.
 
 This fail-closed reservation preserves format diagnosis without pretending

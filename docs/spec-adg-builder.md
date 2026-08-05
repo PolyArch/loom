@@ -150,6 +150,38 @@ helper expansion, duplicate nonsemantic labels where diagnostics would become
 ambiguous, and other authoring failures. Fabric verification remains the only
 semantic hardware authority.
 
+Clock and Reset construction follows the same thin typed boundary:
+
+```text
+SpatialCoreBuilder::declareDomainSlot(Clock | Reset)
+  -> Expected<ModuleDomainSlotHandle>
+SpatialCoreBuilder::assignDomainSlot(ModulePhysicalMemberHandle,
+                                     ModuleDomainSlotHandle)
+  -> Error
+ImportedSpatialCore::domainSlots(Clock | Reset)
+  -> Expected<canonical range<ImportedModuleDomainSlotHandle>>
+SystemBuilder::spatialCoreDomainSlotMember(
+    AccCore,
+    ImportedModuleDomainSlotHandle)
+  -> Expected<HardwareDomainMember>
+HardwareDomainBuilder::close(canonical range<HardwareDomainMember>,
+                             HardwareDomainContract)
+  -> Error
+```
+
+These calls elaborate directly into the Module slot/assignment and System
+domain-membership relations owned by Fabric. The Builder stores no shadow
+domain graph, applies no AccCore-wide inheritance, and supplies no implicit
+Clock or Reset default.
+
+`ModuleDomainSlotHandle` is local to the open SpatialCoreBuilder and cannot
+cross root publication. `ImportedModuleDomainSlotHandle` is recovered only
+from the exact finalized Module view held by `ImportedSpatialCore`; combining
+it with an `AccCore` proves the occurrence before producing the ordinary
+`HardwareDomainMember`. A stale handle, a slot from another imported Module, a
+wrong-kind domain, `AccCore::domainMember()`, or an AccCore-wide SpatialCore
+membership is rejected rather than used as a slot shortcut.
+
 Convenience topology and resource helpers use only this exact public surface.
 They may return typed groups of created handles, but cannot create hidden
 hardware facts or use a private emitter.
@@ -308,6 +340,10 @@ The initial general-purpose family has three closed authoring presets:
 BuiltinTargetPreset = Small | Default | Large
 ```
 
+The `Small`, `Default`, and `Large` builtin descriptors use schema version
+`2.0`. Their prior schema did not materialize complete symbolic slot and Reset
+facts and is not retained as a compatibility expansion.
+
 The public builtin boundary is:
 
 ```text
@@ -415,6 +451,35 @@ Serve endpoint in the System clock domain. Its service rate is one operation
 per System clock tick, with `temporalResidentContexts` outstanding operations
 and fair-eventual progress. These are expanded Fabric facts, not additional
 preset fields or backend defaults.
+
+Every builtin SpatialCore Module declares one Clock slot and one Reset slot
+and explicitly associates every boundary and every Module physical owner with
+both slots. System expansion binds every occurrence of those slots to the
+builtin System Clock and Reset domains. It also derives the complete direct
+System Clock/Reset member inventory from the finalized System root: the
+HostCore, every InstructionCore context, System memory service, service
+endpoint, service transform, non-crossing transport resource, and external
+boundary are members of both domains. An AsyncFifo crossing instead carries
+its exact source and destination Clock and Reset domains in its crossing
+contract. No AccCore or SpatialCore parent membership is emitted.
+
+The builtin Reset contract is exactly:
+
+```text
+Reset {
+  polarity = ActiveHigh
+  assertion = Synchronous
+  deassertion = Synchronous
+  initial_state = Asserted
+  synchronous_to = builtin System Clock
+  release_latency_cycles = 0
+}
+```
+
+Zero release latency means no additional release cycle beyond observation on
+the selected synchronous clock edge. It does not mean asynchronous release.
+The expansion emits this complete contract and membership; RTL lowering cannot
+invent, omit, or replace it with a backend default.
 
 Every builtin SpatialCore has exactly one `memref<?xi8>` manager-capability
 input. All of its Spatial and Temporal memory occurrences consume that same
@@ -826,12 +891,13 @@ data and one-bit condition network. Internal data `fabric.mux` and
 `fabric.demux` resources use `S`-bit ports. No implicit adapter, hidden drain,
 or outer-width arithmetic datapath is inferred.
 
-Every stateless scalar compute resource in these two helpers has one
-registered elastic result stage; that stage is its sole result holding slot.
-It has latency one and initiation interval one under downstream progress,
-retains a stalled result, and supports same-cycle result consumption and
-replacement acceptance. The multi-operation template timing is derived from
-its selected resources and explicit topology.
+Every semantically stateless scalar operation in these two helpers is
+implemented by a compute resource with one registered elastic `ResourceState`;
+that state is its sole result holding slot, so the physical resource consumes
+its assigned Clock and Reset. It has latency one and initiation interval one
+under downstream progress, retains a stalled result, and supports same-cycle
+result consumption and replacement acceptance. The multi-operation template
+timing is derived from its selected resources and explicit topology.
 
 The imported recurrence resource uses the exact `LoopCarry` family contract.
 It has initial/running mode state but stores no carried payload, and its
@@ -894,7 +960,7 @@ The helper requires at least `2 + R` PE input ports. A custom PE may therefore
 raise `R` only by exposing the corresponding physical inputs; the helper never
 packs several dynamic positions into one untyped value.
 
-The version 1 builtin policy uses `O = V = 128`, `I = 64`, and `R = 3`, which
+The version 2 builtin policy uses `O = V = 128`, `I = 64`, and `R = 3`, which
 fits the five-input builtin PE boundary.
 Its slice resource admits 32- and 64-bit resolved indices and container/slice
 payloads no wider than 128 bits. Its shuffle resource admits operands and a
@@ -957,7 +1023,7 @@ structural templates, not one shared token-control circuit.
 
 ### Builtin Payload And Type Floor
 
-The version 1 Small, Default, and Large policy explicitly passes a 128-bit
+The version 2 Small, Default, and Large policy explicitly passes a 128-bit
 ordinary PE and intra-SpatialCore data-transport payload capacity to the typed
 recipes above. This shared catalog value is not a Fabric-root field, ADG
 Builder default, or Loom-wide maximum. Narrower scalar values
@@ -1190,12 +1256,13 @@ The stable Builder anchors are deliberately small:
    and rejects an equal-width semantic type outside that capability.
 9. FU materialization and reverse synthesis satisfy the configured-function
    round-trip contract for both equality and strict-superset outcomes.
-10. The version 1 scalar helper policy preserves its explicit 128-bit outer
+10. The version 2 scalar helper policy preserves its explicit 128-bit outer
     and 64-bit inner interface while a custom helper using different widths
     obeys the same low-bit normalization.
-11. A stateless scalar resource exhibits the declared one-cycle elastic
-    timing, while an imported `LoopCarry` preserves that one-cycle recurrence
-    path through elastic-transparent forwarding.
+11. A semantically stateless scalar operation uses its registered elastic
+    `ResourceState` and exhibits the declared one-cycle timing, while an
+    imported `LoopCarry` preserves that one-cycle recurrence path through
+    elastic-transparent forwarding.
 12. A fused carry-or-invariant plus gate template exposes the raw
     parent-domain value, projected child-domain value, and child phase without
     admitting incoherent selector products.

@@ -175,6 +175,14 @@ for that flow without invalidating the target manifest. No adapter renames a
 technology, changes an FPGA part, substitutes another corner, or treats a
 synthesis-only input set as physical or signoff closure.
 
+This section owns target compatibility only. Central plan admission owns input
+readiness, each Artifact family owns strict import, the Candidate Generator or
+Evaluation descriptor owns flow-specific compatibility and consumption, and
+the local invocation layer owns executable, runtime, and frozen-file preflight
+as specified by `docs/spec-external-tool-invocation.md`. No layer restates
+their union as a second total-admission authority, and none may treat a valid
+Platform as proof supplied by another.
+
 Initial ASIC conformance covers these independently configured target
 identities:
 

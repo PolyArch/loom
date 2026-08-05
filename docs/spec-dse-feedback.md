@@ -276,8 +276,15 @@ model at any point in the stack. The initial production profiles are:
 | physical implementation analysis | HardwareImplementation |
 | system simulation | Deployment, Gem5 Simulation Binding |
 
-Schema 1.0 initially registers these exact case signatures used by the
+Evaluation registry schema 2.0 registers these exact case signatures used by the
 pre-Mapping, DFG-simulation, FPA, and system-simulation flows described here:
+
+Registry 2.0 is a new exact descriptor namespace. No 1.0 case or model
+descriptor reference is reinterpreted to accept Fabric, ConfigurationABI, or
+HardwareImplementation 2.0. The `evaluation.request.1.0` and
+`evaluation.evidence.1.0` root record shapes remain unchanged because they
+already carry exact versioned descriptor and Artifact references; newly
+constructed roots use registry-2.0 refs.
 
 | Case kind | Stable spelling | Ordered roles | Workload/runtime input |
 | --- | --- | --- | --- |
@@ -286,7 +293,7 @@ pre-Mapping, DFG-simulation, FPA, and system-simulation flows described here:
 | 2 | `structured_program_functional_comparison` | `0: selected Structured Program Candidate` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
 | 3 | `canonical_dataflow_simulation` | `0: Canonical Dataflow Program` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
 | 4 | `fpa_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with an FPA prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
-| 5 | `hardware_implementation_physical` | `0: HardwareImplementation` | both forbidden |
+| 5 | `hardware_implementation_physical` | `0: exact loom.hardware_implementation 2.0` | both forbidden |
 | 6 | `system_simulation` | `0: Deployment`, `1: Gem5 Simulation Binding` | both required; the workload and runtime input are System roots coupled to the exact Deployment |
 | 7 | `cgra_simulation` | `0: Canonical Dataflow Program`, `1: Fabric`, `2: SpatialMapping` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
 | 8 | `simulation_execution_comparison` | `0: reference SimulationExecution`, `1: candidate SimulationExecution` | both forbidden; each execution's exact Request closure must resolve the same workload and runtime input |
@@ -468,14 +475,23 @@ Evaluation library's static typed registry, not an Artifact. It owns:
 - descriptor-owned model input slots, including exact accepted parameter
   contract refs where applicable, role-labeled typed output slots, and resolved
   model-config schema;
+- one exact `ProviderForm`;
 - one exact decimal-result finalization contract whenever any declared result
   can contain `DecimalValue`;
 - modeled phenomena, execution method, and determinism contract; and
 - exact optional domain-specific incremental and guidance interaction
   capabilities.
 
-Schema 1.0 owns these closed capability enums and stable zero-based `uint32`
-wire tags:
+DSE provider boundaries share one closed form tag:
+
+```text
+ProviderForm =
+    InProcess              // tag 0
+  | ExternalPrepareImport  // tag 1
+```
+
+Evaluation registry schema 2.0 owns the following capability enums and retains
+their stable zero-based `uint32` wire tags:
 
 ```text
 ModeledPhenomenon =
@@ -535,26 +551,86 @@ the contract while no result can contain a decimal, is invalid. This field is
 part of descriptor semantic identity; evaluator implementations cannot choose
 host precision or another rounding mode.
 
-The static descriptor's canonical capability projection encodes the phenomenon
-set as `u64be(count)` followed by its sorted `u32be(tag)` values and encodes the
-execution method as one `u32be(tag)`. C++ registration uses the closed enums,
-not strings or raw integers. Human-readable spellings are registry-derived and
-never an identity input.
+The static descriptor's canonical capability projection encodes the provider
+form first as one `u32be(tag)`, the phenomenon set as `u64be(count)` followed
+by its sorted `u32be(tag)` values, and the execution method as one
+`u32be(tag)`. C++ registration uses the closed enums, not strings or raw
+integers. Human-readable spellings are registry-derived and never an identity
+input.
 
 The same projection encodes decimal finalization as `u32be(0)` when absent or
 `u32be(1) || u32be(significant_decimal_digits) || u32be(0)` when present; the
-final zero is the schema-1.0 tag for `RoundToNearestTiesToEven`. Unknown tags or
+final zero is the registry-schema-2.0 tag for
+`RoundToNearestTiesToEven`. Unknown tags or
 a presence state inconsistent with the descriptor's result capabilities are
 registry errors.
 
-Full Evaluation has no separate domain field. Every registered model must
-implement the public full `evaluate(EvaluationRequest)` contract, and its full
-domain is operationally the exact set of Requests accepted by
-`RequestVerifier`. That verifier intersects the descriptor's case signature,
-condition capabilities, metric and finding capabilities, input and output
-slots, resolved config view, mandatory terminal findings, determinism, and
-replicate rules. Copying a second full-domain description would be another
-authority.
+Full Evaluation has no separate domain field. Its full domain is operationally
+the exact set of Requests accepted by `RequestVerifier`. That verifier
+intersects the descriptor's case signature, condition capabilities, metric and
+finding capabilities, input and output slots, resolved config view, mandatory
+terminal findings, determinism, and replicate rules. Copying a second full-
+domain description into either provider form would be another authority.
+
+For each exact descriptor reference, the provider implementation registered in
+the process must match the descriptor's `ProviderForm` exactly:
+
+```text
+EvaluationProviderImplementation =
+    InProcess {
+      evaluate(EvaluationRequest,
+               CaseArtifactResolution,
+               ArtifactStore,
+               BlobStore) -> Expected<EvaluationModelResult>
+    }
+  | ExternalPrepareImport {
+      prepare(EvaluationRequest,
+              CaseArtifactResolution,
+              ArtifactStore,
+              BlobStore,
+              ExternalToolPreparationContext)
+        -> Expected<PreparedExternalToolInvocation>
+      import(EvaluationRequest,
+             CaseArtifactResolution,
+             PreparedExternalToolInvocation,
+             ArtifactStore,
+             BlobStore) -> Expected<EvaluationModelResult>
+    }
+
+EvaluationModelResult {
+  output_bindings:
+    dense array<ModelOutputSlotRef, canonical ArtifactRootReference collection>
+  outcome: EvaluationEvidenceOutcome
+}
+```
+
+`EvaluationModelResult` is a transient provider return, not another persistent
+result schema. Its output slots and result arrays obey the same descriptor and
+Request cardinality rules as `EvaluationEvidence`; the Evaluation owner alone
+validates it, binds the exact Request, and finalizes the persistent Evidence
+root. The provider cannot add another outcome kind or omit the dense output
+slot array.
+
+The exact finalized `EvaluationRequest` is the external form's complete
+semantic closure. `RequestVerifier`, case-signature callbacks, and Artifact-
+family importers remain the admission owners; `prepare` invokes those owners as
+needed and adds only descriptor-specific consumption plus local invocation
+preflight. It materializes one finalized bundle but does not execute a process,
+publish an output Artifact, or publish Evidence. `import` accepts the same
+Request and exact prepared bundle only after strict completion validation. It
+first finalizes every descriptor-owned output Artifact, then returns one
+`EvaluationModelResult`. The Evaluation owner validates that result and
+finalizes `EvaluationEvidence`; the provider never writes Evidence directly.
+Already finalized but unreferenced output roots may remain after a later
+Evidence-publication failure, but no partial output binding or Evidence is
+published.
+
+The caller alone decides whether, where, and when to execute `run.sh`. The
+ordinary `evaluateRequest` facade applies only to `InProcess`; a synchronous
+external CLI is an explicit composition of prepare, caller execution, and
+import rather than an implicit callback behavior. Changing an existing
+descriptor's provider form requires a new descriptor version or reference; a
+registry cannot reinterpret an exact ref.
 
 Every owner-local static typed registry reference in this document uses one
 canonical key framing:
@@ -777,7 +853,10 @@ EvaluationEvidence {
   request_ref: exact EvaluationRequest reference
   output_bindings:
     table<ModelOutputSlotRef, canonical ArtifactRootReference collection>
-  outcome:
+  outcome: EvaluationEvidenceOutcome
+}
+
+EvaluationEvidenceOutcome =
     Completed {
       metric_results: canonical array<MetricResult>
       finding_results: canonical array<FindingResult>
@@ -785,7 +864,6 @@ EvaluationEvidence {
     | Unsupported { reason: OutcomeReason }
     | ExecutionFailed { reason: OutcomeReason }
     | CancelledOrTimeout { reason: OutcomeReason }
-}
 ```
 
 The two result arrays have exactly the cardinality of the corresponding
@@ -886,14 +964,22 @@ invocation remain in its enclosing record rather than being repeated on every
 edge:
 
 ```text
-MechanicalDerivation:
-  enclosing exact inputs + resolved producer/config
-  -> output ArtifactRootReference
-
-CandidateDecision:
-  parent candidate ArtifactRootReferences + typed decision
-  -> child ArtifactRootReference
+CandidateGeneratorLineageContribution =
+    MechanicalDerivation {
+      output_slot
+      output: ArtifactRootReference
+    }
+  | CandidateDecision {
+      output_slot
+      output: ArtifactRootReference
+      parents: canonical set<ArtifactRootReference>
+      owner_payload: canonical descriptor-owned bytes
+    }
 ```
+
+`MechanicalDerivation` derives its one output from the enclosing exact inputs
+and resolved producer binding. `CandidateDecision` derives its one child from
+its canonical parent set and the exact descriptor-owned typed decision bytes.
 
 Each edge has exactly one output or child. A Generate invocation that returns
 several Artifacts therefore does not become a multi-output lineage hyperedge.
@@ -907,7 +993,7 @@ GenerateInvocationRecord {
   typed_input_bindings
   resolved_generator_binding
   output_bindings
-  lineage_edges
+  lineage_edges: canonical array<CandidateGeneratorLineageContribution>
 }
 
 OutputBinding {
@@ -1291,7 +1377,7 @@ finite Generate and Promote nodes express cross-domain iteration.
 Candidate-generator capabilities live in a static typed descriptor registry.
 A resolved Generate node fixes typed inputs through the common plan bindings
 and fixes owner-typed generator configuration through its generator binding.
-The generator produces domain Artifacts and its invocation outcome supplies
+The generator produces domain Artifacts and its provider result supplies
 descriptor-owned output bindings. `InvocationManifest` records that outcome
 and each owner-supplied `MechanicalDerivation` or `CandidateDecision` edge.
 Its domain owns transformations, typed decision payloads, and local search
@@ -1690,6 +1776,14 @@ In-flight work is safely retried with its original ordinal. Resume cannot
 renumber work, consume the same logical slot twice, substitute another
 candidate, or complete from best-so-far state.
 
+For an external-tool attempt, a valid atomic completion permits import of that
+exact bundle. A prepared bundle without valid completion remains incomplete;
+the controller cannot infer process liveness, acquire an execution claim, or
+automatically retry it. If the external execution owner explicitly authorizes
+another attempt, it retains the same `WorkUnitKey` and materializes an
+independent bundle. This is owner-attempt recovery, not a new semantic work item
+or generic Job state machine.
+
 Attempts and checkpoints remain owner-specific. Evaluation uses its
 request-local attempt record; an ExternalToolInvocationBundle retains generated
 scripts, frozen local bindings, stdout, stderr, raw reports, and its atomic
@@ -1705,11 +1799,20 @@ Candidate generation preserves domain semantics while using one central plan.
 Generator capability is registered through a static typed descriptor rather
 than a persistent Artifact:
 
+Candidate-generator descriptor registry schema 2.0 is a new exact registry
+namespace. Its descriptor reference uses the shared owner-local registry
+framing with `loom.candidate_generator_descriptor`, version 2.0, and the
+generator kind. Registry 2.0 adds `ProviderForm` to the canonical descriptor
+projection and admits exact HardwareImplementation 2.0 slots. No registry-1.0
+descriptor reference is reinterpreted; an existing semantic generator that
+adopts either change receives the corresponding registry-2.0 reference.
+
 ```text
 CandidateGeneratorDescriptor {
   generator_kind
   descriptor_schema_and_version
   implementation_semantic_identity
+  provider_form: ProviderForm
   typed_input_slot_descriptors
   typed_output_slot_descriptors
   resolved_generator_config_view_contract
@@ -1744,6 +1847,12 @@ OwnerLineagePayloadContract {
 }
 ```
 
+`ProviderForm` uses the shared tags above and is encoded as one `u32be` field
+in both descriptor projections. The exact
+descriptor ref therefore recovers the form before a provider implementation is
+looked up. A callback pointer, local provider name, or runtime availability bit
+does not enter descriptor identity.
+
 Central `Generate` plan nodes connect exact static values or earlier
 `PlanOutputRef` values to descriptor-owned input slots. The resolved node's
 output slots are mechanically obtained from the descriptor's role, schema, and
@@ -1757,6 +1866,23 @@ owner-typed value, re-encodes it, and requires exact byte equality. A
 `ResolvedCandidateGeneratorBinding` is a versioned canonical value in the
 resolved plan and invocation record, not an Artifact, candidate identity, or
 independently authorable configuration.
+
+It has no caller-authored identity field. Whenever a bundle or attempt needs a
+compact binding identity, that value is mechanically derived from the exact
+descriptor reference and the adopted canonical resolved-config bytes:
+
+```text
+CandidateGeneratorBindingIdentity = SHA-256(
+  bytes("loom.candidate_generator_binding.v1\0")
+  || u64be(length(canonical descriptor-reference bytes))
+  || canonical descriptor-reference bytes
+  || u64be(length(canonical resolved-config-view bytes))
+  || canonical resolved-config-view bytes)
+```
+
+The registry owns the descriptor-reference codec and this framing. A display
+name, provider label, local path, or arbitrary string cannot substitute for
+that projection.
 
 Central ranking and promotion consume their own typed plan inputs and policies;
 they are not copied into a generic generator binding. If a generator itself
@@ -1802,6 +1928,110 @@ Candidate Generator even when the same process also emits reports. The new
 implementation is finalized before an Evaluation observes it. An
 `EvaluationModelDescriptor` never mutates or replaces its subject.
 
+For each exact descriptor reference, the registered implementation must match
+the descriptor's `ProviderForm` exactly:
+
+```text
+CandidateGeneratorProviderImplementation =
+    InProcess {
+      invoke(typed input bindings,
+             ResolvedCandidateGeneratorBinding,
+             ArtifactStore,
+             BlobStore) -> Expected<CandidateGeneratorProviderResult>
+    }
+  | ExternalPrepareImport {
+      prepare(typed input bindings,
+              ResolvedCandidateGeneratorBinding,
+              ArtifactStore,
+              BlobStore,
+              ExternalToolPreparationContext)
+        -> Expected<PreparedExternalToolInvocation>
+      import(typed input bindings,
+             ResolvedCandidateGeneratorBinding,
+             PreparedExternalToolInvocation,
+             ArtifactStore,
+             BlobStore) -> Expected<CandidateGeneratorProviderResult>
+    }
+
+CandidateGeneratorProviderResult =
+    Completed {
+      output_bindings:
+        dense array<CandidateGeneratorOutputSlotRef,
+                    canonical ArtifactRootReference collection>
+      lineage_contributions:
+        canonical array<CandidateGeneratorLineageContribution>
+    }
+  | Incomplete {
+      reason: CandidateGeneratorIncompleteReason
+      retained_output_bindings:
+        dense array<CandidateGeneratorOutputSlotRef,
+                    canonical ArtifactRootReference collection>
+      lineage_contributions:
+        canonical array<CandidateGeneratorLineageContribution>
+    }
+
+CandidateGeneratorIncompleteReason =
+    ProofNotEstablished  // tag 0
+  | SemanticLimitReached // tag 1
+  | ProviderUnavailable  // tag 2
+  | Unsupported          // tag 3
+  | ExecutionFailed      // tag 4
+  | CancelledOrTimeout   // tag 5
+```
+
+`CandidateGeneratorProviderResult` is a transient report to the controller,
+not a persistent invocation outcome. A completed result satisfies every
+descriptor-owned minimum and maximum cardinality. An incomplete result obeys
+every maximum, may remain below a minimum, and carries only fully finalized
+retained outputs. The controller validates either variant, derives the one
+outer manifest outcome, and writes a nested Generate record with no outcome
+tag. Invalid typed inputs, a violated provider contract, or malformed returned
+data are errors rather than another incomplete reason.
+Each lineage contribution is the closed single-child edge shape defined by
+`Candidate Lineage and Evaluation DAG`. Its target must occur in the named
+output binding; the enclosing typed inputs and resolved generator binding are
+not repeated. `MechanicalDerivation` has no parent or owner-payload field, and
+`CandidateDecision` is legal only when the exact descriptor supplies the
+corresponding owner lineage payload contract.
+
+Both forms share the same descriptor, exact typed input bindings, exact
+`ResolvedCandidateGeneratorBinding`, output-slot validation, work-unit owner,
+and `InvocationManifest` lineage contract. Plan admission uniquely validates
+that every typed input slot is ready and total. Artifact-family importers and
+descriptor callbacks uniquely validate schema, cardinality, parameter
+contracts, and provider-specific compatibility. The external layer adds only
+local tool/runtime preflight. No layer restates the union of those checks as a
+second "total admission" authority.
+
+For an existing HardwareImplementation input, `prepare` must consume or reject
+its exact representation root, top, constraints, external bindings, and memory
+bindings before materializing a downstream bundle. A generator that creates
+the first HardwareImplementation cannot require those output facts before they
+exist; its `import` validates them against the descriptor's declared output
+contract before returning the finalized root.
+
+`prepare` materializes one deterministic finalized bundle. It neither executes
+`run.sh` nor publishes an Artifact, output binding, lineage edge, or Evidence.
+`import` accepts the same exact typed closure and bundle, requires a valid
+atomic completion, finalizes complete output Artifacts, and returns output
+bindings plus typed lineage contributions. The central
+`InvocationManifest` validator alone records those contributions; no importer
+publishes lineage. A later manifest failure may leave an unreferenced complete
+Artifact but cannot publish a partial output binding or edge.
+
+A Candidate Generator cannot publish `EvaluationEvidence`. In the baseline
+contract, reports from a generation bundle remain attempt material and are not
+reused by an evaluator. A subsequent exact EvaluationRequest over the finalized
+output Artifact prepares and imports its own bundle. This avoids selecting a
+nonsemantic generation attempt when several derivations converge to one
+Artifact; a future reuse optimization requires a separately versioned typed
+cross-attempt contract.
+
+Local executable, module, container, license, queue, and resource availability
+remain execution admission owned by the invocation environment. They do not
+enter the semantic generator binding and cannot trigger semantic fallback to a
+different provider.
+
 Hardware generation uses three descriptor-owned typed configuration roots:
 
 ```text
@@ -1833,6 +2063,15 @@ typed input slots, not configuration fields. Each descriptor owns a closed
 schema for its typed parameter and decision records; there is no generic
 property bag, hardware action language, mutable candidate IR, or
 evaluator-owned rewrite.
+
+Hardware generator and evaluator descriptors introduced by this contract
+accept or produce exact `loom.hardware_implementation 2.0` slots. A registry
+must allocate a new descriptor version or exact reference when changing an
+existing slot from the 1.0 root shape to 2.0 or when changing an existing
+provider from `InProcess` to `ExternalPrepareImport`; it cannot reinterpret a
+published descriptor reference. EvaluationRequest and EvaluationEvidence root
+shapes do not change merely because their exact case signature admits the new
+HardwareImplementation schema.
 
 The central plan may compose and rank these generators, but it does not copy
 their semantics. Builtin search ranges and heuristics are resolved generator
@@ -1994,7 +2233,7 @@ below. The generic plan does not acquire a parameter-specific type-refinement
 DSL.
 
 The initial contract is
-`ModelParameterContractRef("loom.fpa", 1.0, 0)`. Its prediction case set is
+`ModelParameterContractRef("loom.fpa", 2.0, 0)`. Its prediction case set is
 exactly case kinds 0 and 1, and its ground-truth case set is exactly case kind
 5. For all three signatures, its feature projector consumes every
 result-affecting Base condition: process corner, supply voltage, temperature,
@@ -2019,6 +2258,12 @@ case, or HardwareImplementation identity changes the Request or makes
 projection invalid. The contract never treats two operating
 conditions as one prediction question merely because their structural subject
 matches.
+
+The FPA contract major changes because its case-signature refs and physical
+feature projector now admit the registry-2.0
+`loom.hardware_implementation 2.0` subject. Its prediction payload schema may
+remain `FpaMetricPredictionView 1.0`; unchanged coefficient bytes do not permit
+an old contract ref to acquire the new subject validator.
 
 Validation and held-out evaluation use case kind 4. Its complete subject shape
 is:
@@ -2189,3 +2434,14 @@ Only these stable semantic anchors belong at this boundary:
 - Template, Fabric rewrite, and implementation-flow generators preserve their
   distinct typed owners while the central plan composes and deduplicates their
   ordinary Artifact outputs.
+- Candidate Generator admission rejects a missing slot, wrong cardinality,
+  incompatible contract, or unreadable Artifact/Blob closure before external
+  `prepare` is entered.
+- Equal admitted closure and local binding produce byte-identical bundles;
+  `prepare`, caller execution, and `import` remain independently callable and
+  expose no Job, scheduler, or process handle.
+- Candidate-generator binding identity is derived from the exact descriptor
+  and canonical config view, and a caller-authored replacement is rejected.
+- An external generator publishes only complete descriptor output Artifacts;
+  no completion, partial output, malformed representation root, or direct
+  Evidence output can produce a binding or lineage edge.

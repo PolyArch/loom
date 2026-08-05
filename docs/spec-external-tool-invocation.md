@@ -8,11 +8,19 @@ isolation, scheduling, or Evaluation result schemas.
 
 ## Ownership
 
-An external-tool provider owns one static typed descriptor, its driver-script
-generator, its version probe, and its result importer. The descriptor declares
-the logical tool key, executable names, provider-recognized environment roots,
-module candidates, runtime compatibility, and the exact result-affecting
-binding fields it expects from its model or candidate-generator owner.
+A local external-tool provider owns one static typed local descriptor, its
+driver-script projection, and its version probe. The descriptor declares the
+logical tool key, executable names, provider-recognized environment roots,
+module candidates, runtime compatibility, and the exact local binding fields
+it expects from its semantic owner.
+
+The exact `CandidateGeneratorDescriptor` or `EvaluationModelDescriptor` owns
+the typed semantic `prepare/import` boundary and its result contract. A local
+tool descriptor may supply provider-specific driver and parser components, but
+it cannot choose semantic inputs, output slots, Evidence meaning, or an
+importer independently. Any importer identity retained by a bundle is a
+mechanical verification projection of the exact semantic descriptor and its
+provider form, not a caller-authored callback name.
 
 The version probe is structured data: an argument token array, a nonempty set
 of accepted process exit codes, an optional required output marker, and an
@@ -307,6 +315,47 @@ those services.
 
 ## Bundle Contract
 
+The manifest schema owned by this section is:
+
+```text
+loom.external_tool_invocation 2.0
+
+SemanticInvocationClosure =
+    CandidateGenerator {
+      exact typed input bindings
+      exact ResolvedCandidateGeneratorBinding canonical bytes
+      derived CandidateGeneratorBindingIdentity
+    }
+  | Evaluation {
+      exact EvaluationRequest ArtifactRootReference
+    }
+
+ExternalToolPreparationContext {
+  strict adopted LocalToolConfig
+  bundle_destination
+}
+
+PreparedExternalToolInvocation {
+  bundle_root
+  manifest_sha256
+}
+```
+
+The context and prepared handle are ephemeral nonsemantic C++ values. Their
+paths never enter an Artifact, Request, Evidence, or generator binding. The
+prepared handle does not own or recover the semantic closure; every import
+receives the full typed closure again and recomputes its expected manifest.
+`manifest_sha256` is only an integrity and lookup key.
+
+The 2.0 manifest uses stable closure tags `CandidateGenerator = 0` and
+`Evaluation = 1`. Canonical JSON spells them `candidate_generator` and
+`evaluation`. Candidate resolved-binding canonical bytes and all descriptor-
+derived identity bytes are lowercase hexadecimal with fixed digest length
+where applicable. The binding's own DSE codec and adopter remain authoritative;
+the bundle JSON parser cannot reinterpret those bytes. This is a major change
+from manifest 1.0, whose free semantic-binding field cannot be imported as a
+typed 2.0 closure.
+
 Bundle finalization is failure-atomic. A complete bundle contains:
 
 ```text
@@ -320,11 +369,13 @@ outputs/...
 `tool-invocation.json` is the sole bundle manifest. It records:
 
 - the bundle schema and version;
-- exact semantic input Artifact references and materialized relative paths;
+- one exact `SemanticInvocationClosure`;
+- materialization rows that reference the closure's typed input slots or exact
+  Request-owned Artifacts and bind them to relative paths;
 - the SHA-256 digest of every materialized driver and input byte sequence;
 - every provider-declared external input slot, its semantic fingerprint, and
   either its materialized relative path or frozen absolute local path;
-- the exact model or generator binding and provider semantic identity;
+- the mechanically derived provider semantic identity and provider-form tag;
 - frozen tool and runtime bindings, their resolution sources, and version
   probe results;
 - the structured version-probe arguments, accepted exit codes, required
@@ -334,7 +385,28 @@ outputs/...
 - commands as token arrays, not shell fragments;
 - required inherited environment-variable names, never their values;
 - declared driver, input, output, raw-report, and completion-record paths; and
-- the exact result importer identity.
+- the exact semantic-descriptor-derived result importer identity.
+
+For a Candidate Generator, the full resolved binding remains present in the
+closure and the stored `CandidateGeneratorBindingIdentity` must equal a fresh
+derivation from it. For Evaluation, the exact Request recovers the full resolved
+model binding. A compact digest is never sufficient to adopt configuration,
+select a descriptor, or invoke an importer, and the bundle alone is never a
+binding authority.
+
+The result-importer identity is the verification digest:
+
+```text
+SHA-256(
+  bytes("loom.external_tool_importer.v1\0")
+  || u64be(length(exact semantic descriptor-reference bytes))
+  || exact semantic descriptor-reference bytes
+  || u32be(ProviderForm::ExternalPrepareImport))
+```
+
+The manifest stores this digest as 64 lowercase hexadecimal characters and the
+importer recomputes it from the full typed closure. It is not a callback name,
+dynamic-library symbol, or importer selection authority.
 
 All bundle-owned paths are relative to the bundle root. Frozen host
 executables, module initialization paths, and directly referenced external
@@ -360,6 +432,16 @@ provider projection contract; equal verified bytes have identical semantic
 input identity. A bundle never derives its expected functional result from the
 same RTL provider that it is testing.
 
+When an input is a `HardwareImplementation`, preparation first strict-imports
+its exact typed `representation_root`, reads every required logical byte
+sequence only through the referenced `BlobDigest` and `BlobStore`, rehashes the
+bytes, and derives the top object from that root. A caller cannot substitute
+raw RTL, a top name, a previous work directory, or the most recent vendor
+database. Every `GenerationConstraint`, external binding, and memory binding
+is consumed exactly, mechanically preserved, or rejected before bundle
+materialization; the local tool or driver cannot supply a second constraint
+body or hidden default.
+
 ## Execution And Collection
 
 Bundle preparation is the default operation. A Loom command may optionally
@@ -379,13 +461,37 @@ output, and successful driver completion. A signal, externally enforced
 timeout, scheduler cancellation, resource limit, or interrupted host may leave
 no valid completion record; that remains an incomplete attempt.
 
-The provider importer reads only the exact bundle manifest, valid completion
-record, and declared outputs. It never scans a scratch directory or infers the
-nearest report. A flow that derives hardware finalizes the new
-`HardwareImplementation` before issuing Evaluation against that exact identity.
-Only then may the importer construct normalized `EvaluationEvidence` or, for a
-real workload run, `SimulationExecution`. Missing, malformed, partial, or
-incompatible output cannot create partial Evidence.
+A prepared bundle with no valid completion record is merely incomplete. Loom
+does not infer whether an external process is still running, acquire an
+execution claim, retry the script, or create a replacement attempt. The caller
+or its external execution owner decides whether to wait, cancel, rerun, or
+prepare another owner attempt and is responsible for preventing concurrent
+writes. A new attempt may retain the same semantic WorkUnitKey but receives an
+independent bundle. None of these execution choices changes semantic identity
+or introduces a Loom Job state machine.
+
+The shared strict-import helper reads only the exact manifest, valid completion
+record, and declared outputs. It verifies attempt integrity and returns one
+ephemeral immutable output snapshot to the descriptor-owned importer; it never
+scans a scratch directory or infers the nearest report. This helper is a
+library operation, not a third semantic importer or persistent output owner.
+
+A Candidate Generator importer finalizes only its descriptor-owned Artifact
+outputs and returns dense descriptor output bindings plus typed lineage
+contributions; the central `InvocationManifest` alone validates and records
+those contributions. A flow that derives hardware first finalizes the new
+`HardwareImplementation`; it cannot publish Evidence from the generator
+import. An Evaluation importer consumes an exact finalized
+`EvaluationRequest`, first finalizes any descriptor-owned output Artifacts such
+as `SimulationExecution`, and returns their dense descriptor output bindings
+plus one normalized `EvaluationEvidenceOutcome` to the EvaluationEvidence
+finalizer. Neither finalizer scans ArtifactStore to discover output membership.
+Generation reports remain attempt
+material in the baseline contract. An Evaluation over the finalized
+implementation prepares its own bundle, so one tool execution is never
+silently adopted by two semantic descriptors. Missing, malformed, partial, or
+incompatible output publishes neither a partial implementation nor partial
+Evidence.
 
 Raw logs, reports, waveforms, tool databases, and the completion record remain
 owner-attempt material until an exact raw-bundle Artifact owner is defined.
@@ -435,8 +541,14 @@ Stable tests cover:
 - independent tool/runtime selection plus rejected incompatible composition;
 - shell-safe projection of adversarial paths, arguments, and module names;
 - deterministic byte-identical manifests and scripts from identical inputs;
+- exact HardwareImplementation bytes and top derived from its representation
+  root, with raw-source, top-name, and prior-workdir substitution rejected;
 - independent parallel bundles with no shared mutable environment;
 - atomic completion publication and rejection of missing or partial results;
+- descriptor-owned prepare and import as separate calls, with an incomplete
+  bundle remaining nonsemantic while any retry decision stays caller-owned;
+- generator import publishing no Evidence and evaluator import requiring an
+  exact finalized Request;
 - derivation-before-Evaluation and exact Request/implementation coupling; and
 - absence of secrets, cgroup policy, memory supervision, and raw report fields
   from semantic Artifacts and Evidence.

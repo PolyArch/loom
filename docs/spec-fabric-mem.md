@@ -335,7 +335,8 @@ InactiveLaneSemantics = NotApplicable(0) | Suppress(1)
                       | SuppressAndZeroFill(2)
 ```
 
-These tags are `loom.fabric 2.0` schema values. They do not inherit C++ enum
+These tags were introduced by `loom.fabric 1.0` and retain the same values in
+`loom.fabric 2.0`. They do not inherit C++ enum
 ordinals, source declaration order, or printer spelling. A codec must reject
 an unknown tag rather than preserve it as an opaque future value.
 
@@ -552,7 +553,8 @@ MemoryPortTransactionProjection =
   | ActiveLanesRowMajor(1)
 ```
 
-The projection tags above are stable `loom.fabric 2.0` wire values. They do
+The projection tags above were introduced by `loom.fabric 1.0` and retain the
+same values in `loom.fabric 2.0`. They do
 not inherit a C++ enum ordinal or printer spelling, and an unknown tag is
 invalid.
 

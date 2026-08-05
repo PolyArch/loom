@@ -1,10 +1,13 @@
 # Fabric Persistent Identity And References
 
-This document is the single source of truth for the Mapping-visible
-persistent identity and reference vocabulary owned by the Fabric Hardware
-Description family. It defines which targets are independent entities, which
-targets are owner-relative structures, the closed role-specific reference
-unions, canonical reference ordering, and validation.
+This document is the single source of truth for the persistent local identity
+and reference vocabulary owned by the Fabric Hardware Description family. It
+defines which targets are independent entities, which targets are owner-
+relative structures, the closed role-specific reference unions, canonical
+reference ordering, and validation. Each consuming schema separately states
+whether one of these references is selectable by Mapping, consumed only by a
+backend, or used only to close Fabric itself; inclusion here does not enlarge
+the Mapping target universe.
 
 It does not redefine the hardware semantics of a PE, FU, memory, switch, FIFO,
 boundary, system service, or transport pattern. The specification that owns a
@@ -12,10 +15,12 @@ resource owns its endpoint inventory, traversal relation, resource states,
 use patterns, configuration fields, and refinement domains. This document
 only gives those owned objects one unambiguous persistent reference.
 
-The catalog below is the complete Mapping-visible catalog. Fabric producer
-closure, all authoring-only template kinds, root finalization, and dependency
-publication are owned by `docs/spec-fabric-artifact.md`. A Fabric producer cannot make a new
-target visible to Mapping without extending this catalog.
+The catalog below is the complete persistent Fabric local-reference catalog.
+Fabric producer closure, all authoring-only template kinds, root finalization,
+and dependency publication are owned by `docs/spec-fabric-artifact.md`. A
+Fabric producer cannot make a new persistent target available to any consumer
+without extending this catalog, and cannot make it Mapping-selectable without
+also extending that target's Mapping owner contract.
 
 ## Exact Artifact Scope
 
@@ -97,6 +102,9 @@ bytes of the named Fabric reference defined in this specification.
 | 47 | `FabricMemoryEngineTemplateCapabilityAlternativeRef` |
 | 48 | `FabricMemoryEngineTemplateEndpointRef` |
 | 49 | `FabricMemoryEngineTemplateInternalConnectionRef` |
+| 50 | `FabricModuleDomainSlotRef` |
+| 51 | `SpatialCoreDomainSlotOccurrenceRef` |
+| 52 | `SpatialCoreInternalOccurrenceRef` |
 
 One generated Fabric declaration owns this table, the C++ enum, each typed
 codec registration, strict decoder, and validator dispatch. A kind ordinal is
@@ -166,11 +174,12 @@ only in a field whose schema asks for that template kind. TechMapping may
 reference an FU template or Memory Operation Engine template; SpatialMapping
 placement always references a concrete FU or memory occurrence.
 
-Canonical elaboration creates a distinct entity for every concrete physical
-occurrence. Two AccCores that instantiate the same module template therefore
-own distinct PE, FU, memory, switch, FIFO, and boundary occurrence entities.
-Template reuse never merges their capacity, state, configuration, or physical
-identity.
+A Module's internal entity identifiers are definition-local to that exact
+Module Artifact. Importing the same Module into two AccCores does not clone,
+rebind, or renumber those identifiers. A System physical reference qualifies
+the exact Module-local target by the owning `SpatialCoreOccurrenceRef`, so two
+imports never alias capacity, state, configuration, provider realization,
+memory binding, activity, or physical identity.
 
 One AccCore has exactly one SpatialCore attachment. The structural occurrence
 reference is:
@@ -205,6 +214,173 @@ dependency ordinal nor the local payload is meaningful alone.
 
 Module boundary references define attachment correspondence. They are not
 Spatial RouteTree endpoints or independently consumable capacity resources.
+
+## Module Domain And Physical Occurrence References
+
+A finalized Module declares symbolic Clock and Reset slots. The persistent
+slot reference is:
+
+```text
+FabricModuleDomainSlotRef =
+  (FabricModuleTemplateRef, Clock | Reset, slot ordinal)
+```
+
+The slot ordinal is dense within its domain kind. The exact Module root owns
+the slot inventory and its assignments; this reference copies no concrete
+period, polarity, synchronization, or release contract.
+
+The Module slot-assignment wire uses these closed declarations:
+
+```text
+FabricModulePhysicalOwnerRef =
+    PeOccurrence(FabricPeOccurrenceRef)
+  | FuOccurrence(FabricFuOccurrenceRef)
+  | FuOccurrenceNode(FabricFuOccurrenceNodeRef)
+  | MemoryOccurrence(FabricMemoryOccurrenceRef)
+  | MemoryOperationPort(FabricMemoryOperationPortRef)
+  | LocalMemoryService(FabricMemoryServiceRef::Local)
+  | SwitchOccurrence(FabricSwitchOccurrenceRef)
+  | FifoOccurrence(FabricFifoOccurrenceRef)
+  | BoundaryOccurrence(FabricBoundaryOccurrenceRef)
+  | InstructionContext(InstructionContextRef)
+
+FabricModuleDomainMemberRef =
+    Boundary(FabricModuleBoundaryEndpointRef)
+  | Internal(FabricModulePhysicalOwnerRef)
+
+ModuleDomainAssignment = {
+  member : FabricModuleDomainMemberRef
+  slot : FabricModuleDomainSlotRef
+}
+```
+
+`FabricModulePhysicalTargetRef` is the exact closed target union used when a
+System consumer must name state inside one imported Module occurrence:
+
+```text
+FabricModulePhysicalTargetRef =
+    Owner(FabricModulePhysicalOwnerRef)
+  | FuOccurrencePort(FabricFuOccurrencePortRef)
+  | TransportEndpoint(FabricTransportEndpointRef
+      whose owner is a FabricModulePhysicalOwnerRef)
+  | MemoryEndpoint(FabricMemoryEndpointRef
+      whose owner is a FabricModulePhysicalOwnerRef)
+  | MemoryCapabilityAlternative(FabricMemoryCapabilityAlternativeRef)
+  | MemoryOperationContext(FabricMemoryOperationContextRef)
+  | MemoryServiceRegion(FabricMemoryServiceRegionRef::Local)
+  | ResourceState(FabricResourceStateRef
+      whose owner is a FabricModulePhysicalOwnerRef)
+  | UsePattern(FabricUsePatternRef
+      whose owner is a FabricModulePhysicalOwnerRef)
+  | SemanticConfigurationField(FabricSemanticConfigFieldRef
+      whose owner is a FabricModulePhysicalOwnerRef)
+  | PhysicalRefinementDomain(FabricPhysicalRefinementDomainRef
+      whose owner is a FabricModulePhysicalOwnerRef)
+  | PhysicalTraversal(FabricPhysicalTraversalRef
+      whose complete closure is inside the Module)
+```
+
+The alternatives above, their zero-based tags, their field order, and their
+role validators are generated from this one declaration. Definition templates,
+Module boundary template faces, System objects, generic paths, and property
+references are excluded. A role-refined nested reference retains the canonical
+bytes of its named underlying reference after its containing union tag; no
+consumer owns another target-kind table.
+
+For a System occurrence, the exact slot and every exact internal physical
+target are qualified structurally:
+
+```text
+SpatialCoreDomainSlotOccurrenceRef =
+  (SpatialCoreOccurrenceRef, Clock | Reset, slot ordinal)
+
+SpatialCoreInternalOccurrenceRef =
+  (SpatialCoreOccurrenceRef, FabricModulePhysicalTargetRef)
+```
+
+The `SpatialCoreOccurrenceRef` selects exactly one imported Module through its
+owning AccCore. The slot or target must resolve in that Module. The compact
+slot-occurrence payload omits the redundant Module template reference; it is
+the canonical projection of
+`(SpatialCoreOccurrenceRef, FabricModuleDomainSlotRef)`. The internal payload
+retains the underlying target's registered kind and canonical bytes. Neither
+reference allocates an `EntityId`, duplicates a dependency row, or changes the
+identity of the imported Module-local target.
+
+Domain lookup over a complete System uses one nested role union without a new
+owner-local kind:
+
+```text
+SpatialCorePhysicalDomainTargetRef =
+    TransportBoundary(FabricTransportEndpointRef
+      whose owner is the exact SpatialCoreOccurrenceRef)
+  | MemoryBoundary(FabricMemoryEndpointRef
+      whose owner is the exact SpatialCoreOccurrenceRef)
+  | Internal(SpatialCoreInternalOccurrenceRef)
+```
+
+The two boundary alternatives are the existing occurrence endpoint identities
+projected from the exact Module face through `spatial_attachment`; they are not
+another boundary inventory.
+
+Consumers that address complete System physical state use these closed
+compositions:
+
+```text
+FabricPhysicalOccurrenceOwnerRef =
+    DirectSystemOwner(FabricInventoryOwnerRef)
+  | SpatialCoreInternal(SpatialCoreInternalOccurrenceRef
+      whose target is FabricModulePhysicalOwnerRef)
+
+FabricPhysicalConfigurationFieldRef =
+    DirectSystemField(FabricSemanticConfigFieldRef)
+  | SpatialCoreInternalField(SpatialCoreInternalOccurrenceRef
+      whose target is FabricSemanticConfigFieldRef)
+```
+
+The direct variants admit only owners or fields declared by the System root;
+they cannot wrap an imported Module-local target. These compositions are
+nested typed unions used by consuming schemas and receive no standalone Fabric
+local-kind ordinal. This document owns them so ConfigurationABI,
+HardwareImplementation, Mapping, and RTL cannot define competing physical
+owner or field unions.
+
+Hardware-domain membership uses this closed composition:
+
+```text
+FabricHardwareDomainMemberRef =
+    DirectSystemOwner(FabricInventoryOwnerRef)
+  | SpatialCoreSlot(SpatialCoreDomainSlotOccurrenceRef)
+```
+
+For Clock and Reset domains, the direct variant is further restricted by one
+role-refinement predicate over the existing `FabricInventoryOwnerRef`. The
+refined value retains the underlying inventory-owner canonical bytes; it does
+not allocate another union tag or define another persistent encoding:
+
+```text
+admitClockResetDirectOwner(FabricInventoryOwnerRef) =
+    HostCoreOccurrence(HostCoreOccurrenceRef)
+  | InstructionCoreContext(InstructionCoreContextRef)
+  | MemoryService(System(SystemMemoryServiceRef))
+  | SystemServiceEndpoint(SystemServiceEndpointRef)
+  | SystemServiceTransform(SystemServiceTransformRef)
+  | SystemTransportResource(SystemTransportResourceRef)
+  | ExternalBoundary(ExternalBoundaryRef)
+
+FabricClockResetDirectOwnerRef =
+  refined<FabricInventoryOwnerRef, admitClockResetDirectOwner>
+```
+
+Construction and adoption validate that predicate and otherwise preserve the
+exact underlying `FabricInventoryOwnerRef`. Consumers cannot author a second
+role tag, and conversion back to the inventory owner is identity on canonical
+bytes.
+
+`AccCoreOccurrenceRef`, `SpatialCoreOccurrenceRef`, `HardwareDomainRef`, and a
+transfer pattern are not Clock/Reset inheritance proxies. Other hardware-domain
+kinds retain their own kind-specific admission rules over the same general
+member wire.
 
 ## FU-Internal Structural References
 
@@ -732,8 +908,12 @@ Those caches are removable derived data and never enter persistent identity.
 
 Anchor-level tests cover:
 
-* two occurrences elaborated from one template receive distinct occurrence
-  references while retaining exact template correspondence;
+* two SpatialCore occurrences importing one Module retain the same
+  definition-local target bytes but receive distinct occurrence-qualified
+  physical references without cloned or rebound EntityIds;
+* Module slot, occurrence-slot, and occurrence-qualified internal references
+  round-trip canonically and reject a slot or target from another imported
+  Module;
 * named and anonymous authoring forms of one FU definition resolve to the same
   definition and capability-template references;
 * capability-template record reorder is identity-neutral while one active

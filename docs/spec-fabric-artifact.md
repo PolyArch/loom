@@ -88,6 +88,25 @@ no accepted artifact family, schema version, root kind, owner-local target
 kind, or dependency-use contract in schema 2.x. It is therefore not an enabled
 dependency role and cannot appear in a canonical Fabric root.
 
+The enabled schema-2.0 dependency contracts are exact:
+
+```text
+ImportedModule:
+  owner schema = loom.fabric 2.0
+  required root = Module
+
+RefinedSystem:
+  owner schema = loom.fabric 2.0
+  required root = System
+```
+
+A `loom.fabric 1.x` Module has no 2.0 slot or occurrence contract and is
+therefore rejected rather than interpreted as declaring zero slots. Likewise,
+a `RefinedSystem` dependency cannot cross a Fabric schema version or name a
+Module or InterconnectImplementation root. A later compatible Fabric minor
+version must explicitly publish its own dependency-contract table; role
+ordinals alone never imply cross-version admission.
+
 An authoring draft, encoder input, or imported envelope containing an
 `ImplementationInput` row fails structurally with
 `fabric_artifact_owner_contract_unavailable` before the referenced object is
@@ -111,6 +130,10 @@ System AccCore spatial_core
 System spatial_attachment module endpoint
   role: ImportedModule
   target: FabricModuleBoundaryEndpointRef
+
+System hardware_domain SpatialCoreSlot member
+  role: ImportedModule
+  target: FabricModuleDomainSlotRef selected through the member's AccCore
 
 InterconnectImplementation refined_system
   role: RefinedSystem
@@ -147,6 +170,13 @@ row. Duplicate uses are legal; duplicate or unused rows are not.
 A repeated use of one enabled dependency repeats its table ordinal in the
 payload; it does not duplicate the dependency row. Rows are sorted by `(role,
 ArtifactRootReference canonical bytes)` and exact duplicate rows are invalid.
+
+An occurrence-qualified Module slot or internal target in a System does not
+add another direct dependency use. Its `SpatialCoreOccurrenceRef` selects the
+AccCore's already-declared `ImportedModule` row, and validation resolves the
+slot or local target through that exact dependency. The occurrence-qualified
+reference never repeats a dependency ordinal, Module identity, or dependency
+row.
 
 The transitive dependency closure is derived mechanically. It is never stored
 as another list. Every enabled direct dependency must already be durably
@@ -187,6 +217,13 @@ authoring order or raw source text. Canonicalization:
 8. assigns root-local entity identifiers and structural ordinals from that
    canonical form; and
 9. writes one deterministic MLIR bytecode payload in canonical entity order.
+
+For a Module root, that relation includes the canonical symbolic Clock/Reset
+slot inventory and every Module boundary or internal-owner assignment. For a
+System root, it includes the canonical occurrence-slot domain memberships.
+The effective domain of an occurrence-qualified internal target is derived
+from those two relations and is not serialized as a second expanded member
+list.
 
 The exact Fabric canonical semantic bytes passed to the Common Artifact
 SHA-256 v1 finalizer are:
@@ -359,7 +396,9 @@ inventory, and the exact memory-occurrence-to-engine-definition relation.
 Convenience queries such as `fuTemplate(occurrence)`,
 `fuCapabilityTemplates(template)`, and `memoryEngineTemplate(occurrence)` are
 indexes over those complete ranges, not additional authorities. For a Module
-root, the view also exposes the complete canonical token-plane
+root, the view exposes the canonical symbolic Clock/Reset slot inventory and
+the complete boundary/internal-owner assignment relation. It also exposes the
+complete canonical token-plane
 resource-attachment relation. Each `FabricModuleBoundaryEndpointRef` directly
 connected to a resource maps to the one occurrence-local
 `FabricTransportEndpointRef` reached by that signature input or producing that
@@ -382,11 +421,14 @@ relation contains no resource endpoint, traversal, capacity, EntityId, or
 serialized payload and does not change Fabric Artifact identity.
 
 Memory-plane Module boundaries remain in the typed memory endpoint model and
-never appear in this token-plane relation. A `System` root
-additionally exposes complete canonical
-ranges for spatial attachments, hardware-domain declarations and membership,
-system transport resources, transfer patterns, and each transport resource's
-optional crossing contract.
+never appear in this token-plane relation. A `System` root additionally
+exposes complete canonical ranges for spatial attachments, hardware-domain
+declarations and direct or occurrence-slot membership, system transport
+resources, transfer patterns, and each transport resource's optional crossing
+contract. The same view derives the complete effective-domain relation for
+each occurrence-qualified Module boundary and internal target. That derived
+range is an index over the exact Module assignments and System slot
+memberships, not another serialized catalog.
 
 All range elements are exact typed Fabric references or immutable views of
 root-owned records. Ranges use canonical order and contain no duplicates.
@@ -404,6 +446,12 @@ importEntireFabricRoot(ArtifactRootReference,
                        canonical bytes,
                        exact dependencies) -> FabricArtifactView
 requireSystemRoot(FabricArtifactView) -> FabricSystemRootView
+requireModuleRoot(FabricArtifactView) -> FabricModuleRootView
+
+FabricModuleRootView::domainSlots()
+  -> canonical range<FabricModuleDomainSlotRef>
+FabricModuleRootView::domainAssignments()
+  -> canonical range<ModuleDomainAssignmentView>
 
 FabricArtifactView::pointConnections()
   -> canonical range<FabricPointConnectionPayload>
@@ -433,7 +481,12 @@ FabricSystemRootView::hardwareDomains()
 FabricSystemRootView::hardwareDomainContract(HardwareDomainRef)
   -> exact closed HardwareDomainContractView
 FabricSystemRootView::hardwareDomainMembers(HardwareDomainRef)
-  -> canonical range<FabricInventoryOwnerRef>
+  -> canonical range<FabricHardwareDomainMemberRef>
+FabricSystemRootView::effectiveHardwareDomain(
+    Direct(FabricClockResetDirectOwnerRef)
+      | SpatialCore(SpatialCorePhysicalDomainTargetRef),
+    Clock | Reset)
+  -> exact HardwareDomainRef
 FabricSystemRootView::transportResources()
   -> canonical range<SystemTransportResourceRef>
 FabricSystemRootView::transferPatterns(SystemTransportResourceRef)
@@ -516,7 +569,8 @@ This artifact family does not own:
 * physical sharing legality, owned by the HSG registry;
 * concrete `fabric.op` capability, owned by Fabric operation contracts;
 * backend availability or recipes, owned by Fabric-to-RTL providers;
-* software-selected configuration, owned by Mapping and ConfigurationABI;
+* software-selected actor and refinement facts, owned by Mapping;
+* physical configuration encoding, owned by ConfigurationABI;
 * implementation realization and tool outputs, owned by
   HardwareImplementation; or
 * timing, power, area, and other measured or predicted observations, owned by
@@ -541,6 +595,9 @@ Anchor tests cover:
 * wrong-kind, foreign, duplicate, cyclic, and missing direct references;
 * fixed byte vectors for every root variant, zero and multiple dependencies,
   dependency-table target uses, and malformed count or length framing;
+* the `loom.fabric.semantic.v2` envelope, Module slot/assignment relation, and
+  System occurrence-slot membership changing identity exactly when their
+  semantic content changes;
 * strict field-owned dependency-use decoding, target re-encoding, and
   rejection of missing, wrong-role, wrong-target, and unused dependency rows;
 * rejection of any envelope-only or dependency-preflight path that attempts to
@@ -557,6 +614,9 @@ Anchor tests cover:
 * independent import and re-verification of canonical bytes;
 * exact agreement between every complete relation range and its convenience
   queries;
+* exact agreement between Module assignments plus System slot membership and
+  the derived occurrence-qualified effective-domain range, with no serialized
+  expanded member catalog;
 * rejection of a hidden clock-domain crossing even when a caller would have
   omitted that point connection from a former shadow list;
 * rejection of attempts to construct, subclass, or publicly freeze a partial

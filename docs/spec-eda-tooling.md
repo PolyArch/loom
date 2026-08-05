@@ -26,9 +26,11 @@ capability:
 
 One resolved model binding supplies exact result-affecting inputs such as the
 stable provider build, selected standard-cell or macro file fingerprints,
-tool-bundled FPGA resource keys, corner mapping, constraints, parser version,
-and semantic effort. Executable paths, module activation, license servers,
-host selection, scratch roots, and parallel-job limits are invocation bindings.
+tool-bundled FPGA resource keys, corner mapping, constraint-translation
+choices, parser version, and semantic effort. It never supplies an independent
+constraint body when the subject HardwareImplementation already owns an exact
+`GenerationConstraint` payload. Executable paths, module activation, license
+servers, host selection, scratch roots, and parallel-job limits are invocation bindings.
 They do not enter candidate semantics unless the model descriptor explicitly
 declares a result-affecting value.
 
@@ -50,7 +52,7 @@ defaults.
 A flow that creates a new `HardwareImplementation` is instead selected through
 the central `CandidateGeneratorDescriptor` and
 `ResolvedCandidateGeneratorBinding`. One physical tool invocation may derive
-an implementation and retain raw reports for a following Evaluation, but it
+an implementation and retain raw reports as attempt material, but it
 does not make EvaluationModelDescriptor an implementation generator.
 
 ## Capability Obligations And Provider Catalog
@@ -147,7 +149,8 @@ implementation stage and does not turn those bytes into Platform fields.
 
 ## Invocation Bundles
 
-An EDA adapter emits one finalized `ExternalToolInvocationBundle` containing
+An exact generator or evaluator descriptor's `prepare` operation emits one
+finalized `ExternalToolInvocationBundle` containing
 exact materialized Artifact inputs, frozen references to declared external
 files, generated constraints, workload inputs and expected observations where
 applicable, provider Tcl/Python or equivalent drivers, a top-level Bash script,
@@ -156,6 +159,24 @@ structured tokens before script projection. Machine-local paths, module
 activation, inherited environment names, and PolyArch/container binding are
 frozen into the nonsemantic bundle manifest. The script validates every frozen
 external-file fingerprint before invoking the tool.
+
+Generator preparation consumes exact typed input slots and one
+`ResolvedCandidateGeneratorBinding`; evaluator preparation consumes one exact
+`EvaluationRequest`. Central plan admission proves input readiness,
+Artifact-family importers prove each exact Artifact and Blob closure, semantic
+descriptor callbacks prove flow-specific compatibility, and the external layer
+proves local tool/runtime availability. These owners do not restate one total
+admission predicate.
+
+For a downstream flow whose input is an existing HardwareImplementation, its
+semantic callback accounts for the exact target, corner, external and memory
+bindings, representation root, top object, and every `GenerationConstraint`
+before a bundle is materialized. For the first implementation-producing flow,
+root, top, and constraint are output facts validated by its importer instead.
+A missing or unsupported required owner fails before the first point at which
+that owner could be consumed. Raw RTL, a free top name, a caller-authored
+semantic-binding string, or a backend-default constraint is never an alternate
+input.
 
 The top-level script performs no discovery and does not contain a second copy
 of result-affecting model or generator configuration. Tool options that can
@@ -167,10 +188,24 @@ script; resource isolation, limits, scheduling, container lifecycle, and
 license services remain external. Independent bundles may be executed in
 parallel without sharing mutable process environment.
 
+After execution, the shared strict-import helper verifies only attempt
+integrity and declared output bytes. The same semantic descriptor's `import`
+operation interprets that ephemeral immutable snapshot. A generator import
+finalizes a complete implementation and returns dense descriptor output
+bindings plus lineage contributions but no Evidence; an evaluator import
+finalizes any descriptor output Artifacts and returns their dense descriptor
+output bindings plus one normalized `EvaluationEvidenceOutcome` to the
+EvaluationEvidence finalizer. Neither path scans ArtifactStore for result
+membership. An evaluator cannot mutate or replace the subject. Generation
+reports are not reused by Evaluation in the baseline two-call contract; the
+evaluator prepares a new exact bundle over the finalized implementation.
+
 ## HardwareImplementation Generation
 
 The initial RTL implementation is a `MechanicalDerivation` from exact Fabric,
-exact `ConfigurationABI`, and the resolved generator binding. A later flow that
+exact `ConfigurationABI`, and the resolved generator binding. It publishes the
+closed `Rtl` representation root of
+`loom.hardware_implementation 2.0`. A later flow that
 consumes existing hardware state and preserves new state creates another
 immutable `HardwareImplementation`. `InvocationManifest`, not the output
 Artifact, owns both derivation records. Representative later derivations are:
@@ -194,11 +229,27 @@ transformation uses `MechanicalDerivation`; a search choice uses
 converge on one HardwareImplementation identity. Logs and QoR observations do
 not become fields of `HardwareImplementation`.
 
+A generator importer processes one valid declared-output snapshot in this
+order: interpret provider outputs into canonical logical payload bytes; publish
+those bytes through BlobStore; construct the exact typed representation root,
+format ref, top, interfaces, activity, macro, and external-binding closure;
+finalize the HardwareImplementation; strict-reimport it through the same owner
+and representation-format validators; and only then return its descriptor
+output binding plus lineage contribution. A failure after BlobStore insertion
+may leave deduplicated unreferenced blobs, but no partial root or output binding
+is published.
+
+A downstream generator materializes production bytes only from the exact input
+HardwareImplementation representation root and its BlobStore-verified
+BlobDigests. The representation root supplies the exact top object. Bundle
+paths, tool database directories, filenames, and reports cannot replace either
+authority.
+
 For a Fabric-to-RTL generator, an implementation-only recipe selection is a
 typed occurrence-scoped entry in the resolved generator configuration:
 
 ```text
-FabricEntityRef -> BackendRecipeKey
+FabricPhysicalOccurrenceOwnerRef -> BackendRecipeKey
 ```
 
 `BackendRecipeKey` is a closed typed value owned by that candidate-generator
@@ -379,7 +430,9 @@ deterministic invocation.
 ## Anchor Verification
 
 Stable tests cover semantic versus invocation binding, exact manifest
-derivation inputs, occurrence-scoped recipe selection,
+derivation inputs, occurrence-scoped recipe selection, owner-specific
+admission before each fact is consumed, exact representation-root and
+BlobStore input materialization, separate prepare/import,
 derivation-before-evaluation, implementation-state convergence,
 capability-obligation resolution without an ecosystem mode, output collection,
 typed failure classification, canonical parameter payload validation before

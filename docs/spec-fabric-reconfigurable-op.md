@@ -64,8 +64,10 @@ membership or `op_list` syntax alone never authorizes a type, attribute,
 arity, operation family, or port relation that the complete typed relation
 does not accept.
 
-The former finite exact-mode model is retired; none of its representations
-remain normative.
+The former persisted Cartesian exact-mode model is retired; none of its
+representations remain normative. The derived semantic-field relation below
+classifies only the behavior choices that require physical configuration. It
+does not restore an actor-mode catalog.
 
 ## Implementation Families And `op_list`
 
@@ -236,6 +238,90 @@ same modular datapath realizes every admitted width without selecting it.
 Neither `hw_params` nor canonical Fabric stores a workload's selected value,
 mask, predicate, topology route, or raw configuration bits.
 
+### Derived Semantic Field Relation
+
+For every concrete `fabric.op`, the Fabric finalizer derives exactly one sealed
+joint relation from the exact registered operation schemas, enabled `op_list`,
+typed `hw_params`, physical ports, and constraints:
+
+```text
+FabricOpSemanticFieldRelation =
+    None
+  | Finite {
+      canonical_behavior_keys[]
+      admitted_actor_projection_to_key
+      canonical_key_codec
+    }
+  | Direct {
+      encoded_bit_count
+      canonical_bit_domain
+      admitted_actor_projection_to_bits
+      canonical_bit_codec
+    }
+```
+
+This is one concrete-resource relation, not another IR operation, persistent
+record, HSG descriptor field, backend registry, or workload selection. It is
+sealed into `ResolvedFabricOpCapabilityView`; the corresponding canonical
+`FabricSemanticConfigFieldRef` inventory contains exactly one composite field
+when the relation is non-`None`, and no field when it is `None`. Multiple actor
+properties that jointly select physical behavior are components of one
+canonical behavior key or one canonical direct-bit carrier. They are never
+independent relations whose domains may be combined as a Cartesian product.
+
+`None` means every admitted actor point has one equal physical behavior and
+therefore creates no semantic configuration field.
+`Finite` owns the exact behavior equivalence relation, the canonical finite
+key domain, the total admitted-actor-to-key projection, and the canonical key
+codec. `Direct` owns one fixed-width canonical bit carrier, its exact
+schema-derived validity domain, a total admitted-actor-to-bits projection, and
+the canonical bit codec without enumerating the domain. The domain may be the
+entire `2^encoded_bit_count` carrier or a proper schema-derived subset. The
+projector's semantic image equals that admitted domain; Fabric exposes the
+canonical domain validator and ConfigurationABI cannot define another one. A
+different relation kind, missing projection, noncanonical key, invalid direct
+value, or ambiguous projection is invalid Fabric rather than a backend choice.
+
+Behavior equivalence is physical behavior required by exact actor semantics,
+not spelling equality or approximate QoR similarity. Non-defined result
+refinements such as poison or undef do not create keys, modes, or RTL
+sidebands. `Disabled` is not an additional Fabric behavior key. An ABI
+`inactive_value` is any encodable member of the relation domain; the disabled
+resource/topology contract, rather than that member's active semantics, proves
+that the encoded value is unobservable.
+
+For scalar integer division and remainder, each finite behavior key is exactly:
+
+```text
+(role, active integer width)
+
+role = Quotient | Remainder
+```
+
+The concrete implementation family fixes signedness; `role` distinguishes its
+quotient and remainder behaviors. The active width is the canonical singleton
+semantic width selected by that actor point. A provider cannot collapse roles,
+omit width, include a full operation-schema identity, or derive a second mode
+number from `op_list` order. For a Direct vector index or selector, the fixed
+carrier width and validity domain are resolved by the registered operation
+schema before this relation is sealed; native host width and backend defaults
+never enter the relation.
+
+Mapping owns the authoritative actor and refinement selections. The relation's
+projector mechanically derives one transient selected semantic value from each
+admitted active selection, and Mapping's `ConfiguredHardwareProjection` carries
+that derived value without becoming another semantic-selection authority. If
+several selected actors or uses target the same physical field, equal projected
+values collapse to that one field value; unequal projected values make the
+complete Mapping invalid. ConfigurationABI persists only the resulting physical
+encoding.
+
+The relation result is fixed by the `loom.fabric 2.0` schema and the exact
+canonical Fabric identity. A registry implementation identity may invalidate a
+cached elaboration, but it cannot change the relation result for the same Fabric
+identity. An incompatible relation change requires a Fabric major-version
+change.
+
 The configured operation projection is a closed sum:
 
 ```text
@@ -262,16 +348,19 @@ framework. Every concrete operation resource uses the existing Fabric-owned
 abstractions. The registered software operation schema remains the sole owner
 of mathematical or logical actor transitions.
 
-For the initial `CoreAluFu` and arithmetic portions of `MacFu`, each stateless
-scalar compute resource uses one registered elastic result stage, which is
-also its sole result holding slot. Acceptance consumes all required operands
-atomically only when that stage has capacity. A firing accepted in local cycle
-`t` publishes its result in cycle `t + 1`. The latency is one cycle and the
-initiation interval is one under downstream progress. A stalled result remains
-stable. Consumption of one held result and acceptance of its replacement may
-occur in the same cycle. There is no hidden input queue or drain.
+For the initial `CoreAluFu` and arithmetic portions of `MacFu`, each
+semantically stateless scalar operation is implemented by a compute resource
+with one registered elastic `ResourceState`, which is also its sole result
+holding slot. The resource is therefore physically stateful and consumes its
+assigned Clock and Reset even though the software operation has no logical
+state. Acceptance consumes all required operands atomically only when that
+state has capacity. A firing accepted in local cycle `t` publishes its result
+in cycle `t + 1`. The latency is one cycle and the initiation interval is one
+under downstream progress. A stalled result remains stable. Consumption of one
+held result and acceptance of its replacement may occur in the same cycle.
+There is no hidden input queue or drain.
 
-This baseline does not apply to stateful operation schemas such as
+This baseline does not apply to operation schemas with logical state, such as
 `dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, or
 `dataflow.gate`. Their operation schemas uniquely own condition-dependent
 operand consumption, result production, and logical state transitions. A
@@ -286,10 +375,10 @@ that transition. Physical state and already published results remain stable
 while blocked. Whether a transition with no result, a result-producing
 transition, or a following transition can advance in a given cycle is stated
 by that operation's exact use patterns rather than inferred from the
-stateless scalar baseline.
+semantically stateless scalar baseline.
 
-An FU containing stateful and stateless resources does not become one macro
-firing. Each configured Canonical Dataflow actor transition executes
+An FU containing resources for logically stateful and stateless operations
+does not become one macro firing. Each configured Canonical Dataflow actor transition executes
 independently through its selected operation resource. `MacFu` imports the
 canonical `LoopCarry` capability for recurrence templates. The HSG registry
 owns that family identity, and this document owns its Fabric resource
@@ -401,7 +490,7 @@ ResolvedFabricOpCapabilityView {
   enabled_operation_schemas
   parameterized_capability
   physical_ports
-  configuration_field_schema
+  semantic_field_relation
   resource_state_and_timing_contract
   physical_refinement_domains
 }
@@ -413,10 +502,12 @@ cold elaboration result and may be cached as a compact hot-path structure for
 verification, TechMapping, and RTL emission.
 
 The view is not an IR operation, Artifact, persistent schema, configured
-function, or semantic owner. It must not enumerate the Cartesian product of
-exact modes or preserve a backend-local support table. Cache identity and
-invalidation derive from the exact Fabric and registry implementation
-identity; serialized Fabric remains the authority.
+function, or semantic owner. It must not split the one joint relation into
+independent dimensions, enumerate a Cartesian product of exact modes, or
+preserve a backend-local support table. The exact Fabric identity owns the
+semantic result. Registry implementation identity may participate only in
+cache invalidation so stale derived values are recomputed and checked against
+that result; serialized Fabric remains the authority.
 
 ## Generic Operation-Schema Mechanism
 
@@ -648,17 +739,21 @@ Anchor tests should pin only the stable semantic boundaries:
 * a multi-member `op_list` describes hardware capability while one exact
   selected member is derived in `sw_configs`, and a singleton capability has
   no redundant operation-selector field;
+* one joint `None`, finite, or direct semantic-field relation derives field
+  need, joint domain, projection, and codec without a backend mode table,
+  including exact finite div/rem keys `(role, active width)`;
 * mutually exclusive branches require explicit FU demux/mux topology, and
   co-location does not absorb an external edge; and
 * static and dynamic vector slice actors plus one poison-containing shuffle
   derive the exact typed physical fields without a mask table, shape table, or
   redundant field for a hardwired fact;
-* one stateless scalar firing obeys its exact one-cycle elastic contract while
-  one stateful transition is governed by its operation-specific state and use
-  patterns; and
-* equal repeated semantic assignments to one physical slot collapse, unequal
-  assignments are rejected, and a declared semantic-preserving physical
-  refinement leaves the software function unchanged.
+* one semantically stateless scalar firing uses its registered elastic
+  `ResourceState` and exact one-cycle contract, while one logically stateful
+  transition is governed by its operation-specific state and use patterns; and
+* equal repeated semantic assignments to one physical configuration slot
+  collapse to one value, conflicting assignments are rejected, and a declared
+  semantic-preserving physical refinement leaves the software function
+  unchanged.
 
 Tests must not require exhaustive parameter enumeration, field Cartesian
 products, printer layout, raw bit-pattern multiplicity, or a special Mapping

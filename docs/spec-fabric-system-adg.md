@@ -14,8 +14,8 @@ identity.
 It does not own software execution semantics, selected workload Mapping,
 runtime remapping, simulator observations, or DSE choices.
 
-`docs/spec-fabric-identity.md` is the sole owner of the Mapping-visible
-Fabric entity and structural-reference catalog. This document owns the
+`docs/spec-fabric-identity.md` is the sole owner of the persistent Fabric
+entity and structural-reference catalog. This document owns the
 system entities, endpoint inventories, service regions, transport patterns,
 resource states, use patterns, and other hardware semantics addressed by
 those references.
@@ -300,7 +300,10 @@ identity or SystemMapping identity.
 
 Its SpatialCore references one exact `fabric.module` template. Multiple
 AccCores may reference the same template while remaining distinct physical
-resources.
+resources. Their internal physical targets and symbolic domain slots are
+qualified by their exact `SpatialCoreOccurrenceRef` as defined by
+`docs/spec-fabric-identity.md`; importing the Module never clones or rebinds
+its definition-local identifiers.
 
 Because the InstructionCore cardinality is one, its Mapping reference is
 derived rather than allocated. `docs/spec-fabric-identity.md` owns the
@@ -346,7 +349,10 @@ type, service capability, and role are derived from the endpoints.
 An attachment is not a route and cannot hide conversion, buffering,
 arbitration, clock-domain crossing, or any other stateful behavior. Such
 behavior requires an explicit Fabric resource or transfer pattern. Every
-module endpoint attaches exactly once.
+module endpoint attaches exactly once. Its effective Clock and Reset are
+derived from the endpoint's Module slot and that occurrence slot's System
+domain membership; neither the AccCore nor SpatialCore parent supplies an
+inherited domain.
 
 Value, stream, control, completion, and other token transfers remain typed
 transport contracts across the attachment. A memory endpoint remains a typed
@@ -792,6 +798,65 @@ root storage. It may cache exact member-to-domain and carrier-to-crossing
 lookups, but it owns no copied declarations and cannot outlive or disagree
 with its `FabricSystemRootView`.
 
+Concrete System-domain membership uses the one closed
+`FabricHardwareDomainMemberRef` wire defined by
+`docs/spec-fabric-identity.md`.
+
+`DirectSystemOwner` retains the existing kind-owned membership semantics for
+System objects. A Clock or Reset domain admits only the identity spec's exact
+`FabricClockResetDirectOwnerRef` subset. It rejects `AccCoreOccurrenceRef` and
+`SpatialCoreOccurrenceRef`: neither is an inheritance proxy for its
+InstructionCore, Module boundary, or Module internals. An InstructionCore uses
+its exact independently typed context reference. An imported Module's Clock or
+Reset role uses only `SpatialCoreSlot`.
+
+Every direct Clock/Reset physical owner is associated with exactly one Clock
+and one Reset domain. A direct owner with a nonempty canonical ResourceState
+inventory consumes both signals and defines every state's reset value; an
+owner with no state is combinational and consumes neither signal. The
+association still closes ordinary connectivity for a combinational owner. The
+only exception is an asynchronous crossing transport resource, whose two-sided
+Clock and Reset associations are owned by its crossing contract and which has
+no ordinary single-domain membership.
+
+For every SpatialCore occurrence, every slot declared by its exact imported
+Module is projected to one `SpatialCoreDomainSlotOccurrenceRef` and appears in
+exactly one same-kind System domain. The domain membership row itself is the
+binding; there is no second slot-binding table. A slot cannot bind by name,
+ordinal alone, a different imported Module, or an AccCore-wide default.
+
+The effective domain of a Module boundary or internal target is derived by:
+
+```text
+exact Module-local target
+  -> exact Module-local physical owner
+  -> ModuleDomainAssignment
+  -> SpatialCoreDomainSlotOccurrenceRef
+  -> exact System HardwareDomainRef
+```
+
+The resulting physical target is occurrence-qualified. The expanded
+target-to-domain relation is never persisted in the System member list, and a
+consumer cannot supply or override it. Reusing one Module in two AccCores may
+bind equal or different concrete domains, but the two effective internal
+targets remain distinct.
+
+The typed lookup is a function because the requested domain kind is explicit:
+
+```text
+effectiveHardwareDomain(
+    Direct(FabricClockResetDirectOwnerRef)
+      | SpatialCore(SpatialCorePhysicalDomainTargetRef),
+    Clock | Reset)
+  -> exact HardwareDomainRef
+```
+
+For a SpatialCore token or memory boundary, `spatial_attachment` first recovers
+the exact Module boundary face and its same-kind slot assignment. For an
+internal target, the target-to-physical-owner projection recovers the
+assignment. The lookup never treats Clock and Reset as one value and never
+persists an expanded target-membership table.
+
 A transfer between different clock domains is legal only through a transport
 resource carrying one exact crossing contract:
 
@@ -800,6 +865,8 @@ ClockCrossingContract = AsyncFifo {
   transfer_pattern_ref
   source_clock_domain_ref
   destination_clock_domain_ref
+  source_reset_domain_ref
+  destination_reset_domain_ref
   depth
   synchronizer_stages
   preserves_order = true
@@ -822,11 +889,18 @@ lookup never uses first-match behavior. The carrier is recovered from
 structural ownership and is not copied inside the contract. The selected
 transfer pattern must belong to that exact carrier.
 
+The source and destination Reset domains cover the exact ingress and egress
+faces, respectively. When a Reset contract names `synchronous_to`, it must name
+the corresponding source or destination Clock domain. The fixed reset behavior
+therefore has two exact release authorities rather than an inferred reset from
+the carrier owner.
+
 The fixed reset behavior discards no accepted token during ordinary operation.
-If either domain is reset, the crossing cannot accept or publish traffic until
-both domains have completed their declared release latency, after which its
-observable state is empty. A design that must preserve in-flight traffic across
-reset requires a future explicit contract rather than another policy field.
+If either Reset domain is asserted, the crossing cannot accept or publish
+traffic until both Reset domains have completed their declared release latency,
+after which its observable state is empty. A design that must preserve in-flight
+traffic across reset requires a future explicit contract rather than another
+policy field.
 
 Coherence is an explicit typed service transform, not a parallel domain kind.
 Runtime protection remains an invocation fact rather than permanent Fabric
@@ -944,7 +1018,7 @@ fabric.system.spatial_attachment
 fabric.system.hardware_domain
   EntityId
   closed domain kind
-  canonical member references
+  canonical FabricHardwareDomainMemberRef sequence
   kind-owned typed contract
 
 fabric.system.external_boundary
@@ -1106,19 +1180,31 @@ queue occupancy, and grant state remain dynamic execution state.
 The hardware-domain catalog is one canonical sorted-unique sequence keyed by
 `HardwareDomainRef`. A domain reference is declared exactly once. Each
 domain's member sequence is canonical sorted-unique over the complete
-`FabricInventoryOwnerRef` bytes. The same exact member may belong to at most
-one domain of a given kind; membership in one Clock and one Reset domain is
-legal. Duplicate membership within one declaration, duplicate Clock or Reset
-declarations, and membership of one exact member in two Clock or two Reset
-domains are invalid.
+`FabricHardwareDomainMemberRef` bytes. The same exact member may belong to at
+most one domain of a given kind; membership in one Clock and one Reset domain
+is legal. Every required occurrence-qualified slot belongs to exactly one
+same-kind domain. Duplicate membership within one declaration, duplicate Clock
+or Reset declarations, wrong-kind slot membership, an unbound required slot,
+and membership of one exact member in two Clock or two Reset domains are
+invalid.
+
+The required direct Clock/Reset membership set is derived exactly from the
+root's complete `FabricClockResetDirectOwnerRef` inventory after excluding the
+crossing transport resources described above. The required imported-Module
+membership set is the complete occurrence-slot projection. These two derived
+sets are the only coverage authority for builtins and custom Systems; a builder
+cannot supply a smaller required-member list.
 
 Endpoint ownership is related to domain membership through the total exact
 endpoint-owner to inventory-owner projection defined by
 `docs/spec-fabric-identity.md`. Validation compares complete typed references.
 It never extracts a parent `EntityId`, silently skips an owner-relative member,
 or treats two different owner-relative references as the same entity. A
-crossing carrier has no ordinary single Clock membership; its ingress and
-egress faces derive their source and destination Clock domains from its exact
+SpatialCore endpoint obtains its effective domain from its exact
+`spatial_attachment`, Module boundary assignment, and occurrence-slot binding;
+it does not obtain a domain from its AccCore or SpatialCore parent. A crossing
+carrier has no ordinary single Clock or Reset membership; its ingress and
+egress faces derive their source and destination domains from its exact
 crossing contract.
 
 Every atomic or fence capability references exactly one
@@ -1145,6 +1231,12 @@ domain in `synchronous_to`; a fully asynchronous reset omits it. Release
 latency is measured in that clock domain and is zero only when release has no
 synchronous delay. Reset-domain membership and every clock crossing are
 complete typed facts used by RTL and constraint derivation.
+
+Every stateful imported Module owner obtains exactly one effective Clock and
+the Reset coverage required by its exact resource contract through the slot
+relation. `loom.fabric 2.0` admits no implicit resetless stateful owner. A
+backend cannot supply a default Reset contract or infer one from Clock
+membership.
 
 Where a software contract permits several legal behaviors, such as weak
 compare-exchange spurious failure, the Fabric domain declares only the
@@ -1174,10 +1266,12 @@ transformation relation; any physical input or output port it exposes is an
 explicit service-endpoint entity owned by that transform.
 
 Clock/reset validation walks the complete root-owned point-connection and
-spatial-attachment ranges. Every endpoint owner must resolve through its exact
-inventory-owner projection. The two faces of a spatial attachment must belong
-to the same Clock domain because an attachment has no crossing behavior. Each
-point connection must likewise join equal effective face domains. A crossing
+spatial-attachment ranges and every imported Module's complete local
+connection and slot-assignment ranges. Every endpoint owner must resolve
+through its exact inventory-owner or occurrence-qualified projection. The two
+faces of a spatial attachment resolve to the same occurrence slot because an
+attachment has no crossing behavior. Each ordinary point or Module-local
+connection must likewise join equal effective face domains. A crossing
 carrier's ingress and egress faces obtain their effective domains from its
 contract, so a legal cross-domain path is represented by explicit same-domain
 legs into and out of that carrier. Omitting a relation from a consumer is
@@ -1254,8 +1348,8 @@ Authoring names, operation order, builder insertion order, source locations,
 comments, and visualization metadata are non-semantic. The complete
 failure-atomic root finalization, direct dependency framing, canonical bytes,
 and identity contract is owned by `docs/spec-fabric-artifact.md`. The
-Mapping-visible entity and structural-reference variants used by that process
-are closed by `docs/spec-fabric-identity.md`; this document cannot add an
+Fabric entity and structural-reference variants used by that process are
+closed by `docs/spec-fabric-identity.md`; this document cannot add an
 unregistered reference kind through a generic child or property record.
 
 The C++ ADG Builder creates this typed model and invokes the same finalizer; it
@@ -1314,12 +1408,19 @@ Anchor-level validation should cover:
   implementation;
 * one explicit asynchronous clock crossing and rejection of a hidden direct
   crossing or invalid reset-to-clock relation;
+* one imported Module whose complete Clock/Reset slots bind exactly once, plus
+  rejection of a missing, duplicate, wrong-kind, or foreign slot binding;
+* two AccCores importing the same Module with independently qualified internal
+  state and equal or different concrete domains, with no aliasing of either
+  occurrence;
+* rejection of `AccCoreOccurrenceRef` or bare `SpatialCoreOccurrenceRef` as a
+  Clock/Reset inheritance shortcut;
 * the omitted-bypass counterexample: a cross-domain point connection present
   in the root is rejected even though no consumer supplies a connection list;
 * duplicate crossing contracts for one carrier, duplicate Clock or Reset
   declarations, duplicate reset membership, and conflicting same-kind domain
   membership are rejected;
-* owner-relative domain members, including a SpatialCore occurrence, are
+* owner-relative direct members and occurrence-qualified SpatialCore slots are
   validated by their full typed reference and are never skipped through an
   entity-ID projection;
 * an InstructionCore-only SystemMapping with no imported SpatialMapping; and
