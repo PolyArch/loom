@@ -103,6 +103,19 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-scalar-unsigned-integer-div-rem-test
+    PortableScalarUnsignedIntegerDivRemTest.cpp
+  )
+
+  target_link_libraries(loom-portable-scalar-unsigned-integer-div-rem-test PRIVATE
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-fixed-vector-integer-add-sub-test
     PortableFixedVectorIntegerAddSubTest.cpp
   )

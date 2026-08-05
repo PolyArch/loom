@@ -1,0 +1,1190 @@
+#include "Hardware/RTL/OperationLeaf.h"
+#include "Hardware/RTL/Providers/ScalarUnsignedIntegerDivRem.h"
+
+#include "Common/ArtifactStore.h"
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/IR/FabricDialect.h"
+#include "Fabric/IR/FabricOps.h"
+#include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/IR/ResourceContractRecord.h"
+
+#include "circt/Dialect/Comb/CombDialect.h"
+#include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/SV/SVDialect.h"
+#include "circt/Dialect/Seq/SeqDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
+
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <memory>
+#include <random>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <variant>
+#include <vector>
+
+namespace {
+
+using loom::ArtifactStore;
+using loom::fabric::FabricFuOccurrenceNodeRef;
+using loom::fabric::FinalizedFabricRoot;
+using namespace loom::hardware;
+using namespace loom::hardware::rtl;
+
+using Family = ::fabric::ImplementationFamilyId;
+using Schema = ::dataflow::OperationSchemaId;
+
+[[noreturn]] void fail(llvm::StringRef test, const std::string &message) {
+  llvm::errs() << test << ": " << message << '\n';
+  std::exit(EXIT_FAILURE);
+}
+
+void require(llvm::StringRef test, bool condition, llvm::StringRef message) {
+  if (!condition)
+    fail(test, message.str());
+}
+
+template <typename T> T take(llvm::StringRef test, llvm::Expected<T> value) {
+  if (!value)
+    fail(test, llvm::toString(value.takeError()));
+  return std::move(*value);
+}
+
+template <typename T>
+void expectError(llvm::StringRef test, llvm::Expected<T> value,
+                 llvm::StringRef expected) {
+  if (value)
+    fail(test, "accepted malformed scalar unsigned div/rem input");
+  const std::string message = llvm::toString(value.takeError());
+  require(test, llvm::StringRef(message).contains(expected), message);
+}
+
+void expectTypedUnsupported(llvm::StringRef test,
+                            llvm::Expected<FabricOperationProviderOutput> value,
+                            Family family, BackendRecipeKey recipe,
+                            llvm::StringRef description) {
+  require(test, !value, std::string("provider accepted ") + description.str());
+  bool typedUnsupported = false;
+  llvm::handleAllErrors(
+      value.takeError(),
+      [&](const FabricOperationProviderUnsupportedError &error) {
+        typedUnsupported =
+            error.implementationFamily() == family && error.recipe() == recipe;
+      },
+      [&](const llvm::ErrorInfoBase &error) {
+        fail(test, description.str() +
+                       " returned the wrong error class: " + error.message());
+      });
+  require(test, typedUnsupported,
+          description.str() + " lost its typed Unsupported classification");
+}
+
+mlir::MLIRContext &fabricContext() {
+  static mlir::MLIRContext *context = [] {
+    mlir::DialectRegistry registry;
+    registry.insert<::dataflow::DataflowDialect, ::fabric::FabricDialect,
+                    mlir::arith::ArithDialect, mlir::func::FuncDialect>();
+    auto *result =
+        new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
+    result->loadAllAvailableDialects();
+    return result;
+  }();
+  return *context;
+}
+
+struct FabricSpec final {
+  std::string name;
+  std::string familyKeyword;
+  Family family;
+  std::vector<std::string> operations;
+  std::string parameters;
+  std::vector<unsigned> inputWidths;
+  unsigned outputWidth = 0;
+  unsigned semanticWidth = 0;
+  bool unsupportedContract = false;
+  bool inactiveQuotient = false;
+};
+
+FabricSpec div8PaddedSpec() {
+  return {"scalar_unsigned_div_8_padded",
+          "ScalarUnsignedIntegerDivRem",
+          Family::ScalarUnsignedIntegerDivRem,
+          {"arith.divui"},
+          "integer_widths = [8 : i32]",
+          {13, 13},
+          13,
+          8};
+}
+
+FabricSpec rem8PaddedSpec() {
+  return {"scalar_unsigned_rem_8_padded",
+          "ScalarUnsignedIntegerDivRem",
+          Family::ScalarUnsignedIntegerDivRem,
+          {"arith.remui"},
+          "integer_widths = [8 : i32]",
+          {13, 13},
+          13,
+          8};
+}
+
+FabricSpec configured8PaddedSpec() {
+  return {"scalar_unsigned_div_rem_8_padded",
+          "ScalarUnsignedIntegerDivRem",
+          Family::ScalarUnsignedIntegerDivRem,
+          {"arith.divui", "arith.remui"},
+          "integer_widths = [8 : i32]",
+          {13, 13},
+          13,
+          8};
+}
+
+FabricSpec configured8PaddedInactiveQuotientSpec() {
+  FabricSpec spec = configured8PaddedSpec();
+  spec.name = "scalar_unsigned_div_rem_8_padded_inactive_quotient";
+  spec.inactiveQuotient = true;
+  return spec;
+}
+
+FabricSpec configured64Spec() {
+  return {"scalar_unsigned_div_rem_64",
+          "ScalarUnsignedIntegerDivRem",
+          Family::ScalarUnsignedIntegerDivRem,
+          {"arith.divui", "arith.remui"},
+          "integer_widths = [64 : i32]",
+          {64, 64},
+          64,
+          64};
+}
+
+FabricSpec unsupportedContractSpec() {
+  FabricSpec spec = configured8PaddedSpec();
+  spec.name = "scalar_unsigned_div_rem_unsupported_contract";
+  spec.unsupportedContract = true;
+  return spec;
+}
+
+FabricSpec unsupportedShapeSpec() {
+  FabricSpec spec = div8PaddedSpec();
+  spec.name = "scalar_unsigned_div_unsupported_shape";
+  spec.inputWidths.push_back(13);
+  return spec;
+}
+
+FabricSpec multiWidthSpec() {
+  return {"scalar_unsigned_div_multi_width",
+          "ScalarUnsignedIntegerDivRem",
+          Family::ScalarUnsignedIntegerDivRem,
+          {"arith.divui"},
+          "integer_widths = [8 : i32, 16 : i32]",
+          {16, 16},
+          16,
+          16};
+}
+
+FabricSpec semanticWidthExceedsPhysicalSpec() {
+  return {"scalar_unsigned_div_semantic_width_exceeds_physical",
+          "ScalarUnsignedIntegerDivRem",
+          Family::ScalarUnsignedIntegerDivRem,
+          {"arith.divui"},
+          "integer_widths = [16 : i32]",
+          {8, 8},
+          8,
+          16};
+}
+
+FabricSpec otherFamilySpec() {
+  return {"scalar_integer_multiply_other_family",
+          "ScalarIntegerMultiply",
+          Family::ScalarIntegerMultiply,
+          {"arith.muli"},
+          "integer_widths = [8 : i32]",
+          {8, 8},
+          8,
+          8};
+}
+
+std::string fabricSource(const FabricSpec &spec) {
+  std::string source;
+  llvm::raw_string_ostream stream(source);
+  stream << "module { fabric.module @" << spec.name << '(';
+  for (const auto [index, width] : llvm::enumerate(spec.inputWidths)) {
+    if (index != 0)
+      stream << ", ";
+    stream << "%a" << index << ": !fabric.bits<" << width << '>';
+  }
+  stream << ") -> !fabric.bits<" << spec.outputWidth
+         << "> { %pe = fabric.pe [spatial] (";
+  for (const auto [index, width] : llvm::enumerate(spec.inputWidths)) {
+    if (index != 0)
+      stream << ", ";
+    stream << "%pa" << index << " = %a" << index << " : !fabric.bits<" << width
+           << '>';
+  }
+  stream << ") -> !fabric.bits<" << spec.outputWidth << "> { %fu = fabric.fu (";
+  for (const auto [index, width] : llvm::enumerate(spec.inputWidths)) {
+    if (index != 0)
+      stream << ", ";
+    stream << "%fa" << index << " = %pa" << index << " : !fabric.bits<" << width
+           << '>';
+  }
+  stream << ") -> !fabric.bits<" << spec.outputWidth
+         << "> { %value = fabric.op [";
+  for (const auto [index, operation] : llvm::enumerate(spec.operations)) {
+    if (index != 0)
+      stream << ", ";
+    stream << '@' << operation;
+  }
+  stream << "] (";
+  for (std::size_t index = 0; index < spec.inputWidths.size(); ++index) {
+    if (index != 0)
+      stream << ", ";
+    stream << "%fa" << index;
+  }
+  stream << ") {implementation_family = #fabric.implementation_family<"
+         << spec.familyKeyword << ">, hw_params = {" << spec.parameters
+         << "}} : (";
+  for (const auto [index, width] : llvm::enumerate(spec.inputWidths)) {
+    if (index != 0)
+      stream << ", ";
+    stream << "!fabric.bits<" << width << '>';
+  }
+  stream << ") -> !fabric.bits<" << spec.outputWidth
+         << "> fabric.yield %value : !fabric.bits<" << spec.outputWidth
+         << "> } } fabric.yield %pe : !fabric.bits<" << spec.outputWidth
+         << "> } }";
+  return source;
+}
+
+void attachResourceContract(llvm::StringRef test, mlir::ModuleOp source,
+                            bool unsupported) {
+  const ::fabric::ResourceContract &resourceContract =
+      unsupported ? ::fabric::loopCarryOperationResourceContract()
+                  : ::fabric::oneCycleElasticOperationResourceContract();
+  const std::vector<std::uint8_t> contract =
+      take(test, ::fabric::encodeResourceContractRecord(resourceContract));
+  const std::vector<std::int8_t> signedContract(contract.begin(),
+                                                contract.end());
+  source.walk([&](::fabric::OpOp operation) {
+    operation->setAttr(
+        ::fabric::kResourceContractRecordAttrName,
+        mlir::DenseI8ArrayAttr::get(&fabricContext(), signedContract));
+  });
+}
+
+struct FabricFixture final {
+  FinalizedFabricRoot fabric;
+  FabricFuOccurrenceNodeRef occurrence;
+  FabricSpec spec;
+};
+
+FabricFixture makeFabric(llvm::StringRef test, const ArtifactStore &store,
+                         FabricSpec spec) {
+  const std::string sourceText = fabricSource(spec);
+  auto source =
+      mlir::parseSourceString<mlir::ModuleOp>(sourceText, &fabricContext());
+  require(test, static_cast<bool>(source), "could not parse Fabric fixture");
+  attachResourceContract(test, *source, spec.unsupportedContract);
+
+  ::fabric::ModuleOp root;
+  source->walk([&](::fabric::ModuleOp candidate) { root = candidate; });
+  require(test, static_cast<bool>(root), "Fabric fixture has no root");
+  FinalizedFabricRoot fabric =
+      take(test, loom::fabric::finalizeFabricRoot(root, store));
+
+  for (const auto fuOccurrence : fabric.view().fuOccurrences()) {
+    const auto definition = fabric.view().fuTemplateOf(fuOccurrence);
+    if (!definition)
+      continue;
+    for (const auto &candidate :
+         fabric.view().resolvedFabricOpCapabilities(*definition)) {
+      if (candidate.implementationFamily != spec.family)
+        continue;
+      FabricFuOccurrenceNodeRef occurrence =
+          take(test, loom::fabric::deriveFabricFuOccurrenceNode(
+                         fabric.view(), candidate.occurrence, fuOccurrence));
+      return {std::move(fabric), occurrence, std::move(spec)};
+    }
+  }
+  fail(test, "Fabric fixture has no expected operation occurrence");
+}
+
+void expectFabricRejected(llvm::StringRef test, const ArtifactStore &store,
+                          const FabricSpec &spec, llvm::StringRef expected) {
+  std::vector<std::string> diagnostics;
+  mlir::ScopedDiagnosticHandler capture(
+      &fabricContext(), [&](mlir::Diagnostic &diagnostic) {
+        diagnostics.push_back(diagnostic.str());
+        return mlir::success();
+      });
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(fabricSource(spec),
+                                                        &fabricContext());
+  if (!source) {
+    require(test,
+            llvm::any_of(diagnostics,
+                         [&](const std::string &message) {
+                           return llvm::StringRef(message).contains(expected);
+                         }),
+            diagnostics.empty() ? "invalid Fabric produced no diagnostic"
+                                : diagnostics.front());
+    return;
+  }
+  attachResourceContract(test, *source, false);
+  ::fabric::ModuleOp root;
+  source->walk([&](::fabric::ModuleOp candidate) { root = candidate; });
+  auto finalized = loom::fabric::finalizeFabricRoot(root, store);
+  require(test, !finalized, "malformed Fabric capability was finalized");
+  const std::string message = llvm::toString(finalized.takeError());
+  require(test, llvm::StringRef(message).contains(expected), message);
+}
+
+const loom::fabric::ResolvedFabricOpCapabilityView &
+capability(llvm::StringRef test, const FabricFixture &fixture) {
+  const auto *result =
+      fixture.fabric.view().resolvedFabricOpCapability(fixture.occurrence);
+  require(test, result != nullptr, "Fabric capability did not resolve");
+  return *result;
+}
+
+std::vector<std::uint8_t>
+operationValue(llvm::StringRef test,
+               const loom::fabric::ResolvedFabricOpCapabilityView &resolved,
+               const loom::fabric::FabricSemanticConfigFieldRef &field,
+               Schema schema) {
+  const loom::CanonicalSemanticBytes encoded =
+      take(test, resolved.encodeOperationSelection(field, schema));
+  return {encoded.bytes().begin(), encoded.bytes().end()};
+}
+
+enum class ConfigurationAbiKind {
+  Complete,
+  MissingRemainder,
+  ExtraSemanticValue,
+  DirectBits,
+  MissingField,
+};
+
+FinalizedConfigurationABI makeConfigurationAbi(
+    llvm::StringRef test, const ArtifactStore &store,
+    const FabricFixture &fixture,
+    ConfigurationAbiKind kind = ConfigurationAbiKind::Complete) {
+  const auto &resolved = capability(test, fixture);
+  if (resolved.configurationFieldSchema.empty() ||
+      kind == ConfigurationAbiKind::MissingField)
+    return take(test, finalizeConfigurationABI(
+                          ConfigurationABIDraft{fixture.fabric.reference(), {}},
+                          store));
+
+  require(test, resolved.configurationFieldSchema.size() == 1,
+          "configured div/rem fixture has an unexpected field count");
+  const auto &descriptor =
+      ::fabric::implementationFamily(resolved.implementationFamily);
+  require(test, descriptor.admittedSchemas.size() == 2,
+          "generated div/rem family descriptor changed cardinality");
+  const auto fieldReference = resolved.configurationFieldSchema.front();
+  const std::vector<std::uint8_t> quotientValue = operationValue(
+      test, resolved, fieldReference, descriptor.admittedSchemas[0]);
+  const std::vector<std::uint8_t> remainderValue = operationValue(
+      test, resolved, fieldReference, descriptor.admittedSchemas[1]);
+
+  SemanticFieldEncoding encoding;
+  if (kind == ConfigurationAbiKind::DirectBits) {
+    encoding = DirectBitsEncoding{2};
+  } else {
+    std::vector<FiniteCodebookEntry> entries{
+        {quotientValue, {0x02}},
+        {kind == ConfigurationAbiKind::MissingRemainder
+             ? std::vector<std::uint8_t>{0xff}
+             : remainderValue,
+         {0x01}}};
+    if (kind == ConfigurationAbiKind::ExtraSemanticValue)
+      entries.push_back({{0xfe}, {0x03}});
+    encoding = FiniteCodebookEncoding{2, std::move(entries)};
+  }
+  ConfigurationFieldEncoding field{
+      fieldReference,
+      std::move(encoding),
+      {{0, 0, 2}},
+      kind == ConfigurationAbiKind::DirectBits ? std::vector<std::uint8_t>{0}
+      : kind == ConfigurationAbiKind::MissingRemainder ||
+              fixture.spec.inactiveQuotient
+          ? quotientValue
+          : remainderValue};
+  ProgrammingUnitDraft unit{{field.field.owner.catalog()}, 2, {field}};
+  return take(test, finalizeConfigurationABI(
+                        ConfigurationABIDraft{fixture.fabric.reference(),
+                                              {std::move(unit)}},
+                        store));
+}
+
+std::unique_ptr<mlir::MLIRContext> makeCirctContext() {
+  mlir::DialectRegistry registry;
+  registry.insert<circt::comb::CombDialect, circt::hw::HWDialect,
+                  circt::seq::SeqDialect, circt::sv::SVDialect>();
+  auto context = std::make_unique<mlir::MLIRContext>(
+      registry, mlir::MLIRContext::Threading::DISABLED);
+  context->loadAllAvailableDialects();
+  return context;
+}
+
+enum class LeafMutation { None, WrongFirstInputWidth };
+
+struct SkeletonFixture final {
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  circt::hw::HWModuleGeneratedOp leaf;
+};
+
+SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
+                             const FabricFixture &fixture,
+                             const ConfigurationABI &abi,
+                             LeafMutation mutation = LeafMutation::None) {
+  const auto &resolved = capability(test, fixture);
+  mlir::OpBuilder builder(&context);
+  const mlir::Location location = builder.getUnknownLoc();
+  mlir::OwningOpRef<mlir::ModuleOp> module = mlir::ModuleOp::create(location);
+  builder.setInsertionPointToStart(module->getBody());
+  circt::hw::HWGeneratorSchemaOp::create(
+      builder, location, fabricOperationGeneratorSchemaSymbol,
+      fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
+  std::vector<circt::hw::PortInfo> ports =
+      take(test, deriveFabricOperationLeafPorts(builder, resolved, abi));
+  if (mutation == LeafMutation::WrongFirstInputWidth) {
+    require(test, !ports.empty(), "div/rem leaf has no data input");
+    const unsigned width =
+        mlir::cast<mlir::IntegerType>(ports.front().type).getWidth();
+    ports.front().type = builder.getIntegerType(width + 1);
+  }
+  circt::hw::HWModuleGeneratedOp leaf = circt::hw::HWModuleGeneratedOp::create(
+      builder, location,
+      mlir::FlatSymbolRefAttr::get(&context,
+                                   fabricOperationGeneratorSchemaSymbol),
+      builder.getStringAttr(fixture.spec.name), ports);
+  return {std::move(module), leaf};
+}
+
+std::string moduleText(mlir::ModuleOp module) {
+  std::string result;
+  llvm::raw_string_ostream stream(result);
+  module.print(stream);
+  return result;
+}
+
+FabricOperationProviderRegistry makeProviderRegistry(llvm::StringRef test) {
+  FabricOperationProviderRegistry registry;
+  if (llvm::Error error =
+          registerPortableScalarUnsignedIntegerDivRemProvider(registry))
+    fail(test, llvm::toString(std::move(error)));
+  return registry;
+}
+
+llvm::Expected<FabricOperationProviderOutput> specializeFor(
+    SkeletonFixture &skeleton, const FabricFixture &fixture,
+    const FinalizedConfigurationABI &abi,
+    const FabricOperationProviderRegistry &registry,
+    BackendRecipeKey recipe = BackendRecipeKey::PortableSystemVerilog) {
+  ExternalImplementationContractCatalog externalContracts;
+  const std::vector<FabricOperationLeafAssociation> associations = {
+      {skeleton.leaf, fixture.occurrence}};
+  const std::vector<FabricOperationRecipeBinding> recipes = {
+      {fixture.occurrence, recipe, {}}};
+  return specializeFabricOperationLeaves(*skeleton.module, fixture.fabric, abi,
+                                         associations, recipes, registry,
+                                         externalContracts);
+}
+
+std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
+                       const FabricFixture &fixture,
+                       const FinalizedConfigurationABI &abi) {
+  FabricOperationProviderRegistry registry = makeProviderRegistry(test);
+  FabricOperationProviderOutput output =
+      take(test, specializeFor(skeleton, fixture, abi, registry));
+  require(test,
+          output.payloads.empty() && output.activityPoints.empty() &&
+              output.externalImplementationBindings.empty(),
+          "portable div/rem emitted external implementation state");
+  bool unresolved = false;
+  skeleton.module->walk(
+      [&](circt::hw::HWModuleGeneratedOp) { unresolved = true; });
+  require(test, !unresolved, "portable div/rem left an unresolved leaf");
+  if (llvm::Error error = verifySpecializedCirctModule(*skeleton.module))
+    fail(test, llvm::toString(std::move(error)));
+  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+}
+
+void generatedOwnerAndProviderCoverage() {
+  const llvm::StringRef test = __func__;
+  constexpr Family family = Family::ScalarUnsignedIntegerDivRem;
+  const ::fabric::ImplementationFamilyDescriptor &descriptor =
+      ::fabric::implementationFamily(family);
+  require(test,
+          descriptor.familyId == family &&
+              descriptor.capabilityParamsSchema ==
+                  ::fabric::CapabilityParamsSchemaId::ScalarIntegerParams &&
+              descriptor.typedAdmissionProvider ==
+                  ::fabric::TypedAdmissionProviderId::
+                      ScalarOrdinaryIntegerAdmission &&
+              descriptor.admittedSchemas.size() == 2 &&
+              descriptor.admittedSchemas[0] == Schema::ArithDivUI &&
+              descriptor.admittedSchemas[1] == Schema::ArithRemUI,
+          "generated scalar unsigned div/rem descriptor changed");
+
+  FabricOperationProviderRegistry registry = makeProviderRegistry(test);
+  const auto coverage = registry.coverage();
+  const auto found = llvm::find_if(coverage, [&](const auto &candidate) {
+    return candidate.implementationFamily == family;
+  });
+  require(test,
+          coverage.size() == ::fabric::implementationFamilyCount() &&
+              found != coverage.end() &&
+              found->recipes ==
+                  std::vector<BackendRecipeKey>{
+                      BackendRecipeKey::PortableSystemVerilog},
+          "scalar unsigned div/rem provider coverage is not portable-only");
+}
+
+void checkCapability(llvm::StringRef test, const FabricFixture &fixture) {
+  const auto &resolved = capability(test, fixture);
+  require(test, resolved.implementationFamily == fixture.spec.family,
+          "div/rem capability changed implementation family");
+  const auto &descriptor =
+      ::fabric::implementationFamily(resolved.implementationFamily);
+  require(test,
+          !resolved.enabledOperationSchemas.empty() &&
+              llvm::all_of(resolved.enabledOperationSchemas,
+                           [&](Schema schema) {
+                             return llvm::is_contained(
+                                 descriptor.admittedSchemas, schema);
+                           }),
+          "div/rem capability escaped its generated family descriptor");
+  const auto *parameters = std::get_if<::fabric::ScalarIntegerParams>(
+      &resolved.parameterizedCapability);
+  require(test,
+          parameters && parameters->integerWidths.valid() &&
+              parameters->integerWidths.size() == 1 &&
+              parameters->pointerFormats.empty(),
+          "div/rem capability changed its scalar integer parameters");
+  const auto width = llvm::find_if(
+      ::fabric::integerWidthDomain, [&](::fabric::IntegerWidth candidate) {
+        return ::fabric::getBitWidth(candidate) == fixture.spec.semanticWidth;
+      });
+  require(test,
+          width != ::fabric::integerWidthDomain.end() &&
+              parameters->integerWidths.contains(*width),
+          "div/rem capability lost its semantic integer width");
+  require(test,
+          resolved.configurationFieldSchema.size() ==
+              (resolved.enabledOperationSchemas.size() == 1 ? 0U : 1U),
+          "div/rem capability changed selector cardinality");
+
+  std::vector<const loom::fabric::ResolvedFabricOpPhysicalPortView *> inputs;
+  std::vector<const loom::fabric::ResolvedFabricOpPhysicalPortView *> outputs;
+  for (const auto &port : resolved.physicalPorts)
+    (port.reference.direction == loom::fabric::FabricPortDirection::Input
+         ? inputs
+         : outputs)
+        .push_back(&port);
+  const auto byOrdinal = [](const auto *lhs, const auto *rhs) {
+    return lhs->reference.ordinal < rhs->reference.ordinal;
+  };
+  llvm::sort(inputs, byOrdinal);
+  llvm::sort(outputs, byOrdinal);
+  require(test,
+          inputs.size() == fixture.spec.inputWidths.size() &&
+              outputs.size() == 1 && outputs[0]->reference.ordinal == 0 &&
+              outputs[0]->payloadWidthBits == fixture.spec.outputWidth,
+          "div/rem capability changed its exact physical port inventory");
+  for (const auto [index, input] : llvm::enumerate(inputs))
+    require(test,
+            input->reference.ordinal == index &&
+                input->payloadWidthBits == fixture.spec.inputWidths[index],
+            "div/rem capability changed an exact physical input");
+}
+
+void checkLeafPorts(llvm::StringRef test, SkeletonFixture &skeleton,
+                    const FabricFixture &fixture, bool configured) {
+  const circt::hw::ModulePortInfo ports(skeleton.leaf.getPortList());
+  require(test, ports.size() == (configured ? 4U : 3U),
+          "div/rem leaf has the wrong exact port count");
+  require(
+      test,
+      ports.atInput(0).getName() == "data_input_0" &&
+          ports.atInput(1).getName() == "data_input_1" &&
+          ports.atOutput(0).getName() == "data_output_0" &&
+          mlir::cast<mlir::IntegerType>(ports.atInput(0).type).getWidth() ==
+              fixture.spec.inputWidths[0] &&
+          mlir::cast<mlir::IntegerType>(ports.atInput(1).type).getWidth() ==
+              fixture.spec.inputWidths[1] &&
+          mlir::cast<mlir::IntegerType>(ports.atOutput(0).type).getWidth() ==
+              fixture.spec.outputWidth,
+      "div/rem leaf lost its exact physical data ports");
+  if (configured)
+    require(
+        test,
+        ports.atInput(2).getName() == "config_0" &&
+            mlir::cast<mlir::IntegerType>(ports.atInput(2).type).getWidth() ==
+                2,
+        "configured div/rem leaf lost its ABI-owned selector port");
+  else
+    for (const auto &port : ports)
+      require(test, !port.getName().starts_with("config_"),
+              "singleton div/rem retained a selector port");
+}
+
+std::string emitDeterministically(llvm::StringRef test,
+                                  const FabricFixture &fixture,
+                                  const FinalizedConfigurationABI &abi) {
+  const bool configured =
+      !capability(test, fixture).configurationFieldSchema.empty();
+  std::unique_ptr<mlir::MLIRContext> firstContext = makeCirctContext();
+  SkeletonFixture first = makeSkeleton(test, *firstContext, fixture, abi.abi());
+  checkLeafPorts(test, first, fixture, configured);
+  const std::string firstRtl = specialize(test, first, fixture, abi);
+
+  std::unique_ptr<mlir::MLIRContext> secondContext = makeCirctContext();
+  SkeletonFixture second =
+      makeSkeleton(test, *secondContext, fixture, abi.abi());
+  const std::string secondRtl = specialize(test, second, fixture, abi);
+  require(test, firstRtl == secondRtl,
+          "identical div/rem inputs produced different SystemVerilog bytes");
+  const llvm::StringRef rtl(firstRtl);
+  require(test, rtl.count(" / ") == 1 && !rtl.contains(" % "),
+          "div/rem provider did not emit exactly one unsigned divider");
+  require(test, rtl.contains(" == ") && rtl.contains(" ? "),
+          "div/rem provider lost deterministic divisor-zero refinement");
+  if (configured)
+    require(test, rtl.contains("config_0"),
+            "configured div/rem emitted no ABI selector");
+  else
+    require(test, !rtl.contains("config_"),
+            "singleton div/rem emitted a selector");
+  return firstRtl;
+}
+
+void writeFile(llvm::StringRef test, const std::filesystem::path &path,
+               llvm::StringRef contents) {
+  std::ofstream output(path);
+  require(test, static_cast<bool>(output), "could not create tool input");
+  output << contents.str();
+  require(test, static_cast<bool>(output), "could not write tool input");
+}
+
+std::string hexLiteral(unsigned width, std::uint64_t value) {
+  std::ostringstream stream;
+  stream << width << "'h" << std::hex << std::setfill('0')
+         << std::setw(static_cast<int>((width + 3) / 4)) << value;
+  return stream.str();
+}
+
+std::string testbenchSource() {
+  std::ostringstream stream;
+  stream << R"sv(module testbench;
+  logic [12:0] div8_lhs;
+  logic [12:0] div8_rhs;
+  logic [12:0] div8_result;
+  logic [12:0] rem8_lhs;
+  logic [12:0] rem8_rhs;
+  logic [12:0] rem8_result;
+  logic [12:0] dual8_lhs;
+  logic [12:0] dual8_rhs;
+  logic [1:0] dual8_config;
+  logic [12:0] dual8_result;
+  logic [12:0] dual8q_lhs;
+  logic [12:0] dual8q_rhs;
+  logic [1:0] dual8q_config;
+  logic [12:0] dual8q_result;
+  logic [63:0] dual64_lhs;
+  logic [63:0] dual64_rhs;
+  logic [1:0] dual64_config;
+  logic [63:0] dual64_result;
+
+  scalar_unsigned_div_8_padded div8(
+    .data_input_0(div8_lhs), .data_input_1(div8_rhs),
+    .data_output_0(div8_result));
+  scalar_unsigned_rem_8_padded rem8(
+    .data_input_0(rem8_lhs), .data_input_1(rem8_rhs),
+    .data_output_0(rem8_result));
+  scalar_unsigned_div_rem_8_padded dual8(
+    .data_input_0(dual8_lhs), .data_input_1(dual8_rhs),
+    .config_0(dual8_config), .data_output_0(dual8_result));
+  scalar_unsigned_div_rem_8_padded_inactive_quotient dual8q(
+    .data_input_0(dual8q_lhs), .data_input_1(dual8q_rhs),
+    .config_0(dual8q_config), .data_output_0(dual8q_result));
+  scalar_unsigned_div_rem_64 dual64(
+    .data_input_0(dual64_lhs), .data_input_1(dual64_rhs),
+    .config_0(dual64_config), .data_output_0(dual64_result));
+
+  task automatic check_div8(
+      input logic [7:0] lhs, input logic [7:0] rhs,
+      input logic [7:0] expected);
+    begin
+      div8_lhs = {5'h0, lhs};
+      div8_rhs = {5'h0, rhs};
+      #1;
+      if (div8_result !== {5'h00, expected})
+        $fatal(1, "8-bit unsigned division oracle mismatch");
+    end
+  endtask
+
+  task automatic check_div8_padded(
+      input logic [12:0] lhs, input logic [12:0] rhs,
+      input logic [7:0] expected);
+    begin
+      div8_lhs = lhs;
+      div8_rhs = rhs;
+      #1;
+      if (div8_result !== {5'h00, expected})
+        $fatal(1, "8-bit padded unsigned division oracle mismatch");
+    end
+  endtask
+
+  task automatic check_rem8(
+      input logic [7:0] lhs, input logic [7:0] rhs,
+      input logic [7:0] expected);
+    begin
+      rem8_lhs = {5'h0, lhs};
+      rem8_rhs = {5'h0, rhs};
+      #1;
+      if (rem8_result !== {5'h00, expected})
+        $fatal(1, "8-bit unsigned remainder oracle mismatch");
+    end
+  endtask
+
+  task automatic check_rem8_padded(
+      input logic [12:0] lhs, input logic [12:0] rhs,
+      input logic [7:0] expected);
+    begin
+      rem8_lhs = lhs;
+      rem8_rhs = rhs;
+      #1;
+      if (rem8_result !== {5'h00, expected})
+        $fatal(1, "8-bit padded unsigned remainder oracle mismatch");
+    end
+  endtask
+
+  task automatic check_dual8(
+      input logic [7:0] lhs, input logic [7:0] rhs,
+      input logic [1:0] configuration, input logic [7:0] expected);
+    begin
+      dual8_lhs = {5'h0, lhs};
+      dual8_rhs = {5'h0, rhs};
+      dual8_config = configuration;
+      #1;
+      if (dual8_result !== {5'h00, expected})
+        $fatal(1, "8-bit configured div/rem oracle mismatch");
+    end
+  endtask
+
+  task automatic check_dual8_padded(
+      input logic [12:0] lhs, input logic [12:0] rhs,
+      input logic [1:0] configuration, input logic [7:0] expected);
+    begin
+      dual8_lhs = lhs;
+      dual8_rhs = rhs;
+      dual8_config = configuration;
+      #1;
+      if (dual8_result !== {5'h00, expected})
+        $fatal(1, "8-bit padded configured div/rem oracle mismatch");
+    end
+  endtask
+
+  task automatic check_dual8q(
+      input logic [12:0] lhs, input logic [12:0] rhs,
+      input logic [1:0] configuration, input logic [7:0] expected);
+    begin
+      dual8q_lhs = lhs;
+      dual8q_rhs = rhs;
+      dual8q_config = configuration;
+      #1;
+      if (dual8q_result !== {5'h00, expected})
+        $fatal(1, "8-bit quotient-inactive div/rem oracle mismatch");
+    end
+  endtask
+
+  task automatic check_dual64(
+      input logic [63:0] lhs, input logic [63:0] rhs,
+      input logic [1:0] configuration, input logic [63:0] expected);
+    begin
+      dual64_lhs = lhs;
+      dual64_rhs = rhs;
+      dual64_config = configuration;
+      #1;
+      if (dual64_result !== expected)
+        $fatal(1, "64-bit configured div/rem oracle mismatch");
+    end
+  endtask
+
+  initial begin
+    check_div8(8'h00, 8'h01, 8'h00);
+    check_div8(8'hff, 8'h01, 8'hff);
+    check_div8(8'hff, 8'hff, 8'h01);
+    check_div8(8'hfe, 8'hff, 8'h00);
+    check_div8(8'hff, 8'h00, 8'h00);
+    check_div8_padded(13'h1fd3, 13'h1a11, 8'h0c);
+    check_div8_padded(13'h1fd3, 13'h1a00, 8'h00);
+    check_rem8(8'h00, 8'h01, 8'h00);
+    check_rem8(8'hff, 8'h01, 8'h00);
+    check_rem8(8'hff, 8'hfe, 8'h01);
+    check_rem8(8'hff, 8'h00, 8'h00);
+    check_rem8_padded(13'h1fd3, 13'h1a11, 8'h07);
+    check_rem8_padded(13'h1fd3, 13'h1a00, 8'h00);
+    check_dual8(8'hd3, 8'h11, 2'b10, 8'h0c);
+    check_dual8(8'hd3, 8'h11, 2'b01, 8'h07);
+    check_dual8(8'hd3, 8'h11, 2'b00, 8'h07);
+    check_dual8(8'hd3, 8'h11, 2'b11, 8'h07);
+    check_dual8(8'hd3, 8'h00, 2'b10, 8'h00);
+    check_dual8(8'hd3, 8'h00, 2'b01, 8'h00);
+    check_dual8_padded(13'h1fd3, 13'h1a11, 2'b10, 8'h0c);
+    check_dual8_padded(13'h1fd3, 13'h1a11, 2'b01, 8'h07);
+    check_dual8q(13'h1fd3, 13'h1a11, 2'b10, 8'h0c);
+    check_dual8q(13'h1fd3, 13'h1a11, 2'b01, 8'h07);
+    check_dual8q(13'h1fd3, 13'h1a11, 2'b00, 8'h0c);
+    check_dual8q(13'h1fd3, 13'h1a11, 2'b11, 8'h0c);
+    check_dual8q(13'h1fd3, 13'h1a00, 2'b00, 8'h00);
+    check_dual64(64'hffffffffffffffff, 64'h0000000000000001,
+                 2'b10, 64'hffffffffffffffff);
+    check_dual64(64'hffffffffffffffff, 64'hffffffffffffffff,
+                 2'b10, 64'h0000000000000001);
+    check_dual64(64'hffffffffffffffff, 64'h8000000000000000,
+                 2'b01, 64'h7fffffffffffffff);
+    check_dual64(64'hffffffffffffffff, 64'h0000000000000000,
+                 2'b10, 64'h0000000000000000);
+)sv";
+
+  std::mt19937_64 generator(0x6c6f6f6d64697672ULL);
+  for (unsigned index = 0; index < 32; ++index) {
+    const std::uint8_t lhs = static_cast<std::uint8_t>(generator());
+    std::uint8_t rhs = static_cast<std::uint8_t>(generator());
+    if (rhs == 0)
+      rhs = 1;
+    stream << "    check_div8(" << hexLiteral(8, lhs) << ", "
+           << hexLiteral(8, rhs) << ", " << hexLiteral(8, lhs / rhs) << ");\n";
+    stream << "    check_rem8(" << hexLiteral(8, lhs) << ", "
+           << hexLiteral(8, rhs) << ", " << hexLiteral(8, lhs % rhs) << ");\n";
+    stream << "    check_dual8(" << hexLiteral(8, lhs) << ", "
+           << hexLiteral(8, rhs) << ", 2'b10, " << hexLiteral(8, lhs / rhs)
+           << ");\n";
+    stream << "    check_dual8(" << hexLiteral(8, lhs) << ", "
+           << hexLiteral(8, rhs) << ", 2'b01, " << hexLiteral(8, lhs % rhs)
+           << ");\n";
+  }
+  for (unsigned index = 0; index < 24; ++index) {
+    const std::uint64_t lhs = generator();
+    std::uint64_t rhs = generator();
+    if (rhs == 0)
+      rhs = 1;
+    stream << "    check_dual64(" << hexLiteral(64, lhs) << ", "
+           << hexLiteral(64, rhs) << ", 2'b10, " << hexLiteral(64, lhs / rhs)
+           << ");\n";
+    stream << "    check_dual64(" << hexLiteral(64, lhs) << ", "
+           << hexLiteral(64, rhs) << ", 2'b01, " << hexLiteral(64, lhs % rhs)
+           << ");\n";
+  }
+  stream << R"sv(    $finish;
+  end
+endmodule
+)sv";
+  return stream.str();
+}
+
+std::string synthesisTopSource() {
+  return R"sv(module scalar_unsigned_div_rem_synthesis_top(
+  input [12:0] div8_lhs,
+  input [12:0] div8_rhs,
+  input [12:0] rem8_lhs,
+  input [12:0] rem8_rhs,
+  input [12:0] dual8_lhs,
+  input [12:0] dual8_rhs,
+  input [1:0] dual8_config,
+  input [12:0] dual8q_lhs,
+  input [12:0] dual8q_rhs,
+  input [1:0] dual8q_config,
+  input [63:0] dual64_lhs,
+  input [63:0] dual64_rhs,
+  input [1:0] dual64_config,
+  output [12:0] div8_result,
+  output [12:0] rem8_result,
+  output [12:0] dual8_result,
+  output [12:0] dual8q_result,
+  output [63:0] dual64_result
+);
+  scalar_unsigned_div_8_padded div8(
+    .data_input_0(div8_lhs), .data_input_1(div8_rhs),
+    .data_output_0(div8_result));
+  scalar_unsigned_rem_8_padded rem8(
+    .data_input_0(rem8_lhs), .data_input_1(rem8_rhs),
+    .data_output_0(rem8_result));
+  scalar_unsigned_div_rem_8_padded dual8(
+    .data_input_0(dual8_lhs), .data_input_1(dual8_rhs),
+    .config_0(dual8_config), .data_output_0(dual8_result));
+  scalar_unsigned_div_rem_8_padded_inactive_quotient dual8q(
+    .data_input_0(dual8q_lhs), .data_input_1(dual8q_rhs),
+    .config_0(dual8q_config), .data_output_0(dual8q_result));
+  scalar_unsigned_div_rem_64 dual64(
+    .data_input_0(dual64_lhs), .data_input_1(dual64_rhs),
+    .config_0(dual64_config), .data_output_0(dual64_result));
+endmodule
+)sv";
+}
+
+void validBehaviorAndToolInputs(const std::filesystem::path &root) {
+  const llvm::StringRef test = __func__;
+  std::filesystem::create_directories(root);
+  const std::filesystem::path artifactRoot = root / "artifacts";
+  std::filesystem::create_directories(artifactRoot);
+  ArtifactStore store(artifactRoot.string());
+
+  const std::array specs = {
+      div8PaddedSpec(), rem8PaddedSpec(), configured8PaddedSpec(),
+      configured8PaddedInactiveQuotientSpec(), configured64Spec()};
+  std::vector<std::string> emitted;
+  emitted.reserve(specs.size());
+  for (const FabricSpec &spec : specs) {
+    FabricFixture fixture = makeFabric(test, store, spec);
+    checkCapability(test, fixture);
+    FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fixture);
+    emitted.push_back(emitDeterministically(test, fixture, abi));
+  }
+
+  writeFile(test, root / "scalar_unsigned_div_8_padded.sv", emitted[0]);
+  writeFile(test, root / "scalar_unsigned_rem_8_padded.sv", emitted[1]);
+  writeFile(test, root / "scalar_unsigned_div_rem_8_padded.sv", emitted[2]);
+  writeFile(test,
+            root / "scalar_unsigned_div_rem_8_padded_inactive_quotient.sv",
+            emitted[3]);
+  writeFile(test, root / "scalar_unsigned_div_rem_64.sv", emitted[4]);
+  writeFile(test, root / "testbench.sv", testbenchSource());
+  writeFile(test, root / "synthesis_top.sv", synthesisTopSource());
+  writeFile(
+      test, root / "portable_scalar_unsigned_integer_div_rem.ys",
+      R"ys(read_verilog -sv scalar_unsigned_div_8_padded.sv scalar_unsigned_rem_8_padded.sv scalar_unsigned_div_rem_8_padded.sv scalar_unsigned_div_rem_8_padded_inactive_quotient.sv scalar_unsigned_div_rem_64.sv synthesis_top.sv
+hierarchy -check -top scalar_unsigned_div_rem_synthesis_top
+proc
+opt
+check
+select -assert-count 5 t:$div
+select -assert-none t:$mod
+synth -top scalar_unsigned_div_rem_synthesis_top -noabc
+check -assert
+stat
+)ys");
+}
+
+void malformedInputsAreTransactional(const std::filesystem::path &root) {
+  const llvm::StringRef test = __func__;
+  std::filesystem::create_directories(root);
+  const std::filesystem::path artifactRoot = root / "artifacts";
+  std::filesystem::create_directories(artifactRoot);
+  ArtifactStore store(artifactRoot.string());
+
+  FabricSpec wrongFamily = div8PaddedSpec();
+  wrongFamily.name = "wrong_div_family";
+  wrongFamily.familyKeyword = "ScalarIntegerMultiply";
+  wrongFamily.family = Family::ScalarIntegerMultiply;
+  expectFabricRejected(test, store, wrongFamily,
+                       "not admitted by implementation family");
+  FabricSpec wrongParameters = div8PaddedSpec();
+  wrongParameters.name = "wrong_div_parameters";
+  wrongParameters.parameters.clear();
+  expectFabricRejected(test, store, wrongParameters, "integer_widths");
+
+  FabricFixture valid = makeFabric(test, store, configured8PaddedSpec());
+  FinalizedConfigurationABI validAbi = makeConfigurationAbi(test, store, valid);
+  FabricOperationProviderRegistry registry = makeProviderRegistry(test);
+
+  auto malformedParameters = capability(test, valid);
+  malformedParameters.parameterizedCapability = ::fabric::ScalarFloatParams{
+      ::fabric::FloatFormatSet::get({::fabric::FloatFormat::F32}),
+      ::fabric::FloatBehaviorProfile::strictIEEE()};
+  expectError(test,
+              malformedParameters.encodeOperationSelection(
+                  malformedParameters.configurationFieldSchema.front(),
+                  Schema::ArithDivUI),
+              "parameter schema");
+
+  std::unique_ptr<mlir::MLIRContext> portContext = makeCirctContext();
+  SkeletonFixture wrongPorts =
+      makeSkeleton(test, *portContext, valid, validAbi.abi(),
+                   LeafMutation::WrongFirstInputWidth);
+  const std::string portBefore = moduleText(*wrongPorts.module);
+  expectError(test, specializeFor(wrongPorts, valid, validAbi, registry),
+              "leaf port");
+  require(test, moduleText(*wrongPorts.module) == portBefore,
+          "malformed div/rem leaf partially mutated the caller module");
+
+  for (ConfigurationAbiKind kind : {
+           ConfigurationAbiKind::MissingRemainder,
+           ConfigurationAbiKind::ExtraSemanticValue,
+           ConfigurationAbiKind::DirectBits,
+       }) {
+    FinalizedConfigurationABI malformedAbi =
+        makeConfigurationAbi(test, store, valid, kind);
+    std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
+    SkeletonFixture skeleton =
+        makeSkeleton(test, *context, valid, malformedAbi.abi());
+    const std::string before = moduleText(*skeleton.module);
+    llvm::StringRef expected;
+    switch (kind) {
+    case ConfigurationAbiKind::MissingRemainder:
+      expected = "remainder semantic value";
+      break;
+    case ConfigurationAbiKind::ExtraSemanticValue:
+      expected = "operation-selection domain";
+      break;
+    case ConfigurationAbiKind::DirectBits:
+      expected = "finite codebook";
+      break;
+    default:
+      fail(test, "unexpected malformed ABI kind");
+    }
+    expectError(test, specializeFor(skeleton, valid, malformedAbi, registry),
+                expected);
+    require(test, moduleText(*skeleton.module) == before,
+            "malformed div/rem codebook partially mutated the caller module");
+  }
+
+  FinalizedConfigurationABI missing = makeConfigurationAbi(
+      test, store, valid, ConfigurationAbiKind::MissingField);
+  std::unique_ptr<mlir::MLIRContext> missingContext = makeCirctContext();
+  SkeletonFixture missingSkeleton =
+      makeSkeleton(test, *missingContext, valid, validAbi.abi());
+  const std::string missingBefore = moduleText(*missingSkeleton.module);
+  expectError(test, specializeFor(missingSkeleton, valid, missing, registry),
+              "absent");
+  require(test, moduleText(*missingSkeleton.module) == missingBefore,
+          "missing div/rem ABI field partially mutated the caller module");
+
+  FabricFixture unsupportedContract =
+      makeFabric(test, store, unsupportedContractSpec());
+  FinalizedConfigurationABI contractAbi =
+      makeConfigurationAbi(test, store, unsupportedContract);
+  std::unique_ptr<mlir::MLIRContext> contractContext = makeCirctContext();
+  SkeletonFixture contractSkeleton = makeSkeleton(
+      test, *contractContext, unsupportedContract, contractAbi.abi());
+  const std::string contractBefore = moduleText(*contractSkeleton.module);
+  expectTypedUnsupported(test,
+                         specializeFor(contractSkeleton, unsupportedContract,
+                                       contractAbi, registry),
+                         Family::ScalarUnsignedIntegerDivRem,
+                         BackendRecipeKey::PortableSystemVerilog,
+                         "unsupported div/rem resource contract");
+  require(test, moduleText(*contractSkeleton.module) == contractBefore,
+          "unsupported div/rem contract partially mutated the caller module");
+
+  FabricFixture unsupportedShape =
+      makeFabric(test, store, unsupportedShapeSpec());
+  FinalizedConfigurationABI shapeAbi =
+      makeConfigurationAbi(test, store, unsupportedShape);
+  std::unique_ptr<mlir::MLIRContext> shapeContext = makeCirctContext();
+  SkeletonFixture shapeSkeleton =
+      makeSkeleton(test, *shapeContext, unsupportedShape, shapeAbi.abi());
+  const std::string shapeBefore = moduleText(*shapeSkeleton.module);
+  expectTypedUnsupported(
+      test, specializeFor(shapeSkeleton, unsupportedShape, shapeAbi, registry),
+      Family::ScalarUnsignedIntegerDivRem,
+      BackendRecipeKey::PortableSystemVerilog,
+      "unsupported div/rem physical shape");
+  require(test, moduleText(*shapeSkeleton.module) == shapeBefore,
+          "unsupported div/rem shape partially mutated the caller module");
+
+  FabricFixture multiWidth = makeFabric(test, store, multiWidthSpec());
+  FinalizedConfigurationABI multiWidthAbi =
+      makeConfigurationAbi(test, store, multiWidth);
+  std::unique_ptr<mlir::MLIRContext> multiWidthContext = makeCirctContext();
+  SkeletonFixture multiWidthSkeleton =
+      makeSkeleton(test, *multiWidthContext, multiWidth, multiWidthAbi.abi());
+  const std::string multiWidthBefore = moduleText(*multiWidthSkeleton.module);
+  expectTypedUnsupported(
+      test,
+      specializeFor(multiWidthSkeleton, multiWidth, multiWidthAbi, registry),
+      Family::ScalarUnsignedIntegerDivRem,
+      BackendRecipeKey::PortableSystemVerilog,
+      "unsupported multi-width div/rem capability");
+  require(test, moduleText(*multiWidthSkeleton.module) == multiWidthBefore,
+          "unsupported multi-width div/rem partially mutated the caller "
+          "module");
+
+  FabricFixture narrowPhysical =
+      makeFabric(test, store, semanticWidthExceedsPhysicalSpec());
+  FinalizedConfigurationABI narrowPhysicalAbi =
+      makeConfigurationAbi(test, store, narrowPhysical);
+  std::unique_ptr<mlir::MLIRContext> narrowPhysicalContext = makeCirctContext();
+  SkeletonFixture narrowPhysicalSkeleton = makeSkeleton(
+      test, *narrowPhysicalContext, narrowPhysical, narrowPhysicalAbi.abi());
+  const std::string narrowPhysicalBefore =
+      moduleText(*narrowPhysicalSkeleton.module);
+  expectTypedUnsupported(
+      test,
+      specializeFor(narrowPhysicalSkeleton, narrowPhysical, narrowPhysicalAbi,
+                    registry),
+      Family::ScalarUnsignedIntegerDivRem,
+      BackendRecipeKey::PortableSystemVerilog,
+      "div/rem semantic width exceeding the physical data shape");
+  require(test,
+          moduleText(*narrowPhysicalSkeleton.module) == narrowPhysicalBefore,
+          "unsupported narrow div/rem physical shape partially mutated the "
+          "caller module");
+
+  constexpr std::array nativeRecipes = {
+      BackendRecipeKey::SynopsysDesignWare,
+      BackendRecipeKey::CadenceChipWare,
+      BackendRecipeKey::AmdXilinx,
+      BackendRecipeKey::IntelAltera,
+  };
+  for (BackendRecipeKey recipe : nativeRecipes) {
+    std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
+    SkeletonFixture skeleton =
+        makeSkeleton(test, *context, valid, validAbi.abi());
+    const std::string before = moduleText(*skeleton.module);
+    expectTypedUnsupported(
+        test, specializeFor(skeleton, valid, validAbi, registry, recipe),
+        Family::ScalarUnsignedIntegerDivRem, recipe,
+        "backend-native div/rem recipe");
+    require(test, moduleText(*skeleton.module) == before,
+            "unsupported backend recipe partially mutated the caller module");
+  }
+
+  FabricFixture other = makeFabric(test, store, otherFamilySpec());
+  FinalizedConfigurationABI otherAbi = makeConfigurationAbi(test, store, other);
+  std::unique_ptr<mlir::MLIRContext> otherContext = makeCirctContext();
+  SkeletonFixture otherSkeleton =
+      makeSkeleton(test, *otherContext, other, otherAbi.abi());
+  const std::string otherBefore = moduleText(*otherSkeleton.module);
+  expectTypedUnsupported(
+      test, specializeFor(otherSkeleton, other, otherAbi, registry),
+      Family::ScalarIntegerMultiply, BackendRecipeKey::PortableSystemVerilog,
+      "wrong-family capability");
+  require(test, moduleText(*otherSkeleton.module) == otherBefore,
+          "wrong-family capability partially mutated the caller module");
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+  if (argc != 2)
+    fail("main", "expected one temporary directory argument");
+  const std::filesystem::path root(argv[1]);
+  generatedOwnerAndProviderCoverage();
+  validBehaviorAndToolInputs(root);
+  malformedInputsAreTransactional(root / "malformed");
+  return 0;
+}

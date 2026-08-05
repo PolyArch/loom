@@ -1,0 +1,80 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-scalar-unsigned-integer-div-rem-test %t
+# RUN: FileCheck %s --check-prefix=DIV8 < %t/scalar_unsigned_div_8_padded.sv
+# RUN: FileCheck %s --check-prefix=REM8 < %t/scalar_unsigned_rem_8_padded.sv
+# RUN: FileCheck %s --check-prefix=DUAL8 < %t/scalar_unsigned_div_rem_8_padded.sv
+# RUN: FileCheck %s --check-prefix=DUAL8Q < %t/scalar_unsigned_div_rem_8_padded_inactive_quotient.sv
+# RUN: FileCheck %s --check-prefix=DUAL64 < %t/scalar_unsigned_div_rem_64.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_scalar_unsigned_integer_div_rem.ys
+
+# DIV8-LABEL: module scalar_unsigned_div_8_padded(
+# DIV8: input [12:0] data_input_0
+# DIV8: data_input_1,
+# DIV8: output [12:0] data_output_0
+# DIV8: wire [[ZERO:[_A-Za-z0-9]+]] = data_input_1[7:0] == 8'h0
+# DIV8: {5'h0, [[ZERO]] ? 8'h0 : data_input_0[7:0] / ([[ZERO]] ? 8'h1 : data_input_1[7:0])}
+# DIV8-NOT: config_
+# DIV8-NOT: %
+
+# REM8-LABEL: module scalar_unsigned_rem_8_padded(
+# REM8: input [12:0] data_input_0
+# REM8: data_input_1,
+# REM8: output [12:0] data_output_0
+# REM8: wire [[ZERO:[_A-Za-z0-9]+]] = data_input_1[7:0] == 8'h0
+# REM8: wire [7:0] [[SAFE:[_A-Za-z0-9]+]] = [[ZERO]] ? 8'h1 : data_input_1[7:0]
+# REM8: {5'h0, [[ZERO]] ? 8'h0 : data_input_0[7:0] - data_input_0[7:0] / [[SAFE]] * [[SAFE]]}
+# REM8-NOT: config_
+# REM8-NOT: %
+
+# DUAL8-LABEL: module scalar_unsigned_div_rem_8_padded(
+# DUAL8: input [1:0] config_0
+# DUAL8: wire [[ZERO:[_A-Za-z0-9]+]] = data_input_1[7:0] == 8'h0
+# DUAL8: wire [7:0] [[SAFE:[_A-Za-z0-9]+]] = [[ZERO]] ? 8'h1 : data_input_1[7:0]
+# DUAL8: wire [7:0] [[QUOTIENT:[_A-Za-z0-9]+]] = data_input_0[7:0] / [[SAFE]]
+# DUAL8: {5'h0, [[ZERO]] ? 8'h0 : config_0 == 2'h2 ? [[QUOTIENT]] : data_input_0[7:0] - [[QUOTIENT]] * [[SAFE]]}
+# DUAL8-NOT: %
+
+# DUAL8Q-LABEL: module scalar_unsigned_div_rem_8_padded_inactive_quotient(
+# DUAL8Q: input [1:0] config_0
+# DUAL8Q: wire [[ZERO:[_A-Za-z0-9]+]] = data_input_1[7:0] == 8'h0
+# DUAL8Q: wire [7:0] [[SAFE:[_A-Za-z0-9]+]] = [[ZERO]] ? 8'h1 : data_input_1[7:0]
+# DUAL8Q: wire [7:0] [[QUOTIENT:[_A-Za-z0-9]+]] = data_input_0[7:0] / [[SAFE]]
+# DUAL8Q: {5'h0, [[ZERO]] ? 8'h0 : config_0 == 2'h1 ? data_input_0[7:0] - [[QUOTIENT]] * [[SAFE]] : [[QUOTIENT]]}
+# DUAL8Q-NOT: %
+
+# DUAL64-LABEL: module scalar_unsigned_div_rem_64(
+# DUAL64: input [63:0] data_input_0
+# DUAL64: input [1:0] config_0
+# DUAL64: wire [63:0] [[SAFE:[_A-Za-z0-9]+]] = {{[_A-Za-z0-9]+}} ? 64'h1 : data_input_1
+# DUAL64: wire [63:0] [[QUOTIENT:[_A-Za-z0-9]+]] = data_input_0 / [[SAFE]]
+# DUAL64: config_0 == 2'h2 ? [[QUOTIENT]] : data_input_0 - [[QUOTIENT]] * [[SAFE]]
+# DUAL64-NOT: %
+
+# TB: 8-bit unsigned division oracle mismatch
+# TB: 8-bit padded unsigned division oracle mismatch
+# TB: 8-bit unsigned remainder oracle mismatch
+# TB: 8-bit padded unsigned remainder oracle mismatch
+# TB: 8-bit configured div/rem oracle mismatch
+# TB: 8-bit padded configured div/rem oracle mismatch
+# TB: 8-bit quotient-inactive div/rem oracle mismatch
+# TB: 64-bit configured div/rem oracle mismatch
+# TB: check_div8_padded(13'h1fd3, 13'h1a11, 8'h0c)
+# TB: check_rem8_padded(13'h1fd3, 13'h1a11, 8'h07)
+# TB: check_dual8(8'hd3, 8'h11, 2'b10, 8'h0c)
+# TB: check_dual8(8'hd3, 8'h11, 2'b01, 8'h07)
+# TB: check_dual8(8'hd3, 8'h11, 2'b00, 8'h07)
+# TB: check_dual8(8'hd3, 8'h11, 2'b11, 8'h07)
+# TB: check_dual8_padded(13'h1fd3, 13'h1a11, 2'b10, 8'h0c)
+# TB: check_dual8q(13'h1fd3, 13'h1a11, 2'b10, 8'h0c)
+# TB: check_dual8q(13'h1fd3, 13'h1a11, 2'b01, 8'h07)
+# TB: check_dual8q(13'h1fd3, 13'h1a11, 2'b00, 8'h0c)
+# TB: check_dual8q(13'h1fd3, 13'h1a11, 2'b11, 8'h0c)
+
+# YOSYS: hierarchy -check -top scalar_unsigned_div_rem_synthesis_top
+# YOSYS: select -assert-count 5 t:$div
+# YOSYS: select -assert-none t:$mod
+# YOSYS: synth -top scalar_unsigned_div_rem_synthesis_top -noabc
+# YOSYS: check -assert
+# YOSYS: stat

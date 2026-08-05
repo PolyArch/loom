@@ -19,6 +19,7 @@ add_library(LoomHardwareRTL
   Providers/ScalarIntegerCast.cpp
   Providers/ScalarIntegerCompareMinMax.cpp
   Providers/ScalarIntegerMultiply.cpp
+  Providers/ScalarUnsignedIntegerDivRem.cpp
   Providers/ScalarValueSelect.cpp
   Specialization.cpp
   Transport.cpp
