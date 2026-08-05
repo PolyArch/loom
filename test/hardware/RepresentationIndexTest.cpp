@@ -459,6 +459,9 @@ void lexicalAndHierarchySubsetFailuresAreTyped(
                     "module top; class local_class; endclass endmodule\n");
   expectUnsupported("interface-top-blobs", "interface top; endinterface\n");
   expectUnsupported("program-top-blobs", "program top; endprogram\n");
+  expectUnsupported("unnamed-instance-blobs",
+                    "module leaf(input logic a); endmodule\n"
+                    "module top(input logic a); leaf(a); endmodule\n");
 
   expectUnsupported(
       "unused-interface-blobs",

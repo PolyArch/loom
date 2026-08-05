@@ -238,6 +238,8 @@ endmodule
                 {RepresentationObjectKind::Net, "top.u_leaf.a"});
   requireAbsent(__func__, index,
                 {RepresentationObjectKind::Net, "top.u_leaf.y"});
+  requireAbsent(__func__, index,
+                {RepresentationObjectKind::Net, "top.u_leaf.io"});
 
   for (llvm::StringRef name :
        {"bus", "selected", "slice", "repeated", "initialized"})
