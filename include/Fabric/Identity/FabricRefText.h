@@ -73,6 +73,16 @@ void printFabricRef(llvm::raw_ostream &os,
 void printFabricRef(llvm::raw_ostream &os,
                     const FabricModulePhysicalTargetRef &target);
 void printFabricRef(llvm::raw_ostream &os,
+                    const SpatialCorePhysicalDomainTargetRef &target);
+void printFabricRef(llvm::raw_ostream &os,
+                    const FabricPhysicalOccurrenceOwnerRef &owner);
+void printFabricRef(llvm::raw_ostream &os,
+                    const FabricPhysicalConfigurationFieldRef &field);
+void printFabricRef(llvm::raw_ostream &os,
+                    const FabricHardwareDomainMemberRef &member);
+void printFabricRef(llvm::raw_ostream &os,
+                    const FabricClockResetDirectOwnerRef &owner);
+void printFabricRef(llvm::raw_ostream &os,
                     const FabricMemoryServiceRef &service);
 void printFabricRef(llvm::raw_ostream &os,
                     const FabricPhysicalTraversalRef &traversal);
@@ -155,6 +165,16 @@ llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
                                FabricModuleDomainMemberRef &member);
 llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
                                FabricModulePhysicalTargetRef &target);
+llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
+                               SpatialCorePhysicalDomainTargetRef &target);
+llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
+                               FabricPhysicalOccurrenceOwnerRef &owner);
+llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
+                               FabricPhysicalConfigurationFieldRef &field);
+llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
+                               FabricHardwareDomainMemberRef &member);
+llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
+                               FabricClockResetDirectOwnerRef &owner);
 llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
                                FabricMemoryServiceRef &service);
 llvm::Error parseFabricRefInto(FabricRefScanner &scanner,

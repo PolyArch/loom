@@ -119,6 +119,31 @@ enum class FabricModulePhysicalTargetKind : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
 
+#define LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET(Ordinal, Name, Type, Validator) \
+  Name = Ordinal,
+enum class SpatialCorePhysicalDomainTargetKind : std::uint32_t {
+#include "Fabric/Identity/FabricRefs.def"
+};
+
+#define LOOM_FABRIC_PHYSICAL_OCCURRENCE_OWNER(Ordinal, Name, Type, Validator)  \
+  Name = Ordinal,
+enum class FabricPhysicalOccurrenceOwnerKind : std::uint32_t {
+#include "Fabric/Identity/FabricRefs.def"
+};
+
+#define LOOM_FABRIC_PHYSICAL_CONFIGURATION_FIELD(Ordinal, Name, Type,          \
+                                                 Validator)                    \
+  Name = Ordinal,
+enum class FabricPhysicalConfigurationFieldKind : std::uint32_t {
+#include "Fabric/Identity/FabricRefs.def"
+};
+
+#define LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER(Ordinal, Name, Type, Validator)     \
+  Name = Ordinal,
+enum class FabricHardwareDomainMemberKind : std::uint32_t {
+#include "Fabric/Identity/FabricRefs.def"
+};
+
 #define LOOM_FABRIC_REF_ERROR(Name, Keyword) Name,
 /// Typed classification of an invalid persistent reference. A well-formed
 /// reference whose target cannot support the requested software operation is
@@ -322,6 +347,51 @@ inline std::uint32_t fabricClosedBound(FabricModulePhysicalTargetKind) {
 }
 inline llvm::StringRef fabricClosedName(FabricModulePhysicalTargetKind) {
   return "Module physical target";
+}
+
+#define LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET(Ordinal, Name, Type, Validator) \
+  bound = std::max(bound, static_cast<std::uint32_t>(Ordinal) + 1);
+inline std::uint32_t fabricClosedBound(SpatialCorePhysicalDomainTargetKind) {
+  std::uint32_t bound = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return bound;
+}
+inline llvm::StringRef fabricClosedName(SpatialCorePhysicalDomainTargetKind) {
+  return "SpatialCore physical domain target";
+}
+
+#define LOOM_FABRIC_PHYSICAL_OCCURRENCE_OWNER(Ordinal, Name, Type, Validator)  \
+  bound = std::max(bound, static_cast<std::uint32_t>(Ordinal) + 1);
+inline std::uint32_t fabricClosedBound(FabricPhysicalOccurrenceOwnerKind) {
+  std::uint32_t bound = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return bound;
+}
+inline llvm::StringRef fabricClosedName(FabricPhysicalOccurrenceOwnerKind) {
+  return "physical occurrence owner";
+}
+
+#define LOOM_FABRIC_PHYSICAL_CONFIGURATION_FIELD(Ordinal, Name, Type,          \
+                                                 Validator)                    \
+  bound = std::max(bound, static_cast<std::uint32_t>(Ordinal) + 1);
+inline std::uint32_t fabricClosedBound(FabricPhysicalConfigurationFieldKind) {
+  std::uint32_t bound = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return bound;
+}
+inline llvm::StringRef fabricClosedName(FabricPhysicalConfigurationFieldKind) {
+  return "physical configuration field";
+}
+
+#define LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER(Ordinal, Name, Type, Validator)     \
+  bound = std::max(bound, static_cast<std::uint32_t>(Ordinal) + 1);
+inline std::uint32_t fabricClosedBound(FabricHardwareDomainMemberKind) {
+  std::uint32_t bound = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return bound;
+}
+inline llvm::StringRef fabricClosedName(FabricHardwareDomainMemberKind) {
+  return "hardware domain member";
 }
 
 #undef LOOM_FABRIC_COUNT_ENTRY
@@ -1336,6 +1406,229 @@ inline bool operator!=(const SpatialCoreInternalOccurrenceRef &lhs,
                        const SpatialCoreInternalOccurrenceRef &rhs) {
   return !(lhs == rhs);
 }
+
+/// One exact occurrence-owned Module boundary or internal target used for
+/// complete-System Clock and Reset domain lookup.
+class SpatialCorePhysicalDomainTargetRef {
+public:
+  using Payload = typename FabricCatalogVariant<void
+#define LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET(Ordinal, Name, Type, Validator) \
+  , Type
+#include "Fabric/Identity/FabricRefs.def"
+                                                >::type;
+
+  SpatialCorePhysicalDomainTargetRef() = default;
+
+  SpatialCorePhysicalDomainTargetKind kind() const {
+    return static_cast<SpatialCorePhysicalDomainTargetKind>(payload_.index());
+  }
+
+#define LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET(Ordinal, Name, Type, Validator) \
+  static_assert(                                                               \
+      std::is_same_v<std::variant_alternative_t<                               \
+                         static_cast<std::size_t>(                             \
+                             SpatialCorePhysicalDomainTargetKind::Name),       \
+                         Payload>,                                             \
+                     Type>,                                                    \
+      "alternative order must match the discriminants");                       \
+  static llvm::Expected<SpatialCorePhysicalDomainTargetRef> create(            \
+      const Type &value);
+#include "Fabric/Identity/FabricRefs.def"
+
+  const Payload &payload() const { return payload_; }
+
+private:
+  explicit SpatialCorePhysicalDomainTargetRef(Payload payload)
+      : payload_(std::move(payload)) {}
+
+  Payload payload_;
+};
+
+inline bool operator==(const SpatialCorePhysicalDomainTargetRef &lhs,
+                       const SpatialCorePhysicalDomainTargetRef &rhs) {
+  return lhs.payload() == rhs.payload();
+}
+inline bool operator!=(const SpatialCorePhysicalDomainTargetRef &lhs,
+                       const SpatialCorePhysicalDomainTargetRef &rhs) {
+  return !(lhs == rhs);
+}
+
+/// One exact physical owner in a complete System. Imported Module owners are
+/// occurrence-qualified and cannot enter through the direct System variant.
+class FabricPhysicalOccurrenceOwnerRef {
+public:
+  using Payload = typename FabricCatalogVariant<void
+#define LOOM_FABRIC_PHYSICAL_OCCURRENCE_OWNER(Ordinal, Name, Type, Validator)  \
+  , Type
+#include "Fabric/Identity/FabricRefs.def"
+                                                >::type;
+
+  FabricPhysicalOccurrenceOwnerRef()
+      : payload_(std::in_place_type<FabricInventoryOwnerRef>,
+                 FabricInventoryOwnerRef::of(HostCoreOccurrenceRef(0))) {}
+
+  FabricPhysicalOccurrenceOwnerKind kind() const {
+    return static_cast<FabricPhysicalOccurrenceOwnerKind>(payload_.index());
+  }
+
+#define LOOM_FABRIC_PHYSICAL_OCCURRENCE_OWNER(Ordinal, Name, Type, Validator)  \
+  static_assert(                                                               \
+      std::is_same_v<std::variant_alternative_t<                               \
+                         static_cast<std::size_t>(                             \
+                             FabricPhysicalOccurrenceOwnerKind::Name),         \
+                         Payload>,                                             \
+                     Type>,                                                    \
+      "alternative order must match the discriminants");                       \
+  static llvm::Expected<FabricPhysicalOccurrenceOwnerRef> create(              \
+      const Type &value);
+#include "Fabric/Identity/FabricRefs.def"
+
+  const Payload &payload() const { return payload_; }
+
+private:
+  explicit FabricPhysicalOccurrenceOwnerRef(Payload payload)
+      : payload_(std::move(payload)) {}
+
+  Payload payload_;
+};
+
+inline bool operator==(const FabricPhysicalOccurrenceOwnerRef &lhs,
+                       const FabricPhysicalOccurrenceOwnerRef &rhs) {
+  return lhs.payload() == rhs.payload();
+}
+inline bool operator!=(const FabricPhysicalOccurrenceOwnerRef &lhs,
+                       const FabricPhysicalOccurrenceOwnerRef &rhs) {
+  return !(lhs == rhs);
+}
+
+/// One exact semantic configuration field in a complete System. Imported
+/// Module fields retain their SpatialCore occurrence qualifier.
+class FabricPhysicalConfigurationFieldRef {
+public:
+  using Payload = typename FabricCatalogVariant<void
+#define LOOM_FABRIC_PHYSICAL_CONFIGURATION_FIELD(Ordinal, Name, Type,          \
+                                                 Validator)                    \
+  , Type
+#include "Fabric/Identity/FabricRefs.def"
+                                                >::type;
+
+  FabricPhysicalConfigurationFieldRef()
+      : payload_(std::in_place_type<FabricSemanticConfigFieldRef>,
+                 FabricSemanticConfigFieldRef{
+                     FabricConfigurationOwnerRef(
+                         FabricInventoryOwnerRef::of(HostCoreOccurrenceRef(0))),
+                     0}) {}
+
+  FabricPhysicalConfigurationFieldKind kind() const {
+    return static_cast<FabricPhysicalConfigurationFieldKind>(payload_.index());
+  }
+
+#define LOOM_FABRIC_PHYSICAL_CONFIGURATION_FIELD(Ordinal, Name, Type,          \
+                                                 Validator)                    \
+  static_assert(                                                               \
+      std::is_same_v<std::variant_alternative_t<                               \
+                         static_cast<std::size_t>(                             \
+                             FabricPhysicalConfigurationFieldKind::Name),      \
+                         Payload>,                                             \
+                     Type>,                                                    \
+      "alternative order must match the discriminants");                       \
+  static llvm::Expected<FabricPhysicalConfigurationFieldRef> create(           \
+      const Type &value);
+#include "Fabric/Identity/FabricRefs.def"
+
+  const Payload &payload() const { return payload_; }
+
+private:
+  explicit FabricPhysicalConfigurationFieldRef(Payload payload)
+      : payload_(std::move(payload)) {}
+
+  Payload payload_;
+};
+
+inline bool operator==(const FabricPhysicalConfigurationFieldRef &lhs,
+                       const FabricPhysicalConfigurationFieldRef &rhs) {
+  return lhs.payload() == rhs.payload();
+}
+inline bool operator!=(const FabricPhysicalConfigurationFieldRef &lhs,
+                       const FabricPhysicalConfigurationFieldRef &rhs) {
+  return !(lhs == rhs);
+}
+
+/// One complete-System hardware-domain member. Imported Module membership is
+/// expressed only by its occurrence-qualified symbolic slot.
+class FabricHardwareDomainMemberRef {
+public:
+  using Payload = typename FabricCatalogVariant<void
+#define LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER(Ordinal, Name, Type, Validator)     \
+  , Type
+#include "Fabric/Identity/FabricRefs.def"
+                                                >::type;
+
+  FabricHardwareDomainMemberRef()
+      : payload_(std::in_place_type<FabricInventoryOwnerRef>,
+                 FabricInventoryOwnerRef::of(HostCoreOccurrenceRef(0))) {}
+
+  FabricHardwareDomainMemberKind kind() const {
+    return static_cast<FabricHardwareDomainMemberKind>(payload_.index());
+  }
+
+#define LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER(Ordinal, Name, Type, Validator)     \
+  static_assert(                                                               \
+      std::is_same_v<                                                          \
+          std::variant_alternative_t<                                          \
+              static_cast<std::size_t>(FabricHardwareDomainMemberKind::Name),  \
+              Payload>,                                                        \
+          Type>,                                                               \
+      "alternative order must match the discriminants");                       \
+  static llvm::Expected<FabricHardwareDomainMemberRef> create(                 \
+      const Type &value);
+#include "Fabric/Identity/FabricRefs.def"
+
+  const Payload &payload() const { return payload_; }
+
+private:
+  explicit FabricHardwareDomainMemberRef(Payload payload)
+      : payload_(std::move(payload)) {}
+
+  Payload payload_;
+};
+
+inline bool operator==(const FabricHardwareDomainMemberRef &lhs,
+                       const FabricHardwareDomainMemberRef &rhs) {
+  return lhs.payload() == rhs.payload();
+}
+inline bool operator!=(const FabricHardwareDomainMemberRef &lhs,
+                       const FabricHardwareDomainMemberRef &rhs) {
+  return !(lhs == rhs);
+}
+
+/// A direct System owner admitted by Clock and Reset domains. This refinement
+/// adds no tag or bytes to its underlying inventory-owner identity.
+class FabricClockResetDirectOwnerRef {
+public:
+  FabricClockResetDirectOwnerRef()
+      : owner_(FabricInventoryOwnerRef::of(HostCoreOccurrenceRef(0))) {}
+
+  static llvm::Expected<FabricClockResetDirectOwnerRef>
+  create(const FabricInventoryOwnerRef &owner);
+
+  const FabricInventoryOwnerRef &underlying() const { return owner_; }
+
+  friend bool operator==(const FabricClockResetDirectOwnerRef &lhs,
+                         const FabricClockResetDirectOwnerRef &rhs) {
+    return lhs.owner_ == rhs.owner_;
+  }
+  friend bool operator!=(const FabricClockResetDirectOwnerRef &lhs,
+                         const FabricClockResetDirectOwnerRef &rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  explicit FabricClockResetDirectOwnerRef(FabricInventoryOwnerRef owner)
+      : owner_(std::move(owner)) {}
+
+  FabricInventoryOwnerRef owner_;
+};
 
 #undef LOOM_FABRIC_REF_EQUALITY
 #undef LOOM_FABRIC_REF_FIELDS

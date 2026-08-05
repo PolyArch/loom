@@ -123,6 +123,117 @@ llvm::Error validateFabricModulePhysicalTraversalTarget(
   llvm_unreachable("closed traversal kind outside its declaration");
 }
 
+llvm::Error systemPhysicalRoleError(const llvm::Twine &message) {
+  return makeFabricRefError(FabricRefErrorKind::InvalidOwnerFamily, message);
+}
+
+template <typename Ref> llvm::Error acceptFabricDirectSystemOwner(const Ref &) {
+  return llvm::Error::success();
+}
+
+template <typename Ref>
+llvm::Error acceptFabricClockResetDirectOwner(const Ref &) {
+  return llvm::Error::success();
+}
+
+template <typename Ref>
+llvm::Error rejectFabricClockResetDirectOwner(const Ref &) {
+  return systemPhysicalRoleError(
+      "the direct System owner is not a Clock/Reset domain member");
+}
+
+llvm::Error
+validateFabricSystemMemoryServiceOwner(const FabricMemoryServiceRef &service) {
+  if (service.kind() == FabricMemoryServiceKind::System)
+    return llvm::Error::success();
+  return systemPhysicalRoleError(
+      "a direct System owner cannot select a Module-local memory service");
+}
+
+#define LOOM_FABRIC_DIRECT_SYSTEM_OWNER(Name, Type, DirectValidator,           \
+                                        ClockResetValidator)                   \
+  static_assert(                                                               \
+      std::is_same_v<                                                          \
+          std::variant_alternative_t<static_cast<std::size_t>(                 \
+                                         FabricInventoryOwnerKind::Name),      \
+                                     FabricInventoryOwnerRef::Payload>,        \
+          Type>,                                                               \
+      "direct System owner must reuse its inventory-owner constructor");
+#include "Fabric/Identity/FabricRefs.def"
+
+llvm::Error
+validateFabricDirectSystemOwner(const FabricInventoryOwnerRef &owner) {
+  switch (owner.kind()) {
+#define LOOM_FABRIC_DIRECT_SYSTEM_OWNER(Name, Type, DirectValidator,           \
+                                        ClockResetValidator)                   \
+  case FabricInventoryOwnerKind::Name:                                         \
+    return DirectValidator(std::get<Type>(owner.payload));
+#include "Fabric/Identity/FabricRefs.def"
+  default:
+    return systemPhysicalRoleError(
+        "the inventory owner is not declared by the System root");
+  }
+}
+
+llvm::Error
+validateFabricClockResetDirectOwner(const FabricInventoryOwnerRef &owner) {
+  switch (owner.kind()) {
+#define LOOM_FABRIC_DIRECT_SYSTEM_OWNER(Name, Type, DirectValidator,           \
+                                        ClockResetValidator)                   \
+  case FabricInventoryOwnerKind::Name:                                         \
+    return ClockResetValidator(std::get<Type>(owner.payload));
+#include "Fabric/Identity/FabricRefs.def"
+  default:
+    return systemPhysicalRoleError(
+        "the inventory owner is not a direct System Clock/Reset owner");
+  }
+}
+
+template <typename Ref>
+llvm::Error acceptFabricSystemPhysicalRole(const Ref &) {
+  return llvm::Error::success();
+}
+
+llvm::Error validateFabricSpatialCoreTransportBoundary(
+    const FabricTransportEndpointRef &endpoint) {
+  if (endpoint.owner.kind() ==
+      FabricTransportEndpointOwnerKind::SpatialCoreOccurrence)
+    return llvm::Error::success();
+  return systemPhysicalRoleError(
+      "a SpatialCore transport boundary must name its exact occurrence");
+}
+
+llvm::Error validateFabricSpatialCoreMemoryBoundary(
+    const FabricMemoryEndpointRef &endpoint) {
+  if (endpoint.owner.kind() ==
+      FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence)
+    return llvm::Error::success();
+  return systemPhysicalRoleError(
+      "a SpatialCore memory boundary must name its exact occurrence");
+}
+
+llvm::Error validateFabricSpatialCoreInternalOwner(
+    const SpatialCoreInternalOccurrenceRef &occurrence) {
+  if (occurrence.target.kind() == FabricModulePhysicalTargetKind::Owner)
+    return llvm::Error::success();
+  return systemPhysicalRoleError(
+      "a physical occurrence owner must select a Module physical owner");
+}
+
+llvm::Error validateFabricDirectSystemConfigurationField(
+    const FabricSemanticConfigFieldRef &field) {
+  return validateFabricDirectSystemOwner(field.owner.catalog());
+}
+
+llvm::Error validateFabricSpatialCoreInternalConfigurationField(
+    const SpatialCoreInternalOccurrenceRef &occurrence) {
+  if (occurrence.target.kind() ==
+      FabricModulePhysicalTargetKind::SemanticConfigurationField)
+    return llvm::Error::success();
+  return systemPhysicalRoleError(
+      "a physical configuration field must select a Module semantic field");
+}
+
 } // namespace
 
 #define LOOM_FABRIC_MODULE_PHYSICAL_OWNER(Ordinal, Name, Type, Validator)      \
@@ -144,6 +255,54 @@ llvm::Error validateFabricModulePhysicalTraversalTarget(
         Payload(std::in_place_type<Type>, value));                             \
   }
 #include "Fabric/Identity/FabricRefs.def"
+
+#define LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET(Ordinal, Name, Type, Validator) \
+  llvm::Expected<SpatialCorePhysicalDomainTargetRef>                           \
+  SpatialCorePhysicalDomainTargetRef::create(const Type &value) {              \
+    if (llvm::Error error = Validator(value))                                  \
+      return std::move(error);                                                 \
+    return SpatialCorePhysicalDomainTargetRef(                                 \
+        Payload(std::in_place_type<Type>, value));                             \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+
+#define LOOM_FABRIC_PHYSICAL_OCCURRENCE_OWNER(Ordinal, Name, Type, Validator)  \
+  llvm::Expected<FabricPhysicalOccurrenceOwnerRef>                             \
+  FabricPhysicalOccurrenceOwnerRef::create(const Type &value) {                \
+    if (llvm::Error error = Validator(value))                                  \
+      return std::move(error);                                                 \
+    return FabricPhysicalOccurrenceOwnerRef(                                   \
+        Payload(std::in_place_type<Type>, value));                             \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+
+#define LOOM_FABRIC_PHYSICAL_CONFIGURATION_FIELD(Ordinal, Name, Type,          \
+                                                 Validator)                    \
+  llvm::Expected<FabricPhysicalConfigurationFieldRef>                          \
+  FabricPhysicalConfigurationFieldRef::create(const Type &value) {             \
+    if (llvm::Error error = Validator(value))                                  \
+      return std::move(error);                                                 \
+    return FabricPhysicalConfigurationFieldRef(                                \
+        Payload(std::in_place_type<Type>, value));                             \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+
+#define LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER(Ordinal, Name, Type, Validator)     \
+  llvm::Expected<FabricHardwareDomainMemberRef>                                \
+  FabricHardwareDomainMemberRef::create(const Type &value) {                   \
+    if (llvm::Error error = Validator(value))                                  \
+      return std::move(error);                                                 \
+    return FabricHardwareDomainMemberRef(                                      \
+        Payload(std::in_place_type<Type>, value));                             \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+
+llvm::Expected<FabricClockResetDirectOwnerRef>
+FabricClockResetDirectOwnerRef::create(const FabricInventoryOwnerRef &owner) {
+  if (llvm::Error error = validateFabricClockResetDirectOwner(owner))
+    return std::move(error);
+  return FabricClockResetDirectOwnerRef(owner);
+}
 
 // Every keyword table below is a projection of the one catalog declaration.
 

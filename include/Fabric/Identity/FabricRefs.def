@@ -111,6 +111,31 @@
 #define LOOM_FABRIC_MODULE_PHYSICAL_TARGET(Ordinal, Name, Type, Validator)
 #endif
 
+// System-root owners and their Clock/Reset role admission share one catalog.
+// DirectValidator admits the general System role. ClockResetValidator selects
+// its exact Clock/Reset subset without a second owner-kind table.
+#ifndef LOOM_FABRIC_DIRECT_SYSTEM_OWNER
+#define LOOM_FABRIC_DIRECT_SYSTEM_OWNER(                                      \
+    Name, Type, DirectValidator, ClockResetValidator)
+#endif
+
+#ifndef LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET
+#define LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET(Ordinal, Name, Type, Validator)
+#endif
+
+#ifndef LOOM_FABRIC_PHYSICAL_OCCURRENCE_OWNER
+#define LOOM_FABRIC_PHYSICAL_OCCURRENCE_OWNER(Ordinal, Name, Type, Validator)
+#endif
+
+#ifndef LOOM_FABRIC_PHYSICAL_CONFIGURATION_FIELD
+#define LOOM_FABRIC_PHYSICAL_CONFIGURATION_FIELD(Ordinal, Name, Type,          \
+                                                 Validator)
+#endif
+
+#ifndef LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER
+#define LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER(Ordinal, Name, Type, Validator)
+#endif
+
 // The role-specific owner projections. Each is a distinct static type over
 // the one constructor catalog above and selects the canonical inventory its
 // consuming family indexes.
@@ -370,6 +395,76 @@ LOOM_FABRIC_MODULE_PHYSICAL_TARGET(11, PhysicalTraversal,
                                    FabricPhysicalTraversalRef,
                                    validateFabricModulePhysicalTraversalTarget)
 
+LOOM_FABRIC_DIRECT_SYSTEM_OWNER(HostCoreOccurrence, HostCoreOccurrenceRef,
+                                acceptFabricDirectSystemOwner,
+                                acceptFabricClockResetDirectOwner)
+LOOM_FABRIC_DIRECT_SYSTEM_OWNER(AccCoreOccurrence, AccCoreOccurrenceRef,
+                                acceptFabricDirectSystemOwner,
+                                rejectFabricClockResetDirectOwner)
+LOOM_FABRIC_DIRECT_SYSTEM_OWNER(InstructionCoreContext,
+                                InstructionCoreContextRef,
+                                acceptFabricDirectSystemOwner,
+                                acceptFabricClockResetDirectOwner)
+LOOM_FABRIC_DIRECT_SYSTEM_OWNER(SpatialCoreOccurrence,
+                                SpatialCoreOccurrenceRef,
+                                acceptFabricDirectSystemOwner,
+                                rejectFabricClockResetDirectOwner)
+LOOM_FABRIC_DIRECT_SYSTEM_OWNER(MemoryService, FabricMemoryServiceRef,
+                                validateFabricSystemMemoryServiceOwner,
+                                validateFabricSystemMemoryServiceOwner)
+LOOM_FABRIC_DIRECT_SYSTEM_OWNER(SystemServiceEndpoint,
+                                SystemServiceEndpointRef,
+                                acceptFabricDirectSystemOwner,
+                                acceptFabricClockResetDirectOwner)
+LOOM_FABRIC_DIRECT_SYSTEM_OWNER(SystemServiceTransform,
+                                SystemServiceTransformRef,
+                                acceptFabricDirectSystemOwner,
+                                acceptFabricClockResetDirectOwner)
+LOOM_FABRIC_DIRECT_SYSTEM_OWNER(SystemTransportResource,
+                                SystemTransportResourceRef,
+                                acceptFabricDirectSystemOwner,
+                                acceptFabricClockResetDirectOwner)
+LOOM_FABRIC_DIRECT_SYSTEM_OWNER(TransferPattern, FabricTransferPatternRef,
+                                acceptFabricDirectSystemOwner,
+                                rejectFabricClockResetDirectOwner)
+LOOM_FABRIC_DIRECT_SYSTEM_OWNER(HardwareDomain, HardwareDomainRef,
+                                acceptFabricDirectSystemOwner,
+                                rejectFabricClockResetDirectOwner)
+LOOM_FABRIC_DIRECT_SYSTEM_OWNER(ExternalBoundary, ExternalBoundaryRef,
+                                acceptFabricDirectSystemOwner,
+                                acceptFabricClockResetDirectOwner)
+
+LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET(
+    0, TransportBoundary, FabricTransportEndpointRef,
+    validateFabricSpatialCoreTransportBoundary)
+LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET(
+    1, MemoryBoundary, FabricMemoryEndpointRef,
+    validateFabricSpatialCoreMemoryBoundary)
+LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET(
+    2, Internal, SpatialCoreInternalOccurrenceRef,
+    acceptFabricSystemPhysicalRole)
+
+LOOM_FABRIC_PHYSICAL_OCCURRENCE_OWNER(
+    0, DirectSystemOwner, FabricInventoryOwnerRef,
+    validateFabricDirectSystemOwner)
+LOOM_FABRIC_PHYSICAL_OCCURRENCE_OWNER(
+    1, SpatialCoreInternal, SpatialCoreInternalOccurrenceRef,
+    validateFabricSpatialCoreInternalOwner)
+
+LOOM_FABRIC_PHYSICAL_CONFIGURATION_FIELD(
+    0, DirectSystemField, FabricSemanticConfigFieldRef,
+    validateFabricDirectSystemConfigurationField)
+LOOM_FABRIC_PHYSICAL_CONFIGURATION_FIELD(
+    1, SpatialCoreInternalField, SpatialCoreInternalOccurrenceRef,
+    validateFabricSpatialCoreInternalConfigurationField)
+
+LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER(0, DirectSystemOwner,
+                                   FabricInventoryOwnerRef,
+                                   validateFabricDirectSystemOwner)
+LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER(1, SpatialCoreSlot,
+                                   SpatialCoreDomainSlotOccurrenceRef,
+                                   acceptFabricSystemPhysicalRole)
+
 LOOM_FABRIC_LOCAL_REFERENCE_KIND(0, FabricModuleTemplateRef)
 LOOM_FABRIC_LOCAL_REFERENCE_KIND(1, FabricPeOccurrenceRef)
 LOOM_FABRIC_LOCAL_REFERENCE_KIND(2, FabricFuTemplateRef)
@@ -461,6 +556,11 @@ LOOM_FABRIC_DEPRECATED_REF("fabric.property")
 #undef LOOM_FABRIC_MODULE_PHYSICAL_OWNER
 #undef LOOM_FABRIC_MODULE_DOMAIN_MEMBER
 #undef LOOM_FABRIC_MODULE_PHYSICAL_TARGET
+#undef LOOM_FABRIC_DIRECT_SYSTEM_OWNER
+#undef LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET
+#undef LOOM_FABRIC_PHYSICAL_OCCURRENCE_OWNER
+#undef LOOM_FABRIC_PHYSICAL_CONFIGURATION_FIELD
+#undef LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER
 #undef LOOM_FABRIC_OWNER_ROLE
 #undef LOOM_FABRIC_REFINEMENT
 #undef LOOM_FABRIC_LOCAL_REFERENCE_KIND

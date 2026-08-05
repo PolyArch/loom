@@ -210,6 +210,10 @@ add_executable(loom-fabric-physical-identity-test
   FabricPhysicalIdentityTest.cpp
 )
 
+add_executable(loom-fabric-system-physical-identity-test
+  FabricSystemPhysicalIdentityTest.cpp
+)
+
 add_executable(loom-fabric-artifact-local-reference-test
   ArtifactLocalReferenceTest.cpp
 )
@@ -265,6 +269,12 @@ target_link_libraries(loom-fabric-persistent-ref-test PRIVATE
 )
 
 target_link_libraries(loom-fabric-physical-identity-test PRIVATE
+  LoomCommon
+  LoomFabricIdentity
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-system-physical-identity-test PRIVATE
   LoomCommon
   LoomFabricIdentity
   LLVMSupport

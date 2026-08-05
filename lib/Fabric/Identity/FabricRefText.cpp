@@ -68,6 +68,14 @@ bool isMemoryOwnerFamily(llvm::StringRef keyword) {
   return false;
 }
 
+bool isInventoryOwnerFamily(llvm::StringRef keyword) {
+#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)                                \
+  if (keyword == Type::familyKeyword)                                          \
+    return true;
+#include "Fabric/Identity/FabricRefs.def"
+  return false;
+}
+
 bool isModulePhysicalOwnerFamily(llvm::StringRef keyword) {
 #define LOOM_FABRIC_MODULE_PHYSICAL_OWNER(Ordinal, Name, Type, Validator)      \
   if (keyword == Type::familyKeyword)                                          \
@@ -84,6 +92,25 @@ template <>
 bool matchesReferenceFamily<FabricModulePhysicalOwnerRef>(
     llvm::StringRef keyword) {
   return isModulePhysicalOwnerFamily(keyword);
+}
+
+template <>
+bool matchesReferenceFamily<FabricInventoryOwnerRef>(llvm::StringRef keyword) {
+  return isInventoryOwnerFamily(keyword);
+}
+
+template <typename Payload, typename Union>
+llvm::Error
+parseValidatedFabricUnion(FabricRefScanner &scanner, Union &value,
+                          llvm::Expected<Union> (*create)(const Payload &)) {
+  Payload payload;
+  if (llvm::Error error = parseFabricRefInto(scanner, payload))
+    return error;
+  llvm::Expected<Union> created = create(payload);
+  if (!created)
+    return created.takeError();
+  value = std::move(*created);
+  return llvm::Error::success();
 }
 
 } // namespace
@@ -243,6 +270,52 @@ void loom::fabric::printFabricRef(llvm::raw_ostream &os,
   }
 }
 
+void loom::fabric::printFabricRef(
+    llvm::raw_ostream &os, const SpatialCorePhysicalDomainTargetRef &target) {
+  switch (target.kind()) {
+#define LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET(Ordinal, Name, Type, Validator) \
+  case SpatialCorePhysicalDomainTargetKind::Name:                              \
+    return printFabricRef(os, std::get<Type>(target.payload()));
+#include "Fabric/Identity/FabricRefs.def"
+  }
+}
+
+void loom::fabric::printFabricRef(
+    llvm::raw_ostream &os, const FabricPhysicalOccurrenceOwnerRef &owner) {
+  switch (owner.kind()) {
+#define LOOM_FABRIC_PHYSICAL_OCCURRENCE_OWNER(Ordinal, Name, Type, Validator)  \
+  case FabricPhysicalOccurrenceOwnerKind::Name:                                \
+    return printFabricRef(os, std::get<Type>(owner.payload()));
+#include "Fabric/Identity/FabricRefs.def"
+  }
+}
+
+void loom::fabric::printFabricRef(
+    llvm::raw_ostream &os, const FabricPhysicalConfigurationFieldRef &field) {
+  switch (field.kind()) {
+#define LOOM_FABRIC_PHYSICAL_CONFIGURATION_FIELD(Ordinal, Name, Type,          \
+                                                 Validator)                    \
+  case FabricPhysicalConfigurationFieldKind::Name:                             \
+    return printFabricRef(os, std::get<Type>(field.payload()));
+#include "Fabric/Identity/FabricRefs.def"
+  }
+}
+
+void loom::fabric::printFabricRef(llvm::raw_ostream &os,
+                                  const FabricHardwareDomainMemberRef &member) {
+  switch (member.kind()) {
+#define LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER(Ordinal, Name, Type, Validator)     \
+  case FabricHardwareDomainMemberKind::Name:                                   \
+    return printFabricRef(os, std::get<Type>(member.payload()));
+#include "Fabric/Identity/FabricRefs.def"
+  }
+}
+
+void loom::fabric::printFabricRef(llvm::raw_ostream &os,
+                                  const FabricClockResetDirectOwnerRef &owner) {
+  printFabricRef(os, owner.underlying());
+}
+
 void loom::fabric::printFabricRef(llvm::raw_ostream &os,
                                   const FabricMemoryServiceRef &service) {
   os << FabricMemoryServiceRef::familyKeyword << '<'
@@ -377,6 +450,90 @@ loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
       FabricRefErrorKind::InvalidOwnerFamily,
       llvm::Twine("'") + keyword +
           "' is not a Module physical target constructor");
+}
+
+llvm::Error
+loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
+                                 SpatialCorePhysicalDomainTargetRef &target) {
+  const llvm::StringRef keyword = scanner.peekKeyword();
+#define LOOM_FABRIC_SPATIAL_CORE_DOMAIN_TARGET(Ordinal, Name, Type, Validator) \
+  if (matchesReferenceFamily<Type>(keyword))                                   \
+    return parseValidatedFabricUnion<Type>(                                    \
+        scanner, target, &SpatialCorePhysicalDomainTargetRef::create);
+#include "Fabric/Identity/FabricRefs.def"
+  if (isDeprecatedFamily(keyword) || isGenericEscape(scanner.rest()))
+    return fabricRefTextError("a SpatialCore physical domain target",
+                              scanner.rest());
+  return makeFabricRefError(
+      FabricRefErrorKind::InvalidOwnerFamily,
+      llvm::Twine("'") + keyword +
+          "' is not a SpatialCore physical domain target constructor");
+}
+
+llvm::Error
+loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
+                                 FabricPhysicalOccurrenceOwnerRef &owner) {
+  const llvm::StringRef keyword = scanner.peekKeyword();
+#define LOOM_FABRIC_PHYSICAL_OCCURRENCE_OWNER(Ordinal, Name, Type, Validator)  \
+  if (matchesReferenceFamily<Type>(keyword))                                   \
+    return parseValidatedFabricUnion<Type>(                                    \
+        scanner, owner, &FabricPhysicalOccurrenceOwnerRef::create);
+#include "Fabric/Identity/FabricRefs.def"
+  if (isDeprecatedFamily(keyword) || isGenericEscape(scanner.rest()))
+    return fabricRefTextError("a physical occurrence owner", scanner.rest());
+  return makeFabricRefError(
+      FabricRefErrorKind::InvalidOwnerFamily,
+      llvm::Twine("'") + keyword +
+          "' is not a physical occurrence owner constructor");
+}
+
+llvm::Error
+loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
+                                 FabricPhysicalConfigurationFieldRef &field) {
+  const llvm::StringRef keyword = scanner.peekKeyword();
+#define LOOM_FABRIC_PHYSICAL_CONFIGURATION_FIELD(Ordinal, Name, Type,          \
+                                                 Validator)                    \
+  if (matchesReferenceFamily<Type>(keyword))                                   \
+    return parseValidatedFabricUnion<Type>(                                    \
+        scanner, field, &FabricPhysicalConfigurationFieldRef::create);
+#include "Fabric/Identity/FabricRefs.def"
+  if (isDeprecatedFamily(keyword) || isGenericEscape(scanner.rest()))
+    return fabricRefTextError("a physical configuration field", scanner.rest());
+  return makeFabricRefError(
+      FabricRefErrorKind::InvalidOwnerFamily,
+      llvm::Twine("'") + keyword +
+          "' is not a physical configuration field constructor");
+}
+
+llvm::Error
+loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
+                                 FabricHardwareDomainMemberRef &member) {
+  const llvm::StringRef keyword = scanner.peekKeyword();
+#define LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER(Ordinal, Name, Type, Validator)     \
+  if (matchesReferenceFamily<Type>(keyword))                                   \
+    return parseValidatedFabricUnion<Type>(                                    \
+        scanner, member, &FabricHardwareDomainMemberRef::create);
+#include "Fabric/Identity/FabricRefs.def"
+  if (isDeprecatedFamily(keyword) || isGenericEscape(scanner.rest()))
+    return fabricRefTextError("a hardware domain member", scanner.rest());
+  return makeFabricRefError(
+      FabricRefErrorKind::InvalidOwnerFamily,
+      llvm::Twine("'") + keyword +
+          "' is not a hardware domain member constructor");
+}
+
+llvm::Error
+loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
+                                 FabricClockResetDirectOwnerRef &owner) {
+  FabricInventoryOwnerRef underlying;
+  if (llvm::Error error = parseFabricRefInto(scanner, underlying))
+    return error;
+  llvm::Expected<FabricClockResetDirectOwnerRef> created =
+      FabricClockResetDirectOwnerRef::create(underlying);
+  if (!created)
+    return created.takeError();
+  owner = std::move(*created);
+  return llvm::Error::success();
 }
 
 llvm::Error loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,

@@ -86,6 +86,16 @@ void encodeFabricRef(FabricByteWriter &writer,
 void encodeFabricRef(FabricByteWriter &writer,
                      const FabricModulePhysicalTargetRef &target);
 void encodeFabricRef(FabricByteWriter &writer,
+                     const SpatialCorePhysicalDomainTargetRef &target);
+void encodeFabricRef(FabricByteWriter &writer,
+                     const FabricPhysicalOccurrenceOwnerRef &owner);
+void encodeFabricRef(FabricByteWriter &writer,
+                     const FabricPhysicalConfigurationFieldRef &field);
+void encodeFabricRef(FabricByteWriter &writer,
+                     const FabricHardwareDomainMemberRef &member);
+void encodeFabricRef(FabricByteWriter &writer,
+                     const FabricClockResetDirectOwnerRef &owner);
+void encodeFabricRef(FabricByteWriter &writer,
                      const FabricMemoryServiceRef &service);
 void encodeFabricRef(FabricByteWriter &writer,
                      const FabricPhysicalTraversalRef &traversal);
@@ -157,6 +167,16 @@ llvm::Error decodeFabricRefInto(FabricByteReader &reader,
                                 FabricModuleDomainMemberRef &member);
 llvm::Error decodeFabricRefInto(FabricByteReader &reader,
                                 FabricModulePhysicalTargetRef &target);
+llvm::Error decodeFabricRefInto(FabricByteReader &reader,
+                                SpatialCorePhysicalDomainTargetRef &target);
+llvm::Error decodeFabricRefInto(FabricByteReader &reader,
+                                FabricPhysicalOccurrenceOwnerRef &owner);
+llvm::Error decodeFabricRefInto(FabricByteReader &reader,
+                                FabricPhysicalConfigurationFieldRef &field);
+llvm::Error decodeFabricRefInto(FabricByteReader &reader,
+                                FabricHardwareDomainMemberRef &member);
+llvm::Error decodeFabricRefInto(FabricByteReader &reader,
+                                FabricClockResetDirectOwnerRef &owner);
 llvm::Error decodeFabricRefInto(FabricByteReader &reader,
                                 FabricMemoryServiceRef &service);
 llvm::Error decodeFabricRefInto(FabricByteReader &reader,

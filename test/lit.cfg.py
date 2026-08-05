@@ -93,6 +93,7 @@ tools = [
     "loom-fabric-memory-role-bindings-test",
     "loom-fabric-memory-consistency-contract-test",
     "loom-fabric-physical-identity-test",
+    "loom-fabric-system-physical-identity-test",
     "loom-fabric-persistent-ref-test",
     "loom-fabric-physical-tag-test",
     "loom-fabric-resource-contract-record-test",
