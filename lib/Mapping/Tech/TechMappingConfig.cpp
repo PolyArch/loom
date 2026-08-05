@@ -41,6 +41,10 @@ llvm::Error validateLimits(llvm::ArrayRef<std::uint64_t> limits) {
 
 } // namespace
 
+llvm::ArrayRef<std::uint8_t> resolvedTechMappingConfigSchemaDescriptorBytes() {
+  return descriptorBytes();
+}
+
 ResolvedTechMappingConfigView::ResolvedTechMappingConfigView(
     std::array<std::uint64_t, 3> limits)
     : limits_(limits) {
@@ -50,7 +54,7 @@ ResolvedTechMappingConfigView::ResolvedTechMappingConfigView(
 
 llvm::ArrayRef<std::uint8_t>
 ResolvedTechMappingConfigView::schemaDescriptorBytes() const {
-  return descriptorBytes();
+  return resolvedTechMappingConfigSchemaDescriptorBytes();
 }
 
 ComponentViewDigest ResolvedTechMappingConfigView::digest() const {

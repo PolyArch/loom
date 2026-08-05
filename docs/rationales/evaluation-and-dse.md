@@ -141,6 +141,14 @@ deduplication, and local work. The central controller owns lineage, scheduling,
 Evidence acquisition, promotion, Pareto selection, and deterministic replay.
 It does not define one generic mutable candidate or action language.
 
+When two domain owners expose different granularities, an explicitly typed
+generator adapter composes them without broadening central semantics. The
+root-complete TechMapping adapter is the representative case: the plan binds
+whole Artifact candidates, Dataflow derives the complete local graph catalog,
+and TechMapping consumes that ephemeral scope. A generic graph-cover value in
+the plan would instead duplicate Dataflow-local identity and turn one mapping
+policy into a second cross-domain authority.
+
 ## Why Invocation Output And Lineage Are Separate
 
 A generator invocation may retain an input unchanged, return several Artifacts

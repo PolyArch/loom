@@ -26,6 +26,10 @@ add_executable(loom-dse-promotion-test
   PromotionTest.cpp
 )
 
+add_executable(loom-root-complete-tech-mapping-generator-test
+  RootCompleteTechMappingGeneratorTest.cpp
+)
+
 target_link_libraries(loom-dse-objective-test PRIVATE
   LoomDSEObjective
   LLVMSupport
@@ -58,5 +62,19 @@ target_link_libraries(loom-dse-resolved-config-view-test PRIVATE
 
 target_link_libraries(loom-dse-promotion-test PRIVATE
   LoomDSE
+  LLVMSupport
+)
+
+target_link_libraries(loom-root-complete-tech-mapping-generator-test PRIVATE
+  LoomADGBuilder
+  LoomDSEMappingGenerator
+  LoomMappingArtifact
+  LoomTechMapping
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
   LLVMSupport
 )

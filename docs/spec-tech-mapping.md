@@ -63,6 +63,32 @@ The complete ResolvedConfig identity and the descriptor and digest of `C` are
 recorded by the ordinary invocation manifest. `C` is not an artifact and does
 not enter TechMapping identity.
 
+### Root-Complete Central Adapter
+
+The central DSE registry provides one deterministic root-complete adapter for
+finite candidate sets. Its typed inputs are a canonical finite set of exact
+Canonical Dataflow Artifact references and exactly one finalized Fabric
+Artifact reference. For each Dataflow Artifact in canonical reference order,
+the adapter strictly imports `D`, derives `covers` as the complete canonical
+`GraphRef` catalog of that exact `D`, and invokes the production generator
+above with the same exact `F` and resolved config view.
+
+A graph-free `D` contributes no TechMapping candidate. `ProvenInfeasible` for
+one `D` likewise contributes no candidate and does not suppress candidates
+from another `D`. A generated finite prefix is complete for that owner
+invocation even when its termination is `SemanticLimitReached`. An
+`Incomplete` result stops the canonical Dataflow-candidate traversal and
+retains only the already published candidate prefix. `Invalid` and internal
+owner failures remain adapter errors and cannot be converted to an empty set.
+
+Every output is an ordinary immutable TechMapping Artifact and receives one
+mechanical lineage edge. The enclosing generator invocation already owns the
+exact `D/F` inputs, so the mechanical edge has no parent or owner payload.
+The adapter does not create a graph-cover Artifact, persist `GraphRef` values
+in resolved config, scan the Artifact Store, or replace the explicit
+independent-scope invocation. A caller that selects a proper subset of graphs
+must continue to invoke the production owner with that exact non-empty scope.
+
 ## Typed Match Rows
 
 The generator mechanically derives a finite domain of two closed row kinds:

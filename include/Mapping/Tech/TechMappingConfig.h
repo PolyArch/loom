@@ -15,6 +15,8 @@ struct ResolvedConfig;
 
 namespace loom::mapping {
 
+llvm::ArrayRef<std::uint8_t> resolvedTechMappingConfigSchemaDescriptorBytes();
+
 class ResolvedTechMappingConfigView final {
 public:
   std::uint64_t matchRowAttemptLimit() const { return limits_[0]; }

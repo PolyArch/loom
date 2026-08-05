@@ -139,6 +139,29 @@ couple a semantic realization decision to a backend search mechanism. CP-SAT
 is reserved for a closed local repair region after ordinary Spatial or System
 search has identified a concrete conflict.
 
+## Why Root-Complete Generation Is An Adapter
+
+The production TechMapping owner accepts an exact graph subset because two
+independent regions of one Dataflow program may need separate mapping and
+evaluation. Central DSE, however, commonly receives a finite set of complete
+Dataflow candidates and needs one ordinary candidate set for the next plan
+node. Making either use case the hidden default would erase the other.
+
+The root-complete adapter resolves the difference by composition. It derives
+the complete graph catalog from each exact Dataflow Artifact and invokes the
+unchanged subset-capable owner. For example, a program containing canonical
+graphs `g0` and `g1` produces the ephemeral scope `{g0, g1}` for one owner
+invocation. A caller evaluating only `g1` still invokes the owner with `{g1}`;
+it does not pass through the root-complete adapter.
+
+Persisting `{g0, g1}` as another Artifact would duplicate a relation already
+owned by the Dataflow root. Encoding it in generator config would mix
+Artifact-local references with implementation policy. Letting the central
+controller infer it for every mapping generator would make a domain rule into
+global workflow semantics. A typed adapter has the smallest conceptual
+surface: exact Artifact inputs remain the plan authority, Dataflow remains the
+graph-catalog authority, and TechMapping remains the realization authority.
+
 ## Why Spatial Resource Time Uses Graph-Local Events
 
 Spatial resource occupancy must distinguish actor firing from token production

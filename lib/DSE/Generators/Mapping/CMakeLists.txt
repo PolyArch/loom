@@ -1,4 +1,5 @@
 add_library(LoomDSEMappingGenerator
+  RootCompleteTechMappingCandidateGenerator.cpp
   SpatialPnrCandidateGenerator.cpp
 )
 
@@ -11,6 +12,7 @@ target_link_libraries(LoomDSEMappingGenerator PUBLIC
   LoomFabricArtifact
   LoomMappingArtifact
   LoomPnRGenerator
+  LoomTechMapping
   MLIRDataflow
   LLVMSupport
 )

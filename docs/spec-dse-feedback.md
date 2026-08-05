@@ -1299,6 +1299,16 @@ semantics; the central plan sees only canonical input and output Artifact sets
 plus the closed lineage contributions admitted by the exact generator
 descriptor.
 
+The built-in root-complete TechMapping generator is one such descriptor-owned
+composition. It consumes a finite set of exact Canonical Dataflow Artifacts
+and one exact Fabric Artifact, derives each Dataflow root's complete canonical
+graph cover through the Dataflow owner, and delegates candidate construction
+to the TechMapping owner. This is not a central-controller default: an
+independent graph scope remains an explicit TechMapping invocation. The plan
+therefore carries only Artifact references, while owner-local `GraphRef`
+values remain ephemeral and no graph-cover Artifact or resolved-config field
+is introduced.
+
 ### Objectives and Quality Gates
 
 One central dimension type owns the fact being optimized, its direction, and
