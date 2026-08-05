@@ -707,6 +707,13 @@ RepresentationIndex::lookup(const RepresentationLocator &locator) const {
           validateRepresentationLocatorSyntax(formatRef_, locator))
     return detail::invalidIndex("lookup locator is invalid: " +
                                 llvm::toString(std::move(error)));
+  const llvm::StringRef name(locator.canonicalName);
+  const llvm::StringRef root(exactRoot_.canonicalName);
+  if (locator.kind != exactRoot_.kind &&
+      !(name.starts_with(root) && name.size() > root.size() &&
+        name[root.size()] == '.'))
+    return detail::invalidIndex(
+        "lookup locator is not rooted at the indexed exact root");
   const auto found = llvm::lower_bound(
       entries_, locator,
       [](const Entry &entry, const RepresentationLocator &key) {

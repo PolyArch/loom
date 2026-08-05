@@ -89,6 +89,26 @@ void requireAbsent(llvm::StringRef test, const RepresentationIndex &index,
           "unexpected representation object '" + locator.canonicalName + "'");
 }
 
+void requireLookupInvalid(llvm::StringRef test,
+                          const RepresentationIndex &index,
+                          RepresentationLocator locator) {
+  llvm::Expected<std::optional<RepresentationObjectFacts>> found =
+      index.lookup(locator);
+  if (found)
+    fail(test, "accepted a lookup outside the indexed exact root: '" +
+                   locator.canonicalName + "'");
+  bool matched = false;
+  llvm::Error remainder = llvm::handleErrors(
+      found.takeError(), [&](const RepresentationIndexFailure &failure) {
+        matched = failure.kind() == RepresentationIndexFailureKind::Invalid;
+        if (!matched)
+          fail(test, "expected Invalid lookup but received: " +
+                         failure.reason().str());
+      });
+  if (remainder)
+    fail(test, llvm::toString(std::move(remainder)));
+}
+
 void expectUnsupported(llvm::StringRef test,
                        llvm::Expected<RepresentationIndex> value) {
   if (value)
@@ -349,6 +369,23 @@ void assignmentsAreOnlyUnpackedAtContinuousAssignSites(
          "assign y = {a & b, 1'b0}; endmodule\n");
 }
 
+void lookupsOutsideTheExactRootAreInvalid(const std::filesystem::path &root) {
+  RepresentationIndex index =
+      buildGateIndex(root, "gate-foreign-root-lookup-blobs",
+                     "module leaf(input a, output y); assign y = a; endmodule\n"
+                     "module top(input a, output y); "
+                     "leaf u_leaf(.a(a), .y(y)); endmodule\n");
+
+  requireFacts(__func__, index, {RepresentationObjectKind::Cell, "top.u_leaf"},
+               objectFacts(RepresentationObjectKind::Cell));
+  requireLookupInvalid(__func__, index,
+                       {RepresentationObjectKind::Cell, "leaf.u_leaf"});
+  requireLookupInvalid(__func__, index,
+                       {RepresentationObjectKind::Pin, "leaf.u_leaf.a"});
+  requireLookupInvalid(__func__, index,
+                       {RepresentationObjectKind::Net, "other.w"});
+}
+
 void validityIsEstablishedOverTheWholeClosure(
     const std::filesystem::path &root) {
   expectInvalid(
@@ -513,6 +550,7 @@ int main(int argc, char **argv) {
   assignmentsAreOnlyUnpackedAtContinuousAssignSites(root);
   gateLanguageValidityPrecedesSubsetAdmission(root);
   validityIsEstablishedOverTheWholeClosure(root);
+  lookupsOutsideTheExactRootAreInvalid(root);
   structuralGateRejectionsCoverTheWholePayload(root);
   warningsAndAuthoringOrderAreNonsemantic(root);
   std::filesystem::remove_all(root);
