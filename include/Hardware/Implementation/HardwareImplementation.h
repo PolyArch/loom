@@ -6,6 +6,7 @@
 #include "Common/BlobDigest.h"
 #include "Common/ExternalFileFingerprint.h"
 #include "Fabric/Identity/FabricRefs.h"
+#include "Hardware/Implementation/RepresentationLocator.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -65,19 +66,6 @@ enum class ImplementationInterfaceRole {
   ExternalProtocol,
 };
 
-enum class RepresentationObjectKind {
-  Module,
-  Instance,
-  Port,
-  Net,
-  Register,
-  Memory,
-  Cell,
-  Pin,
-  PhysicalObject,
-  DeviceResource,
-};
-
 struct HardwarePayload final {
   HardwarePayloadRole role;
   std::string logicalName;
@@ -88,16 +76,6 @@ struct HardwarePayload final {
                          const HardwarePayload &rhs) {
     return lhs.role == rhs.role && lhs.logicalName == rhs.logicalName &&
            lhs.mediaType == rhs.mediaType && lhs.content == rhs.content;
-  }
-};
-
-struct RepresentationLocator final {
-  RepresentationObjectKind kind;
-  std::string canonicalName;
-
-  friend bool operator==(const RepresentationLocator &lhs,
-                         const RepresentationLocator &rhs) {
-    return lhs.kind == rhs.kind && lhs.canonicalName == rhs.canonicalName;
   }
 };
 

@@ -3,6 +3,7 @@ add_library(LoomHardwareImplementation
   HardwareImplementation.cpp
   HardwareImplementationValidation.cpp
   RepresentationFormat.cpp
+  RepresentationLocator.cpp
 )
 
 target_include_directories(LoomHardwareImplementation PUBLIC

@@ -36,6 +36,15 @@ target_link_libraries(loom-representation-format-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-representation-locator-test
+  RepresentationLocatorTest.cpp
+)
+
+target_link_libraries(loom-representation-locator-test PRIVATE
+  LoomHardwareImplementation
+  LLVMSupport
+)
+
 if(LOOM_HAVE_CIRCT)
   add_executable(loom-common-skeleton-test
     CommonSkeletonTest.cpp
