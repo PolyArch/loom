@@ -14,7 +14,136 @@ FabricInventoryOwnerRef inventoryOwnerFor(const Ref &ref) {
   return FabricInventoryOwnerRef::of(ref);
 }
 
+llvm::Error modulePhysicalRoleError(const llvm::Twine &message) {
+  return makeFabricRefError(FabricRefErrorKind::InvalidOwnerFamily, message);
+}
+
+template <typename Ref>
+llvm::Error acceptFabricModulePhysicalOwner(const Ref &) {
+  return llvm::Error::success();
+}
+
+llvm::Error validateFabricModuleLocalMemoryServiceOwner(
+    const LocalMemoryServiceRef &service) {
+  if (service.underlying().kind() == FabricMemoryServiceKind::Local)
+    return llvm::Error::success();
+  return modulePhysicalRoleError(
+      "a Module-local memory service cannot select a System service");
+}
+
+template <typename Ref>
+llvm::Error rejectFabricModuleInventoryOwner(const Ref &) {
+  return modulePhysicalRoleError(
+      "the inventory owner is not declared inside one reusable Module");
+}
+
+#define LOOM_FABRIC_MODULE_PHYSICAL_OWNER(Ordinal, Name, Type, Validator)      \
+  llvm::Error validateFabricModuleInventoryOwner(const Type &value) {          \
+    llvm::Expected<FabricModulePhysicalOwnerRef> owner =                       \
+        FabricModulePhysicalOwnerRef::create(value);                           \
+    if (!owner)                                                                \
+      return owner.takeError();                                                \
+    return llvm::Error::success();                                             \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+
+llvm::Error
+validateFabricModuleInventoryOwner(const FabricMemoryServiceRef &service) {
+  return validateFabricModuleInventoryOwner(LocalMemoryServiceRef(service));
+}
+
+template <typename Ref>
+llvm::Error validateFabricModuleInventoryOwner(const Ref &value) {
+  return rejectFabricModuleInventoryOwner(value);
+}
+
+llvm::Error
+validateFabricModuleInventoryOwner(const FabricInventoryOwnerRef &owner) {
+  return std::visit(
+      [](const auto &value) {
+        return validateFabricModuleInventoryOwner(value);
+      },
+      owner.payload);
+}
+
+template <typename Ref>
+llvm::Error acceptFabricModulePhysicalTarget(const Ref &) {
+  return llvm::Error::success();
+}
+
+llvm::Error validateFabricModuleTransportTarget(
+    const FabricTransportEndpointRef &endpoint) {
+  return validateFabricModuleInventoryOwner(
+      projectFabricInventoryOwner(endpoint.owner));
+}
+
+llvm::Error validateFabricModuleMemoryEndpointTarget(
+    const FabricMemoryEndpointRef &endpoint) {
+  return validateFabricModuleInventoryOwner(
+      projectFabricInventoryOwner(endpoint.owner));
+}
+
+llvm::Error validateFabricModuleMemoryServiceRegionTarget(
+    const FabricMemoryServiceRegionRef &region) {
+  return validateFabricModuleInventoryOwner(region.service);
+}
+
+template <typename Ref>
+llvm::Error validateFabricModuleInventoryTarget(const Ref &ref) {
+  return validateFabricModuleInventoryOwner(ref.owner.catalog());
+}
+
+llvm::Error validateFabricModulePhysicalTraversalTarget(
+    const FabricPhysicalTraversalRef &traversal) {
+  switch (traversal.kind()) {
+  case FabricPhysicalTraversalKind::PointConnection: {
+    const auto &connection =
+        std::get<FabricPointConnectionPayload>(traversal.payload);
+    if (llvm::Error error =
+            validateFabricModuleTransportTarget(connection.source))
+      return error;
+    return validateFabricModuleTransportTarget(connection.destination);
+  }
+  case FabricPhysicalTraversalKind::PeSelectorTraversal: {
+    const auto &selector = std::get<FabricPeSelectorPayload>(traversal.payload);
+    if (llvm::Error error =
+            validateFabricModuleTransportTarget(selector.source))
+      return error;
+    return validateFabricModuleTransportTarget(selector.destination);
+  }
+  case FabricPhysicalTraversalKind::PeRegisterFifoTraversal:
+  case FabricPhysicalTraversalKind::SwitchTraversal:
+  case FabricPhysicalTraversalKind::FifoTraversal:
+  case FabricPhysicalTraversalKind::BoundaryTraversal:
+    return llvm::Error::success();
+  case FabricPhysicalTraversalKind::SystemTransferPatternLeg:
+    return modulePhysicalRoleError(
+        "a System transfer-pattern leg is not a Module-local traversal");
+  }
+  llvm_unreachable("closed traversal kind outside its declaration");
+}
+
 } // namespace
+
+#define LOOM_FABRIC_MODULE_PHYSICAL_OWNER(Ordinal, Name, Type, Validator)      \
+  llvm::Expected<FabricModulePhysicalOwnerRef>                                 \
+  FabricModulePhysicalOwnerRef::create(const Type &value) {                    \
+    if (llvm::Error error = Validator(value))                                  \
+      return std::move(error);                                                 \
+    return FabricModulePhysicalOwnerRef(                                       \
+        Payload(std::in_place_type<Type>, value));                             \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+
+#define LOOM_FABRIC_MODULE_PHYSICAL_TARGET(Ordinal, Name, Type, Validator)     \
+  llvm::Expected<FabricModulePhysicalTargetRef>                                \
+  FabricModulePhysicalTargetRef::create(const Type &value) {                   \
+    if (llvm::Error error = Validator(value))                                  \
+      return std::move(error);                                                 \
+    return FabricModulePhysicalTargetRef(                                      \
+        Payload(std::in_place_type<Type>, value));                             \
+  }
+#include "Fabric/Identity/FabricRefs.def"
 
 // Every keyword table below is a projection of the one catalog declaration.
 

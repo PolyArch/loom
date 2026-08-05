@@ -68,6 +68,24 @@ bool isMemoryOwnerFamily(llvm::StringRef keyword) {
   return false;
 }
 
+bool isModulePhysicalOwnerFamily(llvm::StringRef keyword) {
+#define LOOM_FABRIC_MODULE_PHYSICAL_OWNER(Ordinal, Name, Type, Validator)      \
+  if (keyword == Type::familyKeyword)                                          \
+    return true;
+#include "Fabric/Identity/FabricRefs.def"
+  return false;
+}
+
+template <typename Ref> bool matchesReferenceFamily(llvm::StringRef keyword) {
+  return keyword == Ref::familyKeyword;
+}
+
+template <>
+bool matchesReferenceFamily<FabricModulePhysicalOwnerRef>(
+    llvm::StringRef keyword) {
+  return isModulePhysicalOwnerFamily(keyword);
+}
+
 } // namespace
 
 /// An owner of the opposite plane is plane misuse; an owner of neither plane
@@ -196,6 +214,36 @@ void loom::fabric::printFabricRef(llvm::raw_ostream &os,
 }
 
 void loom::fabric::printFabricRef(llvm::raw_ostream &os,
+                                  const FabricModulePhysicalOwnerRef &owner) {
+  switch (owner.kind()) {
+#define LOOM_FABRIC_MODULE_PHYSICAL_OWNER(Ordinal, Name, Type, Validator)      \
+  case FabricModulePhysicalOwnerKind::Name:                                    \
+    return printFabricRef(os, std::get<Type>(owner.payload()));
+#include "Fabric/Identity/FabricRefs.def"
+  }
+}
+
+void loom::fabric::printFabricRef(llvm::raw_ostream &os,
+                                  const FabricModuleDomainMemberRef &member) {
+  switch (member.kind()) {
+#define LOOM_FABRIC_MODULE_DOMAIN_MEMBER(Ordinal, Name, Type)                  \
+  case FabricModuleDomainMemberKind::Name:                                     \
+    return printFabricRef(os, std::get<Type>(member.payload));
+#include "Fabric/Identity/FabricRefs.def"
+  }
+}
+
+void loom::fabric::printFabricRef(llvm::raw_ostream &os,
+                                  const FabricModulePhysicalTargetRef &target) {
+  switch (target.kind()) {
+#define LOOM_FABRIC_MODULE_PHYSICAL_TARGET(Ordinal, Name, Type, Validator)     \
+  case FabricModulePhysicalTargetKind::Name:                                   \
+    return printFabricRef(os, std::get<Type>(target.payload()));
+#include "Fabric/Identity/FabricRefs.def"
+  }
+}
+
+void loom::fabric::printFabricRef(llvm::raw_ostream &os,
                                   const FabricMemoryServiceRef &service) {
   os << FabricMemoryServiceRef::familyKeyword << '<'
      << fabricRefKeyword(service.kind()) << ", ";
@@ -260,6 +308,75 @@ llvm::Error loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
   return makeFabricRefError(FabricRefErrorKind::InvalidOwnerFamily,
                             llvm::Twine("'") + keyword +
                                 "' is not an inventory owner constructor");
+}
+
+llvm::Error
+loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
+                                 FabricModulePhysicalOwnerRef &owner) {
+  const llvm::StringRef keyword = scanner.peekKeyword();
+#define LOOM_FABRIC_MODULE_PHYSICAL_OWNER(Ordinal, Name, Type, Validator)      \
+  if (keyword == Type::familyKeyword) {                                        \
+    Type payload;                                                              \
+    if (llvm::Error error = parseFabricRefInto(scanner, payload))              \
+      return error;                                                            \
+    llvm::Expected<FabricModulePhysicalOwnerRef> created =                     \
+        FabricModulePhysicalOwnerRef::create(payload);                         \
+    if (!created)                                                              \
+      return created.takeError();                                              \
+    owner = std::move(*created);                                               \
+    return llvm::Error::success();                                             \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+  if (isDeprecatedFamily(keyword) || isGenericEscape(scanner.rest()))
+    return fabricRefTextError("a Module physical owner", scanner.rest());
+  return makeFabricRefError(FabricRefErrorKind::InvalidOwnerFamily,
+                            llvm::Twine("'") + keyword +
+                                "' is not a Module physical owner constructor");
+}
+
+llvm::Error
+loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
+                                 FabricModuleDomainMemberRef &member) {
+  const llvm::StringRef keyword = scanner.peekKeyword();
+#define LOOM_FABRIC_MODULE_DOMAIN_MEMBER(Ordinal, Name, Type)                  \
+  if (matchesReferenceFamily<Type>(keyword)) {                                 \
+    Type payload;                                                              \
+    if (llvm::Error error = parseFabricRefInto(scanner, payload))              \
+      return error;                                                            \
+    member = FabricModuleDomainMemberRef::of(payload);                         \
+    return llvm::Error::success();                                             \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+  if (isDeprecatedFamily(keyword) || isGenericEscape(scanner.rest()))
+    return fabricRefTextError("a Module domain member", scanner.rest());
+  return makeFabricRefError(FabricRefErrorKind::InvalidOwnerFamily,
+                            llvm::Twine("'") + keyword +
+                                "' is not a Module domain member constructor");
+}
+
+llvm::Error
+loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
+                                 FabricModulePhysicalTargetRef &target) {
+  const llvm::StringRef keyword = scanner.peekKeyword();
+#define LOOM_FABRIC_MODULE_PHYSICAL_TARGET(Ordinal, Name, Type, Validator)     \
+  if (matchesReferenceFamily<Type>(keyword)) {                                 \
+    Type payload;                                                              \
+    if (llvm::Error error = parseFabricRefInto(scanner, payload))              \
+      return error;                                                            \
+    llvm::Expected<FabricModulePhysicalTargetRef> created =                    \
+        FabricModulePhysicalTargetRef::create(payload);                        \
+    if (!created)                                                              \
+      return created.takeError();                                              \
+    target = std::move(*created);                                              \
+    return llvm::Error::success();                                             \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+  if (isDeprecatedFamily(keyword) || isGenericEscape(scanner.rest()))
+    return fabricRefTextError("a Module physical target", scanner.rest());
+  return makeFabricRefError(
+      FabricRefErrorKind::InvalidOwnerFamily,
+      llvm::Twine("'") + keyword +
+          "' is not a Module physical target constructor");
 }
 
 llvm::Error loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,

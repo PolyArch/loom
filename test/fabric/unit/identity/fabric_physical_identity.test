@@ -1,0 +1,3 @@
+# RUN: loom-fabric-physical-identity-test | FileCheck %s
+
+# CHECK: fabric physical identity ok

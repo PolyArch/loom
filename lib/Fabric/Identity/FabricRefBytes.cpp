@@ -58,6 +58,39 @@ void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
 }
 
 void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
+                                   const FabricModulePhysicalOwnerRef &value) {
+  writer.tag(static_cast<std::uint32_t>(value.kind()));
+  switch (value.kind()) {
+#define LOOM_FABRIC_MODULE_PHYSICAL_OWNER(Ordinal, Name, Type, Validator)      \
+  case FabricModulePhysicalOwnerKind::Name:                                    \
+    return encodeFabricRef(writer, std::get<Type>(value.payload()));
+#include "Fabric/Identity/FabricRefs.def"
+  }
+}
+
+void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
+                                   const FabricModuleDomainMemberRef &value) {
+  writer.tag(static_cast<std::uint32_t>(value.kind()));
+  switch (value.kind()) {
+#define LOOM_FABRIC_MODULE_DOMAIN_MEMBER(Ordinal, Name, Type)                  \
+  case FabricModuleDomainMemberKind::Name:                                     \
+    return encodeFabricRef(writer, std::get<Type>(value.payload));
+#include "Fabric/Identity/FabricRefs.def"
+  }
+}
+
+void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
+                                   const FabricModulePhysicalTargetRef &value) {
+  writer.tag(static_cast<std::uint32_t>(value.kind()));
+  switch (value.kind()) {
+#define LOOM_FABRIC_MODULE_PHYSICAL_TARGET(Ordinal, Name, Type, Validator)     \
+  case FabricModulePhysicalTargetKind::Name:                                   \
+    return encodeFabricRef(writer, std::get<Type>(value.payload()));
+#include "Fabric/Identity/FabricRefs.def"
+  }
+}
+
+void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
                                    const FabricMemoryServiceRef &value) {
   writer.tag(static_cast<std::uint32_t>(value.kind()));
   switch (value.kind()) {
@@ -133,6 +166,81 @@ llvm::Error loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
 #include "Fabric/Identity/FabricRefs.def"
   }
   return llvm::Error::success();
+}
+
+llvm::Error
+loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
+                                  FabricModulePhysicalOwnerRef &value) {
+  const FabricModulePhysicalOwnerKind bound = FabricModulePhysicalOwnerKind();
+  llvm::Expected<std::uint32_t> tag = readFabricClosedTag(
+      reader, fabricClosedBound(bound), fabricClosedName(bound));
+  if (!tag)
+    return tag.takeError();
+  switch (static_cast<FabricModulePhysicalOwnerKind>(*tag)) {
+#define LOOM_FABRIC_MODULE_PHYSICAL_OWNER(Ordinal, Name, Type, Validator)      \
+  case FabricModulePhysicalOwnerKind::Name: {                                  \
+    Type payload;                                                              \
+    if (llvm::Error error = decodeFabricRefInto(reader, payload))              \
+      return error;                                                            \
+    llvm::Expected<FabricModulePhysicalOwnerRef> created =                     \
+        FabricModulePhysicalOwnerRef::create(payload);                         \
+    if (!created)                                                              \
+      return created.takeError();                                              \
+    value = std::move(*created);                                               \
+    return llvm::Error::success();                                             \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+  }
+  return makeFabricRefError(FabricRefErrorKind::MalformedSyntax,
+                            llvm::Twine("unknown Module physical owner ") +
+                                llvm::Twine(*tag));
+}
+
+llvm::Error
+loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
+                                  FabricModuleDomainMemberRef &value) {
+  const FabricModuleDomainMemberKind bound = FabricModuleDomainMemberKind();
+  llvm::Expected<std::uint32_t> tag = readFabricClosedTag(
+      reader, fabricClosedBound(bound), fabricClosedName(bound));
+  if (!tag)
+    return tag.takeError();
+  switch (static_cast<FabricModuleDomainMemberKind>(*tag)) {
+#define LOOM_FABRIC_MODULE_DOMAIN_MEMBER(Ordinal, Name, Type)                  \
+  case FabricModuleDomainMemberKind::Name:                                     \
+    return decodeFabricRefInto(reader, value.payload.emplace<Type>());
+#include "Fabric/Identity/FabricRefs.def"
+  }
+  return makeFabricRefError(FabricRefErrorKind::MalformedSyntax,
+                            llvm::Twine("unknown Module domain member ") +
+                                llvm::Twine(*tag));
+}
+
+llvm::Error
+loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
+                                  FabricModulePhysicalTargetRef &value) {
+  const FabricModulePhysicalTargetKind bound = FabricModulePhysicalTargetKind();
+  llvm::Expected<std::uint32_t> tag = readFabricClosedTag(
+      reader, fabricClosedBound(bound), fabricClosedName(bound));
+  if (!tag)
+    return tag.takeError();
+  switch (static_cast<FabricModulePhysicalTargetKind>(*tag)) {
+#define LOOM_FABRIC_MODULE_PHYSICAL_TARGET(Ordinal, Name, Type, Validator)     \
+  case FabricModulePhysicalTargetKind::Name: {                                 \
+    Type payload;                                                              \
+    if (llvm::Error error = decodeFabricRefInto(reader, payload))              \
+      return error;                                                            \
+    llvm::Expected<FabricModulePhysicalTargetRef> created =                    \
+        FabricModulePhysicalTargetRef::create(payload);                        \
+    if (!created)                                                              \
+      return created.takeError();                                              \
+    value = std::move(*created);                                               \
+    return llvm::Error::success();                                             \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+  }
+  return makeFabricRefError(FabricRefErrorKind::MalformedSyntax,
+                            llvm::Twine("unknown Module physical target ") +
+                                llvm::Twine(*tag));
 }
 
 llvm::Error loom::fabric::decodeFabricRefInto(FabricByteReader &reader,

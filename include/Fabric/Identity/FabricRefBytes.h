@@ -80,6 +80,12 @@ void encodeFabricRef(FabricByteWriter &writer,
 void encodeFabricRef(FabricByteWriter &writer,
                      const FabricInventoryOwnerRef &owner);
 void encodeFabricRef(FabricByteWriter &writer,
+                     const FabricModulePhysicalOwnerRef &owner);
+void encodeFabricRef(FabricByteWriter &writer,
+                     const FabricModuleDomainMemberRef &member);
+void encodeFabricRef(FabricByteWriter &writer,
+                     const FabricModulePhysicalTargetRef &target);
+void encodeFabricRef(FabricByteWriter &writer,
                      const FabricMemoryServiceRef &service);
 void encodeFabricRef(FabricByteWriter &writer,
                      const FabricPhysicalTraversalRef &traversal);
@@ -145,6 +151,12 @@ llvm::Error decodeFabricRefInto(FabricByteReader &reader,
                                 FabricMemoryEndpointOwnerRef &owner);
 llvm::Error decodeFabricRefInto(FabricByteReader &reader,
                                 FabricInventoryOwnerRef &owner);
+llvm::Error decodeFabricRefInto(FabricByteReader &reader,
+                                FabricModulePhysicalOwnerRef &owner);
+llvm::Error decodeFabricRefInto(FabricByteReader &reader,
+                                FabricModuleDomainMemberRef &member);
+llvm::Error decodeFabricRefInto(FabricByteReader &reader,
+                                FabricModulePhysicalTargetRef &target);
 llvm::Error decodeFabricRefInto(FabricByteReader &reader,
                                 FabricMemoryServiceRef &service);
 llvm::Error decodeFabricRefInto(FabricByteReader &reader,

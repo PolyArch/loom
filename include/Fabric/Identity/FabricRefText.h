@@ -67,6 +67,12 @@ void printFabricRef(llvm::raw_ostream &os,
 void printFabricRef(llvm::raw_ostream &os,
                     const FabricInventoryOwnerRef &owner);
 void printFabricRef(llvm::raw_ostream &os,
+                    const FabricModulePhysicalOwnerRef &owner);
+void printFabricRef(llvm::raw_ostream &os,
+                    const FabricModuleDomainMemberRef &member);
+void printFabricRef(llvm::raw_ostream &os,
+                    const FabricModulePhysicalTargetRef &target);
+void printFabricRef(llvm::raw_ostream &os,
                     const FabricMemoryServiceRef &service);
 void printFabricRef(llvm::raw_ostream &os,
                     const FabricPhysicalTraversalRef &traversal);
@@ -143,6 +149,12 @@ llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
                                FabricMemoryEndpointOwnerRef &owner);
 llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
                                FabricInventoryOwnerRef &owner);
+llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
+                               FabricModulePhysicalOwnerRef &owner);
+llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
+                               FabricModuleDomainMemberRef &member);
+llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
+                               FabricModulePhysicalTargetRef &target);
 llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
                                FabricMemoryServiceRef &service);
 llvm::Error parseFabricRefInto(FabricRefScanner &scanner,

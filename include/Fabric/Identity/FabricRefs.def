@@ -93,6 +93,24 @@
 #define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)
 #endif
 
+// Closed union of physical owners declared inside one reusable Module.
+// Validator is the single structural role admission policy used by factories
+// and both persistent codecs.
+#ifndef LOOM_FABRIC_MODULE_PHYSICAL_OWNER
+#define LOOM_FABRIC_MODULE_PHYSICAL_OWNER(Ordinal, Name, Type, Validator)
+#endif
+
+// Closed Module domain-member relation.
+#ifndef LOOM_FABRIC_MODULE_DOMAIN_MEMBER
+#define LOOM_FABRIC_MODULE_DOMAIN_MEMBER(Ordinal, Name, Type)
+#endif
+
+// Closed Module-local physical target relation. Validator rejects nested
+// System and SpatialCore roles before a target can become persistent state.
+#ifndef LOOM_FABRIC_MODULE_PHYSICAL_TARGET
+#define LOOM_FABRIC_MODULE_PHYSICAL_TARGET(Ordinal, Name, Type, Validator)
+#endif
+
 // The role-specific owner projections. Each is a distinct static type over
 // the one constructor catalog above and selects the canonical inventory its
 // consuming family indexes.
@@ -284,6 +302,74 @@ LOOM_FABRIC_REFINEMENT(MemoryConsistencyDomain, MemoryConsistencyDomainRef,
 LOOM_FABRIC_REFINEMENT(ClockDomain, ClockDomainRef, HardwareDomainRef)
 LOOM_FABRIC_REFINEMENT(ResetDomain, ResetDomainRef, HardwareDomainRef)
 
+LOOM_FABRIC_MODULE_PHYSICAL_OWNER(0, PeOccurrence, FabricPeOccurrenceRef,
+                                  acceptFabricModulePhysicalOwner)
+LOOM_FABRIC_MODULE_PHYSICAL_OWNER(1, FuOccurrence, FabricFuOccurrenceRef,
+                                  acceptFabricModulePhysicalOwner)
+LOOM_FABRIC_MODULE_PHYSICAL_OWNER(2, FuOccurrenceNode,
+                                  FabricFuOccurrenceNodeRef,
+                                  acceptFabricModulePhysicalOwner)
+LOOM_FABRIC_MODULE_PHYSICAL_OWNER(3, MemoryOccurrence,
+                                  FabricMemoryOccurrenceRef,
+                                  acceptFabricModulePhysicalOwner)
+LOOM_FABRIC_MODULE_PHYSICAL_OWNER(4, MemoryOperationPort,
+                                  FabricMemoryOperationPortRef,
+                                  acceptFabricModulePhysicalOwner)
+LOOM_FABRIC_MODULE_PHYSICAL_OWNER(5, LocalMemoryService,
+                                  LocalMemoryServiceRef,
+                                  validateFabricModuleLocalMemoryServiceOwner)
+LOOM_FABRIC_MODULE_PHYSICAL_OWNER(6, SwitchOccurrence,
+                                  FabricSwitchOccurrenceRef,
+                                  acceptFabricModulePhysicalOwner)
+LOOM_FABRIC_MODULE_PHYSICAL_OWNER(7, FifoOccurrence,
+                                  FabricFifoOccurrenceRef,
+                                  acceptFabricModulePhysicalOwner)
+LOOM_FABRIC_MODULE_PHYSICAL_OWNER(8, BoundaryOccurrence,
+                                  FabricBoundaryOccurrenceRef,
+                                  acceptFabricModulePhysicalOwner)
+LOOM_FABRIC_MODULE_PHYSICAL_OWNER(9, InstructionContext,
+                                  InstructionContextRef,
+                                  acceptFabricModulePhysicalOwner)
+
+LOOM_FABRIC_MODULE_DOMAIN_MEMBER(0, Boundary,
+                                 FabricModuleBoundaryEndpointRef)
+LOOM_FABRIC_MODULE_DOMAIN_MEMBER(1, Internal, FabricModulePhysicalOwnerRef)
+
+LOOM_FABRIC_MODULE_PHYSICAL_TARGET(0, Owner, FabricModulePhysicalOwnerRef,
+                                   acceptFabricModulePhysicalTarget)
+LOOM_FABRIC_MODULE_PHYSICAL_TARGET(1, FuOccurrencePort,
+                                   FabricFuOccurrencePortRef,
+                                   acceptFabricModulePhysicalTarget)
+LOOM_FABRIC_MODULE_PHYSICAL_TARGET(2, TransportEndpoint,
+                                   FabricTransportEndpointRef,
+                                   validateFabricModuleTransportTarget)
+LOOM_FABRIC_MODULE_PHYSICAL_TARGET(3, MemoryEndpoint,
+                                   FabricMemoryEndpointRef,
+                                   validateFabricModuleMemoryEndpointTarget)
+LOOM_FABRIC_MODULE_PHYSICAL_TARGET(4, MemoryCapabilityAlternative,
+                                   FabricMemoryCapabilityAlternativeRef,
+                                   acceptFabricModulePhysicalTarget)
+LOOM_FABRIC_MODULE_PHYSICAL_TARGET(5, MemoryOperationContext,
+                                   FabricMemoryOperationContextRef,
+                                   acceptFabricModulePhysicalTarget)
+LOOM_FABRIC_MODULE_PHYSICAL_TARGET(6, MemoryServiceRegion,
+                                   FabricMemoryServiceRegionRef,
+                                   validateFabricModuleMemoryServiceRegionTarget)
+LOOM_FABRIC_MODULE_PHYSICAL_TARGET(7, ResourceState,
+                                   FabricResourceStateRef,
+                                   validateFabricModuleInventoryTarget)
+LOOM_FABRIC_MODULE_PHYSICAL_TARGET(8, UsePattern, FabricUsePatternRef,
+                                   validateFabricModuleInventoryTarget)
+LOOM_FABRIC_MODULE_PHYSICAL_TARGET(9, SemanticConfigurationField,
+                                   FabricSemanticConfigFieldRef,
+                                   validateFabricModuleInventoryTarget)
+LOOM_FABRIC_MODULE_PHYSICAL_TARGET(10, PhysicalRefinementDomain,
+                                   FabricPhysicalRefinementDomainRef,
+                                   validateFabricModuleInventoryTarget)
+LOOM_FABRIC_MODULE_PHYSICAL_TARGET(11, PhysicalTraversal,
+                                   FabricPhysicalTraversalRef,
+                                   validateFabricModulePhysicalTraversalTarget)
+
 LOOM_FABRIC_LOCAL_REFERENCE_KIND(0, FabricModuleTemplateRef)
 LOOM_FABRIC_LOCAL_REFERENCE_KIND(1, FabricPeOccurrenceRef)
 LOOM_FABRIC_LOCAL_REFERENCE_KIND(2, FabricFuTemplateRef)
@@ -372,6 +458,9 @@ LOOM_FABRIC_DEPRECATED_REF("fabric.property")
 #undef LOOM_FABRIC_TRANSPORT_OWNER
 #undef LOOM_FABRIC_MEMORY_OWNER
 #undef LOOM_FABRIC_INVENTORY_OWNER
+#undef LOOM_FABRIC_MODULE_PHYSICAL_OWNER
+#undef LOOM_FABRIC_MODULE_DOMAIN_MEMBER
+#undef LOOM_FABRIC_MODULE_PHYSICAL_TARGET
 #undef LOOM_FABRIC_OWNER_ROLE
 #undef LOOM_FABRIC_REFINEMENT
 #undef LOOM_FABRIC_LOCAL_REFERENCE_KIND
