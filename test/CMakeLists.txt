@@ -124,6 +124,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-temporal-switch-resource-contract-test
   loom-hardware-configuration-abi-test
   loom-hardware-implementation-test
+  loom-representation-format-test
   loom-frontend-dfg-integration-test
   loom-static-global-memory-test
   loom-structured-address-index-narrowing-test
