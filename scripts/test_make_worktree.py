@@ -439,6 +439,11 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertEqual(payload["dependencies"], {"llvm": "llvm-pin"})
         circt_payload = json.loads(self.circt_identity)
         self.assertNotIn("circt_build_targets", circt_payload)
+        expected = ("-DCIRCT_INCLUDE_TOOLS=OFF",
+                    "-DCIRCT_SLANG_FRONTEND_ENABLED=ON",
+                    "-DCIRCT_SLANG_BUILD_FROM_SOURCE=ON")
+        self.assertEqual(self.module.CIRCT_SEMANTIC_CMAKE_ARGS[-3:], expected)
+        self.assertEqual(tuple(arg for arg in circt_payload["circt_semantic_cmake_args"] if arg in expected), expected)
         or_tools_payload = json.loads(self.or_tools_identity)
         self.assertEqual(
             or_tools_payload["dependencies"],
