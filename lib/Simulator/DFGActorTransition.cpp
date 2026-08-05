@@ -270,6 +270,20 @@ probeSerialize(const ActorExecutionPlan &plan, const SimulatorState &state) {
       hasInput(plan, state, 1));
   if (!transition.firing.ready)
     return blocked();
+  if (transition.emitActiveItems) {
+    auto op = mlir::cast<dataflow::SerializeOp>(plan.operation);
+    auto mask = vectorPrimitiveValues(peekInput(plan, state, 1),
+                                      op.getMask().getType(), op);
+    if (!mask)
+      return mask.takeError();
+    if (llvm::any_of(*mask, [](const PrimitiveValue &lane) {
+          return !lane.isDefined();
+        }))
+      return llvm::createStringError(
+          std::errc::not_supported,
+          "dataflow.serialize exceptional mask cardinality has no exact "
+          "single-path provider");
+  }
   llvm::SmallVector<std::uint32_t, 2> active;
   if (transition.emitActiveItems) {
     active.push_back(0);
@@ -295,14 +309,14 @@ selectDynamicShape(const ActorExecutionPlan &plan,
     if (state.oneShotOps.contains(plan.operation))
       return blocked();
     return probeAllInputs(plan, state);
-  case Kind::Primitive:
-    if (state.terminalPrimitiveOps.contains(plan.operation) ||
+  case Kind::StatelessCompute:
+    if (state.terminalComputeOps.contains(plan.operation) ||
         (plan.inputChannelCount == 0 &&
          state.oneShotOps.contains(plan.operation)))
       return blocked();
     return probeAllInputs(plan, state);
   case Kind::GetElementPtr:
-    if (state.terminalPrimitiveOps.contains(plan.operation))
+    if (state.terminalComputeOps.contains(plan.operation))
       return blocked();
     return probeAllInputs(plan, state);
   case Kind::Stream:

@@ -246,8 +246,11 @@ std::vector<std::uint8_t> configurationValue(
     const loom::fabric::ResolvedFabricOpCapabilityView &capability,
     const loom::fabric::FabricSemanticConfigFieldRef &field,
     const dataflow::CanonicalActorSchemaProjection &projection) {
+  constexpr std::array<std::uint64_t, 2> operandPorts = {0, 1};
+  constexpr std::array<std::uint64_t, 1> resultPorts = {0};
   const loom::CanonicalSemanticBytes encoded =
-      take(test, capability.encodeSemanticConfiguration(field, projection, 64));
+      take(test, capability.encodeSemanticConfiguration(
+                     field, projection, 64, operandPorts, resultPorts));
   return std::vector<std::uint8_t>(encoded.bytes().begin(),
                                    encoded.bytes().end());
 }
@@ -552,13 +555,17 @@ void fixedSchemaStaysOutsideWidthValues() {
         ::fabric::encodeImplementationFamilySemanticConfiguration(
             ::fabric::ImplementationFamilyId::FixedVectorIntegerAddSub,
             parameters, llvm::ArrayRef(addSchema), 2, 1,
-            actor({static_cast<std::int64_t>(128 / width)}, width, addSchema)));
+            actor({static_cast<std::int64_t>(128 / width)}, width, addSchema),
+            std::array<std::uint64_t, 2>{0, 1},
+            std::array<std::uint64_t, 1>{0}));
     const loom::CanonicalSemanticBytes subtract = take(
         test, ::fabric::encodeImplementationFamilySemanticConfiguration(
                   ::fabric::ImplementationFamilyId::FixedVectorIntegerAddSub,
                   parameters, llvm::ArrayRef(subtractSchema), 2, 1,
                   actor({static_cast<std::int64_t>(128 / width)}, width,
-                        subtractSchema)));
+                        subtractSchema),
+                  std::array<std::uint64_t, 2>{0, 1},
+                  std::array<std::uint64_t, 1>{0}));
     require(test, add.bytes().equals(subtract.bytes()),
             "fixed operation schema entered width-selector bytes");
   }

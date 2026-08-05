@@ -1,0 +1,1 @@
+# RUN: %loom-configured-hardware-projection-test

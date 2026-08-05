@@ -271,6 +271,31 @@ derived configuration, resources, Tags, and selected handshake closure; then
 progress closure. A later layer cannot guess a repair when an earlier fact is
 invalid.
 
+The derived-configuration layer invokes the unique cold operation specified by
+[Fabric Reconfigurable Operations](spec-fabric-reconfigurable-op.md). For each
+Mapping-selected physical configuration slot, it resolves the exact
+TechMapping actor and capability relation, the SpatialMapping occurrence,
+context, and the Fabric-owned typed field projector.
+Repeated derivations of one slot must produce byte-identical canonical typed
+values. A missing value, an unencodable value, or two different values for one
+slot is `Invalid` Mapping input. Distinct independently configurable contexts
+remain distinct slots.
+
+The resulting `ConfiguredHardwareProjection` is a sealed, removable in-memory
+view indexed only by existing Dataflow, Fabric, and Mapping references. It is
+not serialized in Mapping, assigned a new identity, or reconstructed by a
+simulator or backend. Mapping import may retain it as an invocation-local
+cache. CGRA admission consumes that validated view, while configuration-image
+finalization passes the same semantic values to the exact
+`ConfigurationABI` encoder.
+
+Physical refinements are not part of this projection. Version 1 has no generic
+physical-refinement value codec, so strict Mapping import rejects every
+nonempty refinement assignment before configured-hardware projection. A
+concrete Fabric owner must first publish the domain's closed typed value codec
+and admissibility relation. Raw bytes, an ordinal fallback, or a
+simulator-private interpretation cannot stand in for that owner.
+
 The intrinsic semantic result is either `Valid` or `Invalid` with typed
 diagnostics. A passing verifier does not persist `valid`, closure projections,
 claims, calendars, or proof witnesses in `S`.

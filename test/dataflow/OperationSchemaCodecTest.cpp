@@ -618,6 +618,33 @@ bool checkProjectionCodec(MLIRContext &context) {
     ok = false;
   }
 
+  CanonicalActorSchemaProjection dynamicVectorExtract{
+      OperationSchemaId::VectorExtract,
+      builder.getFunctionType({vector, builder.getIndexType()},
+                              {builder.getI32Type()}),
+      SemanticPayload{VectorStaticPositionPayload{{ShapedType::kDynamic}}}};
+  auto dynamicBytes =
+      encodeCanonicalActorSchemaProjection(dynamicVectorExtract);
+  if (!dynamicBytes) {
+    llvm::errs() << llvm::toString(dynamicBytes.takeError()) << '\n';
+    ok = false;
+  } else if (llvm::Error error = validateCanonicalActorSchemaProjectionBytes(
+                 dynamicBytes->bytes())) {
+    llvm::errs() << llvm::toString(std::move(error)) << '\n';
+    ok = false;
+  } else {
+    std::vector<std::uint8_t> malformed(dynamicBytes->bytes().begin(),
+                                        dynamicBytes->bytes().end());
+    std::fill(malformed.end() - sizeof(std::int64_t), malformed.end(), 0xff);
+    ok &= expectValidationFailure(
+        malformed, "vector static position contains an invalid value");
+  }
+  CanonicalActorSchemaProjection invalidVectorExtract = dynamicVectorExtract;
+  invalidVectorExtract.payload = VectorStaticPositionPayload{{-1}};
+  ok &=
+      expectFailure(encodeCanonicalActorSchemaProjection(invalidVectorExtract),
+                    "vector static position contains an invalid value");
+
   if (firstBytes) {
     std::vector<std::uint8_t> truncated(firstBytes->bytes().begin(),
                                         firstBytes->bytes().end() - 1);

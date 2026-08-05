@@ -52,6 +52,24 @@ sequenceFromTokens(llvm::ArrayRef<Token> tokens, mlir::Type type,
         "DFG observation token exceeds the APInt width domain");
 
   for (const Token &token : tokens) {
+    if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
+      auto lanes = vectorPrimitiveValues(token, vector, scope);
+      if (!lanes)
+        return lanes.takeError();
+      if (lanes->size() != shape.lanesPerToken)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "DFG vector observation does not match its canonical lane shape");
+      for (const PrimitiveValue &lane : *lanes) {
+        if (lane.state == PrimitiveValueState::Poison)
+          sequence.lanes.push_back(SemanticLane::poison());
+        else if (lane.state == PrimitiveValueState::Undef)
+          sequence.lanes.push_back(SemanticLane::undef());
+        else
+          sequence.lanes.push_back(SemanticLane::defined(*lane.bits));
+      }
+      continue;
+    }
     if (token.valueState != PrimitiveValueState::Defined) {
       const SemanticLane lane = token.valueState == PrimitiveValueState::Poison
                                     ? SemanticLane::poison()

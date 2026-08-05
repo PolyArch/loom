@@ -40,6 +40,14 @@ add_executable(loom-spatial-mapping-artifact-test
   TechMappingCandidateTestSupport.cpp
 )
 
+add_executable(loom-configured-hardware-projection-test
+  ConfiguredHardwareProjectionTest.cpp
+)
+
+target_include_directories(loom-configured-hardware-projection-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
+)
+
 target_include_directories(loom-spatial-mapping-artifact-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
 )
@@ -141,5 +149,25 @@ target_link_libraries(loom-spatial-mapping-artifact-test PRIVATE
   MLIRMapping
   MLIRMemRefDialect
   MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-configured-hardware-projection-test PRIVATE
+  LoomADGBuilder
+  LoomMappingArtifact
+  LoomPnR
+  LoomPnRCpSat
+  LoomPnRGenerator
+  LoomSimulator
+  LoomTechMapping
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRMapping
+  MLIRParser
+  MLIRVectorDialect
   LLVMSupport
 )

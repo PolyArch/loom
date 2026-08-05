@@ -18,26 +18,26 @@ namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 namespace {
 
-bool sequenceNeedsLaneStateSupport(const CanonicalValueSequence &sequence,
-                                   const LaneShape &shape) {
-  if (shape.lanesPerToken <= 1)
-    return false;
-  for (std::uint64_t token = 0; token < sequence.tokenCount; ++token) {
-    const std::size_t begin = token * shape.lanesPerToken;
-    const SemanticState state = sequence.lanes[begin].state;
-    for (std::size_t lane = 1; lane < shape.lanesPerToken; ++lane)
-      if (sequence.lanes[begin + lane].state != state)
-        return true;
-  }
-  return false;
-}
-
 llvm::Expected<Token>
 tokenFromLanes(llvm::ArrayRef<SemanticLane> lanes, mlir::Type type,
                const LaneShape &shape,
-               llvm::ArrayRef<std::shared_ptr<MemoryValue>> objects) {
+               llvm::ArrayRef<std::shared_ptr<MemoryValue>> objects,
+               mlir::Operation *scope) {
   if (shape.lanesPerToken == 0)
     return noneToken();
+  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
+    llvm::SmallVector<PrimitiveValue, 8> values;
+    values.reserve(lanes.size());
+    for (const SemanticLane &lane : lanes) {
+      if (lane.state == SemanticState::Poison)
+        values.push_back(PrimitiveValue::poison());
+      else if (lane.state == SemanticState::Undef)
+        values.push_back(PrimitiveValue::undef());
+      else
+        values.push_back(PrimitiveValue::integer(lane.bits));
+    }
+    return tokenFromVectorPrimitiveValues(values, vector, scope);
+  }
   const SemanticState state = lanes.front().state;
   if (state != SemanticState::Defined) {
     const PrimitiveValueState primitive = state == SemanticState::Poison
@@ -65,30 +65,15 @@ tokenFromLanes(llvm::ArrayRef<SemanticLane> lanes, mlir::Type type,
     return tokenFromBitPattern(lanes.front().bits, type);
   }
 
-  if (shape.lanesPerToken >
-      std::numeric_limits<unsigned>::max() / shape.laneBitWidth)
-    return llvm::createStringError(std::errc::value_too_large,
-                                   "typed vector input is too wide");
-  llvm::APInt bits(
-      static_cast<unsigned>(shape.lanesPerToken) * shape.laneBitWidth, 0);
-  for (auto [ordinal, lane] : llvm::enumerate(lanes))
-    bits.insertBits(lane.bits,
-                    static_cast<unsigned>(ordinal) * shape.laneBitWidth);
-  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
-    if (mlir::isa<mlir::IndexType>(vector.getElementType())) {
-      Token token;
-      token.kind = TokenKind::Vector;
-      token.setExactBitPattern(std::move(bits));
-      return token;
-    }
-  }
-  return tokenFromBitPattern(bits, type);
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "typed multi-lane input is not a vector");
 }
 
 llvm::Expected<llvm::SmallVector<Token>>
 tokensFromSequence(const CanonicalValueSequence &sequence, mlir::Type type,
                    const LaneShape &shape,
-                   llvm::ArrayRef<std::shared_ptr<MemoryValue>> objects) {
+                   llvm::ArrayRef<std::shared_ptr<MemoryValue>> objects,
+                   mlir::Operation *scope) {
   llvm::SmallVector<Token> tokens;
   tokens.reserve(sequence.tokenCount);
   for (std::uint64_t token = 0; token < sequence.tokenCount; ++token) {
@@ -96,7 +81,7 @@ tokensFromSequence(const CanonicalValueSequence &sequence, mlir::Type type,
     if (shape.lanesPerToken != 0)
       lanes = llvm::ArrayRef(sequence.lanes)
                   .slice(token * shape.lanesPerToken, shape.lanesPerToken);
-    auto converted = tokenFromLanes(lanes, type, shape, objects);
+    auto converted = tokenFromLanes(lanes, type, shape, objects, scope);
     if (!converted)
       return converted.takeError();
     tokens.push_back(std::move(*converted));
@@ -133,21 +118,8 @@ std::optional<std::string>
 unsupportedTypedDfgInput(const CanonicalSimulationWorkload &workload,
                          const CanonicalSimulationRuntimeInput &runtimeInput,
                          const ResolvedLaunchContext &context) {
-  const SpatialSimulationWorkload &model = *workload.spatial();
+  (void)workload;
   const SpatialSimulationRuntimeInput &input = *runtimeInput.spatial();
-  for (std::uint64_t ordinal = 0; ordinal < model.valueInputPlan.size();
-       ++ordinal) {
-    const CanonicalValueSequence *sequence =
-        std::get_if<CanonicalValueSequence>(&model.valueInputPlan[ordinal]);
-    if (!sequence) {
-      const RuntimeValueEntry *entry = runtimeValueAt(input, ordinal);
-      if (entry)
-        sequence = &entry->value;
-    }
-    if (sequence && sequenceNeedsLaneStateSupport(
-                        *sequence, context.valueInputShapes[ordinal]))
-      return "mixed per-lane exceptional value input is unsupported";
-  }
   if (!input.runtimeStreams.empty())
     return "typed runtime stream termination is unsupported";
   for (const auto &root : context.memoryInputRoots)
@@ -224,9 +196,9 @@ seedTypedDfgInputs(SimulatorState &state, dataflow::GraphOp graph,
       sequence = &runtime->value;
     }
     mlir::BlockArgument argument = entry.getArgument(ordinal + 1);
-    auto tokens =
-        tokensFromSequence(*sequence, argument.getType(),
-                           context.valueInputShapes[ordinal], objects);
+    auto tokens = tokensFromSequence(*sequence, argument.getType(),
+                                     context.valueInputShapes[ordinal], objects,
+                                     graph.getOperation());
     if (!tokens)
       return tokens.takeError();
     for (const Token &token : *tokens)
@@ -239,7 +211,7 @@ seedTypedDfgInputs(SimulatorState &state, dataflow::GraphOp graph,
     mlir::BlockArgument argument = entry.getArgument(streamBase + ordinal);
     auto tokens = tokensFromSequence(
         input.runtimeStreams[ordinal].values, argument.getType(),
-        context.streamInputShapes[ordinal], objects);
+        context.streamInputShapes[ordinal], objects, graph.getOperation());
     if (!tokens)
       return tokens.takeError();
     for (const Token &token : *tokens)

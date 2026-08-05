@@ -58,8 +58,18 @@ struct PointerValue {
   llvm::APInt representation;
 };
 
+/// Execution-local representation of a fixed vector whose lanes do not share
+/// one exceptional state. Defined lane bits retain canonical row-major order;
+/// bits under poison or undef lanes are ignored. Canonical Dataflow and the
+/// Simulation wire remain the semantic owners of lane state.
+struct VectorLanePayload {
+  unsigned laneBitWidth = 0;
+  llvm::SmallVector<PrimitiveValueState, 4> laneStates;
+  llvm::APInt packedBits;
+};
+
 using ExtendedTokenPayload =
-    std::variant<llvm::APInt, MemoryView, PointerValue>;
+    std::variant<llvm::APInt, VectorLanePayload, MemoryView, PointerValue>;
 
 enum class TokenKind {
   None,
@@ -579,6 +589,15 @@ struct Token {
     extended = std::make_shared<ExtendedTokenPayload>(std::move(bits));
   }
 
+  const VectorLanePayload *vectorLanePayload() const {
+    return extended ? std::get_if<VectorLanePayload>(extended.get()) : nullptr;
+  }
+
+  void setVectorLanePayload(VectorLanePayload payload) {
+    inlineBitWidth = 0;
+    extended = std::make_shared<ExtendedTokenPayload>(std::move(payload));
+  }
+
   const MemoryView *memoryView() const {
     return extended ? std::get_if<MemoryView>(extended.get()) : nullptr;
   }
@@ -824,7 +843,7 @@ enum class ActorTransitionProbeKind : std::uint8_t {
   Unavailable,
   AllInputs,
   OneShot,
-  Primitive,
+  StatelessCompute,
   GetElementPtr,
   Stream,
   Carry,
@@ -1052,7 +1071,7 @@ struct SimulatorState {
   llvm::DenseMap<mlir::Operation *, MemoryOrderAccumulator>
       activationMemoryOrderFrontiers;
   llvm::DenseSet<mlir::Operation *> oneShotOps;
-  llvm::DenseSet<mlir::Operation *> terminalPrimitiveOps;
+  llvm::DenseSet<mlir::Operation *> terminalComputeOps;
   llvm::DenseMap<mlir::Value, std::uint64_t> seededTokenCounts;
   llvm::SmallVector<std::string> diagnostics;
   // OperationSchemaId is a generated dense domain. The execution loop counts
@@ -1314,6 +1333,13 @@ llvm::Expected<CanonicalValueSequence>
 canonicalValueSequenceFromTokens(llvm::ArrayRef<Token> tokens, mlir::Type type,
                                  mlir::Operation *scope);
 
+llvm::Expected<llvm::SmallVector<PrimitiveValue, 8>>
+vectorPrimitiveValues(const Token &token, mlir::VectorType type,
+                      mlir::Operation *scope);
+llvm::Expected<Token>
+tokenFromVectorPrimitiveValues(llvm::ArrayRef<PrimitiveValue> lanes,
+                               mlir::VectorType type, mlir::Operation *scope);
+
 llvm::Expected<PrimitiveValue> primitiveValueFromToken(const Token &token,
                                                        mlir::Type type,
                                                        unsigned indexBitWidth);
@@ -1331,9 +1357,15 @@ llvm::Expected<PrimitiveOperationDescriptor> primitiveDescriptorForActor(
     mlir::Operation *op);
 llvm::Expected<MemoryActorExecutionPlan>
 memoryActorExecutionPlan(mlir::Operation *op, mlir::Operation *graphScope);
+std::optional<std::string>
+unsupportedMemoryActorRepresentation(mlir::Operation *op);
 llvm::Expected<GepExecutionPlan> gepExecutionPlan(mlir::LLVM::GEPOp op,
                                                   mlir::Operation *graphScope);
 bool fireGetElementPtr(
+    mlir::Operation *op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    SimulatorState &state);
+bool fireVectorStructuralActor(
     mlir::Operation *op,
     const dataflow::CanonicalActorSchemaProjection &projection,
     SimulatorState &state);

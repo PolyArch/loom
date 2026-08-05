@@ -118,6 +118,8 @@ deriveSummary(const ::dataflow::CanonicalDataflowProgramView &dataflow,
 
   CgraExecutionPlanSummary summary;
   summary.mappedGraphCount = mappedGraphCount;
+  summary.semanticConfigurationFieldCount =
+      spatial.configuredHardware().fields().size();
   for (const auto &binding : spatial.computeBindings()) {
     auto found = realizations.find(binding.realization);
     if (found == realizations.end())

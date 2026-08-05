@@ -64,6 +64,14 @@ module {
         : memref<?xi8>, vector<2xindex>, vector<2xi8>
     return
   }
+
+  func.func @masked_gather(%mem: memref<?xi8>,
+                           %addresses: vector<2xindex>,
+                           %mask: vector<2xi1>, %ctrl: none) {
+    %loaded, %read = dataflow.load %mem[%addresses] %ctrl mask %mask
+        : memref<?xi8>, vector<2xindex>, vector<2xi8>
+    return
+  }
 }
 )mlir";
 
@@ -602,6 +610,34 @@ void serializePreservesQueuedActivation(dataflow::SerializeOp op,
                "serialize emitted the wrong activation phases");
 }
 
+void serializeExceptionalMaskIsUnsupported(dataflow::SerializeOp op) {
+  TestSimulatorState state;
+  installActorPlan(state, op.getOperation());
+  testChannelQueue(state, op.getVectorMutable())
+      .push_back(tokenWithBits(op.getVector().getType(), 0x44332211U));
+  llvm::SmallVector<loom::sim::PrimitiveValue, 4> mask = {
+      loom::sim::PrimitiveValue::integer(llvm::APInt(1, 1)),
+      loom::sim::PrimitiveValue::poison(),
+      loom::sim::PrimitiveValue::integer(llvm::APInt(1, 0)),
+      loom::sim::PrimitiveValue::integer(llvm::APInt(1, 1))};
+  testChannelQueue(state, op.getMaskMutable())
+      .push_back(takeExpected(tokenFromVectorPrimitiveValues(
+          mask, mlir::cast<mlir::VectorType>(op.getMask().getType()),
+          op.getOperation())));
+  testChannelQueue(state, op.getGroupPhaseMutable())
+      .push_back(boolValueToken(true));
+
+  require(!fireAdmittedActorOperation(op, state),
+          "serialize accepted an exceptional mask lane");
+  require(state.failure == RunFailure::UnsupportedCapability,
+          "serialize exceptional mask did not return typed Unsupported");
+  require(testChannelQueue(state, op.getVectorMutable()).size() == 1 &&
+              testChannelQueue(state, op.getMaskMutable()).size() == 1 &&
+              testChannelQueue(state, op.getGroupPhaseMutable()).size() == 1 &&
+              state.pendingObservedOutputs.empty(),
+          "serialize exceptional-mask rejection was not atomic");
+}
+
 void parallelizeFailureIsAtomic(dataflow::ParallelizeOp op) {
   {
     TestSimulatorState state;
@@ -647,6 +683,33 @@ void parallelizeFailureIsAtomic(dataflow::ParallelizeOp op) {
                 state.actorMutationEpoch == 0,
             "parallelize published a malformed pending group");
   }
+}
+
+void parallelizePreservesExceptionalScalarLane(dataflow::ParallelizeOp op) {
+  TestSimulatorState state;
+  testChannelQueue(state, op.getDataMutable())
+      .push_back(takeExpected(exceptionalValueToken(
+          loom::sim::PrimitiveValueState::Poison, op.getData().getType())));
+  testChannelQueue(state, op.getScalarPhaseMutable())
+      .push_back(boolValueToken(true));
+  testChannelQueue(state, op.getScalarPhaseMutable())
+      .push_back(boolValueToken(false));
+
+  require(fireAdmittedActorOperation(op, state),
+          "parallelize rejected a poison scalar lane");
+  require(fireAdmittedActorOperation(op, state),
+          "parallelize did not close the exceptional scalar group");
+  auto vector = state.pendingObservedOutputs.find(op.getVector());
+  require(vector != state.pendingObservedOutputs.end() &&
+              vector->second.size() == 1,
+          "parallelize did not publish the exceptional group");
+  auto sequence = takeExpected(canonicalValueSequenceFromTokens(
+      vector->second, op.getVector().getType(), op.getOperation()));
+  require(sequence.lanes.size() == 2 &&
+              sequence.lanes[0].state == loom::sim::SemanticState::Poison &&
+              sequence.lanes[1].state == loom::sim::SemanticState::Defined &&
+              sequence.lanes[1].bits == llvm::APInt(8, 0),
+          "parallelize changed exceptional or inactive lane state");
 }
 
 // Independent oracle for the rank-two bit representation: the expected packed
@@ -801,7 +864,7 @@ void expectUntouchedRun(SimulatorState &state, const MemoryValue &memory,
               llvm::all_of(state.operationFireCounts,
                            [](std::uint64_t count) { return count == 0; }),
           message);
-  require(state.terminalPrimitiveOps.empty(), message);
+  require(state.terminalComputeOps.empty(), message);
   llvm::SmallVector<loom::sim::SemanticMemoryByte> expected;
   for (uint64_t value : elements) {
     auto bytes = takeExpected(encodeMemoryElement(
@@ -842,6 +905,86 @@ void loadRejectionIsAtomic(dataflow::LoadOp op) {
   expectUntouchedRun(state, *memory, memoryType.getElementType(),
                      op.getOperation(), {0x11, 0x22},
                      "load changed run or memory state on a rejected access");
+}
+
+void inactiveExceptionalGatherAddressIsUnobserved(dataflow::LoadOp op) {
+  TestSimulatorState state;
+  installMemoryActorPlan(state, op.getOperation());
+  auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
+  auto memory =
+      makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
+  testChannelQueue(state, op.getMemMutable())
+      .push_back(memoryCapabilityToken(op.getMem(), memory, 0));
+
+  const unsigned indexBits = resolvedIndexBits(op.getOperation());
+  llvm::SmallVector<loom::sim::PrimitiveValue, 2> addresses = {
+      loom::sim::PrimitiveValue::integer(llvm::APInt(indexBits, 1)),
+      loom::sim::PrimitiveValue::poison()};
+  testChannelQueue(state, op.getAddrMutable())
+      .push_back(takeExpected(tokenFromVectorPrimitiveValues(
+          addresses, mlir::cast<mlir::VectorType>(op.getAddr().getType()),
+          op.getOperation())));
+  testChannelQueue(state, *op.getMaskMutable().begin())
+      .push_back(tokenWithBits(op.getMask().getType(), 1));
+  testChannelQueue(state, op.getCtrlMutable()).push_back(noneToken());
+
+  PlainMemoryActionProjection projected =
+      projectReadyPlainMemoryAction(op.getOperation(), state);
+  require(projected.ready && projected.diagnostics.empty(),
+          "inactive exceptional gather address was observed");
+  state.admittedPlainMemoryActions.try_emplace(op.getOperation(),
+                                               std::move(*projected.ready));
+  require(fireAdmittedActorOperation(op, state),
+          "masked gather with an inactive exceptional address did not fire");
+  auto result = state.pendingObservedOutputs.find(op.getData());
+  require(result != state.pendingObservedOutputs.end() &&
+              result->second.size() == 1,
+          "masked gather did not publish one vector result");
+  auto sequence = takeExpected(canonicalValueSequenceFromTokens(
+      result->second, op.getData().getType(), op.getOperation()));
+  require(sequence.lanes.size() == 2 &&
+              sequence.lanes[0].state == loom::sim::SemanticState::Defined &&
+              sequence.lanes[0].bits == llvm::APInt(8, 0x22) &&
+              sequence.lanes[1].state == loom::sim::SemanticState::Defined &&
+              sequence.lanes[1].bits == llvm::APInt(8, 0),
+          "masked gather changed active data or inactive zero fill");
+}
+
+void exceptionalMemoryMaskIsUnsupported(dataflow::LoadOp op) {
+  TestSimulatorState state;
+  installMemoryActorPlan(state, op.getOperation());
+  auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
+  auto memory =
+      makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
+  testChannelQueue(state, op.getMemMutable())
+      .push_back(memoryCapabilityToken(op.getMem(), memory, 0));
+  testChannelQueue(state, op.getAddrMutable())
+      .push_back(
+          indexVectorToken(resolvedIndexBits(op.getOperation()), {0, 1}));
+  llvm::SmallVector<loom::sim::PrimitiveValue, 2> mask = {
+      loom::sim::PrimitiveValue::integer(llvm::APInt(1, 1)),
+      loom::sim::PrimitiveValue::undef()};
+  testChannelQueue(state, *op.getMaskMutable().begin())
+      .push_back(takeExpected(tokenFromVectorPrimitiveValues(
+          mask, mlir::cast<mlir::VectorType>(op.getMask().getType()),
+          op.getOperation())));
+  testChannelQueue(state, op.getCtrlMutable()).push_back(noneToken());
+
+  PlainMemoryActionProjection projected =
+      projectReadyPlainMemoryAction(op.getOperation(), state);
+  require(!projected.ready && !projected.diagnostics.empty(),
+          "memory actor accepted an exceptional mask lane");
+  require(state.failure == RunFailure::UnsupportedCapability,
+          "memory exceptional mask did not return typed Unsupported");
+  require(testChannelQueue(state, op.getMemMutable()).size() == 1 &&
+              testChannelQueue(state, op.getAddrMutable()).size() == 1 &&
+              testChannelQueue(state, *op.getMaskMutable().begin()).size() ==
+                  1 &&
+              testChannelQueue(state, op.getCtrlMutable()).size() == 1,
+          "memory exceptional-mask rejection consumed an input");
+  expectUntouchedRun(state, *memory, memoryType.getElementType(),
+                     op.getOperation(), {0x11, 0x22},
+                     "memory exceptional-mask rejection changed state");
 }
 
 void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
@@ -985,7 +1128,10 @@ int main() {
   auto serializeFunc = module->lookupSymbol<mlir::func::FuncOp>("serialize");
   auto rankTwoFunc = module->lookupSymbol<mlir::func::FuncOp>("rank_two");
   auto memoryFunc = module->lookupSymbol<mlir::func::FuncOp>("memory");
-  require(parallelizeFunc && serializeFunc && rankTwoFunc && memoryFunc,
+  auto maskedGatherFunc =
+      module->lookupSymbol<mlir::func::FuncOp>("masked_gather");
+  require(parallelizeFunc && serializeFunc && rankTwoFunc && memoryFunc &&
+              maskedGatherFunc,
           "fixture functions are missing");
 
   dataflow::ParallelizeOp parallelize;
@@ -1002,10 +1148,12 @@ int main() {
   rankTwoFunc.walk([&](dataflow::UnpackOp op) { rankTwoUnpack = op; });
   dataflow::LoadOp load;
   dataflow::StoreOp store;
+  dataflow::LoadOp maskedGather;
   memoryFunc.walk([&](dataflow::LoadOp op) { load = op; });
   memoryFunc.walk([&](dataflow::StoreOp op) { store = op; });
+  maskedGatherFunc.walk([&](dataflow::LoadOp op) { maskedGather = op; });
   require(parallelize && pack && serialize && unpacks.size() == 2 &&
-              rankTwoPack && rankTwoUnpack && load && store,
+              rankTwoPack && rankTwoUnpack && load && store && maskedGather,
           "fixture actors are missing");
 
   dataflow::UnpackOp vectorUnpack = unpacks[0];
@@ -1017,9 +1165,13 @@ int main() {
 
   parallelizePreservesQueuedActivation(parallelize);
   serializePreservesQueuedActivation(serialize, vectorUnpack, maskUnpack);
+  serializeExceptionalMaskIsUnsupported(serialize);
   unpackPlacesRowMajorLanes(rankTwoUnpack);
   packFlattensRowMajorLanes(rankTwoPack);
+  inactiveExceptionalGatherAddressIsUnobserved(maskedGather);
+  exceptionalMemoryMaskIsUnsupported(maskedGather);
   parallelizeFailureIsAtomic(parallelize);
+  parallelizePreservesExceptionalScalarLane(parallelize);
   packFailureIsAtomic(pack);
   unpackFailureIsAtomic(vectorUnpack);
   serializeFailureIsAtomic(serialize);

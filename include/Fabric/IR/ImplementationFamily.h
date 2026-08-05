@@ -708,16 +708,18 @@ llvm::Expected<bool> requiresSemanticConfigurationField(
     llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
     std::uint32_t physicalInputCount, std::uint32_t physicalResultCount);
 
-/// Encodes one admitted actor into the concrete family's minimal semantic
-/// configuration value. The projection retains only facts that select
-/// different configured hardware behavior; ConfigurationABI separately owns
-/// the physical code assigned to the returned value.
+/// Encodes one admitted actor and its ordered physical-port correspondence
+/// into the concrete family's minimal semantic configuration value. The
+/// projection retains only facts that select different configured hardware
+/// behavior; ConfigurationABI separately owns the physical code.
 llvm::Expected<::loom::CanonicalSemanticBytes>
 encodeImplementationFamilySemanticConfiguration(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,
     llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
     std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
     const ::dataflow::CanonicalActorSchemaProjection &actor,
+    llvm::ArrayRef<std::uint64_t> operandPorts,
+    llvm::ArrayRef<std::uint64_t> resultPorts,
     std::optional<ResolvedIndexWidth> resolvedIndexWidth = std::nullopt);
 
 /// One unique configured hardware behavior in a finite concrete capability

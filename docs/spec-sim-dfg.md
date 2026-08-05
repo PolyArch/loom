@@ -474,6 +474,11 @@ Stable anchor tests cover:
   poison or undef;
 * static and dynamic extract/insert plus shuffle duplication and poison blocks
   through the shared mixed-lane vector evaluator;
+* atomic typed `Unsupported` for exceptional serialize or memory-mask activity
+  when the exact single-path provider cannot represent its non-singleton
+  cardinality or effect relation;
+* graph-preparation typed `Unsupported` for fixed vectors of pointer addresses
+  until a lane-local pointer-provenance provider exists;
 * exact token cardinality and state reset for canonical control actors;
 * `ctrl`/`done` memory order and terminal memory diffs;
 * contiguous, indexed, and masked vector-memory semantics with one actor

@@ -142,6 +142,30 @@ fully-defined token or an execution-local arena handle is an implementation
 choice, not another value model. CGRA execution adds only the selected physical
 resource and timing behavior around that same functional result.
 
+A mask lane is different from an ordinary value lane because it chooses
+whether an operand is consumed or a memory effect occurs. Poison or undef
+therefore denotes a non-singleton firing relation rather than an arbitrary
+zero-or-one bit. A single-path execution engine cannot select one branch
+without inventing semantics, and treating the actor as blocked would falsely
+report a wait-set problem. Atomic typed `Unsupported` preserves the exact
+boundary: no input is consumed and no effect occurs until an execution model
+with an explicit exceptional-control relation is available.
+
+CGRA-sim deliberately consumes the Mapping-owned semantic configuration
+projection rather than `ConfigurationABI` or a configuration image. Two ABIs
+may place or encode the same Fabric semantic value differently while describing
+the same selected Dataflow, Fabric, and SpatialMapping behavior. Making either
+ABI a CGRA input would split one architectural execution into encoding-specific
+case identities. Conversely, interpreting only the Dataflow actor without
+replaying the selected Fabric projector could simulate behavior that the mapped
+physical slot cannot configure. The transient Mapping projection supplies the
+needed proof without importing physical programming into the CGRA fidelity.
+Retaining another slot/value vector in the simulator would add no behavior:
+the exact actor semantic kernel already owns the functional result and the
+selected Fabric contracts own resource and timing behavior. The projection is
+therefore checked during cold admission and remains owned by the retained
+Mapping view rather than being copied into the hot execution plan.
+
 CGRA cycle metrics use the exact SpatialMapping root as the case-level cycle
 anchor because the reference domain is a relation of Mapping, Fabric, Dataflow,
 and launch facts rather than a new persistent clock choice. Copying one clock

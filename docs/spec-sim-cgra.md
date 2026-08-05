@@ -117,9 +117,17 @@ For fixed-vector arithmetic and structural resources, physical admission,
 claims, timing, and publication come from the selected Fabric family and
 Mapping, while the functional lane result comes from the same typed vector
 semantic kernel used by DFG-sim. Extract/insert dynamic positions remain
-runtime tokens. Static positions and shuffle selectors are decoded only from
-the selected ConfigurationABI projection. One vector token traverses and
-retires as one token; lane indices are neither events nor Physical Tags.
+runtime tokens. Before dynamic state is created, CGRA admission consumes the
+Mapping-owned transient configured-hardware projection defined by
+[Fabric Reconfigurable Operations](spec-fabric-reconfigurable-op.md). That
+projection re-derives static positions, shuffle selectors, and other selected
+semantic fields through the exact Fabric-owned typed projector. CGRA-sim does
+not import or decode a `ConfigurationABI` or `HardwareConfigurationImage`;
+those own physical programming, not the three-role CGRA case. The validated
+projection is a cold admission proof, not a simulator-owned runtime field
+schema: CGRA-sim does not copy or reinterpret its values in the hot plan. One
+vector token traverses and retires as one token; lane indices are neither
+events nor Physical Tags.
 
 The shared CGRA case signature exposes that unique domain to cycle-based
 metrics through an `ExactSubjectCycle` anchored at the exact SpatialMapping
@@ -306,6 +314,9 @@ Stable anchor tests cover:
 
 * exact `{D,F,SpatialMapping}` admission and rejection of stale or incomplete
   Mapping;
+* rejection before dynamic execution when the Mapping-owned configured-
+  hardware projection cannot derive one unambiguous typed value for every
+  selected physical configuration slot, without adding an ABI or image role;
 * finite-route, buffer, memory, and temporal-resource contention;
 * boundary partial-valid and partial-ready stalls without partial transfer;
 * replay-visible Temporal PE behavior for explicit operand-buffer depths 1 and

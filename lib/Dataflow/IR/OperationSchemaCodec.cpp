@@ -1289,6 +1289,41 @@ llvm::Error validateSignedList(Reader &reader, std::int64_t minimum,
   return llvm::Error::success();
 }
 
+bool isValidVectorPosition(std::int64_t value) {
+  return value == mlir::ShapedType::kDynamic || value >= 0;
+}
+
+bool isValidVectorPositionWire(std::uint64_t value) {
+  return value == static_cast<std::uint64_t>(mlir::ShapedType::kDynamic) ||
+         value <= static_cast<std::uint64_t>(
+                      std::numeric_limits<std::int64_t>::max());
+}
+
+llvm::Error encodeVectorPositionList(Writer &writer,
+                                     llvm::ArrayRef<std::int64_t> values) {
+  writer.u64(values.size());
+  for (std::int64_t value : values) {
+    if (!isValidVectorPosition(value))
+      return invalid("vector static position contains an invalid value");
+    writer.u64(static_cast<std::uint64_t>(value));
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error validateVectorPositionList(Reader &reader) {
+  auto count = readCount(reader, "vector static position count", 8);
+  if (!count)
+    return count.takeError();
+  for (std::uint64_t index = 0; index < *count; ++index) {
+    auto raw = reader.u64("vector static position");
+    if (!raw)
+      return raw.takeError();
+    if (!isValidVectorPositionWire(*raw))
+      return invalid("vector static position contains an invalid value");
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error encodeI32List(Writer &writer, llvm::ArrayRef<std::int32_t> values,
                           llvm::StringRef what) {
   writer.u64(values.size());
@@ -1461,8 +1496,7 @@ llvm::Error encodePayload(Writer &writer,
         std::get_if<dataflow::VectorStaticPositionPayload>(&payload);
     if (!position)
       break;
-    return encodeSignedList(writer, position->position, 0,
-                            "vector static position");
+    return encodeVectorPositionList(writer, position->position);
   }
   case Case::VectorShuffleMask: {
     const auto *mask =
@@ -1582,7 +1616,7 @@ llvm::Error validatePayload(Reader &reader,
     return llvm::Error::success();
   }
   case Case::VectorStaticPosition:
-    return validateSignedList(reader, 0, "vector static position");
+    return validateVectorPositionList(reader);
   case Case::VectorShuffleMask:
     return validateSignedList(reader, -1, "vector shuffle mask");
   }

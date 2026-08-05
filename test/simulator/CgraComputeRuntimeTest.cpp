@@ -6,6 +6,7 @@
 #include "Fabric/IR/ResourceContract.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -13,7 +14,11 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
+#include <system_error>
 #include <utility>
 
 namespace {
@@ -39,7 +44,8 @@ void require(bool condition, llvm::StringRef message) {
 mlir::MLIRContext &context() {
   static mlir::MLIRContext *instance = [] {
     mlir::DialectRegistry registry;
-    registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect>();
+    registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
+                    mlir::vector::VectorDialect>();
     auto *result =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     result->loadAllAvailableDialects();
@@ -76,6 +82,44 @@ module {
     %complete:2 = dataflow.demux %phase, %tokens
         : (i1, none) -> (none, none)
     dataflow.graph.return values() streams(%iv : i32) memories()
+        complete(%complete#0 : none)
+  }
+
+  dataflow.graph private @shuffle(
+      %start: none, %lhs: vector<2xi8>, %rhs: vector<1xi8>)
+      -> (vector<3xi8>)
+      attributes {
+        input_segments = array<i32: 2, 0, 0>,
+        result_segments = array<i32: 1, 0, 0>
+      } {
+    %value = vector.shuffle %lhs, %rhs [1, 2, -1]
+        : vector<2xi8>, vector<1xi8>
+    %published:2 = dataflow.sync %start, %value
+        : (none, vector<3xi8>) -> (none, vector<3xi8>)
+    dataflow.graph.return values(%published#1 : vector<3xi8>) streams()
+        memories() complete(%published#0 : none)
+  }
+
+  dataflow.graph private @serialize(
+      %start: none, %init: i8, %limit: i8, %step: i8)
+      -> (i8, i1)
+      attributes {
+        input_segments = array<i32: 3, 0, 0>,
+        result_segments = array<i32: 0, 2, 0>
+      } {
+    %iv, %phase = dataflow.stream %init, %limit, %step
+        step add while ult : i8
+    %values, %mask, %group_phase =
+        dataflow.parallelize %iv, %phase
+          : (i8, i1) -> (vector<2xi8>, vector<2xi1>, i1)
+    %scalar, %scalar_phase =
+        dataflow.serialize %values, %mask, %group_phase
+        : (vector<2xi8>, vector<2xi1>, i1) -> (i8, i1)
+    %units = dataflow.invariant %scalar_phase, %start : none
+    %complete:2 = dataflow.demux %scalar_phase, %units
+        : (i1, none) -> (none, none)
+    dataflow.graph.return values()
+        streams(%scalar, %scalar_phase : i8, i1) memories()
         complete(%complete#0 : none)
   }
 }
@@ -121,6 +165,17 @@ bool hasPhysical(const CgraComputeLifecycleFrame &frame,
                       [kind](const CgraPhysicalLifecycleEvent &event) {
                         return event.kind == kind;
                       });
+}
+
+Token vectorToken(mlir::VectorType type,
+                  std::initializer_list<std::uint8_t> lanes) {
+  require(static_cast<std::size_t>(type.getNumElements()) == lanes.size(),
+          "vector token lane count does not match its type");
+  llvm::APInt bits(static_cast<unsigned>(lanes.size()) * 8, 0);
+  unsigned ordinal = 0;
+  for (std::uint8_t lane : lanes)
+    bits.insertBits(llvm::APInt(8, lane), 8 * ordinal++);
+  return take(tokenFromBitPattern(bits, type));
 }
 
 ActorExecutionPlan &semanticActor(PreparedGraphExecution &execution,
@@ -329,10 +384,159 @@ void statefulActorCannotBypassUnmodeledTransport() {
           "stateful actor bypassed its pending transport obligation");
 }
 
+void structuralVectorUsesSharedPhysicalLifecycle() {
+  auto artifact = program();
+  auto view = take(artifact.view());
+  const dataflow::CanonicalActorView *shuffle = nullptr;
+  for (const dataflow::CanonicalActorView &actor : view.actors())
+    if (dataflow::operationSchemaOf(actor.op) ==
+        dataflow::OperationSchemaId::VectorShuffle)
+      shuffle = &actor;
+  require(shuffle != nullptr, "fixture has no canonical shuffle actor");
+
+  auto graphView = take(view.resolve(shuffle->graph));
+  auto graph = mlir::cast<dataflow::GraphOp>(graphView.op);
+  GraphPreparationResult preparedResult =
+      take(prepareGraphExecution(artifact.module(), graph));
+  auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
+  require(prepared != nullptr, "shuffle graph preparation failed");
+
+  const fabric::ResourceContract contract = resourceContract();
+  CgraFrozenExecutionPlan plan =
+      selectedPlan(*shuffle, semanticActor(*prepared, shuffle->op), contract);
+  SimulatorState state;
+  state.graphScope = graph.getOperation();
+  initializeRunState(state, *prepared);
+  seedBlockArgument(state, graph.getStart(), noneToken());
+  mlir::Block &entry = graph.getBody().front();
+  seedBlockArgument(
+      state, entry.getArgument(1),
+      vectorToken(mlir::cast<mlir::VectorType>(entry.getArgument(1).getType()),
+                  {1, 2}));
+  seedBlockArgument(
+      state, entry.getArgument(2),
+      vectorToken(mlir::cast<mlir::VectorType>(entry.getArgument(2).getType()),
+                  {3}));
+
+  auto physical = take(CgraPhysicalActionRuntime::create(
+      plan.resources, plan.physicalUseTimings));
+  auto runtime = take(CgraComputeRuntime::create(plan, view, shuffle->graph,
+                                                 *prepared, state, physical));
+  if (llvm::Error error = runtime.start(coordinate(0)))
+    fail(llvm::toString(std::move(error)));
+  auto requested = take(runtime.advance());
+  require(requested &&
+              hasPhysical(*requested, CgraPhysicalLifecycleKind::Requested),
+          "shuffle compute action did not request its physical resource");
+
+  auto physicalFrame = take(physical.advance());
+  require(physicalFrame.has_value(), "shuffle grant frame is missing");
+  auto accepted = take(runtime.acceptPhysicalEvents(*physicalFrame));
+  require(hasPhysical(accepted, CgraPhysicalLifecycleKind::Granted),
+          "shuffle compute action did not receive its grant");
+
+  physicalFrame = take(physical.advance());
+  require(physicalFrame.has_value(), "shuffle commit frame is missing");
+  accepted = take(runtime.acceptPhysicalEvents(*physicalFrame));
+  require(hasPhysical(accepted, CgraPhysicalLifecycleKind::Committed),
+          "shuffle resource did not expose its commit transition");
+
+  auto committed = take(runtime.advance());
+  require(committed && committed->actorEvents.size() == 1 &&
+              committed->actorEvents.front().kind ==
+                  CgraActorLifecycleKind::Committed &&
+              committed->actorEmissions.size() == 1,
+          "shuffle actor did not commit through the CGRA lifecycle");
+  const CgraActorLifecycleEvent committedActor = committed->actorEvents.front();
+  auto lanes = take(vectorPrimitiveValues(
+      committed->actorEmissions.front().token,
+      mlir::cast<mlir::VectorType>(shuffle->op->getResult(0).getType()),
+      shuffle->op));
+  require(lanes.size() == 3 && lanes[0].isDefined() &&
+              *lanes[0].bits == llvm::APInt(8, 2) && lanes[1].isDefined() &&
+              *lanes[1].bits == llvm::APInt(8, 3) &&
+              lanes[2].state == loom::sim::PrimitiveValueState::Poison,
+          "CGRA shuffle result diverged from the shared mixed-lane semantics");
+
+  physicalFrame = take(physical.advance());
+  require(physicalFrame.has_value(), "shuffle retirement frame is missing");
+  accepted = take(runtime.acceptPhysicalEvents(*physicalFrame));
+  require(hasPhysical(accepted, CgraPhysicalLifecycleKind::Retired) &&
+              accepted.physicalCompletions.size() == 1,
+          "shuffle physical execution did not retire");
+  if (llvm::Error error =
+          runtime.retireActor(committedActor.semanticActorOrdinal,
+                              committedActor.occurrenceOrdinal, coordinate(2)))
+    fail(llvm::toString(std::move(error)));
+  require(!runtime.hasActiveActors(),
+          "shuffle actor stayed active after coordinated retirement");
+}
+
+void exceptionalSerializeRejectsBeforePhysicalRequest() {
+  auto artifact = program();
+  auto view = take(artifact.view());
+  const dataflow::CanonicalActorView *serialize = nullptr;
+  for (const dataflow::CanonicalActorView &actor : view.actors())
+    if (dataflow::operationSchemaOf(actor.op) ==
+        dataflow::OperationSchemaId::DataflowSerialize)
+      serialize = &actor;
+  require(serialize != nullptr, "fixture has no canonical serialize actor");
+
+  auto graphView = take(view.resolve(serialize->graph));
+  auto graph = mlir::cast<dataflow::GraphOp>(graphView.op);
+  GraphPreparationResult preparedResult =
+      take(prepareGraphExecution(artifact.module(), graph));
+  auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
+  require(prepared != nullptr, "serialize graph preparation failed");
+
+  ActorExecutionPlan &semantic = semanticActor(*prepared, serialize->op);
+  const fabric::ResourceContract contract = resourceContract();
+  CgraFrozenExecutionPlan plan = selectedPlan(*serialize, semantic, contract);
+  SimulatorState state;
+  state.graphScope = graph.getOperation();
+  initializeRunState(state, *prepared);
+  state.channelSlots[semantic.firstInputChannel].ready.push_back(vectorToken(
+      mlir::cast<mlir::VectorType>(serialize->op->getOperand(0).getType()),
+      {1, 2}));
+  const llvm::SmallVector<loom::sim::PrimitiveValue, 2> mask = {
+      loom::sim::PrimitiveValue::integer(llvm::APInt(1, 1)),
+      loom::sim::PrimitiveValue::poison()};
+  state.channelSlots[semantic.firstInputChannel + 1].ready.push_back(
+      take(tokenFromVectorPrimitiveValues(
+          mask,
+          mlir::cast<mlir::VectorType>(serialize->op->getOperand(1).getType()),
+          serialize->op)));
+  state.channelSlots[semantic.firstInputChannel + 2].ready.push_back(
+      boolValueToken(true));
+
+  auto physical = take(CgraPhysicalActionRuntime::create(
+      plan.resources, plan.physicalUseTimings));
+  auto runtime = take(CgraComputeRuntime::create(plan, view, serialize->graph,
+                                                 *prepared, state, physical));
+  const std::uint64_t mutationEpoch = state.actorMutationEpoch;
+  llvm::Error error = runtime.start(coordinate(0));
+  if (!error)
+    fail("CGRA serialize accepted an exceptional mask");
+  const std::error_code code = llvm::errorToErrorCode(std::move(error));
+  require(code == std::make_error_code(std::errc::not_supported),
+          "CGRA serialize exceptional mask was not typed Unsupported");
+  require(state.actorMutationEpoch == mutationEpoch &&
+              state.channelSlots[semantic.firstInputChannel].ready.size() ==
+                  1 &&
+              state.channelSlots[semantic.firstInputChannel + 1].ready.size() ==
+                  1 &&
+              state.channelSlots[semantic.firstInputChannel + 2].ready.size() ==
+                  1 &&
+              !physical.nextCoordinate() && !runtime.hasPendingEvents(),
+          "CGRA serialize exceptional mask advanced execution state");
+}
+
 } // namespace
 
 int main() {
   computeCommitWaitsForExactPhysicalLifecycle();
   statefulActorCannotBypassUnmodeledTransport();
+  structuralVectorUsesSharedPhysicalLifecycle();
+  exceptionalSerializeRejectsBeforePhysicalRequest();
   return EXIT_SUCCESS;
 }

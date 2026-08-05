@@ -33,9 +33,10 @@ Deployment
 ```
 
 Fabric and Mapping may expose or select semantic `sw_configs`; they do not own
-physical bit positions. `ConfigurationABI` owns those positions once. An
-encoder, RTL decoder, runtime loader, simulator, or backend must consume the
-same ABI rather than duplicating it.
+physical bit positions. `ConfigurationABI` owns those positions once. A
+physical encoder, RTL decoder, runtime loader, or implementation backend must
+consume the same ABI rather than duplicating it. Semantic DFG and CGRA
+simulation does not decode this physical programming representation.
 
 The Artifact DAG is acyclic. A `ConfigurationABI` references its exact Fabric.
 A `HardwareImplementation` references the exact Fabric and ConfigurationABI it
@@ -106,6 +107,14 @@ ConfigurationABI {
   }
 }
 ```
+
+The ABI describes how every Fabric-owned semantic field is represented and
+installed. It does not select a field value, reference a Mapping, or constitute
+a configured hardware state. A selected value exists only in the transient
+`ConfiguredHardwareProjection` derived from one complete Mapping. A physical
+payload exists only when `HardwareConfigurationImage` binds that projection to
+this ABI. Consumers must not use the ABI as a substitute Mapping input or infer
+a selected mode from `inactive_value` or codebook order.
 
 A programming unit is the smallest physical unit for which a complete
 configuration state can be independently installed and activated, such as one
@@ -243,10 +252,13 @@ allowed. Common ArtifactIdentity SHA-256 v1 covers the entire framed value.
 The raw payload is not a second Artifact family.
 
 Image finalization reconstructs a temporary `ConfiguredHardwareProjection`
-from exact Fabric and complete Mapping, encodes it through the ABI, and verifies
-the resulting bytes. That projection is derived data and is never persisted as
-another authority. Images are bound to exact hardware occurrences; equal bytes
-may share blob storage but do not permit implicit rebinding.
+from exact Fabric and complete Mapping through the Mapping-owned derivation
+specified by [Fabric Reconfigurable Operations](spec-fabric-reconfigurable-op.md),
+encodes it through the ABI, and verifies the resulting bytes. It must not
+reimplement field projection or accept simulator-produced values. That
+projection is derived data and is never persisted as another authority. Images
+are bound to exact hardware occurrences; equal bytes may share blob storage but
+do not permit implicit rebinding.
 
 ## Deployment
 

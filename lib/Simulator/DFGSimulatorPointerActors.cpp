@@ -308,7 +308,7 @@ bool fireGetElementPtr(
     SimulatorState &state) {
   (void)projection;
   auto op = mlir::cast<mlir::LLVM::GEPOp>(operation);
-  if (state.terminalPrimitiveOps.contains(operation))
+  if (state.terminalComputeOps.contains(operation))
     return false;
   for (unsigned ordinal = 0; ordinal < operation->getNumOperands(); ++ordinal)
     if (!hasInputToken(state, ordinal))
@@ -325,7 +325,7 @@ bool fireGetElementPtr(
   auto result = evaluateGep(op, *state.currentActorPlan->gep, operands);
   if (!result) {
     state.diagnostics.push_back(llvm::toString(result.takeError()));
-    state.terminalPrimitiveOps.insert(operation);
+    state.terminalComputeOps.insert(operation);
     return false;
   }
   for (unsigned ordinal = 0; ordinal < operation->getNumOperands(); ++ordinal)

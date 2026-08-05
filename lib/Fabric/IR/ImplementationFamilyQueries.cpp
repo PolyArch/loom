@@ -27,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <vector>
@@ -79,6 +80,8 @@ constexpr char kIntegerLogicConfigurationDomain[] =
     "loom.fabric.integer-logic-configuration\0";
 constexpr char kScalarIntegerCastConfigurationDomain[] =
     "loom.fabric.scalar-integer-cast-configuration\0";
+constexpr char kRoutedTokenConfigurationDomain[] =
+    "loom.fabric.routed-token-port-selection\0";
 constexpr std::uint32_t kConfigurationCodecMajor = 1;
 constexpr std::uint32_t kConfigurationCodecMinor = 0;
 constexpr std::array<mlir::arith::CmpIPredicate, 4> kSignedIntegerPredicates = {
@@ -1079,6 +1082,8 @@ fabric::encodeImplementationFamilySemanticConfiguration(
     llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
     std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
     const ::dataflow::CanonicalActorSchemaProjection &actor,
+    llvm::ArrayRef<std::uint64_t> operandPorts,
+    llvm::ArrayRef<std::uint64_t> resultPorts,
     std::optional<ResolvedIndexWidth> resolvedIndexWidth) {
   auto needsConfiguration = requiresSemanticConfigurationField(
       family, params, enabledSchemas, physicalInputCount, physicalResultCount);
@@ -1088,6 +1093,54 @@ fabric::encodeImplementationFamilySemanticConfiguration(
     return reject("capability has no semantic configuration field");
   if (!llvm::is_contained(enabledSchemas, actor.schema))
     return reject("actor schema is not enabled by the concrete capability");
+
+  const ImplementationFamilyDescriptor &descriptor =
+      implementationFamily(family);
+  const bool routedToken = descriptor.typedAdmissionProvider ==
+                               TypedAdmissionProviderId::SyncTokenAdmission ||
+                           descriptor.typedAdmissionProvider ==
+                               TypedAdmissionProviderId::MuxTokenAdmission ||
+                           descriptor.typedAdmissionProvider ==
+                               TypedAdmissionProviderId::DemuxTokenAdmission;
+  if (routedToken) {
+    if (llvm::Error error = verifyImplementationFamilyPortCorrespondence(
+            family, actor, operandPorts, resultPorts))
+      return std::move(error);
+    if (llvm::any_of(
+            operandPorts,
+            [&](std::uint64_t port) { return port >= physicalInputCount; }) ||
+        llvm::any_of(resultPorts, [&](std::uint64_t port) {
+          return port >= physicalResultCount;
+        }))
+      return reject("routed-token correspondence selects a missing port");
+
+    llvm::ArrayRef<std::uint64_t> selectedPorts;
+    switch (descriptor.typedAdmissionProvider) {
+    case TypedAdmissionProviderId::SyncTokenAdmission:
+      selectedPorts = operandPorts;
+      break;
+    case TypedAdmissionProviderId::MuxTokenAdmission:
+      selectedPorts = operandPorts.drop_front();
+      break;
+    case TypedAdmissionProviderId::DemuxTokenAdmission:
+      selectedPorts = resultPorts;
+      break;
+    default:
+      llvm_unreachable("non-routed family reached routed-token codec");
+    }
+
+    std::vector<std::uint8_t> bytes;
+    const llvm::StringRef domain(kRoutedTokenConfigurationDomain,
+                                 sizeof(kRoutedTokenConfigurationDomain) - 1);
+    bytes.insert(bytes.end(), domain.bytes_begin(), domain.bytes_end());
+    appendU32(bytes, kConfigurationCodecMajor);
+    appendU32(bytes, kConfigurationCodecMinor);
+    appendU32(bytes, static_cast<std::uint32_t>(family));
+    appendU32(bytes, static_cast<std::uint32_t>(selectedPorts.size()));
+    for (std::uint64_t port : selectedPorts)
+      appendU64(bytes, port);
+    return loom::CanonicalSemanticBytes(std::move(bytes));
+  }
 
   if (family == ImplementationFamilyId::FixedVectorSliceAlignMerge) {
     const auto *parameters =
@@ -1100,9 +1153,9 @@ fabric::encodeImplementationFamilySemanticConfiguration(
       return reject("vector slice actor has the wrong semantic payload");
     const bool hasDynamicPosition =
         llvm::is_contained(position->position, mlir::ShapedType::kDynamic);
-    if (hasDynamicPosition) {
-      if (!resolvedIndexWidth)
-        return reject("vector slice has no resolved dynamic index width");
+    if (hasDynamicPosition && !resolvedIndexWidth)
+      return reject("vector slice has no resolved dynamic index width");
+    if (resolvedIndexWidth) {
       if (llvm::Error error = verifyImplementationFamilyAdmission(
               family, &params, actor,
               getResolvedIndexBitWidth(*resolvedIndexWidth)))
@@ -1111,7 +1164,15 @@ fabric::encodeImplementationFamilySemanticConfiguration(
                    family, &params, actor)) {
       return std::move(error);
     }
-    auto projected = projectFixedVectorSlice(actor);
+    ::dataflow::CanonicalActorSchemaProjection represented = actor;
+    if (resolvedIndexWidth) {
+      auto projectedActor = projectResolvedIndexTypes(
+          actor, getResolvedIndexBitWidth(*resolvedIndexWidth));
+      if (!projectedActor)
+        return projectedActor.takeError();
+      represented = std::move(*projectedActor);
+    }
+    auto projected = projectFixedVectorSlice(represented);
     if (!projected)
       return projected.takeError();
     auto layout = resolveFixedVectorSliceAlignMergeConfigurationLayout(
@@ -1152,14 +1213,29 @@ fabric::encodeImplementationFamilySemanticConfiguration(
     const auto *parameters = std::get_if<FixedVectorShuffleParams>(&params);
     if (!parameters)
       return reject("capability has the wrong parameter schema");
-    if (llvm::Error error =
-            verifyImplementationFamilyAdmission(family, &params, actor))
+    if (resolvedIndexWidth) {
+      if (llvm::Error error = verifyImplementationFamilyAdmission(
+              family, &params, actor,
+              getResolvedIndexBitWidth(*resolvedIndexWidth)))
+        return std::move(error);
+    } else if (llvm::Error error = verifyImplementationFamilyAdmission(
+                   family, &params, actor)) {
       return std::move(error);
+    }
+    ::dataflow::CanonicalActorSchemaProjection represented = actor;
+    if (resolvedIndexWidth) {
+      auto projectedActor = projectResolvedIndexTypes(
+          actor, getResolvedIndexBitWidth(*resolvedIndexWidth));
+      if (!projectedActor)
+        return projectedActor.takeError();
+      represented = std::move(*projectedActor);
+    }
     auto layout = resolveFixedVectorShuffleConfigurationLayout(*parameters);
     if (!layout)
       return layout.takeError();
-    auto left = llvm::dyn_cast<mlir::VectorType>(actor.type.getInput(0));
-    auto result = llvm::dyn_cast<mlir::VectorType>(actor.type.getResult(0));
+    auto left = llvm::dyn_cast<mlir::VectorType>(represented.type.getInput(0));
+    auto result =
+        llvm::dyn_cast<mlir::VectorType>(represented.type.getResult(0));
     const auto *payload =
         std::get_if<::dataflow::VectorShuffleMaskPayload>(&actor.payload);
     if (!left || !result || !payload)
@@ -1653,9 +1729,13 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
             {std::move(actor), std::nullopt, resolvedActor.resolvedIndexWidth});
       continue;
     }
+    std::vector<std::uint64_t> operandPorts(actor.type.getNumInputs());
+    std::vector<std::uint64_t> resultPorts(actor.type.getNumResults());
+    std::iota(operandPorts.begin(), operandPorts.end(), 0);
+    std::iota(resultPorts.begin(), resultPorts.end(), 0);
     auto semantic = encodeImplementationFamilySemanticConfiguration(
         family, params, enabledSchemas, physicalInputCount, physicalResultCount,
-        actor, resolvedActor.resolvedIndexWidth);
+        actor, operandPorts, resultPorts, resolvedActor.resolvedIndexWidth);
     if (!semantic)
       return semantic.takeError();
     const auto duplicate = llvm::find_if(points, [&](const auto &point) {

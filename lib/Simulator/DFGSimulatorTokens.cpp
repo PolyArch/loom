@@ -144,6 +144,26 @@ llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
   }
   if (token.kind == TokenKind::Vector) {
     auto vector = mlir::dyn_cast<mlir::VectorType>(type);
+    if (vector && token.vectorLanePayload()) {
+      auto lanes = vectorPrimitiveValues(token, vector, scope);
+      if (!lanes)
+        return lanes.takeError();
+      std::string storage;
+      llvm::raw_string_ostream os(storage);
+      os << typePrefix(type) << ":[";
+      for (auto [ordinal, lane] : llvm::enumerate(*lanes)) {
+        if (ordinal != 0)
+          os << ',';
+        if (lane.state == PrimitiveValueState::Poison)
+          os << "poison";
+        else if (lane.state == PrimitiveValueState::Undef)
+          os << "undef";
+        else
+          os << formatHexBitPattern(*lane.bits);
+      }
+      os << ']';
+      return os.str();
+    }
     auto bits = vector && mlir::isa<mlir::IndexType>(vector.getElementType())
                     ? vectorIndexTokenBitPattern(token, vector, scope)
                     : tokenBitPattern(token, type);
@@ -508,6 +528,137 @@ llvm::Expected<unsigned> resolvedTokenTypeBitWidth(mlir::Type type,
     if (mlir::isa<mlir::IndexType>(vector.getElementType()))
       return indexVectorTokenBitWidth(vector, scope);
   return tokenTypeBitWidth(type);
+}
+
+static llvm::Expected<unsigned>
+resolvedVectorLaneBitWidth(mlir::VectorType type, mlir::Operation *scope) {
+  auto width = resolvedTokenTypeBitWidth(type.getElementType(), scope);
+  if (!width)
+    return width.takeError();
+  if (*width == 0)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "vector lane width is zero");
+  return *width;
+}
+
+static llvm::Expected<unsigned>
+resolvedVectorPayloadBitWidth(mlir::VectorType type, unsigned laneBitWidth) {
+  const std::uint64_t laneCount = type.getNumElements();
+  if (laneCount == 0 ||
+      laneCount > std::numeric_limits<unsigned>::max() / laneBitWidth)
+    return llvm::createStringError(
+        std::errc::value_too_large,
+        "fixed-vector token exceeds the simulator bit-width domain");
+  return static_cast<unsigned>(laneCount) * laneBitWidth;
+}
+
+llvm::Expected<llvm::SmallVector<PrimitiveValue, 8>>
+vectorPrimitiveValues(const Token &token, mlir::VectorType type,
+                      mlir::Operation *scope) {
+  if (type.isScalable())
+    return llvm::createStringError(std::errc::not_supported,
+                                   "scalable vector token is unsupported");
+  const std::size_t laneCount = static_cast<std::size_t>(type.getNumElements());
+  auto laneBitWidth = resolvedVectorLaneBitWidth(type, scope);
+  if (!laneBitWidth)
+    return laneBitWidth.takeError();
+  auto payloadBitWidth = resolvedVectorPayloadBitWidth(type, *laneBitWidth);
+  if (!payloadBitWidth)
+    return payloadBitWidth.takeError();
+
+  llvm::SmallVector<PrimitiveValue, 8> lanes;
+  lanes.reserve(laneCount);
+  if (token.valueState != PrimitiveValueState::Defined) {
+    const PrimitiveValue exceptional =
+        token.valueState == PrimitiveValueState::Poison
+            ? PrimitiveValue::poison()
+            : PrimitiveValue::undef();
+    lanes.assign(laneCount, exceptional);
+    return lanes;
+  }
+  if (token.kind != TokenKind::Vector)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "fixed-vector token has the wrong kind");
+
+  if (const VectorLanePayload *payload = token.vectorLanePayload()) {
+    if (payload->laneBitWidth != *laneBitWidth ||
+        payload->laneStates.size() != laneCount ||
+        payload->packedBits.getBitWidth() != *payloadBitWidth)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "mixed-lane payload does not match its fixed-vector type");
+    for (auto [ordinal, state] : llvm::enumerate(payload->laneStates)) {
+      if (state == PrimitiveValueState::Poison)
+        lanes.push_back(PrimitiveValue::poison());
+      else if (state == PrimitiveValueState::Undef)
+        lanes.push_back(PrimitiveValue::undef());
+      else
+        lanes.push_back(PrimitiveValue::integer(payload->packedBits.extractBits(
+            *laneBitWidth, static_cast<unsigned>(ordinal) * *laneBitWidth)));
+    }
+    return lanes;
+  }
+
+  auto bits = resolvedTokenBitPattern(token, type, scope);
+  if (!bits)
+    return bits.takeError();
+  if (bits->getBitWidth() != *payloadBitWidth)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "fixed-vector bit pattern does not match its resolved lane width");
+  for (std::size_t ordinal = 0; ordinal < laneCount; ++ordinal)
+    lanes.push_back(PrimitiveValue::integer(bits->extractBits(
+        *laneBitWidth, static_cast<unsigned>(ordinal) * *laneBitWidth)));
+  return lanes;
+}
+
+llvm::Expected<Token>
+tokenFromVectorPrimitiveValues(llvm::ArrayRef<PrimitiveValue> lanes,
+                               mlir::VectorType type, mlir::Operation *scope) {
+  if (type.isScalable() ||
+      lanes.size() != static_cast<std::size_t>(type.getNumElements()))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "vector lane sequence does not match its fixed-vector type");
+  auto laneBitWidth = resolvedVectorLaneBitWidth(type, scope);
+  if (!laneBitWidth)
+    return laneBitWidth.takeError();
+  auto payloadBitWidth = resolvedVectorPayloadBitWidth(type, *laneBitWidth);
+  if (!payloadBitWidth)
+    return payloadBitWidth.takeError();
+
+  llvm::APInt packedBits(*payloadBitWidth, 0);
+  llvm::SmallVector<PrimitiveValueState, 4> states;
+  states.reserve(lanes.size());
+  bool allDefined = true;
+  bool allPoison = true;
+  bool allUndef = true;
+  for (auto [ordinal, lane] : llvm::enumerate(lanes)) {
+    states.push_back(lane.state);
+    allDefined &= lane.state == PrimitiveValueState::Defined;
+    allPoison &= lane.state == PrimitiveValueState::Poison;
+    allUndef &= lane.state == PrimitiveValueState::Undef;
+    if (lane.state != PrimitiveValueState::Defined)
+      continue;
+    if (!lane.bits || lane.bits->getBitWidth() != *laneBitWidth)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "defined vector lane has the wrong resolved bit width");
+    packedBits.insertBits(*lane.bits,
+                          static_cast<unsigned>(ordinal) * *laneBitWidth);
+  }
+  if (allDefined)
+    return tokenFromResolvedBitPattern(packedBits, type, scope);
+  if (allPoison)
+    return exceptionalValueToken(PrimitiveValueState::Poison, type);
+  if (allUndef)
+    return exceptionalValueToken(PrimitiveValueState::Undef, type);
+
+  Token token;
+  token.kind = TokenKind::Vector;
+  token.setVectorLanePayload(VectorLanePayload{*laneBitWidth, std::move(states),
+                                               std::move(packedBits)});
+  return token;
 }
 
 llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,

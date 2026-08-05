@@ -311,12 +311,6 @@ buildParallelizeGroup(dataflow::ParallelizeOp op, SimulatorState &state,
                       const ParallelizeState &parallel,
                       std::uint64_t activeItems) {
   mlir::VectorType vectorType = op.getVector().getType();
-  auto laneWidth = tokenTypeBitWidth(vectorType.getElementType());
-  if (!laneWidth)
-    return laneWidth.takeError();
-  auto totalWidth = tokenTypeBitWidth(vectorType);
-  if (!totalWidth)
-    return totalWidth.takeError();
   auto maskWidth = tokenTypeBitWidth(op.getMask().getType());
   if (!maskWidth)
     return maskWidth.takeError();
@@ -325,7 +319,12 @@ buildParallelizeGroup(dataflow::ParallelizeOp op, SimulatorState &state,
         std::errc::invalid_argument,
         "dataflow.parallelize active lane count exceeds actor state");
 
-  llvm::APInt vectorBits(*totalWidth, 0);
+  auto laneWidth = resolvedTokenTypeBitWidth(vectorType.getElementType(), op);
+  if (!laneWidth)
+    return laneWidth.takeError();
+  llvm::SmallVector<PrimitiveValue, 8> vectorLanes(
+      static_cast<std::size_t>(vectorType.getNumElements()),
+      PrimitiveValue::integer(llvm::APInt(*laneWidth, 0)));
   llvm::APInt maskBits(*maskWidth, 0);
   MemoryOrderAccumulator frontier;
   for (std::uint64_t lane = 0; lane < activeItems; ++lane) {
@@ -334,16 +333,17 @@ buildParallelizeGroup(dataflow::ParallelizeOp op, SimulatorState &state,
           std::errc::invalid_argument,
           "dataflow.parallelize active lane has no scalar token");
     }
-    auto laneBits =
-        tokenBitPattern(*parallel.slots[lane], vectorType.getElementType());
-    if (!laneBits)
-      return laneBits.takeError();
-    vectorBits.insertBits(*laneBits, *laneWidth * static_cast<unsigned>(lane));
+    auto laneValue = primitiveValueFromToken(
+        *parallel.slots[lane], vectorType.getElementType(), *laneWidth);
+    if (!laneValue)
+      return laneValue.takeError();
+    vectorLanes[lane] = std::move(*laneValue);
     maskBits.setBit(static_cast<unsigned>(lane));
     frontier.absorb(parallel.slots[lane]->memoryOrder);
   }
 
-  auto vectorToken = tokenFromBitPattern(vectorBits, vectorType);
+  auto vectorToken =
+      tokenFromVectorPrimitiveValues(vectorLanes, vectorType, op);
   if (!vectorToken)
     return vectorToken.takeError();
   auto maskToken = tokenFromBitPattern(maskBits, op.getMask().getType());
@@ -384,9 +384,15 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            ParallelizeInput::Data)) {
     const Token data = peekInputToken(state, 0);
-    auto laneBits = tokenBitPattern(data, vectorType.getElementType());
-    if (!laneBits) {
-      state.diagnostics.push_back(llvm::toString(laneBits.takeError()));
+    auto laneWidth = resolvedTokenTypeBitWidth(vectorType.getElementType(), op);
+    if (!laneWidth) {
+      state.diagnostics.push_back(llvm::toString(laneWidth.takeError()));
+      return false;
+    }
+    auto laneValue =
+        primitiveValueFromToken(data, vectorType.getElementType(), *laneWidth);
+    if (!laneValue) {
+      state.diagnostics.push_back(llvm::toString(laneValue.takeError()));
       return false;
     }
     const std::uint64_t lane = next.semanticState.pendingItems;
@@ -436,12 +442,28 @@ static bool firePack(dataflow::PackOp op, SimulatorState &state) {
   if (!hasInputToken(state, 0))
     return false;
   Token vector = peekInputToken(state, 0);
-  auto bits = tokenBitPattern(vector, op.getVector().getType());
-  if (!bits) {
-    state.diagnostics.push_back(llvm::toString(bits.takeError()));
+  auto lanes = vectorPrimitiveValues(vector, op.getVector().getType(), op);
+  if (!lanes) {
+    state.diagnostics.push_back(llvm::toString(lanes.takeError()));
     return false;
   }
-  auto packed = tokenFromBitPattern(*bits, op.getPacked().getType());
+  const bool hasPoison = llvm::any_of(*lanes, [](const PrimitiveValue &lane) {
+    return lane.state == PrimitiveValueState::Poison;
+  });
+  const bool hasUndef = llvm::any_of(*lanes, [](const PrimitiveValue &lane) {
+    return lane.state == PrimitiveValueState::Undef;
+  });
+  llvm::Expected<Token> packed =
+      hasPoison  ? exceptionalValueToken(PrimitiveValueState::Poison,
+                                         op.getPacked().getType())
+      : hasUndef ? exceptionalValueToken(PrimitiveValueState::Undef,
+                                         op.getPacked().getType())
+                 : [&]() -> llvm::Expected<Token> {
+    auto bits = resolvedTokenBitPattern(vector, op.getVector().getType(), op);
+    if (!bits)
+      return bits.takeError();
+    return tokenFromBitPattern(*bits, op.getPacked().getType());
+  }();
   if (!packed) {
     state.diagnostics.push_back(llvm::toString(packed.takeError()));
     return false;
@@ -455,12 +477,15 @@ static bool fireUnpack(dataflow::UnpackOp op, SimulatorState &state) {
   if (!hasInputToken(state, 0))
     return false;
   Token packedToken = peekInputToken(state, 0);
-  auto bits = tokenBitPattern(packedToken, op.getPacked().getType());
-  if (!bits) {
-    state.diagnostics.push_back(llvm::toString(bits.takeError()));
-    return false;
-  }
-  auto vector = tokenFromBitPattern(*bits, op.getVector().getType());
+  llvm::Expected<Token> vector = [&]() -> llvm::Expected<Token> {
+    if (packedToken.valueState != PrimitiveValueState::Defined)
+      return exceptionalValueToken(packedToken.valueState,
+                                   op.getVector().getType());
+    auto bits = tokenBitPattern(packedToken, op.getPacked().getType());
+    if (!bits)
+      return bits.takeError();
+    return tokenFromResolvedBitPattern(*bits, op.getVector().getType(), op);
+  }();
   if (!vector) {
     state.diagnostics.push_back(llvm::toString(vector.takeError()));
     return false;
@@ -482,28 +507,29 @@ static bool fireSerialize(dataflow::SerializeOp op, SimulatorState &state) {
     Token vectorToken = peekInputToken(state, 0);
     Token maskToken = peekInputToken(state, 1);
     mlir::VectorType vectorType = op.getVector().getType();
-    auto vectorBits = tokenBitPattern(vectorToken, vectorType);
-    auto maskBits = tokenBitPattern(maskToken, op.getMask().getType());
-    if (!vectorBits || !maskBits) {
-      if (!vectorBits)
-        state.diagnostics.push_back(llvm::toString(vectorBits.takeError()));
-      if (!maskBits)
-        state.diagnostics.push_back(llvm::toString(maskBits.takeError()));
-      return false;
-    }
-
-    auto laneWidth = tokenTypeBitWidth(vectorType.getElementType());
-    if (!laneWidth) {
-      state.diagnostics.push_back(llvm::toString(laneWidth.takeError()));
+    auto vectorLanes = vectorPrimitiveValues(vectorToken, vectorType, op);
+    auto maskLanes =
+        vectorPrimitiveValues(maskToken, op.getMask().getType(), op);
+    if (!vectorLanes || !maskLanes) {
+      if (!vectorLanes)
+        state.diagnostics.push_back(llvm::toString(vectorLanes.takeError()));
+      if (!maskLanes)
+        state.diagnostics.push_back(llvm::toString(maskLanes.takeError()));
       return false;
     }
     for (unsigned lane = 0; lane < vectorType.getShape().front(); ++lane) {
-      if (!(*maskBits)[lane])
+      const PrimitiveValue &mask = (*maskLanes)[lane];
+      if (!mask.isDefined()) {
+        state.diagnostics.push_back(
+            "dataflow.serialize exceptional mask cardinality has no exact "
+            "single-path provider");
+        state.failure = RunFailure::UnsupportedCapability;
+        return false;
+      }
+      if (mask.bits->isZero())
         continue;
-      llvm::APInt laneBits =
-          vectorBits->extractBits(*laneWidth, *laneWidth * lane);
-      auto laneToken =
-          tokenFromBitPattern(laneBits, vectorType.getElementType());
+      auto laneToken = tokenFromPrimitiveValue((*vectorLanes)[lane],
+                                               vectorType.getElementType());
       if (!laneToken) {
         state.diagnostics.push_back(llvm::toString(laneToken.takeError()));
         return false;
@@ -632,71 +658,41 @@ static llvm::Expected<Token> evaluateElementwiseVectorPrimitive(
     mlir::Value result, llvm::ArrayRef<Token> inputTokens) {
   mlir::VectorType resultType = mlir::cast<mlir::VectorType>(result.getType());
 
-  llvm::SmallVector<llvm::APInt, 4> operandBits;
-  llvm::SmallVector<unsigned, 4> operandWidths;
-  operandBits.reserve(inputTokens.size());
-  operandWidths.reserve(inputTokens.size());
+  llvm::SmallVector<llvm::SmallVector<PrimitiveValue, 8>, 4> operandLanes;
+  operandLanes.reserve(inputTokens.size());
   for (auto [operand, token] :
        llvm::zip_equal(op->getOpOperands(), inputTokens)) {
     auto vectorType = mlir::cast<mlir::VectorType>(operand.get().getType());
-    auto bits = tokenBitPattern(token, vectorType);
-    if (!bits)
-      return bits.takeError();
-    auto width = tokenTypeBitWidth(vectorType.getElementType());
-    if (!width)
-      return width.takeError();
-    operandBits.push_back(*bits);
-    operandWidths.push_back(*width);
+    auto lanes = vectorPrimitiveValues(token, vectorType, op);
+    if (!lanes)
+      return lanes.takeError();
+    operandLanes.push_back(std::move(*lanes));
   }
 
-  auto resultWidth = tokenTypeBitWidth(resultType);
-  if (!resultWidth)
-    return resultWidth.takeError();
-  auto resultElementWidth = tokenTypeBitWidth(resultType.getElementType());
-  if (!resultElementWidth)
-    return resultElementWidth.takeError();
-  llvm::APInt resultBits(*resultWidth, 0);
+  llvm::SmallVector<PrimitiveValue, 8> resultLanes;
+  resultLanes.reserve(static_cast<std::size_t>(resultType.getNumElements()));
   // Operands and result share one shape, so the flattened lane ordinal names
-  // the same logical element in each of them. The canonical row-major order
-  // comes from that shared bit layout rather than from per-axis strides.
-  for (unsigned lane = 0; lane < resultType.getNumElements(); ++lane) {
+  // the same logical element in each of them.
+  for (std::size_t lane = 0;
+       lane < static_cast<std::size_t>(resultType.getNumElements()); ++lane) {
     llvm::SmallVector<PrimitiveValue, 4> laneOperands;
     laneOperands.reserve(inputTokens.size());
-    for (auto [operand, bits, width] :
-         llvm::zip_equal(op->getOpOperands(), operandBits, operandWidths)) {
-      auto vectorType = mlir::cast<mlir::VectorType>(operand.get().getType());
-      llvm::APInt laneBits = bits.extractBits(width, width * lane);
-      auto laneToken =
-          tokenFromBitPattern(laneBits, vectorType.getElementType());
-      if (!laneToken)
-        return laneToken.takeError();
-      auto laneValue = primitiveValueFromToken(
-          *laneToken, vectorType.getElementType(), descriptor.operandBitWidth);
-      if (!laneValue)
-        return laneValue.takeError();
-      laneOperands.push_back(*laneValue);
-    }
+    for (const auto &lanes : operandLanes)
+      laneOperands.push_back(lanes[lane]);
 
     auto laneResult = evaluatePrimitiveOperation(descriptor, laneOperands);
     if (!laneResult)
       return llvm::joinErrors(
           llvm::createStringError(
-              std::errc::invalid_argument, "%s failed for vector lane %u",
+              std::errc::invalid_argument, "%s failed for vector lane %zu",
               dataflow::operationSchemaSpelling(descriptor.actor.schema)
                   .str()
                   .c_str(),
               lane),
           laneResult.takeError());
-    auto laneToken =
-        tokenFromPrimitiveValue(*laneResult, resultType.getElementType());
-    if (!laneToken)
-      return laneToken.takeError();
-    auto laneBits = tokenBitPattern(*laneToken, resultType.getElementType());
-    if (!laneBits)
-      return laneBits.takeError();
-    resultBits.insertBits(*laneBits, *resultElementWidth * lane);
+    resultLanes.push_back(std::move(*laneResult));
   }
-  return tokenFromBitPattern(resultBits, resultType);
+  return tokenFromVectorPrimitiveValues(resultLanes, resultType, op);
 }
 
 llvm::Expected<Token>
@@ -728,7 +724,7 @@ evaluatePrimitiveToken(mlir::Operation *op,
 
 static bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
                                    SimulatorState &state) {
-  if (state.terminalPrimitiveOps.contains(op))
+  if (state.terminalComputeOps.contains(op))
     return false;
   if (op->getNumOperands() == 0 && state.oneShotOps.contains(op))
     return false;
@@ -748,7 +744,7 @@ static bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
       op, *state.currentActorPlan->primitive, result, operands);
   if (!resultToken) {
     state.diagnostics.push_back(llvm::toString(resultToken.takeError()));
-    state.terminalPrimitiveOps.insert(op);
+    state.terminalComputeOps.insert(op);
     return false;
   }
   for (unsigned operand = 0; operand < op->getNumOperands(); ++operand)
@@ -821,10 +817,15 @@ std::optional<ActorRuntimeProvider>
 actorRuntimeProvider(dataflow::OperationSchemaId schema) {
   using Probe = ActorTransitionProbeKind;
   if (isSupportedPrimitiveOperation(schema))
-    return ActorRuntimeProvider{firePrimitiveActor, Probe::Primitive};
+    return ActorRuntimeProvider{firePrimitiveActor, Probe::StatelessCompute};
 
   using Schema = dataflow::OperationSchemaId;
   switch (schema) {
+  case Schema::VectorExtract:
+  case Schema::VectorInsert:
+  case Schema::VectorShuffle:
+    return ActorRuntimeProvider{fireVectorStructuralActor,
+                                Probe::StatelessCompute};
   case Schema::LLVMGetElementPtr:
     return ActorRuntimeProvider{fireGetElementPtr, Probe::GetElementPtr};
   case Schema::ArithConstant:
@@ -905,6 +906,10 @@ std::optional<UnsupportedOperation> unsupportedActorProvider(
         unsupportedOperationLabel(op),
         "atomic, volatile, and fence memory contracts have no dynamic "
         "consistency-domain semantics"};
+
+  if (auto reason = unsupportedMemoryActorRepresentation(op))
+    return UnsupportedOperation{unsupportedOperationLabel(op),
+                                std::move(*reason)};
 
   if (!actorProvider(projection.schema))
     return UnsupportedOperation{unsupportedOperationLabel(op), ""};

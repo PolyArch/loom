@@ -867,23 +867,28 @@ bool checkFixedVectorStructuralAdmission(MLIRContext &context) {
   VectorType lhs = VectorType::get({2, 2}, i16);
   VectorType rhs = VectorType::get({1, 2}, i16);
   VectorType shuffled = VectorType::get({3, 2}, i16);
+  VectorType indexContainer = VectorType::get({2}, index);
+  VectorType indexLeft = VectorType::get({1}, index);
+  VectorType indexResult = VectorType::get({2}, index);
 
   const FamilyCapabilityParams sliceParams = FixedVectorSliceAlignMergeParams{
-      IntegerWidthSet::get({IntegerWidth::I16}),
+      IntegerWidthSet::get(
+          {IntegerWidth::I16, IntegerWidth::I32, IntegerWidth::I64}),
       FloatFormatSet{},
       130,
       64,
       3,
       ResolvedIndexWidthSet::get(
           {ResolvedIndexWidth::I32, ResolvedIndexWidth::I64})};
-  const FamilyCapabilityParams shuffleParams =
-      FixedVectorShuffleParams{IntegerWidthSet::get({IntegerWidth::I16}),
-                               FloatFormatSet{},
-                               130,
-                               130,
-                               32,
-                               4,
-                               4};
+  const FamilyCapabilityParams shuffleParams = FixedVectorShuffleParams{
+      IntegerWidthSet::get(
+          {IntegerWidth::I16, IntegerWidth::I32, IntegerWidth::I64}),
+      FloatFormatSet{},
+      130,
+      130,
+      32,
+      4,
+      4};
 
   const dataflow::CanonicalActorSchemaProjection staticExtract{
       OperationSchemaId::VectorExtract,
@@ -901,6 +906,22 @@ bool checkFixedVectorStructuralAdmission(MLIRContext &context) {
       OperationSchemaId::VectorShuffle,
       FunctionType::get(&context, {lhs, rhs}, {shuffled}),
       dataflow::VectorShuffleMaskPayload{{0, 2, -1}}};
+  const dataflow::CanonicalActorSchemaProjection indexStaticExtract{
+      OperationSchemaId::VectorExtract,
+      FunctionType::get(&context, {indexContainer}, {index}),
+      dataflow::VectorStaticPositionPayload{{1}}};
+  const dataflow::CanonicalActorSchemaProjection indexDynamicExtract{
+      OperationSchemaId::VectorExtract,
+      FunctionType::get(&context, {indexContainer, index}, {index}),
+      dataflow::VectorStaticPositionPayload{{ShapedType::kDynamic}}};
+  const dataflow::CanonicalActorSchemaProjection indexStaticInsert{
+      OperationSchemaId::VectorInsert,
+      FunctionType::get(&context, {index, indexContainer}, {indexContainer}),
+      dataflow::VectorStaticPositionPayload{{0}}};
+  const dataflow::CanonicalActorSchemaProjection indexShuffle{
+      OperationSchemaId::VectorShuffle,
+      FunctionType::get(&context, {indexLeft, indexLeft}, {indexResult}),
+      dataflow::VectorShuffleMaskPayload{{1, 0}}};
 
   bool ok = true;
   ok &= expectAdmission(ImplementationFamilyId::FixedVectorSliceAlignMerge,
@@ -947,14 +968,37 @@ bool checkFixedVectorStructuralAdmission(MLIRContext &context) {
 
   auto staticConfiguration = encodeImplementationFamilySemanticConfiguration(
       ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
-      structuralSchemas, 5, 1, staticExtract, ResolvedIndexWidth::I64);
+      structuralSchemas, 5, 1, staticExtract, std::array<std::uint64_t, 1>{0},
+      resultPort, ResolvedIndexWidth::I64);
   auto dynamicConfiguration = encodeImplementationFamilySemanticConfiguration(
       ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
-      structuralSchemas, 5, 1, dynamicExtract, ResolvedIndexWidth::I64);
+      structuralSchemas, 5, 1, dynamicExtract, extractPorts, resultPort,
+      ResolvedIndexWidth::I64);
   constexpr std::array shuffleSchema = {OperationSchemaId::VectorShuffle};
   auto shuffleConfiguration = encodeImplementationFamilySemanticConfiguration(
       ImplementationFamilyId::FixedVectorShuffle, shuffleParams, shuffleSchema,
-      2, 1, shuffle);
+      2, 1, shuffle, std::array<std::uint64_t, 2>{0, 1}, resultPort);
+  auto indexStaticConfiguration =
+      encodeImplementationFamilySemanticConfiguration(
+          ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
+          structuralSchemas, 5, 1, indexStaticExtract,
+          std::array<std::uint64_t, 1>{0}, resultPort, ResolvedIndexWidth::I32);
+  auto indexDynamicConfiguration =
+      encodeImplementationFamilySemanticConfiguration(
+          ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
+          structuralSchemas, 5, 1, indexDynamicExtract, extractPorts,
+          resultPort, ResolvedIndexWidth::I32);
+  auto indexInsertConfiguration =
+      encodeImplementationFamilySemanticConfiguration(
+          ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
+          structuralSchemas, 5, 1, indexStaticInsert,
+          std::array<std::uint64_t, 2>{0, 1}, resultPort,
+          ResolvedIndexWidth::I32);
+  auto indexShuffleConfiguration =
+      encodeImplementationFamilySemanticConfiguration(
+          ImplementationFamilyId::FixedVectorShuffle, shuffleParams,
+          shuffleSchema, 2, 1, indexShuffle, std::array<std::uint64_t, 2>{0, 1},
+          resultPort, ResolvedIndexWidth::I32);
   if (!staticConfiguration || !dynamicConfiguration || !shuffleConfiguration) {
     if (!staticConfiguration)
       llvm::errs() << llvm::toString(staticConfiguration.takeError()) << '\n';
@@ -964,10 +1008,27 @@ bool checkFixedVectorStructuralAdmission(MLIRContext &context) {
       llvm::errs() << llvm::toString(shuffleConfiguration.takeError()) << '\n';
     return false;
   }
+  bool indexConfigurationsValid = true;
+  const auto checkConfiguration = [&](auto &configuration) {
+    if (configuration)
+      return;
+    llvm::errs() << llvm::toString(configuration.takeError()) << '\n';
+    indexConfigurationsValid = false;
+  };
+  checkConfiguration(indexStaticConfiguration);
+  checkConfiguration(indexDynamicConfiguration);
+  checkConfiguration(indexInsertConfiguration);
+  checkConfiguration(indexShuffleConfiguration);
+  if (!indexConfigurationsValid)
+    return false;
 
   const auto staticBytes = staticConfiguration->bytes();
   const auto dynamicBytes = dynamicConfiguration->bytes();
   const auto shuffleBytes = shuffleConfiguration->bytes();
+  const auto indexStaticBytes = indexStaticConfiguration->bytes();
+  const auto indexDynamicBytes = indexDynamicConfiguration->bytes();
+  const auto indexInsertBytes = indexInsertConfiguration->bytes();
+  const auto indexShuffleBytes = indexShuffleConfiguration->bytes();
   ok &= readPackedBits(staticBytes, sliceLayout->modeBitOffset, 1) == 0;
   ok &= readPackedBits(staticBytes, sliceLayout->staticOffsetBitOffset,
                        sliceLayout->offsetBitCount) == 64;
@@ -975,6 +1036,15 @@ bool checkFixedVectorStructuralAdmission(MLIRContext &context) {
                        sliceLayout->sliceWidthBitCount) == 31;
   ok &= readPackedBits(dynamicBytes, sliceLayout->dynamicStrideBitOffset,
                        sliceLayout->dynamicStrideBitCount) == 32;
+  ok &= readPackedBits(indexStaticBytes, sliceLayout->staticOffsetBitOffset,
+                       sliceLayout->offsetBitCount) == 32;
+  ok &= readPackedBits(indexStaticBytes, sliceLayout->sliceWidthBitOffset,
+                       sliceLayout->sliceWidthBitCount) == 31;
+  ok &= readPackedBits(indexDynamicBytes, sliceLayout->dynamicStrideBitOffset,
+                       sliceLayout->dynamicStrideBitCount) == 32;
+  ok &= readPackedBits(indexInsertBytes, sliceLayout->modeBitOffset, 1) == 1;
+  ok &= readPackedBits(indexShuffleBytes, shuffleLayout->blockWidthBitOffset,
+                       shuffleLayout->blockWidthBitCount) == 31;
   auto powerOfTwoLayout = resolveFixedVectorSliceAlignMergeConfigurationLayout(
       FixedVectorSliceAlignMergeParams{
           IntegerWidthSet::get({IntegerWidth::I16}), FloatFormatSet{}, 128, 64,
@@ -1294,7 +1364,8 @@ bool checkFixedVectorMultiplyBehaviorDomain(MLIRContext &context) {
         dataflow::CanonicalActorSchemaProjection{
             OperationSchemaId::ArithMulI,
             FunctionType::get(&context, {vector, vector}, {vector}),
-            dataflow::IntegerOverflowPayload{}});
+            dataflow::IntegerOverflowPayload{}},
+        std::array<std::uint64_t, 2>{0, 1}, std::array<std::uint64_t, 1>{0});
   };
   auto i16x4 = encode(VectorType::get({4}, IntegerType::get(&context, 16)));
   auto i16x8 = encode(VectorType::get({8}, IntegerType::get(&context, 16)));
@@ -1362,7 +1433,8 @@ bool checkFixedVectorValueSelectBehaviorDomain(MLIRContext &context) {
         dataflow::CanonicalActorSchemaProjection{
             OperationSchemaId::ArithSelect,
             FunctionType::get(&context, {condition, values, values}, {values}),
-            dataflow::NoPayload{}});
+            dataflow::NoPayload{}},
+        std::array<std::uint64_t, 3>{0, 1, 2}, std::array<std::uint64_t, 1>{0});
   };
   auto i16x4 = encode(IntegerType::get(&context, 16), 4);
   auto f16x4 = encode(Float16Type::get(&context), 4);
@@ -1512,6 +1584,7 @@ bool checkScalarIntegerCastBehaviorDomain(MLIRContext &context) {
         return encodeImplementationFamilySemanticConfiguration(
             ImplementationFamilyId::ScalarIntegerCast, params, enabled, 1, 1,
             makeScalarIntegerCastActor(context, schema, source, destination),
+            std::array<std::uint64_t, 1>{0}, std::array<std::uint64_t, 1>{0},
             resolved);
       };
   auto signExtend = encode(OperationSchemaId::ArithExtSI, i8, i32);
@@ -1557,7 +1630,8 @@ bool checkScalarIntegerCastBehaviorDomain(MLIRContext &context) {
   auto missingIndexWitness = encodeImplementationFamilySemanticConfiguration(
       ImplementationFamilyId::ScalarIntegerCast, params, enabled, 1, 1,
       makeScalarIntegerCastActor(context, OperationSchemaId::ArithIndexCast, i8,
-                                 index));
+                                 index),
+      std::array<std::uint64_t, 1>{0}, std::array<std::uint64_t, 1>{0});
   if (missingIndexWitness)
     return false;
   const std::string missingIndexWitnessError =

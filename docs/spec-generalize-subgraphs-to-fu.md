@@ -182,17 +182,24 @@ obligation; physical co-location never absorbs it.
 
 Synthesis creates hardware capability, not a workload configuration.
 TechMapping for exact `D + F` selects the exact finalized
-`FabricFuCapabilityTemplateRef` and binds exact
-actors, attributes, ordered operation ports, and FU boundary ports.
-SpatialMapping selects only semantic-preserving physical or QoR refinements on
-the chosen realization. Mapping then derives a temporary semantic projection:
+`FabricFuCapabilityTemplateRef` and binds exact actors, attributes, ordered
+operation ports, and FU boundary ports. SpatialMapping selects the exact
+occurrence and instruction context for that realization. Complete Mapping
+verification then derives a temporary semantic projection:
 
 ```text
 ConfiguredHardwareProjection =
-  DeriveFields(F,
-               TechRealization(D, T, F),
-               PhysicalRefinement(complete Mapping, F))
+  DeriveFields(CanonicalDataflow,
+               TechMapping,
+               Fabric,
+               complete SpatialMapping)
 ```
+
+Physical refinements are not an input to this projection. Version 1 has no
+generic physical-refinement value codec, so strict Mapping import rejects every
+nonempty refinement assignment before deriving configured hardware. A concrete
+Fabric owner must first publish the domain's closed typed value codec and
+admissibility relation; opaque bytes cannot substitute for that owner.
 
 Neither synthesis nor TechMapping writes raw `sw_configs` back into canonical
 Fabric. Fabric owns typed configuration-field meanings and domains;

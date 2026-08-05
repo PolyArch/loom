@@ -93,14 +93,15 @@ struct ResolvedFabricOpCapabilityView {
   encodeOperationSelection(const FabricSemanticConfigFieldRef &field,
                            ::dataflow::OperationSchemaId schema) const;
 
-  /// Encodes one admitted actor through this resource's exact semantic field
-  /// domain. Actor identity facts that do not change configured hardware
-  /// behavior are intentionally projected out. ConfigurationABI remains the
-  /// sole owner of the resulting value's physical code.
+  /// Encodes one admitted actor and its exact TechMapping-owned ordered port
+  /// correspondence through this resource's semantic field domain. Facts that
+  /// do not change configured hardware behavior are projected out.
+  /// ConfigurationABI remains the sole owner of the physical code.
   llvm::Expected<CanonicalSemanticBytes> encodeSemanticConfiguration(
       const FabricSemanticConfigFieldRef &field,
       const ::dataflow::CanonicalActorSchemaProjection &actor,
-      unsigned indexBitWidth,
+      unsigned indexBitWidth, llvm::ArrayRef<std::uint64_t> operandPorts,
+      llvm::ArrayRef<std::uint64_t> resultPorts,
       const ::loom::PointerLayout *pointerLayout = nullptr) const;
 
   /// Resolves the exact finite configured behavior domain through Fabric's

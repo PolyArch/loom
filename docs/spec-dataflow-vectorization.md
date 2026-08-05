@@ -115,6 +115,15 @@ cannot represent the required mixed-lane state reports unsupported rather than
 coercing poison or undef to zero. The bit-level round-trip equations below
 apply to fully defined values.
 
+A mask consumer observes each lane as an activity decision. Defined zero and
+defined one mean inactive and active, respectively. Poison or undef does not
+become an activity bit. An execution provider that cannot represent the
+resulting non-singleton cardinality or effect relation must reject the firing
+atomically as typed `Unsupported`; it may not choose a bit, consume operands,
+change memory, or report a blocked wait set. Version 1 DFG and CGRA execution
+provide only the exact single-path activity model and therefore reject such an
+exceptional mask firing.
+
 ## Stream Cardinality Boundary
 
 `dataflow.parallelize` and `dataflow.serialize` are the only canonical actors

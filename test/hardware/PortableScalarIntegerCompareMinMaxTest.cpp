@@ -321,8 +321,11 @@ std::vector<std::uint8_t> configurationValue(
     const loom::fabric::ResolvedFabricOpCapabilityView &capability,
     const loom::fabric::FabricSemanticConfigFieldRef &field,
     const dataflow::CanonicalActorSchemaProjection &projection) {
+  constexpr std::array<std::uint64_t, 2> operandPorts = {0, 1};
+  constexpr std::array<std::uint64_t, 1> resultPorts = {0};
   const loom::CanonicalSemanticBytes encoded =
-      take(test, capability.encodeSemanticConfiguration(field, projection, 64));
+      take(test, capability.encodeSemanticConfiguration(
+                     field, projection, 64, operandPorts, resultPorts));
   return std::vector<std::uint8_t>(encoded.bytes().begin(),
                                    encoded.bytes().end());
 }
@@ -531,7 +534,8 @@ void compactSemanticFieldAndDeterminism(const std::filesystem::path &root) {
                   field,
                   actor(8, dataflow::OperationSchemaId::ArithCmpI,
                         mlir::arith::CmpIPredicate::ne),
-                  64),
+                  64, std::array<std::uint64_t, 2>{0, 1},
+                  std::array<std::uint64_t, 1>{0}),
               "predicate");
 
   FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);

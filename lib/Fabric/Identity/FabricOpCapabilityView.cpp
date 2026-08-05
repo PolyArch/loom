@@ -215,7 +215,9 @@ llvm::Expected<loom::CanonicalSemanticBytes>
 ResolvedFabricOpCapabilityView::encodeSemanticConfiguration(
     const FabricSemanticConfigFieldRef &field,
     const ::dataflow::CanonicalActorSchemaProjection &actor,
-    unsigned indexBitWidth, const ::loom::PointerLayout *pointerLayout) const {
+    unsigned indexBitWidth, llvm::ArrayRef<std::uint64_t> operandPorts,
+    llvm::ArrayRef<std::uint64_t> resultPorts,
+    const ::loom::PointerLayout *pointerLayout) const {
   const auto rejected = [](const llvm::Twine &message) {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
@@ -224,7 +226,8 @@ ResolvedFabricOpCapabilityView::encodeSemanticConfiguration(
   if (configurationFieldSchema.size() != 1 ||
       configurationFieldSchema.front() != field)
     return rejected("field is not the exact operation configuration field");
-  if (llvm::Error error = admit(actor, indexBitWidth, pointerLayout))
+  if (llvm::Error error = admitCorrespondence(
+          actor, indexBitWidth, operandPorts, resultPorts, pointerLayout))
     return std::move(error);
 
   std::uint32_t inputCount = 0;
@@ -239,7 +242,7 @@ ResolvedFabricOpCapabilityView::encodeSemanticConfiguration(
   }
   return ::fabric::encodeImplementationFamilySemanticConfiguration(
       implementationFamily, parameterizedCapability, enabledOperationSchemas,
-      inputCount, resultCount, actor,
+      inputCount, resultCount, actor, operandPorts, resultPorts,
       ::fabric::symbolizeResolvedIndexWidth(indexBitWidth));
 }
 

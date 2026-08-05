@@ -1,4 +1,5 @@
 add_library(LoomMappingArtifact
+  ConfiguredHardwareProjection.cpp
   MappingAssembly.cpp
   MappingConstraintSet.cpp
   SpatialMappingConstraintAdmission.cpp

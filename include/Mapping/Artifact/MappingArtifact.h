@@ -6,6 +6,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/IR/UsePatternValue.h"
 #include "Fabric/Identity/FabricRefImport.h"
+#include "Mapping/Artifact/ConfiguredHardwareProjection.h"
 #include "Mapping/IR/MappingOps.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -492,6 +493,9 @@ public:
   llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments() const {
     return physicalTagSegments_;
   }
+  const ConfiguredHardwareProjectionView &configuredHardware() const {
+    return configuredHardware_;
+  }
 
 private:
   SpatialMappingView(
@@ -502,7 +506,8 @@ private:
       std::vector<SpatialMemoryBindingView> memoryBindings,
       std::vector<SpatialRouteTreeView> routeTrees,
       std::vector<SpatialResourceUseView> resourceUses,
-      std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments)
+      std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments,
+      ConfiguredHardwareProjectionView configuredHardware)
       : identity_(std::move(identity)),
         techMappingIdentity_(std::move(techMappingIdentity)),
         dataflowIdentity_(std::move(dataflowIdentity)),
@@ -512,7 +517,8 @@ private:
         memoryBindings_(std::move(memoryBindings)),
         routeTrees_(std::move(routeTrees)),
         resourceUses_(std::move(resourceUses)),
-        physicalTagSegments_(std::move(physicalTagSegments)) {}
+        physicalTagSegments_(std::move(physicalTagSegments)),
+        configuredHardware_(std::move(configuredHardware)) {}
 
   ArtifactIdentity identity_;
   ArtifactIdentity techMappingIdentity_;
@@ -524,6 +530,7 @@ private:
   std::vector<SpatialRouteTreeView> routeTrees_;
   std::vector<SpatialResourceUseView> resourceUses_;
   std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments_;
+  ConfiguredHardwareProjectionView configuredHardware_;
 };
 
 class FinalizedSpatialMapping final {

@@ -325,6 +325,32 @@ bool checkVectorStructure(MLIRContext &context) {
       projectActor(dynamicExtract, ok);
   std::optional<CanonicalActorSchemaProjection> shuffled =
       projectActor(poisonShuffle, ok);
+
+  VectorType indexVector = VectorType::get({2}, fixture.builder.getIndexType());
+  Value indexLhs = fixture.poison(indexVector);
+  Value indexRhs = fixture.poison(indexVector);
+  Value indexScalar = fixture.poison(fixture.builder.getIndexType());
+  Operation *indexExtract =
+      vector::ExtractOp::create(fixture.builder, fixture.loc, indexLhs, 0);
+  Operation *indexInsert = vector::InsertOp::create(
+      fixture.builder, fixture.loc, indexScalar, indexLhs, 1);
+  Operation *indexShuffle = vector::ShuffleOp::create(
+      fixture.builder, fixture.loc, indexVector, indexLhs, indexRhs,
+      llvm::ArrayRef<int64_t>{1, 0});
+  std::optional<CanonicalActorSchemaProjection> projectedIndexExtract =
+      projectActor(indexExtract, ok);
+  std::optional<CanonicalActorSchemaProjection> projectedIndexInsert =
+      projectActor(indexInsert, ok);
+  std::optional<CanonicalActorSchemaProjection> projectedIndexShuffle =
+      projectActor(indexShuffle, ok);
+  if (!projectedIndexExtract || !projectedIndexInsert ||
+      !projectedIndexShuffle ||
+      projectedIndexExtract->schema != OperationSchemaId::VectorExtract ||
+      projectedIndexInsert->schema != OperationSchemaId::VectorInsert ||
+      projectedIndexShuffle->schema != OperationSchemaId::VectorShuffle) {
+    llvm::errs() << "vector<index> structural actors were not registered\n";
+    ok = false;
+  }
   if (first && second && *first == *second) {
     llvm::errs() << "vector positions share one actor projection\n";
     ok = false;

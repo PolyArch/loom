@@ -551,6 +551,35 @@ while the value still has an exact owner codec. This also lets strict import
 rebuild local interference directly from routes and reject collisions without
 trusting PnR's removable coloring cache.
 
+## Why Mapping Owns The Configured Hardware Projection
+
+TechMapping selects exact software-to-capability semantics, SpatialMapping
+selects physical occurrences and contexts, and Fabric owns each typed
+configuration-field domain. Only their complete relation can determine which
+semantic value one physical configuration slot must hold. Giving that
+derivation to CGRA-sim, RTL lowering, or configuration-image code would make
+each consumer a competing Mapping verifier.
+
+The complete Mapping verifier therefore derives the projection once as a
+sealed, removable view. Equal demands on one slot collapse; conflicting demands
+invalidate the Mapping before execution or encoding. CGRA-sim uses the view as
+a cold admission witness, while configuration-image finalization sends the same
+semantic values through the ABI-owned physical encoder. Keeping the projection
+ephemeral avoids copying configuration into Mapping without weakening the
+single validation boundary.
+
+Instruction contexts qualify resident compute configuration because one
+temporal occurrence may retain different settings in different contexts.
+
+Physical refinement does not imply one universal value language. Pipeline
+insertion, a transport-specific handshake break, and a memory implementation
+choice have different legal domains and semantic-preservation proofs. Encoding
+all of them as opaque bytes would make Mapping or a backend the accidental
+owner of their meaning. Until a concrete Fabric resource publishes its closed
+typed codec, rejecting a nonempty refinement assignment before configured
+projection is therefore stricter and smaller than introducing a generic
+refinement schema that later owners would have to escape or supersede.
+
 ## Why SystemMapping Is Required
 
 Binding threads to AccCores and channels to the system transport is not runtime

@@ -600,20 +600,39 @@ operation:
 
 ```text
 ConfiguredHardwareProjection =
-  DeriveFields(Fabric,
-               TechRealization(CanonicalDataflow, TechMapping, Fabric),
-               PhysicalRefinement(complete Mapping, Fabric))
+  DeriveFields(CanonicalDataflow,
+               TechMapping,
+               Fabric,
+               complete SpatialMapping)
 ```
 
 This derivation performs no search. It must reject a configuration field that
-cannot be classified as a TechMapping-derived semantic/topology choice, a
-SpatialMapping-selected semantic-preserving physical refinement, or a value
-mechanically derived from those facts. Fabric defines the typed field meaning
-and legal domain. The temporary projection is handed to the unique finalization
-chain in `docs/spec-configuration-deployment.md`, where the exact
-`ConfigurationABI` defines one canonical physical encoding. Fabric, Mapping,
-and a backend do not emit an alternate image, exact-mode index, or independent
-decoder encoding.
+cannot be derived from the exact Dataflow actor, TechMapping capability and
+ordered correspondence, SpatialMapping occurrence and instruction context,
+and the Fabric-owned typed field projector. Fabric defines the typed field
+meaning and legal domain. A topology-sensitive family projector consumes the
+exact TechMapping-owned ordered operand/result port correspondence; it does not
+infer an active-port mask from actor arity. Values for one Mapping-selected
+physical configuration slot must be unique; equal repeated derivations
+collapse, while unequal values make the Mapping invalid. The complete Mapping
+verifier owns this cold derivation and may retain its result only as a removable
+sealed-view cache.
+
+No generic refinement value type exists. A concrete Fabric resource that
+exposes a non-singleton refinement domain must own its exact typed value codec,
+legal set, and semantic-preservation proof. Until such an owner is implemented,
+strict Mapping import rejects every nonempty physical-refinement assignment;
+the configured-hardware projection does not receive a refinement row and must
+not treat opaque bytes as a value.
+
+CGRA admission requires the validated semantic projection as a cold proof and
+does not copy its values into a simulator-owned runtime schema or decode
+physical programming bits. The same temporary projection is handed to the
+unique finalization chain in
+[Configuration and Deployment](spec-configuration-deployment.md), where the
+exact `ConfigurationABI` defines one canonical physical encoding. Fabric,
+Mapping, a simulator, and a backend do not emit an alternate image, exact-mode
+index, or independent decoder encoding.
 
 ## Validation Anchors
 
@@ -637,9 +656,9 @@ Anchor tests should pin only the stable semantic boundaries:
 * one stateless scalar firing obeys its exact one-cycle elastic contract while
   one stateful transition is governed by its operation-specific state and use
   patterns; and
-* duplicate normalized semantic assignments are rejected while a declared
-  semantic-preserving physical refinement leaves the software function
-  unchanged.
+* equal repeated semantic assignments to one physical slot collapse, unequal
+  assignments are rejected, and a declared semantic-preserving physical
+  refinement leaves the software function unchanged.
 
 Tests must not require exhaustive parameter enumeration, field Cartesian
 products, printer layout, raw bit-pattern multiplicity, or a special Mapping

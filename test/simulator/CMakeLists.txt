@@ -82,6 +82,7 @@ target_link_libraries(loom-simulator-cgra-compute-runtime-test PRIVATE
   MLIRIR
   MLIRParser
   MLIRSupport
+  MLIRVectorDialect
   LLVMSupport
 )
 
@@ -169,6 +170,29 @@ target_link_libraries(loom-simulator-dynamic-work-test PRIVATE
 
 add_executable(loom-simulator-vector-boundary-test
   DFGVectorBoundaryTest.cpp
+)
+
+add_executable(loom-simulator-vector-structure-test
+  DFGVectorStructureTest.cpp
+)
+
+target_include_directories(loom-simulator-vector-structure-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Simulator
+)
+
+target_link_libraries(loom-simulator-vector-structure-test PRIVATE
+  LoomCommon
+  LoomSimulator
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  MLIRUBDialect
+  MLIRVectorDialect
+  LLVMSupport
 )
 
 target_include_directories(loom-simulator-vector-boundary-test PRIVATE

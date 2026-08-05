@@ -131,6 +131,7 @@ set(LOOM_TEST_DEPENDS
   loom-pointer-service-boundary-test
   loom-frontend-payload-framing-test
   loom-mapping-artifact-test
+  loom-configured-hardware-projection-test
   loom-tech-mapping-artifact-test
   loom-tech-mapping-config-test
   loom-tech-mapping-generator-test
@@ -171,6 +172,7 @@ set(LOOM_TEST_DEPENDS
   loom-simulator-structured-program-wire-test
   loom-simulator-synchronization-test
   loom-simulator-vector-boundary-test
+  loom-simulator-vector-structure-test
   loom-tblgen
 )
 

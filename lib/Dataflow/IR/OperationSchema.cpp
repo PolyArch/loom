@@ -555,14 +555,18 @@ dataflow::operationSchemaOf(Operation *op) {
   case OperationSemanticsCase::VectorShuffleMask: {
     for (Type type :
          llvm::concat<Type>(op->getOperandTypes(), op->getResultTypes())) {
-      if (!llvm::isa<VectorType>(type))
+      auto vector = llvm::dyn_cast<VectorType>(type);
+      if (!vector)
         continue;
-      llvm::Expected<VectorType> vector =
+      if (!vector.isScalable() && vector.getRank() > 0 &&
+          llvm::isa<IndexType>(vector.getElementType()))
+        continue;
+      llvm::Expected<VectorType> analyzed =
           dataflow::semantics::analyzeFixedRankDataVector(
               type, dataflow::semantics::VectorRank::AnyFixed);
-      if (vector)
+      if (analyzed)
         continue;
-      llvm::consumeError(vector.takeError());
+      llvm::consumeError(analyzed.takeError());
       return std::nullopt;
     }
     break;

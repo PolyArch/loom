@@ -4,6 +4,7 @@
 #include "Common/ArtifactFinalizer.h"
 #include "Common/IndexWidth.h"
 #include "Common/PointerLayout.h"
+#include "ConfiguredHardwareProjectionInternal.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
@@ -133,24 +134,11 @@ parseSpatialRoot(const CanonicalSemanticBytes &canonicalBytes) {
 }
 
 llvm::Expected<std::vector<SpatialPhysicalRefinementView>>
-importRefinements(ArrayAttr refinements,
-                  const ::loom::fabric::FabricArtifactView &fabric) {
-  std::vector<SpatialPhysicalRefinementView> result;
-  result.reserve(refinements.size());
-  for (Attribute attribute : refinements) {
-    auto assignment =
-        cast<::mapping::PhysicalRefinementAssignmentAttr>(attribute);
-    auto domain =
-        decodeFabric<::loom::fabric::FabricPhysicalRefinementDomainRef>(
-            assignment.getDomain());
-    if (!domain)
-      return domain.takeError();
-    if (llvm::Error error = ::loom::fabric::validateFabricRef(fabric, *domain))
-      return std::move(error);
+importRefinements(ArrayAttr refinements) {
+  if (!refinements.empty())
     return invalid(
         "nonempty physical refinement requires its owner value codec");
-  }
-  return result;
+  return std::vector<SpatialPhysicalRefinementView>();
 }
 
 llvm::Expected<::dataflow::GraphRef>
@@ -267,7 +255,7 @@ importComputeBinding(::mapping::ComputeBindingOp record,
   if (!parentPe || context->pe != *parentPe ||
       context->ordinal >= fabric.peResidentContextCount(*parentPe))
     return invalid("ComputeBinding instruction context is incompatible");
-  auto refinements = importRefinements(record.getRefinements(), fabric);
+  auto refinements = importRefinements(record.getRefinements());
   if (!refinements)
     return refinements.takeError();
   return SpatialComputeBindingView{realizationEntity, *occurrence, *context,
@@ -579,7 +567,7 @@ importRouteTree(::mapping::RouteTreeOp record,
     if (!endpoints.insert(::loom::fabric::canonicalFabricBytes(endpoint))
              .second)
       return invalid("RouteTree contains a repeated physical endpoint");
-    auto refinements = importRefinements(node.getRefinements(), context.fabric);
+    auto refinements = importRefinements(node.getRefinements());
     if (!refinements)
       return refinements.takeError();
     result.nodes.push_back(SpatialRouteNodeView{node.getNodeOrdinal(), endpoint,
@@ -1082,6 +1070,7 @@ struct ImportedSpatialView final {
   std::vector<SpatialRouteTreeView> routeTrees;
   std::vector<SpatialResourceUseView> resourceUses;
   std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments;
+  ConfiguredHardwareProjectionView configuredHardware;
 };
 
 llvm::Expected<ImportedSpatialView>
@@ -1120,7 +1109,6 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
   }
   if (computeBindings.size() != techMapping.computeRealizations().size())
     return invalid("SpatialMapping omits a Tech compute realization");
-
   auto importedMemory =
       detail::importSpatialMemoryView(root, dataflow, techMapping, fabric);
   if (!importedMemory)
@@ -1243,6 +1231,11 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
                    llvm::Twine(witness.capacity));
   }
 
+  auto configuredHardware = detail::deriveConfiguredHardwareProjection(
+      dataflow, techMapping, fabric, computeBindings);
+  if (!configuredHardware)
+    return configuredHardware.takeError();
+
   auto progress = deriveSpatialProgressClosure(dataflow);
   if (!progress)
     return progress.takeError();
@@ -1263,7 +1256,8 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
                              std::move(importedMemory->memoryBindings),
                              std::move(routes),
                              std::move(uses),
-                             std::move(physicalTagSegments)};
+                             std::move(physicalTagSegments),
+                             std::move(*configuredHardware)};
 }
 
 struct PreparedSpatialMapping final {
@@ -1563,7 +1557,8 @@ llvm::Expected<SpatialMappingView> SpatialMappingView::import(
       std::move(imported->memoryEngineBindings),
       std::move(imported->memoryBindings), std::move(imported->routeTrees),
       std::move(imported->resourceUses),
-      std::move(imported->physicalTagSegments));
+      std::move(imported->physicalTagSegments),
+      std::move(imported->configuredHardware));
 }
 
 llvm::Error verifySpatialMappingBase(
