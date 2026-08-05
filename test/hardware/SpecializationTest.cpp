@@ -442,7 +442,7 @@ vendorProvider(FabricOperationProviderRequest request) {
   request.leaf.erase();
 
   FabricOperationProviderOutput output;
-  output.payloads.push_back({HardwarePayloadRole::BlackBoxContract,
+  output.payloads.push_back({PayloadRole::BlackBoxContract,
                              moduleName + ".json",
                              "application/json",
                              {'{', '}'}});
@@ -453,7 +453,7 @@ vendorProvider(FabricOperationProviderRequest request) {
                                          request.externalInputs.end()),
        {},
        {{RepresentationObjectKind::Module, moduleName}},
-       HardwarePayloadRef{HardwarePayloadRole::BlackBoxContract,
+       HardwarePayloadRef{PayloadRole::BlackBoxContract,
                           moduleName + ".json"}});
   output.activityPoints.push_back(
       {moduleName + ".result",
@@ -1119,7 +1119,7 @@ void vendorBindingIsExplicit(llvm::StringRef root) {
   const std::vector<std::uint8_t> rtlBytes(systemVerilog.begin(),
                                            systemVerilog.end());
   const loom::BlobDigest rtlDigest = take(test, blobs.put(rtlBytes));
-  std::vector<HardwarePayload> payloads = {{HardwarePayloadRole::RtlSource,
+  std::vector<HardwarePayload> payloads = {{PayloadRole::RtlSource,
                                             "rtl/specialized.sv",
                                             "text/x-systemverilog", rtlDigest}};
   for (const FabricOperationProviderPayload &payload : output.payloads) {

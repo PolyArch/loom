@@ -240,9 +240,9 @@ HardwareImplementationDraft rtlDraft(const Fixture &fixture) {
       {},
       HardwareRepresentation::Rtl,
       std::nullopt,
-      {{HardwarePayloadRole::RtlSource, "rtl/configured.sv",
-        "text/x-systemverilog", fixture.rtl},
-       {HardwarePayloadRole::GenerationConstraint, "constraints/main.sdc",
+      {{PayloadRole::RtlSource, "rtl/configured.sv", "text/x-systemverilog",
+        fixture.rtl},
+       {PayloadRole::GenerationConstraint, "constraints/main.sdc",
         "application/x-sdc", fixture.constraints}},
       {{"data.input",
         ImplementationInterfaceRole::Data,
@@ -382,7 +382,7 @@ ExternalImplementationContractCatalog externalCatalog(llvm::StringRef test) {
 
 HardwareImplementationDraft externalDraft(const Fixture &fixture) {
   HardwareImplementationDraft draft = rtlDraft(fixture);
-  draft.payloads.push_back({HardwarePayloadRole::BlackBoxContract,
+  draft.payloads.push_back({PayloadRole::BlackBoxContract,
                             "contracts/user_ip.json", "application/json",
                             fixture.constraints});
   draft.externalImplementationBindings.push_back(ExternalImplementationBinding{
@@ -392,7 +392,7 @@ HardwareImplementationDraft externalDraft(const Fixture &fixture) {
         ExplicitFileDependency{fingerprint("encrypted-user-ip")}}},
       {fixture.fabricEndpoint},
       {{RepresentationObjectKind::Instance, "configured.user_ip"}},
-      HardwarePayloadRef{HardwarePayloadRole::BlackBoxContract,
+      HardwarePayloadRef{PayloadRole::BlackBoxContract,
                          "contracts/user_ip.json"}});
   return draft;
 }
@@ -478,7 +478,7 @@ HardwareImplementationDraft memoryMacroDraft(const Fixture &fixture) {
                                       "configured.sram0"};
 
   HardwareImplementationDraft draft = rtlDraft(fixture);
-  draft.payloads.push_back({HardwarePayloadRole::BlackBoxContract,
+  draft.payloads.push_back({PayloadRole::BlackBoxContract,
                             "contracts/sram0.json", "application/json",
                             fixture.constraints});
   draft.externalImplementationBindings.push_back(ExternalImplementationBinding{
@@ -488,7 +488,7 @@ HardwareImplementationDraft memoryMacroDraft(const Fixture &fixture) {
         ExplicitFileDependency{fingerprint("sram0-implementation")}}},
       {encodedMemory},
       {locator},
-      HardwarePayloadRef{HardwarePayloadRole::BlackBoxContract,
+      HardwarePayloadRef{PayloadRole::BlackBoxContract,
                          "contracts/sram0.json"}});
   draft.memoryMacroBindings.push_back(
       MemoryMacroBinding{memory, "sram0", locator});

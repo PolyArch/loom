@@ -254,7 +254,7 @@ ExternalImplementationContractCatalog::canonicalizeAndValidateBindings(
       return invalid("provider contract requires a BlackBoxContract payload");
     if (binding.blackBoxContractPayloadRef) {
       if (binding.blackBoxContractPayloadRef->role !=
-          HardwarePayloadRole::BlackBoxContract)
+          PayloadRole::BlackBoxContract)
         return invalid("external payload reference is not a BlackBoxContract");
       if (!findPayload(payloads, *binding.blackBoxContractPayloadRef))
         return invalid("BlackBoxContract payload reference is unresolved");

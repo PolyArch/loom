@@ -99,45 +99,45 @@ parseRepresentation(llvm::StringRef spelling) {
   return std::nullopt;
 }
 
-llvm::StringRef payloadRoleSpelling(HardwarePayloadRole value) {
+llvm::StringRef payloadRoleSpelling(PayloadRole value) {
   switch (value) {
-  case HardwarePayloadRole::RtlSource:
+  case PayloadRole::RtlSource:
     return "rtl_source";
-  case HardwarePayloadRole::Netlist:
+  case PayloadRole::Netlist:
     return "netlist";
-  case HardwarePayloadRole::PhysicalDatabase:
+  case PayloadRole::PhysicalDatabase:
     return "physical_database";
-  case HardwarePayloadRole::Parasitics:
+  case PayloadRole::Parasitics:
     return "parasitics";
-  case HardwarePayloadRole::LayoutStream:
+  case PayloadRole::LayoutStream:
     return "layout_stream";
-  case HardwarePayloadRole::DeviceImage:
+  case PayloadRole::DeviceImage:
     return "device_image";
-  case HardwarePayloadRole::GenerationConstraint:
+  case PayloadRole::GenerationConstraint:
     return "generation_constraint";
-  case HardwarePayloadRole::BlackBoxContract:
+  case PayloadRole::BlackBoxContract:
     return "black_box_contract";
   }
   llvm_unreachable("validated hardware payload role is closed");
 }
 
-std::optional<HardwarePayloadRole> parsePayloadRole(llvm::StringRef spelling) {
+std::optional<PayloadRole> parsePayloadRole(llvm::StringRef spelling) {
   if (spelling == "rtl_source")
-    return HardwarePayloadRole::RtlSource;
+    return PayloadRole::RtlSource;
   if (spelling == "netlist")
-    return HardwarePayloadRole::Netlist;
+    return PayloadRole::Netlist;
   if (spelling == "physical_database")
-    return HardwarePayloadRole::PhysicalDatabase;
+    return PayloadRole::PhysicalDatabase;
   if (spelling == "parasitics")
-    return HardwarePayloadRole::Parasitics;
+    return PayloadRole::Parasitics;
   if (spelling == "layout_stream")
-    return HardwarePayloadRole::LayoutStream;
+    return PayloadRole::LayoutStream;
   if (spelling == "device_image")
-    return HardwarePayloadRole::DeviceImage;
+    return PayloadRole::DeviceImage;
   if (spelling == "generation_constraint")
-    return HardwarePayloadRole::GenerationConstraint;
+    return PayloadRole::GenerationConstraint;
   if (spelling == "black_box_contract")
-    return HardwarePayloadRole::BlackBoxContract;
+    return PayloadRole::BlackBoxContract;
   return std::nullopt;
 }
 
@@ -629,7 +629,7 @@ parsePayloadReference(const llvm::json::Object &object,
     return roleText.takeError();
   if (!logicalName)
     return logicalName.takeError();
-  std::optional<HardwarePayloadRole> role = parsePayloadRole(*roleText);
+  std::optional<PayloadRole> role = parsePayloadRole(*roleText);
   if (!role)
     return invalid(context + " has unknown payload role");
   return HardwarePayloadRef{*role, logicalName->str()};
@@ -857,7 +857,7 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
       return mediaType.takeError();
     if (!digestText)
       return digestText.takeError();
-    std::optional<HardwarePayloadRole> role = parsePayloadRole(*roleText);
+    std::optional<PayloadRole> role = parsePayloadRole(*roleText);
     if (!role)
       return invalid("payload has unknown role");
     auto digest = parseBlobDigestHex(*digestText);
@@ -1002,36 +1002,36 @@ llvm::Error validatePayloadClosure(llvm::ArrayRef<HardwarePayload> payloads,
                                    const BlobStore &blobs) {
   if (payloads.empty())
     return invalid("payload catalog must be nonempty");
-  auto hasRole = [&](HardwarePayloadRole role) {
+  auto hasRole = [&](PayloadRole role) {
     return llvm::any_of(payloads, [&](const HardwarePayload &payload) {
       return payload.role == role;
     });
   };
   switch (representation) {
   case HardwareRepresentation::Rtl:
-    if (!hasRole(HardwarePayloadRole::RtlSource))
+    if (!hasRole(PayloadRole::RtlSource))
       return invalid("RTL representation requires an RtlSource payload");
     break;
   case HardwareRepresentation::GateNetlist:
-    if (!hasRole(HardwarePayloadRole::Netlist))
+    if (!hasRole(PayloadRole::Netlist))
       return invalid("GateNetlist representation requires a Netlist payload");
     break;
   case HardwareRepresentation::AsicPlaced:
   case HardwareRepresentation::AsicRouted:
   case HardwareRepresentation::FpgaPlaced:
   case HardwareRepresentation::FpgaRouted:
-    if (!hasRole(HardwarePayloadRole::PhysicalDatabase))
+    if (!hasRole(PayloadRole::PhysicalDatabase))
       return invalid("physical representation requires a PhysicalDatabase "
                      "payload");
     break;
   case HardwareRepresentation::AsicExtracted:
-    if (!hasRole(HardwarePayloadRole::PhysicalDatabase) ||
-        !hasRole(HardwarePayloadRole::Parasitics))
+    if (!hasRole(PayloadRole::PhysicalDatabase) ||
+        !hasRole(PayloadRole::Parasitics))
       return invalid("extracted ASIC representation requires PhysicalDatabase "
                      "and Parasitics payloads");
     break;
   case HardwareRepresentation::FpgaImage:
-    if (!hasRole(HardwarePayloadRole::DeviceImage))
+    if (!hasRole(PayloadRole::DeviceImage))
       return invalid(
           "FPGA image representation requires a DeviceImage payload");
     break;

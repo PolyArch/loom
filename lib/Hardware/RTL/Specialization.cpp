@@ -165,7 +165,7 @@ validateProviderOutput(const SpecializationJob &job,
 
 bool hasBlackBoxPayload(const FabricOperationProviderOutput &output,
                         const HardwarePayloadRef &reference) {
-  if (reference.role != HardwarePayloadRole::BlackBoxContract)
+  if (reference.role != PayloadRole::BlackBoxContract)
     return false;
   return llvm::any_of(output.payloads,
                       [&](const FabricOperationProviderPayload &payload) {

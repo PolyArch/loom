@@ -6,6 +6,7 @@
 #include "Common/BlobDigest.h"
 #include "Common/ExternalFileFingerprint.h"
 #include "Fabric/Identity/FabricRefs.h"
+#include "Hardware/Implementation/ImplementationPayload.h"
 #include "Hardware/Implementation/RepresentationLocator.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -46,17 +47,6 @@ enum class HardwareRepresentation {
   FpgaImage,
 };
 
-enum class HardwarePayloadRole {
-  RtlSource,
-  Netlist,
-  PhysicalDatabase,
-  Parasitics,
-  LayoutStream,
-  DeviceImage,
-  GenerationConstraint,
-  BlackBoxContract,
-};
-
 enum class ImplementationInterfaceRole {
   Data,
   Clock,
@@ -67,7 +57,7 @@ enum class ImplementationInterfaceRole {
 };
 
 struct HardwarePayload final {
-  HardwarePayloadRole role;
+  PayloadRole role;
   std::string logicalName;
   std::string mediaType;
   BlobDigest content;
@@ -130,7 +120,7 @@ struct ExternalInputBinding final {
 };
 
 struct HardwarePayloadRef final {
-  HardwarePayloadRole role;
+  PayloadRole role;
   std::string logicalName;
 };
 

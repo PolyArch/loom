@@ -42,7 +42,7 @@ struct FabricOperationRecipeBinding final {
 /// Owned provider material consumed by the eventual HardwareImplementation
 /// publisher. The descriptor digest is derived only from these exact bytes.
 struct FabricOperationProviderPayload final {
-  HardwarePayloadRole role;
+  PayloadRole role;
   std::string logicalName;
   std::string mediaType;
   std::vector<std::uint8_t> bytes;
