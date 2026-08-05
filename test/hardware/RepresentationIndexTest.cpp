@@ -285,6 +285,8 @@ endmodule
   requireAbsent(
       __func__, index,
       {RepresentationObjectKind::Register, "top.u_leaf.procedure_local"});
+  requireAbsent(__func__, index,
+                {RepresentationObjectKind::Register, "top.package_local"});
   requireFacts(__func__, index,
                {RepresentationObjectKind::Port, "top.u_alias.visible"},
                portFacts(RepresentationSignalDirection::Output, 1));

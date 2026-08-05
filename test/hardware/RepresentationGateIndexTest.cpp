@@ -200,6 +200,10 @@ endmodule
                              RepresentationSignalDirection::Inout, 1));
   requireAbsent(__func__, index, {RepresentationObjectKind::Net, "top.a"});
   requireAbsent(__func__, index, {RepresentationObjectKind::Net, "top.y"});
+  requireAbsent(__func__, index,
+                {RepresentationObjectKind::Net, "top.u_leaf.a"});
+  requireAbsent(__func__, index,
+                {RepresentationObjectKind::Net, "top.u_leaf.y"});
 
   for (llvm::StringRef name :
        {"bus", "selected", "slice", "repeated", "initialized"})
