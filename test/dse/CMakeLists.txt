@@ -30,6 +30,10 @@ add_executable(loom-root-complete-tech-mapping-generator-test
   RootCompleteTechMappingGeneratorTest.cpp
 )
 
+add_executable(loom-root-complete-spatial-pnr-generator-test
+  RootCompleteSpatialPnrGeneratorTest.cpp
+)
+
 target_link_libraries(loom-dse-objective-test PRIVATE
   LoomDSEObjective
   LLVMSupport
@@ -69,6 +73,22 @@ target_link_libraries(loom-root-complete-tech-mapping-generator-test PRIVATE
   LoomADGBuilder
   LoomDSEMappingGenerator
   LoomMappingArtifact
+  LoomTechMapping
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-root-complete-spatial-pnr-generator-test PRIVATE
+  LoomADGBuilder
+  LoomDSEMappingGenerator
+  LoomMappingArtifact
+  LoomMappingInspection
+  LoomPnRGenerator
   LoomTechMapping
   MLIRArithDialect
   MLIRDataflow

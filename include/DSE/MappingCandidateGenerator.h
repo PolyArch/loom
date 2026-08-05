@@ -4,9 +4,25 @@
 #include "DSE/CandidateGenerator.h"
 #include "PnR/SpatialPnrGenerator.h"
 
+#include <array>
+
 namespace loom::dse {
 
 inline constexpr CandidateGeneratorKind spatialPnrCandidateGeneratorKind(0);
+
+inline constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 10>
+    spatialPnrCandidateGeneratorWorkUnits = {{
+        {CandidateGeneratorWorkUnitRef(0), "seed_attempt"},
+        {CandidateGeneratorWorkUnitRef(1), "assignment_attempt_per_seed"},
+        {CandidateGeneratorWorkUnitRef(2), "endpoint_expansion"},
+        {CandidateGeneratorWorkUnitRef(3), "negotiation_iteration"},
+        {CandidateGeneratorWorkUnitRef(4), "calibration_proposal"},
+        {CandidateGeneratorWorkUnitRef(5), "proposal_per_level_base"},
+        {CandidateGeneratorWorkUnitRef(6), "proposal_per_movable_decision"},
+        {CandidateGeneratorWorkUnitRef(7), "focused_closure_proposal"},
+        {CandidateGeneratorWorkUnitRef(8), "exact_repair_region_decision"},
+        {CandidateGeneratorWorkUnitRef(9), "exact_repair_solver_call"},
+    }};
 
 const CandidateGeneratorDescriptor &spatialPnrCandidateGeneratorDescriptor();
 llvm::Error registerSpatialPnrCandidateGenerator();

@@ -1309,6 +1309,18 @@ therefore carries only Artifact references, while owner-local `GraphRef`
 values remain ephemeral and no graph-cover Artifact or resolved-config field
 is introduced.
 
+The built-in root-complete Spatial PnR generator composes the next boundary in
+the same typed plan. It consumes the finite TechMapping output and the same
+exact Fabric Artifact. Each `T` already binds one unique Canonical Dataflow
+identity, so the descriptor strictly recovers `D` from `T` instead of accepting
+a second `D` slot. It mechanically publishes the exact empty Spatial
+MappingConstraintSet for `D/T/F` through the constraint owner, then delegates
+to the ordinary Spatial PnR owner with the descriptor's resolved Spatial PnR
+config view. Its finite output contains only ordinary SpatialMapping
+Artifacts. A constrained invocation remains a direct five-authority Spatial
+PnR call; the central plan does not interpret absent constraints as empty and
+does not acquire a constraint language, Mapping state, or search algorithm.
+
 ### Objectives and Quality Gates
 
 One central dimension type owns the fact being optimized, its direction, and
@@ -1749,6 +1761,14 @@ dense binding for every descriptor output slot and only fully finalized
 retained outputs. A completed invocation satisfies each descriptor-owned
 minimum and maximum cardinality; an incomplete invocation may remain below a
 minimum but cannot exceed a maximum.
+
+An invalid typed input, invalid owner tuple, or provider invariant failure is
+not an incomplete search. It aborts the complete Generate invocation and
+therefore creates no invocation record, retained output binding, or lineage
+edge. A domain Artifact published before the failure remains an independently
+valid immutable object in the ArtifactStore, but the failed Generate node does
+not select it. Retained prefixes exist only for descriptor-defined incomplete
+termination after all traversed inputs and emitted outputs were valid.
 
 An external flow that preserves a new `HardwareImplementation` is a hardware
 Candidate Generator even when the same process also emits reports. The new

@@ -233,6 +233,16 @@ finalizeSpatialMappingConstraintSet(
     const ::loom::fabric::FabricArtifactView &fabric,
     const ArtifactStore &store);
 
+/// Materializes and finalizes the unique empty clause sequence for one exact
+/// D/T/F closure. Absence of a constraint Artifact is never interpreted as an
+/// empty set.
+llvm::Expected<FinalizedSpatialMappingConstraintSet>
+finalizeEmptySpatialMappingConstraintSet(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ArtifactStore &store);
+
 llvm::Expected<FinalizedSpatialMappingConstraintSet>
 importSpatialMappingConstraintSet(const ArtifactRootReference &reference,
                                   const ArtifactStore &store);

@@ -139,7 +139,7 @@ couple a semantic realization decision to a backend search mechanism. CP-SAT
 is reserved for a closed local repair region after ordinary Spatial or System
 search has identified a concrete conflict.
 
-## Why Root-Complete Generation Is An Adapter
+## Why Root-Complete Generation Uses Typed Adapters
 
 The production TechMapping owner accepts an exact graph subset because two
 independent regions of one Dataflow program may need separate mapping and
@@ -161,6 +161,30 @@ controller infer it for every mapping generator would make a domain rule into
 global workflow semantics. A typed adapter has the smallest conceptual
 surface: exact Artifact inputs remain the plan authority, Dataflow remains the
 graph-catalog authority, and TechMapping remains the realization authority.
+
+The following Spatial boundary has the inverse mismatch. The exact PnR owner
+must accept an independently authored MappingConstraintSet, while the common
+root-complete exploration path has no additional clauses. Omitting `K` would
+make absence a hidden default and weaken the five-input identity contract.
+Passing both `D` and `T` would duplicate an identity already sealed by `T` and
+create a disagreement state. The Spatial adapter therefore consumes finite
+`T` plus exact `F`, recovers the unique `D` from `T`, and publishes the real
+empty `K(D,T,F)` through the existing constraint owner before invoking PnR.
+
+For example, if `T0` binds `D0/F0` and `T1` binds `D1/F0`, one plan node over
+`{T0,T1}` performs two ordinary invocations with `K(D0,T0,F0)` and
+`K(D1,T1,F0)`. If `T1` instead binds `F1`, the node rejects it rather than
+rebinding it to `F0`. If a user requires `compute_placement(actor) in {fu3}`,
+that nonempty `K` bypasses the convenience adapter and enters the exact owner
+directly. This preserves one constraint language, one PnR implementation, and
+one source for every identity while still composing finite candidate sets.
+
+Only an incomplete search over valid tuples retains candidates from earlier
+canonical `T` inputs. A malformed Mapping profile, foreign tuple, or PnR
+invariant failure makes the finite binding itself unusable, so the invocation
+does not claim a partial output set. Objects already published by an earlier
+tuple remain valid store objects, but treating them as outputs of the failed
+invocation would collapse input validity into search incompleteness.
 
 ## Why Spatial Resource Time Uses Graph-Local Events
 

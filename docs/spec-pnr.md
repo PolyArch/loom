@@ -106,6 +106,32 @@ The persistent authorities are `D`, `T`, `F`, the complete ResolvedConfig, and
 by the `InvocationManifest` and exact admission, not by SpatialMapping semantic
 identity.
 
+The built-in root-complete Spatial PnR candidate generator is a typed
+composition over this exact invocation, not another freeze entry. It consumes
+a finite canonical set of TechMapping Artifacts and exactly one `F`. For each
+`T`, it strictly imports `T`, requires `T.F == F.id`, reconstructs the unique
+`D` reference from `T.D`, and asks the MappingConstraintSet owner to publish
+the exact empty `K(D,T,F)`. It then invokes
+`generateSpatialMappings(D,T,F,C,K)` unchanged. The empty clause sequence is
+therefore still a real, durable Artifact; a missing `K`, null input, config
+default, or wildcard is never accepted as equivalent.
+
+This descriptor is only the root-complete unconstrained convenience path.
+Any caller with one or more Spatial constraint clauses uses the ordinary exact
+five-input invocation and supplies its independently finalized `K`. The
+adapter has no redundant `D` input, no `K` config field, and no private
+constraint or PnR semantics. `ProvenInfeasible` contributes no candidate;
+`Generated`, including a semantic-limit prefix, contributes its complete
+published set; and `Incomplete` or `Unsupported` stops canonical `T` traversal
+while retaining only candidates completed for earlier `T` inputs.
+`Invalid` means the finite input binding or one of its exact owner tuples is
+not a legal invocation, while `InternalError` means the PnR owner failed its
+own invariant. Either aborts the complete adapter invocation and produces no
+formal output or lineage prefix. Immutable objects published before that
+failure may remain visible in the ArtifactStore, but they are not outputs of a
+completed or incomplete invocation and cannot be promoted through that failed
+plan node.
+
 ### System PnR
 
 A System PnR invocation consumes exactly:

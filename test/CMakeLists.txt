@@ -74,6 +74,7 @@ set(LOOM_TEST_DEPENDS
   loom-dse-objective-test
   loom-dse-promotion-test
   loom-root-complete-tech-mapping-generator-test
+  loom-root-complete-spatial-pnr-generator-test
   loom-dfg-sim
   loom-dfg-run
   loom-pre-mapping

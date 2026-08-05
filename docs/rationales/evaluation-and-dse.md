@@ -149,6 +149,24 @@ and TechMapping consumes that ephemeral scope. A generic graph-cover value in
 the plan would instead duplicate Dataflow-local identity and turn one mapping
 policy into a second cross-domain authority.
 
+The root-complete Spatial adapter applies the same rule to a different
+granularity mismatch. A TechMapping already seals its Dataflow and Fabric
+owners, while the exact Spatial PnR API must also receive a real constraint
+Artifact. The adapter recovers `D` from `T`, verifies the separately supplied
+exact `F`, and asks the constraint owner to publish the empty `K`; it does not
+add duplicate `D` or optional `K` plan slots. Constrained searches continue to
+use the exact owner directly. This keeps the central plan generic while making
+the common unconstrained `D -> T -> SpatialMapping` chain explicit and fully
+replayable.
+
+The adapter retains a canonical prefix only when valid search work terminates
+incompletely. A malformed later `T`, foreign owner tuple, or PnR invariant
+failure invalidates the whole invocation rather than converting already
+published store objects into selected outputs. This is the same distinction as
+ArtifactStore publication: immutable objects can survive a failed attempt,
+while only a successful or explicitly incomplete controller invocation owns a
+formal output set.
+
 ## Why Invocation Output And Lineage Are Separate
 
 A generator invocation may retain an input unchanged, return several Artifacts
