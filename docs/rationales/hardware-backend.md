@@ -141,6 +141,70 @@ reject incomplete or mismatched state. Downstream flows read those exact
 BlobDigests through BlobStore so a work-directory path or duplicate RTL string
 cannot silently substitute different hardware.
 
+## Why One Pinned Frontend Supplies HDL Representation Facts
+
+RTL generation and representation indexing answer different questions. CIRCT
+constructs and lowers hardware; the representation index proves what exact
+objects exist in already materialized HDL, including unresolved external
+definitions. The repository-pinned Slang AST retains those source-level facts,
+whereas the public CIRCT import path can reject an unresolved definition before
+it can expose a complete inventory. Making CIRCT IR the index in that state
+would either reject legal black-box implementations or require inference from
+diagnostic text.
+
+Using Slang for unresolved definitions and CIRCT Moore for the rest would be
+two authorities for hierarchy, names, widths, and object kinds. Any mismatch
+would need precedence rules and reconciliation logic. One projection from the
+Slang parse and elaboration result is the smaller contract: CIRCT remains the
+lowering owner, Slang remains the sole indexing source, and the
+HardwareImplementation finalizer compares the resulting facts with Fabric and
+ConfigurationABI rather than allowing either parser to rewrite those semantic
+owners. The frontend AST itself stays removable implementation state rather
+than becoming another persistent catalog.
+
+The versioned `RepresentationFormatDescriptorRef` is the semantic identity of
+that contract. The exact Slang and CIRCT revisions and semantic build options
+are derivation provenance in the producer build identity, not another consumer
+selector. The descriptor fixes the options. Adding another implementation-
+semantic token to the artifact would duplicate the descriptor version; if an
+implementation change alters observable indexing behavior, the descriptor
+version must change instead.
+
+The exact top participates in indexing because reachability is top-dependent.
+A file may contain test modules, helper definitions, and several possible
+roots. Requiring closure for every unused definition would overstate the
+implementation, while choosing the first or filename-matching module would
+make source layout semantic. Exact-root reachability yields one deterministic
+object catalog and only the unresolved definitions that the represented design
+actually uses.
+
+Object kinds deliberately follow stable HDL syntax instead of inferred
+hardware intent. A port wins over the backing net or variable that Slang also
+exposes at the same hierarchical name. A fixed-size unpacked variable is a
+Memory and another fixed-size variable is a Register, but Register does not
+promise a synthesized flip-flop. Proving storage implementation would require
+procedural and synthesis analysis that neither locator validation nor
+HardwareImplementation identity needs.
+
+The initial locator grammar admits only explicitly named scalar hierarchy.
+Inventing spellings for anonymous primitives, implicit generate blocks, or
+array indices would add a second naming scheme that every importer and report
+adapter must reproduce. Rejecting those cases in version 1.0 keeps names equal
+to source-owned identifiers; a later grammar can add indexed hierarchy only
+when it has one versioned canonical encoding.
+
+The gate-netlist descriptor uses a conservative structural subset for the same
+reason. A small whitelist of cells, nets, static elaboration, and wiring-only
+continuous assignments composes into an inspectable connectivity graph.
+Allowing arbitrary expressions and then trying to enumerate every behavioral
+exception would turn a structural descriptor into a second RTL language
+profile. Unknown cell definitions remain explicit Module dependencies. Their
+occurrences can be named without guessing pin geometry; a future versioned
+BlackBoxContract may own those pin facts when a consumer genuinely needs them.
+Exactly one external binding closes each unresolved definition so two provider
+contracts cannot both claim authority, while one library binding can close
+several definitions without duplicating its dependency identity.
+
 QoR, pass/fail status, logs, and reports do not enter that artifact. They are
 Evaluation observations or attempt material. This prevents a tool result from
 changing implementation identity and lets several evaluations query the same

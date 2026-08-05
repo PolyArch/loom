@@ -107,15 +107,17 @@ interpreted:
 ```text
 RepresentationFormatDescriptor {
   format_ref: RepresentationFormatDescriptorRef
-  implementation_semantic_identity
   admitted root variant and stage set
   exact payload role, media-type, and cardinality contract
   canonical locator grammar
-  index(logical payload bytes) -> owner-typed RepresentationIndex
+  index(
+    exact root locator admitted by this descriptor,
+    canonical logical payload closure read through BlobStore
+  ) -> owner-typed RepresentationIndex
   lookup(RepresentationIndex, RepresentationLocator)
     -> RepresentationObjectFacts
   unresolved_external_definitions(RepresentationIndex)
-    -> canonical array<RepresentationLocator<Module | Cell>>
+    -> descriptor-owned canonical array<RepresentationLocator>
 }
 
 RepresentationObjectFacts {
@@ -139,6 +141,14 @@ unsigned integers.
 A MIME string, filename suffix, tool name, or caller parser cannot replace this
 reference.
 
+`format_ref` is the sole semantic identity of a descriptor and fixes every
+semantic frontend option. A parser build, library revision, or compiler option
+recorded by a producer is derivation provenance only; a consumer cannot use it
+to select descriptor behavior. If an implementation change alters any admitted
+payload, locator, object fact, unresolved-definition fact, or failure
+classification, the registry version changes. A second semantic identity field
+or provider-private descriptor revision is forbidden.
+
 Registry 1.0 owns these initial format kinds:
 
 | Kind | Stable spelling | Admitted root | Payload contract |
@@ -157,20 +167,107 @@ units are compiled in canonical logical-name order. An unresolved external
 definition is accepted only when the complete HardwareImplementation closes it
 through an exact black-box contract and external implementation binding.
 
+Registry 1.0 has one fixed HDL frontend profile. `systemverilog_rtl` uses IEEE
+1800-2017 and `structural_verilog_gate_netlist` uses IEEE 1364-2005. Every
+source or netlist payload is an independent preprocessing compilation unit;
+all admitted declarations then participate in one elaboration library. Units
+are processed in canonical logical-name order. Source-local macro definitions
+are legal only within their own unit. An `include` directive is outside both
+initial descriptors. There are no caller-supplied macros, include paths,
+library search paths, top-level parameter overrides, or default timescale.
+Source-encoded declarations and instance parameter values remain part of the
+payload bytes and are interpreted only under the selected language profile.
+The frontend buffer name for each unit is exactly its canonical logical name,
+so a source-location predefined macro cannot observe a host path or synthetic
+temporary filename.
+
 Their canonical locator grammar uses an unescaped HDL identifier
 `[A-Za-z_][A-Za-z0-9_$]*` and a nonempty `.`-separated path of such identifiers.
-A top `Module` locator is one identifier. Instance and contained-object
-locators are top-rooted paths, and a `Port` or `Pin` appends the exact terminal
-signal identifier. Escaped identifiers, ambient generate-name inference, and
-filename-derived module names are outside these two descriptors. Another
-grammar requires another exact format reference.
+A `Module` locator is one definition identifier; the representation root names
+one of them as top. Instance and contained-object locators are top-rooted paths,
+and a `Port` or `Pin` appends the exact terminal signal identifier. Escaped
+identifiers, ambient generate-name inference, and filename-derived module names
+are outside these two descriptors. Another grammar requires another exact
+format reference.
 
-The `systemverilog_rtl` indexer parses and elaborates the complete source set
-without ambient inputs. The `structural_verilog_gate_netlist` indexer also
-rejects behavioral processes and timing controls. Both return the exact object
-kind for every admitted locator, exact direction and bit width for every
-`Port` or `Pin`, and the complete canonical unresolved external-definition
-inventory.
+Both initial descriptors use the repository-pinned Slang frontend as their sole
+parse and elaboration source. One descriptor-owned traversal derives the
+removable RepresentationIndex; the Slang Compilation or AST is not the index
+and is not exposed or persisted. CIRCT IR, emitted HDL, diagnostics, and a
+second parser cannot supply or amend index facts. The exact top locator is an
+index input and must resolve to exactly one module definition. Its ordinary
+object facts contain only that top and admitted objects in its reachable
+elaborated hierarchy, plus the canonical Module locators required by its
+unresolved-definition inventory. An unreferenced definition neither enters the
+index nor creates an external-definition requirement. The top cannot be
+inferred from a filename, source order, first definition, or frontend-selected
+root. A frontend-created top instance is not a second indexed object; the exact
+root is classified only as `Module`.
+
+Registry 1.0 admits only hierarchy paths expressible by its locator grammar.
+Every occurrence is explicitly named and scalar. A generate scope may
+contribute a path segment only when it is explicitly named and elaborates to
+one scalar scope. Implicit generate names, generate arrays, instance arrays,
+unnamed occurrences, and any elaborated path requiring an index or an escaped
+identifier are typed `Unsupported`. Cataloged contained declarations are
+directly owned by a reachable module occurrence or an admitted named scalar
+generate scope. Procedure, subroutine, package, class, and named-block locals,
+and elaboration-only symbols such as genvars, do not enter the locator catalog.
+
+For `systemverilog_rtl`, the exact top is a `Module`; every reachable resolved
+non-top module occurrence is an `Instance`. A declared module port is a
+`Port`. When the AST also exposes its backing net or variable at the same
+canonical path, the `Port` is the only indexed object at that path. Every other
+net declaration with one fixed positive packed-integral bit-stream width is a
+`Net`. Every non-port variable with a statically sized packed-integral element
+type is a `Memory` when its type has an unpacked dimension and is otherwise a
+`Register`.
+`Register` here means a syntactic Verilog variable; it does not claim that
+synthesis will infer a flip-flop. Dynamic arrays, queues, associative arrays,
+SystemVerilog interface declarations or instances, programs, checkers,
+classes, unpacked net or port arrays, reference ports, and ports that combine
+multiple underlying expressions are outside the initial descriptor.
+
+For `structural_verilog_gate_netlist`, the exact top is a `Module`; every
+reachable explicitly named scalar module or user-defined primitive occurrence
+with declared named terminals is a `Cell`. Top-level module interface objects
+are `Port`, resolved cell named interface objects are `Pin`, and all other
+admitted signals are `Net`. When the AST also exposes a backing net or variable
+at the same canonical path as a `Port` or `Pin`, that `Port` or `Pin` is the
+only indexed object at the path. The descriptor admits module declarations,
+fixed-width ports and nets, grammar-compatible static elaboration, those named
+module or user-defined primitive cells, and continuous assignments whose
+expressions are composed only from references, constants, bit selects, part
+selects, concatenations, and replications. Built-in gate or switch primitives,
+unnamed occurrences, procedures, timing controls, assertions, runtime
+variables or memories, behavioral subroutines, and continuous-assignment
+expressions containing arithmetic, bitwise, comparison, logical, or
+conditional operators are typed `Unsupported`.
+
+Every admitted `Port` or `Pin` has one fixed positive packed-integral bit-stream
+width and exact direction. An unresolved module occurrence is still indexed as
+an `Instance` for RTL or a `Cell` for a gate netlist, while its descriptor-owned
+unresolved-definition name contributes one canonical `Module` locator.
+Repeated uses of the same unresolved-definition name contribute one inventory
+entry. The initial descriptors do not guess `Pin` names, directions, or widths
+for an unresolved cell. Such facts remain unavailable until a versioned
+BlackBoxContract schema owns them.
+
+An external implementation binding closes an unresolved definition only when
+its `representation_locators` include that exact `Module` locator and its
+`black_box_contract_payload_ref` resolves in the same representation root.
+Naming only an unresolved occurrence does not imply definition closure. Every
+unresolved Module locator is closed by exactly one external implementation
+binding. One binding may close several locators; overlap between bindings is
+invalid.
+
+The frontend is configured to retain an unknown referenced module as the one
+descriptor-owned non-error condition described above. Every other parse or
+elaboration error makes the representation invalid. A payload closure that is
+otherwise well formed but uses a construct outside the fixed descriptor
+contract is typed `Unsupported`. Warnings may be reported as nonsemantic
+diagnostics, but they neither reject an otherwise admitted representation nor
+alter its index or identity.
 
 Indexing reads payload bytes only through BlobStore and is pure: it cannot
 execute a tool, inspect a workdir, or use a local path. The returned index is a
@@ -552,6 +649,21 @@ Anchor tests cover:
   root vector;
 * variant-specific representation-root locator and payload cardinality, with a
   flat or inferred top rejected;
+* exact-top-dependent reachability, independent compilation-unit macro scope,
+  canonical logical source names, rejection of ambient frontend inputs, and
+  warning-invariant index results;
+* RTL Port precedence over a backing net or variable, syntactic
+  Register-versus-Memory classification, and rejection of unsupported dynamic
+  or interface-like objects;
+* explicitly named scalar hierarchy and generate scopes, with unnamed,
+  arrayed, implicit-name, built-in-primitive, and non-grammar paths rejected;
+* gate module or named user-defined-primitive Cell and Pin classification,
+  Port and Pin precedence over backing objects, wiring-only continuous
+  assignments, and rejection of behavioral or operator-bearing structural
+  input;
+* top-reachable unresolved Module inventory, duplicate-use convergence, exact
+  one-binding closure without overlap, and no guessed Pin facts for an
+  unresolved cell;
 * missing representation-format providers, wrong-format payloads, locators
   absent from the exact logical representation, and an opaque database without
   its descriptor-required canonical index;
