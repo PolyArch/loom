@@ -1,4 +1,5 @@
 #include "AnalyticModelSupport.h"
+#include "StructuredEvaluationInvocationCacheInternal.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/IndexWidth.h"
@@ -497,12 +498,12 @@ llvm::Expected<CaseArtifactResolution> resolveSingleSubjectFabricCase(
       [&](const ArtifactRootReference &current) -> llvm::Error {
     if (resolved.count(current) != 0)
       return llvm::Error::success();
-    auto root = fabric::importEntireFabricRoot(current, artifactStore);
+    auto root = importCachedFabricRoot(current, artifactStore);
     if (!root)
       return root.takeError();
     std::vector<ArtifactRootReference> closure;
     for (const fabric::FabricDirectDependency &dependency :
-         root->directDependencies()) {
+         (*root)->directDependencies()) {
       if (llvm::Error error = visit(dependency.root))
         return error;
       closure.push_back(dependency.root);

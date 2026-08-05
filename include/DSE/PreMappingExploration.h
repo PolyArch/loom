@@ -21,6 +21,7 @@ struct SelectedPreMappingCompilation final {
   std::vector<StructuredOwnershipDerivation> derivations;
   std::vector<StructuredExecutionShapeDerivation> executionShapeDerivations;
   std::vector<StructuredScheduleDerivation> scheduleDerivations;
+  std::vector<DataflowRewriteDerivation> dataflowRewriteDerivations;
   std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
 };
 

@@ -57,6 +57,16 @@ public:
   materializeSelectedCandidate(const ArtifactRootReference &candidate,
                                const ArtifactStore &store);
 
+  llvm::Expected<ArtifactRootReference>
+  prepareDataflowGeneration(const ArtifactRootReference &structuredParent,
+                            const ArtifactStore &store);
+
+  llvm::Expected<SelectedStructuredOwnershipCandidate>
+  materializeSelectedDataflowCandidate(
+      const ArtifactRootReference &structuredParent,
+      const ArtifactRootReference &dataflowCandidate,
+      const ArtifactStore &store);
+
 private:
   class Impl;
   std::unique_ptr<Impl> impl_;

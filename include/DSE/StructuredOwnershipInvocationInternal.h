@@ -79,6 +79,11 @@ public:
       lowering::ProjectedCanonicalDataflow projected,
       const ArtifactStore &store);
 
+  static llvm::Error recordDataflowRewriteCandidate(
+      StructuredOwnershipInvocation &invocation,
+      const ArtifactRootReference &parent, const ArtifactRootReference &child,
+      dataflow::DataflowRewriteKind kind, const ArtifactStore &store);
+
   static llvm::Error
   primeAnalyticCandidate(StructuredOwnershipInvocation &invocation,
                          const ArtifactRootReference &candidate,
@@ -88,6 +93,12 @@ public:
   primeFunctionalReplay(StructuredOwnershipInvocation &invocation,
                         const ArtifactRootReference &candidate,
                         const ArtifactStore &store);
+
+  static llvm::Error
+  primeDataflowFunctionalReplay(StructuredOwnershipInvocation &invocation,
+                                const ArtifactRootReference &structuredParent,
+                                const ArtifactRootReference &dataflowCandidate,
+                                const ArtifactStore &store);
 };
 
 } // namespace loom::dse::detail

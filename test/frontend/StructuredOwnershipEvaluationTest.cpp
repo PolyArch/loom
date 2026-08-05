@@ -1,6 +1,7 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/PreMappingExploration.h"
 #include "DSE/Promotion.h"
 #include "DSE/ResolvedConfigView.h"
@@ -10,6 +11,7 @@
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
+#include "Evaluation/Models/CanonicalDataflowFunctional.h"
 #include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/Models/StructuredProgramFunctional.h"
@@ -683,6 +685,20 @@ void verifyStagedOwnershipEvidence(
     if (const auto *candidate =
             std::get_if<loom::ArtifactRootReference>(&disposition.result))
       closures[*candidate];
+  for (const loom::dse::SelectedPreMappingCompilation &selected :
+       selection.selected) {
+    const auto structured = take(loom::frontend::publishStructuredProgram(
+        selected.compilation.structuredProgram, store));
+    const auto dataflow = take(dataflow::publishCanonicalDataflow(
+        selected.compilation.canonicalDataflow, store));
+    closures[structured];
+    closures[dataflow];
+    for (const loom::dse::DataflowRewriteDerivation &derivation :
+         selected.dataflowRewriteDerivations) {
+      closures[derivation.parent];
+      closures[derivation.child];
+    }
+  }
 
   std::vector<loom::evaluation::CaseArtifactResolution::Entry> entries;
   entries.reserve(closures.size());
@@ -917,7 +933,7 @@ void runEvaluationAnchor() {
           inputs.workloadReference, inputs.runtimeInputReference,
           loom::defaultResolvedConfig(), store));
   auto acquisitionConfig =
-      take(loom::dse::projectResolvedStructuredEvaluationAcquisitionConfigView(
+      take(loom::dse::projectResolvedEvidenceObligationSetConfigView(
           {loom::dse::EvidenceObligationTemplateRef(0)}));
   loom::ResolvedConfig centralConfig = loom::defaultResolvedConfig();
   centralConfig.dse.modelAuthorizations = {
@@ -966,7 +982,7 @@ void runEvaluationAnchor() {
           baselineRef, inputs.workloadReference, inputs.runtimeInputReference,
           loom::defaultResolvedConfig(), store));
   auto functionalAcquisitionConfig =
-      take(loom::dse::projectResolvedStructuredEvaluationAcquisitionConfigView(
+      take(loom::dse::projectResolvedEvidenceObligationSetConfigView(
           {loom::dse::EvidenceObligationTemplateRef(0)}));
   auto functionalGeneratorConfig =
       take(loom::dse::projectResolvedStructuredOwnershipGeneratorConfigView(
@@ -1033,6 +1049,73 @@ void runEvaluationAnchor() {
            std::to_string(functionalCache.sourceObservationPrimeCount) + "/" +
            std::to_string(functionalCache.sourceObservationHitCount) + "/" +
            std::to_string(functionalCache.sourceObservationMissCount));
+
+    const auto preparedD0 =
+        take(functionalInvocation.prepareDataflowGeneration(spatialRef, store));
+    if (preparedD0 != dataflowRef)
+      fail("Dataflow generation changed the selected Structured D0 identity");
+
+    auto dataflowAnalytic = take(
+        loom::dse::
+            prepareCanonicalDataflowFabricAnalyticEvidenceObligationTemplate(
+                dataflowRef, design.roots().front().reference(),
+                loom::defaultResolvedConfig(), store));
+    auto dataflowFunctional = take(
+        loom::dse::prepareCanonicalDataflowFunctionalEvidenceObligationTemplate(
+            dataflowRef, spatialRef, inputs.workloadReference,
+            inputs.runtimeInputReference, loom::defaultResolvedConfig(),
+            store));
+    std::vector<loom::dse::EvidenceObligationTemplate> dataflowObligations = {
+        dataflowAnalytic, dataflowFunctional};
+    auto dataflowAcquisitionConfig =
+        take(loom::dse::projectResolvedEvidenceObligationSetConfigView(
+            {loom::dse::EvidenceObligationTemplateRef(0),
+             loom::dse::EvidenceObligationTemplateRef(1)}));
+    auto dataflowAcquisitionBinding =
+        take(loom::dse::resolveDataflowEvaluationPromotionAcquisitionBinding(
+            dataflowAcquisitionConfig));
+    auto dataflowAcquisitionInputs =
+        take(loom::dse::bindDataflowEvaluationPromotionInputs(
+            {dataflowRef}, spatialRef, design.roots().front().reference(),
+            inputs.workloadReference, inputs.runtimeInputReference));
+    const std::array<loom::ArtifactRootReference, 1> dataflowCandidates = {
+        dataflowRef};
+    const std::array<loom::dse::EvidenceObligationTemplateRef, 2>
+        dataflowObligationRefs = {loom::dse::EvidenceObligationTemplateRef(0),
+                                  loom::dse::EvidenceObligationTemplateRef(1)};
+    auto dataflowAcquisition = take(loom::dse::invokePromotionAcquisition(
+        dataflowAcquisitionInputs, dataflowAcquisitionBinding,
+        dataflowObligations, {dataflowCandidates, dataflowObligationRefs},
+        store));
+    const auto *completedDataflowAcquisition =
+        std::get_if<loom::dse::CompletedPromotionAcquisition>(
+            &dataflowAcquisition);
+    if (!completedDataflowAcquisition ||
+        completedDataflowAcquisition->evidence.size() != 2)
+      fail("Dataflow acquisition did not produce total central Evidence");
+    bool observedDataflowAnalytic = false;
+    bool observedDataflowFunctional = false;
+    for (const loom::dse::PromotionEvidence &record :
+         completedDataflowAcquisition->evidence) {
+      if (record.request.modelBinding().descriptorRef() ==
+          loom::evaluation::models::
+              canonicalDataflowFabricAnalyticModelDescriptorRef()) {
+        const auto *completed =
+            std::get_if<loom::evaluation::CompletedEvidence>(
+                &record.evidence.outcome());
+        observedDataflowAnalytic =
+            completed && completed->metricResults.size() == 5;
+      } else if (record.request.modelBinding().descriptorRef() ==
+                 loom::evaluation::models::
+                     canonicalDataflowFunctionalModelDescriptorRef()) {
+        observedDataflowFunctional =
+            functionalMismatchResult(record.request, record.evidence) ==
+            loom::evaluation::FindingResultForm::Absent;
+      }
+    }
+    if (!observedDataflowAnalytic || !observedDataflowFunctional)
+      fail("Dataflow acquisition changed analytical or functional Evidence");
+
     auto centrallySelected = take(
         functionalInvocation.materializeSelectedCandidate(spatialRef, store));
     if (centrallySelected.candidate.structuredProgram.identity() !=

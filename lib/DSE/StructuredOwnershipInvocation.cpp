@@ -3,6 +3,7 @@
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/StructuredOwnershipInvocationInternal.h"
+#include "Evaluation/Models/CanonicalDataflowFunctional.h"
 #include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/Models/StructuredProgramFunctional.h"
@@ -74,6 +75,8 @@ public:
         materialized(&artifactRootReferenceLess),
         executionShapeLineage(&artifactRootReferenceLess),
         scheduleLineage(&artifactRootReferenceLess),
+        dataflowRoots(&artifactRootReferenceLess),
+        dataflowLineage(&artifactRootReferenceLess),
         finalCandidates(&artifactRootReferenceLess) {}
 
   const frontend::StructuredProgramCandidate &sourceProgram;
@@ -108,10 +111,18 @@ public:
   std::map<ArtifactRootReference, std::vector<StructuredScheduleDerivation>,
            decltype(&artifactRootReferenceLess)>
       scheduleLineage;
+  std::map<ArtifactRootReference, ArtifactRootReference,
+           decltype(&artifactRootReferenceLess)>
+      dataflowRoots;
+  std::map<ArtifactRootReference, std::vector<DataflowRewriteDerivation>,
+           decltype(&artifactRootReferenceLess)>
+      dataflowLineage;
   std::map<ArtifactRootReference, FinalCandidateState,
            decltype(&artifactRootReferenceLess)>
       finalCandidates;
   std::vector<ArtifactRootReference> primedCandidates;
+  std::vector<std::pair<ArtifactRootReference, ArtifactRootReference>>
+      primedDataflowCandidates;
 
   llvm::Expected<ResolvedLineage>
   resolveLineage(const ArtifactRootReference &candidate) const {
@@ -165,6 +176,71 @@ public:
     if (result.ownership.empty())
       return invalid("Structured candidate has no Ownership lineage");
     return result;
+  }
+
+  llvm::Expected<std::optional<std::vector<DataflowRewriteDerivation>>>
+  tryResolveDataflowLineage(const ArtifactRootReference &structuredParent,
+                            const ArtifactRootReference &candidate) const {
+    auto root = dataflowRoots.find(structuredParent);
+    if (root == dataflowRoots.end())
+      return invalid("Structured parent has no Canonical Dataflow root");
+    std::vector<DataflowRewriteDerivation> result;
+    std::vector<ArtifactRootReference> visiting;
+    std::function<llvm::Expected<bool>(const ArtifactRootReference &)> visit =
+        [&](const ArtifactRootReference &reference) -> llvm::Expected<bool> {
+      if (reference == root->second)
+        return true;
+      if (llvm::is_contained(visiting, reference))
+        return invalid("Dataflow candidate lineage contains a cycle");
+      auto edges = dataflowLineage.find(reference);
+      if (edges == dataflowLineage.end())
+        return false;
+      visiting.push_back(reference);
+      bool reachesRoot = false;
+      for (const DataflowRewriteDerivation &edge : edges->second) {
+        auto reaches = visit(edge.parent);
+        if (!reaches)
+          return reaches.takeError();
+        if (!*reaches)
+          continue;
+        reachesRoot = true;
+        if (!llvm::is_contained(result, edge))
+          result.push_back(edge);
+      }
+      visiting.pop_back();
+      return reachesRoot;
+    };
+    auto reaches = visit(candidate);
+    if (!reaches)
+      return reaches.takeError();
+    if (!*reaches)
+      return std::optional<std::vector<DataflowRewriteDerivation>>{};
+    llvm::sort(result, [](const DataflowRewriteDerivation &lhs,
+                          const DataflowRewriteDerivation &rhs) {
+      if (artifactRootReferenceLess(lhs.parent, rhs.parent))
+        return true;
+      if (artifactRootReferenceLess(rhs.parent, lhs.parent))
+        return false;
+      if (artifactRootReferenceLess(lhs.child, rhs.child))
+        return true;
+      if (artifactRootReferenceLess(rhs.child, lhs.child))
+        return false;
+      return static_cast<std::uint32_t>(lhs.kind) <
+             static_cast<std::uint32_t>(rhs.kind);
+    });
+    return std::optional<std::vector<DataflowRewriteDerivation>>(
+        std::move(result));
+  }
+
+  llvm::Expected<std::vector<DataflowRewriteDerivation>>
+  resolveDataflowLineage(const ArtifactRootReference &structuredParent,
+                         const ArtifactRootReference &candidate) const {
+    auto result = tryResolveDataflowLineage(structuredParent, candidate);
+    if (!result)
+      return result.takeError();
+    if (!*result)
+      return invalid("Dataflow candidate does not descend from its exact D0");
+    return std::move(**result);
   }
 };
 
@@ -325,9 +401,76 @@ StructuredOwnershipInvocation::materializeSelectedCandidate(
     functionalReplay.emplace(std::move(*replay));
   }
   return SelectedStructuredOwnershipCandidate{
-      std::move(*materialized), std::move(derivations),
-      std::move(executionShapeDerivations), std::move(scheduleDerivations),
+      std::move(*materialized),
+      std::move(derivations),
+      std::move(executionShapeDerivations),
+      std::move(scheduleDerivations),
+      {},
       std::move(functionalReplay)};
+}
+
+llvm::Expected<ArtifactRootReference>
+StructuredOwnershipInvocation::prepareDataflowGeneration(
+    const ArtifactRootReference &structuredParent, const ArtifactStore &store) {
+  auto found = impl_->materialized.find(structuredParent);
+  if (found == impl_->materialized.end())
+    return invalid("Dataflow generation requires a promoted Structured parent");
+  auto published = dataflow::publishCanonicalDataflow(
+      found->second.canonicalDataflow, store);
+  if (!published)
+    return published.takeError();
+  auto [root, inserted] =
+      impl_->dataflowRoots.try_emplace(structuredParent, *published);
+  if (!inserted && root->second != *published)
+    return invalid("Structured parent changed its Canonical Dataflow root");
+  return *published;
+}
+
+llvm::Expected<SelectedStructuredOwnershipCandidate>
+StructuredOwnershipInvocation::materializeSelectedDataflowCandidate(
+    const ArtifactRootReference &structuredParent,
+    const ArtifactRootReference &dataflowCandidate,
+    const ArtifactStore &store) {
+  if (!impl_->workloadReference || !impl_->runtimeInputReference)
+    return invalid("Dataflow selection precedes source preparation");
+  auto dataflowDerivations =
+      impl_->resolveDataflowLineage(structuredParent, dataflowCandidate);
+  if (!dataflowDerivations)
+    return dataflowDerivations.takeError();
+  auto replay = evaluation::models::getPrimedCanonicalDataflowFunctionalReplay(
+      dataflowCandidate, structuredParent, *impl_->workloadReference,
+      *impl_->runtimeInputReference);
+  if (!replay)
+    return replay.takeError();
+  if (replay->status != sim::SourceBackedDfgValidationStatus::Equivalent)
+    return invalid("selected Dataflow candidate lacks equivalent replay");
+
+  auto found = impl_->materialized.find(structuredParent);
+  if (found == impl_->materialized.end())
+    return invalid("selected Dataflow candidate lost its Structured parent");
+  auto selectedStructured =
+      frontend::importStructuredProgram(structuredParent, store);
+  if (!selectedStructured)
+    return selectedStructured.takeError();
+  auto selectedDataflow =
+      dataflow::importCanonicalDataflow(dataflowCandidate, store);
+  if (!selectedDataflow)
+    return selectedDataflow.takeError();
+  frontend::MaterializedOwnershipCandidate materialized{
+      std::move(*selectedStructured), std::move(*selectedDataflow),
+      found->second.spatialGraphs, found->second.blockActivityLineage,
+      found->second.sourceProvenance};
+
+  auto lineage = impl_->resolveLineage(structuredParent);
+  if (!lineage)
+    return lineage.takeError();
+  return SelectedStructuredOwnershipCandidate{
+      std::move(materialized),
+      std::move(lineage->ownership),
+      std::move(lineage->executionShape),
+      std::move(lineage->schedule),
+      std::move(*dataflowDerivations),
+      std::move(*replay)};
 }
 
 StructuredOwnershipInvocationScope::StructuredOwnershipInvocationScope(
@@ -613,6 +756,42 @@ detail::StructuredOwnershipInvocationAccess::recordExecutionShapeCandidate(
   return llvm::Error::success();
 }
 
+llvm::Error
+detail::StructuredOwnershipInvocationAccess::recordDataflowRewriteCandidate(
+    StructuredOwnershipInvocation &invocation,
+    const ArtifactRootReference &parent, const ArtifactRootReference &child,
+    dataflow::DataflowRewriteKind kind, const ArtifactStore &store) {
+  StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
+  if (impl.dataflowRoots.empty())
+    return invalid("Dataflow rewrite precedes D0 preparation");
+  if (parent.schemaIdentity != dataflow::canonicalDataflowSchema.identity ||
+      parent.schemaVersion != dataflow::canonicalDataflowSchema.version ||
+      child.schemaIdentity != dataflow::canonicalDataflowSchema.identity ||
+      child.schemaVersion != dataflow::canonicalDataflowSchema.version)
+    return invalid("Dataflow rewrite lineage contains a foreign reference");
+  bool parentReachable = false;
+  for (const auto &[structuredParent, root] : impl.dataflowRoots) {
+    (void)root;
+    auto lineage = impl.tryResolveDataflowLineage(structuredParent, parent);
+    if (!lineage)
+      return lineage.takeError();
+    if (*lineage) {
+      parentReachable = true;
+      break;
+    }
+  }
+  if (!parentReachable)
+    return invalid("Dataflow rewrite parent is outside the prepared lineage");
+  auto stored = store.get(child);
+  if (!stored)
+    return stored.takeError();
+  DataflowRewriteDerivation derivation{parent, child, kind};
+  std::vector<DataflowRewriteDerivation> &edges = impl.dataflowLineage[child];
+  if (!llvm::is_contained(edges, derivation))
+    edges.push_back(std::move(derivation));
+  return llvm::Error::success();
+}
+
 llvm::Error detail::StructuredOwnershipInvocationAccess::primeAnalyticCandidate(
     StructuredOwnershipInvocation &invocation,
     const ArtifactRootReference &candidate, const ArtifactStore &store) {
@@ -711,6 +890,85 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeFunctionalReplay(
   }
   impl.primedCandidates.push_back(candidate);
   llvm::sort(impl.primedCandidates, artifactRootReferenceLess);
+  return llvm::Error::success();
+}
+
+llvm::Error
+detail::StructuredOwnershipInvocationAccess::primeDataflowFunctionalReplay(
+    StructuredOwnershipInvocation &invocation,
+    const ArtifactRootReference &structuredParent,
+    const ArtifactRootReference &dataflowCandidate,
+    const ArtifactStore &store) {
+  StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
+  if (!impl.sourceReference || !impl.workloadReference ||
+      !impl.runtimeInputReference || !impl.sourceObservations)
+    return invalid(
+        "Dataflow functional acquisition precedes source preparation");
+  const auto key = std::make_pair(structuredParent, dataflowCandidate);
+  if (llvm::is_contained(impl.primedDataflowCandidates, key))
+    return llvm::Error::success();
+
+  auto dataflowLineage =
+      impl.resolveDataflowLineage(structuredParent, dataflowCandidate);
+  if (!dataflowLineage)
+    return dataflowLineage.takeError();
+
+  auto d0 = impl.dataflowRoots.find(structuredParent);
+  if (d0 == impl.dataflowRoots.end())
+    return invalid("Dataflow functional replay has no exact D0 root");
+  if (dataflowCandidate == d0->second) {
+    auto structuredReplay =
+        evaluation::models::getPrimedStructuredProgramFunctionalReplay(
+            structuredParent, *impl.workloadReference,
+            *impl.runtimeInputReference);
+    if (!structuredReplay)
+      return structuredReplay.takeError();
+    if (llvm::Error error =
+            evaluation::models::primeCanonicalDataflowFunctionalReplayResult(
+                dataflowCandidate, structuredParent, *impl.workloadReference,
+                *impl.runtimeInputReference, *structuredReplay))
+      return error;
+    impl.primedDataflowCandidates.push_back(key);
+    return llvm::Error::success();
+  }
+
+  auto parentState = impl.materialized.find(structuredParent);
+  if (parentState == impl.materialized.end())
+    return invalid("Dataflow candidate has no selected Structured parent");
+  auto lineage = impl.resolveLineage(structuredParent);
+  if (!lineage)
+    return lineage.takeError();
+  auto structured = frontend::importStructuredProgram(structuredParent, store);
+  if (!structured)
+    return structured.takeError();
+  auto dataflow = dataflow::importCanonicalDataflow(dataflowCandidate, store);
+  if (!dataflow)
+    return dataflow.takeError();
+
+  frontend::MaterializedOwnershipCandidate candidate{
+      std::move(*structured), std::move(*dataflow),
+      parentState->second.spatialGraphs,
+      parentState->second.blockActivityLineage,
+      parentState->second.sourceProvenance};
+  std::vector<frontend::StructuredExecutionShapeDecision>
+      executionShapeDecisions;
+  executionShapeDecisions.reserve(lineage->executionShape.size());
+  for (const StructuredExecutionShapeDerivation &derivation :
+       lineage->executionShape)
+    executionShapeDecisions.push_back(derivation.decision);
+  for (const StructuredOwnershipDerivation &derivation : lineage->ownership) {
+    if (llvm::Error error =
+            evaluation::models::primeCanonicalDataflowFunctionalReplay(
+                dataflowCandidate, structuredParent,
+                {*impl.workloadReference, *impl.runtimeInputReference,
+                 impl.sourceProgram, derivation.scope, derivation.decision,
+                 executionShapeDecisions, candidate, impl.workload,
+                 impl.runtimeInput, *impl.sourceObservations,
+                 impl.functionalReplayLimits},
+                store))
+      return error;
+  }
+  impl.primedDataflowCandidates.push_back(key);
   return llvm::Error::success();
 }
 

@@ -22,7 +22,9 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/CommandLine.h"
@@ -48,7 +50,9 @@ using ::dataflow::DataflowRewriteKind;
 // exact type recovery, and that the intermediate token has no other consumer.
 // It never inserts a replacement adapter, so no physical adaptation can be
 // invented by eliminating one.
-bool applyPackUnpackRoundTripEliminate(::mlir::Operation *op) {
+bool applyPackUnpackRoundTripEliminate(
+    ::mlir::Operation *op,
+    ::llvm::function_ref<void(::mlir::Operation *)> eraseOperation) {
   ::mlir::Operation *inner = nullptr;
   if (auto unpack = ::llvm::dyn_cast<::dataflow::UnpackOp>(op))
     inner = unpack.getPacked().getDefiningOp<::dataflow::PackOp>();
@@ -73,8 +77,8 @@ bool applyPackUnpackRoundTripEliminate(::mlir::Operation *op) {
     return false;
 
   op->getResult(0).replaceAllUsesWith(source);
-  op->erase();
-  inner->erase();
+  eraseOperation(op);
+  eraseOperation(inner);
   return true;
 }
 
@@ -185,7 +189,9 @@ bool provesScalarStreamRoundTrip(std::uint64_t groupWidth) {
 // Only `serialize(parallelize(data, phase))` is matched. The reverse shape is
 // never an identity, because serialize drops inactive lanes and a following
 // parallelize compacts the survivors across the original group boundaries.
-bool applyParallelizeSerializeRoundTripEliminate(::mlir::Operation *op) {
+bool applyParallelizeSerializeRoundTripEliminate(
+    ::mlir::Operation *op,
+    ::llvm::function_ref<void(::mlir::Operation *)> eraseOperation) {
   auto serialize = ::llvm::dyn_cast<::dataflow::SerializeOp>(op);
   if (!serialize)
     return false;
@@ -261,8 +267,8 @@ bool applyParallelizeSerializeRoundTripEliminate(::mlir::Operation *op) {
 
   serialize.getData().replaceAllUsesWith(parallelize.getData());
   serialize.getScalarPhase().replaceAllUsesWith(*originalScalarPhase);
-  serialize->erase();
-  parallelize->erase();
+  eraseOperation(serialize);
+  eraseOperation(parallelize);
   return true;
 }
 
@@ -274,7 +280,9 @@ bool applyParallelizeSerializeRoundTripEliminate(::mlir::Operation *op) {
 // subgraph it replaces, so every source constant must be triggered by the
 // exact same ctrl SSA value. Two ctrl values that happen to be exact-one are
 // still two activation streams and are never merged.
-bool applyActivationPreservingConstantFold(::mlir::Operation *op) {
+bool applyActivationPreservingConstantFold(
+    ::mlir::Operation *op,
+    ::llvm::function_ref<void(::mlir::Operation *)> eraseOperation) {
   // Canonical actor classification owns the selector, control, stateful and
   // memory exclusions; this rule adds no operation taxonomy of its own.
   if (!::dataflow::isCanonicalDataflowActor(
@@ -341,10 +349,10 @@ bool applyActivationPreservingConstantFold(::mlir::Operation *op) {
       builder, op->getLoc(), typed.getType(), ctrl,
       ::llvm::cast<::mlir::Attribute>(typed));
   op->getResult(0).replaceAllUsesWith(replacement.getValue());
-  op->erase();
+  eraseOperation(op);
   // Deduplicated, so a constant feeding several operands is erased once.
   for (::mlir::Operation *source : sources)
-    source->erase();
+    eraseOperation(source);
   return true;
 }
 
@@ -354,14 +362,16 @@ bool applyActivationPreservingConstantFold(::mlir::Operation *op) {
 
 // The one closed dispatch over the catalog. Every kind resolves here to its
 // own matcher, legality checker and builder; there is no callback table.
-bool applySelectedRewrite(::mlir::Operation *op, DataflowRewriteKind kind) {
+bool applySelectedRewrite(
+    ::mlir::Operation *op, DataflowRewriteKind kind,
+    ::llvm::function_ref<void(::mlir::Operation *)> eraseOperation) {
   switch (kind) {
   case DataflowRewriteKind::PackUnpackRoundTripEliminate:
-    return applyPackUnpackRoundTripEliminate(op);
+    return applyPackUnpackRoundTripEliminate(op, eraseOperation);
   case DataflowRewriteKind::ParallelizeSerializeRoundTripEliminate:
-    return applyParallelizeSerializeRoundTripEliminate(op);
+    return applyParallelizeSerializeRoundTripEliminate(op, eraseOperation);
   case DataflowRewriteKind::ActivationPreservingConstantFold:
-    return applyActivationPreservingConstantFold(op);
+    return applyActivationPreservingConstantFold(op, eraseOperation);
   }
   return false;
 }
@@ -458,13 +468,12 @@ struct DataflowRewritePass
   }
 
   // Deterministic order: graph definitions in module order, then operations in
-  // program order inside each graph body. Graph definitions are the iteration
-  // domain and are never erased by a rule, while every match is recomputed
-  // from live SSA at the moment it is applied. Overlapping round trips are
-  // therefore resolved in favour of the earliest outer operation, and a match
-  // invalidated by an earlier application simply stops matching instead of
-  // being dereferenced. Each operation is considered once; the pass runs no
-  // fixpoint loop and keeps no rewrite state between operations.
+  // stored block order inside each graph body. A dataflow.graph is an MLIR
+  // Graph region, so a defining actor may occur after its consumer in that
+  // order. A rewrite can consequently erase an operation whose turn has not
+  // arrived. The transient slot map clears such entries before destruction;
+  // the iteration never dereferences a stale Operation pointer. It is only a
+  // mutation-safe traversal index and carries no persistent identity.
   bool applySelectedRewrites(::mlir::ModuleOp candidate) {
     ::llvm::SmallVector<::dataflow::GraphOp, 4> graphs;
     candidate.walk([&](::dataflow::GraphOp graph) {
@@ -475,16 +484,23 @@ struct DataflowRewritePass
     bool changed = false;
     for (::dataflow::GraphOp graph : graphs) {
       ::llvm::SmallVector<::mlir::Operation *, 32> programOrder;
-      for (::mlir::Operation &op : graph.getBody().front())
+      ::llvm::DenseMap<::mlir::Operation *, std::size_t> liveSlot;
+      for (::mlir::Operation &op : graph.getBody().front()) {
+        liveSlot.try_emplace(&op, programOrder.size());
         programOrder.push_back(&op);
+      }
 
-      // Every rule in the closed catalog is rooted at the latest operation in
-      // its source pattern and erases only that root plus already-visited
-      // defining predecessors. Snapshotting program order therefore keeps all
-      // not-yet-visited pointers live while avoiding an intrusive-list
-      // iterator whose current node can be erased by the matcher.
+      auto eraseOperation = [&](::mlir::Operation *operation) {
+        auto found = liveSlot.find(operation);
+        if (found != liveSlot.end()) {
+          programOrder[found->second] = nullptr;
+          liveSlot.erase(found);
+        }
+        operation->erase();
+      };
       for (::mlir::Operation *op : programOrder)
-        changed |= applySelectedRewrite(op, kind.getValue());
+        if (op)
+          changed |= applySelectedRewrite(op, kind.getValue(), eraseOperation);
     }
     return changed;
   }

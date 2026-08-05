@@ -2,6 +2,8 @@
 
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/DataflowEvaluationAcquisition.h"
+#include "DSE/DataflowRewriteCandidateGenerator.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/StructuredEvaluationAcquisition.h"
 #include "DSE/StructuredExecutionShapeCandidateGenerator.h"
@@ -9,6 +11,7 @@
 #include "DSE/StructuredOwnershipInvocation.h"
 #include "DSE/StructuredScheduleCandidateGenerator.h"
 #include "Evaluation/Evidence.h"
+#include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/StandardFindings.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
@@ -35,14 +38,14 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "pre_mapping_exploration_invalid: " + message);
 }
 
-enum class OwnershipObligationKind : std::uint8_t { Analytic, Functional };
+enum class CompilerObligationKind : std::uint8_t { Analytic, Functional };
 
 struct TaggedObligation final {
-  OwnershipObligationKind kind;
+  CompilerObligationKind kind;
   EvidenceObligationTemplate obligation;
 };
 
-struct OwnershipObligations final {
+struct CompilerObligations final {
   std::vector<EvidenceObligationTemplate> templates;
   EvidenceObligationTemplateRef analytic{0};
   EvidenceObligationTemplateRef functional{0};
@@ -55,21 +58,20 @@ bool obligationLess(const TaggedObligation &lhs, const TaggedObligation &rhs) {
                                       rhs.obligation.canonicalBytes().end());
 }
 
-llvm::Expected<OwnershipObligations>
+llvm::Expected<CompilerObligations>
 canonicalizeObligations(EvidenceObligationTemplate analytic,
                         EvidenceObligationTemplate functional) {
   std::vector<TaggedObligation> tagged;
-  tagged.push_back({OwnershipObligationKind::Analytic, std::move(analytic)});
-  tagged.push_back(
-      {OwnershipObligationKind::Functional, std::move(functional)});
+  tagged.push_back({CompilerObligationKind::Analytic, std::move(analytic)});
+  tagged.push_back({CompilerObligationKind::Functional, std::move(functional)});
   llvm::sort(tagged, obligationLess);
   if (!obligationLess(tagged[0], tagged[1]))
-    return invalid("Structured Evidence obligations are not distinct");
+    return invalid("compiler Evidence obligations are not distinct");
 
-  OwnershipObligations result;
+  CompilerObligations result;
   result.templates.reserve(tagged.size());
   for (std::uint32_t ordinal = 0; ordinal != tagged.size(); ++ordinal) {
-    if (tagged[ordinal].kind == OwnershipObligationKind::Analytic)
+    if (tagged[ordinal].kind == CompilerObligationKind::Analytic)
       result.analytic = EvidenceObligationTemplateRef(ordinal);
     else
       result.functional = EvidenceObligationTemplateRef(ordinal);
@@ -90,7 +92,7 @@ bool authorizationLess(const ModelAuthorization &lhs,
 }
 
 std::vector<ModelAuthorization>
-modelAuthorizations(const OwnershipObligations &obligations) {
+modelAuthorizations(const CompilerObligations &obligations) {
   std::vector<ModelAuthorization> result;
   result.reserve(obligations.templates.size());
   for (const EvidenceObligationTemplate &obligation : obligations.templates)
@@ -131,14 +133,13 @@ using BaselineMetricOutcome =
     std::variant<BaselineMetric, IncompletePreMappingExploration>;
 
 llvm::Expected<BaselineMetricOutcome> acquireBaselineMetric(
-    const OwnershipObligations &obligations,
+    const CompilerObligations &obligations,
     evaluation::MetricRequestOrdinal metricRequest,
     const ArtifactRootReference &source, const ArtifactRootReference &fabric,
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ArtifactStore &store) {
   auto acquisitionConfig =
-      projectResolvedStructuredEvaluationAcquisitionConfigView(
-          {obligations.analytic});
+      projectResolvedEvidenceObligationSetConfigView({obligations.analytic});
   if (!acquisitionConfig)
     return acquisitionConfig.takeError();
   auto binding = resolveStructuredEvaluationPromotionAcquisitionBinding(
@@ -213,25 +214,24 @@ functionalMismatchOrdinal(const EvidenceObligationTemplate &obligation) {
   return *result;
 }
 
-llvm::Expected<ResolvedObjectiveCatalogs>
-ownershipObjectives(const OwnershipObligations &obligations,
-                    evaluation::MetricRequestOrdinal metricRequest,
-                    ResolvedObjectiveDirection direction) {
+llvm::Expected<ResolvedObjectiveCatalogs> compilerObjectives(
+    const CompilerObligations &obligations,
+    evaluation::MetricRequestOrdinal metricRequest,
+    ResolvedObjectiveDirection direction,
+    llvm::Expected<std::int64_t> (*quantum)(evaluation::MetricKind)) {
   if (direction != ResolvedObjectiveDirection::Minimize &&
       direction != ResolvedObjectiveDirection::Maximize)
-    return invalid("ownership objective direction is invalid");
+    return invalid("compiler objective direction is invalid");
   if (metricRequest.ordinal() >=
       obligations.templates[obligations.analytic.ordinal()]
           .metricRequests()
           .size())
-    return invalid("ownership objective metric request is out of range");
+    return invalid("compiler objective metric request is out of range");
   const evaluation::MetricKind metric =
       obligations.templates[obligations.analytic.ordinal()]
           .metricRequests()[metricRequest.ordinal()]
           .query.metric;
-  auto exponent =
-      evaluation::models::structuredFabricAnalyticMetricQuantumBase10Exponent(
-          metric);
+  auto exponent = quantum(metric);
   if (!exponent)
     return exponent.takeError();
 
@@ -250,7 +250,7 @@ ownershipObjectives(const OwnershipObligations &obligations,
 }
 
 llvm::Expected<QualityGatePolicy>
-ownershipQualityGate(const OwnershipObligations &obligations,
+ownershipQualityGate(const CompilerObligations &obligations,
                      const StructuredOwnershipExplorationOptions &options,
                      const std::optional<BaselineMetric> &baseline) {
   std::vector<QualityGateClause> clauses;
@@ -272,6 +272,17 @@ ownershipQualityGate(const OwnershipObligations &obligations,
   clauses.push_back({{FindingGate{obligations.functional.ordinal(), *mismatch,
                                   RequiredFindingState::Absent}}});
   return QualityGatePolicy::get(std::move(clauses));
+}
+
+llvm::Expected<QualityGatePolicy>
+dataflowQualityGate(const CompilerObligations &obligations) {
+  auto mismatch = functionalMismatchOrdinal(
+      obligations.templates[obligations.functional.ordinal()]);
+  if (!mismatch)
+    return mismatch.takeError();
+  return QualityGatePolicy::get(
+      {{{FindingGate{obligations.functional.ordinal(), *mismatch,
+                     RequiredFindingState::Absent}}}});
 }
 
 void mergeReferences(std::vector<ArtifactRootReference> &destination,
@@ -299,6 +310,88 @@ retainedEvidence(const IncompleteDsePlanExecution &incomplete,
   return result;
 }
 
+struct CompletedDataflowSelection final {
+  std::vector<ArtifactRootReference> selected;
+  std::vector<ArtifactRootReference> evidence;
+};
+
+using DataflowSelectionOutcome =
+    std::variant<CompletedDataflowSelection, IncompletePreMappingExploration>;
+
+llvm::Expected<DataflowSelectionOutcome> exploreDataflowCandidates(
+    const ArtifactRootReference &d0,
+    const ArtifactRootReference &structuredParent,
+    const ArtifactRootReference &fabric, const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
+    const StructuredOwnershipTopKSelection &selection,
+    const ArtifactStore &store) {
+  auto analytic =
+      prepareCanonicalDataflowFabricAnalyticEvidenceObligationTemplate(
+          d0, fabric, config, store);
+  if (!analytic)
+    return analytic.takeError();
+  auto functional =
+      prepareCanonicalDataflowFunctionalEvidenceObligationTemplate(
+          d0, structuredParent, workload, runtimeInput, config, store);
+  if (!functional)
+    return functional.takeError();
+  auto obligations =
+      canonicalizeObligations(std::move(*analytic), std::move(*functional));
+  if (!obligations)
+    return obligations.takeError();
+  auto objectives = compilerObjectives(
+      *obligations, selection.metricRequest, selection.direction,
+      evaluation::models::
+          canonicalDataflowFabricAnalyticMetricQuantumBase10Exponent);
+  if (!objectives)
+    return objectives.takeError();
+  auto gate = dataflowQualityGate(*obligations);
+  if (!gate)
+    return gate.takeError();
+  auto generatorConfig = projectResolvedDataflowRewriteGeneratorConfigView();
+  if (!generatorConfig)
+    return generatorConfig.takeError();
+  auto acquisitionConfig = projectResolvedEvidenceObligationSetConfigView(
+      {obligations->analytic, obligations->functional});
+  if (!acquisitionConfig)
+    return acquisitionConfig.takeError();
+
+  ResolvedConfig planConfig = config;
+  planConfig.dse.modelAuthorizations = modelAuthorizations(*obligations);
+  planConfig.dse.evidenceObligationTemplates = obligations->templates;
+  planConfig.dse.objectiveCatalogs = std::move(*objectives);
+  planConfig.dse.qualityGatePolicies = {*gate};
+  planConfig.dse.planNodes = {
+      GeneratePlanNodeDefinition{
+          dataflowRewriteCandidateGeneratorDescriptor().reference(),
+          {ExactPlanArtifacts{{d0}}, ExactPlanArtifacts{{fabric}}},
+          generatorConfig->canonicalViewBytes().vec(),
+          generatorConfig->digest()},
+      PromotePlanNodeDefinition{
+          dataflowEvaluationPromotionAcquisitionDescriptor().reference(),
+          {PlanOutputRef{0, 0}, ExactPlanArtifacts{{structuredParent}},
+           ExactPlanArtifacts{{fabric}}, ExactPlanArtifacts{{workload}},
+           ExactPlanArtifacts{{runtimeInput}}},
+          acquisitionConfig->canonicalViewBytes().vec(),
+          acquisitionConfig->digest(),
+          QualityGatePolicyRef(0),
+          TopKSelection{0, selection.k},
+          PromotePurpose::CandidateSelection}};
+  auto view = projectResolvedDseConfigView(planConfig);
+  if (!view)
+    return view.takeError();
+  auto executed = executeDsePlan(*view, store);
+  if (!executed)
+    return executed.takeError();
+  if (auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&*executed))
+    return DataflowSelectionOutcome{IncompletePreMappingExploration{
+        incomplete->nodeOrdinal, incomplete->reason,
+        retainedEvidence(*incomplete, {})}};
+  auto &completed = std::get<CompletedDsePlanExecution>(*executed);
+  return DataflowSelectionOutcome{CompletedDataflowSelection{
+      completed.resolve({1, 0}).vec(), completed.resolve({1, 1}).vec()}};
+}
+
 } // namespace
 
 llvm::Expected<PreMappingExplorationOutcome>
@@ -320,6 +413,10 @@ exploreStructuredCompilationToPreMapping(
   if (llvm::Error error = registerStructuredScheduleCandidateGenerator())
     return std::move(error);
   if (llvm::Error error = registerStructuredEvaluationPromotionAcquisition())
+    return std::move(error);
+  if (llvm::Error error = registerDataflowRewriteCandidateGenerator())
+    return std::move(error);
+  if (llvm::Error error = registerDataflowEvaluationPromotionAcquisition())
     return std::move(error);
 
   auto sourceReference = frontend::publishStructuredProgram(
@@ -378,9 +475,10 @@ exploreStructuredCompilationToPreMapping(
     baselineEvidence.push_back(baseline->evidence);
   }
 
-  auto objectives = ownershipObjectives(
+  auto objectives = compilerObjectives(
       *obligations, options.ownership.selection.metricRequest,
-      options.ownership.selection.direction);
+      options.ownership.selection.direction,
+      evaluation::models::structuredFabricAnalyticMetricQuantumBase10Exponent);
   if (!objectives)
     return objectives.takeError();
   auto gate = ownershipQualityGate(*obligations, options.ownership, baseline);
@@ -390,9 +488,8 @@ exploreStructuredCompilationToPreMapping(
       config, options.ownership.protocolCallableRoots);
   if (!generatorConfig)
     return generatorConfig.takeError();
-  auto acquisitionConfig =
-      projectResolvedStructuredEvaluationAcquisitionConfigView(
-          {obligations->analytic, obligations->functional});
+  auto acquisitionConfig = projectResolvedEvidenceObligationSetConfigView(
+      {obligations->analytic, obligations->functional});
   if (!acquisitionConfig)
     return acquisitionConfig.takeError();
   auto scheduleConfig =
@@ -463,23 +560,66 @@ exploreStructuredCompilationToPreMapping(
   }
 
   std::vector<SelectedPreMappingCompilation> selected;
-  selected.reserve(selectedReferences.size());
+  selected.reserve(selectedReferences.size() * options.ownership.selection.k);
   for (const ArtifactRootReference &reference : selectedReferences) {
-    auto candidate =
-        invocation.materializeSelectedCandidate(reference, artifactStore);
-    if (!candidate)
-      return candidate.takeError();
-    selected.push_back(SelectedPreMappingCompilation{
-        frontend::PreMappingCompilation{
-            compilation.fabric, compilation.staticGlobalMemory,
-            std::move(candidate->candidate.structuredProgram),
-            std::move(candidate->candidate.sourceProvenance),
-            std::move(candidate->candidate.canonicalDataflow)},
-        std::move(candidate->derivations),
-        std::move(candidate->executionShapeDerivations),
-        std::move(candidate->scheduleDerivations),
-        std::move(candidate->functionalReplay)});
+    if (reference == *sourceReference) {
+      auto candidate =
+          invocation.materializeSelectedCandidate(reference, artifactStore);
+      if (!candidate)
+        return candidate.takeError();
+      selected.push_back(SelectedPreMappingCompilation{
+          frontend::PreMappingCompilation{
+              compilation.fabric, compilation.staticGlobalMemory,
+              std::move(candidate->candidate.structuredProgram),
+              std::move(candidate->candidate.sourceProvenance),
+              std::move(candidate->candidate.canonicalDataflow)},
+          std::move(candidate->derivations),
+          std::move(candidate->executionShapeDerivations),
+          std::move(candidate->scheduleDerivations),
+          std::move(candidate->dataflowRewriteDerivations),
+          std::move(candidate->functionalReplay)});
+      continue;
+    }
+
+    auto d0 = invocation.prepareDataflowGeneration(reference, artifactStore);
+    if (!d0)
+      return d0.takeError();
+    auto dataflowSelection = exploreDataflowCandidates(
+        *d0, reference, fabric.reference(), *workloadReference,
+        *runtimeInputReference, config, options.ownership.selection,
+        artifactStore);
+    if (!dataflowSelection)
+      return dataflowSelection.takeError();
+    if (auto *incomplete =
+            std::get_if<IncompletePreMappingExploration>(&*dataflowSelection)) {
+      mergeReferences(incomplete->retainedEvidence, satisfiedEvidence);
+      return PreMappingExplorationOutcome{std::move(*incomplete)};
+    }
+    auto &dataflowCompleted =
+        std::get<CompletedDataflowSelection>(*dataflowSelection);
+    mergeReferences(satisfiedEvidence, dataflowCompleted.evidence);
+    for (const ArtifactRootReference &dataflowReference :
+         dataflowCompleted.selected) {
+      auto candidate = invocation.materializeSelectedDataflowCandidate(
+          reference, dataflowReference, artifactStore);
+      if (!candidate)
+        return candidate.takeError();
+      selected.push_back(SelectedPreMappingCompilation{
+          frontend::PreMappingCompilation{
+              compilation.fabric, compilation.staticGlobalMemory,
+              std::move(candidate->candidate.structuredProgram),
+              std::move(candidate->candidate.sourceProvenance),
+              std::move(candidate->candidate.canonicalDataflow)},
+          std::move(candidate->derivations),
+          std::move(candidate->executionShapeDerivations),
+          std::move(candidate->scheduleDerivations),
+          std::move(candidate->dataflowRewriteDerivations),
+          std::move(candidate->functionalReplay)});
+    }
   }
+  if (selected.empty())
+    return PreMappingExplorationOutcome{
+        CompletedNoFeasibleCandidate{std::move(satisfiedEvidence)}};
   return PreMappingExplorationOutcome{CompletedPreMappingSelection{
       std::move(selected), std::move(satisfiedEvidence),
       std::vector<StructuredOwnershipCandidateDisposition>(

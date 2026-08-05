@@ -57,6 +57,20 @@ bool loom::evaluation::models::detail::operator<(
 }
 
 bool loom::evaluation::models::detail::operator<(
+    const CanonicalDataflowFunctionalCacheKey &lhs,
+    const CanonicalDataflowFunctionalCacheKey &rhs) {
+  for (auto member : {&CanonicalDataflowFunctionalCacheKey::candidate,
+                      &CanonicalDataflowFunctionalCacheKey::structuredParent,
+                      &CanonicalDataflowFunctionalCacheKey::workload,
+                      &CanonicalDataflowFunctionalCacheKey::runtimeInput}) {
+    const int order = compareReferenceMember(lhs, rhs, member);
+    if (order != 0)
+      return order < 0;
+  }
+  return false;
+}
+
+bool loom::evaluation::models::detail::operator<(
     const StructuredSourceObservationCacheKey &lhs,
     const StructuredSourceObservationCacheKey &rhs) {
   for (auto member : {&StructuredSourceObservationCacheKey::source,
@@ -144,4 +158,31 @@ loom::evaluation::models::detail::StructuredEvaluationCacheAccess::bind(
 StructuredEvaluationInvocationCache *
 loom::evaluation::models::detail::currentStructuredEvaluationCache() {
   return StructuredEvaluationCacheAccess::current();
+}
+
+llvm::Expected<std::shared_ptr<const loom::fabric::FinalizedFabricRoot>>
+loom::evaluation::models::detail::importCachedFabricRoot(
+    const ArtifactRootReference &reference, const ArtifactStore &store) {
+  StructuredEvaluationInvocationCache *cache =
+      currentStructuredEvaluationCache();
+  if (cache) {
+    auto &impl = StructuredEvaluationCacheAccess::impl(*cache);
+    std::lock_guard<std::mutex> lock(impl.mutex);
+    auto found = impl.fabricRoots.find(reference);
+    if (found != impl.fabricRoots.end())
+      return found->second;
+  }
+
+  auto imported = loom::fabric::importEntireFabricRoot(reference, store);
+  if (!imported)
+    return imported.takeError();
+  auto sealed = std::make_shared<const loom::fabric::FinalizedFabricRoot>(
+      std::move(*imported));
+  if (!cache)
+    return sealed;
+
+  auto &impl = StructuredEvaluationCacheAccess::impl(*cache);
+  std::lock_guard<std::mutex> lock(impl.mutex);
+  auto [found, inserted] = impl.fabricRoots.try_emplace(reference, sealed);
+  return inserted ? sealed : found->second;
 }

@@ -1,5 +1,5 @@
-#ifndef LOOM_DSE_STRUCTUREDEVALUATIONACQUISITION_H
-#define LOOM_DSE_STRUCTUREDEVALUATIONACQUISITION_H
+#ifndef LOOM_DSE_DATAFLOWEVALUATIONACQUISITION_H
+#define LOOM_DSE_DATAFLOWEVALUATIONACQUISITION_H
 
 #include "DSE/EvidenceObligationSetConfig.h"
 #include "DSE/PromotionAcquisition.h"
@@ -17,36 +17,37 @@ struct ResolvedConfig;
 namespace loom::dse {
 
 inline constexpr PromotionAcquisitionKind
-    structuredEvaluationPromotionAcquisitionKind(0);
+    dataflowEvaluationPromotionAcquisitionKind(1);
 
 const PromotionAcquisitionDescriptor &
-structuredEvaluationPromotionAcquisitionDescriptor();
-llvm::Error registerStructuredEvaluationPromotionAcquisition();
+dataflowEvaluationPromotionAcquisitionDescriptor();
+llvm::Error registerDataflowEvaluationPromotionAcquisition();
 
 llvm::Expected<std::vector<PromotionAcquisitionInputBinding>>
-bindStructuredEvaluationPromotionInputs(
-    llvm::ArrayRef<ArtifactRootReference> structuredPrograms,
+bindDataflowEvaluationPromotionInputs(
+    llvm::ArrayRef<ArtifactRootReference> canonicalDataflowPrograms,
+    const ArtifactRootReference &structuredParent,
     const ArtifactRootReference &fabric, const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput);
 
 llvm::Expected<ResolvedPromotionAcquisitionBinding>
-resolveStructuredEvaluationPromotionAcquisitionBinding(
+resolveDataflowEvaluationPromotionAcquisitionBinding(
     const ResolvedEvidenceObligationSetConfigView &config);
 
 llvm::Expected<EvidenceObligationTemplate>
-prepareStructuredFabricAnalyticEvidenceObligationTemplate(
+prepareCanonicalDataflowFabricAnalyticEvidenceObligationTemplate(
     const ArtifactRootReference &prototypeCandidate,
-    const ArtifactRootReference &fabric, const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
+    const ArtifactRootReference &fabric, const ResolvedConfig &config,
     const ArtifactStore &store);
 
 llvm::Expected<EvidenceObligationTemplate>
-prepareStructuredProgramFunctionalEvidenceObligationTemplate(
+prepareCanonicalDataflowFunctionalEvidenceObligationTemplate(
     const ArtifactRootReference &prototypeCandidate,
+    const ArtifactRootReference &structuredParent,
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
     const ArtifactStore &store);
 
 } // namespace loom::dse
 
-#endif // LOOM_DSE_STRUCTUREDEVALUATIONACQUISITION_H
+#endif // LOOM_DSE_DATAFLOWEVALUATIONACQUISITION_H

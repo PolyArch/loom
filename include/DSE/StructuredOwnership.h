@@ -2,6 +2,7 @@
 #define LOOM_DSE_STRUCTUREDOWNERSHIP_H
 
 #include "DSE/Promotion.h"
+#include "Dataflow/Transforms/DataflowRewrite.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StructuredExecutionShape.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
@@ -89,6 +90,18 @@ struct StructuredExecutionShapeDerivation final {
   }
 };
 
+struct DataflowRewriteDerivation final {
+  ArtifactRootReference parent;
+  ArtifactRootReference child;
+  dataflow::DataflowRewriteKind kind;
+
+  friend bool operator==(const DataflowRewriteDerivation &lhs,
+                         const DataflowRewriteDerivation &rhs) {
+    return lhs.parent == rhs.parent && lhs.child == rhs.child &&
+           lhs.kind == rhs.kind;
+  }
+};
+
 /// One exact coordinate in the invocation-local finite ownership domain. An
 /// absent decision denotes a definition-level scope rejection before a typed
 /// decision domain could be derived.
@@ -143,6 +156,7 @@ struct SelectedStructuredOwnershipCandidate final {
   std::vector<StructuredOwnershipDerivation> derivations;
   std::vector<StructuredExecutionShapeDerivation> executionShapeDerivations;
   std::vector<StructuredScheduleDerivation> scheduleDerivations;
+  std::vector<DataflowRewriteDerivation> dataflowRewriteDerivations;
   std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
 };
 

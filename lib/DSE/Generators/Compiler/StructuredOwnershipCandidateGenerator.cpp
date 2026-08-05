@@ -3,6 +3,7 @@
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/StructuredOwnership.h"
+#include "DSE/StructuredOwnershipInvocationInternal.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Simulator/SimulationArtifacts.h"
@@ -15,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -232,10 +234,23 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeOwnershipProvider(
   if (structured.artifact != simulationInputs->structuredProgram.identity())
     return invalid("workload owner differs from the Structured input");
 
-  auto fabric = fabric::importEntireFabricRoot(
-      singleInput(inputBindings, FabricInput), store);
-  if (!fabric)
-    return fabric.takeError();
+  StructuredOwnershipInvocation *invocation =
+      detail::StructuredOwnershipInvocationAccess::current();
+  std::optional<fabric::FinalizedFabricRoot> importedFabric;
+  const fabric::FinalizedFabricRoot *exactFabric = nullptr;
+  if (invocation) {
+    exactFabric =
+        &detail::StructuredOwnershipInvocationAccess::fabric(*invocation);
+    if (singleInput(inputBindings, FabricInput) != exactFabric->reference())
+      return invalid("Fabric input differs from the bound invocation");
+  } else {
+    auto imported = fabric::importEntireFabricRoot(
+        singleInput(inputBindings, FabricInput), store);
+    if (!imported)
+      return imported.takeError();
+    importedFabric.emplace(std::move(*imported));
+    exactFabric = &*importedFabric;
+  }
   for (const frontend::StructuredEntityRef &root :
        config->protocolCallableRoots())
     if (root.parent != simulationInputs->structuredProgram.identity())
@@ -248,7 +263,7 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeOwnershipProvider(
                                        config->protocolCallableRoots().end());
   auto generated = generateStructuredOwnershipCandidates(
       simulationInputs->structuredProgram, simulationInputs->workload,
-      simulationInputs->runtimeInput, *fabric, options, store);
+      simulationInputs->runtimeInput, *exactFabric, options, store);
   if (!generated)
     return generated.takeError();
   std::vector<ArtifactRootReference> allCandidates(

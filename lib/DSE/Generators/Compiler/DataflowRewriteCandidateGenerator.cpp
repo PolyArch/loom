@@ -1,4 +1,5 @@
 #include "DSE/DataflowRewriteCandidateGenerator.h"
+#include "DSE/StructuredOwnershipInvocationInternal.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -108,10 +109,24 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   if (!config)
     return config.takeError();
 
-  auto fabricRoot = fabric::importEntireFabricRoot(
-      singleInput(inputBindings, FabricInput), store);
-  if (!fabricRoot)
-    return fabricRoot.takeError();
+  const ArtifactRootReference &fabricReference =
+      singleInput(inputBindings, FabricInput);
+  std::optional<fabric::FinalizedFabricRoot> importedFabric;
+  const fabric::FinalizedFabricRoot *fabricRoot = nullptr;
+  if (StructuredOwnershipInvocation *invocation =
+          detail::StructuredOwnershipInvocationAccess::current()) {
+    const fabric::FinalizedFabricRoot &bound =
+        detail::StructuredOwnershipInvocationAccess::fabric(*invocation);
+    if (bound.reference() != fabricReference)
+      return invalid("bound Fabric differs from the active invocation");
+    fabricRoot = &bound;
+  } else {
+    auto imported = fabric::importEntireFabricRoot(fabricReference, store);
+    if (!imported)
+      return imported.takeError();
+    importedFabric.emplace(std::move(*imported));
+    fabricRoot = &*importedFabric;
+  }
   frontend::FabricCapabilityIndex capabilities(fabricRoot->view());
 
   std::vector<ArtifactRootReference> outputs;
@@ -143,6 +158,12 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       auto published = dataflow::publishCanonicalDataflow(**child, store);
       if (!published)
         return published.takeError();
+      if (StructuredOwnershipInvocation *invocation =
+              detail::StructuredOwnershipInvocationAccess::current())
+        if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
+                recordDataflowRewriteCandidate(*invocation, reference,
+                                               *published, kind, store))
+          return std::move(error);
       outputs.push_back(std::move(*published));
     }
   }

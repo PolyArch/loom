@@ -1,6 +1,7 @@
 add_library(LoomStructuredFabricAnalyticModel
   AnalyticModelSupport.cpp
   CanonicalDataflowFabricAnalytic.cpp
+  CanonicalDataflowFunctional.cpp
   CgraSimulation.cpp
   DfgSimulation.cpp
   SimulationComparison.cpp

@@ -594,7 +594,7 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
     if (!program)
       return program.takeError();
     auto fabricRoot =
-        fabric::importEntireFabricRoot(fabric.front(), artifactStore);
+        detail::importCachedFabricRoot(fabric.front(), artifactStore);
     if (!fabricRoot)
       return fabricRoot.takeError();
     auto inputs = sim::importStructuredProgramSimulationInputs(
@@ -651,7 +651,7 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
     if (!activity)
       return activity.takeError();
     auto computed = estimateMetrics(
-        *activity, *fabricRoot, projectedView ? &*projectedView : nullptr,
+        *activity, **fabricRoot, projectedView ? &*projectedView : nullptr,
         projected
             ? llvm::ArrayRef(projected->spatialGraphs)
             : llvm::ArrayRef<lowering::StructuredSpatialGraphProjection>{});

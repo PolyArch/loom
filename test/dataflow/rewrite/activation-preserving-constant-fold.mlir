@@ -9,6 +9,8 @@
 // RUN: FileCheck %s --check-prefix=SUM < %t.src-fold.json
 // RUN: loom-dfg-sim %s --graph repeated_operand_fold --output %t.src-repeated.json
 // RUN: FileCheck %s --check-prefix=DOUBLED < %t.src-repeated.json
+// RUN: loom-dfg-sim %s --graph graph_order_fold --output %t.src-graph-order.json
+// RUN: FileCheck %s --check-prefix=SUM < %t.src-graph-order.json
 // RUN: loom-dfg-sim %s --graph distinct_control --output %t.src-distinct.json
 // RUN: FileCheck %s --check-prefix=SUM < %t.src-distinct.json
 
@@ -18,6 +20,8 @@
 // RUN: FileCheck %s --check-prefix=SUM < %t.opt-fold.json
 // RUN: loom-dfg-sim %t.opt.mlir --graph repeated_operand_fold --output %t.opt-repeated.json
 // RUN: FileCheck %s --check-prefix=DOUBLED < %t.opt-repeated.json
+// RUN: loom-dfg-sim %t.opt.mlir --graph graph_order_fold --output %t.opt-graph-order.json
+// RUN: FileCheck %s --check-prefix=SUM < %t.opt-graph-order.json
 // RUN: loom-dfg-sim %t.opt.mlir --graph distinct_control --output %t.opt-distinct.json
 // RUN: FileCheck %s --check-prefix=SUM < %t.opt-distinct.json
 // RUN: loom-dfg-sim %t.opt.mlir --graph selector_actor --output %t.opt-selector.json
@@ -64,6 +68,26 @@ module {
                   result_segments = array<i32: 1, 0, 0>} {
     %value = dataflow.constant %start {const_value = 5 : i32} : i32
     %sum = arith.addi %value, %value : i32
+    %retired:2 = dataflow.sync %start, %sum : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%retired#1 : i32) streams() memories()
+        complete(%retired#0 : none)
+  }
+
+  // A dataflow.graph is an MLIR Graph region: textual operation order does
+  // not establish SSA dominance. A rewrite may erase source actors that occur
+  // later in the block, so traversal must resolve each original actor through
+  // its stable canonical identity instead of retaining raw operation pointers.
+  // OPT-LABEL: dataflow.graph private @graph_order_fold
+  // OPT-NOT: arith.addi
+  // OPT-NOT: const_value = 3 : i32
+  // OPT-NOT: const_value = 4 : i32
+  // OPT: dataflow.constant %{{[^ ]*}} {const_value = 7 : i32} : i32
+  dataflow.graph private @graph_order_fold(%start: none) -> i32
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %sum = arith.addi %lhs, %rhs : i32
+    %lhs = dataflow.constant %start {const_value = 3 : i32} : i32
+    %rhs = dataflow.constant %start {const_value = 4 : i32} : i32
     %retired:2 = dataflow.sync %start, %sum : (none, i32) -> (none, i32)
     dataflow.graph.return values(%retired#1 : i32) streams() memories()
         complete(%retired#0 : none)

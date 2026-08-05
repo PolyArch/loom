@@ -11,20 +11,14 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
-#include <algorithm>
 #include <array>
-#include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
 
 namespace loom::dse {
 namespace {
-
-constexpr llvm::StringLiteral configDescriptor =
-    "loom.structured_evaluation_acquisition.config.1.0";
 
 enum InputSlot : std::uint32_t {
   CandidateInput,
@@ -57,108 +51,6 @@ llvm::Error invalid(const llvm::Twine &message) {
                                      message);
 }
 
-llvm::ArrayRef<std::uint8_t> descriptorBytes() {
-  return {reinterpret_cast<const std::uint8_t *>(configDescriptor.data()),
-          configDescriptor.size()};
-}
-
-void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
-  bytes.push_back(static_cast<std::uint8_t>(value >> 24));
-  bytes.push_back(static_cast<std::uint8_t>(value >> 16));
-  bytes.push_back(static_cast<std::uint8_t>(value >> 8));
-  bytes.push_back(static_cast<std::uint8_t>(value));
-}
-
-void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
-  for (unsigned shift = 56; shift != 0; shift -= 8)
-    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
-  bytes.push_back(static_cast<std::uint8_t>(value));
-}
-
-llvm::Expected<std::uint32_t> readU32(llvm::ArrayRef<std::uint8_t> bytes,
-                                      std::size_t &offset) {
-  if (bytes.size() - offset < 4)
-    return invalid("truncated u32 field");
-  std::uint32_t value = 0;
-  for (unsigned ordinal = 0; ordinal != 4; ++ordinal)
-    value = (value << 8) | bytes[offset++];
-  return value;
-}
-
-llvm::Expected<std::uint64_t> readU64(llvm::ArrayRef<std::uint8_t> bytes,
-                                      std::size_t &offset) {
-  if (bytes.size() - offset < 8)
-    return invalid("truncated u64 field");
-  std::uint64_t value = 0;
-  for (unsigned ordinal = 0; ordinal != 8; ++ordinal)
-    value = (value << 8) | bytes[offset++];
-  return value;
-}
-
-llvm::Expected<std::vector<EvidenceObligationTemplateRef>>
-canonicalRefs(llvm::ArrayRef<EvidenceObligationTemplateRef> references) {
-  std::vector<EvidenceObligationTemplateRef> canonical(references.begin(),
-                                                       references.end());
-  llvm::sort(canonical, [](EvidenceObligationTemplateRef lhs,
-                           EvidenceObligationTemplateRef rhs) {
-    return lhs.ordinal() < rhs.ordinal();
-  });
-  if (std::adjacent_find(canonical.begin(), canonical.end()) != canonical.end())
-    return invalid("Evidence obligation set contains a duplicate reference");
-  return canonical;
-}
-
-std::vector<std::uint8_t>
-encodeConfig(llvm::ArrayRef<EvidenceObligationTemplateRef> references) {
-  std::vector<std::uint8_t> bytes;
-  bytes.reserve(8 + references.size() * 4);
-  appendU64(bytes, references.size());
-  for (EvidenceObligationTemplateRef reference : references)
-    appendU32(bytes, reference.ordinal());
-  return bytes;
-}
-
-llvm::Expected<std::vector<EvidenceObligationTemplateRef>>
-decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
-  std::size_t offset = 0;
-  auto count = readU64(bytes, offset);
-  if (!count)
-    return count.takeError();
-  if (*count > (bytes.size() - offset) / 4 ||
-      *count > std::numeric_limits<std::size_t>::max())
-    return invalid("Evidence obligation count exceeds remaining bytes");
-  std::vector<EvidenceObligationTemplateRef> references;
-  references.reserve(static_cast<std::size_t>(*count));
-  for (std::uint64_t index = 0; index != *count; ++index) {
-    auto ordinal = readU32(bytes, offset);
-    if (!ordinal)
-      return ordinal.takeError();
-    references.emplace_back(*ordinal);
-  }
-  if (offset != bytes.size())
-    return invalid("config has trailing bytes");
-  auto canonical = canonicalRefs(references);
-  if (!canonical)
-    return canonical.takeError();
-  if (*canonical != references)
-    return invalid("Evidence obligation references are not canonical");
-  return references;
-}
-
-llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
-                           const ComponentViewDigest &digest) {
-  auto adopted = adoptResolvedStructuredEvaluationAcquisitionConfigView(
-      descriptorBytes(), bytes, digest);
-  if (!adopted)
-    return adopted.takeError();
-  return llvm::Error::success();
-}
-
-llvm::Expected<std::vector<EvidenceObligationTemplateRef>>
-resolveEvidenceObligations(llvm::ArrayRef<std::uint8_t> bytes) {
-  return decodeConfig(bytes);
-}
-
 const PromotionAcquisitionDescriptor descriptor{
     structuredEvaluationPromotionAcquisitionKind,
     "compiler.structured_evaluation",
@@ -166,8 +58,10 @@ const PromotionAcquisitionDescriptor descriptor{
     inputSlots,
     PromotionAcquisitionInputSlotRef(CandidateInput),
     evaluation::CaseSubjectRoleRef(0),
-    ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
-    &resolveEvidenceObligations,
+    ResolvedDseConfigViewContract{
+        resolvedEvidenceObligationSetConfigSchemaBytes(),
+        validateResolvedEvidenceObligationSetConfigView},
+    &resolveEvidenceObligationSetConfig,
 };
 
 const ArtifactRootReference &
@@ -235,45 +129,6 @@ const PromotionAcquisitionProvider provider{descriptor.reference(),
 
 } // namespace
 
-llvm::ArrayRef<std::uint8_t>
-resolvedStructuredEvaluationAcquisitionConfigSchemaBytes() {
-  return descriptorBytes();
-}
-
-llvm::Expected<ResolvedStructuredEvaluationAcquisitionConfigView>
-projectResolvedStructuredEvaluationAcquisitionConfigView(
-    llvm::ArrayRef<EvidenceObligationTemplateRef> evidenceObligations) {
-  auto canonical = canonicalRefs(evidenceObligations);
-  if (!canonical)
-    return canonical.takeError();
-  std::vector<std::uint8_t> bytes = encodeConfig(*canonical);
-  auto digest = computeComponentViewDigest(descriptorBytes(), bytes);
-  if (!digest)
-    return digest.takeError();
-  return ResolvedStructuredEvaluationAcquisitionConfigView(
-      std::move(*canonical), std::move(bytes), std::move(*digest));
-}
-
-llvm::Expected<ResolvedStructuredEvaluationAcquisitionConfigView>
-adoptResolvedStructuredEvaluationAcquisitionConfigView(
-    llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
-    llvm::ArrayRef<std::uint8_t> canonicalViewBytes,
-    const ComponentViewDigest &digest) {
-  if (schemaDescriptorBytes != descriptorBytes())
-    return invalid("config descriptor does not match the exact owner");
-  if (llvm::Error error = validateComponentViewDigest(
-          schemaDescriptorBytes, canonicalViewBytes, digest))
-    return std::move(error);
-  auto references = decodeConfig(canonicalViewBytes);
-  if (!references)
-    return references.takeError();
-  std::vector<std::uint8_t> reencoded = encodeConfig(*references);
-  if (llvm::ArrayRef<std::uint8_t>(reencoded) != canonicalViewBytes)
-    return invalid("decoded config does not re-encode to the source bytes");
-  return ResolvedStructuredEvaluationAcquisitionConfigView(
-      std::move(*references), std::move(reencoded), digest);
-}
-
 const PromotionAcquisitionDescriptor &
 structuredEvaluationPromotionAcquisitionDescriptor() {
   return descriptor;
@@ -324,7 +179,7 @@ bindStructuredEvaluationPromotionInputs(
 
 llvm::Expected<ResolvedPromotionAcquisitionBinding>
 resolveStructuredEvaluationPromotionAcquisitionBinding(
-    const ResolvedStructuredEvaluationAcquisitionConfigView &config) {
+    const ResolvedEvidenceObligationSetConfigView &config) {
   if (llvm::Error error = registerStructuredEvaluationPromotionAcquisition())
     return std::move(error);
   return ResolvedPromotionAcquisitionBinding::get(

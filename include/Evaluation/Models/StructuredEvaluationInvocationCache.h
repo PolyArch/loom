@@ -22,8 +22,8 @@ struct StructuredEvaluationInvocationCacheStatistics final {
   std::uint64_t sourceObservationMissCount = 0;
 };
 
-/// Removable typed results shared by all workers of one Structured DSE
-/// invocation. Exact Artifact references key every entry; the cache has no
+/// Removable typed imports and results shared by all workers of one Structured
+/// DSE invocation. Exact Artifact references key every entry; the cache has no
 /// persistent identity and is never consulted outside an explicit scope.
 class StructuredEvaluationInvocationCache final {
 public:

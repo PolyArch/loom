@@ -1,6 +1,7 @@
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 
 #include "AnalyticModelSupport.h"
+#include "StructuredEvaluationInvocationCacheInternal.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -10,6 +11,7 @@
 
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <utility>
@@ -120,10 +122,10 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
   if (!program)
     return program.takeError();
   auto fabricRoot =
-      fabric::importEntireFabricRoot(fabrics.front(), artifactStore);
+      detail::importCachedFabricRoot(fabrics.front(), artifactStore);
   if (!fabricRoot)
     return fabricRoot.takeError();
-  auto metrics = estimateMetrics(*program, *fabricRoot);
+  auto metrics = estimateMetrics(*program, **fabricRoot);
   if (!metrics)
     return metrics.takeError();
   if (!*metrics)
@@ -155,6 +157,67 @@ llvm::Error registerCanonicalDataflowFabricAnalyticModel() {
   return registerEvaluationModelProvider(kProvider);
 }
 
+EvaluationModelDescriptorRef
+canonicalDataflowFabricAnalyticModelDescriptorRef() {
+  return kModelDescriptor.reference();
+}
+
+CaseSubjectRoleRef canonicalDataflowFabricAnalyticCandidateRole() {
+  return kCanonicalDataflowRole;
+}
+
+CaseSubjectRoleRef canonicalDataflowFabricAnalyticFabricRole() {
+  return kFabricRole;
+}
+
+llvm::Expected<std::int64_t>
+canonicalDataflowFabricAnalyticMetricQuantumBase10Exponent(MetricKind metric) {
+  return detail::lowConfidenceMetricQuantumBase10Exponent(metric);
+}
+
+llvm::Expected<CaseArtifactResolution>
+resolveCanonicalDataflowFabricEvaluationCase(
+    const ArtifactRootReference &canonicalDataflow,
+    const ArtifactRootReference &fabricReference,
+    const ArtifactStore &artifactStore) {
+  return resolveCanonicalDataflowFabricEvaluationCases(
+      {canonicalDataflow}, fabricReference, artifactStore);
+}
+
+llvm::Expected<CaseArtifactResolution>
+resolveCanonicalDataflowFabricEvaluationCases(
+    llvm::ArrayRef<ArtifactRootReference> canonicalDataflowPrograms,
+    const ArtifactRootReference &fabricReference,
+    const ArtifactStore &artifactStore) {
+  if (canonicalDataflowPrograms.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "canonical_dataflow_fabric_model_invalid: invocation has no "
+        "Canonical Dataflow candidates");
+  std::vector<ArtifactRootReference> candidates(
+      canonicalDataflowPrograms.begin(), canonicalDataflowPrograms.end());
+  llvm::sort(candidates, artifactRootReferenceLess);
+  candidates.erase(std::unique(candidates.begin(), candidates.end()),
+                   candidates.end());
+  std::vector<CaseArtifactResolution::Entry> additionalEntries;
+  additionalEntries.reserve(candidates.size());
+  for (const ArtifactRootReference &candidate : candidates) {
+    if (candidate.schemaIdentity !=
+            dataflow::canonicalDataflowSchema.identity ||
+        candidate.schemaVersion != dataflow::canonicalDataflowSchema.version)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "canonical_dataflow_fabric_model_invalid: invocation contains a "
+          "foreign candidate");
+    auto stored = artifactStore.get(candidate);
+    if (!stored)
+      return stored.takeError();
+    additionalEntries.push_back({candidate, {}});
+  }
+  return detail::resolveSingleSubjectFabricCase(
+      candidates.front(), fabricReference, artifactStore, additionalEntries);
+}
+
 llvm::Expected<PreparedCanonicalDataflowFabricEvaluation>
 prepareCanonicalDataflowFabricEvaluation(
     const ArtifactRootReference &canonicalDataflow,
@@ -163,15 +226,7 @@ prepareCanonicalDataflowFabricEvaluation(
   if (llvm::Error error = registerCanonicalDataflowFabricAnalyticModel())
     return std::move(error);
 
-  auto program =
-      dataflow::importCanonicalDataflow(canonicalDataflow, artifactStore);
-  if (!program)
-    return program.takeError();
-  auto fabricRoot =
-      fabric::importEntireFabricRoot(fabricReference, artifactStore);
-  if (!fabricRoot)
-    return fabricRoot.takeError();
-  auto resolution = detail::resolveSingleSubjectFabricCase(
+  auto resolution = resolveCanonicalDataflowFabricEvaluationCase(
       canonicalDataflow, fabricReference, artifactStore);
   if (!resolution)
     return resolution.takeError();
@@ -208,8 +263,8 @@ prepareCanonicalDataflowFabricEvaluation(
   auto published = publishEvaluationRequest(*request, artifactStore);
   if (!published)
     return published.takeError();
-  return PreparedCanonicalDataflowFabricEvaluation{std::move(*request),
-                                                   std::move(*resolution)};
+  return PreparedCanonicalDataflowFabricEvaluation{
+      std::move(*request), std::move(*resolution), kCanonicalDataflowRole};
 }
 
 } // namespace loom::evaluation::models
