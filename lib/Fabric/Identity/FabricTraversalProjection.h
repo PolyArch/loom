@@ -12,6 +12,9 @@ projectFabricTraversal(const FabricArtifactView &view,
 llvm::Expected<std::vector<FabricInventoryOwnerRef>>
 projectModuleResourceOwners(const FabricArtifactView &view);
 
+llvm::Expected<std::vector<FabricModuleDomainMemberRef>>
+projectModuleDomainMembers(const FabricArtifactView &view);
+
 } // namespace loom::fabric::detail
 
 #endif // LOOM_LIB_FABRIC_IDENTITY_FABRICTRAVERSALPROJECTION_H

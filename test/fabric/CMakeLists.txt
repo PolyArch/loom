@@ -242,6 +242,10 @@ add_executable(loom-fabric-artifact-finalizer-test
   FabricArtifactFinalizerTest.cpp
 )
 
+target_include_directories(loom-fabric-artifact-finalizer-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Fabric/Identity
+)
+
 add_executable(loom-fabric-module-boundary-transport-passthrough-test
   ModuleBoundaryTransportPassthroughTest.cpp
 )
@@ -337,6 +341,7 @@ target_link_libraries(loom-fabric-system-canonical-labeling-test PRIVATE
 )
 
 target_link_libraries(loom-fabric-artifact-finalizer-test PRIVATE
+  LoomADGBuilder
   LoomCommon
   LoomFabricArtifact
   MLIRDataflow

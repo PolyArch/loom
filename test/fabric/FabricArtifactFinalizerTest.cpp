@@ -1,3 +1,4 @@
+#include "ADG/Builtin.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
@@ -6,6 +7,8 @@
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+
+#include "FabricTraversalProjection.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/OperationSchema.h"
@@ -32,6 +35,7 @@
 #include <array>
 #include <cstdlib>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -1635,6 +1639,113 @@ void systemRequiresExplicitClockCrossing() {
           "explicit crossing System changed its crossing contract");
 }
 
+void moduleDomainMembersFollowCanonicalTopology() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+  require(test, design.roots().size() == 1,
+          "builtin target did not publish one System root");
+  const FinalizedFabricRoot &system = design.roots().front();
+  expectRejected(
+      test, loom::fabric::detail::projectModuleDomainMembers(system.view()),
+      "requires a Module root");
+  require(test, system.directDependencies().size() == 1,
+          "builtin System did not publish one Module dependency");
+
+  FinalizedFabricRoot module =
+      take(test, loom::fabric::importEntireFabricRoot(
+                     system.directDependencies().front().root, store));
+  auto members = take(
+      test, loom::fabric::detail::projectModuleDomainMembers(module.view()));
+  const auto moduleTemplate = module.view().moduleRootTemplate();
+  require(test, moduleTemplate.has_value(),
+          "Module root has no canonical template");
+  const std::uint64_t expectedBoundaryCount =
+      module.view().moduleBoundaryEndpointCount(
+          *moduleTemplate, loom::fabric::FabricPortDirection::Input) +
+      module.view().moduleBoundaryEndpointCount(
+          *moduleTemplate, loom::fabric::FabricPortDirection::Output);
+  std::uint64_t expectedInternalCount =
+      module.view().switchOccurrences().size() +
+      module.view().fifoOccurrences().size() +
+      module.view().boundaryOccurrences().size();
+  for (const auto pe : module.view().peOccurrences())
+    expectedInternalCount += 1 + module.view().peResidentContextCount(pe);
+  for (const auto fu : module.view().fuOccurrences())
+    expectedInternalCount +=
+        1 + module.view().inventorySize(
+                loom::fabric::FabricInventoryOwnerRef::of(fu),
+                loom::fabric::FabricInventoryKind::FuNode);
+  for (const auto memory : module.view().memoryOccurrences())
+    expectedInternalCount += 1 +
+                             module.view().memoryOperationPorts(memory).size() +
+                             module.view().declaresLocalMemoryService(memory);
+  require(test, members.size() == expectedBoundaryCount + expectedInternalCount,
+          "Module domain-member inventory omitted a topology occurrence");
+
+  std::uint64_t boundaryCount = 0;
+  std::vector<bool> physicalKinds(loom::fabric::fabricClosedBound(
+      loom::fabric::FabricModulePhysicalOwnerKind::PeOccurrence));
+  bool sawOwnerWithoutResourceContract = false;
+  std::uint64_t contractBearingMemberCount = 0;
+  std::vector<std::uint8_t> previous;
+  for (const loom::fabric::FabricModuleDomainMemberRef &member : members) {
+    const std::vector<std::uint8_t> bytes =
+        loom::fabric::canonicalFabricBytes(member);
+    require(test, previous.empty() || previous < bytes,
+            "Module domain-member inventory is not canonical sorted-unique");
+    previous = bytes;
+    if (member.kind() == loom::fabric::FabricModuleDomainMemberKind::Boundary) {
+      ++boundaryCount;
+      continue;
+    }
+    const auto &owner =
+        std::get<loom::fabric::FabricModulePhysicalOwnerRef>(member.payload);
+    physicalKinds.at(static_cast<std::size_t>(owner.kind())) = true;
+    const loom::fabric::FabricInventoryOwnerRef inventoryOwner = std::visit(
+        [](const auto &value) -> loom::fabric::FabricInventoryOwnerRef {
+          using Type = std::decay_t<decltype(value)>;
+          if constexpr (std::is_same_v<Type,
+                                       loom::fabric::LocalMemoryServiceRef>)
+            return loom::fabric::FabricInventoryOwnerRef::of(
+                value.underlying());
+          else
+            return loom::fabric::FabricInventoryOwnerRef::of(value);
+        },
+        owner.payload());
+    const bool hasResourceContract =
+        module.view().resourceContract(inventoryOwner) != nullptr;
+    contractBearingMemberCount += hasResourceContract;
+    require(test,
+            llvm::is_contained(module.view().moduleResourceOwners(),
+                               inventoryOwner) == hasResourceContract,
+            "resource-owner projection is not the exact contract-bearing "
+            "domain-member subset");
+    sawOwnerWithoutResourceContract |= !hasResourceContract;
+  }
+  require(test, boundaryCount == expectedBoundaryCount,
+          "Module domain-member inventory omitted a signature face");
+  require(test,
+          llvm::all_of(physicalKinds, [](bool present) { return present; }),
+          "Module domain-member inventory omitted a physical owner kind");
+  require(test, sawOwnerWithoutResourceContract,
+          "Module domain-member inventory reused the resource-owner filter");
+  require(test,
+          contractBearingMemberCount ==
+              module.view().moduleResourceOwners().size(),
+          "resource-owner projection contains a non-domain owner");
+
+  FinalizedFabricRoot reimported = take(
+      test, loom::fabric::importEntireFabricRoot(module.reference(), store));
+  auto reimportedMembers =
+      take(test,
+           loom::fabric::detail::projectModuleDomainMembers(reimported.view()));
+  require(test, members == reimportedMembers,
+          "strict import changed the Module domain-member inventory");
+}
+
 } // namespace
 
 int main() {
@@ -1652,5 +1763,6 @@ int main() {
   systemRejectsImplicitConnectionFanout();
   systemPublicationIgnoresAuthoringIdentityAndOrder();
   systemRequiresExplicitClockCrossing();
+  moduleDomainMembersFollowCanonicalTopology();
   return EXIT_SUCCESS;
 }

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 namespace loom::fabric::detail {
@@ -101,25 +102,49 @@ void canonicalizeStates(std::vector<FabricResourceStateRef> &states) {
   states.erase(std::unique(states.begin(), states.end()), states.end());
 }
 
-void appendPhysicalResourceOwner(const FabricArtifactView &view,
-                                 FabricInventoryOwnerRef owner,
-                                 std::vector<FabricInventoryOwnerRef> &owners) {
-  if (view.resourceContract(owner))
-    owners.push_back(std::move(owner));
+template <typename Ref>
+llvm::Error
+appendModulePhysicalOwner(const Ref &reference,
+                          std::vector<FabricModulePhysicalOwnerRef> &owners) {
+  auto owner = FabricModulePhysicalOwnerRef::create(reference);
+  if (!owner)
+    return owner.takeError();
+  owners.push_back(std::move(*owner));
+  return llvm::Error::success();
 }
 
-} // namespace
+FabricInventoryOwnerRef
+inventoryOwner(const FabricModulePhysicalOwnerRef &owner) {
+  return std::visit(
+      [](const auto &value) -> FabricInventoryOwnerRef {
+        using Type = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<Type, LocalMemoryServiceRef>)
+          return FabricInventoryOwnerRef::of(value.underlying());
+        else
+          return FabricInventoryOwnerRef::of(value);
+      },
+      owner.payload());
+}
 
-llvm::Expected<std::vector<FabricInventoryOwnerRef>>
-projectModuleResourceOwners(const FabricArtifactView &view) {
-  std::vector<FabricInventoryOwnerRef> owners;
+llvm::Expected<std::vector<FabricModulePhysicalOwnerRef>>
+collectModulePhysicalOwners(const FabricArtifactView &view) {
+  std::vector<FabricModulePhysicalOwnerRef> owners;
   if (view.rootKind() != FabricRootKind::Module)
     return owners;
-  for (FabricPeOccurrenceRef pe : view.peOccurrences())
-    appendPhysicalResourceOwner(view, FabricInventoryOwnerRef::of(pe), owners);
+
+  for (FabricPeOccurrenceRef pe : view.peOccurrences()) {
+    if (llvm::Error error = appendModulePhysicalOwner(pe, owners))
+      return std::move(error);
+    for (FabricOrdinal ordinal = 0; ordinal < view.peResidentContextCount(pe);
+         ++ordinal)
+      if (llvm::Error error = appendModulePhysicalOwner(
+              InstructionContextRef{pe, ordinal}, owners))
+        return std::move(error);
+  }
   for (FabricFuOccurrenceRef fu : view.fuOccurrences()) {
+    if (llvm::Error error = appendModulePhysicalOwner(fu, owners))
+      return std::move(error);
     const FabricInventoryOwnerRef fuOwner = FabricInventoryOwnerRef::of(fu);
-    appendPhysicalResourceOwner(view, fuOwner, owners);
     const std::uint64_t nodeCount =
         view.inventorySize(fuOwner, FabricInventoryKind::FuNode);
     for (FabricOrdinal ordinal = 0; ordinal < nodeCount; ++ordinal) {
@@ -127,34 +152,55 @@ projectModuleResourceOwners(const FabricArtifactView &view) {
           view.fuNodeKind(fuOwner, ordinal);
       if (!kind)
         return invalid("FU occurrence has an invalid node inventory");
-      appendPhysicalResourceOwner(
-          view,
-          FabricInventoryOwnerRef::of(
-              FabricFuOccurrenceNodeRef{*kind, fu, ordinal}),
-          owners);
+      if (llvm::Error error = appendModulePhysicalOwner(
+              FabricFuOccurrenceNodeRef{*kind, fu, ordinal}, owners))
+        return std::move(error);
     }
   }
   for (FabricMemoryOccurrenceRef memory : view.memoryOccurrences()) {
-    appendPhysicalResourceOwner(view, FabricInventoryOwnerRef::of(memory),
-                                owners);
+    if (llvm::Error error = appendModulePhysicalOwner(memory, owners))
+      return std::move(error);
     for (FabricMemoryOperationPortRef port : view.memoryOperationPorts(memory))
-      appendPhysicalResourceOwner(view, FabricInventoryOwnerRef::of(port),
-                                  owners);
+      if (llvm::Error error = appendModulePhysicalOwner(port, owners))
+        return std::move(error);
     if (view.declaresLocalMemoryService(memory))
-      appendPhysicalResourceOwner(
-          view,
-          FabricInventoryOwnerRef::of(FabricMemoryServiceRef::local(memory)),
-          owners);
+      if (llvm::Error error = appendModulePhysicalOwner(
+              LocalMemoryServiceRef(FabricMemoryServiceRef::local(memory)),
+              owners))
+        return std::move(error);
   }
   for (FabricSwitchOccurrenceRef resource : view.switchOccurrences())
-    appendPhysicalResourceOwner(view, FabricInventoryOwnerRef::of(resource),
-                                owners);
+    if (llvm::Error error = appendModulePhysicalOwner(resource, owners))
+      return std::move(error);
   for (FabricFifoOccurrenceRef resource : view.fifoOccurrences())
-    appendPhysicalResourceOwner(view, FabricInventoryOwnerRef::of(resource),
-                                owners);
+    if (llvm::Error error = appendModulePhysicalOwner(resource, owners))
+      return std::move(error);
   for (FabricBoundaryOccurrenceRef resource : view.boundaryOccurrences())
-    appendPhysicalResourceOwner(view, FabricInventoryOwnerRef::of(resource),
-                                owners);
+    if (llvm::Error error = appendModulePhysicalOwner(resource, owners))
+      return std::move(error);
+
+  llvm::sort(owners, [](const FabricModulePhysicalOwnerRef &lhs,
+                        const FabricModulePhysicalOwnerRef &rhs) {
+    return canonicalFabricBytes(lhs) < canonicalFabricBytes(rhs);
+  });
+  if (std::adjacent_find(owners.begin(), owners.end()) != owners.end())
+    return invalid("Module physical-owner inventory contains a duplicate");
+  return owners;
+}
+
+} // namespace
+
+llvm::Expected<std::vector<FabricInventoryOwnerRef>>
+projectModuleResourceOwners(const FabricArtifactView &view) {
+  std::vector<FabricInventoryOwnerRef> owners;
+  auto physicalOwners = collectModulePhysicalOwners(view);
+  if (!physicalOwners)
+    return physicalOwners.takeError();
+  for (const FabricModulePhysicalOwnerRef &physicalOwner : *physicalOwners) {
+    FabricInventoryOwnerRef owner = inventoryOwner(physicalOwner);
+    if (view.resourceContract(owner))
+      owners.push_back(std::move(owner));
+  }
 
   llvm::sort(owners, [](const FabricInventoryOwnerRef &lhs,
                         const FabricInventoryOwnerRef &rhs) {
@@ -163,6 +209,39 @@ projectModuleResourceOwners(const FabricArtifactView &view) {
   if (std::adjacent_find(owners.begin(), owners.end()) != owners.end())
     return invalid("physical resource-owner inventory contains a duplicate");
   return owners;
+}
+
+llvm::Expected<std::vector<FabricModuleDomainMemberRef>>
+projectModuleDomainMembers(const FabricArtifactView &view) {
+  if (view.rootKind() != FabricRootKind::Module)
+    return invalid("Module domain-member projection requires a Module root");
+  const std::optional<FabricModuleTemplateRef> module =
+      view.moduleRootTemplate();
+  if (!module)
+    return invalid("Module root has no unique canonical template");
+
+  std::vector<FabricModuleDomainMemberRef> members;
+  for (FabricPortDirection direction :
+       {FabricPortDirection::Input, FabricPortDirection::Output})
+    for (FabricOrdinal ordinal = 0;
+         ordinal < view.moduleBoundaryEndpointCount(*module, direction);
+         ++ordinal)
+      members.push_back(FabricModuleDomainMemberRef::of(
+          FabricModuleBoundaryEndpointRef{*module, direction, ordinal}));
+
+  auto physicalOwners = collectModulePhysicalOwners(view);
+  if (!physicalOwners)
+    return physicalOwners.takeError();
+  for (const FabricModulePhysicalOwnerRef &owner : *physicalOwners)
+    members.push_back(FabricModuleDomainMemberRef::of(owner));
+
+  llvm::sort(members, [](const FabricModuleDomainMemberRef &lhs,
+                         const FabricModuleDomainMemberRef &rhs) {
+    return canonicalFabricBytes(lhs) < canonicalFabricBytes(rhs);
+  });
+  if (std::adjacent_find(members.begin(), members.end()) != members.end())
+    return invalid("Module domain-member inventory contains a duplicate");
+  return members;
 }
 
 llvm::Expected<FabricPhysicalTraversalView>
