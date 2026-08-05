@@ -229,6 +229,74 @@ void refinementsAddNoIdentity() {
           "hardware-domain refinements changed owner bytes");
 }
 
+void moduleDomainSlotsHaveOneCanonicalIdentity() {
+  const llvm::StringRef test = __func__;
+  static_assert(!std::is_same_v<FabricModuleDomainSlotRef,
+                                SpatialCoreDomainSlotOccurrenceRef>);
+  static_assert(!std::is_convertible_v<FabricModuleDomainSlotRef,
+                                       SpatialCoreDomainSlotOccurrenceRef>);
+
+  const FabricModuleDomainSlotRef moduleClock{FabricModuleTemplateRef(7),
+                                              FabricClockResetKind::Clock, 2};
+  const FabricModuleDomainSlotRef moduleReset{FabricModuleTemplateRef(7),
+                                              FabricClockResetKind::Reset, 2};
+  const SpatialCoreDomainSlotOccurrenceRef occurrenceClock{
+      SpatialCoreOccurrenceRef{AccCoreOccurrenceRef(7)},
+      FabricClockResetKind::Clock, 2};
+
+  require(test,
+          printFabricRef(moduleClock) ==
+              "fabric.module_domain_slot<fabric.module_template<7>, clock, 2>",
+          "Module domain slot canonical spelling changed");
+  require(test,
+          printFabricRef(occurrenceClock) ==
+              "fabric.spatial_core_domain_slot_occurrence<"
+              "fabric.spatial_core_occurrence<"
+              "fabric.acc_core_occurrence<7>>, clock, 2>",
+          "spatial-core slot occurrence canonical spelling changed");
+
+  const auto moduleBytes = canonicalFabricBytes(moduleClock);
+  const auto resetBytes = canonicalFabricBytes(moduleReset);
+  const auto occurrenceBytes = canonicalFabricBytes(occurrenceClock);
+  require(test, moduleBytes.size() == 24 && occurrenceBytes.size() == 24,
+          "domain slot encoding duplicated structural owner facts");
+  require(test,
+          moduleBytes[12] == 0 && moduleBytes[13] == 0 &&
+              moduleBytes[14] == 0 && moduleBytes[15] == 0 &&
+              resetBytes[12] == 0 && resetBytes[13] == 0 &&
+              resetBytes[14] == 0 && resetBytes[15] == 1,
+          "Clock/Reset slot discriminants changed");
+  require(test, moduleBytes != occurrenceBytes,
+          "Module and occurrence slots shared canonical identity");
+  require(test,
+          occurrenceBytes !=
+              canonicalFabricBytes(SpatialCoreDomainSlotOccurrenceRef{
+                  SpatialCoreOccurrenceRef{AccCoreOccurrenceRef(8)},
+                  FabricClockResetKind::Clock, 2}),
+          "slot occurrence identity lost its owning occurrence");
+  require(test,
+          take(test, decodeFabricRef<FabricModuleDomainSlotRef>(moduleBytes)) ==
+                  moduleClock &&
+              take(test, decodeFabricRef<SpatialCoreDomainSlotOccurrenceRef>(
+                             occurrenceBytes)) == occurrenceClock,
+          "domain slot canonical byte roundtrip changed value");
+  require(test,
+          take(test, parseFabricRef<FabricModuleDomainSlotRef>(
+                         printFabricRef(moduleReset))) == moduleReset,
+          "Reset slot canonical text roundtrip changed value");
+
+  std::vector<std::uint8_t> invalidKind = moduleBytes;
+  invalidKind[15] = 2;
+  requireRejected(test,
+                  decodeFabricRef<FabricModuleDomainSlotRef>(invalidKind));
+  requireParseKind<FabricModuleDomainSlotRef>(
+      test, "fabric.module_domain_slot<fabric.module_template<7>, power, 2>",
+      FabricRefErrorKind::MalformedSyntax);
+  requireParseKind<SpatialCoreDomainSlotOccurrenceRef>(
+      test, "fabric.module_domain_slot<fabric.module_template<7>, clock, 2>",
+      FabricRefErrorKind::MalformedSyntax);
+}
+
 void strictTextLanguage() {
   const llvm::StringRef test = __func__;
   requireCanonical<FabricFuOccurrenceRef>(test, "fabric.fu_occurrence<11>");
@@ -297,6 +365,7 @@ int main() {
   memoryEngineTemplateReferencesRoundTrip();
   systemServiceEndpointOwnsOperationServicePlanes();
   refinementsAddNoIdentity();
+  moduleDomainSlotsHaveOneCanonicalIdentity();
   strictTextLanguage();
   canonicalByteRoundTrip();
   llvm::outs() << "fabric persistent references ok\n";

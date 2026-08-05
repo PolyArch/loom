@@ -57,6 +57,11 @@ enum class FabricHardwareDomainKind : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
 
+#define LOOM_FABRIC_CLOCK_RESET_KIND(Name, Keyword) Name,
+enum class FabricClockResetKind : std::uint32_t {
+#include "Fabric/Identity/FabricRefs.def"
+};
+
 #define LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Name, Keyword) Name,
 enum class FabricMemoryEndpointRole : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
@@ -113,6 +118,7 @@ llvm::StringRef fabricRefKeyword(FabricFuNodeKind kind);
 llvm::StringRef fabricRefKeyword(FabricPortDirection direction);
 llvm::StringRef fabricRefKeyword(FabricMemoryServiceKind kind);
 llvm::StringRef fabricRefKeyword(FabricHardwareDomainKind kind);
+llvm::StringRef fabricRefKeyword(FabricClockResetKind kind);
 llvm::StringRef fabricRefKeyword(FabricMemoryEndpointRole role);
 llvm::StringRef fabricRefKeyword(FabricFifoTraversalMode mode);
 llvm::StringRef fabricRefKeyword(FabricRegisterFifoPathRole role);
@@ -173,6 +179,16 @@ inline std::uint32_t fabricClosedBound(FabricHardwareDomainKind) {
 }
 inline llvm::StringRef fabricClosedName(FabricHardwareDomainKind) {
   return "hardware domain kind";
+}
+
+#define LOOM_FABRIC_CLOCK_RESET_KIND(Name, Keyword) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricClockResetKind) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricClockResetKind) {
+  return "Clock/Reset slot kind";
 }
 
 #define LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Name, Keyword) LOOM_FABRIC_COUNT_ENTRY
@@ -371,6 +387,33 @@ struct SpatialCoreOccurrenceRef {
   AccCoreOccurrenceRef core;
 
   LOOM_FABRIC_REF_FIELDS(visitor.ref(self.core);)
+};
+
+/// One symbolic Clock or Reset slot declared by a reusable Module. Concrete
+/// signal contracts remain owned by the enclosing System occurrence.
+struct FabricModuleDomainSlotRef {
+  static constexpr llvm::StringLiteral familyKeyword =
+      llvm::StringLiteral("fabric.module_domain_slot");
+  FabricModuleTemplateRef module;
+  FabricClockResetKind kind = FabricClockResetKind::Clock;
+  FabricOrdinal ordinal = 0;
+
+  LOOM_FABRIC_REF_FIELDS(visitor.ref(self.module); visitor.tag(self.kind);
+                         visitor.ordinal(self.ordinal);)
+};
+
+/// The occurrence-qualified projection of one imported Module domain slot.
+/// The owning Module is implied by the SpatialCore occurrence and is not
+/// duplicated in the canonical payload.
+struct SpatialCoreDomainSlotOccurrenceRef {
+  static constexpr llvm::StringLiteral familyKeyword =
+      llvm::StringLiteral("fabric.spatial_core_domain_slot_occurrence");
+  SpatialCoreOccurrenceRef spatialCore;
+  FabricClockResetKind kind = FabricClockResetKind::Clock;
+  FabricOrdinal ordinal = 0;
+
+  LOOM_FABRIC_REF_FIELDS(visitor.ref(self.spatialCore); visitor.tag(self.kind);
+                         visitor.ordinal(self.ordinal);)
 };
 
 /// The AccCore-resident InstructionCore context. It shares the numeric
@@ -610,6 +653,12 @@ struct FabricTransferPatternRef {
 };
 
 LOOM_FABRIC_REF_EQUALITY(SpatialCoreOccurrenceRef, lhs.core == rhs.core)
+LOOM_FABRIC_REF_EQUALITY(FabricModuleDomainSlotRef,
+                         lhs.module == rhs.module && lhs.kind == rhs.kind &&
+                             lhs.ordinal == rhs.ordinal)
+LOOM_FABRIC_REF_EQUALITY(SpatialCoreDomainSlotOccurrenceRef,
+                         lhs.spatialCore == rhs.spatialCore &&
+                             lhs.kind == rhs.kind && lhs.ordinal == rhs.ordinal)
 LOOM_FABRIC_REF_EQUALITY(InstructionCoreContextRef, lhs.core == rhs.core)
 LOOM_FABRIC_REF_EQUALITY(InstructionContextRef,
                          lhs.pe == rhs.pe && lhs.ordinal == rhs.ordinal)

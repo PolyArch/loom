@@ -110,6 +110,16 @@ llvm::StringRef loom::fabric::fabricRefKeyword(FabricHardwareDomainKind value) {
   llvm_unreachable("closed sum value outside its declaration");
 }
 
+#define LOOM_FABRIC_CLOCK_RESET_KIND(Name, Keyword)                            \
+  case FabricClockResetKind::Name:                                             \
+    return Keyword;
+llvm::StringRef loom::fabric::fabricRefKeyword(FabricClockResetKind value) {
+  switch (value) {
+#include "Fabric/Identity/FabricRefs.def"
+  }
+  llvm_unreachable("closed sum value outside its declaration");
+}
+
 #define LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Name, Keyword)                        \
   case FabricMemoryEndpointRole::Name:                                         \
     return Keyword;

@@ -45,6 +45,12 @@
 #define LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Name, Keyword)
 #endif
 
+// Symbolic domain-slot kinds owned by docs/spec-fabric-module.md. This is a
+// deliberately narrower domain than the System hardware-domain catalog.
+#ifndef LOOM_FABRIC_CLOCK_RESET_KIND
+#define LOOM_FABRIC_CLOCK_RESET_KIND(Name, Keyword)
+#endif
+
 // Memory-service endpoint roles owned by docs/spec-fabric-mem.md.
 #ifndef LOOM_FABRIC_MEMORY_ENDPOINT_ROLE
 #define LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Name, Keyword)
@@ -158,6 +164,9 @@ LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Reset, "reset")
 LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Power, "power")
 LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Address, "address")
 LOOM_FABRIC_HARDWARE_DOMAIN_KIND(MemoryConsistency, "memory_consistency")
+
+LOOM_FABRIC_CLOCK_RESET_KIND(Clock, "clock")
+LOOM_FABRIC_CLOCK_RESET_KIND(Reset, "reset")
 
 LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Manager, "manager")
 LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Subordinate, "subordinate")
@@ -354,6 +363,7 @@ LOOM_FABRIC_DEPRECATED_REF("fabric.property")
 #undef LOOM_FABRIC_PORT_DIRECTION
 #undef LOOM_FABRIC_MEMORY_SERVICE
 #undef LOOM_FABRIC_HARDWARE_DOMAIN_KIND
+#undef LOOM_FABRIC_CLOCK_RESET_KIND
 #undef LOOM_FABRIC_MEMORY_ENDPOINT_ROLE
 #undef LOOM_FABRIC_FIFO_MODE
 #undef LOOM_FABRIC_REGISTER_FIFO_PATH_ROLE
