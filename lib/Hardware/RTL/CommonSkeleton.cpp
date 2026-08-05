@@ -1,6 +1,8 @@
 #include "Hardware/RTL/CommonSkeleton.h"
 
+#include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/Transport.h"
 
 #include "circt/Conversion/ExportVerilog.h"
@@ -26,6 +28,46 @@ llvm::Error skeletonError(const llvm::Twine &message) {
 
 bool isFabricOperationLeaf(circt::hw::HWModuleGeneratedOp module) {
   return module.getGeneratorKind() == fabricOperationGeneratorSchemaSymbol;
+}
+
+ArtifactRootReference
+fabricReference(const fabric::FabricArtifactView &fabric) {
+  return {fabric::fabricArtifactSchema.identity.str(),
+          fabric::fabricArtifactSchema.version, fabric.identity()};
+}
+
+llvm::Error
+verifyConfigurationAbiFabric(const fabric::FabricArtifactView &fabric,
+                             const ConfigurationABI &configurationAbi) {
+  if (configurationAbi.fabric() != fabricReference(fabric))
+    return skeletonError(
+        "ConfigurationABI does not implement the exact Fabric");
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::set<std::vector<std::uint8_t>>>
+expectedOperationOccurrences(const fabric::FabricArtifactView &fabric) {
+  std::set<std::vector<std::uint8_t>> result;
+  for (const fabric::FabricFuOccurrenceRef occurrence :
+       fabric.fuOccurrences()) {
+    const std::optional<fabric::FabricFuTemplateRef> definition =
+        fabric.fuTemplateOf(occurrence);
+    if (!definition)
+      return skeletonError("FU occurrence has no exact template owner");
+    for (const fabric::ResolvedFabricOpCapabilityView &capability :
+         fabric.resolvedFabricOpCapabilities(*definition)) {
+      auto node = fabric::deriveFabricFuOccurrenceNode(
+          fabric, capability.occurrence, occurrence);
+      if (!node) {
+        llvm::consumeError(node.takeError());
+        return skeletonError("Fabric operation occurrence cannot be derived");
+      }
+      if (!result.insert(fabric::canonicalFabricBytes(*node)).second)
+        return skeletonError("Fabric operation occurrence inventory is not "
+                             "unique");
+    }
+  }
+  return result;
 }
 
 llvm::Error verifyNoUnresolvedFabricOperationLeaves(mlir::ModuleOp module) {
@@ -65,11 +107,15 @@ void appendBoundaryPorts(
 
 llvm::Expected<ModuleRootCirctSkeleton>
 buildModuleRootCirctSkeleton(mlir::MLIRContext &context,
-                             const fabric::FabricArtifactView &fabric) {
+                             const fabric::FabricArtifactView &fabric,
+                             const ConfigurationABI &configurationAbi) {
   const auto root = fabric.moduleRootTemplate();
   if (!root)
     return skeletonError("Module skeleton construction requires a Module "
                          "root");
+  if (llvm::Error error =
+          verifyConfigurationAbiFabric(fabric, configurationAbi))
+    return std::move(error);
 
   if (!fabric.moduleBoundaryTransportAttachments().empty() ||
       !fabric.pointConnections().empty() || !fabric.peOccurrences().empty() ||
@@ -194,15 +240,19 @@ buildModuleRootCirctSkeleton(mlir::MLIRContext &context,
     return skeletonError(*materializationError);
 
   ModuleRootCirctSkeleton result{std::move(module), {}};
-  if (llvm::Error error = verifyCommonCirctSkeleton(*result.module, fabric,
-                                                    result.operationLeaves))
+  if (llvm::Error error = verifyCommonCirctSkeleton(
+          *result.module, fabric, configurationAbi, result.operationLeaves))
     return std::move(error);
   return result;
 }
 
 llvm::Error verifyCommonCirctSkeleton(
     mlir::ModuleOp module, const fabric::FabricArtifactView &fabric,
+    const ConfigurationABI &configurationAbi,
     llvm::ArrayRef<FabricOperationLeafAssociation> operationLeaves) {
+  if (llvm::Error error =
+          verifyConfigurationAbiFabric(fabric, configurationAbi))
+    return error;
   if (mlir::failed(mlir::verify(module)))
     return skeletonError("common CIRCT module does not verify");
 
@@ -245,16 +295,30 @@ llvm::Error verifyCommonCirctSkeleton(
           "association does not resolve to a concrete Fabric operation "
           "capability");
     }
-    if (!fabric.resolvedFabricOpCapability(association.occurrence))
+    const fabric::ResolvedFabricOpCapabilityView *capability =
+        fabric.resolvedFabricOpCapability(association.occurrence);
+    if (!capability)
       return skeletonError(
           "association does not resolve to a concrete Fabric operation "
           "capability");
+    if (llvm::Error error =
+            verifyFabricOperationLeafPorts(leaf, *capability, configurationAbi))
+      return error;
   }
 
   if (declaredLeaves != associatedLeaves)
     return skeletonError(
         "Loom Fabric operation leaf has no exact Fabric occurrence "
         "association");
+  auto expectedOccurrences = expectedOperationOccurrences(fabric);
+  if (!expectedOccurrences)
+    return expectedOccurrences.takeError();
+  if (*expectedOccurrences != associatedOccurrences)
+    return skeletonError(
+        llvm::Twine("operation association set does not exactly cover Fabric "
+                    "operation occurrences: expected ") +
+        llvm::Twine(expectedOccurrences->size()) + ", received " +
+        llvm::Twine(associatedOccurrences.size()));
   return llvm::Error::success();
 }
 

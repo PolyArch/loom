@@ -45,7 +45,6 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-specialization-test PRIVATE
-    LoomADGBuilder
     LoomHardwareConfiguration
     LoomHardwareRTL
     LoomImplementationPlatform

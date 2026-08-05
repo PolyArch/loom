@@ -2,6 +2,7 @@
 #define LOOM_HARDWARE_RTL_COMMONSKELETON_H
 
 #include "Fabric/Identity/FabricRefImport.h"
+#include "Hardware/Configuration/ConfigurationABI.h"
 
 #include "circt/Dialect/HW/HWOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -38,10 +39,12 @@ struct ModuleRootCirctSkeleton final {
 /// no partial skeleton.
 llvm::Expected<ModuleRootCirctSkeleton>
 buildModuleRootCirctSkeleton(mlir::MLIRContext &context,
-                             const fabric::FabricArtifactView &fabric);
+                             const fabric::FabricArtifactView &fabric,
+                             const ConfigurationABI &configurationAbi);
 
 llvm::Error verifyCommonCirctSkeleton(
     mlir::ModuleOp module, const fabric::FabricArtifactView &fabric,
+    const ConfigurationABI &configurationAbi,
     llvm::ArrayRef<FabricOperationLeafAssociation> operationLeaves);
 
 /// Verifies a specialized module and rejects any remaining Loom abstract leaf.

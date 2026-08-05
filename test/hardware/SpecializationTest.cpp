@@ -1,10 +1,16 @@
 #include "Hardware/RTL/Specialization.h"
 
-#include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobDigest.h"
 #include "Common/BlobStore.h"
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricArtifactLocalReference.h"
+#include "Fabric/IR/FabricDialect.h"
+#include "Fabric/IR/FabricOps.h"
+#include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/IR/ResourceContractRecord.h"
+#include "Hardware/RTL/OperationLeaf.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include "circt/Dialect/Comb/CombDialect.h"
@@ -12,10 +18,15 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/SV/SVDialect.h"
 #include "circt/Dialect/Seq/SeqDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -81,7 +92,6 @@ std::string moduleText(mlir::ModuleOp module) {
 }
 
 struct FabricFixture final {
-  FinalizedFabricRoot system;
   FinalizedFabricRoot module;
 };
 
@@ -95,19 +105,93 @@ llvm::Error requireImplementationPlatform(
   return llvm::Error::success();
 }
 
-FabricFixture makeFabric(llvm::StringRef test, const ArtifactStore &store) {
-  auto design = take(test, loom::adg::buildBuiltinTarget(
-                               store, loom::adg::BuiltinTargetPreset::Small));
-  require(test, design.roots().size() == 1,
-          "builtin target did not produce one System root");
-  FinalizedFabricRoot system = design.roots().front();
-  const auto dependencies = system.directDependencies();
-  require(test, dependencies.size() == 1,
-          "builtin System root did not name one module dependency");
+FabricFixture makeFabric(llvm::StringRef test, const ArtifactStore &store,
+                         bool twoOccurrences = false) {
+  mlir::DialectRegistry registry;
+  registry.insert<::dataflow::DataflowDialect, ::fabric::FabricDialect,
+                  mlir::arith::ArithDialect, mlir::func::FuncDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  const llvm::StringRef sourceText = twoOccurrences ? R"mlir(
+    module {
+      fabric.module @two_integer_adds(
+          %a0: !fabric.bits<32>, %b0: !fabric.bits<32>,
+          %a1: !fabric.bits<32>, %b1: !fabric.bits<32>)
+          -> (!fabric.bits<32>, !fabric.bits<32>) {
+        %pe0 = fabric.pe [spatial]
+            (%pa0 = %a0 : !fabric.bits<32>, %pb0 = %b0 : !fabric.bits<32>)
+            -> !fabric.bits<32> {
+          %fu0 = fabric.fu
+              (%fa0 = %pa0 : !fabric.bits<32>, %fb0 = %pb0 : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+            %value0 = fabric.op [@arith.addi] (%fa0, %fb0)
+              {implementation_family =
+                 #fabric.implementation_family<ScalarIntegerAddSub>,
+               hw_params = {integer_widths = [32 : i32]}}
+              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %value0 : !fabric.bits<32>
+          }
+        }
+        %pe1 = fabric.pe [spatial]
+            (%pa1 = %a1 : !fabric.bits<32>, %pb1 = %b1 : !fabric.bits<32>)
+            -> !fabric.bits<32> {
+          %fu1 = fabric.fu
+              (%fa1 = %pa1 : !fabric.bits<32>, %fb1 = %pb1 : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+            %value1 = fabric.op [@arith.addi] (%fa1, %fb1)
+              {implementation_family =
+                 #fabric.implementation_family<ScalarIntegerAddSub>,
+               hw_params = {integer_widths = [32 : i32]}}
+              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %value1 : !fabric.bits<32>
+          }
+        }
+        fabric.yield %pe0, %pe1 : !fabric.bits<32>, !fabric.bits<32>
+      }
+    }
+  )mlir"
+                                                    : R"mlir(
+    module {
+      fabric.module @integer_add(
+          %a: !fabric.bits<32>, %b: !fabric.bits<32>) -> !fabric.bits<32> {
+        %pe = fabric.pe [spatial]
+            (%pa = %a : !fabric.bits<32>, %pb = %b : !fabric.bits<32>)
+            -> !fabric.bits<32> {
+          %fu = fabric.fu
+              (%fa = %pa : !fabric.bits<32>, %fb = %pb : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+            %value = fabric.op [@arith.addi] (%fa, %fb)
+              {implementation_family =
+                 #fabric.implementation_family<ScalarIntegerAddSub>,
+               hw_params = {integer_widths = [32 : i32]}}
+              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %value : !fabric.bits<32>
+          }
+        }
+        fabric.yield %pe : !fabric.bits<32>
+      }
+    }
+  )mlir";
+  mlir::OwningOpRef<mlir::ModuleOp> source =
+      mlir::parseSourceString<mlir::ModuleOp>(sourceText, &context);
+  require(test, static_cast<bool>(source),
+          "unable to parse specialization Fabric fixture");
+  const std::vector<std::uint8_t> contract =
+      take(test, ::fabric::encodeResourceContractRecord(
+                     ::fabric::oneCycleElasticOperationResourceContract()));
+  const std::vector<std::int8_t> signedContract(contract.begin(),
+                                                contract.end());
+  source->walk([&](::fabric::OpOp operation) {
+    operation->setAttr(::fabric::kResourceContractRecordAttrName,
+                       mlir::DenseI8ArrayAttr::get(&context, signedContract));
+  });
+  ::fabric::ModuleOp moduleRoot;
+  source->walk([&](::fabric::ModuleOp candidate) { moduleRoot = candidate; });
+  require(test, static_cast<bool>(moduleRoot),
+          "specialization Fabric fixture has no Module root");
   FinalizedFabricRoot module =
-      take(test, loom::fabric::importEntireFabricRoot(dependencies.front().root,
-                                                      store));
-  return FabricFixture{std::move(system), std::move(module)};
+      take(test, loom::fabric::finalizeFabricRoot(moduleRoot, store));
+  return FabricFixture{std::move(module)};
 }
 
 ExternalImplementationContractCatalog
@@ -166,8 +250,11 @@ struct SkeletonFixture final {
   std::vector<circt::hw::HWModuleGeneratedOp> leaves;
 };
 
-SkeletonFixture makeSkeleton(mlir::MLIRContext &context,
-                             std::size_t leafCount = 1) {
+SkeletonFixture
+makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
+             const loom::fabric::FabricArtifactView &fabric,
+             const ConfigurationABI &configurationAbi,
+             llvm::ArrayRef<FabricFuOccurrenceNodeRef> occurrences) {
   mlir::OpBuilder builder(&context);
   const mlir::Location location = builder.getUnknownLoc();
   mlir::OwningOpRef<mlir::ModuleOp> module = mlir::ModuleOp::create(location);
@@ -176,14 +263,20 @@ SkeletonFixture makeSkeleton(mlir::MLIRContext &context,
       builder, location, fabricOperationGeneratorSchemaSymbol,
       fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
   std::vector<circt::hw::HWModuleGeneratedOp> leaves;
-  leaves.reserve(leafCount);
-  for (std::size_t index = 0; index < leafCount; ++index)
+  leaves.reserve(occurrences.size());
+  for (std::size_t index = 0; index < occurrences.size(); ++index) {
+    const auto *capability =
+        fabric.resolvedFabricOpCapability(occurrences[index]);
+    require(test, capability != nullptr,
+            "skeleton occurrence has no resolved capability");
     leaves.push_back(circt::hw::HWModuleGeneratedOp::create(
         builder, location,
         mlir::FlatSymbolRefAttr::get(&context,
                                      fabricOperationGeneratorSchemaSymbol),
         builder.getStringAttr("loom_fabric_operation_" + std::to_string(index)),
-        llvm::ArrayRef<circt::hw::PortInfo>{}));
+        take(test, deriveFabricOperationLeafPorts(builder, *capability,
+                                                  configurationAbi))));
+  }
   circt::hw::HWModuleOp::create(
       builder, location, builder.getStringAttr("specialized_top"),
       circt::hw::ModulePortInfo({}, {}),
@@ -191,7 +284,11 @@ SkeletonFixture makeSkeleton(mlir::MLIRContext &context,
   return SkeletonFixture{std::move(module), std::move(leaves)};
 }
 
-SkeletonFixture makeConnectedSkeleton(mlir::MLIRContext &context) {
+SkeletonFixture
+makeConnectedSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
+                      const loom::fabric::FabricArtifactView &fabric,
+                      const ConfigurationABI &configurationAbi,
+                      FabricFuOccurrenceNodeRef occurrence) {
   mlir::OpBuilder builder(&context);
   const mlir::Location location = builder.getUnknownLoc();
   mlir::OwningOpRef<mlir::ModuleOp> module = mlir::ModuleOp::create(location);
@@ -199,29 +296,30 @@ SkeletonFixture makeConnectedSkeleton(mlir::MLIRContext &context) {
   circt::hw::HWGeneratorSchemaOp::create(
       builder, location, fabricOperationGeneratorSchemaSymbol,
       fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
-  const mlir::Type valueType = builder.getIntegerType(32);
-  const auto port = [&](llvm::StringRef name,
-                        circt::hw::ModulePort::Direction direction) {
-    return circt::hw::PortInfo{
-        {builder.getStringAttr(name), valueType, direction}};
-  };
-  const std::vector<circt::hw::PortInfo> leafPorts = {
-      port("operand", circt::hw::ModulePort::Direction::Input),
-      port("result", circt::hw::ModulePort::Direction::Output)};
+  const auto *capability = fabric.resolvedFabricOpCapability(occurrence);
+  require(test, capability != nullptr,
+          "connected skeleton occurrence has no resolved capability");
+  const std::vector<circt::hw::PortInfo> leafPorts =
+      take(test, deriveFabricOperationLeafPorts(builder, *capability,
+                                                configurationAbi));
+  const circt::hw::ModulePortInfo leafPortInfo(leafPorts);
   circt::hw::HWModuleGeneratedOp leaf = circt::hw::HWModuleGeneratedOp::create(
       builder, location,
       mlir::FlatSymbolRefAttr::get(&context,
                                    fabricOperationGeneratorSchemaSymbol),
       builder.getStringAttr("loom_fabric_operation_0"), leafPorts);
   circt::hw::HWModuleOp::create(
-      builder, location, builder.getStringAttr("connected_top"),
-      circt::hw::ModulePortInfo({leafPorts.front()}, {leafPorts.back()}),
+      builder, location, builder.getStringAttr("connected_top"), leafPortInfo,
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
+        llvm::SmallVector<mlir::Value> operands;
+        for (const circt::hw::PortInfo &input : leafPortInfo.getInputs())
+          operands.push_back(accessor.getInput(input.getName()));
         circt::hw::InstanceOp instance = circt::hw::InstanceOp::create(
-            bodyBuilder, location, leaf.getOperation(), "operation",
-            {accessor.getInput("operand")});
-        accessor.setOutput("result", instance.getResult(0));
+            bodyBuilder, location, leaf.getOperation(), "operation", operands);
+        for (const auto &[output, result] :
+             llvm::zip_equal(leafPortInfo.getOutputs(), instance.getResults()))
+          accessor.setOutput(output.getName(), result);
       });
   return SkeletonFixture{std::move(module), {leaf}};
 }
@@ -243,9 +341,15 @@ unsigned providerInvocationCount = 0;
 void materializeConcreteModule(FabricOperationProviderRequest request) {
   mlir::OpBuilder builder(request.leaf.getContext());
   builder.setInsertionPoint(request.leaf);
+  const circt::hw::ModulePortInfo ports(request.leaf.getPortList());
   circt::hw::HWModuleOp::create(
-      builder, request.leaf.getLoc(), request.leaf.getSymNameAttr(),
-      circt::hw::ModulePortInfo(request.leaf.getPortList()),
+      builder, request.leaf.getLoc(), request.leaf.getSymNameAttr(), ports,
+      [&](mlir::OpBuilder &, circt::hw::HWModulePortAccessor &accessor) {
+        const mlir::Value value =
+            accessor.getInput(ports.getInputs().begin()->getName());
+        for (const circt::hw::PortInfo &output : ports.getOutputs())
+          accessor.setOutput(output.getName(), value);
+      },
       request.leaf.getParametersAttr());
   request.leaf.erase();
 }
@@ -272,11 +376,16 @@ passthroughProvider(FabricOperationProviderRequest request) {
   ++providerInvocationCount;
   mlir::OpBuilder builder(request.leaf.getContext());
   builder.setInsertionPoint(request.leaf);
+  const circt::hw::ModulePortInfo ports(request.leaf.getPortList());
+  if (ports.getInputs().empty() || ports.getOutputs().empty())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "passthrough provider requires data ports");
   circt::hw::HWModuleOp::create(
-      builder, request.leaf.getLoc(), request.leaf.getSymNameAttr(),
-      circt::hw::ModulePortInfo(request.leaf.getPortList()),
+      builder, request.leaf.getLoc(), request.leaf.getSymNameAttr(), ports,
       [&](mlir::OpBuilder &, circt::hw::HWModulePortAccessor &accessor) {
-        accessor.setOutput("result", accessor.getInput("operand"));
+        accessor.setOutput(
+            ports.getOutputs().begin()->getName(),
+            accessor.getInput(ports.getInputs().begin()->getName()));
       },
       request.leaf.getParametersAttr());
   request.leaf.erase();
@@ -428,7 +537,8 @@ void registryAndSpecializationAreExact(llvm::StringRef root) {
   mlir::MLIRContext context;
   context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                       circt::seq::SeqDialect, circt::sv::SVDialect>();
-  SkeletonFixture skeleton = makeSkeleton(context);
+  SkeletonFixture skeleton = makeSkeleton(test, context, fabric.module.view(),
+                                          abi.abi(), {occurrence});
   const std::vector<FabricOperationLeafAssociation> associations = {
       {skeleton.leaves.front(), occurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
@@ -485,7 +595,8 @@ void connectedLeafKeepsItsInstanceContract(llvm::StringRef root) {
   mlir::MLIRContext context;
   context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                       circt::seq::SeqDialect, circt::sv::SVDialect>();
-  SkeletonFixture skeleton = makeConnectedSkeleton(context);
+  SkeletonFixture skeleton = makeConnectedSkeleton(
+      test, context, fabric.module.view(), abi.abi(), occurrence);
   const std::vector<FabricOperationLeafAssociation> associations = {
       {skeleton.leaves.front(), occurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
@@ -505,7 +616,7 @@ void connectedLeafKeepsItsInstanceContract(llvm::StringRef root) {
   require(test,
           instances.size() == 1 &&
               instances.front().getModuleName() == "loom_fabric_operation_0" &&
-              instances.front().getNumOperands() == 1 &&
+              instances.front().getNumOperands() == 2 &&
               instances.front().getNumResults() == 1,
           "connected specialization changed the exact instance contract");
   require(test, mlir::succeeded(mlir::verify(*skeleton.module)),
@@ -544,7 +655,8 @@ void providerInputsHaveCanonicalOrder(llvm::StringRef root) {
   mlir::MLIRContext context;
   context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                       circt::seq::SeqDialect, circt::sv::SVDialect>();
-  SkeletonFixture skeleton = makeSkeleton(context);
+  SkeletonFixture skeleton = makeSkeleton(test, context, fabric.module.view(),
+                                          abi.abi(), {occurrence});
   const std::vector<FabricOperationLeafAssociation> associations = {
       {skeleton.leaves.front(), occurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
@@ -577,16 +689,8 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
   FinalizedConfigurationABI abi = take(
       test, finalizeConfigurationABI(
                 ConfigurationABIDraft{fabric.module.reference(), {}}, store));
-  FinalizedConfigurationABI foreignAbi = take(
-      test, finalizeConfigurationABI(
-                ConfigurationABIDraft{fabric.system.reference(), {}}, store));
   std::vector<FabricFuOccurrenceNodeRef> occurrences =
-      findOperationOccurrences(test, fabric.module.view(), 2);
-  std::sort(occurrences.begin(), occurrences.end(),
-            [](const auto &lhs, const auto &rhs) {
-              return loom::fabric::canonicalFabricBytes(lhs) <
-                     loom::fabric::canonicalFabricBytes(rhs);
-            });
+      findOperationOccurrences(test, fabric.module.view(), 1);
   const FabricFuOccurrenceNodeRef occurrence = occurrences.front();
   const auto *capability =
       fabric.module.view().resolvedFabricOpCapability(occurrence);
@@ -596,12 +700,16 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
   mlir::MLIRContext context;
   context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                       circt::seq::SeqDialect, circt::sv::SVDialect>();
+  const auto makeExactSkeleton = [&] {
+    return makeSkeleton(test, context, fabric.module.view(), abi.abi(),
+                        {occurrence});
+  };
   const std::vector<FabricOperationRecipeBinding> recipe = {
       {occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   ExternalImplementationContractCatalog contracts;
 
   FabricOperationProviderRegistry empty;
-  SkeletonFixture missing = makeSkeleton(context);
+  SkeletonFixture missing = makeExactSkeleton();
   const std::vector<FabricOperationLeafAssociation> missingAssociation = {
       {missing.leaves.front(), occurrence}};
   auto unsupportedResult = specializeFabricOperationLeaves(
@@ -632,25 +740,42 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
   require(test, static_cast<bool>(missing.leaves.front()),
           "provider preflight mutated the skeleton on Unsupported");
 
+  FabricFixture twoFabric = makeFabric(test, store, true);
+  FinalizedConfigurationABI twoAbi =
+      take(test,
+           finalizeConfigurationABI(
+               ConfigurationABIDraft{twoFabric.module.reference(), {}}, store));
+  std::vector<FabricFuOccurrenceNodeRef> twoOccurrences =
+      findOperationOccurrences(test, twoFabric.module.view(), 2);
+  std::sort(twoOccurrences.begin(), twoOccurrences.end(),
+            [](const auto &lhs, const auto &rhs) {
+              return loom::fabric::canonicalFabricBytes(lhs) <
+                     loom::fabric::canonicalFabricBytes(rhs);
+            });
+  const auto *twoCapability =
+      twoFabric.module.view().resolvedFabricOpCapability(twoOccurrences[0]);
+  require(test, twoCapability != nullptr,
+          "two-operation occurrence has no resolved capability");
   FabricOperationProviderRegistry partial;
-  if (llvm::Error error = partial.add({capability->implementationFamily,
+  if (llvm::Error error = partial.add({twoCapability->implementationFamily,
                                        BackendRecipeKey::PortableSystemVerilog,
                                        {},
                                        materializeProvider}))
     fail(test, llvm::toString(std::move(error)));
-  SkeletonFixture partiallyCovered = makeSkeleton(context, 2);
+  SkeletonFixture partiallyCovered = makeSkeleton(
+      test, context, twoFabric.module.view(), twoAbi.abi(), twoOccurrences);
   const std::vector<FabricOperationLeafAssociation> partialAssociations = {
-      {partiallyCovered.leaves[0], occurrences[0]},
-      {partiallyCovered.leaves[1], occurrences[1]},
+      {partiallyCovered.leaves[0], twoOccurrences[0]},
+      {partiallyCovered.leaves[1], twoOccurrences[1]},
   };
   const std::vector<FabricOperationRecipeBinding> partialRecipes = {
-      {occurrences[0], BackendRecipeKey::PortableSystemVerilog, {}},
-      {occurrences[1], BackendRecipeKey::SynopsysDesignWare, {}},
+      {twoOccurrences[0], BackendRecipeKey::PortableSystemVerilog, {}},
+      {twoOccurrences[1], BackendRecipeKey::SynopsysDesignWare, {}},
   };
   observation.reset();
   expectError(test,
               specializeFabricOperationLeaves(
-                  *partiallyCovered.module, fabric.module, abi,
+                  *partiallyCovered.module, twoFabric.module, twoAbi,
                   partialAssociations, partialRecipes, partial, contracts),
               "provider_unsupported");
   require(test,
@@ -664,19 +789,19 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
                                         {},
                                         materializeProvider}))
     fail(test, llvm::toString(std::move(error)));
-  SkeletonFixture wrongAbi = makeSkeleton(context);
+  SkeletonFixture wrongAbi = makeExactSkeleton();
   const std::vector<FabricOperationLeafAssociation> wrongAbiAssociation = {
       {wrongAbi.leaves.front(), occurrence}};
   observation.reset();
   expectError(test,
               specializeFabricOperationLeaves(*wrongAbi.module, fabric.module,
-                                              foreignAbi, wrongAbiAssociation,
+                                              twoAbi, wrongAbiAssociation,
                                               recipe, registry, contracts),
               "ConfigurationABI");
   require(test, !observation && static_cast<bool>(wrongAbi.leaves.front()),
           "ABI preflight invoked or mutated a provider");
 
-  SkeletonFixture unexpectedInputs = makeSkeleton(context);
+  SkeletonFixture unexpectedInputs = makeExactSkeleton();
   const std::vector<FabricOperationLeafAssociation> unexpectedInputAssociation =
       {{unexpectedInputs.leaves.front(), occurrence}};
   const std::vector<FabricOperationRecipeBinding> unexpectedInputRecipe = {
@@ -711,7 +836,7 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
          ToolBundledResourceDependency{"synopsys.vcs:Y-2026.03-SP1",
                                        "designware:arithmetic"}}}},
   };
-  SkeletonFixture unknownContract = makeSkeleton(context);
+  SkeletonFixture unknownContract = makeExactSkeleton();
   const std::vector<FabricOperationLeafAssociation> vendorAssociation = {
       {unknownContract.leaves.front(), occurrence}};
   providerInvocationCount = 0;
@@ -725,7 +850,7 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
               static_cast<bool>(unknownContract.leaves.front()),
           "unknown provider contract was checked after callback invocation");
 
-  SkeletonFixture incompatibleInput = makeSkeleton(context);
+  SkeletonFixture incompatibleInput = makeExactSkeleton();
   const std::vector<FabricOperationLeafAssociation> incompatibleAssociation = {
       {incompatibleInput.leaves.front(), occurrence}};
   ExternalImplementationContractCatalog explicitOnly =
@@ -742,7 +867,7 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
               static_cast<bool>(incompatibleInput.leaves.front()),
           "incompatible provider input was checked after callback invocation");
 
-  SkeletonFixture missingPlatform = makeSkeleton(context);
+  SkeletonFixture missingPlatform = makeExactSkeleton();
   const std::vector<FabricOperationLeafAssociation> platformAssociation = {
       {missingPlatform.leaves.front(), occurrence}};
   ExternalImplementationContractCatalog platformRequired =
@@ -760,7 +885,7 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
               moduleText(*missingPlatform.module) == beforeMissingPlatform,
           "catalog output validation partially committed specialization");
 
-  SkeletonFixture missingRecipe = makeSkeleton(context);
+  SkeletonFixture missingRecipe = makeExactSkeleton();
   const std::vector<FabricOperationLeafAssociation> missingRecipeAssociation = {
       {missingRecipe.leaves.front(), occurrence}};
   expectError(test,
@@ -778,7 +903,7 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
                           {},
                           incompleteProvider}))
     fail(test, llvm::toString(std::move(error)));
-  SkeletonFixture unresolved = makeSkeleton(context);
+  SkeletonFixture unresolved = makeExactSkeleton();
   const std::vector<FabricOperationLeafAssociation> unresolvedAssociation = {
       {unresolved.leaves.front(), occurrence}};
   expectError(test,
@@ -796,7 +921,7 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
                                {},
                                unboundExternalProvider}))
     fail(test, llvm::toString(std::move(error)));
-  SkeletonFixture external = makeSkeleton(context);
+  SkeletonFixture external = makeExactSkeleton();
   const std::vector<FabricOperationLeafAssociation> externalAssociation = {
       {external.leaves.front(), occurrence}};
   expectError(test,
@@ -814,7 +939,7 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
                          {},
                          collidingProvider}))
     fail(test, llvm::toString(std::move(error)));
-  SkeletonFixture collision = makeSkeleton(context);
+  SkeletonFixture collision = makeExactSkeleton();
   const std::vector<FabricOperationLeafAssociation> collisionAssociation = {
       {collision.leaves.front(), occurrence}};
   const std::string beforeCollision = moduleText(*collision.module);
@@ -830,7 +955,7 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
 void providerFailureIsTransactional(llvm::StringRef root) {
   const llvm::StringRef test = __func__;
   ArtifactStore store(root);
-  FabricFixture fabric = makeFabric(test, store);
+  FabricFixture fabric = makeFabric(test, store, true);
   FinalizedConfigurationABI abi = take(
       test, finalizeConfigurationABI(
                 ConfigurationABIDraft{fabric.module.reference(), {}}, store));
@@ -863,7 +988,8 @@ void providerFailureIsTransactional(llvm::StringRef root) {
   mlir::MLIRContext context;
   context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                       circt::seq::SeqDialect, circt::sv::SVDialect>();
-  SkeletonFixture skeleton = makeSkeleton(context, 2);
+  SkeletonFixture skeleton =
+      makeSkeleton(test, context, fabric.module.view(), abi.abi(), occurrences);
   const std::vector<FabricOperationLeafAssociation> associations = {
       {skeleton.leaves[0], occurrences[0]},
       {skeleton.leaves[1], occurrences[1]},
@@ -924,7 +1050,8 @@ void vendorBindingIsExplicit(llvm::StringRef root) {
   mlir::MLIRContext context;
   context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                       circt::seq::SeqDialect, circt::sv::SVDialect>();
-  SkeletonFixture skeleton = makeSkeleton(context);
+  SkeletonFixture skeleton = makeSkeleton(test, context, fabric.module.view(),
+                                          abi.abi(), {occurrence});
   const std::vector<FabricOperationLeafAssociation> associations = {
       {skeleton.leaves.front(), occurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {

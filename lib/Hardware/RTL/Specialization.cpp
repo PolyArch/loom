@@ -434,10 +434,8 @@ llvm::Expected<FabricOperationProviderOutput> specializeFabricOperationLeaves(
     const FabricOperationProviderRegistry &providers,
     const ExternalImplementationContractCatalog &externalContracts,
     const platform::ImplementationPlatform *implementationPlatform) {
-  if (configurationAbi.abi().fabric() != fabric.reference())
-    return invalid("ConfigurationABI does not implement the exact Fabric");
-  if (llvm::Error error =
-          verifyCommonCirctSkeleton(module, fabric.view(), operationLeaves))
+  if (llvm::Error error = verifyCommonCirctSkeleton(
+          module, fabric.view(), configurationAbi.abi(), operationLeaves))
     return error;
 
   std::map<std::vector<std::uint8_t>, const FabricOperationRecipeBinding *>
