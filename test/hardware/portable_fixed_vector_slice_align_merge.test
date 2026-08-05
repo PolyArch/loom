@@ -1,0 +1,38 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-slice-align-merge-test %t
+# RUN: FileCheck %s --check-prefix=RTL < %t/fixed_vector_slice_align_merge.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_fixed_vector_slice_align_merge.ys
+
+# RTL: module fixed_vector_slice_align_merge
+# RTL: input [129:0] data_input_0
+# RTL: data_input_1,
+# RTL: input [63:0] data_input_2
+# RTL: data_input_3,
+# RTL: input [30:0] config_0
+# RTL: output [129:0] data_output_0
+# RTL: data_input_2[7:0] * config_0[22:15]
+# RTL: data_input_3[7:0]
+# RTL: * config_0[30:23]
+# RTL: config_0[0]
+# RTL: data_input_1 & ~
+# RTL: data_input_0 >>
+# RTL-NOT: poison
+
+# TB: module testbench
+# TB: static scalar extract failed
+# TB: static trailing-subvector extract failed
+# TB: two-position dynamic scalar extract failed
+# TB: mixed-position trailing-subvector extract failed
+# TB: static scalar insert failed
+# TB: static trailing-subvector insert failed
+# TB: mixed-position dynamic scalar insert failed
+# TB: dynamic trailing-subvector insert failed
+# TB: out-of-range position introduced X-filled success
+
+# YOSYS: hierarchy -check -top fixed_vector_slice_align_merge
+# YOSYS: check -assert
+# YOSYS: select -assert-none t:$dlatch t:$memrd t:$memwr t:$meminit t:$mem_v2
+# YOSYS: synth -top fixed_vector_slice_align_merge
+# YOSYS: check -assert
