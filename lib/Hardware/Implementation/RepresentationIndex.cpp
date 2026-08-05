@@ -598,11 +598,17 @@ indexInitialHdl(RepresentationFormatDescriptorRef formatRef,
                            parserOptions(version));
   std::vector<std::shared_ptr<slang::syntax::SyntaxTree>> trees;
   trees.reserve(sources->size());
-  for (const LoadedSource &source : *sources) {
-    const slang::SourceBuffer buffer =
-        sourceManager.assignText(source.logicalName, source.bytes);
+  std::vector<slang::SourceBuffer> buffers;
+  buffers.reserve(sources->size());
+  for (const LoadedSource &source : *sources)
+    buffers.push_back(
+        sourceManager.assignText(source.logicalName, source.bytes));
+
+  for (const slang::SourceBuffer &buffer : buffers)
     if (llvm::Error error = validateRawSource(buffer, sourceManager, version))
       return std::move(error);
+
+  for (const slang::SourceBuffer &buffer : buffers) {
     std::shared_ptr<slang::syntax::SyntaxTree> tree =
         slang::syntax::SyntaxTree::fromBuffer(buffer, sourceManager,
                                               syntaxOptions);
@@ -613,12 +619,15 @@ indexInitialHdl(RepresentationFormatDescriptorRef formatRef,
                        return diagnostic.isError();
                      }))
       return detail::invalidIndex("HDL parse or elaboration failed");
+    trees.push_back(std::move(tree));
+  }
+
+  for (const auto &tree : trees) {
     if (!tree->getIncludeDirectives().empty())
       return detail::unsupportedIndex(
           "include directives are outside the descriptor");
     if (llvm::Error error = validateSyntaxNode(tree->root(), entry.indexer))
       return std::move(error);
-    trees.push_back(std::move(tree));
   }
 
   slang::Bag compilationBag(

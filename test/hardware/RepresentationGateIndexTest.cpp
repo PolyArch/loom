@@ -136,6 +136,20 @@ tryBuildGateIndex(const std::filesystem::path &root, llvm::StringRef storeName,
                              payloads, store);
 }
 
+llvm::Expected<RepresentationIndex>
+tryBuildGateIndexFromUnits(
+    const std::filesystem::path &root, llvm::StringRef storeName,
+    std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>> units) {
+  const std::filesystem::path storePath = root / storeName.str();
+  std::filesystem::create_directories(storePath);
+  const BlobStore store(storePath.string());
+  const std::vector<ImplementationPayload> payloads =
+      putSources(__func__, store, units);
+  return indexRepresentation(gateFormat(__func__),
+                             {RepresentationObjectKind::Module, "top"},
+                             payloads, store);
+}
+
 RepresentationIndex buildGateIndex(const std::filesystem::path &root,
                                    llvm::StringRef storeName,
                                    llvm::StringRef source) {
@@ -335,6 +349,42 @@ void assignmentsAreOnlyUnpackedAtContinuousAssignSites(
          "assign y = {a & b, 1'b0}; endmodule\n");
 }
 
+void validityIsEstablishedOverTheWholeClosure(
+    const std::filesystem::path &root) {
+  expectInvalid(
+      "gate-mixed-failure-one-unit-blobs",
+      tryBuildGateIndex(root, "gate-mixed-failure-one-unit-blobs",
+                        "module top(input a, b, output y, output z); "
+                        "assign y = a & b; "
+                        "assign z = ; endmodule\n"));
+
+  expectInvalid("gate-mixed-failure-across-units-blobs",
+                tryBuildGateIndexFromUnits(
+                    root, "gate-mixed-failure-across-units-blobs",
+                    {{"netlist/a_subset.v",
+                      "module top(input a, b, output y); "
+                      "assign y = a & b; endmodule\n"},
+                     {"netlist/b_invalid.v",
+                      "module other(input a); assign = a; endmodule\n"}}));
+
+  expectInvalid("gate-raw-directive-does-not-mask-parse-error-blobs",
+                tryBuildGateIndexFromUnits(
+                    root, "gate-raw-directive-does-not-mask-parse-error-blobs",
+                    {{"netlist/a_directive.v",
+                      "`timescale 1ns/1ps\n"
+                      "module helper(input a); endmodule\n"},
+                     {"netlist/b_invalid.v",
+                      "module other(input a); assign = a; endmodule\n"}}));
+
+  expectInvalid("gate-exact-top-does-not-mask-parse-error-blobs",
+                tryBuildGateIndexFromUnits(
+                    root, "gate-exact-top-does-not-mask-parse-error-blobs",
+                    {{"netlist/a_no_top.v",
+                      "module helper(input a); endmodule\n"},
+                     {"netlist/b_invalid.v",
+                      "module other(input a); assign = a; endmodule\n"}}));
+}
+
 void gateLanguageValidityPrecedesSubsetAdmission(
     const std::filesystem::path &root) {
   expectInvalid(
@@ -462,6 +512,7 @@ int main(int argc, char **argv) {
   behavioralCellActualsAreUnsupported(root);
   assignmentsAreOnlyUnpackedAtContinuousAssignSites(root);
   gateLanguageValidityPrecedesSubsetAdmission(root);
+  validityIsEstablishedOverTheWholeClosure(root);
   structuralGateRejectionsCoverTheWholePayload(root);
   warningsAndAuthoringOrderAreNonsemantic(root);
   std::filesystem::remove_all(root);
