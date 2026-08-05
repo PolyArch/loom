@@ -207,6 +207,7 @@ if(LOOM_HAVE_CIRCT)
     loom-portable-scalar-bit-reinterpret-test
     loom-portable-scalar-float-fma-test
     loom-portable-scalar-integer-add-sub-test
+    loom-portable-scalar-integer-cast-test
     loom-portable-scalar-integer-compare-min-max-test
     loom-portable-scalar-integer-multiply-test
     loom-portable-scalar-value-select-test

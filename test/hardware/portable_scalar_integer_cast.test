@@ -1,0 +1,37 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-scalar-integer-cast-test %t
+# RUN: FileCheck %s --check-prefix=CONFIGURED < %t/scalar_integer_cast.sv
+# RUN: FileCheck %s --check-prefix=IDENTITY < %t/scalar_integer_cast_identity.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_scalar_integer_cast.ys
+
+# CONFIGURED: module scalar_integer_cast
+# CONFIGURED: input [36:0] data_input_0
+# CONFIGURED: input [2:0] config_0
+# CONFIGURED: output [39:0] data_output_0
+# CONFIGURED: data_input_0[7:0]
+# CONFIGURED: data_input_0[31:0]
+# CONFIGURED-NOT: poison
+# CONFIGURED-NOT: trap
+# CONFIGURED-NOT: valid_
+# CONFIGURED-NOT: ready_
+
+# IDENTITY: module scalar_integer_cast_identity
+# IDENTITY: input [34:0] data_input_0
+# IDENTITY: output [35:0] data_output_0
+# IDENTITY: data_input_0[31:0]
+# IDENTITY-NOT: config_
+
+# TB: sign extension or physical zero fill failed
+# TB: zero extension failed
+# TB: truncation or low-bit input adaptation failed
+# TB: configured identity failed
+# TB: unassigned code did not select the inactive identity
+# TB: configuration-free index identity failed
+
+# YOSYS: hierarchy -check -top scalar_integer_cast_synthesis_top
+# YOSYS: check -assert
+# YOSYS: synth -top scalar_integer_cast_synthesis_top
+# YOSYS: check -assert
+# YOSYS: stat

@@ -65,6 +65,19 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-scalar-integer-cast-test
+    PortableScalarIntegerCastTest.cpp
+  )
+
+  target_link_libraries(loom-portable-scalar-integer-cast-test PRIVATE
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-scalar-integer-compare-min-max-test
     PortableScalarIntegerCompareMinMaxTest.cpp
   )

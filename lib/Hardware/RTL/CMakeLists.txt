@@ -14,6 +14,7 @@ add_library(LoomHardwareRTL
   Providers/ScalarBitReinterpret.cpp
   Providers/ScalarFloatFma.cpp
   Providers/ScalarIntegerAddSub.cpp
+  Providers/ScalarIntegerCast.cpp
   Providers/ScalarIntegerCompareMinMax.cpp
   Providers/ScalarIntegerMultiply.cpp
   Providers/ScalarValueSelect.cpp
