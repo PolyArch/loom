@@ -140,6 +140,22 @@ repeated per-resource System table and an implicit connectivity inference while
 remaining explicit enough to validate multi-clock reuse and to derive RTL ports
 and constraints mechanically.
 
+An SSA `SpatialValue` belongs only to the connectivity plane; making it also
+identify a physical owner would conflate two facts and fail for boundary faces
+or resources with several owners, such as a memory occurrence with operation
+ports and a local service. The Module relation already has one closed
+`Boundary | Internal` member union, so one owner-checked
+`ModuleDomainMemberHandle` is its smallest faithful authoring projection.
+Separate boundary and internal assignment APIs would duplicate the same
+relation, while adding Clock and Reset parameters to every resource constructor
+would couple orthogonal topology choices and proliferate PE, FU-node, memory,
+and instruction-context exceptions. The resource-construction call is the
+single public authoring boundary that can expose the owners it creates, so its
+role-specific accessors derive the single unified handle mechanically from
+those Fabric draft entities rather than owning or storing another inventory.
+Finalization discards the handles and persists only the existing
+`ModuleDomainAssignment` relation.
+
 When a Module instantiates another Module, the instance edge is the only place
 that knows both symbolic slot contexts. Giving that edge one explicit total
 child-to-parent correspondence records the essential relationship without

@@ -60,6 +60,17 @@ Graph-region connectivity as owned by the corresponding Fabric specifications.
 An FU remains PE-local; the Builder cannot promote it into a parallel
 module-level resource kind.
 
+The same public surface exposes every member of the Module Clock and Reset
+assignment relation. This includes every input and output boundary face,
+including token and memory faces, and every internal physical owner admitted by
+`FabricModulePhysicalOwnerRef`: PE occurrences, FU occurrences, FU occurrence
+nodes, memory occurrences, memory operation ports, local memory services,
+switches, FIFOs, boundary resources, and instruction contexts. A caller never
+has to recover one of these members from an SSA value, an operation name, or a
+resource-private flat ordinal convention. A Module signature endpoint ordinal
+is the canonical typed selector owned by `FabricModuleBoundaryEndpointRef`, not
+an inferred resource role.
+
 For an exact memory Operation Engine declaration, the public API requires its
 canonical operation-port inventory. A Temporal engine additionally requires
 the positive resident-context count `K`; a Spatial engine cannot carry it.
@@ -155,7 +166,11 @@ Clock and Reset construction follows the same thin typed boundary:
 ```text
 SpatialCoreBuilder::declareDomainSlot(Clock | Reset)
   -> Expected<ModuleDomainSlotHandle>
-SpatialCoreBuilder::assignDomainSlot(ModulePhysicalMemberHandle,
+SpatialCoreBuilder::inputDomainMember(input ordinal)
+  -> Expected<ModuleDomainMemberHandle>
+SpatialCoreBuilder::outputDomainMember(output ordinal)
+  -> Expected<ModuleDomainMemberHandle>
+SpatialCoreBuilder::assignDomainSlot(ModuleDomainMemberHandle,
                                      ModuleDomainSlotHandle)
   -> Error
 ModuleInstanceDomainSlotBinding = {
@@ -178,10 +193,63 @@ HardwareDomainBuilder::close(canonical range<HardwareDomainMember>,
   -> Error
 ```
 
+`ModuleDomainMemberHandle` is one opaque, owner-checked authoring handle local
+to an open `SpatialCoreBuilder`. It mechanically projects the closed member
+wire owned by `docs/spec-fabric-identity.md`:
+
+```text
+Boundary(FabricModuleBoundaryEndpointRef)
+| Internal(FabricModulePhysicalOwnerRef)
+```
+
+It is not a persistent Fabric reference, generic node handle, shadow member
+inventory, or System `HardwareDomainMember`, and none of those types may be
+silently substituted for it. The signature accessors select Module boundary
+faces directly; they do not infer a face from an SSA use or wait until root
+closure to reconstruct one. `assignDomainSlot` accepts the handle to author
+the Module-owned `domain_assignments` relation specified by
+`docs/spec-fabric-module.md`.
+
+Every typed resource-construction result exposes all physical owners created by
+that call through role-specific accessors returning the single unified
+`ModuleDomainMemberHandle`. The required projection is complete:
+
+* a FIFO, switch, or boundary result exposes its occurrence;
+* a PE result exposes its occurrence and every instruction context;
+* an FU result exposes its occurrence, and each FU-node result exposes its own
+  occurrence node;
+* a memory result exposes its occurrence, every operation port, and its local
+  service when present; and
+* a non-Module instantiation result exposes every fresh occurrence and derived
+  internal owner materialized by that use.
+
+For a non-Module instantiation, the result supplies a one-to-one,
+authoring-only projection from each target-local typed owner role or reference
+to its fresh `ModuleDomainMemberHandle`. That projection is mechanically
+derived for this use, is not persisted, and does not become another owner
+inventory.
+
+A Module instantiation does not expose callee-local member handles to the
+receiving Builder. Its fresh internal owners survive in the receiving Module,
+and their assignments are remapped through the instance's total domain-slot
+binding. Child boundary members and their assignments disappear with the child
+boundary, as specified by `docs/spec-fabric-instantiate.md`. Exact C++
+result-class and accessor spellings are implementation choices, but returning
+only `SpatialValue` and asking a caller to infer an owner, or assigning semantic
+roles to an untyped ordinal array, does not satisfy this contract.
+
 These calls elaborate directly into the Module slot/assignment and System
 domain-membership relations owned by Fabric. The Builder stores no shadow
 domain graph, applies no AccCore-wide inheritance, and supplies no implicit
 Clock or Reset default.
+
+The member and slot supplied to `assignDomainSlot` must belong to the same open
+Module. Stale or foreign handles, an invalid slot kind, and more than one
+assignment of the same kind for one member are rejected. Before the Module can
+close, every member exposed by its signature and resource topology has exactly
+one Clock assignment and exactly one Reset assignment. Slot zero is not a
+default, and connectivity, containment, parent assignment, or an omitted call
+cannot provide an assignment implicitly.
 
 For `instantiate`, each child handle must belong to `target` and each parent
 handle must belong to the receiving builder. The bindings must form the exact
@@ -201,6 +269,9 @@ wrong-kind domain, `AccCore::domainMember()`, or an AccCore-wide SpatialCore
 membership is rejected rather than used as a slot shortcut.
 
 Convenience topology and resource helpers use only this exact public surface.
+They return or propagate the complete member handles created by their expansion
+through role-specific accessors; a helper cannot hide FU, FU-node,
+instruction-context, or other members and rely on containment to assign them.
 They may return typed groups of created handles, but cannot create hidden
 hardware facts or use a private emitter.
 
@@ -274,6 +345,11 @@ assignment. `FinalizedFabricDesign` exposes only those sealed views. A
 convenience helper that internally records such facts must elaborate them into
 the root before finalization and discard its private state.
 
+A Module with a missing or duplicate Clock or Reset assignment cannot close or
+publish. The Builder may diagnose this through its owner-checked handles before
+canonicalization, but the Fabric verifier remains the sole semantic authority
+for total assignment and topology consistency.
+
 Finalization performs one failure-atomic returned-closure derivation:
 
 1. close construction scopes and expand all helpers;
@@ -330,6 +406,10 @@ the same Builder/Fabric path. Selecting a builtin preset expands its exact
 template identity, version, and parameters, then finalizes an ordinary Fabric
 Artifact. A preset name is authoring provenance, not a substitute for the
 expanded hardware facts.
+
+Each builtin assigns all Module boundary and internal members through the same
+public `ModuleDomainMemberHandle` surface. A builtin cannot inject root domain
+properties directly or use a private emitter to bypass the public Builder.
 
 An external Fabric file and a builtin template are distinct source forms, but
 all downstream stages see the same finalized Fabric contract. If hardware
@@ -1150,6 +1230,10 @@ The canonical preset expansion functions are reference-quality C++ examples
 of the public ADG Builder API. They are compiled as production builtin
 generators and remain readable as examples for hardware architects.
 
+Their Clock and Reset construction uses the same domain-member handles and
+typed resource results available to user-authored designs; equivalence with a
+direct public expansion includes the complete Module assignment relation.
+
 A focused example executable may select a preset, populate a `DesignBuilder`,
 finalize it, and print or publish the resulting Fabric. It must call the same
 descriptor and expansion function as `loom-cc` and `loom-c++`; it must not
@@ -1292,6 +1376,13 @@ The stable Builder anchors are deliberately small:
 15. General64 admits one exact contiguous `vector<2xf64>` point, admits one
     indexed point whose complete address vector fits, and rejects an
     equal-data-width indexed point whose address vector does not fit.
+16. One Module containing token and memory boundary faces, PE/FU/FU-node,
+    memory/operation-port/local-service, switch, FIFO, boundary-resource, and
+    spatial and temporal instruction-context members exposes every member
+    through the public typed surface. Distinct-slot and many-to-one assignments
+    close successfully; missing, duplicate, foreign, stale, or wrong-root
+    handles fail closed; and the equivalent builtin expansion has the same
+    finalized Fabric identity.
 
 These anchors test the public boundary and determinism. They do not require a
 fixture for every helper, topology, operation ordering, generated name, or
