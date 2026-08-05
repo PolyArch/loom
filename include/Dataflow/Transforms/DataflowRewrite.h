@@ -1,9 +1,14 @@
 #ifndef LOOM_DATAFLOW_TRANSFORMS_DATAFLOW_REWRITE_H
 #define LOOM_DATAFLOW_TRANSFORMS_DATAFLOW_REWRITE_H
 
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
+
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/Support/Error.h"
+
 #include <memory>
+#include <optional>
 
 namespace dataflow {
 
@@ -32,6 +37,13 @@ enum class DataflowRewriteKind {
 /// finalization: the pass runs no canonicalizer and no finalization pipeline.
 std::unique_ptr<::mlir::Pass>
 createDataflowRewritePass(DataflowRewriteKind kind);
+
+/// Applies one typed rewrite to a private clone and finalizes the complete
+/// result through the sole Canonical Dataflow finalizer. A no-op returns an
+/// empty optional; a changed result has a distinct immutable identity.
+llvm::Expected<std::optional<CanonicalDataflowArtifact>>
+materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
+                           DataflowRewriteKind kind);
 
 /// Registers `--dataflow-rewrite` with the global pass registry so developer
 /// tools can drive it as `--dataflow-rewrite=kind=<value>`.

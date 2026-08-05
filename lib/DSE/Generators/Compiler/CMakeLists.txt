@@ -1,4 +1,5 @@
 add_library(LoomDSECompilerGenerator
+  DataflowRewriteCandidateGenerator.cpp
   PreMappingExploration.cpp
   StructuredExecutionShapeCandidateGenerator.cpp
   StructuredOwnershipCandidateGenerator.cpp
@@ -12,6 +13,8 @@ target_include_directories(LoomDSECompilerGenerator PUBLIC
 target_link_libraries(LoomDSECompilerGenerator PUBLIC
   LoomDSE
   LoomFabricArtifact
+  LoomFrontendCompilation
   LoomSimulator
+  MLIRDataflowTransforms
   LLVMSupport
 )

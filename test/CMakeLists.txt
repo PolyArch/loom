@@ -126,6 +126,7 @@ set(LOOM_TEST_DEPENDS
   loom-structured-thread-domain-test
   loom-structured-schedule-generator-test
   loom-structured-execution-shape-generator-test
+  loom-dataflow-rewrite-generator-test
   loom-pre-mapping-compilation-test
   loom-pointer-service-boundary-test
   loom-frontend-payload-framing-test

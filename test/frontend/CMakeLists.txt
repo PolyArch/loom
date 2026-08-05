@@ -185,6 +185,21 @@ target_link_libraries(loom-structured-execution-shape-generator-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-dataflow-rewrite-generator-test
+  DataflowRewriteGeneratorTest.cpp
+)
+
+target_link_libraries(loom-dataflow-rewrite-generator-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomDSECompilerGenerator
+  MLIRDataflow
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
 add_executable(loom-frontend-dfg-integration-test
   FrontendDfgIntegrationTest.cpp
 )

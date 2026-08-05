@@ -10,8 +10,8 @@
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowGraphValidation.h"
-#include "Dataflow/IR/OperationSchema.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/OperationSchema.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -20,6 +20,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
@@ -472,10 +473,19 @@ struct DataflowRewritePass
     });
 
     bool changed = false;
-    for (::dataflow::GraphOp graph : graphs)
-      for (::mlir::Operation &op :
-           ::llvm::make_early_inc_range(graph.getBody().front()))
-        changed |= applySelectedRewrite(&op, kind.getValue());
+    for (::dataflow::GraphOp graph : graphs) {
+      ::llvm::SmallVector<::mlir::Operation *, 32> programOrder;
+      for (::mlir::Operation &op : graph.getBody().front())
+        programOrder.push_back(&op);
+
+      // Every rule in the closed catalog is rooted at the latest operation in
+      // its source pattern and erases only that root plus already-visited
+      // defining predecessors. Snapshotting program order therefore keeps all
+      // not-yet-visited pointers live while avoiding an intrusive-list
+      // iterator whose current node can be erased by the matcher.
+      for (::mlir::Operation *op : programOrder)
+        changed |= applySelectedRewrite(op, kind.getValue());
+    }
     return changed;
   }
 };
@@ -485,6 +495,25 @@ struct DataflowRewritePass
 std::unique_ptr<::mlir::Pass>
 dataflow::createDataflowRewritePass(DataflowRewriteKind kind) {
   return std::make_unique<DataflowRewritePass>(kind);
+}
+
+llvm::Expected<std::optional<dataflow::CanonicalDataflowArtifact>>
+dataflow::materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
+                                     DataflowRewriteKind kind) {
+  ::mlir::OwningOpRef<::mlir::ModuleOp> candidate(
+      ::mlir::cast<::mlir::ModuleOp>(parent.module()->clone()));
+  ::mlir::PassManager pipeline(candidate->getContext());
+  pipeline.addPass(createDataflowRewritePass(kind));
+  if (::mlir::failed(pipeline.run(*candidate)))
+    return ::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "dataflow_rewrite_invalid: typed rewrite pipeline failed");
+  auto finalized = finalizeCanonicalDataflow(candidate.get());
+  if (!finalized)
+    return finalized.takeError();
+  if (finalized->identity() == parent.identity())
+    return std::optional<CanonicalDataflowArtifact>{};
+  return std::optional<CanonicalDataflowArtifact>(std::move(*finalized));
 }
 
 void dataflow::registerDataflowTransformsPasses() {

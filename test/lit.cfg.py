@@ -130,6 +130,7 @@ tools = [
     "loom-structured-program-artifact-test",
     "loom-structured-thread-domain-test",
     "loom-structured-schedule-generator-test",
+    "loom-dataflow-rewrite-generator-test",
     "loom-pre-mapping-compilation-test",
     "loom-pointer-service-boundary-test",
     "mlir-opt",
