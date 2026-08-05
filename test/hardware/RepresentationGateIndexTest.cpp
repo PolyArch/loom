@@ -319,6 +319,22 @@ void behavioralCellActualsAreUnsupported(const std::filesystem::path &root) {
          "module top(input a, b); missing_cell u(.a(a == b)); endmodule\n");
 }
 
+void assignmentsAreOnlyUnpackedAtContinuousAssignSites(
+    const std::filesystem::path &root) {
+  auto reject = [&](llvm::StringRef name, llvm::StringRef source) {
+    expectUnsupported(name, tryBuildGateIndex(root, name, source));
+  };
+
+  reject("gate-assignment-in-cell-actual-blobs",
+         "module leaf(input a); endmodule\n"
+         "module top(input a, output y); leaf u(.a(y = a)); endmodule\n");
+  reject("gate-assignment-in-net-initializer-blobs",
+         "module top(input a, output y); wire w = (y = a); endmodule\n");
+  reject("gate-operator-nested-in-concatenation-blobs",
+         "module top(input a, b, output [1:0] y); "
+         "assign y = {a & b, 1'b0}; endmodule\n");
+}
+
 void gateLanguageValidityPrecedesSubsetAdmission(
     const std::filesystem::path &root) {
   expectInvalid(
@@ -444,6 +460,7 @@ int main(int argc, char **argv) {
   completeStructuralGateSubsetIsIndexed(root);
   wiringGrammarIsUniformAcrossElectricalSites(root);
   behavioralCellActualsAreUnsupported(root);
+  assignmentsAreOnlyUnpackedAtContinuousAssignSites(root);
   gateLanguageValidityPrecedesSubsetAdmission(root);
   structuralGateRejectionsCoverTheWholePayload(root);
   warningsAndAuthoringOrderAreNonsemantic(root);

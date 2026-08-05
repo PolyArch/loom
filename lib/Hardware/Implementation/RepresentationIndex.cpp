@@ -330,7 +330,6 @@ llvm::Error validateRawSource(const slang::SourceBuffer &buffer,
 llvm::Error validateWiringExpression(const slang::syntax::SyntaxNode &node) {
   using slang::syntax::SyntaxKind;
   switch (node.kind) {
-  case SyntaxKind::AssignmentExpression:
   case SyntaxKind::IdentifierName:
   case SyntaxKind::IdentifierSelectName:
   case SyntaxKind::ElementSelect:
@@ -406,7 +405,14 @@ llvm::Error validateGateContinuousAssign(
     if (!expression)
       return detail::unsupportedIndex(
           "empty gate continuous assignment is outside the descriptor");
-    if (llvm::Error error = validateWiringExpression(*expression))
+    if (expression->kind != slang::syntax::SyntaxKind::AssignmentExpression)
+      return detail::unsupportedIndex(
+          "gate continuous assignment is outside the descriptor");
+    const auto &assigned =
+        expression->as<slang::syntax::BinaryExpressionSyntax>();
+    if (llvm::Error error = validateWiringExpression(*assigned.left))
+      return error;
+    if (llvm::Error error = validateWiringExpression(*assigned.right))
       return error;
   }
   return llvm::Error::success();
