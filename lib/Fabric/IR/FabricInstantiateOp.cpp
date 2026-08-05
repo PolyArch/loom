@@ -2,6 +2,7 @@
 
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricTypes.h"
+#include "Fabric/IR/ModuleDomain.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/SymbolTable.h"
@@ -90,6 +91,18 @@ static bool isLegalKindForParent(Operation *parent, Operation *target) {
   if (isa<fabric::PeOp>(parent))
     return isa<fabric::FuOp>(target);
   return false;
+}
+
+static LogicalResult decodeDomainBindings(
+    InstantiateOp instantiate,
+    SmallVectorImpl<ModuleInstanceDomainSlotBinding> &bindings) {
+  auto decoded = decodeModuleInstanceDomainSlotBindings(
+      instantiate.getDomainSlotBindingsAttr());
+  if (!decoded)
+    return instantiate.emitOpError("has malformed domain-slot bindings: ")
+           << llvm::toString(decoded.takeError());
+  bindings.append(decoded->begin(), decoded->end());
+  return success();
 }
 
 } // namespace
@@ -267,6 +280,10 @@ LogicalResult InstantiateOp::verify() {
              << ": memref operands cannot use the 'to <inner-type>' clause; "
                 "memref types must match exactly";
   }
+
+  SmallVector<ModuleInstanceDomainSlotBinding, 4> bindings;
+  if (failed(decodeDomainBindings(*this, bindings)))
+    return failure();
   return success();
 }
 
@@ -307,6 +324,23 @@ InstantiateOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
              << targetName << "' for symbol '@" << getCallee() << "'";
     return emitOpError("has unsupported parent op '")
            << parentName << "' for fabric.instantiate";
+  }
+
+  SmallVector<ModuleInstanceDomainSlotBinding, 4> domainBindings;
+  if (failed(decodeDomainBindings(*this, domainBindings)))
+    return failure();
+  if (!isa<fabric::ModuleOp>(target)) {
+    if (!domainBindings.empty())
+      return emitOpError(
+          "a non-Module target cannot have domain-slot bindings");
+  } else if (isa<fabric::ModuleOp>(parent)) {
+    if (llvm::Error error = validateModuleInstanceDomainSlotBindings(
+            /*child=*/{}, /*parent=*/{}, domainBindings))
+      return emitOpError("has invalid domain-slot bindings: ")
+             << llvm::toString(std::move(error));
+  } else if (!domainBindings.empty()) {
+    return emitOpError(
+        "a Module target outside a fabric.module cannot bind domain slots");
   }
 
   // 3. Self-reference: the closest enclosing Symbol op of this

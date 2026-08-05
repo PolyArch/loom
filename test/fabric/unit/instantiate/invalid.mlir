@@ -250,3 +250,36 @@ fabric.module @inner_types_collision_host(%a : !fabric.bits<32>) {
       : (!fabric.bits<32>) -> !fabric.bits<16>
   fabric.yield
 }
+
+// -----
+// The flat binding property must contain complete typed triples.
+fabric.module @malformed_domain_binding_target() {
+}
+fabric.module @malformed_domain_binding_host() {
+  // expected-error @+1 {{has malformed domain-slot bindings}}
+  fabric.instantiate @malformed_domain_binding_target() -> ()
+      {domain_slot_bindings = array<i64: 0, 0>}
+}
+
+// -----
+// A zero-slot Module target requires the exact empty relation.
+fabric.module @zero_slot_domain_target() {
+}
+fabric.module @zero_slot_domain_host() {
+  // expected-error @+1 {{binding count does not equal the child slot count}}
+  fabric.instantiate @zero_slot_domain_target() -> ()
+      {domain_slot_bindings = array<i64: 0, 0, 0>}
+}
+
+// -----
+// A non-Module target cannot carry a Module domain relation.
+fabric.module @non_module_domain_binding(%arg : !fabric.bits<8>) {
+  fabric.switch @SW [spatial]
+      (!fabric.bits<8>) -> (!fabric.bits<8>)
+      [{connectivity_table = ["1"]}]
+  // expected-error @+1 {{a non-Module target cannot have domain-slot bindings}}
+  %result = fabric.instantiate @SW(
+      %arg : !fabric.bits<8>) -> (!fabric.bits<8>)
+      {domain_slot_bindings = array<i64: 0, 0, 0>}
+  fabric.yield
+}

@@ -2,6 +2,7 @@
 
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
+#include "Fabric/IR/ModuleDomain.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
@@ -10,6 +11,87 @@
 #include "llvm/Support/raw_ostream.h"
 
 using namespace mlir;
+
+static bool acceptsDomainBindings(
+    fabric::ModuleDomainSlotCounts child, fabric::ModuleDomainSlotCounts parent,
+    ArrayRef<fabric::ModuleInstanceDomainSlotBinding> bindings) {
+  if (llvm::Error error = fabric::validateModuleInstanceDomainSlotBindings(
+          child, parent, bindings)) {
+    llvm::consumeError(std::move(error));
+    return false;
+  }
+  return true;
+}
+
+static bool verifyDomainBindingRelation() {
+  using loom::fabric::FabricClockResetKind;
+  using Binding = fabric::ModuleInstanceDomainSlotBinding;
+
+  const fabric::ModuleDomainSlotCounts child{2, 1};
+  const fabric::ModuleDomainSlotCounts parent{2, 1};
+  const Binding manyToOne[] = {
+      {FabricClockResetKind::Clock, 0, 1},
+      {FabricClockResetKind::Clock, 1, 1},
+      {FabricClockResetKind::Reset, 0, 0},
+  };
+  if (!acceptsDomainBindings(child, parent, manyToOne))
+    return false;
+
+  const Binding wrongOrder[] = {
+      {FabricClockResetKind::Clock, 1, 1},
+      {FabricClockResetKind::Clock, 0, 1},
+      {FabricClockResetKind::Reset, 0, 0},
+  };
+  const Binding duplicateChild[] = {
+      {FabricClockResetKind::Clock, 0, 0},
+      {FabricClockResetKind::Clock, 0, 1},
+      {FabricClockResetKind::Reset, 0, 0},
+  };
+  const Binding missingReset[] = {
+      {FabricClockResetKind::Clock, 0, 0},
+      {FabricClockResetKind::Clock, 1, 1},
+  };
+  const Binding childOutOfRange[] = {
+      {FabricClockResetKind::Clock, 0, 0},
+      {FabricClockResetKind::Clock, 2, 1},
+      {FabricClockResetKind::Reset, 0, 0},
+  };
+  const Binding parentOutOfRange[] = {
+      {FabricClockResetKind::Clock, 0, 0},
+      {FabricClockResetKind::Clock, 1, 2},
+      {FabricClockResetKind::Reset, 0, 0},
+  };
+  const Binding unknownKind[] = {
+      {static_cast<FabricClockResetKind>(2), 0, 0},
+  };
+
+  MLIRContext context(MLIRContext::Threading::DISABLED);
+  DenseI64ArrayAttr encoded =
+      fabric::encodeModuleInstanceDomainSlotBindings(&context, manyToOne);
+  auto decoded = fabric::decodeModuleInstanceDomainSlotBindings(encoded);
+  if (!decoded || ArrayRef<Binding>(*decoded) != ArrayRef<Binding>(manyToOne))
+    return false;
+
+  auto rejectsEncoding = [&](ArrayRef<int64_t> fields) {
+    auto decoded = fabric::decodeModuleInstanceDomainSlotBindings(
+        DenseI64ArrayAttr::get(&context, fields));
+    if (decoded)
+      return false;
+    llvm::consumeError(decoded.takeError());
+    return true;
+  };
+  if (!rejectsEncoding({0, 0}) || !rejectsEncoding({2, 0, 0}) ||
+      !rejectsEncoding({0, -1, 0}) || !rejectsEncoding({0, 4294967296LL, 0}))
+    return false;
+
+  return !acceptsDomainBindings(child, parent, wrongOrder) &&
+         !acceptsDomainBindings(child, parent, duplicateChild) &&
+         !acceptsDomainBindings(child, parent, missingReset) &&
+         !acceptsDomainBindings(child, parent, childOutOfRange) &&
+         !acceptsDomainBindings(child, parent, parentOutOfRange) &&
+         !acceptsDomainBindings({1, 0}, {1, 0}, unknownKind) &&
+         acceptsDomainBindings({0, 0}, {0, 0}, {});
+}
 
 static constexpr StringLiteral input = R"mlir(
 module {
@@ -125,6 +207,9 @@ static bool verifyFailureAtomicity(MLIRContext &context) {
 }
 
 int main() {
+  if (!verifyDomainBindingRelation())
+    return 1;
+
   MLIRContext context(MLIRContext::Threading::DISABLED);
   context.getOrLoadDialect<fabric::FabricDialect>();
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(input, &context);

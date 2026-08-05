@@ -385,6 +385,9 @@ def Fabric_InstantiateOp
     declared input port type, expressed via the `to <inner-type>` clause.
     Differing destination types are retained in the ODS-owned typed
     `inner_input_types` property.
+    The `domain_slot_bindings` property carries the authoring-only canonical
+    child-to-parent Clock/Reset slot relation for a Module target. Non-Module
+    targets and zero-slot Modules use the empty relation.
     `memref` operands must match exactly. Output direction is strict:
     each result type must equal the target's declared output port type.
 
@@ -393,7 +396,8 @@ def Fabric_InstantiateOp
 
   let arguments = (ins FlatSymbolRefAttr:$callee,
       Variadic<Fabric_ModulePortType>:$inputs,
-      Fabric_InnerInputTypesProp:$inner_input_types);
+      Fabric_InnerInputTypesProp:$inner_input_types,
+      DefaultValuedAttr<DenseI64ArrayAttr, "{}">:$domain_slot_bindings);
   let results = (outs Variadic<Fabric_ModulePortType>:$outputs);
 
   let hasCustomAssemblyFormat = 1;

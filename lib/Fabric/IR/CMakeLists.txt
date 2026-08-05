@@ -78,6 +78,7 @@ add_mlir_dialect_library(MLIRFabric
   FabricMemoryAttrs.cpp
   FabricMemOp.cpp
   FabricModuleOp.cpp
+  ModuleDomain.cpp
   FabricOpUtils.cpp
   FabricOps.cpp
   FabricPrimitiveOps.cpp
