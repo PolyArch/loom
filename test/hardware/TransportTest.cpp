@@ -1,5 +1,10 @@
 #include "Hardware/RTL/Transport.h"
 
+#include "Common/ArtifactStore.h"
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/IR/FabricDialect.h"
+#include "Fabric/IR/FabricOps.h"
+
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWDialect.h"
@@ -8,14 +13,19 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Parser/Parser.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 
 #include <cstdlib>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 
 using namespace loom::hardware::rtl;
@@ -48,8 +58,94 @@ void expectErrorContains(const char *test, llvm::Expected<T> value,
           "unexpected error: " + message);
 }
 
+class TemporaryDirectory final {
+public:
+  explicit TemporaryDirectory(const char *test) : test_(test) {
+    llvm::SmallString<128> path;
+    if (std::error_code error =
+            llvm::sys::fs::createUniqueDirectory("loom-transport-test", path))
+      fail(test, error.message());
+    path_ = path.str().str();
+  }
+
+  ~TemporaryDirectory() {
+    if (std::error_code error = llvm::sys::fs::remove_directories(path_))
+      std::cerr << test_
+                << ": unable to remove temporary directory: " << error.message()
+                << '\n';
+  }
+
+  llvm::StringRef path() const { return path_; }
+
+private:
+  std::string test_;
+  std::string path_;
+};
+
 unsigned integerWidth(mlir::Value value) {
   return mlir::cast<mlir::IntegerType>(value.getType()).getWidth();
+}
+
+loom::fabric::FinalizedFabricRoot
+makePointConnectionFabric(const char *test, const loom::ArtifactStore &store) {
+  mlir::DialectRegistry registry;
+  registry.insert<::fabric::FabricDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  mlir::OwningOpRef<mlir::ModuleOp> source =
+      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+        module {
+          fabric.module @point_connections(
+              %arg: !fabric.bits_tag<16, 3>)
+              -> !fabric.bits_tag<8, 9> {
+            %wide = fabric.fifo %arg [max_depth = 2, bypassable = false]
+                : !fabric.bits_tag<16, 3>
+            %narrow = fabric.switch [temporal] %wide
+                [{connectivity_table = ["1"], route_table_size = 1 : i32}]
+                : (!fabric.bits_tag<16, 3> to !fabric.bits_tag<4, 7>)
+                -> !fabric.bits_tag<4, 7>
+            %extended = fabric.switch [temporal] %narrow
+                [{connectivity_table = ["1"], route_table_size = 1 : i32}]
+                : (!fabric.bits_tag<4, 7> to !fabric.bits_tag<8, 9>)
+                -> !fabric.bits_tag<8, 9>
+            fabric.yield %extended : !fabric.bits_tag<8, 9>
+          }
+        }
+      )mlir",
+                                              &context);
+  require(test, static_cast<bool>(source),
+          "unable to parse point-connection Fabric fixture");
+  ::fabric::ModuleOp root;
+  source->walk([&](::fabric::ModuleOp candidate) { root = candidate; });
+  require(test, static_cast<bool>(root),
+          "point-connection fixture has no Module root");
+  return take(test, loom::fabric::finalizeFabricRoot(root, store));
+}
+
+const loom::fabric::FabricPointConnectionPayload &
+findConnection(const char *test, const loom::fabric::FabricArtifactView &view,
+               std::uint32_t sourcePayloadWidth, std::uint32_t sourceTagWidth,
+               std::uint32_t destinationPayloadWidth,
+               std::uint32_t destinationTagWidth) {
+  std::string inventory;
+  for (const loom::fabric::FabricPointConnectionPayload &connection :
+       view.pointConnections()) {
+    const auto source = view.transportEndpointDataPath(connection.source);
+    const auto destination =
+        view.transportEndpointDataPath(connection.destination);
+    if (source && destination)
+      inventory += " [" + std::to_string(source->payloadWidthBits) + "," +
+                   std::to_string(source->tagWidthBits) + " -> " +
+                   std::to_string(destination->payloadWidthBits) + "," +
+                   std::to_string(destination->tagWidthBits) + "]";
+    if (source && destination &&
+        source->payloadWidthBits == sourcePayloadWidth &&
+        source->tagWidthBits == sourceTagWidth &&
+        destination->payloadWidthBits == destinationPayloadWidth &&
+        destination->tagWidthBits == destinationTagWidth)
+      return connection;
+  }
+  fail(test, "expected point connection is absent; inventory:" + inventory);
 }
 
 void lowBitAlignmentAndZeroWidthPayload() {
@@ -199,6 +295,148 @@ void malformedOrCrossKindAdaptationFails() {
                                    {::fabric::DataPathKind::Bits, 8, 0},
                                    {mlir::Value{}, payload, std::nullopt}),
       "source valid signal");
+
+  const std::uint32_t excessiveWidth = mlir::IntegerType::kMaxWidth + 1u;
+  mlir::Value tag =
+      circt::hw::ConstantOp::create(builder, location, llvm::APInt(3, 0));
+  auto expectCapacityFailure = [&](::fabric::DataPathType sourceType,
+                                   ::fabric::DataPathType destinationType,
+                                   ForwardTransportSignals signals,
+                                   llvm::StringRef message) {
+    const auto before =
+        std::distance(top->getBody()->begin(), top->getBody()->end());
+    expectErrorContains(
+        __func__,
+        adaptForwardTransportSignals(builder, location, sourceType,
+                                     destinationType, std::move(signals)),
+        message);
+    require(__func__,
+            std::distance(top->getBody()->begin(), top->getBody()->end()) ==
+                before,
+            "excessive transport width produced partial CIRCT");
+  };
+  expectCapacityFailure({::fabric::DataPathKind::Bits, excessiveWidth, 0},
+                        {::fabric::DataPathKind::Bits, 8, 0},
+                        {valid, payload, std::nullopt},
+                        "source payload width exceeds CIRCT capacity");
+  expectCapacityFailure({::fabric::DataPathKind::Bits, 8, 0},
+                        {::fabric::DataPathKind::Bits, excessiveWidth, 0},
+                        {valid, payload, std::nullopt},
+                        "destination payload width exceeds CIRCT capacity");
+  expectCapacityFailure({::fabric::DataPathKind::BitsTag, 8, excessiveWidth},
+                        {::fabric::DataPathKind::BitsTag, 8, 3},
+                        {valid, payload, tag},
+                        "source tag width exceeds CIRCT capacity");
+  expectCapacityFailure({::fabric::DataPathKind::BitsTag, 8, 3},
+                        {::fabric::DataPathKind::BitsTag, 8, excessiveWidth},
+                        {valid, payload, tag},
+                        "destination tag width exceeds CIRCT capacity");
+}
+
+void exactFabricPointConnectionsOwnAdaptationTypes() {
+  TemporaryDirectory directory(__func__);
+  loom::ArtifactStore store(directory.path());
+  loom::fabric::FinalizedFabricRoot fabric =
+      makePointConnectionFabric(__func__, store);
+  const loom::fabric::FabricArtifactView &view = fabric.view();
+  require(__func__, view.pointConnections().size() == 2,
+          "fixture did not produce two exact point connections");
+  const auto &narrowing = findConnection(__func__, view, 16, 3, 4, 7);
+  const auto &widening = findConnection(__func__, view, 4, 7, 8, 9);
+
+  mlir::MLIRContext context;
+  context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect>();
+  mlir::OpBuilder builder(&context);
+  const mlir::Location location = builder.getUnknownLoc();
+  mlir::OwningOpRef<mlir::ModuleOp> top = mlir::ModuleOp::create(location);
+  builder.setInsertionPointToStart(top->getBody());
+
+  mlir::Value valid =
+      circt::hw::ConstantOp::create(builder, location, llvm::APInt(1, 1));
+  mlir::Value payload16 =
+      circt::hw::ConstantOp::create(builder, location, llvm::APInt(16, 0x35a7));
+  mlir::Value tag3 =
+      circt::hw::ConstantOp::create(builder, location, llvm::APInt(3, 5));
+  ForwardTransportSignals narrowed =
+      take(__func__,
+           adaptFabricPointConnectionForwardSignals(
+               builder, location, view, narrowing, {valid, payload16, tag3}));
+  require(__func__, narrowed.valid == valid,
+          "point-connection adaptation changed valid");
+  auto payloadExtract =
+      narrowed.payload->getDefiningOp<circt::comb::ExtractOp>();
+  require(__func__,
+          payloadExtract && payloadExtract.getLowBit() == 0 &&
+              integerWidth(*narrowed.payload) == 4,
+          "point-connection narrowing did not retain low payload bits");
+  auto tagExtension = narrowed.tag->getDefiningOp<circt::comb::ConcatOp>();
+  require(__func__, tagExtension && integerWidth(*narrowed.tag) == 7,
+          "point-connection narrowing did not zero-extend its tag");
+  auto tagZeros =
+      tagExtension.getInputs().front().getDefiningOp<circt::hw::ConstantOp>();
+  require(__func__, tagZeros && tagZeros.getValue().isZero(),
+          "point-connection tag extension has nonzero high bits");
+
+  ForwardTransportSignals widened =
+      take(__func__, adaptFabricPointConnectionForwardSignals(
+                         builder, location, view, widening,
+                         {narrowed.valid, *narrowed.payload, *narrowed.tag}));
+  auto payloadExtension =
+      widened.payload->getDefiningOp<circt::comb::ConcatOp>();
+  auto widerTagExtension = widened.tag->getDefiningOp<circt::comb::ConcatOp>();
+  require(__func__, payloadExtension && integerWidth(*widened.payload) == 8,
+          "point-connection widening did not zero-extend its payload");
+  require(__func__, widerTagExtension && integerWidth(*widened.tag) == 9,
+          "point-connection widening did not zero-extend its tag");
+  require(__func__, mlir::succeeded(mlir::verify(*top)),
+          "exact point-connection adaptation produced invalid CIRCT");
+
+  loom::fabric::FabricPointConnectionPayload reversed{narrowing.destination,
+                                                      narrowing.source};
+  const auto beforeForeign =
+      std::distance(top->getBody()->begin(), top->getBody()->end());
+  expectErrorContains(
+      __func__,
+      adaptFabricPointConnectionForwardSignals(
+          builder, location, view, reversed, {valid, payload16, tag3}),
+      "point connection");
+  require(__func__,
+          std::distance(top->getBody()->begin(), top->getBody()->end()) ==
+              beforeForeign,
+          "absent point connection produced partial CIRCT");
+
+  mlir::Value wrongPayload =
+      circt::hw::ConstantOp::create(builder, location, llvm::APInt(8, 0));
+  const auto beforeMalformed =
+      std::distance(top->getBody()->begin(), top->getBody()->end());
+  expectErrorContains(
+      __func__,
+      adaptFabricPointConnectionForwardSignals(
+          builder, location, view, narrowing, {valid, wrongPayload, tag3}),
+      "source payload signal");
+  require(__func__,
+          std::distance(top->getBody()->begin(), top->getBody()->end()) ==
+              beforeMalformed,
+          "malformed point-connection input produced partial CIRCT");
+
+  loom::fabric::FinalizedFabricRoot reimported =
+      take(__func__,
+           loom::fabric::importEntireFabricRoot(fabric.reference(), store));
+  require(__func__,
+          reimported.view().pointConnections() == view.pointConnections(),
+          "strict reimport changed point-connection identity or order");
+  const auto &reimportedNarrowing =
+      findConnection(__func__, reimported.view(), 16, 3, 4, 7);
+  ForwardTransportSignals repeated =
+      take(__func__, adaptFabricPointConnectionForwardSignals(
+                         builder, location, reimported.view(),
+                         reimportedNarrowing, {valid, payload16, tag3}));
+  require(__func__,
+          repeated.payload->getDefiningOp<circt::comb::ExtractOp>() &&
+              integerWidth(*repeated.payload) == 4 &&
+              repeated.tag->getDefiningOp<circt::comb::ConcatOp>() &&
+              integerWidth(*repeated.tag) == 7,
+          "strict reimport changed point-connection lowering");
 }
 
 } // namespace
@@ -206,5 +444,6 @@ void malformedOrCrossKindAdaptationFails() {
 int main() {
   lowBitAlignmentAndZeroWidthPayload();
   malformedOrCrossKindAdaptationFails();
+  exactFabricPointConnectionsOwnAdaptationTypes();
   return 0;
 }

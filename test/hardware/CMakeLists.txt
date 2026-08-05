@@ -323,7 +323,10 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-hardware-transport-test PRIVATE
+    LoomFabricArtifact
     LoomHardwareRTL
+    MLIRFabric
+    MLIRParser
     LLVMSupport
   )
 

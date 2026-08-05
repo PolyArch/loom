@@ -55,6 +55,17 @@ adaptForwardTransportSignals(mlir::OpBuilder &builder, mlir::Location location,
                              ::fabric::DataPathType destinationType,
                              ForwardTransportSignals sourceSignals);
 
+/// Adapts the forward signals of one exact finalized Fabric point connection.
+/// Endpoint types come only from the Fabric owner. Ready remains the reverse
+/// signal of that connection and is materialized unchanged by the surrounding
+/// structural lowering.
+llvm::Expected<ForwardTransportSignals>
+adaptFabricPointConnectionForwardSignals(
+    mlir::OpBuilder &builder, mlir::Location location,
+    const loom::fabric::FabricArtifactView &artifact,
+    const loom::fabric::FabricPointConnectionPayload &connection,
+    ForwardTransportSignals sourceSignals);
+
 } // namespace loom::hardware::rtl
 
 #endif // LOOM_HARDWARE_RTL_TRANSPORT_H

@@ -37,6 +37,16 @@ llvm::Error validateSignal(llvm::StringRef name, std::uint32_t width,
   return llvm::Error::success();
 }
 
+llvm::Error validateCirctCapacity(llvm::StringRef endpoint,
+                                  ::fabric::DataPathType type) {
+  if (type.payloadWidthBits > mlir::IntegerType::kMaxWidth)
+    return transportError(endpoint + " payload width exceeds CIRCT capacity");
+  if (type.kind == ::fabric::DataPathKind::BitsTag &&
+      type.tagWidthBits > mlir::IntegerType::kMaxWidth)
+    return transportError(endpoint + " tag width exceeds CIRCT capacity");
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::optional<mlir::Value>>
 adaptSignal(mlir::OpBuilder &builder, mlir::Location location,
             std::uint32_t sourceWidth, std::uint32_t destinationWidth,
@@ -169,6 +179,10 @@ adaptForwardTransportSignals(mlir::OpBuilder &builder, mlir::Location location,
     return transportError("destination type is malformed");
   if (sourceType.kind != destinationType.kind)
     return transportError("cannot adapt different Fabric transport kinds");
+  if (llvm::Error error = validateCirctCapacity("source", sourceType))
+    return std::move(error);
+  if (llvm::Error error = validateCirctCapacity("destination", destinationType))
+    return std::move(error);
 
   if (llvm::Error error =
           validateSignal("source valid signal", 1,
@@ -201,6 +215,25 @@ adaptForwardTransportSignals(mlir::OpBuilder &builder, mlir::Location location,
     return tag.takeError();
   return ForwardTransportSignals{sourceSignals.valid, std::move(*payload),
                                  std::move(*tag)};
+}
+
+llvm::Expected<ForwardTransportSignals>
+adaptFabricPointConnectionForwardSignals(
+    mlir::OpBuilder &builder, mlir::Location location,
+    const loom::fabric::FabricArtifactView &artifact,
+    const loom::fabric::FabricPointConnectionPayload &connection,
+    ForwardTransportSignals sourceSignals) {
+  if (!artifact.hasPointConnection(connection.source, connection.destination))
+    return transportError("point connection is absent from the exact Fabric");
+  const auto sourceType = artifact.transportEndpointDataPath(connection.source);
+  const auto destinationType =
+      artifact.transportEndpointDataPath(connection.destination);
+  if (!sourceType || !destinationType)
+    return transportError(
+        "point connection endpoint has no canonical transport type");
+  return adaptForwardTransportSignals(builder, location, *sourceType,
+                                      *destinationType,
+                                      std::move(sourceSignals));
 }
 
 } // namespace loom::hardware::rtl
