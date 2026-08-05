@@ -296,8 +296,11 @@ semanticValue(llvm::StringRef test,
               const loom::fabric::ResolvedFabricOpCapabilityView &capability,
               const loom::fabric::FabricSemanticConfigFieldRef &field,
               const ::dataflow::CanonicalActorSchemaProjection &actor) {
+  constexpr std::array<std::uint64_t, 1> operandPorts = {0};
+  constexpr std::array<std::uint64_t, 1> resultPorts = {0};
   const loom::CanonicalSemanticBytes encoded =
-      take(test, capability.encodeSemanticConfiguration(field, actor, 32));
+      take(test, capability.encodeSemanticConfiguration(
+                     field, actor, 32, operandPorts, resultPorts));
   return std::vector<std::uint8_t>(encoded.bytes().begin(),
                                    encoded.bytes().end());
 }

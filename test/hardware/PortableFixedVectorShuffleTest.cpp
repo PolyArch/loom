@@ -26,6 +26,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -266,9 +267,12 @@ std::vector<std::uint8_t> semanticConfiguration(
     const ::dataflow::CanonicalActorSchemaProjection &actor) {
   require(test, resolved.configurationFieldSchema.size() == 1,
           "shuffle capability does not own exactly one configuration field");
+  constexpr std::array<std::uint64_t, 2> operandPorts = {0, 1};
+  constexpr std::array<std::uint64_t, 1> resultPorts = {0};
   const loom::CanonicalSemanticBytes encoded =
       take(test, resolved.encodeSemanticConfiguration(
-                     resolved.configurationFieldSchema.front(), actor, 64));
+                     resolved.configurationFieldSchema.front(), actor, 64,
+                     operandPorts, resultPorts));
   return std::vector<std::uint8_t>(encoded.bytes().begin(),
                                    encoded.bytes().end());
 }

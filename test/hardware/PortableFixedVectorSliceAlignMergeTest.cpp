@@ -258,9 +258,22 @@ configurationValue(llvm::StringRef test,
                    const ::dataflow::CanonicalActorSchemaProjection &actor) {
   require(test, resolved.configurationFieldSchema.size() == 1,
           "slice capability does not have one direct field");
+  std::vector<std::uint64_t> operandPorts;
+  if (actor.schema == Schema::VectorExtract) {
+    operandPorts.push_back(0);
+    for (std::uint64_t ordinal = 1; ordinal != actor.type.getNumInputs();
+         ++ordinal)
+      operandPorts.push_back(ordinal + 1);
+  } else {
+    for (std::uint64_t ordinal = 0; ordinal != actor.type.getNumInputs();
+         ++ordinal)
+      operandPorts.push_back(ordinal);
+  }
+  constexpr std::array<std::uint64_t, 1> resultPorts = {0};
   const loom::CanonicalSemanticBytes encoded =
       take(test, resolved.encodeSemanticConfiguration(
-                     resolved.configurationFieldSchema.front(), actor, 64));
+                     resolved.configurationFieldSchema.front(), actor, 64,
+                     operandPorts, resultPorts));
   return std::vector<std::uint8_t>(encoded.bytes().begin(),
                                    encoded.bytes().end());
 }
@@ -718,20 +731,24 @@ void generatedOwnersRejectMalformedCapabilities() {
               ::fabric::resolveFixedVectorSliceAlignMergeConfigurationLayout(
                   parameters(), {Schema::VectorShuffle}),
               "foreign schema");
-  expectError(test,
-              ::fabric::encodeImplementationFamilySemanticConfiguration(
-                  ::fabric::ImplementationFamilyId::FixedVectorSliceAlignMerge,
-                  ::fabric::ScalarIntegerParams{::fabric::IntegerWidthSet::get(
-                      {::fabric::IntegerWidth::I16})},
-                  {Schema::VectorExtract}, 4, 1,
-                  makeActor(Schema::VectorExtract, 16, {2, 4}, {4}, {1}),
-                  ::fabric::ResolvedIndexWidth::I64),
-              "parameter schema");
+  expectError(
+      test,
+      ::fabric::encodeImplementationFamilySemanticConfiguration(
+          ::fabric::ImplementationFamilyId::FixedVectorSliceAlignMerge,
+          ::fabric::ScalarIntegerParams{
+              ::fabric::IntegerWidthSet::get({::fabric::IntegerWidth::I16})},
+          {Schema::VectorExtract}, 4, 1,
+          makeActor(Schema::VectorExtract, 16, {2, 4}, {4}, {1}),
+          std::array<std::uint64_t, 1>{0}, std::array<std::uint64_t, 1>{0},
+          ::fabric::ResolvedIndexWidth::I64),
+      "parameter schema");
   expectError(test,
               ::fabric::encodeImplementationFamilySemanticConfiguration(
                   ::fabric::ImplementationFamilyId::FixedVectorSliceAlignMerge,
                   parameters(), {Schema::VectorInsert}, 4, 1,
                   makeActor(Schema::VectorExtract, 16, {2, 4}, {4}, {1}),
+                  std::array<std::uint64_t, 1>{0},
+                  std::array<std::uint64_t, 1>{0},
                   ::fabric::ResolvedIndexWidth::I64),
               "not enabled");
 }
