@@ -170,6 +170,20 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-fixed-vector-shuffle-test
+    PortableFixedVectorShuffleTest.cpp
+  )
+
+  target_link_libraries(loom-portable-fixed-vector-shuffle-test PRIVATE
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-fixed-vector-slice-align-merge-test
     PortableFixedVectorSliceAlignMergeTest.cpp
   )

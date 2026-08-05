@@ -1,0 +1,13 @@
+# REQUIRES: circt, verilator, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-shuffle-test %t
+# RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
+# RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
+# RUN: cd %t && verilator --binary --timing --Wall --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench fixed_vector_shuffle.sv testbench.sv --Mdir obj_dir
+# RUN: %t/obj_dir/Vtestbench
+# RUN: cd %t/single-bit && verilator --lint-only --Wall --Wno-UNUSEDSIGNAL --top-module fixed_vector_shuffle fixed_vector_shuffle.sv
+# RUN: cd %t && yosys -q -s portable_fixed_vector_shuffle.ys
+# RUN: cd %t/single-bit && yosys -q -p 'read_verilog fixed_vector_shuffle.sv; hierarchy -check -top fixed_vector_shuffle; check -assert; synth -top fixed_vector_shuffle; check -assert'
+
+# VERILATOR: Verilator 5.050
+# YOSYS: Yosys 0.67

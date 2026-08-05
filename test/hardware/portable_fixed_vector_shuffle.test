@@ -1,0 +1,33 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-shuffle-test %t
+# RUN: FileCheck %s --check-prefix=RTL < %t/fixed_vector_shuffle.sv
+# RUN: FileCheck %s --check-prefix=SINGLE < %t/single-bit/fixed_vector_shuffle.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_fixed_vector_shuffle.ys
+
+# RTL: module fixed_vector_shuffle
+# RTL: input [129:0] data_input_0
+# RTL: data_input_1,
+# RTL: input [22:0] config_0
+# RTL: output [129:0] data_output_0
+# RTL: >>
+# RTL: <<
+
+# SINGLE: module fixed_vector_shuffle
+# SINGLE: input [6:0] data_input_0
+# SINGLE: input [11:0] config_0
+# SINGLE: output [6:0] data_output_0
+# SINGLE-NOT: [-1:0]
+# SINGLE-NOT: 'x
+
+# TB: module testbench
+# TB: unequal duplicate poison defined blocks failed
+# TB: unequal duplicate poison high padding failed
+# TB: smaller result capacity defined blocks failed
+# TB: smaller result capacity high padding failed
+
+# YOSYS: hierarchy -check -top fixed_vector_shuffle
+# YOSYS: check -assert
+# YOSYS: synth -top fixed_vector_shuffle
+# YOSYS: check -assert
