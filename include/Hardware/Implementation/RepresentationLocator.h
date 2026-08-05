@@ -7,24 +7,10 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
-#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace loom::hardware {
-
-enum class RepresentationObjectKind : std::uint32_t {
-  Module = 0,
-  Instance = 1,
-  Port = 2,
-  Net = 3,
-  Register = 4,
-  Memory = 5,
-  Cell = 6,
-  Pin = 7,
-  PhysicalObject = 8,
-  DeviceResource = 9,
-};
 
 struct RepresentationLocator final {
   RepresentationObjectKind kind;

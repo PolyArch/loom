@@ -1,4 +1,5 @@
 #include "Hardware/Implementation/RepresentationFormat.h"
+#include "Hardware/Implementation/RepresentationLocator.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -7,6 +8,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -187,10 +189,88 @@ void exactJsonCodecIsClosed() {
       "unsigned");
 }
 
+void staticDescriptorMetadataIsClosedWithoutCirct() {
+  const RepresentationFormatDescriptorRef rtlRef =
+      take(__func__, RepresentationFormatDescriptorRef::get(
+                         RepresentationFormatKind::SystemVerilogRtl));
+  const RepresentationFormatDescriptorRef gateRef = take(
+      __func__, RepresentationFormatDescriptorRef::get(
+                    RepresentationFormatKind::StructuralVerilogGateNetlist));
+  const RepresentationFormatDescriptor &rtl =
+      getRepresentationFormatDescriptor(rtlRef);
+  const RepresentationFormatDescriptor &gate =
+      getRepresentationFormatDescriptor(gateRef);
+
+  require(__func__, rtl.formatRef == rtlRef && gate.formatRef == gateRef,
+          "static descriptor changed its exact format reference");
+  require(__func__,
+          rtl.exactRootKind == RepresentationObjectKind::Module &&
+              gate.exactRootKind == RepresentationObjectKind::Module,
+          "initial HDL descriptor changed its exact root kind");
+  require(__func__,
+          rtl.payloadContracts.size() == 3 && gate.payloadContracts.size() == 3,
+          "initial HDL descriptor has the wrong role closure");
+  require(__func__,
+          rtl.payloadContracts[0] ==
+              RepresentationPayloadContract{
+                  PayloadRole::RtlSource, "text/x-systemverilog; charset=utf-8",
+                  1, std::nullopt, RepresentationTextPolicy::Utf8LfNoNul},
+          "RTL source contract changed");
+  require(__func__,
+          gate.payloadContracts[0] ==
+              RepresentationPayloadContract{
+                  PayloadRole::Netlist, "text/x-verilog; charset=utf-8", 1,
+                  std::nullopt, RepresentationTextPolicy::Utf8LfNoNul},
+          "gate-netlist source contract changed");
+  for (llvm::ArrayRef<RepresentationPayloadContract> contracts :
+       {rtl.payloadContracts, gate.payloadContracts}) {
+    require(__func__,
+            contracts[1] ==
+                RepresentationPayloadContract{
+                    PayloadRole::GenerationConstraint,
+                    "application/x-sdc; charset=utf-8", 0, std::nullopt,
+                    RepresentationTextPolicy::Utf8LfNoNul},
+            "generation-constraint contract changed");
+    require(__func__,
+            contracts[2] ==
+                RepresentationPayloadContract{
+                    PayloadRole::BlackBoxContract,
+                    "application/vnd.loom.black-box-contract", 0, std::nullopt,
+                    RepresentationTextPolicy::Opaque},
+            "black-box contract changed");
+  }
+
+  require(__func__,
+          rtl.frontendSourceRole == std::optional(PayloadRole::RtlSource) &&
+              gate.frontendSourceRole == std::optional(PayloadRole::Netlist),
+          "descriptor source-role ownership changed");
+  require(__func__,
+          rtl.languageProfile ==
+                  std::optional(RepresentationLanguageProfile::Ieee1800_2017) &&
+              gate.languageProfile ==
+                  std::optional(RepresentationLanguageProfile::Ieee1364_2005),
+          "descriptor language profiles changed");
+
+  const std::vector<RepresentationObjectKind> expectedRtlKinds{
+      RepresentationObjectKind::Module,   RepresentationObjectKind::Instance,
+      RepresentationObjectKind::Port,     RepresentationObjectKind::Net,
+      RepresentationObjectKind::Register, RepresentationObjectKind::Memory};
+  const std::vector<RepresentationObjectKind> expectedGateKinds{
+      RepresentationObjectKind::Module, RepresentationObjectKind::Cell,
+      RepresentationObjectKind::Port, RepresentationObjectKind::Pin,
+      RepresentationObjectKind::Net};
+  require(__func__, rtl.admittedObjectKinds == llvm::ArrayRef(expectedRtlKinds),
+          "RTL admitted object-kind set changed");
+  require(__func__,
+          gate.admittedObjectKinds == llvm::ArrayRef(expectedGateKinds),
+          "gate admitted object-kind set changed");
+}
+
 } // namespace
 
 int main() {
   exactBinaryCodecIsClosed();
   exactJsonCodecIsClosed();
+  staticDescriptorMetadataIsClosedWithoutCirct();
   return EXIT_SUCCESS;
 }

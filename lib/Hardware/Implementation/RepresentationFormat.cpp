@@ -1,5 +1,7 @@
 #include "Hardware/Implementation/RepresentationFormat.h"
 
+#include "RepresentationIndexInternal.h"
+
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/JSON.h"
@@ -86,6 +88,60 @@ llvm::Expected<std::uint32_t> requireU32(const llvm::json::Object &object,
   return static_cast<std::uint32_t>(*integer);
 }
 
+RepresentationFormatDescriptorRef knownRef(RepresentationFormatKind kind) {
+  auto reference = RepresentationFormatDescriptorRef::get(kind);
+  if (!reference)
+    llvm_unreachable("static representation format kind is valid");
+  return *reference;
+}
+
+const RepresentationFormatDescriptorRef systemVerilogRtlRef =
+    knownRef(RepresentationFormatKind::SystemVerilogRtl);
+const RepresentationFormatDescriptorRef structuralVerilogGateNetlistRef =
+    knownRef(RepresentationFormatKind::StructuralVerilogGateNetlist);
+
+constexpr std::array<RepresentationPayloadContract, 3> rtlPayloadContracts{{
+    {PayloadRole::RtlSource, "text/x-systemverilog; charset=utf-8", 1,
+     std::nullopt, RepresentationTextPolicy::Utf8LfNoNul},
+    {PayloadRole::GenerationConstraint, "application/x-sdc; charset=utf-8", 0,
+     std::nullopt, RepresentationTextPolicy::Utf8LfNoNul},
+    {PayloadRole::BlackBoxContract, "application/vnd.loom.black-box-contract",
+     0, std::nullopt, RepresentationTextPolicy::Opaque},
+}};
+
+constexpr std::array<RepresentationPayloadContract, 3>
+    gateNetlistPayloadContracts{{
+        {PayloadRole::Netlist, "text/x-verilog; charset=utf-8", 1, std::nullopt,
+         RepresentationTextPolicy::Utf8LfNoNul},
+        {PayloadRole::GenerationConstraint, "application/x-sdc; charset=utf-8",
+         0, std::nullopt, RepresentationTextPolicy::Utf8LfNoNul},
+        {PayloadRole::BlackBoxContract,
+         "application/vnd.loom.black-box-contract", 0, std::nullopt,
+         RepresentationTextPolicy::Opaque},
+    }};
+
+constexpr std::array<RepresentationObjectKind, 6> rtlObjectKinds{
+    RepresentationObjectKind::Module,   RepresentationObjectKind::Instance,
+    RepresentationObjectKind::Port,     RepresentationObjectKind::Net,
+    RepresentationObjectKind::Register, RepresentationObjectKind::Memory};
+
+constexpr std::array<RepresentationObjectKind, 5> gateObjectKinds{
+    RepresentationObjectKind::Module, RepresentationObjectKind::Cell,
+    RepresentationObjectKind::Port, RepresentationObjectKind::Pin,
+    RepresentationObjectKind::Net};
+
+const std::array<detail::StaticRepresentationFormatEntry, 2>
+    representationFormats{{
+        {{systemVerilogRtlRef, RepresentationObjectKind::Module,
+          rtlPayloadContracts, PayloadRole::RtlSource,
+          RepresentationLanguageProfile::Ieee1800_2017, rtlObjectKinds},
+         detail::BuiltinRepresentationIndexer::SystemVerilogRtl},
+        {{structuralVerilogGateNetlistRef, RepresentationObjectKind::Module,
+          gateNetlistPayloadContracts, PayloadRole::Netlist,
+          RepresentationLanguageProfile::Ieee1364_2005, gateObjectKinds},
+         detail::BuiltinRepresentationIndexer::StructuralVerilogGateNetlist},
+    }};
+
 } // namespace
 
 llvm::Expected<RepresentationFormatDescriptorRef>
@@ -97,6 +153,20 @@ RepresentationFormatDescriptorRef::get(RepresentationFormatKind kind) {
   }
   return invalid("representation format kind is unsupported");
 }
+
+const RepresentationFormatDescriptor &
+getRepresentationFormatDescriptor(RepresentationFormatDescriptorRef reference) {
+  return detail::getStaticRepresentationFormatEntry(reference).descriptor;
+}
+
+namespace detail {
+
+const StaticRepresentationFormatEntry &getStaticRepresentationFormatEntry(
+    RepresentationFormatDescriptorRef reference) {
+  return representationFormats[static_cast<std::size_t>(reference.kind())];
+}
+
+} // namespace detail
 
 std::vector<std::uint8_t> encodeRepresentationFormatDescriptorRef(
     RepresentationFormatDescriptorRef reference) {

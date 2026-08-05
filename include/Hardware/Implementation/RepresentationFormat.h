@@ -2,16 +2,31 @@
 #define LOOM_HARDWARE_IMPLEMENTATION_REPRESENTATIONFORMAT_H
 
 #include "Common/Artifact.h"
+#include "Hardware/Implementation/ImplementationPayload.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace loom::hardware {
+
+enum class RepresentationObjectKind : std::uint32_t {
+  Module = 0,
+  Instance = 1,
+  Port = 2,
+  Net = 3,
+  Register = 4,
+  Memory = 5,
+  Cell = 6,
+  Pin = 7,
+  PhysicalObject = 8,
+  DeviceResource = 9,
+};
 
 inline constexpr ArtifactSchemaDescriptor hardwareRepresentationFormatRegistry{
     "loom.hardware_representation_format", SchemaVersion{1, 0}};
@@ -19,6 +34,16 @@ inline constexpr ArtifactSchemaDescriptor hardwareRepresentationFormatRegistry{
 enum class RepresentationFormatKind : std::uint32_t {
   SystemVerilogRtl = 0,
   StructuralVerilogGateNetlist = 1,
+};
+
+enum class RepresentationTextPolicy : std::uint32_t {
+  Opaque = 0,
+  Utf8LfNoNul = 1,
+};
+
+enum class RepresentationLanguageProfile : std::uint32_t {
+  Ieee1800_2017 = 0,
+  Ieee1364_2005 = 1,
 };
 
 class RepresentationFormatDescriptorRef final {
@@ -43,6 +68,35 @@ private:
 
   RepresentationFormatKind kind_;
 };
+
+struct RepresentationPayloadContract final {
+  PayloadRole role;
+  llvm::StringRef mediaType;
+  std::uint64_t minimumCount;
+  std::optional<std::uint64_t> maximumCount;
+  RepresentationTextPolicy textPolicy;
+
+  friend bool operator==(const RepresentationPayloadContract &lhs,
+                         const RepresentationPayloadContract &rhs) {
+    return lhs.role == rhs.role && lhs.mediaType == rhs.mediaType &&
+           lhs.minimumCount == rhs.minimumCount &&
+           lhs.maximumCount == rhs.maximumCount &&
+           lhs.textPolicy == rhs.textPolicy;
+  }
+};
+
+struct RepresentationFormatDescriptor final {
+  RepresentationFormatDescriptorRef formatRef;
+  RepresentationObjectKind exactRootKind;
+  llvm::ArrayRef<RepresentationPayloadContract> payloadContracts;
+  std::optional<PayloadRole> frontendSourceRole;
+  std::optional<RepresentationLanguageProfile> languageProfile;
+  llvm::ArrayRef<RepresentationObjectKind> admittedObjectKinds;
+};
+
+/// Returns immutable metadata owned by the closed static format registry.
+const RepresentationFormatDescriptor &
+getRepresentationFormatDescriptor(RepresentationFormatDescriptorRef reference);
 
 std::vector<std::uint8_t> encodeRepresentationFormatDescriptorRef(
     RepresentationFormatDescriptorRef reference);

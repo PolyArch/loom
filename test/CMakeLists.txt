@@ -196,6 +196,13 @@ set(LOOM_TEST_DEPENDS
 
 if(LOOM_HAVE_CIRCT)
   list(APPEND LOOM_TEST_DEPENDS
+    loom-representation-gate-index-test
+    loom-representation-index-test
+  )
+endif()
+
+if(LOOM_HAVE_CIRCT)
+  list(APPEND LOOM_TEST_DEPENDS
     loom-circt-conformance-test
     loom-common-skeleton-test
     loom-hardware-transport-test

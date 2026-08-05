@@ -1,0 +1,5 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-representation-index-test %t
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-representation-gate-index-test %t

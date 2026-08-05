@@ -1,5 +1,6 @@
 #include "Hardware/Implementation/RepresentationLocator.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/JSON.h"
@@ -159,26 +160,6 @@ llvm::Expected<std::size_t> validateHdlPath(llvm::StringRef name) {
   return segmentCount;
 }
 
-bool formatAdmitsKind(RepresentationFormatKind format,
-                      RepresentationObjectKind kind) {
-  switch (format) {
-  case RepresentationFormatKind::SystemVerilogRtl:
-    return kind == RepresentationObjectKind::Module ||
-           kind == RepresentationObjectKind::Instance ||
-           kind == RepresentationObjectKind::Port ||
-           kind == RepresentationObjectKind::Net ||
-           kind == RepresentationObjectKind::Register ||
-           kind == RepresentationObjectKind::Memory;
-  case RepresentationFormatKind::StructuralVerilogGateNetlist:
-    return kind == RepresentationObjectKind::Module ||
-           kind == RepresentationObjectKind::Cell ||
-           kind == RepresentationObjectKind::Port ||
-           kind == RepresentationObjectKind::Pin ||
-           kind == RepresentationObjectKind::Net;
-  }
-  return false;
-}
-
 } // namespace
 
 llvm::Expected<std::vector<std::uint8_t>>
@@ -294,7 +275,9 @@ validateRepresentationLocatorSyntax(RepresentationFormatDescriptorRef format,
   auto spelling = objectKindSpelling(locator.kind);
   if (!spelling)
     return spelling.takeError();
-  if (!formatAdmitsKind(format.kind(), locator.kind))
+  const RepresentationFormatDescriptor &descriptor =
+      getRepresentationFormatDescriptor(format);
+  if (!llvm::is_contained(descriptor.admittedObjectKinds, locator.kind))
     return invalid("locator kind is incompatible with the selected format");
   auto segmentCount = validateHdlPath(locator.canonicalName);
   if (!segmentCount)
