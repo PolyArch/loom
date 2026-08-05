@@ -236,13 +236,28 @@ admitted signals are `Net`. When the AST also exposes a backing net or variable
 at the same canonical path as a `Port` or `Pin`, that `Port` or `Pin` is the
 only indexed object at the path. The descriptor admits module declarations,
 fixed-width ports and nets, grammar-compatible static elaboration, those named
-module or user-defined primitive cells, and continuous assignments whose
-expressions are composed only from references, constants, bit selects, part
-selects, concatenations, and replications. Built-in gate or switch primitives,
-unnamed occurrences, procedures, timing controls, assertions, runtime
-variables or memories, behavioral subroutines, and continuous-assignment
-expressions containing arithmetic, bitwise, comparison, logical, or
-conditional operators are typed `Unsupported`.
+module or user-defined primitive cells, and one `GateWiringExpression`
+grammar. A `GateWiringExpression` is composed only from references, integer
+constants, parentheses, bit selects, part selects, concatenations, and
+replications. The same grammar applies to both sides of every continuous
+assignment, every net-declaration initializer, and every nonempty explicit
+actual expression on a resolved module, user-defined primitive, or unresolved
+module occurrence. Static parameter values, generate conditions, and
+user-defined primitive truth tables are not electrical connection expressions
+and do not use this grammar. Built-in gate or switch primitives, unnamed
+occurrences, procedures, timing controls, runtime variables or memories,
+behavioral subroutines, and admitted-language connection expressions containing
+arithmetic, bitwise, comparison, logical, conditional, call, cast, or streaming
+operators are typed `Unsupported`.
+
+Failure classification is language-first. Source that is not well formed under
+the descriptor's selected language profile is `Invalid`; in particular,
+SystemVerilog-only assertion syntax is `Invalid` for the IEEE 1364-2005 gate
+descriptor. A source construct is `Unsupported` only after the sole selected
+frontend recognizes a well-formed IEEE 1364-2005 payload closure and the
+construct lies outside the fixed structural subset. The indexer cannot scan
+assertion-like words, retry another language profile, or use a second parser to
+change that classification.
 
 Every admitted `Port` or `Pin` has one fixed positive packed-integral bit-stream
 width and exact direction. An unresolved module occurrence is still indexed as
@@ -250,8 +265,10 @@ an `Instance` for RTL or a `Cell` for a gate netlist, while its descriptor-owned
 unresolved-definition name contributes one canonical `Module` locator.
 Repeated uses of the same unresolved-definition name contribute one inventory
 entry. The initial descriptors do not guess `Pin` names, directions, or widths
-for an unresolved cell. Such facts remain unavailable until a versioned
-BlackBoxContract schema owns them.
+for an unresolved cell. Named actual connections on such a cell are checked
+only as `GateWiringExpression` values; their source spelling cannot create Pin
+facts. Such facts remain unavailable until a versioned BlackBoxContract schema
+owns them.
 
 An external implementation binding closes an unresolved definition only when
 its `representation_locators` include that exact `Module` locator and its

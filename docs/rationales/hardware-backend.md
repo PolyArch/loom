@@ -196,14 +196,25 @@ when it has one versioned canonical encoding.
 The gate-netlist descriptor uses a conservative structural subset for the same
 reason. A small whitelist of cells, nets, static elaboration, and wiring-only
 continuous assignments composes into an inspectable connectivity graph.
-Allowing arbitrary expressions and then trying to enumerate every behavioral
-exception would turn a structural descriptor into a second RTL language
-profile. Unknown cell definitions remain explicit Module dependencies. Their
-occurrences can be named without guessing pin geometry; a future versioned
-BlackBoxContract may own those pin facts when a consumer genuinely needs them.
-Exactly one external binding closes each unresolved definition so two provider
-contracts cannot both claim authority, while one library binding can close
-several definitions without duplicating its dependency identity.
+The same wiring-expression grammar applies to continuous assignments, net
+initializers, and cell actual connections. Otherwise behavioral logic rejected
+in an assignment could be hidden directly in a port connection, forcing every
+consumer to understand arbitrary expressions. One grammar closes that side
+channel without creating per-connection rules or turning the read-only indexer
+into a source transformer. Unknown cell definitions remain explicit Module
+dependencies. Their occurrences and actual-expression shape can be checked
+without guessing pin geometry; a future versioned BlackBoxContract may own
+those pin facts when a consumer genuinely needs them. Exactly one external
+binding closes each unresolved definition so two provider contracts cannot
+both claim authority, while one library binding can close several definitions
+without duplicating its dependency identity.
+
+Language validity precedes subset admission. Retrying an invalid Verilog-2005
+source as SystemVerilog, or scanning words such as `assert` and `property`,
+would introduce a second language authority and would misclassify legal uses of
+those words as identifiers. The selected profile and pinned frontend therefore
+decide validity once; only a well-formed source can proceed to the structural
+subset check and receive `Unsupported`.
 
 QoR, pass/fail status, logs, and reports do not enter that artifact. They are
 Evaluation observations or attempt material. This prevents a tool result from
