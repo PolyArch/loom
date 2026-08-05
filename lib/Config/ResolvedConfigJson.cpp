@@ -329,6 +329,11 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
             llvm::json::Object{{"scope_expansion_limit",
                                 static_cast<int64_t>(
                                     config.dse.schedule.scopeExpansionLimit)}}},
+           {"dataflow_rewrite",
+            llvm::json::Object{
+                {"scope_expansion_limit",
+                 static_cast<int64_t>(
+                     config.dse.dataflowRewrite.scopeExpansionLimit)}}},
            {"tech_mapping",
             llvm::json::Object{
                 {"match_row_attempt_limit",

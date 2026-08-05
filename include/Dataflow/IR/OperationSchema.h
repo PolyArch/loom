@@ -26,7 +26,8 @@ namespace dataflow {
 /// identity uses the registry-owned wire codec, never these numeric values.
 enum class OperationSchemaId : std::uint32_t {
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase, SelectorKind, SelectorValue)      \
+                              SemanticsCase, SelectorKind, SelectorValue,      \
+                              ElementwiseDecomposable)                         \
   Name = Id,
 #include "Dataflow/IR/OperationSchemas.inc"
 };
@@ -70,6 +71,19 @@ OperationSchemaId requireOperationSchema(::mlir::Operation *op);
 
 CanonicalDataflowActorKind actorKind(OperationSchemaId schema);
 OperationSemanticsCase semanticsCase(OperationSchemaId schema);
+
+/// Whether a fixed-vector instance is exactly the pointwise lift of the same
+/// scalar operation and may therefore use the canonical elementwise
+/// decomposition rewrite.
+bool supportsElementwiseVectorDecomposition(OperationSchemaId schema);
+
+/// Recomputes source-owned selector state after a type-preserving-schema
+/// rewrite changes one actor's exact function type. Whole-class carriers need
+/// no mutation; a registered LLVM intrinsic carrier receives the exact
+/// overloaded spelling derived by LLVM's registry. The resulting instance is
+/// verified against `schema`.
+llvm::Error canonicalizeRegisteredActorInstance(OperationSchemaId schema,
+                                                ::mlir::Operation *op);
 
 /// Canonical actor classification. An operation is a canonical actor exactly
 /// when the registry declares a schema for it; the classifier is a derived

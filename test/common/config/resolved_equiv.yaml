@@ -3,6 +3,8 @@ dse:
     scope_expansion_limit: 17
   schedule:
     scope_expansion_limit: 19
+  dataflow_rewrite:
+    scope_expansion_limit: 23
   tech_mapping:
     match_row_attempt_limit: 2048
     partial_cover_expansion_limit: 4096

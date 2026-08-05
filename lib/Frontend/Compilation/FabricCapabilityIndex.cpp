@@ -353,8 +353,8 @@ frontend::FabricCapabilityIndex::firstInadmissibleActor(
         return resources.takeError();
       if (resources->empty())
         return std::optional<frontend::ExactFabricCapabilityMiss>{
-            frontend::ExactFabricCapabilityMiss{actor.kind, projection->schema,
-                                                projection->type}};
+            frontend::ExactFabricCapabilityMiss{
+                actor.ref, actor.kind, projection->schema, projection->type}};
       continue;
     }
     auto resources = admittingOperationResources(actor.op);
@@ -362,8 +362,8 @@ frontend::FabricCapabilityIndex::firstInadmissibleActor(
       return resources.takeError();
     if (resources->empty())
       return std::optional<frontend::ExactFabricCapabilityMiss>{
-          frontend::ExactFabricCapabilityMiss{actor.kind, projection->schema,
-                                              projection->type}};
+          frontend::ExactFabricCapabilityMiss{
+              actor.ref, actor.kind, projection->schema, projection->type}};
   }
   return std::optional<frontend::ExactFabricCapabilityMiss>{};
 }

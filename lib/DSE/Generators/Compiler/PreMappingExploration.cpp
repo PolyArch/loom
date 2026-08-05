@@ -348,7 +348,8 @@ llvm::Expected<DataflowSelectionOutcome> exploreDataflowCandidates(
   auto gate = dataflowQualityGate(*obligations);
   if (!gate)
     return gate.takeError();
-  auto generatorConfig = projectResolvedDataflowRewriteGeneratorConfigView();
+  auto generatorConfig =
+      projectResolvedDataflowRewriteGeneratorConfigView(config);
   if (!generatorConfig)
     return generatorConfig.takeError();
   auto acquisitionConfig = projectResolvedEvidenceObligationSetConfigView(

@@ -1068,6 +1068,29 @@ they are not mislabeled as infeasible or workload-inapplicable. Cache state and
 parallel worker completion order cannot change the frontier or its stable work
 ordinals.
 
+The Dataflow rewrite generator uses the positive
+`dse.dataflow_rewrite.scope_expansion_limit`. For each exact input it probes
+the closed fixed-rule catalog in stable enum order, charging one expansion per
+probe. Every non-isomorphic child and the input itself then enters one
+deduplicated immutable-artifact frontier. A Fabric-admissible candidate enters
+the retained output set; a non-admissible candidate expands only the first
+missing actor in canonical Dataflow actor order.
+
+The actor's typed decomposition domain is the one owned by
+[Explicit Elementwise Decomposition](spec-dataflow-vectorization.md#explicit-elementwise-decomposition):
+proper leading-dimension divisors in descending order, followed by the one
+scalarization decision when legal. A chunk decision charges the number of
+narrow compute actors it materializes. A scalarization decision charges the
+fixed vector element count. Publication and exact-identity deduplication do not
+refund work.
+
+If the next canonical decision does not fit the remaining resolved budget, the
+generator returns `Incomplete` with reason `SemanticLimitReached`. Already
+admitted candidates are retained for audit but are not a formal completed
+candidate set and cannot be promoted. Worker count, cache hits, artifact-store
+state, or completion order cannot alter the frontier, decision order, charge,
+or outcome.
+
 The controller owns finite candidate sets as canonical sets of complete typed
 ArtifactRootReferences. They are controller-local values, not Artifacts. Every
 promotion has one shape:

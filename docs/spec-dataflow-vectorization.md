@@ -63,6 +63,49 @@ port. Several canonical scalar or narrower-vector actors exist only after an
 explicit Dataflow-to-Dataflow candidate rewrite. Both forms must preserve
 shape, lane order, mask behavior, and token publication.
 
+### Explicit Elementwise Decomposition
+
+The Dataflow rewrite owner may derive narrower candidates from one exact pure,
+total, regionless fixed-vector Compute actor with elementwise semantics. Every
+operand and the one result have the same nonempty shape; element types may
+differ, as for a vector comparison. Memory actors, reductions, stream or
+cardinality actors, stateful actors, and operations with effects or potentially
+trapping behavior are outside this transform.
+
+The generated OperationSchema registry is the sole owner of whether a schema
+has this pointwise decomposition semantic. The decision is attached to the
+exact schema, including a selected instance of a generic carrier such as a
+registered LLVM intrinsic; it is not inferred from an MLIR operation trait,
+operation spelling, implementation-family membership, or provider
+availability. After a typed rewrite changes an exact function type, the
+OperationSchema owner mechanically regenerates any source-owned overloaded
+selector spelling before canonical finalization.
+
+One leading-chunk decision chooses a positive proper divisor `C` of the
+leading dimension `N`. It materializes `N / C` actors with the same registered
+operation schema and attributes at leading dimension `C`. Multi-operand input
+tokens first cross one `dataflow.sync`, so no chunk can consume one
+activation's operand while another operand remains pending. Standard
+`vector.shuffle` actors select complete leading blocks and concatenate all
+chunk results in ascending block order. The final result publishes only after
+every chunk of that activation is available.
+
+One scalarization decision materializes one scalar actor for every row-major
+position, using static standard `vector.extract` and `vector.insert` actors.
+It is legal only when an operand has the exact complete result-vector type, so
+the insert chain has a typed destination while replacing every position. A
+result whose element type differs from every operand, such as many comparison
+results, has no scalarization decision under this rule; leading-chunk
+decomposition remains available.
+
+Both decisions preserve the exact scalar operation behavior, lane order,
+mixed defined/poison/undef state, one atomic multi-operand activation, and one
+complete result publication. They introduce no packed-integer interpretation,
+hidden lane route, memory-access decomposition, or Mapping fact. Finalization
+assigns all derived actor identities, and the result is a distinct immutable
+Canonical Dataflow Artifact. Mapping may select it only through ordinary exact
+actor, port, capability, and route admission.
+
 ### Fixed-Vector Structural Operations
 
 Canonical Dataflow admits the standard MLIR `vector.extract`,
@@ -447,6 +490,11 @@ Verification rejects:
 
 Stable anchor tests cover:
 
+* exact leading-chunk masks, operand rendezvous, chunk pairing, result order,
+  retirement, and graph-return wiring, plus scalarization when the leading
+  extent is one;
+* exclusion of non-total elementwise-looking operations from the generated
+  decomposition domain;
 * per-lane poison and undef propagation, lazy vector selection, and inactive
   masked-lane non-observation;
 * static and dynamic extract/insert of scalar and trailing-subvector values,

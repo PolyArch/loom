@@ -23,6 +23,8 @@
 // JSON-DAG: "scope_expansion_limit": 64
 // JSON-DAG: "schedule"
 // JSON-DAG: "scope_expansion_limit": 64
+// JSON-DAG: "dataflow_rewrite"
+// JSON-DAG: "scope_expansion_limit": 64
 // JSON-DAG: "tech_mapping"
 // JSON-DAG: "match_row_attempt_limit": 65536
 // JSON-DAG: "partial_cover_expansion_limit": 262144

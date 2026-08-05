@@ -103,7 +103,8 @@ bool expectValidationFailure(llvm::ArrayRef<std::uint8_t> bytes,
 bool checkVocabularyCodecs() {
   constexpr OperationSchemaId schemas[] = {
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase, SelectorKind, SelectorValue)      \
+                              SemanticsCase, SelectorKind, SelectorValue,      \
+                              ElementwiseDecomposable)                         \
   OperationSchemaId::Name,
 #include "Dataflow/IR/OperationSchemas.inc"
   };

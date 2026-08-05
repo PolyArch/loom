@@ -67,7 +67,8 @@ bool nativeSemanticInterfacesAreClassified(OperationSemanticsCase semantics) {
 bool checkRegistry(MLIRContext &context) {
   bool ok = true;
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase, SelectorKind, SelectorValue)      \
+                              SemanticsCase, SelectorKind, SelectorValue,      \
+                              ElementwiseDecomposable)                         \
   if (!nativeSemanticInterfacesAreClassified<OpClass>(                         \
           OperationSemanticsCase::SemanticsCase)) {                            \
     llvm::errs() << OpClass::getOperationName()                                \

@@ -52,6 +52,7 @@ struct SchemaRow {
   StringRef semanticsCase;
   StringRef selectorKind;
   StringRef selectorValue;
+  bool supportsElementwiseVectorDecomposition;
 };
 
 struct FamilyRow {
@@ -171,10 +172,12 @@ readSchemas(const RecordKeeper &records,
       PrintFatalError(record->getName() +
                       " applies an LLVM intrinsic selector to a non-LLVM "
                       "carrier");
-    rows.push_back({record->getValueAsInt("schemaId"),
-                    record->getValueAsInt("stableWireTag"), record->getName(),
-                    record->getValueAsString("opClass"), actorKind, semantics,
-                    selectorKind, selectorValue});
+    rows.push_back(
+        {record->getValueAsInt("schemaId"),
+         record->getValueAsInt("stableWireTag"), record->getName(),
+         record->getValueAsString("opClass"), actorKind, semantics,
+         selectorKind, selectorValue,
+         record->getValueAsBit("supportsElementwiseVectorDecomposition")});
   }
   requireDenseDomain(rows, "operation schema");
   requireUniqueWireTags(rows, "operation schema");
@@ -271,7 +274,7 @@ void loom::tblgen::emitOperationSchemas(const RecordKeeper &records,
   emitMacroGuard(os, "LOOM_OPERATION_SEMANTICS_CASE", "Name, Id, WireTag");
   emitMacroGuard(os, "LOOM_OPERATION_SCHEMA",
                  "Name, Id, WireTag, OpClass, ActorKind, SemanticsCase, "
-                 "SelectorKind, SelectorValue");
+                 "SelectorKind, SelectorValue, ElementwiseDecomposable");
   os << "\n";
 
   for (const WireVocabularyRow &row : cases)
@@ -282,7 +285,9 @@ void loom::tblgen::emitOperationSchemas(const RecordKeeper &records,
     os << "LOOM_OPERATION_SCHEMA(" << row.name << ", " << row.id << ", "
        << row.wireTag << ", " << row.opClass << ", " << row.actorKind << ", "
        << row.semanticsCase << ", " << row.selectorKind << ", "
-       << row.selectorValue << ")\n";
+       << row.selectorValue << ", "
+       << (row.supportsElementwiseVectorDecomposition ? "true" : "false")
+       << ")\n";
 
   os << "\n";
   emitMacroUndef(os, "LOOM_OPERATION_SEMANTICS_CASE");

@@ -10,6 +10,10 @@
 #include <cstdint>
 #include <vector>
 
+namespace loom {
+struct ResolvedConfig;
+}
+
 namespace loom::dse {
 
 inline constexpr CandidateGeneratorKind
@@ -17,6 +21,7 @@ inline constexpr CandidateGeneratorKind
 
 class ResolvedDataflowRewriteGeneratorConfigView final {
 public:
+  std::uint64_t scopeExpansionLimit() const { return scopeExpansionLimit_; }
   llvm::ArrayRef<std::uint8_t> canonicalViewBytes() const {
     return canonicalBytes_;
   }
@@ -24,14 +29,17 @@ public:
 
 private:
   ResolvedDataflowRewriteGeneratorConfigView(
+      std::uint64_t scopeExpansionLimit,
       std::vector<std::uint8_t> canonicalBytes, ComponentViewDigest digest)
-      : canonicalBytes_(std::move(canonicalBytes)), digest_(digest) {}
+      : scopeExpansionLimit_(scopeExpansionLimit),
+        canonicalBytes_(std::move(canonicalBytes)), digest_(digest) {}
 
+  std::uint64_t scopeExpansionLimit_;
   std::vector<std::uint8_t> canonicalBytes_;
   ComponentViewDigest digest_;
 
   friend llvm::Expected<ResolvedDataflowRewriteGeneratorConfigView>
-  projectResolvedDataflowRewriteGeneratorConfigView();
+  projectResolvedDataflowRewriteGeneratorConfigView(const ResolvedConfig &);
   friend llvm::Expected<ResolvedDataflowRewriteGeneratorConfigView>
   adoptResolvedDataflowRewriteGeneratorConfigView(llvm::ArrayRef<std::uint8_t>,
                                                   llvm::ArrayRef<std::uint8_t>,
@@ -42,7 +50,7 @@ llvm::ArrayRef<std::uint8_t>
 resolvedDataflowRewriteGeneratorConfigSchemaBytes();
 
 llvm::Expected<ResolvedDataflowRewriteGeneratorConfigView>
-projectResolvedDataflowRewriteGeneratorConfigView();
+projectResolvedDataflowRewriteGeneratorConfigView(const ResolvedConfig &config);
 
 llvm::Expected<ResolvedDataflowRewriteGeneratorConfigView>
 adoptResolvedDataflowRewriteGeneratorConfigView(

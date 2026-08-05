@@ -29,6 +29,10 @@ struct ResolvedStructuredScheduleConfig {
   std::uint32_t scopeExpansionLimit = 64;
 };
 
+struct ResolvedDataflowRewriteConfig {
+  std::uint32_t scopeExpansionLimit = 64;
+};
+
 struct ResolvedTechMappingConfig {
   std::uint64_t matchRowAttemptLimit = 65536;
   std::uint64_t partialCoverExpansionLimit = 262144;
@@ -38,6 +42,7 @@ struct ResolvedTechMappingConfig {
 struct ResolvedDseConfig {
   ResolvedStructuredOwnershipConfig structuredOwnership;
   ResolvedStructuredScheduleConfig schedule;
+  ResolvedDataflowRewriteConfig dataflowRewrite;
   ResolvedTechMappingConfig techMapping;
   std::vector<dse::ModelAuthorization> modelAuthorizations;
   std::vector<dse::EvidenceObligationTemplate> evidenceObligationTemplates;
@@ -50,7 +55,7 @@ struct ResolvedDseConfig {
 
 struct ResolvedConfig {
   static constexpr ArtifactSchemaDescriptor artifactSchema{
-      "loom.config.resolved", SchemaVersion{3, 0}};
+      "loom.config.resolved", SchemaVersion{3, 1}};
 
   ResolvedHardwareTargetConfig hardwareTarget;
   ResolvedDseConfig dse;

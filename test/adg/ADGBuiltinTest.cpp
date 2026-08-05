@@ -287,7 +287,7 @@ void publicFuLibraryBuildsTypedGraphs() {
           pe, inputs, ::dataflow::StreamStepKind::Add,
           ::dataflow::StreamStepKind::Sub))
     fail(test, llvm::toString(std::move(error)));
-  if (llvm::Error error = loom::adg::addVectorComputeFu(pe, inputs))
+  if (llvm::Error error = loom::adg::addVectorComputeFu(pe, inputs, {128, 128}))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = loom::adg::addSpecialMathFu(
           pe, llvm::ArrayRef<loom::adg::PeValue>(inputs).take_front(2)))

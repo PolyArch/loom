@@ -208,7 +208,8 @@ llvm::Expected<std::uint32_t>
 schemaWireTag(dataflow::OperationSchemaId schema) {
   switch (schema) {
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase, SelectorKind, SelectorValue)      \
+                              SemanticsCase, SelectorKind, SelectorValue,      \
+                              ElementwiseDecomposable)                         \
   case dataflow::OperationSchemaId::Name:                                      \
     return WireTag;
 #include "Dataflow/IR/OperationSchemas.inc"
@@ -220,7 +221,8 @@ llvm::Expected<dataflow::OperationSchemaId>
 schemaFromWireTag(std::uint32_t wireTag) {
   switch (wireTag) {
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase, SelectorKind, SelectorValue)      \
+                              SemanticsCase, SelectorKind, SelectorValue,      \
+                              ElementwiseDecomposable)                         \
   case WireTag:                                                                \
     return dataflow::OperationSchemaId::Name;
 #include "Dataflow/IR/OperationSchemas.inc"

@@ -96,7 +96,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 3.0`. Version 2.0 was an
+The current schema is `loom.config.resolved 3.1`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -114,7 +114,11 @@ rewriting objective ordinals is incompatible. A 3.0 parser rejects old fields
 and retired violation spellings rather than adopting, translating, or aliasing
 them.
 
-The 3.0 schema composes these active policy domains:
+Version 3.1 is a compatible extension that adds the Dataflow rewrite
+generator's positive semantic expansion limit. It changes neither an existing
+field nor any Mapping, PnR, or objective meaning.
+
+The 3.1 schema composes these active policy domains:
 
 ```text
 ResolvedConfig {
@@ -122,6 +126,7 @@ ResolvedConfig {
   dse {
     structured_ownership
     schedule
+    dataflow_rewrite
     tech_mapping
     spatial_pnr
     system_pnr
@@ -173,6 +178,20 @@ field. Its exact Fused/Split domain is owned by the
 contract. An empty canonical component view and its digest therefore select the
 complete schema-1.0 policy; process-local worker or cache settings cannot alter
 it.
+
+The Dataflow rewrite generator policy owns:
+
+```text
+dse.dataflow_rewrite.scope_expansion_limit: positive uint32 = 64
+```
+
+Its exact accounting and incomplete-search behavior are owned by
+[Deterministic Work, Candidate Sets, and Cache](spec-dse-feedback.md#deterministic-work-candidate-sets-and-cache).
+The immutable component view descriptor is
+`loom.dataflow_rewrite_generator.config.1.1`; its canonical bytes are exactly
+one unsigned 64-bit big-endian projection of this resolved value. The adopter
+requires an exact descriptor, positive value, digest match, no trailing bytes,
+and byte-exact re-encoding.
 
 The TechMapping generator policy owns:
 

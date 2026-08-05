@@ -225,8 +225,7 @@ public:
         return true;
       if (artifactRootReferenceLess(rhs.child, lhs.child))
         return false;
-      return static_cast<std::uint32_t>(lhs.kind) <
-             static_cast<std::uint32_t>(rhs.kind);
+      return dataflow::dataflowRewriteDecisionLess(lhs.decision, rhs.decision);
     });
     return std::optional<std::vector<DataflowRewriteDerivation>>(
         std::move(result));
@@ -760,7 +759,8 @@ llvm::Error
 detail::StructuredOwnershipInvocationAccess::recordDataflowRewriteCandidate(
     StructuredOwnershipInvocation &invocation,
     const ArtifactRootReference &parent, const ArtifactRootReference &child,
-    dataflow::DataflowRewriteKind kind, const ArtifactStore &store) {
+    const dataflow::DataflowRewriteDecision &decision,
+    const ArtifactStore &store) {
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
   if (impl.dataflowRoots.empty())
     return invalid("Dataflow rewrite precedes D0 preparation");
@@ -785,7 +785,7 @@ detail::StructuredOwnershipInvocationAccess::recordDataflowRewriteCandidate(
   auto stored = store.get(child);
   if (!stored)
     return stored.takeError();
-  DataflowRewriteDerivation derivation{parent, child, kind};
+  DataflowRewriteDerivation derivation{parent, child, decision};
   std::vector<DataflowRewriteDerivation> &edges = impl.dataflowLineage[child];
   if (!llvm::is_contained(edges, derivation))
     edges.push_back(std::move(derivation));

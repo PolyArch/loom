@@ -226,7 +226,7 @@ llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
       return error;
   if (distribution.vectorCompute[site])
     if (llvm::Error error = addVectorComputeFu(
-            pe, {inputs[0], inputs[1], inputs[2], inputs[3]}))
+            pe, {inputs[0], inputs[1], inputs[2], inputs[3]}, {128, 128}))
       return error;
   if (distribution.loopControl[site]) {
     static constexpr std::array<
@@ -246,7 +246,8 @@ llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
       return error;
   }
   if (distribution.tokenControl[site])
-    if (llvm::Error error = addTokenControlFu(pe, inputs))
+    if (llvm::Error error =
+            addTokenControlFu(pe, inputs, TokenControlFuParameters{128, 64}))
       return error;
   if (distribution.vectorAdapter[site])
     if (llvm::Error error =

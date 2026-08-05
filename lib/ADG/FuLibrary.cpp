@@ -966,62 +966,71 @@ llvm::Error addLoopControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
   return fu->close({*r0Value, *r1Value, *p0Value});
 }
 
-llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
+llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+                               VectorComputeFuParameters parameters) {
   if (inputs.size() != 4)
     return invalid(
         "VectorComputeFu requires data0, data1, data2, and condition inputs");
-  auto bits128 = PortType::bits(128);
-  if (!bits128)
-    return bits128.takeError();
+  if (parameters.outerPayloadBits == 0 || parameters.vectorPayloadBits == 0)
+    return invalid("VectorComputeFu widths must be positive");
+  if (parameters.vectorPayloadBits > parameters.outerPayloadBits)
+    return invalid("VectorComputeFu vector width exceeds its outer width");
+  auto outer = PortType::bits(parameters.outerPayloadBits);
+  if (!outer)
+    return outer.takeError();
+  auto vector = PortType::bits(parameters.vectorPayloadBits);
+  if (!vector)
+    return vector.takeError();
   const auto integer = ordinaryIntegerWidths();
   const auto floating = floatFormats();
   const auto strict = ::fabric::FloatBehaviorProfile::strictIEEE();
+  const std::uint32_t capacity = parameters.vectorPayloadBits;
   std::vector<SelectableResource> resources = {
       {ImplementationFamilyId::FixedVectorIntegerAddSub,
-       ::fabric::FixedVectorIntegerParams{integer, 128},
+       ::fabric::FixedVectorIntegerParams{integer, capacity},
        {0, 1}},
       {ImplementationFamilyId::FixedVectorIntegerSaturatingAddSub,
-       ::fabric::FixedVectorIntegerParams{integer, 128},
+       ::fabric::FixedVectorIntegerParams{integer, capacity},
        {0, 1}},
       {ImplementationFamilyId::FixedVectorIntegerCountZeros,
-       ::fabric::FixedVectorIntegerParams{integer, 128},
+       ::fabric::FixedVectorIntegerParams{integer, capacity},
        {0}},
       {ImplementationFamilyId::FixedVectorIntegerLogic,
-       ::fabric::FixedVectorIntegerParams{logicIntegerWidths(), 128},
+       ::fabric::FixedVectorIntegerParams{logicIntegerWidths(), capacity},
        {0, 1}},
       {ImplementationFamilyId::FixedVectorIntegerShift,
-       ::fabric::FixedVectorIntegerParams{integer, 128},
+       ::fabric::FixedVectorIntegerParams{integer, capacity},
        {0, 1}},
       {ImplementationFamilyId::FixedVectorIntegerCompareMinMax,
        ::fabric::FixedVectorIntegerCompareMinMaxParams{
-           integer, integerPredicates(), 128},
+           integer, integerPredicates(), capacity},
        {0, 1}},
       {ImplementationFamilyId::FixedVectorValueSelect,
        ::fabric::FixedVectorValueSelectParams{logicIntegerWidths(), floating,
-                                              128},
+                                              capacity},
        {3, 0, 1}},
       {ImplementationFamilyId::FixedVectorIntegerMultiply,
-       ::fabric::FixedVectorIntegerParams{integer, 128},
+       ::fabric::FixedVectorIntegerParams{integer, capacity},
        {0, 1}},
       {ImplementationFamilyId::FixedVectorFloatSign,
-       ::fabric::FixedVectorFloatParams{floating, strict, 128},
+       ::fabric::FixedVectorFloatParams{floating, strict, capacity},
        {0}},
       {ImplementationFamilyId::FixedVectorFloatAddSub,
-       ::fabric::FixedVectorFloatParams{floating, strict, 128},
+       ::fabric::FixedVectorFloatParams{floating, strict, capacity},
        {0, 1}},
       {ImplementationFamilyId::FixedVectorFloatCompareMinMax,
        ::fabric::FixedVectorFloatCompareMinMaxParams{
-           floating, floatCompareBehavior(), floatPredicates(), 128},
+           floating, floatCompareBehavior(), floatPredicates(), capacity},
        {0, 1}},
       {ImplementationFamilyId::FixedVectorFloatMultiply,
-       ::fabric::FixedVectorFloatParams{floating, strict, 128},
+       ::fabric::FixedVectorFloatParams{floating, strict, capacity},
        {0, 1}},
       {ImplementationFamilyId::FixedVectorFloatFma,
-       ::fabric::FixedVectorFloatParams{floating, strict, 128},
+       ::fabric::FixedVectorFloatParams{floating, strict, capacity},
        {0, 1, 2}},
   };
-  return addSelectableFu(pe, inputs, {*bits128, *bits128, *bits128, *bits128},
-                         *bits128, *bits128, resources);
+  return addSelectableFu(pe, inputs, {*vector, *vector, *vector, *vector},
+                         *vector, *outer, resources);
 }
 
 llvm::Error
@@ -1139,42 +1148,50 @@ llvm::Error addVectorAdapterFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
                      {*bits128, *bits128, *bits128}, resources);
 }
 
-llvm::Error addTokenControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
+llvm::Error addTokenControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+                              TokenControlFuParameters parameters) {
+  if (parameters.outerPayloadBits == 0 || parameters.selectorPayloadBits == 0)
+    return invalid("TokenControlFu widths must be positive");
+  if (parameters.selectorPayloadBits > parameters.outerPayloadBits)
+    return invalid("TokenControlFu selector width exceeds its outer width");
   if (inputs.size() != 5)
     return invalid(
         "TokenControlFu requires selector/control and four payload inputs");
-  auto bits128 = PortType::bits(128);
-  if (!bits128)
-    return bits128.takeError();
-  auto bits64 = PortType::bits(64);
-  if (!bits64)
-    return bits64.takeError();
-  const ::fabric::RoutedTokenParams routed{128, 4};
+  auto outer = PortType::bits(parameters.outerPayloadBits);
+  if (!outer)
+    return outer.takeError();
+  auto selector = PortType::bits(parameters.selectorPayloadBits);
+  if (!selector)
+    return selector.takeError();
+
+  const std::vector<std::uint32_t> payloadRoles = {1, 2, 3, 4};
+  const std::vector<std::uint32_t> outputRoles = {0, 1, 2, 3};
+  const std::vector<PortType> payloadTypes(4, *outer);
+  const ::fabric::RoutedTokenParams routed{parameters.outerPayloadBits, 4};
   std::vector<RoutedResource> resources = {
       {ImplementationFamilyId::TokenConstant,
-       ::fabric::PayloadCapacityParams{128},
+       ::fabric::PayloadCapacityParams{parameters.outerPayloadBits},
        {0},
-       {*bits128},
+       {*outer},
        {0}},
-      {ImplementationFamilyId::TokenSync,
-       routed,
-       {1, 2, 3, 4},
-       {*bits128, *bits128, *bits128, *bits128},
-       {0, 1, 2, 3}},
+      {ImplementationFamilyId::TokenSync, routed, payloadRoles, payloadTypes,
+       outputRoles},
       {ImplementationFamilyId::TokenMux,
        routed,
        {0, 1, 2, 3, 4},
-       {*bits128},
+       {*outer},
        {0}},
       {ImplementationFamilyId::TokenDemux,
        routed,
        {0, 1},
-       {*bits128, *bits128, *bits128, *bits128},
-       {0, 1, 2, 3}},
+       payloadTypes,
+       outputRoles},
   };
-  return addRoutedFu(pe, inputs,
-                     {*bits64, *bits128, *bits128, *bits128, *bits128},
-                     {*bits128, *bits128, *bits128, *bits128}, resources);
+  std::vector<PortType> innerInputs = {*selector};
+  innerInputs.insert(innerInputs.end(), payloadTypes.begin(),
+                     payloadTypes.end());
+  return addRoutedFu(pe, inputs, std::move(innerInputs), payloadTypes,
+                     resources);
 }
 
 llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {

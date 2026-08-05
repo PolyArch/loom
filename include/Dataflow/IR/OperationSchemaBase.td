@@ -42,14 +42,24 @@ class LLVMIntrinsicSelector<string intrinsic> : OperationInstanceSelector<
 // source-owned instance when that class is a generic carrier.
 class ActorSchema<int id, int wireTag, string cls, string kind,
                   SemanticsCase case,
-                  OperationInstanceSelector selector = WholeOperationClass> {
+                  OperationInstanceSelector selector = WholeOperationClass,
+                  bit elementwiseDecomposable = 0> {
   int schemaId = id;
   int stableWireTag = wireTag;
   string opClass = cls;
   string actorKind = kind;
   SemanticsCase semantics = case;
   OperationInstanceSelector instanceSelector = selector;
+  bit supportsElementwiseVectorDecomposition = elementwiseDecomposable;
 }
+
+// A pure software actor whose fixed-vector instance is exactly the pointwise
+// lift of the same scalar operation. This is a software semantic fact, not an
+// implementation-family admission rule.
+class ElementwiseActorSchema<
+    int id, int wireTag, string cls, string kind, SemanticsCase case,
+    OperationInstanceSelector selector = WholeOperationClass>
+    : ActorSchema<id, wireTag, cls, kind, case, selector, 1>;
 
 // One closed typed `hw_params` record schema an implementation family selects.
 // Every schema names one concrete C++ record; there is no generic record or

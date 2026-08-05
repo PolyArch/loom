@@ -497,6 +497,28 @@ functional proof. This preserves a simple Mapping contract: either every
 complete actor token fits one admitted realization and route, or that Mapping
 candidate is invalid.
 
+The minimal exact transform for an elementwise actor uses complete
+leading-dimension blocks. Standard `vector.shuffle` already owns block
+selection and concatenation, while one `dataflow.sync` preserves the original
+joint operand firing. This avoids a new lane IR, packed-integer convention, or
+backend-private slicing table. Scalarization is a separate typed decision
+because it changes both actor count and the required physical families; it is
+not an implicit fallback when chunk admission fails.
+
+Constraining the transform to pure elementwise actors is intentional. A vector
+memory operation, reduction, or stateful actor has an atomic effect or ordering
+contract that cannot be reconstructed by merely cloning its scalar operation.
+Those owners require their own proved transforms rather than exceptions in the
+elementwise rule.
+
+The classification belongs in the generated OperationSchema source because an
+operation carrier trait is not the software semantic identity. In particular,
+a generic registered-intrinsic carrier may have no generic elementwise trait
+while its selected saturating arithmetic schema is exactly pointwise. Reading
+the generated schema fact admits that actor without a handwritten intrinsic
+exception, and keeps HSG membership from becoming a second software-semantics
+authority.
+
 ## Why Representative Kernels Are Structural Anchors
 
 The frontend anchors were selected to force interaction among decisions:

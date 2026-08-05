@@ -19,7 +19,8 @@ def LoneGamma : ImplementationFamily<1, [GammaSchema],
 def PredicateParams : CapabilityParamsSchema<1>;
 def PredicateAdmission : TypedAdmissionProvider<1>;
 
-def BetaSchema : ActorSchema<1, 73, "::test::BetaOp", "Compute", PredicateCase>;
+def BetaSchema : ElementwiseActorSchema<
+    1, 73, "::test::BetaOp", "Compute", PredicateCase>;
 def AlphaSchema : ActorSchema<0, 9001, "::test::AlphaOp", "Compute", PlainCase>;
 
 def SharedAlphaBeta : ImplementationFamily<0, [AlphaSchema, BetaSchema],

@@ -15,6 +15,7 @@
 namespace loom::frontend {
 
 struct ExactFabricCapabilityMiss final {
+  ::dataflow::ActorRef actor;
   ::dataflow::CanonicalDataflowActorKind actorKind;
   ::dataflow::OperationSchemaId schema;
   ::mlir::FunctionType type;

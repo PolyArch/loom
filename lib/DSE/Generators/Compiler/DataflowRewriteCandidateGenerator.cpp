@@ -2,6 +2,7 @@
 #include "DSE/StructuredOwnershipInvocationInternal.h"
 
 #include "Common/ArtifactStore.h"
+#include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/Transforms/DataflowRewrite.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -11,6 +12,7 @@
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -19,7 +21,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.dataflow_rewrite_generator.config.1.0";
+    "loom.dataflow_rewrite_generator.config.1.1";
 
 enum InputSlot : std::uint32_t {
   CanonicalDataflowProgramsInput,
@@ -43,7 +45,7 @@ constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {
       PlanValueCardinality::FiniteSet}}};
 
 constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 1> workUnits = {{
-    {CandidateGeneratorWorkUnitRef(0), "typed_rewrite_kind"},
+    {CandidateGeneratorWorkUnitRef(0), "rewrite_expansion"},
 }};
 
 constexpr std::array<dataflow::DataflowRewriteKind, 3> rewriteKinds = {{
@@ -63,6 +65,28 @@ llvm::ArrayRef<std::uint8_t> descriptorBytes() {
           configDescriptor.size()};
 }
 
+std::vector<std::uint8_t> encodeConfig(std::uint64_t limit) {
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(8);
+  for (unsigned shift = 56; shift != 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(limit >> shift));
+  bytes.push_back(static_cast<std::uint8_t>(limit));
+  return bytes;
+}
+
+llvm::Expected<std::uint64_t> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
+  if (bytes.size() < 8)
+    return invalid("truncated scope expansion limit");
+  std::uint64_t limit = 0;
+  for (std::uint8_t byte : bytes.take_front(8))
+    limit = (limit << 8) | byte;
+  if (bytes.size() != 8)
+    return invalid("config has trailing bytes");
+  if (limit == 0)
+    return invalid("scope expansion limit must be positive");
+  return limit;
+}
+
 llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
                            const ComponentViewDigest &digest) {
   auto adopted = adoptResolvedDataflowRewriteGeneratorConfigView(
@@ -75,7 +99,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     dataflowRewriteCandidateGeneratorKind,
     "compiler.dataflow_rewrite",
-    "loom.compiler.dataflow_rewrite.generator.v1",
+    "loom.compiler.dataflow_rewrite.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -90,14 +114,10 @@ singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> bindings,
   return bindings[slot].artifacts.front();
 }
 
-llvm::Expected<bool>
-isAdmitted(const frontend::FabricCapabilityIndex &capabilities,
-           const dataflow::CanonicalDataflowArtifact &program) {
-  auto miss = capabilities.firstInadmissibleActor(program);
-  if (!miss)
-    return miss.takeError();
-  return !miss->has_value();
-}
+struct SearchCandidate final {
+  ArtifactRootReference reference;
+  dataflow::CanonicalDataflowArtifact artifact;
+};
 
 llvm::Expected<CandidateGeneratorInvocationOutcome>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
@@ -130,48 +150,128 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   frontend::FabricCapabilityIndex capabilities(fabricRoot->view());
 
   std::vector<ArtifactRootReference> outputs;
+  std::vector<ArtifactRootReference> seen;
+  std::deque<SearchCandidate> frontier;
+  std::uint64_t expansions = 0;
+  bool semanticLimitReached = false;
+
+  const auto classify =
+      [&](ArtifactRootReference reference,
+          dataflow::CanonicalDataflowArtifact candidate) -> llvm::Error {
+    if (llvm::is_contained(seen, reference))
+      return llvm::Error::success();
+    seen.push_back(reference);
+    auto miss = capabilities.firstInadmissibleActor(candidate);
+    if (!miss)
+      return miss.takeError();
+    if (!*miss) {
+      outputs.push_back(std::move(reference));
+      return llvm::Error::success();
+    }
+    frontier.push_back(
+        SearchCandidate{std::move(reference), std::move(candidate)});
+    return llvm::Error::success();
+  };
+
+  const auto publishChild =
+      [&](const ArtifactRootReference &parent,
+          const dataflow::DataflowRewriteDecision &decision,
+          dataflow::CanonicalDataflowArtifact child) -> llvm::Error {
+    auto published = dataflow::publishCanonicalDataflow(child, store);
+    if (!published)
+      return published.takeError();
+    if (StructuredOwnershipInvocation *invocation =
+            detail::StructuredOwnershipInvocationAccess::current())
+      if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
+              recordDataflowRewriteCandidate(*invocation, parent, *published,
+                                             decision, store))
+        return error;
+    return classify(std::move(*published), std::move(child));
+  };
+
   for (const ArtifactRootReference &reference :
        inputBindings[CanonicalDataflowProgramsInput].artifacts) {
     auto parent = dataflow::importCanonicalDataflow(reference, store);
     if (!parent)
       return parent.takeError();
 
-    auto parentAdmitted = isAdmitted(capabilities, *parent);
-    if (!parentAdmitted)
-      return parentAdmitted.takeError();
-    if (*parentAdmitted)
-      outputs.push_back(reference);
+    // Fixed catalog rules are independent one-hop alternatives from the exact
+    // input. Their children become seeds for the same vector decomposition
+    // search instead of being discarded merely because the first rewrite is
+    // not yet Fabric-admissible.
+    std::vector<std::pair<dataflow::DataflowRewriteDecision,
+                          dataflow::CanonicalDataflowArtifact>>
+        fixedChildren;
 
     for (dataflow::DataflowRewriteKind kind : rewriteKinds) {
+      if (expansions == config->scopeExpansionLimit()) {
+        semanticLimitReached = true;
+        break;
+      }
+      ++expansions;
       auto child = dataflow::materializeDataflowRewrite(*parent, kind);
       if (!child)
         return child.takeError();
       if (!*child)
         continue;
+      fixedChildren.emplace_back(dataflow::DataflowRewriteDecision{kind},
+                                 std::move(**child));
+    }
+    if (semanticLimitReached)
+      break;
 
-      auto childAdmitted = isAdmitted(capabilities, **child);
-      if (!childAdmitted)
-        return childAdmitted.takeError();
-      if (!*childAdmitted)
-        continue;
+    if (llvm::Error error = classify(reference, std::move(*parent)))
+      return std::move(error);
+    for (auto &[decision, child] : fixedChildren)
+      if (llvm::Error error =
+              publishChild(reference, decision, std::move(child)))
+        return std::move(error);
+  }
 
-      auto published = dataflow::publishCanonicalDataflow(**child, store);
-      if (!published)
-        return published.takeError();
-      if (StructuredOwnershipInvocation *invocation =
-              detail::StructuredOwnershipInvocationAccess::current())
-        if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
-                recordDataflowRewriteCandidate(*invocation, reference,
-                                               *published, kind, store))
-          return std::move(error);
-      outputs.push_back(std::move(*published));
+  while (!semanticLimitReached && !frontier.empty()) {
+    SearchCandidate parent = std::move(frontier.front());
+    frontier.pop_front();
+    auto miss = capabilities.firstInadmissibleActor(parent.artifact);
+    if (!miss)
+      return miss.takeError();
+    if (!*miss)
+      return invalid("admitted candidate remained in the rewrite frontier");
+
+    auto decisions = dataflow::enumerateElementwiseVectorDecompositionDecisions(
+        parent.artifact, (*miss)->actor);
+    if (!decisions)
+      return decisions.takeError();
+    for (const dataflow::DataflowRewriteDecision &decision : *decisions) {
+      auto cost =
+          dataflow::dataflowRewriteExpansionCost(parent.artifact, decision);
+      if (!cost)
+        return cost.takeError();
+      if (*cost > config->scopeExpansionLimit() - expansions) {
+        semanticLimitReached = true;
+        break;
+      }
+      expansions += *cost;
+      auto child =
+          dataflow::materializeDataflowRewrite(parent.artifact, decision);
+      if (!child)
+        return child.takeError();
+      if (!*child)
+        return invalid("typed vector decomposition produced an identity");
+      if (llvm::Error error =
+              publishChild(parent.reference, decision, std::move(**child)))
+        return std::move(error);
     }
   }
 
+  CandidateGeneratorOutputBinding output{CandidateGeneratorOutputSlotRef(0),
+                                         std::move(outputs)};
+  if (semanticLimitReached)
+    return CandidateGeneratorInvocationOutcome{
+        IncompleteCandidateGeneratorInvocation{
+            CandidateGeneratorIncompleteReason::SemanticLimitReached,
+            {std::move(output)}}};
   return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{{
-          {CandidateGeneratorOutputSlotRef(0), std::move(outputs)},
-      }}};
+      CompletedCandidateGeneratorInvocation{{std::move(output)}}};
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),
@@ -185,12 +285,16 @@ resolvedDataflowRewriteGeneratorConfigSchemaBytes() {
 }
 
 llvm::Expected<ResolvedDataflowRewriteGeneratorConfigView>
-projectResolvedDataflowRewriteGeneratorConfigView() {
-  std::vector<std::uint8_t> bytes;
+projectResolvedDataflowRewriteGeneratorConfigView(
+    const ResolvedConfig &config) {
+  const std::uint64_t limit = config.dse.dataflowRewrite.scopeExpansionLimit;
+  if (limit == 0)
+    return invalid("scope expansion limit must be positive");
+  std::vector<std::uint8_t> bytes = encodeConfig(limit);
   auto digest = computeComponentViewDigest(descriptorBytes(), bytes);
   if (!digest)
     return digest.takeError();
-  return ResolvedDataflowRewriteGeneratorConfigView(std::move(bytes),
+  return ResolvedDataflowRewriteGeneratorConfigView(limit, std::move(bytes),
                                                     std::move(*digest));
 }
 
@@ -201,12 +305,17 @@ adoptResolvedDataflowRewriteGeneratorConfigView(
     const ComponentViewDigest &digest) {
   if (schemaDescriptorBytes != descriptorBytes())
     return invalid("config descriptor does not match the exact owner");
-  if (!canonicalViewBytes.empty())
-    return invalid("schema-1.0 config must be empty");
   if (llvm::Error error = validateComponentViewDigest(
           schemaDescriptorBytes, canonicalViewBytes, digest))
     return std::move(error);
-  return ResolvedDataflowRewriteGeneratorConfigView({}, digest);
+  auto limit = decodeConfig(canonicalViewBytes);
+  if (!limit)
+    return limit.takeError();
+  std::vector<std::uint8_t> reencoded = encodeConfig(*limit);
+  if (llvm::ArrayRef<std::uint8_t>(reencoded) != canonicalViewBytes)
+    return invalid("decoded config does not re-encode to the source bytes");
+  return ResolvedDataflowRewriteGeneratorConfigView(
+      *limit, std::move(reencoded), digest);
 }
 
 const CandidateGeneratorDescriptor &

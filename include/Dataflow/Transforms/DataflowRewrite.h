@@ -9,6 +9,8 @@
 
 #include <memory>
 #include <optional>
+#include <variant>
+#include <vector>
 
 namespace dataflow {
 
@@ -28,6 +30,52 @@ enum class DataflowRewriteKind {
   ActivationPreservingConstantFold,
 };
 
+/// Split one fixed-vector elementwise actor into equal leading-dimension
+/// chunks. The ActorRef belongs to the exact parent artifact; it is invocation
+/// lineage, not a second persistent actor identity.
+struct ElementwiseVectorChunkRewrite final {
+  ActorRef actor;
+  std::int64_t leadingBlocksPerChunk;
+
+  friend bool operator==(const ElementwiseVectorChunkRewrite &lhs,
+                         const ElementwiseVectorChunkRewrite &rhs) {
+    return lhs.actor == rhs.actor &&
+           lhs.leadingBlocksPerChunk == rhs.leadingBlocksPerChunk;
+  }
+};
+
+/// Scalarize one fixed-vector elementwise actor at every row-major position.
+struct ElementwiseVectorScalarizeRewrite final {
+  ActorRef actor;
+
+  friend bool operator==(const ElementwiseVectorScalarizeRewrite &lhs,
+                         const ElementwiseVectorScalarizeRewrite &rhs) {
+    return lhs.actor == rhs.actor;
+  }
+};
+
+using DataflowRewriteDecision =
+    std::variant<DataflowRewriteKind, ElementwiseVectorChunkRewrite,
+                 ElementwiseVectorScalarizeRewrite>;
+
+/// Stable total order used only for deterministic invocation lineage.
+bool dataflowRewriteDecisionLess(const DataflowRewriteDecision &lhs,
+                                 const DataflowRewriteDecision &rhs);
+
+/// Enumerates the finite decomposition domain for one exact actor. An empty
+/// result means that the actor is outside the closed pure fixed-vector
+/// elementwise domain.
+llvm::Expected<std::vector<DataflowRewriteDecision>>
+enumerateElementwiseVectorDecompositionDecisions(
+    const CanonicalDataflowArtifact &parent, ActorRef actor);
+
+/// Number of narrow compute actors materialized by one decision. Generators
+/// charge this exact amount against their resolved semantic work limit before
+/// constructing the candidate.
+llvm::Expected<std::uint64_t>
+dataflowRewriteExpansionCost(const CanonicalDataflowArtifact &parent,
+                             const DataflowRewriteDecision &decision);
+
 /// Applies exactly one selected rewrite kind. Graph changes are made on a
 /// private module candidate and published only after native verification and
 /// whole-program `validateFinalizedProgram` succeed, so a rejected rewrite
@@ -44,6 +92,10 @@ createDataflowRewritePass(DataflowRewriteKind kind);
 llvm::Expected<std::optional<CanonicalDataflowArtifact>>
 materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
                            DataflowRewriteKind kind);
+
+llvm::Expected<std::optional<CanonicalDataflowArtifact>>
+materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
+                           const DataflowRewriteDecision &decision);
 
 /// Registers `--dataflow-rewrite` with the global pass registry so developer
 /// tools can drive it as `--dataflow-rewrite=kind=<value>`.

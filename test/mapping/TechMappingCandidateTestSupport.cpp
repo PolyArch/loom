@@ -324,7 +324,8 @@ loom::test::buildTemporalCapacityFabric(const ArtifactStore &store) {
     fuInputs.reserve(5);
     for (unsigned input = 0; input != 5; ++input)
       fuInputs.push_back(take(pe.input(input)));
-    requireSuccess(addTokenControlFu(pe, fuInputs));
+    requireSuccess(
+        addTokenControlFu(pe, fuInputs, TokenControlFuParameters{128, 64}));
     requireSuccess(pe.close());
     for (unsigned output = 0; output != 4; ++output)
       outputs.push_back(take(pe.output(output)));

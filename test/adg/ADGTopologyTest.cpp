@@ -147,7 +147,8 @@ void routedFuLibraryBuildsHeterogeneousBoundaries() {
   std::vector<loom::adg::PeValue> tokenInputs;
   for (std::size_t ordinal = 0; ordinal != 5; ++ordinal)
     tokenInputs.push_back(take(test, tokenPe.input(ordinal)));
-  if (llvm::Error error = loom::adg::addTokenControlFu(tokenPe, tokenInputs))
+  if (llvm::Error error = loom::adg::addTokenControlFu(
+          tokenPe, tokenInputs, loom::adg::TokenControlFuParameters{128, 64}))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = tokenPe.close())
     fail(test, llvm::toString(std::move(error)));

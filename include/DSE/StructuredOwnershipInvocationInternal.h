@@ -82,7 +82,8 @@ public:
   static llvm::Error recordDataflowRewriteCandidate(
       StructuredOwnershipInvocation &invocation,
       const ArtifactRootReference &parent, const ArtifactRootReference &child,
-      dataflow::DataflowRewriteKind kind, const ArtifactStore &store);
+      const dataflow::DataflowRewriteDecision &decision,
+      const ArtifactStore &store);
 
   static llvm::Error
   primeAnalyticCandidate(StructuredOwnershipInvocation &invocation,

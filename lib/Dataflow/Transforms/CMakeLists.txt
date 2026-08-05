@@ -1,5 +1,6 @@
 add_mlir_library(MLIRDataflowTransforms
   DataflowRewritePass.cpp
+  DataflowVectorDecomposition.cpp
 
   PARTIAL_SOURCES_INTENDED
 
@@ -16,4 +17,5 @@ mlir_target_link_libraries(MLIRDataflowTransforms PUBLIC
   MLIRPass
   MLIRSideEffectInterfaces
   MLIRSupport
+  MLIRVectorDialect
 )
