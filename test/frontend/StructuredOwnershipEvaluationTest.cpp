@@ -444,6 +444,26 @@ void centralPlanEvaluatesScheduleChildren() {
     fail("central schedule exploration selected no feasible candidate");
   }
 
+  bool sawStructuredMemoryCommunication = false;
+  bool sawDataflowRewrite = false;
+  for (const loom::dse::DsePlanGenerateInvocationRecords &planInvocation :
+       selection->planGenerateInvocations) {
+    if (planInvocation.incomplete())
+      fail("completed pre-Mapping selection retained an incomplete Generate");
+    for (const loom::dse::GenerateInvocationRecord &record :
+         planInvocation.completed()) {
+      const loom::dse::CandidateGeneratorDescriptor *descriptor =
+          record.generatorBinding.descriptorRef().descriptor();
+      if (!descriptor)
+        fail("pre-Mapping Generate provenance lost its exact descriptor");
+      sawStructuredMemoryCommunication |=
+          descriptor->spelling == "compiler.structured_memory_communication";
+      sawDataflowRewrite |= descriptor->spelling == "compiler.dataflow_rewrite";
+    }
+  }
+  if (!sawStructuredMemoryCommunication || !sawDataflowRewrite)
+    fail("production pre-Mapping boundary discarded Generate provenance");
+
   bool sawScheduleChild = false;
   loom::frontend::FabricCapabilityIndex capabilities(spatial.view());
   for (const loom::dse::SelectedPreMappingCompilation &selected :
@@ -894,6 +914,19 @@ void runEvaluationAnchor() {
       completedGeneration->outputBindings[0].artifacts != expectedGenerated ||
       completedGeneration->outputBindings[1].artifacts != expectedAccelerators)
     fail("central ownership generator changed the exact candidate set");
+  if (completedGeneration->lineageEdges.size() < 4)
+    fail("central ownership generator lost typed decision lineage");
+  for (const loom::dse::CandidateGeneratorLineageEdge &edge :
+       completedGeneration->lineageEdges) {
+    if (edge.kind !=
+            loom::dse::CandidateGeneratorLineageEdgeKind::CandidateDecision ||
+        edge.parents != std::vector<loom::ArtifactRootReference>{baselineRef})
+      fail("ownership lineage changed its exact parent relation");
+    auto decision =
+        take(loom::frontend::adoptSpatialOwnershipDecision(edge.ownerPayload));
+    if (decision.scope.selection.parent != baselineRef.artifact)
+      fail("ownership lineage decision belongs to a foreign parent");
+  }
 
   auto foreignGeneratorConfig =
       take(loom::dse::projectResolvedStructuredOwnershipGeneratorConfigView(
@@ -1543,6 +1576,86 @@ void runEvaluationAnchor() {
     fail("cannot remove artifact store directory: " + error.message());
 }
 
+void ownershipLineageRejectsAnOutOfRangeScope() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-ownership-lineage-context", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto parent = makeScheduledLoopProgram();
+  auto parentReference =
+      take(loom::frontend::publishStructuredProgram(parent, store));
+  const loom::frontend::SpatialOwnershipScope validScope{
+      findCallable(parent, "loop_kernel")};
+  auto validDomain =
+      take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+          parent, validScope.selection));
+  if (validDomain.empty())
+    fail("ownership fixture has no typed decision domain");
+
+  loom::frontend::SpatialOwnershipDecisionPoint invalidCallPoint =
+      validDomain.front();
+  invalidCallPoint.directCallSpecializationShape =
+      static_cast<loom::frontend::DirectCallSpecializationShape>(99);
+  auto invalidCallEncoding = loom::frontend::encodeSpatialOwnershipDecision(
+      {validScope, invalidCallPoint});
+  if (invalidCallEncoding)
+    fail("ownership encoder accepted an unknown direct-call specialization");
+  llvm::consumeError(invalidCallEncoding.takeError());
+  auto invalidCallMaterialization =
+      loom::frontend::materializeStructuredSpatialOwnershipDecision(
+          parent, validScope, invalidCallPoint);
+  if (invalidCallMaterialization)
+    fail("ownership materializer accepted an unknown direct-call "
+         "specialization");
+  llvm::consumeError(invalidCallMaterialization.takeError());
+
+  loom::frontend::SpatialOwnershipDecisionPoint invalidWidthPoint =
+      validDomain.front();
+  invalidWidthPoint.addressProjection =
+      loom::frontend::RootRelativeAddressProjection{7};
+  auto invalidWidthEncoding = loom::frontend::encodeSpatialOwnershipDecision(
+      {validScope, invalidWidthPoint});
+  if (invalidWidthEncoding)
+    fail("ownership encoder accepted an unsupported root-relative width");
+  llvm::consumeError(invalidWidthEncoding.takeError());
+  auto invalidWidthMaterialization =
+      loom::frontend::materializeStructuredSpatialOwnershipDecision(
+          parent, validScope, invalidWidthPoint);
+  if (invalidWidthMaterialization)
+    fail("ownership materializer accepted an unsupported root-relative width");
+  llvm::consumeError(invalidWidthMaterialization.takeError());
+
+  const loom::frontend::SpatialOwnershipDecision invalidDecision{
+      {{parent.identity(), loom::frontend::StructuredEntityKind::Operation, 0}},
+      {std::nullopt, static_cast<loom::frontend::ForallOwnershipShape>(99),
+       std::nullopt}};
+  auto invalidEncoding =
+      loom::frontend::encodeSpatialOwnershipDecision(invalidDecision);
+  if (invalidEncoding)
+    fail("ownership encoder accepted an unknown in-memory decision shape");
+  llvm::consumeError(invalidEncoding.takeError());
+  const loom::frontend::SpatialOwnershipDecision decision{
+      {{parent.identity(), loom::frontend::StructuredEntityKind::Operation,
+        999999}},
+      {}};
+  auto encoded = take(loom::frontend::encodeSpatialOwnershipDecision(decision));
+  const auto *contract =
+      loom::dse::structuredOwnershipCandidateGeneratorDescriptor()
+          .ownerLineagePayload;
+  if (!contract)
+    fail("ownership generator has no owner lineage contract");
+  llvm::Error validation =
+      contract->validateCanonical(encoded, {parentReference}, store);
+  if (!validation)
+    fail("ownership lineage accepted an out-of-range parent-local scope");
+  llvm::consumeError(std::move(validation));
+  error = llvm::sys::fs::remove_directories(directory);
+  if (error)
+    fail("cannot remove ArtifactStore directory: " + error.message());
+}
+
 } // namespace
 
 int main() {
@@ -1554,6 +1667,7 @@ int main() {
     fail(llvm::toString(std::move(error)));
   exactUniformCallArgumentsAreCandidateLocal();
   centralPlanEvaluatesScheduleChildren();
+  ownershipLineageRejectsAnOutOfRangeScope();
   runEvaluationAnchor();
   return EXIT_SUCCESS;
 }

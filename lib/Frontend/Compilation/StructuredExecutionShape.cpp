@@ -13,11 +13,15 @@
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <utility>
 #include <vector>
 
 namespace loom::frontend {
 namespace {
+
+constexpr llvm::StringLiteral decisionSchema =
+    "loom.structured_execution_shape.decision.1.0";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -63,6 +67,9 @@ llvm::Expected<MaterializedShapeProjection> materializeDecision(
     const StructuredExecutionShapeDecision &decision,
     llvm::ArrayRef<StructuredEntityRef> trackedBlockReferences,
     llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
+  auto encoded = encodeStructuredExecutionShapeDecision(decision);
+  if (!encoded)
+    return encoded.takeError();
   auto parentView = parent.view();
   if (!parentView)
     return parentView.takeError();
@@ -143,6 +150,39 @@ llvm::Expected<MaterializedShapeProjection> materializeDecision(
 }
 
 } // namespace
+
+llvm::ArrayRef<std::uint8_t> structuredExecutionShapeDecisionSchemaBytes() {
+  return {reinterpret_cast<const std::uint8_t *>(decisionSchema.data()),
+          decisionSchema.size()};
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeStructuredExecutionShapeDecision(
+    const StructuredExecutionShapeDecision &decision) {
+  if (decision.fmuladdShape != raising::FMulAddExecutionShape::Fused &&
+      decision.fmuladdShape != raising::FMulAddExecutionShape::Split)
+    return invalid("decision has an unknown shape");
+  return std::vector<std::uint8_t>{
+      static_cast<std::uint8_t>(decision.fmuladdShape)};
+}
+
+llvm::Expected<StructuredExecutionShapeDecision>
+adoptStructuredExecutionShapeDecision(
+    llvm::ArrayRef<std::uint8_t> canonicalBytes) {
+  if (canonicalBytes.size() != 1)
+    return invalid("decision payload has the wrong size");
+  if (canonicalBytes.front() >
+      static_cast<std::uint8_t>(raising::FMulAddExecutionShape::Split))
+    return invalid("decision payload has an unknown shape");
+  StructuredExecutionShapeDecision decision{
+      static_cast<raising::FMulAddExecutionShape>(canonicalBytes.front())};
+  auto reencoded = encodeStructuredExecutionShapeDecision(decision);
+  if (!reencoded)
+    return reencoded.takeError();
+  if (llvm::ArrayRef<std::uint8_t>(*reencoded) != canonicalBytes)
+    return invalid("decision payload does not re-encode exactly");
+  return decision;
+}
 
 llvm::Expected<std::vector<StructuredExecutionShapeDecision>>
 enumerateStructuredExecutionShapeDecisions(

@@ -325,6 +325,9 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     }
   }
 
+  if (taskDomain.candidates.empty())
+    return PromotionAcquisitionOutcome{CompletedPromotionAcquisition{}};
+
   PromotionAcquisitionProviderFunction resolve = nullptr;
   {
     std::shared_lock<std::shared_mutex> lock(providerMutex());

@@ -508,18 +508,30 @@ struct DataflowRewritePass
 
 } // namespace
 
-std::unique_ptr<::mlir::Pass>
+llvm::Expected<std::unique_ptr<::mlir::Pass>>
 dataflow::createDataflowRewritePass(DataflowRewriteKind kind) {
+  if (static_cast<std::uint32_t>(kind) >
+      static_cast<std::uint32_t>(
+          DataflowRewriteKind::ActivationPreservingConstantFold))
+    return ::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "dataflow_rewrite_invalid: typed rewrite kind is unknown");
   return std::make_unique<DataflowRewritePass>(kind);
 }
 
 llvm::Expected<std::optional<dataflow::CanonicalDataflowArtifact>>
 dataflow::materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
                                      DataflowRewriteKind kind) {
+  auto encoded = encodeDataflowRewriteDecision(DataflowRewriteDecision{kind});
+  if (!encoded)
+    return encoded.takeError();
   ::mlir::OwningOpRef<::mlir::ModuleOp> candidate(
       ::mlir::cast<::mlir::ModuleOp>(parent.module()->clone()));
   ::mlir::PassManager pipeline(candidate->getContext());
-  pipeline.addPass(createDataflowRewritePass(kind));
+  auto rewritePass = createDataflowRewritePass(kind);
+  if (!rewritePass)
+    return rewritePass.takeError();
+  pipeline.addPass(std::move(*rewritePass));
   if (::mlir::failed(pipeline.run(*candidate)))
     return ::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),

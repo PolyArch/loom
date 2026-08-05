@@ -1,0 +1,3 @@
+dse:
+  dataflow_rewrite:
+    scope_expansion_limit: 1

@@ -7,6 +7,7 @@
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/StructuredEvaluationAcquisition.h"
 #include "DSE/StructuredExecutionShapeCandidateGenerator.h"
+#include "DSE/StructuredMemoryCommunicationCandidateGenerator.h"
 #include "DSE/StructuredOwnershipCandidateGenerator.h"
 #include "DSE/StructuredOwnershipInvocation.h"
 #include "DSE/StructuredScheduleCandidateGenerator.h"
@@ -23,6 +24,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <tuple>
@@ -165,8 +167,10 @@ llvm::Expected<BaselineMetricOutcome> acquireBaselineMetric(
     if (!retained)
       return retained.takeError();
     return BaselineMetricOutcome{IncompletePreMappingExploration{
-        std::nullopt, DsePlanIncompleteReason{incomplete->reason},
-        std::move(*retained)}};
+        std::nullopt,
+        DsePlanIncompleteReason{incomplete->reason},
+        std::move(*retained),
+        {}}};
   }
 
   auto &completed = std::get<CompletedPromotionAcquisition>(*acquired);
@@ -187,6 +191,7 @@ llvm::Expected<BaselineMetricOutcome> acquireBaselineMetric(
         std::nullopt,
         DsePlanIncompleteReason{
             IncompleteSelectionReason::NonComparableEvidence},
+        {},
         {}}};
   auto evidenceReference =
       evaluation::publishEvaluationEvidence(record.evidence, store);
@@ -298,8 +303,10 @@ retainedEvidence(const IncompleteDsePlanExecution &incomplete,
                  llvm::ArrayRef<ArtifactRootReference> baselineEvidence) {
   std::vector<ArtifactRootReference> result(baselineEvidence.begin(),
                                             baselineEvidence.end());
-  for (const auto &output : incomplete.retainedOutputs)
-    for (const ArtifactRootReference &reference : output)
+  for (std::size_t ordinal = 0; ordinal < incomplete.retainedOutputCount();
+       ++ordinal)
+    for (const ArtifactRootReference &reference :
+         incomplete.retainedOutput(ordinal))
       if (reference.schemaIdentity ==
               evaluation::EvaluationEvidence::artifactSchema.identity &&
           reference.schemaVersion ==
@@ -313,6 +320,7 @@ retainedEvidence(const IncompleteDsePlanExecution &incomplete,
 struct CompletedDataflowSelection final {
   std::vector<ArtifactRootReference> selected;
   std::vector<ArtifactRootReference> evidence;
+  DsePlanGenerateInvocationRecords generateInvocations;
 };
 
 using DataflowSelectionOutcome =
@@ -384,13 +392,23 @@ llvm::Expected<DataflowSelectionOutcome> exploreDataflowCandidates(
   auto executed = executeDsePlan(*view, store);
   if (!executed)
     return executed.takeError();
-  if (auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&*executed))
+  if (auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&*executed)) {
+    const std::uint64_t nodeOrdinal = incomplete->nodeOrdinal();
+    const DsePlanIncompleteReason reason = incomplete->reason();
+    auto evidence = retainedEvidence(*incomplete, {});
+    std::vector<DsePlanGenerateInvocationRecords> generateInvocations;
+    generateInvocations.push_back(
+        takeDsePlanGenerateInvocationRecords(std::move(*executed)));
     return DataflowSelectionOutcome{IncompletePreMappingExploration{
-        incomplete->nodeOrdinal, incomplete->reason,
-        retainedEvidence(*incomplete, {})}};
+        nodeOrdinal, reason, std::move(evidence),
+        std::move(generateInvocations)}};
+  }
   auto &completed = std::get<CompletedDsePlanExecution>(*executed);
+  std::vector<ArtifactRootReference> selected = completed.resolve({1, 0}).vec();
+  std::vector<ArtifactRootReference> evidence = completed.resolve({1, 1}).vec();
   return DataflowSelectionOutcome{CompletedDataflowSelection{
-      completed.resolve({1, 0}).vec(), completed.resolve({1, 1}).vec()}};
+      std::move(selected), std::move(evidence),
+      takeDsePlanGenerateInvocationRecords(std::move(*executed))}};
 }
 
 } // namespace
@@ -412,6 +430,9 @@ exploreStructuredCompilationToPreMapping(
   if (llvm::Error error = registerStructuredExecutionShapeCandidateGenerator())
     return std::move(error);
   if (llvm::Error error = registerStructuredScheduleCandidateGenerator())
+    return std::move(error);
+  if (llvm::Error error =
+          registerStructuredMemoryCommunicationCandidateGenerator())
     return std::move(error);
   if (llvm::Error error = registerStructuredEvaluationPromotionAcquisition())
     return std::move(error);
@@ -501,6 +522,10 @@ exploreStructuredCompilationToPreMapping(
       projectResolvedStructuredExecutionShapeGeneratorConfigView();
   if (!executionShapeConfig)
     return executionShapeConfig.takeError();
+  auto memoryCommunicationConfig =
+      projectResolvedStructuredMemoryCommunicationGeneratorConfigView(config);
+  if (!memoryCommunicationConfig)
+    return memoryCommunicationConfig.takeError();
 
   ResolvedConfig planConfig = config;
   planConfig.dse.modelAuthorizations = modelAuthorizations(*obligations);
@@ -526,9 +551,15 @@ exploreStructuredCompilationToPreMapping(
           {PlanOutputRef{1, 0}, ExactPlanArtifacts{{fabric.reference()}}},
           scheduleConfig->canonicalViewBytes().vec(),
           scheduleConfig->digest()},
+      GeneratePlanNodeDefinition{
+          structuredMemoryCommunicationCandidateGeneratorDescriptor()
+              .reference(),
+          {PlanOutputRef{2, 0}, ExactPlanArtifacts{{fabric.reference()}}},
+          memoryCommunicationConfig->canonicalViewBytes().vec(),
+          memoryCommunicationConfig->digest()},
       PromotePlanNodeDefinition{
           structuredEvaluationPromotionAcquisitionDescriptor().reference(),
-          {PlanOutputRef{2, 0}, ExactPlanArtifacts{{fabric.reference()}},
+          {PlanOutputRef{3, 0}, ExactPlanArtifacts{{fabric.reference()}},
            ExactPlanArtifacts{{*workloadReference}},
            ExactPlanArtifacts{{*runtimeInputReference}}},
           acquisitionConfig->canonicalViewBytes().vec(),
@@ -542,21 +573,33 @@ exploreStructuredCompilationToPreMapping(
   auto executed = executeDsePlan(*view, artifactStore);
   if (!executed)
     return executed.takeError();
-  if (auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&*executed))
+  if (auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&*executed)) {
+    const std::uint64_t nodeOrdinal = incomplete->nodeOrdinal();
+    const DsePlanIncompleteReason reason = incomplete->reason();
+    auto evidence = retainedEvidence(*incomplete, baselineEvidence);
+    std::vector<DsePlanGenerateInvocationRecords> generateInvocations;
+    generateInvocations.push_back(
+        takeDsePlanGenerateInvocationRecords(std::move(*executed)));
     return PreMappingExplorationOutcome{IncompletePreMappingExploration{
-        incomplete->nodeOrdinal, incomplete->reason,
-        retainedEvidence(*incomplete, baselineEvidence)}};
+        nodeOrdinal, reason, std::move(evidence),
+        std::move(generateInvocations)}};
+  }
 
   auto &completed = std::get<CompletedDsePlanExecution>(*executed);
   std::vector<ArtifactRootReference> selectedReferences(
-      completed.resolve({3, 0}).begin(), completed.resolve({3, 0}).end());
+      completed.resolve({4, 0}).begin(), completed.resolve({4, 0}).end());
   std::vector<ArtifactRootReference> satisfiedEvidence = baselineEvidence;
-  mergeReferences(satisfiedEvidence, completed.resolve({3, 1}));
+  mergeReferences(satisfiedEvidence, completed.resolve({4, 1}));
+  std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
+  planGenerateInvocations.push_back(
+      takeDsePlanGenerateInvocationRecords(std::move(*executed)));
   if (selectedReferences.empty()) {
     if (options.ownership.selectionMode ==
         StructuredOwnershipSelectionMode::SemanticConformance)
       return PreMappingExplorationOutcome{
-          CompletedNoFeasibleCandidate{std::move(satisfiedEvidence)}};
+          CompletedPreMappingNoFeasibleCandidate{
+              std::move(satisfiedEvidence),
+              std::move(planGenerateInvocations)}};
     selectedReferences.push_back(*sourceReference);
   }
 
@@ -577,6 +620,7 @@ exploreStructuredCompilationToPreMapping(
           std::move(candidate->derivations),
           std::move(candidate->executionShapeDerivations),
           std::move(candidate->scheduleDerivations),
+          std::move(candidate->memoryCommunicationDerivations),
           std::move(candidate->dataflowRewriteDerivations),
           std::move(candidate->functionalReplay)});
       continue;
@@ -594,11 +638,17 @@ exploreStructuredCompilationToPreMapping(
     if (auto *incomplete =
             std::get_if<IncompletePreMappingExploration>(&*dataflowSelection)) {
       mergeReferences(incomplete->retainedEvidence, satisfiedEvidence);
+      incomplete->planGenerateInvocations.insert(
+          incomplete->planGenerateInvocations.begin(),
+          std::make_move_iterator(planGenerateInvocations.begin()),
+          std::make_move_iterator(planGenerateInvocations.end()));
       return PreMappingExplorationOutcome{std::move(*incomplete)};
     }
     auto &dataflowCompleted =
         std::get<CompletedDataflowSelection>(*dataflowSelection);
     mergeReferences(satisfiedEvidence, dataflowCompleted.evidence);
+    planGenerateInvocations.push_back(
+        std::move(dataflowCompleted.generateInvocations));
     for (const ArtifactRootReference &dataflowReference :
          dataflowCompleted.selected) {
       auto candidate = invocation.materializeSelectedDataflowCandidate(
@@ -614,17 +664,19 @@ exploreStructuredCompilationToPreMapping(
           std::move(candidate->derivations),
           std::move(candidate->executionShapeDerivations),
           std::move(candidate->scheduleDerivations),
+          std::move(candidate->memoryCommunicationDerivations),
           std::move(candidate->dataflowRewriteDerivations),
           std::move(candidate->functionalReplay)});
     }
   }
   if (selected.empty())
-    return PreMappingExplorationOutcome{
-        CompletedNoFeasibleCandidate{std::move(satisfiedEvidence)}};
+    return PreMappingExplorationOutcome{CompletedPreMappingNoFeasibleCandidate{
+        std::move(satisfiedEvidence), std::move(planGenerateInvocations)}};
   return PreMappingExplorationOutcome{CompletedPreMappingSelection{
       std::move(selected), std::move(satisfiedEvidence),
       std::vector<StructuredOwnershipCandidateDisposition>(
-          invocation.dispositions().begin(), invocation.dispositions().end())}};
+          invocation.dispositions().begin(), invocation.dispositions().end()),
+      std::move(planGenerateInvocations)}};
 }
 
 } // namespace loom::dse

@@ -3,10 +3,41 @@
 
 #include "DSE/StructuredOwnershipInvocation.h"
 #include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
+#include "Frontend/Compilation/StructuredMemoryCommunication.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
 #include "Simulator/NativeSimulationOracle.h"
 
 namespace loom::dse::detail {
+
+/// Invocation-local, removable index for exact D0-rooted rewrite lineage.
+/// Canonical Artifact references and typed decisions remain the authorities;
+/// this cache only avoids rescanning or rewalking unrelated derivations.
+class StructuredOwnershipDataflowLineageIndex final {
+public:
+  StructuredOwnershipDataflowLineageIndex();
+  ~StructuredOwnershipDataflowLineageIndex();
+
+  StructuredOwnershipDataflowLineageIndex(
+      const StructuredOwnershipDataflowLineageIndex &) = delete;
+  StructuredOwnershipDataflowLineageIndex &
+  operator=(const StructuredOwnershipDataflowLineageIndex &) = delete;
+
+  bool empty() const;
+  llvm::Error recordRoot(const ArtifactRootReference &structuredParent,
+                         const ArtifactRootReference &dataflowRoot);
+  llvm::Expected<ArtifactRootReference>
+  root(const ArtifactRootReference &structuredParent) const;
+  llvm::Error recordDecision(const ArtifactRootReference &parent,
+                             const ArtifactRootReference &child,
+                             const dataflow::DataflowRewriteDecision &decision);
+  llvm::Expected<std::optional<std::vector<DataflowRewriteDerivation>>>
+  tryResolve(const ArtifactRootReference &structuredParent,
+             const ArtifactRootReference &candidate) const;
+
+private:
+  class Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 struct StructuredOwnershipPreparedSource final {
   const ArtifactRootReference &sourceReference;
@@ -76,6 +107,14 @@ public:
       const ArtifactRootReference &parent, const ArtifactRootReference &child,
       std::optional<frontend::StructuredExecutionShapeDecision> decision,
       frontend::MaterializedStructuredOwnershipCandidate candidate,
+      lowering::ProjectedCanonicalDataflow projected,
+      const ArtifactStore &store);
+
+  static llvm::Error recordMemoryCommunicationCandidate(
+      StructuredOwnershipInvocation &invocation,
+      const ArtifactRootReference &parent, const ArtifactRootReference &child,
+      const frontend::StructuredMemoryCommunicationDecision &decision,
+      frontend::MaterializedStructuredMemoryCommunicationCandidate candidate,
       lowering::ProjectedCanonicalDataflow projected,
       const ArtifactStore &store);
 

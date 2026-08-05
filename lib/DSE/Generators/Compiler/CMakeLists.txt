@@ -2,6 +2,7 @@ add_library(LoomDSECompilerGenerator
   DataflowRewriteCandidateGenerator.cpp
   PreMappingExploration.cpp
   StructuredExecutionShapeCandidateGenerator.cpp
+  StructuredMemoryCommunicationCandidateGenerator.cpp
   StructuredOwnershipCandidateGenerator.cpp
   StructuredScheduleCandidateGenerator.cpp
 )

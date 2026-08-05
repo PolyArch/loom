@@ -455,6 +455,16 @@ void centralGeneratorPublishesOnlyAdmittedUniformShapes() {
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() != 2)
     fail("central generator did not publish the Fused/Split candidate pair");
+  if (completed->lineageEdges.size() != 2)
+    fail("central generator lost Fused/Split lineage");
+  for (const loom::dse::CandidateGeneratorLineageEdge &edge :
+       completed->lineageEdges) {
+    if (edge.parents !=
+        std::vector<loom::ArtifactRootReference>{parentReference})
+      fail("execution-shape lineage changed its exact parent");
+    take(loom::frontend::adoptStructuredExecutionShapeDecision(
+        edge.ownerPayload));
+  }
 
   std::size_t fused = 0;
   std::size_t split = 0;
@@ -481,6 +491,75 @@ void centralGeneratorPublishesOnlyAdmittedUniformShapes() {
     fail("central generator duplicated or omitted one execution shape");
 }
 
+void invalidInMemoryDecisionFailsClosed() {
+  auto parent = parseProgram();
+  const loom::frontend::StructuredExecutionShapeDecision decision{
+      static_cast<loom::raising::FMulAddExecutionShape>(99)};
+  auto encoded =
+      loom::frontend::encodeStructuredExecutionShapeDecision(decision);
+  if (encoded)
+    fail("execution-shape encoder accepted an unknown in-memory shape");
+  llvm::consumeError(encoded.takeError());
+  auto materialized =
+      loom::frontend::materializeStructuredExecutionShapeDecision(parent,
+                                                                  decision);
+  if (materialized)
+    fail("execution-shape materializer accepted an unknown in-memory shape");
+  llvm::consumeError(materialized.takeError());
+}
+
+void ownerPayloadMustBelongToExactParentDecisionDomain() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-execution-shape-parent-domain", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+
+  auto unresolved = parseProgram();
+  auto fused = take(loom::frontend::materializeStructuredExecutionShapeDecision(
+      unresolved, {loom::raising::FMulAddExecutionShape::Fused}));
+  auto split = take(loom::frontend::materializeStructuredExecutionShapeDecision(
+      unresolved, {loom::raising::FMulAddExecutionShape::Split}));
+  auto fusedReference = take(
+      loom::frontend::publishStructuredProgram(fused.structuredProgram, store));
+  auto splitReference = take(
+      loom::frontend::publishStructuredProgram(split.structuredProgram, store));
+
+  auto config = take(
+      loom::dse::projectResolvedStructuredExecutionShapeGeneratorConfigView());
+  auto inputs =
+      take(loom::dse::bindStructuredExecutionShapeCandidateGeneratorInputs(
+          {fusedReference}, design.roots().front().reference()));
+  auto binding =
+      take(loom::dse::resolveStructuredExecutionShapeCandidateGeneratorBinding(
+          config));
+  auto payload = take(loom::frontend::encodeStructuredExecutionShapeDecision(
+      {loom::raising::FMulAddExecutionShape::Split}));
+  std::vector<loom::dse::CandidateGeneratorOutputBinding> outputs = {
+      {loom::dse::CandidateGeneratorOutputSlotRef(0), {splitReference}}};
+  std::vector<loom::dse::CandidateGeneratorLineageEdge> lineage = {{
+      loom::dse::CandidateGeneratorLineageEdgeKind::CandidateDecision,
+      loom::dse::CandidateGeneratorOutputSlotRef(0),
+      splitReference,
+      {fusedReference},
+      std::move(payload),
+  }};
+  llvm::Error validation =
+      loom::dse::validateCanonicalCandidateGeneratorInvocation(
+          inputs, binding, outputs, lineage, true, store);
+  if (!validation)
+    fail("execution-shape owner accepted a decision outside the exact parent "
+         "domain");
+  llvm::consumeError(std::move(validation));
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail("cannot remove ArtifactStore directory: " + cleanup.message());
+}
+
 } // namespace
 
 int main() {
@@ -488,5 +567,7 @@ int main() {
   selectedShapesRemainNativeObservable();
   ownershipLineageIsMechanicallyReprojected();
   centralGeneratorPublishesOnlyAdmittedUniformShapes();
+  invalidInMemoryDecisionFailsClosed();
+  ownerPayloadMustBelongToExactParentDecisionDomain();
   return EXIT_SUCCESS;
 }

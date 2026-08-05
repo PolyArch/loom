@@ -8,12 +8,15 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <deque>
 #include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -96,6 +99,45 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return llvm::Error::success();
 }
 
+llvm::Error
+validateDecisionPayload(llvm::ArrayRef<std::uint8_t> bytes,
+                        llvm::ArrayRef<ArtifactRootReference> parents,
+                        const ArtifactStore &store) {
+  auto adopted = dataflow::adoptDataflowRewriteDecision(bytes);
+  if (!adopted)
+    return adopted.takeError();
+  if (parents.size() != 1 ||
+      parents.front().schemaIdentity !=
+          dataflow::canonicalDataflowSchema.identity ||
+      parents.front().schemaVersion !=
+          dataflow::canonicalDataflowSchema.version)
+    return invalid(
+        "rewrite decision does not have one exact Canonical Dataflow parent");
+  if (const auto *chunk =
+          std::get_if<dataflow::ElementwiseVectorChunkRewrite>(&*adopted)) {
+    if (chunk->actor.artifact != parents.front().artifact)
+      return invalid("chunk decision does not belong to its exact parent");
+  } else if (const auto *scalar =
+                 std::get_if<dataflow::ElementwiseVectorScalarizeRewrite>(
+                     &*adopted)) {
+    if (scalar->actor.artifact != parents.front().artifact)
+      return invalid("scalarization decision does not belong to its exact "
+                     "parent");
+  }
+  auto parent = dataflow::importCanonicalDataflow(parents.front(), store);
+  if (!parent)
+    return parent.takeError();
+  if (!std::holds_alternative<dataflow::DataflowRewriteKind>(*adopted)) {
+    auto cost = dataflow::dataflowRewriteExpansionCost(*parent, *adopted);
+    if (!cost)
+      return cost.takeError();
+  }
+  return llvm::Error::success();
+}
+
+const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
+    dataflow::dataflowRewriteDecisionSchemaBytes(), validateDecisionPayload};
+
 const CandidateGeneratorDescriptor descriptor{
     dataflowRewriteCandidateGeneratorKind,
     "compiler.dataflow_rewrite",
@@ -106,6 +148,7 @@ const CandidateGeneratorDescriptor descriptor{
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
     {},
+    &lineageContract,
 };
 
 const ArtifactRootReference &
@@ -150,7 +193,9 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   frontend::FabricCapabilityIndex capabilities(fabricRoot->view());
 
   std::vector<ArtifactRootReference> outputs;
-  std::vector<ArtifactRootReference> seen;
+  std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)> seen(
+      &artifactRootReferenceLess);
+  std::vector<CandidateGeneratorLineageEdge> generatedLineageEdges;
   std::deque<SearchCandidate> frontier;
   std::uint64_t expansions = 0;
   bool semanticLimitReached = false;
@@ -158,9 +203,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   const auto classify =
       [&](ArtifactRootReference reference,
           dataflow::CanonicalDataflowArtifact candidate) -> llvm::Error {
-    if (llvm::is_contained(seen, reference))
+    if (!seen.insert(reference).second)
       return llvm::Error::success();
-    seen.push_back(reference);
     auto miss = capabilities.firstInadmissibleActor(candidate);
     if (!miss)
       return miss.takeError();
@@ -186,6 +230,15 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
               recordDataflowRewriteCandidate(*invocation, parent, *published,
                                              decision, store))
         return error;
+    auto ownerPayload = dataflow::encodeDataflowRewriteDecision(decision);
+    if (!ownerPayload)
+      return ownerPayload.takeError();
+    generatedLineageEdges.push_back(CandidateGeneratorLineageEdge{
+        CandidateGeneratorLineageEdgeKind::CandidateDecision,
+        CandidateGeneratorOutputSlotRef(0),
+        *published,
+        {parent},
+        std::move(*ownerPayload)});
     return classify(std::move(*published), std::move(child));
   };
 
@@ -265,13 +318,29 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
 
   CandidateGeneratorOutputBinding output{CandidateGeneratorOutputSlotRef(0),
                                          std::move(outputs)};
+  std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)>
+      requiredTargets(output.artifacts.begin(), output.artifacts.end(),
+                      &artifactRootReferenceLess);
+  std::vector<CandidateGeneratorLineageEdge> retainedLineageEdges;
+  for (auto edge = generatedLineageEdges.rbegin();
+       edge != generatedLineageEdges.rend(); ++edge) {
+    if (requiredTargets.find(edge->output) == requiredTargets.end())
+      continue;
+    retainedLineageEdges.push_back(std::move(*edge));
+    for (const ArtifactRootReference &parent :
+         retainedLineageEdges.back().parents)
+      requiredTargets.insert(parent);
+  }
+  std::reverse(retainedLineageEdges.begin(), retainedLineageEdges.end());
   if (semanticLimitReached)
     return CandidateGeneratorInvocationOutcome{
         IncompleteCandidateGeneratorInvocation{
             CandidateGeneratorIncompleteReason::SemanticLimitReached,
-            {std::move(output)}}};
+            {std::move(output)},
+            std::move(retainedLineageEdges)}};
   return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{{std::move(output)}}};
+      CompletedCandidateGeneratorInvocation{{std::move(output)},
+                                            std::move(retainedLineageEdges)}};
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),

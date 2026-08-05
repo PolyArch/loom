@@ -1,7 +1,10 @@
 #include "DSE/CandidateGenerator.h"
 
+#include "Common/ArtifactStore.h"
+
 #include "Common/ArtifactLocalReference.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
@@ -56,10 +59,222 @@ bool matchesSchema(const CandidateGeneratorOutputSlotDescriptor &slot,
          slot.schema->version == artifact.schemaVersion;
 }
 
+bool containsReference(llvm::ArrayRef<ArtifactRootReference> references,
+                       const ArtifactRootReference &reference) {
+  return std::binary_search(references.begin(), references.end(), reference,
+                            artifactRootReferenceLess);
+}
+
+bool lineageEdgeLess(const CandidateGeneratorLineageEdge &lhs,
+                     const CandidateGeneratorLineageEdge &rhs) {
+  if (lhs.kind != rhs.kind)
+    return lhs.kind < rhs.kind;
+  if (lhs.outputSlot != rhs.outputSlot)
+    return lhs.outputSlot.ordinal() < rhs.outputSlot.ordinal();
+  if (lhs.output != rhs.output)
+    return artifactRootReferenceLess(lhs.output, rhs.output);
+  if (lhs.parents != rhs.parents)
+    return std::lexicographical_compare(lhs.parents.begin(), lhs.parents.end(),
+                                        rhs.parents.begin(), rhs.parents.end(),
+                                        artifactRootReferenceLess);
+  return lhs.ownerPayload < rhs.ownerPayload;
+}
+
+struct LineageTargetKey final {
+  CandidateGeneratorOutputSlotRef slot;
+  ArtifactRootReference output;
+};
+
+bool lineageTargetLess(const LineageTargetKey &lhs,
+                       const LineageTargetKey &rhs) {
+  if (lhs.slot != rhs.slot)
+    return lhs.slot.ordinal() < rhs.slot.ordinal();
+  return artifactRootReferenceLess(lhs.output, rhs.output);
+}
+
+llvm::Error canonicalizeLineageEdges(
+    const CandidateGeneratorDescriptor &descriptor,
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    llvm::ArrayRef<CandidateGeneratorOutputBinding> outputs,
+    std::vector<CandidateGeneratorLineageEdge> &edges,
+    const ArtifactStore &store) {
+  std::vector<ArtifactRootReference> invocationInputs;
+  for (const CandidateGeneratorInputBinding &binding : inputs)
+    invocationInputs.insert(invocationInputs.end(), binding.artifacts.begin(),
+                            binding.artifacts.end());
+  llvm::sort(invocationInputs, artifactRootReferenceLess);
+  invocationInputs.erase(
+      std::unique(invocationInputs.begin(), invocationInputs.end()),
+      invocationInputs.end());
+
+  for (CandidateGeneratorLineageEdge &edge : edges) {
+    if (static_cast<std::uint32_t>(edge.kind) >
+        static_cast<std::uint32_t>(
+            CandidateGeneratorLineageEdgeKind::CandidateDecision))
+      return invalid("provider returned an invalid lineage edge kind");
+    if (edge.outputSlot.ordinal() >= outputs.size())
+      return invalid("lineage edge references an unknown output slot");
+    if (!matchesSchema(descriptor.outputSlots[edge.outputSlot.ordinal()],
+                       edge.output))
+      return invalid("lineage edge target does not match its output slot");
+    auto storedOutput = store.get(edge.output);
+    if (!storedOutput)
+      return storedOutput.takeError();
+
+    llvm::sort(edge.parents, artifactRootReferenceLess);
+    edge.parents.erase(std::unique(edge.parents.begin(), edge.parents.end()),
+                       edge.parents.end());
+    for (const ArtifactRootReference &parent : edge.parents) {
+      if (parent == edge.output)
+        return invalid("lineage edge cannot reference its output as a parent");
+    }
+
+    if (edge.kind == CandidateGeneratorLineageEdgeKind::MechanicalDerivation) {
+      if (!edge.parents.empty() || !edge.ownerPayload.empty())
+        return invalid("mechanical lineage edge has decision fields");
+      continue;
+    }
+    if (edge.parents.empty())
+      return invalid("candidate decision lineage requires a parent");
+    if (!descriptor.ownerLineagePayload)
+      return invalid("descriptor does not own a lineage payload contract");
+    if (llvm::Error error = descriptor.ownerLineagePayload->validateCanonical(
+            edge.ownerPayload, edge.parents, store))
+      return error;
+    for (const ArtifactRootReference &parent : edge.parents) {
+      auto stored = store.get(parent);
+      if (!stored)
+        return stored.takeError();
+    }
+  }
+
+  llvm::sort(edges, lineageEdgeLess);
+  edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+
+  std::vector<LineageTargetKey> lineageTargets;
+  lineageTargets.reserve(edges.size());
+  for (const CandidateGeneratorLineageEdge &edge : edges)
+    lineageTargets.push_back({edge.outputSlot, edge.output});
+  llvm::sort(lineageTargets, lineageTargetLess);
+  lineageTargets.erase(
+      std::unique(lineageTargets.begin(), lineageTargets.end(),
+                  [](const LineageTargetKey &lhs, const LineageTargetKey &rhs) {
+                    return lhs.slot == rhs.slot && lhs.output == rhs.output;
+                  }),
+      lineageTargets.end());
+
+  std::vector<ArtifactRootReference> produced;
+  produced.reserve(edges.size());
+  for (const CandidateGeneratorLineageEdge &edge : edges)
+    produced.push_back(edge.output);
+  llvm::sort(produced, artifactRootReferenceLess);
+  produced.erase(std::unique(produced.begin(), produced.end()), produced.end());
+
+  std::vector<ArtifactRootReference> consumed;
+  for (const CandidateGeneratorLineageEdge &edge : edges)
+    consumed.insert(consumed.end(), edge.parents.begin(), edge.parents.end());
+  llvm::sort(consumed, artifactRootReferenceLess);
+  consumed.erase(std::unique(consumed.begin(), consumed.end()), consumed.end());
+
+  for (const CandidateGeneratorLineageEdge &edge : edges) {
+    const bool isReturned = containsReference(
+        outputs[edge.outputSlot.ordinal()].artifacts, edge.output);
+    const bool isConsumed = containsReference(consumed, edge.output);
+    if (!isReturned && !isConsumed)
+      return invalid("internal lineage target does not reach an output");
+    for (const ArtifactRootReference &parent : edge.parents)
+      if (!containsReference(invocationInputs, parent) &&
+          !containsReference(produced, parent))
+        return invalid("lineage parent is not an invocation input or produced "
+                       "target");
+  }
+
+  std::vector<std::vector<std::size_t>> successors(produced.size());
+  std::vector<std::vector<std::size_t>> producers(produced.size());
+  std::vector<std::size_t> indegrees(produced.size());
+  const auto producedOrdinal = [&](const ArtifactRootReference &reference) {
+    auto found =
+        llvm::lower_bound(produced, reference, artifactRootReferenceLess);
+    return static_cast<std::size_t>(found - produced.begin());
+  };
+  for (std::size_t edgeOrdinal = 0; edgeOrdinal < edges.size(); ++edgeOrdinal) {
+    const CandidateGeneratorLineageEdge &edge = edges[edgeOrdinal];
+    const std::size_t child = producedOrdinal(edge.output);
+    producers[child].push_back(edgeOrdinal);
+    for (const ArtifactRootReference &parent : edge.parents) {
+      if (!containsReference(produced, parent))
+        continue;
+      const std::size_t parentOrdinal = producedOrdinal(parent);
+      successors[parentOrdinal].push_back(child);
+    }
+  }
+  for (std::vector<std::size_t> &children : successors) {
+    llvm::sort(children);
+    children.erase(std::unique(children.begin(), children.end()),
+                   children.end());
+    for (const std::size_t child : children)
+      ++indegrees[child];
+  }
+
+  std::vector<std::size_t> ready;
+  ready.reserve(produced.size());
+  for (std::size_t ordinal = 0; ordinal < indegrees.size(); ++ordinal)
+    if (indegrees[ordinal] == 0)
+      ready.push_back(ordinal);
+  std::vector<std::size_t> topologicalOrder;
+  topologicalOrder.reserve(produced.size());
+  for (std::size_t cursor = 0; cursor < ready.size(); ++cursor) {
+    const std::size_t parent = ready[cursor];
+    topologicalOrder.push_back(parent);
+    for (const std::size_t child : successors[parent])
+      if (--indegrees[child] == 0)
+        ready.push_back(child);
+  }
+  if (topologicalOrder.size() != produced.size())
+    return invalid("candidate lineage contains a cycle");
+
+  std::vector<bool> rooted(produced.size());
+  for (const std::size_t ordinal : topologicalOrder) {
+    for (const std::size_t edgeOrdinal : producers[ordinal]) {
+      const CandidateGeneratorLineageEdge &edge = edges[edgeOrdinal];
+      bool edgeIsRooted =
+          edge.kind == CandidateGeneratorLineageEdgeKind::MechanicalDerivation;
+      if (edge.kind == CandidateGeneratorLineageEdgeKind::CandidateDecision)
+        edgeIsRooted = llvm::all_of(
+            edge.parents, [&](const ArtifactRootReference &parent) {
+              if (containsReference(invocationInputs, parent))
+                return true;
+              return static_cast<bool>(rooted[producedOrdinal(parent)]);
+            });
+      rooted[ordinal] = rooted[ordinal] || edgeIsRooted;
+    }
+  }
+  for (const CandidateGeneratorLineageEdge &edge : edges) {
+    if (!llvm::all_of(edge.parents, [&](const ArtifactRootReference &parent) {
+          return containsReference(invocationInputs, parent) ||
+                 static_cast<bool>(rooted[producedOrdinal(parent)]);
+        }))
+      return invalid("candidate lineage is not rooted in invocation inputs");
+  }
+
+  for (const CandidateGeneratorOutputBinding &binding : outputs) {
+    for (const ArtifactRootReference &output : binding.artifacts) {
+      if (containsReference(invocationInputs, output))
+        continue;
+      const bool hasLineage = std::binary_search(
+          lineageTargets.begin(), lineageTargets.end(),
+          LineageTargetKey{binding.slot, output}, lineageTargetLess);
+      if (!hasLineage)
+        return invalid("generated output has no lineage edge");
+    }
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error canonicalizeOutputBindings(
     const CandidateGeneratorDescriptor &descriptor,
     std::vector<CandidateGeneratorOutputBinding> &bindings,
-    bool requireFinalCardinality) {
+    bool requireFinalCardinality, const ArtifactStore &store) {
   if (bindings.size() != descriptor.outputSlots.size())
     return invalid("provider does not bind every output slot");
   for (std::size_t index = 0; index < bindings.size(); ++index) {
@@ -76,6 +291,11 @@ llvm::Error canonicalizeOutputBindings(
     binding.artifacts.erase(
         std::unique(binding.artifacts.begin(), binding.artifacts.end()),
         binding.artifacts.end());
+    for (const ArtifactRootReference &artifact : binding.artifacts) {
+      auto stored = store.get(artifact);
+      if (!stored)
+        return stored.takeError();
+    }
     const PlanCardinalityBounds bounds =
         planCardinalityBounds(slot.cardinality);
     if (binding.artifacts.size() > bounds.maximum ||
@@ -98,6 +318,10 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
   if (descriptor.resolvedConfigView.schemaDescriptorBytes.empty() ||
       !descriptor.resolvedConfigView.validateCanonical)
     return invalid("descriptor requires an exact resolved config contract");
+  if (descriptor.ownerLineagePayload &&
+      (descriptor.ownerLineagePayload->schemaDescriptorBytes.empty() ||
+       !descriptor.ownerLineagePayload->validateCanonical))
+    return invalid("descriptor has an incomplete owner lineage contract");
   if (static_cast<std::uint32_t>(descriptor.determinism) >
       static_cast<std::uint32_t>(
           CandidateGeneratorDeterminism::IndependentReplicates))
@@ -333,7 +557,8 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeCandidateGenerator(
     return CandidateGeneratorInvocationOutcome{
         IncompleteCandidateGeneratorInvocation{
             CandidateGeneratorIncompleteReason::ProviderUnavailable,
-            std::move(outputs)}};
+            std::move(outputs),
+            {}}};
   }
 
   auto outcome = invoke(inputBindings, binding, store);
@@ -342,7 +567,11 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeCandidateGenerator(
   if (auto *completed =
           std::get_if<CompletedCandidateGeneratorInvocation>(&*outcome)) {
     if (llvm::Error error = canonicalizeOutputBindings(
-            *descriptor, completed->outputBindings, true))
+            *descriptor, completed->outputBindings, true, store))
+      return std::move(error);
+    if (llvm::Error error = canonicalizeLineageEdges(
+            *descriptor, inputBindings, completed->outputBindings,
+            completed->lineageEdges, store))
       return std::move(error);
   } else {
     auto &incomplete =
@@ -352,10 +581,59 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeCandidateGenerator(
             CandidateGeneratorIncompleteReason::Unsupported))
       return invalid("provider returned an invalid Incomplete reason");
     if (llvm::Error error = canonicalizeOutputBindings(
-            *descriptor, incomplete.retainedOutputBindings, false))
+            *descriptor, incomplete.retainedOutputBindings, false, store))
+      return std::move(error);
+    if (llvm::Error error = canonicalizeLineageEdges(
+            *descriptor, inputBindings, incomplete.retainedOutputBindings,
+            incomplete.lineageEdges, store))
       return std::move(error);
   }
   return outcome;
+}
+
+llvm::Error validateCanonicalCandidateGeneratorInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    llvm::ArrayRef<CandidateGeneratorOutputBinding> outputs,
+    llvm::ArrayRef<CandidateGeneratorLineageEdge> lineageEdges, bool completed,
+    const ArtifactStore &store) {
+  const CandidateGeneratorDescriptor *descriptor =
+      binding.descriptorRef().descriptor();
+  if (!descriptor)
+    return invalid("invocation record references an unregistered descriptor");
+  if (llvm::Error error = descriptor->resolvedConfigView.validateCanonical(
+          binding.canonicalConfigBytes(), binding.configDigest()))
+    return error;
+  if (llvm::Error error = validateCandidateGeneratorInputBindings(
+          binding.descriptorRef(), inputs))
+    return error;
+  for (const CandidateGeneratorInputBinding &input : inputs)
+    for (const ArtifactRootReference &artifact : input.artifacts) {
+      auto stored = store.get(artifact);
+      if (!stored)
+        return stored.takeError();
+    }
+
+  std::vector<CandidateGeneratorOutputBinding> canonicalOutputs(outputs.begin(),
+                                                                outputs.end());
+  if (llvm::Error error = canonicalizeOutputBindings(
+          *descriptor, canonicalOutputs, completed, store))
+    return error;
+  if (canonicalOutputs.size() != outputs.size())
+    return invalid("invocation output binding cardinality changed");
+  for (auto [canonical, supplied] : llvm::zip_equal(canonicalOutputs, outputs))
+    if (canonical.slot != supplied.slot ||
+        canonical.artifacts != supplied.artifacts)
+      return invalid("invocation output bindings are not canonical");
+
+  std::vector<CandidateGeneratorLineageEdge> canonicalEdges(
+      lineageEdges.begin(), lineageEdges.end());
+  if (llvm::Error error = canonicalizeLineageEdges(
+          *descriptor, inputs, canonicalOutputs, canonicalEdges, store))
+    return error;
+  if (llvm::ArrayRef(canonicalEdges) != lineageEdges)
+    return invalid("invocation lineage edges are not canonical");
+  return llvm::Error::success();
 }
 
 } // namespace loom::dse

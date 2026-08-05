@@ -89,15 +89,25 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   ::loom::pnr::SpatialPnrGenerationOutcome outcome =
       invokeSpatialPnrCandidateGenerator(inputs, binding, store);
   if (auto *generated =
-          std::get_if<::loom::pnr::GeneratedSpatialMappings>(&outcome))
-    return CompletedCandidateGeneratorInvocation{{
-        {CandidateGeneratorOutputSlotRef(0), std::move(generated->candidates)},
-    }};
+          std::get_if<::loom::pnr::GeneratedSpatialMappings>(&outcome)) {
+    std::vector<CandidateGeneratorLineageEdge> lineageEdges;
+    lineageEdges.reserve(generated->candidates.size());
+    for (const ArtifactRootReference &candidate : generated->candidates)
+      lineageEdges.push_back(CandidateGeneratorLineageEdge{
+          CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+          CandidateGeneratorOutputSlotRef(0),
+          candidate,
+          {},
+          {}});
+    return CompletedCandidateGeneratorInvocation{
+        {{CandidateGeneratorOutputSlotRef(0),
+          std::move(generated->candidates)}},
+        std::move(lineageEdges)};
+  }
   if (std::holds_alternative<::loom::pnr::ProvenInfeasibleSpatialMapping>(
           outcome))
-    return CompletedCandidateGeneratorInvocation{{
-        {CandidateGeneratorOutputSlotRef(0), {}},
-    }};
+    return CompletedCandidateGeneratorInvocation{
+        {{CandidateGeneratorOutputSlotRef(0), {}}}, {}};
   if (const auto *incomplete =
           std::get_if<::loom::pnr::IncompleteSpatialPnrGeneration>(&outcome)) {
     const CandidateGeneratorIncompleteReason reason =
@@ -107,13 +117,14 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
             ? CandidateGeneratorIncompleteReason::SemanticLimitReached
             : CandidateGeneratorIncompleteReason::ProofNotEstablished;
     return IncompleteCandidateGeneratorInvocation{
-        reason, {{CandidateGeneratorOutputSlotRef(0), {}}}};
+        reason, {{CandidateGeneratorOutputSlotRef(0), {}}}, {}};
   }
   if (std::holds_alternative<::loom::pnr::UnsupportedSpatialPnrGeneration>(
           outcome))
     return IncompleteCandidateGeneratorInvocation{
         CandidateGeneratorIncompleteReason::Unsupported,
-        {{CandidateGeneratorOutputSlotRef(0), {}}}};
+        {{CandidateGeneratorOutputSlotRef(0), {}}},
+        {}};
   if (const auto *invalid =
           std::get_if<::loom::pnr::InvalidSpatialPnrGeneration>(&outcome))
     return llvm::createStringError(llvm::inconvertibleErrorCode(),

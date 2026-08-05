@@ -1,5 +1,6 @@
 add_mlir_library(MLIRDataflowTransforms
   DataflowRewritePass.cpp
+  DataflowRewriteDecision.cpp
   DataflowVectorDecomposition.cpp
 
   PARTIAL_SOURCES_INTENDED

@@ -124,7 +124,9 @@ set(LOOM_TEST_DEPENDS
   loom-structured-address-index-narrowing-test
   loom-structured-program-artifact-test
   loom-structured-thread-domain-test
+  loom-structured-ownership-lineage-index-test
   loom-structured-schedule-generator-test
+  loom-structured-memory-communication-generator-test
   loom-structured-execution-shape-generator-test
   loom-dataflow-rewrite-generator-test
   loom-pre-mapping-compilation-test
@@ -138,6 +140,7 @@ set(LOOM_TEST_DEPENDS
   loom-tech-mapping-joint-legality-test
   loom-tech-mapping-search-test
   loom-spatial-mapping-artifact-test
+  loom-spatial-tag-continuity-index-test
   loom-spatial-mapping-wire-test
   loom-pnr-endpoint-router-test
   loom-pnr-config-test

@@ -9,6 +9,7 @@
 #include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
@@ -189,6 +190,35 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return llvm::Error::success();
 }
 
+llvm::Error
+validateDecisionPayload(llvm::ArrayRef<std::uint8_t> bytes,
+                        llvm::ArrayRef<ArtifactRootReference> parents,
+                        const ArtifactStore &store) {
+  auto adopted = frontend::adoptSpatialOwnershipDecision(bytes);
+  if (!adopted)
+    return adopted.takeError();
+  if (parents.size() != 1 ||
+      parents.front().schemaIdentity !=
+          frontend::structuredProgramArtifactSchema.identity ||
+      parents.front().schemaVersion !=
+          frontend::structuredProgramArtifactSchema.version ||
+      adopted->scope.selection.parent != parents.front().artifact)
+    return invalid("ownership decision does not belong to its exact parent");
+  auto parent = frontend::importStructuredProgram(parents.front(), store);
+  if (!parent)
+    return parent.takeError();
+  auto domain = frontend::enumerateSpatialOwnershipDecisionDomain(
+      *parent, adopted->scope.selection);
+  if (!domain)
+    return domain.takeError();
+  if (!llvm::is_contained(*domain, adopted->point))
+    return invalid("ownership decision is outside its exact parent domain");
+  return llvm::Error::success();
+}
+
+const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
+    frontend::spatialOwnershipDecisionSchemaBytes(), validateDecisionPayload};
+
 const CandidateGeneratorDescriptor descriptor{
     structuredOwnershipCandidateGeneratorKind,
     "compiler.structured_ownership",
@@ -199,6 +229,7 @@ const CandidateGeneratorDescriptor descriptor{
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
     {},
+    &lineageContract,
 };
 
 std::uint32_t defaultWorkerCount() {
@@ -276,12 +307,42 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeOwnershipProvider(
       acceleratorCandidates.push_back(candidate);
   if (acceleratorCandidates.size() + 1 != allCandidates.size())
     return invalid("generated candidate set lost its exact source input");
+  std::vector<CandidateGeneratorLineageEdge> lineageEdges;
+  for (const StructuredOwnershipCandidateDisposition &disposition :
+       generated->dispositions) {
+    const auto *child = std::get_if<ArtifactRootReference>(&disposition.result);
+    if (!child || *child == structured)
+      continue;
+    if (!disposition.coordinate.decision)
+      return invalid("generated ownership child has no typed decision");
+    if (!std::binary_search(acceleratorCandidates.begin(),
+                            acceleratorCandidates.end(), *child,
+                            artifactRootReferenceLess))
+      return invalid("ownership lineage target is absent from candidate set");
+    auto payload = frontend::encodeSpatialOwnershipDecision(
+        frontend::SpatialOwnershipDecision{disposition.coordinate.scope,
+                                           *disposition.coordinate.decision});
+    if (!payload)
+      return payload.takeError();
+    lineageEdges.push_back(CandidateGeneratorLineageEdge{
+        CandidateGeneratorLineageEdgeKind::CandidateDecision,
+        CandidateGeneratorOutputSlotRef(0),
+        *child,
+        {structured},
+        *payload});
+    lineageEdges.push_back(CandidateGeneratorLineageEdge{
+        CandidateGeneratorLineageEdgeKind::CandidateDecision,
+        CandidateGeneratorOutputSlotRef(1),
+        *child,
+        {structured},
+        std::move(*payload)});
+  }
   return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{{
-          {CandidateGeneratorOutputSlotRef(0), std::move(allCandidates)},
-          {CandidateGeneratorOutputSlotRef(1),
-           std::move(acceleratorCandidates)},
-      }}};
+      CompletedCandidateGeneratorInvocation{
+          {{CandidateGeneratorOutputSlotRef(0), std::move(allCandidates)},
+           {CandidateGeneratorOutputSlotRef(1),
+            std::move(acceleratorCandidates)}},
+          std::move(lineageEdges)}};
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),

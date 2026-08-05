@@ -69,6 +69,36 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return llvm::Error::success();
 }
 
+llvm::Error
+validateDecisionPayload(llvm::ArrayRef<std::uint8_t> bytes,
+                        llvm::ArrayRef<ArtifactRootReference> parents,
+                        const ArtifactStore &store) {
+  auto adopted = frontend::adoptStructuredExecutionShapeDecision(bytes);
+  if (!adopted)
+    return adopted.takeError();
+  if (parents.size() != 1 ||
+      parents.front().schemaIdentity !=
+          frontend::structuredProgramArtifactSchema.identity ||
+      parents.front().schemaVersion !=
+          frontend::structuredProgramArtifactSchema.version)
+    return invalid(
+        "execution-shape decision does not have one exact Structured parent");
+  auto parent = frontend::importStructuredProgram(parents.front(), store);
+  if (!parent)
+    return parent.takeError();
+  auto domain = frontend::enumerateStructuredExecutionShapeDecisions(*parent);
+  if (!domain)
+    return domain.takeError();
+  if (!llvm::is_contained(*domain, *adopted))
+    return invalid(
+        "execution-shape decision is outside the exact parent decision domain");
+  return llvm::Error::success();
+}
+
+const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
+    frontend::structuredExecutionShapeDecisionSchemaBytes(),
+    validateDecisionPayload};
+
 const CandidateGeneratorDescriptor descriptor{
     structuredExecutionShapeCandidateGeneratorKind,
     "compiler.structured_execution_shape",
@@ -79,6 +109,7 @@ const CandidateGeneratorDescriptor descriptor{
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
     {},
+    &lineageContract,
 };
 
 const ArtifactRootReference &
@@ -179,6 +210,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                  : lowering::CanonicalDataflowLoweringOptions{};
 
   std::vector<ArtifactRootReference> outputs;
+  std::vector<CandidateGeneratorLineageEdge> lineageEdges;
   for (const ArtifactRootReference &reference :
        inputBindings[StructuredProgramsInput].artifacts) {
     auto parent = cloneParentState(invocation, reference, store);
@@ -229,13 +261,23 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       if (llvm::Error error = recordFinalizedCandidate(
               reference, *published, decision, std::move(**finalized), store))
         return std::move(error);
+      auto ownerPayload =
+          frontend::encodeStructuredExecutionShapeDecision(decision);
+      if (!ownerPayload)
+        return ownerPayload.takeError();
+      lineageEdges.push_back(CandidateGeneratorLineageEdge{
+          CandidateGeneratorLineageEdgeKind::CandidateDecision,
+          CandidateGeneratorOutputSlotRef(0),
+          *published,
+          {reference},
+          std::move(*ownerPayload)});
       outputs.push_back(std::move(*published));
     }
   }
   return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{{
-          {CandidateGeneratorOutputSlotRef(0), std::move(outputs)},
-      }}};
+      CompletedCandidateGeneratorInvocation{
+          {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
+          std::move(lineageEdges)}};
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),

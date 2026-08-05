@@ -480,22 +480,73 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
       CompletedStagedTopK{std::move(selected), std::move(retainedEvidence)}};
 }
 
-llvm::Expected<std::vector<ArtifactRootReference>> resolveRuntimeInput(
-    const PlanInputBinding &input, llvm::ArrayRef<std::uint64_t> outputOffsets,
-    llvm::ArrayRef<std::vector<ArtifactRootReference>> outputs) {
+llvm::Expected<std::vector<ArtifactRootReference>>
+resolveRuntimeInput(const PlanInputBinding &input,
+                    const CompletedDsePlanExecution &completed) {
   if (const auto *exact = std::get_if<ExactPlanArtifacts>(&input))
     return exact->artifacts;
   const PlanOutputRef output = std::get<PlanOutputRef>(input);
-  if (output.producerNodeOrdinal >= outputOffsets.size() - 1)
+  if (!completed.hasOutput(output))
     return invalid("resolved use-def references an unavailable output");
-  const std::uint64_t begin = outputOffsets[output.producerNodeOrdinal];
-  const std::uint64_t end = outputOffsets[output.producerNodeOrdinal + 1];
-  if (output.outputSlotOrdinal >= end - begin)
-    return invalid("resolved use-def references an unavailable slot");
-  return outputs[begin + output.outputSlotOrdinal];
+  return completed.resolve(output).vec();
 }
 
 } // namespace
+
+class DsePlanExecutionBuilder final {
+public:
+  static CompletedDsePlanExecution createCompleted(ComponentViewDigest digest) {
+    return CompletedDsePlanExecution(digest);
+  }
+
+  static llvm::Error appendGenerate(CompletedDsePlanExecution &completed,
+                                    GenerateInvocationRecord invocation) {
+    return completed.appendGenerate(std::move(invocation));
+  }
+
+  static void appendPromote(
+      CompletedDsePlanExecution &completed,
+      std::vector<std::vector<ArtifactRootReference>> outputBindings) {
+    completed.appendPromote(std::move(outputBindings));
+  }
+
+  static IncompleteDsePlanExecution
+  incompleteGenerate(std::uint64_t nodeOrdinal, DsePlanIncompleteReason reason,
+                     CompletedDsePlanExecution completedPrefix,
+                     GenerateInvocationRecord invocation) {
+    return IncompleteDsePlanExecution(
+        nodeOrdinal, std::move(reason), std::move(completedPrefix),
+        IncompleteDsePlanExecution::IncompleteNode(std::move(invocation)));
+  }
+
+  static IncompleteDsePlanExecution incompletePromote(
+      std::uint64_t nodeOrdinal, DsePlanIncompleteReason reason,
+      CompletedDsePlanExecution completedPrefix,
+      std::vector<std::vector<ArtifactRootReference>> outputBindings) {
+    return IncompleteDsePlanExecution(
+        nodeOrdinal, std::move(reason), std::move(completedPrefix),
+        IncompleteDsePlanExecution::IncompleteNode(
+            IncompleteDsePlanExecution::PromoteRetainedOutputs{
+                std::move(outputBindings)}));
+  }
+
+  static DsePlanGenerateInvocationRecords
+  takeGenerateInvocationRecords(DsePlanExecutionOutcome outcome) {
+    if (auto *completed = std::get_if<CompletedDsePlanExecution>(&outcome))
+      return DsePlanGenerateInvocationRecords{
+          completed->resolvedDseConfigViewDigest_,
+          std::move(completed->generateInvocations_), std::nullopt};
+    auto &incomplete = std::get<IncompleteDsePlanExecution>(outcome);
+    std::optional<GenerateInvocationRecord> stopped;
+    if (auto *record =
+            std::get_if<GenerateInvocationRecord>(&incomplete.incompleteNode_))
+      stopped.emplace(std::move(*record));
+    return DsePlanGenerateInvocationRecords{
+        incomplete.completedPrefix_.resolvedDseConfigViewDigest_,
+        std::move(incomplete.completedPrefix_.generateInvocations_),
+        std::move(stopped)};
+  }
+};
 
 llvm::Expected<ResolvedDsePlan> ResolvedDsePlan::get(
     llvm::ArrayRef<DsePlanNodeDefinition> definitions,
@@ -656,14 +707,150 @@ ResolvedDsePlan::resolve(QualityGatePolicyRef gate) const {
 
 llvm::ArrayRef<ArtifactRootReference>
 CompletedDsePlanExecution::resolve(PlanOutputRef output) const {
-  if (outputOffsets_.empty() ||
-      output.producerNodeOrdinal >= outputOffsets_.size() - 1)
+  if (!hasOutput(output))
     return {};
-  const std::uint64_t begin = outputOffsets_[output.producerNodeOrdinal];
-  const std::uint64_t end = outputOffsets_[output.producerNodeOrdinal + 1];
-  if (output.outputSlotOrdinal >= end - begin)
+  const NodeOutputs &node = nodeOutputs_[output.producerNodeOrdinal];
+  if (const auto *generate = std::get_if<GenerateNodeOutputs>(&node))
+    return generateInvocations_[generate->invocationOrdinal]
+        .outputBindings[output.outputSlotOrdinal]
+        .artifacts;
+  return std::get<PromoteNodeOutputs>(node)
+      .outputBindings[output.outputSlotOrdinal];
+}
+
+bool CompletedDsePlanExecution::hasOutput(PlanOutputRef output) const {
+  if (output.producerNodeOrdinal >= nodeOutputs_.size())
+    return false;
+  const NodeOutputs &node = nodeOutputs_[output.producerNodeOrdinal];
+  if (const auto *generate = std::get_if<GenerateNodeOutputs>(&node)) {
+    if (generate->invocationOrdinal >= generateInvocations_.size())
+      return false;
+    return output.outputSlotOrdinal <
+           generateInvocations_[generate->invocationOrdinal]
+               .outputBindings.size();
+  }
+  return output.outputSlotOrdinal <
+         std::get<PromoteNodeOutputs>(node).outputBindings.size();
+}
+
+llvm::Error
+CompletedDsePlanExecution::appendGenerate(GenerateInvocationRecord invocation) {
+  if (invocation.planNodeOrdinal != nodeOutputs_.size())
+    return invalid("Generate invocation ordinal does not follow plan order");
+  const std::size_t invocationOrdinal = generateInvocations_.size();
+  generateInvocations_.push_back(std::move(invocation));
+  nodeOutputs_.push_back(GenerateNodeOutputs{invocationOrdinal});
+  return llvm::Error::success();
+}
+
+void CompletedDsePlanExecution::appendPromote(
+    std::vector<std::vector<ArtifactRootReference>> outputBindings) {
+  nodeOutputs_.push_back(PromoteNodeOutputs{std::move(outputBindings)});
+}
+
+std::size_t IncompleteDsePlanExecution::retainedOutputCount() const {
+  if (const auto *generate =
+          std::get_if<GenerateInvocationRecord>(&incompleteNode_))
+    return generate->outputBindings.size();
+  return std::get<PromoteRetainedOutputs>(incompleteNode_)
+      .outputBindings.size();
+}
+
+llvm::ArrayRef<ArtifactRootReference>
+IncompleteDsePlanExecution::retainedOutput(
+    std::size_t outputSlotOrdinal) const {
+  if (const auto *generate =
+          std::get_if<GenerateInvocationRecord>(&incompleteNode_)) {
+    if (outputSlotOrdinal >= generate->outputBindings.size())
+      return {};
+    return generate->outputBindings[outputSlotOrdinal].artifacts;
+  }
+  const auto &outputs =
+      std::get<PromoteRetainedOutputs>(incompleteNode_).outputBindings;
+  if (outputSlotOrdinal >= outputs.size())
     return {};
-  return outputs_[begin + output.outputSlotOrdinal];
+  return outputs[outputSlotOrdinal];
+}
+
+const GenerateInvocationRecord *
+IncompleteDsePlanExecution::incompleteGenerateInvocation() const {
+  return std::get_if<GenerateInvocationRecord>(&incompleteNode_);
+}
+
+DsePlanGenerateInvocationRecords
+takeDsePlanGenerateInvocationRecords(DsePlanExecutionOutcome outcome) {
+  return DsePlanExecutionBuilder::takeGenerateInvocationRecords(
+      std::move(outcome));
+}
+
+llvm::Expected<DsePlanGenerateInvocationSummary>
+validateAndSummarizeDsePlanGenerateInvocations(
+    llvm::ArrayRef<DsePlanGenerateInvocationRecords> records,
+    const ArtifactStore &store) {
+  DsePlanGenerateInvocationSummary summary;
+  auto add = [](std::uint64_t &total, std::size_t amount,
+                llvm::StringRef field) -> llvm::Error {
+    if (amount > std::numeric_limits<std::uint64_t>::max() - total)
+      return invalid("Generate invocation " + field + " count overflows u64");
+    total += static_cast<std::uint64_t>(amount);
+    return llvm::Error::success();
+  };
+  auto consume = [&](const GenerateInvocationRecord &invocation,
+                     bool completed) -> llvm::Error {
+    if (llvm::Error error = validateCanonicalCandidateGeneratorInvocation(
+            invocation.inputBindings, invocation.generatorBinding,
+            invocation.outputBindings, invocation.lineageEdges, completed,
+            store))
+      return error;
+    if (llvm::Error error =
+            add(summary.inputBindings, invocation.inputBindings.size(),
+                "input binding"))
+      return error;
+    for (const CandidateGeneratorInputBinding &input : invocation.inputBindings)
+      if (llvm::Error error = add(summary.inputArtifacts,
+                                  input.artifacts.size(), "input artifact"))
+        return error;
+    if (llvm::Error error =
+            add(summary.outputBindings, invocation.outputBindings.size(),
+                "output binding"))
+      return error;
+    for (const CandidateGeneratorOutputBinding &output :
+         invocation.outputBindings)
+      if (llvm::Error error = add(summary.outputArtifacts,
+                                  output.artifacts.size(), "output artifact"))
+        return error;
+    return add(summary.lineageEdges, invocation.lineageEdges.size(),
+               "lineage edge");
+  };
+
+  for (const DsePlanGenerateInvocationRecords &planRecords : records) {
+    if (llvm::Error error = add(summary.planExecutions, 1, "plan execution"))
+      return std::move(error);
+    std::optional<std::uint64_t> previousNode;
+    for (const GenerateInvocationRecord &invocation : planRecords.completed()) {
+      if (previousNode && invocation.planNodeOrdinal <= *previousNode)
+        return invalid("completed Generate invocation ordinals are not "
+                       "strictly increasing");
+      if (llvm::Error error = consume(invocation, true))
+        return std::move(error);
+      if (llvm::Error error =
+              add(summary.completedInvocations, 1, "completed invocation"))
+        return std::move(error);
+      previousNode = invocation.planNodeOrdinal;
+    }
+    if (planRecords.incomplete()) {
+      const GenerateInvocationRecord &invocation = *planRecords.incomplete();
+      if (previousNode && invocation.planNodeOrdinal <= *previousNode)
+        return invalid("incomplete Generate invocation does not follow the "
+                       "completed prefix");
+      if (llvm::Error error = consume(invocation, false))
+        return std::move(error);
+      if (llvm::Error error =
+              add(summary.incompleteInvocations, 1, "incomplete invocation"))
+        return std::move(error);
+    }
+  }
+  return summary;
 }
 
 llvm::StringRef toString(const DsePlanIncompleteReason &reason) {
@@ -704,10 +891,8 @@ llvm::StringRef toString(const DsePlanIncompleteReason &reason) {
 llvm::Expected<DsePlanExecutionOutcome>
 executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
   const ResolvedDsePlan &plan = view.plan();
-  std::vector<std::uint64_t> outputOffsets;
-  std::vector<std::vector<ArtifactRootReference>> outputs;
-  outputOffsets.reserve(plan.nodes().size() + 1);
-  outputOffsets.push_back(0);
+  CompletedDsePlanExecution completed =
+      DsePlanExecutionBuilder::createCompleted(view.digest());
 
   for (std::size_t nodeIndex = 0; nodeIndex < plan.nodes().size();
        ++nodeIndex) {
@@ -717,8 +902,8 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
       inputs.reserve(generate->inputBindings().size());
       for (std::size_t index = 0; index < generate->inputBindings().size();
            ++index) {
-        auto artifacts = resolveRuntimeInput(generate->inputBindings()[index],
-                                             outputOffsets, outputs);
+        auto artifacts =
+            resolveRuntimeInput(generate->inputBindings()[index], completed);
         if (!artifacts)
           return artifacts.takeError();
         inputs.push_back(
@@ -735,22 +920,24 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
         return outcome.takeError();
       if (auto *incomplete =
               std::get_if<IncompleteCandidateGeneratorInvocation>(&*outcome)) {
-        std::vector<std::vector<ArtifactRootReference>> retained;
-        retained.reserve(incomplete->retainedOutputBindings.size());
-        for (CandidateGeneratorOutputBinding &output :
-             incomplete->retainedOutputBindings)
-          retained.push_back(std::move(output.artifacts));
-        return DsePlanExecutionOutcome{IncompleteDsePlanExecution{
-            static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
-            CompletedDsePlanExecution(std::move(outputOffsets),
-                                      std::move(outputs)),
-            std::move(retained)}};
+        GenerateInvocationRecord invocationRecord{
+            static_cast<std::uint64_t>(nodeIndex), std::move(inputs),
+            std::move(*binding), std::move(incomplete->retainedOutputBindings),
+            std::move(incomplete->lineageEdges)};
+        return DsePlanExecutionOutcome{
+            DsePlanExecutionBuilder::incompleteGenerate(
+                static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
+                std::move(completed), std::move(invocationRecord))};
       }
-      auto &completed =
+      auto &generated =
           std::get<CompletedCandidateGeneratorInvocation>(*outcome);
-      for (CandidateGeneratorOutputBinding &output : completed.outputBindings)
-        outputs.push_back(std::move(output.artifacts));
-      outputOffsets.push_back(outputs.size());
+      GenerateInvocationRecord invocationRecord{
+          static_cast<std::uint64_t>(nodeIndex), std::move(inputs),
+          std::move(*binding), std::move(generated.outputBindings),
+          std::move(generated.lineageEdges)};
+      if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
+              completed, std::move(invocationRecord)))
+        return std::move(error);
       continue;
     }
 
@@ -763,8 +950,8 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
     inputs.reserve(promote.inputBindings().size());
     for (std::size_t index = 0; index < promote.inputBindings().size();
          ++index) {
-      auto artifacts = resolveRuntimeInput(promote.inputBindings()[index],
-                                           outputOffsets, outputs);
+      auto artifacts =
+          resolveRuntimeInput(promote.inputBindings()[index], completed);
       if (!artifacts)
         return artifacts.takeError();
       inputs.push_back(
@@ -799,16 +986,14 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
       if (!staged)
         return staged.takeError();
       if (auto *incomplete = std::get_if<IncompleteStagedTopK>(&*staged))
-        return DsePlanExecutionOutcome{IncompleteDsePlanExecution{
-            static_cast<std::uint64_t>(nodeIndex),
-            incomplete->reason,
-            CompletedDsePlanExecution(std::move(outputOffsets),
-                                      std::move(outputs)),
-            {{}, std::move(incomplete->evidence)}}};
-      auto &completed = std::get<CompletedStagedTopK>(*staged);
-      outputs.push_back(std::move(completed.selected));
-      outputs.push_back(std::move(completed.evidence));
-      outputOffsets.push_back(outputs.size());
+        return DsePlanExecutionOutcome{
+            DsePlanExecutionBuilder::incompletePromote(
+                static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
+                std::move(completed), {{}, std::move(incomplete->evidence)})};
+      auto &stagedCompleted = std::get<CompletedStagedTopK>(*staged);
+      DsePlanExecutionBuilder::appendPromote(
+          completed, {std::move(stagedCompleted.selected),
+                      std::move(stagedCompleted.evidence)});
       continue;
     }
 
@@ -825,39 +1010,32 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
       auto retained = publishEvidence(incomplete->retainedEvidence, store);
       if (!retained)
         return retained.takeError();
-      return DsePlanExecutionOutcome{IncompleteDsePlanExecution{
-          static_cast<std::uint64_t>(nodeIndex),
-          incomplete->reason,
-          CompletedDsePlanExecution(std::move(outputOffsets),
-                                    std::move(outputs)),
-          {{}, std::move(*retained)}}};
+      return DsePlanExecutionOutcome{DsePlanExecutionBuilder::incompletePromote(
+          static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
+          std::move(completed), {{}, std::move(*retained)})};
     }
 
-    auto &completed = std::get<CompletedPromotionAcquisition>(*acquisition);
+    auto &acquired = std::get<CompletedPromotionAcquisition>(*acquisition);
     auto promotion = promoteCandidates(
-        *candidateSet, descriptor->candidateRole, completed.evidence,
+        *candidateSet, descriptor->candidateRole, acquired.evidence,
         *qualityGate, promote.selection(), plan.objectiveProgram(), store);
     if (!promotion)
       return promotion.takeError();
     if (auto *incomplete = std::get_if<IncompleteSelection>(&*promotion))
-      return DsePlanExecutionOutcome{IncompleteDsePlanExecution{
-          static_cast<std::uint64_t>(nodeIndex),
-          incomplete->reason,
-          CompletedDsePlanExecution(std::move(outputOffsets),
-                                    std::move(outputs)),
-          {{}, std::move(incomplete->retainedEvidence)}}};
+      return DsePlanExecutionOutcome{DsePlanExecutionBuilder::incompletePromote(
+          static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
+          std::move(completed), {{}, std::move(incomplete->retainedEvidence)})};
     if (auto *none = std::get_if<CompletedNoFeasibleCandidate>(&*promotion)) {
-      outputs.push_back({});
-      outputs.push_back(std::move(none->satisfiedEvidence));
+      DsePlanExecutionBuilder::appendPromote(
+          completed, {{}, std::move(none->satisfiedEvidence)});
     } else {
       auto &selected = std::get<CompletedSelection>(*promotion);
-      outputs.push_back(std::move(selected.selected));
-      outputs.push_back(std::move(selected.satisfiedEvidence));
+      DsePlanExecutionBuilder::appendPromote(
+          completed, {std::move(selected.selected),
+                      std::move(selected.satisfiedEvidence)});
     }
-    outputOffsets.push_back(outputs.size());
   }
-  return DsePlanExecutionOutcome{
-      CompletedDsePlanExecution(std::move(outputOffsets), std::move(outputs))};
+  return DsePlanExecutionOutcome{std::move(completed)};
 }
 
 } // namespace loom::dse

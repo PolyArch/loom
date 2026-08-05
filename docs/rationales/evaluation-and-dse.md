@@ -153,11 +153,17 @@ edge would make large candidate sets duplicate invocation facts.
 The manifest therefore records the invocation's typed input and output
 bindings once and nests ordinary single-child lineage edges beneath that
 occurrence. Output bindings answer what the invocation returned; lineage edges
-answer how a particular returned Artifact was produced. This is not duplicate
-authority because neither can derive the other when an input is retained or
-several paths converge. Artifact dependency closure continues to own semantic
-data dependence, while owner codecs preserve typed decisions without creating
-a universal action language.
+answer how those Artifacts were produced. Recursive generation may need several
+atomic decisions before a candidate becomes returnable. Keeping the complete
+rooted derivation DAG preserves those decisions without pretending that every
+intermediate is a plan output, and avoids an owner-specific composite path
+payload. Internal targets must be durably published, rooted, acyclic, and lead
+to a returned sink, so lineage cannot become scratch state or an unrelated
+history log. This is not duplicate authority because neither binding can be
+derived from the other when an input is retained, an internal path is needed,
+or several paths converge. Artifact dependency closure continues to own
+semantic data dependence, while owner codecs preserve typed decisions without
+creating a universal action language.
 
 ## Why Model Parameters Are Ordinary Domain Candidates
 

@@ -4,6 +4,7 @@
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Raising/Passes.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <vector>
@@ -27,6 +28,14 @@ struct MaterializedStructuredExecutionShapeCandidate final {
   StructuredProgramCandidate structuredProgram;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
+
+llvm::ArrayRef<std::uint8_t> structuredExecutionShapeDecisionSchemaBytes();
+llvm::Expected<std::vector<std::uint8_t>>
+encodeStructuredExecutionShapeDecision(
+    const StructuredExecutionShapeDecision &decision);
+llvm::Expected<StructuredExecutionShapeDecision>
+adoptStructuredExecutionShapeDecision(
+    llvm::ArrayRef<std::uint8_t> canonicalBytes);
 
 /// Returns the canonical Fused/Split domain exactly when a selected Spatial
 /// region contains an unresolved, exactly representable llvm.intr.fmuladd.

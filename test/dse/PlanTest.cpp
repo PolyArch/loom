@@ -5,6 +5,7 @@
 #include "Config/ResolvedConfig.h"
 #include "DSE/ResolvedConfigView.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -137,12 +138,23 @@ const PromotionAcquisitionDescriptor unavailableAcquisition{
     resolveNoObligations,
 };
 
+bool sourceGenerationStopsAfterRetainingOutputs = false;
+bool sourceGenerationReturnsEmpty = false;
+
 ArtifactRootReference makeReference(const ArtifactSchemaDescriptor &schema,
                                     std::uint8_t fill) {
   std::array<std::uint8_t, ArtifactIdentity::byteSize> bytes{};
   bytes.fill(fill);
   return ArtifactRootReference{schema.identity.str(), schema.version,
                                take(ArtifactIdentity::fromBytes(bytes))};
+}
+
+ArtifactRootReference publishReference(const ArtifactStore &store,
+                                       const ArtifactSchemaDescriptor &schema,
+                                       std::uint8_t byte) {
+  const ArtifactIdentity identity = take(store.put(
+      schema, CanonicalSemanticBytes(std::vector<std::uint8_t>{byte})));
+  return ArtifactRootReference{schema.identity.str(), schema.version, identity};
 }
 
 GeneratePlanNodeDefinition makeNode(CandidateGeneratorDescriptorRef descriptor,
@@ -170,17 +182,38 @@ makePromoteNode(PromotionAcquisitionDescriptorRef descriptor,
 llvm::Expected<CandidateGeneratorInvocationOutcome>
 generateSource(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
-               const ArtifactStore &) {
+               const ArtifactStore &store) {
   if (inputBindings.size() != 1 ||
       inputBindings.front().artifacts.size() != 1 ||
       binding.descriptorRef() != sourceGenerator.reference())
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "source provider received invalid inputs");
-  const ArtifactRootReference first = makeReference(candidateSchema, 0x31);
-  const ArtifactRootReference second = makeReference(candidateSchema, 0x22);
-  return CompletedCandidateGeneratorInvocation{{
-      {CandidateGeneratorOutputSlotRef(0), {first, second, first}},
-  }};
+  if (sourceGenerationReturnsEmpty)
+    return CompletedCandidateGeneratorInvocation{
+        {{CandidateGeneratorOutputSlotRef(0), {}}}, {}};
+  const ArtifactRootReference first =
+      publishReference(store, candidateSchema, 0x31);
+  const ArtifactRootReference second =
+      publishReference(store, candidateSchema, 0x22);
+  std::vector<CandidateGeneratorOutputBinding> outputBindings = {
+      {CandidateGeneratorOutputSlotRef(0), {first, second, first}}};
+  std::vector<CandidateGeneratorLineageEdge> lineageEdges = {
+      {CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+       CandidateGeneratorOutputSlotRef(0),
+       first,
+       {},
+       {}},
+      {CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+       CandidateGeneratorOutputSlotRef(0),
+       second,
+       {},
+       {}}};
+  if (sourceGenerationStopsAfterRetainingOutputs)
+    return IncompleteCandidateGeneratorInvocation{
+        CandidateGeneratorIncompleteReason::SemanticLimitReached,
+        std::move(outputBindings), std::move(lineageEdges)};
+  return CompletedCandidateGeneratorInvocation{std::move(outputBindings),
+                                               std::move(lineageEdges)};
 }
 
 llvm::Expected<PromotionAcquisitionResolutionOutcome>
@@ -274,9 +307,12 @@ void exerciseOrderedTypedUseDef() {
           llvm::sys::fs::createUniqueDirectory("loom-dse-plan", storePath))
     fail("cannot create plan test ArtifactStore: " + error.message());
   ArtifactStore store(storePath);
+  const ArtifactRootReference executionSource =
+      publishReference(store, sourceSchema, 0x11);
   std::vector<DsePlanNodeDefinition> executionNodes;
   executionNodes.push_back(makeNode(sourceGenerator.reference(),
-                                    {ExactPlanArtifacts{{source}}}, digest));
+                                    {ExactPlanArtifacts{{executionSource}}},
+                                    digest));
   executionNodes.push_back(makePromoteNode(objectiveAcquisition.reference(),
                                            PlanOutputRef{0, 0}, digest,
                                            AllPassingSelection{}));
@@ -290,17 +326,62 @@ void exerciseOrderedTypedUseDef() {
       completed->resolve(PlanOutputRef{0, 0});
   llvm::ArrayRef<ArtifactRootReference> selected =
       completed->resolve(PlanOutputRef{1, 0});
-  if (generated.size() != 2 ||
-      generated.front() != makeReference(candidateSchema, 0x22) ||
-      selected.size() != 2 ||
-      selected.front() != makeReference(candidateSchema, 0x22) ||
-      selected.back() != makeReference(candidateSchema, 0x31) ||
+  std::vector<ArtifactRootReference> expected = {
+      publishReference(store, candidateSchema, 0x31),
+      publishReference(store, candidateSchema, 0x22)};
+  llvm::sort(expected, artifactRootReferenceLess);
+  if (!llvm::equal(generated, expected) || !llvm::equal(selected, expected) ||
       !completed->resolve(PlanOutputRef{1, 1}).empty())
     fail("mixed execution did not canonicalize and select its candidates");
+  if (completed->generateInvocations().size() != 1)
+    fail("completed plan lost its Generate invocation record");
+  const GenerateInvocationRecord &record =
+      completed->generateInvocations().front();
+  if (record.planNodeOrdinal != 0 || record.inputBindings.size() != 1 ||
+      record.inputBindings.front().artifacts !=
+          std::vector<ArtifactRootReference>{executionSource} ||
+      record.generatorBinding.descriptorRef() != sourceGenerator.reference() ||
+      record.outputBindings.size() != 1 ||
+      !llvm::equal(record.outputBindings.front().artifacts, generated) ||
+      record.lineageEdges.size() != 2)
+    fail("Generate invocation record lost exact binding or output facts");
+  for (const CandidateGeneratorLineageEdge &edge : record.lineageEdges)
+    if (edge.kind != CandidateGeneratorLineageEdgeKind::MechanicalDerivation ||
+        edge.outputSlot != CandidateGeneratorOutputSlotRef(0) ||
+        !edge.parents.empty() || !edge.ownerPayload.empty())
+      fail("Generate invocation record changed mechanical lineage");
+
+  sourceGenerationStopsAfterRetainingOutputs = true;
+  DsePlanExecutionOutcome retainedGeneration =
+      take(executeDsePlan(view, store));
+  sourceGenerationStopsAfterRetainingOutputs = false;
+  const auto *retainedIncomplete =
+      std::get_if<IncompleteDsePlanExecution>(&retainedGeneration);
+  if (!retainedIncomplete ||
+      !retainedIncomplete->incompleteGenerateInvocation() ||
+      retainedIncomplete->retainedOutputCount() != 1 ||
+      retainedIncomplete->retainedOutput(0).data() !=
+          retainedIncomplete->incompleteGenerateInvocation()
+              ->outputBindings.front()
+              .artifacts.data())
+    fail("incomplete Generate output is copied outside its canonical binding");
+  if (generated.data() != record.outputBindings.front().artifacts.data())
+    fail("Generate plan output is copied outside its canonical output binding");
+
+  sourceGenerationReturnsEmpty = true;
+  DsePlanExecutionOutcome emptyGeneration = take(executeDsePlan(view, store));
+  sourceGenerationReturnsEmpty = false;
+  const auto *emptyCompleted =
+      std::get_if<CompletedDsePlanExecution>(&emptyGeneration);
+  if (!emptyCompleted ||
+      !emptyCompleted->resolve(PlanOutputRef{0, 0}).empty() ||
+      !emptyCompleted->resolve(PlanOutputRef{1, 0}).empty() ||
+      !emptyCompleted->resolve(PlanOutputRef{1, 1}).empty())
+    fail("empty CandidateSet did not complete as no feasible candidate");
 
   const std::vector<DsePlanNodeDefinition> unavailableNodes = {
-      makeNode(sourceGenerator.reference(), {ExactPlanArtifacts{{source}}},
-               digest),
+      makeNode(sourceGenerator.reference(),
+               {ExactPlanArtifacts{{executionSource}}}, digest),
       makeNode(unavailableGenerator.reference(), {PlanOutputRef{0, 0}}, digest),
   };
   ResolvedDseConfigView unavailableView =
@@ -309,18 +390,49 @@ void exerciseOrderedTypedUseDef() {
       take(executeDsePlan(unavailableView, store));
   const auto *incomplete =
       std::get_if<IncompleteDsePlanExecution>(&unavailable);
-  const auto *reason =
-      incomplete
-          ? std::get_if<CandidateGeneratorIncompleteReason>(&incomplete->reason)
-          : nullptr;
-  if (!incomplete || incomplete->nodeOrdinal != 1 || !reason ||
+  const auto *reason = incomplete
+                           ? std::get_if<CandidateGeneratorIncompleteReason>(
+                                 &incomplete->reason())
+                           : nullptr;
+  if (!incomplete || incomplete->nodeOrdinal() != 1 || !reason ||
       *reason != CandidateGeneratorIncompleteReason::ProviderUnavailable ||
-      incomplete->completedPrefix.resolve(PlanOutputRef{0, 0}).size() != 2)
+      incomplete->completedPrefix().resolve(PlanOutputRef{0, 0}).size() != 2 ||
+      incomplete->completedPrefix().generateInvocations().size() != 1 ||
+      !incomplete->incompleteGenerateInvocation() ||
+      incomplete->incompleteGenerateInvocation()->planNodeOrdinal != 1 ||
+      incomplete->incompleteGenerateInvocation()
+              ->generatorBinding.descriptorRef() !=
+          unavailableGenerator.reference() ||
+      incomplete->incompleteGenerateInvocation()->outputBindings.size() != 1 ||
+      !incomplete->incompleteGenerateInvocation()
+           ->outputBindings.front()
+           .artifacts.empty() ||
+      !incomplete->incompleteGenerateInvocation()->lineageEdges.empty())
     fail("missing Generate provider did not produce typed Incomplete");
+  DsePlanGenerateInvocationRecords unavailableRecords =
+      takeDsePlanGenerateInvocationRecords(std::move(unavailable));
+  if (unavailableRecords.resolvedDseConfigViewDigest() !=
+          unavailableView.digest() ||
+      unavailableRecords.completed().size() != 1 ||
+      !unavailableRecords.incomplete() ||
+      unavailableRecords.incomplete()->planNodeOrdinal != 1)
+    fail("outer controller projection lost incomplete Generate provenance");
+  const DsePlanGenerateInvocationSummary unavailableSummary =
+      take(validateAndSummarizeDsePlanGenerateInvocations(
+          llvm::ArrayRef(&unavailableRecords, 1), store));
+  if (unavailableSummary.planExecutions != 1 ||
+      unavailableSummary.completedInvocations != 1 ||
+      unavailableSummary.incompleteInvocations != 1 ||
+      unavailableSummary.inputBindings != 2 ||
+      unavailableSummary.inputArtifacts != 3 ||
+      unavailableSummary.outputBindings != 2 ||
+      unavailableSummary.outputArtifacts != 2 ||
+      unavailableSummary.lineageEdges != 2)
+    fail("Generate invocation consumer lost typed provenance facts");
 
   const std::vector<DsePlanNodeDefinition> unavailablePromotionNodes = {
-      makeNode(sourceGenerator.reference(), {ExactPlanArtifacts{{source}}},
-               digest),
+      makeNode(sourceGenerator.reference(),
+               {ExactPlanArtifacts{{executionSource}}}, digest),
       makePromoteNode(unavailableAcquisition.reference(), PlanOutputRef{0, 0},
                       digest, AllPassingSelection{}),
   };
@@ -332,12 +444,26 @@ void exerciseOrderedTypedUseDef() {
       std::get_if<IncompleteDsePlanExecution>(&unavailablePromotionOutcome);
   const auto *promotionReason =
       promotionIncomplete ? std::get_if<PromotionAcquisitionIncompleteReason>(
-                                &promotionIncomplete->reason)
+                                &promotionIncomplete->reason())
                           : nullptr;
-  if (!promotionIncomplete || promotionIncomplete->nodeOrdinal != 1 ||
+  if (!promotionIncomplete || promotionIncomplete->nodeOrdinal() != 1 ||
       !promotionReason ||
       *promotionReason !=
-          PromotionAcquisitionIncompleteReason::ProviderUnavailable)
+          PromotionAcquisitionIncompleteReason::ProviderUnavailable ||
+      promotionIncomplete->completedPrefix().generateInvocations().size() !=
+          1 ||
+      promotionIncomplete->completedPrefix()
+              .generateInvocations()
+              .front()
+              .planNodeOrdinal != 0 ||
+      promotionIncomplete->completedPrefix()
+              .generateInvocations()
+              .front()
+              .outputBindings.size() != 1 ||
+      promotionIncomplete->completedPrefix()
+              .generateInvocations()
+              .front()
+              .lineageEdges.size() != 2)
     fail("missing Promote provider did not produce typed Incomplete");
   llvm::sys::fs::remove_directories(storePath);
 

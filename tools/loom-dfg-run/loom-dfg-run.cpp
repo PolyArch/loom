@@ -170,6 +170,9 @@ struct SourceBackedCompilation final {
   loom::dse::SelectedPreMappingCompilation selected;
   loom::ArtifactIdentity workloadIdentity;
   loom::ArtifactIdentity runtimeInputIdentity;
+  std::vector<loom::dse::DsePlanGenerateInvocationRecords>
+      planGenerateInvocations;
+  loom::dse::DsePlanGenerateInvocationSummary planGenerateSummary;
 };
 
 llvm::Expected<NullaryProgramInputs> makeNullaryProgramInputs(
@@ -263,6 +266,14 @@ compileTarget(std::unique_ptr<llvm::Module> module,
       config, exploration, store);
   if (!outcome)
     return outcome.takeError();
+  auto generateSummary = std::visit(
+      [&](const auto &result) {
+        return loom::dse::validateAndSummarizeDsePlanGenerateInvocations(
+            result.planGenerateInvocations, store);
+      },
+      *outcome);
+  if (!generateSummary)
+    return generateSummary.takeError();
   if (const auto *incomplete =
           std::get_if<loom::dse::IncompletePreMappingExploration>(&*outcome)) {
     std::string message;
@@ -271,17 +282,33 @@ compileTarget(std::unique_ptr<llvm::Module> module,
            << loom::dse::toString(incomplete->reason);
     if (incomplete->planNodeOrdinal)
       stream << ", plan_node=" << *incomplete->planNodeOrdinal;
-    stream << ", retained_evidence=" << incomplete->retainedEvidence.size();
+    stream << ", retained_evidence=" << incomplete->retainedEvidence.size()
+           << ", completed_generate_invocations="
+           << generateSummary->completedInvocations
+           << ", incomplete_generate_invocations="
+           << generateSummary->incompleteInvocations;
     return unsupported(stream.str());
   }
-  if (std::holds_alternative<loom::dse::CompletedNoFeasibleCandidate>(*outcome))
-    return unsupported("central DSE found no feasible ownership candidate");
+  if (std::holds_alternative<loom::dse::CompletedPreMappingNoFeasibleCandidate>(
+          *outcome)) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    stream << "central DSE found no feasible ownership candidate after "
+           << generateSummary->completedInvocations
+           << " completed Generate invocations";
+    return unsupported(stream.str());
+  }
   auto completed =
       std::get<loom::dse::CompletedPreMappingSelection>(std::move(*outcome));
   if (completed.selected.size() != 1)
     return invalid("TopK(1) did not select exactly one candidate");
+  if (generateSummary->completedInvocations == 0 ||
+      generateSummary->incompleteInvocations != 0)
+    return invalid("completed central DSE has invalid Generate provenance");
   return SourceBackedCompilation{std::move(completed.selected.front()),
-                                 workloadIdentity, runtimeInputIdentity};
+                                 workloadIdentity, runtimeInputIdentity,
+                                 std::move(completed.planGenerateInvocations),
+                                 *generateSummary};
 }
 
 llvm::Expected<std::vector<std::string>>
@@ -308,15 +335,15 @@ selectedSourceFiles(const loom::dse::SelectedPreMappingCompilation &selected) {
   return files;
 }
 
-llvm::Error
-writeReport(llvm::StringRef path, std::uint64_t graphCount,
-            std::uint64_t actorCount,
-            llvm::ArrayRef<std::string> selectedSourceFiles,
-            const loom::ArtifactIdentity &canonicalDataflowIdentity,
-            const loom::ArtifactIdentity &workloadIdentity,
-            const loom::ArtifactIdentity &runtimeInputIdentity,
-            const loom::SystemCompilerTargetBindings &compilerTargets,
-            const loom::sim::SourceBackedDfgValidationResult &replay) {
+llvm::Error writeReport(
+    llvm::StringRef path, std::uint64_t graphCount, std::uint64_t actorCount,
+    llvm::ArrayRef<std::string> selectedSourceFiles,
+    const loom::ArtifactIdentity &canonicalDataflowIdentity,
+    const loom::ArtifactIdentity &workloadIdentity,
+    const loom::ArtifactIdentity &runtimeInputIdentity,
+    const loom::SystemCompilerTargetBindings &compilerTargets,
+    const loom::sim::SourceBackedDfgValidationResult &replay,
+    const loom::dse::DsePlanGenerateInvocationSummary &planGenerateSummary) {
   llvm::SmallString<256> parent(path);
   llvm::sys::path::remove_filename(parent);
   if (!parent.empty())
@@ -354,6 +381,21 @@ writeReport(llvm::StringRef path, std::uint64_t graphCount,
                 replay.simulationSeconds
           : 0.0;
   root["operation_firings"] = std::move(firings);
+  if (planGenerateSummary.completedInvocations == 0 ||
+      planGenerateSummary.incompleteInvocations != 0)
+    return invalid("completed DSE retained no Generate provenance");
+  llvm::json::Object dseExecution;
+  dseExecution["plan_executions"] = planGenerateSummary.planExecutions;
+  dseExecution["generate_invocations"] =
+      planGenerateSummary.completedInvocations;
+  dseExecution["incomplete_generate_invocations"] =
+      planGenerateSummary.incompleteInvocations;
+  dseExecution["input_bindings"] = planGenerateSummary.inputBindings;
+  dseExecution["input_artifacts"] = planGenerateSummary.inputArtifacts;
+  dseExecution["output_bindings"] = planGenerateSummary.outputBindings;
+  dseExecution["output_artifacts"] = planGenerateSummary.outputArtifacts;
+  dseExecution["generate_lineage_edges"] = planGenerateSummary.lineageEdges;
+  root["dse_execution"] = std::move(dseExecution);
   llvm::json::Object target;
   target["host_binding"] = loom::formatArtifactIdentityHex(
       compilerTargets.host().reference().artifact);
@@ -486,7 +528,7 @@ int main(int argc, char **argv) {
           *sourceFiles,
           selected->selected.compilation.canonicalDataflow.identity(),
           selected->workloadIdentity, selected->runtimeInputIdentity,
-          *compilerTargets, replay))
+          *compilerTargets, replay, selected->planGenerateSummary))
     return reportError(std::move(error));
   return 0;
 }

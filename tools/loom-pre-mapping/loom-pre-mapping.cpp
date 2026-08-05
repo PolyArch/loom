@@ -50,11 +50,13 @@
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cinttypes>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace {
 
@@ -366,6 +368,9 @@ int main(int argc, char **argv) {
   compilationOptions.lowering.applyPassManagerCommandLineOptions = true;
 
   std::optional<loom::frontend::PreMappingCompilation> compiled;
+  std::vector<loom::dse::DsePlanGenerateInvocationRecords>
+      planGenerateInvocations;
+  loom::dse::DsePlanGenerateInvocationSummary planGenerateSummary;
   std::optional<loom::frontend::StructuredCompilation> explicitInput;
   std::optional<loom::frontend::MaterializedOwnershipCandidate> selected;
   if (!hasExplicitSelection) {
@@ -392,6 +397,14 @@ int main(int argc, char **argv) {
         design->roots().front(), *config, exploration, store);
     if (!outcome)
       return reportError(outcome.takeError());
+    auto generateSummary = std::visit(
+        [&](const auto &result) {
+          return loom::dse::validateAndSummarizeDsePlanGenerateInvocations(
+              result.planGenerateInvocations, store);
+        },
+        *outcome);
+    if (!generateSummary)
+      return reportError(generateSummary.takeError());
     if (const auto *incomplete =
             std::get_if<loom::dse::IncompletePreMappingExploration>(
                 &*outcome)) {
@@ -400,15 +413,21 @@ int main(int argc, char **argv) {
               ? " at plan node " + std::to_string(*incomplete->planNodeOrdinal)
               : " before plan execution";
       return reportError(::llvm::createStringError(
-          ::llvm::inconvertibleErrorCode(), "central DSE is incomplete%s: %s",
+          ::llvm::inconvertibleErrorCode(),
+          "central DSE is incomplete%s: %s; completed Generate "
+          "invocations=%" PRIu64 ", incomplete Generate invocations=%" PRIu64,
           location.c_str(),
-          loom::dse::toString(incomplete->reason).str().c_str()));
+          loom::dse::toString(incomplete->reason).str().c_str(),
+          generateSummary->completedInvocations,
+          generateSummary->incompleteInvocations));
     }
-    if (std::holds_alternative<loom::dse::CompletedNoFeasibleCandidate>(
-            *outcome))
+    if (std::holds_alternative<
+            loom::dse::CompletedPreMappingNoFeasibleCandidate>(*outcome))
       return reportError(::llvm::createStringError(
           ::llvm::inconvertibleErrorCode(),
-          "central DSE completed without a feasible candidate"));
+          "central DSE completed without a feasible candidate after %" PRIu64
+          " Generate invocations",
+          generateSummary->completedInvocations));
     auto &completion =
         std::get<loom::dse::CompletedPreMappingSelection>(*outcome);
     if (completion.selected.size() != 1)
@@ -417,6 +436,8 @@ int main(int argc, char **argv) {
           "TopK(1) returned %zu pre-Mapping candidates",
           completion.selected.size()));
     compiled.emplace(std::move(completion.selected.front().compilation));
+    planGenerateInvocations = std::move(completion.planGenerateInvocations);
+    planGenerateSummary = *generateSummary;
   } else {
     auto mechanical = loom::frontend::raiseLlvmModuleToStructured(
         std::move(llvmModule), design->roots().front().reference(), store,
@@ -563,7 +584,22 @@ int main(int argc, char **argv) {
                    << "\n";
     return 1;
   }
+  if (!hasExplicitSelection && (planGenerateSummary.completedInvocations == 0 ||
+                                planGenerateSummary.incompleteInvocations != 0))
+    return reportError(::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "completed DSE retained no Generate provenance"));
   countsFile->os() << "{\"actors\": " << view->actors().size()
+                   << ", \"central_generate_invocations\": "
+                   << planGenerateSummary.completedInvocations
+                   << ", \"central_generate_input_artifacts\": "
+                   << planGenerateSummary.inputArtifacts
+                   << ", \"central_generate_lineage_edges\": "
+                   << planGenerateSummary.lineageEdges
+                   << ", \"central_generate_output_artifacts\": "
+                   << planGenerateSummary.outputArtifacts
+                   << ", \"central_plan_executions\": "
+                   << planGenerateSummary.planExecutions
                    << ", \"graphs\": " << view->graphs().size() << "}\n";
   countsFile->keep();
 

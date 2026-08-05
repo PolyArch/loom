@@ -58,6 +58,12 @@ using DataflowRewriteDecision =
     std::variant<DataflowRewriteKind, ElementwiseVectorChunkRewrite,
                  ElementwiseVectorScalarizeRewrite>;
 
+llvm::ArrayRef<std::uint8_t> dataflowRewriteDecisionSchemaBytes();
+llvm::Expected<std::vector<std::uint8_t>>
+encodeDataflowRewriteDecision(const DataflowRewriteDecision &decision);
+llvm::Expected<DataflowRewriteDecision>
+adoptDataflowRewriteDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes);
+
 /// Stable total order used only for deterministic invocation lineage.
 bool dataflowRewriteDecisionLess(const DataflowRewriteDecision &lhs,
                                  const DataflowRewriteDecision &rhs);
@@ -83,7 +89,7 @@ dataflowRewriteExpansionCost(const CanonicalDataflowArtifact &parent,
 ///
 /// This optional rewrite surface is separate from mandatory canonical
 /// finalization: the pass runs no canonicalizer and no finalization pipeline.
-std::unique_ptr<::mlir::Pass>
+llvm::Expected<std::unique_ptr<::mlir::Pass>>
 createDataflowRewritePass(DataflowRewriteKind kind);
 
 /// Applies one typed rewrite to a private clone and finalizes the complete

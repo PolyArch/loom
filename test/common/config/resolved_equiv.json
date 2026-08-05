@@ -6,6 +6,9 @@
     "schedule": {
       "scope_expansion_limit": 19
     },
+    "memory_communication": {
+      "scope_expansion_limit": 29
+    },
     "dataflow_rewrite": {
       "scope_expansion_limit": 23
     },

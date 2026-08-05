@@ -413,6 +413,43 @@ the published object, and deleting it only causes deterministic reconstruction.
 The architecture therefore keeps one persistent authority while avoiding work
 at the publication boundary.
 
+## Why Constant Staging Starts At The Spatial Memory Boundary
+
+A constant table is globally named in the enclosing program, but a canonical
+Spatial graph consumes an explicit memory capability. Moving
+`memref.get_global` into the graph would make a symbol lookup into executable
+Spatial semantics and create a memory root that neither Dataflow nor Fabric
+owns. Keeping the lookup outside while staging the exact region memory input
+preserves the existing boundary: thread launch selects the logical object, and
+the graph only performs explicit memory work on the supplied capability.
+
+The first MemoryCommunication decision deliberately accepts only direct loads
+from a constant global with an explicit elements initializer at every root
+launch. This narrow proof is more general than a symbol-name rule and safer
+than a broad read-only guess. If the region stores through the same argument or
+derives another use from it, redirecting only its loads could change
+read-after-write behavior. Rejecting every such unknown use lets later alias
+and effect analysis enlarge the legal domain without a compatibility path or a
+second notion of constness. A sibling view of the same constant global does
+not need a synthetic `noalias` proof because writing that source object is
+already undefined; staging only snapshots its defined immutable contents.
+
+Preserving an explicit load alignment requires more than copying its number to
+the new allocation. The allocation base and the load's exact byte offset must
+together establish the effective-address alignment. Constant identity-layout
+indices permit that proof; a dynamic or misaligned offset does not. The new
+logical allocation therefore carries the strongest proved base alignment and
+each redirected load retains its own contract unchanged. These facts are
+derived from ordinary Structured IR, not copied into generator configuration
+or a separate memory schema.
+
+The staging buffer is logical Structured IR rather than a physical memory
+choice. Its copy becomes ordinary Dataflow load/store work, so Fabric
+capability admission, Mapping, and Evaluation can decide whether any concrete
+memory realization is feasible and worthwhile. This keeps software
+transformation, memory hardware, and placement as three separate owners while
+allowing central DSE to compare the complete immutable alternatives.
+
 ## Why SCF-To-Dataflow Is Mechanical
 
 Once the candidate fixes schedule, shape, reduction, and ownership, lowering

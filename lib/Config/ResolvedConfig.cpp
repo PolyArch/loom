@@ -223,6 +223,7 @@ struct ConfigPatch {
   std::optional<loom::ResolvedHardwareTargetConfig> hardwareTarget;
   std::optional<std::uint32_t> ownershipScopeExpansionLimit;
   std::optional<std::uint32_t> scheduleScopeExpansionLimit;
+  std::optional<std::uint32_t> memoryCommunicationScopeExpansionLimit;
   std::optional<std::uint32_t> dataflowRewriteScopeExpansionLimit;
   std::optional<std::uint64_t> techMappingMatchRowAttemptLimit;
   std::optional<std::uint64_t> techMappingPartialCoverExpansionLimit;
@@ -302,6 +303,9 @@ void applyPatch(loom::ResolvedConfig &config, const ConfigPatch &patch) {
   if (patch.scheduleScopeExpansionLimit)
     config.dse.schedule.scopeExpansionLimit =
         *patch.scheduleScopeExpansionLimit;
+  if (patch.memoryCommunicationScopeExpansionLimit)
+    config.dse.memoryCommunication.scopeExpansionLimit =
+        *patch.memoryCommunicationScopeExpansionLimit;
   if (patch.dataflowRewriteScopeExpansionLimit)
     config.dse.dataflowRewrite.scopeExpansionLimit =
         *patch.dataflowRewriteScopeExpansionLimit;
@@ -1250,6 +1254,24 @@ llvm::Error parseStructuredSchedule(ConfigPatch &patch,
   return llvm::Error::success();
 }
 
+llvm::Error parseMemoryCommunication(ConfigPatch &patch,
+                                     const ConfigSyntax *node) {
+  auto fieldsOrErr = ClosedMapping::parse(node, "dse.memory_communication", {},
+                                          {"scope_expansion_limit"});
+  if (!fieldsOrErr)
+    return fieldsOrErr.takeError();
+  if (const ConfigSyntax *value = fieldsOrErr->at("scope_expansion_limit")) {
+    constexpr llvm::StringLiteral key =
+        "dse.memory_communication.scope_expansion_limit";
+    auto valueOrErr = requireUnsigned(value, key);
+    if (!valueOrErr)
+      return valueOrErr.takeError();
+    patch.memoryCommunicationScopeExpansionLimit = *valueOrErr;
+    return touch(patch, key);
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error parseDataflowRewrite(ConfigPatch &patch, const ConfigSyntax *node) {
   auto fieldsOrErr = ClosedMapping::parse(node, "dse.dataflow_rewrite", {},
                                           {"scope_expansion_limit"});
@@ -1304,8 +1326,9 @@ llvm::Error parseTechMapping(ConfigPatch &patch, const ConfigSyntax *node) {
 llvm::Error parseDse(ConfigPatch &patch, const ConfigSyntax *node) {
   auto fieldsOrErr = ClosedMapping::parse(
       node, "dse", {},
-      {"structured_ownership", "schedule", "dataflow_rewrite", "tech_mapping",
-       "evaluation_and_objective_catalogs", "spatial_pnr", "system_pnr"});
+      {"structured_ownership", "schedule", "memory_communication",
+       "dataflow_rewrite", "tech_mapping", "evaluation_and_objective_catalogs",
+       "spatial_pnr", "system_pnr"});
   if (!fieldsOrErr)
     return fieldsOrErr.takeError();
   if (const ConfigSyntax *structured = fieldsOrErr->at("structured_ownership"))
@@ -1313,6 +1336,9 @@ llvm::Error parseDse(ConfigPatch &patch, const ConfigSyntax *node) {
       return error;
   if (const ConfigSyntax *schedule = fieldsOrErr->at("schedule"))
     if (llvm::Error error = parseStructuredSchedule(patch, schedule))
+      return error;
+  if (const ConfigSyntax *memory = fieldsOrErr->at("memory_communication"))
+    if (llvm::Error error = parseMemoryCommunication(patch, memory))
       return error;
   if (const ConfigSyntax *rewrite = fieldsOrErr->at("dataflow_rewrite"))
     if (llvm::Error error = parseDataflowRewrite(patch, rewrite))
@@ -1424,6 +1450,7 @@ llvm::Error validateResolvedConfig(const loom::ResolvedConfig &config) {
                       "all target scale values must be positive");
   if (config.dse.structuredOwnership.scopeExpansionLimit == 0 ||
       config.dse.schedule.scopeExpansionLimit == 0 ||
+      config.dse.memoryCommunication.scopeExpansionLimit == 0 ||
       config.dse.dataflowRewrite.scopeExpansionLimit == 0 ||
       config.dse.techMapping.matchRowAttemptLimit == 0 ||
       config.dse.techMapping.partialCoverExpansionLimit == 0 ||

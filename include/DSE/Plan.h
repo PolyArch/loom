@@ -17,6 +17,7 @@
 namespace loom::dse {
 
 class ResolvedDseConfigView;
+class DsePlanExecutionBuilder;
 
 struct GeneratePlanNodeDefinition final {
   CandidateGeneratorDescriptorRef descriptor;
@@ -157,19 +158,56 @@ private:
   std::optional<ObjectiveProgram> objectiveProgram_;
 };
 
+/// Exact invocation-local record for one executed Generate plan node. The
+/// enclosing plan outcome owns whether this record completed or is the node
+/// at which execution became incomplete.
+struct GenerateInvocationRecord final {
+  std::uint64_t planNodeOrdinal;
+  std::vector<CandidateGeneratorInputBinding> inputBindings;
+  ResolvedCandidateGeneratorBinding generatorBinding;
+  std::vector<CandidateGeneratorOutputBinding> outputBindings;
+  std::vector<CandidateGeneratorLineageEdge> lineageEdges;
+};
+
 class CompletedDsePlanExecution final {
 public:
-  CompletedDsePlanExecution(
-      std::vector<std::uint64_t> outputOffsets,
-      std::vector<std::vector<ArtifactRootReference>> outputs)
-      : outputOffsets_(std::move(outputOffsets)), outputs_(std::move(outputs)) {
+  CompletedDsePlanExecution(CompletedDsePlanExecution &&) = default;
+  CompletedDsePlanExecution &operator=(CompletedDsePlanExecution &&) = default;
+  CompletedDsePlanExecution(const CompletedDsePlanExecution &) = delete;
+  CompletedDsePlanExecution &
+  operator=(const CompletedDsePlanExecution &) = delete;
+
+  bool hasOutput(PlanOutputRef output) const;
+  llvm::ArrayRef<ArtifactRootReference> resolve(PlanOutputRef output) const;
+  const ComponentViewDigest &resolvedDseConfigViewDigest() const {
+    return resolvedDseConfigViewDigest_;
+  }
+  llvm::ArrayRef<GenerateInvocationRecord> generateInvocations() const {
+    return generateInvocations_;
   }
 
-  llvm::ArrayRef<ArtifactRootReference> resolve(PlanOutputRef output) const;
-
 private:
-  std::vector<std::uint64_t> outputOffsets_;
-  std::vector<std::vector<ArtifactRootReference>> outputs_;
+  struct GenerateNodeOutputs final {
+    std::size_t invocationOrdinal;
+  };
+
+  struct PromoteNodeOutputs final {
+    std::vector<std::vector<ArtifactRootReference>> outputBindings;
+  };
+
+  using NodeOutputs = std::variant<GenerateNodeOutputs, PromoteNodeOutputs>;
+
+  explicit CompletedDsePlanExecution(ComponentViewDigest digest)
+      : resolvedDseConfigViewDigest_(digest) {}
+  llvm::Error appendGenerate(GenerateInvocationRecord invocation);
+  void
+  appendPromote(std::vector<std::vector<ArtifactRootReference>> outputBindings);
+
+  std::vector<NodeOutputs> nodeOutputs_;
+  std::vector<GenerateInvocationRecord> generateInvocations_;
+  ComponentViewDigest resolvedDseConfigViewDigest_;
+
+  friend class DsePlanExecutionBuilder;
 };
 
 using DsePlanIncompleteReason =
@@ -179,15 +217,103 @@ using DsePlanIncompleteReason =
 
 llvm::StringRef toString(const DsePlanIncompleteReason &reason);
 
-struct IncompleteDsePlanExecution final {
-  std::uint64_t nodeOrdinal = 0;
-  DsePlanIncompleteReason reason;
-  CompletedDsePlanExecution completedPrefix;
-  std::vector<std::vector<ArtifactRootReference>> retainedOutputs;
+class IncompleteDsePlanExecution final {
+public:
+  IncompleteDsePlanExecution(IncompleteDsePlanExecution &&) = default;
+  IncompleteDsePlanExecution &
+  operator=(IncompleteDsePlanExecution &&) = default;
+  IncompleteDsePlanExecution(const IncompleteDsePlanExecution &) = delete;
+  IncompleteDsePlanExecution &
+  operator=(const IncompleteDsePlanExecution &) = delete;
+
+  std::uint64_t nodeOrdinal() const { return nodeOrdinal_; }
+  const DsePlanIncompleteReason &reason() const { return reason_; }
+  const CompletedDsePlanExecution &completedPrefix() const {
+    return completedPrefix_;
+  }
+  std::size_t retainedOutputCount() const;
+  llvm::ArrayRef<ArtifactRootReference>
+  retainedOutput(std::size_t outputSlotOrdinal) const;
+  const GenerateInvocationRecord *incompleteGenerateInvocation() const;
+
+private:
+  struct PromoteRetainedOutputs final {
+    std::vector<std::vector<ArtifactRootReference>> outputBindings;
+  };
+
+  using IncompleteNode =
+      std::variant<GenerateInvocationRecord, PromoteRetainedOutputs>;
+
+  IncompleteDsePlanExecution(std::uint64_t nodeOrdinal,
+                             DsePlanIncompleteReason reason,
+                             CompletedDsePlanExecution completedPrefix,
+                             IncompleteNode incompleteNode)
+      : nodeOrdinal_(nodeOrdinal), reason_(std::move(reason)),
+        completedPrefix_(std::move(completedPrefix)),
+        incompleteNode_(std::move(incompleteNode)) {}
+
+  std::uint64_t nodeOrdinal_ = 0;
+  DsePlanIncompleteReason reason_;
+  CompletedDsePlanExecution completedPrefix_;
+  IncompleteNode incompleteNode_;
+
+  friend class DsePlanExecutionBuilder;
 };
 
 using DsePlanExecutionOutcome =
     std::variant<CompletedDsePlanExecution, IncompleteDsePlanExecution>;
+
+/// Invocation-local transfer projection for the future InvocationManifest.
+/// The component-view digest scopes every PlanNodeRef to one exact resolved
+/// plan. This record is not an Artifact or a candidate identity.
+class DsePlanGenerateInvocationRecords final {
+public:
+  const ComponentViewDigest &resolvedDseConfigViewDigest() const {
+    return resolvedDseConfigViewDigest_;
+  }
+  llvm::ArrayRef<GenerateInvocationRecord> completed() const {
+    return completed_;
+  }
+  const std::optional<GenerateInvocationRecord> &incomplete() const {
+    return incomplete_;
+  }
+
+private:
+  DsePlanGenerateInvocationRecords(
+      ComponentViewDigest resolvedDseConfigViewDigest,
+      std::vector<GenerateInvocationRecord> completed,
+      std::optional<GenerateInvocationRecord> incomplete)
+      : resolvedDseConfigViewDigest_(resolvedDseConfigViewDigest),
+        completed_(std::move(completed)), incomplete_(std::move(incomplete)) {}
+
+  ComponentViewDigest resolvedDseConfigViewDigest_;
+  std::vector<GenerateInvocationRecord> completed_;
+  std::optional<GenerateInvocationRecord> incomplete_;
+
+  friend class DsePlanExecutionBuilder;
+};
+
+DsePlanGenerateInvocationRecords
+takeDsePlanGenerateInvocationRecords(DsePlanExecutionOutcome outcome);
+
+/// Derived diagnostics produced while strictly consuming immutable Generate
+/// invocation records. The records and referenced Artifacts remain the only
+/// semantic authority.
+struct DsePlanGenerateInvocationSummary final {
+  std::uint64_t planExecutions = 0;
+  std::uint64_t completedInvocations = 0;
+  std::uint64_t incompleteInvocations = 0;
+  std::uint64_t inputBindings = 0;
+  std::uint64_t inputArtifacts = 0;
+  std::uint64_t outputBindings = 0;
+  std::uint64_t outputArtifacts = 0;
+  std::uint64_t lineageEdges = 0;
+};
+
+llvm::Expected<DsePlanGenerateInvocationSummary>
+validateAndSummarizeDsePlanGenerateInvocations(
+    llvm::ArrayRef<DsePlanGenerateInvocationRecords> records,
+    const ArtifactStore &store);
 
 llvm::Expected<DsePlanExecutionOutcome>
 executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store);

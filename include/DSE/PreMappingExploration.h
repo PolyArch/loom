@@ -21,6 +21,8 @@ struct SelectedPreMappingCompilation final {
   std::vector<StructuredOwnershipDerivation> derivations;
   std::vector<StructuredExecutionShapeDerivation> executionShapeDerivations;
   std::vector<StructuredScheduleDerivation> scheduleDerivations;
+  std::vector<StructuredMemoryCommunicationDerivation>
+      memoryCommunicationDerivations;
   std::vector<DataflowRewriteDerivation> dataflowRewriteDerivations;
   std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
 };
@@ -29,16 +31,24 @@ struct CompletedPreMappingSelection final {
   std::vector<SelectedPreMappingCompilation> selected;
   std::vector<ArtifactRootReference> satisfiedEvidence;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
+  std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
+};
+
+struct CompletedPreMappingNoFeasibleCandidate final {
+  std::vector<ArtifactRootReference> satisfiedEvidence;
+  std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
 };
 
 struct IncompletePreMappingExploration final {
   std::optional<std::uint64_t> planNodeOrdinal;
   DsePlanIncompleteReason reason;
   std::vector<ArtifactRootReference> retainedEvidence;
+  std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
 };
 
 using PreMappingExplorationOutcome =
-    std::variant<CompletedPreMappingSelection, CompletedNoFeasibleCandidate,
+    std::variant<CompletedPreMappingSelection,
+                 CompletedPreMappingNoFeasibleCandidate,
                  IncompletePreMappingExploration>;
 
 llvm::Expected<PreMappingExplorationOutcome>

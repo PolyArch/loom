@@ -21,7 +21,7 @@ enum class StructuredScheduleDecisionKind : std::uint32_t {
 
 /// One atomic schedule decision over an exact parent-local loop. A zero factor
 /// is canonical for decisions without a factor; replication decisions carry a
-/// positive factor.
+/// factor greater than one.
 struct StructuredScheduleDecision final {
   StructuredEntityRef loop;
   StructuredScheduleDecisionKind kind;
@@ -38,6 +38,12 @@ struct MaterializedStructuredScheduleCandidate final {
   StructuredProgramCandidate structuredProgram;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
+
+llvm::ArrayRef<std::uint8_t> structuredScheduleDecisionSchemaBytes();
+llvm::Expected<std::vector<std::uint8_t>>
+encodeStructuredScheduleDecision(const StructuredScheduleDecision &decision);
+llvm::Expected<StructuredScheduleDecision>
+adoptStructuredScheduleDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes);
 
 /// Enumerates the finite legal schedule domain in canonical loop order. The
 /// Fabric is consumed only for proved aggregate-capacity pruning; a surviving

@@ -29,6 +29,10 @@ struct ResolvedStructuredScheduleConfig {
   std::uint32_t scopeExpansionLimit = 64;
 };
 
+struct ResolvedMemoryCommunicationConfig {
+  std::uint32_t scopeExpansionLimit = 64;
+};
+
 struct ResolvedDataflowRewriteConfig {
   std::uint32_t scopeExpansionLimit = 64;
 };
@@ -42,6 +46,7 @@ struct ResolvedTechMappingConfig {
 struct ResolvedDseConfig {
   ResolvedStructuredOwnershipConfig structuredOwnership;
   ResolvedStructuredScheduleConfig schedule;
+  ResolvedMemoryCommunicationConfig memoryCommunication;
   ResolvedDataflowRewriteConfig dataflowRewrite;
   ResolvedTechMappingConfig techMapping;
   std::vector<dse::ModelAuthorization> modelAuthorizations;
@@ -55,7 +60,7 @@ struct ResolvedDseConfig {
 
 struct ResolvedConfig {
   static constexpr ArtifactSchemaDescriptor artifactSchema{
-      "loom.config.resolved", SchemaVersion{3, 1}};
+      "loom.config.resolved", SchemaVersion{3, 2}};
 
   ResolvedHardwareTargetConfig hardwareTarget;
   ResolvedDseConfig dse;

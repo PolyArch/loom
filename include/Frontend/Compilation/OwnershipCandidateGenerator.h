@@ -172,6 +172,24 @@ struct SpatialOwnershipScope final {
   }
 };
 
+/// One exact atomic ownership transformation used as invocation lineage. The
+/// selected child Structured Program remains the semantic authority.
+struct SpatialOwnershipDecision final {
+  SpatialOwnershipScope scope;
+  SpatialOwnershipDecisionPoint point;
+
+  friend bool operator==(const SpatialOwnershipDecision &lhs,
+                         const SpatialOwnershipDecision &rhs) {
+    return lhs.scope == rhs.scope && lhs.point == rhs.point;
+  }
+};
+
+llvm::ArrayRef<std::uint8_t> spatialOwnershipDecisionSchemaBytes();
+llvm::Expected<std::vector<std::uint8_t>>
+encodeSpatialOwnershipDecision(const SpatialOwnershipDecision &decision);
+llvm::Expected<SpatialOwnershipDecision>
+adoptSpatialOwnershipDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes);
+
 /// One definition-level ownership scope that belongs to the finite domain but
 /// cannot be materialized by the current lowering semantics. Declarations and
 /// operations that are not ownership scopes are omitted rather than recorded

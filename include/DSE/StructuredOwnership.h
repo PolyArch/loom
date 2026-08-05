@@ -5,6 +5,7 @@
 #include "Dataflow/Transforms/DataflowRewrite.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StructuredExecutionShape.h"
+#include "Frontend/Compilation/StructuredMemoryCommunication.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SourceBackedDfgValidation.h"
@@ -90,6 +91,16 @@ struct StructuredExecutionShapeDerivation final {
   }
 };
 
+struct StructuredMemoryCommunicationDerivation final {
+  ArtifactRootReference parent;
+  frontend::StructuredMemoryCommunicationDecision decision;
+
+  friend bool operator==(const StructuredMemoryCommunicationDerivation &lhs,
+                         const StructuredMemoryCommunicationDerivation &rhs) {
+    return lhs.parent == rhs.parent && lhs.decision == rhs.decision;
+  }
+};
+
 struct DataflowRewriteDerivation final {
   ArtifactRootReference parent;
   ArtifactRootReference child;
@@ -156,6 +167,8 @@ struct SelectedStructuredOwnershipCandidate final {
   std::vector<StructuredOwnershipDerivation> derivations;
   std::vector<StructuredExecutionShapeDerivation> executionShapeDerivations;
   std::vector<StructuredScheduleDerivation> scheduleDerivations;
+  std::vector<StructuredMemoryCommunicationDerivation>
+      memoryCommunicationDerivations;
   std::vector<DataflowRewriteDerivation> dataflowRewriteDerivations;
   std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
 };

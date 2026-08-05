@@ -40,6 +40,10 @@ add_executable(loom-spatial-mapping-artifact-test
   TechMappingCandidateTestSupport.cpp
 )
 
+add_executable(loom-spatial-tag-continuity-index-test
+  SpatialTagContinuityIndexTest.cpp
+)
+
 add_executable(loom-configured-hardware-projection-test
   ConfiguredHardwareProjectionTest.cpp
 )
@@ -148,6 +152,14 @@ target_link_libraries(loom-spatial-mapping-artifact-test PRIVATE
   MLIRLLVMDialect
   MLIRMapping
   MLIRMemRefDialect
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-spatial-tag-continuity-index-test PRIVATE
+  LoomFabricArtifact
+  LoomPnR
+  MLIRIR
   MLIRParser
   LLVMSupport
 )

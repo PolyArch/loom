@@ -27,6 +27,9 @@
 namespace loom::frontend {
 namespace {
 
+constexpr llvm::StringLiteral decisionSchema =
+    "loom.structured_schedule.decision.1.0";
+
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "structured_schedule_invalid: " + message);
@@ -222,6 +225,75 @@ llvm::Error applyUnrollAndJam(mlir::scf::ForOp loop, std::uint64_t factor) {
 
 } // namespace
 
+llvm::ArrayRef<std::uint8_t> structuredScheduleDecisionSchemaBytes() {
+  return {reinterpret_cast<const std::uint8_t *>(decisionSchema.data()),
+          decisionSchema.size()};
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeStructuredScheduleDecision(const StructuredScheduleDecision &decision) {
+  if (decision.loop.kind != StructuredEntityKind::Operation)
+    return invalid("decision does not reference an operation");
+  if (static_cast<std::uint32_t>(decision.kind) >
+      static_cast<std::uint32_t>(StructuredScheduleDecisionKind::Parallelize))
+    return invalid("decision has an unknown kind");
+  const bool factorless =
+      decision.kind == StructuredScheduleDecisionKind::Interchange ||
+      decision.kind == StructuredScheduleDecisionKind::Parallelize;
+  if ((factorless && decision.factor != 0) ||
+      (!factorless && decision.factor <= 1))
+    return invalid("decision has an invalid factor");
+  std::vector<std::uint8_t> bytes = encodeStructuredEntityRef(decision.loop);
+  const auto appendU32 = [&](std::uint32_t value) {
+    for (int shift = 24; shift >= 0; shift -= 8)
+      bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+  };
+  const auto appendU64 = [&](std::uint64_t value) {
+    for (int shift = 56; shift >= 0; shift -= 8)
+      bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+  };
+  appendU32(static_cast<std::uint32_t>(decision.kind));
+  appendU64(decision.factor);
+  return bytes;
+}
+
+llvm::Expected<StructuredScheduleDecision>
+adoptStructuredScheduleDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes) {
+  constexpr std::size_t wireSize = structuredEntityRefWireSize + 12;
+  if (canonicalBytes.size() != wireSize)
+    return invalid("decision payload has the wrong size");
+  auto loop = decodeStructuredEntityRef(
+      canonicalBytes.take_front(structuredEntityRefWireSize));
+  if (!loop)
+    return loop.takeError();
+  if (loop->kind != StructuredEntityKind::Operation)
+    return invalid("decision does not reference an operation");
+  llvm::ArrayRef<std::uint8_t> suffix =
+      canonicalBytes.drop_front(structuredEntityRefWireSize);
+  std::uint32_t kind = 0;
+  for (std::uint8_t byte : suffix.take_front(4))
+    kind = (kind << 8) | byte;
+  if (kind >
+      static_cast<std::uint32_t>(StructuredScheduleDecisionKind::Parallelize))
+    return invalid("decision payload has an unknown kind");
+  std::uint64_t factor = 0;
+  for (std::uint8_t byte : suffix.drop_front(4))
+    factor = (factor << 8) | byte;
+  const auto typedKind = static_cast<StructuredScheduleDecisionKind>(kind);
+  const bool factorless =
+      typedKind == StructuredScheduleDecisionKind::Interchange ||
+      typedKind == StructuredScheduleDecisionKind::Parallelize;
+  if ((factorless && factor != 0) || (!factorless && factor <= 1))
+    return invalid("decision payload has an invalid factor");
+  StructuredScheduleDecision decision{*loop, typedKind, factor};
+  auto reencoded = encodeStructuredScheduleDecision(decision);
+  if (!reencoded)
+    return reencoded.takeError();
+  if (llvm::ArrayRef<std::uint8_t>(*reencoded) != canonicalBytes)
+    return invalid("decision payload does not re-encode exactly");
+  return decision;
+}
+
 llvm::Expected<std::vector<StructuredScheduleDecision>>
 enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
                                      const fabric::FinalizedFabricRoot &fabric,
@@ -292,6 +364,9 @@ llvm::Expected<MaterializedStructuredScheduleCandidate>
 materializeStructuredScheduleDecision(
     const StructuredProgramCandidate &parent,
     const StructuredScheduleDecision &decision) {
+  auto encoded = encodeStructuredScheduleDecision(decision);
+  if (!encoded)
+    return encoded.takeError();
   mlir::scf::ForOp loop;
   auto clone = cloneAndResolveLoop(parent, decision.loop, loop);
   if (!clone)

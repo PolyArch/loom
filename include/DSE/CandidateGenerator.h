@@ -158,6 +158,14 @@ struct CandidateGeneratorProjectionSlotDescriptor final {
   CandidateGeneratorProjectionKind kind;
 };
 
+struct CandidateGeneratorOwnerLineagePayloadContract final {
+  llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes;
+  llvm::Error (*validateCanonical)(
+      llvm::ArrayRef<std::uint8_t>,
+      llvm::ArrayRef<ArtifactRootReference> canonicalParents,
+      const ArtifactStore &store);
+};
+
 struct CandidateGeneratorDescriptor;
 
 class CandidateGeneratorDescriptorRef final {
@@ -201,6 +209,8 @@ struct CandidateGeneratorDescriptor final {
   CandidateGeneratorDeterminism determinism;
   llvm::ArrayRef<CandidateGeneratorWorkUnitDescriptor> workUnits;
   llvm::ArrayRef<CandidateGeneratorProjectionSlotDescriptor> projectionSlots;
+  const CandidateGeneratorOwnerLineagePayloadContract *ownerLineagePayload =
+      nullptr;
 
   CandidateGeneratorDescriptorRef reference() const;
   const CandidateGeneratorInputSlotDescriptor *
@@ -250,8 +260,29 @@ struct CandidateGeneratorOutputBinding final {
   std::vector<ArtifactRootReference> artifacts;
 };
 
+enum class CandidateGeneratorLineageEdgeKind : std::uint32_t {
+  MechanicalDerivation = 0,
+  CandidateDecision = 1,
+};
+
+struct CandidateGeneratorLineageEdge final {
+  CandidateGeneratorLineageEdgeKind kind;
+  CandidateGeneratorOutputSlotRef outputSlot;
+  ArtifactRootReference output;
+  std::vector<ArtifactRootReference> parents;
+  std::vector<std::uint8_t> ownerPayload;
+
+  friend bool operator==(const CandidateGeneratorLineageEdge &lhs,
+                         const CandidateGeneratorLineageEdge &rhs) {
+    return lhs.kind == rhs.kind && lhs.outputSlot == rhs.outputSlot &&
+           lhs.output == rhs.output && lhs.parents == rhs.parents &&
+           lhs.ownerPayload == rhs.ownerPayload;
+  }
+};
+
 struct CompletedCandidateGeneratorInvocation final {
   std::vector<CandidateGeneratorOutputBinding> outputBindings;
+  std::vector<CandidateGeneratorLineageEdge> lineageEdges;
 };
 
 enum class CandidateGeneratorIncompleteReason : std::uint32_t {
@@ -264,6 +295,7 @@ enum class CandidateGeneratorIncompleteReason : std::uint32_t {
 struct IncompleteCandidateGeneratorInvocation final {
   CandidateGeneratorIncompleteReason reason;
   std::vector<CandidateGeneratorOutputBinding> retainedOutputBindings;
+  std::vector<CandidateGeneratorLineageEdge> lineageEdges;
 };
 
 using CandidateGeneratorInvocationOutcome =
@@ -289,6 +321,16 @@ llvm::Expected<CandidateGeneratorInvocationOutcome>
 invokeCandidateGenerator(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                          const ResolvedCandidateGeneratorBinding &binding,
                          const ArtifactStore &store);
+
+/// Strictly revalidates one immutable invocation record at an external
+/// consumption boundary. The check imports every exact input, output, parent,
+/// and internal lineage target; it does not create another record authority.
+llvm::Error validateCanonicalCandidateGeneratorInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    llvm::ArrayRef<CandidateGeneratorOutputBinding> outputs,
+    llvm::ArrayRef<CandidateGeneratorLineageEdge> lineageEdges, bool completed,
+    const ArtifactStore &store);
 
 } // namespace loom::dse
 

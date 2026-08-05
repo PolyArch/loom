@@ -104,6 +104,29 @@ module {
   return take(dataflow::finalizeCanonicalDataflow(module.get()));
 }
 
+dataflow::CanonicalDataflowArtifact twoWideVectorActorsProgram() {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.graph private @two_wide_actors(
+      %start: none, %lhs: vector<4xi32>, %rhs: vector<4xi32>)
+      -> vector<4xi32>
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %sum = arith.addi %lhs, %rhs : vector<4xi32>
+    %product = arith.muli %sum, %rhs : vector<4xi32>
+    %retired:2 = dataflow.sync %start, %product
+        : (none, vector<4xi32>) -> (none, vector<4xi32>)
+    dataflow.graph.return values(%retired#1 : vector<4xi32>)
+        streams() memories() complete(%retired#0 : none)
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail("cannot parse the recursive rewrite fixture");
+  return take(dataflow::finalizeCanonicalDataflow(module.get()));
+}
+
 dataflow::CanonicalDataflowArtifact unitLeadingVectorAddProgram() {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
@@ -397,6 +420,12 @@ void exactParentAndOneAtomicChildArePublished() {
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() != 2)
     fail("generator did not publish the parent and one atomic child");
+  if (completed->lineageEdges.size() != 1 ||
+      completed->lineageEdges.front().parents !=
+          std::vector<loom::ArtifactRootReference>{parentReference})
+    fail("generator lost its exact atomic rewrite lineage");
+  take(dataflow::adoptDataflowRewriteDecision(
+      completed->lineageEdges.front().ownerPayload));
 
   bool sawParent = false;
   bool sawChild = false;
@@ -473,6 +502,55 @@ void configRoundTripsAndRejectsZeroLimit() {
   llvm::consumeError(invalid.takeError());
 }
 
+void invalidInMemoryDecisionFailsClosed() {
+  auto parent = roundTripProgram();
+  const dataflow::DataflowRewriteDecision decision =
+      static_cast<dataflow::DataflowRewriteKind>(99);
+  auto encoded = dataflow::encodeDataflowRewriteDecision(decision);
+  if (encoded)
+    fail("Dataflow encoder accepted an unknown in-memory rewrite kind");
+  llvm::consumeError(encoded.takeError());
+  auto materialized = dataflow::materializeDataflowRewrite(parent, decision);
+  if (materialized)
+    fail("Dataflow materializer accepted an unknown in-memory rewrite kind");
+  llvm::consumeError(materialized.takeError());
+
+  auto rewritePass = dataflow::createDataflowRewritePass(
+      static_cast<dataflow::DataflowRewriteKind>(99));
+  if (rewritePass)
+    fail("Dataflow pass factory accepted an unknown in-memory rewrite kind");
+  llvm::consumeError(rewritePass.takeError());
+}
+
+void lineageCodecRejectsAnOutOfRangeActor() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-dataflow-lineage-context", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto parent = roundTripProgram();
+  auto parentReference =
+      take(dataflow::publishCanonicalDataflow(parent, store));
+  const dataflow::DataflowRewriteDecision decision =
+      dataflow::ElementwiseVectorScalarizeRewrite{
+          dataflow::ActorRef{parent.identity(), dataflow::ActorId(999999)}};
+  auto encoded = take(dataflow::encodeDataflowRewriteDecision(decision));
+  const auto *contract =
+      loom::dse::dataflowRewriteCandidateGeneratorDescriptor()
+          .ownerLineagePayload;
+  if (!contract)
+    fail("Dataflow generator has no owner lineage contract");
+  llvm::Error validation =
+      contract->validateCanonical(encoded, {parentReference}, store);
+  if (!validation)
+    fail("Dataflow lineage accepted an out-of-range parent-local actor");
+  llvm::consumeError(std::move(validation));
+  error = llvm::sys::fs::remove_directories(directory);
+  if (error)
+    fail("cannot remove ArtifactStore directory: " + error.message());
+}
+
 void wideVectorActorIsChunkedForExactNarrowComputeFabric() {
   llvm::SmallString<128> directory;
   std::error_code error = llvm::sys::fs::createUniqueDirectory(
@@ -533,6 +611,60 @@ void wideVectorActorIsChunkedForExactNarrowComputeFabric() {
   }
   if (!sawTwoChunks)
     fail("generator did not materialize the exact two-chunk vector graph");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail("cannot remove ArtifactStore directory: " + cleanup.message());
+}
+
+void recursiveRewriteRetainsItsRootedInternalLineage() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-dataflow-recursive-rewrite-lineage", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = narrowVectorComputeFabric(store);
+  auto parentReference = take(
+      dataflow::publishCanonicalDataflow(twoWideVectorActorsProgram(), store));
+
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.dataflowRewrite.scopeExpansionLimit = 64;
+  auto config = take(
+      loom::dse::projectResolvedDataflowRewriteGeneratorConfigView(resolved));
+  auto inputs = take(loom::dse::bindDataflowRewriteCandidateGeneratorInputs(
+      {parentReference}, design.roots().front().reference()));
+  auto binding =
+      take(loom::dse::resolveDataflowRewriteCandidateGeneratorBinding(config));
+  auto outcome =
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+  auto *completed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+  if (!completed || completed->outputBindings.size() != 1 ||
+      completed->outputBindings.front().artifacts.empty())
+    fail("recursive rewrite produced no admitted final candidate");
+
+  const auto &outputs = completed->outputBindings.front().artifacts;
+  bool sawInternal = false;
+  bool sawFinalDependingOnInternal = false;
+  for (const loom::dse::CandidateGeneratorLineageEdge &edge :
+       completed->lineageEdges) {
+    const bool returned = llvm::is_contained(outputs, edge.output);
+    sawInternal |= !returned;
+    if (!returned)
+      continue;
+    sawFinalDependingOnInternal |= llvm::any_of(
+        edge.parents, [&](const loom::ArtifactRootReference &parent) {
+          return llvm::any_of(
+              completed->lineageEdges,
+              [&](const loom::dse::CandidateGeneratorLineageEdge &producer) {
+                return producer.output == parent &&
+                       !llvm::is_contained(outputs, producer.output);
+              });
+        });
+  }
+  if (!sawInternal || !sawFinalDependingOnInternal)
+    fail("recursive rewrite discarded its internal production path");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -717,8 +849,11 @@ void decompositionUsesRegisteredSoftwareSemanticsAndOneValidator() {
 
 int main() {
   configRoundTripsAndRejectsZeroLimit();
+  invalidInMemoryDecisionFailsClosed();
+  lineageCodecRejectsAnOutOfRangeActor();
   exactParentAndOneAtomicChildArePublished();
   wideVectorActorIsChunkedForExactNarrowComputeFabric();
+  recursiveRewriteRetainsItsRootedInternalLineage();
   semanticLimitNeverPromotesAnExploredPrefix();
   decompositionUsesRegisteredSoftwareSemanticsAndOneValidator();
   return EXIT_SUCCESS;

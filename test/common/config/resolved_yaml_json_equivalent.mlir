@@ -9,6 +9,7 @@
 
 // CHECK-DAG: "scope_expansion_limit": 17
 // CHECK-DAG: "scope_expansion_limit": 19
+// CHECK-DAG: "scope_expansion_limit": 29
 // CHECK-DAG: "scope_expansion_limit": 23
 // CHECK-DAG: "match_row_attempt_limit": 2048
 // CHECK-DAG: "partial_cover_expansion_limit": 4096

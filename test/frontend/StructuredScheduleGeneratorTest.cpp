@@ -214,6 +214,15 @@ generated(const loom::frontend::StructuredProgramCandidate &program,
       std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
   if (!completed || completed->outputBindings.size() != 1)
     fail("schedule generator did not complete one output set");
+  for (const loom::dse::CandidateGeneratorLineageEdge &edge :
+       completed->lineageEdges) {
+    if (edge.kind !=
+            loom::dse::CandidateGeneratorLineageEdgeKind::CandidateDecision ||
+        edge.parents !=
+            std::vector<loom::ArtifactRootReference>{programReference})
+      fail("schedule generator changed its parent lineage");
+    take(loom::frontend::adoptStructuredScheduleDecision(edge.ownerPayload));
+  }
   return completed->outputBindings.front().artifacts;
 }
 
@@ -242,6 +251,123 @@ void configRoundTripsAndRejectsMalformedBytes() {
           loom::dse::resolvedStructuredScheduleGeneratorConfigSchemaBytes(),
           malformed, digest),
       "trailing");
+}
+
+void decisionCodecRejectsFactorOne() {
+  auto program = parseProgram(R"mlir(
+module {
+  func.func @loop(%out: memref<4xi32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %i = %c0 to %c4 step %c1 {
+      %value = arith.constant 1 : i32
+      memref.store %value, %out[%i] : memref<4xi32>
+    }
+    return
+  }
+}
+)mlir");
+  auto view = take(program.view());
+  std::optional<loom::frontend::StructuredEntityRef> loop;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation))
+    if (llvm::isa<mlir::scf::ForOp>(entity.operation)) {
+      loop = entity.reference;
+      break;
+    }
+  if (!loop)
+    fail("factor-one codec fixture has no loop");
+  const loom::frontend::StructuredScheduleDecision decision{
+      *loop, loom::frontend::StructuredScheduleDecisionKind::Tile, 1};
+  auto encoded = loom::frontend::encodeStructuredScheduleDecision(decision);
+  if (encoded)
+    fail("schedule decision encoder accepted factor one");
+  llvm::consumeError(encoded.takeError());
+}
+
+void invalidInMemoryDecisionFailsClosed() {
+  auto program = parseProgram(R"mlir(
+module {
+  func.func @loop(%out: memref<4xi32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %i = %c0 to %c4 step %c1 {
+      %value = arith.constant 1 : i32
+      memref.store %value, %out[%i] : memref<4xi32>
+    }
+    return
+  }
+}
+)mlir");
+  auto view = take(program.view());
+  std::optional<loom::frontend::StructuredEntityRef> loop;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation))
+    if (llvm::isa<mlir::scf::ForOp>(entity.operation)) {
+      loop = entity.reference;
+      break;
+    }
+  if (!loop)
+    fail("invalid-decision fixture has no loop");
+  const loom::frontend::StructuredScheduleDecision decision{
+      *loop, static_cast<loom::frontend::StructuredScheduleDecisionKind>(99),
+      0};
+  auto encoded = loom::frontend::encodeStructuredScheduleDecision(decision);
+  if (encoded)
+    fail("schedule encoder accepted an unknown in-memory decision kind");
+  llvm::consumeError(encoded.takeError());
+  auto materialized =
+      loom::frontend::materializeStructuredScheduleDecision(program, decision);
+  if (materialized)
+    fail("schedule materializer accepted an unknown in-memory decision kind");
+  llvm::consumeError(materialized.takeError());
+}
+
+void lineageCodecRejectsAnOutOfRangeLoop() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-schedule-lineage-context", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto program = parseProgram(R"mlir(
+module {
+  func.func @loop(%out: memref<4xi32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %i = %c0 to %c4 step %c1 {
+      %value = arith.constant 1 : i32
+      memref.store %value, %out[%i] : memref<4xi32>
+    }
+    return
+  }
+}
+)mlir");
+  auto parentReference =
+      take(loom::frontend::publishStructuredProgram(program, store));
+  const loom::frontend::StructuredScheduleDecision decision{
+      {program.identity(), loom::frontend::StructuredEntityKind::Operation,
+       999999},
+      loom::frontend::StructuredScheduleDecisionKind::Tile,
+      2};
+  auto encoded =
+      take(loom::frontend::encodeStructuredScheduleDecision(decision));
+  const auto *contract =
+      loom::dse::structuredScheduleCandidateGeneratorDescriptor()
+          .ownerLineagePayload;
+  if (!contract)
+    fail("schedule generator has no owner lineage contract");
+  llvm::Error validation =
+      contract->validateCanonical(encoded, {parentReference}, store);
+  if (!validation)
+    fail("schedule lineage accepted an out-of-range parent-local loop");
+  llvm::consumeError(std::move(validation));
+  error = llvm::sys::fs::remove_directories(directory);
+  if (error)
+    fail("cannot remove ArtifactStore directory: " + error.message());
 }
 
 void transformationsAreTypedCapacityBoundAndDependenceChecked() {
@@ -379,6 +505,9 @@ module attributes {dlti.dl_spec = #layout} {
 
 int main() {
   configRoundTripsAndRejectsMalformedBytes();
+  decisionCodecRejectsFactorOne();
+  invalidInMemoryDecisionFailsClosed();
+  lineageCodecRejectsAnOutOfRangeLoop();
   transformationsAreTypedCapacityBoundAndDependenceChecked();
   return EXIT_SUCCESS;
 }

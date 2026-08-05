@@ -332,6 +332,9 @@ enumerateElementwiseVectorDecompositionDecisions(
 llvm::Expected<std::uint64_t>
 dataflowRewriteExpansionCost(const CanonicalDataflowArtifact &parent,
                              const DataflowRewriteDecision &decision) {
+  auto encoded = encodeDataflowRewriteDecision(decision);
+  if (!encoded)
+    return encoded.takeError();
   if (std::holds_alternative<DataflowRewriteKind>(decision))
     return 1;
   auto analyzed = validateElementwiseDecision(parent, decision);
@@ -349,6 +352,9 @@ dataflowRewriteExpansionCost(const CanonicalDataflowArtifact &parent,
 llvm::Expected<std::optional<CanonicalDataflowArtifact>>
 materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
                            const DataflowRewriteDecision &decision) {
+  auto encoded = encodeDataflowRewriteDecision(decision);
+  if (!encoded)
+    return encoded.takeError();
   if (const auto *fixed = std::get_if<DataflowRewriteKind>(&decision))
     return materializeDataflowRewrite(parent, *fixed);
 

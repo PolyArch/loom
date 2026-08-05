@@ -924,7 +924,10 @@ Generate plan node.
 
 Output bindings and lineage edges own different facts. An output binding owns
 which Artifacts the invocation returned through one descriptor-owned slot. A
-lineage edge owns one production path to one returned Artifact. An exact input
+lineage edge owns one production step in a rooted derivation DAG whose returned
+sinks occur in output bindings. A recursive generator may therefore retain a
+durably published intermediate Artifact only as an internal lineage target and
+parent; that Artifact does not become a returned plan value. An exact input
 Artifact may be retained in an output binding without a fabricated self-edge,
 while several distinct edges may target one deduplicated output Artifact.
 Outputs in different slots have no positional pairing; any semantic dependency
@@ -937,14 +940,20 @@ ordinal. An incomplete record retains an empty or partial canonical Artifact
 set in a slot rather than omitting the slot. The maximum cardinality applies to
 every record; a completed record also satisfies every minimum.
 
-Every lineage edge names its exact descriptor output slot, and its target must
-occur in that slot's output binding. Every finalized output member that is not
-an exact retained input requires at least one lineage edge, including a member
-retained by an incomplete invocation. Completely identical edges are
-deduplicated. CandidateDecision parent references form a canonical set using
-Common's root-reference order. Edges with different parents or canonical owner
-decision bytes remain distinct; the producer binding is inherited from the
-enclosing record and is not an edge field.
+Every lineage edge names its exact descriptor output slot. Its target must
+match that slot's exact schema, be independently and durably published, and
+either occur in that slot's output binding or be a parent of another lineage
+edge in the same invocation. Every CandidateDecision parent must be an exact
+invocation input or another edge target. The resulting dependency graph is
+acyclic; every edge is rooted in the exact invocation inputs or a
+MechanicalDerivation, and every internal target reaches a returned output.
+Every finalized output member that is not an exact retained input requires at
+least one rooted lineage edge, including a member retained by an incomplete
+invocation. Completely identical edges are deduplicated.
+CandidateDecision parent references form a canonical set using Common's
+root-reference order. Edges with different parents or canonical owner decision
+bytes remain distinct; the producer binding is inherited from the enclosing
+record and is not an edge field.
 
 Generate records are ordered by `PlanNodeRef` rather than completion time and
 duplicate refs are invalid. Artifact sets use Common's canonical root-reference
@@ -1681,7 +1690,8 @@ ResolvedGeneratorConfigViewContract {
 OwnerLineagePayloadContract {
   schema_descriptor_bytes
   encode(owner-typed decision) -> canonical_payload_bytes
-  adopt(canonical_payload_bytes) -> owner-typed decision
+  adopt(canonical_payload_bytes, canonical exact parent references)
+    -> owner-typed decision
 }
 ```
 
@@ -1717,9 +1727,10 @@ payload contract and therefore uniquely selects the codec, schema, and version
 for any typed CandidateDecision payload. Descriptor registration rejects a
 conflicting contract for the same descriptor reference, and provider-output
 validation rejects a CandidateDecision edge when the descriptor has no such
-contract. The adopter decodes, validates, re-encodes, and requires exact byte
-equality. A descriptor without the contract can publish only
-MechanicalDerivation edges. This is an
+contract. The adopter decodes, validates all owner-local references against the
+edge's canonical exact parent set, re-encodes, and requires exact byte equality.
+A descriptor without the contract can publish only MechanicalDerivation edges.
+This is an
 owner-typed byte contract, not a universal decision algebra.
 
 Rejected owner-local attempts remain work-summary or attempt records rather

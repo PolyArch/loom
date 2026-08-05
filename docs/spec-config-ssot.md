@@ -96,7 +96,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 3.1`. Version 2.0 was an
+The current schema is `loom.config.resolved 3.2`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -118,7 +118,11 @@ Version 3.1 is a compatible extension that adds the Dataflow rewrite
 generator's positive semantic expansion limit. It changes neither an existing
 field nor any Mapping, PnR, or objective meaning.
 
-The 3.1 schema composes these active policy domains:
+Version 3.2 is a compatible extension that adds the Structured
+MemoryCommunication generator's positive semantic expansion limit. It changes
+neither an existing field nor physical memory ownership.
+
+The 3.2 schema composes these active policy domains:
 
 ```text
 ResolvedConfig {
@@ -126,6 +130,7 @@ ResolvedConfig {
   dse {
     structured_ownership
     schedule
+    memory_communication
     dataflow_rewrite
     tech_mapping
     spatial_pnr
@@ -178,6 +183,21 @@ field. Its exact Fused/Split domain is owned by the
 contract. An empty canonical component view and its digest therefore select the
 complete schema-1.0 policy; process-local worker or cache settings cannot alter
 it.
+
+The Structured MemoryCommunication generator policy owns:
+
+```text
+dse.memory_communication.scope_expansion_limit: positive uint32 = 64
+```
+
+This is the number of constant-memory staging scopes admitted from canonical
+Structured operation order into one invocation's finite domain. It is a
+semantic work limit, not a physical memory capacity, worker count, or wall-time
+budget. The immutable component view descriptor is
+`loom.structured_memory_communication_generator.config.1.0`; its canonical
+bytes are one unsigned 64-bit big-endian projection of this resolved value.
+Import rejects zero and every value outside the positive `uint32` owner domain;
+the wider wire encoding does not enlarge the semantic value set.
 
 The Dataflow rewrite generator policy owns:
 

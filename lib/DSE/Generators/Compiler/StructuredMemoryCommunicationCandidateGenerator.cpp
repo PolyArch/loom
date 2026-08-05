@@ -1,22 +1,19 @@
-#include "DSE/StructuredScheduleCandidateGenerator.h"
+#include "DSE/StructuredMemoryCommunicationCandidateGenerator.h"
 #include "DSE/StructuredOwnershipInvocationInternal.h"
 
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
-#include "Frontend/Compilation/StructuredSchedule.h"
-
-#include "Frontend/IR/LoomOps.h"
+#include "Frontend/Compilation/StructuredMemoryCommunication.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 
 #include "llvm/Support/Error.h"
 
 #include <array>
-#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -25,7 +22,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.structured_schedule_generator.config.1.0";
+    "loom.structured_memory_communication_generator.config.1.0";
 
 enum InputSlot : std::uint32_t {
   StructuredProgramsInput,
@@ -51,14 +48,14 @@ constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
 }};
 
 constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 2> workUnits = {{
-    {CandidateGeneratorWorkUnitRef(0), "loop_scope"},
-    {CandidateGeneratorWorkUnitRef(1), "schedule_decision"},
+    {CandidateGeneratorWorkUnitRef(0), "memory_scope"},
+    {CandidateGeneratorWorkUnitRef(1), "memory_communication_decision"},
 }};
 
 llvm::Error invalid(const llvm::Twine &message) {
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "structured_schedule_generator_invalid: " +
-                                     message);
+  return llvm::createStringError(
+      llvm::inconvertibleErrorCode(),
+      "structured_memory_communication_generator_invalid: " + message);
 }
 
 llvm::ArrayRef<std::uint8_t> descriptorBytes() {
@@ -75,7 +72,7 @@ std::vector<std::uint8_t> encodeConfig(std::uint64_t limit) {
   return bytes;
 }
 
-llvm::Expected<std::uint64_t> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
+llvm::Expected<std::uint32_t> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   if (bytes.size() < 8)
     return invalid("truncated scope expansion limit");
   std::uint64_t limit = 0;
@@ -85,12 +82,14 @@ llvm::Expected<std::uint64_t> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     return invalid("config has trailing bytes");
   if (limit == 0)
     return invalid("scope expansion limit must be positive");
-  return limit;
+  if (limit > std::numeric_limits<std::uint32_t>::max())
+    return invalid("scope expansion limit exceeds uint32");
+  return static_cast<std::uint32_t>(limit);
 }
 
 llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
                            const ComponentViewDigest &digest) {
-  auto adopted = adoptResolvedStructuredScheduleGeneratorConfigView(
+  auto adopted = adoptResolvedStructuredMemoryCommunicationGeneratorConfigView(
       descriptorBytes(), bytes, digest);
   if (!adopted)
     return adopted.takeError();
@@ -101,7 +100,7 @@ llvm::Error
 validateDecisionPayload(llvm::ArrayRef<std::uint8_t> bytes,
                         llvm::ArrayRef<ArtifactRootReference> parents,
                         const ArtifactStore &store) {
-  auto adopted = frontend::adoptStructuredScheduleDecision(bytes);
+  auto adopted = frontend::adoptStructuredMemoryCommunicationDecision(bytes);
   if (!adopted)
     return adopted.takeError();
   if (parents.size() != 1 ||
@@ -109,29 +108,28 @@ validateDecisionPayload(llvm::ArrayRef<std::uint8_t> bytes,
           frontend::structuredProgramArtifactSchema.identity ||
       parents.front().schemaVersion !=
           frontend::structuredProgramArtifactSchema.version ||
-      adopted->loop.parent != parents.front().artifact)
-    return invalid("schedule decision does not belong to its exact parent");
+      adopted->memoryInput.parent != parents.front().artifact)
+    return invalid("memory decision does not belong to its exact parent");
   auto parent = frontend::importStructuredProgram(parents.front(), store);
   if (!parent)
     return parent.takeError();
-  auto view = parent->view();
-  if (!view)
-    return view.takeError();
-  auto loop = view->resolve(adopted->loop);
-  if (!loop)
-    return loop.takeError();
-  if (!llvm::isa_and_nonnull<mlir::scf::ForOp>(loop->operation))
-    return invalid("schedule decision does not reference an exact SCF loop");
+  auto domain = frontend::enumerateStructuredMemoryCommunicationDecisions(
+      *parent, std::numeric_limits<std::uint64_t>::max());
+  if (!domain)
+    return domain.takeError();
+  if (!llvm::is_contained(*domain, *adopted))
+    return invalid("memory decision is outside its exact parent domain");
   return llvm::Error::success();
 }
 
 const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
-    frontend::structuredScheduleDecisionSchemaBytes(), validateDecisionPayload};
+    frontend::structuredMemoryCommunicationDecisionSchemaBytes(),
+    validateDecisionPayload};
 
 const CandidateGeneratorDescriptor descriptor{
-    structuredScheduleCandidateGeneratorKind,
-    "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v1",
+    structuredMemoryCommunicationCandidateGeneratorKind,
+    "compiler.structured_memory_communication",
+    "loom.compiler.structured_memory_communication.generator.v1",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -147,25 +145,16 @@ singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> bindings,
   return bindings[slot].artifacts.front();
 }
 
-bool hasSelectedSpatialRegion(
-    const frontend::StructuredProgramCandidate &candidate) {
-  bool found = false;
-  candidate.module().walk([&](loom::SpatialRegionOp) {
-    found = true;
-    return mlir::WalkResult::interrupt();
-  });
-  return found;
-}
-
-llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
-    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
-    const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store) {
-  auto config = adoptResolvedStructuredScheduleGeneratorConfigView(
+llvm::Expected<CandidateGeneratorInvocationOutcome>
+invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+               const ResolvedCandidateGeneratorBinding &binding,
+               const ArtifactStore &store) {
+  auto config = adoptResolvedStructuredMemoryCommunicationGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
   if (!config)
     return config.takeError();
+
   StructuredOwnershipInvocation *invocation =
       detail::StructuredOwnershipInvocationAccess::current();
   std::optional<fabric::FinalizedFabricRoot> importedFabric;
@@ -192,50 +181,48 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
   std::vector<ArtifactRootReference> outputs =
       inputBindings[StructuredProgramsInput].artifacts;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
+  std::uint64_t remainingScopes = config->scopeExpansionLimit();
   for (const ArtifactRootReference &reference :
        inputBindings[StructuredProgramsInput].artifacts) {
+    if (remainingScopes == 0)
+      break;
     auto parent = frontend::importStructuredProgram(reference, store);
     if (!parent)
       return parent.takeError();
-    auto decisions = frontend::enumerateStructuredScheduleDecisions(
-        *parent, *exactFabric, config->scopeExpansionLimit());
+    auto decisions = frontend::enumerateStructuredMemoryCommunicationDecisions(
+        *parent, remainingScopes);
     if (!decisions)
       return decisions.takeError();
+    remainingScopes -= decisions->size();
     outputs.reserve(outputs.size() + decisions->size());
-    for (const frontend::StructuredScheduleDecision &decision : *decisions) {
-      auto child =
-          frontend::materializeStructuredScheduleDecision(*parent, decision);
+    for (const frontend::StructuredMemoryCommunicationDecision &decision :
+         *decisions) {
+      auto child = frontend::materializeStructuredMemoryCommunicationDecision(
+          *parent, decision);
       if (!child)
         return child.takeError();
-      std::optional<lowering::ProjectedCanonicalDataflow> projected;
-      if (hasSelectedSpatialRegion(child->structuredProgram)) {
-        auto lowered =
-            lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
-                child->structuredProgram, loweringOptions);
-        if (!lowered)
-          return lowered.takeError();
-        auto miss = capabilities.firstInadmissibleActor(lowered->artifact);
-        if (!miss)
-          return miss.takeError();
-        if (*miss)
-          continue;
-        projected.emplace(std::move(*lowered));
-      }
+      auto projected =
+          lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
+              child->structuredProgram, loweringOptions);
+      if (!projected)
+        return projected.takeError();
+      auto miss = capabilities.firstInadmissibleActor(projected->artifact);
+      if (!miss)
+        return miss.takeError();
+      if (*miss)
+        continue;
       auto published =
           frontend::publishStructuredProgram(child->structuredProgram, store);
       if (!published)
         return published.takeError();
       if (invocation)
-        if (!projected)
-          return invalid(
-              "central Schedule child has no selected Spatial projection");
-      if (invocation)
         if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
-                recordScheduleCandidate(*invocation, reference, *published,
-                                        decision, std::move(*child),
-                                        std::move(*projected), store))
+                recordMemoryCommunicationCandidate(
+                    *invocation, reference, *published, decision,
+                    std::move(*child), std::move(*projected), store))
           return std::move(error);
-      auto ownerPayload = frontend::encodeStructuredScheduleDecision(decision);
+      auto ownerPayload =
+          frontend::encodeStructuredMemoryCommunicationDecision(decision);
       if (!ownerPayload)
         return ownerPayload.takeError();
       lineageEdges.push_back(CandidateGeneratorLineageEdge{
@@ -254,31 +241,32 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),
-                                          invokeScheduleProvider};
+                                          invokeProvider};
 
 } // namespace
 
 llvm::ArrayRef<std::uint8_t>
-resolvedStructuredScheduleGeneratorConfigSchemaBytes() {
+resolvedStructuredMemoryCommunicationGeneratorConfigSchemaBytes() {
   return descriptorBytes();
 }
 
-llvm::Expected<ResolvedStructuredScheduleGeneratorConfigView>
-projectResolvedStructuredScheduleGeneratorConfigView(
+llvm::Expected<ResolvedStructuredMemoryCommunicationGeneratorConfigView>
+projectResolvedStructuredMemoryCommunicationGeneratorConfigView(
     const ResolvedConfig &config) {
-  const std::uint64_t limit = config.dse.schedule.scopeExpansionLimit;
+  const std::uint32_t limit =
+      config.dse.memoryCommunication.scopeExpansionLimit;
   if (limit == 0)
     return invalid("scope expansion limit must be positive");
   std::vector<std::uint8_t> bytes = encodeConfig(limit);
   auto digest = computeComponentViewDigest(descriptorBytes(), bytes);
   if (!digest)
     return digest.takeError();
-  return ResolvedStructuredScheduleGeneratorConfigView(limit, std::move(bytes),
-                                                       std::move(*digest));
+  return ResolvedStructuredMemoryCommunicationGeneratorConfigView(
+      limit, std::move(bytes), std::move(*digest));
 }
 
-llvm::Expected<ResolvedStructuredScheduleGeneratorConfigView>
-adoptResolvedStructuredScheduleGeneratorConfigView(
+llvm::Expected<ResolvedStructuredMemoryCommunicationGeneratorConfigView>
+adoptResolvedStructuredMemoryCommunicationGeneratorConfigView(
     llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
     llvm::ArrayRef<std::uint8_t> canonicalViewBytes,
     const ComponentViewDigest &digest) {
@@ -293,26 +281,27 @@ adoptResolvedStructuredScheduleGeneratorConfigView(
   std::vector<std::uint8_t> reencoded = encodeConfig(*limit);
   if (llvm::ArrayRef<std::uint8_t>(reencoded) != canonicalViewBytes)
     return invalid("decoded config does not re-encode to the source bytes");
-  return ResolvedStructuredScheduleGeneratorConfigView(
+  return ResolvedStructuredMemoryCommunicationGeneratorConfigView(
       *limit, std::move(reencoded), digest);
 }
 
 const CandidateGeneratorDescriptor &
-structuredScheduleCandidateGeneratorDescriptor() {
+structuredMemoryCommunicationCandidateGeneratorDescriptor() {
   return descriptor;
 }
 
-llvm::Error registerStructuredScheduleCandidateGenerator() {
+llvm::Error registerStructuredMemoryCommunicationCandidateGenerator() {
   if (llvm::Error error = registerCandidateGeneratorDescriptor(descriptor))
     return error;
   return registerCandidateGeneratorProvider(provider);
 }
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
-bindStructuredScheduleCandidateGeneratorInputs(
+bindStructuredMemoryCommunicationCandidateGeneratorInputs(
     llvm::ArrayRef<ArtifactRootReference> structuredPrograms,
     const ArtifactRootReference &fabric) {
-  if (llvm::Error error = registerStructuredScheduleCandidateGenerator())
+  if (llvm::Error error =
+          registerStructuredMemoryCommunicationCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings = {
       {CandidateGeneratorInputSlotRef(StructuredProgramsInput),
@@ -326,9 +315,10 @@ bindStructuredScheduleCandidateGeneratorInputs(
 }
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
-resolveStructuredScheduleCandidateGeneratorBinding(
-    const ResolvedStructuredScheduleGeneratorConfigView &config) {
-  if (llvm::Error error = registerStructuredScheduleCandidateGenerator())
+resolveStructuredMemoryCommunicationCandidateGeneratorBinding(
+    const ResolvedStructuredMemoryCommunicationGeneratorConfigView &config) {
+  if (llvm::Error error =
+          registerStructuredMemoryCommunicationCandidateGenerator())
     return std::move(error);
   return ResolvedCandidateGeneratorBinding::get(
       descriptor.reference(), config.canonicalViewBytes(), config.digest());

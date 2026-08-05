@@ -687,6 +687,62 @@ domain. A cache entry is keyed by the exact Structured Artifact reference and
 must match its already validated canonical bytes; it is removable and cannot
 serve as a second candidate authority.
 
+### Structured MemoryCommunication Generator
+
+The schema-1.0 MemoryCommunication generator consumes a finite set of exact
+Structured Program references and one exact finalized Fabric. It emits every
+input parent plus each distinct child obtained by one legal atomic logical
+memory decision. An empty input set produces an empty output set. Its resolved
+component view contains only the positive `scope_expansion_limit` owned by the
+Resolved Configuration View.
+
+The first schema-1.0 decision is `StageConstantGlobal`. Its scope is an exact
+memory block argument of one selected `loom.spatial_region`, identified by the
+parent-local `StructuredEntityRef`. The decision exists only when all of the
+following are proved from the complete parent:
+
+1. the argument has a statically shaped identity-layout ranked memref type;
+2. every use of that exact region argument is a direct `memref.load` in the
+   selected region;
+3. the corresponding region operand is an exact formal argument of its
+   enclosing `dataflow.thread`; and
+4. every root `dataflow.thread.launch` of that thread binds the formal to a
+   direct `memref.get_global` whose exact `memref.global` owns a constant
+   `ElementsAttr` initializer; and
+5. for every explicit load alignment greater than one, the identity layout,
+   exact constant indices, element byte size, and proposed allocation-base
+   alignment prove the effective byte address satisfies that alignment.
+
+No launch, an uninitialized or mutable global, a store, a derived use of the
+selected region argument, an unknown memory use, or an indirect provenance
+chain makes this decision absent rather than guessing read-only behavior. An
+additional launch operand that aliases the same constant global does not by
+itself invalidate staging: mutation of that constant object through any alias
+is already undefined source behavior. Different root launches may bind
+different constant globals because the logical staging copy is executed
+independently for each thread activation.
+
+Materialization clones the complete parent, allocates one invocation-local
+logical memref at the selected region entry, copies the region memory input
+into it, and redirects only the proved direct loads to that buffer. The parent
+thread launch and global access remain outside the Spatial region. The child
+allocation carries the strongest proved base alignment required by any
+redirected load; each load retains its own explicit alignment unchanged. A
+dynamic or otherwise unproved effective-address alignment makes the decision
+absent rather than weakening the source contract. The child is verified and
+finalized through the sole Structured Program finalizer, then mechanically
+lowered to D0. That lowering expands `memref.copy` into ordinary Dataflow
+load/store actors; finalized D0 contains neither `memref.copy` nor
+`memref.get_global` inside a graph. Complete exact-Fabric actor admission runs
+before publication.
+
+This decision chooses a software-visible logical buffer and copy, not a
+physical SRAM, bank, address, memory service, route, overlap schedule, or
+Mapping. Later MemoryCommunication decisions may add typed layout,
+multibuffering, pipelining, or channel alternatives, but they compose as
+ordinary immutable children and cannot weaken the proof above or introduce a
+parallel memory authority.
+
 ### Workload-Aware Ownership Selection
 
 Ownership promotion is a whole-workload decision. Before a promotion gate
