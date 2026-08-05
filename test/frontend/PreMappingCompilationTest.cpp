@@ -1459,14 +1459,28 @@ void wholeCallableScopesFollowCanonicalOrder() {
     if (llvm::isa_and_nonnull<mlir::LLVM::LLVMFuncOp>(entity.operation))
       scopes.push_back(scope->selection);
   }
-  if (scopes.size() != 1 ||
-      scopes.front() !=
-          findCallable(test, compiled.structuredProgram, "kernel"))
-    fail(test, "whole-callable domain admitted a declaration, non-void "
-               "wrapper, or omitted the eligible kernel");
-  if (scopes.front().parent != compiled.structuredProgram.identity() ||
-      scopes.front().kind != loom::frontend::StructuredEntityKind::Operation)
-    fail(test, "whole-callable scope is not parent-local operation identity");
+  std::vector<loom::frontend::StructuredEntityRef> expected;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto function =
+        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
+    if (function &&
+        (function.getSymName() == "kernel" || function.getSymName() == "main"))
+      expected.push_back(entity.reference);
+  }
+  if (scopes != expected) {
+    std::string observed;
+    llvm::raw_string_ostream stream(observed);
+    for (const loom::frontend::StructuredEntityRef &scope : scopes)
+      stream << (observed.empty() ? "" : ",") << scope.ordinal;
+    fail(test, "whole-callable domain omitted an exact inlineable wrapper or "
+               "lost canonical function order; observed ordinals=" +
+                   observed);
+  }
+  for (const loom::frontend::StructuredEntityRef &scope : scopes)
+    if (scope.parent != compiled.structuredProgram.identity() ||
+        scope.kind != loom::frontend::StructuredEntityKind::Operation)
+      fail(test, "whole-callable scope is not parent-local operation identity");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)

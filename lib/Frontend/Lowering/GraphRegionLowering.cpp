@@ -1,6 +1,7 @@
 #include "GraphRegionLowering.h"
 #include "Frontend/Lowering/GraphParallelLowering.h"
 #include "GraphIndexLowering.h"
+#include "GraphRegionAdmission.h"
 #include "GraphStreamBoundaryLowering.h"
 #include "RankedMemRefLowering.h"
 
@@ -21,8 +22,6 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/Interfaces/FunctionInterfaces.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/DenseMap.h"
@@ -39,120 +38,6 @@
 #include <memory>
 #include <optional>
 #include <vector>
-
-namespace loom {
-namespace lowering {
-
-namespace {
-
-// The pure address leaves `findKnownRoot`, `canonicalizeRoot` and
-// `isMemoryCapabilityCapture` walk to resolve a memory root. Lowering keeps
-// them as ordinary frontier values rather than rewriting them, so they carry
-// no completion event of their own.
-bool isGraphMemoryAddressLeaf(::mlir::Operation *op) {
-  return ::llvm::isa<::mlir::memref::CastOp, ::mlir::memref::GetGlobalOp,
-                     ::mlir::LLVM::AddressOfOp, ::mlir::LLVM::GEPOp>(op);
-}
-
-// The graph frontier: the entry block of the enclosing `dataflow.graph` body.
-// It is where the fallback hoists leaves to, so a leaf already there stands at
-// its final position and no structured control governs how often it runs.
-bool isGraphFrontier(::mlir::Block *block) {
-  auto graph =
-      ::llvm::dyn_cast_or_null<::dataflow::GraphOp>(block->getParentOp());
-  return graph && block == &graph.getBody().front();
-}
-
-bool isGraphRegionControlOperation(::mlir::Operation *op) {
-  return ::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp,
-                     ::mlir::scf::WhileOp, ::mlir::scf::IndexSwitchOp,
-                     ::mlir::scf::ParallelOp, ::mlir::scf::ForallOp,
-                     ::mlir::scf::YieldOp, ::mlir::scf::ConditionOp,
-                     ::mlir::scf::ReduceOp, ::mlir::scf::InParallelOp,
-                     ::dataflow::GraphReturnOp>(op);
-}
-
-} // namespace
-
-GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op) {
-  // Some generic native carriers do not expose MLIR's memory-effect
-  // interface. An exact registered Compute schema is nevertheless the
-  // Dataflow owner's proof that this instance is a pure compute actor. The
-  // typed selector must match first, so an unregistered instance of the same
-  // carrier remains unsupported.
-  bool isEffectFree = ::mlir::isMemoryEffectFree(op) ||
-                      ::dataflow::isCanonicalDataflowActor(
-                          op, ::dataflow::CanonicalDataflowActorKind::Compute);
-  // Movability is tested first because it is what the frontier fallback needs.
-  // A leaf with an in-place rewrite can still require the move afterwards:
-  // `lowerOperations` retargets a dataflow.constant's control token and then
-  // falls through to hoist it. The move is sound only with no region to
-  // flatten, no effect to order, and eligibility under the graph contract as a
-  // registered canonical actor or an address leaf the memory root resolution
-  // walks. This deliberately asks only about effects, not unconditional
-  // speculatability: selection lowering projects every captured operand and
-  // branch-local constant through the selected lane, so a conditionally
-  // defined actor still fires only when that lane receives its operand tokens.
-  if (op->getNumRegions() == 0 && isEffectFree &&
-      (::dataflow::isCanonicalDataflowActor(op) ||
-       isGraphMemoryAddressLeaf(op)))
-    return GraphLeafLowering::Movable;
-  // The effectful leaves that never reach the fallback because a dedicated
-  // action rewrites or consumes them in place.
-  if (::llvm::isa<::mlir::memref::LoadOp, ::mlir::memref::StoreOp,
-                  ::dataflow::LoadOp, ::dataflow::StoreOp,
-                  ::dataflow::ChannelSendOp, ::dataflow::ChannelReceiveOp>(op))
-    return GraphLeafLowering::Implemented;
-  // Graph normalization rewrites ordinary loads and stores into dataflow
-  // memory actors. Bulk intrinsics must have been expanded before ownership
-  // selection; residual operations fail the normalized-effect check.
-  if (::llvm::isa<::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp,
-                  ::mlir::LLVM::MemcpyOp, ::mlir::LLVM::MemmoveOp,
-                  ::mlir::LLVM::MemsetOp>(op))
-    return GraphLeafLowering::Implemented;
-  // A fresh allocation is the invocation-local memory root
-  // `docs/spec-compiler-part-3-mem.md` defines, and the finalized graph keeps
-  // it. It allocates, so it is not movable; in the graph frontier it already
-  // stands where the finalized graph wants it, and preserving it there is the
-  // implemented action. Under structured control the root is created once per
-  // execution of the container, and no lowering reproduces that identity at
-  // the frontier, so there is no action to implement for it.
-  if (::llvm::isa<::mlir::memref::AllocOp>(op))
-    return isGraphFrontier(op->getBlock()) ? GraphLeafLowering::Implemented
-                                           : GraphLeafLowering::Unsupported;
-  // Nothing implements this leaf. An effectful actor such as dataflow.fence,
-  // atomic_rmw or cmpxchg lands here: it has no rewrite above and cannot be
-  // moved without dropping the ordering semantics lowering does not reproduce.
-  return GraphLeafLowering::Unsupported;
-}
-
-std::optional<std::string>
-explainGraphRegionStructuralRejection(::mlir::Operation *scope) {
-  if (!scope)
-    return std::string("missing graph-region scope");
-
-  const bool callableRoot = ::llvm::isa<::mlir::FunctionOpInterface>(scope);
-  std::optional<std::string> rejection;
-  scope->walk([&](::mlir::Operation *op) {
-    if (op != scope && ::llvm::isa<::mlir::FunctionOpInterface>(op))
-      return ::mlir::WalkResult::skip();
-    if ((op == scope && callableRoot) ||
-        (callableRoot && ::llvm::isa<::mlir::LLVM::ReturnOp>(op)) ||
-        ::llvm::isa<::mlir::LLVM::FMulAddOp>(op) ||
-        isGraphRegionControlOperation(op) ||
-        classifyGraphLoweringLeaf(op) != GraphLeafLowering::Unsupported)
-      return ::mlir::WalkResult::advance();
-
-    rejection = ("operation '" + op->getName().getStringRef() +
-                 "' has no graph-region lowering")
-                    .str();
-    return ::mlir::WalkResult::interrupt();
-  });
-  return rejection;
-}
-
-} // namespace lowering
-} // namespace loom
 
 namespace {
 
@@ -331,9 +216,10 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
                     "must be normalized before graph-region lowering");
       return ::mlir::WalkResult::interrupt();
     }
-    bool modeled = ::loom::lowering::isGraphRegionControlOperation(op) ||
-                   ::loom::lowering::classifyGraphLoweringLeaf(op) !=
-                       ::loom::lowering::GraphLeafLowering::Unsupported;
+    bool modeled =
+        ::loom::lowering::detail::isGraphRegionControlOperation(op) ||
+        ::loom::lowering::classifyGraphLoweringLeaf(op) !=
+            ::loom::lowering::GraphLeafLowering::Unsupported;
     if (::llvm::isa<::dataflow::ChannelSendOp, ::dataflow::ChannelReceiveOp>(
             op))
       modeled = boundary.isTransient();

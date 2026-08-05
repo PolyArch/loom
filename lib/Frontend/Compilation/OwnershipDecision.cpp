@@ -12,7 +12,7 @@ namespace loom::frontend {
 namespace {
 
 constexpr llvm::StringLiteral decisionSchema =
-    "loom.spatial_ownership.decision.1.0";
+    "loom.spatial_ownership.decision.1.1";
 
 enum class AddressProjectionTag : std::uint8_t {
   None = 0,
@@ -123,12 +123,26 @@ encodeSpatialOwnershipDecision(const SpatialOwnershipDecision &decision) {
   if (!encodedCall)
     return encodedCall.takeError();
   bytes.push_back(static_cast<std::uint8_t>(*encodedCall));
+  bytes.push_back(decision.point.directCallInlining ? 1 : 0);
+  if (decision.point.directCallInlining) {
+    const StructuredEntityRef &callSite =
+        decision.point.directCallInlining->callSite;
+    if (callSite.kind != StructuredEntityKind::Operation)
+      return invalid("direct-call inline site is not an operation reference");
+    if (callSite.parent != decision.scope.selection.parent)
+      return invalid("direct-call inline site has a foreign parent");
+    std::vector<std::uint8_t> encodedCallSite =
+        encodeStructuredEntityRef(callSite);
+    bytes.insert(bytes.end(), encodedCallSite.begin(), encodedCallSite.end());
+  } else {
+    bytes.insert(bytes.end(), structuredEntityRefWireSize, 0);
+  }
   return bytes;
 }
 
 llvm::Expected<SpatialOwnershipDecision>
 adoptSpatialOwnershipDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes) {
-  constexpr std::size_t suffixSize = 7;
+  constexpr std::size_t suffixSize = 8 + structuredEntityRefWireSize;
   if (canonicalBytes.size() != structuredEntityRefWireSize + suffixSize)
     return invalid("decision payload has the wrong size");
   auto selection = decodeStructuredEntityRef(
@@ -187,10 +201,34 @@ adoptSpatialOwnershipDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes) {
     return invalid("decision payload has an unknown call specialization");
   }
 
+  std::optional<DirectCallInliningDecision> callInlining;
+  llvm::ArrayRef<std::uint8_t> callSiteBytes =
+      suffix.slice(8, structuredEntityRefWireSize);
+  switch (suffix[7]) {
+  case 0:
+    if (llvm::any_of(callSiteBytes,
+                     [](std::uint8_t byte) { return byte != 0; }))
+      return invalid("absent direct-call inline site has nonzero bytes");
+    break;
+  case 1: {
+    auto callSite = decodeStructuredEntityRef(callSiteBytes);
+    if (!callSite)
+      return callSite.takeError();
+    if (callSite->kind != StructuredEntityKind::Operation)
+      return invalid("direct-call inline site is not an operation reference");
+    if (callSite->parent != selection->parent)
+      return invalid("direct-call inline site has a foreign parent");
+    callInlining = DirectCallInliningDecision{*callSite};
+    break;
+  }
+  default:
+    return invalid("decision payload has an unknown direct-call inline tag");
+  }
+
   SpatialOwnershipDecision decision{
       SpatialOwnershipScope{*selection},
-      SpatialOwnershipDecisionPoint{projection, forallShape,
-                                    callSpecialization}};
+      SpatialOwnershipDecisionPoint{projection, forallShape, callSpecialization,
+                                    callInlining}};
   auto reencoded = encodeSpatialOwnershipDecision(decision);
   if (!reencoded)
     return reencoded.takeError();

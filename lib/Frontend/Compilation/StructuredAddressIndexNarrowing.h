@@ -7,11 +7,33 @@
 
 #include <optional>
 #include <string>
+#include <system_error>
+#include <utility>
 
 namespace loom::frontend::detail {
 
 using BlockReplacementObserver =
     llvm::function_ref<llvm::Error(mlir::Block *, mlir::Block *)>;
+
+/// An expected negative result proving that one exact address projection
+/// cannot preserve the selected program's semantics. Malformed input,
+/// transformation invariants, observer failures, and post-transform verifier
+/// failures remain ordinary errors.
+class AddressIndexContractRejection final
+    : public llvm::ErrorInfo<AddressIndexContractRejection> {
+public:
+  static char ID;
+
+  explicit AddressIndexContractRejection(std::string message)
+      : message_(std::move(message)) {}
+
+  std::string message() const override { return message_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  std::string message_;
+};
 
 /// Validate the LLVM module-owned DataLayout and materialize its exact
 /// endianness as the one DLTI projection consumed by Structured/Dataflow

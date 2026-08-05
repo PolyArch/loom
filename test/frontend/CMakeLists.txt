@@ -156,6 +156,24 @@ target_link_libraries(loom-structured-ownership-lineage-index-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-structured-call-ownership-test
+  StructuredCallOwnershipTest.cpp
+)
+
+target_link_libraries(loom-structured-call-ownership-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFrontendCompilation
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRLoom
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
 add_executable(loom-structured-schedule-generator-test
   StructuredScheduleGeneratorTest.cpp
 )

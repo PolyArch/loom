@@ -813,6 +813,62 @@ be specialized or inlined before closure, or remain in InstructionCore while
 independent regions on either side are considered. A canonical graph never
 contains a general call.
 
+`SpatialOwnershipDecisionPoint` schema 1.1 represents candidate-local direct
+call inlining with an optional exact parent-local operation reference. The
+reference identifies the call site; a callee symbol is only an input to typed
+symbol resolution and never becomes candidate identity. The absent coordinate
+is retained. If that coordinate leaves a general call in the selected scope,
+materialization records a typed `NonFinalizable` disposition rather than
+rejecting the callable before its decision domain is visible.
+
+An inline coordinate is admitted when the selected scope contains exactly one
+general call, that operation is a direct `llvm.call`, and its exact module
+definition is non-variadic, single-block, and contains no general call. The
+pinned MLIR inliner applies the transformation only to the private candidate
+clone. The parent Structured Program and the callee definition remain
+unchanged. Structural preflight may defer only that exact call leaf while it
+checks every other operation in the selected nested scope; the call does not
+thereby become graph-lowerable. After inlining and any selected specialization,
+the lowering-owned structural preflight checks the resulting selected scope in
+its materialized context. A fresh allocation directly in the resulting
+callable block is at the prospective graph frontier and is therefore legal;
+an unsupported callee leaf rejects only the inline coordinate. A residual
+`llvm.call` or `llvm.invoke` after the selected transform rejects that
+coordinate.
+
+A refusal returned by the pinned inliner is a candidate-local
+`NonFinalizable` result. Malformed input, post-inline IR verification failure,
+or incomplete block-activity lineage is an invocation or implementation
+failure and aborts generation. The inliner's `IRMapping` must account for every
+cloned nested block while the private candidate is materialized. Direct-call
+inlining nevertheless publishes no source block-activity projection: it
+repartitions callee activity by call site, which cannot be recovered from
+aggregate source-callee block counts. Analytical Evaluation of that child must
+therefore use exact candidate native observations. Structure-preserving
+transforms continue to publish their exact removable block lineage.
+
+The address normalizer owns one typed negative result for an otherwise valid
+address projection. Only that typed result becomes `NonFinalizable`.
+Unsupported graph structure is classified by lowering-owned structural
+preflight before materialization. Once the mechanical Structured-to-Dataflow
+transaction starts, clone correspondence, block replacement, specialization,
+pass verification, canonical artifact/view, and tracked-launch failures are
+invocation failures; callers may not flatten an owner's entire error channel
+into candidate pruning.
+
+Decision-domain projection includes requirements exposed by the exact callee.
+In particular, address-index choices are derived from the union of the
+selected scope and the admitted callee body before materialization. A caller
+that contains no GEP therefore still receives the exact root-relative and
+pointer-addressed choices required by a callee that does. No independent
+callee profile, address table, or post-inline default is permitted.
+
+One ownership invocation does not enumerate subsets of multiple call sites.
+Call-graph reshaping that needs more than one atomic call transformation must
+first publish ordinary Structured Program children; ownership is then
+recomputed from each exact child. This keeps each lineage edge atomic and
+prevents a call-site powerset from becoming a second program authority.
+
 `UniformExactConstants` is the scope-local direct-call specialization choice.
 It applies to the selected scope's nearest owning `llvm.func`, or to the
 selected function itself. The function must be a defined, non-variadic local
@@ -957,6 +1013,19 @@ pointer recurrence may remain a first-class Spatial value if OperationSchema,
 Fabric capability, provider, and simulator contracts admit it. A candidate is
 non-finalizable only when neither exact representation is supported; no pass
 invents a dynamic memory capability or silently casts a pointer to one.
+
+Every selected LLVM load or store must resolve one memory-service root at the
+exact Spatial boundary. Candidate preflight and graph-memory lowering consume
+the same pointer-lineage resolver. A pointer loaded from a descriptor may be an
+ordinary Spatial value, but using that loaded pointer for a second memory
+access also requires an independently bound service capability. If the service
+is unavailable at the larger cut, that coordinate is `NonFinalizable`; a
+smaller dependency-closed scope may take the loaded pointer as a live-in and
+bind its service explicitly. This is a candidate boundary choice, not a rule
+that pointer representation always belongs to InstructionCore. Once the
+mechanical Structured-to-Dataflow transaction begins, a residual memory
+operation remains an invocation failure and is never reclassified by its
+diagnostic text.
 
 Sn uses two ownership carriers:
 

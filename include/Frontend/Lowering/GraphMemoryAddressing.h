@@ -6,6 +6,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
@@ -61,6 +62,14 @@ resolveLinearPointerAddress(mlir::Value pointer, mlir::Type accessType);
 std::optional<ResolvedLinearMemoryAddress>
 resolveLinearMemoryAddress(mlir::Value pointer, dataflow::GraphOp graph,
                            mlir::Type accessType, unsigned canonicalIndexBits);
+
+/// Resolves the one memory-service boundary root of an LLVM pointer lineage.
+/// `isBoundaryRoot` is the only context-dependent policy: graph lowering uses
+/// exact pointer-valued graph inputs, while ownership preflight uses exact
+/// values crossing the selected scope. The lineage rules themselves have one
+/// owner so preflight cannot drift from lowering.
+mlir::Value resolveMemoryServiceBoundaryRoot(
+    mlir::Value pointer, llvm::function_ref<bool(mlir::Value)> isBoundaryRoot);
 
 } // namespace loom::lowering
 

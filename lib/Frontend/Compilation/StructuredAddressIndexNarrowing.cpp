@@ -21,11 +21,14 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
 #include <string>
 
 namespace loom::frontend::detail {
+char AddressIndexContractRejection::ID = 0;
+
 namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -33,6 +36,10 @@ llvm::Error invalid(const llvm::Twine &message) {
       llvm::inconvertibleErrorCode(),
       "ownership_candidate_invalid: canonical index materialization " +
           message);
+}
+
+llvm::Error reject(const llvm::Twine &message) {
+  return llvm::make_error<AddressIndexContractRejection>(message.str());
 }
 
 mlir::IntegerAttr integerConstant(mlir::Value value) {
@@ -1543,8 +1550,8 @@ materializeAddressIndexContract(mlir::ModuleOp module,
       collectPointerInductionLoops(selectedOperation);
   for (const PointerInductionLoop &loop : pointerLoops)
     if (!pointerOffsetsFit(loop, *effectiveWidth))
-      return invalid("cannot prove a pointer induction offset fits the "
-                     "selected signed width");
+      return reject("cannot prove a pointer induction offset fits the "
+                    "selected signed width");
 
   llvm::SmallVector<GepIndexUse> uses;
   llvm::SmallVector<mlir::Value> sources;
@@ -1571,7 +1578,7 @@ materializeAddressIndexContract(mlir::ModuleOp module,
     return mlir::WalkResult::advance();
   });
   if (!proofFailure.empty())
-    return invalid(proofFailure);
+    return reject(proofFailure);
   if (llvm::Error error = materializeIndexLayout(module, *effectiveWidth))
     return error;
 
@@ -1617,12 +1624,12 @@ materializeAddressIndexContract(mlir::ModuleOp module,
     pointerLoops = collectPointerInductionLoops(selectedOperation);
     for (const PointerInductionLoop &loop : pointerLoops)
       if (!pointerOffsetsFit(loop, *effectiveWidth))
-        return invalid("cannot prove a pointer induction offset fits the "
-                       "selected signed width");
+        return reject("cannot prove a pointer induction offset fits the "
+                      "selected signed width");
   }
   if (llvm::Error error =
           rewritePointerSelections(selectedOperation, *effectiveWidth))
-    return std::move(error);
+    return reject(llvm::toString(std::move(error)));
 
   selectedOperation->walk([&](mlir::Operation *operation) {
     if (!llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(operation))
@@ -1633,6 +1640,14 @@ materializeAddressIndexContract(mlir::ModuleOp module,
   if (mlir::failed(mlir::verify(module)))
     return invalid("produced an invalid pointer-induction normalization");
   return selectedOperation;
+}
+
+void AddressIndexContractRejection::log(llvm::raw_ostream &stream) const {
+  stream << message_;
+}
+
+std::error_code AddressIndexContractRejection::convertToErrorCode() const {
+  return std::make_error_code(std::errc::not_supported);
 }
 
 } // namespace loom::frontend::detail

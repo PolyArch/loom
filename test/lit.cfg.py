@@ -128,6 +128,7 @@ tools = [
     "loom-simulator-vector-boundary-test",
     "loom-simulator-vector-structure-test",
     "loom-structured-address-index-narrowing-test",
+    "loom-structured-call-ownership-test",
     "loom-structured-program-artifact-test",
     "loom-structured-thread-domain-test",
     "loom-structured-ownership-lineage-index-test",

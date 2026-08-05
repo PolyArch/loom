@@ -20,10 +20,13 @@
 namespace loom::frontend {
 
 /// Exact one-generation dynamic-activity correspondence created by an
-/// ownership transformation. Both references are block references: the child
-/// block belongs to the materialized candidate, and the parent block belongs
-/// to the exact input candidate whose workload observations drive evaluation.
-/// This lineage is removable and never enters either Artifact identity.
+/// activity-preserving ownership transformation. Both references are block
+/// references: the child block belongs to the materialized candidate, and the
+/// parent block belongs to the exact input candidate whose workload
+/// observations drive evaluation. A transformation that repartitions dynamic
+/// activity, such as direct-call inlining, publishes no such correspondence
+/// and requires exact candidate observations. This lineage is removable and
+/// never enters either Artifact identity.
 struct StructuredBlockActivityLineage final {
   StructuredEntityRef childBlock;
   StructuredEntityRef parentBlock;
@@ -61,6 +64,18 @@ enum class DirectCallSpecializationShape : std::uint8_t {
   UniformExactConstants = 0,
 };
 
+/// One exact parent-local direct call selected for candidate-local inlining.
+/// The call-site reference, rather than the callee symbol spelling, owns the
+/// atomic transform coordinate. Inlining never mutates the parent candidate.
+struct DirectCallInliningDecision final {
+  StructuredEntityRef callSite;
+
+  friend bool operator==(const DirectCallInliningDecision &lhs,
+                         const DirectCallInliningDecision &rhs) {
+    return lhs.callSite == rhs.callSite;
+  }
+};
+
 /// A root-relative Spatial address projection materializes one fixed-width
 /// integer element-offset domain. The width is part of the selected Structured
 /// Program decision rather than an ambient lowering default.
@@ -96,6 +111,7 @@ struct SpatialOwnershipOptions final {
   std::optional<ForallOwnershipShape> forallOwnershipShape = std::nullopt;
   std::optional<DirectCallSpecializationShape> directCallSpecializationShape =
       std::nullopt;
+  std::optional<DirectCallInliningDecision> directCallInlining = std::nullopt;
 };
 
 /// One finite, scope-local ownership decision point. This is an ephemeral
@@ -107,6 +123,7 @@ struct SpatialOwnershipDecisionPoint final {
   std::optional<ForallOwnershipShape> forallOwnershipShape = std::nullopt;
   std::optional<DirectCallSpecializationShape> directCallSpecializationShape =
       std::nullopt;
+  std::optional<DirectCallInliningDecision> directCallInlining = std::nullopt;
 
   std::optional<unsigned> rootRelativeIndexWidth() const {
     if (!addressProjection)
@@ -128,7 +145,8 @@ struct SpatialOwnershipDecisionPoint final {
     return lhs.addressProjection == rhs.addressProjection &&
            lhs.forallOwnershipShape == rhs.forallOwnershipShape &&
            lhs.directCallSpecializationShape ==
-               rhs.directCallSpecializationShape;
+               rhs.directCallSpecializationShape &&
+           lhs.directCallInlining == rhs.directCallInlining;
   }
 };
 
@@ -277,6 +295,11 @@ struct PreparedSpatialOwnershipSelection final {
   /// Ownership materialization extends it for generated thread and Spatial
   /// blocks and for nested regions cloned into the selected boundary.
   std::vector<SourceBlockBinding> sourceBlocks;
+  /// Direct-call inlining repartitions source-callee activity by call site, so
+  /// aggregate source block observations cannot be projected exactly. The
+  /// structural bindings remain useful while materializing and validating the
+  /// clone, but the completed candidate must use exact native observations.
+  bool requiresExactActivityObservations = false;
 };
 
 /// Enumerates the complete finite ownership scope domain in the parent

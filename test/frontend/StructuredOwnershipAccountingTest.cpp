@@ -293,12 +293,36 @@ explore(const loom::fabric::FinalizedFabricRoot &fabric,
 
 void requireCompleteAccounting(
     const loom::dse::CompletedPreMappingSelection &selection) {
-  if (selection.dispositions.size() != 4)
-    fail("candidate domain included a declaration or omitted an attempt");
-  bool sawScopeRejection = false;
-  bool sawDecisionRejection = false;
-  bool sawRootRelativeDecision = false;
-  bool sawPointerAddressedDecision = false;
+  if (selection.dispositions.size() != 7)
+    fail("candidate domain included a declaration or omitted an attempt; "
+         "observed=" +
+         std::to_string(selection.dispositions.size()));
+  const auto &ordered = selection.dispositions;
+  if (llvm::any_of(ordered, [](const auto &disposition) {
+        return !disposition.coordinate.decision;
+      }))
+    fail("accepted ownership scope produced a scope-level disposition");
+  const auto &point0 = *ordered[0].coordinate.decision;
+  const auto &point1 = *ordered[1].coordinate.decision;
+  const auto &point2 = *ordered[2].coordinate.decision;
+  const auto &point3 = *ordered[3].coordinate.decision;
+  const auto &point4 = *ordered[4].coordinate.decision;
+  const auto &point5 = *ordered[5].coordinate.decision;
+  const auto &point6 = *ordered[6].coordinate.decision;
+  if (point0.rootRelativeIndexWidth() != 32 ||
+      point1.rootRelativeIndexWidth() != 64 || !point2.isPointerAddressed() ||
+      point3.addressProjection || point0.directCallInlining ||
+      point1.directCallInlining || point2.directCallInlining ||
+      point3.directCallInlining || !point4.directCallInlining ||
+      !point5.directCallInlining || !point6.directCallInlining ||
+      point4.rootRelativeIndexWidth() != 32 ||
+      point5.rootRelativeIndexWidth() != 64 || !point6.isPointerAddressed())
+    fail("complete ownership disposition order drifted");
+  unsigned unresolvedCallRejections = 0;
+  unsigned narrowingRejections = 0;
+  unsigned rootRelativeChildren = 0;
+  unsigned pointerAddressedChildren = 0;
+  unsigned inlineDecisions = 0;
   for (const loom::dse::StructuredOwnershipCandidateDisposition &disposition :
        selection.dispositions) {
     const auto *rejection =
@@ -306,41 +330,51 @@ void requireCompleteAccounting(
             &disposition.result);
     const auto *candidate =
         std::get_if<loom::ArtifactRootReference>(&disposition.result);
-    if (!disposition.coordinate.decision) {
+    if (!disposition.coordinate.decision)
+      fail("accepted callable produced a scope-level rejection");
+    const loom::frontend::SpatialOwnershipDecisionPoint &decision =
+        *disposition.coordinate.decision;
+    inlineDecisions +=
+        static_cast<unsigned>(decision.directCallInlining.has_value());
+    if (!decision.addressProjection) {
       if (!rejection ||
           rejection->kind !=
               loom::frontend::SpatialOwnershipCandidateRejectionKind::
                   NonFinalizable ||
-          rejection->message.find("unresolved nested call") ==
-              std::string::npos)
-        fail("whole-callable rejection lost its typed scope disposition");
-      sawScopeRejection = true;
+          rejection->message.find("unresolved general call") ==
+              std::string::npos ||
+          decision.directCallInlining)
+        fail("no-inline coordinate lost its typed call rejection");
+      ++unresolvedCallRejections;
       continue;
     }
-    if (disposition.coordinate.decision->rootRelativeIndexWidth() == 32) {
+    if (decision.rootRelativeIndexWidth() == 32) {
       if (!rejection ||
           rejection->kind !=
               loom::frontend::SpatialOwnershipCandidateRejectionKind::
                   NonFinalizable ||
           rejection->message.find("cannot prove") == std::string::npos)
         fail("unsafe 32-bit narrowing lost its typed decision disposition");
-      sawDecisionRejection = true;
+      ++narrowingRejections;
       continue;
     }
-    if (disposition.coordinate.decision->rootRelativeIndexWidth() == 64) {
+    if (decision.rootRelativeIndexWidth() == 64) {
       if (!candidate)
         fail("valid 64-bit ownership decision did not retain its child");
-      sawRootRelativeDecision = true;
+      ++rootRelativeChildren;
       continue;
     }
-    if (disposition.coordinate.decision->isPointerAddressed()) {
+    if (decision.isPointerAddressed()) {
       if (!candidate)
         fail("valid pointer-addressed decision did not retain its child");
-      sawPointerAddressedDecision = true;
+      ++pointerAddressedChildren;
+      continue;
     }
+    fail("candidate domain contained an unknown ownership coordinate");
   }
-  if (!sawScopeRejection || !sawDecisionRejection || !sawRootRelativeDecision ||
-      !sawPointerAddressedDecision)
+  if (unresolvedCallRejections != 1 || narrowingRejections != 2 ||
+      rootRelativeChildren != 2 || pointerAddressedChildren != 2 ||
+      inlineDecisions != 3)
     fail("candidate domain accounting was incomplete");
 }
 

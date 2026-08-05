@@ -2,13 +2,13 @@
 
 #include "StructuredAddressIndexNarrowing.h"
 #include "StructuredCallSpecialization.h"
+#include "StructuredOwnershipAnalysis.h"
 
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowAttrs.h"
 #include "Dataflow/IR/DataflowOps.h"
-#include "Dataflow/IR/OperationSchema.h"
-#include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/IR/LoomOps.h"
+#include "Frontend/Lowering/CanonicalDataflowLowering.h"
 #include "Frontend/Lowering/GraphParallelLowering.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -74,13 +74,6 @@ llvm::Error reject(SpatialOwnershipCandidateRejectionKind kind,
   return reject(kind, llvm::toString(std::move(error)));
 }
 
-std::string typeSpelling(mlir::FunctionType type) {
-  std::string spelling;
-  llvm::raw_string_ostream stream(spelling);
-  stream << type;
-  return spelling;
-}
-
 std::string uniqueSymbol(mlir::ModuleOp module, llvm::StringRef prefix,
                          llvm::StringRef sourceName) {
   std::string base = (llvm::Twine(prefix) + sourceName).str();
@@ -90,40 +83,9 @@ std::string uniqueSymbol(mlir::ModuleOp module, llvm::StringRef prefix,
   return candidate;
 }
 
-std::optional<std::string>
-callableOwnershipRejection(mlir::LLVM::LLVMFuncOp function) {
-  if (function.isExternal())
-    return "selected callable has no definition";
-  if (function.isVarArg())
-    return "variadic callable ownership is not materialized";
-  if (!function.getBody().hasOneBlock())
-    return "whole-callable ownership requires one structured block";
-
-  mlir::Block &body = function.getBody().front();
-  auto returnOp = llvm::dyn_cast<mlir::LLVM::ReturnOp>(body.getTerminator());
-  if (!returnOp)
-    return "selected callable has no direct LLVM return";
-  const bool returnsVoid = llvm::isa<mlir::LLVM::LLVMVoidType>(
-      function.getFunctionType().getReturnType());
-  if (returnOp.getNumOperands() != static_cast<unsigned>(!returnsVoid))
-    return "selected callable return does not match its LLVM ABI";
-
-  mlir::Operation *nestedCall = nullptr;
-  function.getBody().walk([&](mlir::Operation *operation) {
-    if (llvm::isa<mlir::LLVM::CallOp, mlir::LLVM::InvokeOp>(operation)) {
-      nestedCall = operation;
-      return mlir::WalkResult::interrupt();
-    }
-    return mlir::WalkResult::advance();
-  });
-  if (nestedCall)
-    return "selected callable contains an unresolved nested call";
-  return std::nullopt;
-}
-
 llvm::Error verifyEligibleCallable(mlir::LLVM::LLVMFuncOp function) {
   if (std::optional<std::string> rejection =
-          callableOwnershipRejection(function))
+          detail::explainCallableOwnershipRejection(function))
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                   *rejection);
   return llvm::Error::success();
@@ -232,6 +194,33 @@ propagateClonedBlockBindings(PreparedSpatialOwnershipSelection &prepared,
   return llvm::Error::success();
 }
 
+llvm::Error propagateInlinedBlockBindings(
+    std::vector<PreparedSpatialOwnershipSelection::SourceBlockBinding>
+        &sourceBlocks,
+    const mlir::IRMapping &mapping, std::size_t sourceBindingCount) {
+  if (sourceBindingCount > sourceBlocks.size())
+    return invalid("ownership block activity lineage changed during inlining");
+  llvm::DenseSet<mlir::Block *> preexisting;
+  llvm::DenseMap<mlir::Block *, StructuredEntityRef> added;
+  preexisting.reserve(sourceBlocks.size());
+  for (const auto &binding : sourceBlocks)
+    preexisting.insert(binding.candidateBlock);
+  for (std::size_t index = 0; index < sourceBindingCount; ++index) {
+    const auto source = sourceBlocks[index];
+    mlir::Block *cloned = mapping.lookupOrNull(source.candidateBlock);
+    if (!cloned || preexisting.contains(cloned))
+      continue;
+    auto [found, inserted] = added.try_emplace(cloned, source.parentBlock);
+    if (!inserted) {
+      if (found->second != source.parentBlock)
+        return invalid("inlined block has conflicting parent activity lineage");
+      continue;
+    }
+    sourceBlocks.push_back({cloned, source.parentBlock});
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
     mlir::ModuleOp module, mlir::LLVM::LLVMFuncOp sourceCallable,
     mlir::ValueRange captures, mlir::ValueRange threadOnlyCaptures,
@@ -333,135 +322,6 @@ llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
                                std::move(spatialCoordinates)};
 }
 
-struct CallableOwnershipBoundary final {
-  llvm::SmallVector<mlir::LLVM::AddressOfOp, 4> addresses;
-  llvm::SmallVector<mlir::LLVM::UndefOp, 4> undefs;
-  llvm::SmallVector<mlir::Value, 8> inputs;
-  llvm::SmallVector<mlir::Value, 1> outputs;
-};
-
-bool pointerLineageRequiresMemoryService(mlir::Value pointer,
-                                         llvm::DenseSet<mlir::Value> &visited) {
-  if (!pointer || !visited.insert(pointer).second)
-    return false;
-  for (mlir::OpOperand &use : pointer.getUses()) {
-    mlir::Operation *owner = use.getOwner();
-    if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(owner)) {
-      if (load.getAddr() == pointer)
-        return true;
-    } else if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(owner)) {
-      if (store.getAddr() == pointer)
-        return true;
-    }
-    for (mlir::Value result : owner->getResults())
-      if (llvm::isa<mlir::LLVM::LLVMPointerType>(result.getType()) &&
-          pointerLineageRequiresMemoryService(result, visited))
-        return true;
-  }
-  return false;
-}
-
-mlir::Operation *lastDynamicPointerServiceSource(mlir::Block &block) {
-  mlir::Operation *last = nullptr;
-  for (mlir::Operation &operation : block.without_terminator()) {
-    auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(operation);
-    if (!load ||
-        !llvm::isa<mlir::LLVM::LLVMPointerType>(load.getResult().getType()))
-      continue;
-    llvm::DenseSet<mlir::Value> visited;
-    if (pointerLineageRequiresMemoryService(load.getResult(), visited))
-      last = &operation;
-  }
-  return last;
-}
-
-bool isDefinedInSelection(
-    mlir::Value value,
-    const llvm::SmallPtrSetImpl<mlir::Operation *> &selected) {
-  if (auto result = llvm::dyn_cast<mlir::OpResult>(value))
-    return selected.contains(result.getOwner());
-  auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
-  return argument && selected.contains(argument.getOwner()->getParentOp());
-}
-
-llvm::SmallVector<mlir::Value, 8> deriveSelectionLiveIns(
-    llvm::ArrayRef<mlir::Operation *> selectedBody,
-    const llvm::SmallPtrSetImpl<mlir::Operation *> &selected) {
-  llvm::SmallVector<mlir::Value, 8> liveIns;
-  llvm::SmallPtrSet<mlir::Value, 8> seen;
-  for (mlir::Operation *topLevel : selectedBody)
-    topLevel->walk([&](mlir::Operation *operation) {
-      for (mlir::Value operand : operation->getOperands())
-        if (!isDefinedInSelection(operand, selected) &&
-            seen.insert(operand).second)
-          liveIns.push_back(operand);
-    });
-  return liveIns;
-}
-
-struct CallableSpatialSlice final {
-  llvm::SmallVector<mlir::Operation *, 16> body;
-  llvm::SmallVector<mlir::Value, 8> liveIns;
-  llvm::SmallVector<mlir::Value, 1> liveOuts;
-};
-
-CallableSpatialSlice
-deriveCallableSpatialSlice(mlir::LLVM::LLVMFuncOp function,
-                           const CallableOwnershipBoundary &boundary) {
-  CallableSpatialSlice slice;
-  mlir::Block &block = function.getBody().front();
-  mlir::Operation *servicePrefixEnd = lastDynamicPointerServiceSource(block);
-  bool afterServicePrefix = servicePrefixEnd == nullptr;
-  for (mlir::Operation &operation : block.without_terminator()) {
-    if (!afterServicePrefix) {
-      afterServicePrefix = &operation == servicePrefixEnd;
-      continue;
-    }
-    if (!llvm::isa<mlir::LLVM::AddressOfOp, mlir::LLVM::UndefOp>(operation))
-      slice.body.push_back(&operation);
-  }
-
-  if (!servicePrefixEnd) {
-    slice.liveIns.assign(boundary.inputs.begin(), boundary.inputs.end());
-    slice.liveOuts.assign(boundary.outputs.begin(), boundary.outputs.end());
-    return slice;
-  }
-
-  llvm::SmallPtrSet<mlir::Operation *, 32> selected;
-  for (mlir::Operation *operation : slice.body)
-    operation->walk([&](mlir::Operation *nested) { selected.insert(nested); });
-  slice.liveIns = deriveSelectionLiveIns(slice.body, selected);
-  for (mlir::Value output : boundary.outputs)
-    if (isDefinedInSelection(output, selected))
-      slice.liveOuts.push_back(output);
-  return slice;
-}
-
-CallableOwnershipBoundary
-deriveCallableOwnershipBoundary(mlir::LLVM::LLVMFuncOp function) {
-  CallableOwnershipBoundary boundary;
-  function.walk([&](mlir::LLVM::AddressOfOp address) {
-    if (!address.getRes().use_empty())
-      boundary.addresses.push_back(address);
-  });
-  function.walk([&](mlir::LLVM::UndefOp undef) {
-    if (!undef.getRes().use_empty())
-      boundary.undefs.push_back(undef);
-  });
-  mlir::Block &entry = function.getBody().front();
-  for (mlir::BlockArgument argument : entry.getArguments())
-    if (!argument.use_empty())
-      boundary.inputs.push_back(argument);
-  for (mlir::LLVM::AddressOfOp address : boundary.addresses)
-    boundary.inputs.push_back(address.getRes());
-  for (mlir::LLVM::UndefOp undef : boundary.undefs)
-    boundary.inputs.push_back(undef.getRes());
-  auto returnOp = llvm::cast<mlir::LLVM::ReturnOp>(entry.getTerminator());
-  boundary.outputs.append(returnOp.getOperands().begin(),
-                          returnOp.getOperands().end());
-  return boundary;
-}
-
 llvm::Error materializeThread(PreparedSpatialOwnershipSelection &prepared,
                               mlir::LLVM::LLVMFuncOp function) {
   mlir::ModuleOp module = prepared.module.get();
@@ -480,11 +340,12 @@ llvm::Error materializeThread(PreparedSpatialOwnershipSelection &prepared,
   // actor. Hoist nested address leaves to the wrapper entry so every retained
   // leaf has one explicit launch binding and can be removed from the cloned
   // graph body.
-  CallableOwnershipBoundary callableBoundary =
-      deriveCallableOwnershipBoundary(function);
+  detail::CallableOwnershipBoundary callableBoundary =
+      detail::deriveCallableOwnershipBoundary(function);
   llvm::ArrayRef<mlir::Operation *> selectedBody = prepared.callableSpatialBody;
   if (selectedBody.empty())
-    return invalid("dynamic pointer service prelude leaves no Spatial body");
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  "dynamic pointer service prelude leaves no Spatial body");
   llvm::ArrayRef<mlir::Value> captures = prepared.liveIns;
   llvm::ArrayRef<mlir::Value> yieldedValues = prepared.liveOuts;
   llvm::SmallVector<std::optional<std::size_t>, 1> outputResultOrdinals;
@@ -501,13 +362,15 @@ llvm::Error materializeThread(PreparedSpatialOwnershipSelection &prepared,
   auto resultSlots =
       createCallerOwnedResultStorage(function, resultTypes, location);
   if (!resultSlots)
-    return resultSlots.takeError();
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  resultSlots.takeError());
 
   auto boundary =
       createSpatialThreadBoundary(module, function, captures, *resultSlots,
                                   resultTypes, mlir::TypeRange{}, location);
   if (!boundary)
-    return boundary.takeError();
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  boundary.takeError());
 
   mlir::OpBuilder builder(context);
   mlir::IRMapping mapping;
@@ -914,7 +777,8 @@ llvm::Error materializePreparedForallThreadDomain(
       module, *callable, prepared.liveIns, mlir::ValueRange{},
       mlir::TypeRange{}, mlir::TypeRange{}, location, forall.getRank());
   if (!boundary)
-    return boundary.takeError();
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  boundary.takeError());
 
   mlir::IRMapping mapping;
   const std::size_t sourceBindingCount = prepared.sourceBlocks.size();
@@ -1003,12 +867,14 @@ materializePreparedOperation(PreparedSpatialOwnershipSelection &prepared,
   auto resultSlots =
       createCallerOwnedResultStorage(*callable, valueResultTypes, location);
   if (!resultSlots)
-    return resultSlots.takeError();
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  resultSlots.takeError());
   auto boundary = createSpatialThreadBoundary(
       module, *callable, closure.liveIns, *resultSlots, valueResultTypes,
       mlir::TypeRange{}, location);
   if (!boundary)
-    return boundary.takeError();
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  boundary.takeError());
 
   mlir::IRMapping mapping;
   const std::size_t sourceBindingCount = prepared.sourceBlocks.size();
@@ -1059,37 +925,12 @@ materializePreparedOperation(PreparedSpatialOwnershipSelection &prepared,
   return llvm::Error::success();
 }
 
-llvm::Error requireExactFabricCapabilities(
-    const dataflow::CanonicalDataflowArtifact &program,
-    const fabric::FinalizedFabricRoot &fabric) {
-  auto view = program.view();
-  if (!view)
-    return view.takeError();
-  if (view->graphs().empty() || view->actors().empty())
-    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                  "materialized candidate has no SpatialCore workload");
-
-  FabricCapabilityIndex capabilities(fabric.view());
-  auto miss = capabilities.firstInadmissibleActor(program);
-  if (!miss)
-    return miss.takeError();
-  if (!*miss)
-    return llvm::Error::success();
-  const llvm::StringRef resource =
-      (*miss)->actorKind == dataflow::CanonicalDataflowActorKind::Memory
-          ? "memory resource"
-          : "operation resource";
-  return reject(SpatialOwnershipCandidateRejectionKind::ExactFabricInadmissible,
-                "exact Fabric admits no " + resource + " for actor " +
-                    dataflow::operationSchemaSpelling((*miss)->schema) +
-                    " with type " + typeSpelling((*miss)->type));
-}
-
 /// Resolves the exact parent-local selection, clones the complete parent
 /// candidate, and resolves the same reference in the clone.
 struct PrivateSelection {
   mlir::OwningOpRef<mlir::ModuleOp> clone;
   mlir::Operation *operation;
+  mlir::Operation *directCallSite;
   std::vector<PreparedSpatialOwnershipSelection::SourceBlockBinding>
       sourceBlocks;
 };
@@ -1097,6 +938,7 @@ struct PrivateSelection {
 llvm::Expected<PrivateSelection> cloneSelectedOperation(
     const StructuredProgramCandidate &parent,
     const StructuredEntityRef &selection,
+    const std::optional<DirectCallInliningDecision> &directCallInlining,
     llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
   auto parentView = parent.view();
   if (!parentView)
@@ -1141,6 +983,20 @@ llvm::Expected<PrivateSelection> cloneSelectedOperation(
       mapping.lookupOrNull(parentEntity->operation);
   if (!clonedOperation)
     return invalid("selected operation was not mapped into the private clone");
+  mlir::Operation *clonedCallSite = nullptr;
+  if (directCallInlining) {
+    if (directCallInlining->callSite.parent != parent.identity() ||
+        directCallInlining->callSite.kind != StructuredEntityKind::Operation)
+      return invalid("direct-call inline site has the wrong parent or kind");
+    auto callEntity = parentView->resolve(directCallInlining->callSite);
+    if (!callEntity)
+      return callEntity.takeError();
+    if (!llvm::isa_and_nonnull<mlir::LLVM::CallOp>(callEntity->operation))
+      return invalid("direct-call inline site does not resolve to llvm.call");
+    clonedCallSite = mapping.lookupOrNull(callEntity->operation);
+    if (!clonedCallSite)
+      return invalid("direct-call inline site was not mapped into the clone");
+  }
   std::vector<PreparedSpatialOwnershipSelection::SourceBlockBinding>
       sourceBlocks;
   sourceBlocks.reserve(
@@ -1152,7 +1008,7 @@ llvm::Expected<PrivateSelection> cloneSelectedOperation(
       return invalid("parent block was not mapped into the private clone");
     sourceBlocks.push_back({mapped, entity.reference});
   }
-  return PrivateSelection{std::move(clone), clonedOperation,
+  return PrivateSelection{std::move(clone), clonedOperation, clonedCallSite,
                           std::move(sourceBlocks)};
 }
 
@@ -1218,10 +1074,12 @@ finalizeStructuredOwnershipCandidate(
       structuredView->entities(StructuredEntityKind::Block).size())
     return invalid("finalized block activity lineage is not total");
   std::vector<StructuredBlockActivityLineage> blockActivityLineage;
-  blockActivityLineage.reserve(parentBlocks.size());
-  for (auto [child, parent] :
-       llvm::zip_equal(structured->trackedBlocks, parentBlocks))
-    blockActivityLineage.push_back({child, parent});
+  if (!prepared.requiresExactActivityObservations) {
+    blockActivityLineage.reserve(parentBlocks.size());
+    for (auto [child, parent] :
+         llvm::zip_equal(structured->trackedBlocks, parentBlocks))
+      blockActivityLineage.push_back({child, parent});
+  }
   return MaterializedStructuredOwnershipCandidate{
       std::move(structured->artifact), std::move(blockActivityLineage),
       std::move(structured->sourceProvenance)};
@@ -1306,7 +1164,12 @@ enumerateSpatialOwnershipScopeDomainImpl(
         continue;
       SpatialOwnershipScope scope{entity.reference};
       if (std::optional<std::string> rejection =
-              callableOwnershipRejection(callable)) {
+              detail::explainCallableOwnershipRejection(callable)) {
+        domain.entries.push_back(
+            RejectedSpatialOwnershipScope{scope, std::move(*rejection)});
+      } else if (std::optional<std::string> rejection =
+                     detail::explainGraphStructuralOwnershipRejection(
+                         parent.module(), entity.operation)) {
         domain.entries.push_back(
             RejectedSpatialOwnershipScope{scope, std::move(*rejection)});
       } else if (std::optional<std::string> rejection =
@@ -1325,7 +1188,8 @@ enumerateSpatialOwnershipScopeDomainImpl(
       continue;
     SpatialOwnershipScope scope{entity.reference};
     if (std::optional<std::string> rejection =
-            lowering::explainGraphRegionStructuralRejection(entity.operation)) {
+            detail::explainGraphStructuralOwnershipRejection(
+                parent.module(), entity.operation)) {
       domain.entries.push_back(
           RejectedSpatialOwnershipScope{scope, std::move(*rejection)});
     } else if (std::optional<std::string> rejection =
@@ -1441,22 +1305,6 @@ enumerateSpatialOwnershipDecisionDomain(
     return callable.takeError();
   }
 
-  llvm::SmallVector<std::optional<SpatialAddressProjection>, 3>
-      addressProjections;
-  if (detail::requiresCanonicalAddressIndexDecision(operation)) {
-    std::optional<unsigned> fixedWidth =
-        detail::getExplicitFixedAddressIndexWidth(parent.module());
-    for (::fabric::ResolvedIndexWidth width :
-         ::fabric::resolvedIndexWidthDomain) {
-      const unsigned bitWidth = ::fabric::getResolvedIndexBitWidth(width);
-      if (!fixedWidth || *fixedWidth == bitWidth)
-        addressProjections.push_back(RootRelativeAddressProjection{bitWidth});
-    }
-    addressProjections.push_back(PointerAddressedAddressProjection{});
-  } else {
-    addressProjections.push_back(std::nullopt);
-  }
-
   llvm::SmallVector<std::optional<ForallOwnershipShape>, 2> forallShapes;
   if (llvm::isa<mlir::scf::ForallOp>(operation)) {
     forallShapes.push_back(ForallOwnershipShape::GraphParallel);
@@ -1477,16 +1325,61 @@ enumerateSpatialOwnershipDecisionDomain(
     callSpecializations.push_back(
         DirectCallSpecializationShape::UniformExactConstants);
 
+  llvm::SmallVector<std::optional<DirectCallInliningDecision>, 4> callInlinings;
+  callInlinings.push_back(std::nullopt);
+  if (std::optional<detail::ExactDirectCallSiteInliningCandidate> directCall =
+          detail::findExactDirectCallSiteInliningCandidate(parent.module(),
+                                                           operation)) {
+    auto candidate =
+        llvm::find_if(view->entities(StructuredEntityKind::Operation),
+                      [&](const StructuredEntity &entity) {
+                        return entity.operation == directCall->callSite;
+                      });
+    if (candidate == view->entities(StructuredEntityKind::Operation).end())
+      return invalid("inlineable direct call has no StructuredEntityRef");
+    callInlinings.push_back(DirectCallInliningDecision{candidate->reference});
+  }
+
   std::vector<SpatialOwnershipDecisionPoint> result;
-  result.reserve(addressProjections.size() * forallShapes.size() *
-                 callSpecializations.size());
-  for (const std::optional<SpatialAddressProjection> &addressProjection :
-       addressProjections)
-    for (std::optional<ForallOwnershipShape> forallShape : forallShapes)
-      for (std::optional<DirectCallSpecializationShape> callSpecialization :
-           callSpecializations)
-        result.push_back(SpatialOwnershipDecisionPoint{
-            addressProjection, forallShape, callSpecialization});
+  result.reserve(3 * forallShapes.size() * callSpecializations.size() *
+                 callInlinings.size());
+  const bool scopeRequiresAddressDecision =
+      detail::requiresCanonicalAddressIndexDecision(operation);
+  for (const std::optional<DirectCallInliningDecision> &callInlining :
+       callInlinings) {
+    bool requiresAddressDecision = scopeRequiresAddressDecision;
+    if (callInlining) {
+      auto callEntity = view->resolve(callInlining->callSite);
+      if (!callEntity)
+        return callEntity.takeError();
+      requiresAddressDecision |= detail::
+          exactDirectCallSiteInliningRequiresCanonicalAddressIndexDecision(
+              parent.module(), operation, callEntity->operation);
+    }
+    llvm::SmallVector<std::optional<SpatialAddressProjection>, 3>
+        addressProjections;
+    if (requiresAddressDecision) {
+      std::optional<unsigned> fixedWidth =
+          detail::getExplicitFixedAddressIndexWidth(parent.module());
+      for (::fabric::ResolvedIndexWidth width :
+           ::fabric::resolvedIndexWidthDomain) {
+        const unsigned bitWidth = ::fabric::getResolvedIndexBitWidth(width);
+        if (!fixedWidth || *fixedWidth == bitWidth)
+          addressProjections.push_back(RootRelativeAddressProjection{bitWidth});
+      }
+      addressProjections.push_back(PointerAddressedAddressProjection{});
+    } else {
+      addressProjections.push_back(std::nullopt);
+    }
+    for (const std::optional<SpatialAddressProjection> &addressProjection :
+         addressProjections)
+      for (std::optional<ForallOwnershipShape> forallShape : forallShapes)
+        for (std::optional<DirectCallSpecializationShape> callSpecialization :
+             callSpecializations)
+          result.push_back(
+              SpatialOwnershipDecisionPoint{addressProjection, forallShape,
+                                            callSpecialization, callInlining});
+  }
   return result;
 }
 
@@ -1504,21 +1397,18 @@ materializeStructuredSpatialOwnershipDecision(
   if (auto function =
           llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(prepared->operation)) {
     if (llvm::Error error = materializeThread(*prepared, function))
-      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                    std::move(error));
+      return std::move(error);
   } else if (auto forall = llvm::dyn_cast_or_null<mlir::scf::ForallOp>(
                  prepared->operation);
              forall && decision.forallOwnershipShape ==
                            ForallOwnershipShape::LogicalThreadDomain) {
     if (llvm::Error error =
             materializePreparedForallThreadDomain(*prepared, forall))
-      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                    std::move(error));
+      return std::move(error);
   } else {
     if (llvm::Error error =
             materializePreparedOperation(*prepared, prepared->operation))
-      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                    std::move(error));
+      return std::move(error);
   }
   return finalizeStructuredOwnershipCandidate(*prepared);
 }
@@ -1547,8 +1437,8 @@ prepareSpatialOwnershipSelection(
     return invalid("decision is not in the selected scope's typed domain");
   }
 
-  auto selection =
-      cloneSelectedOperation(parent, scope.selection, sourceProvenance);
+  auto selection = cloneSelectedOperation(
+      parent, scope.selection, decision.directCallInlining, sourceProvenance);
   if (!selection)
     return selection.takeError();
   mlir::Operation *operation = selection->operation;
@@ -1580,6 +1470,23 @@ prepareSpatialOwnershipSelection(
       return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                     std::move(error));
   }
+  if (decision.directCallInlining) {
+    const std::size_t sourceBindingCount = selection->sourceBlocks.size();
+    auto inlined = detail::materializeExactDirectCallSiteInlining(
+        selection->clone.get(), operation, selection->directCallSite);
+    if (!inlined)
+      return inlined.takeError();
+    if (!*inlined)
+      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                    "pinned MLIR inliner rejected the exact direct call");
+    operation = (*inlined)->selection;
+    if (llvm::Error error = propagateInlinedBlockBindings(
+            selection->sourceBlocks, (*inlined)->clonedBlocks,
+            sourceBindingCount))
+      return std::move(error);
+    if (llvm::Error error = retainLiveBlockLineage(*selection))
+      return std::move(error);
+  }
   if (decision.directCallSpecializationShape) {
     if (*decision.directCallSpecializationShape !=
         DirectCallSpecializationShape::UniformExactConstants)
@@ -1588,13 +1495,18 @@ prepareSpatialOwnershipSelection(
         detail::materializeUniformExactCallArgumentSpecialization(
             selection->clone.get(), operation);
     if (!specialized)
-      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                    specialized.takeError());
+      return specialized.takeError();
     operation = *specialized;
     if (llvm::Error error = retainLiveBlockLineage(*selection))
-      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                    std::move(error));
+      return std::move(error);
   }
+  if (detail::containsGeneralCall(operation))
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  "selected scope contains an unresolved general call");
+  if (std::optional<std::string> rejection =
+          lowering::explainGraphRegionStructuralRejection(operation))
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  *rejection);
   if (llvm::Error error = detail::materializeDataLayoutEndiannessProjection(
           selection->clone.get()))
     return std::move(error);
@@ -1629,9 +1541,21 @@ prepareSpatialOwnershipSelection(
     auto normalized = detail::materializeAddressIndexContract(
         selection->clone.get(), operation, canonicalIndexWidth,
         observeBlockReplacement);
-    if (!normalized)
+    if (!normalized) {
+      llvm::Error error = normalized.takeError();
+      std::optional<std::string> rejection;
+      llvm::Error unhandled = llvm::handleErrors(
+          std::move(error),
+          [&](const detail::AddressIndexContractRejection &failure) {
+            rejection = failure.message();
+          });
+      if (unhandled)
+        return std::move(unhandled);
+      if (!rejection)
+        return invalid("address projection failed without a typed outcome");
       return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                    normalized.takeError());
+                    *rejection);
+    }
     operation = *normalized;
   }
   std::vector<mlir::Value> liveIns;
@@ -1642,8 +1566,8 @@ prepareSpatialOwnershipSelection(
       sourceInductions;
   std::optional<std::vector<mlir::Value>> threadExtents;
   if (auto function = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(operation)) {
-    CallableOwnershipBoundary boundary =
-        deriveCallableOwnershipBoundary(function);
+    detail::CallableOwnershipBoundary boundary =
+        detail::deriveCallableOwnershipBoundary(function);
     for (mlir::LLVM::AddressOfOp address : llvm::reverse(boundary.addresses))
       if (&function.getBody().front().front() != address.getOperation())
         address->moveBefore(&function.getBody().front(),
@@ -1652,7 +1576,8 @@ prepareSpatialOwnershipSelection(
       if (&function.getBody().front().front() != undef.getOperation())
         undef->moveBefore(&function.getBody().front(),
                           function.getBody().front().begin());
-    CallableSpatialSlice slice = deriveCallableSpatialSlice(function, boundary);
+    detail::CallableSpatialSlice slice =
+        detail::deriveCallableSpatialSlice(function, boundary);
     callableSpatialBody.assign(slice.body.begin(), slice.body.end());
     liveIns.assign(slice.liveIns.begin(), slice.liveIns.end());
     liveOuts.assign(slice.liveOuts.begin(), slice.liveOuts.end());
@@ -1688,65 +1613,28 @@ prepareSpatialOwnershipSelection(
     liveIns.assign(closure.liveIns.begin(), closure.liveIns.end());
     liveOuts.assign(closure.liveOuts.begin(), closure.liveOuts.end());
   }
+  llvm::SmallVector<mlir::Operation *, 1> selectedOperation;
+  llvm::ArrayRef<mlir::Operation *> memoryServiceBody = callableSpatialBody;
+  if (memoryServiceBody.empty()) {
+    selectedOperation.push_back(operation);
+    memoryServiceBody = selectedOperation;
+  }
+  if (std::optional<std::string> rejection =
+          detail::explainUnboundMemoryService(memoryServiceBody, liveIns))
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  *rejection);
   if (mlir::failed(mlir::verify(selection->clone.get())))
     return invalid("prepared ownership selection does not verify");
-  return PreparedSpatialOwnershipSelection{std::move(selection->clone),
-                                           operation,
-                                           std::move(callableSpatialBody),
-                                           std::move(liveIns),
-                                           std::move(liveOuts),
-                                           std::move(sourceInductions),
-                                           std::move(threadExtents),
-                                           std::move(selection->sourceBlocks)};
-}
-
-llvm::Expected<MaterializedOwnershipCandidate>
-finalizeSpatialOwnershipCandidate(
-    MaterializedStructuredOwnershipCandidate candidate,
-    const fabric::FinalizedFabricRoot &fabric,
-    const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
-  auto projected =
-      lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
-          candidate.structuredProgram, loweringOptions);
-  if (!projected)
-    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                  projected.takeError());
-  if (llvm::Error error =
-          requireExactFabricCapabilities(projected->artifact, fabric))
-    return std::move(error);
-  return MaterializedOwnershipCandidate{
-      std::move(candidate.structuredProgram), std::move(projected->artifact),
-      std::move(projected->spatialGraphs),
-      std::move(candidate.blockActivityLineage),
-      std::move(candidate.sourceProvenance)};
-}
-
-llvm::Expected<MaterializedOwnershipCandidate>
-materializeSpatialOwnershipDecision(
-    const StructuredProgramCandidate &parent,
-    const SpatialOwnershipScope &scope,
-    const SpatialOwnershipDecisionPoint &decision,
-    const fabric::FinalizedFabricRoot &fabric,
-    const lowering::CanonicalDataflowLoweringOptions &lowering,
-    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
-  auto structured = materializeStructuredSpatialOwnershipDecision(
-      parent, scope, decision, sourceProvenance);
-  if (!structured)
-    return structured.takeError();
-  return finalizeSpatialOwnershipCandidate(std::move(*structured), fabric,
-                                           lowering);
-}
-
-llvm::Expected<MaterializedOwnershipCandidate>
-materializeSpatialOwnership(const StructuredProgramCandidate &parent,
-                            const StructuredEntityRef &selection,
-                            const fabric::FinalizedFabricRoot &fabric,
-                            const SpatialOwnershipOptions &options) {
-  return materializeSpatialOwnershipDecision(
-      parent, {selection},
-      {options.addressProjection, options.forallOwnershipShape,
-       options.directCallSpecializationShape},
-      fabric, options.lowering);
+  return PreparedSpatialOwnershipSelection{
+      std::move(selection->clone),
+      operation,
+      std::move(callableSpatialBody),
+      std::move(liveIns),
+      std::move(liveOuts),
+      std::move(sourceInductions),
+      std::move(threadExtents),
+      std::move(selection->sourceBlocks),
+      decision.directCallInlining.has_value()};
 }
 
 } // namespace loom::frontend

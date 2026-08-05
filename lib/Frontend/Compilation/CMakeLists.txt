@@ -1,12 +1,14 @@
 add_library(LoomFrontendCompilation
   FabricCapabilityIndex.cpp
   OwnershipCandidateGenerator.cpp
+  OwnershipCandidateFinalization.cpp
   OwnershipDecision.cpp
   PreMappingCompilation.cpp
   StaticGlobalMemory.cpp
   StaticMemoryBinding.cpp
   StructuredAddressIndexNarrowing.cpp
   StructuredCallSpecialization.cpp
+  StructuredOwnershipAnalysis.cpp
   StructuredExecutionShape.cpp
   StructuredMemoryCommunication.cpp
   StructuredSchedule.cpp

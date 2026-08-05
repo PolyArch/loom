@@ -1,12 +1,16 @@
 #include "StructuredCallSpecialization.h"
 
+#include "StructuredAddressIndexNarrowing.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -30,6 +34,31 @@ bool isLocalDefinition(mlir::LLVM::LLVMFuncOp function) {
     return false;
   return function.getLinkage() == mlir::LLVM::Linkage::Internal ||
          function.getLinkage() == mlir::LLVM::Linkage::Private;
+}
+
+mlir::LLVM::LLVMFuncOp resolveInlineableDirectCallee(mlir::LLVM::CallOp call) {
+  if (!call || !call.getCalleeAttr())
+    return {};
+  auto callee =
+      mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+          call, call.getCalleeAttr());
+  if (!callee || callee.isExternal() || callee.isVarArg() ||
+      !callee.getBody().hasOneBlock())
+    return {};
+  if (call.getArgOperands().size() !=
+      callee.getFunctionType().getParams().size())
+    return {};
+  bool hasNestedGeneralCall = false;
+  callee.walk([&](mlir::Operation *operation) {
+    if (mlir::isa<mlir::LLVM::CallOp, mlir::LLVM::InvokeOp>(operation)) {
+      hasNestedGeneralCall = true;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
+  if (hasNestedGeneralCall)
+    return {};
+  return callee;
 }
 
 bool isExactCloneableConstant(mlir::Operation *operation) {
@@ -228,6 +257,101 @@ materializeUniformExactCallArgumentSpecialization(mlir::ModuleOp module,
     return invalid("selected nested scope was removed by specialization");
   specializedSelection->removeAttr(selectionMarker);
   return specializedSelection;
+}
+
+bool isExactDirectCallSiteInlineable(mlir::ModuleOp module,
+                                     mlir::Operation *selection,
+                                     mlir::Operation *callSite) {
+  std::optional<ExactDirectCallSiteInliningCandidate> candidate =
+      findExactDirectCallSiteInliningCandidate(module, selection);
+  return callSite && candidate && candidate->callSite == callSite;
+}
+
+std::optional<ExactDirectCallSiteInliningCandidate>
+findExactDirectCallSiteInliningCandidate(mlir::ModuleOp module,
+                                         mlir::Operation *selection) {
+  if (!module || !selection)
+    return std::nullopt;
+  mlir::Operation *callSite = nullptr;
+  bool sawCallSite = false;
+  bool sawOtherGeneralCall = false;
+  selection->walk([&](mlir::Operation *operation) {
+    if (!mlir::isa<mlir::LLVM::CallOp, mlir::LLVM::InvokeOp>(operation))
+      return mlir::WalkResult::advance();
+    if (!sawCallSite) {
+      callSite = operation;
+      sawCallSite = true;
+    } else {
+      sawOtherGeneralCall = true;
+    }
+    return sawOtherGeneralCall ? mlir::WalkResult::interrupt()
+                               : mlir::WalkResult::advance();
+  });
+  if (!sawCallSite || sawOtherGeneralCall)
+    return std::nullopt;
+  auto call = llvm::dyn_cast<mlir::LLVM::CallOp>(callSite);
+  mlir::LLVM::LLVMFuncOp callee = resolveInlineableDirectCallee(call);
+  if (!callee)
+    return std::nullopt;
+  return ExactDirectCallSiteInliningCandidate{callSite, callee.getOperation()};
+}
+
+bool exactDirectCallSiteInliningRequiresCanonicalAddressIndexDecision(
+    mlir::ModuleOp module, mlir::Operation *selection,
+    mlir::Operation *callSite) {
+  std::optional<ExactDirectCallSiteInliningCandidate> candidate =
+      findExactDirectCallSiteInliningCandidate(module, selection);
+  if (!candidate || candidate->callSite != callSite)
+    return false;
+  return requiresCanonicalAddressIndexDecision(candidate->callee);
+}
+
+llvm::Expected<std::optional<DirectCallInliningMaterialization>>
+materializeExactDirectCallSiteInlining(mlir::ModuleOp module,
+                                       mlir::Operation *selection,
+                                       mlir::Operation *callSite) {
+  if (!module || !selection || !callSite || !selection->isAncestor(callSite))
+    return invalid("direct-call inline site is outside the selected scope");
+  std::optional<ExactDirectCallSiteInliningCandidate> candidate =
+      findExactDirectCallSiteInliningCandidate(module, selection);
+  if (!candidate || candidate->callSite != callSite)
+    return invalid("selected call has no exact inlineable local definition");
+  auto call = llvm::cast<mlir::LLVM::CallOp>(callSite);
+  auto callee = llvm::cast<mlir::LLVM::LLVMFuncOp>(candidate->callee);
+
+  mlir::InlinerInterface interface(module.getContext());
+  mlir::IRMapping clonedBlocks;
+  auto cloneCallback = [&](mlir::OpBuilder &, mlir::Region *source,
+                           mlir::Block *inlineBlock,
+                           mlir::Block *postInsertBlock,
+                           mlir::IRMapping &mapping, bool shouldClone) {
+    mlir::Region *destination = inlineBlock->getParent();
+    if (shouldClone) {
+      source->cloneInto(destination, postInsertBlock->getIterator(), mapping);
+      for (auto [sourceBlock, clonedBlock] : mapping.getBlockMap())
+        clonedBlocks.map(sourceBlock, clonedBlock);
+      return;
+    }
+    destination->getBlocks().splice(postInsertBlock->getIterator(),
+                                    source->getBlocks(), source->begin(),
+                                    source->end());
+  };
+  auto callInterface =
+      llvm::dyn_cast<mlir::CallOpInterface>(call.getOperation());
+  auto callableInterface =
+      llvm::dyn_cast<mlir::CallableOpInterface>(callee.getOperation());
+  if (!callInterface || !callableInterface)
+    return invalid("exact direct call lacks pinned MLIR call interfaces");
+  if (mlir::failed(mlir::inlineCall(interface, cloneCallback, callInterface,
+                                    callableInterface, &callee.getBody(),
+                                    /*shouldCloneInlinedRegion=*/true)))
+    return std::optional<DirectCallInliningMaterialization>();
+  call.erase();
+  if (mlir::failed(mlir::verify(module.getOperation())))
+    return invalid("direct-call inlining produced invalid Structured IR");
+  return std::optional<DirectCallInliningMaterialization>(
+      std::in_place,
+      DirectCallInliningMaterialization{selection, std::move(clonedBlocks)});
 }
 
 } // namespace loom::frontend::detail

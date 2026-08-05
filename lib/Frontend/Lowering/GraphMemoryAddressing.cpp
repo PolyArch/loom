@@ -285,7 +285,127 @@ getStructElementOffset(const mlir::DataLayout &layout,
   llvm_unreachable("struct element loop must return at the selected ordinal");
 }
 
+mlir::Value resolveMemoryServiceBoundaryRootImpl(
+    mlir::Value pointer, llvm::function_ref<bool(mlir::Value)> isBoundaryRoot,
+    llvm::DenseSet<mlir::Value> &visiting) {
+  if (!pointer || !visiting.insert(pointer).second)
+    return {};
+  if (isBoundaryRoot(pointer))
+    return pointer;
+  if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(pointer)) {
+    mlir::Operation *parent = argument.getOwner()->getParentOp();
+    if (auto loop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(parent)) {
+      if (argument.getOwner() == loop.getBody() &&
+          argument.getArgNumber() > 0) {
+        unsigned ordinal = argument.getArgNumber() - 1;
+        if (ordinal < loop.getInitArgs().size())
+          return resolveMemoryServiceBoundaryRootImpl(
+              loop.getInitArgs()[ordinal], isBoundaryRoot, visiting);
+      }
+    }
+    if (auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(parent)) {
+      unsigned ordinal = argument.getArgNumber();
+      if (argument.getOwner() == loop.getBeforeBody() &&
+          ordinal < loop.getInits().size())
+        return resolveMemoryServiceBoundaryRootImpl(loop.getInits()[ordinal],
+                                                    isBoundaryRoot, visiting);
+      if (argument.getOwner() == loop.getAfterBody() &&
+          ordinal < loop.getConditionOp().getArgs().size())
+        return resolveMemoryServiceBoundaryRootImpl(
+            loop.getConditionOp().getArgs()[ordinal], isBoundaryRoot, visiting);
+    }
+    return {};
+  }
+  if (auto gep = pointer.getDefiningOp<mlir::LLVM::GEPOp>())
+    return resolveMemoryServiceBoundaryRootImpl(gep.getBase(), isBoundaryRoot,
+                                                visiting);
+  if (auto carry = pointer.getDefiningOp<dataflow::CarryOp>())
+    return resolveMemoryServiceBoundaryRootImpl(carry.getInit(), isBoundaryRoot,
+                                                visiting);
+  if (auto invariant = pointer.getDefiningOp<dataflow::InvariantOp>())
+    return resolveMemoryServiceBoundaryRootImpl(invariant.getInit(),
+                                                isBoundaryRoot, visiting);
+  if (auto gate = pointer.getDefiningOp<dataflow::GateOp>())
+    return resolveMemoryServiceBoundaryRootImpl(gate.getBeforeValue(),
+                                                isBoundaryRoot, visiting);
+  if (auto sync = pointer.getDefiningOp<dataflow::SyncOp>()) {
+    unsigned ordinal = llvm::cast<mlir::OpResult>(pointer).getResultNumber();
+    if (ordinal < sync.getInputs().size())
+      return resolveMemoryServiceBoundaryRootImpl(sync.getInputs()[ordinal],
+                                                  isBoundaryRoot, visiting);
+  }
+  if (auto select = pointer.getDefiningOp<mlir::arith::SelectOp>()) {
+    llvm::DenseSet<mlir::Value> truePath = visiting;
+    llvm::DenseSet<mlir::Value> falsePath = visiting;
+    mlir::Value trueRoot = resolveMemoryServiceBoundaryRootImpl(
+        select.getTrueValue(), isBoundaryRoot, truePath);
+    mlir::Value falseRoot = resolveMemoryServiceBoundaryRootImpl(
+        select.getFalseValue(), isBoundaryRoot, falsePath);
+    if (trueRoot && trueRoot == falseRoot)
+      return trueRoot;
+  }
+  if (auto result = llvm::dyn_cast<mlir::OpResult>(pointer)) {
+    if (auto loop = llvm::dyn_cast<mlir::scf::ForOp>(result.getOwner())) {
+      unsigned ordinal = result.getResultNumber();
+      if (ordinal >= loop.getInitArgs().size() ||
+          ordinal >= loop.getYieldedValues().size())
+        return {};
+      llvm::DenseSet<mlir::Value> initialPath = visiting;
+      llvm::DenseSet<mlir::Value> yieldedPath = visiting;
+      mlir::Value initial = resolveMemoryServiceBoundaryRootImpl(
+          loop.getInitArgs()[ordinal], isBoundaryRoot, initialPath);
+      mlir::Value yielded = resolveMemoryServiceBoundaryRootImpl(
+          loop.getYieldedValues()[ordinal], isBoundaryRoot, yieldedPath);
+      if (initial && initial == yielded)
+        return initial;
+    }
+    if (auto loop = llvm::dyn_cast<mlir::scf::WhileOp>(result.getOwner())) {
+      unsigned ordinal = result.getResultNumber();
+      if (ordinal >= loop.getInits().size() ||
+          ordinal >= loop.getYieldOp().getNumOperands())
+        return {};
+      llvm::DenseSet<mlir::Value> initialPath = visiting;
+      llvm::DenseSet<mlir::Value> yieldedPath = visiting;
+      mlir::Value initial = resolveMemoryServiceBoundaryRootImpl(
+          loop.getInits()[ordinal], isBoundaryRoot, initialPath);
+      mlir::Value yielded = resolveMemoryServiceBoundaryRootImpl(
+          loop.getYieldOp().getOperand(ordinal), isBoundaryRoot, yieldedPath);
+      if (initial && initial == yielded)
+        return initial;
+    }
+    if (auto branch = llvm::dyn_cast<mlir::scf::IfOp>(result.getOwner())) {
+      unsigned ordinal = result.getResultNumber();
+      auto thenYield = llvm::dyn_cast<mlir::scf::YieldOp>(
+          branch.getThenRegion().front().getTerminator());
+      auto elseYield =
+          branch.getElseRegion().empty()
+              ? mlir::scf::YieldOp{}
+              : llvm::dyn_cast<mlir::scf::YieldOp>(
+                    branch.getElseRegion().front().getTerminator());
+      if (!thenYield || !elseYield || ordinal >= thenYield.getNumOperands() ||
+          ordinal >= elseYield.getNumOperands())
+        return {};
+      llvm::DenseSet<mlir::Value> thenPath = visiting;
+      llvm::DenseSet<mlir::Value> elsePath = visiting;
+      mlir::Value thenRoot = resolveMemoryServiceBoundaryRootImpl(
+          thenYield.getOperand(ordinal), isBoundaryRoot, thenPath);
+      mlir::Value elseRoot = resolveMemoryServiceBoundaryRootImpl(
+          elseYield.getOperand(ordinal), isBoundaryRoot, elsePath);
+      if (thenRoot && thenRoot == elseRoot)
+        return thenRoot;
+    }
+  }
+  return {};
+}
+
 } // namespace
+
+mlir::Value resolveMemoryServiceBoundaryRoot(
+    mlir::Value pointer, llvm::function_ref<bool(mlir::Value)> isBoundaryRoot) {
+  llvm::DenseSet<mlir::Value> visiting;
+  return resolveMemoryServiceBoundaryRootImpl(pointer, isBoundaryRoot,
+                                              visiting);
+}
 
 std::optional<ExactElementStrideScale>
 resolveExactElementStrideScale(mlir::Value index, std::uint64_t byteStride,

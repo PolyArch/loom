@@ -125,6 +125,7 @@ set(LOOM_TEST_DEPENDS
   loom-structured-program-artifact-test
   loom-structured-thread-domain-test
   loom-structured-ownership-lineage-index-test
+  loom-structured-call-ownership-test
   loom-structured-schedule-generator-test
   loom-structured-memory-communication-generator-test
   loom-structured-execution-shape-generator-test

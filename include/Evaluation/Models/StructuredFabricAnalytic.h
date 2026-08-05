@@ -142,11 +142,12 @@ struct StructuredFabricAnalyticInvocation final {
 
 /// One exact complete-candidate projection within the invocation. The
 /// Dataflow owner and every Structured-to-graph relation are absent together
-/// for a candidate with no Spatial ownership. `blockActivityLineage`
-/// mechanically projects one parent execution onto a just-materialized child;
-/// `observations`, when present, are the more expensive removable result of
-/// executing the exact candidate. The provider derives that same normalized
-/// activity on a cache miss.
+/// for a candidate with no Spatial ownership. A nonempty
+/// `blockActivityLineage` mechanically projects an activity-preserving parent
+/// execution onto a just-materialized child. A transformation that repartitions
+/// dynamic activity publishes no lineage and must supply `observations`, the
+/// removable result of executing the exact candidate. The provider derives
+/// exact observations on a cache miss.
 struct StructuredFabricAnalyticCandidateProjection final {
   const ::loom::frontend::StructuredProgramCandidate &candidate;
   const ::dataflow::CanonicalDataflowArtifact *canonicalDataflow = nullptr;

@@ -46,6 +46,14 @@ struct ProjectedCanonicalDataflow final {
 std::optional<std::string>
 explainGraphRegionStructuralRejection(mlir::Operation *scope);
 
+/// Applies the same lowering-owned structural proof while deferring one exact
+/// leaf that an explicit candidate decision will remove before lowering. The
+/// deferred operation must remain part of `scope`; this does not make the leaf
+/// graph-lowerable or weaken the final lowering transaction.
+std::optional<std::string>
+explainGraphRegionStructuralRejection(mlir::Operation *scope,
+                                      mlir::Operation *deferredLeaf);
+
 /// Runs the standard mechanical SCF-to-Dataflow transaction in place. This
 /// supports focused developer tools and leaves Artifact publication to callers
 /// that hold a complete root-closed candidate.

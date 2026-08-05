@@ -249,6 +249,58 @@ preserving the original callable ABI; unknown or conflicting callers simply
 leave that choice absent. Dynamic workload coverage remains useful for ranking,
 but cannot justify changing code that is reachable under another legal input.
 
+Direct-call inlining also needs an exact coordinate rather than a symbol-name
+policy. Rejecting every callable that contains a call hides a legal candidate
+before central DSE can account for it, while silently inlining every reachable
+callee makes the transformed program depend on an unrecorded compiler choice.
+The smallest complete coordinate is therefore the parent-local call-site
+reference plus the ordinary child Structured Program produced by the pinned
+inliner. The no-inline coordinate remains observable and fails normally when
+it cannot form a closed Spatial region.
+
+Nested structured scopes need the same coordinate. Treating `llvm.call` as a
+generally supported graph leaf would weaken the finalizer, while rejecting the
+scope before decision enumeration would hide the only transformation that can
+remove it. Deferring exactly the selected call during preflight preserves both
+properties. The inliner can also clone nested region blocks, so its ordinary
+`IRMapping` is the only sound source for validating structural block
+correspondence; reconstructing that relation from block position would create
+a second identity authority. It is not, however, an exact dynamic-activity
+projection. A callee used by two callers has aggregate source block counts,
+whereas inlining one call splits those counts between the retained callee and
+the clone. Executing the exact candidate is the smallest correct activity
+owner, so direct-call children require its removable native observations and
+publish no misleading block lineage. An ordinary inliner legality refusal
+prunes one coordinate, but verifier or lineage failures indicate broken
+implementation invariants and therefore cannot be reported as normal search
+outcomes.
+
+Candidate failure classification must be owned where the distinction is
+known. A caller cannot tell whether an arbitrary lowering error means “this
+legal coordinate is not expressible” or “the implementation lost a tracked
+block.” The address normalizer therefore exposes a narrow typed proof
+rejection, while graph structural preflight rejects unsupported leaves before
+the final transaction. All remaining errors stay untouched. This avoids both
+string-based dispatch and the tempting but incorrect rule that every failed
+transform is a normal search result.
+
+The initial atomic form is admitted only when one direct leaf call closes the
+selected scope. Enumerating arbitrary call subsets would create an exponential
+domain and duplicate program structure in the decision record. Larger call
+graphs instead progress through ordinary Structured children, after which the
+same ownership analysis is recomputed. Requirements newly visible through the
+callee, such as address-index width, are projected from that exact body into
+the same finite decision domain. They are not inferred after selection and are
+not stored in a separate call summary.
+
+Preflighting a callee in its original function context is too early. A fresh
+allocation at the top of a helper is not at a graph frontier there, but it is
+at the prospective frontier after the exact call is inlined into a selected
+callable. Conversely, an unregistered intrinsic remains unsupported after
+inlining. Applying the same lowering-owned proof to the transformed private
+candidate preserves both cases without a callee summary or a second table of
+context-sensitive exceptions.
+
 Candidate rejection must remain as observable invocation provenance. Dropping
 a whole callable because it contains an unresolved call, or dropping one
 address-width choice because narrowing cannot be proved, makes a graph-free
@@ -271,6 +323,16 @@ first-class LLVM pointer values when exact DataLayout, OperationSchema, Fabric,
 and provider contracts exist. DSE chooses between the rooted form, pointer
 execution in a SpatialCore, and InstructionCore ownership; no frontend rule
 forces all address representation into one execution owner.
+
+The service boundary remains distinct from the pointer value. For example, a
+descriptor load can produce pointer `p`, while a later `load p` needs both `p`
+and a service that can resolve its target object. When `p` is produced inside a
+larger candidate, that service is not automatically invented from the pointer
+bits. Selecting the inner loop makes `p` an explicit live-in and gives the
+existing graph-memory owner a precise service source. Reusing one pointer-root
+resolver for this candidate proof and for final lowering prevents the host
+prelude heuristic from becoming a second memory model; it also leaves DSE free
+to select a future Fabric that admits the larger pointer-processing cut.
 
 A persistent Schedule IR, Placement IR, or generic action DSL was rejected.
 Loop structure and transformations already live in the candidate IR;
