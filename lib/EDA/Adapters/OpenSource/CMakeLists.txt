@@ -1,5 +1,6 @@
 add_library(LoomEDAOpenSource
   Verilator.cpp
+  Yosys.cpp
 )
 
 target_include_directories(LoomEDAOpenSource PUBLIC

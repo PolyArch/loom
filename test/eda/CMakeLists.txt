@@ -7,3 +7,12 @@ target_link_libraries(loom-eda-open-source-adapter-test PRIVATE
   LoomExternalTool
   LLVMSupport
 )
+
+add_executable(loom-yosys-synthesis-test
+  YosysSynthesisTest.cpp
+)
+
+target_link_libraries(loom-yosys-synthesis-test PRIVATE
+  LoomEDAOpenSource
+  LLVMSupport
+)
