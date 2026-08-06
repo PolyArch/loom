@@ -113,6 +113,7 @@ struct FabricArtifactViewData {
       moduleBoundaryTransportPassthroughs;
   std::vector<FabricArtifactView> importedModules;
   std::vector<FabricSpatialAttachmentRecordView> spatialAttachments;
+  std::vector<ServiceLegCarrierAttachmentRecord> serviceLegCarrierAttachments;
   std::vector<HardwareDomainRef> hardwareDomains;
   std::vector<SystemTransportResourceRef> transportResources;
 };

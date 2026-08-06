@@ -38,8 +38,8 @@ def Fabric_TypeProp : Property<"::mlir::Type", "MLIR type"> {
   let hashProperty = "::llvm::hash_value($_storage.getAsOpaquePointer())";
 }
 
-def Fabric_InnerInputTypesProp : ArrayProp<Fabric_TypeProp,
-    "inner input type array"> {
+def Fabric_InnerInputTypesProp
+    : ArrayProp<Fabric_TypeProp, "inner input type array"> {
   let defaultValue = "::llvm::ArrayRef<::mlir::Type>{}";
   let storageTypeValueOverride = "::llvm::SmallVector<::mlir::Type>{}";
 }
@@ -60,12 +60,9 @@ def Fabric_MuxOp : Fabric_Op<"mux", [Pure, SameOperandsAndResultType]> {
     combinations must satisfy: !(discard && disconnect).
   }];
 
-  let arguments = (ins
-      Variadic<Fabric_BitsType>:$inputs,
-      OptionalAttr<I32Attr>:$sel,
-      OptionalAttr<BoolAttr>:$discard,
-      OptionalAttr<BoolAttr>:$disconnect
-  );
+  let arguments = (ins Variadic<Fabric_BitsType>:$inputs,
+      OptionalAttr<I32Attr>:$sel, OptionalAttr<BoolAttr>:$discard,
+      OptionalAttr<BoolAttr>:$disconnect);
   let results = (outs Fabric_BitsType:$output);
 
   let hasCustomAssemblyFormat = 1;
@@ -95,12 +92,8 @@ def Fabric_DemuxOp : Fabric_Op<"demux", [Pure, SameOperandsAndResultType]> {
       * disconnect=T: input.ready=0; all outputs.valid=0
   }];
 
-  let arguments = (ins
-      Fabric_BitsType:$input,
-      OptionalAttr<I32Attr>:$sel,
-      OptionalAttr<BoolAttr>:$discard,
-      OptionalAttr<BoolAttr>:$disconnect
-  );
+  let arguments = (ins Fabric_BitsType:$input, OptionalAttr<I32Attr>:$sel,
+      OptionalAttr<BoolAttr>:$discard, OptionalAttr<BoolAttr>:$disconnect);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
 
   let hasCustomAssemblyFormat = 1;
@@ -127,12 +120,8 @@ def Fabric_FifoOp : Fabric_Op<"fifo", [Pure]> {
     `bypassed` when `bypassable` is false is illegal.
   }];
 
-  let arguments = (ins
-      Fabric_AnyType:$input,
-      I32Attr:$max_depth,
-      BoolAttr:$bypassable,
-      OptionalAttr<BoolAttr>:$bypassed
-  );
+  let arguments = (ins Fabric_AnyType:$input, I32Attr:$max_depth,
+      BoolAttr:$bypassable, OptionalAttr<BoolAttr>:$bypassed);
   let results = (outs Fabric_AnyType:$output);
 
   let hasCustomAssemblyFormat = 1;
@@ -161,8 +150,7 @@ def Fabric_OpOp : Fabric_Op<"op", []> {
 
   let arguments = (ins Variadic<Fabric_BitsType>:$inputs,
       OptionalAttr<Fabric_ImplementationFamilyAttr>:$implementation_family,
-      ArrayAttr:$op_list,
-      DictionaryAttr:$hw_params);
+      ArrayAttr:$op_list, DictionaryAttr:$hw_params);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
 
   let assemblyFormat = [{
@@ -175,15 +163,12 @@ def Fabric_OpOp : Fabric_Op<"op", []> {
 def Fabric_ModulePortType
     : AnyTypeOf<[Fabric_BitsType, Fabric_BitsTagType, AnyMemRef]>;
 
-def Fabric_ModuleOp : Fabric_Op<"module", [
-    IsolatedFromAbove,
-    SingleBlockImplicitTerminator<"YieldOp">,
-    Symbol,
-    SymbolTable,
-    DeclareOpInterfaceMethods<RegionKindInterface>
-]> {
-  let summary =
-      "fabric module: top-level container of the fabric dialect";
+def Fabric_ModuleOp
+    : Fabric_Op<"module", [IsolatedFromAbove,
+                           SingleBlockImplicitTerminator<"YieldOp">, Symbol,
+                           SymbolTable,
+                           DeclareOpInterfaceMethods<RegionKindInterface>]> {
+  let summary = "fabric module: top-level container of the fabric dialect";
   let description = [{
     Top-level container for the fabric dialect. Carries a required
     `sym_name`. The body is a single graph-region block whose
@@ -204,29 +189,23 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
     `docs/spec-fabric-module.md` for the full rules.
   }];
 
-  let arguments = (ins
-      SymbolNameAttr:$sym_name,
+  let arguments = (ins SymbolNameAttr:$sym_name,
       TypeAttrOf<FunctionType>:$function_type,
       // Optional exact module-scoped semantic values. Absence remains
       // absence during elaboration; no Fabric-local default is applied.
       OptionalAttr<I32Attr>:$loom_addr_bits,
-      OptionalAttr<I32Attr>:$loom_mem_bus_width
-  );
+      OptionalAttr<I32Attr>:$loom_mem_bus_width);
   let regions = (region SizedRegion<1>:$body);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 
-def Fabric_PeOp : Fabric_Op<"pe", [
-    IsolatedFromAbove,
-    SingleBlock,
-    NoTerminator,
-    DeclareOpInterfaceMethods<RegionKindInterface>,
-    DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>,
-    HasParent<"::fabric::ModuleOp">,
-    SymbolTable
-]> {
+def Fabric_PeOp
+    : Fabric_Op<"pe", [IsolatedFromAbove, SingleBlock, NoTerminator,
+                       DeclareOpInterfaceMethods<RegionKindInterface>,
+                       DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>,
+                       HasParent<"::fabric::ModuleOp">, SymbolTable]> {
   let summary =
       "fabric PE: a container of one or more fabric.fu ops with a schedule "
       "predicate (spatial or temporal)";
@@ -291,16 +270,13 @@ def Fabric_PeOp : Fabric_Op<"pe", [
       * The op must appear inside a `fabric.module` body.
   }];
 
-  let arguments = (ins
-      OptionalAttr<SymbolNameAttr>:$sym_name,
+  let arguments = (ins OptionalAttr<SymbolNameAttr>:$sym_name,
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
-      Fabric_ScheduleAttr:$schedule,
-      Variadic<Fabric_AnyType>:$inputs,
+      Fabric_ScheduleAttr:$schedule, Variadic<Fabric_AnyType>:$inputs,
       // Temporal-only hardware parameters. All must be absent on a
       // spatial PE; presence/absence rules per-attribute are enforced
       // by the verifier (see docs/spec-fabric-pe-temporal.md).
-      OptionalAttr<I32Attr>:$tag_width,
-      OptionalAttr<I32Attr>:$num_instruction,
+      OptionalAttr<I32Attr>:$tag_width, OptionalAttr<I32Attr>:$num_instruction,
       OptionalAttr<I32Attr>:$num_reg_fifo,
       OptionalAttr<I32Attr>:$reg_fifo_depth,
       OptionalAttr<I32Attr>:$reg_fifo_ports,
@@ -318,14 +294,13 @@ def Fabric_PeOp : Fabric_Op<"pe", [
   let hasVerifier = 1;
 }
 
-def Fabric_FuOp : Fabric_Op<"fu", [
-    IsolatedFromAbove,
-    SingleBlockImplicitTerminator<"YieldOp">,
-    DeclareOpInterfaceMethods<RegionKindInterface>,
-    DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>
-]> {
-  let summary =
-      "fabric function unit (FU): a graph-region tile of fabric.op / mux / demux";
+def Fabric_FuOp
+    : Fabric_Op<
+          "fu", [IsolatedFromAbove, SingleBlockImplicitTerminator<"YieldOp">,
+                 DeclareOpInterfaceMethods<RegionKindInterface>,
+                 DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>]> {
+  let summary = "fabric function unit (FU): a graph-region tile of fabric.op / "
+                "mux / demux";
   let description = [{
     Container for one CGRA-style functional unit. The op exists in two
     disjoint syntactic forms by `sym_name` presence:
@@ -372,8 +347,7 @@ def Fabric_FuOp : Fabric_Op<"fu", [
         equals outer (strict).
   }];
 
-  let arguments = (ins
-      OptionalAttr<SymbolNameAttr>:$sym_name,
+  let arguments = (ins OptionalAttr<SymbolNameAttr>:$sym_name,
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
       OptionalAttr<Fabric_FuCapabilityDomainAttr>:$capability_templates,
       Variadic<Fabric_BitsType>:$inputs);
@@ -384,9 +358,9 @@ def Fabric_FuOp : Fabric_Op<"fu", [
   let hasVerifier = 1;
 }
 
-def Fabric_InstantiateOp : Fabric_Op<"instantiate", [
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>
-]> {
+def Fabric_InstantiateOp
+    : Fabric_Op<
+          "instantiate", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary =
       "fabric instantiation: bind a previously-defined fabric resource "
       "symbol into the current scope as a fresh hardware instance";
@@ -417,8 +391,7 @@ def Fabric_InstantiateOp : Fabric_Op<"instantiate", [
     Forward and self-references are forbidden.
   }];
 
-  let arguments = (ins
-      FlatSymbolRefAttr:$callee,
+  let arguments = (ins FlatSymbolRefAttr:$callee,
       Variadic<Fabric_ModulePortType>:$inputs,
       Fabric_InnerInputTypesProp:$inner_input_types);
   let results = (outs Variadic<Fabric_ModulePortType>:$outputs);
@@ -452,23 +425,21 @@ def Fabric_BoundaryOp : Fabric_Op<"boundary", [Pure]> {
     the t2t LUT config-mem encoding.
   }];
 
-  let arguments = (ins
-      Variadic<Fabric_AnyType>:$inputs,
+  let arguments = (ins Variadic<Fabric_AnyType>:$inputs,
       Fabric_BoundaryDirectionAttr:$direction,
       Fabric_InnerInputTypesProp:$inner_input_types,
       OptionalAttr<ArrayAttr>:$hw_params,
-      OptionalAttr<DictionaryAttr>:$sw_configs
-  );
+      OptionalAttr<DictionaryAttr>:$sw_configs);
   let results = (outs Variadic<Fabric_AnyType>:$outputs);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 
-def Fabric_SwitchOp : Fabric_Op<"switch", [
-    DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>,
-    Pure
-]> {
+def Fabric_SwitchOp
+    : Fabric_Op<
+          "switch", [DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>,
+                     Pure]> {
   let summary =
       "fabric switch: configurable routing crossbar with a schedule predicate "
       "(spatial or temporal)";
@@ -495,24 +466,22 @@ def Fabric_SwitchOp : Fabric_Op<"switch", [
     route_table layout, tag-driven temporal trigger semantics, etc.).
   }];
 
-  let arguments = (ins
-      Variadic<Fabric_AnyType>:$inputs,
+  let arguments = (ins Variadic<Fabric_AnyType>:$inputs,
       OptionalAttr<SymbolNameAttr>:$sym_name,
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
       Fabric_ScheduleAttr:$schedule,
       Fabric_InnerInputTypesProp:$inner_input_types,
       OptionalAttr<ArrayAttr>:$hw_params,
-      OptionalAttr<DictionaryAttr>:$sw_configs
-  );
+      OptionalAttr<DictionaryAttr>:$sw_configs);
   let results = (outs Variadic<Fabric_AnyType>:$outputs);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 
-def Fabric_MemOp : Fabric_Op<"mem", [
-    DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>
-]> {
+def Fabric_MemOp
+    : Fabric_Op<
+          "mem", [DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>]> {
   let summary = "fabric memory capability occurrence";
   let description = [{
     One typed memory_contract owns the optional Operation Engine, optional
@@ -541,27 +510,21 @@ def Fabric_MemOp : Fabric_Op<"mem", [
     See `docs/spec-fabric-mem.md` for the full per-schedule rules.
   }];
 
-  let arguments = (ins
-      Variadic<Fabric_ModulePortType>:$inputs,
+  let arguments = (ins Variadic<Fabric_ModulePortType>:$inputs,
       OptionalAttr<SymbolNameAttr>:$sym_name,
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
       Fabric_MemoryContractAttr:$memory_contract,
       Fabric_InnerInputTypesProp:$inner_input_types,
       OptionalAttr<ArrayAttr>:$hw_params,
-      OptionalAttr<ArrayAttr>:$memory_operation_ports
-  );
+      OptionalAttr<ArrayAttr>:$memory_operation_ports);
   let results = (outs Variadic<Fabric_ModulePortType>:$outputs);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 
-def Fabric_SystemOp : Fabric_Op<"system", [
-    IsolatedFromAbove,
-    SingleBlock,
-    NoTerminator,
-    Symbol
-]> {
+def Fabric_SystemOp : Fabric_Op<"system", [IsolatedFromAbove, SingleBlock,
+                                           NoTerminator, Symbol]> {
   let summary = "typed system-level heterogeneous hardware root";
   let description = [{
     The single declarative architecture root. Its body has no block arguments,
@@ -576,9 +539,8 @@ def Fabric_SystemOp : Fabric_Op<"system", [
   let hasVerifier = 1;
 }
 
-def Fabric_SystemHostCoreOp : Fabric_Op<"system.host_core", [
-    HasParent<"::fabric::SystemOp">
-]> {
+def Fabric_SystemHostCoreOp
+    : Fabric_Op<"system.host_core", [HasParent<"::fabric::SystemOp">]> {
   let summary = "InstructionCore-only system compute entity";
   let description = [{
     One HostCore with exact InstructionCore architecture and
@@ -586,11 +548,8 @@ def Fabric_SystemHostCoreOp : Fabric_Op<"system.host_core", [
     assigned by Fabric canonical finalization.
   }];
 
-  let arguments = (ins
-      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
-      DenseI8ArrayAttr:$architecture,
-      DenseI8ArrayAttr:$microarchitecture
-  );
+  let arguments = (ins OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      DenseI8ArrayAttr:$architecture, DenseI8ArrayAttr:$microarchitecture);
 
   let assemblyFormat = [{
     `architecture` `=` $architecture
@@ -599,21 +558,17 @@ def Fabric_SystemHostCoreOp : Fabric_Op<"system.host_core", [
   let hasVerifier = 1;
 }
 
-def Fabric_SystemAccCoreOp : Fabric_Op<"system.acc_core", [
-    HasParent<"::fabric::SystemOp">
-]> {
+def Fabric_SystemAccCoreOp
+    : Fabric_Op<"system.acc_core", [HasParent<"::fabric::SystemOp">]> {
   let summary = "coupled InstructionCore and SpatialCore system entity";
   let description = [{
     One AccCore with exact InstructionCore architecture and microarchitecture
     records plus one compact ImportedModule target for its SpatialCore.
   }];
 
-  let arguments = (ins
-      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
-      DenseI8ArrayAttr:$architecture,
-      DenseI8ArrayAttr:$microarchitecture,
-      DenseI8ArrayAttr:$spatial_core
-  );
+  let arguments = (ins OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      DenseI8ArrayAttr:$architecture, DenseI8ArrayAttr:$microarchitecture,
+      DenseI8ArrayAttr:$spatial_core);
 
   let assemblyFormat = [{
     `architecture` `=` $architecture
@@ -623,9 +578,8 @@ def Fabric_SystemAccCoreOp : Fabric_Op<"system.acc_core", [
   let hasVerifier = 1;
 }
 
-def Fabric_SystemMemoryServiceOp : Fabric_Op<"system.memory_service", [
-    HasParent<"::fabric::SystemOp">
-]> {
+def Fabric_SystemMemoryServiceOp
+    : Fabric_Op<"system.memory_service", [HasParent<"::fabric::SystemOp">]> {
   let summary = "system-addressed memory service entity";
   let description = [{
     One exact MemoryServiceContractRecord interpreted in the System owner
@@ -633,10 +587,8 @@ def Fabric_SystemMemoryServiceOp : Fabric_Op<"system.memory_service", [
     resource state, timing, progress, and grant semantics.
   }];
 
-  let arguments = (ins
-      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
-      Fabric_MemoryServiceContractAttr:$service_contract
-  );
+  let arguments = (ins OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      Fabric_MemoryServiceContractAttr:$service_contract);
 
   let assemblyFormat = [{
     `contract` `=` $service_contract attr-dict
@@ -644,9 +596,8 @@ def Fabric_SystemMemoryServiceOp : Fabric_Op<"system.memory_service", [
   let hasVerifier = 1;
 }
 
-def Fabric_SystemServiceEndpointOp : Fabric_Op<"system.service_endpoint", [
-    HasParent<"::fabric::SystemOp">
-]> {
+def Fabric_SystemServiceEndpointOp
+    : Fabric_Op<"system.service_endpoint", [HasParent<"::fabric::SystemOp">]> {
   let summary = "typed Canonical Service endpoint entity";
   let description = [{
     One endpoint owned by an exact System entity. Its capability set binds the
@@ -654,12 +605,9 @@ def Fabric_SystemServiceEndpointOp : Fabric_Op<"system.service_endpoint", [
     rate, outstanding-capacity, and progress contract.
   }];
 
-  let arguments = (ins
-      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
-      DenseI8ArrayAttr:$owner,
-      DenseI8ArrayAttr:$capabilities,
-      OptionalAttr<TypeAttr>:$carrier_type
-  );
+  let arguments = (ins OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      DenseI8ArrayAttr:$owner, DenseI8ArrayAttr:$capabilities,
+      OptionalAttr<TypeAttr>:$carrier_type);
 
   let assemblyFormat = [{
     `owner` `=` $owner `capabilities` `=` $capabilities
@@ -668,9 +616,23 @@ def Fabric_SystemServiceEndpointOp : Fabric_Op<"system.service_endpoint", [
   let hasVerifier = 1;
 }
 
-def Fabric_SystemServiceTransformOp : Fabric_Op<"system.service_transform", [
-    HasParent<"::fabric::SystemOp">
-]> {
+def Fabric_SystemServiceLegCarrierAttachmentOp
+    : Fabric_Op<"system.service_leg_carrier_attachment",
+                [HasParent<"::fabric::SystemOp">]> {
+  let summary = "memory-service leg to candidate transport carriers";
+  let description = [{
+    One Fabric-owned structural relation from an exact memory-service endpoint,
+    Canonical Service kind, and schema-local leg ordinal to a non-empty
+    canonical carrier set. The encoded record has no EntityId.
+  }];
+
+  let arguments = (ins DenseI8ArrayAttr:$record);
+  let assemblyFormat = "`record` `=` $record attr-dict";
+  let hasVerifier = 1;
+}
+
+def Fabric_SystemServiceTransformOp
+    : Fabric_Op<"system.service_transform", [HasParent<"::fabric::SystemOp">]> {
   let summary = "closed typed System memory-service transform";
   let description = [{
     One complete input/output relation and one AddressOffset, AddressMaskXor,
@@ -678,18 +640,15 @@ def Fabric_SystemServiceTransformOp : Fabric_Op<"system.service_transform", [
     connection and has no transform operation.
   }];
 
-  let arguments = (ins
-      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
-      DenseI8ArrayAttr:$contract
-  );
+  let arguments = (ins OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      DenseI8ArrayAttr:$contract);
 
   let assemblyFormat = "`contract` `=` $contract attr-dict";
   let hasVerifier = 1;
 }
 
-def Fabric_SystemExternalBoundaryOp : Fabric_Op<"system.external_boundary", [
-    HasParent<"::fabric::SystemOp">
-]> {
+def Fabric_SystemExternalBoundaryOp
+    : Fabric_Op<"system.external_boundary", [HasParent<"::fabric::SystemOp">]> {
   let summary = "external System interface owner";
   let description = [{
     One external interface grouping. Its complete physical interface is
@@ -702,9 +661,8 @@ def Fabric_SystemExternalBoundaryOp : Fabric_Op<"system.external_boundary", [
   let hasVerifier = 1;
 }
 
-def Fabric_SystemHardwareDomainOp : Fabric_Op<"system.hardware_domain", [
-    HasParent<"::fabric::SystemOp">
-]> {
+def Fabric_SystemHardwareDomainOp
+    : Fabric_Op<"system.hardware_domain", [HasParent<"::fabric::SystemOp">]> {
   let summary = "closed typed System hardware domain";
   let description = [{
     One Clock, Reset, Power, Address, or MemoryConsistency domain. The closed
@@ -712,19 +670,16 @@ def Fabric_SystemHardwareDomainOp : Fabric_Op<"system.hardware_domain", [
     exact Fabric inventory-owner references.
   }];
 
-  let arguments = (ins
-      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
-      DenseI8ArrayAttr:$contract
-  );
+  let arguments = (ins OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      DenseI8ArrayAttr:$contract);
 
   let assemblyFormat = "`contract` `=` $contract attr-dict";
   let hasVerifier = 1;
 }
 
-def Fabric_SystemTransportResourceOp :
-    Fabric_Op<"system.transport_resource", [
-      HasParent<"::fabric::SystemOp">
-    ]> {
+def Fabric_SystemTransportResourceOp
+    : Fabric_Op<
+          "system.transport_resource", [HasParent<"::fabric::SystemOp">]> {
   let summary = "typed System transport capacity and state owner";
   let description = [{
     One independently meaningful transport resource with exact token port
@@ -732,12 +687,10 @@ def Fabric_SystemTransportResourceOp :
     is the only legal clock-domain crossing carried by this resource.
   }];
 
-  let arguments = (ins
-      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+  let arguments = (ins OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
       TypeAttrOf<FunctionType>:$function_type,
       DenseI8ArrayAttr:$resource_contract,
-      OptionalAttr<DenseI8ArrayAttr>:$clock_crossing
-  );
+      OptionalAttr<DenseI8ArrayAttr>:$clock_crossing);
 
   let assemblyFormat = [{
     `ports` `=` $function_type
@@ -747,10 +700,8 @@ def Fabric_SystemTransportResourceOp :
   let hasVerifier = 1;
 }
 
-def Fabric_SystemTransferPatternOp :
-    Fabric_Op<"system.transfer_pattern", [
-      HasParent<"::fabric::SystemOp">
-    ]> {
+def Fabric_SystemTransferPatternOp
+    : Fabric_Op<"system.transfer_pattern", [HasParent<"::fabric::SystemOp">]> {
   let summary = "one atomic System transport traversal pattern";
   let description = [{
     One ingress, a canonical non-empty egress set, and the exact owner-local
@@ -763,9 +714,8 @@ def Fabric_SystemTransferPatternOp :
   let hasVerifier = 1;
 }
 
-def Fabric_SystemConnectionOp : Fabric_Op<"system.connection", [
-    HasParent<"::fabric::SystemOp">
-]> {
+def Fabric_SystemConnectionOp
+    : Fabric_Op<"system.connection", [HasParent<"::fabric::SystemOp">]> {
   let summary = "fixed directed System transport connection";
   let description = [{
     One exact point-to-point connection between existing transport endpoints.
@@ -773,10 +723,7 @@ def Fabric_SystemConnectionOp : Fabric_Op<"system.connection", [
     behavior; independently meaningful behavior is a transport resource.
   }];
 
-  let arguments = (ins
-      DenseI8ArrayAttr:$source,
-      DenseI8ArrayAttr:$destination
-  );
+  let arguments = (ins DenseI8ArrayAttr:$source, DenseI8ArrayAttr:$destination);
 
   let assemblyFormat = [{
     `source` `=` $source `destination` `=` $destination attr-dict
@@ -784,10 +731,9 @@ def Fabric_SystemConnectionOp : Fabric_Op<"system.connection", [
   let hasVerifier = 1;
 }
 
-def Fabric_SystemSpatialAttachmentOp :
-    Fabric_Op<"system.spatial_attachment", [
-      HasParent<"::fabric::SystemOp">
-    ]> {
+def Fabric_SystemSpatialAttachmentOp
+    : Fabric_Op<
+          "system.spatial_attachment", [HasParent<"::fabric::SystemOp">]> {
   let summary = "module boundary to SpatialCore occurrence attachment";
   let description = [{
     One structural, one-to-one correspondence between an ImportedModule
@@ -796,10 +742,8 @@ def Fabric_SystemSpatialAttachmentOp :
     the referenced endpoints.
   }];
 
-  let arguments = (ins
-      DenseI8ArrayAttr:$module_endpoint,
-      DenseI8ArrayAttr:$spatial_endpoint
-  );
+  let arguments = (ins DenseI8ArrayAttr:$module_endpoint,
+      DenseI8ArrayAttr:$spatial_endpoint);
 
   let assemblyFormat = [{
     `module_endpoint` `=` $module_endpoint
@@ -808,11 +752,9 @@ def Fabric_SystemSpatialAttachmentOp :
   let hasVerifier = 1;
 }
 
-def Fabric_YieldOp : Fabric_Op<"yield", [
-    Terminator,
-    Pure
-]> {
-  let summary = "terminator of a fabric.fu, named fabric.pe, or fabric.module region";
+def Fabric_YieldOp : Fabric_Op<"yield", [Terminator, Pure]> {
+  let summary =
+      "terminator of a fabric.fu, named fabric.pe, or fabric.module region";
   let description = [{
     Closes the enclosing `fabric.fu`, named `fabric.pe`, or `fabric.module`
     body.
@@ -847,11 +789,9 @@ def Fabric_YieldOp : Fabric_Op<"yield", [
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 
-  let builders = [
-    OpBuilder<(ins), [{
+  let builders = [OpBuilder<(ins), [{
       build($_builder, $_state, ::mlir::ValueRange{});
-    }]>
-  ];
+    }]>];
 }
 
 #endif // FABRIC_OPS_TD

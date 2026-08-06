@@ -200,8 +200,19 @@ VectorStructuralFuParameters builtinVectorStructuralParameters() {
                                              128, 128, 32, 16}};
 }
 
-MemoryInterfaceParameters builtinMemoryInterface() {
-  return {MemoryAccessDomainParameters{128, 128, 16}, 128, 128};
+llvm::Expected<MemoryAccessDomainParameters> builtinMemoryAccessDomain() {
+  auto indexWidths =
+      ::fabric::UnsignedDomain::fromCanonical({{32, 32}, {64, 64}});
+  if (!indexWidths)
+    return indexWidths.takeError();
+  return MemoryAccessDomainParameters{128, 128, 16, std::move(*indexWidths)};
+}
+
+llvm::Expected<MemoryInterfaceParameters> builtinMemoryInterface() {
+  auto accessDomain = builtinMemoryAccessDomain();
+  if (!accessDomain)
+    return accessDomain.takeError();
+  return MemoryInterfaceParameters{std::move(*accessDomain), 128, 128};
 }
 
 llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
@@ -302,13 +313,16 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   if (!spatial)
     return spatial.takeError();
 
-  auto spatialMemory =
-      makeGeneral64LocalMemory({scale.memoryCapacityBytes,
-                                builtinMemoryInterface(), std::nullopt, true});
+  auto memoryInterface = builtinMemoryInterface();
+  if (!memoryInterface)
+    return memoryInterface.takeError();
+
+  auto spatialMemory = makeGeneral64LocalMemory(
+      {scale.memoryCapacityBytes, *memoryInterface, std::nullopt, true});
   if (!spatialMemory)
     return spatialMemory.takeError();
   auto temporalMemory = makeGeneral64LocalMemory(
-      {scale.memoryCapacityBytes, builtinMemoryInterface(),
+      {scale.memoryCapacityBytes, *memoryInterface,
        TemporalMemoryParameters{scale.temporalResidentContexts,
                                 scale.temporalResidentContexts},
        true});
@@ -680,6 +694,8 @@ expandBuiltinSystemImpl(DesignBuilder &design,
     clockMembers.push_back(core.instructionCoreDomainMember());
     clockMembers.push_back(core.spatialCoreDomainMember());
   }
+  std::vector<SystemTransportEndpoint> memoryRequestCarriers;
+  std::vector<SystemTransportEndpoint> memoryResponseCarriers;
   for (std::uint32_t source = 0; source != cores.size(); ++source) {
     for (std::uint32_t gateway = 0; gateway != descriptor.scale.gatewayCount;
          ++gateway) {
@@ -698,11 +714,13 @@ expandBuiltinSystemImpl(DesignBuilder &design,
       auto transportInput = transport->input(0);
       if (!transportInput)
         return transportInput.takeError();
+      memoryRequestCarriers.push_back(*transportInput);
       if (llvm::Error error = system->connect(*sourceEndpoint, *transportInput))
         return std::move(error);
       auto transportOutput = transport->output(0);
       if (!transportOutput)
         return transportOutput.takeError();
+      memoryResponseCarriers.push_back(*transportOutput);
       auto destinationEndpoint =
           cores[destination].spatialTransportInput(gateway);
       if (!destinationEndpoint)
@@ -732,9 +750,11 @@ expandBuiltinSystemImpl(DesignBuilder &design,
       descriptor.scale.memoryCapacityBytes, descriptor.scale.accCoreCount);
   if (!systemMemoryCapacity)
     return invalid("builtin System memory capacity overflows u64");
+  auto memoryAccessDomain = builtinMemoryAccessDomain();
+  if (!memoryAccessDomain)
+    return memoryAccessDomain.takeError();
   auto systemMemory = makeGeneral64SystemMemory(
-      {0, *systemMemoryCapacity, MemoryAccessDomainParameters{128, 128, 16},
-       128},
+      {0, *systemMemoryCapacity, std::move(*memoryAccessDomain), 128},
       std::move(*serviceRate));
   if (!systemMemory)
     return systemMemory.takeError();
@@ -745,6 +765,25 @@ expandBuiltinSystemImpl(DesignBuilder &design,
       system->addServiceEndpoint(*memoryService, systemMemory->capabilities);
   if (!memoryEndpoint)
     return memoryEndpoint.takeError();
+  auto memoryEndpointRef = memoryEndpoint->memory();
+  if (!memoryEndpointRef)
+    return memoryEndpointRef.takeError();
+  if (llvm::Error error = system->attachServiceLegCarriers(
+          *memoryEndpointRef, dataflow::semantics::ServiceKind::MemoryRead, 0,
+          memoryRequestCarriers))
+    return std::move(error);
+  if (llvm::Error error = system->attachServiceLegCarriers(
+          *memoryEndpointRef, dataflow::semantics::ServiceKind::MemoryRead, 1,
+          memoryResponseCarriers))
+    return std::move(error);
+  if (llvm::Error error = system->attachServiceLegCarriers(
+          *memoryEndpointRef, dataflow::semantics::ServiceKind::MemoryWrite, 0,
+          memoryRequestCarriers))
+    return std::move(error);
+  if (llvm::Error error = system->attachServiceLegCarriers(
+          *memoryEndpointRef, dataflow::semantics::ServiceKind::MemoryWrite, 1,
+          memoryResponseCarriers))
+    return std::move(error);
   clockMembers.push_back(memoryService->domainMember());
   clockMembers.push_back(memoryEndpoint->domainMember());
   if (llvm::Error error = clock->close(clockMembers, *clockContract))

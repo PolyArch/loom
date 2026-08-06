@@ -32,6 +32,7 @@ int main(int argc, char **argv) {
                     "[--conformance-anchors]\n";
     return EXIT_FAILURE;
   }
+  loom::adg::test::runServiceLegCarrierTests();
   loom::adg::test::runBuilderTests();
   loom::adg::test::runBuiltinTests();
   loom::adg::test::runTopologyTests();

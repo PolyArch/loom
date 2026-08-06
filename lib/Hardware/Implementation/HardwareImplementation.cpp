@@ -1056,7 +1056,7 @@ canonicalize(HardwareImplementationDraft draft,
              const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (draft.fabric.schemaIdentity != fabric::fabricArtifactSchema.identity ||
       draft.fabric.schemaVersion != fabric::fabricArtifactSchema.version)
-    return invalid("fabric_ref requires loom.fabric 1.1");
+    return invalid("fabric_ref requires loom.fabric 2.0");
   auto importedFabric = fabric::importEntireFabricRoot(draft.fabric, artifacts);
   if (!importedFabric)
     return importedFabric.takeError();

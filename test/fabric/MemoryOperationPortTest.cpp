@@ -87,6 +87,19 @@ UnsignedDomain singleton(std::uint64_t value) {
               UnsignedDomain::fromCanonical({UnsignedInterval{value, value}}));
 }
 
+MemoryAddressDomain rootRelativeAddress(std::uint64_t indexBits) {
+  return take("root-relative address domain",
+              MemoryAddressDomain::rootRelative(singleton(indexBits)));
+}
+
+MemoryAddressDomain pointerAddress(std::uint32_t representationBits) {
+  return take(
+      "pointer-addressed domain",
+      MemoryAddressDomain::pointerAddressed(PointerFormatRelation::get(
+          {{0, representationBits, representationBits,
+            loom::PointerLayoutKind::StableIntegral}})));
+}
+
 AlignmentDomain allAlignments() {
   return take("alignment",
               AlignmentDomain::create(take(
@@ -114,7 +127,7 @@ MemoryAccessClass elementAccess() {
                   {MaskInactivePair{MemoryMaskForm::Absent,
                                     InactiveLaneSemantics::NotApplicable}},
                   allAlignments(), readDomain(ReadSubwordSemantics::ZeroExtend),
-                  noWrite()));
+                  noWrite(), rootRelativeAddress(32)));
 }
 
 MemoryAccessClass vectorAccess() {
@@ -126,7 +139,25 @@ MemoryAccessClass vectorAccess() {
                             InactiveLaneSemantics::NotApplicable},
            MaskInactivePair{MemoryMaskForm::Dynamic,
                             InactiveLaneSemantics::SuppressAndZeroFill}},
-          allAlignments(), readDomain(ReadSubwordSemantics::Exact), noWrite()));
+          allAlignments(), readDomain(ReadSubwordSemantics::Exact), noWrite(),
+          rootRelativeAddress(32)));
+}
+
+MemoryAccessClass vectorAccess(MemoryAccessForm form,
+                               MemoryAddressDomain addressDomain,
+                               std::uint64_t maximumLanes) {
+  return take(
+      "parameterized vector access",
+      MemoryAccessClass::create(
+          form, singleton(32),
+          take("lane domain", UnsignedDomain::fromCanonical(
+                                  {UnsignedInterval{2, maximumLanes}})),
+          {MaskInactivePair{MemoryMaskForm::Absent,
+                            InactiveLaneSemantics::NotApplicable},
+           MaskInactivePair{MemoryMaskForm::Dynamic,
+                            InactiveLaneSemantics::SuppressAndZeroFill}},
+          allAlignments(), readDomain(ReadSubwordSemantics::ZeroExtend),
+          noWrite(), std::move(addressDomain)));
 }
 
 ResourceContract directContract() {
@@ -216,14 +247,22 @@ ActorProjection project(mlir::ModuleOp module, llvm::StringRef name) {
 }
 
 std::vector<MemoryTransportEndpointDescriptor>
-hybridEndpoints(mlir::MLIRContext &context) {
+hybridEndpoints(mlir::MLIRContext &context,
+                std::uint32_t addressPayloadBits = 32) {
   mlir::FunctionType type = mlir::FunctionType::get(
       &context,
-      {BitsType::get(&context, 32), BitsType::get(&context, 4),
+      {BitsType::get(&context, addressPayloadBits), BitsType::get(&context, 4),
        BitsType::get(&context, 0)},
       {BitsType::get(&context, 128), BitsType::get(&context, 0)});
   return take("endpoint inventory",
               deriveMemoryTransportEndpointInventory(type));
+}
+
+MemoryOperationPortDeclaration declarationForAccess(MemoryAccessClass access) {
+  return {{0, 1, 2, 3, 4},
+          directContract(),
+          {{MemoryPortTransactionProjection::Direct}},
+          {alternativeForAccess(std::move(access))}};
 }
 
 MemoryOperationPortRecord hybridPort(mlir::MLIRContext &context) {
@@ -327,6 +366,36 @@ void checkCompleteRelationNormalization(mlir::MLIRContext &context) {
       "strict split relation", MemoryOperationPortRecord::fromCanonical(
                                    &context, Schedule::Spatial,
                                    hybridEndpoints(context), std::move(split)));
+}
+
+void checkAddressPayloadCapacity(mlir::MLIRContext &context) {
+  auto create = [&](MemoryAccessClass access, std::uint32_t addressBits) {
+    return MemoryOperationPortRecord::create(
+        &context, Schedule::Spatial, hybridEndpoints(context, addressBits),
+        declarationForAccess(std::move(access)));
+  };
+
+  take("indexed RootRelative address capacity",
+       create(vectorAccess(MemoryAccessForm::Indexed,
+                           rootRelativeAddress(64), 2),
+              128));
+  expectRejected<MemoryOperationPortRecord>(
+      "indexed RootRelative address overflow",
+      create(vectorAccess(MemoryAccessForm::Indexed,
+                          rootRelativeAddress(64), 3),
+             128));
+  take("contiguous RootRelative address capacity",
+       create(vectorAccess(MemoryAccessForm::Contiguous,
+                           rootRelativeAddress(64), 4),
+              64));
+
+  take("indexed pointer address capacity",
+       create(vectorAccess(MemoryAccessForm::Indexed, pointerAddress(64), 2),
+              128));
+  expectRejected<MemoryOperationPortRecord>(
+      "indexed pointer address overflow",
+      create(vectorAccess(MemoryAccessForm::Indexed, pointerAddress(64), 3),
+             128));
 }
 
 void checkConnectivityContract(mlir::MLIRContext &context) {
@@ -495,6 +564,7 @@ int main() {
   checkHybridGeometry(*module, context);
   checkRoleDirection(context);
   checkCompleteRelationNormalization(context);
+  checkAddressPayloadCapacity(context);
   checkConnectivityContract(context);
   checkExactFabricCarrier(context);
   return EXIT_SUCCESS;

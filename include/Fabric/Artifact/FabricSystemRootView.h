@@ -51,6 +51,8 @@ public:
   serviceEndpointCapabilities(SystemServiceEndpointRef endpoint) const;
   const SystemServiceTransformRecord *
   serviceTransform(SystemServiceTransformRef transform) const;
+  llvm::ArrayRef<ServiceLegCarrierAttachmentRecord>
+  serviceLegCarrierAttachments() const;
 
   llvm::ArrayRef<FabricSpatialAttachmentRecordView> spatialAttachments() const;
   llvm::ArrayRef<HardwareDomainRef> hardwareDomains() const;

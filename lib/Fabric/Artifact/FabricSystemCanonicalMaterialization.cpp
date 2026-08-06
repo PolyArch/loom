@@ -734,6 +734,35 @@ remapSpatialAttachment(::fabric::SystemSpatialAttachmentOp attachment,
   return llvm::Error::success();
 }
 
+llvm::Error remapServiceLegCarrierAttachment(
+    ::fabric::SystemServiceLegCarrierAttachmentOp attachment,
+    const SystemReferenceRemapper &remapper) {
+  auto record = decodeServiceLegCarrierAttachmentRecord(
+      unsignedBytes(attachment.getRecordAttr()));
+  if (!record)
+    return record.takeError();
+  auto endpoint = remapper.remap(record->endpoint());
+  if (!endpoint)
+    return endpoint.takeError();
+  std::vector<FabricTransportEndpointRef> carriers;
+  carriers.reserve(record->carriers().size());
+  for (const FabricTransportEndpointRef &carrier : record->carriers()) {
+    auto mapped = remapper.remap(carrier);
+    if (!mapped)
+      return mapped.takeError();
+    carriers.push_back(*mapped);
+  }
+  auto mapped = ServiceLegCarrierAttachmentRecord::create(
+      *endpoint, record->kind(), record->legOrdinal(), std::move(carriers));
+  if (!mapped)
+    return mapped.takeError();
+  auto bytes = encodeServiceLegCarrierAttachmentRecord(*mapped);
+  if (!bytes)
+    return bytes.takeError();
+  attachment.setRecordAttr(denseBytes(attachment.getContext(), *bytes));
+  return llvm::Error::success();
+}
+
 llvm::Error remapOperation(Operation *operation,
                            const SystemReferenceRemapper &remapper) {
   if (auto core = dyn_cast<::fabric::SystemAccCoreOp>(operation))
@@ -755,6 +784,9 @@ llvm::Error remapOperation(Operation *operation,
   if (auto attachment =
           dyn_cast<::fabric::SystemSpatialAttachmentOp>(operation))
     return remapSpatialAttachment(attachment, remapper);
+  if (auto attachment =
+          dyn_cast<::fabric::SystemServiceLegCarrierAttachmentOp>(operation))
+    return remapServiceLegCarrierAttachment(attachment, remapper);
   if (isa<::fabric::SystemHostCoreOp, ::fabric::SystemExternalBoundaryOp>(
           operation))
     return llvm::Error::success();

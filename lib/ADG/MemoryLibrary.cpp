@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
+#include <map>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -74,7 +76,7 @@ enumDomain(std::initializer_list<Enum> values) {
 
 llvm::Expected<::fabric::MemoryAccessClass>
 elementAccess(bool reads, CatalogMemoryDomain domain,
-              dataflow::semantics::MemoryAddressForm addressForm) {
+              ::fabric::MemoryAddressDomain addressDomain) {
   auto widths = scalarElementWidths(domain);
   if (!widths)
     return widths.takeError();
@@ -98,16 +100,14 @@ elementAccess(bool reads, CatalogMemoryDomain domain,
       MemoryAccessForm::Element, std::move(*widths), std::move(*lanes),
       {{MemoryMaskForm::Absent,
         ::fabric::InactiveLaneSemantics::NotApplicable}},
-      std::move(*alignments), std::move(*read), std::move(*write), addressForm,
-      addressForm == dataflow::semantics::MemoryAddressForm::PointerAddressed
-          ? ::loom::adg::detail::catalogPointerFormats()
-          : ::fabric::PointerFormatRelation{},
+      std::move(*alignments), std::move(*read), std::move(*write),
+      std::move(addressDomain),
       ::loom::adg::detail::catalogPointerFormats());
 }
 
 llvm::Expected<::fabric::MemoryAccessClass>
 vectorAccess(bool reads, MemoryAccessForm accessForm,
-             dataflow::semantics::MemoryAddressForm addressForm,
+             ::fabric::MemoryAddressDomain addressDomain,
              std::uint32_t elementWidth, std::uint64_t maximumLanes,
              llvm::ArrayRef<::fabric::MaskInactivePair> masks) {
   auto widths = singleton(elementWidth);
@@ -131,11 +131,76 @@ vectorAccess(bool reads, MemoryAccessForm accessForm,
     return write.takeError();
   return ::fabric::MemoryAccessClass::create(
       accessForm, std::move(*widths), std::move(*lanes), masks,
-      std::move(*alignments), std::move(*read), std::move(*write), addressForm,
-      addressForm == dataflow::semantics::MemoryAddressForm::PointerAddressed
-          ? ::loom::adg::detail::catalogPointerFormats()
-          : ::fabric::PointerFormatRelation{},
+      std::move(*alignments), std::move(*read), std::move(*write),
+      std::move(addressDomain),
       ::loom::adg::detail::catalogPointerFormats());
+}
+
+struct IndexedRootRelativeDomain final {
+  ::fabric::UnsignedDomain indexWidths;
+  std::uint64_t maximumLanes;
+};
+
+llvm::Expected<std::vector<IndexedRootRelativeDomain>>
+partitionIndexedRootRelativeDomains(const ::fabric::UnsignedDomain &widths,
+                                    std::uint32_t addressPayloadBits,
+                                    std::uint64_t dataLaneCapacity) {
+  std::map<std::uint64_t, std::vector<::fabric::UnsignedInterval>> byLanes;
+  const std::uint64_t maximumWidth = addressPayloadBits / 2;
+  for (::fabric::UnsignedInterval interval : widths.intervals()) {
+    std::uint64_t cursor = interval.lower;
+    const std::uint64_t upper = std::min(interval.upper, maximumWidth);
+    while (cursor <= upper) {
+      const std::uint64_t quotient = addressPayloadBits / cursor;
+      const std::uint64_t lanes = std::min(dataLaneCapacity, quotient);
+      if (lanes < 2)
+        break;
+      const std::uint64_t last =
+          std::min(upper, quotient >= dataLaneCapacity
+                              ? addressPayloadBits / dataLaneCapacity
+                              : addressPayloadBits / quotient);
+      byLanes[lanes].push_back({cursor, last});
+      cursor = last + 1;
+    }
+  }
+
+  std::vector<IndexedRootRelativeDomain> result;
+  result.reserve(byLanes.size());
+  for (auto &[lanes, intervals] : byLanes) {
+    auto domain = ::fabric::UnsignedDomain::normalize(intervals);
+    if (!domain)
+      return domain.takeError();
+    result.push_back({std::move(*domain), lanes});
+  }
+  return result;
+}
+
+struct IndexedPointerDomain final {
+  ::fabric::PointerFormatRelation pointerFormats;
+  std::uint64_t maximumLanes;
+};
+
+llvm::Expected<std::vector<IndexedPointerDomain>>
+partitionIndexedPointerDomains(const ::fabric::PointerFormatRelation &formats,
+                               std::uint32_t addressPayloadBits,
+                               std::uint64_t dataLaneCapacity) {
+  std::map<std::uint64_t, ::fabric::PointerFormatRelation> byLanes;
+  for (const ::fabric::PointerFormat &format : formats.formats()) {
+    const std::uint64_t lanes =
+        std::min<std::uint64_t>(dataLaneCapacity,
+                                addressPayloadBits /
+                                    format.representationBits);
+    if (lanes < 2)
+      continue;
+    if (!byLanes[lanes].insert(format))
+      return invalid("catalog pointer-format relation is not canonical");
+  }
+
+  std::vector<IndexedPointerDomain> result;
+  result.reserve(byLanes.size());
+  for (auto &[lanes, pointerFormats] : byLanes)
+    result.push_back({std::move(pointerFormats), lanes});
+  return result;
 }
 
 llvm::Expected<::fabric::ParameterizedMemoryAccessDomain>
@@ -145,31 +210,44 @@ accessDomain(bool reads, CatalogMemoryDomain domain,
   using dataflow::semantics::MemoryAddressForm;
   if (parameters.dataPayloadBits == 0 || parameters.maskPayloadBits == 0)
     return invalid("memory access-domain widths must be positive");
+  if (!parameters.rootRelativeIndexWidths)
+    return invalid(
+        "memory access domain requires explicit RootRelative index widths");
+  auto rootAddress = ::fabric::MemoryAddressDomain::rootRelative(
+      *parameters.rootRelativeIndexWidths);
+  if (!rootAddress)
+    return rootAddress.takeError();
+  const ::fabric::PointerFormatRelation pointerFormats =
+      ::loom::adg::detail::catalogPointerFormats();
+  auto pointerAddress =
+      ::fabric::MemoryAddressDomain::pointerAddressed(pointerFormats);
+  if (!pointerAddress)
+    return pointerAddress.takeError();
   if (projection != AccessProjectionDomain::Direct &&
       !parameters.indexedAddressPayloadBits)
     return invalid("indexed memory domain requires an indexed address width");
 
   std::vector<::fabric::MemoryAccessClass> classes;
-  constexpr std::array addressForms = {MemoryAddressForm::RootRelative,
-                                       MemoryAddressForm::PointerAddressed};
   if (projection != AccessProjectionDomain::Indexed) {
-    for (MemoryAddressForm addressForm : addressForms) {
-      auto element = elementAccess(reads, domain, addressForm);
-      if (!element)
-        return element.takeError();
-      classes.push_back(std::move(*element));
-    }
+    auto rootElement = elementAccess(reads, domain, *rootAddress);
+    if (!rootElement)
+      return rootElement.takeError();
+    classes.push_back(std::move(*rootElement));
+    auto pointerElement = elementAccess(reads, domain, *pointerAddress);
+    if (!pointerElement)
+      return pointerElement.takeError();
+    classes.push_back(std::move(*pointerElement));
   }
 
   auto appendVectorClasses = [&](MemoryAccessForm accessForm,
-                                 MemoryAddressForm addressForm,
+                                 ::fabric::MemoryAddressDomain addressDomain,
                                  std::uint32_t elementWidth,
                                  std::uint64_t maximumLanes) -> llvm::Error {
     if (maximumLanes < 2)
       return llvm::Error::success();
     const ::fabric::MaskInactivePair absent{
         MemoryMaskForm::Absent, ::fabric::InactiveLaneSemantics::NotApplicable};
-    auto unmasked = vectorAccess(reads, accessForm, addressForm, elementWidth,
+    auto unmasked = vectorAccess(reads, accessForm, addressDomain, elementWidth,
                                  maximumLanes, {absent});
     if (!unmasked)
       return unmasked.takeError();
@@ -183,8 +261,8 @@ accessDomain(bool reads, CatalogMemoryDomain domain,
         MemoryMaskForm::Dynamic,
         reads ? ::fabric::InactiveLaneSemantics::SuppressAndZeroFill
               : ::fabric::InactiveLaneSemantics::Suppress};
-    auto masked = vectorAccess(reads, accessForm, addressForm, elementWidth,
-                               maskedMaximum, {dynamic});
+    auto masked = vectorAccess(reads, accessForm, std::move(addressDomain),
+                               elementWidth, maskedMaximum, {dynamic});
     if (!masked)
       return masked.takeError();
     classes.push_back(std::move(*masked));
@@ -193,19 +271,44 @@ accessDomain(bool reads, CatalogMemoryDomain domain,
 
   for (std::uint32_t width : catalogElementWidths(domain)) {
     const std::uint64_t dataLanes = parameters.dataPayloadBits / width;
-    if (projection != AccessProjectionDomain::Indexed)
-      for (MemoryAddressForm addressForm : addressForms)
-        if (llvm::Error error = appendVectorClasses(
-                MemoryAccessForm::Contiguous, addressForm, width, dataLanes))
-          return std::move(error);
+    if (projection != AccessProjectionDomain::Indexed) {
+      if (llvm::Error error = appendVectorClasses(
+              MemoryAccessForm::Contiguous, *rootAddress, width, dataLanes))
+        return std::move(error);
+      if (llvm::Error error = appendVectorClasses(
+              MemoryAccessForm::Contiguous, *pointerAddress, width, dataLanes))
+        return std::move(error);
+    }
     if (projection != AccessProjectionDomain::Direct) {
-      const std::uint64_t addressLanes =
-          *parameters.indexedAddressPayloadBits / 32;
-      const std::uint64_t indexedLanes = std::min(dataLanes, addressLanes);
-      for (MemoryAddressForm addressForm : addressForms)
+      auto rootDomains = partitionIndexedRootRelativeDomains(
+          *parameters.rootRelativeIndexWidths,
+          *parameters.indexedAddressPayloadBits, dataLanes);
+      if (!rootDomains)
+        return rootDomains.takeError();
+      for (IndexedRootRelativeDomain &root : *rootDomains) {
+        auto address = ::fabric::MemoryAddressDomain::rootRelative(
+            std::move(root.indexWidths));
+        if (!address)
+          return address.takeError();
         if (llvm::Error error = appendVectorClasses(
-                MemoryAccessForm::Indexed, addressForm, width, indexedLanes))
+                MemoryAccessForm::Indexed, std::move(*address), width,
+                root.maximumLanes))
           return std::move(error);
+      }
+      auto pointerDomains = partitionIndexedPointerDomains(
+          pointerFormats, *parameters.indexedAddressPayloadBits, dataLanes);
+      if (!pointerDomains)
+        return pointerDomains.takeError();
+      for (IndexedPointerDomain &pointer : *pointerDomains) {
+        auto address = ::fabric::MemoryAddressDomain::pointerAddressed(
+            std::move(pointer.pointerFormats));
+        if (!address)
+          return address.takeError();
+        if (llvm::Error error = appendVectorClasses(
+                MemoryAccessForm::Indexed, std::move(*address), width,
+                pointer.maximumLanes))
+          return std::move(error);
+      }
     }
   }
   if (classes.empty())
@@ -351,12 +454,20 @@ endpointInventory(const MemoryEndpointLayout &layout,
   return endpoints;
 }
 
-std::uint32_t
-maximumIndexedLaneCount(const MemoryAccessDomainParameters &parameters) {
-  if (!parameters.indexedAddressPayloadBits)
-    return 0;
-  return std::min(parameters.dataPayloadBits / 8,
-                  *parameters.indexedAddressPayloadBits / 32);
+llvm::Expected<std::uint32_t> maximumIndexedLaneCount(
+    const ::fabric::ParameterizedMemoryAccessDomain &domain) {
+  std::uint64_t maximum = 0;
+  for (const ::fabric::MemoryAccessClass &access : domain.accessClasses()) {
+    if (access.accessForm() != MemoryAccessForm::Indexed)
+      continue;
+    if (access.flattenedLaneCounts().intervals().empty())
+      return invalid("indexed memory access has no lane-count interval");
+    maximum = std::max(
+        maximum, access.flattenedLaneCounts().intervals().back().upper);
+  }
+  if (maximum > std::numeric_limits<std::uint32_t>::max())
+    return invalid("indexed memory lane count exceeds u32");
+  return static_cast<std::uint32_t>(maximum);
 }
 
 std::vector<::fabric::MemoryRoleEndpointBindingRecord>
@@ -380,22 +491,31 @@ llvm::Expected<::fabric::MemoryOperationPortDeclaration> operationPort(
     llvm::ArrayRef<::fabric::MemoryTransportEndpointDescriptor> endpoints,
     const MemoryEndpointLayout &layout, bool reads, CatalogMemoryDomain domain,
     const MemoryAccessDomainParameters &parameters) {
-  const std::uint32_t indexedLanes = maximumIndexedLaneCount(parameters);
-  if (parameters.indexedAddressPayloadBits && indexedLanes < 2)
-    return invalid("indexed memory endpoint cannot carry two lane addresses");
-  auto resources = operationPortResourceContract(
-      parameters.indexedAddressPayloadBits
-          ? std::optional<std::uint32_t>(indexedLanes)
-          : std::nullopt);
+  auto directAccesses =
+      accessDomain(reads, domain, parameters, AccessProjectionDomain::Direct);
+  if (!directAccesses)
+    return directAccesses.takeError();
+  std::optional<::fabric::ParameterizedMemoryAccessDomain> indexedAccesses;
+  std::optional<std::uint32_t> indexedLanes;
+  if (parameters.indexedAddressPayloadBits) {
+    auto indexed = accessDomain(reads, domain, parameters,
+                                AccessProjectionDomain::Indexed);
+    if (!indexed)
+      return indexed.takeError();
+    auto maximum = maximumIndexedLaneCount(*indexed);
+    if (!maximum)
+      return maximum.takeError();
+    if (*maximum < 2)
+      return invalid("indexed memory endpoint cannot carry two lane addresses");
+    indexedLanes = *maximum;
+    indexedAccesses = std::move(*indexed);
+  }
+  auto resources = operationPortResourceContract(indexedLanes);
   if (!resources)
     return resources.takeError();
   auto actors = actorDomain(reads);
   if (!actors)
     return actors.takeError();
-  auto directAccesses =
-      accessDomain(reads, domain, parameters, AccessProjectionDomain::Direct);
-  if (!directAccesses)
-    return directAccesses.takeError();
 
   const std::uint64_t scalarAddress =
       reads ? layout.readScalarAddress : layout.writeScalarAddress;
@@ -405,10 +525,6 @@ llvm::Expected<::fabric::MemoryOperationPortDeclaration> operationPort(
                           std::move(*directAccesses),
                           {::fabric::UsePatternKey(0)}});
   if (parameters.indexedAddressPayloadBits) {
-    auto indexedAccesses = accessDomain(reads, domain, parameters,
-                                        AccessProjectionDomain::Indexed);
-    if (!indexedAccesses)
-      return indexedAccesses.takeError();
     const std::uint64_t indexedAddress =
         reads ? *layout.readIndexedAddress : *layout.writeIndexedAddress;
     alternatives.push_back({std::move(*actors),

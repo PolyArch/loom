@@ -957,6 +957,40 @@ SystemBuilder::addTransferPattern(const SystemTransportResource &resource,
   return SystemTransferPattern(*state, rootOrdinal_, pattern);
 }
 
+llvm::Error SystemBuilder::attachServiceLegCarriers(
+    const SystemMemoryEndpoint &endpoint, dataflow::semantics::ServiceKind kind,
+    dataflow::StructuralOrdinal legOrdinal,
+    llvm::ArrayRef<SystemTransportEndpoint> carriers) {
+  auto state = detail::activeState(state_);
+  if (!state)
+    return state.takeError();
+  if (llvm::Error error = checkOwned(endpoint, *state, rootOrdinal_))
+    return error;
+
+  std::vector<loom::fabric::FabricTransportEndpointRef> carrierRefs;
+  carrierRefs.reserve(carriers.size());
+  for (const SystemTransportEndpoint &carrier : carriers) {
+    if (llvm::Error error = checkOwned(carrier, *state, rootOrdinal_))
+      return error;
+    carrierRefs.push_back(carrier.reference_);
+  }
+  auto record = loom::fabric::ServiceLegCarrierAttachmentRecord::create(
+      endpoint.reference_, kind, legOrdinal, std::move(carrierRefs));
+  if (!record)
+    return record.takeError();
+  auto encoded = loom::fabric::encodeServiceLegCarrierAttachmentRecord(*record);
+  if (!encoded)
+    return encoded.takeError();
+  auto root = activeSystem(*state, rootOrdinal_);
+  if (!root)
+    return root.takeError();
+  mlir::OpBuilder builder = systemInsertionBuilder(**state, **root);
+  auto operation = ::fabric::SystemServiceLegCarrierAttachmentOp::create(
+      builder, (*root)->operation.getLoc(),
+      denseBytes((*state)->context, *encoded));
+  return verifyCreated(operation, "service-leg carrier attachment");
+}
+
 llvm::Error
 SystemBuilder::addClockCrossing(const SystemTransportResource &resource,
                                 const SystemTransferPattern &pattern,

@@ -17,7 +17,7 @@ namespace loom::fabric {
 
 class FabricArtifactView;
 
-/// The closed loom.fabric 1.x owner-local kind space used by Common's
+/// The closed loom.fabric 2.x owner-local kind space used by Common's
 /// ArtifactLocalReference framing. Enumerators and typed traits are generated
 /// from the one declaration in FabricRefs.def.
 enum class FabricArtifactLocalReferenceKind : std::uint32_t {
@@ -93,7 +93,7 @@ llvm::Expected<ArtifactReference<Ref>> decodeFabricArtifactLocalReference(
       reference.artifact.schemaVersion != fabricArtifactSchema.version)
     return makeFabricRefError(
         FabricRefErrorKind::ForeignArtifact,
-        "the local reference is not owned by loom.fabric 1.1");
+        "the local reference is not owned by loom.fabric 2.0");
 
   const std::uint32_t expected = fabricArtifactLocalReferenceKindOrdinal(
       FabricArtifactLocalReferenceKindTraits<Ref>::kind);

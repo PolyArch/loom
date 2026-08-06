@@ -636,6 +636,7 @@ private:
   loom::fabric::FabricMemoryEndpointRole role_ =
       loom::fabric::FabricMemoryEndpointRole::Manager;
 
+  friend class SystemBuilder;
   friend class ServiceTransformBuilder;
   friend class SystemServiceEndpoint;
   friend class AccCore;
@@ -885,6 +886,11 @@ public:
                      std::size_t inputOrdinal,
                      llvm::ArrayRef<std::uint32_t> outputOrdinals,
                      std::uint32_t usePatternOrdinal);
+  llvm::Error
+  attachServiceLegCarriers(const SystemMemoryEndpoint &endpoint,
+                           dataflow::semantics::ServiceKind kind,
+                           dataflow::StructuralOrdinal legOrdinal,
+                           llvm::ArrayRef<SystemTransportEndpoint> carriers);
   llvm::Error addClockCrossing(const SystemTransportResource &resource,
                                const SystemTransferPattern &pattern,
                                const HardwareDomainBuilder &sourceClock,

@@ -100,13 +100,16 @@ MemoryAccessClass elementAccess() {
   auto writes = take("write semantics",
                      ClosedEnumDomain<WriteSubwordSemantics>::fromCanonical(
                          {WriteSubwordSemantics::NotApplicable}));
+  auto address = take("address domain",
+                      MemoryAddressDomain::rootRelative(singleton(64)));
   return take("element access",
               MemoryAccessClass::create(
                   dataflow::semantics::MemoryAccessForm::Element, singleton(32),
                   singleton(1),
                   {MaskInactivePair{dataflow::semantics::MemoryMaskForm::Absent,
                                     InactiveLaneSemantics::NotApplicable}},
-                  std::move(alignments), std::move(reads), std::move(writes)));
+                  std::move(alignments), std::move(reads), std::move(writes),
+                  std::move(address)));
 }
 
 MemoryServiceContractRecord

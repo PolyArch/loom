@@ -236,12 +236,15 @@ loom::adg::MemorySpec makeStorageProvider(mlir::MLIRContext &context) {
   auto write =
       take(::fabric::ClosedEnumDomain<::fabric::WriteSubwordSemantics>::
                fromCanonical({::fabric::WriteSubwordSemantics::NotApplicable}));
+  auto address = take(
+      ::fabric::MemoryAddressDomain::rootRelative(singleton(64)));
   auto access = take(::fabric::MemoryAccessClass::create(
       ::dataflow::semantics::MemoryAccessForm::Element, singleton(32),
       singleton(1),
       {{::dataflow::semantics::MemoryMaskForm::Absent,
         ::fabric::InactiveLaneSemantics::NotApplicable}},
-      std::move(alignment), std::move(read), std::move(write)));
+      std::move(alignment), std::move(read), std::move(write),
+      std::move(address)));
   auto accesses = take(
       ::fabric::ParameterizedMemoryAccessDomain::create({std::move(access)}));
   ::fabric::MemoryActorContractClause plain =
@@ -336,8 +339,9 @@ loom::fabric::FinalizedFabricRoot buildMemoryFabric(loom::ArtifactStore &store,
                                                     bool temporal) {
   loom::adg::LocalMemoryParameters parameters;
   parameters.capacityBytes = 4096;
-  parameters.interface = {loom::adg::MemoryAccessDomainParameters{128, 128, 16},
-                          128, 128};
+  parameters.interface = {
+      loom::adg::MemoryAccessDomainParameters{128, 128, 16, singleton(64)},
+      128, 128};
   parameters.managerEndpoint = true;
   if (temporal)
     parameters.temporal = loom::adg::TemporalMemoryParameters{4, 2};

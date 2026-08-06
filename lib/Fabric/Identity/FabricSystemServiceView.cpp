@@ -9,9 +9,8 @@ const ::fabric::MemoryServiceContractRecord *
 FabricSystemRootView::memoryService(SystemMemoryServiceRef service) const {
   const detail::FabricEntityViewData *entity =
       artifact_.storage_->entity(service);
-  return entity && entity->systemMemoryService
-             ? &*entity->systemMemoryService
-             : nullptr;
+  return entity && entity->systemMemoryService ? &*entity->systemMemoryService
+                                               : nullptr;
 }
 
 const SystemServiceEndpointOwnerRef *FabricSystemRootView::serviceEndpointOwner(
@@ -40,4 +39,9 @@ const SystemServiceTransformRecord *FabricSystemRootView::serviceTransform(
   return entity && entity->systemServiceTransform
              ? &*entity->systemServiceTransform
              : nullptr;
+}
+
+llvm::ArrayRef<ServiceLegCarrierAttachmentRecord>
+FabricSystemRootView::serviceLegCarrierAttachments() const {
+  return artifact_.storage_->data.serviceLegCarrierAttachments;
 }

@@ -564,6 +564,8 @@ fabric::MemoryOperationPortDeclaration memoryPort(bool reads) {
       fabric::ClosedEnumDomain<fabric::WriteSubwordSemantics>::fromCanonical(
           {reads ? fabric::WriteSubwordSemantics::NotApplicable
                  : fabric::WriteSubwordSemantics::ByteEnable}));
+  auto address = take(fabric::MemoryAddressDomain::rootRelative(
+      singletonDomain(64)));
   auto access = take(fabric::MemoryAccessClass::create(
       dataflow::semantics::MemoryAccessForm::Element, singletonDomain(32),
       singletonDomain(1),
@@ -572,7 +574,8 @@ fabric::MemoryOperationPortDeclaration memoryPort(bool reads) {
        {dataflow::semantics::MemoryMaskForm::Dynamic,
         reads ? fabric::InactiveLaneSemantics::SuppressAndZeroFill
               : fabric::InactiveLaneSemantics::Suppress}},
-      std::move(alignment), std::move(read), std::move(write)));
+      std::move(alignment), std::move(read), std::move(write),
+      std::move(address)));
   auto accessDomain = take(
       fabric::ParameterizedMemoryAccessDomain::create({std::move(access)}));
   fabric::MemoryActorContractClause plain =

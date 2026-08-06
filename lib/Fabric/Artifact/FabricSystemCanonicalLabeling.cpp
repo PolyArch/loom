@@ -67,6 +67,8 @@ enum class RelationKind : std::uint32_t {
   ConnectionSource,
   ConnectionDestination,
   SpatialAttachmentEndpoint,
+  ServiceLegAttachmentEndpoint,
+  ServiceLegAttachmentCarrier,
 };
 
 struct ProvisionalEntity {
@@ -615,6 +617,18 @@ private:
         return record.takeError();
       return serviceTransformIntrinsic(*record);
     }
+    if (auto attachment =
+            dyn_cast<::fabric::SystemServiceLegCarrierAttachmentOp>(
+                operation)) {
+      auto record = decodeServiceLegCarrierAttachmentRecord(
+          unsignedBytes(attachment.getRecordAttr()));
+      if (!record)
+        return record.takeError();
+      appendText(intrinsic, "system.service_leg_carrier_attachment");
+      appendEnum(intrinsic, record->kind());
+      appendU64(intrinsic, record->legOrdinal());
+      return intrinsic;
+    }
     if (isa<::fabric::SystemExternalBoundaryOp>(operation)) {
       appendText(intrinsic, "system.external_boundary");
       return intrinsic;
@@ -1080,6 +1094,24 @@ private:
                               memory.ordinal});
   }
 
+  llvm::Error addServiceLegCarrierAttachmentRelations(
+      ::fabric::SystemServiceLegCarrierAttachmentOp attachment,
+      std::uint32_t vertex) {
+    auto record = decodeServiceLegCarrierAttachmentRecord(
+        unsignedBytes(attachment.getRecordAttr()));
+    if (!record)
+      return record.takeError();
+    if (llvm::Error error = addMemoryEndpointRelation(
+            vertex, record->endpoint(),
+            RelationKind::ServiceLegAttachmentEndpoint))
+      return error;
+    for (const FabricTransportEndpointRef &carrier : record->carriers())
+      if (llvm::Error error = addTransportEndpointRelation(
+              vertex, carrier, RelationKind::ServiceLegAttachmentCarrier))
+        return error;
+    return llvm::Error::success();
+  }
+
   llvm::Error buildRelations() {
     for (Operation &operation : root_.getBody().front()) {
       const std::uint32_t vertex = vertexByOperation_.lookup(&operation);
@@ -1123,6 +1155,14 @@ private:
               dyn_cast<::fabric::SystemSpatialAttachmentOp>(&operation)) {
         if (llvm::Error error =
                 addSpatialAttachmentRelations(attachment, vertex))
+          return error;
+        continue;
+      }
+      if (auto attachment =
+              dyn_cast<::fabric::SystemServiceLegCarrierAttachmentOp>(
+                  &operation)) {
+        if (llvm::Error error =
+                addServiceLegCarrierAttachmentRelations(attachment, vertex))
           return error;
         continue;
       }

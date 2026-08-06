@@ -185,6 +185,7 @@ void heterogeneousSystemFinalizes() {
   TemporaryDirectory directory(test);
   loom::ArtifactStore store(directory.path());
   const PortType bits32 = take(test, PortType::bits(32));
+  const PortType bits64 = take(test, PortType::bits(64));
 
   DesignBuilder moduleDesign(store);
   auto firstSpatial =
@@ -225,7 +226,7 @@ void heterogeneousSystemFinalizes() {
 
   auto transport =
       take(test, system.addTransportResource(
-                     {{bits32}, {bits32}, singleUseResourceContract(test)}));
+                     {{bits64}, {bits64}, singleUseResourceContract(test)}));
   auto pattern = take(test, system.addTransferPattern(transport, 0, {0}, 0));
   if (llvm::Error error =
           system.connect(take(test, firstCore.spatialTransportOutput(0)),
@@ -249,6 +250,19 @@ void heterogeneousSystemFinalizes() {
       take(test, system.addServiceEndpoint(
                      memoryService,
                      systemMemoryCapabilities(test, std::move(serviceRate))));
+  auto memoryEndpointRef = take(test, memoryEndpoint.memory());
+  if (llvm::Error error = system.attachServiceLegCarriers(
+          memoryEndpointRef, ::dataflow::semantics::ServiceKind::MemoryRead, 0,
+          {take(test, transport.input(0))}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = system.attachServiceLegCarriers(
+          memoryEndpointRef, ::dataflow::semantics::ServiceKind::MemoryRead, 0,
+          {take(test, transport.input(0))}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = system.attachServiceLegCarriers(
+          memoryEndpointRef, ::dataflow::semantics::ServiceKind::MemoryRead, 1,
+          {take(test, transport.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
   auto clockContract =
       take(test, loom::fabric::ClockDomainContractRecord::create(1'000, 0));
   if (llvm::Error error = clock.close(
@@ -301,6 +315,8 @@ void heterogeneousSystemFinalizes() {
           systemView.transferPatterns(systemView.transportResources().front())
                   .size() == 1,
       "System Builder lost its explicit transport resource or pattern");
+  require(test, systemView.serviceLegCarrierAttachments().size() == 2,
+          "System Builder lost the complete memory service carrier relation");
   require(test, root.view().pointConnections().size() == 2,
           "System Builder lost its arbitrary directed transport path");
 

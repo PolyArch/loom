@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace fabric {
@@ -204,6 +206,33 @@ struct MaskInactivePair {
   }
 };
 
+/// The exact address-representation capability owned by one memory-access
+/// relation row. Root-relative accesses admit DataLayout index widths;
+/// pointer-addressed accesses admit exact pointer representations.
+class MemoryAddressDomain {
+public:
+  static llvm::Expected<MemoryAddressDomain>
+  rootRelative(UnsignedDomain indexWidths);
+  static llvm::Expected<MemoryAddressDomain>
+  pointerAddressed(PointerFormatRelation pointerFormats);
+
+  dataflow::semantics::MemoryAddressForm addressForm() const;
+  const UnsignedDomain *rootRelativeIndexWidths() const {
+    return std::get_if<UnsignedDomain>(&domain_);
+  }
+  const PointerFormatRelation *pointerFormats() const {
+    return std::get_if<PointerFormatRelation>(&domain_);
+  }
+
+private:
+  explicit MemoryAddressDomain(UnsignedDomain indexWidths)
+      : domain_(std::move(indexWidths)) {}
+  explicit MemoryAddressDomain(PointerFormatRelation pointerFormats)
+      : domain_(std::move(pointerFormats)) {}
+
+  std::variant<UnsignedDomain, PointerFormatRelation> domain_;
+};
+
 class MemoryAccessClass {
 public:
   static llvm::Expected<MemoryAccessClass>
@@ -213,9 +242,7 @@ public:
          AlignmentDomain sourceAlignments,
          ClosedEnumDomain<ReadSubwordSemantics> readSubword,
          ClosedEnumDomain<WriteSubwordSemantics> writeSubword,
-         dataflow::semantics::MemoryAddressForm addressForm =
-             dataflow::semantics::MemoryAddressForm::RootRelative,
-         PointerFormatRelation addressPointerFormats = {},
+         MemoryAddressDomain addressDomain,
          PointerFormatRelation dataPointerFormats = {});
 
   dataflow::semantics::MemoryAccessForm accessForm() const {
@@ -236,10 +263,13 @@ public:
     return writeSubword_;
   }
   dataflow::semantics::MemoryAddressForm addressForm() const {
-    return addressForm_;
+    return addressDomain_.addressForm();
   }
-  const PointerFormatRelation &addressPointerFormats() const {
-    return addressPointerFormats_;
+  const UnsignedDomain *rootRelativeIndexWidths() const {
+    return addressDomain_.rootRelativeIndexWidths();
+  }
+  const PointerFormatRelation *addressPointerFormats() const {
+    return addressDomain_.pointerFormats();
   }
   const PointerFormatRelation &dataPointerFormats() const {
     return dataPointerFormats_;
@@ -256,16 +286,15 @@ private:
                     AlignmentDomain sourceAlignments,
                     ClosedEnumDomain<ReadSubwordSemantics> readSubword,
                     ClosedEnumDomain<WriteSubwordSemantics> writeSubword,
-                    dataflow::semantics::MemoryAddressForm addressForm,
-                    PointerFormatRelation addressPointerFormats,
+                    MemoryAddressDomain addressDomain,
                     PointerFormatRelation dataPointerFormats)
       : accessForm_(accessForm), elementWidths_(std::move(elementWidths)),
         flattenedLaneCounts_(std::move(flattenedLaneCounts)),
         maskInactivePairs_(std::move(maskInactivePairs)),
         sourceAlignments_(std::move(sourceAlignments)),
         readSubword_(std::move(readSubword)),
-        writeSubword_(std::move(writeSubword)), addressForm_(addressForm),
-        addressPointerFormats_(std::move(addressPointerFormats)),
+        writeSubword_(std::move(writeSubword)),
+        addressDomain_(std::move(addressDomain)),
         dataPointerFormats_(std::move(dataPointerFormats)) {}
 
   dataflow::semantics::MemoryAccessForm accessForm_;
@@ -275,10 +304,21 @@ private:
   AlignmentDomain sourceAlignments_;
   ClosedEnumDomain<ReadSubwordSemantics> readSubword_;
   ClosedEnumDomain<WriteSubwordSemantics> writeSubword_;
-  dataflow::semantics::MemoryAddressForm addressForm_;
-  PointerFormatRelation addressPointerFormats_;
+  MemoryAddressDomain addressDomain_;
   PointerFormatRelation dataPointerFormats_;
 };
+
+/// Nonpersistent physical payload envelope mechanically derived from one
+/// reduced-product access row. It is a query over the row, not another
+/// capability declaration.
+struct MemoryAccessTransportEnvelope {
+  std::uint64_t addressPayloadBits = 0;
+  std::uint64_t dataPayloadBits = 0;
+  std::uint64_t maskPayloadBits = 0;
+};
+
+llvm::Expected<MemoryAccessTransportEnvelope>
+deriveMemoryAccessTransportEnvelope(const MemoryAccessClass &access);
 
 class ParameterizedMemoryAccessDomain {
 public:

@@ -26,6 +26,7 @@
 #include "FabricOperationTransport.h"
 #include "FabricResourceContractFinalization.h"
 #include "FabricSystemCanonicalLabeling.h"
+#include "FabricSystemServiceLegCarrier.h"
 #include "FabricSystemValidation.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
@@ -1300,6 +1301,17 @@ buildSystemView(::fabric::SystemOp root,
   }
 
   for (Operation &operation : root.getBody().front()) {
+    if (auto attachment =
+            dyn_cast<::fabric::SystemServiceLegCarrierAttachmentOp>(
+                &operation)) {
+      auto record = decodeServiceLegCarrierAttachmentRecord(
+          unsignedBytes(attachment.getRecordAttr()));
+      if (!record)
+        return record.takeError();
+      data.serviceLegCarrierAttachments.push_back(std::move(*record));
+      continue;
+    }
+
     if (auto pattern =
             dyn_cast<::fabric::SystemTransferPatternOp>(&operation)) {
       auto record = decodeSystemTransferPatternRecord(
@@ -1382,6 +1394,9 @@ buildSystemView(::fabric::SystemOp root,
   auto systemView = requireSystemRoot(*view);
   if (!systemView)
     return systemView.takeError();
+  if (llvm::Error error =
+          detail::validateSystemServiceLegCarrierAttachments(*systemView))
+    return std::move(error);
   if (llvm::Error error =
           validateSystemRelations(root, *systemView, importedModules))
     return std::move(error);
@@ -1472,6 +1487,16 @@ strictImportSystem(const ArtifactRootReference &reference,
                      carrier.op->getName().getStringRef());
   }
 
+  auto expectedOperation = labeling->canonicalOperationOrder.begin();
+  for (Operation &operation : root.getBody().front()) {
+    if (expectedOperation == labeling->canonicalOperationOrder.end() ||
+        *expectedOperation != &operation)
+      return invalid("canonical System child operation order is not canonical");
+    ++expectedOperation;
+  }
+  if (expectedOperation != labeling->canonicalOperationOrder.end())
+    return invalid("canonical System child operation order is not canonical");
+
   auto rewritten = detail::writeCanonicalFabricBytecode(module);
   if (!rewritten)
     return rewritten.takeError();
@@ -1516,6 +1541,10 @@ llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
     if (&operation != clonedRoot.getOperation())
       operation.erase();
   clonedRoot.setSymName(canonicalRootName);
+
+  if (llvm::Error error =
+          detail::normalizeSystemServiceLegCarrierAttachments(clonedRoot))
+    return std::move(error);
 
   auto labeling = detail::computeFabricSystemCanonicalLabeling(
       clonedRoot, sourceDependencies);

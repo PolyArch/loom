@@ -67,13 +67,17 @@ std::string denseI8Assembly(mlir::MLIRContext &context,
       take("write semantics",
            ::fabric::ClosedEnumDomain<::fabric::WriteSubwordSemantics>::
                fromCanonical({::fabric::WriteSubwordSemantics::Exact}));
+  auto address = take(
+      "address domain",
+      ::fabric::MemoryAddressDomain::rootRelative(singleton(64, 64)));
   return take("element access",
               ::fabric::MemoryAccessClass::create(
                   dataflow::semantics::MemoryAccessForm::Element,
                   singleton(32, 32), singleton(1, 1),
                   {{dataflow::semantics::MemoryMaskForm::Absent,
                     ::fabric::InactiveLaneSemantics::NotApplicable}},
-                  std::move(alignment), std::move(reads), std::move(writes)));
+                  std::move(alignment), std::move(reads), std::move(writes),
+                  std::move(address)));
 }
 
 ::fabric::ParameterizedMemoryAccessDomain accessDomain() {

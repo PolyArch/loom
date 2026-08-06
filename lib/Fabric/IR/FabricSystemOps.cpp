@@ -88,9 +88,10 @@ LogicalResult SystemOp::verify() {
   for (Operation &operation : block) {
     if (!isa<SystemHostCoreOp, SystemAccCoreOp, SystemMemoryServiceOp,
              SystemServiceEndpointOp, SystemServiceTransformOp,
-             SystemExternalBoundaryOp, SystemHardwareDomainOp,
-             SystemTransportResourceOp, SystemTransferPatternOp,
-             SystemConnectionOp, SystemSpatialAttachmentOp>(operation))
+             SystemServiceLegCarrierAttachmentOp, SystemExternalBoundaryOp,
+             SystemHardwareDomainOp, SystemTransportResourceOp,
+             SystemTransferPatternOp, SystemConnectionOp,
+             SystemSpatialAttachmentOp>(operation))
       return operation.emitOpError(
           "is not in the closed fabric.system child catalog");
     if (std::optional<std::uint64_t> id = entityId(operation))
@@ -181,6 +182,17 @@ LogicalResult SystemServiceEndpointOp::verify() {
                << *width << " exceeds carrier width " << *carrierWidth;
     }
   }
+  return success();
+}
+
+LogicalResult SystemServiceLegCarrierAttachmentOp::verify() {
+  if (failed(verifyClosedAttributes(getOperation())))
+    return failure();
+  auto record = loom::fabric::decodeServiceLegCarrierAttachmentRecord(
+      unsignedBytes(getRecordAttr()));
+  if (!record)
+    return emitOpError("has invalid attachment record: ")
+           << llvm::toString(record.takeError());
   return success();
 }
 

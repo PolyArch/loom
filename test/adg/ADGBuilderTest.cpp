@@ -153,6 +153,12 @@ integerCapability(::fabric::ImplementationFamilyId family,
               ::fabric::UnsignedDomain::fromCanonical({{value, value}}));
 }
 
+::fabric::MemoryAddressDomain rootRelativeAddress(std::uint64_t indexBits) {
+  return take("root-relative address domain",
+              ::fabric::MemoryAddressDomain::rootRelative(
+                  singleton(indexBits)));
+}
+
 ::fabric::ResourceContract singleUseResourceContract(llvm::StringRef test) {
   ::fabric::ResourceContractDeclaration declaration;
   declaration.states = {::fabric::ResourceStateDeclaration{
@@ -247,7 +253,8 @@ outOfOrderMicroarchitecture(llvm::StringRef test) {
                 singleton(1),
                 {{::dataflow::semantics::MemoryMaskForm::Absent,
                   ::fabric::InactiveLaneSemantics::NotApplicable}},
-                std::move(alignment), std::move(read), std::move(write)));
+                std::move(alignment), std::move(read), std::move(write),
+                rootRelativeAddress(64)));
 }
 
 ::fabric::MemoryActorContractDomain plainLoadActorDomain(llvm::StringRef test) {
@@ -353,7 +360,8 @@ systemMemoryCapabilities(llvm::StringRef test,
                singleton(1),
                {{::dataflow::semantics::MemoryMaskForm::Absent,
                  ::fabric::InactiveLaneSemantics::NotApplicable}},
-               std::move(alignment), std::move(read), std::move(write)));
+               std::move(alignment), std::move(read), std::move(write),
+               rootRelativeAddress(32)));
   auto accessDomain = take(
       "memory access domain",
       ::fabric::ParameterizedMemoryAccessDomain::create({std::move(access)}));
@@ -988,7 +996,9 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
   loom::ArtifactStore store(directory.path());
   DesignBuilder design(store);
   const loom::adg::MemoryInterfaceParameters interface{
-      loom::adg::MemoryAccessDomainParameters{128, std::nullopt, 4}, 64, 128};
+      loom::adg::MemoryAccessDomainParameters{128, std::nullopt, 4,
+                                              singleton(64)},
+      64, 128};
 
   expectError(
       test,
@@ -1122,8 +1132,12 @@ void publicMemoryRecipeKeepsIndependentEndpointWidths() {
   loom::ArtifactStore store(directory.path());
   DesignBuilder design(store);
 
+  auto indexWidths = take(
+      test, ::fabric::UnsignedDomain::fromCanonical({{48, 48}, {64, 64}}));
   const loom::adg::MemoryInterfaceParameters interface{
-      loom::adg::MemoryAccessDomainParameters{192, 256, 8}, 64, 96};
+      loom::adg::MemoryAccessDomainParameters{192, 256, 8,
+                                              std::move(indexWidths)},
+      64, 96};
   LocalMemoryParameters parameters;
   parameters.capacityBytes = 4096;
   parameters.interface = interface;
@@ -1170,13 +1184,47 @@ void publicMemoryRecipeKeepsIndependentEndpointWidths() {
   for (const auto &port : engine->operationPorts) {
     bool sawDirect = false;
     bool sawIndexed = false;
+    bool sawIndex48Lanes5 = false;
+    bool sawIndex64Lanes4 = false;
+    bool sawPointer32Lanes8 = false;
+    bool sawPointer64Lanes4 = false;
     for (const auto &alternative : port.capabilityAlternatives()) {
       require(test, alternative.accessDomain.has_value(),
               "general memory capability lost its access domain");
       bool hasIndexed = false;
-      for (const auto &access : alternative.accessDomain->accessClasses())
+      for (const auto &access : alternative.accessDomain->accessClasses()) {
         hasIndexed |= access.accessForm() ==
                       ::dataflow::semantics::MemoryAccessForm::Indexed;
+        if (access.accessForm() !=
+                ::dataflow::semantics::MemoryAccessForm::Indexed ||
+            !access.elementWidths().contains(8))
+          continue;
+        if (const auto *widths = access.rootRelativeIndexWidths()) {
+          sawIndex48Lanes5 |=
+              widths->contains(48) && !widths->contains(64) &&
+              access.flattenedLaneCounts().contains(5) &&
+              !access.flattenedLaneCounts().contains(6);
+          sawIndex64Lanes4 |=
+              widths->contains(64) && !widths->contains(48) &&
+              access.flattenedLaneCounts().contains(4) &&
+              !access.flattenedLaneCounts().contains(5);
+          continue;
+        }
+        if (const auto *formats = access.addressPointerFormats()) {
+          const ::fabric::PointerFormat p32{
+              0, 32, 32, ::loom::PointerLayoutKind::StableIntegral};
+          const ::fabric::PointerFormat p64{
+              0, 64, 64, ::loom::PointerLayoutKind::StableIntegral};
+          sawPointer32Lanes8 |=
+              formats->contains(p32) && !formats->contains(p64) &&
+              access.flattenedLaneCounts().contains(8) &&
+              !access.flattenedLaneCounts().contains(9);
+          sawPointer64Lanes4 |=
+              formats->contains(p64) && !formats->contains(p32) &&
+              access.flattenedLaneCounts().contains(4) &&
+              !access.flattenedLaneCounts().contains(5);
+        }
+      }
       require(test, alternative.admissibleUsePatterns.size() == 1,
               "general memory capability has ambiguous use patterns");
       const std::uint32_t pattern =
@@ -1186,6 +1234,10 @@ void publicMemoryRecipeKeepsIndependentEndpointWidths() {
     }
     require(test, sawDirect && sawIndexed,
             "general memory did not separate direct and indexed access");
+    require(test, sawIndex48Lanes5 && sawIndex64Lanes4,
+            "general memory lost index-width/lane-count correlation");
+    require(test, sawPointer32Lanes8 && sawPointer64Lanes4,
+            "general memory lost pointer-format/lane-count correlation");
     require(test,
             port.resourceContract()
                         .usePattern(::fabric::UsePatternKey(0))

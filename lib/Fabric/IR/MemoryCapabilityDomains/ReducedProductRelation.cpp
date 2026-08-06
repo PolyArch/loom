@@ -225,15 +225,21 @@ rowCoveredFromField(const ReducedProductRow &subset,
 
   if (candidates.empty())
     return false;
-  for (const ReducedProductRow &candidate : candidates)
-    if (candidate.size() != subset.size() ||
-        candidate[field].index() != subset[field].index())
+  std::vector<ReducedProductRow> compatible;
+  compatible.reserve(candidates.size());
+  for (const ReducedProductRow &candidate : candidates) {
+    if (candidate.size() != subset.size())
       return invalid("relation coverage compares incompatible row shapes");
+    if (candidate[field].index() == subset[field].index())
+      compatible.push_back(candidate);
+  }
+  if (compatible.empty())
+    return false;
 
   if (const auto *finite = std::get_if<ReducedFiniteDomain>(&subset[field])) {
     for (const ReducedFiniteAtom &atom : finite->atoms) {
       std::vector<ReducedProductRow> selected;
-      for (const ReducedProductRow &candidate : candidates) {
+      for (const ReducedProductRow &candidate : compatible) {
         const auto &domain = std::get<ReducedFiniteDomain>(candidate[field]);
         if (llvm::any_of(domain.atoms, [&](const ReducedFiniteAtom &value) {
               return value.bytes == atom.bytes;
@@ -252,7 +258,7 @@ rowCoveredFromField(const ReducedProductRow &subset,
     std::vector<std::uint64_t> boundaries{interval.lower};
     if (interval.upper != std::numeric_limits<std::uint64_t>::max())
       boundaries.push_back(interval.upper + 1);
-    for (const ReducedProductRow &candidate : candidates) {
+    for (const ReducedProductRow &candidate : compatible) {
       for (UnsignedInterval accepted :
            std::get<UnsignedDomain>(candidate[field]).intervals()) {
         if (accepted.upper < interval.lower || accepted.lower > interval.upper)
@@ -271,7 +277,7 @@ rowCoveredFromField(const ReducedProductRow &subset,
       if (lower < interval.lower || lower > interval.upper)
         continue;
       std::vector<ReducedProductRow> selected;
-      for (const ReducedProductRow &candidate : candidates)
+      for (const ReducedProductRow &candidate : compatible)
         if (std::get<UnsignedDomain>(candidate[field]).contains(lower))
           selected.push_back(candidate);
       auto covered = rowCoveredFromField(subset, selected, field + 1);
@@ -333,9 +339,22 @@ reduceAtField(llvm::ArrayRef<ReducedProductRow> rows, std::size_t field,
     return std::vector<ReducedProductRow>{ReducedProductRow{}};
 
   const std::size_t domainKind = rows.front()[field].index();
+  std::map<std::size_t, std::vector<ReducedProductRow>> kindPartitions;
   for (const ReducedProductRow &row : rows)
-    if (row[field].index() != domainKind)
-      return invalid("relation field mixes incompatible domain kinds");
+    kindPartitions[row[field].index()].push_back(row);
+  if (kindPartitions.size() != 1) {
+    std::vector<ReducedProductRow> partitioned;
+    for (const auto &[kind, partition] : kindPartitions) {
+      auto reduced = reduceAtField(partition, field, groupFiniteFields);
+      if (!reduced)
+        return reduced.takeError();
+      partitioned.insert(partitioned.end(),
+                         std::make_move_iterator(reduced->begin()),
+                         std::make_move_iterator(reduced->end()));
+    }
+    sortRows(partitioned);
+    return partitioned;
+  }
 
   std::vector<ReducedProductRow> normalized;
   if (domainKind == 0) {
@@ -465,13 +484,9 @@ reducedProductRelationCovers(llvm::ArrayRef<ReducedProductRow> superset,
   if (fieldCount == 0)
     return invalid("relation coverage requires nonempty product rows");
   auto validateShape = [&](llvm::ArrayRef<ReducedProductRow> rows) {
-    for (const ReducedProductRow &row : rows) {
+    for (const ReducedProductRow &row : rows)
       if (row.size() != fieldCount)
         return false;
-      for (std::size_t field = 0; field < fieldCount; ++field)
-        if (row[field].index() != superset.front()[field].index())
-          return false;
-    }
     return true;
   };
   if (!validateShape(superset) || !validateShape(subset))
@@ -496,16 +511,10 @@ reducedProductRelationsOverlap(llvm::ArrayRef<ReducedProductRow> left,
   for (const ReducedProductRow &row : left) {
     if (row.size() != fieldCount)
       return invalid("left relation has inconsistent row shapes");
-    for (std::size_t field = 0; field < fieldCount; ++field)
-      if (row[field].index() != left.front()[field].index())
-        return invalid("left relation has incompatible domain kinds");
   }
   for (const ReducedProductRow &row : right) {
     if (row.size() != fieldCount)
       return invalid("relation overlap compares incompatible row shapes");
-    for (std::size_t field = 0; field < fieldCount; ++field)
-      if (row[field].index() != left.front()[field].index())
-        return invalid("relation overlap compares incompatible domain kinds");
   }
   for (const ReducedProductRow &lhs : left)
     for (const ReducedProductRow &rhs : right)
@@ -552,9 +561,6 @@ decodeReducedProductRelation(llvm::ArrayRef<std::uint8_t> bytes) {
       fieldCount = row->size();
     else if (row->size() != fieldCount)
       return invalid("reduced relation rows have inconsistent field counts");
-    for (std::size_t field = 0; field < row->size(); ++field)
-      if (!rows.empty() && (*row)[field].index() != rows.front()[field].index())
-        return invalid("reduced relation field changes domain kind");
     previousBytes.assign(rowBytes->begin(), rowBytes->end());
     rows.push_back(std::move(*row));
   }

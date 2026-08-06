@@ -156,12 +156,6 @@ bool hasDynamicMask(const ParameterizedMemoryAccessDomain &domain) {
   return false;
 }
 
-bool hasDynamicMask(const MemoryAccessClass &access) {
-  return llvm::any_of(access.maskInactivePairs(), [](MaskInactivePair pair) {
-    return pair.mask == MemoryMaskForm::Dynamic;
-  });
-}
-
 llvm::Expected<std::pair<std::uint64_t, std::uint64_t>>
 domainBounds(const UnsignedDomain &domain) {
   if (domain.intervals().empty())
@@ -179,10 +173,12 @@ dataWidthBounds(const MemoryAccessClass &access) {
   if (!lanes)
     return lanes.takeError();
   auto minimum = llvm::checkedMulUnsigned(elements->first, lanes->first);
-  auto maximum = llvm::checkedMulUnsigned(elements->second, lanes->second);
-  if (!minimum || !maximum)
+  if (!minimum)
     return invalid("memory access payload width overflows u64");
-  return std::make_pair(*minimum, *maximum);
+  auto envelope = deriveMemoryAccessTransportEnvelope(access);
+  if (!envelope)
+    return envelope.takeError();
+  return std::make_pair(*minimum, envelope->dataPayloadBits);
 }
 
 bool everyElementWidthIsByteMultiple(const UnsignedDomain &domain) {
@@ -440,16 +436,18 @@ llvm::Error validateRoleRelation(
         endpointAt(endpoints, (*addressBinding)->endpointOrdinal);
     if (!address || address->payloadWidth == 0)
       return invalid("memory address endpoint has zero payload capacity");
-    if (hasDynamicMask(access)) {
+    auto envelope = deriveMemoryAccessTransportEnvelope(access);
+    if (!envelope)
+      return envelope.takeError();
+    if (envelope->addressPayloadBits > address->payloadWidth)
+      return invalid("memory address payload exceeds endpoint width");
+    if (envelope->maskPayloadBits != 0) {
       auto maskBinding =
           bindingFor(alternative.roleToEndpoint, ServiceValueRole::Mask);
       if (!maskBinding)
         return maskBinding.takeError();
       const auto *mask = endpointAt(endpoints, (*maskBinding)->endpointOrdinal);
-      auto lanes = domainBounds(access.flattenedLaneCounts());
-      if (!lanes)
-        return lanes.takeError();
-      if (!mask || mask->payloadWidth < lanes->second)
+      if (!mask || mask->payloadWidth < envelope->maskPayloadBits)
         return invalid("memory mask payload exceeds endpoint width");
     }
     if (*kind == ServiceKind::MemoryCompareExchange) {

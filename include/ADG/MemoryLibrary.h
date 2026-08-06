@@ -24,6 +24,7 @@ struct MemoryAccessDomainParameters final {
   std::uint32_t dataPayloadBits = 0;
   std::optional<std::uint32_t> indexedAddressPayloadBits;
   std::uint32_t maskPayloadBits = 0;
+  std::optional<::fabric::UnsignedDomain> rootRelativeIndexWidths;
 };
 
 /// Independent physical widths of one local memory interface.

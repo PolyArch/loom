@@ -9,6 +9,7 @@ add_mlir_library(LoomFabricArtifact
   FabricCanonicalLabeling.cpp
   FabricSystemCanonicalLabeling.cpp
   FabricSystemCanonicalMaterialization.cpp
+  FabricSystemServiceLegCarrier.cpp
   FabricSystemValidation.cpp
   FabricArtifactDependencyClosure.cpp
   FabricArtifactLocalReference.cpp

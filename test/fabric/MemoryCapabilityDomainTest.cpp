@@ -28,7 +28,10 @@ using namespace fabric;
 namespace {
 
 constexpr llvm::StringLiteral accessFixture = R"mlir(
-module attributes {llvm.data_layout = "e-p:64:64:64:64"} {
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>,
+  llvm.data_layout = "e-p:64:64:64:64"
+} {
   func.func @element_f32(%mem: memref<8xf32>, %address: index, %ctrl: none)
       -> (f32, none) {
     %data, %done = dataflow.load %mem[%address] %ctrl : memref<8xf32>
@@ -103,6 +106,17 @@ UnsignedDomain singleton(std::uint64_t value) {
               UnsignedDomain::fromCanonical({UnsignedInterval{value, value}}));
 }
 
+MemoryAddressDomain rootRelativeAddress(std::uint64_t indexBits) {
+  return take("root-relative address domain",
+              MemoryAddressDomain::rootRelative(singleton(indexBits)));
+}
+
+MemoryAddressDomain pointerAddress(PointerFormat format) {
+  return take("pointer-addressed domain",
+              MemoryAddressDomain::pointerAddressed(
+                  PointerFormatRelation::get({format})));
+}
+
 AlignmentDomain scalarAlignment() {
   return take("alignment", AlignmentDomain::create(singleton(0)));
 }
@@ -130,7 +144,8 @@ MemoryAccessClass accessClass(MemoryAccessForm form, std::uint64_t elementBits,
                   form, singleton(elementBits), singleton(laneCount),
                   {MaskInactivePair{MemoryMaskForm::Absent,
                                     InactiveLaneSemantics::NotApplicable}},
-                  scalarAlignment(), readExact(), writeNotApplicable()));
+                  scalarAlignment(), readExact(), writeNotApplicable(),
+                  rootRelativeAddress(64)));
 }
 
 MemoryAccessClass accessClass(MemoryAccessForm form, UnsignedDomain elementBits,
@@ -140,7 +155,8 @@ MemoryAccessClass accessClass(MemoryAccessForm form, UnsignedDomain elementBits,
                   form, std::move(elementBits), std::move(laneCounts),
                   {MaskInactivePair{MemoryMaskForm::Absent,
                                     InactiveLaneSemantics::NotApplicable}},
-                  scalarAlignment(), readExact(), writeNotApplicable()));
+                  scalarAlignment(), readExact(), writeNotApplicable(),
+                  rootRelativeAddress(64)));
 }
 
 void checkUnsignedDomains() {
@@ -195,21 +211,24 @@ void checkUnsignedDomains() {
           MemoryAccessForm::Element, singleton(0), singleton(1),
           {MaskInactivePair{MemoryMaskForm::Absent,
                             InactiveLaneSemantics::NotApplicable}},
-          scalarAlignment(), readExact(), writeNotApplicable()));
+          scalarAlignment(), readExact(), writeNotApplicable(),
+          rootRelativeAddress(64)));
   expectRejected<MemoryAccessClass>(
       "zero lane count",
       MemoryAccessClass::create(
           MemoryAccessForm::Contiguous, singleton(32), singleton(0),
           {MaskInactivePair{MemoryMaskForm::Absent,
                             InactiveLaneSemantics::NotApplicable}},
-          scalarAlignment(), readExact(), writeNotApplicable()));
+          scalarAlignment(), readExact(), writeNotApplicable(),
+          rootRelativeAddress(64)));
   expectRejected<MemoryAccessClass>(
       "element lane count",
       MemoryAccessClass::create(
           MemoryAccessForm::Element, singleton(32), singleton(2),
           {MaskInactivePair{MemoryMaskForm::Absent,
                             InactiveLaneSemantics::NotApplicable}},
-          scalarAlignment(), readExact(), writeNotApplicable()));
+          scalarAlignment(), readExact(), writeNotApplicable(),
+          rootRelativeAddress(64)));
 }
 
 void checkEnumCodecs() {
@@ -344,7 +363,8 @@ void checkTypedAccessMembership(mlir::ModuleOp module) {
                     MemoryAccessForm::Element, singleton(32), singleton(1),
                     {MaskInactivePair{MemoryMaskForm::Absent,
                                       InactiveLaneSemantics::NotApplicable}},
-                    fourByteAlignment(), readExact(), writeNotApplicable()))}));
+                    fourByteAlignment(), readExact(), writeNotApplicable(),
+                    rootRelativeAddress(64)))}));
   require("plain alignment derivation", !inferredAlignment.contains(element),
           "plain access alignment was inferred from its type or width");
   require("atomic alignment projection", inferredAlignment.contains(atomic),
@@ -411,8 +431,7 @@ void checkPointerCapabilityMembership(mlir::ModuleOp module) {
                     {MaskInactivePair{MemoryMaskForm::Absent,
                                       InactiveLaneSemantics::NotApplicable}},
                     scalarAlignment(), readExact(), writeNotApplicable(),
-                    MemoryAddressForm::PointerAddressed,
-                    PointerFormatRelation::get({format})));
+                    pointerAddress(format)));
   };
   CanonicalMemoryAccessView pointerAddress =
       accessView(module, "pointer_address");
@@ -436,8 +455,7 @@ void checkPointerCapabilityMembership(mlir::ModuleOp module) {
                {MaskInactivePair{MemoryMaskForm::Absent,
                                  InactiveLaneSemantics::NotApplicable}},
                scalarAlignment(), readExact(), writeNotApplicable(),
-               MemoryAddressForm::RootRelative, {},
-               PointerFormatRelation::get({p64})));
+               rootRelativeAddress(64), PointerFormatRelation::get({p64})));
   require("pointer data capability", pointerData.contains(pointerPayload),
           "exact pointer payload format was rejected");
 
@@ -451,6 +469,119 @@ void checkPointerCapabilityMembership(mlir::ModuleOp module) {
   require("pointer capability codec",
           decoded.contains(pointerAddress) && decoded.contains(pointerPayload),
           "pointer capability relation did not round-trip");
+}
+
+void checkRootRelativeIndexWidth(mlir::ModuleOp module) {
+  auto indexedClass = [&](std::uint64_t indexBits, UnsignedDomain lanes) {
+    return take("root-relative indexed class",
+                MemoryAccessClass::create(
+                    MemoryAccessForm::Indexed, singleton(32), std::move(lanes),
+                    {MaskInactivePair{MemoryMaskForm::Absent,
+                                      InactiveLaneSemantics::NotApplicable}},
+                    scalarAlignment(), readExact(), writeNotApplicable(),
+                    rootRelativeAddress(indexBits)));
+  };
+
+  CanonicalMemoryAccessView element = accessView(module, "element_f32");
+  MemoryAccessClass index32 =
+      take("32-bit root-relative class",
+           MemoryAccessClass::create(
+               MemoryAccessForm::Element, singleton(32), singleton(1),
+               {MaskInactivePair{MemoryMaskForm::Absent,
+                                 InactiveLaneSemantics::NotApplicable}},
+               scalarAlignment(), readExact(), writeNotApplicable(),
+               rootRelativeAddress(32)));
+  MemoryAccessClass index64 =
+      take("64-bit root-relative class",
+           MemoryAccessClass::create(
+               MemoryAccessForm::Element, singleton(32), singleton(1),
+               {MaskInactivePair{MemoryMaskForm::Absent,
+                                 InactiveLaneSemantics::NotApplicable}},
+               scalarAlignment(), readExact(), writeNotApplicable(),
+               rootRelativeAddress(64)));
+  require("root-relative index width", !index32.contains(element),
+          "32-bit capability admitted a 64-bit DataLayout index");
+  require("root-relative index width", index64.contains(element),
+          "64-bit capability rejected a 64-bit DataLayout index");
+  require("root-relative index width",
+          index64.rootRelativeIndexWidths() &&
+              index64.rootRelativeIndexWidths()->contains(64) &&
+              !index64.addressPointerFormats(),
+          "RootRelative row did not expose only its index-width domain");
+
+  MemoryAccessClass lanes32 = indexedClass(
+      32, take("32-bit lane domain",
+               UnsignedDomain::fromCanonical({UnsignedInterval{1, 4}})));
+  MemoryAccessClass lanes64 = indexedClass(
+      64, take("64-bit lane domain",
+               UnsignedDomain::fromCanonical({UnsignedInterval{1, 2}})));
+  ParameterizedMemoryAccessDomain correlated =
+      take("index-width lane correlation",
+           ParameterizedMemoryAccessDomain::create({lanes64, lanes32}));
+  require("index-width lane correlation",
+          correlated.accessClasses().size() == 2,
+          "index width and lane count formed a free cross-product");
+
+  const PointerFormat p64{0, 64, 64, loom::PointerLayoutKind::StableIntegral};
+  MemoryAccessClass pointer =
+      take("pointer-addressed class",
+           MemoryAccessClass::create(
+               MemoryAccessForm::Element, singleton(32), singleton(1),
+               {MaskInactivePair{MemoryMaskForm::Absent,
+                                 InactiveLaneSemantics::NotApplicable}},
+               scalarAlignment(), readExact(), writeNotApplicable(),
+               pointerAddress(p64)));
+  require("pointer-addressed domain",
+          !pointer.rootRelativeIndexWidths() &&
+              pointer.addressPointerFormats() &&
+              pointer.addressPointerFormats()->contains(p64),
+          "PointerAddressed row acquired an index-width domain");
+
+  expectRejected<MemoryAddressDomain>(
+      "zero root-relative index width",
+      MemoryAddressDomain::rootRelative(singleton(0)));
+  expectRejected<MemoryAddressDomain>(
+      "empty pointer-addressed domain",
+      MemoryAddressDomain::pointerAddressed({}));
+}
+
+void checkDerivedTransportEnvelope() {
+  MemoryAccessClass indexed =
+      take("indexed transport envelope",
+           MemoryAccessClass::create(
+               MemoryAccessForm::Indexed, singleton(32),
+               take("indexed lane domain",
+                    UnsignedDomain::fromCanonical({UnsignedInterval{1, 4}})),
+               {MaskInactivePair{MemoryMaskForm::Dynamic,
+                                 InactiveLaneSemantics::SuppressAndZeroFill}},
+               scalarAlignment(), readExact(), writeNotApplicable(),
+               rootRelativeAddress(32)));
+  const MemoryAccessTransportEnvelope indexedEnvelope =
+      take("indexed transport envelope",
+           deriveMemoryAccessTransportEnvelope(indexed));
+  require("indexed transport envelope",
+          indexedEnvelope.addressPayloadBits == 128 &&
+              indexedEnvelope.dataPayloadBits == 128 &&
+              indexedEnvelope.maskPayloadBits == 4,
+          "RootRelative indexed geometry did not preserve width correlation");
+
+  const PointerFormat p64{0, 64, 64, loom::PointerLayoutKind::StableIntegral};
+  MemoryAccessClass pointer =
+      take("pointer transport envelope",
+           MemoryAccessClass::create(
+               MemoryAccessForm::Indexed, singleton(32), singleton(2),
+               {MaskInactivePair{MemoryMaskForm::Absent,
+                                 InactiveLaneSemantics::NotApplicable}},
+               scalarAlignment(), readExact(), writeNotApplicable(),
+               pointerAddress(p64), PointerFormatRelation::get({p64})));
+  const MemoryAccessTransportEnvelope pointerEnvelope =
+      take("pointer transport envelope",
+           deriveMemoryAccessTransportEnvelope(pointer));
+  require("pointer transport envelope",
+          pointerEnvelope.addressPayloadBits == 128 &&
+              pointerEnvelope.dataPayloadBits == 64 &&
+              pointerEnvelope.maskPayloadBits == 0,
+          "pointer-addressed transport geometry lost representation width");
 }
 
 } // namespace
@@ -471,5 +602,7 @@ int main() {
   checkTypedAccessMembership(*module);
   checkReducedAccessRelation();
   checkPointerCapabilityMembership(*module);
+  checkRootRelativeIndexWidth(*module);
+  checkDerivedTransportEnvelope();
   return EXIT_SUCCESS;
 }

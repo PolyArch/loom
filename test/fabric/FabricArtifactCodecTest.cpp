@@ -58,7 +58,7 @@ void appendU64Be(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
 /// The loom.fabric semantic domain is independent of the codec internals so
 /// the rejection tests build malformed framing without trusting the encoder.
 void appendSemanticDomain(std::vector<std::uint8_t> &bytes) {
-  static constexpr char domain[] = "loom.fabric.semantic.v1\0";
+  static constexpr char domain[] = "loom.fabric.semantic.v2\0";
   bytes.insert(bytes.end(), domain, domain + sizeof(domain) - 1);
 }
 
@@ -121,6 +121,17 @@ void expectDecodeFails(const char *test, llvm::ArrayRef<std::uint8_t> bytes) {
   llvm::consumeError(result.takeError());
 }
 
+void priorMajorEnvelopeIsRejected() {
+  std::vector<std::uint8_t> bytes = buildEnvelope(0, {}, 0, {0xaa});
+  const llvm::StringRef currentDomain = "loom.fabric.semantic.v2";
+  const auto marker = std::search(bytes.begin(), bytes.end(),
+                                  currentDomain.begin(), currentDomain.end());
+  require(__func__, marker != bytes.end(),
+          "could not locate semantic major marker");
+  *(marker + currentDomain.size() - 1) = '1';
+  expectDecodeFails(__func__, bytes, "wrong semantic domain");
+}
+
 void rootReferenceIsAnOwningCommonValue() {
   const ArtifactIdentity expected = identity(__func__, 0x5a);
   std::string sourceIdentity = "loom.test.root";
@@ -154,7 +165,7 @@ void envelopeFramesRootDependencyAndPayloadExactly() {
                                              {dependency}, payload));
   require(__func__,
           llvm::toHex(encoded.bytes(), true) ==
-              "6c6f6f6d2e6661627269632e73656d616e7469632e763100"
+              "6c6f6f6d2e6661627269632e73656d616e7469632e763200"
               "00000000"
               "0000000000000001"
               "00000000"
@@ -423,6 +434,7 @@ void decodeRejectsImpossibleDependencyCount() {
 } // namespace
 
 int main() {
+  priorMajorEnvelopeIsRejected();
   rootReferenceIsAnOwningCommonValue();
   envelopeFramesRootDependencyAndPayloadExactly();
   envelopeFramesEveryRootOrdinal();

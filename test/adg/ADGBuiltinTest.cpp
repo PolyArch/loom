@@ -145,10 +145,10 @@ void builtinPresetsExpandThroughPublicBuilder() {
     bool supportsWrite = false;
     if (endpointCapabilities)
       for (const auto &capability : endpointCapabilities->capabilities()) {
-        supportsRead |= capability.kind() ==
-                        dataflow::semantics::ServiceKind::MemoryRead;
-        supportsWrite |= capability.kind() ==
-                         dataflow::semantics::ServiceKind::MemoryWrite;
+        supportsRead |=
+            capability.kind() == dataflow::semantics::ServiceKind::MemoryRead;
+        supportsWrite |=
+            capability.kind() == dataflow::semantics::ServiceKind::MemoryWrite;
       }
     require(
         test,
@@ -156,7 +156,8 @@ void builtinPresetsExpandThroughPublicBuilder() {
             memoryService->capabilities().size() == 2 && endpointOwner &&
             endpointOwner->owner() ==
                 loom::fabric::FabricInventoryOwnerRef::of(
-                    loom::fabric::FabricMemoryServiceRef::system(systemMemory)) &&
+                    loom::fabric::FabricMemoryServiceRef::system(
+                        systemMemory)) &&
             endpointCapabilities &&
             endpointCapabilities->role() ==
                 loom::fabric::CanonicalServiceEndpointRole::Serve &&
@@ -672,6 +673,41 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
   loom::ArtifactStore store(directory.path());
   auto system = take(test, loom::adg::buildBuiltinTarget(
                                store, loom::adg::BuiltinTargetPreset::Small));
+  auto systemView = take(
+      test, loom::fabric::requireSystemRoot(system.roots().front().view()));
+  const auto attachments = systemView.serviceLegCarrierAttachments();
+  require(test, attachments.size() == 4,
+          "builtin System does not publish exactly four memory service legs");
+  const auto findAttachment = [&](dataflow::semantics::ServiceKind kind,
+                                  dataflow::StructuralOrdinal leg)
+      -> const loom::fabric::ServiceLegCarrierAttachmentRecord * {
+    const auto found = llvm::find_if(attachments, [&](const auto &attachment) {
+      return attachment.kind() == kind && attachment.legOrdinal() == leg;
+    });
+    return found == attachments.end() ? nullptr : &*found;
+  };
+  const auto *readRequest =
+      findAttachment(dataflow::semantics::ServiceKind::MemoryRead, 0);
+  const auto *readResponse =
+      findAttachment(dataflow::semantics::ServiceKind::MemoryRead, 1);
+  const auto *writeRequest =
+      findAttachment(dataflow::semantics::ServiceKind::MemoryWrite, 0);
+  const auto *writeResponse =
+      findAttachment(dataflow::semantics::ServiceKind::MemoryWrite, 1);
+  require(test, readRequest && readResponse && writeRequest && writeResponse,
+          "builtin System lost a canonical read or write service leg");
+  require(test,
+          llvm::equal(readRequest->carriers(), writeRequest->carriers()) &&
+              llvm::equal(readResponse->carriers(), writeResponse->carriers()),
+          "builtin System did not reuse carrier domains across service kinds");
+  require(
+      test,
+      llvm::none_of(attachments,
+                    [](const auto &attachment) {
+                      return attachment.kind() ==
+                             dataflow::semantics::ServiceKind::MessageTransfer;
+                    }),
+      "builtin System attached a transport-plane MessageTransfer leg");
   auto module =
       take(test, loom::fabric::importEntireFabricRoot(
                      system.roots().front().directDependencies().front().root,

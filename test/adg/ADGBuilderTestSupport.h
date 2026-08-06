@@ -77,6 +77,7 @@ systemMemoryCapabilities(llvm::StringRef test,
 void runBuilderTests();
 void runBuiltinTests();
 void runTopologyTests();
+void runServiceLegCarrierTests();
 void runConformanceAnchorTests();
 
 void regularAndIrregularSpatialCoresFinalize();
