@@ -357,18 +357,28 @@ void behavioralCellActualsAreUnsupported(const std::filesystem::path &root) {
 
 void assignmentsAreOnlyUnpackedAtContinuousAssignSites(
     const std::filesystem::path &root) {
-  auto reject = [&](llvm::StringRef name, llvm::StringRef source) {
-    expectUnsupported(name, tryBuildGateIndex(root, name, source));
-  };
-
-  reject("gate-assignment-in-cell-actual-blobs",
-         "module leaf(input a); endmodule\n"
-         "module top(input a, output y); leaf u(.a(y = a)); endmodule\n");
-  reject("gate-assignment-in-net-initializer-blobs",
-         "module top(input a, output y); wire w = (y = a); endmodule\n");
-  reject("gate-operator-nested-in-concatenation-blobs",
-         "module top(input a, b, output [1:0] y); "
-         "assign y = {a & b, 1'b0}; endmodule\n");
+  // An assignment is not a legal connection or initializer expression in the
+  // selected profile, and an unnamed instance is not a legal instantiation,
+  // so these are language errors rather than subset violations.
+  expectInvalid("gate-assignment-in-cell-actual-blobs",
+                tryBuildGateIndex(root, "gate-assignment-in-cell-actual-blobs",
+                                  "module leaf(input a); endmodule\n"
+                                  "module top(input a, output y); "
+                                  "leaf u(.a(y = a)); endmodule\n"));
+  expectInvalid("gate-assignment-in-net-initializer-blobs",
+                tryBuildGateIndex(root,
+                                  "gate-assignment-in-net-initializer-blobs",
+                                  "module top(input a, output y); "
+                                  "wire w = (y = a); endmodule\n"));
+  expectInvalid("gate-unnamed-instance-blobs",
+                tryBuildGateIndex(root, "gate-unnamed-instance-blobs",
+                                  "module leaf; endmodule\n"
+                                  "module top; leaf (); endmodule\n"));
+  expectUnsupported(
+      "gate-operator-nested-in-concatenation-blobs",
+      tryBuildGateIndex(root, "gate-operator-nested-in-concatenation-blobs",
+                        "module top(input a, b, output [1:0] y); "
+                        "assign y = {a & b, 1'b0}; endmodule\n"));
 }
 
 void lookupsOutsideTheExactRootAreInvalid(const std::filesystem::path &root) {
@@ -485,8 +495,6 @@ void structuralGateRejectionsCoverTheWholePayload(
          "module top(input a, b, output y); and g(y, a, b); endmodule\n");
   reject("gate-switch-primitive-blobs",
          "module top(inout a, b); tran t(a, b); endmodule\n");
-  reject("gate-unnamed-instance-blobs",
-         "module leaf; endmodule\nmodule top; leaf (); endmodule\n");
   reject("gate-arrayed-instance-blobs",
          "module leaf; endmodule\nmodule top; leaf u[1:0](); endmodule\n");
   reject("gate-implicit-generate-blobs",

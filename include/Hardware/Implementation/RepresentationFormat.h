@@ -29,7 +29,7 @@ enum class RepresentationObjectKind : std::uint32_t {
 };
 
 inline constexpr ArtifactSchemaDescriptor hardwareRepresentationFormatRegistry{
-    "loom.hardware_representation_format", SchemaVersion{1, 0}};
+    "loom.hardware_representation_format", SchemaVersion{2, 0}};
 
 enum class RepresentationFormatKind : std::uint32_t {
   SystemVerilogRtl = 0,

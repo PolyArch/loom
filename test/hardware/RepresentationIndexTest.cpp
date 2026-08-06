@@ -459,9 +459,6 @@ void lexicalAndHierarchySubsetFailuresAreTyped(
                     "module top; class local_class; endclass endmodule\n");
   expectUnsupported("interface-top-blobs", "interface top; endinterface\n");
   expectUnsupported("program-top-blobs", "program top; endprogram\n");
-  expectUnsupported("unnamed-instance-blobs",
-                    "module leaf(input logic a); endmodule\n"
-                    "module top(input logic a); leaf(a); endmodule\n");
 
   expectUnsupported(
       "unused-interface-blobs",
@@ -551,6 +548,83 @@ void frontendFailuresRemainRecoverableAndWarningsNonsemantic(
           "unresolved definitions are not sorted and unique");
 }
 
+void languageValidityDominatesAdmissionFailures(
+    const std::filesystem::path &root) {
+  const RepresentationFormatDescriptorRef format = rtlFormat(__func__);
+  const RepresentationLocator top{RepresentationObjectKind::Module, "top"};
+  auto expect =
+      [&](llvm::StringRef name, RepresentationIndexFailureKind kind,
+          std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>
+              units) {
+        const std::filesystem::path storePath = root / name.str();
+        std::filesystem::create_directories(storePath);
+        const BlobStore store(storePath.string());
+        const std::vector<ImplementationPayload> payloads =
+            putSources(__func__, store, PayloadRole::RtlSource, units);
+        expectIndexFailure(name, indexRepresentation(format, top, payloads,
+                                                     store),
+                           kind, "");
+      };
+  auto expectInvalid = [&](llvm::StringRef name, llvm::StringRef source) {
+    expect(name, RepresentationIndexFailureKind::Invalid,
+           {{"rtl/top.sv", source}});
+  };
+  auto expectUnsupported = [&](llvm::StringRef name, llvm::StringRef source) {
+    expect(name, RepresentationIndexFailureKind::Unsupported,
+           {{"rtl/top.sv", source}});
+  };
+
+  // An unnamed instance is a language error, not a subset violation.
+  expectInvalid("unnamed-instance-invalid-blobs",
+                "module leaf(input logic a); endmodule\n"
+                "module top(input logic a); leaf(a); endmodule\n");
+  // An illegal constant expression is a language error.
+  expectInvalid("illegal-constant-blobs",
+                "module top; parameter int p = undefined_call(1); endmodule\n");
+  // A legal module that needs a top parameter override the descriptor never
+  // supplies is admission-only.
+  expectUnsupported(
+      "top-parameter-override-blobs",
+      "module top #(parameter int W) (input [W-1:0] a); endmodule\n");
+  // An escaped identifier must not mask a parse error in another unit, in
+  // either canonical unit order.
+  expect("escaped-after-invalid-blobs", RepresentationIndexFailureKind::Invalid,
+         {{"rtl/a_invalid.sv", "module other(input a); assign = a; endmodule\n"},
+          {"rtl/b_escaped.sv", "module top; logic \\escaped.name ; endmodule\n"}});
+  expect("escaped-before-invalid-blobs",
+         RepresentationIndexFailureKind::Invalid,
+         {{"rtl/a_escaped.sv", "module top; logic \\escaped.name ; endmodule\n"},
+          {"rtl/b_invalid.sv", "module other(input a); assign = a; endmodule\n"}});
+  // A well-formed include is admission-only; an unrelated parse error is a
+  // language error; a malformed include is a language error.
+  expect("include-plus-parse-error-blobs",
+         RepresentationIndexFailureKind::Invalid,
+         {{"rtl/a_include.sv",
+           "`include \"missing.svh\"\nmodule top; endmodule\n"},
+          {"rtl/b_invalid.sv", "module other(input a); assign = a; endmodule\n"}});
+  expectInvalid("malformed-include-blobs",
+                "`include\nmodule top; endmodule\n");
+  // A subset violation must not mask an elaboration error in another unit.
+  expect("subset-plus-elaboration-error-blobs",
+         RepresentationIndexFailureKind::Invalid,
+         {{"rtl/a_subset.sv", "module top; class local_class; endclass endmodule\n"},
+          {"rtl/b_elab.sv",
+           "module unused; logic value; assign value = missing_name; "
+           "endmodule\n"}});
+  // A non-module exact top must not mask an elaboration error either.
+  expect("non-module-top-plus-elaboration-error-blobs",
+         RepresentationIndexFailureKind::Invalid,
+         {{"rtl/a_top.sv", "interface top; endinterface\n"},
+          {"rtl/b_elab.sv",
+           "module unused; logic value; assign value = missing_name; "
+           "endmodule\n"}});
+  // A missing exact root and an ambiguous exact root are both Invalid.
+  expectInvalid("missing-top-blobs",
+                "module other(input logic a); endmodule\n");
+  expectInvalid("duplicate-top-blobs",
+                "module top; endmodule\nmodule top; logic q; endmodule\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -564,6 +638,7 @@ int main(int argc, char **argv) {
   inputClosureAndExactTopFailuresAreTyped(root);
   lexicalAndHierarchySubsetFailuresAreTyped(root);
   frontendFailuresRemainRecoverableAndWarningsNonsemantic(root);
+  languageValidityDominatesAdmissionFailures(root);
   std::filesystem::remove_all(root);
   return EXIT_SUCCESS;
 }

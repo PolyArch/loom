@@ -49,7 +49,7 @@ expectedBinaryReference(RepresentationFormatKind kind) {
   std::vector<std::uint8_t> expected{0, 0, 0, 0, 0, 0, 0, 35};
   expected.insert(expected.end(), identity.bytes_begin(), identity.bytes_end());
   const std::vector<std::uint8_t> suffix{
-      0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, static_cast<std::uint8_t>(kind),
+      0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, static_cast<std::uint8_t>(kind),
   };
   expected.insert(expected.end(), suffix.begin(), suffix.end());
   return expected;
@@ -69,7 +69,7 @@ void exactBinaryCodecIsClosed() {
           "registry identity changed");
   require(__func__,
           hardwareRepresentationFormatRegistry.version ==
-              loom::SchemaVersion{1, 0},
+              loom::SchemaVersion{2, 0},
           "registry version changed");
   require(__func__, rtl.kind() == RepresentationFormatKind::SystemVerilogRtl,
           "RTL kind changed");
@@ -119,7 +119,7 @@ void exactBinaryCodecIsClosed() {
               "registry");
 
   std::vector<std::uint8_t> wrongVersion = rtlBytes;
-  wrongVersion[46] = 2;
+  wrongVersion[46] = 1;
   expectError(__func__, decodeRepresentationFormatDescriptorRef(wrongVersion),
               "version");
 
@@ -137,9 +137,9 @@ void exactJsonCodecIsClosed() {
       __func__, RepresentationFormatDescriptorRef::get(
                     RepresentationFormatKind::StructuralVerilogGateNetlist));
   constexpr llvm::StringLiteral rtlJson =
-      R"json({"registry":"loom.hardware_representation_format","major":1,"minor":0,"kind":0})json";
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":0,"kind":0})json";
   constexpr llvm::StringLiteral netlistJson =
-      R"json({"registry":"loom.hardware_representation_format","major":1,"minor":0,"kind":1})json";
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":0,"kind":1})json";
 
   require(__func__,
           serializeRepresentationFormatDescriptorRefJson(rtl) == rtlJson,
@@ -160,32 +160,32 @@ void exactJsonCodecIsClosed() {
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"major":1,"registry":"loom.hardware_representation_format","minor":0,"kind":0})json"),
+          R"json({"major":2,"registry":"loom.hardware_representation_format","minor":0,"kind":0})json"),
       "canonical");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"loom.hardware_representation_format","major":1,"minor":0,"kind":0,"name":"sv"})json"),
+          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":0,"kind":0,"name":"sv"})json"),
       "field");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"other","major":1,"minor":0,"kind":0})json"),
+          R"json({"registry":"other","major":2,"minor":0,"kind":0})json"),
       "registry");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"loom.hardware_representation_format","major":1,"minor":1,"kind":0})json"),
+          R"json({"registry":"loom.hardware_representation_format","major":1,"minor":0,"kind":0})json"),
       "version");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"loom.hardware_representation_format","major":1,"minor":0,"kind":2})json"),
+          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":0,"kind":2})json"),
       "kind");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"loom.hardware_representation_format","major":1,"minor":0,"kind":-1})json"),
+          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":0,"kind":-1})json"),
       "unsigned");
 }
 

@@ -9,6 +9,7 @@
 #include "slang/ast/symbols/MemberSymbols.h"
 #include "slang/ast/types/Type.h"
 #include "slang/diagnostics/Diagnostics.h"
+#include "slang/diagnostics/PreprocessorDiags.h"
 #include "slang/parsing/Lexer.h"
 #include "slang/parsing/Parser.h"
 #include "slang/parsing/Preprocessor.h"
@@ -179,8 +180,7 @@ slang::parsing::ParserOptions parserOptions(LanguageVersion version) {
   return options;
 }
 
-slang::ast::CompilationOptions compilationOptions(LanguageVersion version,
-                                                  llvm::StringRef exactTop) {
+slang::ast::CompilationOptions baseCompilationOptions(LanguageVersion version) {
   slang::ast::CompilationOptions options;
   options.flags = slang::ast::CompilationFlags::IgnoreUnknownModules |
                   slang::ast::CompilationFlags::DisallowRefsToUnknownInstances;
@@ -203,9 +203,29 @@ slang::ast::CompilationOptions compilationOptions(LanguageVersion version,
   options.languageVersion = version;
   options.defaultTimeScale.reset();
   options.topModules.clear();
-  options.topModules.emplace(exactTop);
   options.paramOverrides.clear();
   options.defaultLiblist.clear();
+  return options;
+}
+
+// Language validity is evaluated in a context that applies no admission
+// policy: no preselected top, and top-level interface or reference ports stay
+// legal. Every definition in the closure participates, so an intrinsic
+// frontend error is observed wherever it occurs.
+slang::ast::CompilationOptions
+languageValidationOptions(LanguageVersion version) {
+  slang::ast::CompilationOptions options = baseCompilationOptions(version);
+  options.flags |= slang::ast::CompilationFlags::AllowTopLevelIfacePorts;
+  return options;
+}
+
+// Admission elaboration forces the exact root under the descriptor's fixed
+// configuration. A failure at this stage is an admission result, never a
+// language error.
+slang::ast::CompilationOptions
+admissionElaborationOptions(LanguageVersion version, llvm::StringRef exactTop) {
+  slang::ast::CompilationOptions options = baseCompilationOptions(version);
+  options.topModules.emplace(exactTop);
   return options;
 }
 
@@ -300,9 +320,27 @@ bool isForbiddenRawDirective(slang::syntax::SyntaxKind kind) {
   }
 }
 
+/// Descriptor-admission conditions observed while raw-lexing one source unit.
+/// They are recorded rather than returned so that language validity of the
+/// complete payload closure is always established first.
+struct RawAdmissionMarkers final {
+  bool forbiddenDirective = false;
+  bool escapedIdentifier = false;
+};
+
+/// The descriptor never follows an include directive, so the frontend's exact
+/// typed report that a well-formed include could not be followed under that
+/// fixed policy is an admission fact. Every other error belongs to the
+/// selected language profile.
+bool isLanguageError(const slang::Diagnostic &diagnostic) {
+  return diagnostic.isError() &&
+         diagnostic.code != slang::diag::ExceededMaxIncludeDepth;
+}
+
 llvm::Error validateRawSource(const slang::SourceBuffer &buffer,
                               slang::SourceManager &sourceManager,
-                              LanguageVersion version) {
+                              LanguageVersion version,
+                              RawAdmissionMarkers &markers) {
   slang::BumpAllocator allocator;
   slang::Diagnostics diagnostics;
   slang::parsing::Lexer lexer(buffer, allocator, diagnostics, sourceManager,
@@ -313,12 +351,10 @@ llvm::Error validateRawSource(const slang::SourceBuffer &buffer,
       break;
     if (token.kind == slang::parsing::TokenKind::Directive &&
         isForbiddenRawDirective(token.directiveKind()))
-      return detail::unsupportedIndex(
-          "source directive is outside the descriptor");
+      markers.forbiddenDirective = true;
     if (token.kind == slang::parsing::TokenKind::Identifier &&
         llvm::StringRef(token.rawText()).starts_with("\\"))
-      return detail::unsupportedIndex(
-          "escaped identifiers are outside the descriptor");
+      markers.escapedIdentifier = true;
   }
   if (llvm::any_of(diagnostics, [](const slang::Diagnostic &diagnostic) {
         return diagnostic.isError();
@@ -604,41 +640,44 @@ indexInitialHdl(RepresentationFormatDescriptorRef formatRef,
     buffers.push_back(
         sourceManager.assignText(source.logicalName, source.bytes));
 
+  // LanguageValid, raw phase: malformed bytes are language errors, while
+  // descriptor-policy observations are only recorded.
+  RawAdmissionMarkers markers;
   for (const slang::SourceBuffer &buffer : buffers)
-    if (llvm::Error error = validateRawSource(buffer, sourceManager, version))
+    if (llvm::Error error =
+            validateRawSource(buffer, sourceManager, version, markers))
       return std::move(error);
 
+  // LanguageValid, parse phase: every unit must parse under the selected
+  // profile before any admission verdict is computed.
   for (const slang::SourceBuffer &buffer : buffers) {
     std::shared_ptr<slang::syntax::SyntaxTree> tree =
         slang::syntax::SyntaxTree::fromBuffer(buffer, sourceManager,
                                               syntaxOptions);
     if (!tree)
       return detail::invalidIndex("HDL source did not produce a syntax tree");
-    if (llvm::any_of(tree->diagnostics(),
-                     [](const slang::Diagnostic &diagnostic) {
-                       return diagnostic.isError();
-                     }))
+    if (llvm::any_of(tree->diagnostics(), isLanguageError))
       return detail::invalidIndex("HDL parse or elaboration failed");
     trees.push_back(std::move(tree));
   }
 
-  for (const auto &tree : trees) {
-    if (!tree->getIncludeDirectives().empty())
-      return detail::unsupportedIndex(
-          "include directives are outside the descriptor");
-    if (llvm::Error error = validateSyntaxNode(tree->root(), entry.indexer))
-      return std::move(error);
-  }
-
-  slang::Bag compilationBag(
-      compilationOptions(version, exactRoot.canonicalName));
-  slang::ast::Compilation compilation(compilationBag);
+  // LanguageValid, semantic phase: elaborate the complete closure in the
+  // language-validation context, which applies no admission policy.
+  slang::ast::Compilation languageCompilation(
+      slang::Bag(languageValidationOptions(version)));
   for (const auto &tree : trees)
-    compilation.addSyntaxTree(tree);
+    languageCompilation.addSyntaxTree(tree);
+  const slang::Diagnostics &languageDiagnostics =
+      languageCompilation.getAllDiagnostics();
+  if (llvm::any_of(languageDiagnostics, isLanguageError))
+    return detail::invalidIndex("HDL parse or elaboration failed");
 
+  // The exact-root claim: absence or ambiguity is Invalid; the root kind is
+  // an admission question.
   std::size_t exactDefinitionCount = 0;
   bool exactDefinitionIsModule = false;
-  for (const slang::ast::Symbol *definition : compilation.getDefinitions()) {
+  for (const slang::ast::Symbol *definition :
+       languageCompilation.getDefinitions()) {
     if (definition->name != exactRoot.canonicalName)
       continue;
     ++exactDefinitionCount;
@@ -646,21 +685,52 @@ indexInitialHdl(RepresentationFormatDescriptorRef formatRef,
     exactDefinitionIsModule =
         module && module->definitionKind == slang::ast::DefinitionKind::Module;
   }
+  if (exactDefinitionCount == 0)
+    return detail::invalidIndex(
+        "exact top does not resolve to a module definition");
   if (exactDefinitionCount > 1)
     return detail::invalidIndex(
         "exact top resolves to more than one definition");
-  if (exactDefinitionCount == 1 && !exactDefinitionIsModule)
-    return detail::unsupportedIndex("exact top is not a module definition");
 
-  const slang::Diagnostics &diagnostics = compilation.getAllDiagnostics();
-  if (llvm::any_of(diagnostics, [](const slang::Diagnostic &diagnostic) {
-        return diagnostic.isError();
-      }))
-    return detail::invalidIndex("HDL parse or elaboration failed");
-  if (llvm::Error error = validateDefinitionClosure(compilation, entry.indexer))
+  // DescriptorAdmitted, over the complete closure.
+  if (!exactDefinitionIsModule)
+    return detail::unsupportedIndex("exact top is not a module definition");
+  if (markers.forbiddenDirective)
+    return detail::unsupportedIndex(
+        "source directive is outside the descriptor");
+  if (markers.escapedIdentifier)
+    return detail::unsupportedIndex(
+        "escaped identifiers are outside the descriptor");
+  for (const auto &tree : trees) {
+    if (!tree->getIncludeDirectives().empty())
+      return detail::unsupportedIndex(
+          "include directives are outside the descriptor");
+    if (llvm::Error error = validateSyntaxNode(tree->root(), entry.indexer))
+      return std::move(error);
+  }
+  if (llvm::Error error =
+          validateDefinitionClosure(languageCompilation, entry.indexer))
     return std::move(error);
 
-  const slang::ast::RootSymbol &root = compilation.getRoot();
+  // Admission elaboration forces the exact root under the fixed descriptor
+  // configuration. Language validity is already established, so any error
+  // here is an admission result.
+  slang::ast::Compilation admissionCompilation(
+      slang::Bag(admissionElaborationOptions(version,
+                                             exactRoot.canonicalName)));
+  for (const auto &tree : trees)
+    admissionCompilation.addSyntaxTree(tree);
+  const slang::Diagnostics &admissionDiagnostics =
+      admissionCompilation.getAllDiagnostics();
+  if (llvm::any_of(admissionDiagnostics,
+                   [](const slang::Diagnostic &diagnostic) {
+                     return diagnostic.isError();
+                   }))
+    return detail::unsupportedIndex(
+        "exact top does not elaborate under the fixed descriptor "
+        "configuration");
+
+  const slang::ast::RootSymbol &root = admissionCompilation.getRoot();
   const slang::ast::InstanceSymbol *top = nullptr;
   for (const slang::ast::InstanceSymbol *candidate : root.topInstances) {
     if (candidate->name != exactRoot.canonicalName)
