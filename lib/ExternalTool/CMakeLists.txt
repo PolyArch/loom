@@ -2,6 +2,7 @@ add_mlir_library(LoomExternalTool
   Binding.cpp
   ExternalFile.cpp
   InvocationBundle.cpp
+  InvocationBundleScript.cpp
   LocalConfig.cpp
   Provider.cpp
   RuntimeBinding.cpp

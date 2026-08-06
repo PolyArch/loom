@@ -12,6 +12,7 @@
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <optional>
 #include <string>
@@ -148,29 +149,57 @@ private:
 
   friend llvm::Expected<ImportedExternalToolInvocationBundle>
   importExternalToolInvocationBundle(
-      llvm::StringRef bundleRoot,
+      const PreparedExternalToolInvocation &prepared,
       const ExternalToolInvocationImportExpectation &expectation);
   friend llvm::Expected<std::string> readExternalToolInvocationDeclaredOutput(
       const ImportedExternalToolInvocationBundle &bundle,
       llvm::StringRef relativePath);
 };
 
-llvm::Error finalizeExternalToolInvocationBundle(
+/// The single typed signal that a prepared invocation has no completion
+/// record at all: the caller has not executed the bundle, or the attempt was
+/// interrupted before publication. Only an absent outputs/completion.json
+/// produces this error; a missing manifest, a present but malformed or
+/// non-success completion, and a missing declared output remain ordinary
+/// bundle integrity failures. The type is stateless and implies no retry,
+/// polling, or lifecycle authority.
+class IncompleteExternalToolInvocationError final
+    : public llvm::ErrorInfo<IncompleteExternalToolInvocationError> {
+public:
+  static char ID;
+
+  void log(llvm::raw_ostream &os) const override {
+    os << "invocation is incomplete: the completion record is absent";
+  }
+
+  std::error_code convertToErrorCode() const override {
+    return llvm::inconvertibleErrorCode();
+  }
+};
+
+llvm::Expected<PreparedExternalToolInvocation> finalizeExternalToolInvocationBundle(
     llvm::StringRef bundleRoot,
     const ExternalToolInvocationBundleSpec &specification);
 
-llvm::Expected<int>
-executeExternalToolInvocationBundle(llvm::StringRef bundleRoot);
+llvm::Expected<int> executeExternalToolInvocationBundle(
+    const PreparedExternalToolInvocation &prepared);
 
+/// Diagnostic reader for the completion record of one prepared invocation:
+/// the prepared manifest is verified through the shared integrity helper and
+/// the record is parsed from the same open bundle root. It is a raw
+/// diagnostic view only, not an import or execution authority.
 llvm::Expected<InvocationCompletion>
-loadExternalToolInvocationCompletion(llvm::StringRef bundleRoot);
+loadExternalToolInvocationCompletion(
+    const PreparedExternalToolInvocation &prepared);
 
-/// Strictly imports one canonical, successfully completed invocation attempt,
-/// binds it to the caller's exact semantic expectations, and snapshots all
-/// declared ordinary output bytes from the same bundle directory.
+/// Strictly imports one canonical, successfully completed invocation attempt
+/// through its exact prepared handle: the manifest bytes must digest to the
+/// prepared manifest_sha256, the completion must bind that manifest
+/// atomically, and every declared ordinary output is snapshotted as owned
+/// immutable bytes from the same bundle directory.
 llvm::Expected<ImportedExternalToolInvocationBundle>
 importExternalToolInvocationBundle(
-    llvm::StringRef bundleRoot,
+    const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationImportExpectation &expectation);
 
 /// Reads one declared output from the immutable import snapshot.

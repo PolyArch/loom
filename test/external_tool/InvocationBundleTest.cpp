@@ -17,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <sys/wait.h>
+#include <tuple>
 #include <unistd.h>
 #include <utility>
 
@@ -56,20 +57,6 @@ void requireFailureContains(const char *test, llvm::Expected<T> value,
   const std::string message = llvm::toString(value.takeError());
   require(test, message.find(reason) != std::string::npos,
           "failure reason mismatch: " + message);
-}
-
-void requireFailureContains(const char *test, llvm::Error error,
-                            const std::string &reason) {
-  if (!error)
-    fail(test, "expected a failure containing: " + reason);
-  const std::string message = llvm::toString(std::move(error));
-  require(test, message.find(reason) != std::string::npos,
-          "failure reason mismatch: " + message);
-}
-
-void take(const char *test, llvm::Error error) {
-  if (error)
-    fail(test, llvm::toString(std::move(error)));
 }
 
 int waitForChild(const char *test, pid_t child) {
@@ -196,8 +183,10 @@ void deterministicHostBundleExecutes(const std::filesystem::path &root,
   writeExecutable(*spec.tool.moduleInit,
                   "module() { [[ \"${1-}\" == load ]]; }\n");
 
-  take(__func__, finalizeExternalToolInvocationBundle(first.string(), spec));
-  take(__func__, finalizeExternalToolInvocationBundle(second.string(), spec));
+  const PreparedExternalToolInvocation preparedFirst = take(
+      __func__, finalizeExternalToolInvocationBundle(first.string(), spec));
+  const PreparedExternalToolInvocation preparedSecond = take(
+      __func__, finalizeExternalToolInvocationBundle(second.string(), spec));
   const std::string firstManifest = readFile(first / "tool-invocation.json");
   const std::string firstScript = readFile(first / "run.sh");
   require(__func__, firstManifest == readFile(second / "tool-invocation.json"),
@@ -213,14 +202,14 @@ void deterministicHostBundleExecutes(const std::filesystem::path &root,
           "an inherited environment value leaked into the bundle");
 
   const int status =
-      take(__func__, executeExternalToolInvocationBundle(first.string()));
+      take(__func__, executeExternalToolInvocationBundle(preparedFirst));
   require(__func__, status == 0, "successful bundle returned a failure status");
   require(__func__, readFile(first / output) == "literal; $(touch never)",
           "command arguments were not preserved as data");
   require(__func__, !std::filesystem::exists(first / "never"),
           "command data was evaluated by the shell");
   InvocationCompletion completion =
-      take(__func__, loadExternalToolInvocationCompletion(first.string()));
+      take(__func__, loadExternalToolInvocationCompletion(preparedFirst));
   require(__func__,
           completion.status == InvocationCompletionStatus::Success &&
               completion.exitCode == 0 &&
@@ -234,18 +223,18 @@ void deterministicHostBundleExecutes(const std::filesystem::path &root,
       first / "outputs" / "completion.json";
   writeText(completionPath, " " + readFile(completionPath));
   llvm::Expected<InvocationCompletion> noncanonical =
-      loadExternalToolInvocationCompletion(first.string());
+      loadExternalToolInvocationCompletion(preparedFirst);
   require(__func__, !noncanonical,
           "noncanonical completion record was accepted");
   llvm::consumeError(noncanonical.takeError());
 
   writeExecutable(second / "drivers" / "driver with ' quote.tcl", "tampered\n");
   const int tamperedStatus =
-      take(__func__, executeExternalToolInvocationBundle(second.string()));
+      take(__func__, executeExternalToolInvocationBundle(preparedSecond));
   require(__func__, tamperedStatus != 0,
           "bundle with tampered materialized content returned success");
   InvocationCompletion tampered =
-      take(__func__, loadExternalToolInvocationCompletion(second.string()));
+      take(__func__, loadExternalToolInvocationCompletion(preparedSecond));
   require(__func__,
           tampered.status == InvocationCompletionStatus::BundleContentMismatch,
           "tampered bundle content was not distinguished in completion");
@@ -271,9 +260,10 @@ void containerBundleExecutes(const std::filesystem::path &root,
   spec.containerVersionProbe =
       ToolVersionProbe{{"--version"}, "PolyArch container"};
 
-  take(__func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
   const int status =
-      take(__func__, executeExternalToolInvocationBundle(bundle.string()));
+      take(__func__, executeExternalToolInvocationBundle(prepared));
   require(__func__, status == 0, "container bundle returned a failure status");
   require(__func__, readFile(bundle / output) == "literal; $(touch never)",
           "container command did not preserve arguments");
@@ -296,7 +286,8 @@ void externalFileIsRevalidated(const std::filesystem::path &root,
   const std::filesystem::path output = "outputs/external-file-result.txt";
   ExternalToolInvocationBundleSpec spec = baseSpec(tool, output);
   spec.externalFiles = resolved;
-  take(__func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
 
   const std::string manifest = readFile(bundle / "tool-invocation.json");
   require(__func__,
@@ -311,30 +302,31 @@ void externalFileIsRevalidated(const std::filesystem::path &root,
           "resolved external file provenance is absent from the manifest");
 
   int status =
-      take(__func__, executeExternalToolInvocationBundle(bundle.string()));
+      take(__func__, executeExternalToolInvocationBundle(prepared));
   require(__func__, status == 0,
           "bundle rejected an unchanged resolved external file");
   require(__func__, readFile(bundle / output) == "literal; $(touch never)",
           "bundle with an external file did not execute the tool");
 
   ExternalToolInvocationImportExpectation expected = importExpectation(spec);
-  take(__func__, importExternalToolInvocationBundle(bundle.string(), expected));
+  take(__func__, importExternalToolInvocationBundle(prepared, expected));
   ExternalToolInvocationImportExpectation wrong = expected;
   wrong.externalInputs.front().fingerprint = fingerprint("different-bytes");
   requireFailure(__func__,
-                 importExternalToolInvocationBundle(bundle.string(), wrong),
+                 importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong external input fingerprint was accepted");
 
   writeText(external, "vendor-library-mutated\n");
   const std::filesystem::path changedBundle = root / "changed-external-bundle";
-  take(__func__,
-       finalizeExternalToolInvocationBundle(changedBundle.string(), spec));
+  const PreparedExternalToolInvocation preparedChanged = take(
+      __func__,
+      finalizeExternalToolInvocationBundle(changedBundle.string(), spec));
   status = take(__func__,
-                executeExternalToolInvocationBundle(changedBundle.string()));
+                executeExternalToolInvocationBundle(preparedChanged));
   require(__func__, status != 0,
           "bundle accepted a changed resolved external file");
   InvocationCompletion completion = take(
-      __func__, loadExternalToolInvocationCompletion(changedBundle.string()));
+      __func__, loadExternalToolInvocationCompletion(preparedChanged));
   require(__func__,
           completion.status == InvocationCompletionStatus::BundleContentMismatch,
           "changed external content was not distinguished in completion");
@@ -348,13 +340,14 @@ void missingOutputIsRecorded(const std::filesystem::path &root,
   ExternalToolInvocationBundleSpec spec =
       baseSpec(tool, "outputs/required.txt");
   spec.commands = {{tool.string(), "no-output"}};
-  take(__func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
   const int status =
-      take(__func__, executeExternalToolInvocationBundle(bundle.string()));
+      take(__func__, executeExternalToolInvocationBundle(prepared));
   require(__func__, status != 0,
           "bundle with a missing output returned success");
   InvocationCompletion completion =
-      take(__func__, loadExternalToolInvocationCompletion(bundle.string()));
+      take(__func__, loadExternalToolInvocationCompletion(prepared));
   require(__func__,
           completion.status == InvocationCompletionStatus::MissingOutput,
           "missing output was not distinguished in completion");
@@ -368,21 +361,22 @@ void missingOutputIsRecorded(const std::filesystem::path &root,
   ExternalToolInvocationBundleSpec staleSpec =
       baseSpec(tool, "outputs/required.txt");
   staleSpec.commands = {{tool.string(), "no-output"}};
-  take(__func__,
-       finalizeExternalToolInvocationBundle(staleBundle.string(), staleSpec));
+  const PreparedExternalToolInvocation preparedStale = take(
+      __func__,
+      finalizeExternalToolInvocationBundle(staleBundle.string(), staleSpec));
   writeText(staleBundle / staleSpec.declaredOutputs.front(), "stale");
   require(__func__,
           take(__func__,
-               executeExternalToolInvocationBundle(staleBundle.string())) != 0,
+               executeExternalToolInvocationBundle(preparedStale)) != 0,
           "a preexisting output was accepted as a fresh tool result");
   completion = take(__func__,
-                    loadExternalToolInvocationCompletion(staleBundle.string()));
+                    loadExternalToolInvocationCompletion(preparedStale));
   require(__func__,
           completion.status == InvocationCompletionStatus::MissingOutput,
           "a planted stale output was not removed before execution");
   requireFailure(__func__,
                  importExternalToolInvocationBundle(
-                     staleBundle.string(), importExpectation(staleSpec)),
+                     preparedStale, importExpectation(staleSpec)),
                  "a stale planted output was imported as a fresh result");
 }
 
@@ -404,7 +398,8 @@ void versionNormalizationMatchesDiscovery(const std::filesystem::path &root) {
   spec.tool.version = "dc_shell version - Y-2026.03-SP2";
   spec.toolVersionProbe = ToolVersionProbe{
       {"--version"}, "dc_shell version", {0, 1}, "dc_shell version"};
-  take(__func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
   const std::string manifest = readFile(bundle / "tool-invocation.json");
   require(__func__,
           manifest.find("\"accepted_exit_codes\"") != std::string::npos &&
@@ -412,7 +407,7 @@ void versionNormalizationMatchesDiscovery(const std::filesystem::path &root) {
                   std::string::npos,
           "version normalization contract is absent from the manifest");
   const int status =
-      take(__func__, executeExternalToolInvocationBundle(bundle.string()));
+      take(__func__, executeExternalToolInvocationBundle(prepared));
   require(__func__, status == 0,
           "bundle rejected the version accepted during discovery");
   require(__func__, readFile(bundle / output) == "literal; $(touch never)",
@@ -425,10 +420,10 @@ void invalidPathLeavesNoBundle(const std::filesystem::path &root,
   ExternalToolInvocationBundleSpec spec =
       baseSpec(tool, "outputs/required.txt");
   spec.files.front().relativePath = "inputs/../escape";
-  llvm::Error error =
+  llvm::Expected<PreparedExternalToolInvocation> result =
       finalizeExternalToolInvocationBundle(bundle.string(), spec);
-  require(__func__, static_cast<bool>(error), "escaping path was accepted");
-  llvm::consumeError(std::move(error));
+  require(__func__, !result, "escaping path was accepted");
+  llvm::consumeError(result.takeError());
   require(__func__, !std::filesystem::exists(bundle),
           "failed finalization published a bundle");
 }
@@ -438,11 +433,11 @@ void conflictingPathLeavesNoBundle(const std::filesystem::path &root,
   const std::filesystem::path bundle = root / "conflicting-bundle";
   ExternalToolInvocationBundleSpec spec =
       baseSpec(tool, "outputs/completion.json/child");
-  llvm::Error error =
+  llvm::Expected<PreparedExternalToolInvocation> result =
       finalizeExternalToolInvocationBundle(bundle.string(), spec);
-  require(__func__, static_cast<bool>(error),
+  require(__func__, !result,
           "a path below the completion record was accepted");
-  llvm::consumeError(std::move(error));
+  llvm::consumeError(result.takeError());
   require(__func__, !std::filesystem::exists(bundle),
           "conflicting finalization published a bundle");
 }
@@ -452,11 +447,11 @@ void internalVersionPathCannotBeDeclared(const std::filesystem::path &root,
   const std::filesystem::path bundle = root / "reserved-version-output";
   ExternalToolInvocationBundleSpec spec =
       baseSpec(tool, "outputs/.loom-tool-version");
-  llvm::Error error =
+  llvm::Expected<PreparedExternalToolInvocation> result =
       finalizeExternalToolInvocationBundle(bundle.string(), spec);
-  require(__func__, static_cast<bool>(error),
+  require(__func__, !result,
           "the internal version output path was accepted");
-  llvm::consumeError(std::move(error));
+  llvm::consumeError(result.takeError());
   require(__func__, !std::filesystem::exists(bundle),
           "reserved-path finalization published a bundle");
 }
@@ -469,18 +464,20 @@ void independentBundlesExecuteInParallel(const std::filesystem::path &root,
       baseSpec(tool, "outputs/result.txt");
   firstSpec.commands = {{tool.string(), "block", "outputs/tool-entry.log",
                          "outputs/release", "outputs/result.txt"}};
-  take(__func__, finalizeExternalToolInvocationBundle(first.string(),
-                                                      firstSpec));
+  const PreparedExternalToolInvocation preparedFirst =
+      take(__func__, finalizeExternalToolInvocationBundle(first.string(),
+                                                          firstSpec));
   ExternalToolInvocationBundleSpec secondSpec =
       baseSpec(tool, "outputs/result.txt");
-  take(__func__, finalizeExternalToolInvocationBundle(second.string(),
-                                                      secondSpec));
+  const PreparedExternalToolInvocation preparedSecond =
+      take(__func__, finalizeExternalToolInvocationBundle(second.string(),
+                                                          secondSpec));
 
   const pid_t child = ::fork();
   require(__func__, child >= 0, "could not fork the first bundle execution");
   if (child == 0) {
     llvm::Expected<int> status =
-        executeExternalToolInvocationBundle(first.string());
+        executeExternalToolInvocationBundle(preparedFirst);
     if (!status) {
       llvm::consumeError(status.takeError());
       ::_exit(254);
@@ -507,16 +504,16 @@ void independentBundlesExecuteInParallel(const std::filesystem::path &root,
   // is still inside the tool: no shared mutable state exists between roots.
   require(__func__,
           take(__func__,
-               executeExternalToolInvocationBundle(second.string())) == 0,
+               executeExternalToolInvocationBundle(preparedSecond)) == 0,
           "an independent bundle could not execute while another ran");
   writeText(first / "outputs" / "release", "");
   const int firstStatus = waitForChild(__func__, child);
   require(__func__, WIFEXITED(firstStatus) && WEXITSTATUS(firstStatus) == 0,
           "the blocked execution did not complete after release");
   take(__func__, importExternalToolInvocationBundle(
-                     first.string(), importExpectation(firstSpec)));
+                     preparedFirst, importExpectation(firstSpec)));
   take(__func__, importExternalToolInvocationBundle(
-                     second.string(), importExpectation(secondSpec)));
+                     preparedSecond, importExpectation(secondSpec)));
 }
 
 void unremovableDeclaredOutputFailsBeforeToolEntry(
@@ -525,27 +522,28 @@ void unremovableDeclaredOutputFailsBeforeToolEntry(
   ExternalToolInvocationBundleSpec spec = baseSpec(tool, "outputs/result.txt");
   spec.commands = {{tool.string(), "block", "outputs/tool-entry.log",
                     "outputs/release", "outputs/result.txt"}};
-  take(__func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
   // The release marker lets the blocking tool proceed immediately if it is
   // ever entered; the directory makes the stale-output removal fail.
   writeText(bundle / "outputs" / "release", "");
   std::filesystem::create_directories(bundle / "outputs" / "result.txt");
 
   const int status =
-      take(__func__, executeExternalToolInvocationBundle(bundle.string()));
+      take(__func__, executeExternalToolInvocationBundle(prepared));
   require(__func__, status != 0,
           "an unremovable declared output did not fail the execution");
   require(__func__,
           !std::filesystem::exists(bundle / "outputs" / "tool-entry.log"),
           "the external tool was entered despite the failed removal");
   InvocationCompletion completion =
-      take(__func__, loadExternalToolInvocationCompletion(bundle.string()));
+      take(__func__, loadExternalToolInvocationCompletion(prepared));
   require(__func__,
           completion.status == InvocationCompletionStatus::BundleContentMismatch,
           "an unremovable declared output did not fail integrity validation");
   requireFailure(__func__,
                  importExternalToolInvocationBundle(
-                     bundle.string(), importExpectation(spec)),
+                     prepared, importExpectation(spec)),
                  "stale bytes were imported after a failed removal");
 }
 
@@ -553,37 +551,38 @@ void sequentialReexecutionIsCallerOwned(const std::filesystem::path &root,
                                         const std::filesystem::path &tool) {
   const std::filesystem::path bundle = root / "reexecuted";
   ExternalToolInvocationBundleSpec spec = baseSpec(tool, "outputs/result.txt");
-  take(__func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
 
   require(__func__,
           take(__func__,
-               executeExternalToolInvocationBundle(bundle.string())) == 0,
+               executeExternalToolInvocationBundle(prepared)) == 0,
           "the first execution failed");
   take(__func__, importExternalToolInvocationBundle(
-                     bundle.string(), importExpectation(spec)));
+                     prepared, importExpectation(spec)));
 
   // The caller chooses to execute the same prepared bundle again: the
   // completion and declared outputs are republished by the new execution.
   require(__func__,
           take(__func__,
-               executeExternalToolInvocationBundle(bundle.string())) == 0,
+               executeExternalToolInvocationBundle(prepared)) == 0,
           "a caller-chosen sequential re-execution was refused");
   take(__func__, importExternalToolInvocationBundle(
-                     bundle.string(), importExpectation(spec)));
+                     prepared, importExpectation(spec)));
 
   // An interrupted attempt leaves no completion; re-execution still works,
   // and the incomplete state stays import-rejected in between.
   std::filesystem::remove(bundle / "outputs" / "completion.json");
   requireFailure(__func__,
                  importExternalToolInvocationBundle(
-                     bundle.string(), importExpectation(spec)),
+                     prepared, importExpectation(spec)),
                  "an interrupted bundle remained importable");
   require(__func__,
           take(__func__,
-               executeExternalToolInvocationBundle(bundle.string())) == 0,
+               executeExternalToolInvocationBundle(prepared)) == 0,
           "re-execution after an interrupted attempt failed");
   take(__func__, importExternalToolInvocationBundle(
-                     bundle.string(), importExpectation(spec)));
+                     prepared, importExpectation(spec)));
 
   // No Loom-owned claim or retry authority remains in the generated script.
   const std::string script = readFile(bundle / "run.sh");
@@ -598,15 +597,16 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
   const std::filesystem::path bundle = root / "strict-import";
   const std::filesystem::path output = "outputs/imported.txt";
   ExternalToolInvocationBundleSpec spec = baseSpec(tool, output);
-  take(__func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
   require(
       __func__,
-      take(__func__, executeExternalToolInvocationBundle(bundle.string())) == 0,
+      take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
       "strict-import bundle did not execute");
 
   ExternalToolInvocationImportExpectation expected = importExpectation(spec);
   ImportedExternalToolInvocationBundle imported = take(
-      __func__, importExternalToolInvocationBundle(bundle.string(), expected));
+      __func__, importExternalToolInvocationBundle(prepared, expected));
   require(__func__,
           take(__func__, readExternalToolInvocationDeclaredOutput(
                              imported, output.generic_string())) ==
@@ -620,7 +620,7 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
   ExternalToolInvocationImportExpectation wrong = expected;
   wrong.providerIdentity = "other-provider@1";
   requireFailure(__func__,
-                 importExternalToolInvocationBundle(bundle.string(), wrong),
+                 importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong provider identity was accepted");
   wrong = expected;
   wrong.semanticClosure = SemanticInvocationClosure(loom::ArtifactRootReference{
@@ -628,12 +628,12 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
       {1, 0},
       take(__func__, loom::parseArtifactIdentityHex(std::string(64, '3')))});
   requireFailure(__func__,
-                 importExternalToolInvocationBundle(bundle.string(), wrong),
+                 importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong semantic closure was accepted");
   wrong = expected;
   wrong.resultImporterIdentity = "other-importer@1";
   requireFailure(__func__,
-                 importExternalToolInvocationBundle(bundle.string(), wrong),
+                 importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong result importer identity was accepted");
   wrong = expected;
   wrong.semanticInputs.front().sourceArtifact = loom::ArtifactRootReference{
@@ -641,12 +641,12 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
       {1, 0},
       take(__func__, loom::parseArtifactIdentityHex(std::string(64, '2')))};
   requireFailure(__func__,
-                 importExternalToolInvocationBundle(bundle.string(), wrong),
+                 importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong semantic input Artifact reference was accepted");
   wrong = expected;
   wrong.semanticInputs.front().contentDigest = blobDigest("other-input-bytes");
   requireFailure(__func__,
-                 importExternalToolInvocationBundle(bundle.string(), wrong),
+                 importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong semantic input content digest was accepted");
 
   const std::filesystem::path substituted = root / "strict-import-substituted";
@@ -654,28 +654,29 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
   for (MaterializedBundleFile &file : substitutedSpec.files)
     if (file.sourceArtifact)
       file.contents = "substituted-input-bytes";
-  take(__func__, finalizeExternalToolInvocationBundle(substituted.string(),
-                                                      substitutedSpec));
+  const PreparedExternalToolInvocation preparedSubstituted =
+      take(__func__, finalizeExternalToolInvocationBundle(substituted.string(),
+                                                          substitutedSpec));
   require(__func__,
           take(__func__,
-               executeExternalToolInvocationBundle(substituted.string())) == 0,
+               executeExternalToolInvocationBundle(preparedSubstituted)) == 0,
           "content-substituted bundle did not execute");
   requireFailure(
       __func__,
-      importExternalToolInvocationBundle(substituted.string(), expected),
+      importExternalToolInvocationBundle(preparedSubstituted, expected),
       "same-ref semantic input content substitution was accepted");
 
   wrong = expected;
   wrong.declaredOutputs.push_back("outputs/unexpected.txt");
   requireFailure(__func__,
-                 importExternalToolInvocationBundle(bundle.string(), wrong),
+                 importExternalToolInvocationBundle(prepared, wrong),
                  "wrong declared output membership was accepted");
 
   const std::string completionBefore =
       readFile(bundle / "outputs" / "completion.json");
   require(
       __func__,
-      take(__func__, executeExternalToolInvocationBundle(bundle.string())) == 0,
+      take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
       "a caller-chosen rerun of a completed bundle was refused");
   require(__func__,
           readFile(bundle / "outputs" / "completion.json") == completionBefore,
@@ -698,26 +699,28 @@ void unsafeOutputsCannotBeImported(const std::filesystem::path &root,
     const std::filesystem::path bundle = root / name.str();
     ExternalToolInvocationBundleSpec spec =
         baseSpec(tool, "outputs/result.txt");
-    take(__func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+    const PreparedExternalToolInvocation prepared = take(
+        __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
     require(__func__,
             take(__func__,
-                 executeExternalToolInvocationBundle(bundle.string())) == 0,
+                 executeExternalToolInvocationBundle(prepared)) == 0,
             "unsafe-output bundle did not execute");
-    return std::pair(bundle, std::move(spec));
+    return std::tuple(bundle, std::move(spec), prepared);
   };
   const std::filesystem::path outside = root / "outside-output.txt";
   writeText(outside, "outside");
 
-  auto [symlinkBundle, symlinkSpec] = makeExecutedBundle("symlink-output");
+  auto [symlinkBundle, symlinkSpec, symlinkPrepared] =
+      makeExecutedBundle("symlink-output");
   std::filesystem::remove(symlinkBundle / symlinkSpec.declaredOutputs.front());
   std::filesystem::create_symlink(
       outside, symlinkBundle / symlinkSpec.declaredOutputs.front());
   requireFailure(__func__,
                  importExternalToolInvocationBundle(
-                     symlinkBundle.string(), importExpectation(symlinkSpec)),
+                     symlinkPrepared, importExpectation(symlinkSpec)),
                  "a symlinked declared output was imported");
 
-  auto [directoryBundle, directorySpec] =
+  auto [directoryBundle, directorySpec, directoryPrepared] =
       makeExecutedBundle("directory-output");
   std::filesystem::remove(directoryBundle /
                           directorySpec.declaredOutputs.front());
@@ -725,15 +728,16 @@ void unsafeOutputsCannotBeImported(const std::filesystem::path &root,
                                     directorySpec.declaredOutputs.front());
   requireFailure(
       __func__,
-      importExternalToolInvocationBundle(directoryBundle.string(),
+      importExternalToolInvocationBundle(directoryPrepared,
                                          importExpectation(directorySpec)),
       "a directory declared output was imported");
 
-  auto [changedBundle, changedSpec] = makeExecutedBundle("changed-output");
+  auto [changedBundle, changedSpec, changedPrepared] =
+      makeExecutedBundle("changed-output");
   writeText(changedBundle / changedSpec.declaredOutputs.front(), "changed");
   requireFailure(__func__,
                  importExternalToolInvocationBundle(
-                     changedBundle.string(), importExpectation(changedSpec)),
+                     changedPrepared, importExpectation(changedSpec)),
                  "an output changed after completion was imported");
 }
 
@@ -743,26 +747,33 @@ void strictImportRejectsAttemptTampering(const std::filesystem::path &root,
     const std::filesystem::path bundle = root / name.str();
     ExternalToolInvocationBundleSpec spec =
         baseSpec(tool, "outputs/result.txt");
-    take(__func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+    const PreparedExternalToolInvocation prepared = take(
+        __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
     require(__func__,
             take(__func__,
-                 executeExternalToolInvocationBundle(bundle.string())) == 0,
+                 executeExternalToolInvocationBundle(prepared)) == 0,
             "import-negative bundle did not execute");
-    return std::pair(bundle, std::move(spec));
+    return std::tuple(bundle, std::move(spec), prepared);
   };
 
-  auto [noncanonicalBundle, noncanonicalSpec] =
+  auto [noncanonicalBundle, noncanonicalSpec, noncanonicalPrepared] =
       makeExecutedBundle("noncanonical-manifest");
   const std::filesystem::path noncanonicalManifest =
       noncanonicalBundle / "tool-invocation.json";
   writeText(noncanonicalManifest, " " + readFile(noncanonicalManifest));
+  // The handle must bind the tampered bytes exactly, or the import stops at
+  // the prepared-handle digest check instead of the canonical parser.
+  const PreparedExternalToolInvocation noncanonicalHandle{
+      noncanonicalBundle.string(),
+      blobDigest(readFile(noncanonicalManifest))};
   requireFailure(
       __func__,
-      importExternalToolInvocationBundle(noncanonicalBundle.string(),
+      importExternalToolInvocationBundle(noncanonicalHandle,
                                          importExpectation(noncanonicalSpec)),
       "a noncanonical manifest was accepted");
 
-  auto [unknownBundle, unknownSpec] = makeExecutedBundle("unknown-manifest");
+  auto [unknownBundle, unknownSpec, unknownPrepared] =
+      makeExecutedBundle("unknown-manifest");
   const std::filesystem::path unknownManifest =
       unknownBundle / "tool-invocation.json";
   std::string unknownText = readFile(unknownManifest);
@@ -771,30 +782,38 @@ void strictImportRejectsAttemptTampering(const std::filesystem::path &root,
           "cannot locate manifest version field");
   unknownText.insert(version, "  \"unknown\": true,\n");
   writeText(unknownManifest, unknownText);
+  const PreparedExternalToolInvocation unknownHandle{
+      unknownBundle.string(), blobDigest(readFile(unknownManifest))};
   requireFailure(__func__,
                  importExternalToolInvocationBundle(
-                     unknownBundle.string(), importExpectation(unknownSpec)),
+                     unknownHandle, importExpectation(unknownSpec)),
                  "a manifest with an unknown field was accepted");
 
-  auto [firstBundle, firstSpec] = makeExecutedBundle("manifest-binding-a");
+  auto [firstBundle, firstSpec, firstPrepared] =
+      makeExecutedBundle("manifest-binding-a");
   ExternalToolInvocationBundleSpec secondSpec = firstSpec;
   secondSpec.tool.source = ToolBindingSource::EnvironmentPath;
   const std::filesystem::path secondDistinct =
       root / "manifest-binding-distinct";
-  take(__func__, finalizeExternalToolInvocationBundle(secondDistinct.string(),
-                                                      secondSpec));
+  const PreparedExternalToolInvocation preparedSecondDistinct =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         secondDistinct.string(), secondSpec));
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(
-                             secondDistinct.string())) == 0,
+                             preparedSecondDistinct)) == 0,
           "distinct manifest bundle did not execute");
   writeText(firstBundle / "tool-invocation.json",
             readFile(secondDistinct / "tool-invocation.json"));
+  // The handle binds the exact manifest bytes now present in the directory,
+  // so the import reaches the completion-to-manifest binding check.
+  const PreparedExternalToolInvocation swappedHandle{
+      firstBundle.string(), preparedSecondDistinct.manifestDigest};
   requireFailure(__func__,
                  importExternalToolInvocationBundle(
-                     firstBundle.string(), importExpectation(firstSpec)),
+                     swappedHandle, importExpectation(firstSpec)),
                  "completion was accepted with a different manifest");
 
-  auto [malformedBundle, malformedSpec] =
+  auto [malformedBundle, malformedSpec, malformedPrepared] =
       makeExecutedBundle("malformed-nested-manifest");
   const std::filesystem::path malformedManifest =
       malformedBundle / "tool-invocation.json";
@@ -808,34 +827,38 @@ void strictImportRejectsAttemptTampering(const std::filesystem::path &root,
                           ("    \"" + field + "\": true").str());
   }
   writeText(malformedManifest, malformedText);
+  const PreparedExternalToolInvocation malformedHandle{
+      malformedBundle.string(), blobDigest(readFile(malformedManifest))};
   requireFailure(
       __func__,
-      importExternalToolInvocationBundle(malformedBundle.string(),
+      importExternalToolInvocationBundle(malformedHandle,
                                          importExpectation(malformedSpec)),
       "malformed nested manifest fields were accepted");
 
   const std::filesystem::path incomplete = root / "incomplete-import";
   ExternalToolInvocationBundleSpec incompleteSpec =
       baseSpec(tool, "outputs/result.txt");
-  take(__func__, finalizeExternalToolInvocationBundle(incomplete.string(),
-                                                      incompleteSpec));
+  const PreparedExternalToolInvocation preparedIncomplete =
+      take(__func__, finalizeExternalToolInvocationBundle(incomplete.string(),
+                                                          incompleteSpec));
   requireFailure(__func__,
                  importExternalToolInvocationBundle(
-                     incomplete.string(), importExpectation(incompleteSpec)),
+                     preparedIncomplete, importExpectation(incompleteSpec)),
                  "an invocation without completion was imported");
   const std::filesystem::path failed = root / "failed-import";
   ExternalToolInvocationBundleSpec failedSpec =
       baseSpec(tool, "outputs/result.txt");
   failedSpec.commands = {{tool.string(), "no-output"}};
-  take(__func__,
-       finalizeExternalToolInvocationBundle(failed.string(), failedSpec));
+  const PreparedExternalToolInvocation preparedFailed = take(
+      __func__,
+      finalizeExternalToolInvocationBundle(failed.string(), failedSpec));
   require(
       __func__,
-      take(__func__, executeExternalToolInvocationBundle(failed.string())) != 0,
+      take(__func__, executeExternalToolInvocationBundle(preparedFailed)) != 0,
       "failed-import bundle unexpectedly succeeded");
   requireFailure(__func__,
                  importExternalToolInvocationBundle(
-                     failed.string(), importExpectation(failedSpec)),
+                     preparedFailed, importExpectation(failedSpec)),
                  "a non-success completion was imported");
 }
 
@@ -849,12 +872,13 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
       "loom.test_request",
       {1, 0},
       take(__func__, loom::parseArtifactIdentityHex(std::string(64, '7')))});
-  take(__func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
   require(__func__,
-          take(__func__, executeExternalToolInvocationBundle(bundle.string())) ==
+          take(__func__, executeExternalToolInvocationBundle(prepared)) ==
               0,
           "evaluation-closure bundle did not execute");
-  take(__func__, importExternalToolInvocationBundle(bundle.string(),
+  take(__func__, importExternalToolInvocationBundle(prepared,
                                                     importExpectation(spec)));
 
   // A candidate-generator closure without owner bytes fails closed at
@@ -880,9 +904,13 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
   legacyText.replace(version, std::string("\"version\": \"2.0\"").size(),
                      "\"version\": \"1.0\"");
   writeText(legacyManifest, legacyText);
+  // The handle must bind the tampered bytes exactly, or the import stops at
+  // the prepared-handle digest check instead of the version rejection.
+  const PreparedExternalToolInvocation legacyHandle{
+      legacy.string(), blobDigest(readFile(legacyManifest))};
   requireFailureContains(
       __func__,
-      importExternalToolInvocationBundle(legacy.string(),
+      importExternalToolInvocationBundle(legacyHandle,
                                          importExpectation(spec)),
       "1.0");
 
@@ -899,11 +927,128 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
   unknownText.replace(form, std::string("\"form\": \"evaluation\"").size(),
                       "\"form\": \"diagnostic\"");
   writeText(unknownManifest, unknownText);
+  const PreparedExternalToolInvocation unknownFormHandle{
+      unknownForm.string(), blobDigest(readFile(unknownManifest))};
   requireFailureContains(
       __func__,
-      importExternalToolInvocationBundle(unknownForm.string(),
+      importExternalToolInvocationBundle(unknownFormHandle,
                                          importExpectation(spec)),
       "unknown closure form");
+}
+
+void preparedHandleBindsTheExactManifest(const std::filesystem::path &root,
+                                         const std::filesystem::path &tool) {
+  const std::filesystem::path bundle = root / "prepared-anchor";
+  ExternalToolInvocationBundleSpec spec = baseSpec(tool, "outputs/result.txt");
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  require(__func__,
+          prepared.bundleRoot == bundle.string() &&
+              prepared.manifestDigest ==
+                  blobDigest(readFile(bundle / "tool-invocation.json")),
+          "the prepared handle did not bind the exact manifest bytes");
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
+          "prepared-anchor bundle did not execute");
+  take(__func__,
+       importExternalToolInvocationBundle(prepared, importExpectation(spec)));
+
+  // A handle carrying any other manifest digest never imports the bundle.
+  const PreparedExternalToolInvocation wrong{bundle.string(),
+                                             blobDigest("wrong")};
+  requireFailureContains(
+      __func__,
+      importExternalToolInvocationBundle(wrong, importExpectation(spec)),
+      "prepared handle");
+
+  // A handle bound to one bundle never imports another bundle's directory.
+  const std::filesystem::path other = root / "prepared-anchor-other";
+  ExternalToolInvocationBundleSpec otherSpec =
+      baseSpec(tool, "outputs/other-result.txt");
+  const PreparedExternalToolInvocation preparedOther = take(
+      __func__,
+      finalizeExternalToolInvocationBundle(other.string(), otherSpec));
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(preparedOther)) ==
+              0,
+          "second prepared-anchor bundle did not execute");
+  const PreparedExternalToolInvocation swapped{other.string(),
+                                               prepared.manifestDigest};
+  requireFailureContains(__func__,
+                         importExternalToolInvocationBundle(
+                             swapped, importExpectation(otherSpec)),
+                         "prepared handle");
+}
+
+void executionRejectsSubstitutedBundle(const std::filesystem::path &root,
+                                       const std::filesystem::path &tool) {
+  const std::filesystem::path bundle = root / "execute-anchor";
+  const std::filesystem::path replacement = root / "execute-anchor-other";
+  ExternalToolInvocationBundleSpec spec = baseSpec(tool, "outputs/result.txt");
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  ExternalToolInvocationBundleSpec otherSpec = baseSpec(tool, "outputs/other.txt");
+  take(__func__,
+       finalizeExternalToolInvocationBundle(replacement.string(), otherSpec));
+  // A whole self-consistent bundle replacement before execution is rejected
+  // against the original prepared handle.
+  std::filesystem::remove_all(bundle);
+  std::filesystem::rename(replacement, bundle);
+  requireFailureContains(__func__,
+                         executeExternalToolInvocationBundle(prepared),
+                         "prepared handle");
+}
+
+void finalizeRejectsNonNormalizedBundleRoot(const std::filesystem::path &root,
+                                            const std::filesystem::path &tool) {
+  ExternalToolInvocationBundleSpec spec = baseSpec(tool, "outputs/result.txt");
+  const std::filesystem::path nonNormalized =
+      root / "nested" / ".." / "non-normalized";
+  auto result =
+      finalizeExternalToolInvocationBundle(nonNormalized.string(), spec);
+  require(__func__, !result, "a non-normalized bundle root was finalized");
+  llvm::consumeError(result.takeError());
+  require(__func__, !std::filesystem::exists(root / "non-normalized"),
+          "a rejected finalization published a bundle");
+}
+
+void incompleteAttemptHasATypedImportError(const std::filesystem::path &root,
+                                           const std::filesystem::path &tool) {
+  const std::filesystem::path bundle = root / "incomplete-attempt";
+  ExternalToolInvocationBundleSpec spec = baseSpec(tool, "outputs/result.txt");
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+
+  // A prepared bundle that was never executed has no completion record: the
+  // import failure is the one typed incomplete-attempt error.
+  llvm::Expected<ImportedExternalToolInvocationBundle> incomplete =
+      importExternalToolInvocationBundle(prepared, importExpectation(spec));
+  require(__func__, !incomplete, "an unexecuted bundle was importable");
+  bool typedIncomplete = false;
+  llvm::Error remainder =
+      llvm::handleErrors(incomplete.takeError(),
+                         [&](const IncompleteExternalToolInvocationError &) {
+                           typedIncomplete = true;
+                         });
+  require(__func__, typedIncomplete,
+          "an absent completion record was not typed as incomplete");
+  llvm::consumeError(std::move(remainder));
+
+  // A present but malformed completion record is a bundle integrity failure,
+  // not an incomplete attempt.
+  writeText(bundle / "outputs" / "completion.json", "not a completion\n");
+  llvm::Expected<ImportedExternalToolInvocationBundle> malformed =
+      importExternalToolInvocationBundle(prepared, importExpectation(spec));
+  require(__func__, !malformed, "a malformed completion was imported");
+  typedIncomplete = false;
+  remainder =
+      llvm::handleErrors(malformed.takeError(),
+                         [&](const IncompleteExternalToolInvocationError &) {
+                           typedIncomplete = true;
+                         });
+  require(__func__, !typedIncomplete,
+          "a malformed completion was typed as an incomplete attempt");
+  llvm::consumeError(std::move(remainder));
 }
 
 } // namespace
@@ -972,5 +1117,9 @@ int main(int argc, char **argv) {
   unsafeOutputsCannotBeImported(root, tool);
   strictImportRejectsAttemptTampering(root, tool);
   typedClosureIsExactAndLegacyManifestIsRejected(root, tool);
+  preparedHandleBindsTheExactManifest(root, tool);
+  executionRejectsSubstitutedBundle(root, tool);
+  finalizeRejectsNonNormalizedBundleRoot(root, tool);
+  incompleteAttemptHasATypedImportError(root, tool);
   return 0;
 }
