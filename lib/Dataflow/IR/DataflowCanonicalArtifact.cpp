@@ -25,6 +25,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -34,6 +35,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -448,6 +450,28 @@ CanonicalDataflowProgramView::buildView(
 llvm::Expected<::loom::PointerLayout>
 CanonicalDataflowProgramView::pointerLayout(std::uint32_t addressSpace) const {
   return ::loom::resolvePointerLayout(module_, addressSpace);
+}
+
+llvm::Expected<std::uint32_t>
+CanonicalDataflowProgramView::transportPayloadBitWidth(mlir::Type type) const {
+  mlir::ModuleOp module = module_;
+  if (!type || type.getContext() != module.getContext())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "transport payload type is absent or belongs to a foreign context");
+  if (mlir::isa<mlir::NoneType>(type))
+    return 0;
+  llvm::TypeSize width =
+      mlir::DataLayout::closest(module).getTypeSizeInBits(type);
+  if (width.isScalable())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "transport payload type does not have a fixed bit width");
+  if (width.getFixedValue() > std::numeric_limits<std::uint32_t>::max())
+    return llvm::createStringError(
+        std::errc::value_too_large,
+        "transport payload bit width exceeds the PnR native domain");
+  return static_cast<std::uint32_t>(width.getFixedValue());
 }
 
 llvm::Expected<CanonicalDataflowProgramView>

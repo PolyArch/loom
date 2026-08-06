@@ -36,15 +36,15 @@ std::error_code EndpointRouteSearchFailure::convertToErrorCode() const {
   llvm_unreachable("invalid endpoint route search failure kind");
 }
 
-EndpointRoutingGraphView
-loom::pnr::endpointRoutingGraphView(const FrozenSpatialRoutingGraph &graph) {
-  return {static_cast<PnrIndex>(graph.routingEndpoints().size()),
-          graph.routingArcs(),
-          graph.arcSources(),
-          graph.adjacencyOffsets(),
-          graph.reverseAdjacencyOffsets(),
-          graph.reverseArcOrdinals(),
-          graph.traversalReplicationGroups()};
+EndpointRoutingGraphView loom::pnr::endpointRoutingGraphView(
+    const FrozenEndpointRoutingTopology &topology) {
+  return {static_cast<PnrIndex>(topology.endpoints().size()),
+          topology.arcs(),
+          topology.arcSources(),
+          topology.adjacencyOffsets(),
+          topology.reverseAdjacencyOffsets(),
+          topology.reverseArcOrdinals(),
+          topology.traversalReplicationGroups()};
 }
 
 namespace {

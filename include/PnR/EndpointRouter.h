@@ -1,8 +1,8 @@
 #ifndef LOOM_PNR_ENDPOINTROUTER_H
 #define LOOM_PNR_ENDPOINTROUTER_H
 
+#include "PnR/EndpointRoutingTopology.h"
 #include "PnR/RoutingNegotiation.h"
-#include "PnR/SpatialPnrProblem.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -17,7 +17,7 @@ namespace loom::pnr {
 
 struct EndpointRoutingGraphView final {
   PnrIndex endpointCount = 0;
-  llvm::ArrayRef<FrozenSpatialRoutingArc> arcs;
+  llvm::ArrayRef<EndpointRoutingArc> arcs;
   llvm::ArrayRef<PnrIndex> arcSources;
   llvm::ArrayRef<PnrIndex> adjacencyOffsets;
   llvm::ArrayRef<PnrIndex> reverseAdjacencyOffsets;
@@ -26,7 +26,7 @@ struct EndpointRoutingGraphView final {
 };
 
 EndpointRoutingGraphView
-endpointRoutingGraphView(const FrozenSpatialRoutingGraph &graph);
+endpointRoutingGraphView(const FrozenEndpointRoutingTopology &topology);
 
 enum class EndpointRouteSearchFailureKind {
   Invalid,

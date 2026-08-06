@@ -62,22 +62,11 @@ constexpr PnrCapacityContext contextOffsetContext{
 constexpr PnrCapacityContext contextCountContext{
     frozenArtifact, "instruction_contexts", "instruction_contexts",
     PnrCapacityMeasure::Count};
-constexpr PnrCapacityContext endpointCountContext{
-    frozenArtifact, "routing_endpoints", "routing_endpoints",
-    PnrCapacityMeasure::Count};
-constexpr PnrCapacityContext traversalCountContext{
-    frozenArtifact, "traversals", "traversals", PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext traversalIndexContext{
     frozenArtifact, "traversals", "traversals", PnrCapacityMeasure::Index};
 constexpr PnrCapacityContext replicationGroupIndexContext{
     frozenArtifact, "traversal_replication_groups", "replication_groups",
     PnrCapacityMeasure::Index};
-constexpr PnrCapacityContext traversalEndpointOffsetContext{
-    frozenArtifact, "traversals", "traversal_endpoints",
-    PnrCapacityMeasure::Offset};
-constexpr PnrCapacityContext traversalEndpointCountContext{
-    frozenArtifact, "traversal_endpoints", "traversal_endpoints",
-    PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext traversalResourceStateOffsetContext{
     frozenArtifact, "traversals", "traversal_resource_states",
     PnrCapacityMeasure::Offset};
@@ -113,10 +102,6 @@ constexpr PnrCapacityContext traversalArcOffsetContext{
 constexpr PnrCapacityContext traversalArcCountContext{
     frozenArtifact, "traversal_arcs", "routing_arcs",
     PnrCapacityMeasure::Count};
-constexpr PnrCapacityContext arcOffsetContext{
-    frozenArtifact, "adjacency", "routing_arcs", PnrCapacityMeasure::Offset};
-constexpr PnrCapacityContext arcCountContext{
-    frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
@@ -231,10 +216,6 @@ restriction(const FrozenConstraintIndex &constraints,
             Subject subject) {
   return constraints.shard(projection)
       .restrictedDomain(SpatialConstraintSubject{std::move(subject)});
-}
-
-std::uint32_t tagCapacity(const ::fabric::DataPathType &path) {
-  return path.kind == ::fabric::DataPathKind::BitsTag ? path.tagWidthBits : 0;
 }
 
 std::string
@@ -864,7 +845,7 @@ public:
       if (begin > end || end > routing.routingArcs().size())
         return invalid("routing CSR offsets are inconsistent");
       for (PnrIndex arc = begin; arc < end; ++arc) {
-        const FrozenSpatialRoutingArc &record = routing.routingArcs()[arc];
+        const EndpointRoutingArc &record = routing.routingArcs()[arc];
         if (routing.arcSources()[arc] != source ||
             record.target >= routing.routingEndpoints().size() ||
             record.traversal >= routing.traversals().size())
@@ -980,7 +961,7 @@ public:
 
     std::vector<PnrIndex> expectedTraversalOffsets(
         routing.traversals().size() + 1, 0);
-    for (const FrozenSpatialRoutingArc &arc : routing.routingArcs())
+    for (const EndpointRoutingArc &arc : routing.routingArcs())
       ++expectedTraversalOffsets[arc.traversal + 1];
     for (std::size_t traversal = 1; traversal < expectedTraversalOffsets.size();
          ++traversal)
@@ -1288,35 +1269,18 @@ private:
   static llvm::Expected<FrozenSpatialRoutingGraph>
   buildRouting(const FabricArtifactView &fabric,
                const FrozenSpatialResourceIndex &resources) {
-    const auto endpointRefs = fabric.transportEndpoints();
     const auto traversalViews = fabric.physicalTraversals();
-    if (llvm::Error error = preflightPnrIndexCapacity(endpointCountContext,
-                                                      endpointRefs.size()))
-      return std::move(error);
-    if (llvm::Error error = preflightPnrIndexCapacity(traversalCountContext,
-                                                      traversalViews.size()))
-      return std::move(error);
-
     FrozenSpatialRoutingGraph result;
+    auto topology = freezeEndpointRoutingTopology(fabric);
+    if (!topology)
+      return topology.takeError();
+    result.topology_ = std::move(*topology);
+    if (result.topology_.traversals().size() != traversalViews.size())
+      return invalid("routing topology lost a physical traversal");
     auto tagContinuity = freezeSpatialTagContinuityIndex(fabric);
     if (!tagContinuity)
       return tagContinuity.takeError();
     result.tagContinuity_ = std::move(*tagContinuity);
-    result.endpoints_.reserve(endpointRefs.size());
-    llvm::StringMap<PnrIndex> endpointByCanonicalRef;
-    for (auto [ordinal, reference] : llvm::enumerate(endpointRefs)) {
-      const auto direction = fabric.transportEndpointDirection(reference);
-      const auto dataPath = fabric.transportEndpointDataPath(reference);
-      if (!direction || !dataPath)
-        return invalid("a canonical Fabric endpoint has no typed projection");
-      result.endpoints_.push_back({reference, *direction, *dataPath});
-      auto index = checked(endpointCountContext, ordinal);
-      if (!index)
-        return index.takeError();
-      if (!endpointByCanonicalRef.try_emplace(refKey(reference), *index).second)
-        return invalid(
-            "the canonical Fabric endpoint inventory has a duplicate");
-    }
     llvm::StringMap<PnrIndex> stateByCanonicalRef;
     for (auto [ordinal, state] : llvm::enumerate(resources.resourceStates())) {
       auto index = checked(traversalResourceStateCountContext, ordinal);
@@ -1336,73 +1300,12 @@ private:
         return invalid("the frozen use-pattern inventory has a duplicate");
     }
     llvm::StringMap<PnrIndex> routeClaimByKey;
-    llvm::StringMap<PnrIndex> replicationGroupByKey;
-
-    struct ArcDraft final {
-      PnrIndex source;
-      FrozenSpatialRoutingArc arc;
-    };
-    std::vector<ArcDraft> arcDrafts;
     result.traversals_.reserve(traversalViews.size());
-    result.traversalReplicationGroups_.reserve(traversalViews.size());
     for (auto [traversalOrdinal, traversal] : llvm::enumerate(traversalViews)) {
-      auto traversalIndex = checked(traversalIndexContext, traversalOrdinal);
-      if (!traversalIndex)
-        return traversalIndex.takeError();
-      auto endpointEnd = checkedPnrIndexAdd(traversalEndpointCountContext,
-                                            result.traversalEndpoints_.size(),
-                                            traversal.sources.size());
-      if (!endpointEnd)
-        return endpointEnd.takeError();
-      endpointEnd =
-          checkedPnrIndexAdd(traversalEndpointCountContext, *endpointEnd,
-                             traversal.destinations.size());
-      if (!endpointEnd)
-        return endpointEnd.takeError();
-      auto arcProduct =
-          checkedPnrIndexMultiply(arcCountContext, traversal.sources.size(),
-                                  traversal.destinations.size());
-      if (!arcProduct)
-        return arcProduct.takeError();
-      if (llvm::Error error =
-              preflightAppend(arcCountContext, arcDrafts.size(), *arcProduct))
-        return error;
-      auto sourceOffset = checked(traversalEndpointOffsetContext,
-                                  result.traversalEndpoints_.size());
-      if (!sourceOffset)
-        return sourceOffset.takeError();
-      std::vector<PnrIndex> sources;
-      sources.reserve(traversal.sources.size());
-      for (const FabricTransportEndpointRef &source : traversal.sources) {
-        const auto index = endpointByCanonicalRef.find(refKey(source));
-        if (index == endpointByCanonicalRef.end())
-          return invalid(
-              "a traversal source is absent from the endpoint inventory");
-        sources.push_back(index->second);
-        result.traversalEndpoints_.push_back(index->second);
-      }
-      auto sourceCount = checked(traversalEndpointCountContext, sources.size());
-      if (!sourceCount)
-        return sourceCount.takeError();
-      auto destinationOffset = checked(traversalEndpointOffsetContext,
-                                       result.traversalEndpoints_.size());
-      if (!destinationOffset)
-        return destinationOffset.takeError();
-      std::vector<PnrIndex> destinations;
-      destinations.reserve(traversal.destinations.size());
-      for (const FabricTransportEndpointRef &destination :
-           traversal.destinations) {
-        const auto index = endpointByCanonicalRef.find(refKey(destination));
-        if (index == endpointByCanonicalRef.end())
-          return invalid(
-              "a traversal destination is absent from the endpoint inventory");
-        destinations.push_back(index->second);
-        result.traversalEndpoints_.push_back(index->second);
-      }
-      auto destinationCount =
-          checked(traversalEndpointCountContext, destinations.size());
-      if (!destinationCount)
-        return destinationCount.takeError();
+      const EndpointRoutingTraversal &routingTraversal =
+          result.topology_.traversals()[traversalOrdinal];
+      if (routingTraversal.reference != traversal.reference)
+        return invalid("routing topology traversal order is not canonical");
       auto resourceStateOffset =
           checked(traversalResourceStateOffsetContext,
                   result.traversalResourceStates_.size());
@@ -1429,15 +1332,6 @@ private:
       if (!routeClaimOffset)
         return routeClaimOffset.takeError();
       std::vector<PnrIndex> traversalClaimKeys;
-      const auto *switchPayload = switchTraversalPayload(traversal.reference);
-      PnrIndex replicationGroup = getInvalidPnrIndex();
-      if (switchPayload) {
-        auto group =
-            internReplicationGroup(replicationGroupByKey, *switchPayload);
-        if (!group)
-          return group.takeError();
-        replicationGroup = *group;
-      }
       for (const FabricTraversalUseView &use : traversal.impliedUses) {
         const auto patternFound =
             patternByCanonicalRef.find(refKey(use.pattern));
@@ -1458,10 +1352,6 @@ private:
           if (use.activationGroup.ordinal != pattern.requester)
             return invalid(
                 "a switch traversal activation disagrees with its requester");
-          if (!switchPayload ||
-              !matchesSwitchRequester(use.activationGroup, *switchPayload))
-            return invalid(
-                "a switch requester activation disagrees with its traversal");
           break;
         }
 
@@ -1524,73 +1414,10 @@ private:
       if (!routeClaimCount)
         return routeClaimCount.takeError();
       result.traversals_.push_back(
-          {traversal.reference, *sourceOffset, *sourceCount, *destinationOffset,
-           *destinationCount, *resourceStateOffset, *resourceStateCount,
-           *routeClaimOffset, *routeClaimCount});
-      result.traversalReplicationGroups_.push_back(replicationGroup);
-
-      for (PnrIndex source : sources) {
-        const auto &sourcePath = result.endpoints_[source].dataPath;
-        for (PnrIndex destination : destinations) {
-          const auto &destinationPath = result.endpoints_[destination].dataPath;
-          arcDrafts.push_back({source,
-                               {destination, *traversalIndex,
-                                std::min(sourcePath.payloadWidthBits,
-                                         destinationPath.payloadWidthBits),
-                                std::min(tagCapacity(sourcePath),
-                                         tagCapacity(destinationPath))}});
-        }
-      }
-    }
-    llvm::sort(arcDrafts, [](const ArcDraft &lhs, const ArcDraft &rhs) {
-      return std::tie(lhs.source, lhs.arc.target, lhs.arc.traversal) <
-             std::tie(rhs.source, rhs.arc.target, rhs.arc.traversal);
-    });
-    result.adjacencyOffsets_.reserve(result.endpoints_.size() + 1);
-    std::size_t cursor = 0;
-    for (std::size_t source = 0; source < result.endpoints_.size(); ++source) {
-      auto offset = checked(arcOffsetContext, result.arcs_.size());
-      if (!offset)
-        return offset.takeError();
-      result.adjacencyOffsets_.push_back(*offset);
-      while (cursor < arcDrafts.size() && arcDrafts[cursor].source == source) {
-        result.arcSources_.push_back(arcDrafts[cursor].source);
-        result.arcs_.push_back(arcDrafts[cursor++].arc);
-      }
-    }
-    auto end = checked(arcOffsetContext, result.arcs_.size());
-    if (!end)
-      return end.takeError();
-    result.adjacencyOffsets_.push_back(*end);
-    if (cursor != arcDrafts.size())
-      return invalid("routing CSR construction left an out-of-range source");
-
-    std::vector<PnrIndex> reverseOffsets(result.endpoints_.size() + 1, 0);
-    for (const FrozenSpatialRoutingArc &arc : result.arcs_) {
-      auto count = checkedPnrIndexAdd(arcCountContext,
-                                      reverseOffsets[arc.target + 1], 1);
-      if (!count)
-        return count.takeError();
-      reverseOffsets[arc.target + 1] = *count;
-    }
-    for (std::size_t endpoint = 1; endpoint < reverseOffsets.size();
-         ++endpoint) {
-      auto prefix =
-          checkedPnrIndexAdd(arcOffsetContext, reverseOffsets[endpoint - 1],
-                             reverseOffsets[endpoint]);
-      if (!prefix)
-        return prefix.takeError();
-      reverseOffsets[endpoint] = *prefix;
-    }
-    result.reverseAdjacencyOffsets_ = reverseOffsets;
-    result.reverseArcOrdinals_.resize(result.arcs_.size());
-    std::vector<PnrIndex> reverseCursors = std::move(reverseOffsets);
-    for (auto [arcOrdinal, arc] : llvm::enumerate(result.arcs_)) {
-      auto index = checked(arcIndexContext, arcOrdinal);
-      if (!index)
-        return index.takeError();
-      const PnrIndex slot = reverseCursors[arc.target]++;
-      result.reverseArcOrdinals_[slot] = *index;
+          {routingTraversal.reference, routingTraversal.sourceOffset,
+           routingTraversal.sourceCount, routingTraversal.destinationOffset,
+           routingTraversal.destinationCount, *resourceStateOffset,
+           *resourceStateCount, *routeClaimOffset, *routeClaimCount});
     }
 
     result.capacityRouteClaimOffsets_.assign(
@@ -1663,7 +1490,7 @@ private:
     }
 
     result.traversalArcOffsets_.assign(result.traversals_.size() + 1, 0);
-    for (const FrozenSpatialRoutingArc &arc : result.arcs_) {
+    for (const EndpointRoutingArc &arc : result.topology_.arcs()) {
       auto count =
           checkedPnrIndexAdd(traversalArcCountContext,
                              result.traversalArcOffsets_[arc.traversal + 1], 1);
@@ -1680,9 +1507,9 @@ private:
         return prefix.takeError();
       result.traversalArcOffsets_[traversal] = *prefix;
     }
-    result.traversalArcs_.resize(result.arcs_.size());
+    result.traversalArcs_.resize(result.topology_.arcs().size());
     std::vector<PnrIndex> traversalArcCursors = result.traversalArcOffsets_;
-    for (auto [arcOrdinal, arc] : llvm::enumerate(result.arcs_)) {
+    for (auto [arcOrdinal, arc] : llvm::enumerate(result.topology_.arcs())) {
       auto arcIndex = checked(arcIndexContext, arcOrdinal);
       if (!arcIndex)
         return arcIndex.takeError();

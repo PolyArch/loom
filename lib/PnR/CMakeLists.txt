@@ -1,6 +1,7 @@
 add_mlir_library(LoomPnR
   DeterministicSearchProtocol.cpp
   EndpointRouter.cpp
+  EndpointRoutingTopology.cpp
   ExpNegativeQ64Table.cpp
   FrozenConstraintIndex.cpp
   HandshakeCandidateState.cpp
@@ -50,6 +51,7 @@ add_mlir_library(LoomPnR
   System/SystemPresburgerPartition.cpp
   System/SystemPnrProblem.cpp
   System/SystemCandidateState.cpp
+  System/SystemServiceRouter.cpp
   System/SystemMappingMaterializer.cpp
 
   ADDITIONAL_HEADER_DIRS

@@ -730,7 +730,7 @@ llvm::Expected<PhysicalTagUseOrigin> materializePhysicalTagUseOrigin(
         continue;
       if (node.parentArc >= arcs.size())
         return invalid("Physical Tag boundary origin has an absent arc");
-      const FrozenSpatialRoutingArc &arc = arcs[node.parentArc];
+      const EndpointRoutingArc &arc = arcs[node.parentArc];
       if (arc.traversal >= traversalPoints.size())
         return invalid("Physical Tag boundary origin has an absent traversal");
       if (traversalPoints[arc.traversal] != segment.origin)

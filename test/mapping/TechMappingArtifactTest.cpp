@@ -1011,7 +1011,7 @@ void artifactRoundTripAndReferenceValidation() {
       frozen->routing().routingArcs().size(), 1);
   loom::pnr::EndpointRouteSearchScratch routeSearch;
   requireSuccess(routeSearch.prepare(
-      loom::pnr::endpointRoutingGraphView(frozen->routing())));
+      loom::pnr::endpointRoutingGraphView(frozen->routing().topology())));
   const loom::pnr::PnrIndex unrestrictedReplicationGroup =
       loom::pnr::getInvalidPnrIndex();
   const loom::pnr::PnrIndex firstTargetRank = 0;

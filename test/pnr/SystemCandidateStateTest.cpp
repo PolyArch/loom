@@ -8,6 +8,7 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/ResourceContract.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
@@ -99,6 +100,14 @@ mlir::DenseI8ArrayAttr bytesAttr(mlir::MLIRContext *context,
   return mlir::DenseI8ArrayAttr::get(context, signedBytes);
 }
 
+std::vector<std::uint8_t> unsignedBytes(mlir::DenseI8ArrayAttr attribute) {
+  std::vector<std::uint8_t> result;
+  result.reserve(attribute.size());
+  for (std::int8_t byte : attribute.asArrayRef())
+    result.push_back(static_cast<std::uint8_t>(byte));
+  return result;
+}
+
 ::mapping::ArtifactRootReferenceAttr
 rootReferenceAttr(mlir::MLIRContext *context,
                   const loom::ArtifactRootReference &reference) {
@@ -178,7 +187,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
         values(%value) stream_inputs() memories() stream_outputs()
         : (none, i32) -> (i32, none)
     %second_result, %second_done = dataflow.graph.launch @sync deps(%first_done)
-        values(%value) stream_inputs() memories() stream_outputs()
+        values(%first_result) stream_inputs() memories() stream_outputs()
         : (none, i32) -> (i32, none)
     dataflow.thread.yield %second_done : none
   }
@@ -308,7 +317,8 @@ loom::adg::FinalizedFabricDesign buildSpatialModule(loom::ArtifactStore &store,
 loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
     loom::ArtifactStore &store,
     const loom::fabric::FinalizedFabricRoot &primaryModule,
-    const loom::fabric::FinalizedFabricRoot &alternateModule) {
+    const loom::fabric::FinalizedFabricRoot &alternateModule,
+    mlir::MLIRContext &context) {
   loom::adg::DesignBuilder design(store);
   auto system = take(loom::adg::expandBuiltinSystem(
       design, loom::adg::BuiltinTargetPreset::Small, primaryModule));
@@ -339,6 +349,49 @@ loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
     domainMembers.push_back(pattern.domainMember());
   }
   auto domain = take(system.createHardwareDomain());
+  auto rate = take(system.createServiceRate(
+      domain, 1, 1, 4,
+      loom::fabric::ServiceProgress(
+          std::in_place_type<::fabric::FairEventual>)));
+  auto initiateCapability =
+      take(loom::fabric::CanonicalServiceCapabilityRecord::create(
+          dataflow::semantics::ServiceKind::MessageTransfer,
+          loom::fabric::CanonicalServiceEndpointRole::Initiate,
+          take(loom::fabric::MessageTransferCapabilityDomain::create(
+              {mlir::NoneType::get(&context),
+               mlir::IntegerType::get(&context, 32)})),
+          rate));
+  auto serveCapability =
+      take(loom::fabric::CanonicalServiceCapabilityRecord::create(
+          dataflow::semantics::ServiceKind::MessageTransfer,
+          loom::fabric::CanonicalServiceEndpointRole::Serve,
+          take(loom::fabric::MessageTransferCapabilityDomain::create(
+              {mlir::NoneType::get(&context),
+               mlir::IntegerType::get(&context, 32)})),
+          rate));
+  auto initiateSet = take(loom::fabric::CanonicalServiceCapabilitySet::create(
+      {std::move(initiateCapability)}));
+  auto serveSet = take(loom::fabric::CanonicalServiceCapabilitySet::create(
+      {std::move(serveCapability)}));
+  const auto bits32 = take(loom::adg::PortType::bits(32));
+  auto messageSource =
+      take(system.addServiceEndpoint(extraCore, initiateSet, bits32));
+  auto messageSink =
+      take(system.addServiceEndpoint(extraCore, serveSet, bits32));
+  auto messageTransport = take(
+      system.addTransportResource({{bits32}, {bits32}, transportContract}));
+  auto messagePattern =
+      take(system.addTransferPattern(messageTransport, 0, {0}, 0));
+  if (llvm::Error error = system.connect(take(messageSource.transport()),
+                                         take(messageTransport.input(0))))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = system.connect(take(messageTransport.output(0)),
+                                         take(messageSink.transport())))
+    fail(llvm::toString(std::move(error)));
+  domainMembers.push_back(messageSource.domainMember());
+  domainMembers.push_back(messageSink.domainMember());
+  domainMembers.push_back(messageTransport.domainMember());
+  domainMembers.push_back(messagePattern.domainMember());
   auto clock = take(loom::fabric::ClockDomainContractRecord::create(1'000, 0));
   if (llvm::Error error = domain.close(domainMembers, std::move(clock)))
     fail(llvm::toString(std::move(error)));
@@ -394,8 +447,9 @@ int main() {
   auto dataflow = take(dataflowArtifact.view());
   auto primaryDesign = buildSpatialModule(store, false);
   auto alternateDesign = buildSpatialModule(store, true);
-  auto design = buildHeterogeneousSystem(store, primaryDesign.roots().front(),
-                                         alternateDesign.roots().front());
+  auto design =
+      buildHeterogeneousSystem(store, primaryDesign.roots().front(),
+                               alternateDesign.roots().front(), context);
   const auto &systemRoot = design.roots().front();
   auto system = take(loom::fabric::requireSystemRoot(systemRoot.view()));
   require(systemRoot.directDependencies().size() == 2,
@@ -420,6 +474,8 @@ int main() {
       dataflow, constraints.view().rootThreadLaunches()));
   auto searchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
       dataflow, system, constraints, partition, spatialMappings, store));
+  require(!searchDomain.serviceObligations().empty(),
+          "System route fixture has no service obligation");
   const auto config =
       take(loom::pnr::projectResolvedSystemPnrConfigView(resolved));
   auto problem = take(loom::pnr::freezeSystemPnrProblem(
@@ -432,6 +488,8 @@ int main() {
               problem->spatialMappings().size() == 2 &&
               problem->targetClasses().size() == 2,
           "frozen System target catalogs are incomplete");
+  require(!problem->serviceLegs().empty(),
+          "frozen System problem lost its service legs");
 
   auto first = take(loom::pnr::initializeCanonicalSystemCandidate(problem));
   auto second = take(loom::pnr::initializeCanonicalSystemCandidate(problem));
@@ -439,15 +497,138 @@ int main() {
               first.state->graphChoices() == second.state->graphChoices() &&
               first.assignmentAttempts == second.assignmentAttempts,
           "canonical System initializer is not deterministic");
+  require(first.state->serviceRoutes().size() == problem->serviceLegs().size(),
+          "canonical System initializer did not route every service leg");
+  for (const loom::pnr::SystemServiceRouteSelection &route :
+       first.state->serviceRoutes()) {
+    require(route.nodeCount != 0 && route.sinkCount != 0,
+            "canonical System route is empty");
+    require(route.rootEndpoint != loom::pnr::getInvalidPnrIndex(),
+            "canonical System route has no root endpoint");
+  }
   if (llvm::Error error = first.state->verify())
     fail(llvm::toString(std::move(error)));
 
-  auto firstDraft = take(
-      loom::pnr::materializeSystemExecutionBindings(*first.state, context));
-  auto secondDraft = take(
-      loom::pnr::materializeSystemExecutionBindings(*first.state, context));
-  auto firstBytes = take(loom::mapping::writeCanonicalSystemMappingAssembly(
-      mlir::cast<::mapping::SystemOp>(firstDraft.get())));
+  std::vector<loom::pnr::SystemServiceRouteSelection> incompleteRoutes(
+      first.state->serviceRoutes().begin(), first.state->serviceRoutes().end());
+  incompleteRoutes.front().sinkCount = 0;
+  requireFailureContains(
+      loom::pnr::SystemCandidateState::create(
+          problem, {first.state->threadChoices(), first.state->graphChoices(),
+                    incompleteRoutes, first.state->serviceRouteNodes(),
+                    first.state->serviceRouteSinks()}),
+      "service route does not cover every sink terminal");
+
+  std::vector<loom::pnr::SystemServiceRouteSinkSelection> foreignSinks(
+      first.state->serviceRouteSinks().begin(),
+      first.state->serviceRouteSinks().end());
+  foreignSinks.front().terminal =
+      problem->serviceLegs()[first.state->serviceRoutes().front().leg]
+          .sourceTerminal;
+  requireFailureContains(
+      loom::pnr::SystemCandidateState::create(
+          problem, {first.state->threadChoices(), first.state->graphChoices(),
+                    first.state->serviceRoutes(),
+                    first.state->serviceRouteNodes(), foreignSinks}),
+      "service route sink is outside its exact H domain");
+
+  auto withCanonicalRoutes =
+      [&](llvm::ArrayRef<loom::pnr::PnrIndex> threadChoices,
+          llvm::ArrayRef<loom::pnr::PnrIndex> graphChoices) {
+        return loom::pnr::SystemCandidateInitialization{
+            threadChoices, graphChoices, first.state->serviceRoutes(),
+            first.state->serviceRouteNodes(), first.state->serviceRouteSinks()};
+      };
+
+  auto firstDraft =
+      take(loom::pnr::materializeSystemCandidateDraft(*first.state, context));
+  auto secondDraft =
+      take(loom::pnr::materializeSystemCandidateDraft(*first.state, context));
+  auto firstRoot = mlir::cast<::mapping::SystemOp>(firstDraft.get());
+  std::size_t materializedRouteCount = 0;
+  for (auto service :
+       firstRoot.getBody().front().getOps<::mapping::ServiceRealizationOp>()) {
+    require(llvm::hasSingleElement(
+                service.getBody().front().getOps<::mapping::ServicePlanOp>()),
+            "materialized service has more than one selected plan");
+    auto plan =
+        *service.getBody().front().getOps<::mapping::ServicePlanOp>().begin();
+    require(plan.getPlanOrdinal() == 0,
+            "materialized selected service plan has a nonzero ordinal");
+    for (auto route :
+         plan.getBody().front().getOps<::mapping::TransferLegRealizationOp>()) {
+      const auto leg = take(loom::mapping::decodeCanonicalServiceLegKey(
+          unsignedBytes(route.getLeg().getRecord()),
+          problem->dataflowIdentity()));
+      loom::pnr::PnrIndex selectedOrdinal = loom::pnr::getInvalidPnrIndex();
+      for (const auto &[ordinal, selected] :
+           llvm::enumerate(first.state->serviceRoutes()))
+        if (problem->serviceLegs()[selected.leg].key == leg) {
+          selectedOrdinal = static_cast<loom::pnr::PnrIndex>(ordinal);
+          break;
+        }
+      require(selectedOrdinal != loom::pnr::getInvalidPnrIndex(),
+              "materialized route has no selected Candidate route");
+      const auto &selected = first.state->serviceRoutes()[selectedOrdinal];
+      const auto expectedRoot = loom::fabric::canonicalFabricBytes(
+          problem->routingTopology()
+              .endpoints()[selected.rootEndpoint]
+              .reference);
+      require(unsignedBytes(route.getRootEndpoint().getRecord()) ==
+                  std::vector<std::uint8_t>(expectedRoot.begin(),
+                                            expectedRoot.end()),
+              "materialized route changed its selected root endpoint");
+
+      auto selectedNodes = first.state->serviceRouteNodes().slice(
+          selected.nodeOffset, selected.nodeCount);
+      auto materializedNodes =
+          route.getBody().front().getOps<::mapping::SystemRouteNodeOp>();
+      require(
+          std::distance(materializedNodes.begin(), materializedNodes.end()) +
+                  1 ==
+              selectedNodes.size(),
+          "materialized route changed its node count");
+      for (const auto &[nodeOrdinal, node] :
+           llvm::enumerate(materializedNodes)) {
+        const auto &expected = selectedNodes[nodeOrdinal + 1];
+        const auto expectedTraversal = loom::fabric::canonicalFabricBytes(
+            problem->routingTopology()
+                .traversals()[expected.incomingTraversal]
+                .reference);
+        require(node.getNodeOrdinal() == nodeOrdinal + 1 &&
+                    node.getParentNodeOrdinal() == expected.parentNode &&
+                    unsignedBytes(node.getIncomingTraversal().getRecord()) ==
+                        std::vector<std::uint8_t>(expectedTraversal.begin(),
+                                                  expectedTraversal.end()),
+                "materialized route changed a selected traversal");
+      }
+
+      auto selectedSinks = first.state->serviceRouteSinks().slice(
+          selected.sinkOffset, selected.sinkCount);
+      auto materializedSinks =
+          route.getBody().front().getOps<::mapping::SystemRouteSinkOp>();
+      require(std::distance(materializedSinks.begin(),
+                            materializedSinks.end()) == selectedSinks.size(),
+              "materialized route changed its sink count");
+      for (const auto &[sinkOrdinal, sink] :
+           llvm::enumerate(materializedSinks)) {
+        const auto &expected = selectedSinks[sinkOrdinal];
+        const auto expectedTerminal =
+            take(loom::mapping::encodeSystemTransferTerminalKey(
+                problem->dataflowIdentity(),
+                problem->serviceTerminals()[expected.terminal].key));
+        require(unsignedBytes(sink.getTerminal().getRecord()) ==
+                        expectedTerminal &&
+                    sink.getNodeOrdinal() == expected.node,
+                "materialized route changed a selected sink attachment");
+      }
+      ++materializedRouteCount;
+    }
+  }
+  require(materializedRouteCount == first.state->serviceRoutes().size(),
+          "materializer omitted a selected service route");
+  auto firstBytes =
+      take(loom::mapping::writeCanonicalSystemMappingAssembly(firstRoot));
   auto secondBytes = take(loom::mapping::writeCanonicalSystemMappingAssembly(
       mlir::cast<::mapping::SystemOp>(secondDraft.get())));
   require(firstBytes.bytes() == secondBytes.bytes(),
@@ -736,10 +917,10 @@ int main() {
   }
   threadChoices[0] = sameClassFirst;
   auto sameClassBase = take(loom::pnr::SystemCandidateState::create(
-      problem, {threadChoices, graphChoices}));
+      problem, withCanonicalRoutes(threadChoices, graphChoices)));
   threadChoices[0] = sameClassSecond;
   auto alternate = take(loom::pnr::SystemCandidateState::create(
-      problem, {threadChoices, graphChoices}));
+      problem, withCanonicalRoutes(threadChoices, graphChoices)));
   if (llvm::Error error = alternate->verify())
     fail(llvm::toString(std::move(error)));
   require(alternate->selectedAccCore(0) != sameClassBase->selectedAccCore(0),
@@ -758,9 +939,10 @@ int main() {
           problem->spatialMappingTargetClass(firstGraphDomain[graphChoice])) {
         threadChoices.assign(problem->threadDecisions().size(), threadChoice);
         graphChoices.assign(problem->graphDecisions().size(), graphChoice);
-        requireFailureContains(loom::pnr::SystemCandidateState::create(
-                                   problem, {threadChoices, graphChoices}),
-                               "target classes are incompatible");
+        requireFailureContains(
+            loom::pnr::SystemCandidateState::create(
+                problem, withCanonicalRoutes(threadChoices, graphChoices)),
+            "target classes are incompatible");
         foundMismatch = true;
       }
   require(foundMismatch,
@@ -769,13 +951,15 @@ int main() {
   threadChoices.assign(problem->threadDecisions().size(), 0);
   graphChoices.assign(problem->graphDecisions().size(), 0);
   threadChoices[0] = problem->threadChoiceCatalogOrdinals(0).size();
-  requireFailureContains(loom::pnr::SystemCandidateState::create(
-                             problem, {threadChoices, graphChoices}),
-                         "thread choice is outside its H domain");
+  requireFailureContains(
+      loom::pnr::SystemCandidateState::create(
+          problem, withCanonicalRoutes(threadChoices, graphChoices)),
+      "thread choice is outside its H domain");
   threadChoices.pop_back();
-  requireFailureContains(loom::pnr::SystemCandidateState::create(
-                             problem, {threadChoices, graphChoices}),
-                         "thread choice count does not match H");
+  requireFailureContains(
+      loom::pnr::SystemCandidateState::create(
+          problem, withCanonicalRoutes(threadChoices, graphChoices)),
+      "thread choice count does not match H");
 
   llvm::outs() << "System CandidateState anchors passed\n";
   return EXIT_SUCCESS;

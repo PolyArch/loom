@@ -10,11 +10,12 @@
 
 namespace loom::pnr {
 
-/// Materializes only the tracked ExecutionBinding records. The returned root
-/// is a non-published draft until service and ResourceUse closure are added.
+/// Materializes the selected execution bindings and reduced System service
+/// routes. The returned root remains a non-published draft until target,
+/// refinement, and ResourceUse closure are added.
 llvm::Expected<mlir::OwningOpRef<mlir::Operation *>>
-materializeSystemExecutionBindings(const SystemCandidateState &candidate,
-                                   mlir::MLIRContext &context);
+materializeSystemCandidateDraft(const SystemCandidateState &candidate,
+                                mlir::MLIRContext &context);
 
 } // namespace loom::pnr
 

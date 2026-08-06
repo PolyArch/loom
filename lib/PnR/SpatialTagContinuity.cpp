@@ -127,7 +127,7 @@ llvm::Error loom::pnr::detail::rebuildSpatialTagContinuityUnchecked(
       if (child.parentArc >= arcs.size() ||
           child.parentArc >= arcSources.size())
         return invalid("a route child has no physical arc");
-      const FrozenSpatialRoutingArc &arc = arcs[child.parentArc];
+      const EndpointRoutingArc &arc = arcs[child.parentArc];
       if (arcSources[child.parentArc] != parent.endpoint ||
           arc.target != child.endpoint ||
           arc.traversal >= traversalPoints.size())

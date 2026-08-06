@@ -2,6 +2,8 @@
 #define LOOM_PNR_SYSTEM_SYSTEMPNRPROBLEM_H
 
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "Mapping/Artifact/SystemMappingIdentity.h"
+#include "PnR/EndpointRoutingTopology.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrIndex.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
@@ -71,6 +73,20 @@ struct FrozenSystemGraphExecutionDecision final {
   PnrIndex relationDecision = 0;
 };
 
+struct FrozenSystemTransferTerminal final {
+  ::loom::mapping::SystemTransferTerminalKey key;
+  PnrIndex endpointChoiceOffset = 0;
+  PnrIndex endpointChoiceCount = 0;
+};
+
+struct FrozenSystemServiceLeg final {
+  ::loom::mapping::CanonicalServiceLegKey key;
+  PnrIndex sourceTerminal = 0;
+  PnrIndex sinkOffset = 0;
+  PnrIndex sinkCount = 0;
+  std::uint32_t requiredPayloadWidthBits = 0;
+};
+
 class FrozenSystemPnrProblem final {
 public:
   FrozenSystemPnrProblem(const FrozenSystemPnrProblem &) = delete;
@@ -106,8 +122,20 @@ public:
   llvm::ArrayRef<FrozenSystemGraphExecutionDecision> graphDecisions() const {
     return graphDecisions_;
   }
+  const FrozenEndpointRoutingTopology &routingTopology() const {
+    return routingTopology_;
+  }
+  llvm::ArrayRef<FrozenSystemTransferTerminal> serviceTerminals() const {
+    return serviceTerminals_;
+  }
+  llvm::ArrayRef<FrozenSystemServiceLeg> serviceLegs() const {
+    return serviceLegs_;
+  }
   llvm::ArrayRef<PnrIndex> threadChoiceCatalogOrdinals(PnrIndex decision) const;
   llvm::ArrayRef<PnrIndex> graphChoiceCatalogOrdinals(PnrIndex decision) const;
+  llvm::ArrayRef<PnrIndex>
+  serviceTerminalEndpointChoices(PnrIndex terminal) const;
+  llvm::ArrayRef<PnrIndex> serviceLegSinkTerminals(PnrIndex leg) const;
   PnrIndex accCoreTargetClass(PnrIndex core) const;
   PnrIndex spatialMappingTargetClass(PnrIndex mapping) const;
 
@@ -129,6 +157,11 @@ private:
       std::vector<PnrIndex> graphChoiceCatalogOrdinals,
       std::vector<PnrIndex> graphThreadOverlapOffsets,
       std::vector<PnrIndex> graphThreadOverlaps,
+      FrozenEndpointRoutingTopology routingTopology,
+      std::vector<FrozenSystemTransferTerminal> serviceTerminals,
+      std::vector<PnrIndex> serviceTerminalEndpointChoices,
+      std::vector<FrozenSystemServiceLeg> serviceLegs,
+      std::vector<PnrIndex> serviceLegSinkTerminals,
       std::unique_ptr<detail::InitializerRelationModel> initializerRelations);
 
   ArtifactIdentity dataflowIdentity_;
@@ -148,6 +181,11 @@ private:
   std::vector<PnrIndex> graphChoiceCatalogOrdinals_;
   std::vector<PnrIndex> graphThreadOverlapOffsets_;
   std::vector<PnrIndex> graphThreadOverlaps_;
+  FrozenEndpointRoutingTopology routingTopology_;
+  std::vector<FrozenSystemTransferTerminal> serviceTerminals_;
+  std::vector<PnrIndex> serviceTerminalEndpointChoices_;
+  std::vector<FrozenSystemServiceLeg> serviceLegs_;
+  std::vector<PnrIndex> serviceLegSinkTerminals_;
   std::unique_ptr<detail::InitializerRelationModel> initializerRelations_;
 
   friend class SystemCandidateState;

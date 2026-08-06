@@ -7,6 +7,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SpatialProgressAnalysis.h"
+#include "PnR/EndpointRoutingTopology.h"
 #include "PnR/FrozenConstraintIndex.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrIndex.h"
@@ -641,12 +642,6 @@ private:
   friend class FrozenSpatialCapacityIndexBuilder;
 };
 
-struct FrozenSpatialRoutingEndpoint final {
-  ::loom::fabric::FabricTransportEndpointRef reference;
-  ::loom::fabric::FabricPortDirection direction;
-  ::fabric::DataPathType dataPath;
-};
-
 /// One Fabric-owned Physical Tag continuity point retained in canonical
 /// boundary-occurrence order. The dense ordinal is a rebuildable PnR cache;
 /// `reference` remains the exact owner.
@@ -712,23 +707,17 @@ struct FrozenSpatialRouteClaim final {
   std::uint64_t qCost = 0;
 };
 
-struct FrozenSpatialRoutingArc final {
-  PnrIndex target = 0;
-  PnrIndex traversal = 0;
-  std::uint32_t payloadCapacityBits = 0;
-  std::uint32_t tagCapacityBits = 0;
-};
-
 class FrozenSpatialRoutingGraph final {
 public:
-  llvm::ArrayRef<FrozenSpatialRoutingEndpoint> routingEndpoints() const {
-    return endpoints_;
+  const FrozenEndpointRoutingTopology &topology() const { return topology_; }
+  llvm::ArrayRef<EndpointRoutingEndpoint> routingEndpoints() const {
+    return topology_.endpoints();
   }
   llvm::ArrayRef<FrozenSpatialTraversal> traversals() const {
     return traversals_;
   }
   llvm::ArrayRef<PnrIndex> traversalEndpoints() const {
-    return traversalEndpoints_;
+    return topology_.traversalEndpoints();
   }
   llvm::ArrayRef<PnrIndex> traversalResourceStates() const {
     return traversalResourceStates_;
@@ -740,7 +729,7 @@ public:
     return traversalClaimKeys_;
   }
   llvm::ArrayRef<PnrIndex> traversalReplicationGroups() const {
-    return traversalReplicationGroups_;
+    return topology_.traversalReplicationGroups();
   }
   llvm::ArrayRef<PnrIndex> capacityRouteClaimOffsets() const {
     return capacityRouteClaimOffsets_;
@@ -759,39 +748,34 @@ public:
   }
   llvm::ArrayRef<PnrIndex> traversalArcs() const { return traversalArcs_; }
   llvm::ArrayRef<PnrIndex> adjacencyOffsets() const {
-    return adjacencyOffsets_;
+    return topology_.adjacencyOffsets();
   }
   llvm::ArrayRef<PnrIndex> reverseAdjacencyOffsets() const {
-    return reverseAdjacencyOffsets_;
+    return topology_.reverseAdjacencyOffsets();
   }
   llvm::ArrayRef<PnrIndex> reverseArcOrdinals() const {
-    return reverseArcOrdinals_;
+    return topology_.reverseArcOrdinals();
   }
-  llvm::ArrayRef<PnrIndex> arcSources() const { return arcSources_; }
-  llvm::ArrayRef<FrozenSpatialRoutingArc> routingArcs() const { return arcs_; }
+  llvm::ArrayRef<PnrIndex> arcSources() const { return topology_.arcSources(); }
+  llvm::ArrayRef<EndpointRoutingArc> routingArcs() const {
+    return topology_.arcs();
+  }
   const FrozenSpatialTagContinuityIndex &tagContinuity() const {
     return tagContinuity_;
   }
 
 private:
-  std::vector<FrozenSpatialRoutingEndpoint> endpoints_;
+  FrozenEndpointRoutingTopology topology_;
   std::vector<FrozenSpatialTraversal> traversals_;
-  std::vector<PnrIndex> traversalEndpoints_;
   std::vector<PnrIndex> traversalResourceStates_;
   std::vector<FrozenSpatialRouteClaim> routeClaims_;
   std::vector<PnrIndex> traversalClaimKeys_;
-  std::vector<PnrIndex> traversalReplicationGroups_;
   std::vector<PnrIndex> capacityRouteClaimOffsets_;
   std::vector<PnrIndex> capacityRouteClaims_;
   std::vector<PnrIndex> routeClaimTraversalOffsets_;
   std::vector<PnrIndex> routeClaimTraversals_;
   std::vector<PnrIndex> traversalArcOffsets_;
   std::vector<PnrIndex> traversalArcs_;
-  std::vector<PnrIndex> adjacencyOffsets_;
-  std::vector<PnrIndex> reverseAdjacencyOffsets_;
-  std::vector<PnrIndex> reverseArcOrdinals_;
-  std::vector<PnrIndex> arcSources_;
-  std::vector<FrozenSpatialRoutingArc> arcs_;
   FrozenSpatialTagContinuityIndex tagContinuity_;
 
   friend class FrozenSpatialPnrProblemBuilder;

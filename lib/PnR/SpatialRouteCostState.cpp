@@ -128,7 +128,7 @@ SpatialRouteCostState::create(const SpatialCandidateState &candidate) {
 
   state.lowerBoundArcCosts_.reserve(problem.routing().routingArcs().size());
   state.currentArcCosts_.reserve(problem.routing().routingArcs().size());
-  for (const FrozenSpatialRoutingArc &arc : problem.routing().routingArcs()) {
+  for (const EndpointRoutingArc &arc : problem.routing().routingArcs()) {
     if (arc.traversal >= traversalCount)
       return routeCostStateError("routing arc traversal is out of range");
     state.lowerBoundArcCosts_.push_back(

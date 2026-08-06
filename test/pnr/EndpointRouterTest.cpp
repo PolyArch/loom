@@ -55,7 +55,7 @@ void expectFailure(const char *test,
 struct Fixture final {
   static constexpr PnrIndex noReplicationGroup = getInvalidPnrIndex();
 
-  std::array<FrozenSpatialRoutingArc, 7> arcs{{
+  std::array<EndpointRoutingArc, 7> arcs{{
       {1, 0, 64, 8},
       {2, 1, 64, 8},
       {4, 2, 64, 8},

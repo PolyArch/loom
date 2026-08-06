@@ -2,6 +2,7 @@
 
 #include "PnR/InitializerRelationSolver.h"
 #include "SystemPnrSearchDomainInternal.h"
+#include "SystemServiceRouter.h"
 
 #include "llvm/Support/Error.h"
 
@@ -60,12 +61,25 @@ SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
     return llvm::joinErrors(
         invalid("thread and graph target classes are incompatible"),
         std::move(error));
+  if (llvm::Error error = detail::verifySystemServiceRoutes(
+          *problem, initialization.serviceRoutes,
+          initialization.serviceRouteNodes, initialization.serviceRouteSinks))
+    return std::move(error);
   auto state = SystemCandidateStateHandle(new SystemCandidateState(
       std::move(problem),
       std::vector<PnrIndex>(initialization.threadChoices.begin(),
                             initialization.threadChoices.end()),
       std::vector<PnrIndex>(initialization.graphChoices.begin(),
-                            initialization.graphChoices.end())));
+                            initialization.graphChoices.end()),
+      std::vector<SystemServiceRouteSelection>(
+          initialization.serviceRoutes.begin(),
+          initialization.serviceRoutes.end()),
+      std::vector<SystemServiceRouteNodeSelection>(
+          initialization.serviceRouteNodes.begin(),
+          initialization.serviceRouteNodes.end()),
+      std::vector<SystemServiceRouteSinkSelection>(
+          initialization.serviceRouteSinks.begin(),
+          initialization.serviceRouteSinks.end())));
   if (llvm::Error error = state->verify())
     return std::move(error);
   return state;
@@ -97,6 +111,9 @@ llvm::Error SystemCandidateState::verify() const {
   auto choices = relationChoices(*problem_, threadChoices_, graphChoices_);
   if (!choices)
     return choices.takeError();
+  if (llvm::Error error = detail::verifySystemServiceRoutes(
+          *problem_, serviceRoutes_, serviceRouteNodes_, serviceRouteSinks_))
+    return error;
 
   std::map<std::uint64_t, std::vector<PnrIndex>> threadsByRoot;
   for (const auto &[threadOrdinal, thread] :
@@ -153,9 +170,13 @@ loom::pnr::initializeCanonicalSystemCandidate(
   if (!solved)
     return solved.takeError();
   const std::size_t threadCount = problem->threadDecisions().size();
+  auto routes = detail::buildCanonicalSystemServiceRoutes(*problem);
+  if (!routes)
+    return routes.takeError();
   SystemCandidateInitialization initialization{
       llvm::ArrayRef(solved->choices).take_front(threadCount),
-      llvm::ArrayRef(solved->choices).drop_front(threadCount)};
+      llvm::ArrayRef(solved->choices).drop_front(threadCount), routes->routes,
+      routes->nodes, routes->sinks};
   auto state = SystemCandidateState::create(problem, initialization);
   if (!state)
     return state.takeError();

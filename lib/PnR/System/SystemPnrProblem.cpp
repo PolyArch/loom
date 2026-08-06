@@ -5,11 +5,13 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ComponentViewDigest.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -53,6 +55,15 @@ constexpr PnrCapacityContext decisionIndexContext{
 constexpr PnrCapacityContext overlapOffsetContext{
     frozenArtifact, "graph_thread_overlap", "overlap",
     PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext serviceTerminalContext{
+    frozenArtifact, "service_routing", "terminal", PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext serviceEndpointChoiceContext{
+    frozenArtifact, "service_routing", "endpoint_choice",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext serviceLegContext{
+    frozenArtifact, "service_routing", "leg", PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext serviceLegSinkContext{
+    frozenArtifact, "service_routing", "sink", PnrCapacityMeasure::Offset};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::make_error<SystemPnrFreezeFailure>(
@@ -93,6 +104,180 @@ targetClassForModule(const ::loom::fabric::FabricArtifactView &module) {
   if (module.rootKind() != ::loom::fabric::FabricRootKind::Module || !root)
     return invalid("System SpatialCore dependency is not an exact Module root");
   return FrozenSystemSpatialTargetClass{module.identity(), *root};
+}
+
+struct FrozenSystemRoutingData final {
+  FrozenEndpointRoutingTopology topology;
+  std::vector<FrozenSystemTransferTerminal> terminals;
+  std::vector<PnrIndex> endpointChoices;
+  std::vector<FrozenSystemServiceLeg> legs;
+  std::vector<PnrIndex> legSinks;
+};
+
+struct ServiceLegDraft final {
+  ::loom::mapping::CanonicalServiceLegKey key;
+  const SystemSearchTransferTerminalDomain *source = nullptr;
+  std::vector<const SystemSearchTransferTerminalDomain *> sinks;
+};
+
+llvm::Expected<FrozenSystemRoutingData>
+freezeSystemRouting(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                    const ::loom::fabric::FabricSystemRootView &fabric,
+                    const SystemPnrSearchDomainView &searchDomain) {
+  FrozenSystemRoutingData result;
+  auto topology = freezeEndpointRoutingTopology(fabric.artifact());
+  if (!topology)
+    return topology.takeError();
+  result.topology = std::move(*topology);
+
+  llvm::StringMap<PnrIndex> endpointOrdinals;
+  for (auto [ordinal, endpoint] :
+       llvm::enumerate(result.topology.endpoints())) {
+    auto index = checked(serviceEndpointChoiceContext, ordinal);
+    if (!index)
+      return index.takeError();
+    const std::string key =
+        bytesKey(::loom::fabric::canonicalFabricBytes(endpoint.reference));
+    if (!endpointOrdinals.try_emplace(key, *index).second)
+      return invalid("System routing topology has a duplicate endpoint");
+  }
+
+  std::map<std::string, std::uint32_t> producerWidths;
+  for (const ::dataflow::RootThreadLaunchRef &root :
+       searchDomain.rootThreadLaunches())
+    if (llvm::Error error = dataflow.forEachProducerTerminal(
+            root,
+            [&](const ::dataflow::CanonicalProducerTerminalView &view)
+                -> llvm::Error {
+              auto key = ::dataflow::encodeDataflowReference(
+                  dataflow.identity(), view.terminal);
+              if (!key)
+                return key.takeError();
+              auto width = dataflow.transportPayloadBitWidth(view.payloadType);
+              if (!width)
+                return width.takeError();
+              auto [found, inserted] =
+                  producerWidths.emplace(bytesKey(*key), *width);
+              if (!inserted && found->second != *width)
+                return invalid(
+                    "one producer terminal has inconsistent payload widths");
+              return llvm::Error::success();
+            }))
+      return std::move(error);
+
+  auto appendTerminal = [&](const SystemSearchTransferTerminalDomain &domain)
+      -> llvm::Expected<PnrIndex> {
+    auto terminal = checked(serviceTerminalContext, result.terminals.size());
+    if (!terminal)
+      return terminal.takeError();
+    auto offset =
+        checked(serviceEndpointChoiceContext, result.endpointChoices.size());
+    if (!offset)
+      return offset.takeError();
+    std::vector<PnrIndex> choices;
+    choices.reserve(domain.compatibleTransportEndpoints.size());
+    for (const auto &endpoint : domain.compatibleTransportEndpoints) {
+      auto found = endpointOrdinals.find(
+          bytesKey(::loom::fabric::canonicalFabricBytes(endpoint)));
+      if (found == endpointOrdinals.end())
+        return invalid("H service terminal names an endpoint outside F");
+      choices.push_back(found->second);
+    }
+    if (!llvm::is_sorted(choices) ||
+        std::adjacent_find(choices.begin(), choices.end()) != choices.end())
+      return invalid(
+          "H service terminal endpoint domain is not canonical in F");
+    auto count = checked(serviceEndpointChoiceContext, choices.size());
+    if (!count)
+      return count.takeError();
+    result.endpointChoices.insert(result.endpointChoices.end(), choices.begin(),
+                                  choices.end());
+    result.terminals.push_back({domain.key, *offset, *count});
+    return *terminal;
+  };
+
+  for (const SystemSearchServiceDomain &service :
+       searchDomain.serviceObligations()) {
+    const auto *producer =
+        std::get_if<::loom::mapping::TransferObligationFamilyKey>(&service.key);
+    if (!producer)
+      return invalid(
+          "operation-service target selection must precede System routing");
+    auto producerKey =
+        ::dataflow::encodeDataflowReference(dataflow.identity(), *producer);
+    if (!producerKey)
+      return producerKey.takeError();
+    auto payloadWidth = producerWidths.find(bytesKey(*producerKey));
+    if (payloadWidth == producerWidths.end())
+      return invalid("H transfer obligation has no Dataflow producer");
+
+    std::map<std::string, ServiceLegDraft> drafts;
+    for (const SystemSearchTransferTerminalDomain &terminal :
+         service.transferTerminals) {
+      const ::loom::mapping::CanonicalServiceLegKey &leg =
+          std::holds_alternative<
+              ::loom::mapping::SystemTransferSourceTerminalKey>(terminal.key)
+              ? std::get<::loom::mapping::SystemTransferSourceTerminalKey>(
+                    terminal.key)
+                    .leg
+              : std::get<::loom::mapping::SystemTransferSinkTerminalKey>(
+                    terminal.key)
+                    .leg;
+      if (leg.obligation != service.key)
+        return invalid("H transfer terminal belongs to a foreign obligation");
+      auto key = ::loom::mapping::encodeCanonicalServiceLegKey(
+          dataflow.identity(), leg);
+      if (!key)
+        return key.takeError();
+      auto [found, inserted] =
+          drafts.try_emplace(bytesKey(*key), ServiceLegDraft{leg, nullptr, {}});
+      ServiceLegDraft &draft = found->second;
+      if (std::holds_alternative<
+              ::loom::mapping::SystemTransferSourceTerminalKey>(terminal.key)) {
+        if (draft.source)
+          return invalid("H service leg has duplicate source terminals");
+        draft.source = &terminal;
+      } else {
+        draft.sinks.push_back(&terminal);
+      }
+    }
+
+    for (auto &[key, draft] : drafts) {
+      if (draft.sinks.empty())
+        continue;
+      if (!draft.source)
+        return invalid("H service leg with sinks has no source terminal");
+      if (draft.source->compatibleTransportEndpoints.empty())
+        return infeasible(
+            "a service source terminal has no compatible endpoint");
+      for (const auto *sink : draft.sinks)
+        if (sink->compatibleTransportEndpoints.empty())
+          return infeasible(
+              "a service sink terminal has no compatible endpoint");
+
+      auto source = appendTerminal(*draft.source);
+      if (!source)
+        return source.takeError();
+      auto sinkOffset = checked(serviceLegSinkContext, result.legSinks.size());
+      if (!sinkOffset)
+        return sinkOffset.takeError();
+      for (const auto *sink : draft.sinks) {
+        auto terminal = appendTerminal(*sink);
+        if (!terminal)
+          return terminal.takeError();
+        result.legSinks.push_back(*terminal);
+      }
+      auto sinkCount = checked(serviceLegSinkContext, draft.sinks.size());
+      if (!sinkCount)
+        return sinkCount.takeError();
+      if (llvm::Error error = preflightPnrIndexCapacity(serviceLegContext,
+                                                        result.legs.size() + 1))
+        return std::move(error);
+      result.legs.push_back({std::move(draft.key), *source, *sinkOffset,
+                             *sinkCount, payloadWidth->second});
+    }
+  }
+  return result;
 }
 
 llvm::Error validateInputs(
@@ -448,6 +633,11 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
     std::vector<PnrIndex> graphChoiceCatalogOrdinals,
     std::vector<PnrIndex> graphThreadOverlapOffsets,
     std::vector<PnrIndex> graphThreadOverlaps,
+    FrozenEndpointRoutingTopology routingTopology,
+    std::vector<FrozenSystemTransferTerminal> serviceTerminals,
+    std::vector<PnrIndex> serviceTerminalEndpointChoices,
+    std::vector<FrozenSystemServiceLeg> serviceLegs,
+    std::vector<PnrIndex> serviceLegSinkTerminals,
     std::unique_ptr<detail::InitializerRelationModel> initializerRelations)
     : dataflowIdentity_(std::move(dataflowIdentity)),
       fabricIdentity_(std::move(fabricIdentity)),
@@ -465,6 +655,12 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
       graphChoiceCatalogOrdinals_(std::move(graphChoiceCatalogOrdinals)),
       graphThreadOverlapOffsets_(std::move(graphThreadOverlapOffsets)),
       graphThreadOverlaps_(std::move(graphThreadOverlaps)),
+      routingTopology_(std::move(routingTopology)),
+      serviceTerminals_(std::move(serviceTerminals)),
+      serviceTerminalEndpointChoices_(
+          std::move(serviceTerminalEndpointChoices)),
+      serviceLegs_(std::move(serviceLegs)),
+      serviceLegSinkTerminals_(std::move(serviceLegSinkTerminals)),
       initializerRelations_(std::move(initializerRelations)) {}
 
 FrozenSystemPnrProblem::~FrozenSystemPnrProblem() = default;
@@ -483,6 +679,22 @@ FrozenSystemPnrProblem::graphChoiceCatalogOrdinals(PnrIndex decision) const {
   const auto &record = graphDecisions_[decision];
   return choiceSlice(graphChoiceCatalogOrdinals_, record.choiceOffset,
                      record.choiceCount);
+}
+
+llvm::ArrayRef<PnrIndex> FrozenSystemPnrProblem::serviceTerminalEndpointChoices(
+    PnrIndex terminal) const {
+  assert(terminal < serviceTerminals_.size());
+  const auto &record = serviceTerminals_[terminal];
+  return choiceSlice(serviceTerminalEndpointChoices_,
+                     record.endpointChoiceOffset, record.endpointChoiceCount);
+}
+
+llvm::ArrayRef<PnrIndex>
+FrozenSystemPnrProblem::serviceLegSinkTerminals(PnrIndex leg) const {
+  assert(leg < serviceLegs_.size());
+  const auto &record = serviceLegs_[leg];
+  return choiceSlice(serviceLegSinkTerminals_, record.sinkOffset,
+                     record.sinkCount);
 }
 
 PnrIndex FrozenSystemPnrProblem::accCoreTargetClass(PnrIndex core) const {
@@ -518,6 +730,9 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       buildRelations(*catalogs, *decisions, overlapOffsets, overlaps);
   if (!relations)
     return relations.takeError();
+  auto routing = freezeSystemRouting(dataflow, fabric, searchDomain);
+  if (!routing)
+    return routing.takeError();
 
   return FrozenSystemPnrProblemHandle(new FrozenSystemPnrProblem(
       dataflow.identity(), fabric.artifact().identity(),
@@ -530,5 +745,8 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       std::move(catalogs->mappingTargetClasses), std::move(decisions->threads),
       std::move(decisions->threadChoices), std::move(decisions->graphs),
       std::move(decisions->graphChoices), std::move(overlapOffsets),
-      std::move(overlaps), std::move(*relations)));
+      std::move(overlaps), std::move(routing->topology),
+      std::move(routing->terminals), std::move(routing->endpointChoices),
+      std::move(routing->legs), std::move(routing->legSinks),
+      std::move(*relations)));
 }

@@ -143,6 +143,11 @@ public:
   llvm::Expected<::loom::PointerLayout>
   pointerLayout(std::uint32_t addressSpace) const;
 
+  /// Derives one token's fixed physical payload width from its exact type and
+  /// this program's DataLayout. This is a removable transport projection; the
+  /// type remains the semantic owner and no width is persisted in Dataflow.
+  llvm::Expected<std::uint32_t> transportPayloadBitWidth(mlir::Type type) const;
+
   // Typed resolution. Each requires the exact artifact identity, so a
   // foreign-artifact or wrong-kind reference is a real runtime rejection.
   llvm::Expected<CanonicalGraphView> resolve(GraphRef ref) const;

@@ -39,8 +39,8 @@ SpatialNetRouterScratch::~SpatialNetRouterScratch() = default;
 
 llvm::Error
 SpatialNetRouterScratch::prepare(const FrozenSpatialPnrProblem &problem) {
-  if (llvm::Error error =
-          endpointSearch_.prepare(endpointRoutingGraphView(problem.routing())))
+  if (llvm::Error error = endpointSearch_.prepare(
+          endpointRoutingGraphView(problem.routing().topology())))
     return error;
 
   const std::size_t endpointCount = problem.routing().routingEndpoints().size();
