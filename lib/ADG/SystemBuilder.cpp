@@ -203,6 +203,10 @@ HardwareDomainMember SystemMemoryService::domainMember() const {
               loom::fabric::SystemMemoryServiceRef(entity_))));
 }
 
+loom::fabric::SystemMemoryServiceRef SystemMemoryService::reference() const {
+  return loom::fabric::SystemMemoryServiceRef(entity_);
+}
+
 HardwareDomainMember ExternalBoundary::domainMember() const {
   return makeDomainMember(state_, rootOrdinal_,
                           loom::fabric::FabricInventoryOwnerRef::of(
@@ -232,6 +236,10 @@ HardwareDomainMember HardwareDomainBuilder::domainMember() const {
   return makeDomainMember(state_, rootOrdinal_,
                           loom::fabric::FabricInventoryOwnerRef::of(
                               loom::fabric::HardwareDomainRef(entity_)));
+}
+
+loom::fabric::HardwareDomainRef HardwareDomainBuilder::reference() const {
+  return loom::fabric::HardwareDomainRef(entity_);
 }
 
 HardwareDomainMember ServiceTransformBuilder::domainMember() const {

@@ -690,6 +690,7 @@ private:
 
 class SystemMemoryService final {
 public:
+  loom::fabric::SystemMemoryServiceRef reference() const;
   HardwareDomainMember domainMember() const;
 
 private:
@@ -791,6 +792,7 @@ private:
 /// Scoped definition used where a domain's members may refer back to it.
 class HardwareDomainBuilder final {
 public:
+  loom::fabric::HardwareDomainRef reference() const;
   HardwareDomainMember domainMember() const;
   llvm::Error close(llvm::ArrayRef<HardwareDomainMember> members,
                     loom::fabric::HardwareDomainContract contract);

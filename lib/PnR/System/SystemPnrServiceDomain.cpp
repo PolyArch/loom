@@ -347,6 +347,47 @@ compatibleServiceRegions(const ::loom::fabric::FabricSystemRootView &fabric,
   return result;
 }
 
+llvm::Expected<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>
+compatibleConsistencyDomains(const ::loom::fabric::FabricSystemRootView &fabric,
+                             llvm::ArrayRef<ResolvedServiceMember> members) {
+  std::vector<::loom::fabric::MemoryConsistencyDomainRef> result;
+  if (members.empty() || llvm::any_of(members, [](const auto &member) {
+        return member.kind != ServiceKind::MemoryFence || !member.actor ||
+               member.access;
+      }))
+    return result;
+
+  for (const ::loom::fabric::SystemServiceEndpointRef endpoint :
+       fabric.artifact().systemServiceEndpoints()) {
+    const auto *capabilities = fabric.serviceEndpointCapabilities(endpoint);
+    if (!capabilities ||
+        capabilities->plane() != CanonicalServiceEndpointPlane::Memory ||
+        capabilities->role() != CanonicalServiceEndpointRole::Serve)
+      continue;
+
+    const FenceCapabilityDomain *accepted = nullptr;
+    bool supportsAll = true;
+    for (const ResolvedServiceMember &member : members) {
+      auto capability = matchingCapability(*capabilities, member);
+      if (!capability)
+        return capability.takeError();
+      if (!*capability) {
+        supportsAll = false;
+        break;
+      }
+      const auto *fence =
+          std::get_if<FenceCapabilityDomain>(&(*capability)->domain());
+      if (!fence)
+        return invalid("matching fence capability has a non-fence domain");
+      accepted = fence;
+    }
+    if (supportsAll && accepted)
+      result.push_back(accepted->consistencyDomain());
+  }
+  canonicalizeFabricRefs(result);
+  return result;
+}
+
 } // namespace
 
 llvm::Expected<std::vector<SystemSearchServiceDomain>>
@@ -387,14 +428,23 @@ projectSystemServiceDomains(
       members.push_back(std::move(*resolved));
     }
 
-    SystemSearchServiceDomain domain{obligation.key, std::nullopt, {}};
-    if (std::holds_alternative<
-            ::loom::mapping::OperationServiceObligationFamilyKey>(
-            obligation.key)) {
-      auto regions = compatibleServiceRegions(fabric, members);
-      if (!regions)
-        return regions.takeError();
-      domain.compatibleServiceRegions = std::move(*regions);
+    SystemSearchServiceDomain domain{
+        obligation.key, std::nullopt, std::nullopt, {}};
+    if (const auto *operation =
+            std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
+                &obligation.key)) {
+      if (std::holds_alternative<::dataflow::LogicalMemoryRootOrViewRef>(
+              *operation)) {
+        auto regions = compatibleServiceRegions(fabric, members);
+        if (!regions)
+          return regions.takeError();
+        domain.compatibleServiceRegions = std::move(*regions);
+      } else {
+        auto domains = compatibleConsistencyDomains(fabric, members);
+        if (!domains)
+          return domains.takeError();
+        domain.compatibleConsistencyDomains = std::move(*domains);
+      }
     }
 
     std::size_t expectedLegCount = 0;

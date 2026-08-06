@@ -123,6 +123,8 @@ struct SystemSearchServiceDomain final {
   ::loom::mapping::SystemServiceObligationKey key;
   std::optional<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>
       compatibleServiceRegions;
+  std::optional<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>
+      compatibleConsistencyDomains;
   std::vector<SystemSearchTransferTerminalDomain> transferTerminals;
 };
 

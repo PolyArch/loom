@@ -51,7 +51,7 @@ struct SystemPnrSearchDomainViewBuilder final {
 
 namespace {
 
-constexpr char kSchemaDescriptor[] = "loom.system_pnr_search_domain.1.0";
+constexpr char kSchemaDescriptor[] = "loom.system_pnr_search_domain.2.0";
 constexpr char kDigestDomain[] = "loom.system.pnr.search.domain.digest.v1\0";
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -502,14 +502,25 @@ canonicalizeServiceDomains(std::vector<SystemSearchServiceDomain> &services,
       ordered;
   ordered.reserve(services.size());
   for (SystemSearchServiceDomain &service : services) {
-    const bool operation = std::holds_alternative<
-        ::loom::mapping::OperationServiceObligationFamilyKey>(service.key);
-    if (operation != service.compatibleServiceRegions.has_value())
-      return invalid("service-region domain has the wrong obligation kind");
+    bool expectsRegions = false;
+    bool expectsConsistency = false;
+    if (const auto *operation =
+            std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
+                &service.key)) {
+      expectsRegions =
+          std::holds_alternative<::dataflow::LogicalMemoryRootOrViewRef>(
+              *operation);
+      expectsConsistency = !expectsRegions;
+    }
+    if (expectsRegions != service.compatibleServiceRegions.has_value() ||
+        expectsConsistency != service.compatibleConsistencyDomains.has_value())
+      return invalid("service target domain has the wrong obligation kind");
     if (service.transferTerminals.empty())
       return invalid("service obligation has no transfer-terminal domains");
     if (service.compatibleServiceRegions)
       canonicalizeFabricDomain(*service.compatibleServiceRegions);
+    if (service.compatibleConsistencyDomains)
+      canonicalizeFabricDomain(*service.compatibleConsistencyDomains);
 
     std::vector<std::pair<std::vector<std::uint8_t>,
                           SystemSearchTransferTerminalDomain>>
@@ -599,10 +610,17 @@ encodeView(const ArtifactRootReference &dataflowReference,
     if (!keyBytes)
       return keyBytes.takeError();
     writer.sizedBytes(*keyBytes);
-    writer.u32(service.compatibleServiceRegions ? 1 : 0);
+    const std::uint32_t targetKind = service.compatibleServiceRegions       ? 1
+                                     : service.compatibleConsistencyDomains ? 2
+                                                                            : 0;
+    writer.u32(targetKind);
     if (service.compatibleServiceRegions)
       if (llvm::Error error = encodeFabricDomain(
               writer, llvm::ArrayRef(*service.compatibleServiceRegions)))
+        return std::move(error);
+    if (service.compatibleConsistencyDomains)
+      if (llvm::Error error = encodeFabricDomain(
+              writer, llvm::ArrayRef(*service.compatibleConsistencyDomains)))
         return std::move(error);
     writer.u64(service.transferTerminals.size());
     for (const SystemSearchTransferTerminalDomain &terminal :
@@ -700,25 +718,43 @@ decodeView(llvm::ArrayRef<std::uint8_t> bytes,
       return invalid("service-obligation domains are not strictly ordered");
     previousService = keyStorage;
 
-    auto regionPresence = reader.u32();
-    if (!regionPresence)
-      return regionPresence.takeError();
-    if (*regionPresence > 1)
-      return invalid("service-region presence field is not canonical");
+    auto targetKind = reader.u32();
+    if (!targetKind)
+      return targetKind.takeError();
+    if (*targetKind > 2)
+      return invalid("service target-domain kind is not canonical");
     std::optional<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>
         regions;
-    if (*regionPresence == 1) {
+    std::optional<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>
+        consistencyDomains;
+    if (*targetKind == 1) {
       auto decoded =
           decodeFabricDomain<::loom::fabric::FabricMemoryServiceRegionRef>(
               reader, fabric);
       if (!decoded)
         return decoded.takeError();
       regions = std::move(*decoded);
+    } else if (*targetKind == 2) {
+      auto decoded =
+          decodeFabricDomain<::loom::fabric::MemoryConsistencyDomainRef>(
+              reader, fabric);
+      if (!decoded)
+        return decoded.takeError();
+      consistencyDomains = std::move(*decoded);
     }
-    const bool operation = std::holds_alternative<
-        ::loom::mapping::OperationServiceObligationFamilyKey>(*key);
-    if (operation != regions.has_value())
-      return invalid("service-region domain has the wrong obligation kind");
+    bool expectsRegions = false;
+    bool expectsConsistency = false;
+    if (const auto *operation =
+            std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
+                &*key)) {
+      expectsRegions =
+          std::holds_alternative<::dataflow::LogicalMemoryRootOrViewRef>(
+              *operation);
+      expectsConsistency = !expectsRegions;
+    }
+    if (expectsRegions != regions.has_value() ||
+        expectsConsistency != consistencyDomains.has_value())
+      return invalid("service target domain has the wrong obligation kind");
 
     auto terminalCount =
         reader.count(/*minimumElementBytes=*/20, "transfer terminal");
@@ -754,8 +790,8 @@ decodeView(llvm::ArrayRef<std::uint8_t> bytes,
         return endpoints.takeError();
       terminals.push_back({std::move(*terminalKey), std::move(*endpoints)});
     }
-    services.push_back(
-        {std::move(*key), std::move(regions), std::move(terminals)});
+    services.push_back({std::move(*key), std::move(regions),
+                        std::move(consistencyDomains), std::move(terminals)});
   }
   if (!reader.empty())
     return invalid("trailing canonical view bytes");
@@ -1010,7 +1046,7 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
                            const SystemPnrSearchDomainDigest &digest,
                            const ArtifactStore &store) {
   if (schemaDescriptorBytes != systemPnrSearchDomainSchemaDescriptorBytes())
-    return invalid("schema descriptor is not exact version 1.0");
+    return invalid("schema descriptor is not exact version 2.0");
   if (llvm::Error error = validateSystemPnrSearchDomainDigest(
           schemaDescriptorBytes, canonicalViewBytes, digest))
     return std::move(error);
