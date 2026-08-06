@@ -101,20 +101,8 @@ struct SystemSearchBindingDomain final {
   std::vector<SystemSearchAtom> atoms;
 };
 
-struct SystemTransferSourceTerminalKey final {
-  ::loom::mapping::CanonicalServiceLegKey leg;
-};
-
-struct SystemTransferSinkTerminalKey final {
-  ::loom::mapping::CanonicalServiceLegKey leg;
-  ::dataflow::StructuralOrdinal sinkOrdinal = 0;
-};
-
-using SystemTransferTerminalKey = std::variant<SystemTransferSourceTerminalKey,
-                                               SystemTransferSinkTerminalKey>;
-
 struct SystemSearchTransferTerminalDomain final {
-  SystemTransferTerminalKey key;
+  ::loom::mapping::SystemTransferTerminalKey key;
   std::vector<::loom::fabric::FabricTransportEndpointRef>
       compatibleTransportEndpoints;
 };

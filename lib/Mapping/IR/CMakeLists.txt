@@ -3,6 +3,7 @@ add_mlir_dialect_library(MLIRMapping
   MappingDialect.cpp
   MappingEnums.cpp
   MappingOps.cpp
+  MappingSystemServiceOps.cpp
 
   PARTIAL_SOURCES_INTENDED
 
@@ -19,6 +20,7 @@ add_mlir_dialect_library(MLIRMapping
 target_link_libraries(MLIRMapping PUBLIC
   LoomCommon
   LoomFabricIdentity
+  LoomSystemMappingIdentity
   MLIRDataflow
 )
 

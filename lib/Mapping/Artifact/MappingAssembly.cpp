@@ -607,6 +607,128 @@ llvm::Error canonicalizeSystemBinding(BindingOp binding) {
   return llvm::Error::success();
 }
 
+std::string systemRouteSemanticKey(::mapping::TransferLegRealizationOp route) {
+  std::string result;
+  appendFramed(result, recordKey(route.getLeg().getRecord()));
+  appendFramed(result, recordKey(route.getRootEndpoint().getRecord()));
+  for (auto node :
+       route.getBody().front().getOps<::mapping::SystemRouteNodeOp>()) {
+    appendU64(result, node.getParentNodeOrdinal());
+    appendFramed(result, recordKey(node.getIncomingTraversal().getRecord()));
+  }
+  for (auto sink :
+       route.getBody().front().getOps<::mapping::SystemRouteSinkOp>()) {
+    appendFramed(result, recordKey(sink.getTerminal().getRecord()));
+    appendU64(result, sink.getNodeOrdinal());
+  }
+  return result;
+}
+
+void canonicalizeSystemRoute(::mapping::TransferLegRealizationOp route) {
+  Block &body = route.getBody().front();
+  llvm::DenseMap<std::uint64_t, SmallVector<::mapping::SystemRouteNodeOp, 4>>
+      children;
+  for (auto node : body.getOps<::mapping::SystemRouteNodeOp>())
+    children[node.getParentNodeOrdinal()].push_back(node);
+  for (auto &entry : children)
+    llvm::sort(entry.second, [](auto left, auto right) {
+      return recordKey(left.getIncomingTraversal().getRecord()) <
+             recordKey(right.getIncomingTraversal().getRecord());
+    });
+
+  SmallVector<::mapping::SystemRouteNodeOp> preorder;
+  SmallVector<::mapping::SystemRouteNodeOp> stack;
+  if (auto found = children.find(0); found != children.end())
+    for (auto child : llvm::reverse(found->second))
+      stack.push_back(child);
+  while (!stack.empty()) {
+    auto node = stack.pop_back_val();
+    preorder.push_back(node);
+    if (auto found = children.find(node.getNodeOrdinal());
+        found != children.end())
+      for (auto child : llvm::reverse(found->second))
+        stack.push_back(child);
+  }
+
+  llvm::DenseMap<std::uint64_t, std::uint64_t> renumbering;
+  renumbering.try_emplace(0, 0);
+  for (auto [index, node] : llvm::enumerate(preorder))
+    renumbering.try_emplace(node.getNodeOrdinal(), index + 1);
+
+  Builder builder(route.getContext());
+  for (auto node : preorder) {
+    const std::uint64_t oldOrdinal = node.getNodeOrdinal();
+    const std::uint64_t oldParent = node.getParentNodeOrdinal();
+    node.setNodeOrdinalAttr(
+        builder.getI64IntegerAttr(renumbering.lookup(oldOrdinal)));
+    node.setParentNodeOrdinalAttr(
+        builder.getI64IntegerAttr(renumbering.lookup(oldParent)));
+    node->moveBefore(&body, body.end());
+  }
+
+  SmallVector<::mapping::SystemRouteSinkOp> sinks(
+      body.getOps<::mapping::SystemRouteSinkOp>().begin(),
+      body.getOps<::mapping::SystemRouteSinkOp>().end());
+  llvm::sort(sinks, [](auto left, auto right) {
+    return recordKey(left.getTerminal().getRecord()) <
+           recordKey(right.getTerminal().getRecord());
+  });
+  for (auto sink : sinks) {
+    sink.setNodeOrdinalAttr(
+        builder.getI64IntegerAttr(renumbering.lookup(sink.getNodeOrdinal())));
+    sink->moveBefore(&body, body.end());
+  }
+}
+
+std::string servicePlanSemanticKey(::mapping::ServicePlanOp plan) {
+  std::string result;
+  for (auto route :
+       plan.getBody().front().getOps<::mapping::TransferLegRealizationOp>())
+    appendFramed(result, systemRouteSemanticKey(route));
+  return result;
+}
+
+llvm::Error
+canonicalizeServiceRealization(::mapping::ServiceRealizationOp service) {
+  Block &body = service.getBody().front();
+  struct Plan final {
+    std::string key;
+    ::mapping::ServicePlanOp operation;
+  };
+  std::vector<Plan> plans;
+  for (auto plan : body.getOps<::mapping::ServicePlanOp>()) {
+    Block &planBody = plan.getBody().front();
+    SmallVector<::mapping::TransferLegRealizationOp> routes;
+    for (auto route : planBody.getOps<::mapping::TransferLegRealizationOp>()) {
+      canonicalizeSystemRoute(route);
+      routes.push_back(route);
+    }
+    llvm::sort(routes, [](auto left, auto right) {
+      return recordKey(left.getLeg().getRecord()) <
+             recordKey(right.getLeg().getRecord());
+    });
+    for (auto route : routes)
+      route->moveBefore(&planBody, planBody.end());
+    plans.push_back({servicePlanSemanticKey(plan), plan});
+  }
+  llvm::sort(plans, [](const Plan &left, const Plan &right) {
+    return left.key < right.key;
+  });
+  for (std::size_t index = 1; index < plans.size(); ++index)
+    if (plans[index - 1].key == plans[index].key)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "System service realization duplicates a complete plan semantic "
+          "key");
+
+  Builder builder(service.getContext());
+  for (auto [ordinal, plan] : llvm::enumerate(plans)) {
+    plan.operation.setPlanOrdinalAttr(builder.getI64IntegerAttr(ordinal));
+    plan.operation->moveBefore(&body, body.end());
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error canonicalizeSystem(::mapping::SystemOp root) {
   SmallVector<Attribute> roots(root.getRootThreadLaunches().begin(),
                                root.getRootThreadLaunches().end());
@@ -644,7 +766,9 @@ llvm::Error canonicalizeSystem(::mapping::SystemOp root) {
       ArrayAttr::get(root.getContext(), orderedImports));
 
   Block &body = root.getBody().front();
-  std::vector<Operation *> bindings;
+  SmallVector<::mapping::ThreadExecutionBindingOp> threadBindings;
+  SmallVector<::mapping::GraphExecutionBindingOp> graphBindings;
+  SmallVector<::mapping::ServiceRealizationOp> services;
   for (Operation &operation : body) {
     if (auto graph = dyn_cast<::mapping::GraphExecutionBindingOp>(operation)) {
       if (graph.getDefaultTarget())
@@ -664,6 +788,7 @@ llvm::Error canonicalizeSystem(::mapping::SystemOp root) {
                                         ::mapping::GraphPresburgerClauseOp>(
                   graph))
         return error;
+      graphBindings.push_back(graph);
     } else if (auto thread =
                    dyn_cast<::mapping::ThreadExecutionBindingOp>(operation)) {
       if (llvm::Error error =
@@ -671,35 +796,32 @@ llvm::Error canonicalizeSystem(::mapping::SystemOp root) {
                                         ::mapping::ThreadPresburgerClauseOp>(
                   thread))
         return error;
+      threadBindings.push_back(thread);
+    } else if (auto service =
+                   dyn_cast<::mapping::ServiceRealizationOp>(operation)) {
+      if (llvm::Error error = canonicalizeServiceRealization(service))
+        return error;
+      services.push_back(service);
     }
-    bindings.push_back(&operation);
   }
-  llvm::sort(bindings, [](Operation *lhs, Operation *rhs) {
-    std::string left;
-    std::string right;
-    if (auto thread = dyn_cast<::mapping::ThreadExecutionBindingOp>(lhs)) {
-      appendU32(left, 0);
-      appendFramed(left, recordKey(thread.getKey().getRecord()));
-    } else {
-      appendU32(left, 1);
-      appendFramed(left, recordKey(cast<::mapping::GraphExecutionBindingOp>(lhs)
-                                       .getKey()
-                                       .getRecord()));
-    }
-    if (auto thread = dyn_cast<::mapping::ThreadExecutionBindingOp>(rhs)) {
-      appendU32(right, 0);
-      appendFramed(right, recordKey(thread.getKey().getRecord()));
-    } else {
-      appendU32(right, 1);
-      appendFramed(right,
-                   recordKey(cast<::mapping::GraphExecutionBindingOp>(rhs)
-                                 .getKey()
-                                 .getRecord()));
-    }
-    return left < right;
+  llvm::sort(threadBindings, [](auto left, auto right) {
+    return recordKey(left.getKey().getRecord()) <
+           recordKey(right.getKey().getRecord());
   });
-  for (Operation *binding : bindings)
+  llvm::sort(graphBindings, [](auto left, auto right) {
+    return recordKey(left.getKey().getRecord()) <
+           recordKey(right.getKey().getRecord());
+  });
+  llvm::sort(services, [](auto left, auto right) {
+    return recordKey(left.getKey().getRecord()) <
+           recordKey(right.getKey().getRecord());
+  });
+  for (auto binding : threadBindings)
     binding->moveBefore(&body, body.end());
+  for (auto binding : graphBindings)
+    binding->moveBefore(&body, body.end());
+  for (auto service : services)
+    service->moveBefore(&body, body.end());
   return llvm::Error::success();
 }
 

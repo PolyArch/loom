@@ -10,6 +10,10 @@ add_executable(loom-system-service-obligation-test
   SystemServiceObligationTest.cpp
 )
 
+add_executable(loom-system-service-route-wire-test
+  SystemServiceRouteWireTest.cpp
+)
+
 add_executable(loom-tech-mapping-artifact-test
   TechMappingArtifactTest.cpp
   TechMappingComputeBoundaryTest.cpp
@@ -89,6 +93,13 @@ target_link_libraries(loom-system-service-obligation-test PRIVATE
   MLIRDataflow
   MLIRDLTIDialect
   MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-system-service-route-wire-test PRIVATE
+  LoomMappingArtifact
   MLIRIR
   MLIRParser
   LLVMSupport

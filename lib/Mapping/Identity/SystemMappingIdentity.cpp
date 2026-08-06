@@ -77,6 +77,7 @@ public:
   }
 
   bool empty() const { return bytes_.empty(); }
+  std::size_t remainingSize() const { return bytes_.size(); }
 
 private:
   llvm::ArrayRef<std::uint8_t> bytes_;
@@ -256,6 +257,75 @@ decodeCanonicalServiceLegKey(llvm::ArrayRef<std::uint8_t> bytes,
   if (llvm::ArrayRef(*canonical) != bytes)
     return invalid("canonical service-leg key is not canonical");
   return result;
+}
+
+llvm::Expected<Bytes>
+encodeSystemTransferTerminalKey(const ArtifactIdentity &dataflowIdentity,
+                                const SystemTransferTerminalKey &key) {
+  Bytes result;
+  if (const auto *source = std::get_if<SystemTransferSourceTerminalKey>(&key)) {
+    appendU32(result, 0);
+    auto leg = encodeCanonicalServiceLegKey(dataflowIdentity, source->leg);
+    if (!leg)
+      return leg.takeError();
+    appendSized(result, *leg);
+    return result;
+  }
+  const auto &sink = std::get<SystemTransferSinkTerminalKey>(key);
+  appendU32(result, 1);
+  auto leg = encodeCanonicalServiceLegKey(dataflowIdentity, sink.leg);
+  if (!leg)
+    return leg.takeError();
+  appendSized(result, *leg);
+  appendU64(result, sink.sinkOrdinal);
+  return result;
+}
+
+llvm::Expected<DecodedSystemTransferTerminalKeyPrefix>
+decodeSystemTransferTerminalKeyPrefix(
+    llvm::ArrayRef<std::uint8_t> bytes,
+    const ArtifactIdentity &dataflowIdentity) {
+  Reader reader(bytes);
+  auto kind = reader.u32();
+  if (!kind)
+    return kind.takeError();
+  auto legBytes = reader.sized();
+  if (!legBytes)
+    return legBytes.takeError();
+  auto leg = decodeCanonicalServiceLegKey(*legBytes, dataflowIdentity);
+  if (!leg)
+    return leg.takeError();
+
+  std::optional<SystemTransferTerminalKey> key;
+  if (*kind == 0) {
+    key = SystemTransferSourceTerminalKey{std::move(*leg)};
+  } else if (*kind == 1) {
+    auto sinkOrdinal = reader.u64();
+    if (!sinkOrdinal)
+      return sinkOrdinal.takeError();
+    key = SystemTransferSinkTerminalKey{std::move(*leg), *sinkOrdinal};
+  } else {
+    return invalid("unknown transfer-terminal key kind");
+  }
+
+  const std::size_t byteCount = bytes.size() - reader.remainingSize();
+  auto canonical = encodeSystemTransferTerminalKey(dataflowIdentity, *key);
+  if (!canonical)
+    return canonical.takeError();
+  if (llvm::ArrayRef(*canonical) != bytes.take_front(byteCount))
+    return invalid("transfer-terminal key is not canonical");
+  return DecodedSystemTransferTerminalKeyPrefix{std::move(*key), byteCount};
+}
+
+llvm::Expected<SystemTransferTerminalKey>
+decodeSystemTransferTerminalKey(llvm::ArrayRef<std::uint8_t> bytes,
+                                const ArtifactIdentity &dataflowIdentity) {
+  auto decoded = decodeSystemTransferTerminalKeyPrefix(bytes, dataflowIdentity);
+  if (!decoded)
+    return decoded.takeError();
+  if (decoded->byteCount != bytes.size())
+    return invalid("trailing transfer-terminal key bytes");
+  return std::move(decoded->key);
 }
 
 llvm::Expected<std::vector<SystemServiceObligationProjection>>

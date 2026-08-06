@@ -909,59 +909,6 @@ void mapping::SystemOp::print(OpAsmPrinter &printer) {
                                                       "root_thread_launches"});
 }
 
-LogicalResult mapping::SystemOp::verify() {
-  if (failed(rejectUnknownAttributes(*this, {"dataflow", "fabric",
-                                             "spatial_mapping_imports",
-                                             "root_thread_launches"})))
-    return failure();
-  if (getBody().empty() || !llvm::hasSingleElement(getBody()))
-    return emitOpError("must contain exactly one declarative block");
-  if (getBody().front().getNumArguments() != 0)
-    return emitOpError("declarative block must not have arguments");
-  if (getRootThreadLaunches().empty())
-    return emitOpError("requires a non-empty root thread launch set");
-
-  llvm::DenseSet<Attribute> imports;
-  for (Attribute attribute : getSpatialMappingImports()) {
-    if (!isa<mapping::ArtifactRootReferenceAttr>(attribute))
-      return emitOpError(
-          "spatial_mapping_imports contains a non-root reference");
-    if (!imports.insert(attribute).second)
-      return emitOpError("spatial_mapping_imports contains a duplicate");
-  }
-  llvm::DenseSet<Attribute> roots;
-  for (Attribute attribute : getRootThreadLaunches()) {
-    if (!isa<mapping::RootThreadLaunchRefAttr>(attribute))
-      return emitOpError(
-          "root_thread_launches contains a non-root-thread reference");
-    if (!roots.insert(attribute).second)
-      return emitOpError("root_thread_launches contains a duplicate");
-  }
-
-  llvm::DenseSet<Attribute> threadKeys;
-  llvm::DenseSet<Attribute> graphKeys;
-  for (Operation &child : getBody().front()) {
-    if (auto binding = dyn_cast<mapping::ThreadExecutionBindingOp>(child)) {
-      if (!roots.contains(binding.getKey()))
-        return binding.emitOpError("has a key outside root_thread_launches");
-      if (!threadKeys.insert(binding.getKey()).second)
-        return binding.emitOpError("duplicates a ThreadExecutionBinding key");
-      continue;
-    }
-    if (auto binding = dyn_cast<mapping::GraphExecutionBindingOp>(child)) {
-      if (!graphKeys.insert(binding.getKey()).second)
-        return binding.emitOpError("duplicates a GraphExecutionBinding key");
-      continue;
-    }
-    return child.emitOpError(
-        "is not an implemented closed SystemMapping record kind");
-  }
-  if (threadKeys.size() != roots.size())
-    return emitOpError(
-        "requires exactly one ThreadExecutionBinding for every root launch");
-  return success();
-}
-
 LogicalResult mapping::ThreadExecutionBindingOp::verify() {
   if (failed(rejectUnknownAttributes(
           *this, {"key", "relation_kind", "default_target"})))

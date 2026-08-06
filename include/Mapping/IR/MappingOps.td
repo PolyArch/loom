@@ -322,6 +322,62 @@ def Mapping_GraphPresburgerClauseOp
   let hasVerifier = 1;
 }
 
+def Mapping_ServiceRealizationOp
+    : Mapping_Op<"service_realization",
+                 [HasParent<"SystemOp">, SingleBlock, NoTerminator]> {
+  let summary = "one System service-obligation realization";
+  let arguments = (ins Mapping_SystemServiceObligationKeyAttr:$key);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{`key` `(` $key `)` $body attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_ServicePlanOp
+    : Mapping_Op<"service_plan",
+                 [HasParent<"ServiceRealizationOp">, SingleBlock,
+                  NoTerminator]> {
+  let summary = "one owner-local System service plan";
+  let arguments = (ins I64Attr:$plan_ordinal);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{`plan` $plan_ordinal $body attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_TransferLegRealizationOp
+    : Mapping_Op<"transfer_leg_realization",
+                 [HasParent<"ServicePlanOp">, SingleBlock, NoTerminator]> {
+  let summary = "one canonical service leg and its reduced flat route tree";
+  let arguments = (ins Mapping_CanonicalServiceLegKeyAttr:$leg,
+      Mapping_FabricTransportEndpointRefAttr:$root_endpoint);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{`leg` `(` $leg `)`
+                         `root_endpoint` `(` $root_endpoint `)`
+                         $body attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_SystemRouteNodeOp
+    : Mapping_Op<"system_route_node",
+                 [HasParent<"TransferLegRealizationOp">]> {
+  let summary = "one non-root node in a reduced System route tree";
+  let arguments = (ins I64Attr:$node_ordinal, I64Attr:$parent_node_ordinal,
+      Mapping_FabricPhysicalTraversalRefAttr:$incoming_traversal);
+  let assemblyFormat = [{`node` $node_ordinal `parent` $parent_node_ordinal
+                         `traversal` `(` $incoming_traversal `)` attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_SystemRouteSinkOp
+    : Mapping_Op<"system_route_sink",
+                 [HasParent<"TransferLegRealizationOp">]> {
+  let summary = "one System transfer sink attached to a route node";
+  let arguments = (ins Mapping_SystemTransferTerminalKeyAttr:$terminal,
+      I64Attr:$node_ordinal);
+  let assemblyFormat = [{`terminal` `(` $terminal `)`
+                         `node` $node_ordinal attr-dict}];
+  let hasVerifier = 1;
+}
+
 def Mapping_ConstraintsSpatialOp
     : Mapping_Op<"constraints.spatial", [IsolatedFromAbove, SingleBlock,
                                          NoTerminator]> {

@@ -499,7 +499,13 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
       threadBindings.push_back(std::move(view));
       continue;
     }
-    auto binding = mlir::cast<::mapping::GraphExecutionBindingOp>(operation);
+    if (mlir::isa<::mapping::ServiceRealizationOp>(operation))
+      continue;
+    auto binding =
+        mlir::dyn_cast<::mapping::GraphExecutionBindingOp>(operation);
+    if (!binding)
+      return invalid(
+          "execution importer encountered a non-execution System record");
     auto key = decodeDataflow<::dataflow::RootedGraphLaunchRef>(
         binding.getKey(), dataflow.identity());
     if (!key)

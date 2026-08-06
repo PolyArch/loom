@@ -5,6 +5,7 @@
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "mlir/IR/BuiltinTypes.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -105,6 +106,39 @@ LogicalResult mapping::RootedGraphLaunchRefAttr::verify(
 LogicalResult mapping::RootThreadLaunchRefAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
   return verifyDataflowRef<::dataflow::RootThreadLaunchRef>(emitError, record);
+}
+
+LogicalResult mapping::SystemServiceObligationKeyAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  auto decoded = ::loom::mapping::decodeSystemServiceObligationKey(
+      unsignedBytes(record), dummyIdentity());
+  if (!decoded) {
+    emitError() << llvm::toString(decoded.takeError());
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult mapping::CanonicalServiceLegKeyAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  auto decoded = ::loom::mapping::decodeCanonicalServiceLegKey(
+      unsignedBytes(record), dummyIdentity());
+  if (!decoded) {
+    emitError() << llvm::toString(decoded.takeError());
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult mapping::SystemTransferTerminalKeyAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  auto decoded = ::loom::mapping::decodeSystemTransferTerminalKey(
+      unsignedBytes(record), dummyIdentity());
+  if (!decoded) {
+    emitError() << llvm::toString(decoded.takeError());
+    return failure();
+  }
+  return success();
 }
 
 LogicalResult mapping::SystemPresburgerCellAttr::verify(

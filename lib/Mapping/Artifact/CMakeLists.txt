@@ -12,7 +12,6 @@ add_library(LoomMappingArtifact
   SystemMappingConstraintSet.cpp
   SystemMappingConstraintSetBuilder.cpp
   SystemMappingArtifact.cpp
-  SystemMappingIdentity.cpp
   SystemPresburger.cpp
   TechMappingCanonicalKey.cpp
   TechMappingComputeVerification.cpp
@@ -27,6 +26,7 @@ target_include_directories(LoomMappingArtifact PUBLIC
 target_link_libraries(LoomMappingArtifact PUBLIC
   LoomCommon
   LoomFabricArtifact
+  LoomSystemMappingIdentity
   MLIRDataflow
   MLIRMapping
 )

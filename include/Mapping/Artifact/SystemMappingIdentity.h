@@ -7,6 +7,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <variant>
 #include <vector>
@@ -37,6 +38,34 @@ struct CanonicalServiceLegKey final {
   }
 };
 
+struct SystemTransferSourceTerminalKey final {
+  CanonicalServiceLegKey leg;
+
+  friend bool operator==(const SystemTransferSourceTerminalKey &lhs,
+                         const SystemTransferSourceTerminalKey &rhs) {
+    return lhs.leg == rhs.leg;
+  }
+};
+
+struct SystemTransferSinkTerminalKey final {
+  CanonicalServiceLegKey leg;
+  ::dataflow::StructuralOrdinal sinkOrdinal = 0;
+
+  friend bool operator==(const SystemTransferSinkTerminalKey &lhs,
+                         const SystemTransferSinkTerminalKey &rhs) {
+    return lhs.leg == rhs.leg && lhs.sinkOrdinal == rhs.sinkOrdinal;
+  }
+};
+
+using SystemTransferTerminalKey =
+    std::variant<SystemTransferSourceTerminalKey,
+                 SystemTransferSinkTerminalKey>;
+
+struct DecodedSystemTransferTerminalKeyPrefix final {
+  SystemTransferTerminalKey key;
+  std::size_t byteCount = 0;
+};
+
 llvm::Expected<std::vector<std::uint8_t>>
 encodeSystemServiceObligationKey(const ArtifactIdentity &dataflowIdentity,
                                  const SystemServiceObligationKey &key);
@@ -52,6 +81,19 @@ encodeCanonicalServiceLegKey(const ArtifactIdentity &dataflowIdentity,
 llvm::Expected<CanonicalServiceLegKey>
 decodeCanonicalServiceLegKey(llvm::ArrayRef<std::uint8_t> bytes,
                              const ArtifactIdentity &dataflowIdentity);
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeSystemTransferTerminalKey(const ArtifactIdentity &dataflowIdentity,
+                                const SystemTransferTerminalKey &key);
+
+llvm::Expected<DecodedSystemTransferTerminalKeyPrefix>
+decodeSystemTransferTerminalKeyPrefix(
+    llvm::ArrayRef<std::uint8_t> bytes,
+    const ArtifactIdentity &dataflowIdentity);
+
+llvm::Expected<SystemTransferTerminalKey>
+decodeSystemTransferTerminalKey(llvm::ArrayRef<std::uint8_t> bytes,
+                                const ArtifactIdentity &dataflowIdentity);
 
 /// Exact nonpersistent service closure for one Canonical Dataflow Program and
 /// canonical root-launch scope. Members, sinks, exposures, and legs are

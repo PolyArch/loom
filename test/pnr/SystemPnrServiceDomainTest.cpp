@@ -794,11 +794,12 @@ terminal(const loom::pnr::SystemSearchServiceDomain &service,
   const auto found =
       llvm::find_if(service.transferTerminals, [&](const auto &candidate) {
         if (const auto *key =
-                std::get_if<loom::pnr::SystemTransferSourceTerminalKey>(
+                std::get_if<loom::mapping::SystemTransferSourceTerminalKey>(
                     &candidate.key))
           return source && key->leg.ordinal == legOrdinal;
-        const auto *key = std::get_if<loom::pnr::SystemTransferSinkTerminalKey>(
-            &candidate.key);
+        const auto *key =
+            std::get_if<loom::mapping::SystemTransferSinkTerminalKey>(
+                &candidate.key);
         return !source && key && key->leg.ordinal == legOrdinal &&
                key->sinkOrdinal == 0;
       });
@@ -1090,8 +1091,8 @@ int main() {
     std::size_t sourceCount = 0;
     std::size_t sinkCount = 0;
     for (const auto &terminal : messageService.transferTerminals) {
-      if (std::holds_alternative<loom::pnr::SystemTransferSourceTerminalKey>(
-              terminal.key)) {
+      if (std::holds_alternative<
+              loom::mapping::SystemTransferSourceTerminalKey>(terminal.key)) {
         ++sourceCount;
         require(directlyAdmitted
                     ? terminal.compatibleTransportEndpoints ==

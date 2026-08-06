@@ -154,6 +154,7 @@ public:
   }
 
   bool empty() const { return bytes_.empty(); }
+  llvm::ArrayRef<std::uint8_t> remaining() const { return bytes_; }
 
 private:
   llvm::ArrayRef<std::uint8_t> bytes_;
@@ -437,62 +438,36 @@ llvm::Error encodeBindingKey(WireWriter &writer,
   return llvm::Error::success();
 }
 
-llvm::Error encodeTerminalKey(WireWriter &writer,
-                              const SystemTransferTerminalKey &key,
-                              const ArtifactIdentity &dataflowIdentity) {
-  if (const auto *source = std::get_if<SystemTransferSourceTerminalKey>(&key)) {
-    writer.u32(0);
-    auto bytes = ::loom::mapping::encodeCanonicalServiceLegKey(dataflowIdentity,
-                                                               source->leg);
-    if (!bytes)
-      return bytes.takeError();
-    writer.sizedBytes(*bytes);
-    return llvm::Error::success();
-  }
-  writer.u32(1);
-  const auto &sink = std::get<SystemTransferSinkTerminalKey>(key);
+llvm::Error
+encodeTerminalKey(WireWriter &writer,
+                  const ::loom::mapping::SystemTransferTerminalKey &key,
+                  const ArtifactIdentity &dataflowIdentity) {
   auto bytes =
-      ::loom::mapping::encodeCanonicalServiceLegKey(dataflowIdentity, sink.leg);
+      ::loom::mapping::encodeSystemTransferTerminalKey(dataflowIdentity, key);
   if (!bytes)
     return bytes.takeError();
-  writer.sizedBytes(*bytes);
-  writer.u64(sink.sinkOrdinal);
+  writer.bytes(*bytes);
   return llvm::Error::success();
 }
 
 llvm::Expected<std::vector<std::uint8_t>>
-terminalKeyBytes(const SystemTransferTerminalKey &key,
+terminalKeyBytes(const ::loom::mapping::SystemTransferTerminalKey &key,
                  const ArtifactIdentity &dataflowIdentity) {
-  WireWriter writer;
-  if (llvm::Error error = encodeTerminalKey(writer, key, dataflowIdentity))
-    return std::move(error);
-  return writer.take();
+  return ::loom::mapping::encodeSystemTransferTerminalKey(dataflowIdentity,
+                                                          key);
 }
 
-llvm::Expected<SystemTransferTerminalKey>
+llvm::Expected<::loom::mapping::SystemTransferTerminalKey>
 decodeTerminalKey(WireReader &reader,
                   const ArtifactIdentity &dataflowIdentity) {
-  auto kind = reader.u32();
-  if (!kind)
-    return kind.takeError();
-  auto legBytes = reader.sizedBytes();
-  if (!legBytes)
-    return legBytes.takeError();
-  auto leg = ::loom::mapping::decodeCanonicalServiceLegKey(*legBytes,
-                                                           dataflowIdentity);
-  if (!leg)
-    return leg.takeError();
-  if (*kind == 0)
-    return SystemTransferTerminalKey(
-        SystemTransferSourceTerminalKey{std::move(*leg)});
-  if (*kind == 1) {
-    auto sinkOrdinal = reader.u64();
-    if (!sinkOrdinal)
-      return sinkOrdinal.takeError();
-    return SystemTransferTerminalKey(
-        SystemTransferSinkTerminalKey{std::move(*leg), *sinkOrdinal});
-  }
-  return invalid("unknown transfer-terminal key kind");
+  auto decoded = ::loom::mapping::decodeSystemTransferTerminalKeyPrefix(
+      reader.remaining(), dataflowIdentity);
+  if (!decoded)
+    return decoded.takeError();
+  auto consumed = reader.take(decoded->byteCount);
+  if (!consumed)
+    return consumed.takeError();
+  return std::move(decoded->key);
 }
 
 llvm::Error
@@ -530,9 +505,14 @@ canonicalizeServiceDomains(std::vector<SystemSearchServiceDomain> &services,
          service.transferTerminals) {
       canonicalizeFabricDomain(terminal.compatibleTransportEndpoints);
       const auto &leg =
-          std::holds_alternative<SystemTransferSourceTerminalKey>(terminal.key)
-              ? std::get<SystemTransferSourceTerminalKey>(terminal.key).leg
-              : std::get<SystemTransferSinkTerminalKey>(terminal.key).leg;
+          std::holds_alternative<
+              ::loom::mapping::SystemTransferSourceTerminalKey>(terminal.key)
+              ? std::get<::loom::mapping::SystemTransferSourceTerminalKey>(
+                    terminal.key)
+                    .leg
+              : std::get<::loom::mapping::SystemTransferSinkTerminalKey>(
+                    terminal.key)
+                    .leg;
       if (leg.obligation != service.key)
         return invalid("transfer-terminal key belongs to another obligation");
       auto bytes = terminalKeyBytes(terminal.key, dataflowIdentity);
@@ -771,9 +751,14 @@ decodeView(llvm::ArrayRef<std::uint8_t> bytes,
       if (!terminalKey)
         return terminalKey.takeError();
       const auto &leg =
-          std::holds_alternative<SystemTransferSourceTerminalKey>(*terminalKey)
-              ? std::get<SystemTransferSourceTerminalKey>(*terminalKey).leg
-              : std::get<SystemTransferSinkTerminalKey>(*terminalKey).leg;
+          std::holds_alternative<
+              ::loom::mapping::SystemTransferSourceTerminalKey>(*terminalKey)
+              ? std::get<::loom::mapping::SystemTransferSourceTerminalKey>(
+                    *terminalKey)
+                    .leg
+              : std::get<::loom::mapping::SystemTransferSinkTerminalKey>(
+                    *terminalKey)
+                    .leg;
       if (leg.obligation != *key)
         return invalid("transfer-terminal key belongs to another obligation");
       auto terminalBytes =

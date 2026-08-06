@@ -465,7 +465,8 @@ projectSystemServiceDomains(
       if (!sources)
         return sources.takeError();
       domain.transferTerminals.push_back(
-          {SystemTransferSourceTerminalKey{leg}, std::move(*sources)});
+          {::loom::mapping::SystemTransferSourceTerminalKey{leg},
+           std::move(*sources)});
 
       const std::size_t sinkCount =
           members[memberIndex].kind == ServiceKind::MessageTransfer
@@ -478,7 +479,7 @@ projectSystemServiceDomains(
         if (!sinks)
           return sinks.takeError();
         domain.transferTerminals.push_back(
-            {SystemTransferSinkTerminalKey{
+            {::loom::mapping::SystemTransferSinkTerminalKey{
                  leg, static_cast<::dataflow::StructuralOrdinal>(sink)},
              std::move(*sinks)});
       }

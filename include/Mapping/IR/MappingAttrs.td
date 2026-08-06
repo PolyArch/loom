@@ -42,6 +42,21 @@ def Mapping_RootThreadLaunchRefAttr
           "RootThreadLaunchRef", "root_thread_launch_ref",
           "Dataflow-owned root thread launch reference">;
 
+def Mapping_SystemServiceObligationKeyAttr
+    : Mapping_CanonicalBytesAttr<
+          "SystemServiceObligationKey", "system_service_obligation_key",
+          "Mapping-owned System service-obligation key">;
+
+def Mapping_CanonicalServiceLegKeyAttr
+    : Mapping_CanonicalBytesAttr<
+          "CanonicalServiceLegKey", "canonical_service_leg_key",
+          "Mapping-owned canonical System service-leg key">;
+
+def Mapping_SystemTransferTerminalKeyAttr
+    : Mapping_CanonicalBytesAttr<
+          "SystemTransferTerminalKey", "system_transfer_terminal_key",
+          "Mapping-owned System service transfer-terminal key">;
+
 def Mapping_SystemPresburgerCellAttr
     : Mapping_Attr<"SystemPresburgerCell", "system_presburger_cell"> {
   let summary = "one convex canonical integer-set disjunct";
