@@ -362,6 +362,11 @@ making Mapping own a tuple layout or one route per role. Each value still obeys
 the no-split rule independently, so taking the maximum cannot legalize a path
 narrower than any value in the leg.
 
+Deferring carrier-width legality entirely to an EDA or interconnect backend
+would let Mapping accept an unrealizable route and discover the failure only
+after search. Route selection must therefore prove structural representability
+while protocol realization remains backend-owned.
+
 ## Why Placement And Routing Are Coupled
 
 Greedy placement followed by one routing pass cannot escape congestion,
