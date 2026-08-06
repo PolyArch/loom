@@ -260,6 +260,68 @@ def Mapping_ResourceUseOp
   let hasVerifier = 1;
 }
 
+def Mapping_SystemOp
+    : Mapping_Op<"system", [IsolatedFromAbove, SingleBlock, NoTerminator]> {
+  let summary = "complete loom.mapping 2.0 SystemMapping root";
+  let arguments = (ins Mapping_ArtifactIdentityAttr:$dataflow,
+      Mapping_ArtifactIdentityAttr:$fabric,
+      ArrayAttr:$spatial_mapping_imports,
+      ArrayAttr:$root_thread_launches);
+  let regions = (region SizedRegion<1>:$body);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Mapping_ThreadExecutionBindingOp
+    : Mapping_Op<"thread_execution_binding",
+                 [HasParent<"SystemOp">, SingleBlock, NoTerminator]> {
+  let summary = "one root-thread execution binding relation";
+  let arguments = (ins Mapping_RootThreadLaunchRefAttr:$key,
+      Mapping_SystemBindingRelationKindAttr:$relation_kind,
+      OptionalAttr<Mapping_FabricAccCoreOccurrenceRefAttr>:$default_target);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{`key` `(` $key `)` `relation` $relation_kind
+                         (`default` `(` $default_target^ `)`)?
+                         $body attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_ThreadPresburgerClauseOp
+    : Mapping_Op<"thread_presburger_clause",
+                 [HasParent<"ThreadExecutionBindingOp">]> {
+  let summary = "one target and canonical integer-set union";
+  let arguments = (ins ArrayAttr:$cells,
+      Mapping_FabricAccCoreOccurrenceRefAttr:$target);
+  let assemblyFormat = [{`cells` `(` $cells `)` `target` `(` $target `)`
+                         attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_GraphExecutionBindingOp
+    : Mapping_Op<"graph_execution_binding",
+                 [HasParent<"SystemOp">, SingleBlock, NoTerminator]> {
+  let summary = "one rooted graph-launch execution binding relation";
+  let arguments = (ins Mapping_RootedGraphLaunchRefAttr:$key,
+      Mapping_SystemBindingRelationKindAttr:$relation_kind,
+      OptionalAttr<Mapping_SpatialMappingImportRefAttr>:$default_target);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{`key` `(` $key `)` `relation` $relation_kind
+                         (`default` `(` $default_target^ `)`)?
+                         $body attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_GraphPresburgerClauseOp
+    : Mapping_Op<"graph_presburger_clause",
+                 [HasParent<"GraphExecutionBindingOp">]> {
+  let summary = "one SpatialMapping target and canonical integer-set union";
+  let arguments = (ins ArrayAttr:$cells,
+      Mapping_SpatialMappingImportRefAttr:$target);
+  let assemblyFormat = [{`cells` `(` $cells `)` `target` `(` $target `)`
+                         attr-dict}];
+  let hasVerifier = 1;
+}
+
 def Mapping_ConstraintsSpatialOp
     : Mapping_Op<"constraints.spatial", [IsolatedFromAbove, SingleBlock,
                                          NoTerminator]> {

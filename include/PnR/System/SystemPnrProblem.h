@@ -57,7 +57,7 @@ struct FrozenSystemSpatialTargetClass final {
 
 struct FrozenSystemThreadExecutionDecision final {
   ::dataflow::RootThreadLaunchRef root;
-  SystemPresburgerCell cell;
+  ::loom::mapping::SystemPresburgerCell cell;
   PnrIndex choiceOffset = 0;
   PnrIndex choiceCount = 0;
   PnrIndex relationDecision = 0;
@@ -65,7 +65,7 @@ struct FrozenSystemThreadExecutionDecision final {
 
 struct FrozenSystemGraphExecutionDecision final {
   ::dataflow::RootedGraphLaunchRef launch;
-  SystemPresburgerCell cell;
+  ::loom::mapping::SystemPresburgerCell cell;
   PnrIndex choiceOffset = 0;
   PnrIndex choiceCount = 0;
   PnrIndex relationDecision = 0;

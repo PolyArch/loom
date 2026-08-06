@@ -17,11 +17,19 @@ struct CanonicalSpatialMappingAssembly final {
   CanonicalSemanticBytes bytes;
 };
 
+struct CanonicalSystemMappingAssembly final {
+  mlir::OwningOpRef<mlir::Operation *> root;
+  CanonicalSemanticBytes bytes;
+};
+
 llvm::Expected<CanonicalTechMappingAssembly>
 prepareCanonicalTechMappingAssembly(::mapping::TechOp root);
 
 llvm::Expected<CanonicalSpatialMappingAssembly>
 prepareCanonicalSpatialMappingAssembly(::mapping::SpatialOp root);
+
+llvm::Expected<CanonicalSystemMappingAssembly>
+prepareCanonicalSystemMappingAssembly(::mapping::SystemOp root);
 
 } // namespace loom::mapping::detail
 

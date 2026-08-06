@@ -6,6 +6,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "Mapping/Artifact/SystemPresburger.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -67,27 +68,12 @@ llvm::Error validateSystemPnrSearchDomainDigest(
     llvm::ArrayRef<std::uint8_t> canonicalViewBytes,
     const SystemPnrSearchDomainDigest &digest);
 
-struct SystemPresburgerCell final {
-  std::uint32_t dimensionCount = 0;
-  std::uint32_t symbolCount = 0;
-  std::vector<std::vector<std::int64_t>> equalities;
-  std::vector<std::vector<std::int64_t>> inequalities;
-
-  friend bool operator==(const SystemPresburgerCell &lhs,
-                         const SystemPresburgerCell &rhs) {
-    return lhs.dimensionCount == rhs.dimensionCount &&
-           lhs.symbolCount == rhs.symbolCount &&
-           lhs.equalities == rhs.equalities &&
-           lhs.inequalities == rhs.inequalities;
-  }
-};
-
 using SystemSearchBindingKey = std::variant<::dataflow::RootThreadLaunchRef,
                                             ::dataflow::RootedGraphLaunchRef>;
 
 struct SystemPresburgerBindingPartition final {
   SystemSearchBindingKey key;
-  std::vector<SystemPresburgerCell> cells;
+  std::vector<::loom::mapping::SystemPresburgerCell> cells;
 };
 
 struct SystemBindingPartitionPlan final {
@@ -105,7 +91,7 @@ struct SystemSearchAtomDomains final {
 };
 
 struct SystemSearchAtom final {
-  SystemPresburgerCell cell;
+  ::loom::mapping::SystemPresburgerCell cell;
   SystemSearchAtomDomains domains;
 };
 

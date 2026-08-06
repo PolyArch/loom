@@ -381,7 +381,7 @@ int main() {
   requireFailureContains(
       loom::pnr::projectSystemPnrSearchDomain(dataflowView, system, constraints,
                                               integerEmpty, {}, store),
-      "Presburger partition contains an empty cell",
+      "Presburger cell is integer-empty",
       "integer-empty Presburger cell was accepted");
 
   auto overlap = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(

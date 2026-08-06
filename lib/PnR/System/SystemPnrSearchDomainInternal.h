@@ -13,7 +13,7 @@ namespace loom::pnr::detail {
 
 struct CanonicalSystemPartitionBinding final {
   SystemSearchBindingKey key;
-  std::vector<SystemPresburgerCell> cells;
+  std::vector<::loom::mapping::SystemPresburgerCell> cells;
 };
 
 llvm::Expected<std::vector<std::uint8_t>>
@@ -31,9 +31,9 @@ canonicalizeAndValidateSystemPartition(
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
     const SystemBindingPartitionPlan &plan);
 
-llvm::Expected<bool>
-systemPresburgerCellsIntersect(const SystemPresburgerCell &lhs,
-                               const SystemPresburgerCell &rhs);
+llvm::Expected<bool> systemPresburgerCellsIntersect(
+    const ::loom::mapping::SystemPresburgerCell &lhs,
+    const ::loom::mapping::SystemPresburgerCell &rhs);
 
 } // namespace loom::pnr::detail
 

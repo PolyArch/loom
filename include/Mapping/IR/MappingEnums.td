@@ -15,6 +15,19 @@ def Mapping_PortDirection : I32EnumAttr<"PortDirection",
 def Mapping_PortDirectionAttr
     : EnumAttr<Mapping_Dialect, Mapping_PortDirection, "port_direction">;
 
+def Mapping_SystemBindingRelationKind : I32EnumAttr<
+    "SystemBindingRelationKind",
+    "closed System execution-binding relation shape", [
+  I32EnumAttrCase<"PresburgerPartition", 0, "presburger_partition">,
+  I32EnumAttrCase<"StableKeyLookup", 1, "stable_key_lookup">
+]> {
+  let cppNamespace = "::mapping";
+}
+
+def Mapping_SystemBindingRelationKindAttr
+    : EnumAttr<Mapping_Dialect, Mapping_SystemBindingRelationKind,
+               "system_binding_relation_kind">;
+
 def Mapping_SpatialConstraintProjection : I32EnumAttr<
     "SpatialConstraintProjection",
     "closed Spatial MappingConstraintSet projection catalog", [

@@ -27,6 +27,8 @@
 
 namespace loom::pnr {
 
+using ::loom::mapping::SystemPresburgerCell;
+
 namespace detail {
 struct SystemPnrSearchDomainViewBuilder final {
   static SystemPnrSearchDomainView

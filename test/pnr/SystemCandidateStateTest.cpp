@@ -1,5 +1,6 @@
 #include "PnR/System/SystemCandidateState.h"
 #include "ADG/Builtin.h"
+#include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -9,26 +10,32 @@
 #include "Fabric/IR/ResourceContract.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
+#include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialPnrGenerator.h"
+#include "PnR/System/SystemMappingMaterializer.h"
 #include "PnR/System/SystemPnrProblem.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OperationSupport.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <limits>
@@ -64,6 +71,70 @@ void requireFailureContains(llvm::Expected<T> value,
   const std::string actual = llvm::toString(value.takeError());
   require(llvm::StringRef(actual).contains(diagnostic),
           "adverse diagnostic changed: " + actual);
+}
+
+void requireVerificationFailureContains(mlir::Operation *operation,
+                                        llvm::StringRef expected) {
+  std::vector<std::string> diagnostics;
+  mlir::ScopedDiagnosticHandler capture(
+      operation->getContext(), [&](mlir::Diagnostic &diagnostic) {
+        diagnostics.push_back(diagnostic.str());
+        return mlir::success();
+      });
+  require(mlir::failed(mlir::verify(operation)),
+          "adverse SystemMapping operation unexpectedly verified");
+  require(llvm::any_of(diagnostics,
+                       [&](const std::string &diagnostic) {
+                         return llvm::StringRef(diagnostic).contains(expected);
+                       }),
+          "adverse SystemMapping diagnostic changed");
+}
+
+mlir::DenseI8ArrayAttr bytesAttr(mlir::MLIRContext *context,
+                                 llvm::ArrayRef<std::uint8_t> bytes) {
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  return mlir::DenseI8ArrayAttr::get(context, signedBytes);
+}
+
+::mapping::ArtifactRootReferenceAttr
+rootReferenceAttr(mlir::MLIRContext *context,
+                  const loom::ArtifactRootReference &reference) {
+  return ::mapping::ArtifactRootReferenceAttr::get(
+      context,
+      bytesAttr(context, loom::encodeArtifactRootReference(reference)));
+}
+
+loom::CanonicalSemanticBytes rawSystemBytes(::mapping::SystemOp root) {
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  root.print(stream, mlir::OpPrintingFlags().enableDebugInfo(false));
+  stream << '\n';
+  stream.flush();
+  return loom::CanonicalSemanticBytes(
+      std::vector<std::uint8_t>(text.begin(), text.end()));
+}
+
+::mapping::SystemPresburgerCellAttr
+withFirstCoordinateLowerBound(::mapping::SystemPresburgerCellAttr cell,
+                              std::int64_t lowerBound) {
+  require(cell.getDimensionCount() != 0,
+          "Presburger test cell has no logical coordinate");
+  llvm::SmallVector<mlir::Attribute> inequalities(
+      cell.getInequalities().begin(), cell.getInequalities().end());
+  std::vector<std::int64_t> row(
+      static_cast<std::size_t>(cell.getDimensionCount()) +
+          cell.getSymbolCount() + 1,
+      0);
+  row.front() = 1;
+  row.back() = -lowerBound;
+  inequalities.push_back(mlir::DenseI64ArrayAttr::get(cell.getContext(), row));
+  return ::mapping::SystemPresburgerCellAttr::get(
+      cell.getContext(), cell.getDimensionCount(), cell.getSymbolCount(),
+      cell.getEqualities(),
+      mlir::ArrayAttr::get(cell.getContext(), inequalities));
 }
 
 class TemporaryDirectory final {
@@ -370,6 +441,227 @@ int main() {
           "canonical System initializer is not deterministic");
   if (llvm::Error error = first.state->verify())
     fail(llvm::toString(std::move(error)));
+
+  auto firstDraft = take(
+      loom::pnr::materializeSystemExecutionBindings(*first.state, context));
+  auto secondDraft = take(
+      loom::pnr::materializeSystemExecutionBindings(*first.state, context));
+  auto firstBytes = take(loom::mapping::writeCanonicalSystemMappingAssembly(
+      mlir::cast<::mapping::SystemOp>(firstDraft.get())));
+  auto secondBytes = take(loom::mapping::writeCanonicalSystemMappingAssembly(
+      mlir::cast<::mapping::SystemOp>(secondDraft.get())));
+  require(firstBytes.bytes() == secondBytes.bytes(),
+          "System execution materialization is not deterministic");
+
+  mlir::OwningOpRef<mlir::Operation *> reordered(firstDraft->clone());
+  auto reorderedRoot = mlir::cast<::mapping::SystemOp>(reordered.get());
+  llvm::SmallVector<mlir::Attribute> reversedRoots(
+      reorderedRoot.getRootThreadLaunches().begin(),
+      reorderedRoot.getRootThreadLaunches().end());
+  std::reverse(reversedRoots.begin(), reversedRoots.end());
+  reorderedRoot.setRootThreadLaunchesAttr(
+      mlir::ArrayAttr::get(&context, reversedRoots));
+  auto reorderedBytes =
+      take(loom::mapping::writeCanonicalSystemMappingAssembly(reorderedRoot));
+  require(reorderedBytes.bytes() == firstBytes.bytes(),
+          "System root authoring order changed canonical bytes");
+  auto rawReorderedBytes = rawSystemBytes(reorderedRoot);
+  require(rawReorderedBytes.bytes() != firstBytes.bytes(),
+          "noncanonical System fixture accidentally matched canonical bytes");
+  requireFailureContains(loom::mapping::strictImportSystemExecutionBindings(
+                             rawReorderedBytes, dataflow, system, store),
+                         "payload is not canonical");
+
+  mlir::OwningOpRef<mlir::Operation *> missingThread(firstDraft->clone());
+  auto missingRoot = mlir::cast<::mapping::SystemOp>(missingThread.get());
+  auto missingBinding = *missingRoot.getBody()
+                             .front()
+                             .getOps<::mapping::ThreadExecutionBindingOp>()
+                             .begin();
+  missingBinding.erase();
+  requireVerificationFailureContains(missingRoot,
+                                     "exactly one ThreadExecutionBinding");
+
+  mlir::OwningOpRef<mlir::Operation *> defaultOnly(firstDraft->clone());
+  auto defaultRoot = mlir::cast<::mapping::SystemOp>(defaultOnly.get());
+  auto defaultBinding = *defaultRoot.getBody()
+                             .front()
+                             .getOps<::mapping::ThreadExecutionBindingOp>()
+                             .begin();
+  auto defaultClause = *defaultBinding.getBody()
+                            .front()
+                            .getOps<::mapping::ThreadPresburgerClauseOp>()
+                            .begin();
+  defaultBinding->setAttr("default_target", defaultClause.getTarget());
+  defaultClause.erase();
+  auto defaultBytes =
+      take(loom::mapping::writeCanonicalSystemMappingAssembly(defaultRoot));
+  auto defaultExecution =
+      take(loom::mapping::strictImportSystemExecutionBindings(
+          defaultBytes, dataflow, system, store));
+  require(defaultExecution.threadBindings().front().clauses.empty() &&
+              defaultExecution.threadBindings().front().defaultTarget,
+          "default-only whole-domain relation did not round trip");
+
+  mlir::OwningOpRef<mlir::Operation *> graphDefaultOnly(firstDraft->clone());
+  auto graphDefaultRoot =
+      mlir::cast<::mapping::SystemOp>(graphDefaultOnly.get());
+  auto graphDefaultBinding = *graphDefaultRoot.getBody()
+                                  .front()
+                                  .getOps<::mapping::GraphExecutionBindingOp>()
+                                  .begin();
+  auto graphDefaultClause = *graphDefaultBinding.getBody()
+                                 .front()
+                                 .getOps<::mapping::GraphPresburgerClauseOp>()
+                                 .begin();
+  graphDefaultBinding->setAttr("default_target",
+                               graphDefaultClause.getTarget());
+  graphDefaultClause.erase();
+  auto graphDefaultBytes = take(
+      loom::mapping::writeCanonicalSystemMappingAssembly(graphDefaultRoot));
+  auto graphDefaultExecution =
+      take(loom::mapping::strictImportSystemExecutionBindings(
+          graphDefaultBytes, dataflow, system, store));
+  require(graphDefaultExecution.graphBindings().front().clauses.empty() &&
+              graphDefaultExecution.graphBindings().front().defaultTarget,
+          "default-only graph relation did not round trip");
+
+  mlir::OwningOpRef<mlir::Operation *> emptyThread(firstDraft->clone());
+  auto emptyThreadBinding = *mlir::cast<::mapping::SystemOp>(emptyThread.get())
+                                 .getBody()
+                                 .front()
+                                 .getOps<::mapping::ThreadExecutionBindingOp>()
+                                 .begin();
+  emptyThreadBinding.getBody().front().front().erase();
+  requireVerificationFailureContains(emptyThreadBinding,
+                                     "requires a clause or default target");
+
+  mlir::OwningOpRef<mlir::Operation *> emptyGraph(firstDraft->clone());
+  auto emptyGraphBinding = *mlir::cast<::mapping::SystemOp>(emptyGraph.get())
+                                .getBody()
+                                .front()
+                                .getOps<::mapping::GraphExecutionBindingOp>()
+                                .begin();
+  emptyGraphBinding.getBody().front().front().erase();
+  requireVerificationFailureContains(emptyGraphBinding,
+                                     "requires a clause or default target");
+
+  mlir::OwningOpRef<mlir::Operation *> domainGap(firstDraft->clone());
+  auto gapBinding = *mlir::cast<::mapping::SystemOp>(domainGap.get())
+                         .getBody()
+                         .front()
+                         .getOps<::mapping::ThreadExecutionBindingOp>()
+                         .begin();
+  auto gapClause = *gapBinding.getBody()
+                        .front()
+                        .getOps<::mapping::ThreadPresburgerClauseOp>()
+                        .begin();
+  auto wholeCell =
+      mlir::cast<::mapping::SystemPresburgerCellAttr>(gapClause.getCells()[0]);
+  auto partialCell = withFirstCoordinateLowerBound(wholeCell, 1);
+  gapClause->setAttr("cells", mlir::ArrayAttr::get(&context, {partialCell}));
+  auto gapBytes = take(loom::mapping::writeCanonicalSystemMappingAssembly(
+      mlir::cast<::mapping::SystemOp>(domainGap.get())));
+  requireFailureContains(loom::mapping::strictImportSystemExecutionBindings(
+                             gapBytes, dataflow, system, store),
+                         "does not cover its Dataflow may-domain");
+
+  mlir::OwningOpRef<mlir::Operation *> domainOverlap(firstDraft->clone());
+  auto overlapBinding = *mlir::cast<::mapping::SystemOp>(domainOverlap.get())
+                             .getBody()
+                             .front()
+                             .getOps<::mapping::ThreadExecutionBindingOp>()
+                             .begin();
+  auto overlapClause = *overlapBinding.getBody()
+                            .front()
+                            .getOps<::mapping::ThreadPresburgerClauseOp>()
+                            .begin();
+  llvm::SmallVector<mlir::Attribute> overlappingCells = {wholeCell,
+                                                         partialCell};
+  overlapClause->setAttr("cells",
+                         mlir::ArrayAttr::get(&context, overlappingCells));
+  auto overlapBytes = take(loom::mapping::writeCanonicalSystemMappingAssembly(
+      mlir::cast<::mapping::SystemOp>(domainOverlap.get())));
+  requireFailureContains(loom::mapping::strictImportSystemExecutionBindings(
+                             overlapBytes, dataflow, system, store),
+                         "overlapping Presburger cells");
+
+  mlir::OwningOpRef<mlir::Operation *> redundantDefault(firstDraft->clone());
+  auto redundantBinding =
+      *mlir::cast<::mapping::SystemOp>(redundantDefault.get())
+           .getBody()
+           .front()
+           .getOps<::mapping::ThreadExecutionBindingOp>()
+           .begin();
+  auto redundantClause = *redundantBinding.getBody()
+                              .front()
+                              .getOps<::mapping::ThreadPresburgerClauseOp>()
+                              .begin();
+  redundantBinding->setAttr("default_target", redundantClause.getTarget());
+  requireFailureContains(loom::mapping::strictImportSystemExecutionBindings(
+                             rawSystemBytes(mlir::cast<::mapping::SystemOp>(
+                                 redundantDefault.get())),
+                             dataflow, system, store),
+                         "default is forbidden for an empty complement");
+
+  const auto selectedMapping = first.state->selectedSpatialMapping(0);
+  const auto unselectedMapping = spatialMappings.front() == selectedMapping
+                                     ? spatialMappings.back()
+                                     : spatialMappings.front();
+  mlir::OwningOpRef<mlir::Operation *> extraImport(firstDraft->clone());
+  auto extraImportRoot = mlir::cast<::mapping::SystemOp>(extraImport.get());
+  llvm::SmallVector<mlir::Attribute> imports(
+      extraImportRoot.getSpatialMappingImports().begin(),
+      extraImportRoot.getSpatialMappingImports().end());
+  imports.push_back(rootReferenceAttr(&context, unselectedMapping));
+  extraImportRoot.setSpatialMappingImportsAttr(
+      mlir::ArrayAttr::get(&context, imports));
+  auto extraImportBytes =
+      take(loom::mapping::writeCanonicalSystemMappingAssembly(extraImportRoot));
+  requireFailureContains(loom::mapping::strictImportSystemExecutionBindings(
+                             extraImportBytes, dataflow, system, store),
+                         "not the exact selected B_graph range");
+
+  mlir::OwningOpRef<mlir::Operation *> incompatible(firstDraft->clone());
+  auto incompatibleRoot = mlir::cast<::mapping::SystemOp>(incompatible.get());
+  llvm::SmallVector<mlir::Attribute> incompatibleImports(
+      incompatibleRoot.getSpatialMappingImports().begin(),
+      incompatibleRoot.getSpatialMappingImports().end());
+  incompatibleImports.push_back(rootReferenceAttr(&context, unselectedMapping));
+  incompatibleRoot.setSpatialMappingImportsAttr(
+      mlir::ArrayAttr::get(&context, incompatibleImports));
+  auto incompatibleBinding = *incompatibleRoot.getBody()
+                                  .front()
+                                  .getOps<::mapping::GraphExecutionBindingOp>()
+                                  .begin();
+  auto incompatibleClause = *incompatibleBinding.getBody()
+                                 .front()
+                                 .getOps<::mapping::GraphPresburgerClauseOp>()
+                                 .begin();
+  incompatibleClause->setAttr(
+      "target", ::mapping::SpatialMappingImportRefAttr::get(&context, 1));
+  auto incompatibleBytes = take(
+      loom::mapping::writeCanonicalSystemMappingAssembly(incompatibleRoot));
+  requireFailureContains(loom::mapping::strictImportSystemExecutionBindings(
+                             incompatibleBytes, dataflow, system, store),
+                         "graph and thread targets are incompatible");
+
+  auto execution = take(loom::mapping::strictImportSystemExecutionBindings(
+      firstBytes, dataflow, system, store));
+  require(execution.rootThreadLaunches().size() == 2 &&
+              execution.threadBindings().size() == 2 &&
+              execution.graphBindings().size() == 4,
+          "strict execution import lost factorized binding keys");
+  require(execution.spatialMappingImports().size() == 1,
+          "System import table is not the exact selected B_graph range");
+  for (const auto &binding : execution.threadBindings())
+    require(binding.clauses.size() == 1 && !binding.defaultTarget,
+            "whole-domain thread binding was not canonicalized");
+  for (const auto &binding : execution.graphBindings())
+    require(binding.clauses.size() == 1 && !binding.defaultTarget &&
+                binding.clauses.front().target ==
+                    execution.spatialMappingImports().front(),
+            "whole-domain graph binding did not resolve its exact import");
   for (loom::pnr::PnrIndex decision = 0;
        decision != problem->graphDecisions().size(); ++decision) {
     const auto graphDomain = problem->graphChoiceCatalogOrdinals(decision);

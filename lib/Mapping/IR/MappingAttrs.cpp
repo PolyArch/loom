@@ -5,7 +5,6 @@
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
-
 #include "mlir/IR/BuiltinTypes.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -108,6 +107,37 @@ LogicalResult mapping::RootThreadLaunchRefAttr::verify(
   return verifyDataflowRef<::dataflow::RootThreadLaunchRef>(emitError, record);
 }
 
+LogicalResult mapping::SystemPresburgerCellAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, std::uint32_t dimensionCount,
+    std::uint32_t symbolCount, ArrayAttr equalities, ArrayAttr inequalities) {
+  const std::uint64_t width =
+      static_cast<std::uint64_t>(dimensionCount) + symbolCount + 1;
+  if (width > std::numeric_limits<std::size_t>::max()) {
+    emitError() << "Presburger row width exceeds native size";
+    return failure();
+  }
+  const auto verifyRows = [&](ArrayAttr rows,
+                              llvm::StringRef kind) -> LogicalResult {
+    for (Attribute attribute : rows) {
+      auto row = dyn_cast<DenseI64ArrayAttr>(attribute);
+      if (!row) {
+        emitError() << kind << " rows must be dense i64 arrays";
+        return failure();
+      }
+      if (static_cast<std::uint64_t>(row.size()) != width) {
+        emitError() << kind << " row has width " << row.size()
+                    << " but expected " << width;
+        return failure();
+      }
+    }
+    return success();
+  };
+  if (failed(verifyRows(equalities, "equality")) ||
+      failed(verifyRows(inequalities, "inequality")))
+    return failure();
+  return success();
+}
+
 LogicalResult mapping::ArtifactRootReferenceAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
   std::vector<std::uint8_t> bytes = unsignedBytes(record);
@@ -177,6 +207,8 @@ LogicalResult mapping::FabricFuTemplatePortRefAttr::verify(
   }
 
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricFuOccurrenceRef, FabricFuOccurrenceRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricAccCoreOccurrenceRef,
+                                  AccCoreOccurrenceRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricPeOccurrenceRef, FabricPeOccurrenceRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(InstructionContextRef, InstructionContextRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricUsePatternRef, FabricUsePatternRef)

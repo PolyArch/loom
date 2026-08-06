@@ -11,7 +11,9 @@ add_library(LoomMappingArtifact
   SpatialMappingMemoryImport.cpp
   SystemMappingConstraintSet.cpp
   SystemMappingConstraintSetBuilder.cpp
+  SystemMappingArtifact.cpp
   SystemMappingIdentity.cpp
+  SystemPresburger.cpp
   TechMappingCanonicalKey.cpp
   TechMappingComputeVerification.cpp
   TechMappingArtifact.cpp
@@ -32,5 +34,6 @@ target_link_libraries(LoomMappingArtifact PUBLIC
 mlir_target_link_libraries(LoomMappingArtifact PUBLIC
   MLIRIR
   MLIRParser
+  MLIRPresburger
   MLIRSupport
 )

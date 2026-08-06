@@ -1,4 +1,5 @@
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingArtifact.h"
 
 #include "MappingAssemblyInternal.h"
 #include "TechMappingCanonicalKeyInternal.h"
@@ -18,8 +19,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
 using namespace mlir;
@@ -483,6 +486,223 @@ void canonicalizeSpatial(::mapping::SpatialOp root) {
     use->moveBefore(&body, body.end());
 }
 
+llvm::Expected<SystemPresburgerCell>
+decodeSystemCell(::mapping::SystemPresburgerCellAttr attribute) {
+  SystemPresburgerCell cell;
+  cell.dimensionCount = attribute.getDimensionCount();
+  cell.symbolCount = attribute.getSymbolCount();
+  const auto appendRows = [](ArrayAttr attributes,
+                             std::vector<std::vector<std::int64_t>> &rows) {
+    rows.reserve(attributes.size());
+    for (Attribute attribute : attributes) {
+      auto values = cast<DenseI64ArrayAttr>(attribute).asArrayRef();
+      rows.emplace_back(values.begin(), values.end());
+    }
+  };
+  appendRows(attribute.getEqualities(), cell.equalities);
+  appendRows(attribute.getInequalities(), cell.inequalities);
+  return canonicalizeSystemPresburgerCell(cell);
+}
+
+::mapping::SystemPresburgerCellAttr
+systemCellAttr(MLIRContext *context, const SystemPresburgerCell &cell) {
+  SmallVector<Attribute> equalities;
+  SmallVector<Attribute> inequalities;
+  for (const auto &row : cell.equalities)
+    equalities.push_back(DenseI64ArrayAttr::get(context, row));
+  for (const auto &row : cell.inequalities)
+    inequalities.push_back(DenseI64ArrayAttr::get(context, row));
+  return ::mapping::SystemPresburgerCellAttr::get(
+      context, cell.dimensionCount, cell.symbolCount,
+      ArrayAttr::get(context, equalities),
+      ArrayAttr::get(context, inequalities));
+}
+
+std::string systemCellKey(::mapping::SystemPresburgerCellAttr cell) {
+  std::string result;
+  appendU32(result, cell.getDimensionCount());
+  appendU32(result, cell.getSymbolCount());
+  const auto appendRows = [&](ArrayAttr rows) {
+    appendU64(result, rows.size());
+    for (Attribute attribute : rows) {
+      auto row = cast<DenseI64ArrayAttr>(attribute).asArrayRef();
+      appendU64(result, row.size());
+      for (std::int64_t value : row)
+        appendU64(result, static_cast<std::uint64_t>(value));
+    }
+  };
+  appendRows(cell.getEqualities());
+  appendRows(cell.getInequalities());
+  return result;
+}
+
+template <typename BindingOp, typename ClauseOp>
+llvm::Error canonicalizeSystemBinding(BindingOp binding) {
+  struct Group final {
+    Attribute target;
+    SmallVector<::mapping::SystemPresburgerCellAttr> cells;
+  };
+  std::map<std::string, Group> groups;
+  const auto targetKey = [](Attribute target) {
+    std::string key;
+    if constexpr (std::is_same_v<ClauseOp, ::mapping::ThreadPresburgerClauseOp>)
+      key = recordKey(
+          cast<::mapping::FabricAccCoreOccurrenceRefAttr>(target).getRecord());
+    else
+      appendU64(
+          key,
+          cast<::mapping::SpatialMappingImportRefAttr>(target).getOrdinal());
+    return key;
+  };
+  for (auto clause : binding.getBody().front().template getOps<ClauseOp>()) {
+    Attribute target = clause.getTarget();
+    Group &group =
+        groups.try_emplace(targetKey(target), Group{target, {}}).first->second;
+    for (Attribute rawCell : clause.getCells()) {
+      auto canonical =
+          decodeSystemCell(cast<::mapping::SystemPresburgerCellAttr>(rawCell));
+      if (!canonical)
+        return canonical.takeError();
+      group.cells.push_back(systemCellAttr(binding.getContext(), *canonical));
+    }
+  }
+  if (binding.getDefaultTarget())
+    groups.erase(targetKey(*binding.getDefaultTarget()));
+
+  struct OrderedGroup final {
+    std::string key;
+    Group group;
+  };
+  std::vector<OrderedGroup> ordered;
+  ordered.reserve(groups.size());
+  for (auto &[targetKey, group] : groups) {
+    llvm::sort(group.cells, [](auto lhs, auto rhs) {
+      return systemCellKey(lhs) < systemCellKey(rhs);
+    });
+    group.cells.erase(std::unique(group.cells.begin(), group.cells.end()),
+                      group.cells.end());
+    std::string key;
+    for (auto cell : group.cells)
+      appendFramed(key, systemCellKey(cell));
+    appendFramed(key, targetKey);
+    ordered.push_back({std::move(key), std::move(group)});
+  }
+  llvm::sort(ordered, [](const auto &lhs, const auto &rhs) {
+    return lhs.key < rhs.key;
+  });
+
+  Block &body = binding.getBody().front();
+  while (!body.empty())
+    body.front().erase();
+  OpBuilder builder(binding.getContext());
+  builder.setInsertionPointToEnd(&body);
+  for (const OrderedGroup &entry : ordered) {
+    OperationState state(binding.getLoc(), ClauseOp::getOperationName());
+    SmallVector<Attribute> cells(entry.group.cells.begin(),
+                                 entry.group.cells.end());
+    state.addAttribute("cells", ArrayAttr::get(binding.getContext(), cells));
+    state.addAttribute("target", entry.group.target);
+    builder.create(state);
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error canonicalizeSystem(::mapping::SystemOp root) {
+  SmallVector<Attribute> roots(root.getRootThreadLaunches().begin(),
+                               root.getRootThreadLaunches().end());
+  llvm::sort(roots, [](Attribute lhs, Attribute rhs) {
+    return recordKey(
+               cast<::mapping::RootThreadLaunchRefAttr>(lhs).getRecord()) <
+           recordKey(cast<::mapping::RootThreadLaunchRefAttr>(rhs).getRecord());
+  });
+  root.setRootThreadLaunchesAttr(ArrayAttr::get(root.getContext(), roots));
+
+  struct Import final {
+    std::size_t oldOrdinal = 0;
+    std::string key;
+    Attribute value;
+  };
+  std::vector<Import> imports;
+  for (auto [ordinal, attribute] :
+       llvm::enumerate(root.getSpatialMappingImports()))
+    imports.push_back(
+        {ordinal,
+         recordKey(
+             cast<::mapping::ArtifactRootReferenceAttr>(attribute).getRecord()),
+         attribute});
+  llvm::sort(imports, [](const Import &lhs, const Import &rhs) {
+    return lhs.key < rhs.key;
+  });
+  std::vector<std::uint64_t> importRenumbering(imports.size());
+  SmallVector<Attribute> orderedImports;
+  orderedImports.reserve(imports.size());
+  for (auto [ordinal, entry] : llvm::enumerate(imports)) {
+    importRenumbering[entry.oldOrdinal] = ordinal;
+    orderedImports.push_back(entry.value);
+  }
+  root.setSpatialMappingImportsAttr(
+      ArrayAttr::get(root.getContext(), orderedImports));
+
+  Block &body = root.getBody().front();
+  std::vector<Operation *> bindings;
+  for (Operation &operation : body) {
+    if (auto graph = dyn_cast<::mapping::GraphExecutionBindingOp>(operation)) {
+      if (graph.getDefaultTarget())
+        graph->setAttr(
+            "default_target",
+            ::mapping::SpatialMappingImportRefAttr::get(
+                root.getContext(),
+                importRenumbering[graph.getDefaultTarget()->getOrdinal()]));
+      for (auto clause :
+           graph.getBody().front().getOps<::mapping::GraphPresburgerClauseOp>())
+        clause->setAttr(
+            "target", ::mapping::SpatialMappingImportRefAttr::get(
+                          root.getContext(),
+                          importRenumbering[clause.getTarget().getOrdinal()]));
+      if (llvm::Error error =
+              canonicalizeSystemBinding<::mapping::GraphExecutionBindingOp,
+                                        ::mapping::GraphPresburgerClauseOp>(
+                  graph))
+        return error;
+    } else if (auto thread =
+                   dyn_cast<::mapping::ThreadExecutionBindingOp>(operation)) {
+      if (llvm::Error error =
+              canonicalizeSystemBinding<::mapping::ThreadExecutionBindingOp,
+                                        ::mapping::ThreadPresburgerClauseOp>(
+                  thread))
+        return error;
+    }
+    bindings.push_back(&operation);
+  }
+  llvm::sort(bindings, [](Operation *lhs, Operation *rhs) {
+    std::string left;
+    std::string right;
+    if (auto thread = dyn_cast<::mapping::ThreadExecutionBindingOp>(lhs)) {
+      appendU32(left, 0);
+      appendFramed(left, recordKey(thread.getKey().getRecord()));
+    } else {
+      appendU32(left, 1);
+      appendFramed(left, recordKey(cast<::mapping::GraphExecutionBindingOp>(lhs)
+                                       .getKey()
+                                       .getRecord()));
+    }
+    if (auto thread = dyn_cast<::mapping::ThreadExecutionBindingOp>(rhs)) {
+      appendU32(right, 0);
+      appendFramed(right, recordKey(thread.getKey().getRecord()));
+    } else {
+      appendU32(right, 1);
+      appendFramed(right,
+                   recordKey(cast<::mapping::GraphExecutionBindingOp>(rhs)
+                                 .getKey()
+                                 .getRecord()));
+    }
+    return left < right;
+  });
+  for (Operation *binding : bindings)
+    binding->moveBefore(&body, body.end());
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Expected<detail::CanonicalTechMappingAssembly>
@@ -538,6 +758,37 @@ detail::prepareCanonicalSpatialMappingAssembly(::mapping::SpatialOp root) {
 llvm::Expected<CanonicalSemanticBytes>
 writeCanonicalSpatialMappingAssembly(::mapping::SpatialOp root) {
   auto prepared = detail::prepareCanonicalSpatialMappingAssembly(root);
+  if (!prepared)
+    return prepared.takeError();
+  return std::move(prepared->bytes);
+}
+
+llvm::Expected<detail::CanonicalSystemMappingAssembly>
+detail::prepareCanonicalSystemMappingAssembly(::mapping::SystemOp root) {
+  OwningOpRef<Operation *> clone(root->clone());
+  auto canonical = cast<::mapping::SystemOp>(clone.get());
+  if (failed(verify(canonical)))
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "system mapping is structurally invalid");
+  if (llvm::Error error = canonicalizeSystem(canonical))
+    return std::move(error);
+  if (failed(verify(canonical)))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "canonical system mapping is structurally invalid");
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  canonical.print(stream, OpPrintingFlags().enableDebugInfo(false));
+  stream << '\n';
+  stream.flush();
+  return detail::CanonicalSystemMappingAssembly{
+      std::move(clone), CanonicalSemanticBytes(std::vector<std::uint8_t>(
+                            text.begin(), text.end()))};
+}
+
+llvm::Expected<CanonicalSemanticBytes>
+writeCanonicalSystemMappingAssembly(::mapping::SystemOp root) {
+  auto prepared = detail::prepareCanonicalSystemMappingAssembly(root);
   if (!prepared)
     return prepared.takeError();
   return std::move(prepared->bytes);

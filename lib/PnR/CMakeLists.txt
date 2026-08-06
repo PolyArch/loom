@@ -49,6 +49,7 @@ add_mlir_library(LoomPnR
   System/SystemPresburgerPartition.cpp
   System/SystemPnrProblem.cpp
   System/SystemCandidateState.cpp
+  System/SystemMappingMaterializer.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR

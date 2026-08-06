@@ -42,6 +42,24 @@ def Mapping_RootThreadLaunchRefAttr
           "RootThreadLaunchRef", "root_thread_launch_ref",
           "Dataflow-owned root thread launch reference">;
 
+def Mapping_SystemPresburgerCellAttr
+    : Mapping_Attr<"SystemPresburgerCell", "system_presburger_cell"> {
+  let summary = "one convex canonical integer-set disjunct";
+  let parameters = (ins "uint32_t":$dimensionCount,
+      "uint32_t":$symbolCount, "::mlir::ArrayAttr":$equalities,
+      "::mlir::ArrayAttr":$inequalities);
+  let assemblyFormat = "`<` $dimensionCount `,` $symbolCount `,` "
+                       "$equalities `,` $inequalities `>`";
+  let genVerifyDecl = 1;
+}
+
+def Mapping_SpatialMappingImportRefAttr
+    : Mapping_Attr<"SpatialMappingImportRef", "spatial_mapping_import_ref"> {
+  let summary = "SystemMapping-local exact SpatialMapping import ordinal";
+  let parameters = (ins "uint64_t":$ordinal);
+  let assemblyFormat = "`<` $ordinal `>`";
+}
+
 def Mapping_ArtifactRootReferenceAttr
     : Mapping_CanonicalBytesAttr<
           "ArtifactRootReference", "artifact_root_reference",
@@ -110,6 +128,11 @@ def Mapping_FabricFuOccurrenceRefAttr
     : Mapping_CanonicalBytesAttr<"FabricFuOccurrenceRef",
                                  "fabric_fu_occurrence_ref",
                                  "Fabric-owned FU occurrence reference">;
+
+def Mapping_FabricAccCoreOccurrenceRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricAccCoreOccurrenceRef",
+                                 "fabric_acc_core_occurrence_ref",
+                                 "Fabric-owned AccCore occurrence reference">;
 
 def Mapping_FabricPeOccurrenceRefAttr
     : Mapping_CanonicalBytesAttr<"FabricPeOccurrenceRef",

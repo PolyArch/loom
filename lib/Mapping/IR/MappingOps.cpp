@@ -860,6 +860,179 @@ LogicalResult mapping::ResourceUseOp::verify() {
   return success();
 }
 
+ParseResult mapping::SystemOp::parse(OpAsmParser &parser,
+                                     OperationState &result) {
+  std::uint32_t major = 0;
+  std::uint32_t minor = 0;
+  if (parser.parseKeyword("version") || parser.parseLess() ||
+      parser.parseInteger(major) || parser.parseComma() ||
+      parser.parseInteger(minor) || parser.parseGreater())
+    return failure();
+  if (major != 2 || minor != 0)
+    return parser.emitError(parser.getCurrentLocation(),
+                            "mapping.system requires schema version 2.0");
+
+  mapping::ArtifactIdentityAttr dataflow;
+  mapping::ArtifactIdentityAttr fabric;
+  ArrayAttr imports;
+  ArrayAttr roots;
+  if (parser.parseKeyword("dataflow") || parser.parseLParen() ||
+      parser.parseAttribute(dataflow, "dataflow", result.attributes) ||
+      parser.parseRParen() || parser.parseKeyword("fabric") ||
+      parser.parseLParen() ||
+      parser.parseAttribute(fabric, "fabric", result.attributes) ||
+      parser.parseRParen() || parser.parseKeyword("spatial_mapping_imports") ||
+      parser.parseLParen() ||
+      parser.parseAttribute(imports, "spatial_mapping_imports",
+                            result.attributes) ||
+      parser.parseRParen() || parser.parseKeyword("root_thread_launches") ||
+      parser.parseLParen() ||
+      parser.parseAttribute(roots, "root_thread_launches", result.attributes) ||
+      parser.parseRParen())
+    return failure();
+  Region *body = result.addRegion();
+  if (parser.parseRegion(*body, {}, /*enableNameShadowing=*/false) ||
+      parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  return success();
+}
+
+void mapping::SystemOp::print(OpAsmPrinter &printer) {
+  printer << " version<2, 0> dataflow(" << getDataflow() << ") fabric("
+          << getFabric() << ") spatial_mapping_imports("
+          << getSpatialMappingImports() << ") root_thread_launches("
+          << getRootThreadLaunches() << ") ";
+  printer.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                      /*printBlockTerminators=*/false);
+  printer.printOptionalAttrDict((*this)->getAttrs(), {"dataflow", "fabric",
+                                                      "spatial_mapping_imports",
+                                                      "root_thread_launches"});
+}
+
+LogicalResult mapping::SystemOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"dataflow", "fabric",
+                                             "spatial_mapping_imports",
+                                             "root_thread_launches"})))
+    return failure();
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()))
+    return emitOpError("must contain exactly one declarative block");
+  if (getBody().front().getNumArguments() != 0)
+    return emitOpError("declarative block must not have arguments");
+  if (getRootThreadLaunches().empty())
+    return emitOpError("requires a non-empty root thread launch set");
+
+  llvm::DenseSet<Attribute> imports;
+  for (Attribute attribute : getSpatialMappingImports()) {
+    if (!isa<mapping::ArtifactRootReferenceAttr>(attribute))
+      return emitOpError(
+          "spatial_mapping_imports contains a non-root reference");
+    if (!imports.insert(attribute).second)
+      return emitOpError("spatial_mapping_imports contains a duplicate");
+  }
+  llvm::DenseSet<Attribute> roots;
+  for (Attribute attribute : getRootThreadLaunches()) {
+    if (!isa<mapping::RootThreadLaunchRefAttr>(attribute))
+      return emitOpError(
+          "root_thread_launches contains a non-root-thread reference");
+    if (!roots.insert(attribute).second)
+      return emitOpError("root_thread_launches contains a duplicate");
+  }
+
+  llvm::DenseSet<Attribute> threadKeys;
+  llvm::DenseSet<Attribute> graphKeys;
+  for (Operation &child : getBody().front()) {
+    if (auto binding = dyn_cast<mapping::ThreadExecutionBindingOp>(child)) {
+      if (!roots.contains(binding.getKey()))
+        return binding.emitOpError("has a key outside root_thread_launches");
+      if (!threadKeys.insert(binding.getKey()).second)
+        return binding.emitOpError("duplicates a ThreadExecutionBinding key");
+      continue;
+    }
+    if (auto binding = dyn_cast<mapping::GraphExecutionBindingOp>(child)) {
+      if (!graphKeys.insert(binding.getKey()).second)
+        return binding.emitOpError("duplicates a GraphExecutionBinding key");
+      continue;
+    }
+    return child.emitOpError(
+        "is not an implemented closed SystemMapping record kind");
+  }
+  if (threadKeys.size() != roots.size())
+    return emitOpError(
+        "requires exactly one ThreadExecutionBinding for every root launch");
+  return success();
+}
+
+LogicalResult mapping::ThreadExecutionBindingOp::verify() {
+  if (failed(rejectUnknownAttributes(
+          *this, {"key", "relation_kind", "default_target"})))
+    return failure();
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()) ||
+      getBody().front().getNumArguments() != 0)
+    return emitOpError("must contain one argument-free declarative block");
+  if (getRelationKind() !=
+      mapping::SystemBindingRelationKind::PresburgerPartition)
+    return emitOpError(
+        "StableKeyLookup is unavailable without a Dataflow stable-key owner");
+  if (getBody().front().empty() && !getDefaultTarget())
+    return emitOpError(
+        "Presburger relation requires a clause or default target");
+  for (Operation &child : getBody().front())
+    if (!isa<mapping::ThreadPresburgerClauseOp>(child))
+      return child.emitOpError("is not a thread Presburger clause");
+  return success();
+}
+
+LogicalResult mapping::ThreadPresburgerClauseOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"cells", "target"})))
+    return failure();
+  if (getCells().empty())
+    return emitOpError("requires at least one Presburger cell");
+  for (Attribute cell : getCells())
+    if (!isa<mapping::SystemPresburgerCellAttr>(cell))
+      return emitOpError("cells contains a non-Presburger value");
+  return success();
+}
+
+LogicalResult mapping::GraphExecutionBindingOp::verify() {
+  if (failed(rejectUnknownAttributes(
+          *this, {"key", "relation_kind", "default_target"})))
+    return failure();
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()) ||
+      getBody().front().getNumArguments() != 0)
+    return emitOpError("must contain one argument-free declarative block");
+  if (getRelationKind() !=
+      mapping::SystemBindingRelationKind::PresburgerPartition)
+    return emitOpError(
+        "StableKeyLookup is unavailable without a Dataflow stable-key owner");
+  if (getBody().front().empty() && !getDefaultTarget())
+    return emitOpError(
+        "Presburger relation requires a clause or default target");
+  const auto importCount = cast<mapping::SystemOp>((*this)->getParentOp())
+                               .getSpatialMappingImports()
+                               .size();
+  if (getDefaultTarget() && getDefaultTarget()->getOrdinal() >= importCount)
+    return emitOpError("default target names an absent SpatialMapping import");
+  for (Operation &child : getBody().front()) {
+    auto clause = dyn_cast<mapping::GraphPresburgerClauseOp>(child);
+    if (!clause)
+      return child.emitOpError("is not a graph Presburger clause");
+    if (clause.getTarget().getOrdinal() >= importCount)
+      return clause.emitOpError("target names an absent SpatialMapping import");
+  }
+  return success();
+}
+
+LogicalResult mapping::GraphPresburgerClauseOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"cells", "target"})))
+    return failure();
+  if (getCells().empty())
+    return emitOpError("requires at least one Presburger cell");
+  for (Attribute cell : getCells())
+    if (!isa<mapping::SystemPresburgerCellAttr>(cell))
+      return emitOpError("cells contains a non-Presburger value");
+  return success();
+}
+
 ParseResult mapping::ConstraintsSpatialOp::parse(OpAsmParser &parser,
                                                  OperationState &result) {
   mapping::ArtifactIdentityAttr dataflow;
