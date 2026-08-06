@@ -1208,11 +1208,16 @@ buildSystemView(::fabric::SystemOp root,
       entity.owner.resourceContract = record->resourceContract();
       entity.owner.inventoryCounts[static_cast<std::size_t>(
           FabricInventoryKind::MemoryServiceRegion)] = record->regions().size();
+      entity.systemMemoryService = std::move(*record);
       continue;
     }
 
     if (auto endpoint =
             dyn_cast<::fabric::SystemServiceEndpointOp>(carrier.op)) {
+      auto owner = decodeSystemServiceEndpointOwnerRef(
+          unsignedBytes(endpoint.getOwnerAttr()));
+      if (!owner)
+        return owner.takeError();
       auto capabilities = decodeCanonicalServiceCapabilitySet(
           unsignedBytes(endpoint.getCapabilitiesAttr()), root.getContext());
       if (!capabilities)
@@ -1241,6 +1246,18 @@ buildSystemView(::fabric::SystemOp root,
                  : FabricMemoryEndpointRole::Subordinate,
              {}});
       }
+      entity.systemServiceEndpointOwner = std::move(*owner);
+      entity.systemServiceCapabilities = std::move(*capabilities);
+      continue;
+    }
+
+    if (auto transform =
+            dyn_cast<::fabric::SystemServiceTransformOp>(carrier.op)) {
+      auto record = decodeSystemServiceTransformRecord(
+          unsignedBytes(transform.getContractAttr()));
+      if (!record)
+        return record.takeError();
+      entity.systemServiceTransform = std::move(*record);
       continue;
     }
 

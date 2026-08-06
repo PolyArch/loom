@@ -6,6 +6,7 @@
 #include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/MemoryServiceContract.h"
+#include "Fabric/IR/SystemServiceContract.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefImport.h"
 
@@ -86,6 +87,10 @@ struct FabricEntityViewData {
   std::optional<FabricMemoryEngineTemplateRef> memoryEngineTemplate;
   std::optional<FabricMemoryEngineTemplateRecord> memoryEngineTemplateRecord;
   std::optional<std::vector<std::uint8_t>> memoryEngineTemplateProjection;
+  std::optional<::fabric::MemoryServiceContractRecord> systemMemoryService;
+  std::optional<SystemServiceEndpointOwnerRef> systemServiceEndpointOwner;
+  std::optional<CanonicalServiceCapabilitySet> systemServiceCapabilities;
+  std::optional<SystemServiceTransformRecord> systemServiceTransform;
   std::optional<FabricHardwareDomainKind> hardwareDomainKind;
   std::optional<HardwareDomainContractRecord> hardwareDomainContract;
   std::optional<ClockCrossingContractRecord> clockCrossing;

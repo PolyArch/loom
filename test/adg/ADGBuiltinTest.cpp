@@ -132,6 +132,43 @@ void builtinPresetsExpandThroughPublicBuilder() {
     requireExactCanonicalEntityRange(
         test, root.view(), systemView.artifact().externalBoundaries(),
         loom::fabric::FabricEntityKind::ExternalBoundary);
+    const auto systemMemory =
+        systemView.artifact().systemMemoryServices().front();
+    const auto serviceEndpoint =
+        systemView.artifact().systemServiceEndpoints().front();
+    const auto *memoryService = systemView.memoryService(systemMemory);
+    const auto *endpointOwner =
+        systemView.serviceEndpointOwner(serviceEndpoint);
+    const auto *endpointCapabilities =
+        systemView.serviceEndpointCapabilities(serviceEndpoint);
+    bool supportsRead = false;
+    bool supportsWrite = false;
+    if (endpointCapabilities)
+      for (const auto &capability : endpointCapabilities->capabilities()) {
+        supportsRead |= capability.kind() ==
+                        dataflow::semantics::ServiceKind::MemoryRead;
+        supportsWrite |= capability.kind() ==
+                         dataflow::semantics::ServiceKind::MemoryWrite;
+      }
+    require(
+        test,
+        memoryService && memoryService->regions().size() == 1 &&
+            memoryService->capabilities().size() == 2 && endpointOwner &&
+            endpointOwner->owner() ==
+                loom::fabric::FabricInventoryOwnerRef::of(
+                    loom::fabric::FabricMemoryServiceRef::system(systemMemory)) &&
+            endpointCapabilities &&
+            endpointCapabilities->role() ==
+                loom::fabric::CanonicalServiceEndpointRole::Serve &&
+            endpointCapabilities->plane() ==
+                loom::fabric::CanonicalServiceEndpointPlane::Memory &&
+            endpointCapabilities->capabilities().size() == 2 && supportsRead &&
+            supportsWrite &&
+            !systemView.memoryService(
+                loom::fabric::SystemMemoryServiceRef(serviceEndpoint.id())) &&
+            !systemView.serviceEndpointOwner(
+                loom::fabric::SystemServiceEndpointRef(systemMemory.id())),
+        "builtin System view lost its exact memory service capability owner");
     const loom::fabric::HostCoreOccurrenceRef host(uniqueEntity(
         test, root.view(), loom::fabric::FabricEntityKind::HostCoreOccurrence));
     const auto *hostArchitecture = systemView.instructionCoreArchitecture(host);

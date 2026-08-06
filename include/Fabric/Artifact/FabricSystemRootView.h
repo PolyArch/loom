@@ -3,6 +3,7 @@
 
 #include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
+#include "Fabric/IR/SystemServiceContract.h"
 #include "Fabric/Identity/FabricRefImport.h"
 
 namespace loom::fabric {
@@ -38,6 +39,18 @@ public:
   /// inference. A wrong-kind or unknown occurrence has no target.
   std::optional<FabricImportedModuleTargetRef>
   spatialCoreTarget(AccCoreOccurrenceRef core) const;
+
+  /// Exact owner records of the closed System service entities. These are
+  /// sealed projections of the canonical Fabric fields already validated at
+  /// import; invalid or wrong-kind references return null.
+  const ::fabric::MemoryServiceContractRecord *
+  memoryService(SystemMemoryServiceRef service) const;
+  const SystemServiceEndpointOwnerRef *
+  serviceEndpointOwner(SystemServiceEndpointRef endpoint) const;
+  const CanonicalServiceCapabilitySet *
+  serviceEndpointCapabilities(SystemServiceEndpointRef endpoint) const;
+  const SystemServiceTransformRecord *
+  serviceTransform(SystemServiceTransformRef transform) const;
 
   llvm::ArrayRef<FabricSpatialAttachmentRecordView> spatialAttachments() const;
   llvm::ArrayRef<HardwareDomainRef> hardwareDomains() const;
