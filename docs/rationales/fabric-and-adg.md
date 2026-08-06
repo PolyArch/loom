@@ -165,7 +165,10 @@ the reverse relation is not required. Keeping the correspondence authoring-only
 lets elaboration rewrite child assignments directly into the enclosing flat
 Module and then delete the instance. Persisting a nested instance or expanded
 domain table would duplicate the final assignments and break equivalence with
-inline authoring.
+inline authoring. The binding cites the identity-owned slot ordinal domain
+rather than restating a narrower width, so no hidden narrowing can appear
+between the authoring record and the persistent relation, and an inlined and
+an instantiated Module keep one assignment semantics.
 
 Imported Module identifiers remain definition-local because cloning or
 renumbering them would make physical identity depend on how many times a

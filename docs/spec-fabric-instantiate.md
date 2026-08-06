@@ -48,15 +48,18 @@ one required typed, authoring-only domain-slot correspondence property:
 ```text
 ModuleInstanceDomainSlotBinding = {
   kind : Clock | Reset
-  child_slot_ordinal : uint32
-  parent_slot_ordinal : uint32
+  child_slot_ordinal : ordinal
+  parent_slot_ordinal : ordinal
 }
 
 domain_slot_bindings :
   canonical array<ModuleInstanceDomainSlotBinding>
 ```
 
-The resolved callee supplies the child Module context and the enclosing
+Both ordinal fields cite the one semantic ordinal domain owned by
+`FabricModuleDomainSlotRef.ordinal` in `docs/spec-fabric-identity.md`; this
+record restates no narrower width. The resolved callee supplies the child
+Module context and the enclosing
 `fabric.module` supplies the parent Module context. A record therefore denotes
 the exact correspondence
 `(callee, kind, child_slot_ordinal) ->
