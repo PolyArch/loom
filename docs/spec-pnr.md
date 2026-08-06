@@ -213,6 +213,18 @@ SystemSearchAtomDomains {
 }
 ```
 
+For a `SystemTransferTerminalKey`, `compatible_transport_endpoints` is derived
+without a target-owned pairing table. A `MessageTransfer` terminal uses the
+matching transport-plane service endpoint directly. A memory or fence
+terminal first resolves each compatible memory-service endpoint and its exact
+capability, then uses only that Fabric root's
+`ServiceLegCarrierAttachment(endpoint, kind, leg_ordinal)` carrier set.
+Direction and payload compatibility are recomputed from endpoint role, the
+Canonical Service leg, and the capability domain. `H` neither copies those
+facts nor infers a carrier from entity ownership, endpoint ordinals, equal
+width, protocol names, or physical targets. An empty derived carrier union is
+proven infeasibility.
+
 The owner-specific view descriptor identity is
 `loom.system_pnr_search_domain`, version 1.0. Its exact descriptor bytes are
 the ASCII bytes `loom.system_pnr_search_domain.1.0`, without a trailing zero
@@ -564,6 +576,14 @@ transfer_assigned_tag_values:
   CanonicalServiceLegKey
     -> Set<PhysicalTagValue> [zero-or-more]
 ```
+
+`transfer_terminal_attachment` contains the exact transport endpoints selected
+by the realized RouteTrees. For memory and fence service legs, every selected
+endpoint must belong to the corresponding Fabric-owned
+`ServiceLegCarrierAttachment` domain. For `MessageTransfer`, no such row
+exists and the selected endpoint remains the transport-plane service endpoint.
+The projection never returns a memory endpoint, attachment key, capability
+ordinal, or protocol-specific channel.
 
 Each projection returns the canonical union over the complete normalized
 binding relation or all selectable service plans for its subject. An empty
@@ -1080,6 +1100,13 @@ Each residual logical net is realized by one rooted arborescence with shared
 trunks and explicit branches. Its persistent field shape, owner key, canonical
 node ordering, sink attachments, and System transfer-leg form are owned only
 by `docs/spec-mapping-artifact.md`.
+
+A System memory or fence service-leg RouteTree uses only transport endpoints
+from the exact Fabric service-leg carrier attachment domains at its source and
+sinks. The attachment relation supplies terminal candidates, not traversals:
+all selected edges remain ordinary `FabricPhysicalTraversalRef` values in the
+root-complete Transport Architecture. `MessageTransfer` continues to route
+between its transport-plane service endpoints without this projection.
 
 The routing algorithm must maintain the same semantic invariants before
 projection: the root has no incoming traversal; every non-root node has one

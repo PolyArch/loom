@@ -29,7 +29,8 @@ The Fabric Hardware Description family distinguishes:
 * SpatialCore occurrences referencing exact `fabric.module` templates;
 * typed module-to-occurrence endpoint attachments;
 * physical memory services and regions;
-* typed service endpoints and service transforms;
+* typed service endpoints, service-leg carrier attachments, and service
+  transforms;
 * one Transport Architecture owned by the `fabric.system` root;
 * zero or more independent Interconnect Implementation objects refining that
   architecture;
@@ -373,6 +374,65 @@ An endpoint is not a software address space or physical storage identity. One
 endpoint may serve several mapped logical memories, and one logical memory may
 be reachable through several endpoints. Mapping records own those relations.
 
+### Service-Leg Carrier Attachment
+
+A memory-plane endpoint does not itself expose a transport carrier. The exact
+`fabric.system` root therefore owns one structural relation from each admitted
+memory-service leg to its non-empty physical carrier domain:
+
+```text
+ServiceLegCarrierAttachmentKey = {
+  endpoint: FabricMemoryEndpointRef
+  kind: ServiceKind
+  leg_ordinal: uint32
+}
+
+ServiceLegCarrierAttachment = {
+  key: ServiceLegCarrierAttachmentKey
+  carriers: canonical non-empty sorted-unique
+            Set<FabricTransportEndpointRef>
+}
+```
+
+The key is a structural lookup key, not an entity or identity. The relation
+receives no `EntityId`, local reference kind, capability ordinal, or Mapping
+record. The endpoint capability set is unique by `(ServiceKind,
+EndpointRole)`, so the endpoint, kind, and schema-local leg ordinal select the
+exact capability without another ordinal.
+
+The [Canonical Service Schema](#canonical-service-schema) remains the sole
+owner of the number, ordinal, direction, payload roles, and payload types of
+the legs. Fabric owns only which physical transport endpoints can carry each
+leg. Carrier direction is derived mechanically from endpoint role and
+canonical leg direction:
+
+| memory endpoint role | `InitiatorToServer` leg | `ServerToInitiator` leg |
+|---|---|---|
+| `Initiate` | transport output | transport input |
+| `Serve` | transport input | transport output |
+
+For every memory or fence capability and every leg of its exact service kind,
+finalization derives the canonical leg payload over the capability domain and
+retains only carriers whose direction and carrier type represent that entire
+domain. The relation does not copy a workload actor, payload, payload width,
+accepted domain, endpoint role, or protocol name. Compatibility is always
+recomputed from the endpoint capability, Canonical Service Schema, and
+transport endpoint inventory.
+
+Every admitted memory or fence capability leg has exactly one attachment row
+and at least one compatible carrier. All memory and transport endpoint
+references resolve inside the same exact Fabric root. `MessageTransfer`
+already belongs to the transport plane and must not have an attachment row.
+One transport endpoint may appear in several rows; sharing, capacity,
+contention, and occupancy remain owned by transfer patterns, `ResourceUse`,
+and their selected routes.
+
+Authoring rows with the same key are coalesced by set union. Finalization sorts
+rows by the complete key and sorts and deduplicates each carrier set. The
+canonical form contains one row per key and no empty set. Strict import
+re-encodes and rejects persisted duplicate, unsorted, incomplete, or otherwise
+noncanonical relation data.
+
 ## Physical Memory And Services
 
 Fabric owns physical memory services, address spaces, service regions,
@@ -501,6 +561,12 @@ virtual-channel encoding; router pipelines; adapters; arbiters; RTL or IP
 blocks; and configuration circuitry. `ConfigurationABI` alone owns the
 physical bit/address encoding and programming contract for every exposed
 semantic configuration field.
+
+A service-leg carrier attachment is only an architecture-level candidate
+relation between existing memory and transport endpoints. It does not create
+a request channel, response channel, packet, flit, header, adapter, or physical
+encoding. The exact Interconnect Implementation refines the Mapping-selected
+transport path into those protocol-specific mechanisms.
 
 Transport Architecture and Interconnect Implementation are independent,
 immutable, content-addressed objects in the Fabric Hardware Description
@@ -759,6 +825,7 @@ fabric.system.host_core
 fabric.system.acc_core
 fabric.system.memory_service
 fabric.system.service_endpoint
+fabric.system.service_leg_carrier_attachment
 fabric.system.service_transform
 fabric.system.transport_resource
 fabric.system.transfer_pattern
@@ -799,6 +866,12 @@ fabric.system.service_endpoint
   exact owner reference
   canonical non-empty CanonicalServiceCapability set
   absent | exact message carrier type
+
+fabric.system.service_leg_carrier_attachment
+  FabricMemoryEndpointRef
+  ServiceKind
+  schema-local leg ordinal
+  canonical non-empty sorted-unique FabricTransportEndpointRef set
 
 fabric.system.service_transform
   EntityId
@@ -868,9 +941,10 @@ A message endpoint has exactly one physical carrier type, either
 `!fabric.bits<W>` or `!fabric.bits_tag<W,T>`. The carrier must represent every
 admitted payload type under the canonical low-bit-aligned transport rule. A
 memory endpoint has no carrier type because its beat width and accepted
-operation domain are already owned by its capabilities. No owner, connection,
-or Mapping record may override these derived plane, direction, role, or type
-facts.
+operation domain are already owned by its capabilities. Its service legs use
+only the root-owned `ServiceLegCarrierAttachment` relation above. No owner,
+connection, or Mapping record may override these derived plane, direction,
+role, or type facts.
 
 `fabric.system.external_boundary` is only the identity of one external
 interface grouping. Its complete outward contract is the canonical non-empty
@@ -1155,7 +1229,11 @@ canonical importer/finalizer rejects duplicate point connections, duplicate
 hardware-domain references, duplicate domain members, conflicting same-kind
 membership, duplicate crossing fields for one carrier, wrong-kind typed domain
 refinements, and any connection or attachment hidden from the complete
-relation. These checks are root validation, not optional consumer policy.
+relation. It also rejects invalid or foreign service-leg attachment endpoints,
+unsupported service kinds, out-of-range leg ordinals, direction or
+payload-domain incompatibility, missing memory-service leg coverage, and every
+`MessageTransfer` attachment. These checks are root validation, not optional
+consumer policy.
 
 ## Validation Anchors
 
@@ -1172,6 +1250,14 @@ Anchor-level validation should cover:
 * all six Canonical Service kinds, exact leg order, actor-contract ownership,
   exact dynamic-mask leg derivation, and rejection of implicit plain, atomic,
   volatile, or coherence semantics;
+* canonical service-leg carrier attachment order and duplicate normalization,
+  multiple carrier alternatives, one carrier reused by several kinds or legs,
+  and rejection of missing or foreign endpoints, unsupported kinds,
+  out-of-range legs, role-direction mismatch, incompatible payload domains,
+  incomplete memory-service coverage, and every `MessageTransfer` row;
+* structural confirmation that service-leg carrier attachments contain no
+  actor, payload, width, protocol, capability-domain, capability-ordinal, or
+  independent identity field;
 * one multi-participant MemoryConsistency domain, exact atomic and fence
   domain closure, and rejection when no one compatible domain covers a fence;
 * one `CoherentMemory` transform whose explicit region correspondence permits

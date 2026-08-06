@@ -842,6 +842,15 @@ route tree itself owns terminal endpoint choices. Protocol packets, flits,
 headers, concrete virtual-channel encoding, and implementation-specific bus
 encoding remain owned by the selected interconnect implementation.
 
+For `MessageTransfer`, the terminal domain is derived directly from matching
+transport-plane service endpoints. For a memory or fence leg, the terminal
+domain is derived from the selected memory-service endpoint and the exact
+Fabric-owned `ServiceLegCarrierAttachment` row for its kind and schema-local
+leg ordinal. The selected `RouteTree` stores only its existing transport
+terminal references and traversals. It does not copy the attachment row,
+memory endpoint, capability domain, payload, width, or protocol, and no new
+ServiceRealization child kind is introduced.
+
 Plan selection first derives an `ExecutionContextKey` from the evaluated
 `B_thread` and `B_graph` targets. Only reachable contexts are stored. Within a
 context, the same closed binding-relation algebra may select a plan from

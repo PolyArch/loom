@@ -333,6 +333,23 @@ a later wider segment cannot recover discarded high bits. This derives route
 legality from the existing endpoint types without adding an adapter or a
 second width field to Mapping.
 
+## Why System Mapping Selects But Does Not Own Service Carriers
+
+System PnR must route memory requests, responses, and fences over transport
+endpoints, but the legal correspondence from a memory-service endpoint to
+those endpoints is a hardware-topology fact. Copying it into Mapping would let
+two mappings disagree about the same Fabric and would force Mapping identity to
+repeat capability and payload facts.
+
+The frozen search domain therefore derives terminal candidates from the exact
+Fabric-owned service-leg carrier relation. CandidateState chooses ordinary
+transport terminals and traversals, and the persistent RouteTree records only
+that selected route. Final verification repeats the same derivation from the
+exact Fabric. `MessageTransfer` needs no projection because its service
+endpoint already is a transport endpoint. Protocol subchannels and encodings
+remain a later Interconnect Implementation refinement, so neither PnR nor the
+Mapping artifact becomes a protocol owner.
+
 ## Why Placement And Routing Are Coupled
 
 Greedy placement followed by one routing pass cannot escape congestion,

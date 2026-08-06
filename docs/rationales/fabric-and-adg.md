@@ -174,6 +174,29 @@ direct inventories because their ordered port topology is intrinsic to those
 resources. They are not operation-service endpoints and collapsing them into
 service-endpoint entities would erase a real structural distinction.
 
+## Why Memory-Service Legs Need An Explicit Carrier Relation
+
+A memory endpoint and a transport endpoint are deliberately different planes.
+Making a memory endpoint double as a token carrier would merge operation
+admission, address and consistency semantics with routable direction and
+payload transport. Inferring a carrier from a common owner, matching ordinal,
+or equal width would instead create an unwritten topology rule that fails as
+soon as one service has several ports or one carrier is shared.
+
+Fabric therefore owns one structural relation from the existing memory
+endpoint, service kind, and schema-local leg to a non-empty set of existing
+transport endpoints. This is the minimum additional fact needed to expose a
+service leg to system routing. The Canonical Service Schema still owns what the
+leg means, the endpoint capability still owns what operations it admits, and
+the Transport Architecture still owns how messages traverse and contend.
+
+No capability ordinal is needed because one endpoint has at most one
+capability for a given kind and role. No payload, width, protocol, or workload
+identity is stored because each is already derivable from an existing owner.
+Allowing one carrier in several attachment rows preserves real shared hardware;
+its capacity and arbitration remain visible through transfer patterns and
+resource use rather than being duplicated in the relation.
+
 ## Why Fabric Finalization Is Root-Complete
 
 Canonical identity must reflect the complete elaborated hardware, including

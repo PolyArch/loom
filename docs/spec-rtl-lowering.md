@@ -57,6 +57,15 @@ a choice in RTL.
 Visualization metadata is stripped before Fabric identity and has no effect on
 hardware generation.
 
+For a memory or fence service leg, the Fabric-owned
+`ServiceLegCarrierAttachment` relation identifies architecture-level candidate
+transport endpoints and the SystemMapping RouteTree selects among them. The
+relation is not itself a protocol channel. Only the exact Interconnect
+Implementation may refine the selected path into AXI, TileLink, CXL, custom
+request or response subchannels, packet or flit fields, adapters, RTL/IP, and
+physical encodings. Lowering cannot infer or persist a second pairing between
+memory and transport endpoints.
+
 ### Non-Defined Value Refinement
 
 RTL payloads are total fixed-width bit values, while each Canonical Dataflow

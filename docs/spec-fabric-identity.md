@@ -434,6 +434,12 @@ An endpoint ordinal is valid only in the inventory selected by the typed
 owner and reference plane. A token endpoint cannot be reinterpreted as a
 memory endpoint even when the integer ordinals happen to match.
 
+The `ServiceLegCarrierAttachment` relation owned by
+`docs/spec-fabric-system-adg.md` uses one existing
+`FabricMemoryEndpointRef` in its structural key and a set of existing
+`FabricTransportEndpointRef` values. It introduces no endpoint variant,
+owner-relative reference, entity, or identity of its own.
+
 ## Concrete Memory Structural References
 
 One concrete `fabric.mem` occurrence owns these Spatial and System
