@@ -4,7 +4,6 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/JSON.h"
 
-#include <cctype>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -19,19 +18,18 @@ llvm::Error invalid(const llvm::Twine &message) {
 }
 
 bool isPortableIdentifier(llvm::StringRef value) {
-  if (value.empty())
-    return false;
-  const auto isFirst = [](unsigned char character) {
-    return std::isalpha(character) || character == '_';
+  // Explicit ASCII ranges keep the grammar host-locale independent.
+  const auto isFirst = [](char character) {
+    return (character >= 'A' && character <= 'Z') ||
+           (character >= 'a' && character <= 'z') || character == '_';
   };
-  const auto isRest = [](unsigned char character) {
-    return std::isalnum(character) || character == '_' || character == '$';
+  const auto isRest = [&](char character) {
+    return isFirst(character) ||
+           (character >= '0' && character <= '9') || character == '$';
   };
-  if (!isFirst(static_cast<unsigned char>(value.front())))
+  if (value.empty() || !isFirst(value.front()))
     return false;
-  return llvm::all_of(value.drop_front(), [&](char character) {
-    return isRest(static_cast<unsigned char>(character));
-  });
+  return llvm::all_of(value.drop_front(), isRest);
 }
 
 bool isNonzeroAttribute(const llvm::json::Value &value) {
@@ -51,6 +49,20 @@ requireObject(const llvm::json::Object &object, llvm::StringRef field,
   if (!value)
     return invalid(context + " requires object field '" + field + "'");
   return *value;
+}
+
+/// An optional container is legal only when absent or an object; a present
+/// but wrong-typed container never reads as absent.
+llvm::Expected<const llvm::json::Object *>
+optionalObject(const llvm::json::Object &object, llvm::StringRef field,
+               const llvm::Twine &context) {
+  const llvm::json::Value *value = object.get(field);
+  if (!value)
+    return nullptr;
+  const llvm::json::Object *child = value->getAsObject();
+  if (!child)
+    return invalid(context + " field '" + field + "' must be an object");
+  return child;
 }
 
 llvm::Expected<YosysPortGeometry::Direction>
@@ -91,10 +103,16 @@ parseBits(const llvm::json::Array &bits, const llvm::Twine &context) {
 
 llvm::Expected<YosysPortGeometry>
 parsePortGeometry(const llvm::json::Object &port, const llvm::Twine &context) {
-  auto direction = parseDirection(*port.get("direction"), context);
+  const llvm::json::Value *directionValue = port.get("direction");
+  if (!directionValue)
+    return invalid(context + " requires a direction");
+  auto direction = parseDirection(*directionValue, context);
   if (!direction)
     return direction.takeError();
-  const llvm::json::Array *bits = port.getArray("bits");
+  const llvm::json::Value *bitsValue = port.get("bits");
+  if (!bitsValue)
+    return invalid(context + " requires signal bits");
+  const llvm::json::Array *bits = bitsValue->getAsArray();
   if (!bits || bits->empty())
     return invalid(context + " requires nonempty signal bits");
   auto signalBits = parseBits(*bits, context);
@@ -172,71 +190,91 @@ parseYosysStructureFacts(llvm::StringRef contents) {
     const llvm::json::Object *module = value.getAsObject();
     if (!module)
       return invalid("structural JSON module is not an object");
+    const llvm::Twine context = llvm::Twine("module '") +
+                                llvm::StringRef(name) + "'";
     YosysModuleFacts facts;
-    if (const llvm::json::Object *attributes =
-            module->getObject("attributes"))
+    auto attributes = optionalObject(*module, "attributes", context);
+    if (!attributes)
+      return attributes.takeError();
+    if (*attributes)
       for (llvm::StringRef attributeName :
            {llvm::StringRef("blackbox"), llvm::StringRef("whitebox")})
         if (const llvm::json::Value *attribute =
-                attributes->get(attributeName))
+                (*attributes)->get(attributeName))
           facts.declaredBox =
               facts.declaredBox || isNonzeroAttribute(*attribute);
-    if (const llvm::json::Object *processes = module->getObject("processes"))
-      facts.hasProcesses = !processes->empty();
-    if (const llvm::json::Object *memories = module->getObject("memories"))
-      facts.hasMemories = !memories->empty();
-    if (const llvm::json::Object *ports = module->getObject("ports"))
-      for (const auto &[portName, portValue] : *ports) {
+    auto processes = optionalObject(*module, "processes", context);
+    if (!processes)
+      return processes.takeError();
+    facts.hasProcesses = *processes && !(*processes)->empty();
+    auto memories = optionalObject(*module, "memories", context);
+    if (!memories)
+      return memories.takeError();
+    facts.hasMemories = *memories && !(*memories)->empty();
+    auto ports = optionalObject(*module, "ports", context);
+    if (!ports)
+      return ports.takeError();
+    if (*ports)
+      for (const auto &[portName, portValue] : **ports) {
         const llvm::json::Object *port = portValue.getAsObject();
         if (!port)
-          return invalid("module port is not an object");
-        auto geometry = parsePortGeometry(
-            *port, llvm::Twine("module '") + llvm::StringRef(name) + "' port");
+          return invalid(context + " port is not an object");
+        auto geometry = parsePortGeometry(*port, context + " port");
         if (!geometry)
           return geometry.takeError();
-        facts.ports.emplace(portName.str(), *geometry);
+        facts.ports.emplace(portName.str(), std::move(*geometry));
       }
-    if (const llvm::json::Object *cells = module->getObject("cells"))
-      for (const auto &[cellName, cellValue] : *cells) {
+    auto cells = optionalObject(*module, "cells", context);
+    if (!cells)
+      return cells.takeError();
+    if (*cells)
+      for (const auto &[cellName, cellValue] : **cells) {
         const llvm::json::Object *cell = cellValue.getAsObject();
         if (!cell)
-          return invalid("module cell is not an object");
+          return invalid(context + " cell is not an object");
         YosysCellFacts cellFacts;
         const std::optional<llvm::StringRef> type = cell->getString("type");
         if (!type)
-          return invalid("module cell type must be a string");
+          return invalid(context + " cell type must be a string");
         cellFacts.type = type->str();
-        auto directions = requireObject(*cell, "port_directions", "module cell");
+        auto directions =
+            requireObject(*cell, "port_directions", context + " cell");
         if (!directions)
           return directions.takeError();
         for (const auto &[portName, directionValue] : *directions) {
-          auto direction = parseDirection(directionValue, "module cell port");
+          auto direction = parseDirection(directionValue,
+                                          context + " cell port");
           if (!direction)
             return direction.takeError();
           cellFacts.portDirections.emplace(portName.str(), *direction);
         }
-        auto connections = requireObject(*cell, "connections", "module cell");
+        auto connections =
+            requireObject(*cell, "connections", context + " cell");
         if (!connections)
           return connections.takeError();
         for (const auto &[portName, connectionValue] : *connections) {
           const llvm::json::Array *bits = connectionValue.getAsArray();
           if (!bits)
-            return invalid("module cell connection requires a bit array");
-          auto signalBits =
-              parseBits(*bits, llvm::Twine("module cell '") +
-                                   llvm::StringRef(cellName) + "' connection");
+            return invalid(context + " cell connection requires a bit array");
+          auto signalBits = parseBits(*bits, context + llvm::Twine(" cell '") +
+                                                       llvm::StringRef(cellName) +
+                                                       "' connection");
           if (!signalBits)
             return signalBits.takeError();
           cellFacts.connections.emplace(portName.str(), std::move(*signalBits));
         }
         facts.cells.emplace(cellName.str(), std::move(cellFacts));
       }
-    if (const llvm::json::Object *netnames = module->getObject("netnames"))
-      for (const auto &[netName, netValue] : *netnames) {
+    // Netnames carry no fact the validator consumes; only their shape is
+    // checked so a malformed document still fails closed.
+    auto netnames = optionalObject(*module, "netnames", context);
+    if (!netnames)
+      return netnames.takeError();
+    if (*netnames)
+      for (const auto &[netName, netValue] : **netnames) {
         const llvm::json::Object *net = netValue.getAsObject();
         if (!net || !net->getArray("bits"))
-          return invalid("module netname has no signal bits");
-        facts.netNames.push_back(netName.str());
+          return invalid(context + " netname has no signal bits");
       }
     structure.modules.emplace(name.str(), std::move(facts));
   }
@@ -258,6 +296,10 @@ validateYosysSynthesizedStructure(const YosysStructureFacts &structure,
     if (!module.declaredBox)
       return invalid("structural JSON contains an unexpected functional "
                      "module");
+    // A blackbox or whitebox attribute never hides executable structure.
+    if (module.hasProcesses || module.hasMemories || !module.cells.empty())
+      return invalid("structural JSON box module '" + name +
+                     "' hides a structural body");
   }
   if (top.hasProcesses)
     return invalid("structural JSON contains residual processes");
@@ -281,19 +323,33 @@ validateYosysSynthesizedStructure(const YosysStructureFacts &structure,
     if (llvm::StringRef(cell.type).starts_with("$"))
       return invalid("structural JSON contains an unmapped generic cell '" +
                      cell.type + "'");
+    if (cell.type == topModule)
+      return invalid("structural JSON cell instantiates the functional top");
     const auto definition = structure.modules.find(cell.type);
     if (definition == structure.modules.end())
       return invalid("structural JSON contains an undeclared cell type '" +
                      cell.type + "'");
     for (const auto &[portName, connection] : cell.connections) {
-      if (definition->second.ports.find(portName) ==
-          definition->second.ports.end())
+      if (connection.empty())
+        return invalid("structural JSON cell '" + cell.type +
+                       "' connection '" + portName + "' is empty");
+      const auto definitionPort =
+          definition->second.ports.find(portName);
+      if (definitionPort == definition->second.ports.end())
         return invalid("structural JSON cell '" + cell.type +
                        "' has no declared port '" + portName + "'");
       const auto direction = cell.portDirections.find(portName);
       if (direction == cell.portDirections.end())
         return invalid("structural JSON cell '" + cell.type +
                        "' connection '" + portName + "' has no direction");
+      if (direction->second != definitionPort->second.direction)
+        return invalid("structural JSON cell '" + cell.type +
+                       "' connection '" + portName +
+                       "' direction does not match its definition");
+      if (connection.size() != definitionPort->second.bits.size())
+        return invalid("structural JSON cell '" + cell.type +
+                       "' connection '" + portName +
+                       "' width does not match its definition");
       if (direction->second != YosysPortGeometry::Direction::Input)
         recordDrivers(connection);
     }

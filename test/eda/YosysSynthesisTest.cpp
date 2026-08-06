@@ -108,6 +108,149 @@ const std::string kConstantJson = R"json({
   }
 })json";
 
+const std::string kMultidriverJson = R"json({
+  "creator": "fixture",
+  "modules": {
+    "AND2X1": {
+      "attributes": {"blackbox": "00000000000000000000000000000001"},
+      "ports": {
+        "A": {"direction": "input", "bits": [0]},
+        "B": {"direction": "input", "bits": [0]},
+        "Y": {"direction": "output", "bits": [0]}
+      },
+      "cells": {},
+      "netnames": {}
+    },
+    "top": {
+      "attributes": {},
+      "ports": {
+        "a": {"direction": "input", "bits": [2]},
+        "b": {"direction": "input", "bits": [3]},
+        "y": {"direction": "output", "bits": [4]}
+      },
+      "cells": {
+        "_0_": {
+          "type": "AND2X1",
+          "port_directions": {"A": "input", "B": "input", "Y": "output"},
+          "connections": {"A": [2], "B": [3], "Y": [4]}
+        },
+        "_1_": {
+          "type": "AND2X1",
+          "port_directions": {"A": "input", "B": "input", "Y": "output"},
+          "connections": {"A": [2], "B": [3], "Y": [4]}
+        }
+      },
+      "netnames": {
+        "a": {"bits": [2]},
+        "b": {"bits": [3]},
+        "y": {"bits": [4]}
+      }
+    }
+  }
+})json";
+
+const std::string kSelfInstantiationJson = R"json({
+  "creator": "fixture",
+  "modules": {
+    "AND2X1": {
+      "attributes": {"blackbox": "00000000000000000000000000000001"},
+      "ports": {
+        "A": {"direction": "input", "bits": [0]},
+        "B": {"direction": "input", "bits": [0]},
+        "Y": {"direction": "output", "bits": [0]}
+      },
+      "cells": {},
+      "netnames": {}
+    },
+    "top": {
+      "attributes": {},
+      "ports": {
+        "a": {"direction": "input", "bits": [2]},
+        "b": {"direction": "input", "bits": [3]},
+        "y": {"direction": "output", "bits": [4]}
+      },
+      "cells": {
+        "_0_": {
+          "type": "AND2X1",
+          "port_directions": {"A": "input", "B": "input", "Y": "output"},
+          "connections": {"A": [2], "B": [3], "Y": [4]}
+        },
+        "_1_": {
+          "type": "top",
+          "port_directions": {"a": "input", "b": "input", "y": "output"},
+          "connections": {"a": [2], "b": [3], "y": [5]}
+        }
+      },
+      "netnames": {
+        "a": {"bits": [2]},
+        "b": {"bits": [3]},
+        "y": {"bits": [4]},
+        "extra": {"bits": [5]}
+      }
+    }
+  }
+})json";
+
+const std::string kBoxWithCellsJson = R"json({
+  "creator": "fixture",
+  "modules": {
+    "AND2X1": {
+      "attributes": {"blackbox": "00000000000000000000000000000001"},
+      "ports": {
+        "A": {"direction": "input", "bits": [0]},
+        "B": {"direction": "input", "bits": [0]},
+        "Y": {"direction": "output", "bits": [0]}
+      },
+      "cells": {
+        "inner": {"type": "AND2X1", "port_directions": {}, "connections": {}}
+      },
+      "netnames": {}
+    },
+    "top": {
+      "attributes": {},
+      "ports": {
+        "a": {"direction": "input", "bits": [2]},
+        "b": {"direction": "input", "bits": [3]},
+        "y": {"direction": "output", "bits": [4]}
+      },
+      "cells": {
+        "_0_": {
+          "type": "AND2X1",
+          "port_directions": {"A": "input", "B": "input", "Y": "output"},
+          "connections": {"A": [2], "B": [3], "Y": [4]}
+        }
+      },
+      "netnames": {
+        "a": {"bits": [2]},
+        "b": {"bits": [3]},
+        "y": {"bits": [4]}
+      }
+    }
+  }
+})json";
+
+const std::string kPortsAsArrayJson = R"json({
+  "creator": "fixture",
+  "modules": {
+    "AND2X1": {
+      "attributes": {"blackbox": "00000000000000000000000000000001"},
+      "ports": {
+        "A": {"direction": "input", "bits": [0]},
+        "B": {"direction": "input", "bits": [0]},
+        "Y": {"direction": "output", "bits": [0]}
+      },
+      "cells": {},
+      "netnames": {}
+    },
+    "top": {
+      "attributes": {},
+      "ports": [],
+      "cells": {},
+      "netnames": {}
+    }
+  }
+})json";
+
 std::string replaceAll(std::string text, llvm::StringRef from,
                        llvm::StringRef to) {
   std::size_t position = 0;
@@ -222,9 +365,26 @@ void adverseStructuresAreRejected() {
          replaceAll(kMappedJson, "\"A\": [2],", "\"Q\": [2],"));
   reject("undriven-output",
          replaceAll(kMappedJson, "\"Y\": [4]", "\"Y\": [9]"));
-  reject("multidriver-output", replaceAll(
-             kMappedJson, "\"connections\": {\"A\": [2], \"B\": [3], \"Y\": [4]}",
-             "\"connections\": {\"A\": [2], \"B\": [3], \"Y\": [2]}"));
+  {
+    // The fixture must prove two top-level cells output-drive the required
+    // net before the validator is consulted.
+    YosysStructureFacts multidriver =
+        take(__func__, parseYosysStructureFacts(kMultidriverJson));
+    const auto &cells = multidriver.modules.at("top").cells;
+    require(__func__, cells.size() == 2, "multidriver fixture lost a cell");
+    for (const auto &[name, cell] : cells) {
+      const auto &connection = cell.connections.at("Y");
+      require(__func__,
+              connection.size() == 1 &&
+                  std::get<std::uint64_t>(connection.front().value) == 4,
+              "multidriver fixture does not drive required net 4");
+    }
+    llvm::Error error = validateYosysSynthesizedStructure(multidriver, "top");
+    require(__func__, !!error, "multidriver structure was accepted");
+    const std::string message = llvm::toString(std::move(error));
+    require(__func__, llvm::StringRef(message).contains("multiple drivers"),
+            "wrong failure class: " + message);
+  }
   reject("x-constant-output",
          replaceAll(kConstantJson, "\"bits\": [\"0\"]", "\"bits\": [\"x\"]"));
 
@@ -238,6 +398,50 @@ void adverseStructuresAreRejected() {
   expectInvalid(__func__,
                 parseYosysStructureFacts(
                     replaceAll(kMappedJson, "\"bits\": [2]", "\"bits\": [-1]")));
+}
+
+void structuralConsistencyIsEnforced() {
+  const auto reject = [&](llvm::StringRef name, std::string json) {
+    auto facts = parseYosysStructureFacts(json);
+    if (!facts) {
+      llvm::consumeError(facts.takeError());
+      return;
+    }
+    expectInvalid(name, validateYosysSynthesizedStructure(*facts, "top"));
+  };
+
+  // A present-but-wrong-typed container must not read as absent.
+  reject("ports-as-array", kPortsAsArrayJson);
+  reject("attributes-as-string", replaceAll(kMappedJson, "\"attributes\": {}",
+                                            "\"attributes\": \"none\""));
+  reject("processes-as-array",
+         replaceAll(kMappedJson, "\"attributes\": {}",
+                    "\"attributes\": {}, \"processes\": []"));
+  reject("netnames-as-string",
+         replaceAll(kMappedJson, "\"netnames\": {\n        \"a\"",
+                    "\"netnames\": \"x\", \"junk\": {\n        \"a\""));
+
+  // Cell structural consistency.
+  reject("empty-connection",
+         replaceAll(kMappedJson, "\"A\": [2],", "\"A\": [],"));
+  reject("direction-mismatch",
+         replaceAll(kMappedJson, "\"port_directions\": {\"A\": \"input\"",
+                    "\"port_directions\": {\"A\": \"output\""));
+  reject("width-mismatch",
+         replaceAll(kMappedJson, "\"Y\": [4]}", "\"Y\": [4, 5]}"));
+  reject("self-instantiation", kSelfInstantiationJson);
+  reject("box-with-process",
+         replaceAll(kMappedJson,
+                    "\"blackbox\": "
+                    "\"00000000000000000000000000000001\"},\n      \"ports\"",
+                    "\"blackbox\": "
+                    "\"00000000000000000000000000000001\"},\n      "
+                    "\"processes\": {\"p\": {}},\n      \"ports\""));
+  reject("box-with-cells", kBoxWithCellsJson);
+
+  // A port object without a direction must fail typed, never crash.
+  reject("missing-direction",
+         replaceAll(kMappedJson, "\"direction\": \"input\", ", ""));
 }
 
 void portGeometryComparisonIsExact() {
@@ -450,6 +654,7 @@ int main(int argc, char **argv) {
   malformedJsonIsRejected();
   positiveStructuresAreAccepted();
   adverseStructuresAreRejected();
+  structuralConsistencyIsEnforced();
   portGeometryComparisonIsExact();
   return EXIT_SUCCESS;
 }

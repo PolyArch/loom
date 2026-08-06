@@ -58,7 +58,6 @@ struct YosysModuleFacts final {
   bool hasMemories = false;
   std::map<std::string, YosysPortGeometry> ports;
   std::map<std::string, YosysCellFacts> cells;
-  std::vector<std::string> netNames;
 };
 
 /// The ephemeral typed facts view of one Yosys write_json document. It is

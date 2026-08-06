@@ -1,11 +1,11 @@
 # REQUIRES: yosys
-# RUN: rm -rf %t && mkdir -p %t/a %t/b %t/c
+# RUN: rm -rf %t && mkdir -p %t/a %t/b %t/c %t/tmp-a %t/tmp-b %t/tmp-c
 # RUN: %loom-yosys-synthesis-test %t/a mapped
 # RUN: %loom-yosys-synthesis-test %t/b mapped
 # RUN: %loom-yosys-synthesis-test %t/c constant
-# RUN: cd %t/a && yosys -q -s synthesize.ys
-# RUN: cd %t/b && yosys -q -s synthesize.ys
-# RUN: cd %t/c && yosys -q -s synthesize.ys
+# RUN: cd %t/a && env TMPDIR=%t/tmp-a yosys -q -s synthesize.ys
+# RUN: cd %t/b && env TMPDIR=%t/tmp-b yosys -q -s synthesize.ys
+# RUN: cd %t/c && env TMPDIR=%t/tmp-c yosys -q -s synthesize.ys
 # RUN: %loom-yosys-synthesis-test --verify %t/a
 # RUN: %loom-yosys-synthesis-test --verify %t/c
 # RUN: %loom-yosys-synthesis-test --compare %t/a %t/b
