@@ -223,6 +223,42 @@ serializeImplementationPayloadJson(const ImplementationPayload &payload) {
 }
 
 llvm::Expected<ImplementationPayload>
+parseImplementationPayloadJsonValue(const llvm::json::Object &object) {
+  constexpr std::array<llvm::StringLiteral, 3> fields{
+      "role", "canonical_logical_name", "blob_digest"};
+  for (const auto &field : object) {
+    const llvm::StringRef key = field.getFirst();
+    if (std::find(fields.begin(), fields.end(), key) == fields.end())
+      return invalid("implementation payload has unknown field '" + key + "'");
+  }
+  if (object.size() != fields.size())
+    return invalid("implementation payload requires exactly role, "
+                   "canonical_logical_name, and blob_digest fields");
+
+  const std::optional<llvm::StringRef> roleText = object.getString("role");
+  if (!roleText)
+    return invalid("implementation payload field 'role' must be a string");
+  const std::optional<PayloadRole> role = parseRole(*roleText);
+  if (!role)
+    return invalid("implementation payload role is unsupported");
+  const std::optional<llvm::StringRef> name =
+      object.getString("canonical_logical_name");
+  if (!name)
+    return invalid("implementation payload field 'canonical_logical_name' "
+                   "must be a string");
+  const std::optional<llvm::StringRef> digestText =
+      object.getString("blob_digest");
+  if (!digestText)
+    return invalid(
+        "implementation payload field 'blob_digest' must be a string");
+  auto blobDigest = parseBlobDigestHex(*digestText);
+  if (!blobDigest)
+    return invalid("implementation payload blob digest is invalid: " +
+                   llvm::toString(blobDigest.takeError()));
+  return ImplementationPayload{*role, name->str(), *blobDigest};
+}
+
+llvm::Expected<ImplementationPayload>
 parseImplementationPayloadJson(llvm::StringRef bytes) {
   auto parsed = llvm::json::parse(bytes);
   if (!parsed)
@@ -231,46 +267,15 @@ parseImplementationPayloadJson(llvm::StringRef bytes) {
   const llvm::json::Object *object = parsed->getAsObject();
   if (!object)
     return invalid("implementation payload JSON must be an object");
-
-  constexpr std::array<llvm::StringLiteral, 3> fields{
-      "role", "canonical_logical_name", "blob_digest"};
-  for (const auto &field : *object) {
-    const llvm::StringRef key = field.getFirst();
-    if (std::find(fields.begin(), fields.end(), key) == fields.end())
-      return invalid("implementation payload has unknown field '" + key + "'");
-  }
-  if (object->size() != fields.size())
-    return invalid("implementation payload requires exactly role, "
-                   "canonical_logical_name, and blob_digest fields");
-
-  const std::optional<llvm::StringRef> roleText = object->getString("role");
-  if (!roleText)
-    return invalid("implementation payload field 'role' must be a string");
-  const std::optional<PayloadRole> role = parseRole(*roleText);
-  if (!role)
-    return invalid("implementation payload role is unsupported");
-  const std::optional<llvm::StringRef> name =
-      object->getString("canonical_logical_name");
-  if (!name)
-    return invalid("implementation payload field 'canonical_logical_name' "
-                   "must be a string");
-  const std::optional<llvm::StringRef> digestText =
-      object->getString("blob_digest");
-  if (!digestText)
-    return invalid(
-        "implementation payload field 'blob_digest' must be a string");
-  auto blobDigest = parseBlobDigestHex(*digestText);
-  if (!blobDigest)
-    return invalid("implementation payload blob digest is invalid: " +
-                   llvm::toString(blobDigest.takeError()));
-
-  ImplementationPayload payload{*role, name->str(), *blobDigest};
-  auto canonical = serializeImplementationPayloadJson(payload);
+  auto payload = parseImplementationPayloadJsonValue(*object);
+  if (!payload)
+    return payload.takeError();
+  auto canonical = serializeImplementationPayloadJson(*payload);
   if (!canonical)
     return canonical.takeError();
   if (*canonical != bytes)
     return invalid("implementation payload JSON is not canonical");
-  return payload;
+  return *payload;
 }
 
 llvm::Expected<std::vector<ImplementationPayload>>

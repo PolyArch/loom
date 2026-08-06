@@ -3,6 +3,7 @@ add_library(LoomHardwareImplementation
   HardwareImplementation.cpp
   HardwareImplementationValidation.cpp
   ImplementationPayload.cpp
+  ImplementationRepresentationRoot.cpp
   RepresentationFormat.cpp
   RepresentationLocator.cpp
 )

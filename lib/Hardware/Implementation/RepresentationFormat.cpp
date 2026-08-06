@@ -3,6 +3,7 @@
 #include "RepresentationIndexInternal.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
@@ -130,15 +131,25 @@ constexpr std::array<RepresentationObjectKind, 5> gateObjectKinds{
     RepresentationObjectKind::Port, RepresentationObjectKind::Pin,
     RepresentationObjectKind::Net};
 
+constexpr std::array<RepresentationRootAdmission, 1> rtlRootAdmissions{{
+    {RepresentationRootVariant::Rtl, {}},
+}};
+
+constexpr std::array<RepresentationRootAdmission, 1> gateRootAdmissions{{
+    {RepresentationRootVariant::GateNetlist, {}},
+}};
+
 const std::array<detail::StaticRepresentationFormatEntry, 2>
     representationFormats{{
         {{systemVerilogRtlRef, RepresentationObjectKind::Module,
           rtlPayloadContracts, PayloadRole::RtlSource,
-          RepresentationLanguageProfile::Ieee1800_2017, rtlObjectKinds},
+          RepresentationLanguageProfile::Ieee1800_2017, rtlObjectKinds,
+          rtlRootAdmissions},
          detail::BuiltinRepresentationIndexer::SystemVerilogRtl},
         {{structuralVerilogGateNetlistRef, RepresentationObjectKind::Module,
           gateNetlistPayloadContracts, PayloadRole::Netlist,
-          RepresentationLanguageProfile::Ieee1364_2005, gateObjectKinds},
+          RepresentationLanguageProfile::Ieee1364_2005, gateObjectKinds,
+          gateRootAdmissions},
          detail::BuiltinRepresentationIndexer::StructuralVerilogGateNetlist},
     }};
 
@@ -157,6 +168,20 @@ RepresentationFormatDescriptorRef::get(RepresentationFormatKind kind) {
 const RepresentationFormatDescriptor &
 getRepresentationFormatDescriptor(RepresentationFormatDescriptorRef reference) {
   return detail::getStaticRepresentationFormatEntry(reference).descriptor;
+}
+
+bool admitsRepresentationRoot(
+    const RepresentationFormatDescriptor &descriptor,
+    RepresentationRootVariant variant,
+    std::optional<RepresentationPhysicalStage> stage) {
+  for (const RepresentationRootAdmission &admission : descriptor.admittedRoots) {
+    if (admission.variant != variant)
+      continue;
+    if (!stage)
+      return admission.admittedStages.empty();
+    return llvm::is_contained(admission.admittedStages, *stage);
+  }
+  return false;
 }
 
 namespace detail {
@@ -231,18 +256,11 @@ std::string serializeRepresentationFormatDescriptorRefJson(
 }
 
 llvm::Expected<RepresentationFormatDescriptorRef>
-parseRepresentationFormatDescriptorRefJson(llvm::StringRef bytes) {
-  auto parsed = llvm::json::parse(bytes);
-  if (!parsed)
-    return invalid("invalid representation format reference JSON: " +
-                   llvm::toString(parsed.takeError()));
-  const llvm::json::Object *object = parsed->getAsObject();
-  if (!object)
-    return invalid("representation format reference JSON must be an object");
-
+parseRepresentationFormatDescriptorRefJsonValue(
+    const llvm::json::Object &object) {
   constexpr std::array<llvm::StringLiteral, 4> fields{"registry", "major",
                                                       "minor", "kind"};
-  for (const auto &field : *object) {
+  for (const auto &field : object) {
     const llvm::StringRef key = field.getFirst();
     bool known = false;
     for (llvm::StringRef expected : fields)
@@ -251,21 +269,21 @@ parseRepresentationFormatDescriptorRefJson(llvm::StringRef bytes) {
       return invalid("representation format reference has unknown field '" +
                      key + "'");
   }
-  if (object->size() != fields.size())
+  if (object.size() != fields.size())
     return invalid("representation format reference requires exactly registry, "
                    "major, minor, and kind fields");
 
-  std::optional<llvm::StringRef> registry = object->getString("registry");
+  std::optional<llvm::StringRef> registry = object.getString("registry");
   if (!registry)
     return invalid("representation format reference field 'registry' must be "
                    "a string");
-  auto major = requireU32(*object, "major");
+  auto major = requireU32(object, "major");
   if (!major)
     return major.takeError();
-  auto minor = requireU32(*object, "minor");
+  auto minor = requireU32(object, "minor");
   if (!minor)
     return minor.takeError();
-  auto kind = requireU32(*object, "kind");
+  auto kind = requireU32(object, "kind");
   if (!kind)
     return kind.takeError();
 
@@ -274,8 +292,20 @@ parseRepresentationFormatDescriptorRefJson(llvm::StringRef bytes) {
   if (SchemaVersion{*major, *minor} !=
       hardwareRepresentationFormatRegistry.version)
     return invalid("representation format registry version is unsupported");
-  auto reference = RepresentationFormatDescriptorRef::get(
+  return RepresentationFormatDescriptorRef::get(
       static_cast<RepresentationFormatKind>(*kind));
+}
+
+llvm::Expected<RepresentationFormatDescriptorRef>
+parseRepresentationFormatDescriptorRefJson(llvm::StringRef bytes) {
+  auto parsed = llvm::json::parse(bytes);
+  if (!parsed)
+    return invalid("invalid representation format reference JSON: " +
+                   llvm::toString(parsed.takeError()));
+  const llvm::json::Object *object = parsed->getAsObject();
+  if (!object)
+    return invalid("representation format reference JSON must be an object");
+  auto reference = parseRepresentationFormatDescriptorRefJsonValue(*object);
   if (!reference)
     return reference.takeError();
   if (serializeRepresentationFormatDescriptorRefJson(*reference) != bytes)

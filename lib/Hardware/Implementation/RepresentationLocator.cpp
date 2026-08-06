@@ -214,28 +214,20 @@ serializeRepresentationLocatorJson(const RepresentationLocator &locator) {
 }
 
 llvm::Expected<RepresentationLocator>
-parseRepresentationLocatorJson(llvm::StringRef bytes) {
-  auto parsed = llvm::json::parse(bytes);
-  if (!parsed)
-    return invalid("invalid representation locator JSON: " +
-                   llvm::toString(parsed.takeError()));
-  const llvm::json::Object *object = parsed->getAsObject();
-  if (!object)
-    return invalid("representation locator JSON must be an object");
-
+parseRepresentationLocatorJsonValue(const llvm::json::Object &object) {
   constexpr std::array<llvm::StringLiteral, 2> fields{"object_kind",
                                                       "canonical_name"};
-  for (const auto &field : *object) {
+  for (const auto &field : object) {
     const llvm::StringRef key = field.getFirst();
     if (key != fields[0] && key != fields[1])
       return invalid("representation locator has unknown field '" + key + "'");
   }
-  if (object->size() != fields.size())
+  if (object.size() != fields.size())
     return invalid("representation locator requires exactly object_kind and "
                    "canonical_name fields");
 
   const std::optional<llvm::StringRef> kindText =
-      object->getString("object_kind");
+      object.getString("object_kind");
   if (!kindText)
     return invalid("representation locator field 'object_kind' must be a "
                    "string");
@@ -244,13 +236,26 @@ parseRepresentationLocatorJson(llvm::StringRef bytes) {
   if (!kind)
     return invalid("representation locator object kind is unsupported");
   const std::optional<llvm::StringRef> name =
-      object->getString("canonical_name");
+      object.getString("canonical_name");
   if (!name)
     return invalid("representation locator field 'canonical_name' must be a "
                    "string");
+  return RepresentationLocator{*kind, name->str()};
+}
 
-  RepresentationLocator locator{*kind, name->str()};
-  auto canonical = serializeRepresentationLocatorJson(locator);
+llvm::Expected<RepresentationLocator>
+parseRepresentationLocatorJson(llvm::StringRef bytes) {
+  auto parsed = llvm::json::parse(bytes);
+  if (!parsed)
+    return invalid("invalid representation locator JSON: " +
+                   llvm::toString(parsed.takeError()));
+  const llvm::json::Object *object = parsed->getAsObject();
+  if (!object)
+    return invalid("representation locator JSON must be an object");
+  auto locator = parseRepresentationLocatorJsonValue(*object);
+  if (!locator)
+    return locator.takeError();
+  auto canonical = serializeRepresentationLocatorJson(*locator);
   if (!canonical)
     return canonical.takeError();
   if (*canonical != bytes)

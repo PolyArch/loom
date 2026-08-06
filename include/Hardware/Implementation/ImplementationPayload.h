@@ -11,6 +11,10 @@
 #include <string>
 #include <vector>
 
+namespace llvm::json {
+class Object;
+}
+
 namespace loom::hardware {
 
 enum class PayloadRole : std::uint32_t {
@@ -48,6 +52,12 @@ decodeImplementationPayload(llvm::ArrayRef<std::uint8_t> bytes);
 /// Uses the schema-2.0 field names and exact displayed payload-role spellings.
 llvm::Expected<std::string>
 serializeImplementationPayloadJson(const ImplementationPayload &payload);
+
+/// Field validation and semantic construction from an already parsed object.
+/// This is the composition entry point for an enclosing canonical document;
+/// the text entry point additionally enforces exact canonical bytes.
+llvm::Expected<ImplementationPayload>
+parseImplementationPayloadJsonValue(const llvm::json::Object &object);
 
 llvm::Expected<ImplementationPayload>
 parseImplementationPayloadJson(llvm::StringRef bytes);

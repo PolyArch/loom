@@ -125,6 +125,7 @@ set(LOOM_TEST_DEPENDS
   loom-hardware-configuration-abi-test
   loom-hardware-implementation-test
   loom-implementation-payload-test
+  loom-implementation-representation-root-test
   loom-representation-format-test
   loom-representation-locator-test
   loom-frontend-dfg-integration-test

@@ -10,6 +10,10 @@
 #include <string>
 #include <vector>
 
+namespace llvm::json {
+class Object;
+}
+
 namespace loom::hardware {
 
 struct RepresentationLocator final {
@@ -32,6 +36,12 @@ decodeRepresentationLocator(llvm::ArrayRef<std::uint8_t> bytes);
 /// Uses the schema-2.0 field names and exact displayed object-kind spellings.
 llvm::Expected<std::string>
 serializeRepresentationLocatorJson(const RepresentationLocator &locator);
+
+/// Field validation and semantic construction from an already parsed object.
+/// This is the composition entry point for an enclosing canonical document;
+/// the text entry point additionally enforces exact canonical bytes.
+llvm::Expected<RepresentationLocator>
+parseRepresentationLocatorJsonValue(const llvm::json::Object &object);
 
 llvm::Expected<RepresentationLocator>
 parseRepresentationLocatorJson(llvm::StringRef bytes);

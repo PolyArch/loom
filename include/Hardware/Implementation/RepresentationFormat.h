@@ -8,10 +8,15 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
+
+namespace llvm::json {
+class Object;
+}
 
 namespace loom::hardware {
 
@@ -34,6 +39,40 @@ inline constexpr ArtifactSchemaDescriptor hardwareRepresentationFormatRegistry{
 enum class RepresentationFormatKind : std::uint32_t {
   SystemVerilogRtl = 0,
   StructuralVerilogGateNetlist = 1,
+};
+
+/// Closed root variants of one HardwareImplementation representation, with
+/// their stable tags. Owned here because the format descriptor alone admits a
+/// variant and stage set.
+enum class RepresentationRootVariant : std::uint32_t {
+  Rtl = 0,
+  GateNetlist = 1,
+  AsicPhysical = 2,
+  FpgaPhysical = 3,
+  FpgaImage = 4,
+};
+
+/// Stable stage tags for the physical root variants. `Extracted` is legal
+/// only for `AsicPhysical`.
+enum class RepresentationPhysicalStage : std::uint32_t {
+  Placed = 0,
+  Routed = 1,
+  Extracted = 2,
+};
+
+/// One admitted root variant and, for a physical variant, its exact admitted
+/// stage set. An empty stage set admits only the stageless form.
+struct RepresentationRootAdmission final {
+  RepresentationRootVariant variant;
+  llvm::ArrayRef<RepresentationPhysicalStage> admittedStages;
+
+  friend bool operator==(const RepresentationRootAdmission &lhs,
+                         const RepresentationRootAdmission &rhs) {
+    return lhs.variant == rhs.variant &&
+           lhs.admittedStages.size() == rhs.admittedStages.size() &&
+           std::equal(lhs.admittedStages.begin(), lhs.admittedStages.end(),
+                      rhs.admittedStages.begin());
+  }
 };
 
 enum class RepresentationTextPolicy : std::uint32_t {
@@ -92,7 +131,15 @@ struct RepresentationFormatDescriptor final {
   std::optional<PayloadRole> frontendSourceRole;
   std::optional<RepresentationLanguageProfile> languageProfile;
   llvm::ArrayRef<RepresentationObjectKind> admittedObjectKinds;
+  llvm::ArrayRef<RepresentationRootAdmission> admittedRoots;
 };
+
+/// Data-driven admission query: the descriptor alone decides whether one
+/// (variant, stage) pair is admitted. No caller-side branch may substitute.
+bool admitsRepresentationRoot(
+    const RepresentationFormatDescriptor &descriptor,
+    RepresentationRootVariant variant,
+    std::optional<RepresentationPhysicalStage> stage);
 
 /// Returns immutable metadata owned by the closed static format registry.
 const RepresentationFormatDescriptor &
@@ -106,6 +153,13 @@ decodeRepresentationFormatDescriptorRef(llvm::ArrayRef<std::uint8_t> bytes);
 
 std::string serializeRepresentationFormatDescriptorRefJson(
     RepresentationFormatDescriptorRef reference);
+
+/// Field validation and semantic construction from an already parsed object.
+/// This is the composition entry point for an enclosing canonical document;
+/// the text entry point additionally enforces exact canonical bytes.
+llvm::Expected<RepresentationFormatDescriptorRef>
+parseRepresentationFormatDescriptorRefJsonValue(
+    const llvm::json::Object &object);
 
 llvm::Expected<RepresentationFormatDescriptorRef>
 parseRepresentationFormatDescriptorRefJson(llvm::StringRef bytes);
