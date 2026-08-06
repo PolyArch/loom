@@ -3,8 +3,11 @@
 
 #include "Common/Artifact.h"
 #include "Common/BlobDigest.h"
+#include "Common/BlobStore.h"
 #include "Common/ComponentViewDigest.h"
+#include "Common/ProviderForm.h"
 #include "DSE/PlanValue.h"
+#include "ExternalTool/InvocationBundle.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -21,7 +24,7 @@ class ArtifactStore;
 namespace loom::dse {
 
 inline constexpr ArtifactSchemaDescriptor candidateGeneratorDescriptorSchema{
-    "loom.candidate_generator_descriptor", SchemaVersion{1, 0}};
+    "loom.candidate_generator_descriptor", SchemaVersion{2, 0}};
 
 class CandidateGeneratorKind final {
 public:
@@ -197,6 +200,9 @@ struct CandidateGeneratorDescriptor final {
   llvm::ArrayRef<CandidateGeneratorWorkUnitDescriptor> workUnits;
   const CandidateGeneratorOwnerLineagePayloadContract *ownerLineagePayload =
       nullptr;
+  /// The closed provider form of this descriptor, recovered from the exact
+  /// registry-2.0 descriptor reference before any implementation lookup.
+  ProviderForm providerForm;
 
   CandidateGeneratorDescriptorRef reference() const;
   const CandidateGeneratorInputSlotDescriptor *
@@ -266,10 +272,9 @@ struct CandidateGeneratorLineageEdge final {
   }
 };
 
-struct CompletedCandidateGeneratorInvocation final {
+struct CompletedCandidateGeneratorResult final {
   std::vector<CandidateGeneratorOutputBinding> outputBindings;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
-  std::vector<CandidateGeneratorWorkUnitSummary> workSummary;
 };
 
 enum class CandidateGeneratorIncompleteReason : std::uint32_t {
@@ -277,42 +282,123 @@ enum class CandidateGeneratorIncompleteReason : std::uint32_t {
   SemanticLimitReached = 1,
   ProviderUnavailable = 2,
   Unsupported = 3,
+  ExecutionFailed = 4,
+  CancelledOrTimeout = 5,
 };
 
-struct IncompleteCandidateGeneratorInvocation final {
+struct IncompleteCandidateGeneratorResult final {
   CandidateGeneratorIncompleteReason reason;
   std::vector<CandidateGeneratorOutputBinding> retainedOutputBindings;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
+};
+
+using CandidateGeneratorProviderOutcome =
+    std::variant<CompletedCandidateGeneratorResult,
+                 IncompleteCandidateGeneratorResult>;
+
+/// One transient provider report: the outcome variant plus exactly one dense
+/// work summary outside it. The descriptor owns the stable work-unit
+/// ordinals; the provider is the sole runtime observation source of the
+/// planned and consumed counts; InvocationManifest remains the sole
+/// persistent owner.
+struct CandidateGeneratorProviderResult final {
+  CandidateGeneratorProviderOutcome outcome;
   std::vector<CandidateGeneratorWorkUnitSummary> workSummary;
 };
 
-using CandidateGeneratorInvocationOutcome =
-    std::variant<CompletedCandidateGeneratorInvocation,
-                 IncompleteCandidateGeneratorInvocation>;
-
 using CandidateGeneratorProviderFunction =
-    llvm::Expected<CandidateGeneratorInvocationOutcome> (*)(
+    llvm::Expected<CandidateGeneratorProviderResult> (*)(
         llvm::ArrayRef<CandidateGeneratorInputBinding>,
-        const ResolvedCandidateGeneratorBinding &, const ArtifactStore &);
+        const ResolvedCandidateGeneratorBinding &, const ArtifactStore &,
+        const BlobStore &);
+
+/// The external prepare callable of one ExternalPrepareImport generator. It
+/// materializes one deterministic finalized bundle and never executes a
+/// process, publishes an output Artifact, or publishes Evidence.
+using CandidateGeneratorPrepareFunction =
+    llvm::Expected<external_tool::PreparedExternalToolInvocation> (*)(
+        llvm::ArrayRef<CandidateGeneratorInputBinding>,
+        const ResolvedCandidateGeneratorBinding &, const ArtifactStore &,
+        const BlobStore &,
+        const external_tool::ExternalToolPreparationContext &);
+
+/// The external import callable of one ExternalPrepareImport generator. It
+/// receives the full typed closure again, validates strict completion against
+/// the exact prepared bundle, and returns the provider result.
+using CandidateGeneratorImportFunction =
+    llvm::Expected<CandidateGeneratorProviderResult> (*)(
+        llvm::ArrayRef<CandidateGeneratorInputBinding>,
+        const ResolvedCandidateGeneratorBinding &,
+        const external_tool::PreparedExternalToolInvocation &,
+        const ArtifactStore &, const BlobStore &);
+
+/// The closed provider implementation forms. The registered form must match
+/// the descriptor's provider form exactly.
+struct CandidateGeneratorInProcessProvider final {
+  CandidateGeneratorProviderFunction invoke;
+
+  friend bool operator==(const CandidateGeneratorInProcessProvider &lhs,
+                         const CandidateGeneratorInProcessProvider &rhs) {
+    return lhs.invoke == rhs.invoke;
+  }
+};
+
+struct CandidateGeneratorExternalPrepareImportProvider final {
+  CandidateGeneratorPrepareFunction prepare;
+  CandidateGeneratorImportFunction import;
+
+  friend bool operator==(
+      const CandidateGeneratorExternalPrepareImportProvider &lhs,
+      const CandidateGeneratorExternalPrepareImportProvider &rhs) {
+    return lhs.prepare == rhs.prepare && lhs.import == rhs.import;
+  }
+};
+
+using CandidateGeneratorProviderImplementation =
+    std::variant<CandidateGeneratorInProcessProvider,
+                 CandidateGeneratorExternalPrepareImportProvider>;
 
 struct CandidateGeneratorProvider final {
   CandidateGeneratorDescriptorRef descriptor;
-  CandidateGeneratorProviderFunction invoke;
+  CandidateGeneratorProviderImplementation implementation;
 };
 
 llvm::Error
 registerCandidateGeneratorProvider(const CandidateGeneratorProvider &provider);
 
-/// Invokes the exact registered provider and canonicalizes every typed output
-/// set. Missing implementation is a typed Incomplete outcome.
-llvm::Expected<CandidateGeneratorInvocationOutcome>
+/// Invokes the exact registered in-process provider and canonicalizes every
+/// typed output set. Missing implementation is a typed Incomplete outcome
+/// with the mechanically derived all-zero work summary; an
+/// ExternalPrepareImport provider is never invoked through this facade.
+llvm::Expected<CandidateGeneratorProviderResult>
 invokeCandidateGenerator(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                          const ResolvedCandidateGeneratorBinding &binding,
-                         const ArtifactStore &store);
+                         const ArtifactStore &store, const BlobStore &blobs);
 
 llvm::Error validateCandidateGeneratorWorkSummary(
     CandidateGeneratorDescriptorRef descriptor,
     llvm::ArrayRef<CandidateGeneratorWorkUnitSummary> summary);
+
+/// Prepares one deterministic finalized invocation bundle through the exact
+/// registered ExternalPrepareImport provider. The descriptor form is
+/// validated before any provider lookup; the caller alone decides whether,
+/// where, and when to execute run.sh.
+llvm::Expected<external_tool::PreparedExternalToolInvocation>
+prepareCandidateGeneratorInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store, const BlobStore &blobs,
+    const external_tool::ExternalToolPreparationContext &context);
+
+/// Strictly imports one prepared invocation through the exact registered
+/// ExternalPrepareImport provider and validates the provider result against
+/// the full typed closure.
+llvm::Expected<CandidateGeneratorProviderResult>
+importCandidateGeneratorInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const ArtifactStore &store, const BlobStore &blobs);
 
 /// The canonical key bytes of one descriptor reference under the shared
 /// owner-local registry reference framing: u64be identity length, exact

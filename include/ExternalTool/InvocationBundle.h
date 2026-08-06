@@ -3,6 +3,7 @@
 
 #include "ExternalTool/Binding.h"
 #include "ExternalTool/ExternalFile.h"
+#include "ExternalTool/LocalConfig.h"
 #include "ExternalTool/RuntimeBinding.h"
 #include "ExternalTool/ShellProbe.h"
 
@@ -52,6 +53,24 @@ struct MaterializedBundleFile {
   std::string contents;
   std::optional<ArtifactRootReference> sourceArtifact;
   bool executable = false;
+};
+
+/// The nonsemantic preparation context for one external provider attempt:
+/// the strictly adopted machine-local tool configuration and the destination
+/// directory for the finalized bundle. Neither enters an Artifact, Request,
+/// Evidence, or binding identity.
+struct ExternalToolPreparationContext final {
+  LocalToolConfig localConfig;
+  std::string bundleDestination;
+};
+
+/// The ephemeral prepared handle of one finalized invocation bundle. It owns
+/// no semantic closure; every import receives the full typed closure again
+/// and recomputes the expected manifest. The digest is only an integrity and
+/// lookup key.
+struct PreparedExternalToolInvocation final {
+  std::string bundleRoot;
+  BlobDigest manifestDigest;
 };
 
 struct ExternalToolInvocationBundleSpec {

@@ -1,6 +1,7 @@
 #include "CgraAdmissionTestSupport.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Models/CgraSimulation.h"
@@ -76,7 +77,8 @@ void loom::test::exerciseCgraAdmission(
     const ArtifactRootReference &fabricReference,
     const ArtifactRootReference &spatialMappingReference,
     const ArtifactRootReference &foreignFabricReference,
-    const ArtifactStore &store, bool expectPhysicalTags) {
+    const ArtifactStore &store, const BlobStore &blobs,
+    bool expectPhysicalTags) {
   auto dataflow =
       take(::dataflow::importCanonicalDataflow(dataflowReference, store));
   auto view = take(dataflow.view());
@@ -231,7 +233,7 @@ void loom::test::exerciseCgraAdmission(
       dataflowReference, workloadReference, runtimeReference,
       defaultResolvedConfig(), store));
   auto dfgEvidence = take(evaluation::models::evaluateDfgSimulation(
-      preparedDfg, {128, std::nullopt}, store));
+      preparedDfg, {128, std::nullopt}, store, blobs));
   if (dfgEvidence.outcomeKind() != evaluation::EvidenceOutcomeKind::Completed ||
       dfgEvidence.outputBindings().size() != 1 ||
       dfgEvidence.outputBindings().front().artifacts.size() != 1)
@@ -241,7 +243,7 @@ void loom::test::exerciseCgraAdmission(
       dataflowReference, fabricReference, spatialMappingReference,
       workloadReference, runtimeReference, defaultResolvedConfig(), store));
   auto cgraEvidence = take(evaluation::models::evaluateCgraSimulation(
-      preparedCgra, {128, std::nullopt}, store));
+      preparedCgra, {128, std::nullopt}, store, blobs));
   if (cgraEvidence.outcomeKind() !=
           evaluation::EvidenceOutcomeKind::Completed ||
       cgraEvidence.outputBindings().size() != 1 ||
@@ -254,8 +256,9 @@ void loom::test::exerciseCgraAdmission(
           preparedDfg.resolution,
           cgraEvidence.outputBindings().front().artifacts.front(),
           preparedCgra.resolution, defaultResolvedConfig(), store));
-  auto comparisonEvidence =
-      take(evaluation::models::evaluateSimulationComparison(comparison, store));
+  auto comparisonEvidence = take(
+      evaluation::models::evaluateSimulationComparison(comparison, store,
+                                                       blobs));
   const auto *completed =
       std::get_if<evaluation::CompletedEvidence>(&comparisonEvidence.outcome());
   if (!completed || completed->findingResults.size() != 1 ||
@@ -290,7 +293,7 @@ void loom::test::exerciseCgraAdmission(
           preparedDfg.resolution, mismatchReference, preparedCgra.resolution,
           defaultResolvedConfig(), store));
   auto mismatchEvidence = take(evaluation::models::evaluateSimulationComparison(
-      mismatchComparison, store));
+      mismatchComparison, store, blobs));
   const auto *mismatchCompleted =
       std::get_if<evaluation::CompletedEvidence>(&mismatchEvidence.outcome());
   if (!mismatchCompleted || mismatchCompleted->findingResults.size() != 1 ||

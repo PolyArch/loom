@@ -106,6 +106,7 @@ const CandidateGeneratorDescriptor descriptor{
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
     &dataflowRewriteCandidateLineagePayloadContract(),
+    ProviderForm::InProcess,
 };
 
 const ArtifactRootReference &
@@ -386,10 +387,10 @@ llvm::Expected<std::optional<FeedbackCandidate>> materializeFeedback(
   return std::optional<FeedbackCandidate>{};
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome>
+llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                const ResolvedCandidateGeneratorBinding &binding,
-               const ArtifactStore &store) {
+               const ArtifactStore &store, const BlobStore &blobs) {
   auto config = ::loom::pnr::adoptResolvedSpatialPnrConfigView(
       ::loom::pnr::resolvedSpatialPnrConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -512,23 +513,23 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   CandidateGeneratorOutputBinding output{CandidateGeneratorOutputSlotRef(0),
                                          std::move(outputs)};
   if (proofNotEstablished)
-    return CandidateGeneratorInvocationOutcome{
-        IncompleteCandidateGeneratorInvocation{
+    return CandidateGeneratorProviderResult{
+        IncompleteCandidateGeneratorResult{
             CandidateGeneratorIncompleteReason::ProofNotEstablished,
             {std::move(output)},
-            std::move(lineage),
-            {{CandidateGeneratorWorkUnitRef(0), mappings.size(),
-              mappings.size()}}}};
-  return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{
+            std::move(lineage)},
+        {{CandidateGeneratorWorkUnitRef(0), mappings.size(),
+          mappings.size()}}};
+  return CandidateGeneratorProviderResult{
+      CompletedCandidateGeneratorResult{
           {std::move(output)},
-          std::move(lineage),
-          {{CandidateGeneratorWorkUnitRef(0), mappings.size(),
-            mappings.size()}}}};
+          std::move(lineage)},
+      {{CandidateGeneratorWorkUnitRef(0), mappings.size(),
+        mappings.size()}}};
 }
 
-const CandidateGeneratorProvider provider{descriptor.reference(),
-                                          invokeProvider};
+const CandidateGeneratorProvider provider{
+    descriptor.reference(), CandidateGeneratorInProcessProvider{invokeProvider}};
 
 void canonicalizeReferences(std::vector<ArtifactRootReference> &references) {
   llvm::sort(references, artifactRootReferenceLess);

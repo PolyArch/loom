@@ -45,6 +45,7 @@ target_link_libraries(loom-dse-objective-test PRIVATE
 
 target_link_libraries(loom-dse-candidate-generator-test PRIVATE
   LoomDSECandidateGenerator
+  LoomExternalTool
   LLVMSupport
 )
 

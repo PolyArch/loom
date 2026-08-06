@@ -234,7 +234,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
     const sim::PreparedCgraExecution &execution,
     const sim::CanonicalSimulationWorkload &workload,
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
-    CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore) {
+    CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
+    const BlobStore &blobStore) {
   if (request.modelBinding().descriptorRef() != kModelDescriptor.reference())
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -301,7 +302,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
 llvm::Expected<EvaluationModelResult>
 evaluate(const EvaluationRequest &request,
          const CaseArtifactResolution &resolution,
-         const ArtifactStore &artifactStore) {
+         const ArtifactStore &artifactStore,
+         const BlobStore &blobStore) {
   const auto programs = request.subjectBindings().subjects(kProgramRole);
   const auto hardware = request.subjectBindings().subjects(kHardwareRole);
   const auto mappings = request.subjectBindings().subjects(kSpatialMappingRole);
@@ -319,11 +321,12 @@ evaluate(const EvaluationRequest &request,
   if (!inputs)
     return classifyExecutionFailure(inputs.takeError());
   return evaluateWithPrepared(request, resolution, *execution, inputs->workload,
-                              inputs->runtimeInput, {}, artifactStore);
+                              inputs->runtimeInput, {}, artifactStore,
+                              blobStore);
 }
 
 const EvaluationModelProvider kProvider{kModelDescriptor.reference(),
-                                        &evaluate};
+                                        EvaluationModelInProcessProvider{&evaluate}};
 
 } // namespace
 
@@ -454,14 +457,15 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
 llvm::Expected<EvaluationEvidence>
 evaluateCgraSimulation(const PreparedCgraSimulationEvaluation &prepared,
                        CgraSimulationAttemptLimits limits,
-                       const ArtifactStore &artifactStore) {
+                       const ArtifactStore &artifactStore,
+                       const BlobStore &blobStore) {
   RequestVerifier verifier(prepared.resolution, artifactStore);
   if (llvm::Error error = verifier.verify(prepared.request))
     return std::move(error);
   auto result = evaluateWithPrepared(prepared.request, prepared.resolution,
                                      prepared.execution, prepared.workload,
                                      prepared.runtimeInput, std::move(limits),
-                                     artifactStore);
+                                     artifactStore, blobStore);
   if (!result)
     return result.takeError();
   return EvaluationEvidence::get(

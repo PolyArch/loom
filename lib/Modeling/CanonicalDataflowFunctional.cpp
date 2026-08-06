@@ -264,7 +264,7 @@ llvm::Error storeReplay(const ArtifactRootReference &candidate,
 
 llvm::Expected<EvaluationModelResult>
 evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
-         const ArtifactStore &artifactStore) {
+         const ArtifactStore &artifactStore, const BlobStore &) {
   llvm::ArrayRef<ArtifactRootReference> candidates =
       request.subjectBindings().subjects(kCandidateRole);
   llvm::ArrayRef<ArtifactRootReference> parents =
@@ -321,8 +321,9 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
   return EvaluationModelResult{{}, CompletedEvidence{{}, std::move(findings)}};
 }
 
-const EvaluationModelProvider kProvider{kModelDescriptor.reference(),
-                                        &evaluate};
+const EvaluationModelProvider kProvider{
+    kModelDescriptor.reference(),
+    EvaluationModelInProcessProvider{&evaluate}};
 
 } // namespace
 

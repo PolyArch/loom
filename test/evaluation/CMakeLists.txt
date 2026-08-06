@@ -29,5 +29,6 @@ add_executable(loom-evaluation-evidence-test
 target_link_libraries(loom-evaluation-evidence-test PRIVATE
   LoomConfig
   LoomEvaluation
+  LoomExternalTool
   LLVMSupport
 )

@@ -1,6 +1,7 @@
 #include "DSE/InvocationManifest.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Common/ComponentViewDigest.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/ResolvedConfigView.h"
@@ -185,31 +186,31 @@ ArtifactRootReference publish(const ArtifactStore &store,
   return {schema.identity.str(), schema.version, identity};
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome>
+llvm::Expected<CandidateGeneratorProviderResult>
 generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
-         const ResolvedCandidateGeneratorBinding &,
-         const ArtifactStore &store) {
+         const ResolvedCandidateGeneratorBinding &, const ArtifactStore &store,
+         const BlobStore &) {
   const ArtifactRootReference candidate = publish(store, candidateSchema, 0x31);
   if (generationStopsEarly)
-    return CandidateGeneratorInvocationOutcome{
-        IncompleteCandidateGeneratorInvocation{
+    return CandidateGeneratorProviderResult{
+        IncompleteCandidateGeneratorResult{
             CandidateGeneratorIncompleteReason::SemanticLimitReached,
             {{CandidateGeneratorOutputSlotRef(0), {candidate}}},
             {{CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
               CandidateGeneratorOutputSlotRef(0),
               candidate,
               {},
-              {}}},
-            {{CandidateGeneratorWorkUnitRef(0), 4, 1}}}};
-  return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{
+              {}}}},
+        {{CandidateGeneratorWorkUnitRef(0), 4, 1}}};
+  return CandidateGeneratorProviderResult{
+      CompletedCandidateGeneratorResult{
           {{CandidateGeneratorOutputSlotRef(0), {candidate}}},
           {{CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
             CandidateGeneratorOutputSlotRef(0),
             candidate,
             {},
-            {}}},
-          {{CandidateGeneratorWorkUnitRef(0), inputBindings.size(), 1}}}};
+            {}}}},
+      {{CandidateGeneratorWorkUnitRef(0), inputBindings.size(), 1}}};
 }
 
 void registerOwner() {
@@ -222,7 +223,9 @@ void registerOwner() {
   if (llvm::Error error = registerCandidateGeneratorDescriptor(generator))
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error = registerCandidateGeneratorProvider(
-          CandidateGeneratorProvider{generator.reference(), generate}))
+          CandidateGeneratorProvider{generator.reference(),
+                                     CandidateGeneratorInProcessProvider{
+                                         generate}}))
     fail(llvm::toString(std::move(error)));
 }
 
@@ -279,7 +282,8 @@ struct Fixture final {
         records(std::move(records)), selected(std::move(selected)) {}
 };
 
-Fixture makeFixture(const ArtifactStore &store, bool stopEarly = false) {
+Fixture makeFixture(const ArtifactStore &store, const BlobStore &blobs,
+                    bool stopEarly = false) {
   const ComponentViewDigest digest =
       take(computeComponentViewDigest(configSchema, {0x01}));
   ResolvedConfig config = defaultResolvedConfig();
@@ -297,7 +301,7 @@ Fixture makeFixture(const ArtifactStore &store, bool stopEarly = false) {
 
   ResolvedDseConfigView view = take(projectResolvedDseConfigView(config));
   generationStopsEarly = stopEarly;
-  DsePlanExecutionOutcome execution = take(executeDsePlan(view, store));
+  DsePlanExecutionOutcome execution = take(executeDsePlan(view, store, blobs));
   generationStopsEarly = false;
   ArtifactRootReference selected = source;
   if (auto *completed = std::get_if<CompletedDsePlanExecution>(&execution)) {
@@ -329,8 +333,9 @@ DseRunClosure makeClosure(const Fixture &fixture, const ArtifactStore &store,
       fixture.config, {fixture.preexistingEvidence}, store));
 }
 
-void testRunKeyAndRoundTrip(const ArtifactStore &store) {
-  Fixture fixture = makeFixture(store);
+void testRunKeyAndRoundTrip(const ArtifactStore &store,
+                            const BlobStore &blobs) {
+  Fixture fixture = makeFixture(store, blobs);
   const std::array<ArtifactRootReference, 3> duplicateInputs = {
       fixture.selected, fixture.source, fixture.source};
   const std::array<ArtifactRootReference, 2> reversedInputs = {
@@ -384,8 +389,9 @@ void testRunKeyAndRoundTrip(const ArtifactStore &store) {
     fail("producer identity did not change the run key");
 }
 
-void testIncompleteWorkPreservation(const ArtifactStore &store) {
-  Fixture fixture = makeFixture(store, true);
+void testIncompleteWorkPreservation(const ArtifactStore &store,
+                                    const BlobStore &blobs) {
+  Fixture fixture = makeFixture(store, blobs, true);
   InvocationManifest manifest = take(InvocationManifest::get(
       makeClosure(fixture, store, {fixture.source}), 3, std::nullopt,
       fixture.config, fixture.records,
@@ -409,8 +415,34 @@ void testIncompleteWorkPreservation(const ArtifactStore &store) {
     fail("incomplete Manifest changed planned or consumed logical work");
 }
 
-void testStrictFailures(const ArtifactStore &store) {
-  Fixture fixture = makeFixture(store);
+void testIncompleteReasonRoundTripCoverage(const ArtifactStore &store,
+                                           const BlobStore &blobs) {
+  Fixture fixture = makeFixture(store, blobs, true);
+  for (std::uint32_t ordinal = 0; ordinal <= 5; ++ordinal) {
+    const auto reason =
+        static_cast<CandidateGeneratorIncompleteReason>(ordinal);
+    InvocationManifest manifest = take(InvocationManifest::get(
+        makeClosure(fixture, store, {fixture.source}), 3, std::nullopt,
+        fixture.config, fixture.records,
+        InvocationIncomplete{0, reason, {}, {fixture.selected}, {}}, store));
+    InvocationManifest adopted = take(adoptInvocationManifest(
+        manifest.canonicalBytes(), fixture.config, store));
+    if (adopted.canonicalBytes() != manifest.canonicalBytes())
+      fail("an incomplete reason changed across manifest reimport");
+    const auto *adoptedIncomplete =
+        std::get_if<InvocationIncomplete>(&adopted.outcome());
+    if (!adoptedIncomplete)
+      fail("an incomplete reason outcome changed form");
+    const auto *candidateReason =
+        std::get_if<CandidateGeneratorIncompleteReason>(
+            &adoptedIncomplete->reason);
+    if (!candidateReason || *candidateReason != reason)
+      fail("an incomplete reason did not round-trip exactly");
+  }
+}
+
+void testStrictFailures(const ArtifactStore &store, const BlobStore &blobs) {
+  Fixture fixture = makeFixture(store, blobs);
   DseRunClosure closure = makeClosure(fixture, store, {fixture.source});
   InvocationManifest manifest = take(InvocationManifest::get(
       std::move(closure), 1, std::nullopt, fixture.config, fixture.records,
@@ -466,8 +498,14 @@ int main(int argc, char **argv) {
     fail("unable to create ArtifactStore directory: " + error.message());
   registerOwner();
   ArtifactStore store(argv[1]);
-  testRunKeyAndRoundTrip(store);
-  testIncompleteWorkPreservation(store);
-  testStrictFailures(store);
+  llvm::SmallString<128> blobPath(argv[1]);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const BlobStore blobs(blobPath);
+  testRunKeyAndRoundTrip(store, blobs);
+  testIncompleteWorkPreservation(store, blobs);
+  testIncompleteReasonRoundTripCoverage(store, blobs);
+  testStrictFailures(store, blobs);
   return 0;
 }

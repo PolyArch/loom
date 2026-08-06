@@ -1,5 +1,6 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/PreMappingExploration.h"
@@ -41,6 +42,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
@@ -409,6 +411,11 @@ void centralPlanEvaluatesScheduleChildren() {
   if (error)
     fail("cannot create ArtifactStore directory: " + error.message());
   loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Large));
   auto spatial = take(loom::fabric::importEntireFabricRoot(
@@ -430,7 +437,7 @@ void centralPlanEvaluatesScheduleChildren() {
 
   auto explored = take(loom::dse::exploreStructuredCompilationToPreMapping(
       std::move(compilation), inputs.workload, inputs.runtimeInput, spatial,
-      config, options, store));
+      config, options, store, blobs));
   const auto *selection =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!selection || selection->selected.empty()) {
@@ -626,13 +633,14 @@ evaluateStructuredRuntime(const loom::ArtifactRootReference &structuredProgram,
                           const loom::ArtifactRootReference &fabric,
                           const loom::ArtifactRootReference &workload,
                           const loom::ArtifactRootReference &runtimeInput,
-                          const loom::ArtifactStore &store) {
+                          const loom::ArtifactStore &store,
+                          const loom::BlobStore &blobs) {
   auto prepared =
       take(loom::evaluation::models::prepareStructuredFabricEvaluation(
           structuredProgram, fabric, workload, runtimeInput,
           loom::defaultResolvedConfig(), store));
   auto evidence = take(loom::evaluation::evaluateRequest(
-      prepared.request, prepared.resolution, store));
+      prepared.request, prepared.resolution, store, blobs));
   return EvaluatedRuntime{metricResult(prepared.request, evidence,
                                        loom::evaluation::MetricKind::Runtime),
                           std::move(prepared.request), std::move(evidence)};
@@ -642,13 +650,13 @@ EvaluatedFunctional evaluateStructuredFunctional(
     const loom::ArtifactRootReference &structuredProgram,
     const loom::ArtifactRootReference &workload,
     const loom::ArtifactRootReference &runtimeInput,
-    const loom::ArtifactStore &store) {
+    const loom::ArtifactStore &store, const loom::BlobStore &blobs) {
   auto prepared = take(
       loom::evaluation::models::prepareStructuredProgramFunctionalEvaluation(
           structuredProgram, workload, runtimeInput,
           loom::defaultResolvedConfig(), store));
   auto evidence = take(loom::evaluation::evaluateRequest(
-      prepared.request, prepared.resolution, store));
+      prepared.request, prepared.resolution, store, blobs));
   return {std::move(prepared.request), std::move(evidence),
           prepared.functionalMismatchRequest};
 }
@@ -672,12 +680,13 @@ functionalMismatchResult(const loom::evaluation::EvaluationRequest &request,
 loom::evaluation::DecimalValue
 evaluateCanonicalDataflowRuntime(const loom::ArtifactRootReference &program,
                                  const loom::ArtifactRootReference &fabric,
-                                 const loom::ArtifactStore &store) {
+                                 const loom::ArtifactStore &store,
+                                 const loom::BlobStore &blobs) {
   auto prepared =
       take(loom::evaluation::models::prepareCanonicalDataflowFabricEvaluation(
           program, fabric, loom::defaultResolvedConfig(), store));
   auto evidence = take(loom::evaluation::evaluateRequest(
-      prepared.request, prepared.resolution, store));
+      prepared.request, prepared.resolution, store, blobs));
   return metricResult(prepared.request, evidence,
                       loom::evaluation::MetricKind::Runtime);
 }
@@ -785,6 +794,11 @@ void runEvaluationAnchor() {
   if (error)
     fail("cannot create artifact store directory: " + error.message());
   loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
 
@@ -901,9 +915,10 @@ void runEvaluationAnchor() {
       take(loom::dse::resolveStructuredOwnershipCandidateGeneratorBinding(
           generatorConfig));
   auto generated = take(loom::dse::invokeCandidateGenerator(
-      generatorInputs, generatorBinding, store));
+      generatorInputs, generatorBinding, store, blobs));
   const auto *completedGeneration =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&generated);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &generated.outcome);
   std::vector<loom::ArtifactRootReference> expectedGenerated = {
       baselineRef, spatialRef, warmRef};
   llvm::sort(expectedGenerated, loom::artifactRootReferenceLess);
@@ -936,7 +951,7 @@ void runEvaluationAnchor() {
       take(loom::dse::resolveStructuredOwnershipCandidateGeneratorBinding(
           foreignGeneratorConfig));
   auto foreignGeneration = loom::dse::invokeCandidateGenerator(
-      generatorInputs, foreignBinding, store);
+      generatorInputs, foreignBinding, store, blobs);
   if (foreignGeneration)
     fail("ownership generator accepted a foreign protocol root");
   llvm::consumeError(foreignGeneration.takeError());
@@ -988,7 +1003,8 @@ void runEvaluationAnchor() {
       loom::dse::PromotePurpose::CandidateSelection}};
   auto centralView =
       take(loom::dse::projectResolvedDseConfigView(centralConfig));
-  auto centralOutcome = take(loom::dse::executeDsePlan(centralView, store));
+  auto centralOutcome =
+      take(loom::dse::executeDsePlan(centralView, store, blobs));
   const auto *centralCompleted =
       std::get_if<loom::dse::CompletedDsePlanExecution>(&centralOutcome);
   if (!centralCompleted || centralCompleted->resolve({0, 0}).size() != 2 ||
@@ -1061,7 +1077,7 @@ void runEvaluationAnchor() {
     loom::dse::StructuredOwnershipInvocationScope functionalInvocationScope(
         functionalInvocation);
     auto functionalPlanOutcome =
-        take(loom::dse::executeDsePlan(functionalPlanView, store));
+        take(loom::dse::executeDsePlan(functionalPlanView, store, blobs));
     const auto *functionalPlanCompleted =
         std::get_if<loom::dse::CompletedDsePlanExecution>(
             &functionalPlanOutcome);
@@ -1119,7 +1135,7 @@ void runEvaluationAnchor() {
     auto dataflowAcquisition = take(loom::dse::invokePromotionAcquisition(
         dataflowAcquisitionInputs, dataflowAcquisitionBinding,
         dataflowObligations, {dataflowCandidates, dataflowObligationRefs},
-        store));
+        store, blobs));
     const auto *completedDataflowAcquisition =
         std::get_if<loom::dse::CompletedPromotionAcquisition>(
             &dataflowAcquisition);
@@ -1162,7 +1178,7 @@ void runEvaluationAnchor() {
 
   auto coldSpatialEvidence = take(loom::evaluation::evaluateRequest(
       strictSpatialEvaluation.request, strictSpatialEvaluation.resolution,
-      store));
+      store, blobs));
 
   auto spatialReplay = take(loom::sim::validateSourceBackedDfgReplay(
       compiled.structuredProgram, spatialScope, spatialDecision, {}, spatial,
@@ -1309,34 +1325,35 @@ void runEvaluationAnchor() {
     fail(llvm::toString(std::move(error)));
   EvaluatedRuntime baseline = evaluateStructuredRuntime(
       baselineRef, design.roots().front().reference(), inputs.workloadReference,
-      inputs.runtimeInputReference, store);
+      inputs.runtimeInputReference, store, blobs);
   EvaluatedRuntime spatialEvaluation = evaluateStructuredRuntime(
       spatialRef, design.roots().front().reference(), inputs.workloadReference,
-      inputs.runtimeInputReference, store);
+      inputs.runtimeInputReference, store, blobs);
   EvaluatedRuntime coldEvaluation = evaluateStructuredRuntime(
       coldRef, design.roots().front().reference(), inputs.workloadReference,
-      inputs.runtimeInputReference, store);
+      inputs.runtimeInputReference, store, blobs);
   EvaluatedRuntime tinyEvaluation = evaluateStructuredRuntime(
       tinyRef, design.roots().front().reference(), inputs.workloadReference,
-      inputs.runtimeInputReference, store);
+      inputs.runtimeInputReference, store, blobs);
   EvaluatedRuntime combinedEvaluation = evaluateStructuredRuntime(
       combinedRef, design.roots().front().reference(), inputs.workloadReference,
-      inputs.runtimeInputReference, store);
+      inputs.runtimeInputReference, store, blobs);
   if (metricResult(strictSpatialEvaluation.request, coldSpatialEvidence,
                    loom::evaluation::MetricKind::Runtime) !=
       spatialEvaluation.value)
     fail("source-activity projection changed the exact analytical result");
   EvaluatedFunctional baselineFunctional =
       evaluateStructuredFunctional(baselineRef, inputs.workloadReference,
-                                   inputs.runtimeInputReference, store);
+                                   inputs.runtimeInputReference, store, blobs);
   EvaluatedFunctional spatialFunctional =
       evaluateStructuredFunctional(spatialRef, inputs.workloadReference,
-                                   inputs.runtimeInputReference, store);
+                                   inputs.runtimeInputReference, store, blobs);
   EvaluatedFunctional coldFunctional = evaluateStructuredFunctional(
-      coldRef, inputs.workloadReference, inputs.runtimeInputReference, store);
+      coldRef, inputs.workloadReference, inputs.runtimeInputReference, store,
+      blobs);
   EvaluatedFunctional incorrectFunctional =
       evaluateStructuredFunctional(incorrectRef, inputs.workloadReference,
-                                   inputs.runtimeInputReference, store);
+                                   inputs.runtimeInputReference, store, blobs);
   if (baseline.request.workload() != inputs.workloadReference ||
       baseline.request.runtimeInput() != inputs.runtimeInputReference)
     fail("Structured Evaluation Request lost its exact source inputs");
@@ -1360,7 +1377,7 @@ void runEvaluationAnchor() {
           combinedEvaluation.value,
           evaluateStructuredRuntime(warmRef, design.roots().front().reference(),
                                     inputs.workloadReference,
-                                    inputs.runtimeInputReference, store)
+                                    inputs.runtimeInputReference, store, blobs)
               .value) >= 0)
     fail("whole-candidate Evaluation did not compose independent Spatial work");
   if (functionalMismatchResult(baselineFunctional.request,
@@ -1443,7 +1460,7 @@ void runEvaluationAnchor() {
   auto explored = take(loom::dse::exploreStructuredCompilationToPreMapping(
       std::move(exploredSource), inputs.workload, inputs.runtimeInput,
       design.roots().front(), loom::defaultResolvedConfig(), exploration,
-      store));
+      store, blobs));
   const auto *exploredSelection =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!exploredSelection || exploredSelection->selected.size() != 1)
@@ -1481,7 +1498,7 @@ void runEvaluationAnchor() {
   auto benefitOnly = take(loom::dse::exploreStructuredCompilationToPreMapping(
       std::move(benefitOnlySource), inputs.workload, inputs.runtimeInput,
       design.roots().front(), loom::defaultResolvedConfig(),
-      benefitOnlyExploration, store));
+      benefitOnlyExploration, store, blobs));
   const auto *benefitOnlySelection =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&benefitOnly);
   if (!benefitOnlySelection || benefitOnlySelection->selected.size() != 1 ||
@@ -1498,7 +1515,7 @@ void runEvaluationAnchor() {
   auto semanticOnly = take(loom::dse::exploreStructuredCompilationToPreMapping(
       std::move(semanticOnlySource), inputs.workload, inputs.runtimeInput,
       design.roots().front(), loom::defaultResolvedConfig(),
-      semanticOnlyExploration, store));
+      semanticOnlyExploration, store, blobs));
   const auto *semanticOnlySelection =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&semanticOnly);
   if (!semanticOnlySelection || semanticOnlySelection->selected.size() != 1 ||
@@ -1519,7 +1536,7 @@ void runEvaluationAnchor() {
   auto parallel = take(loom::dse::exploreStructuredCompilationToPreMapping(
       std::move(parallelSource), inputs.workload, inputs.runtimeInput,
       design.roots().front(), loom::defaultResolvedConfig(),
-      parallelExploration, store));
+      parallelExploration, store, blobs));
   const auto *parallelSelection =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&parallel);
   if (!parallelSelection || parallelSelection->selected.size() != 1)
@@ -1567,7 +1584,7 @@ void runEvaluationAnchor() {
     fail("invocation-local Evaluation cache did not reuse exact typed results");
 
   if (evaluateCanonicalDataflowRuntime(
-          dataflowRef, design.roots().front().reference(), store)
+          dataflowRef, design.roots().front().reference(), store, blobs)
           .coefficient() <= 0)
     fail("Dataflow/Fabric Evaluation returned no spatial work");
 

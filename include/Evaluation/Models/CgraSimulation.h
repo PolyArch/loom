@@ -11,6 +11,7 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 struct ResolvedConfig;
 } // namespace loom
 
@@ -63,7 +64,8 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
 llvm::Expected<EvaluationEvidence>
 evaluateCgraSimulation(const PreparedCgraSimulationEvaluation &prepared,
                        CgraSimulationAttemptLimits limits,
-                       const ArtifactStore &artifactStore);
+                       const ArtifactStore &artifactStore,
+                       const BlobStore &blobStore);
 
 } // namespace loom::evaluation::models
 

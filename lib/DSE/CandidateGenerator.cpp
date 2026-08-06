@@ -366,6 +366,55 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
   return llvm::Error::success();
 }
 
+std::optional<CandidateGeneratorProviderImplementation>
+lookupProviderImplementation(CandidateGeneratorDescriptorRef descriptorRef) {
+  std::shared_lock<std::shared_mutex> lock(providerMutex());
+  auto found = llvm::lower_bound(
+      providers(), descriptorRef.kind(),
+      [](const CandidateGeneratorProvider &candidate,
+         CandidateGeneratorKind kind) {
+        return candidate.descriptor.kind() < kind;
+      });
+  if (found != providers().end() && found->descriptor == descriptorRef)
+    return found->implementation;
+  return std::nullopt;
+}
+
+llvm::Error validateProviderResult(
+    const CandidateGeneratorDescriptor &descriptor,
+    const ResolvedCandidateGeneratorBinding &binding,
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    CandidateGeneratorProviderResult &result, const ArtifactStore &store) {
+  if (llvm::Error error = validateCandidateGeneratorWorkSummary(
+          binding.descriptorRef(), result.workSummary))
+    return std::move(error);
+  if (auto *completed =
+          std::get_if<CompletedCandidateGeneratorResult>(&result.outcome)) {
+    if (llvm::Error error = canonicalizeOutputBindings(
+            descriptor, completed->outputBindings, true, store))
+      return std::move(error);
+    if (llvm::Error error = canonicalizeLineageEdges(
+            descriptor, inputBindings, completed->outputBindings,
+            completed->lineageEdges, store))
+      return std::move(error);
+  } else {
+    auto &incomplete =
+        std::get<IncompleteCandidateGeneratorResult>(result.outcome);
+    if (static_cast<std::uint32_t>(incomplete.reason) >
+        static_cast<std::uint32_t>(
+            CandidateGeneratorIncompleteReason::CancelledOrTimeout))
+      return invalid("provider returned an invalid Incomplete reason");
+    if (llvm::Error error = canonicalizeOutputBindings(
+            descriptor, incomplete.retainedOutputBindings, false, store))
+      return std::move(error);
+    if (llvm::Error error = canonicalizeLineageEdges(
+            descriptor, inputBindings, incomplete.retainedOutputBindings,
+            incomplete.lineageEdges, store))
+      return std::move(error);
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Expected<CandidateGeneratorDescriptorRef>
@@ -560,13 +609,32 @@ llvm::Error validateCandidateGeneratorWorkSummary(
 
 llvm::Error
 registerCandidateGeneratorProvider(const CandidateGeneratorProvider &provider) {
-  if (!provider.invoke || !provider.descriptor.descriptor())
-    return invalid("provider requires a registered descriptor and callback");
+  const CandidateGeneratorDescriptor *descriptor =
+      provider.descriptor.descriptor();
+  if (!descriptor)
+    return invalid("provider requires a registered descriptor");
+  if (const auto *inProcess =
+          std::get_if<CandidateGeneratorInProcessProvider>(
+              &provider.implementation)) {
+    if (descriptor->providerForm != ProviderForm::InProcess)
+      return invalid("provider form does not match the descriptor");
+    if (!inProcess->invoke)
+      return invalid("in-process provider requires an invoke callback");
+  } else if (const auto *external =
+                 std::get_if<CandidateGeneratorExternalPrepareImportProvider>(
+                     &provider.implementation)) {
+    if (descriptor->providerForm != ProviderForm::ExternalPrepareImport)
+      return invalid("provider form does not match the descriptor");
+    if (!external->prepare || !external->import)
+      return invalid("external provider requires both prepare and import");
+  } else {
+    return invalid("provider has an unknown implementation form");
+  }
   std::unique_lock<std::shared_mutex> lock(providerMutex());
   for (const CandidateGeneratorProvider &existing : providers()) {
     if (existing.descriptor != provider.descriptor)
       continue;
-    if (existing.invoke == provider.invoke)
+    if (existing.implementation == provider.implementation)
       return llvm::Error::success();
     return invalid("conflicting provider registration for candidate generator");
   }
@@ -578,31 +646,30 @@ registerCandidateGeneratorProvider(const CandidateGeneratorProvider &provider) {
   return llvm::Error::success();
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome> invokeCandidateGenerator(
+llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const BlobStore &blobs) {
   const CandidateGeneratorDescriptor *descriptor =
       binding.descriptorRef().descriptor();
   if (!descriptor)
     return invalid("binding references an unregistered descriptor");
+  // The in-process facade is defined only for InProcess descriptors; the
+  // descriptor form rules before any provider registration lookup.
+  if (descriptor->providerForm != ProviderForm::InProcess)
+    return invalid(
+        "external prepare/import provider cannot be invoked in-process");
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           binding.descriptorRef(), inputBindings))
     return std::move(error);
 
-  CandidateGeneratorProviderFunction invoke = nullptr;
-  {
-    std::shared_lock<std::shared_mutex> lock(providerMutex());
-    auto found =
-        llvm::lower_bound(providers(), binding.descriptorRef().kind(),
-                          [](const CandidateGeneratorProvider &provider,
-                             CandidateGeneratorKind kind) {
-                            return provider.descriptor.kind() < kind;
-                          });
-    if (found != providers().end() &&
-        found->descriptor == binding.descriptorRef())
-      invoke = found->invoke;
-  }
+  std::optional<CandidateGeneratorProviderImplementation> implementation =
+      lookupProviderImplementation(binding.descriptorRef());
+  CandidateGeneratorProviderFunction invoke =
+      implementation ? std::get<CandidateGeneratorInProcessProvider>(
+                           *implementation)
+                           .invoke
+                     : nullptr;
   if (!invoke) {
     std::vector<CandidateGeneratorOutputBinding> outputs;
     outputs.reserve(descriptor->outputSlots.size());
@@ -614,48 +681,76 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeCandidateGenerator(
     for (const CandidateGeneratorWorkUnitDescriptor &unit :
          descriptor->workUnits)
       workSummary.push_back({unit.unit, 0, 0});
-    return CandidateGeneratorInvocationOutcome{
-        IncompleteCandidateGeneratorInvocation{
+    return CandidateGeneratorProviderResult{
+        IncompleteCandidateGeneratorResult{
             CandidateGeneratorIncompleteReason::ProviderUnavailable,
             std::move(outputs),
-            {},
-            std::move(workSummary)}};
+            {}},
+        std::move(workSummary)};
   }
 
-  auto outcome = invoke(inputBindings, binding, store);
-  if (!outcome)
-    return outcome.takeError();
-  if (auto *completed =
-          std::get_if<CompletedCandidateGeneratorInvocation>(&*outcome)) {
-    if (llvm::Error error = validateCandidateGeneratorWorkSummary(
-            binding.descriptorRef(), completed->workSummary))
-      return std::move(error);
-    if (llvm::Error error = canonicalizeOutputBindings(
-            *descriptor, completed->outputBindings, true, store))
-      return std::move(error);
-    if (llvm::Error error = canonicalizeLineageEdges(
-            *descriptor, inputBindings, completed->outputBindings,
-            completed->lineageEdges, store))
-      return std::move(error);
-  } else {
-    auto &incomplete =
-        std::get<IncompleteCandidateGeneratorInvocation>(*outcome);
-    if (static_cast<std::uint32_t>(incomplete.reason) >
-        static_cast<std::uint32_t>(
-            CandidateGeneratorIncompleteReason::Unsupported))
-      return invalid("provider returned an invalid Incomplete reason");
-    if (llvm::Error error = validateCandidateGeneratorWorkSummary(
-            binding.descriptorRef(), incomplete.workSummary))
-      return std::move(error);
-    if (llvm::Error error = canonicalizeOutputBindings(
-            *descriptor, incomplete.retainedOutputBindings, false, store))
-      return std::move(error);
-    if (llvm::Error error = canonicalizeLineageEdges(
-            *descriptor, inputBindings, incomplete.retainedOutputBindings,
-            incomplete.lineageEdges, store))
-      return std::move(error);
-  }
-  return outcome;
+  auto result = invoke(inputBindings, binding, store, blobs);
+  if (!result)
+    return result.takeError();
+  if (llvm::Error error = validateProviderResult(*descriptor, binding,
+                                                 inputBindings, *result, store))
+    return std::move(error);
+  return result;
+}
+
+llvm::Expected<external_tool::PreparedExternalToolInvocation>
+prepareCandidateGeneratorInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store, const BlobStore &blobs,
+    const external_tool::ExternalToolPreparationContext &context) {
+  const CandidateGeneratorDescriptor *descriptor =
+      binding.descriptorRef().descriptor();
+  if (!descriptor)
+    return invalid("binding references an unregistered descriptor");
+  // The descriptor form rules before any provider lookup.
+  if (descriptor->providerForm != ProviderForm::ExternalPrepareImport)
+    return invalid("in-process provider cannot prepare an external invocation");
+  if (llvm::Error error = validateCandidateGeneratorInputBindings(
+          binding.descriptorRef(), inputBindings))
+    return std::move(error);
+  std::optional<CandidateGeneratorProviderImplementation> implementation =
+      lookupProviderImplementation(binding.descriptorRef());
+  if (!implementation)
+    return invalid("external prepare/import provider is unavailable");
+  return std::get<CandidateGeneratorExternalPrepareImportProvider>(
+             *implementation)
+      .prepare(inputBindings, binding, store, blobs, context);
+}
+
+llvm::Expected<CandidateGeneratorProviderResult>
+importCandidateGeneratorInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  const CandidateGeneratorDescriptor *descriptor =
+      binding.descriptorRef().descriptor();
+  if (!descriptor)
+    return invalid("binding references an unregistered descriptor");
+  if (descriptor->providerForm != ProviderForm::ExternalPrepareImport)
+    return invalid("in-process provider cannot import an external invocation");
+  if (llvm::Error error = validateCandidateGeneratorInputBindings(
+          binding.descriptorRef(), inputBindings))
+    return std::move(error);
+  std::optional<CandidateGeneratorProviderImplementation> implementation =
+      lookupProviderImplementation(binding.descriptorRef());
+  if (!implementation)
+    return invalid("external prepare/import provider is unavailable");
+  auto result = std::get<CandidateGeneratorExternalPrepareImportProvider>(
+                    *implementation)
+                    .import(inputBindings, binding, prepared, store, blobs);
+  if (!result)
+    return result.takeError();
+  if (llvm::Error error = validateProviderResult(*descriptor, binding,
+                                                 inputBindings, *result, store))
+    return std::move(error);
+  return result;
 }
 
 llvm::Error validateCanonicalCandidateGeneratorInvocation(

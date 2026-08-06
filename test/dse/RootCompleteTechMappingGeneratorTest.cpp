@@ -1,5 +1,6 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -15,6 +16,7 @@
 #include "mlir/Parser/Parser.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
@@ -190,6 +192,11 @@ buildSmallSpatialCore(loom::ArtifactStore &store) {
 void rootCompleteAdapterPublishesExactTechMapping() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildRootedDataflow(context);
   auto dataflowReference =
@@ -209,9 +216,10 @@ void rootCompleteAdapterPublishesExactTechMapping() {
       take(loom::dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() != 1)
     fail("root-complete adapter did not publish one TechMapping");
@@ -237,6 +245,11 @@ void rootCompleteAdapterPublishesExactTechMapping() {
 void emptyCandidateSetIsACompletedEmptySet() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto fabric = buildSmallSpatialCore(store);
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   auto config =
@@ -248,9 +261,10 @@ void emptyCandidateSetIsACompletedEmptySet() {
       take(loom::dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       !completed->outputBindings.front().artifacts.empty() ||
       !completed->lineageEdges.empty())
@@ -260,6 +274,11 @@ void emptyCandidateSetIsACompletedEmptySet() {
 void graphFreeDataflowContributesNoCandidate() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
   auto dataflow = buildGraphFreeDataflow(context);
   auto dataflowReference =
@@ -275,9 +294,10 @@ void graphFreeDataflowContributesNoCandidate() {
       take(loom::dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       !completed->outputBindings.front().artifacts.empty() ||
       !completed->lineageEdges.empty())
@@ -310,6 +330,11 @@ void descriptorReusesTheExactTechMappingOwnerContract() {
 void finiteDataflowSetComposesIndependentOwnerInvocations() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
   auto multiGraph = buildRootedDataflow(context);
   auto singleGraph = buildSingleGraphDataflow(context);
@@ -332,9 +357,10 @@ void finiteDataflowSetComposesIndependentOwnerInvocations() {
       take(loom::dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &outcome.outcome);
   if (!completed || completed->outputBindings.front().artifacts.size() != 2 ||
       completed->lineageEdges.size() != 2)
     fail("finite Dataflow set did not compose two owner invocations");
@@ -355,6 +381,11 @@ void finiteDataflowSetComposesIndependentOwnerInvocations() {
 void infeasibleAndIncompleteOutcomesRemainDistinct() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
   auto infeasible = buildInfeasibleDataflow(context);
   auto infeasibleReference =
@@ -374,10 +405,10 @@ void infeasibleAndIncompleteOutcomesRemainDistinct() {
       take(loom::dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
           completeConfig));
   auto infeasibleOutcome = take(loom::dse::invokeCandidateGenerator(
-      infeasibleInputs, completeBinding, store));
+      infeasibleInputs, completeBinding, store, blobs));
   const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(
-          &infeasibleOutcome);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &infeasibleOutcome.outcome);
   if (!completed || !completed->outputBindings.front().artifacts.empty())
     fail("proven-infeasible Dataflow did not produce a completed empty set");
 
@@ -391,10 +422,10 @@ void infeasibleAndIncompleteOutcomesRemainDistinct() {
       take(loom::dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
           limitedConfig));
   auto limitedOutcome = take(loom::dse::invokeCandidateGenerator(
-      limitedInputs, limitedBinding, store));
+      limitedInputs, limitedBinding, store, blobs));
   const auto *incomplete =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorInvocation>(
-          &limitedOutcome);
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &limitedOutcome.outcome);
   if (!incomplete ||
       incomplete->reason !=
           loom::dse::CandidateGeneratorIncompleteReason::ProofNotEstablished)
@@ -404,6 +435,11 @@ void infeasibleAndIncompleteOutcomesRemainDistinct() {
 void incompleteTraversalRetainsOnlyTheCompletedCanonicalPrefix() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
   auto multiGraph = buildRootedDataflow(context);
   auto singleGraph = buildSingleGraphDataflow(context);
@@ -430,9 +466,10 @@ void incompleteTraversalRetainsOnlyTheCompletedCanonicalPrefix() {
       take(loom::dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *incomplete =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &outcome.outcome);
   const std::size_t expectedPrefixSize =
       singleGraphCompletesBeforeLimit ? 1 : 0;
   if (!incomplete ||

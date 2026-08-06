@@ -139,6 +139,7 @@ const CandidateGeneratorDescriptor descriptor{
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
     &lineageContract,
+    ProviderForm::InProcess,
 };
 
 const ArtifactRootReference &
@@ -157,10 +158,10 @@ bool hasSelectedSpatialRegion(
   return found;
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
+llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const BlobStore &blobs) {
   auto config = adoptResolvedStructuredScheduleGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -258,18 +259,19 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
       outputs.push_back(std::move(*published));
     }
   }
-  return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{
+  return CandidateGeneratorProviderResult{
+      CompletedCandidateGeneratorResult{
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-          std::move(lineageEdges),
-          {{CandidateGeneratorWorkUnitRef(0), inspectedLoopScopes,
-            inspectedLoopScopes},
-           {CandidateGeneratorWorkUnitRef(1), decisionAttempts,
-            decisionAttempts}}}};
+          std::move(lineageEdges)},
+      {{CandidateGeneratorWorkUnitRef(0), inspectedLoopScopes,
+        inspectedLoopScopes},
+       {CandidateGeneratorWorkUnitRef(1), decisionAttempts,
+        decisionAttempts}}};
 }
 
-const CandidateGeneratorProvider provider{descriptor.reference(),
-                                          invokeScheduleProvider};
+const CandidateGeneratorProvider provider{
+    descriptor.reference(),
+    CandidateGeneratorInProcessProvider{invokeScheduleProvider}};
 
 } // namespace
 

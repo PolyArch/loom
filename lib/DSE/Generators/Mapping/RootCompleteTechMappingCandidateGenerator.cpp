@@ -53,10 +53,10 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return llvm::Error::success();
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
+llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store);
+    const ArtifactStore &store, const BlobStore &blobs);
 
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteTechMappingCandidateGeneratorKind,
@@ -69,6 +69,8 @@ const CandidateGeneratorDescriptor descriptor{
         validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
+    nullptr,
+    ProviderForm::InProcess,
 };
 
 llvm::Error accumulate(std::uint64_t source, std::uint64_t &target,
@@ -109,10 +111,10 @@ std::vector<CandidateGeneratorWorkUnitSummary> workSummary(
   };
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
+llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const BlobStore &blobs) {
   auto config = ::loom::mapping::adoptResolvedTechMappingConfigView(
       ::loom::mapping::resolvedTechMappingConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -173,12 +175,12 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
       continue;
     if (std::holds_alternative<
             ::loom::mapping::IncompleteTechMappingGeneration>(outcome))
-      return CandidateGeneratorInvocationOutcome{
-          IncompleteCandidateGeneratorInvocation{
+      return CandidateGeneratorProviderResult{
+          IncompleteCandidateGeneratorResult{
               CandidateGeneratorIncompleteReason::ProofNotEstablished,
               {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-              std::move(lineage),
-              workSummary(accounting)}};
+              std::move(lineage)},
+          workSummary(accounting)};
     if (const auto *invalid =
             std::get_if<::loom::mapping::InvalidTechMappingGeneration>(
                 &outcome))
@@ -194,15 +196,16 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
             internal.diagnostic);
   }
 
-  return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{
+  return CandidateGeneratorProviderResult{
+      CompletedCandidateGeneratorResult{
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-          std::move(lineage),
-          workSummary(accounting)}};
+          std::move(lineage)},
+      workSummary(accounting)};
 }
 
-const CandidateGeneratorProvider provider{descriptor.reference(),
-                                          invokeRootCompleteProvider};
+const CandidateGeneratorProvider provider{
+    descriptor.reference(),
+    CandidateGeneratorInProcessProvider{invokeRootCompleteProvider}};
 
 } // namespace
 

@@ -1,6 +1,7 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/PreMappingExploration.h"
 #include "Dataflow/IR/OperationSchema.h"
@@ -230,7 +231,7 @@ llvm::Expected<SourceBackedCompilation>
 compileTarget(std::unique_ptr<llvm::Module> module,
               const loom::fabric::FinalizedFabricRoot &fabric,
               const loom::ResolvedConfig &config,
-              const loom::ArtifactStore &store) {
+              const loom::ArtifactStore &store, const loom::BlobStore &blobs) {
   loom::frontend::PreMappingCompilationOptions compilation;
   auto source = loom::frontend::raiseLlvmModuleToStructured(
       std::move(module), fabric, compilation.raising);
@@ -263,7 +264,7 @@ compileTarget(std::unique_ptr<llvm::Module> module,
           std::chrono::duration<double>(maxSimulationWallSeconds));
   auto outcome = loom::dse::exploreStructuredCompilationToPreMapping(
       std::move(*source), inputs->workload, inputs->runtimeInput, fabric,
-      config, exploration, store);
+      config, exploration, store, blobs);
   if (!outcome)
     return outcome.takeError();
   auto generateSummary = std::visit(
@@ -471,6 +472,12 @@ int main(int argc, char **argv) {
   if (!config)
     return reportError(config.takeError());
   loom::ArtifactStore store(artifactStorePath);
+  llvm::SmallString<128> blobPath(artifactStorePath);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    return reportError(
+        invalid("cannot create BlobStore directory: " + error.message()));
+  const loom::BlobStore blobs(blobPath);
   auto design = loom::adg::buildBuiltinTarget(store, *preset);
   if (!design)
     return reportError(design.takeError());
@@ -496,7 +503,7 @@ int main(int argc, char **argv) {
             **target, group.binding().binding()))
       return reportError(std::move(error));
   auto selected = compileTarget(std::move(*target), design->roots().front(),
-                                *config, store);
+                                *config, store, blobs);
   if (!selected)
     return reportError(selected.takeError());
   auto view = selected->selected.compilation.canonicalDataflow.view();

@@ -4,11 +4,13 @@
 
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -275,9 +277,82 @@ const EvaluationModelDescriptor modelDescriptor{
     DeterminismContract::Deterministic,
     {}};
 
+const EvaluationModelDescriptor externalModelDescriptor{
+    EvaluationModelKind(45),
+    "evidence_test_external_model",
+    "loom.test.evidence.external_model",
+    signatureRef(),
+    {},
+    metricCapabilities,
+    findingCapabilities,
+    {},
+    outputSlots,
+    modelConfigView,
+    {},
+    EvaluationExecutionMethod::Analytic,
+    {},
+    DeterminismContract::Deterministic,
+    {},
+    ProviderForm::ExternalPrepareImport};
+
+const EvaluationModelDescriptor providerlessExternalModelDescriptor{
+    EvaluationModelKind(46),
+    "evidence_test_providerless_external_model",
+    "loom.test.evidence.providerless_external_model",
+    signatureRef(),
+    {},
+    metricCapabilities,
+    findingCapabilities,
+    {},
+    outputSlots,
+    modelConfigView,
+    {},
+    EvaluationExecutionMethod::Analytic,
+    {},
+    DeterminismContract::Deterministic,
+    {},
+    ProviderForm::ExternalPrepareImport};
+
+const EvaluationModelDescriptor importingExternalModelDescriptor{
+    EvaluationModelKind(47),
+    "evidence_test_importing_external_model",
+    "loom.test.evidence.importing_external_model",
+    signatureRef(),
+    {},
+    metricCapabilities,
+    findingCapabilities,
+    {},
+    outputSlots,
+    modelConfigView,
+    {},
+    EvaluationExecutionMethod::Analytic,
+    {},
+    DeterminismContract::Deterministic,
+    {},
+    ProviderForm::ExternalPrepareImport};
+
+const EvaluationModelDescriptor malformedExternalModelDescriptor{
+    EvaluationModelKind(48),
+    "evidence_test_malformed_external_model",
+    "loom.test.evidence.malformed_external_model",
+    signatureRef(),
+    {},
+    metricCapabilities,
+    findingCapabilities,
+    {},
+    outputSlots,
+    modelConfigView,
+    {},
+    EvaluationExecutionMethod::Analytic,
+    {},
+    DeterminismContract::Deterministic,
+    {},
+    ProviderForm::ExternalPrepareImport};
+
 llvm::Expected<EvaluationModelResult>
 evaluateTestModel(const EvaluationRequest &request,
-                  const CaseArtifactResolution &, const ArtifactStore &) {
+                  const CaseArtifactResolution &, const ArtifactStore &,
+                  const BlobStore &) {
   std::vector<MetricResult> metrics;
   metrics.reserve(request.metricRequests().size());
   for (std::size_t index = 0; index < request.metricRequests().size(); ++index)
@@ -291,8 +366,78 @@ evaluateTestModel(const EvaluationRequest &request,
       CompletedEvidence{std::move(metrics), std::move(findings)}};
 }
 
-const EvaluationModelProvider modelProvider{modelDescriptor.reference(),
-                                            &evaluateTestModel};
+llvm::Expected<external_tool::PreparedExternalToolInvocation>
+prepareTestModel(const EvaluationRequest &, const CaseArtifactResolution &,
+                 const ArtifactStore &, const BlobStore &,
+                 const external_tool::ExternalToolPreparationContext &) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "test external prepare stub");
+}
+
+llvm::Expected<EvaluationModelResult>
+importTestModel(const EvaluationRequest &, const CaseArtifactResolution &,
+                const external_tool::PreparedExternalToolInvocation &,
+                const ArtifactStore &, const BlobStore &) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "test external import stub");
+}
+
+llvm::Expected<EvaluationModelResult>
+importTestModelValid(const EvaluationRequest &request,
+                     const CaseArtifactResolution &,
+                     const external_tool::PreparedExternalToolInvocation &,
+                     const ArtifactStore &, const BlobStore &) {
+  std::vector<MetricResult> metrics;
+  metrics.reserve(request.metricRequests().size());
+  for (std::size_t index = 0; index < request.metricRequests().size(); ++index)
+    metrics.push_back({UncertaintyKind::ExactWithinModel,
+                       PointObservation{IntegerValue(7)}, {}});
+  std::vector<FindingResult> findings(request.findingRequests().size(),
+                                      FindingResult{AbsentFinding{}});
+  return EvaluationModelResult{
+      {{ModelOutputSlotRef(0), {subjectArtifact()}}},
+      CompletedEvidence{std::move(metrics), std::move(findings)}};
+}
+
+llvm::Expected<EvaluationModelResult>
+importTestModelMalformed(const EvaluationRequest &,
+                         const CaseArtifactResolution &,
+                         const external_tool::PreparedExternalToolInvocation &,
+                         const ArtifactStore &, const BlobStore &) {
+  return EvaluationModelResult{{}, CompletedEvidence{{}, {}}};
+}
+
+llvm::Expected<external_tool::PreparedExternalToolInvocation>
+prepareTestModelAlternate(const EvaluationRequest &,
+                          const CaseArtifactResolution &,
+                          const ArtifactStore &, const BlobStore &,
+                          const external_tool::ExternalToolPreparationContext &) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "test external prepare stub");
+}
+
+llvm::Expected<EvaluationModelResult>
+importTestModelAlternate(const EvaluationRequest &,
+                         const CaseArtifactResolution &,
+                         const external_tool::PreparedExternalToolInvocation &,
+                         const ArtifactStore &, const BlobStore &) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "test external import stub");
+}
+
+const EvaluationModelProvider modelProvider{
+    modelDescriptor.reference(),
+    EvaluationModelInProcessProvider{&evaluateTestModel}};
+
+const EvaluationModelProvider importingExternalProvider{
+    importingExternalModelDescriptor.reference(),
+    EvaluationModelExternalPrepareImportProvider{&prepareTestModel,
+                                                 &importTestModelValid}};
+
+const EvaluationModelProvider malformedExternalProvider{
+    malformedExternalModelDescriptor.reference(),
+    EvaluationModelExternalPrepareImportProvider{&prepareTestModel,
+                                                 &importTestModelMalformed}};
 
 EvaluationSubjectBindings subjectBindings(const char *test) {
   return takeExpected(test, EvaluationSubjectBindings::get(
@@ -323,6 +468,27 @@ EvaluationRequest requestForFinding(const char *test,
   return takeExpected(test,
                       EvaluationRequest::get(evaluationCase, {}, {finding},
                                              binding, 0, resolution, store));
+}
+
+EvaluationRequest requestForDescriptor(const char *test,
+                                       const ArtifactStore &store,
+                                       EvaluationModelDescriptorRef model) {
+  ensureSubjectStored(test, store);
+  const CaseArtifactResolution resolution = caseResolution(test);
+  const EvaluationCase evaluationCase = takeExpected(
+      test, EvaluationCase::get(signatureRef(), subjectBindings(test),
+                                std::nullopt, std::nullopt, {}, resolution,
+                                store));
+  const FindingRequest finding = takeExpected(
+      test, FindingRequest::get(
+                FindingQuery{findingKind, EvaluationScope{ScopeFormRef(0), {}}},
+                {}, evaluationCase, resolution, store));
+  const ResolvedModelBinding binding = takeExpected(
+      test, ResolvedModelBinding::project(model, {},
+                                          defaultResolvedConfig()));
+  return takeExpected(
+      test, EvaluationRequest::get(evaluationCase, {}, {finding}, binding, 0,
+                                   resolution, store));
 }
 
 EvaluationRequest request(const char *test, const ArtifactStore &store) {
@@ -655,14 +821,167 @@ void terminalFindingFailsClosedWithoutExecutionOwner() {
                     caseResolution(__func__), store));
 }
 
+void expectRegistrationRejected(const char *test, llvm::Error error,
+                                llvm::StringRef expected) {
+  if (!error)
+    fail(test, "expected a registration rejection");
+  const std::string message = llvm::toString(std::move(error));
+  require(test, llvm::StringRef(message).contains(expected),
+          "unexpected error: " + message);
+}
+
+void externalModelProviderFormAdmission() {
+  // A registry-1.0 model descriptor reference is never reinterpreted.
+  auto legacyModel =
+      EvaluationModelDescriptorRef::get(SchemaVersion{1, 0}, modelKind);
+  if (legacyModel)
+    fail(__func__, "a registry-1.0 model descriptor reference was reinterpreted");
+  llvm::consumeError(legacyModel.takeError());
+
+  // An external implementation cannot serve an in-process descriptor.
+  expectRegistrationRejected(
+      __func__,
+      registerEvaluationModelProvider(EvaluationModelProvider{
+          modelDescriptor.reference(),
+          EvaluationModelExternalPrepareImportProvider{&prepareTestModel,
+                                                       &importTestModel}}),
+      "provider form");
+
+  // An in-process implementation cannot serve an external descriptor, and
+  // both external callbacks are required.
+  expectRegistrationRejected(
+      __func__,
+      registerEvaluationModelProvider(EvaluationModelProvider{
+          externalModelDescriptor.reference(),
+          EvaluationModelInProcessProvider{&evaluateTestModel}}),
+      "provider form");
+  expectRegistrationRejected(
+      __func__,
+      registerEvaluationModelProvider(EvaluationModelProvider{
+          externalModelDescriptor.reference(),
+          EvaluationModelExternalPrepareImportProvider{&prepareTestModel,
+                                                       nullptr}}),
+      "prepare and import");
+
+  // The matching external form registers; a second provider is rejected.
+  // The registry keeps a pointer to the record, so the registered provider
+  // must have static storage duration as the API requires.
+  static const EvaluationModelProvider externalProvider{
+      externalModelDescriptor.reference(),
+      EvaluationModelExternalPrepareImportProvider{&prepareTestModel,
+                                                   &importTestModel}};
+  if (llvm::Error error = registerEvaluationModelProvider(externalProvider))
+    fail("registration", llvm::toString(std::move(error)));
+  expectRegistrationRejected(
+      __func__,
+      registerEvaluationModelProvider(EvaluationModelProvider{
+          externalModelDescriptor.reference(),
+          EvaluationModelExternalPrepareImportProvider{
+              &prepareTestModelAlternate, &importTestModelAlternate}}),
+      "provider");
+
+  // The in-process facade rejects an external descriptor before any provider
+  // lookup, even when no provider is registered for it at all.
+  TemporaryDirectory directory(__func__);
+  llvm::SmallString<128> blobRoot(directory.path());
+  llvm::sys::path::append(blobRoot, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobRoot))
+    fail(__func__, "could not create blob directory: " + error.message());
+  const ArtifactStore store(directory.path());
+  const BlobStore blobs(blobRoot);
+  const EvaluationRequest externalRequest = requestForDescriptor(
+      __func__, store, providerlessExternalModelDescriptor.reference());
+  takeExpected(__func__, publishEvaluationRequest(externalRequest, store));
+  auto facade = evaluateRequest(externalRequest, caseResolution(__func__),
+                                store, blobs);
+  if (facade)
+    fail(__func__, "the in-process facade evaluated an external model");
+  const std::string message = llvm::toString(facade.takeError());
+  require(__func__, llvm::StringRef(message).contains("external prepare/import"),
+          "unexpected facade error: " + message);
+
+  // The external facades reject the in-process form before any lookup.
+  external_tool::ExternalToolPreparationContext context{
+      loom::external_tool::defaultLocalToolConfig(), directory.path().str()};
+  const EvaluationRequest inProcessRequest = requestForDescriptor(
+      __func__, store, modelDescriptor.reference());
+  takeExpected(__func__, publishEvaluationRequest(inProcessRequest, store));
+  auto wrongPrepare = prepareEvaluationModelInvocation(
+      inProcessRequest, caseResolution(__func__), store, blobs, context);
+  if (wrongPrepare)
+    fail(__func__, "an in-process model used the external prepare facade");
+  expectErrorContains(__func__, std::move(wrongPrepare), "in-process");
+  const loom::BlobDigest zeroDigest = loom::computeBlobDigest({});
+  auto wrongImport = importEvaluationModelInvocation(
+      inProcessRequest, caseResolution(__func__),
+      external_tool::PreparedExternalToolInvocation{"unused", zeroDigest},
+      store, blobs);
+  if (wrongImport)
+    fail(__func__, "an in-process model used the external import facade");
+  expectErrorContains(__func__, std::move(wrongImport), "in-process");
+
+  // The external facades dispatch the exact registered external provider.
+  const EvaluationRequest registeredExternalRequest = requestForDescriptor(
+      __func__, store, externalModelDescriptor.reference());
+  takeExpected(__func__,
+               publishEvaluationRequest(registeredExternalRequest, store));
+  auto prepared = prepareEvaluationModelInvocation(
+      registeredExternalRequest, caseResolution(__func__), store, blobs,
+      context);
+  if (prepared)
+    fail(__func__, "the external prepare facade returned a bundle from a stub");
+  expectErrorContains(__func__, std::move(prepared),
+                      "test external prepare stub");
+  auto imported = importEvaluationModelInvocation(
+      registeredExternalRequest, caseResolution(__func__),
+      external_tool::PreparedExternalToolInvocation{"unused", zeroDigest},
+      store, blobs);
+  if (imported)
+    fail(__func__, "the external import facade returned a result from a stub");
+  expectErrorContains(__func__, std::move(imported),
+                      "test external import stub");
+
+  // A successful external import returns owner-validated Evidence.
+  const EvaluationRequest importingRequest = requestForDescriptor(
+      __func__, store, importingExternalModelDescriptor.reference());
+  takeExpected(__func__, publishEvaluationRequest(importingRequest, store));
+  const EvaluationEvidence importedEvidence = takeExpected(
+      __func__, importEvaluationModelInvocation(
+                    importingRequest, caseResolution(__func__),
+                    external_tool::PreparedExternalToolInvocation{"unused",
+                                                                  zeroDigest},
+                    store, blobs));
+  require(__func__,
+          std::holds_alternative<CompletedEvidence>(
+              importedEvidence.outcome()),
+          "external import did not return owner-validated Evidence");
+
+  // A malformed provider result is rejected by the Evidence owner.
+  const EvaluationRequest malformedRequest = requestForDescriptor(
+      __func__, store, malformedExternalModelDescriptor.reference());
+  takeExpected(__func__, publishEvaluationRequest(malformedRequest, store));
+  expectErrorContains(
+      __func__,
+      importEvaluationModelInvocation(
+          malformedRequest, caseResolution(__func__),
+          external_tool::PreparedExternalToolInvocation{"unused", zeroDigest},
+          store, blobs),
+      "not total");
+}
+
 void providerAbsenceProducesTypedUnsupported() {
   TemporaryDirectory directory(__func__);
+  llvm::SmallString<128> blobRoot(directory.path());
+  llvm::sys::path::append(blobRoot, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobRoot))
+    fail(__func__, "could not create blob directory: " + error.message());
   const ArtifactStore store(directory.path());
+  const BlobStore blobs(blobRoot);
   const EvaluationRequest evaluationRequest = request(__func__, store);
   takeExpected(__func__, publishEvaluationRequest(evaluationRequest, store));
   const EvaluationEvidence evidence = takeExpected(
       __func__, evaluateRequest(evaluationRequest, caseResolution(__func__),
-                                store));
+                                store, blobs));
   const auto *unsupported =
       std::get_if<UnsupportedEvidence>(&evidence.outcome());
   require(__func__, unsupported &&
@@ -673,13 +992,18 @@ void providerAbsenceProducesTypedUnsupported() {
 
 void providerDispatchUsesEvidenceOwner() {
   TemporaryDirectory directory(__func__);
+  llvm::SmallString<128> blobRoot(directory.path());
+  llvm::sys::path::append(blobRoot, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobRoot))
+    fail(__func__, "could not create blob directory: " + error.message());
   const ArtifactStore store(directory.path());
+  const BlobStore blobs(blobRoot);
   const EvaluationRequest evaluationRequest =
       metricAndFindingRequest(__func__, store);
   takeExpected(__func__, publishEvaluationRequest(evaluationRequest, store));
   const EvaluationEvidence evidence = takeExpected(
       __func__, evaluateRequest(evaluationRequest, caseResolution(__func__),
-                                store));
+                                store, blobs));
   const auto *completed = std::get_if<CompletedEvidence>(&evidence.outcome());
   require(__func__, completed && completed->metricResults.size() == 1 &&
                         completed->findingResults.size() == 1,
@@ -703,6 +1027,25 @@ int main() {
   if (llvm::Error error =
           registerEvaluationModelDescriptor(modelDescriptor))
     fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          registerEvaluationModelDescriptor(externalModelDescriptor))
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          registerEvaluationModelDescriptor(providerlessExternalModelDescriptor))
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          registerEvaluationModelDescriptor(importingExternalModelDescriptor))
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          registerEvaluationModelDescriptor(malformedExternalModelDescriptor))
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          registerEvaluationModelProvider(importingExternalProvider))
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          registerEvaluationModelProvider(malformedExternalProvider))
+    fail("registration", llvm::toString(std::move(error)));
+  externalModelProviderFormAdmission();
   providerAbsenceProducesTypedUnsupported();
   if (llvm::Error error = registerEvaluationModelProvider(modelProvider))
     fail("registration", llvm::toString(std::move(error)));

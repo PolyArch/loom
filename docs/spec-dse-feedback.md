@@ -1953,7 +1953,8 @@ CandidateGeneratorProviderImplementation =
              BlobStore) -> Expected<CandidateGeneratorProviderResult>
     }
 
-CandidateGeneratorProviderResult =
+CandidateGeneratorProviderResult {
+  outcome:
     Completed {
       output_bindings:
         dense array<CandidateGeneratorOutputSlotRef,
@@ -1969,6 +1970,9 @@ CandidateGeneratorProviderResult =
       lineage_contributions:
         canonical array<CandidateGeneratorLineageContribution>
     }
+  work_summary:
+    dense array<CandidateGeneratorWorkUnitRef, planned, consumed>
+}
 
 CandidateGeneratorIncompleteReason =
     ProofNotEstablished  // tag 0
@@ -1987,6 +1991,17 @@ retained outputs. The controller validates either variant, derives the one
 outer manifest outcome, and writes a nested Generate record with no outcome
 tag. Invalid typed inputs, a violated provider contract, or malformed returned
 data are errors rather than another incomplete reason.
+
+`work_summary` is one dense row per descriptor-owned work unit, outside the
+outcome variant and never duplicated inside it. The descriptor is the sole
+owner of the stable work-unit ordinals and their meanings. The provider is the
+sole runtime observation source of the planned and consumed counts; controller
+inference from output cardinality, an accounting sink, or a side channel never
+replaces them. The controller validates dense descriptor-order coverage and
+`consumed <= planned`, splits the outcome data and the work summary into the
+existing Generate record and work-summary owners, and `InvocationManifest`
+remains the sole persistent owner. A controller-produced `ProviderUnavailable`
+report carries the mechanically derived all-zero dense summary.
 Each lineage contribution is the closed single-child edge shape defined by
 `Candidate Lineage and Evaluation DAG`. Its target must occur in the named
 output binding; the enclosing typed inputs and resolved generator binding are

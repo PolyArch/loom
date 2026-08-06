@@ -9,6 +9,7 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 struct ResolvedConfig;
 } // namespace loom
 
@@ -40,7 +41,8 @@ prepareDfgSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
 llvm::Expected<EvaluationEvidence>
 evaluateDfgSimulation(const PreparedDfgSimulationEvaluation &prepared,
                       DfgSimulationAttemptLimits limits,
-                      const ArtifactStore &artifactStore);
+                      const ArtifactStore &artifactStore,
+                      const BlobStore &blobStore);
 
 } // namespace loom::evaluation::models
 

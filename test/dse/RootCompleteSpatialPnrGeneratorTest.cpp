@@ -1,5 +1,6 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/InvocationManifest.h"
@@ -41,6 +42,7 @@
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -422,7 +424,7 @@ void requireSpatialWorkSummary(
 loom::ArtifactRootReference
 generateTechMapping(const loom::ArtifactRootReference &dataflow,
                     const loom::ArtifactRootReference &fabric,
-                    loom::ArtifactStore &store) {
+                    loom::ArtifactStore &store, const loom::BlobStore &blobs) {
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 1;
   auto config =
@@ -434,9 +436,10 @@ generateTechMapping(const loom::ArtifactRootReference &dataflow,
       take(loom::dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() != 1)
     fail("root-complete TechMapping fixture did not publish one candidate");
@@ -446,7 +449,8 @@ generateTechMapping(const loom::ArtifactRootReference &dataflow,
 std::vector<loom::ArtifactRootReference>
 generateTechMappingSet(const loom::ArtifactRootReference &dataflow,
                        const loom::ArtifactRootReference &fabric,
-                       loom::ArtifactStore &store) {
+                       loom::ArtifactStore &store,
+                       const loom::BlobStore &blobs) {
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 4;
   auto config =
@@ -458,9 +462,10 @@ generateTechMappingSet(const loom::ArtifactRootReference &dataflow,
       take(loom::dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() < 2)
     fail("TechMapping fixture did not publish two distinct candidates");
@@ -474,13 +479,14 @@ struct Fixture final {
   loom::ArtifactRootReference techMappingReference;
 };
 
-Fixture buildFixture(mlir::MLIRContext &context, loom::ArtifactStore &store) {
+Fixture buildFixture(mlir::MLIRContext &context, loom::ArtifactStore &store,
+                     const loom::BlobStore &blobs) {
   auto dataflow = buildDataflow(context);
   auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
   auto fabric = buildSpatialCore(store);
   auto techMappingReference =
-      generateTechMapping(dataflowReference, fabric.reference(), store);
+      generateTechMapping(dataflowReference, fabric.reference(), store, blobs);
   return {std::move(dataflow), std::move(dataflowReference), std::move(fabric),
           std::move(techMappingReference)};
 }
@@ -488,7 +494,8 @@ Fixture buildFixture(mlir::MLIRContext &context, loom::ArtifactStore &store) {
 loom::ArtifactRootReference
 generateSpatialMapping(const loom::ArtifactRootReference &techMapping,
                        const loom::ArtifactRootReference &fabric,
-                       loom::ArtifactStore &store) {
+                       loom::ArtifactStore &store,
+                       const loom::BlobStore &blobs) {
   auto inputs =
       take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
           {techMapping}, fabric));
@@ -496,9 +503,10 @@ generateSpatialMapping(const loom::ArtifactRootReference &techMapping,
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           buildSpatialConfig()));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() != 1)
     fail("SpatialMapping fixture did not publish one candidate");
@@ -507,7 +515,8 @@ generateSpatialMapping(const loom::ArtifactRootReference &techMapping,
 
 std::vector<loom::ArtifactRootReference> generateSpatialMappingSet(
     llvm::ArrayRef<loom::ArtifactRootReference> techMappings,
-    const loom::ArtifactRootReference &fabric, loom::ArtifactStore &store) {
+    const loom::ArtifactRootReference &fabric, loom::ArtifactStore &store,
+    const loom::BlobStore &blobs) {
   loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
   resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 1;
   resolved.dse.spatialPnr.search.routing.negotiationIterationLimit = 8;
@@ -522,9 +531,10 @@ std::vector<loom::ArtifactRootReference> generateSpatialMappingSet(
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1)
     fail("SpatialMapping fixture did not complete one output binding");
   if (completed->outputBindings.front().artifacts.size() < 2)
@@ -644,8 +654,13 @@ publishVectorSpatialInputs(const dataflow::CanonicalDataflowArtifact &dataflow,
 void emptyConstraintOwnerPublishesExactArtifact() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  Fixture fixture = buildFixture(context, store);
+  Fixture fixture = buildFixture(context, store, blobs);
   auto dataflow = take(fixture.dataflow.view());
   auto tech = take(
       loom::mapping::importTechMapping(fixture.techMappingReference, store));
@@ -671,8 +686,13 @@ void emptyConstraintOwnerPublishesExactArtifact() {
 void rootCompleteAdapterPublishesPhysicalMapping() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  Fixture fixture = buildFixture(context, store);
+  Fixture fixture = buildFixture(context, store, blobs);
   requireSuccess(
       loom::dse::registerRootCompleteTechMappingCandidateGenerator());
   requireSuccess(loom::dse::registerRootCompleteSpatialPnrCandidateGenerator());
@@ -699,7 +719,7 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
           spatialConfig.digest()},
   };
   auto view = take(loom::dse::projectResolvedDseConfigView(resolved));
-  auto outcome = take(loom::dse::executeDsePlan(view, store));
+  auto outcome = take(loom::dse::executeDsePlan(view, store, blobs));
   const auto *completed =
       std::get_if<loom::dse::CompletedDsePlanExecution>(&outcome);
   if (!completed || completed->generateInvocations().size() != 2 ||
@@ -741,7 +761,7 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           spatialConfig));
   auto wrongProfile = loom::dse::invokeCandidateGenerator(
-      wrongProfileInputs, spatialBinding, store);
+      wrongProfileInputs, spatialBinding, store, blobs);
   if (wrongProfile)
     fail("SpatialMapping was accepted in the TechMapping input slot");
   const std::string wrongProfileMessage =
@@ -749,7 +769,7 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
   if (!llvm::StringRef(wrongProfileMessage).contains("TechMapping"))
     fail("wrong Mapping profile rejection lost its owner diagnostic");
 
-  auto repeated = take(loom::dse::executeDsePlan(view, store));
+  auto repeated = take(loom::dse::executeDsePlan(view, store, blobs));
   const auto *repeatedCompleted =
       std::get_if<loom::dse::CompletedDsePlanExecution>(&repeated);
   if (!repeatedCompleted ||
@@ -864,6 +884,11 @@ void descriptorAndEmptySetAreClosed() {
 
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto fabric = buildSpatialCore(store);
   auto inputs =
       take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
@@ -872,26 +897,32 @@ void descriptorAndEmptySetAreClosed() {
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       !completed->outputBindings.front().artifacts.empty() ||
       !completed->lineageEdges.empty())
     fail("empty TechMapping set did not propagate as completed empty");
-  requireSpatialWorkSummary(completed->workSummary, false);
+  requireSpatialWorkSummary(outcome.workSummary, false);
 }
 
 void finiteSetTraversesEveryCanonicalTechMapping() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  Fixture fixture = buildFixture(context, store);
+  Fixture fixture = buildFixture(context, store, blobs);
   auto alternateDataflow = buildAlternateDataflow(context);
   auto alternateDataflowReference =
       take(dataflow::publishCanonicalDataflow(alternateDataflow, store));
   auto alternateTechMapping = generateTechMapping(
-      alternateDataflowReference, fixture.fabric.reference(), store);
+      alternateDataflowReference, fixture.fabric.reference(), store, blobs);
 
   std::array<loom::ArtifactRootReference, 2> techMappings = {
       fixture.techMappingReference, alternateTechMapping};
@@ -904,14 +935,15 @@ void finiteSetTraversesEveryCanonicalTechMapping() {
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           buildSpatialConfig()));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() != 2 ||
       completed->lineageEdges.size() != 2)
     fail("finite TechMapping set did not produce one Spatial set");
-  requireSpatialWorkSummary(completed->workSummary, true);
+  requireSpatialWorkSummary(outcome.workSummary, true);
 
   bool foundFirst = false;
   bool foundSecond = false;
@@ -931,8 +963,13 @@ void finiteSetTraversesEveryCanonicalTechMapping() {
 void unavailableNegotiationIsTypedIncomplete() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  Fixture fixture = buildFixture(context, store);
+  Fixture fixture = buildFixture(context, store, blobs);
   loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
   resolved.dse.spatialPnr.search.routing.negotiation =
       loom::ResolvedDualSubgradientPolicy{
@@ -947,9 +984,10 @@ void unavailableNegotiationIsTypedIncomplete() {
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *incomplete =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &outcome.outcome);
   if (!incomplete ||
       incomplete->reason !=
           loom::dse::CandidateGeneratorIncompleteReason::Unsupported ||
@@ -962,8 +1000,13 @@ void unavailableNegotiationIsTypedIncomplete() {
 void initializerSemanticLimitIsTypedIncomplete() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  Fixture fixture = buildFixture(context, store);
+  Fixture fixture = buildFixture(context, store, blobs);
   loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
   resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 1;
   resolved.dse.spatialPnr.search.initializer.assignmentAttemptLimitPerSeed = 1;
@@ -975,9 +1018,10 @@ void initializerSemanticLimitIsTypedIncomplete() {
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *incomplete =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorInvocation>(&outcome);
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &outcome.outcome);
   if (!incomplete)
     fail("one initializer assignment unexpectedly completed Spatial PnR");
   if (incomplete->reason !=
@@ -991,8 +1035,13 @@ void initializerSemanticLimitIsTypedIncomplete() {
 void foreignFabricIsRejectedBeforeSearch() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  Fixture fixture = buildFixture(context, store);
+  Fixture fixture = buildFixture(context, store, blobs);
   auto foreignFabric = buildSpatialCore(store, 64);
   auto inputs =
       take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
@@ -1000,7 +1049,8 @@ void foreignFabricIsRejectedBeforeSearch() {
   auto binding =
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           buildSpatialConfig()));
-  auto outcome = loom::dse::invokeCandidateGenerator(inputs, binding, store);
+  auto outcome =
+      loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs);
   if (outcome)
     fail("root-complete Spatial adapter accepted a foreign Fabric");
   const std::string message = llvm::toString(outcome.takeError());
@@ -1011,10 +1061,15 @@ void foreignFabricIsRejectedBeforeSearch() {
 void spatialMappingPromotionExecutesExactCgraCase() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  Fixture fixture = buildFixture(context, store);
+  Fixture fixture = buildFixture(context, store, blobs);
   const loom::ArtifactRootReference spatialMapping = generateSpatialMapping(
-      fixture.techMappingReference, fixture.fabric.reference(), store);
+      fixture.techMappingReference, fixture.fabric.reference(), store, blobs);
   const PublishedSpatialInputs simulationInputs =
       publishSpatialInputs(fixture.dataflow, store);
   const loom::ArtifactRootReference &workloadReference =
@@ -1046,7 +1101,7 @@ void spatialMappingPromotionExecutesExactCgraCase() {
       workloadReference, runtimeReference));
   auto outcome = take(loom::dse::invokePromotionAcquisition(
       inputs, acquisitionBinding, {obligation},
-      {{spatialMapping}, obligationRefs}, store));
+      {{spatialMapping}, obligationRefs}, store, blobs));
   const auto *completed =
       std::get_if<loom::dse::CompletedPromotionAcquisition>(&outcome);
   if (!completed || completed->evidence.size() != 1)
@@ -1070,7 +1125,7 @@ void spatialMappingPromotionExecutesExactCgraCase() {
           workloadReference, runtimeReference));
   auto wrong = loom::dse::invokePromotionAcquisition(
       wrongInputs, acquisitionBinding, {obligation},
-      {{spatialMapping}, obligationRefs}, store);
+      {{spatialMapping}, obligationRefs}, store, blobs);
   if (wrong)
     fail("SpatialMapping promotion accepted a foreign Dataflow owner set");
   const std::string message = llvm::toString(wrong.takeError());
@@ -1120,7 +1175,7 @@ void spatialMappingPromotionExecutesExactCgraCase() {
           loom::dse::PromotePurpose::CandidateSelection},
   };
   auto planView = take(loom::dse::projectResolvedDseConfigView(resolved));
-  auto planOutcome = take(loom::dse::executeDsePlan(planView, store));
+  auto planOutcome = take(loom::dse::executeDsePlan(planView, store, blobs));
   const auto *planCompleted =
       std::get_if<loom::dse::CompletedDsePlanExecution>(&planOutcome);
   if (!planCompleted || planCompleted->generateInvocations().size() != 2 ||
@@ -1133,15 +1188,22 @@ void spatialMappingPromotionExecutesExactCgraCase() {
 void spatialMappingPromotionKeepsEveryCandidateLineage() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
   auto dataflow = buildDataflow(context);
   const loom::ArtifactRootReference dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
   auto fabric = buildBuiltinSpatialCore(store);
   const std::vector<loom::ArtifactRootReference> techMappings =
-      generateTechMappingSet(dataflowReference, fabric.reference(), store);
+      generateTechMappingSet(dataflowReference, fabric.reference(), store,
+                             blobs);
   std::vector<loom::ArtifactRootReference> mappings =
-      generateSpatialMappingSet(techMappings, fabric.reference(), store);
+      generateSpatialMappingSet(techMappings, fabric.reference(), store,
+                                blobs);
   mappings.erase(mappings.begin() + 2, mappings.end());
   const PublishedSpatialInputs simulationInputs =
       publishSpatialInputs(dataflow, store);
@@ -1162,7 +1224,7 @@ void spatialMappingPromotionKeepsEveryCandidateLineage() {
       mappings, {dataflowReference}, fabric.reference(),
       simulationInputs.workload, simulationInputs.runtimeInput));
   auto outcome = take(loom::dse::invokePromotionAcquisition(
-      inputs, binding, {obligation}, {mappings, obligations}, store));
+      inputs, binding, {obligation}, {mappings, obligations}, store, blobs));
   const auto *completed =
       std::get_if<loom::dse::CompletedPromotionAcquisition>(&outcome);
   if (!completed || completed->evidence.size() != mappings.size())
@@ -1187,13 +1249,18 @@ void spatialMappingPromotionKeepsEveryCandidateLineage() {
 void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
   auto dataflow = buildVectorDataflow(context);
   const loom::ArtifactRootReference dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
   auto fabric = buildBuiltinSpatialCore(store);
   const loom::ArtifactRootReference techMapping =
-      generateTechMapping(dataflowReference, fabric.reference(), store);
+      generateTechMapping(dataflowReference, fabric.reference(), store, blobs);
   auto spatial = generateSpatialFeedbackFixture(dataflowReference, techMapping,
                                                 fabric, store);
   const loom::ArtifactRootReference &spatialMapping = spatial.mapping;
@@ -1294,7 +1361,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
           techConfig.digest()},
   };
   auto planView = take(loom::dse::projectResolvedDseConfigView(planConfig));
-  auto planOutcome = take(loom::dse::executeDsePlan(planView, store));
+  auto planOutcome = take(loom::dse::executeDsePlan(planView, store, blobs));
   const auto *completed =
       std::get_if<loom::dse::CompletedDsePlanExecution>(&planOutcome);
   if (!completed || completed->generateInvocations().size() != 2 ||
@@ -1356,10 +1423,10 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
           spatial.constraints.reference(), {unsupportedReference},
           simulationInputs.workload, simulationInputs.runtimeInput));
   auto unsupportedOutcome = take(loom::dse::invokeCandidateGenerator(
-      unsupportedInputs, feedbackBinding, store));
+      unsupportedInputs, feedbackBinding, store, blobs));
   const auto *proofNotEstablished =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorInvocation>(
-          &unsupportedOutcome);
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &unsupportedOutcome.outcome);
   if (!proofNotEstablished ||
       proofNotEstablished->reason !=
           loom::dse::CandidateGeneratorIncompleteReason::ProofNotEstablished ||
@@ -1400,7 +1467,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
           spatial.constraints.reference(), {impersonatingReference},
           simulationInputs.workload, simulationInputs.runtimeInput));
   auto impersonatingOutcome = loom::dse::invokeCandidateGenerator(
-      impersonatingInputs, feedbackBinding, store);
+      impersonatingInputs, feedbackBinding, store, blobs);
   if (impersonatingOutcome)
     fail("TechMapping Evidence impersonated a SpatialMapping subject");
   const std::string impersonatingMessage =
@@ -1431,7 +1498,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
                 spatial.constraints.reference(), evidence,
                 simulationInputs.workload, simulationInputs.runtimeInput));
         auto missingOutcome = loom::dse::invokeCandidateGenerator(
-            missingInputs, feedbackBinding, store);
+            missingInputs, feedbackBinding, store, blobs);
         if (missingOutcome)
           fail("missing Mapping Evidence was treated as an absent record");
         if (llvm::toString(missingOutcome.takeError()) != directMissingMessage)
@@ -1451,8 +1518,8 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
           spatial.constraints.reference(),
           {completedReference, unsupportedReference}, simulationInputs.workload,
           simulationInputs.runtimeInput));
-  auto extraOutcome =
-      loom::dse::invokeCandidateGenerator(extraInputs, feedbackBinding, store);
+  auto extraOutcome = loom::dse::invokeCandidateGenerator(
+      extraInputs, feedbackBinding, store, blobs);
   if (extraOutcome)
     fail("Mapping feedback ignored an unmatched extra Evidence record");
   if (!llvm::StringRef(llvm::toString(extraOutcome.takeError()))
@@ -1471,7 +1538,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
     fail("one Mapping constraint owner accepted multiple Dataflow roots");
   llvm::consumeError(ambiguous.takeError());
 
-  auto repeated = take(loom::dse::executeDsePlan(planView, store));
+  auto repeated = take(loom::dse::executeDsePlan(planView, store, blobs));
   const auto *repeatedCompleted =
       std::get_if<loom::dse::CompletedDsePlanExecution>(&repeated);
   if (!repeatedCompleted ||
@@ -1485,6 +1552,11 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
 void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
   auto source = buildVectorStructuredSource(context);
   const loom::ArtifactRootReference sourceReference =
@@ -1535,7 +1607,8 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
   auto dataflow =
       take(dataflow::importCanonicalDataflow(*dataflowReference, store));
   const loom::ArtifactRootReference techMapping =
-      generateTechMapping(*dataflowReference, fabric.reference(), store);
+      generateTechMapping(*dataflowReference, fabric.reference(), store,
+                          blobs);
   auto spatial = generateSpatialFeedbackFixture(*dataflowReference, techMapping,
                                                 fabric, store);
   const PublishedSpatialInputs spatialInputs =
@@ -1557,7 +1630,7 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
       spatialInputs.workload, spatialInputs.runtimeInput));
   auto cgraOutcome = take(loom::dse::invokePromotionAcquisition(
       cgraInputs, cgraBinding, {cgraObligation}, {{spatial.mapping}, cgraRefs},
-      store));
+      store, blobs));
   const auto *cgraCompleted =
       std::get_if<loom::dse::CompletedPromotionAcquisition>(&cgraOutcome);
   if (!cgraCompleted || cgraCompleted->evidence.size() != 1)
@@ -1575,10 +1648,10 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
       take(loom::dse::resolveSpatialMappingFeedbackCandidateGeneratorBinding(
           buildFeedbackSpatialConfig()));
   auto feedbackOutcome = take(loom::dse::invokeCandidateGenerator(
-      feedbackInputs, feedbackBinding, store));
+      feedbackInputs, feedbackBinding, store, blobs));
   const auto *feedbackCompleted =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(
-          &feedbackOutcome);
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &feedbackOutcome.outcome);
   if (!feedbackCompleted || feedbackCompleted->outputBindings.size() != 1 ||
       feedbackCompleted->outputBindings.front().artifacts.size() != 1)
     fail("source-backed Mapping feedback produced no immutable child");
@@ -1603,7 +1676,7 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
       sourceInputs.workloadReference, sourceInputs.runtimeInputReference));
   auto functionalOutcome = take(loom::dse::invokePromotionAcquisition(
       functionalInputs, functionalBinding, {functionalObligation},
-      {{child}, functionalRefs}, store));
+      {{child}, functionalRefs}, store, blobs));
   const auto *functionalCompleted =
       std::get_if<loom::dse::CompletedPromotionAcquisition>(&functionalOutcome);
   if (!functionalCompleted || functionalCompleted->evidence.size() != 1)

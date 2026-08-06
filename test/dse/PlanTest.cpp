@@ -1,6 +1,7 @@
 #include "DSE/Plan.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Common/ComponentViewDigest.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/ResolvedConfigView.h"
@@ -181,19 +182,20 @@ makePromoteNode(PromotionAcquisitionDescriptorRef descriptor,
   };
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome>
+llvm::Expected<CandidateGeneratorProviderResult>
 generateSource(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
-               const ArtifactStore &store) {
+               const ArtifactStore &store, const BlobStore &) {
   if (inputBindings.size() != 1 ||
       inputBindings.front().artifacts.size() != 1 ||
       binding.descriptorRef() != sourceGenerator.reference())
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "source provider received invalid inputs");
   if (sourceGenerationReturnsEmpty)
-    return CompletedCandidateGeneratorInvocation{
-        {{CandidateGeneratorOutputSlotRef(0), {}}},
-        {},
+    return CandidateGeneratorProviderResult{
+        CompletedCandidateGeneratorResult{
+            {{CandidateGeneratorOutputSlotRef(0), {}}},
+            {}},
         {{CandidateGeneratorWorkUnitRef(0), 1, 1}}};
   const ArtifactRootReference first =
       publishReference(store, candidateSchema, 0x31);
@@ -213,14 +215,16 @@ generateSource(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
        {},
        {}}};
   if (sourceGenerationStopsAfterRetainingOutputs)
-    return IncompleteCandidateGeneratorInvocation{
-        CandidateGeneratorIncompleteReason::SemanticLimitReached,
-        std::move(outputBindings),
-        std::move(lineageEdges),
+    return CandidateGeneratorProviderResult{
+        IncompleteCandidateGeneratorResult{
+            CandidateGeneratorIncompleteReason::SemanticLimitReached,
+            std::move(outputBindings),
+            std::move(lineageEdges)},
         {{CandidateGeneratorWorkUnitRef(0), 2, 2}}};
-  return CompletedCandidateGeneratorInvocation{
-      std::move(outputBindings),
-      std::move(lineageEdges),
+  return CandidateGeneratorProviderResult{
+      CompletedCandidateGeneratorResult{
+          std::move(outputBindings),
+          std::move(lineageEdges)},
       {{CandidateGeneratorWorkUnitRef(0), 2, 2}}};
 }
 
@@ -254,8 +258,9 @@ void registerOwners() {
           registerPromotionAcquisitionDescriptor(unavailableAcquisition))
     fail(llvm::toString(std::move(error)));
 
-  const CandidateGeneratorProvider sourceProvider{sourceGenerator.reference(),
-                                                  generateSource};
+  const CandidateGeneratorProvider sourceProvider{
+      sourceGenerator.reference(),
+      CandidateGeneratorInProcessProvider{generateSource}};
   if (llvm::Error error = registerCandidateGeneratorProvider(sourceProvider))
     fail(llvm::toString(std::move(error)));
   const PromotionAcquisitionProvider objectiveProvider{
@@ -315,6 +320,11 @@ void exerciseOrderedTypedUseDef() {
           llvm::sys::fs::createUniqueDirectory("loom-dse-plan", storePath))
     fail("cannot create plan test ArtifactStore: " + error.message());
   ArtifactStore store(storePath);
+  llvm::SmallString<128> blobPath(storePath);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const BlobStore blobs(blobPath);
   const ArtifactRootReference executionSource =
       publishReference(store, sourceSchema, 0x11);
   std::vector<DsePlanNodeDefinition> executionNodes;
@@ -326,7 +336,7 @@ void exerciseOrderedTypedUseDef() {
                                            AllPassingSelection{}));
   ResolvedDseConfigView view =
       resolveView(std::move(executionNodes), objectiveCatalogs, qualityGates);
-  DsePlanExecutionOutcome execution = take(executeDsePlan(view, store));
+  DsePlanExecutionOutcome execution = take(executeDsePlan(view, store, blobs));
   const auto *completed = std::get_if<CompletedDsePlanExecution>(&execution);
   if (!completed)
     fail("available mixed plan did not complete");
@@ -367,7 +377,7 @@ void exerciseOrderedTypedUseDef() {
 
   sourceGenerationStopsAfterRetainingOutputs = true;
   DsePlanExecutionOutcome retainedGeneration =
-      take(executeDsePlan(view, store));
+      take(executeDsePlan(view, store, blobs));
   sourceGenerationStopsAfterRetainingOutputs = false;
   const auto *retainedIncomplete =
       std::get_if<IncompleteDsePlanExecution>(&retainedGeneration);
@@ -387,7 +397,8 @@ void exerciseOrderedTypedUseDef() {
     fail("Generate plan output is copied outside its canonical output binding");
 
   sourceGenerationReturnsEmpty = true;
-  DsePlanExecutionOutcome emptyGeneration = take(executeDsePlan(view, store));
+  DsePlanExecutionOutcome emptyGeneration =
+      take(executeDsePlan(view, store, blobs));
   sourceGenerationReturnsEmpty = false;
   const auto *emptyCompleted =
       std::get_if<CompletedDsePlanExecution>(&emptyGeneration);
@@ -405,7 +416,7 @@ void exerciseOrderedTypedUseDef() {
   ResolvedDseConfigView unavailableView =
       resolveView(unavailableNodes, objectiveCatalogs, qualityGates);
   DsePlanExecutionOutcome unavailable =
-      take(executeDsePlan(unavailableView, store));
+      take(executeDsePlan(unavailableView, store, blobs));
   const auto *incomplete =
       std::get_if<IncompleteDsePlanExecution>(&unavailable);
   const auto *reason = incomplete
@@ -468,7 +479,7 @@ void exerciseOrderedTypedUseDef() {
   ResolvedDseConfigView unavailablePromotion =
       resolveView(unavailablePromotionNodes, objectiveCatalogs, qualityGates);
   DsePlanExecutionOutcome unavailablePromotionOutcome =
-      take(executeDsePlan(unavailablePromotion, store));
+      take(executeDsePlan(unavailablePromotion, store, blobs));
   const auto *promotionIncomplete =
       std::get_if<IncompleteDsePlanExecution>(&unavailablePromotionOutcome);
   const auto *promotionReason =

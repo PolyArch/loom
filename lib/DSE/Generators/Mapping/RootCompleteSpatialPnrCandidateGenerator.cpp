@@ -57,10 +57,10 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return llvm::Error::success();
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
+llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store);
+    const ArtifactStore &store, const BlobStore &blobs);
 
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSpatialPnrCandidateGeneratorKind,
@@ -73,6 +73,8 @@ const CandidateGeneratorDescriptor descriptor{
         validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
     spatialPnrCandidateGeneratorWorkUnits,
+    nullptr,
+    ProviderForm::InProcess,
 };
 
 struct CachedDataflow final {
@@ -100,26 +102,23 @@ mechanicalLineage(llvm::ArrayRef<ArtifactRootReference> outputs) {
   return lineage;
 }
 
-CompletedCandidateGeneratorInvocation
-completed(std::vector<ArtifactRootReference> outputs,
-          std::vector<CandidateGeneratorWorkUnitSummary> workSummary) {
+CompletedCandidateGeneratorResult
+completed(std::vector<ArtifactRootReference> outputs) {
   canonicalizeReferences(outputs);
   auto lineage = mechanicalLineage(outputs);
   std::vector<CandidateGeneratorOutputBinding> bindings = {
       {CandidateGeneratorOutputSlotRef(0), std::move(outputs)}};
-  return {std::move(bindings), std::move(lineage), std::move(workSummary)};
+  return {std::move(bindings), std::move(lineage)};
 }
 
-IncompleteCandidateGeneratorInvocation
+IncompleteCandidateGeneratorResult
 incomplete(CandidateGeneratorIncompleteReason reason,
-           std::vector<ArtifactRootReference> outputs,
-           std::vector<CandidateGeneratorWorkUnitSummary> workSummary) {
+           std::vector<ArtifactRootReference> outputs) {
   canonicalizeReferences(outputs);
   auto lineage = mechanicalLineage(outputs);
   std::vector<CandidateGeneratorOutputBinding> bindings = {
       {CandidateGeneratorOutputSlotRef(0), std::move(outputs)}};
-  return {reason, std::move(bindings), std::move(lineage),
-          std::move(workSummary)};
+  return {reason, std::move(bindings), std::move(lineage)};
 }
 
 llvm::Error
@@ -147,10 +146,10 @@ accumulateWorkSummary(llvm::ArrayRef<CandidateGeneratorWorkUnitSummary> source,
   return llvm::Error::success();
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
+llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const BlobStore &blobs) {
   auto config = ::loom::pnr::adoptResolvedSpatialPnrConfigView(
       ::loom::pnr::resolvedSpatialPnrConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -238,14 +237,15 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
                                  SemanticLimitReached
               ? CandidateGeneratorIncompleteReason::SemanticLimitReached
               : CandidateGeneratorIncompleteReason::ProofNotEstablished;
-      return CandidateGeneratorInvocationOutcome{
-          incomplete(reason, std::move(outputs), std::move(workSummary))};
+      return CandidateGeneratorProviderResult{
+          incomplete(reason, std::move(outputs)), std::move(workSummary)};
     }
     if (std::holds_alternative<::loom::pnr::UnsupportedSpatialPnrGeneration>(
             outcome))
-      return CandidateGeneratorInvocationOutcome{
+      return CandidateGeneratorProviderResult{
           incomplete(CandidateGeneratorIncompleteReason::Unsupported,
-                     std::move(outputs), std::move(workSummary))};
+                     std::move(outputs)),
+          std::move(workSummary)};
     if (const auto *invalid =
             std::get_if<::loom::pnr::InvalidSpatialPnrGeneration>(&outcome))
       return llvm::createStringError(
@@ -260,12 +260,13 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
             internal.diagnostic);
   }
 
-  return CandidateGeneratorInvocationOutcome{
-      completed(std::move(outputs), std::move(workSummary))};
+  return CandidateGeneratorProviderResult{
+      completed(std::move(outputs)), std::move(workSummary)};
 }
 
-const CandidateGeneratorProvider provider{descriptor.reference(),
-                                          invokeRootCompleteProvider};
+const CandidateGeneratorProvider provider{
+    descriptor.reference(),
+    CandidateGeneratorInProcessProvider{invokeRootCompleteProvider}};
 
 } // namespace
 

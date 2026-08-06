@@ -171,7 +171,8 @@ classifyExecutionFailure(llvm::Error error) {
 
 llvm::Expected<EvaluationModelResult> evaluateWithLimits(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
-    const ArtifactStore &artifactStore, DfgSimulationAttemptLimits limits) {
+    const ArtifactStore &artifactStore, const BlobStore &blobStore,
+    DfgSimulationAttemptLimits limits) {
   if (request.modelBinding().descriptorRef() != kModelDescriptor.reference())
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -252,13 +253,14 @@ llvm::Expected<EvaluationModelResult> evaluateWithLimits(
 llvm::Expected<EvaluationModelResult>
 evaluate(const EvaluationRequest &request,
          const CaseArtifactResolution &resolution,
-         const ArtifactStore &artifactStore) {
-  return evaluateWithLimits(request, resolution, artifactStore,
+         const ArtifactStore &artifactStore,
+         const BlobStore &blobStore) {
+  return evaluateWithLimits(request, resolution, artifactStore, blobStore,
                             DfgSimulationAttemptLimits{});
 }
 
 const EvaluationModelProvider kProvider{kModelDescriptor.reference(),
-                                        &evaluate};
+                                        EvaluationModelInProcessProvider{&evaluate}};
 
 } // namespace
 
@@ -328,12 +330,14 @@ prepareDfgSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
 llvm::Expected<EvaluationEvidence>
 evaluateDfgSimulation(const PreparedDfgSimulationEvaluation &prepared,
                       DfgSimulationAttemptLimits limits,
-                      const ArtifactStore &artifactStore) {
+                      const ArtifactStore &artifactStore,
+                      const BlobStore &blobStore) {
   RequestVerifier verifier(prepared.resolution, artifactStore);
   if (llvm::Error error = verifier.verify(prepared.request))
     return std::move(error);
   auto result = evaluateWithLimits(prepared.request, prepared.resolution,
-                                   artifactStore, std::move(limits));
+                                   artifactStore, blobStore,
+                                   std::move(limits));
   if (!result)
     return result.takeError();
   return EvaluationEvidence::get(

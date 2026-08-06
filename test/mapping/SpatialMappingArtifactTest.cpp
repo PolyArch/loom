@@ -6,6 +6,7 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -51,6 +52,7 @@
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -648,6 +650,11 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
                                 bool forceTagConflict = false) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
 
   auto dataflowArtifact = buildDataflow(context);
@@ -719,10 +726,10 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
                         loom::artifactRootReferenceLess))
       fail("Spatial PnR generator did not return a canonical candidate set");
     auto genericSpatial = take(loom::dse::invokeCandidateGenerator(
-        typedGeneratorInputs, generatorBinding, store));
+        typedGeneratorInputs, generatorBinding, store, blobs));
     const auto *genericCompleted =
-        std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(
-            &genericSpatial);
+        std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+            &genericSpatial.outcome);
     if (!genericCompleted || genericCompleted->outputBindings.size() != 1 ||
         genericCompleted->outputBindings.front().artifacts !=
             generated->candidates)
@@ -771,7 +778,7 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
     const auto foreignFabric = buildTemporalFabric(store);
     loom::test::exerciseCgraAdmission(dataflowReference, fabric.reference(),
                                       generated->candidates.front(),
-                                      foreignFabric.reference(), store);
+                                      foreignFabric.reference(), store, blobs);
     auto wrongInspection = loom::mapping::inspectSpatialMapping(
         dataflow, tech.view(), foreignFabric.view(), generatedView.view());
     if (wrongInspection)
@@ -1179,7 +1186,7 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
       expectedAssignments += candidate->tagSegments(net).size();
     loom::test::exerciseCgraAdmission(
         dataflowReference, fabric.reference(), finalized.reference(),
-        buildTemporalFabric(store).reference(), store, true);
+        buildTemporalFabric(store).reference(), store, blobs, true);
     std::size_t observedAssignments = 0;
     for (const auto &use : imported.view().resourceUses())
       for (const auto &value : use.sharingAssignments) {

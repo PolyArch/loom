@@ -106,7 +106,7 @@ estimateMetrics(const dataflow::CanonicalDataflowArtifact &program,
 
 llvm::Expected<EvaluationModelResult>
 evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
-         const ArtifactStore &artifactStore) {
+         const ArtifactStore &artifactStore, const BlobStore &) {
   llvm::ArrayRef<ArtifactRootReference> dataflowPrograms =
       request.subjectBindings().subjects(kCanonicalDataflowRole);
   llvm::ArrayRef<ArtifactRootReference> fabrics =
@@ -144,8 +144,9 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
                                CompletedEvidence{std::move(metricResults), {}}};
 }
 
-const EvaluationModelProvider kProvider{kModelDescriptor.reference(),
-                                        &evaluate};
+const EvaluationModelProvider kProvider{
+    kModelDescriptor.reference(),
+    EvaluationModelInProcessProvider{&evaluate}};
 
 } // namespace
 

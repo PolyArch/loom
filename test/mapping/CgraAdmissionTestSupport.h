@@ -5,6 +5,7 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 }
 
 namespace loom::test {
@@ -13,7 +14,7 @@ void exerciseCgraAdmission(const ArtifactRootReference &dataflow,
                            const ArtifactRootReference &fabric,
                            const ArtifactRootReference &spatialMapping,
                            const ArtifactRootReference &foreignFabric,
-                           const ArtifactStore &store,
+                           const ArtifactStore &store, const BlobStore &blobs,
                            bool expectPhysicalTags = false);
 
 void exerciseCgraMemoryAdmission(const ArtifactRootReference &dataflow,

@@ -1,6 +1,7 @@
 #include "ADG/Builder.h"
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/CandidateGenerator.h"
 #include "DSE/StructuredMemoryCommunicationCandidateGenerator.h"
@@ -24,6 +25,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
@@ -399,6 +401,11 @@ void scopeExpansionLimitIsInvocationWide() {
   if (error)
     fail("cannot create ArtifactStore directory: " + error.message());
   loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
   auto first = parseProgram({.firstValue = 1});
@@ -424,9 +431,9 @@ void scopeExpansionLimitIsInvocationWide() {
       loom::dse::resolveStructuredMemoryCommunicationCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
-  auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  auto *completed = std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+      &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() != 3 ||
       completed->lineageEdges.size() != 1)
@@ -444,6 +451,11 @@ void providerPublishesParentAndAdmittedChild() {
   if (error)
     fail("cannot create ArtifactStore directory: " + error.message());
   loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
   auto parent = parseProgram();
@@ -460,9 +472,9 @@ void providerPublishesParentAndAdmittedChild() {
       loom::dse::resolveStructuredMemoryCommunicationCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
-  auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  auto *completed = std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+      &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() != 2)
     fail("provider did not publish the parent and one admitted child");
@@ -506,6 +518,11 @@ void exactFabricInadmissionExcludesTheStagedChild() {
   if (error)
     fail("cannot create ArtifactStore directory: " + error.message());
   loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   loom::adg::DesignBuilder design(store);
   auto spatial = take(design.createSpatialCore("operation-free", {}, {}));
   if (llvm::Error closeError = spatial.close({}))
@@ -526,9 +543,9 @@ void exactFabricInadmissionExcludesTheStagedChild() {
       loom::dse::resolveStructuredMemoryCommunicationCandidateGeneratorBinding(
           config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
-  auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  auto *completed = std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+      &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts !=
           std::vector<loom::ArtifactRootReference>{parentReference} ||

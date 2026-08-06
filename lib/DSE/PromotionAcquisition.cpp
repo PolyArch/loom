@@ -262,7 +262,8 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings,
     const ResolvedPromotionAcquisitionBinding &binding,
     llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligationTemplates,
-    PromotionAcquisitionTaskDomain taskDomain, const ArtifactStore &store) {
+    PromotionAcquisitionTaskDomain taskDomain, const ArtifactStore &store,
+    const BlobStore &blobs) {
   const PromotionAcquisitionDescriptor *descriptor =
       binding.descriptorRef().descriptor();
   if (!descriptor)
@@ -411,7 +412,8 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     if (!requestReference)
       return requestReference.takeError();
     auto result =
-        evaluation::evaluateRequest(*request, *resolved.resolution, store);
+        evaluation::evaluateRequest(*request, *resolved.resolution, store,
+                                    blobs);
     if (!result)
       return result.takeError();
     evidence.emplace_back(std::move(*request), std::move(*result),

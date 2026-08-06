@@ -1,6 +1,7 @@
 #include "Evaluation/Models/DfgSimulation.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -19,6 +20,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
@@ -128,6 +130,11 @@ loom::sim::CanonicalValueSequence value(std::uint32_t bits) {
 void retiredExecutionBecomesEvidenceOutput() {
   TemporaryDirectory directory;
   const loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   dataflow::CanonicalDataflowArtifact dataflow = program();
   dataflow::CanonicalDataflowProgramView view = take(dataflow.view());
   const loom::ArtifactRootReference dataflowRef =
@@ -154,7 +161,7 @@ void retiredExecutionBecomesEvidenceOutput() {
       dataflowRef, workloadRef, runtimeRef, loom::defaultResolvedConfig(),
       store));
   auto limited = take(loom::evaluation::models::evaluateDfgSimulation(
-      prepared, {1, std::nullopt}, store));
+      prepared, {1, std::nullopt}, store, blobs));
   require(limited.outcomeKind() ==
                   loom::evaluation::EvidenceOutcomeKind::CancelledOrTimeout &&
               limited.outputBindings().size() == 1 &&
@@ -162,7 +169,7 @@ void retiredExecutionBecomesEvidenceOutput() {
           "wavefront-limited attempt retained a fabricated execution");
 
   auto evidence = take(loom::evaluation::models::evaluateDfgSimulation(
-      prepared, {64, std::nullopt}, store));
+      prepared, {64, std::nullopt}, store, blobs));
   require(evidence.outcomeKind() ==
               loom::evaluation::EvidenceOutcomeKind::Completed,
           "retired DFG run did not produce Completed Evidence");

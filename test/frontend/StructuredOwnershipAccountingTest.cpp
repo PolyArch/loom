@@ -1,5 +1,6 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/PreMappingExploration.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
@@ -14,6 +15,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -238,7 +240,8 @@ invoke:
 
 loom::dse::CompletedPreMappingSelection
 explore(const loom::fabric::FinalizedFabricRoot &fabric,
-        const loom::ArtifactStore &store, std::uint32_t workers,
+        const loom::ArtifactStore &store, const loom::BlobStore &blobs,
+        std::uint32_t workers,
         std::optional<std::uint32_t> scopeExpansionLimit = std::nullopt) {
   llvm::LLVMContext context;
   auto structured = take(loom::frontend::raiseLlvmModuleToStructured(
@@ -283,7 +286,8 @@ explore(const loom::fabric::FinalizedFabricRoot &fabric,
   if (scopeExpansionLimit)
     config.dse.structuredOwnership.scopeExpansionLimit = *scopeExpansionLimit;
   auto outcome = take(loom::dse::exploreStructuredCompilationToPreMapping(
-      std::move(structured), workload, input, fabric, config, options, store));
+      std::move(structured), workload, input, fabric, config, options, store,
+      blobs));
   auto *completed =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&outcome);
   if (!completed)
@@ -559,6 +563,11 @@ int main() {
   if (error)
     fail("cannot create artifact store directory: " + error.message());
   loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
 
@@ -567,16 +576,16 @@ int main() {
   requireFirstClassPointerStateDoesNotHideInnerScope(design.roots().front());
   requireProtocolRootsExcludeHarnessScopes(design.roots().front());
 
-  auto serial = explore(design.roots().front(), store, 1);
+  auto serial = explore(design.roots().front(), store, blobs, 1);
   requireCompleteAccounting(serial);
-  auto parallel = explore(design.roots().front(), store, 2);
+  auto parallel = explore(design.roots().front(), store, blobs, 2);
   requireCompleteAccounting(parallel);
   if (serial.dispositions != parallel.dispositions)
     fail("candidate worker count changed the disposition sequence");
 
-  auto limitedSerial = explore(design.roots().front(), store, 1, 1);
+  auto limitedSerial = explore(design.roots().front(), store, blobs, 1, 1);
   requireDeterministicScopeExpansionBudget(limitedSerial);
-  auto limitedParallel = explore(design.roots().front(), store, 2, 1);
+  auto limitedParallel = explore(design.roots().front(), store, blobs, 2, 1);
   requireDeterministicScopeExpansionBudget(limitedParallel);
   if (limitedSerial.dispositions != limitedParallel.dispositions)
     fail("worker count changed the resolved scope expansion domain");

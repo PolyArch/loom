@@ -310,7 +310,7 @@ sourceObservationsFor(
 
 llvm::Expected<EvaluationModelResult>
 evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
-         const ArtifactStore &artifactStore) {
+         const ArtifactStore &artifactStore, const BlobStore &) {
   llvm::ArrayRef<ArtifactRootReference> candidates =
       request.subjectBindings().subjects(kCandidateRole);
   if (candidates.size() != 1 || !request.workload() || !request.runtimeInput())
@@ -392,8 +392,9 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
   return EvaluationModelResult{{}, CompletedEvidence{{}, std::move(findings)}};
 }
 
-const EvaluationModelProvider kProvider{kModelDescriptor.reference(),
-                                        &evaluate};
+const EvaluationModelProvider kProvider{
+    kModelDescriptor.reference(),
+    EvaluationModelInProcessProvider{&evaluate}};
 
 llvm::Expected<CaseArtifactResolution>
 resolveCase(const ArtifactRootReference &candidate,

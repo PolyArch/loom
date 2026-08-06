@@ -1,5 +1,6 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/CandidateGenerator.h"
 #include "DSE/StructuredScheduleCandidateGenerator.h"
@@ -21,6 +22,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -198,7 +200,7 @@ operationCapacity(const loom::frontend::StructuredProgramCandidate &candidate,
 std::vector<loom::ArtifactRootReference>
 generated(const loom::frontend::StructuredProgramCandidate &program,
           const loom::fabric::FinalizedFabricRoot &fabric,
-          const loom::ArtifactStore &store) {
+          const loom::ArtifactStore &store, const loom::BlobStore &blobs) {
   loom::ArtifactRootReference programReference =
       take(loom::frontend::publishStructuredProgram(program, store));
   auto config =
@@ -209,9 +211,9 @@ generated(const loom::frontend::StructuredProgramCandidate &program,
   auto binding = take(
       loom::dse::resolveStructuredScheduleCandidateGeneratorBinding(config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
-  auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  auto *completed = std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+      &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1)
     fail("schedule generator did not complete one output set");
   for (const loom::dse::CandidateGeneratorLineageEdge &edge :
@@ -377,6 +379,11 @@ void transformationsAreTypedCapacityBoundAndDependenceChecked() {
   if (error)
     fail("cannot create ArtifactStore directory: " + error.message());
   loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
   const loom::fabric::FinalizedFabricRoot &fabric = design.roots().front();
@@ -402,7 +409,7 @@ module attributes {dlti.dl_spec = #layout} {
 }
 )mlir");
   std::vector<loom::ArtifactRootReference> safeOutputs =
-      generated(safe, fabric, store);
+      generated(safe, fabric, store, blobs);
   if (safeOutputs.size() <= 1)
     fail("schedule generator produced no transformed candidate");
   bool sawInterchange = false;
@@ -454,7 +461,7 @@ module attributes {dlti.dl_spec = #layout} {
 }
 )mlir");
   for (const loom::ArtifactRootReference &reference :
-       generated(dependent, fabric, store)) {
+       generated(dependent, fabric, store, blobs)) {
     auto candidate =
         take(loom::frontend::importStructuredProgram(reference, store));
     if (outerInnerTrips(candidate, "kernel") ==
@@ -487,7 +494,7 @@ module attributes {dlti.dl_spec = #layout} {
       operationCapacity(unroll, fabric, "kernel");
   std::size_t maximumReplication = 0;
   for (const loom::ArtifactRootReference &reference :
-       generated(unroll, fabric, store)) {
+       generated(unroll, fabric, store, blobs)) {
     auto candidate =
         take(loom::frontend::importStructuredProgram(reference, store));
     maximumReplication =

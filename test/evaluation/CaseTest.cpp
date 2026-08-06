@@ -1,4 +1,5 @@
 #include "Evaluation/Case.h"
+#include "Evaluation/Evidence.h"
 #include "Evaluation/Finding.h"
 #include "Evaluation/ModelDescriptor.h"
 #include "Evaluation/OwnerError.h"
@@ -1044,7 +1045,7 @@ void requestCanonicalRoundTripAndStoreImport() {
           "request serialized a forbidden derived authority");
   require(__func__,
           llvm::StringRef(canonical).contains(
-              "\"descriptor_ref\":{\"schema_major\":1,\"schema_minor\":0,") &&
+              "\"descriptor_ref\":{\"schema_major\":2,\"schema_minor\":0,") &&
               llvm::StringRef(canonical).contains(
                   "\"resolved_model_config\":{\"canonical_view_bytes\":\"\"") &&
               llvm::StringRef(canonical).contains(
@@ -1089,7 +1090,7 @@ void requestCanonicalRoundTripAndStoreImport() {
 
   std::string legacyDescriptorVersion = canonical;
   const std::string legacyDescriptorTag =
-      "\"schema_major\":1,\"schema_minor\":0";
+      "\"schema_major\":2,\"schema_minor\":0";
   const std::size_t descriptorPosition =
       legacyDescriptorVersion.find(legacyDescriptorTag);
   require(__func__, descriptorPosition != std::string::npos,
@@ -1401,6 +1402,27 @@ void modelDescriptorOwnerContractsAreClosed() {
 
 } // namespace
 
+void registry20ReferencesAreRequired() {
+  // Registry 2.0 rejects 1.0 case and model descriptor references outright;
+  // there is no reinterpretation path.
+  auto legacyCase =
+      EvaluationCaseSignatureRef::get(SchemaVersion{1, 0}, testCaseKind);
+  if (legacyCase)
+    fail(__func__, "a 1.0 case signature reference was reinterpreted");
+  llvm::consumeError(legacyCase.takeError());
+  auto legacyModel = EvaluationModelDescriptorRef::get(SchemaVersion{1, 0},
+                                                       EvaluationModelKind(0));
+  if (legacyModel)
+    fail(__func__, "a 1.0 model descriptor reference was reinterpreted");
+  llvm::consumeError(legacyModel.takeError());
+  if (evaluationSchemaVersion() != SchemaVersion{2, 0})
+    fail(__func__, "the Evaluation registry did not move to schema 2.0");
+  // The Request and Evidence artifact root records stay at their own 1.0.
+  if (EvaluationRequest::artifactSchema.version != SchemaVersion{1, 0} ||
+      EvaluationEvidence::artifactSchema.version != SchemaVersion{1, 0})
+    fail(__func__, "Request or Evidence artifact schema identity changed");
+}
+
 int main() {
   if (llvm::Error error = registerEvaluationCaseSignature(testSignature))
     fail("registration", llvm::toString(std::move(error)));
@@ -1447,5 +1469,6 @@ int main() {
   scopeChecksAnchorClosureLocalProviderAndRoleOrder();
   conditionsCheckLocationApplicabilityDuplicatesAndConflicts();
   modelDescriptorOwnerContractsAreClosed();
+  registry20ReferencesAreRequired();
   return 0;
 }

@@ -145,6 +145,7 @@ const CandidateGeneratorDescriptor descriptor{
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
     &dataflowRewriteCandidateLineagePayloadContract(),
+    ProviderForm::InProcess,
 };
 
 const ArtifactRootReference &
@@ -158,10 +159,10 @@ struct SearchCandidate final {
   dataflow::CanonicalDataflowArtifact artifact;
 };
 
-llvm::Expected<CandidateGeneratorInvocationOutcome>
+llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
-               const ArtifactStore &store) {
+               const ArtifactStore &store, const BlobStore &blobs) {
   auto config = adoptResolvedDataflowRewriteGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -329,21 +330,21 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   }
   std::reverse(retainedLineageEdges.begin(), retainedLineageEdges.end());
   if (semanticLimitReached)
-    return CandidateGeneratorInvocationOutcome{
-        IncompleteCandidateGeneratorInvocation{
+    return CandidateGeneratorProviderResult{
+        IncompleteCandidateGeneratorResult{
             CandidateGeneratorIncompleteReason::SemanticLimitReached,
             {std::move(output)},
-            std::move(retainedLineageEdges),
-            {{CandidateGeneratorWorkUnitRef(0), expansions, expansions}}}};
-  return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{
+            std::move(retainedLineageEdges)},
+        {{CandidateGeneratorWorkUnitRef(0), expansions, expansions}}};
+  return CandidateGeneratorProviderResult{
+      CompletedCandidateGeneratorResult{
           {std::move(output)},
-          std::move(retainedLineageEdges),
-          {{CandidateGeneratorWorkUnitRef(0), expansions, expansions}}}};
+          std::move(retainedLineageEdges)},
+      {{CandidateGeneratorWorkUnitRef(0), expansions, expansions}}};
 }
 
-const CandidateGeneratorProvider provider{descriptor.reference(),
-                                          invokeProvider};
+const CandidateGeneratorProvider provider{
+    descriptor.reference(), CandidateGeneratorInProcessProvider{invokeProvider}};
 
 } // namespace
 

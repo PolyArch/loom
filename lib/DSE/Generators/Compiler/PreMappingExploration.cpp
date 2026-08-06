@@ -139,7 +139,8 @@ llvm::Expected<BaselineMetricOutcome> acquireBaselineMetric(
     evaluation::MetricRequestOrdinal metricRequest,
     const ArtifactRootReference &source, const ArtifactRootReference &fabric,
     const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput, const ArtifactStore &store) {
+    const ArtifactRootReference &runtimeInput, const ArtifactStore &store,
+    const BlobStore &blobs) {
   auto acquisitionConfig =
       projectResolvedEvidenceObligationSetConfigView({obligations.analytic});
   if (!acquisitionConfig)
@@ -158,7 +159,8 @@ llvm::Expected<BaselineMetricOutcome> acquireBaselineMetric(
       obligations.analytic};
   auto acquired =
       invokePromotionAcquisition(*inputs, *binding, obligations.templates,
-                                 {candidates, selectedObligations}, store);
+                                 {candidates, selectedObligations}, store,
+                                 blobs);
   if (!acquired)
     return acquired.takeError();
   if (auto *incomplete =
@@ -332,7 +334,7 @@ llvm::Expected<DataflowSelectionOutcome> exploreDataflowCandidates(
     const ArtifactRootReference &fabric, const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
     const StructuredOwnershipTopKSelection &selection,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const BlobStore &blobs) {
   auto analytic =
       prepareCanonicalDataflowFabricAnalyticEvidenceObligationTemplate(
           d0, fabric, config, store);
@@ -389,7 +391,7 @@ llvm::Expected<DataflowSelectionOutcome> exploreDataflowCandidates(
   auto view = projectResolvedDseConfigView(planConfig);
   if (!view)
     return view.takeError();
-  auto executed = executeDsePlan(*view, store);
+  auto executed = executeDsePlan(*view, store, blobs);
   if (!executed)
     return executed.takeError();
   if (auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&*executed)) {
@@ -420,7 +422,7 @@ exploreStructuredCompilationToPreMapping(
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const PreMappingExplorationOptions &options,
-    const ArtifactStore &artifactStore) {
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   if (compilation.fabric != fabric.reference())
     return invalid("Structured compilation and Fabric references differ");
   if (options.ownership.selection.k == 0)
@@ -487,7 +489,7 @@ exploreStructuredCompilationToPreMapping(
     auto acquired = acquireBaselineMetric(
         *obligations, options.ownership.selection.metricRequest,
         *sourceReference, fabric.reference(), *workloadReference,
-        *runtimeInputReference, artifactStore);
+        *runtimeInputReference, artifactStore, blobStore);
     if (!acquired)
       return acquired.takeError();
     if (auto *incomplete =
@@ -570,7 +572,7 @@ exploreStructuredCompilationToPreMapping(
   auto view = projectResolvedDseConfigView(planConfig);
   if (!view)
     return view.takeError();
-  auto executed = executeDsePlan(*view, artifactStore);
+  auto executed = executeDsePlan(*view, artifactStore, blobStore);
   if (!executed)
     return executed.takeError();
   if (auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&*executed)) {
@@ -632,7 +634,7 @@ exploreStructuredCompilationToPreMapping(
     auto dataflowSelection = exploreDataflowCandidates(
         *d0, reference, fabric.reference(), *workloadReference,
         *runtimeInputReference, config, options.ownership.selection,
-        artifactStore);
+        artifactStore, blobStore);
     if (!dataflowSelection)
       return dataflowSelection.takeError();
     if (auto *incomplete =

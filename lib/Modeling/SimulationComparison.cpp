@@ -232,7 +232,8 @@ compareExecutions(const sim::CanonicalSimulationExecution &reference,
 llvm::Expected<EvaluationModelResult>
 evaluate(const EvaluationRequest &request,
          const CaseArtifactResolution &resolution,
-         const ArtifactStore &artifactStore) {
+         const ArtifactStore &artifactStore,
+         const BlobStore &) {
   const auto references =
       request.subjectBindings().subjects(kReferenceExecutionRole);
   const auto candidates =
@@ -268,7 +269,7 @@ evaluate(const EvaluationRequest &request,
 }
 
 const EvaluationModelProvider kProvider{kModelDescriptor.reference(),
-                                        &evaluate};
+                                        EvaluationModelInProcessProvider{&evaluate}};
 
 using ResolutionMap =
     std::map<ArtifactRootReference, std::vector<ArtifactRootReference>,
@@ -435,11 +436,12 @@ prepareSimulationComparisonEvaluation(
 
 llvm::Expected<EvaluationEvidence> evaluateSimulationComparison(
     const PreparedSimulationComparisonEvaluation &prepared,
-    const ArtifactStore &artifactStore) {
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   RequestVerifier verifier(prepared.resolution, artifactStore);
   if (llvm::Error error = verifier.verify(prepared.request))
     return std::move(error);
-  auto result = evaluate(prepared.request, prepared.resolution, artifactStore);
+  auto result = evaluate(prepared.request, prepared.resolution, artifactStore,
+                         blobStore);
   if (!result)
     return result.takeError();
   return EvaluationEvidence::get(

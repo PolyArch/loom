@@ -110,6 +110,7 @@ const CandidateGeneratorDescriptor descriptor{
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
     &lineageContract,
+    ProviderForm::InProcess,
 };
 
 const ArtifactRootReference &
@@ -178,10 +179,10 @@ cloneParentState(StructuredOwnershipInvocation *invocation,
       std::move(*clone), {}, {}};
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome>
+llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
-               const ArtifactStore &store) {
+               const ArtifactStore &store, const BlobStore &blobs) {
   auto config = adoptResolvedStructuredExecutionShapeGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -279,16 +280,16 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       outputs.push_back(std::move(*published));
     }
   }
-  return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{
+  return CandidateGeneratorProviderResult{
+      CompletedCandidateGeneratorResult{
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-          std::move(lineageEdges),
-          {{CandidateGeneratorWorkUnitRef(0), decisionAttempts,
-            decisionAttempts}}}};
+          std::move(lineageEdges)},
+      {{CandidateGeneratorWorkUnitRef(0), decisionAttempts,
+        decisionAttempts}}};
 }
 
-const CandidateGeneratorProvider provider{descriptor.reference(),
-                                          invokeProvider};
+const CandidateGeneratorProvider provider{
+    descriptor.reference(), CandidateGeneratorInProcessProvider{invokeProvider}};
 
 } // namespace
 

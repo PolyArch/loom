@@ -7,6 +7,7 @@
 #include "Evaluation/OwnerValue.h"
 
 #include "Common/ComponentViewDigest.h"
+#include "Common/ProviderForm.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -366,6 +367,9 @@ struct EvaluationModelDescriptor {
   llvm::ArrayRef<EvaluationInteractionCapability> interactionCapabilities;
   DeterminismContract determinism;
   llvm::ArrayRef<FindingQuery> mandatoryTerminalFindings;
+  /// The closed provider form of this model descriptor, recovered from the
+  /// exact registry-2.0 reference before any implementation lookup.
+  ProviderForm providerForm;
 
   EvaluationModelDescriptorRef reference() const;
   const ModelConditionCapability *

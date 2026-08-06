@@ -27,6 +27,7 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/PreMappingExploration.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
@@ -39,13 +40,16 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
@@ -322,6 +326,12 @@ int main(int argc, char **argv) {
 
   // Resolve the exact builtin Fabric target through its owner.
   loom::ArtifactStore store(artifactStorePath);
+  ::llvm::SmallString<128> blobPath(artifactStorePath);
+  ::llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = ::llvm::sys::fs::create_directories(blobPath))
+    return reportError(::llvm::createStringError(
+        error, "cannot create BlobStore directory: %s", blobPath.c_str()));
+  const loom::BlobStore blobs(blobPath);
   auto design = loom::adg::buildBuiltinTarget(store, *preset);
   if (!design)
     return reportError(design.takeError());
@@ -394,7 +404,7 @@ int main(int argc, char **argv) {
     exploration.ownership.protocolCallableRoots = std::move(*protocolRoots);
     auto outcome = loom::dse::exploreStructuredCompilationToPreMapping(
         std::move(*source), inputs->workload, inputs->runtimeInput,
-        design->roots().front(), *config, exploration, store);
+        design->roots().front(), *config, exploration, store, blobs);
     if (!outcome)
       return reportError(outcome.takeError());
     auto generateSummary = std::visit(

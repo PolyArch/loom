@@ -229,6 +229,7 @@ const CandidateGeneratorDescriptor descriptor{
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
     &lineageContract,
+    ProviderForm::InProcess,
 };
 
 std::uint32_t defaultWorkerCount() {
@@ -244,10 +245,10 @@ singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   return inputBindings[slot].artifacts.front();
 }
 
-llvm::Expected<CandidateGeneratorInvocationOutcome> invokeOwnershipProvider(
+llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const BlobStore &blobs) {
   auto config = adoptResolvedStructuredOwnershipGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -336,20 +337,21 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeOwnershipProvider(
         {structured},
         std::move(*payload)});
   }
-  return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{
+  return CandidateGeneratorProviderResult{
+      CompletedCandidateGeneratorResult{
           {{CandidateGeneratorOutputSlotRef(0), std::move(allCandidates)},
            {CandidateGeneratorOutputSlotRef(1),
             std::move(acceleratorCandidates)}},
-          std::move(lineageEdges),
-          {{CandidateGeneratorWorkUnitRef(0), generated->plannedScopeCount,
-            generated->plannedScopeCount},
-           {CandidateGeneratorWorkUnitRef(1), generated->decisionAttemptCount,
-            generated->decisionAttemptCount}}}};
+          std::move(lineageEdges)},
+      {{CandidateGeneratorWorkUnitRef(0), generated->plannedScopeCount,
+        generated->plannedScopeCount},
+       {CandidateGeneratorWorkUnitRef(1), generated->decisionAttemptCount,
+        generated->decisionAttemptCount}}};
 }
 
-const CandidateGeneratorProvider provider{descriptor.reference(),
-                                          invokeOwnershipProvider};
+const CandidateGeneratorProvider provider{
+    descriptor.reference(),
+    CandidateGeneratorInProcessProvider{invokeOwnershipProvider}};
 
 } // namespace
 

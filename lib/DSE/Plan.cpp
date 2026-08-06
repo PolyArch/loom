@@ -327,7 +327,8 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
     const CandidateSet &candidateSet,
     llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligations,
     const QualityGatePolicy &qualityGate, const ObjectiveProgram &objectives,
-    const TopKSelection &selection, const ArtifactStore &store) {
+    const TopKSelection &selection, const ArtifactStore &store,
+    const BlobStore &blobs) {
   std::vector<std::uint32_t> objectiveOrdinals;
   objectiveOrdinals.reserve(promote.objectiveObligations().size());
   for (EvidenceObligationTemplateRef ref : promote.objectiveObligations())
@@ -335,7 +336,8 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
 
   auto objectiveAcquisition = invokePromotionAcquisition(
       inputs, promote.acquisitionBinding(), evidenceObligations,
-      {candidateSet.candidates(), promote.objectiveObligations()}, store);
+      {candidateSet.candidates(), promote.objectiveObligations()}, store,
+      blobs);
   if (!objectiveAcquisition)
     return objectiveAcquisition.takeError();
   if (auto *incomplete =
@@ -398,7 +400,7 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
     if (!deferredObligations.empty()) {
       auto acquired = invokePromotionAcquisition(
           inputs, promote.acquisitionBinding(), evidenceObligations,
-          {candidateDomain, deferredObligations}, store);
+          {candidateDomain, deferredObligations}, store, blobs);
       if (!acquired)
         return acquired.takeError();
       deferred = std::move(*acquired);
@@ -935,6 +937,10 @@ llvm::StringRef toString(const DsePlanIncompleteReason &reason) {
             return "candidate_provider_unavailable";
           case CandidateGeneratorIncompleteReason::Unsupported:
             return "candidate_generation_unsupported";
+          case CandidateGeneratorIncompleteReason::ExecutionFailed:
+            return "candidate_execution_failed";
+          case CandidateGeneratorIncompleteReason::CancelledOrTimeout:
+            return "candidate_cancelled_or_timeout";
           }
         } else if constexpr (std::is_same_v<
                                  T, PromotionAcquisitionIncompleteReason>) {
@@ -957,7 +963,8 @@ llvm::StringRef toString(const DsePlanIncompleteReason &reason) {
 }
 
 llvm::Expected<DsePlanExecutionOutcome>
-executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
+executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
+               const BlobStore &blobs) {
   const ResolvedDsePlan &plan = view.plan();
   CompletedDsePlanExecution completed =
       DsePlanExecutionBuilder::createCompleted(view.digest());
@@ -983,18 +990,19 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
           generate->configDigest());
       if (!binding)
         return binding.takeError();
-      auto outcome = invokeCandidateGenerator(inputs, *binding, store);
-      if (!outcome)
-        return outcome.takeError();
+      auto result = invokeCandidateGenerator(inputs, *binding, store, blobs);
+      if (!result)
+        return result.takeError();
       if (auto *incomplete =
-              std::get_if<IncompleteCandidateGeneratorInvocation>(&*outcome)) {
+              std::get_if<IncompleteCandidateGeneratorResult>(
+                  &result->outcome)) {
         GenerateInvocationRecord invocationRecord{
             static_cast<std::uint64_t>(nodeIndex), std::move(inputs),
             std::move(*binding), std::move(incomplete->retainedOutputBindings),
             std::move(incomplete->lineageEdges)};
         GenerateInvocationWorkSummary workSummary{
             static_cast<std::uint64_t>(nodeIndex),
-            std::move(incomplete->workSummary)};
+            std::move(result->workSummary)};
         return DsePlanExecutionOutcome{
             DsePlanExecutionBuilder::incompleteGenerate(
                 static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
@@ -1002,14 +1010,14 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
                 std::move(workSummary))};
       }
       auto &generated =
-          std::get<CompletedCandidateGeneratorInvocation>(*outcome);
+          std::get<CompletedCandidateGeneratorResult>(result->outcome);
       GenerateInvocationRecord invocationRecord{
           static_cast<std::uint64_t>(nodeIndex), std::move(inputs),
           std::move(*binding), std::move(generated.outputBindings),
           std::move(generated.lineageEdges)};
       GenerateInvocationWorkSummary workSummary{
           static_cast<std::uint64_t>(nodeIndex),
-          std::move(generated.workSummary)};
+          std::move(result->workSummary)};
       if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
               completed, std::move(invocationRecord), std::move(workSummary)))
         return std::move(error);
@@ -1057,7 +1065,7 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
       auto staged =
           executeStagedTopK(promote, *descriptor, inputs, *candidateSet,
                             view.evidenceObligationTemplates(), *qualityGate,
-                            *plan.objectiveProgram(), *topK, store);
+                            *plan.objectiveProgram(), *topK, store, blobs);
       if (!staged)
         return staged.takeError();
       if (auto *incomplete = std::get_if<IncompleteStagedTopK>(&*staged))
@@ -1077,7 +1085,7 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
         view.evidenceObligationTemplates(),
         {candidateSet->candidates(),
          promote.acquisitionBinding().evidenceObligations()},
-        store);
+        store, blobs);
     if (!acquisition)
       return acquisition.takeError();
     if (auto *incomplete =

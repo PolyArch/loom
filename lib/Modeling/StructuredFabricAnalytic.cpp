@@ -547,7 +547,7 @@ llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
 
 llvm::Expected<EvaluationModelResult>
 evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
-         const ArtifactStore &artifactStore) {
+         const ArtifactStore &artifactStore, const BlobStore &) {
   llvm::ArrayRef<ArtifactRootReference> structured =
       request.subjectBindings().subjects(kStructuredProgramRole);
   llvm::ArrayRef<ArtifactRootReference> fabric =
@@ -689,8 +689,9 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
                                CompletedEvidence{std::move(metricResults), {}}};
 }
 
-const EvaluationModelProvider kProvider{kModelDescriptor.reference(),
-                                        &evaluate};
+const EvaluationModelProvider kProvider{
+    kModelDescriptor.reference(),
+    EvaluationModelInProcessProvider{&evaluate}};
 
 } // namespace
 

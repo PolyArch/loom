@@ -5,6 +5,7 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 struct ResolvedConfig;
 } // namespace loom
 
@@ -28,7 +29,7 @@ prepareSimulationComparisonEvaluation(
 
 llvm::Expected<EvaluationEvidence> evaluateSimulationComparison(
     const PreparedSimulationComparisonEvaluation &prepared,
-    const ArtifactStore &artifactStore);
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
 } // namespace loom::evaluation::models
 

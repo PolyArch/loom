@@ -17,7 +17,7 @@ namespace {
 
 using detail::evaluationError;
 
-constexpr SchemaVersion evaluationSchema{1, 0};
+constexpr SchemaVersion evaluationSchema{2, 0};
 
 std::vector<const EvaluationCaseSignatureDescriptor *> &caseSignatures() {
   static std::vector<const EvaluationCaseSignatureDescriptor *> descriptors;

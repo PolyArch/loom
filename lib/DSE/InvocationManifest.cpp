@@ -321,7 +321,7 @@ llvm::Error validateIncompleteReason(const DsePlanIncompleteReason &reason) {
         if constexpr (std::is_same_v<T, CandidateGeneratorIncompleteReason>) {
           if (static_cast<std::uint32_t>(value) >
               static_cast<std::uint32_t>(
-                  CandidateGeneratorIncompleteReason::Unsupported))
+                  CandidateGeneratorIncompleteReason::CancelledOrTimeout))
             return invalid("unknown candidate-generator incomplete reason");
         } else if constexpr (std::is_same_v<
                                  T, PromotionAcquisitionIncompleteReason>) {
@@ -510,7 +510,7 @@ decodeIncompleteReason(Decoder &decoder) {
   switch (*family) {
   case 0:
     if (*ordinal > static_cast<std::uint32_t>(
-                       CandidateGeneratorIncompleteReason::Unsupported))
+                       CandidateGeneratorIncompleteReason::CancelledOrTimeout))
       return invalid("unknown candidate-generator incomplete reason");
     return DsePlanIncompleteReason{
         static_cast<CandidateGeneratorIncompleteReason>(*ordinal)};

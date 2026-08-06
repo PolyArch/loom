@@ -352,7 +352,8 @@ validateAndSummarizeDsePlanGenerateInvocations(
     const ArtifactStore &store);
 
 llvm::Expected<DsePlanExecutionOutcome>
-executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store);
+executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
+               const BlobStore &blobs);
 
 } // namespace loom::dse
 

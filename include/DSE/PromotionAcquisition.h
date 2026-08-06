@@ -241,7 +241,8 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings,
     const ResolvedPromotionAcquisitionBinding &binding,
     llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligationTemplates,
-    PromotionAcquisitionTaskDomain taskDomain, const ArtifactStore &store);
+    PromotionAcquisitionTaskDomain taskDomain, const ArtifactStore &store,
+    const BlobStore &blobs);
 
 } // namespace loom::dse
 

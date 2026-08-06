@@ -1,4 +1,5 @@
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/ResolvedConfigView.h"
 #include "Evaluation/ModelProvider.h"
@@ -6,6 +7,7 @@
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 
 #include <algorithm>
 #include <array>
@@ -140,7 +142,8 @@ const EvaluationModelDescriptor modelDescriptor{
 
 llvm::Expected<EvaluationModelResult> evaluate(const EvaluationRequest &request,
                                                const CaseArtifactResolution &,
-                                               const ArtifactStore &store) {
+                                               const ArtifactStore &store,
+                                               const BlobStore &) {
   llvm::ArrayRef<ArtifactRootReference> candidates =
       request.subjectBindings().subjects(candidateRole);
   if (candidates.size() != 1 ||
@@ -183,8 +186,9 @@ llvm::Expected<EvaluationModelResult> evaluate(const EvaluationRequest &request,
       {}, CompletedEvidence{std::move(metrics), std::move(findings)}};
 }
 
-const EvaluationModelProvider modelProvider{modelDescriptor.reference(),
-                                            &evaluate};
+const EvaluationModelProvider modelProvider{
+    modelDescriptor.reference(),
+    EvaluationModelInProcessProvider{&evaluate}};
 
 constexpr std::array<std::uint8_t, 4> acquisitionConfigSchema = {0x41, 0x43,
                                                                  0x51, 0x31};
@@ -403,6 +407,11 @@ void exactTemplateDrivesProductionAcquisition() {
           "loom-promotion-acquisition", directory))
     fail(error.message());
   ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const BlobStore blobs(blobPath);
   const ArtifactRootReference first =
       storeArtifact(store, candidateSchema, 0x11);
   const ArtifactRootReference second =
@@ -472,7 +481,7 @@ void exactTemplateDrivesProductionAcquisition() {
       PromotePurpose::CandidateSelection}};
 
   ResolvedDseConfigView view = take(projectResolvedDseConfigView(config));
-  DsePlanExecutionOutcome outcome = take(executeDsePlan(view, store));
+  DsePlanExecutionOutcome outcome = take(executeDsePlan(view, store, blobs));
   const auto *completed = std::get_if<CompletedDsePlanExecution>(&outcome);
   if (!completed || completed->resolve({0, 0}).size() != 2 ||
       completed->resolve({0, 1}).size() != 2)
@@ -500,6 +509,11 @@ void topKAcquiresOnlyTheRequiredFunctionalPrefix() {
           "loom-staged-promotion-acquisition", directory))
     fail(error.message());
   ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const BlobStore blobs(blobPath);
   const ArtifactRootReference first =
       storeArtifact(store, candidateSchema, 0x11);
   const ArtifactRootReference second =
@@ -569,7 +583,7 @@ void topKAcquiresOnlyTheRequiredFunctionalPrefix() {
 
   resolvedTaskCounts = {};
   ResolvedDseConfigView view = take(projectResolvedDseConfigView(config));
-  DsePlanExecutionOutcome outcome = take(executeDsePlan(view, store));
+  DsePlanExecutionOutcome outcome = take(executeDsePlan(view, store, blobs));
   const auto *completed = std::get_if<CompletedDsePlanExecution>(&outcome);
   if (!completed)
     fail("TopK execution did not complete");
@@ -593,6 +607,11 @@ void taskLocalInputSelectionIsVerified() {
           "loom-task-local-acquisition-input", directory))
     fail(error.message());
   ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const BlobStore blobs(blobPath);
   const ArtifactRootReference first =
       storeArtifact(store, candidateSchema, 0x11);
   const ArtifactRootReference second =
@@ -623,7 +642,7 @@ void taskLocalInputSelectionIsVerified() {
   const std::array<EvidenceObligationTemplateRef, 1> obligations = {
       EvidenceObligationTemplateRef(0)};
   auto outcome = take(invokePromotionAcquisition(
-      inputs, binding, {obligation}, {candidates, obligations}, store));
+      inputs, binding, {obligation}, {candidates, obligations}, store, blobs));
   const auto *completed = std::get_if<CompletedPromotionAcquisition>(&outcome);
   if (!completed || completed->evidence.size() != 2)
     fail("task-local input selection did not acquire every candidate");
@@ -648,8 +667,10 @@ void taskLocalInputSelectionIsVerified() {
         acquisitionConfigSchema, invalidConfigBytes));
     auto invalidBinding = take(ResolvedPromotionAcquisitionBinding::get(
         acquisitionDescriptor.reference(), invalidConfigBytes, invalidDigest));
-    auto invalid = invokePromotionAcquisition(
-        inputs, invalidBinding, {obligation}, {candidates, obligations}, store);
+    auto invalid = invokePromotionAcquisition(inputs, invalidBinding,
+                                              {obligation},
+                                              {candidates, obligations}, store,
+                                              blobs);
     if (invalid)
       fail("provider malformed task input selection was accepted");
     requireErrorContains(invalid.takeError(), error);

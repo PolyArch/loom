@@ -2,6 +2,7 @@
 #include "ADG/Builtin.h"
 #include "ADG/FuLibrary.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/CandidateGenerator.h"
 #include "DSE/DataflowRewriteCandidateGenerator.h"
@@ -22,6 +23,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
@@ -397,6 +399,11 @@ void exactParentAndOneAtomicChildArePublished() {
   if (error)
     fail("cannot create ArtifactStore directory: " + error.message());
   loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
   auto parent = roundTripProgram();
@@ -414,9 +421,9 @@ void exactParentAndOneAtomicChildArePublished() {
   auto binding =
       take(loom::dse::resolveDataflowRewriteCandidateGeneratorBinding(config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
-  auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  auto *completed = std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+      &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() != 2)
     fail("generator did not publish the parent and one atomic child");
@@ -558,6 +565,11 @@ void wideVectorActorIsChunkedForExactNarrowComputeFabric() {
   if (error)
     fail("cannot create ArtifactStore directory: " + error.message());
   loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto design = narrowVectorComputeFabric(store);
   auto parent = wideVectorAddProgram();
   auto parentReference =
@@ -572,9 +584,9 @@ void wideVectorActorIsChunkedForExactNarrowComputeFabric() {
   auto binding =
       take(loom::dse::resolveDataflowRewriteCandidateGeneratorBinding(config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
-  auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  auto *completed = std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+      &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.empty())
     fail("narrow vector Fabric produced no admitted chunk candidate");
@@ -624,6 +636,11 @@ void recursiveRewriteRetainsItsRootedInternalLineage() {
   if (error)
     fail("cannot create ArtifactStore directory: " + error.message());
   loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto design = narrowVectorComputeFabric(store);
   auto parentReference = take(
       dataflow::publishCanonicalDataflow(twoWideVectorActorsProgram(), store));
@@ -637,9 +654,9 @@ void recursiveRewriteRetainsItsRootedInternalLineage() {
   auto binding =
       take(loom::dse::resolveDataflowRewriteCandidateGeneratorBinding(config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
-  auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(&outcome);
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  auto *completed = std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+      &outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.empty())
     fail("recursive rewrite produced no admitted final candidate");
@@ -678,6 +695,11 @@ void semanticLimitNeverPromotesAnExploredPrefix() {
   if (error)
     fail("cannot create ArtifactStore directory: " + error.message());
   loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto design = narrowVectorComputeFabric(store);
   auto parent = wideVectorAddProgram();
   auto parentReference =
@@ -695,9 +717,9 @@ void semanticLimitNeverPromotesAnExploredPrefix() {
   auto binding =
       take(loom::dse::resolveDataflowRewriteCandidateGeneratorBinding(config));
   auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
-  auto *incomplete =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorInvocation>(&outcome);
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  auto *incomplete = std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+      &outcome.outcome);
   if (!incomplete ||
       incomplete->reason !=
           loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||
@@ -721,9 +743,10 @@ void semanticLimitNeverPromotesAnExploredPrefix() {
       loom::dse::projectResolvedDataflowRewriteGeneratorConfigView(resolved));
   binding =
       take(loom::dse::resolveDataflowRewriteCandidateGeneratorBinding(config));
-  outcome = take(loom::dse::invokeCandidateGenerator(inputs, binding, store));
-  incomplete =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorInvocation>(&outcome);
+  outcome =
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  incomplete = std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+      &outcome.outcome);
   if (!incomplete ||
       incomplete->reason !=
           loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||

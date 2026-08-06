@@ -401,6 +401,16 @@ callback for both in-process computation and long-lived external execution
 would hide the prepared-but-not-run state and encourage implicit process
 launch; a descriptor-owned provider form keeps that distinction explicit.
 
+The provider result also carries the invocation's work summary as one dense
+transient field outside the outcome variant. The descriptor owns the stable
+work-unit ordinals; the provider alone observes the planned and consumed
+counts at runtime. A mutable accounting side channel would let callback state
+drift from the validated report and would invite controller inference from
+output cardinality, which collapses whenever one attempt yields several
+candidates or none. Returning the counts inside the one validated transient
+report keeps them reviewable against the descriptor's dense coverage rule,
+while the persistent owner of record remains the central invocation manifest.
+
 ## Why External Tools Are Script Driven
 
 EDA and external simulation tools already own Tcl, Python, shell, module,

@@ -58,7 +58,7 @@ exploreStructuredCompilationToPreMapping(
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const PreMappingExplorationOptions &options,
-    const ArtifactStore &artifactStore);
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
 } // namespace loom::dse
 
