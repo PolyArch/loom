@@ -1,4 +1,3 @@
-#include "EDA/Adapters/OpenSource/Verilator.h"
 #include "ExternalTool/LocalConfig.h"
 #include "ExternalTool/Provider.h"
 #include "ExternalTool/RuntimeBinding.h"
@@ -27,21 +26,17 @@ namespace {
 llvm::cl::OptionCategory probeCategory("Loom hardware probe options");
 
 llvm::cl::opt<std::string>
-    bundleRoot("bundle",
-               llvm::cl::desc("Directory to publish the invocation bundle"),
-               llvm::cl::value_desc("path"), llvm::cl::Required,
-               llvm::cl::cat(probeCategory));
+    probeDirectoryOption(
+        "probe-dir",
+        llvm::cl::desc("Directory for temporary tool probe scripts"),
+        llvm::cl::value_desc("path"), llvm::cl::init(""),
+        llvm::cl::cat(probeCategory));
 
 llvm::cl::opt<std::string>
     localConfigPath("loom-local-config",
                     llvm::cl::desc("Machine-local external-tool configuration"),
                     llvm::cl::value_desc("path"), llvm::cl::init(""),
                     llvm::cl::cat(probeCategory));
-
-llvm::cl::opt<bool> executeBundle(
-    "execute",
-    llvm::cl::desc("Execute the generated run.sh and import completion"),
-    llvm::cl::init(false), llvm::cl::cat(probeCategory));
 
 llvm::Error probeError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -54,12 +49,19 @@ llvm::Expected<loom::external_tool::LocalToolConfig> loadConfiguration() {
   return loom::external_tool::loadLocalToolConfig(localConfigPath);
 }
 
-llvm::Expected<llvm::SmallString<256>> absoluteBundleRoot() {
-  llvm::SmallString<256> path(bundleRoot);
+llvm::Expected<llvm::SmallString<256>> absoluteProbeDirectory() {
+  llvm::SmallString<256> path(probeDirectoryOption);
+  if (path.empty())
+    path = ".";
   if (std::error_code error = llvm::sys::fs::make_absolute(path))
-    return probeError("could not make bundle path absolute: " +
+    return probeError("could not make probe directory absolute: " +
                       error.message());
   llvm::sys::path::remove_dots(path, true);
+  std::error_code directoryError;
+  if (!std::filesystem::is_directory(
+          std::filesystem::path(path.str().str()), directoryError) ||
+      directoryError)
+    return probeError("probe directory does not exist: " + path.str().str());
   return path;
 }
 
@@ -93,82 +95,6 @@ inheritedEnvironment(const loom::external_tool::LocalToolConfig &config,
   return names;
 }
 
-struct TemporaryDirectoryCleanup {
-  std::filesystem::path path;
-
-  ~TemporaryDirectoryCleanup() {
-    std::error_code ignored;
-    std::filesystem::remove_all(path, ignored);
-  }
-};
-
-llvm::Expected<std::optional<std::string>> preflightVerilatorContainer(
-    llvm::StringRef scratchDirectory,
-    const loom::external_tool::ResolvedToolBinding &tool,
-    const loom::external_tool::ResolvedToolBinding &container,
-    llvm::StringRef os, llvm::ArrayRef<std::string> inheritEnvironment) {
-  llvm::SmallString<256> prefix(scratchDirectory);
-  llvm::sys::path::append(prefix, "loom-container-preflight");
-  llvm::SmallString<256> temporaryDirectory;
-  if (std::error_code error =
-          llvm::sys::fs::createUniqueDirectory(prefix, temporaryDirectory))
-    return probeError("could not create composition preflight directory: " +
-                      error.message());
-  TemporaryDirectoryCleanup cleanup{
-      std::filesystem::path(temporaryDirectory.str().str())};
-
-  loom::external_tool::InvocationRuntimeBinding runtime;
-  runtime.kind = loom::external_tool::InvocationRuntimeKind::PolyArchContainer;
-  runtime.polyArchContainer = container;
-  runtime.os = os.str();
-
-  const auto &containerProvider =
-      loom::external_tool::polyArchContainerProvider();
-  const auto &verilatorProvider = loom::external_tool::verilatorProvider();
-  loom::external_tool::ExternalToolInvocationBundleSpec bundle;
-  bundle.providerIdentity = "verilator.runtime-preflight@1";
-  bundle.semanticBindingIdentity = "verilator.version-probe@1";
-  bundle.resultImporterIdentity = "external-tool.completion@1";
-  bundle.tool = tool;
-  bundle.toolVersionProbe = verilatorProvider.versionProbe;
-  bundle.runtime = std::move(runtime);
-  bundle.containerVersionProbe = containerProvider.versionProbe;
-  bundle.commands = {{tool.executable}};
-  bundle.commands.front().insert(
-      bundle.commands.front().end(),
-      verilatorProvider.versionProbe.arguments.begin(),
-      verilatorProvider.versionProbe.arguments.end());
-  bundle.inheritEnvironment.assign(inheritEnvironment.begin(),
-                                   inheritEnvironment.end());
-
-  llvm::SmallString<256> preflightBundle(temporaryDirectory);
-  llvm::sys::path::append(preflightBundle, "bundle");
-  if (llvm::Error error =
-          loom::external_tool::finalizeExternalToolInvocationBundle(
-              preflightBundle, bundle))
-    return error;
-  llvm::Expected<int> status =
-      loom::external_tool::executeExternalToolInvocationBundle(preflightBundle);
-  if (!status)
-    return std::optional<std::string>(
-        "generated composition preflight could not execute: " +
-        llvm::toString(status.takeError()));
-  llvm::Expected<loom::external_tool::InvocationCompletion> completion =
-      loom::external_tool::loadExternalToolInvocationCompletion(
-          preflightBundle);
-  if (!completion)
-    return std::optional<std::string>(
-        "generated composition preflight has no valid completion: " +
-        llvm::toString(completion.takeError()));
-  if (*status != 0 ||
-      completion->status !=
-          loom::external_tool::InvocationCompletionStatus::Success)
-    return std::optional<std::string>(
-        "containerized Verilator version probe exited with status " +
-        std::to_string(*status));
-  return std::optional<std::string>{};
-}
-
 llvm::Error run() {
   llvm::Expected<loom::external_tool::LocalToolConfig> config =
       loadConfiguration();
@@ -177,17 +103,14 @@ llvm::Error run() {
   if (llvm::Error error = rejectUnsupportedProviderOptions(*config))
     return error;
 
-  llvm::Expected<llvm::SmallString<256>> root = absoluteBundleRoot();
-  if (!root)
-    return root.takeError();
-  llvm::SmallString<256> probeDirectory(*root);
-  llvm::sys::path::remove_filename(probeDirectory);
-  if (probeDirectory.empty())
-    probeDirectory = "/";
+  llvm::Expected<llvm::SmallString<256>> probeDirectory =
+      absoluteProbeDirectory();
+  if (!probeDirectory)
+    return probeDirectory.takeError();
 
   const auto &verilator = loom::external_tool::verilatorProvider();
   loom::external_tool::ShellToolBindingProbe toolProbe(
-      probeDirectory.str().str(), verilator.versionProbe);
+      probeDirectory->str().str(), verilator.versionProbe);
   const loom::external_tool::ToolEnvironment toolEnvironment =
       loom::external_tool::captureToolEnvironment(verilator.binding);
   llvm::Expected<loom::external_tool::ResolvedToolBinding> tool =
@@ -198,7 +121,7 @@ llvm::Error run() {
 
   const auto &container = loom::external_tool::polyArchContainerProvider();
   loom::external_tool::ShellToolBindingProbe containerProbe(
-      probeDirectory.str().str(), container.versionProbe);
+      probeDirectory->str().str(), container.versionProbe);
   const loom::external_tool::ToolEnvironment containerEnvironment =
       loom::external_tool::captureToolEnvironment(container.binding);
   llvm::Expected<loom::external_tool::InvocationRuntimeBinding> runtime =
@@ -209,8 +132,9 @@ llvm::Error run() {
               const loom::external_tool::ResolvedToolBinding &resolvedContainer,
               llvm::StringRef os)
               -> llvm::Expected<std::optional<std::string>> {
-            return preflightVerilatorContainer(
-                probeDirectory, resolvedTool, resolvedContainer, os,
+            return loom::external_tool::probeContainerToolComposition(
+                probeDirectory->str(), resolvedTool, verilator.versionProbe,
+                resolvedContainer, os,
                 inheritedEnvironment(
                     *config, loom::external_tool::InvocationRuntimeKind::
                                  PolyArchContainer));
@@ -222,33 +146,18 @@ llvm::Error run() {
       loom::hardware::rtl::emitCirctConformanceSystemVerilog();
   if (!systemVerilog)
     return systemVerilog.takeError();
-  llvm::Expected<loom::external_tool::ExternalToolInvocationBundleSpec> bundle =
-      loom::eda::open_source::makeVerilatorLintBundle(
-          *systemVerilog, "circt-api-conformance@1", *tool, *runtime,
-          inheritedEnvironment(*config, runtime->kind));
-  if (!bundle)
-    return bundle.takeError();
-  if (llvm::Error error =
-          loom::external_tool::finalizeExternalToolInvocationBundle(root->str(),
-                                                                    *bundle))
-    return error;
+  if (!llvm::StringRef(*systemVerilog)
+           .contains("module loom_circt_conformance"))
+    return probeError("CIRCT conformance emission lost the expected module");
 
-  llvm::outs() << "bundle: " << root->str() << '\n';
-  if (!executeBundle)
-    return llvm::Error::success();
-  llvm::Expected<int> status =
-      loom::external_tool::executeExternalToolInvocationBundle(root->str());
-  if (!status)
-    return status.takeError();
-  llvm::Expected<loom::external_tool::InvocationCompletion> completion =
-      loom::external_tool::loadExternalToolInvocationCompletion(root->str());
-  if (!completion)
-    return completion.takeError();
-  if (*status != 0 ||
-      completion->status !=
-          loom::external_tool::InvocationCompletionStatus::Success)
-    return probeError("generated bundle did not complete successfully");
-  llvm::outs() << "completion: success\n";
+  llvm::outs() << "tool: " << tool->executable << '\n';
+  llvm::outs() << "version: " << tool->version << '\n';
+  if (runtime->kind == loom::external_tool::InvocationRuntimeKind::Host) {
+    llvm::outs() << "runtime: host\n";
+  } else {
+    llvm::outs() << "runtime: polyarch_container " << *runtime->os << '\n';
+  }
+  llvm::outs() << "emission: ok\n";
   return llvm::Error::success();
 }
 

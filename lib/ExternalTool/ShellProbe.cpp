@@ -1,5 +1,9 @@
 #include "ExternalTool/ShellProbe.h"
 
+#include "ExternalTool/LocalConfig.h"
+
+#include "ShellRenderingInternal.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
@@ -11,6 +15,7 @@
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -22,6 +27,8 @@
 
 namespace loom::external_tool {
 namespace {
+
+using detail::shellQuote;
 
 constexpr int kCandidateUnavailable = 20;
 
@@ -55,16 +62,32 @@ llvm::Error validateVersionProbe(const ToolVersionProbe &probe) {
   return llvm::Error::success();
 }
 
-std::string shellQuote(llvm::StringRef value) {
-  std::string result = "'";
-  for (char character : value) {
-    if (character == '\'')
-      result += "'\\''";
-    else
-      result += character;
+std::optional<std::string>
+normalizeVersionOutput(llvm::StringRef versionText,
+                       const ToolVersionProbe &probe) {
+  std::string version = versionText.trim().str();
+  if (version.empty())
+    return std::nullopt;
+  if (probe.requiredOutputSubstring &&
+      !llvm::StringRef(version).contains(*probe.requiredOutputSubstring))
+    return std::nullopt;
+  if (probe.selectedOutputLineSubstring) {
+    llvm::SmallVector<llvm::StringRef, 16> lines;
+    llvm::StringRef(version).split(lines, '\n', -1, false);
+    std::optional<std::string> selected;
+    for (llvm::StringRef line : lines) {
+      line = line.trim();
+      if (!line.contains(*probe.selectedOutputLineSubstring))
+        continue;
+      if (selected)
+        return std::nullopt;
+      selected = line.str();
+    }
+    if (!selected || selected->empty())
+      return std::nullopt;
+    version = std::move(*selected);
   }
-  result += "'";
-  return result;
+  return version;
 }
 
 struct ProbeFiles {
@@ -283,32 +306,14 @@ collectProbeResult(const ProbeFiles &files, const ToolVersionProbe &probe,
       readProbeFile(files.version, "version output");
   if (!versionText)
     return versionText.takeError();
-  std::string version = llvm::StringRef(*versionText).trim().str();
-  if (version.empty())
+  std::optional<std::string> normalized =
+      normalizeVersionOutput(*versionText, probe);
+  if (!normalized)
     return std::optional<ProbedToolBinding>{};
-  if (probe.requiredOutputSubstring &&
-      !llvm::StringRef(version).contains(*probe.requiredOutputSubstring))
-    return std::optional<ProbedToolBinding>{};
-  if (probe.selectedOutputLineSubstring) {
-    llvm::SmallVector<llvm::StringRef, 16> lines;
-    llvm::StringRef(version).split(lines, '\n', -1, false);
-    std::optional<std::string> selected;
-    for (llvm::StringRef line : lines) {
-      line = line.trim();
-      if (!line.contains(*probe.selectedOutputLineSubstring))
-        continue;
-      if (selected)
-        return std::optional<ProbedToolBinding>{};
-      selected = line.str();
-    }
-    if (!selected || selected->empty())
-      return std::optional<ProbedToolBinding>{};
-    version = std::move(*selected);
-  }
 
   ProbedToolBinding binding;
   binding.executable = canonicalExecutable.str().str();
-  binding.version = std::move(version);
+  binding.version = std::move(*normalized);
   if (!includeModuleState)
     return std::optional<ProbedToolBinding>{std::move(binding)};
 
@@ -379,6 +384,65 @@ ShellToolBindingProbe::probeModules(const ModuleProbeRequest &request) {
   if (!*succeeded)
     return std::optional<ProbedToolBinding>{};
   return collectProbeResult(*files, versionProbe_, true);
+}
+
+llvm::Expected<std::optional<std::string>> probeContainerToolComposition(
+    llvm::StringRef probeDirectory, const ResolvedToolBinding &tool,
+    const ToolVersionProbe &toolVersionProbe,
+    const ResolvedToolBinding &polyArchContainer, llvm::StringRef os,
+    llvm::ArrayRef<std::string> inheritEnvironment) {
+  if (llvm::Error error = validateVersionProbe(toolVersionProbe))
+    return std::move(error);
+  for (const std::string &name : inheritEnvironment) {
+    if (!isValidEnvironmentName(name))
+      return probeError("required environment name is invalid");
+    if (!std::getenv(name.c_str()))
+      return std::optional<std::string>(
+          "container composition lacks required environment variable " + name);
+  }
+  llvm::Expected<ProbeFiles> files = createProbeFiles(probeDirectory);
+  if (!files)
+    return files.takeError();
+
+  std::vector<std::string> arguments{
+      "/usr/bin/bash", "-c",
+      "loom_version_path=$1\nshift\n\"$@\" >\"$loom_version_path\" 2>&1",
+      "loom-container-version", files->version, tool.executable};
+  arguments.insert(arguments.end(), toolVersionProbe.arguments.begin(),
+                   toolVersionProbe.arguments.end());
+
+  std::string script = "#!/usr/bin/env bash\nset -u\n";
+  script += detail::renderPolyArchContainerInvocation(
+      polyArchContainer.executable, os, detail::shellQuote(probeDirectory),
+      arguments);
+  script += "\nloom_status=$?\n";
+  script += "case \"$loom_status\" in\n";
+  for (int exitCode : toolVersionProbe.acceptedExitCodes)
+    script += "  " + std::to_string(exitCode) + ") ;;\n";
+  script += "  *) exit " + std::to_string(kCandidateUnavailable) + " ;;\n";
+  script += "esac\n";
+
+  if (llvm::Error error = writeProbeScript(files->script, script))
+    return std::move(error);
+  llvm::Expected<bool> succeeded = executeProbeScript(*files);
+  if (!succeeded)
+    return succeeded.takeError();
+  if (!*succeeded)
+    return std::optional<std::string>(
+        "container composition could not execute the tool version probe");
+  llvm::Expected<std::string> versionText =
+      readProbeFile(files->version, "version output");
+  if (!versionText)
+    return versionText.takeError();
+  std::optional<std::string> normalized =
+      normalizeVersionOutput(*versionText, toolVersionProbe);
+  if (!normalized)
+    return std::optional<std::string>(
+        "container composition version output did not match the probe");
+  if (*normalized != tool.version)
+    return std::optional<std::string>(
+        "container composition version does not match the resolved tool");
+  return std::optional<std::string>{};
 }
 
 } // namespace loom::external_tool

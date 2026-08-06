@@ -5,6 +5,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 
 #include <optional>
 #include <string>
@@ -32,6 +33,21 @@ struct ToolVersionProbe {
 };
 
 llvm::ArrayRef<llvm::StringLiteral> defaultModuleInitializationPaths();
+
+/// Probes one already-resolved PolyArch/container and tool composition by
+/// executing the provider-declared tool version probe inside the container.
+/// The result carries the normalized selected version output match: an empty
+/// optional means the composition executed and matched the resolved tool
+/// version, and a string is the human-readable composition rejection reason.
+/// Every name in inheritEnvironment is a fail-closed required environment
+/// variable: an absent variable rejects the composition before any
+/// execution, and the container inherits the process environment through the
+/// shared run protocol.
+llvm::Expected<std::optional<std::string>> probeContainerToolComposition(
+    llvm::StringRef probeDirectory, const ResolvedToolBinding &tool,
+    const ToolVersionProbe &toolVersionProbe,
+    const ResolvedToolBinding &polyArchContainer, llvm::StringRef os,
+    llvm::ArrayRef<std::string> inheritEnvironment);
 
 class ShellToolBindingProbe final : public ToolBindingProbe {
 public:

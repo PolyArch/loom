@@ -15,9 +15,37 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom::external_tool {
+
+/// The CandidateGenerator closure of one semantic invocation: the exact
+/// typed input bindings and the exact resolved binding as owner-codec
+/// canonical bytes, plus the registry-derived binding identity. The bundle
+/// stores and revalidates these bytes but never reinterprets them.
+struct CandidateGeneratorInvocationClosure final {
+  std::vector<std::uint8_t> typedInputBindings;
+  std::vector<std::uint8_t> resolvedBinding;
+  BlobDigest::Storage bindingIdentity{};
+
+  friend bool operator==(const CandidateGeneratorInvocationClosure &lhs,
+                         const CandidateGeneratorInvocationClosure &rhs) {
+    return lhs.typedInputBindings == rhs.typedInputBindings &&
+           lhs.resolvedBinding == rhs.resolvedBinding &&
+           lhs.bindingIdentity == rhs.bindingIdentity;
+  }
+  friend bool operator!=(const CandidateGeneratorInvocationClosure &lhs,
+                         const CandidateGeneratorInvocationClosure &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// The one exact semantic closure of an invocation bundle: a
+/// CandidateGenerator closure (stable tag 0) or an exact EvaluationRequest
+/// reference (stable tag 1).
+using SemanticInvocationClosure =
+    std::variant<CandidateGeneratorInvocationClosure, ArtifactRootReference>;
 
 struct MaterializedBundleFile {
   std::string relativePath;
@@ -28,7 +56,7 @@ struct MaterializedBundleFile {
 
 struct ExternalToolInvocationBundleSpec {
   std::string providerIdentity;
-  std::string semanticBindingIdentity;
+  SemanticInvocationClosure semanticClosure;
   std::string resultImporterIdentity;
   ResolvedToolBinding tool;
   ToolVersionProbe toolVersionProbe;
@@ -84,7 +112,7 @@ struct ExternalToolInvocationExternalInput final {
 
 struct ExternalToolInvocationImportExpectation final {
   std::string providerIdentity;
-  std::string semanticBindingIdentity;
+  SemanticInvocationClosure semanticClosure;
   std::string resultImporterIdentity;
   std::vector<ExternalToolInvocationSemanticInput> semanticInputs;
   std::vector<ExternalToolInvocationExternalInput> externalInputs;

@@ -89,7 +89,6 @@ set(LOOM_TEST_DEPENDS
   loom-external-tool-invocation-bundle-test
   loom-external-tool-runtime-binding-test
   loom-external-tool-provider-test
-  loom-eda-open-source-adapter-test
   loom-yosys-synthesis-test
   loom-implementation-platform-test
   loom-fabric-artifact-gate-test

@@ -1,5 +1,7 @@
 #include "ExternalTool/InvocationBundle.h"
 
+#include "ShellRenderingInternal.h"
+
 #include "Common/ArtifactText.h"
 #include "Common/BlobDigest.h"
 
@@ -7,6 +9,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/FileSystem.h"
@@ -35,11 +38,11 @@
 namespace loom::external_tool {
 namespace {
 
+using detail::shellQuote;
+
 constexpr llvm::StringLiteral kManifestName = "tool-invocation.json";
 constexpr llvm::StringLiteral kRunScriptName = "run.sh";
 constexpr llvm::StringLiteral kCompletionPath = "outputs/completion.json";
-constexpr llvm::StringLiteral kExecutionStartPath =
-    "outputs/.loom-execution-started";
 constexpr llvm::StringLiteral kStdoutPath = "outputs/stdout.log";
 constexpr llvm::StringLiteral kStderrPath = "outputs/stderr.log";
 constexpr llvm::StringLiteral kToolVersionPath = "outputs/.loom-tool-version";
@@ -53,7 +56,7 @@ struct ManifestMaterializedFile final {
 
 struct InvocationManifestData final {
   std::string providerIdentity;
-  std::string semanticBindingIdentity;
+  SemanticInvocationClosure semanticClosure;
   std::string resultImporterIdentity;
   ResolvedToolBinding tool;
   ToolVersionProbe toolVersionProbe;
@@ -196,12 +199,25 @@ llvm::Error
 validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
   const std::string *identities[] = {
       &specification.providerIdentity,
-      &specification.semanticBindingIdentity,
       &specification.resultImporterIdentity,
   };
   for (const std::string *identity : identities)
     if (identity->empty() || containsNull(*identity))
       return bundleError("bundle identity is empty or contains NUL");
+  if (const auto *closure = std::get_if<CandidateGeneratorInvocationClosure>(
+          &specification.semanticClosure)) {
+    if (closure->typedInputBindings.empty() ||
+        closure->resolvedBinding.empty())
+      return bundleError(
+          "candidate generator closure carries empty owner bytes");
+  } else {
+    const ArtifactRootReference &request =
+        std::get<ArtifactRootReference>(specification.semanticClosure);
+    if (request.schemaIdentity.empty() ||
+        containsNull(request.schemaIdentity))
+      return bundleError(
+          "evaluation closure has an invalid request reference");
+  }
   if (llvm::Error error = validateBinding(specification.tool, "tool binding"))
     return error;
   if (llvm::Error error =
@@ -270,9 +286,8 @@ validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
   }
 
   std::set<std::string> paths{kManifestName.str(),   kRunScriptName.str(),
-                              kCompletionPath.str(), kExecutionStartPath.str(),
-                              kStdoutPath.str(),     kStderrPath.str(),
-                              kToolVersionPath.str()};
+                              kCompletionPath.str(), kStdoutPath.str(),
+                              kStderrPath.str(),     kToolVersionPath.str()};
   for (const MaterializedBundleFile &file : specification.files) {
     llvm::Expected<std::string> path =
         normalizedRelativePath(file.relativePath, "materialized file");
@@ -360,6 +375,26 @@ BlobDigest contentDigest(llvm::StringRef contents) {
       llvm::ArrayRef<std::uint8_t>(bytes, contents.size()));
 }
 
+std::string formatCanonicalHex(llvm::ArrayRef<std::uint8_t> bytes) {
+  return llvm::toHex(bytes, /*LowerCase=*/true);
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
+parseCanonicalHex(llvm::StringRef spelling, llvm::StringRef context) {
+  if (spelling.size() % 2 != 0)
+    return bundleError(context + " hex encoding has an odd length");
+  if (!llvm::all_of(spelling,
+                    [](char character) {
+                      return (character >= '0' && character <= '9') ||
+                             (character >= 'a' && character <= 'f');
+                    }))
+    return bundleError(context + " hex encoding is not lowercase canonical");
+  std::string decoded;
+  if (!llvm::tryGetFromHex(spelling, decoded))
+    return bundleError(context + " hex encoding is invalid");
+  return std::vector<std::uint8_t>(decoded.begin(), decoded.end());
+}
+
 void writeArtifactReference(llvm::json::OStream &json,
                             const ArtifactRootReference &reference) {
   json.object([&] {
@@ -373,7 +408,7 @@ void writeArtifactReference(llvm::json::OStream &json,
 InvocationManifestData
 makeManifest(const ExternalToolInvocationBundleSpec &specification) {
   InvocationManifestData manifest{specification.providerIdentity,
-                                  specification.semanticBindingIdentity,
+                                  specification.semanticClosure,
                                   specification.resultImporterIdentity,
                                   specification.tool,
                                   specification.toolVersionProbe,
@@ -396,7 +431,7 @@ ExternalToolInvocationBundleSpec
 makeValidationSpecification(const InvocationManifestData &manifest) {
   ExternalToolInvocationBundleSpec specification;
   specification.providerIdentity = manifest.providerIdentity;
-  specification.semanticBindingIdentity = manifest.semanticBindingIdentity;
+  specification.semanticClosure = manifest.semanticClosure;
   specification.resultImporterIdentity = manifest.resultImporterIdentity;
   specification.tool = manifest.tool;
   specification.toolVersionProbe = manifest.toolVersionProbe;
@@ -419,10 +454,27 @@ std::string serializeManifest(const InvocationManifestData &manifest) {
   llvm::json::OStream json(output, 2);
   json.object([&] {
     json.attribute("schema", "loom.external_tool_invocation");
-    json.attribute("version", "1.0");
+    json.attribute("version", "2.0");
     json.attribute("provider_identity", manifest.providerIdentity);
-    json.attribute("semantic_binding_identity",
-                   manifest.semanticBindingIdentity);
+    json.attributeObject("semantic_closure", [&] {
+      if (const auto *closure =
+              std::get_if<CandidateGeneratorInvocationClosure>(
+                  &manifest.semanticClosure)) {
+        json.attribute("form", "candidate_generator");
+        json.attribute("typed_input_bindings",
+                       formatCanonicalHex(closure->typedInputBindings));
+        json.attribute("resolved_binding",
+                       formatCanonicalHex(closure->resolvedBinding));
+        json.attribute("binding_identity",
+                       formatCanonicalHex(closure->bindingIdentity));
+      } else {
+        json.attribute("form", "evaluation");
+        json.attributeBegin("request");
+        writeArtifactReference(
+            json, std::get<ArtifactRootReference>(manifest.semanticClosure));
+        json.attributeEnd();
+      }
+    });
     json.attribute("result_importer_identity", manifest.resultImporterIdentity);
     json.attributeBegin("tool_binding");
     writeBinding(json, manifest.tool);
@@ -739,6 +791,58 @@ parseRuntimeBinding(const llvm::json::Object &object,
   return runtime;
 }
 
+llvm::Expected<SemanticInvocationClosure>
+parseSemanticClosure(const llvm::json::Object &object,
+                     llvm::StringRef context) {
+  if (llvm::Error error = rejectUnknownFields(
+          object, context,
+          {"form", "typed_input_bindings", "resolved_binding",
+           "binding_identity", "request"}))
+    return std::move(error);
+  auto form = requireString(object, "form", context);
+  if (!form)
+    return form.takeError();
+  if (*form == "candidate_generator") {
+    CandidateGeneratorInvocationClosure closure;
+    auto inputBindings =
+        requireString(object, "typed_input_bindings", context);
+    if (!inputBindings)
+      return inputBindings.takeError();
+    auto inputBytes = parseCanonicalHex(*inputBindings, context);
+    if (!inputBytes)
+      return inputBytes.takeError();
+    closure.typedInputBindings = std::move(*inputBytes);
+    auto resolvedBinding = requireString(object, "resolved_binding", context);
+    if (!resolvedBinding)
+      return resolvedBinding.takeError();
+    auto bindingBytes = parseCanonicalHex(*resolvedBinding, context);
+    if (!bindingBytes)
+      return bindingBytes.takeError();
+    closure.resolvedBinding = std::move(*bindingBytes);
+    auto identity = requireString(object, "binding_identity", context);
+    if (!identity)
+      return identity.takeError();
+    auto identityBytes = parseCanonicalHex(*identity, context);
+    if (!identityBytes)
+      return identityBytes.takeError();
+    auto digest = loom::BlobDigest::fromBytes(*identityBytes);
+    if (!digest)
+      return bundleError(context + " binding identity is not a digest");
+    closure.bindingIdentity = digest->bytes();
+    return SemanticInvocationClosure(std::move(closure));
+  }
+  if (*form == "evaluation") {
+    auto request = requireObject(object, "request", context);
+    if (!request)
+      return request.takeError();
+    auto reference = parseArtifactReference(**request, context);
+    if (!reference)
+      return reference.takeError();
+    return SemanticInvocationClosure(std::move(*reference));
+  }
+  return bundleError(context + " has an unknown closure form");
+}
+
 llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
   llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(contents);
   if (!parsed)
@@ -749,11 +853,11 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
     return bundleError("invocation manifest root must be an object");
   if (llvm::Error error = rejectUnknownFields(
           *root, "invocation manifest",
-          {"schema", "version", "provider_identity",
-           "semantic_binding_identity", "result_importer_identity",
-           "tool_binding", "tool_version_probe", "runtime_binding", "commands",
-           "inherit_environment", "materialized_files", "external_files",
-           "declared_outputs", "stdout", "stderr", "completion_record"}))
+          {"schema", "version", "provider_identity", "semantic_closure",
+           "result_importer_identity", "tool_binding", "tool_version_probe",
+           "runtime_binding", "commands", "inherit_environment",
+           "materialized_files", "external_files", "declared_outputs",
+           "stdout", "stderr", "completion_record"}))
     return std::move(error);
   auto schema = requireString(*root, "schema", "invocation manifest");
   if (!schema)
@@ -761,16 +865,25 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
   auto version = requireString(*root, "version", "invocation manifest");
   if (!version)
     return version.takeError();
-  if (*schema != "loom.external_tool_invocation" || *version != "1.0")
+  if (*schema != "loom.external_tool_invocation")
+    return bundleError("invocation manifest schema is unsupported");
+  if (*version == "1.0")
+    return bundleError("invocation manifest 1.0 free semantic identity is "
+                       "not supported");
+  if (*version != "2.0")
     return bundleError("invocation manifest schema or version is unsupported");
   auto provider =
       requireString(*root, "provider_identity", "invocation manifest");
   if (!provider)
     return provider.takeError();
-  auto semantic =
-      requireString(*root, "semantic_binding_identity", "invocation manifest");
-  if (!semantic)
-    return semantic.takeError();
+  auto closureObject =
+      requireObject(*root, "semantic_closure", "invocation manifest");
+  if (!closureObject)
+    return closureObject.takeError();
+  auto closure =
+      parseSemanticClosure(**closureObject, "invocation manifest closure");
+  if (!closure)
+    return closure.takeError();
   auto importer =
       requireString(*root, "result_importer_identity", "invocation manifest");
   if (!importer)
@@ -913,7 +1026,7 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
   }
 
   InvocationManifestData manifest{
-      provider->str(),           semantic->str(),
+      provider->str(),           std::move(*closure),
       importer->str(),           std::move(*tool),
       std::move(*toolProbe),     std::move(*runtime),
       std::move(containerProbe), std::move(commands),
@@ -928,27 +1041,11 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
   return manifest;
 }
 
-std::string shellQuote(llvm::StringRef value) {
-  std::string result = "'";
-  for (char character : value) {
-    if (character == '\'')
-      result += "'\\''";
-    else
-      result += character;
-  }
-  result += "'";
-  return result;
-}
-
 std::string renderContainerInvocation(const std::vector<std::string> &arguments,
                                       const InvocationManifestData &manifest) {
-  std::string rendered =
-      shellQuote(manifest.runtime.polyArchContainer->executable);
-  rendered += " 'run' '--os' " + shellQuote(*manifest.runtime.os);
-  rendered += " '--workdir' \"$loom_bundle_root\" '--env' 'INHERIT' '--'";
-  for (const std::string &argument : arguments)
-    rendered += " " + shellQuote(argument);
-  return rendered;
+  return detail::renderPolyArchContainerInvocation(
+      manifest.runtime.polyArchContainer->executable, *manifest.runtime.os,
+      "\"$loom_bundle_root\"", arguments);
 }
 
 std::string renderCommand(const std::vector<std::string> &command,
@@ -1109,10 +1206,6 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
       "loom_bundle_root=$(CDPATH= cd -- \"$(dirname -- "
       "\"${BASH_SOURCE[0]}\")\" && pwd -P)\n"
       "cd -- \"$loom_bundle_root\" || exit 126\n"
-      "loom_execution_start=" +
-      shellQuote(kExecutionStartPath) +
-      "\n"
-      "if ! mkdir -- \"$loom_execution_start\"; then exit 120; fi\n"
       "loom_completion=" +
       shellQuote(kCompletionPath) +
       "\n"
@@ -1122,9 +1215,6 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
       shellQuote(manifestDigest) +
       "\n"
       "loom_output_digests='[]'\n"
-      "if [[ -e \"$loom_completion\" || -L \"$loom_completion\" ]]; then "
-      "exit 120; fi\n"
-      "rm -f -- \"$loom_completion_partial\"\n"
       "trap 'rm -f -- \"$loom_completion_partial\"; if [[ -n "
       "\"$loom_tool_version_file\" ]]; then rm -f -- "
       "\"$loom_tool_version_file\"; fi' EXIT\n"
@@ -1138,7 +1228,18 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
       ">\"$loom_completion_partial\" || exit 126\n"
       "  mv -f -- \"$loom_completion_partial\" \"$loom_completion\" || exit "
       "126\n"
-      "}\n";
+      "}\n"
+      // Every removal whose success is required for fresh publication is
+      // checked: stale completion, partial, or declared output material
+      // that cannot be removed fails integrity before the tool is entered.
+      "if ! rm -f -- \"$loom_completion\"; then\n"
+      "  loom_publish_completion 'bundle_content_mismatch' 121\n"
+      "  exit 121\n"
+      "fi\n"
+      "if ! rm -f -- \"$loom_completion_partial\"; then\n"
+      "  loom_publish_completion 'bundle_content_mismatch' 121\n"
+      "  exit 121\n"
+      "fi\n";
 
   script += "if ! command -v sha256sum >/dev/null 2>&1; then\n";
   appendFailure(script, "bundle_content_mismatch", 121);
@@ -1151,8 +1252,7 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
     appendContentDigestCheck(script, file.absolutePath,
                              formatExternalFileFingerprint(file.fingerprint));
   for (const std::string &output : manifest.declaredOutputs) {
-    script += "if [[ -e " + shellQuote(output) + " || -L " +
-              shellQuote(output) + " ]]; then\n";
+    script += "if ! rm -f -- " + shellQuote(output) + "; then\n";
     appendFailure(script, "bundle_content_mismatch", 121);
     script += "fi\n";
   }
@@ -1617,9 +1717,9 @@ importExternalToolInvocationBundle(
     return manifest.takeError();
   if (manifest->providerIdentity != expectation.providerIdentity)
     return bundleError("invocation provider identity does not match importer");
-  if (manifest->semanticBindingIdentity != expectation.semanticBindingIdentity)
+  if (manifest->semanticClosure != expectation.semanticClosure)
     return bundleError(
-        "invocation semantic binding identity does not match importer");
+        "invocation semantic closure does not match importer");
   if (manifest->resultImporterIdentity != expectation.resultImporterIdentity)
     return bundleError("invocation result importer identity does not match");
 

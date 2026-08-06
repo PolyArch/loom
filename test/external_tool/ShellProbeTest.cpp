@@ -164,6 +164,22 @@ void moduleHomeInitIsDiscovered(const std::filesystem::path &root) {
   const char *oldModuleHome = std::getenv("MODULESHOME");
   const std::optional<std::string> savedModuleHome =
       oldModuleHome ? std::optional<std::string>(oldModuleHome) : std::nullopt;
+
+  // Isolate from an inherited module-loaded environment: an exported module
+  // function correctly wins over the MODULESHOME fallback this fixture
+  // exercises, so the function definitions must leave the process
+  // environment before probing and be restored exactly afterwards.
+  static constexpr const char *kModuleFunctionVariables[] = {
+      "BASH_FUNC_module%%", "BASH_FUNC_ml%%", "BASH_FUNC__module_raw%%"};
+  std::vector<std::pair<std::string, std::optional<std::string>>>
+      savedModuleFunctions;
+  for (const char *name : kModuleFunctionVariables) {
+    const char *value = std::getenv(name);
+    savedModuleFunctions.emplace_back(
+        name, value ? std::optional<std::string>(value) : std::nullopt);
+    ::unsetenv(name);
+  }
+
   require(__func__, ::setenv("MODULESHOME", moduleHome.c_str(), 1) == 0,
           "could not set MODULESHOME");
 
@@ -179,6 +195,12 @@ void moduleHomeInitIsDiscovered(const std::filesystem::path &root) {
     ::setenv("MODULESHOME", savedModuleHome->c_str(), 1);
   else
     ::unsetenv("MODULESHOME");
+  for (const auto &[name, value] : savedModuleFunctions) {
+    if (value)
+      ::setenv(name.c_str(), value->c_str(), 1);
+    else
+      ::unsetenv(name.c_str());
+  }
 
   require(__func__, result.has_value(),
           "$MODULESHOME initialization did not bind the tool");
@@ -252,6 +274,73 @@ void moduleWithoutClosureIsRejected(const std::filesystem::path &root) {
           "a module binding without a loaded-module closure was accepted");
 }
 
+void containerCompositionHonorsRequiredEnvironment(
+    const std::filesystem::path &root) {
+  const std::filesystem::path binaries = root / "bin";
+  writeFile(binaries / "fake_tool",
+            "#!/usr/bin/env bash\n"
+            "if [[ \"${1-}\" == --version ]]; then\n"
+            "  printf '%s\\n' 'Fake Tool 3.1'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 64\n",
+            true);
+  writeFile(binaries / "container",
+            "#!/usr/bin/env bash\n"
+            "set -u\n"
+            "[[ \"${1-}\" == run ]] || exit 64\n"
+            "shift\n"
+            "while (( $# )); do\n"
+            "  case \"$1\" in\n"
+            "    --workdir|--os|--env) shift 2 ;;\n"
+            "    --) shift; break ;;\n"
+            "    *) exit 64 ;;\n"
+            "  esac\n"
+            "done\n"
+            "exec \"$@\"\n",
+            true);
+
+  const ResolvedToolBinding tool{"fake_tool", ToolBindingSource::Explicit,
+                                 (binaries / "fake_tool").string(),
+                                 "Fake Tool 3.1",
+                                 {},
+                                 {},
+                                 std::nullopt,
+                                 std::nullopt};
+  const ResolvedToolBinding container{"polyarch_container",
+                                      ToolBindingSource::Explicit,
+                                      (binaries / "container").string(),
+                                      "PolyArch container v0.1.0",
+                                      {},
+                                      {},
+                                      std::nullopt,
+                                      std::nullopt};
+  const ToolVersionProbe probe{{"--version"}, "Fake Tool"};
+
+  require(__func__,
+          ::setenv("LOOM_COMPOSE_TEST_LICENSE", "present", 1) == 0,
+          "could not set the test environment");
+  std::optional<std::string> accepted =
+      take(__func__, probeContainerToolComposition(
+                         root.string(), tool, probe, container, "almalinux9",
+                         {"LOOM_COMPOSE_TEST_LICENSE"}));
+  require(__func__, !accepted.has_value(),
+          std::string("a resolvable composition was rejected") +
+              (accepted ? ": " + *accepted : ""));
+
+  require(__func__, ::unsetenv("LOOM_COMPOSE_TEST_LICENSE") == 0,
+          "could not unset the test environment");
+  std::optional<std::string> rejected =
+      take(__func__, probeContainerToolComposition(
+                         root.string(), tool, probe, container, "almalinux9",
+                         {"LOOM_COMPOSE_TEST_LICENSE"}));
+  require(__func__,
+          rejected.has_value() &&
+              rejected->find("LOOM_COMPOSE_TEST_LICENSE") !=
+                  std::string::npos,
+          "a missing required environment variable was not rejected");
+}
+
 void moduleInitializationLayoutsAreCovered() {
   const llvm::ArrayRef<llvm::StringLiteral> paths =
       defaultModuleInitializationPaths();
@@ -285,6 +374,7 @@ int main(int argc, char **argv) {
   providerExitAndStableVersionLineAreNormalized(root / "stable-version");
   moduleEnvironmentRootCanSelectLauncher(root / "module-root");
   moduleWithoutClosureIsRejected(root / "missing-module-closure");
+  containerCompositionHonorsRequiredEnvironment(root / "composition");
   moduleInitializationLayoutsAreCovered();
   return 0;
 }
