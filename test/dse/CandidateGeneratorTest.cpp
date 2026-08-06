@@ -1,6 +1,7 @@
 #include "DSE/CandidateGenerator.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/BlobDigest.h"
 #include "Common/ComponentViewDigest.h"
 
 #include "llvm/Support/Error.h"
@@ -427,7 +428,38 @@ void exerciseRegistryAndBinding() {
 
 } // namespace
 
+void bindingIdentityDerivationUsesExactFraming() {
+  auto reference = take(CandidateGeneratorDescriptorRef::get(
+      candidateGeneratorDescriptorSchema, CandidateGeneratorKind(9)));
+  const std::vector<std::uint8_t> expectedReference = {
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x23, 0x6c, 0x6f, 0x6f,
+      0x6d, 0x2e, 0x63, 0x61, 0x6e, 0x64, 0x69, 0x64, 0x61, 0x74, 0x65,
+      0x5f, 0x67, 0x65, 0x6e, 0x65, 0x72, 0x61, 0x74, 0x6f, 0x72, 0x5f,
+      0x64, 0x65, 0x73, 0x63, 0x72, 0x69, 0x70, 0x74, 0x6f, 0x72, 0x00,
+      0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09};
+  const std::vector<std::uint8_t> referenceBytes =
+      canonicalCandidateGeneratorDescriptorReferenceBytes(reference);
+  if (referenceBytes != expectedReference)
+    fail("descriptor reference canonical framing changed");
+
+  const std::array<std::uint8_t, 2> config = {0x01, 0x02};
+  const loom::BlobDigest identity =
+      deriveCandidateGeneratorBindingIdentity(reference, config);
+  if (loom::formatBlobDigestHex(identity) !=
+      "a4de2d163eaaec664f85ac3f7fd81044eeb7f0044cee90849d35b93528e19ec4")
+    fail("binding identity derivation framing changed");
+
+  auto zeroReference = take(CandidateGeneratorDescriptorRef::get(
+      candidateGeneratorDescriptorSchema, CandidateGeneratorKind(0)));
+  const loom::BlobDigest emptyIdentity =
+      deriveCandidateGeneratorBindingIdentity(zeroReference, {});
+  if (loom::formatBlobDigestHex(emptyIdentity) !=
+      "18e13389058fb0813b645022190e0029a1776176167a45869b4f146aee73a77e")
+    fail("empty-config binding identity derivation framing changed");
+}
+
 int main() {
   exerciseRegistryAndBinding();
+  bindingIdentityDerivationUsesExactFraming();
   return 0;
 }

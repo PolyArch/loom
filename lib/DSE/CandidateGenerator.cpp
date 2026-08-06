@@ -390,6 +390,54 @@ CandidateGeneratorDescriptor::reference() const {
       candidateGeneratorDescriptorSchema, kind));
 }
 
+std::vector<std::uint8_t> canonicalCandidateGeneratorDescriptorReferenceBytes(
+    CandidateGeneratorDescriptorRef reference) {
+  const ArtifactSchemaDescriptor &schema = reference.descriptorSchema();
+  std::vector<std::uint8_t> bytes;
+  const auto appendU32 = [&bytes](std::uint32_t value) {
+    bytes.push_back(static_cast<std::uint8_t>(value >> 24));
+    bytes.push_back(static_cast<std::uint8_t>(value >> 16));
+    bytes.push_back(static_cast<std::uint8_t>(value >> 8));
+    bytes.push_back(static_cast<std::uint8_t>(value));
+  };
+  const std::uint64_t identityLength = schema.identity.size();
+  for (unsigned shift = 56; shift != 0; shift -= 8)
+    bytes.push_back(
+        static_cast<std::uint8_t>(identityLength >> shift));
+  bytes.push_back(static_cast<std::uint8_t>(identityLength));
+  bytes.insert(bytes.end(), schema.identity.bytes_begin(),
+               schema.identity.bytes_end());
+  appendU32(schema.version.major);
+  appendU32(schema.version.minor);
+  appendU32(reference.kind().ordinal());
+  return bytes;
+}
+
+BlobDigest deriveCandidateGeneratorBindingIdentity(
+    CandidateGeneratorDescriptorRef descriptor,
+    llvm::ArrayRef<std::uint8_t> canonicalConfigBytes) {
+  static constexpr llvm::StringLiteral domainPrefix =
+      "loom.candidate_generator_binding.v1";
+  const std::vector<std::uint8_t> referenceBytes =
+      canonicalCandidateGeneratorDescriptorReferenceBytes(descriptor);
+  std::vector<std::uint8_t> payload;
+  payload.reserve(domainPrefix.size() + 1 + 8 + referenceBytes.size() + 8 +
+                  canonicalConfigBytes.size());
+  payload.insert(payload.end(), domainPrefix.bytes_begin(),
+                 domainPrefix.bytes_end());
+  payload.push_back(0);
+  const auto appendFramed = [&payload](llvm::ArrayRef<std::uint8_t> value) {
+    const std::uint64_t length = value.size();
+    for (unsigned shift = 56; shift != 0; shift -= 8)
+      payload.push_back(static_cast<std::uint8_t>(length >> shift));
+    payload.push_back(static_cast<std::uint8_t>(length));
+    payload.insert(payload.end(), value.begin(), value.end());
+  };
+  appendFramed(referenceBytes);
+  appendFramed(canonicalConfigBytes);
+  return loom::computeBlobDigest(payload);
+}
+
 const CandidateGeneratorInputSlotDescriptor *
 CandidateGeneratorDescriptor::findInputSlot(
     CandidateGeneratorInputSlotRef slot) const {

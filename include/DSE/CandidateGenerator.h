@@ -2,6 +2,7 @@
 #define LOOM_DSE_CANDIDATEGENERATOR_H
 
 #include "Common/Artifact.h"
+#include "Common/BlobDigest.h"
 #include "Common/ComponentViewDigest.h"
 #include "DSE/PlanValue.h"
 
@@ -312,6 +313,21 @@ invokeCandidateGenerator(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
 llvm::Error validateCandidateGeneratorWorkSummary(
     CandidateGeneratorDescriptorRef descriptor,
     llvm::ArrayRef<CandidateGeneratorWorkUnitSummary> summary);
+
+/// The canonical key bytes of one descriptor reference under the shared
+/// owner-local registry reference framing: u64be identity length, exact
+/// registry identity bytes, u32be major and minor schema versions, and the
+/// u32be owner-local kind.
+std::vector<std::uint8_t> canonicalCandidateGeneratorDescriptorReferenceBytes(
+    CandidateGeneratorDescriptorRef reference);
+
+/// The mechanically derived binding identity of one resolved generator
+/// binding: SHA-256 over the "loom.candidate_generator_binding.v1\0" domain
+/// prefix and the length-framed canonical descriptor-reference and
+/// resolved-config-view bytes. Never caller-authored.
+BlobDigest deriveCandidateGeneratorBindingIdentity(
+    CandidateGeneratorDescriptorRef descriptor,
+    llvm::ArrayRef<std::uint8_t> canonicalConfigBytes);
 
 /// Strictly revalidates one immutable invocation record at an external
 /// consumption boundary. The check imports every exact input, output, parent,
