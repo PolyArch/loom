@@ -1651,14 +1651,16 @@ void moduleDomainMembersFollowCanonicalTopology() {
   expectRejected(
       test, loom::fabric::detail::projectModuleDomainMembers(system.view()),
       "requires a Module root");
+  require(test, system.view().moduleDomainMembers().empty(),
+          "System root published a Module domain-member inventory");
   require(test, system.directDependencies().size() == 1,
           "builtin System did not publish one Module dependency");
 
   FinalizedFabricRoot module =
       take(test, loom::fabric::importEntireFabricRoot(
                      system.directDependencies().front().root, store));
-  auto members = take(
-      test, loom::fabric::detail::projectModuleDomainMembers(module.view()));
+  const llvm::ArrayRef<loom::fabric::FabricModuleDomainMemberRef> members =
+      module.view().moduleDomainMembers();
   const auto moduleTemplate = module.view().moduleRootTemplate();
   require(test, moduleTemplate.has_value(),
           "Module root has no canonical template");
@@ -1739,9 +1741,8 @@ void moduleDomainMembersFollowCanonicalTopology() {
 
   FinalizedFabricRoot reimported = take(
       test, loom::fabric::importEntireFabricRoot(module.reference(), store));
-  auto reimportedMembers =
-      take(test,
-           loom::fabric::detail::projectModuleDomainMembers(reimported.view()));
+  const llvm::ArrayRef<loom::fabric::FabricModuleDomainMemberRef>
+      reimportedMembers = reimported.view().moduleDomainMembers();
   require(test, members == reimportedMembers,
           "strict import changed the Module domain-member inventory");
 }

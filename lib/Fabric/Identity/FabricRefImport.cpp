@@ -502,6 +502,11 @@ FabricArtifactView::moduleResourceOwners() const {
   return storage_->moduleResourceOwners;
 }
 
+llvm::ArrayRef<FabricModuleDomainMemberRef>
+FabricArtifactView::moduleDomainMembers() const {
+  return storage_->moduleDomainMembers;
+}
+
 std::optional<FabricFuNodeKind>
 FabricArtifactView::fuNodeKind(const FabricInventoryOwnerRef &owner,
                                FabricOrdinal ordinal) const {
@@ -1603,6 +1608,12 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
   if (!moduleResourceOwners)
     return moduleResourceOwners.takeError();
   storage->moduleResourceOwners = std::move(*moduleResourceOwners);
+  if (view.rootKind() == FabricRootKind::Module) {
+    auto moduleDomainMembers = detail::projectModuleDomainMembers(view);
+    if (!moduleDomainMembers)
+      return moduleDomainMembers.takeError();
+    storage->moduleDomainMembers = std::move(*moduleDomainMembers);
+  }
   for (const FabricPointConnectionPayload &connection :
        view.pointConnections()) {
     if (llvm::Error error = validateFabricRef(view, connection.source))

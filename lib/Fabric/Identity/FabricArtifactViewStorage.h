@@ -37,6 +37,7 @@ struct FabricArtifactView::Storage {
       tagAssignmentPointByEndpoint;
   std::vector<FabricPhysicalTraversalView> physicalTraversalViews;
   std::vector<FabricInventoryOwnerRef> moduleResourceOwners;
+  std::vector<FabricModuleDomainMemberRef> moduleDomainMembers;
   std::vector<FabricFuTemplateRef> fuTemplates;
   std::vector<FabricMemoryEngineTemplateRef> memoryEngineTemplates;
   std::vector<std::vector<FabricMemoryOperationPortRef>> memoryPortRefs;

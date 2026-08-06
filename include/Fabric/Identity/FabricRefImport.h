@@ -395,6 +395,13 @@ public:
   /// owners. Other root kinds have an empty range.
   llvm::ArrayRef<FabricInventoryOwnerRef> moduleResourceOwners() const;
 
+  /// Complete canonical inventory of the Module domain members a fully
+  /// elaborated Module root owns: every boundary signature face and every
+  /// physical owner, mechanically derived from the same collector that
+  /// `moduleResourceOwners` filters by resource contract. Globally sorted and
+  /// unique by canonical member bytes. Other root kinds have an empty range.
+  llvm::ArrayRef<FabricModuleDomainMemberRef> moduleDomainMembers() const;
+
   /// The node kind the owner's configured graph declares at `ordinal`, or
   /// absent when the owner declares no node there. One ordinal never carries
   /// more than one node kind.
