@@ -46,6 +46,15 @@ result computable but impossible to store. A second persistent memory kind was
 rejected: both recipes construct the same canonical Fabric memory contracts,
 and differ only in the exact typed access domain authored into those records.
 
+Memory recipe inputs distinguish accepted RootRelative index widths from the
+physical indexed-address endpoint width. Deriving the former by dividing the
+latter by 32 made one catalog convention an undeclared semantic default and
+could not represent correlated 32-bit and 64-bit lane limits. The helper now
+authors those correlations through the existing reduced-product rows, after
+which the generated Fabric relation and endpoint types are the only authority.
+PointerAddressed rows continue to use exact pointer formats, so no helper-wide
+index setting leaks into pointer admission.
+
 Builtin extension is split at the same publication boundary as custom
 hardware. An open SpatialCore recipe is extended and finalized first; only its
 durably published Module can then be imported by an open System recipe. A

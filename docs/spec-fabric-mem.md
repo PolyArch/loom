@@ -255,7 +255,7 @@ performance comparisons.
 
 ### Persistent Capability Schema
 
-`loom.fabric 1.0` persists one closed typed relation. It does not persist an
+`loom.fabric 2.0` persists one closed typed relation. It does not persist an
 exact actor geometry per alternative and does not replace domain records with
 counts or generic integer properties.
 
@@ -297,6 +297,11 @@ ParameterizedMemoryAccessDomain {
 
 MemoryAccessClass {
   access_form             : MemoryAccessForm
+  address_form            : MemoryAddressForm
+  address_domain          :
+      RootRelative { accepted_index_width_bits : UnsignedDomain }
+    | PointerAddressed { address_pointer_formats : PointerFormatRelation }
+  data_pointer_formats    : PointerFormatRelation
   element_width_bits      : UnsignedDomain
   flattened_lane_count    : UnsignedDomain
   mask_inactive_pairs     : non-empty sorted unique array<
@@ -307,11 +312,20 @@ MemoryAccessClass {
 }
 ```
 
+`MemoryAddressForm` is the Dataflow-owned closed enum used by
+`CanonicalMemoryAccessView`. The `address_domain` variant is selected exactly
+by `address_form`. A `RootRelative` row has one non-empty positive
+`accepted_index_width_bits` domain and no address pointer-format relation. A
+`PointerAddressed` row has one non-empty exact address pointer-format relation
+and no index-width field. `data_pointer_formats` independently admits the
+exact pointer representations that may be transported as memory data; an
+ordinary non-pointer data point remains distinct from every pointer format.
+
 `MemoryAccessForm` and `MemoryMaskForm` are the Dataflow-owned enums used by
 `CanonicalMemoryAccessView`; Fabric does not declare aliases for them.
 `ReadSubwordSemantics`, `WriteSubwordSemantics`, and
 `InactiveLaneSemantics` are Fabric-owned closed enums because they state
-physical guarantees. Their version 1.0 semantic values and stable Fabric wire
+physical guarantees. Their version 2.0 semantic values and stable Fabric wire
 tags are:
 
 ```text
@@ -321,7 +335,7 @@ InactiveLaneSemantics = NotApplicable(0) | Suppress(1)
                       | SuppressAndZeroFill(2)
 ```
 
-These tags are `loom.fabric 1.0` schema values. They do not inherit C++ enum
+These tags are `loom.fabric 2.0` schema values. They do not inherit C++ enum
 ordinals, source declaration order, or printer spelling. A codec must reject
 an unknown tag rather than preserve it as an opaque future value.
 
@@ -341,6 +355,9 @@ The access relation has one fixed field order:
 
 ```text
 access_form
+address_form
+address_domain  // typed by address_form
+data_pointer_formats
 element_width_bits
 flattened_lane_count
 mask_inactive_pair
@@ -348,6 +365,13 @@ source_alignment_log2_bytes
 read_subword
 write_subword
 ```
+
+The address-domain slot is an `UnsignedDomain` for `RootRelative` and a finite
+pointer-format relation for `PointerAddressed`; it is never both. The two
+address forms are singleton structural partitions before any suffix domain is
+grouped, so their differently typed address domains cannot merge. The fixed
+relation therefore remains ten fields and does not encode a sentinel index
+width or an absent pointer format as a second semantic value.
 
 Its unique normal form is a reduced ordered relation. At each field, the
 normalizer partitions accepted values into maximal canonical domains whose
@@ -367,6 +391,30 @@ into two singleton-lane classes is rejected. Structural Dataflow invariants
 still apply: an `element` view has lane count one; contiguous and indexed
 views carry their exact flattened lane counts; payload and mask widths must
 fit the selected physical endpoints.
+
+The exact index width of one RootRelative actor is owned by its DataLayout and
+the shared `getIndexBitWidth` projection. Admission requires that exact width
+to belong to the selected row's `accepted_index_width_bits` domain. Required
+address payload width is then derived with checked arithmetic:
+
+```text
+RootRelative element or contiguous = index_width
+RootRelative indexed               = index_width * flattened_lane_count
+PointerAddressed                   = pointer_representation_width * address_count
+```
+
+`address_count` is the Dataflow-owned canonical access count: one for element
+and contiguous forms and the exact flattened lane count for indexed form.
+The indexed-address endpoint's payload width remains physical capacity; the
+ADG helper's transient `indexedAddressPayloadBits` supplies that width but is
+not an accepted semantic index width. Every admitted relation row must fit its
+selected address endpoint for every point in that row.
+
+Correlation is represented only by existing reduced-product rows. For
+example, a 128-bit indexed endpoint can admit `(index32, lanes 1..4)` and
+`(index64, lanes 1..2)` as two rows. It cannot merge those domains into the
+free product `{32,64} x {1..4}`, because that would falsely admit four 64-bit
+indices. No index-width/lane-count pair table is persisted.
 
 The shared reduced-relation wire is a `u64be` row count followed by framed
 rows. A row is a `u64be` field count followed by framed domains. A domain
@@ -454,7 +502,7 @@ repeat it. Plain access derives alignment one for this compatibility query;
 atomic actors use their exact declared source alignment. Thus actor semantics
 and physical alignment capability each have one owner.
 
-The Fabric-owned clause tags are stable version 1.0 wire values:
+The Fabric-owned clause tags are stable version 2.0 wire values:
 
 ```text
 LoadStorePlain(0)
@@ -504,7 +552,7 @@ MemoryPortTransactionProjection =
   | ActiveLanesRowMajor(1)
 ```
 
-The projection tags above are stable `loom.fabric 1.0` wire values. They do
+The projection tags above are stable `loom.fabric 2.0` wire values. They do
 not inherit a C++ enum ordinal or printer spelling, and an unknown tag is
 invalid.
 
@@ -563,7 +611,7 @@ required by the selected OperationSchema are active. `ServiceValueRole::Mask`
 is present in the record exactly when at least one access class admits
 `MemoryMaskForm::Dynamic`, and is active exactly for a selected dynamic-mask
 access; it is inactive for an absent-mask access and then consumes nothing and
-exerts no backpressure. Version 1.0 has no other conditionally active role.
+exerts no backpressure. Version 2.0 has no other conditionally active role.
 The active relation is therefore derived mechanically from the actor schema,
 selected access class, and this one binding record; no role predicate or
 second configured-role table is persisted.
@@ -576,7 +624,7 @@ matcher and one ordered operand queue for every externally supplied input
 role. SpatialMapping must assign nonconflicting Physical Tags to every
 may-overlap incompatible interpretation in that ingress's local match domain.
 Active output roles within one capability alternative remain injective in
-version 1.0. Reusing one tagged egress across different resident rows remains
+version 2.0. Reusing one tagged egress across different resident rows remains
 legal under the existing Temporal grant, tag, and capacity contracts, but
 serializing several result roles of one firing onto one egress would require
 a future closed retirement-serialization capability. No UsePattern comment or
@@ -836,6 +884,14 @@ ParameterizedMemoryAccessDomainView::contains(
 
 MemoryAccessClassView::accessForm()
   -> MemoryAccessForm
+MemoryAccessClassView::addressForm()
+  -> MemoryAddressForm
+MemoryAccessClassView::rootRelativeIndexWidths()
+  -> optional<UnsignedDomainView>
+MemoryAccessClassView::addressPointerFormats()
+  -> canonical PointerFormatRelation
+MemoryAccessClassView::dataPointerFormats()
+  -> canonical PointerFormatRelation
 MemoryAccessClassView::elementWidths()
   -> const UnsignedDomainView &
 MemoryAccessClassView::flattenedLaneCounts()

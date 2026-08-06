@@ -477,11 +477,23 @@ The vector structural helper additionally receives the exact
 `FixedVectorSliceAlignMergeParams` and `FixedVectorShuffleParams`. A local
 memory recipe receives distinct data, scalar-address, optional
 indexed-address, mask, and service-beat widths together with its exact
-actor/access domains. A System memory-service recipe receives its independent
-service-beat width and the matching exact service capability domain; it does
-not invent operation endpoints. Transport helpers receive explicit endpoint
-types. A missing, zero, or inconsistent required width is `Invalid`; no helper
-supplies an implicit 128-bit fallback.
+actor/access domains. Its transient access-domain parameters also contain the
+non-empty positive RootRelative index-width domain from which it derives each
+generated RootRelative reduced-product row. A System memory-service recipe
+receives its independent service-beat width and the matching exact service
+capability domain; it does not invent operation endpoints. Transport helpers
+receive explicit endpoint types. A missing, zero, or inconsistent required
+width is `Invalid`; no helper supplies an implicit 32-bit index width or
+128-bit payload fallback.
+
+The accepted RootRelative index-width domain is semantic capability, while
+`indexedAddressPayloadBits` is physical endpoint capacity. The helper keeps
+both inputs, emits only ordinary Fabric capability rows and endpoint types,
+and validates every generated row against the bound address endpoint. It emits
+separate reduced-product rows when index width and lane count are correlated;
+it cannot infer lane count by dividing endpoint width by one preferred index
+width or merge those rows into a free cross-product. PointerAddressed rows use
+their exact pointer-format relation instead and receive no index-width domain.
 
 For a helper placed in a PE with ordinary outer payload width `O`, every inner
 data, control, or resolved-index payload width must be no greater than `O`, as
@@ -553,10 +565,11 @@ nothing.
 
 Small, Default, and Large use the General64 recipes for every local and System
 memory. This makes the preset-wide common scalar type floor truthful for
-memory actors as well as FU actors. Their version 1 catalog policy supplies
+memory actors as well as FU actors. Their version 2 catalog policy supplies
 128-bit data, scalar-address, and indexed-address endpoints, a 16-bit mask
-endpoint, and a 128-bit service beat. Under the exact 32/64-bit resolved-index
-domain, the indexed endpoint carries at most four 32-bit or two 64-bit
+endpoint, and a 128-bit service beat. The transient catalog policy explicitly
+authors the exact 32/64-bit RootRelative index-width domain. Under that domain,
+the indexed endpoint carries at most four 32-bit or two 64-bit
 addresses per actor token; wider gathers or scatters require an explicit D*
 split or a custom wider endpoint. Hybrid32 remains available when a hardware
 author intends the narrower exact memory contract. Both helpers construct the same

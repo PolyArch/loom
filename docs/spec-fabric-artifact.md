@@ -7,14 +7,14 @@ identity, finalization, and publication.
 
 ## Artifact Family And Root Variants
 
-The first persistent family is:
+The current persistent family is:
 
 ```text
-loom.fabric 1.1
+loom.fabric 2.0
 
 ArtifactSchemaDescriptor {
   identity = "loom.fabric"
-  version = 1.1
+  version = 2.0
 }
 
 FabricRoot =
@@ -22,6 +22,12 @@ FabricRoot =
   | System
   | InterconnectImplementation
 ```
+
+Version 2.0 is one atomic breaking boundary. A Fabric owner accepts and emits
+only the exact `loom.fabric 2.0` descriptor; there is no 1.x compatibility
+owner, fallback importer, in-place upgrade, or alternate identity path. The
+RootRelative memory index-width relation in
+[Fabric Memory](spec-fabric-mem.md) is part of this boundary.
 
 The three variants share one artifact family because they use the same Fabric
 semantic model, reference framing, canonicalization rules, and finalization
@@ -50,7 +56,7 @@ a known root variant, that variant fails closed as
 `Unsupported(FabricRootProviderUnavailable)`. It cannot fall back to another
 root operation. This is distinct from
 `fabric_artifact_owner_contract_unavailable`, which means the schema itself has
-no enabled owner contract, as for `ImplementationInput` in schema 1.x.
+no enabled owner contract, as for `ImplementationInput` in schema 2.x.
 
 There is no persistent finalized-design wrapper, separate family per variant,
 or generic hardware manifest.
@@ -64,22 +70,22 @@ dependency, it stores the dependency-table ordinal plus that owner's canonical
 local target bytes. This compact form mechanically recovers the complete
 `ArtifactReference<T>` and does not create another reference authority.
 
-The dependency-role catalog remains unchanged in `loom.fabric 1.1`:
+The dependency-role catalog remains unchanged in `loom.fabric 2.0`:
 
 ```text
 ImportedModule       = 0
 RefinedSystem        = 1
-ImplementationInput  = 2  // reserved-unavailable in schema 1.x
+ImplementationInput  = 2  // reserved-unavailable in schema 2.x
 ```
 
 A `Module` root admits no direct dependency: every authoring template use is
 fully elaborated into the canonical Module and no `fabric.instantiate`
 survives. A `System` root admits only `ImportedModule`. An
 `InterconnectImplementation` root admits exactly one `RefinedSystem` and no
-other direct dependency in schema 1.x. `ImplementationInput = 2` retains its
-wire ordinal so schema 1.x never renumbers a published discriminant, but it has
+other direct dependency in schema 2.x. `ImplementationInput = 2` retains its
+wire ordinal so schema 2.x never renumbers a published discriminant, but it has
 no accepted artifact family, schema version, root kind, owner-local target
-kind, or dependency-use contract in schema 1.x. It is therefore not an enabled
+kind, or dependency-use contract in schema 2.x. It is therefore not an enabled
 dependency role and cannot appear in a canonical Fabric root.
 
 An authoring draft, encoder input, or imported envelope containing an
@@ -95,7 +101,7 @@ ordinal alone never owns those facts.
 
 Dependency use is determined by the static field that contains the compact
 reference. There is no generic dependency-use tag, path, or property bag. The
-closed schema 1.x field catalog is:
+closed schema 2.x field catalog is:
 
 ```text
 System AccCore spatial_core
@@ -186,7 +192,7 @@ The exact Fabric canonical semantic bytes passed to the Common Artifact
 SHA-256 v1 finalizer are:
 
 ```text
-bytes("loom.fabric.semantic.v1\0")
+bytes("loom.fabric.semantic.v2\0")
 || u32be(root_variant)
 || u64be(direct_dependency_count)
 || repeated direct_dependency_count times {
@@ -203,7 +209,7 @@ bytes("loom.fabric.semantic.v1\0")
 
 Root variant ordinals are `Module = 0`, `System = 1`, and
 `InterconnectImplementation = 2`. The dependency-role ordinals above and the
-root ordinals are immutable throughout schema 1.x. Counts and lengths are
+root ordinals are immutable throughout schema 2.x. Counts and lengths are
 unsigned big-endian values, there is no padding or native layout, and the
 decoder rejects truncation, trailing bytes, noncanonical dependency order,
 duplicates, unused rows, and payload references outside the dependency table.

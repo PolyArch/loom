@@ -72,6 +72,27 @@ support for either four `f32` lanes or two `f64` lanes; element representation,
 lane geometry, operation semantics, and policy must be admitted by the typed
 capability relation.
 
+## Why RootRelative Index Width Belongs To Each Access Row
+
+DataLayout owns the exact width of a software `index`; a Fabric endpoint owns
+only physical payload capacity. Inferring accepted index widths from that
+capacity would make a 128-bit endpoint silently choose 32-bit or 64-bit index
+semantics. A root-wide index width would duplicate DataLayout and would prevent
+one Fabric from admitting several exact software layouts.
+
+The RootRelative memory row therefore records the widths that its address
+generation circuitry accepts. Keeping this domain in the existing reduced
+product preserves the important correlation with lane count: a 128-bit
+indexed endpoint can admit four 32-bit indices and two 64-bit indices without
+also claiming four 64-bit indices. A separate pair table would duplicate that
+relation, while independent width and lane sets would create the false
+cross-product.
+
+PointerAddressed access is different: its semantic admission depends on the
+exact DataLayout-owned pointer format, not on an `index` width. Reusing the
+same address-form-selected relation slot keeps these alternatives disjoint and
+avoids a meaningless index-width field on pointer rows.
+
 ## Why Vector Hardware Has Several Physical Owners
 
 One universal vector engine would combine elementwise arithmetic, slice
