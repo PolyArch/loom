@@ -475,6 +475,36 @@ the published object, and deleting it only causes deterministic reconstruction.
 The architecture therefore keeps one persistent authority while avoiding work
 at the publication boundary.
 
+## Why Special-Math Accuracy Is Selected Before Dataflow
+
+The source `afn` flag says approximation is permitted; it does not say whether
+the application accepts one, two, four, or an unbounded number of ULP. Treating
+`afn` as a default accuracy would turn one permission bit into an undocumented
+policy. Letting an RTL recipe choose the bound would be worse: identical
+Dataflow and Fabric identities could then mean different numerical programs.
+
+The selected accepted maximum is therefore a Structured candidate decision.
+This is the last optimization surface where the compiler can compare complete
+program alternatives before publishing D0, and it lets central Evaluation
+trade numerical quality against resource and performance evidence without
+changing the source or hiding a backend choice. An operation without `afn`
+closes mechanically to correctly rounded, so the new owner creates no useless
+branch for strict programs.
+
+Accuracy is separate from ExecutionShape because the two decisions answer
+different questions. FMA Fused versus Split changes the operation graph;
+special-math accuracy constrains the legal result set of one unchanged actor.
+Combining them would couple unrelated candidate domains and make every future
+shape decision carry numerical-policy fields. Delaying accuracy to D0-to-D*
+was also rejected because that lineage is semantics-preserving: weakening a
+correctly-rounded actor after publication would silently change its contract.
+
+One four-element ordered domain is sufficient. It permits exact conformance and
+the practical one-, two-, and four-ULP research points without a floating
+tolerance property bag. The selected actor allowance and the Fabric circuit
+guarantee use the same owner-coded order, so admission is one refinement check
+rather than a backend-specific reconciliation table.
+
 ## Why Constant Staging Starts At The Spatial Memory Boundary
 
 A constant table is globally named in the enclosing program, but a canonical

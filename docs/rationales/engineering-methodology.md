@@ -82,3 +82,26 @@ and obsolete fixtures are removed rather than documented indefinitely.
 This does not mean deleting missing capabilities from the roadmap. Slop is
 accidental machinery; an unimplemented but architecturally required compiler,
 mapper, simulator, or backend capability remains real work.
+
+## Why Evolution Is Evidence Driven
+
+Loom begins as a research-oriented full-stack platform and may later serve
+commercial uses, so freezing every internal C++ surface would preserve
+experiments as permanent compatibility burden. Leaving every boundary unstable
+would be equally costly: applications, artifacts, hardware descriptions, and
+external integrations need reproducible semantic contracts.
+
+The stable boundary is therefore the public driver and cross-layer semantic
+surface, not current source organization. New semantic machinery requires a
+real unsupported application, correctness or accuracy defect, quality
+regression, scaling failure, resource-budget failure, or inexpressible target.
+This keeps extension pressure concrete. Existing owners are composed first;
+only a behavior they cannot express justifies a schema and rationale change.
+
+A release baseline is a tuple of existing exact identities and Evidence. A new
+release record, compatibility registry, benchmark database, or mutable
+latest-best pointer would repeat those facts and create synchronization rules
+without improving reproducibility. Deterministic work and typed correctness
+remain portable gates, while machine-sensitive wall time and memory are used
+only in compatible contexts. This lets real use guide development without
+turning every measurement into product semantics.

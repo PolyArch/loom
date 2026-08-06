@@ -727,9 +727,17 @@ preconditions, then propagates bounds and uncertainty by the formula's typed
 rules.
 
 Representative formulas include runtime from cycle count and clock period,
-energy from power and runtime, throughput from work and runtime, and
-performance per area. Unsupported or not-applicable inputs never become zero,
-infinity, or NaN.
+energy from power and runtime, throughput from work and runtime, speedup as one
+exact compatible reference runtime divided by one exact candidate runtime, and
+performance per area. Speedup is never stored as an independent observation or
+computed from unmatched workloads, inputs, scopes, or timing bases.
+Unsupported or not-applicable inputs never become zero, infinity, or NaN.
+
+Active wall time, process CPU time, peak resident memory, worker count, and
+logical CPU count recorded by `InvocationManifest` are nonsemantic operational
+observations. They are not MetricKinds and do not become
+`EvaluationEvidence`. A report may project them beside semantic work summaries
+only while preserving their distinct owners and execution-context limits.
 
 Benchmark weighting, normalization, Pareto preference, annealing cost, and
 other candidate-ranking aggregates remain DSE policy. They do not create a

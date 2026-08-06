@@ -207,6 +207,44 @@ selects stored-program ownership with the existing compiler and Evaluation
 evidence. Directory membership, an empty object, or a feature-disabled stub is
 never that proof.
 
+## Why Real Applications Are A Separate Portfolio
+
+The 889-row corpus is broad operator evidence, not a substitute for complete
+applications. Its units intentionally isolate typed call protocols so failures
+can be localized and compilation work can be shared across vectors. That
+granularity does not exercise whole-program ownership, multi-stage data
+movement, cross-graph scheduling, SystemMapping, deployment, or sustained
+feedback between quality and compiler cost.
+
+The real-application portfolio therefore starts with five complementary
+programs: two streaming ML workloads, one compact language-model inference,
+one irregular graph workload, and one Loom-owned heterogeneous multisensor
+pipeline. A fixed starter set makes vertical closure reviewable, while a
+general admission rule allows later applications only when they contribute a
+new stack behavior. Treating directory contents or a generated dashboard as
+membership would make ordinary checkout state a semantic authority.
+
+One thin manifest is the smallest sufficient repository owner. It selects
+source/build entries, named inputs, independent oracles, and execution cadence;
+all program, workload, Mapping, simulation, implementation, and Evidence facts
+remain in their existing owners. An `ApplicationArtifact` would merely wrap
+those references and create another identity without adding a semantic fact.
+Similarly, one manifest with smoke, validation, and scale/EDA selections keeps
+cadence separate from membership and avoids three drifting inventories.
+
+Pinned external source revisions remain Gitlink facts rather than copied
+manifest strings. Fixed model data follows the executable image contract and
+runtime samples follow SimulationRuntimeInput. Large bytes can therefore stay
+in a verified local cache without turning paths into identity. This split also
+keeps the public repository free of restricted datasets and direct EDA
+material while preserving exact reproducibility through digests.
+
+Pairwise engine equality is deliberately conditional. It is powerful for a
+deterministic exact workload, but approximate special math and legal software
+nondeterminism can produce several correct observations. Requiring every
+engine to satisfy the same independent typed oracle tests the application
+contract directly and avoids making one implementation the golden authority.
+
 ## Why Hardware Construction Closes First
 
 The ADG Builder-to-Fabric path has no software prerequisite, while useful

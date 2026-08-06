@@ -38,6 +38,13 @@ Dataflow or optional Fabric-aware Evaluation to rank candidates. It must not
 reselect a structured schedule or ownership boundary, and Fabric facts never
 become Canonical Dataflow semantics.
 
+For a selected-Spatial scalar `ScalarMath*` actor, semantics include the exact
+`SpecialMathAccuracyTier` selected by the Structured candidate under
+`docs/spec-compiler-part-2-scf.md`. Mechanical lowering copies that owner-coded
+tier into the actor's closed semantic projection. Every D0-to-D* rewrite
+preserves it exactly; changing, dropping, or newly choosing the tier is not a
+semantics-preserving Dataflow transformation.
+
 This document owns only the target contract: IR boundaries, structured-control
 flattening, memory-dependence integration, and verifier invariants. Pass
 decomposition, test layout, and maintenance sequencing are implementation
@@ -512,6 +519,14 @@ every property and attribute that can affect one firing. Unknown or
 unclassified actor state is rejected; consumers never copy an arbitrary
 attribute dictionary. A field may be excluded only when its owning spec proves
 it nonsemantic, as for source provenance.
+
+For every scalar operation in a registered `ScalarMath*` family, the closed
+semantic attribute projection contains exactly one owner-coded
+`SpecialMathAccuracyTier`. A selected-Spatial operation missing that field, a
+non-special operation carrying it, or a projection that reconstructs it from
+`afn`, Fabric capability, or provider choice is invalid. `afn` remains the
+native source permission for approximate functions; the selected tier is the
+narrower canonical actor contract.
 
 For memory actors the closed semantic projection contains the complete
 aggregate contract owned by `docs/spec-dataflow-memory-consistency.md`.

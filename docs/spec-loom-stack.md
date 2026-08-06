@@ -524,6 +524,13 @@ The representative frontend set is owned only by
 [End-To-End Conformance Anchors](spec-end-to-end-demonstrators.md). Anchor
 selection does not redefine corpus membership or the product boundary.
 
+Complete multi-operation and multi-stage application conformance is a separate
+derived inventory owned by the
+[Real Application Portfolio](spec-application-portfolio.md). It consumes the
+same compiler, Mapping, simulation, hardware, Evaluation, and failure
+contracts; it does not enlarge the operator inventory or make an application
+manifest into a program Artifact.
+
 Missing capability is reported honestly as a typed unsupported or incomplete
 outcome. Scaffolds, empty artifacts, skipped work, generated wrappers, or
 inventory counts cannot stand in for completed semantics.
@@ -560,9 +567,11 @@ dispositions or unknown workload behavior cannot prove graph-free legality.
 These existing owners remain authoritative; there is no graph-free Artifact,
 status ledger, or duplicate diagnostic schema.
 
-Corpus contracts are specified by
-[CMSIS Compiler Contract](spec-cmsis-dropin-compiler.md), and
-[LoomBench](spec-loombench.md).
+Operator-corpus contracts are specified by
+[CMSIS Compiler Contract](spec-cmsis-dropin-compiler.md) and
+[LoomBench](spec-loombench.md). Complete application conformance is specified
+separately by the
+[Real Application Portfolio](spec-application-portfolio.md).
 
 ## Initial Integration Gates
 
@@ -593,6 +602,64 @@ least one exact builtin Fabric is available. Hardware-aware compiler decisions
 must consume the shared Evaluation contracts defined by this specification;
 the frontend cannot substitute a private cost model or an abstract target
 summary for the exact Fabric.
+
+## Evidence-Driven Evolution
+
+After the first complete vertical stack is available, Loom evolves from exact
+evidence rather than speculative compatibility machinery. The protected public
+semantic surface consists of:
+
+* the `loom-cc` and `loom-c++` driver contracts;
+* Artifact schemas, canonical encodings, and cross-Artifact coupling;
+* ResolvedConfig and ConfigurationABI semantics;
+* the public ADG Builder interface;
+* cross-layer Dataflow, Fabric, Mapping, HardwareImplementation, Deployment,
+  Simulation, and Evaluation behavior; and
+* the Spatial-only/System-with-gem5 by DFG/CGRA/RTL execution matrix.
+
+Private C++ organization, helper APIs, internal caches, and developer-tool CLI
+presentation are not public compatibility promises merely because they exist.
+They may change while the protected semantic surface remains exact.
+
+A new product feature or semantic extension requires at least one concrete
+input:
+
+* a real application with a typed unsupported outcome;
+* a correctness or approved numerical-accuracy failure;
+* a quality-of-result regression in exact compatible Evidence;
+* a deterministic-work scaling defect;
+* a wall-time or peak-resident-memory budget failure in a declared compatible
+  execution context; or
+* a target implementation that cannot be expressed by the existing
+  Fabric/provider recipe contracts.
+
+The first response is composition from existing owners. If composition cannot
+express the required behavior, the one normative owner changes with an
+appropriate schema-version change and updated rationale. A compatibility
+layer, duplicate registry, local override, or benchmark-specific exception
+cannot substitute for that change. The new behavior is admitted through
+anchor-level TDD and the exact affected application or conformance Evidence is
+rerun.
+
+A release baseline is an exact tuple of existing identities, not a new
+Artifact:
+
+```text
+source revision and external pins
++ application and input selection
++ exact Fabric and ResolvedConfig
++ selected model-parameter roots
++ tool and ImplementationPlatform identities
++ EvaluationEvidence and InvocationManifest references
+```
+
+There is no `ReleaseArtifact`, benchmark database, telemetry model, mutable
+latest-best authority, or compatibility registry. Correctness uses exact
+equality or an approved typed precision relation. Cross-machine performance
+claims use deterministic work as their primary comparable quantity; wall time
+and resident memory are compared only under declared compatible execution
+contexts. Physical quality remains ordinary EvaluationEvidence, and direct EDA
+material remains local under its disclosure boundary.
 
 ## External Dependency Pinning
 

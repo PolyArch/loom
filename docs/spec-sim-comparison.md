@@ -73,6 +73,16 @@ the exact comparison model proves that observation deterministic. This is the
 normal relation for deterministic programs and for observations constrained
 to one value by their software contract.
 
+A selected non-`CorrectlyRounded` `SpecialMathAccuracyTier` admits a bounded
+set of numerical results even when control and memory behavior are
+deterministic. Pairwise bit equality between two engines is therefore not a
+correctness relation unless an independent model proves that the requested
+observable still has one exact value. Each engine instead satisfies the same
+independent application oracle or typed invariant selected by the workload.
+Leaf-provider conformance separately checks every claimed ULP guarantee against
+an independent higher-precision oracle; it is not inferred from two engines
+agreeing with each other.
+
 Atomic and other explicitly nondeterministic software contracts may admit
 several legal executions. Each exact simulator model still deterministically
 produces one legal execution, but two models need not select the same legal
@@ -142,7 +152,8 @@ outcomes have no finding or metric results.
 Stable tests cover exact-role validation, visible-memory alignment,
 deterministic functional mismatch detection, `NotApplicable` for an
 unconstrained nondeterministic value relation, invariant comparison of legal
-atomic executions, rejection of incompatible metrics and progress domains, and
-deterministic Evidence. They also reject a same-provider golden model as an
-independent correctness oracle. Tests do not pin table formatting or duplicate
-simulator semantics.
+atomic executions, approximate special-math executions checked independently
+against one typed oracle, rejection of incompatible metrics and progress
+domains, and deterministic Evidence. They also reject a same-provider golden
+model as an independent correctness oracle. Tests do not pin table formatting
+or duplicate simulator semantics.

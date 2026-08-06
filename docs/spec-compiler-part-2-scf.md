@@ -159,6 +159,40 @@ The ExecutionShape generator resolves it before Schedule or Dataflow lowering
 may consume the candidate. After materialization, no `fmuladd` operation may
 remain in a finalizable Sn or be registered as a Canonical Dataflow actor.
 
+The scalar `math` operations assigned to the registered `ScalarMath*`
+implementation families use one closed accuracy domain:
+
+```text
+SpecialMathAccuracyTier =
+    CorrectlyRounded
+  | Max1Ulp
+  | Max2Ulp
+  | Max4Ulp
+```
+
+`CorrectlyRounded` means the exact mathematical result rounded once to the
+destination floating format under the actor's rounding contract; it does not
+mean that an irrational real number is represented exactly. For a defined
+finite numerical result, `MaxNUlp` permits at most `N` adjacent representable
+destination-format values between the produced result and that
+correctly-rounded reference. Exceptional values, subnormal handling, signed
+zero, and other fast-math permissions remain owned by the native operation
+schema and its floating behavior contract. An accuracy tier neither grants nor
+copies those permissions.
+
+The strength order is:
+
+```text
+CorrectlyRounded < Max1Ulp < Max2Ulp < Max4Ulp
+```
+
+where a lower value is a stronger guarantee and satisfies any higher accepted
+maximum. The selected tier is the exact `loom.special_math_accuracy`
+dialect attribute on the Structured operation and later belongs to its closed
+canonical actor projection. The attribute's codec and validation are owned by
+this domain. It is not inferred from an operation name, a backend recipe, or a
+target library.
+
 Ordinary calls are never expanded from a symbol-name or arity match. A call
 remains a call, becomes visible through LLVM linking or LTO, or is handled by a
 future explicit typed and versioned library model. Recognizing a source
@@ -547,20 +581,21 @@ mutate `S_i`, or reinterpret `M_i` as a Mapping of `S_j`.
 
 Compilation DSE uses the central finite SSA-like Generate/Promote plan. It does
 not create a frontend optimizer controller or enumerate one global Cartesian
-product. Four typed generator families own candidate production:
+product. Five typed generator families own candidate production:
 
 ```text
 Schedule
 ExecutionShape
+SpecialMathAccuracy
 MemoryCommunication
 Ownership
 ```
 
 They cover schedule/polyhedral transformations; spatial/vector/unroll/jam and
-reduction shape; layout/staging/multibuffer/pipeline/channel choices; and
-InstructionCore/SpatialCore plus thread-domain ownership. The groups are
-generator capabilities, not persistent IR families. A resolved DSE policy may
-interleave them and revisit a family.
+reduction shape; accepted special-math accuracy; layout/staging/multibuffer/
+pipeline/channel choices; and InstructionCore/SpatialCore plus thread-domain
+ownership. The groups are generator capabilities, not persistent IR families.
+A resolved DSE policy may interleave them and revisit a family.
 
 Each Generate node consumes complete immutable candidates, exact Fabric, and
 descriptor-declared analysis or Evidence projections. The transform scope is
@@ -686,6 +721,42 @@ invocation-local execution policy and do not change the finite semantic
 domain. A cache entry is keyed by the exact Structured Artifact reference and
 must match its already validated canonical bytes; it is removable and cannot
 serve as a second candidate authority.
+
+### Structured SpecialMathAccuracy Generator
+
+The SpecialMathAccuracy generator closes every selected-Spatial scalar
+`ScalarMath*` operation before mechanical D0 publication. It does not inspect
+or rewrite residual HostCore or InstructionCore computation. A special-math
+operation without the native approximate-functions permission `afn` has one
+legal selected tier, `CorrectlyRounded`; the generator materializes that tier
+mechanically and creates no accuracy choice. `afn` authorizes candidate
+generation over the finite domain above but does not itself select a tier or
+imply `Max4Ulp`.
+
+For an `afn` operation, the finite domain is `CorrectlyRounded`, `Max1Ulp`,
+`Max2Ulp`, and `Max4Ulp`. A resolved Loom policy or a source-derived typed hint
+accepted by that policy may narrow the domain to a stronger maximum, but it
+cannot authorize a tier that the source operation forbids. For example, a
+`Max2Ulp` bound retains `CorrectlyRounded`, `Max1Ulp`, and `Max2Ulp`. A complete
+Generate invocation emits every member of the resulting domain; early budget
+termination remains incomplete rather than silently shrinking it. The selected
+tier, not the hint, is the persistent semantic fact. Candidate production uses
+immutable lineage and never serializes a Cartesian table of per-operation
+choices.
+
+Every child preserves the exact operation type, remaining fast-math flags,
+floating environment, location, Ownership lineage, and source-provenance
+projection. Before publication it passes the sole Structured finalizer,
+mechanical D0 lowering, and exact Fabric admission. The concrete Fabric
+capability must guarantee a tier no weaker than the actor's selected accepted
+maximum. A missing selection, malformed tier, non-`CorrectlyRounded` tier
+without `afn`, or absence of an admitted concrete capability makes that
+selected-Spatial candidate non-finalizable.
+
+SpecialMathAccuracy is not an ExecutionShape choice. It does not replace an
+actor with a different operation graph, and it cannot be delayed to a
+Dataflow-to-Dataflow rewrite or backend recipe. The D0-to-D* lineage preserves
+the exact selected tier byte for byte.
 
 ### Structured MemoryCommunication Generator
 

@@ -377,6 +377,37 @@ license or process failed. Conversely, an internal effort or threading setting
 that changes a tool's result must be promoted into the model binding rather
 than hidden as execution infrastructure.
 
+## Why Operational Cost Stays In InvocationManifest
+
+Compiler wall time, CPU consumption, peak resident memory, and effective
+parallelism are essential feedback for improving Loom, but they do not describe
+the evaluated program or hardware. Putting them in EvaluationEvidence would
+make a loaded host, scheduler decision, or worker count look like a semantic
+quality metric. A separate Telemetry Artifact would instead duplicate the exact
+invocation, plan-node, and work-summary identities already present in
+InvocationManifest.
+
+The manifest is therefore the smallest correct owner for optional operational
+observations. The same PlanNodeRef joins node time to deterministic work without
+copying counts. Whole-invocation peak RSS is honest; per-node RSS is not,
+because shared allocators, caches, and concurrent nodes make additive
+attribution fictitious. Concurrent node wall times likewise remain overlapping
+observations rather than a sum that pretends to reconstruct elapsed time.
+
+Deterministic work stays primary for cross-machine comparison. Wall time, CPU,
+and RSS are valuable within a compatible execution context, but recording CPU
+count and worker request does not prove two machines equivalent. Keeping the
+observations nonsemantic permits profiling and budget gates without letting a
+host measurement change candidate identity, ordering, replay, or formal
+completion.
+
+External EDA execution has a different authority boundary. Loom prepares a
+script and later imports an atomic result, while the caller or scheduler owns
+the process in between. That owner may measure an exact attempt, but making Loom
+monitor it would recreate the process-supervision authority explicitly rejected
+by the external-tool contract. Missing EDA resource measurements therefore do
+not invalidate real EDA Evidence.
+
 ## Why Evaluators Cannot Call One Another
 
 Hidden recursive model calls conceal cost, authorization, lineage, failure,

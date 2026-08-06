@@ -1754,6 +1754,58 @@ Artifact references and satisfied Evidence. `CompletedNoFeasibleCandidate`
 records an empty selection and completed plan. `Incomplete` records unsatisfied
 obligations and retained finalized material but no formal selected output.
 
+### Operational Observations
+
+`InvocationManifest` schema 1.1 is a compatible extension of schema 1.0. It
+adds one optional nonsemantic `InvocationOperationalObservations` block:
+
+```text
+InvocationOperationalObservations {
+  total_active_wall_time_ns    : uint64
+  total_process_cpu_time_ns    : uint64
+  peak_resident_bytes          : uint64
+  requested_worker_count       : positive uint64
+  available_logical_cpu_count  : positive uint64
+  plan_nodes                   : canonical array<PlanNodeOperationalObservation>
+}
+
+PlanNodeOperationalObservation {
+  plan_node_ref                : PlanNodeRef
+  active_wall_time_ns          : uint64
+  process_cpu_time_ns          : uint64
+}
+```
+
+The block is absent when the invocation owner did not collect all required
+whole-invocation observations. Absence has no effect on the controller outcome,
+Artifact selection, Evidence validity, replay, or resume. Within a present
+block, `plan_nodes` contains at most one row for each admitted plan node, sorts
+by canonical `PlanNodeRef`, and omits unobserved nodes rather than representing
+them as zero. Every reference must resolve in the exact plan.
+
+Active wall time uses monotonic intervals during which that invocation is live;
+resume gaps and time after a stopped occurrence are excluded. The total is the
+union of whole-invocation intervals, and each node value is the union of that
+node's active intervals. Concurrent node values overlap and must never be
+summed to reconstruct the total. CPU time is process execution charged during
+the corresponding scope. `peak_resident_bytes` is one whole-invocation process
+high-water observation; there is no per-node resident-memory field or inferred
+allocation. Unsigned overflow is invalid rather than saturated.
+
+The existing producer semantic/build identity, requested worker count, and
+available logical CPU count provide necessary execution context but do not by
+themselves prove two hosts comparable. Deterministic work summaries remain the
+primary cross-machine cost measure. Wall time, CPU time, and resident memory may
+be compared only when the consuming report or gate proves a compatible
+execution context. These observations are neither MetricKinds nor semantic
+budget owners, and they never copy planned or consumed work counts.
+
+Caller-owned execution of an `ExternalToolInvocationBundle` is outside this
+block. A site runner or scheduler may retain resource observations for one
+exact prepared-manifest handle and attempt, but Loom does not monitor that
+process or import those observations as Evidence. Their absence cannot
+invalidate otherwise complete EDA Evidence.
+
 Each recoverable logical unit uses a stable derived key:
 
 ```text
@@ -2455,6 +2507,10 @@ Only these stable semantic anchors belong at this boundary:
 - Equal admitted closure and local binding produce byte-identical bundles;
   `prepare`, caller execution, and `import` remain independently callable and
   expose no Job, scheduler, or process handle.
+- InvocationManifest 1.0 remains importable; 1.1 round-trips absent and present
+  operational observations canonically, rejects unknown plan-node references,
+  duplicate or unsorted rows, zero context counts, and arithmetic overflow,
+  and never changes formal selection or Evidence.
 - Candidate-generator binding identity is derived from the exact descriptor
   and canonical config view, and a caller-authored replacement is rejected.
 - An external generator publishes only complete descriptor output Artifacts;

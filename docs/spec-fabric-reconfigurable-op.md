@@ -177,6 +177,12 @@ ScalarIntegerCastParams {
   width_pairs
   resolved_index_widths
 }
+
+ScalarSpecialMathParams {
+  formats
+  behavior
+  accuracy_guarantee : SpecialMathAccuracyTier
+}
 ```
 
 The cast relation is a typed rule over the two finite domains rather than a
@@ -206,6 +212,23 @@ subnormal, and fast-math admission are observable capability facts and must be
 explicit in the concrete relation. A strict implementation may satisfy a
 relaxed actor only when the registered operation schema proves that refinement;
 the backend cannot infer it.
+
+The `ScalarMath*` families use `ScalarSpecialMathParams` rather than the
+ordinary scalar-float record. `accuracy_guarantee` is one value from the
+`SpecialMathAccuracyTier` domain owned by the Structured compiler contract.
+Fabric owns this guarantee as a property of the concrete circuit; it does not
+copy the actor's selected accepted maximum. Admission requires:
+
+```text
+hardware accuracy guarantee <= actor accepted maximum
+```
+
+under that domain's stronger-to-weaker order. A correctly-rounded circuit can
+therefore implement an actor accepting up to two ULP, while a two-ULP circuit
+cannot implement a correctly-rounded or one-ULP actor. A non-correctly-rounded
+hardware guarantee also requires `afn` in the capability's required fast-math
+mask. Fast-math proves permission to approximate; it never selects or implies
+an accuracy guarantee.
 
 `FloatBehaviorProfile.fastmath` is the permission mask required by the
 physical implementation, not a list of actor spellings it recognizes. The

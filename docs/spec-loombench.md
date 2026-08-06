@@ -17,6 +17,10 @@ LoomBench tests two related product contracts:
 CMSIS-DSP and CMSIS-NN are the other two canonical source suites. Their
 external-source-tree contract is owned by `spec-cmsis-dropin-compiler.md`.
 LoomBench owns only repository cases; it does not duplicate CMSIS membership.
+The complete multi-operation and multi-stage applications selected by
+`test/applications/manifest.json` belong to the separate
+[Real Application Portfolio](spec-application-portfolio.md). They do not extend
+this operator-level manifest or its case identity.
 
 ## Membership And Identity
 

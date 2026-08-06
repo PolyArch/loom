@@ -72,6 +72,29 @@ support for either four `f32` lanes or two `f64` lanes; element representation,
 lane geometry, operation semantics, and policy must be admitted by the typed
 capability relation.
 
+## Why Special-Math Accuracy Is A Capability
+
+A special-function circuit's worst-case numerical error is an observable
+hardware guarantee. It is neither an operation-name property nor a gate-level
+implementation detail. A correctly-rounded implementation can refine an actor
+that accepts two ULP, but the reverse is false, so exact admission needs an
+ordered relation between the actor-owned allowance and the Fabric-owned
+guarantee.
+
+Fast-math cannot own this relation. `afn` grants permission to approximate and
+other flags grant distinct exceptional-value freedoms; none quantify error.
+Overloading the permission mask with an implied ULP level would prevent two
+Fabrics with different numerical quality from admitting the same authorized
+actor honestly. Likewise, choosing accuracy through DesignWare, ChipWare, or
+an FPGA recipe would let tool availability change Fabric semantics.
+
+The special-math families therefore use one typed parameter record that
+composes the existing floating formats and behavior profile with one guarantee
+from the compiler-owned accuracy domain. Ordinary floating arithmetic, divide,
+and remainder keep their existing records. This avoids an optional accuracy
+field on every floating family and gives the twenty-two `ScalarMath*` families
+the one additional fact their physical implementations actually need.
+
 ## Why RootRelative Index Width Belongs To Each Access Row
 
 DataLayout owns the exact width of a software `index`; a Fabric endpoint owns

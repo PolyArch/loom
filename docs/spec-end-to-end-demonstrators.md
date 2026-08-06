@@ -174,8 +174,13 @@ physical implementation -> timing/area/power Evidence
 compatible Evidence -> derived runtime/energy Evidence
 ```
 
-DFG, CGRA, and mapped RTL executions must agree on terminal `C`. CGRA and RTL
-cycles are comparable only when their external service contract is identical.
+DFG, CGRA, and mapped RTL executions must satisfy the same independent terminal
+`C` oracle. They must agree bit for bit when the exact workload and selected
+actor contracts prove one deterministic value. If an approved special-math
+accuracy tier or another typed contract admits several values, every engine is
+checked independently against that same typed oracle or invariant instead;
+pairwise agreement is not correctness evidence. CGRA and RTL cycles are
+comparable only when their external service contract is identical.
 Raw waveforms, vendor reports, databases, and logs remain owner-attempt or
 scratch material until their exact Artifact owner is defined; human-readable
 FPA or comparison summaries are projections.

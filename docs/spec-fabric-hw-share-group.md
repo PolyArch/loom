@@ -320,10 +320,15 @@ ScalarMathErf               = { math.erf }
 ScalarMathPow               = { math.powf }
 ```
 
-Integer divider capabilities use the scalar integer-width record. Floating
-special capabilities use the strict scalar floating-point record. Backend
-provider availability is not part of family admission and does not affect a
-valid Fabric artifact's identity.
+Integer divider capabilities use the scalar integer-width record.
+`ScalarFloatDivide` and `ScalarFloatRemainder` use the ordinary scalar
+floating-point record. The twenty-two `ScalarMath*` families use the closed
+`ScalarSpecialMathParams` record, which composes the ordinary format and
+floating-behavior facts with exactly one Fabric-owned
+`SpecialMathAccuracyTier` guarantee. The selected actor allowance remains in
+its OperationSchema projection; the concrete resource does not copy it.
+Backend provider availability is not part of family admission and does not
+affect a valid Fabric artifact's identity.
 
 ## Genuine Physical Sharing
 

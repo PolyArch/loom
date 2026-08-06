@@ -104,6 +104,28 @@ cannot preserve this relation remains typed `Unsupported`. The same rule covers
 disjoint LLVM OR, integer overflow promises, exact shifts, zero-poison count
 operations, and every other registered semantic promise.
 
+### Special-Math Accuracy Refinement
+
+A `ScalarMath*` provider consumes both the actor's exact selected
+`SpecialMathAccuracyTier` and the concrete Fabric resource's accuracy
+guarantee. The common admission relation has already proved that the hardware
+guarantee is no weaker than the actor allowance. Lowering must implement that
+Fabric guarantee or return typed `Unsupported`; it cannot weaken the guarantee,
+reinterpret `afn` as an accuracy level, or select a different tier.
+
+Backend recipes may realize the guarantee with portable synthesizable RTL,
+DesignWare, ChipWare, or FPGA primitives and configured IP. Those choices may
+change structure and PPA but not the selected actor tier, Fabric guarantee,
+exception behavior, latency, initiation interval, progress, or configuration
+contract. A vendor block whose documented numerical behavior is too weak or
+not provable under the exact binding is unavailable for that occurrence.
+
+Provider conformance uses an independent higher-precision numerical oracle over
+the exact supported formats, relevant boundary classes, and the claimed ULP
+bound. A provider-generated golden function is not independent evidence. Full
+application correctness remains owned by the application oracle; a leaf-level
+ULP test cannot replace it.
+
 ## Common CIRCT Skeleton
 
 Fabric-to-RTL first constructs one target-independent CIRCT skeleton. The
@@ -622,6 +644,9 @@ Stable anchors cover:
   transfer or hidden holding;
 * dispatch of one operation schema through two implementation families and
   typed rejection of a missing provider;
+* correctly-rounded, one-ULP, two-ULP, and four-ULP special-math admission,
+  independent numerical-oracle checks, and typed rejection when a recipe cannot
+  prove its selected guarantee;
 * exact `None`, finite, and direct provider decoding from the shared Fabric
   relation and ConfigurationABI, with no provider-local key ordering;
 * temporal context and memory-operation behavior;
