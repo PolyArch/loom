@@ -107,6 +107,13 @@ struct ChannelConsumerBinding {
   std::optional<mlir::AffineMap> sourceMap;
 };
 
+/// One exact producer terminal and the payload type of its Canonical Service
+/// message-transfer leg. The type borrows the imported canonical program.
+struct CanonicalProducerTerminalView {
+  CanonicalProducerTerminalRef terminal;
+  mlir::Type payloadType;
+};
+
 //===----------------------------------------------------------------------===//
 // CanonicalDataflowProgramView
 //===----------------------------------------------------------------------===//
@@ -184,6 +191,22 @@ public:
   /// derived from the same sealed static-launch relation used by
   /// resolveExposure; consumers must not reconstruct it from graph IR.
   void forEachMemoryExposure(llvm::function_ref<void(MemoryExposureRef)>) const;
+
+  /// Visit the complete producer-terminal inventory reachable from one exact
+  /// root thread launch in canonical reference order. This includes root and
+  /// graph ABI boundaries plus channel producers. Memory capability crossings
+  /// remain MemoryExposureRef values and are deliberately absent.
+  llvm::Error forEachProducerTerminal(
+      RootThreadLaunchRef root,
+      llvm::function_ref<llvm::Error(const CanonicalProducerTerminalView &)>)
+      const;
+
+  /// Visit every addressed-memory or fence actor in each graph launch rooted
+  /// at `root`. The contextual reference is Dataflow-owned; callers do not
+  /// reconstruct actor membership by walking MLIR.
+  llvm::Error forEachContextualServiceActor(
+      RootThreadLaunchRef root,
+      llvm::function_ref<llvm::Error(ContextualActorRef)>) const;
 
   /// Validate a rooted graph launch: the root launch and the static graph
   /// launch must resolve, and the graph-launch site must belong to the thread
@@ -391,6 +414,7 @@ private:
   std::vector<ChannelConsumerBinding> channelBindings_;
   std::vector<CanonicalSinkTerminalRef> channelSinks_;
   std::map<ChannelProducerKey, std::pair<unsigned, unsigned>> channelRange_;
+  std::map<ChannelProducerKey, mlir::Type> channelProducerPayloadType_;
 
   // Static memory composition. Every admitted memory SSA value resolves to a
   // role in `roleTable_` (a disposable value cache); the flat root-local view
@@ -411,6 +435,7 @@ private:
   std::vector<std::pair<unsigned, unsigned>> addressedMemoryRangeByStaticSlot_;
   std::vector<unsigned> addressedMemoryActorSlots_;
   std::vector<unsigned> addressedMemoryRoleIndices_;
+  std::vector<llvm::SmallVector<unsigned, 2>> serviceActorSlotsByGraphSlot_;
 };
 
 //===----------------------------------------------------------------------===//

@@ -6,6 +6,10 @@ add_executable(loom-system-mapping-constraint-set-test
   SystemMappingConstraintSetTest.cpp
 )
 
+add_executable(loom-system-service-obligation-test
+  SystemServiceObligationTest.cpp
+)
+
 add_executable(loom-tech-mapping-artifact-test
   TechMappingArtifactTest.cpp
   TechMappingComputeBoundaryTest.cpp
@@ -69,6 +73,17 @@ target_link_libraries(loom-mapping-artifact-test PRIVATE
 
 target_link_libraries(loom-system-mapping-constraint-set-test PRIVATE
   LoomADGBuilder
+  LoomMappingArtifact
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-system-service-obligation-test PRIVATE
   LoomMappingArtifact
   MLIRArithDialect
   MLIRDataflow

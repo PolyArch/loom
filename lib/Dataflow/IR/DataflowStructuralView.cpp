@@ -22,6 +22,7 @@
 #include "Dataflow/IR/DataflowGraphValidation.h"
 #include "Dataflow/IR/DataflowInterfaces.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -390,6 +391,23 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
                        .second)
                 return invalid("canonical dataflow: duplicate channel "
                                "producer terminal");
+
+              Type payloadType;
+              if (producer.streamOrdinal) {
+                auto launch = cast<GraphLaunchOp>(producer.site);
+                payloadType =
+                    cast<ChannelType>(
+                        launch.getStreamOutputs()[*producer.streamOrdinal]
+                            .getType())
+                        .getElementType();
+              } else {
+                payloadType =
+                    cast<ChannelSendOp>(producer.site).getMessage().getType();
+              }
+              if (!channelProducerPayloadType_.emplace(producerKey, payloadType)
+                       .second)
+                return invalid("canonical dataflow: duplicate channel "
+                               "producer payload type");
             }
             return llvm::Error::success();
           }))
@@ -477,16 +495,19 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
   // provide the deterministic order used by every launch-site range.
   std::vector<llvm::SmallVector<unsigned, 2>> addressedActorsByGraphSlot(
       graphs_.size());
+  serviceActorSlotsByGraphSlot_.assign(graphs_.size(), {});
   for (unsigned actorSlot = 0; actorSlot < actors_.size(); ++actorSlot) {
-    if (actors_[actorSlot].kind != CanonicalDataflowActorKind::Memory ||
-        isa<FenceOp>(actors_[actorSlot].op))
+    if (actors_[actorSlot].kind != CanonicalDataflowActorKind::Memory)
+      continue;
+    const std::size_t graphSlot =
+        slotOfId_[actors_[actorSlot].graph.entity.value()];
+    serviceActorSlotsByGraphSlot_[graphSlot].push_back(actorSlot);
+    if (isa<FenceOp>(actors_[actorSlot].op))
       continue;
     auto access =
         semantics::getCanonicalMemoryAccessView(actors_[actorSlot].op);
     if (!access)
       return access.takeError();
-    const std::size_t graphSlot =
-        slotOfId_[actors_[actorSlot].graph.entity.value()];
     addressedActorsByGraphSlot[graphSlot].push_back(actorSlot);
   }
   for (unsigned s = 0; s < staticGraphLaunches_.size(); ++s) {
@@ -691,6 +712,147 @@ void CanonicalDataflowProgramView::forEachMemoryExposure(
       }
     }
   }
+}
+
+llvm::Error CanonicalDataflowProgramView::forEachProducerTerminal(
+    RootThreadLaunchRef root,
+    llvm::function_ref<llvm::Error(const CanonicalProducerTerminalView &)>
+        callback) const {
+  auto rootSlot = requireKind(root.artifact, root.entity.value(),
+                              CanonicalDataflowEntityKind::RootThreadLaunch);
+  if (!rootSlot)
+    return rootSlot.takeError();
+  const unsigned threadSlot = rootCalleeThreadSlot_[*rootSlot];
+  ThreadOp thread = cast<ThreadOp>(rootThreadLaunches_[*rootSlot].callee);
+  Type none =
+      NoneType::get(rootThreadLaunches_[*rootSlot].callee->getContext());
+
+  struct OrderedTerminal final {
+    CanonicalProducerTerminalView view;
+    std::vector<std::uint8_t> key;
+  };
+  std::vector<OrderedTerminal> terminals;
+  auto add = [&](CanonicalProducerTerminalRef terminal,
+                 Type payloadType) -> llvm::Error {
+    auto key = encodeDataflowReference(identity_, terminal);
+    if (!key)
+      return key.takeError();
+    terminals.push_back({{std::move(terminal), payloadType}, std::move(*key)});
+    return llvm::Error::success();
+  };
+
+  if (llvm::Error error = add(
+          CanonicalProducerTerminalRef{RootThreadBoundarySourceRef{
+              RootThreadBoundaryTransferRef{RootThreadStartTransferRef{root}}}},
+          none))
+    return llvm::Error(std::move(error));
+  StructuralOrdinal valueOrdinal = 0;
+  for (Type input : thread.getFunctionType().getInputs()) {
+    if (isa<ChannelType>(input) || isMemoryCapability(input))
+      continue;
+    if (llvm::Error error = add(
+            CanonicalProducerTerminalRef{
+                RootThreadBoundarySourceRef{RootThreadBoundaryTransferRef{
+                    RootThreadValueInputTransferRef{root, valueOrdinal++}}}},
+            input))
+      return llvm::Error(std::move(error));
+  }
+  if (llvm::Error error =
+          add(CanonicalProducerTerminalRef{RootThreadBoundarySourceRef{
+                  RootThreadBoundaryTransferRef{
+                      RootThreadCompletionTransferRef{root}}}},
+              none))
+    return llvm::Error(std::move(error));
+
+  for (unsigned staticSlot : staticsByThreadSlot_[threadSlot]) {
+    RootedGraphLaunchRef rooted{root, staticGraphLaunches_[staticSlot].ref};
+    GraphOp graph = cast<GraphOp>(
+        llvm::cantFail(resolve(staticGraphLaunches_[staticSlot].callee)).op);
+    if (llvm::Error error =
+            add(CanonicalProducerTerminalRef{GraphLaunchBoundarySourceRef{
+                    GraphLaunchBoundaryTransferRef{
+                        GraphLaunchStartTransferRef{rooted}}}},
+                none))
+      return llvm::Error(std::move(error));
+    const auto inputSegments = graph.getInputSegmentSizes();
+    for (StructuralOrdinal ordinal = 0;
+         ordinal < static_cast<unsigned>(inputSegments[0]); ++ordinal)
+      if (llvm::Error error =
+              add(CanonicalProducerTerminalRef{GraphLaunchBoundarySourceRef{
+                      GraphLaunchBoundaryTransferRef{
+                          GraphLaunchValueInputTransferRef{rooted, ordinal}}}},
+                  graph.getFunctionType().getInput(ordinal)))
+        return llvm::Error(std::move(error));
+    const auto resultSegments = graph.getResultSegmentSizes();
+    for (StructuralOrdinal ordinal = 0;
+         ordinal < static_cast<unsigned>(resultSegments[0]); ++ordinal)
+      if (llvm::Error error =
+              add(CanonicalProducerTerminalRef{GraphLaunchBoundarySourceRef{
+                      GraphLaunchBoundaryTransferRef{
+                          GraphLaunchValueResultTransferRef{rooted, ordinal}}}},
+                  graph.getFunctionType().getResult(ordinal)))
+        return llvm::Error(std::move(error));
+    if (llvm::Error error =
+            add(CanonicalProducerTerminalRef{GraphLaunchBoundarySourceRef{
+                    GraphLaunchBoundaryTransferRef{
+                        GraphLaunchDoneTransferRef{rooted}}}},
+                none))
+      return llvm::Error(std::move(error));
+  }
+
+  for (const auto &[producerKey, range] : channelRange_) {
+    const auto [kind, producerRootSlot, staticSlot, ordinal] = producerKey;
+    if (producerRootSlot != *rootSlot)
+      continue;
+    ChannelProducerRef producer =
+        kind == kStreamOutput
+            ? ChannelProducerRef{GraphStreamOutputProducerRef{
+                  {root, staticGraphLaunches_[staticSlot].ref}, ordinal}}
+            : ChannelProducerRef{ThreadChannelSendSiteRef{root, ordinal}};
+    auto payload = channelProducerPayloadType_.find(producerKey);
+    if (payload == channelProducerPayloadType_.end())
+      return invalid(
+          "canonical dataflow: channel producer has no payload type");
+    if (llvm::Error error =
+            add(CanonicalProducerTerminalRef{ChannelProducerTerminalRef{
+                    std::move(producer)}},
+                payload->second))
+      return llvm::Error(std::move(error));
+    (void)range;
+  }
+
+  llvm::sort(terminals,
+             [](const OrderedTerminal &lhs, const OrderedTerminal &rhs) {
+               return lhs.key < rhs.key;
+             });
+  for (std::size_t index = 1; index < terminals.size(); ++index)
+    if (terminals[index - 1].key == terminals[index].key)
+      return invalid("canonical dataflow: duplicate producer terminal");
+  for (const OrderedTerminal &terminal : terminals)
+    if (llvm::Error error = callback(terminal.view))
+      return llvm::Error(std::move(error));
+  return llvm::Error::success();
+}
+
+llvm::Error CanonicalDataflowProgramView::forEachContextualServiceActor(
+    RootThreadLaunchRef root,
+    llvm::function_ref<llvm::Error(ContextualActorRef)> callback) const {
+  auto rootSlot = requireKind(root.artifact, root.entity.value(),
+                              CanonicalDataflowEntityKind::RootThreadLaunch);
+  if (!rootSlot)
+    return rootSlot.takeError();
+  const unsigned threadSlot = rootCalleeThreadSlot_[*rootSlot];
+  for (unsigned staticSlot : staticsByThreadSlot_[threadSlot]) {
+    const RootedGraphLaunchRef launch{root,
+                                      staticGraphLaunches_[staticSlot].ref};
+    const std::size_t graphSlot =
+        slotOfId_[staticGraphLaunches_[staticSlot].callee.entity.value()];
+    for (unsigned actorSlot : serviceActorSlotsByGraphSlot_[graphSlot])
+      if (llvm::Error error =
+              callback(ContextualActorRef{launch, actors_[actorSlot].ref}))
+        return llvm::Error(std::move(error));
+  }
+  return llvm::Error::success();
 }
 
 llvm::Expected<GraphRef>

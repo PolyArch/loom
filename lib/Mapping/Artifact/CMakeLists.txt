@@ -11,6 +11,7 @@ add_library(LoomMappingArtifact
   SpatialMappingMemoryImport.cpp
   SystemMappingConstraintSet.cpp
   SystemMappingConstraintSetBuilder.cpp
+  SystemMappingIdentity.cpp
   TechMappingCanonicalKey.cpp
   TechMappingComputeVerification.cpp
   TechMappingArtifact.cpp
