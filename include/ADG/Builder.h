@@ -11,6 +11,7 @@
 #include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/MemoryServiceContract.h"
+#include "Fabric/IR/ModuleDomain.h"
 #include "Fabric/IR/ResourceContract.h"
 #include "Fabric/IR/SystemServiceContract.h"
 #include "Fabric/IR/TemporalSwitchResourceContract.h"
@@ -38,6 +39,7 @@ struct SystemHandleAccess;
 class FuBuilder;
 class FuNode;
 class PeBuilder;
+class ModuleDomainMemberHandle;
 class HardwareDomainBuilder;
 class ServiceTransformBuilder;
 class SystemBuilder;
@@ -177,6 +179,9 @@ public:
 
   llvm::Expected<FuValue> output(std::size_t ordinal) const;
 
+  /// This node's own occurrence as one unified domain member handle.
+  ModuleDomainMemberHandle domainMember() const;
+
 private:
   FuNode(const std::shared_ptr<detail::DesignState> &state,
          std::size_t rootOrdinal, std::size_t peOrdinal, std::size_t fuOrdinal,
@@ -222,6 +227,168 @@ private:
   mlir::Operation *placeholder_ = nullptr;
 
   friend class FuBuilder;
+};
+
+/// One opaque, owner-checked handle for a Module's symbolic Clock or Reset
+/// slot. The handle is local to its open SpatialCoreBuilder, is not a
+/// persistent Fabric reference, and never binds by ordinal alone: the
+/// instantiate call site supplies the exact builder context.
+class ModuleDomainSlotHandle final {
+public:
+  ModuleDomainSlotHandle() = default;
+
+private:
+  ModuleDomainSlotHandle(const std::weak_ptr<detail::DesignState> &state,
+                         std::size_t rootOrdinal,
+                         loom::fabric::FabricClockResetKind kind,
+                         loom::fabric::FabricOrdinal ordinal)
+      : state_(state), rootOrdinal_(rootOrdinal), kind_(kind),
+        ordinal_(ordinal) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricClockResetKind kind_ =
+      loom::fabric::FabricClockResetKind::Clock;
+  loom::fabric::FabricOrdinal ordinal_ = 0;
+
+  friend class SpatialCoreBuilder;
+};
+
+/// One opaque, owner-checked authoring handle local to an open
+/// SpatialCoreBuilder. It mechanically projects the closed member wire
+/// `Boundary(direction, endpoint) | Internal(owner, role, subOrdinal)` owned
+/// by the Fabric identity catalog and is consumed only by
+/// `SpatialCoreBuilder::assignDomainSlot`.
+class ModuleDomainMemberHandle final {
+public:
+  ModuleDomainMemberHandle() = default;
+
+private:
+  using InternalRole =
+      ::fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
+
+  static ModuleDomainMemberHandle
+  boundary(const std::weak_ptr<detail::DesignState> &state,
+           std::size_t rootOrdinal, loom::fabric::FabricPortDirection direction,
+           loom::fabric::FabricOrdinal endpointOrdinal) {
+    ModuleDomainMemberHandle handle;
+    handle.state_ = state;
+    handle.rootOrdinal_ = rootOrdinal;
+    handle.direction_ = direction;
+    handle.ordinal_ = endpointOrdinal;
+    return handle;
+  }
+
+  static ModuleDomainMemberHandle
+  internal(const std::weak_ptr<detail::DesignState> &state,
+           std::size_t rootOrdinal, mlir::Operation *owner, InternalRole role,
+           loom::fabric::FabricOrdinal subOrdinal) {
+    ModuleDomainMemberHandle handle;
+    handle.state_ = state;
+    handle.rootOrdinal_ = rootOrdinal;
+    handle.internal_ = true;
+    handle.owner_ = owner;
+    handle.role_ = role;
+    handle.ordinal_ = subOrdinal;
+    return handle;
+  }
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  bool internal_ = false;
+  loom::fabric::FabricPortDirection direction_ =
+      loom::fabric::FabricPortDirection::Input;
+  mlir::Operation *owner_ = nullptr;
+  InternalRole role_ = InternalRole::Occurrence;
+  loom::fabric::FabricOrdinal ordinal_ = 0;
+
+  friend class SpatialCoreBuilder;
+  friend class PeBuilder;
+  friend class FuBuilder;
+  friend class FuNode;
+};
+
+/// One authoring-only child-to-parent slot row for a Module instance edge.
+/// Both handles must name the same Clock/Reset kind; the child handle must
+/// belong to the instantiate target and the parent handle to the receiving
+/// SpatialCoreBuilder.
+struct ModuleInstanceDomainSlotBinding final {
+  ModuleDomainSlotHandle childSlot;
+  ModuleDomainSlotHandle parentSlot;
+};
+
+/// The typed result of one FIFO construction: its connectivity value plus
+/// its occurrence member handle.
+class FifoResult final {
+public:
+  SpatialValue value() const { return value_; }
+  ModuleDomainMemberHandle domainMember() const { return member_; }
+
+private:
+  FifoResult(SpatialValue value, ModuleDomainMemberHandle member)
+      : value_(value), member_(member) {}
+
+  SpatialValue value_;
+  ModuleDomainMemberHandle member_;
+
+  friend class SpatialCoreBuilder;
+};
+
+/// The typed result of one construction that owns exactly one physical
+/// occurrence plus its connectivity values.
+class SingleOccurrenceResult final {
+public:
+  llvm::ArrayRef<SpatialValue> values() const { return values_; }
+  SpatialValue front() const { return values_.front(); }
+  SpatialValue operator[](std::size_t ordinal) const {
+    return values_[ordinal];
+  }
+  std::size_t size() const { return values_.size(); }
+  bool empty() const { return values_.empty(); }
+  ModuleDomainMemberHandle domainMember() const { return member_; }
+
+private:
+  SingleOccurrenceResult(std::vector<SpatialValue> values,
+                         ModuleDomainMemberHandle member)
+      : values_(std::move(values)), member_(member) {}
+
+  std::vector<SpatialValue> values_;
+  ModuleDomainMemberHandle member_;
+
+  friend class SpatialCoreBuilder;
+};
+
+using BoundaryResult = SingleOccurrenceResult;
+using SwitchResult = SingleOccurrenceResult;
+
+/// The typed result of one memory construction: its connectivity values, its
+/// occurrence, every Operation Engine port, and its Local Memory Service when
+/// the declaration carries one.
+class MemoryResult final {
+public:
+  llvm::ArrayRef<SpatialValue> values() const { return values_; }
+  ModuleDomainMemberHandle domainMember() const { return occurrence_; }
+  llvm::Expected<ModuleDomainMemberHandle>
+  operationPortMember(std::size_t ordinal) const;
+  std::optional<ModuleDomainMemberHandle> localServiceMember() const {
+    return localService_;
+  }
+
+private:
+  MemoryResult(std::vector<SpatialValue> values,
+               ModuleDomainMemberHandle occurrence,
+               std::vector<ModuleDomainMemberHandle> operationPorts,
+               std::optional<ModuleDomainMemberHandle> localService)
+      : values_(std::move(values)), occurrence_(occurrence),
+        operationPorts_(std::move(operationPorts)),
+        localService_(localService) {}
+
+  std::vector<SpatialValue> values_;
+  ModuleDomainMemberHandle occurrence_;
+  std::vector<ModuleDomainMemberHandle> operationPorts_;
+  std::optional<ModuleDomainMemberHandle> localService_;
+
+  friend class SpatialCoreBuilder;
 };
 
 enum class FuConfigurationMode : std::uint8_t { PerInstruction, PerFu };
@@ -435,6 +602,9 @@ class FuBuilder final {
 public:
   llvm::Expected<FuValue> input(std::size_t ordinal) const;
 
+  /// The FU occurrence as one unified domain member handle.
+  ModuleDomainMemberHandle domainMember() const;
+
   llvm::Expected<FuBackedge> createBackedge(const PortType &type);
 
   llvm::Error resolveBackedge(FuBackedge &&backedge, FuValue source);
@@ -461,14 +631,15 @@ private:
 
   FuBuilder(const std::shared_ptr<detail::DesignState> &state,
             std::size_t rootOrdinal, std::size_t peOrdinal,
-            std::size_t fuOrdinal)
+            std::size_t fuOrdinal, mlir::Operation *operation)
       : state_(state), rootOrdinal_(rootOrdinal), peOrdinal_(peOrdinal),
-        fuOrdinal_(fuOrdinal) {}
+        fuOrdinal_(fuOrdinal), operation_(operation) {}
 
   std::weak_ptr<detail::DesignState> state_;
   std::size_t rootOrdinal_;
   std::size_t peOrdinal_;
   std::size_t fuOrdinal_;
+  mlir::Operation *operation_ = nullptr;
 
   friend class PeBuilder;
 };
@@ -477,6 +648,15 @@ class PeBuilder final {
 public:
   llvm::Expected<PeValue> input(std::size_t ordinal) const;
   llvm::Expected<SpatialValue> output(std::size_t ordinal) const;
+
+  /// The PE occurrence as one unified domain member handle.
+  ModuleDomainMemberHandle domainMember() const;
+
+  /// One resident instruction context as a domain member handle. A spatial
+  /// PE admits only ordinal zero; a temporal PE admits exactly its
+  /// instruction-capacity range.
+  llvm::Expected<ModuleDomainMemberHandle>
+  instructionContextMember(std::size_t ordinal) const;
 
   llvm::Expected<FuBuilder> addFu(llvm::ArrayRef<PeValue> inputs,
                                   const FuSpec &spec);
@@ -489,12 +669,16 @@ private:
                const PeValue &value) const;
 
   PeBuilder(const std::shared_ptr<detail::DesignState> &state,
-            std::size_t rootOrdinal, std::size_t peOrdinal)
-      : state_(state), rootOrdinal_(rootOrdinal), peOrdinal_(peOrdinal) {}
+            std::size_t rootOrdinal, std::size_t peOrdinal,
+            mlir::Operation *operation, std::size_t instructionContexts)
+      : state_(state), rootOrdinal_(rootOrdinal), peOrdinal_(peOrdinal),
+        operation_(operation), instructionContexts_(instructionContexts) {}
 
   std::weak_ptr<detail::DesignState> state_;
   std::size_t rootOrdinal_;
   std::size_t peOrdinal_;
+  mlir::Operation *operation_ = nullptr;
+  std::size_t instructionContexts_ = 0;
 
   friend class SpatialCoreBuilder;
 };
@@ -507,29 +691,50 @@ public:
 
   llvm::Error resolveBackedge(SpatialBackedge &&backedge, SpatialValue source);
 
+  /// Declares one symbolic Clock or Reset slot on this Module and returns
+  /// its opaque authoring handle.
+  llvm::Expected<ModuleDomainSlotHandle>
+  declareDomainSlot(loom::fabric::FabricClockResetKind kind);
+
+  /// Selects one Module boundary face directly as a domain member handle.
+  llvm::Expected<ModuleDomainMemberHandle>
+  inputDomainMember(std::size_t ordinal) const;
+  llvm::Expected<ModuleDomainMemberHandle>
+  outputDomainMember(std::size_t ordinal) const;
+
+  /// Authors one row of the Module-owned domain_assignments relation. The
+  /// member and slot must belong to this same open SpatialCore.
+  llvm::Error assignDomainSlot(const ModuleDomainMemberHandle &member,
+                               const ModuleDomainSlotHandle &slot);
+
   /// Instantiates one closed SpatialCore from this design as a module
   /// template. Fabric finalization expands the instance into fresh physical
-  /// occurrences.
+  /// occurrences. domainBindings is the exact total child-to-parent slot
+  /// correspondence; a slotless target takes an explicit empty range.
   llvm::Expected<std::vector<SpatialValue>>
   instantiate(const SpatialCoreBuilder &target,
-              llvm::ArrayRef<SpatialValue> inputs);
+              llvm::ArrayRef<SpatialValue> inputs,
+              llvm::ArrayRef<ModuleInstanceDomainSlotBinding> domainBindings);
 
-  llvm::Expected<SpatialValue> addFifo(SpatialValue input,
-                                       const FifoSpec &spec);
+  llvm::Expected<FifoResult> addFifo(SpatialValue input,
+                                     const FifoSpec &spec);
 
-  llvm::Expected<std::vector<SpatialValue>>
+  llvm::Expected<BoundaryResult>
   addBoundary(llvm::ArrayRef<SpatialValue> inputs, const BoundarySpec &spec);
 
-  llvm::Expected<std::vector<SpatialValue>>
+  llvm::Expected<SwitchResult>
   addSwitch(llvm::ArrayRef<SpatialValue> inputs, const SwitchSpec &spec);
 
-  llvm::Expected<std::vector<SpatialValue>>
+  llvm::Expected<MemoryResult>
   addMemory(llvm::ArrayRef<SpatialValue> inputs, const MemorySpec &spec);
 
   llvm::Expected<PeBuilder> addPe(llvm::ArrayRef<SpatialValue> inputs,
                                   const PeSpec &spec);
 
-  /// Closes this root with the exact declared result sequence.
+  /// Closes this root with the exact declared result sequence. When domain
+  /// authoring is active, every member of the complete boundary and internal
+  /// inventory must carry exactly one Clock and one Reset assignment before
+  /// any output mutation is published.
   llvm::Error close(llvm::ArrayRef<SpatialValue> outputs);
 
 private:

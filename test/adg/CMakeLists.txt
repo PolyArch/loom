@@ -4,6 +4,7 @@ add_executable(loom-adg-builder-api-test
   ADGBuilderTestMain.cpp
   ADGServiceLegCarrierTest.cpp
   ADGTopologyTest.cpp
+  BuilderDomainAuthoringTest.cpp
 )
 
 target_include_directories(loom-adg-builder-api-test PRIVATE

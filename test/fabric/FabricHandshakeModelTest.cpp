@@ -468,7 +468,8 @@ void unconditionalReadyCycleIsRejectedBeforePublication() {
   auto spatial = take(test, design.createSpatialCore("ready-cycle", {}, {}));
   auto backedge = take(test, spatial.createBackedge(bits32));
   auto buffered =
-      take(test, spatial.addFifo(backedge.value(), FifoSpec{bits32, 2, false}));
+      take(test, spatial.addFifo(backedge.value(), FifoSpec{bits32, 2, false}))
+          .value();
   if (llvm::Error error =
           spatial.resolveBackedge(std::move(backedge), buffered))
     fail(test, llvm::toString(std::move(error)));
@@ -494,7 +495,8 @@ void selectedGlobalCycleUsesExactTraversalSelection() {
                                                        {bits32, bits32},
                                                        {{0, 1}, {0, 1}})));
   SpatialValue feedback =
-      take(test, spatial.addFifo(routed[0], FifoSpec{bits32, 2, true}));
+      take(test, spatial.addFifo(routed[0], FifoSpec{bits32, 2, true}))
+          .value();
   if (llvm::Error error =
           spatial.resolveBackedge(std::move(backedge), feedback))
     fail(test, llvm::toString(std::move(error)));

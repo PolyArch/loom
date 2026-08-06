@@ -44,6 +44,18 @@ activeState(const std::weak_ptr<DesignState> &weak) {
   return state;
 }
 
+llvm::Error checkDomainHandleOwner(
+    const std::shared_ptr<DesignState> &state, std::size_t rootOrdinal,
+    const std::weak_ptr<DesignState> &owner, std::size_t handleRootOrdinal,
+    llvm::StringRef description) {
+  std::shared_ptr<DesignState> handleState = owner.lock();
+  if (!handleState)
+    return invalid("SpatialCore " + description + " handle is stale");
+  if (handleState.get() != state.get() || handleRootOrdinal != rootOrdinal)
+    return invalid(description + " belongs to a foreign SpatialCore");
+  return llvm::Error::success();
+}
+
 mlir::Type materializePortType(mlir::MLIRContext &context,
                                const PortType &type) {
   switch (type.kind()) {
@@ -68,8 +80,12 @@ mlir::Type materializePortType(mlir::MLIRContext &context,
 namespace {
 
 using detail::activeState;
+using detail::checkDomainHandleOwner;
 using detail::invalid;
 using detail::materializePortType;
+
+using DomainMemberRole =
+    ::fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
 
 bool sameFabricKind(mlir::Type left, mlir::Type right) {
   return (mlir::isa<::fabric::BitsType>(left) &&
@@ -494,6 +510,11 @@ FuBuilder::addOperation(llvm::ArrayRef<FuValue> inputs,
       mlir::DenseI8ArrayAttr::get(&(*state)->context, signedContractBytes));
   if (llvm::Error error = verifyNewOperation(operation, "operation capability"))
     return std::move(error);
+  if (llvm::Error error = (*state)->spatialRoots[rootOrdinal_]
+                              .domainRelation.noteInternalMember(
+                                  operation.getOperation(),
+                                  DomainMemberRole::FuNode, 0))
+    return std::move(error);
 
   return FuNode(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
                 operation.getOperation());
@@ -531,6 +552,11 @@ llvm::Expected<FuNode> FuBuilder::addMux(llvm::ArrayRef<FuValue> inputs) {
                                      mlir::BoolAttr(), mlir::BoolAttr());
   if (llvm::Error error = verifyNewOperation(mux, "FU mux"))
     return std::move(error);
+  if (llvm::Error error = (*state)->spatialRoots[rootOrdinal_]
+                              .domainRelation.noteInternalMember(
+                                  mux.getOperation(), DomainMemberRole::FuNode,
+                                  0))
+    return std::move(error);
   return FuNode(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
                 mux.getOperation());
 }
@@ -561,6 +587,11 @@ llvm::Expected<FuNode> FuBuilder::addDemux(FuValue input,
       builder, (*fu)->operation.getLoc(), outputTypes, *resolved,
       mlir::IntegerAttr(), mlir::BoolAttr(), mlir::BoolAttr());
   if (llvm::Error error = verifyNewOperation(demux, "FU demux"))
+    return std::move(error);
+  if (llvm::Error error = (*state)->spatialRoots[rootOrdinal_]
+                              .domainRelation.noteInternalMember(
+                                  demux.getOperation(), DomainMemberRole::FuNode,
+                                  0))
     return std::move(error);
 
   return FuNode(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
@@ -787,10 +818,16 @@ llvm::Expected<FuBuilder> PeBuilder::addFu(llvm::ArrayRef<PeValue> inputs,
   for (mlir::Type type : innerInputTypes)
     body->addArgument(type, operation.getLoc());
 
+  if (llvm::Error error = (*state)->spatialRoots[rootOrdinal_]
+                              .domainRelation.noteInternalMember(
+                                  operation.getOperation(),
+                                  DomainMemberRole::Occurrence, 0))
+    return std::move(error);
   const std::size_t ordinal = (*state)->fus.size();
   (*state)->fus.push_back(
       detail::FuState{operation, rootOrdinal_, peOrdinal_, false, {}, {}});
-  return FuBuilder(*state, rootOrdinal_, peOrdinal_, ordinal);
+  return FuBuilder(*state, rootOrdinal_, peOrdinal_, ordinal,
+                   operation.getOperation());
 }
 
 llvm::Error PeBuilder::close() {
@@ -908,8 +945,9 @@ llvm::Error SpatialCoreBuilder::resolveBackedge(SpatialBackedge &&backedge,
 }
 
 llvm::Expected<std::vector<SpatialValue>>
-SpatialCoreBuilder::instantiate(const SpatialCoreBuilder &target,
-                                llvm::ArrayRef<SpatialValue> inputs) {
+SpatialCoreBuilder::instantiate(
+    const SpatialCoreBuilder &target, llvm::ArrayRef<SpatialValue> inputs,
+    llvm::ArrayRef<ModuleInstanceDomainSlotBinding> domainBindings) {
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
@@ -931,6 +969,50 @@ SpatialCoreBuilder::instantiate(const SpatialCoreBuilder &target,
     return invalid("SpatialCore is already closed");
   if (!targetRoot.closed)
     return invalid("SpatialCore template must be closed before instantiation");
+
+  // Validate the exact total slot correspondence before any input value is
+  // consumed, so a rejected call leaves the caller's values untouched.
+  std::vector<::fabric::ModuleInstanceDomainSlotBinding> domainRows;
+  domainRows.reserve(domainBindings.size());
+  for (const ModuleInstanceDomainSlotBinding &binding : domainBindings) {
+    if (llvm::Error error =
+            checkDomainHandleOwner(*state, target.rootOrdinal_,
+                                   binding.childSlot.state_,
+                                   binding.childSlot.rootOrdinal_,
+                                   "domain slot"))
+      return error;
+    if (llvm::Error error = checkDomainHandleOwner(
+            *state, rootOrdinal_, binding.parentSlot.state_,
+            binding.parentSlot.rootOrdinal_, "domain slot"))
+      return error;
+    if (binding.childSlot.kind_ != binding.parentSlot.kind_)
+      return invalid("module instance domain slot binding mixes different "
+                     "slot kinds");
+    domainRows.push_back({binding.childSlot.kind_, binding.childSlot.ordinal_,
+                          binding.parentSlot.ordinal_});
+  }
+  llvm::sort(domainRows,
+             [](const ::fabric::ModuleInstanceDomainSlotBinding &left,
+                const ::fabric::ModuleInstanceDomainSlotBinding &right) {
+               if (left.kind != right.kind)
+                 return static_cast<std::uint32_t>(left.kind) <
+                        static_cast<std::uint32_t>(right.kind);
+               return left.childSlotOrdinal < right.childSlotOrdinal;
+             });
+  const ::fabric::ModuleDomainSlotCounts childCounts{
+      targetRoot.domainRelation.declaredSlotCount(
+          loom::fabric::FabricClockResetKind::Clock),
+      targetRoot.domainRelation.declaredSlotCount(
+          loom::fabric::FabricClockResetKind::Reset)};
+  const ::fabric::ModuleDomainSlotCounts parentCounts{
+      root.domainRelation.declaredSlotCount(
+          loom::fabric::FabricClockResetKind::Clock),
+      root.domainRelation.declaredSlotCount(
+          loom::fabric::FabricClockResetKind::Reset)};
+  if (llvm::Error error = ::fabric::validateModuleInstanceDomainSlotBindings(
+          childCounts, parentCounts, domainRows))
+    return invalid("module instance domain slot binding rejected: " +
+                   llvm::toString(std::move(error)));
 
   mlir::FunctionType signature = targetRoot.operation.getFunctionType();
   if (inputs.size() != signature.getNumInputs())
@@ -966,6 +1048,11 @@ SpatialCoreBuilder::instantiate(const SpatialCoreBuilder &target,
                          : llvm::ArrayRef<mlir::Type>{});
   if (llvm::Error error = verifyNewOperation(instance, "module instance"))
     return std::move(error);
+  // The relation canonicalizes an explicit empty range to no transient
+  // state, so a slotless target leaves the 1.1 path untouched.
+  if (llvm::Error error = root.domainRelation.noteInstanceBindings(
+          instance.getOperation(), std::move(domainRows)))
+    return std::move(error);
 
   std::vector<SpatialValue> outputs;
   outputs.reserve(instance.getNumResults());
@@ -974,8 +1061,8 @@ SpatialCoreBuilder::instantiate(const SpatialCoreBuilder &target,
   return outputs;
 }
 
-llvm::Expected<SpatialValue> SpatialCoreBuilder::addFifo(SpatialValue input,
-                                                         const FifoSpec &spec) {
+llvm::Expected<FifoResult>
+SpatialCoreBuilder::addFifo(SpatialValue input, const FifoSpec &spec) {
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
@@ -1006,10 +1093,16 @@ llvm::Expected<SpatialValue> SpatialCoreBuilder::addFifo(SpatialValue input,
                                        spec.bypassable, mlir::BoolAttr());
   if (llvm::Error error = verifyNewOperation(fifo, "FIFO"))
     return std::move(error);
-  return SpatialValue(*state, rootOrdinal_, fifo.getOutput());
+  if (llvm::Error error = root.domainRelation.noteInternalMember(
+          fifo.getOperation(), DomainMemberRole::Occurrence, 0))
+    return std::move(error);
+  return FifoResult(SpatialValue(*state, rootOrdinal_, fifo.getOutput()),
+                    ModuleDomainMemberHandle::internal(
+                        state_, rootOrdinal_, fifo.getOperation(),
+                        DomainMemberRole::Occurrence, 0));
 }
 
-llvm::Expected<std::vector<SpatialValue>>
+llvm::Expected<BoundaryResult>
 SpatialCoreBuilder::addBoundary(llvm::ArrayRef<SpatialValue> inputs,
                                 const BoundarySpec &spec) {
   auto state = activeState(state_);
@@ -1052,15 +1145,21 @@ SpatialCoreBuilder::addBoundary(llvm::ArrayRef<SpatialValue> inputs,
       mlir::ArrayAttr(), mlir::DictionaryAttr());
   if (llvm::Error error = verifyNewOperation(boundary, "Boundary"))
     return std::move(error);
+  if (llvm::Error error = root.domainRelation.noteInternalMember(
+          boundary.getOperation(), DomainMemberRole::Occurrence, 0))
+    return std::move(error);
 
   std::vector<SpatialValue> results;
   results.reserve(boundary.getNumResults());
   for (mlir::Value result : boundary.getResults())
     results.push_back(SpatialValue(*state, rootOrdinal_, result));
-  return results;
+  return BoundaryResult(std::move(results),
+                        ModuleDomainMemberHandle::internal(
+                            state_, rootOrdinal_, boundary.getOperation(),
+                            DomainMemberRole::Occurrence, 0));
 }
 
-llvm::Expected<std::vector<SpatialValue>>
+llvm::Expected<SwitchResult>
 SpatialCoreBuilder::addSwitch(llvm::ArrayRef<SpatialValue> inputs,
                               const SwitchSpec &spec) {
   auto state = activeState(state_);
@@ -1183,15 +1282,21 @@ SpatialCoreBuilder::addSwitch(llvm::ArrayRef<SpatialValue> inputs,
       hardwareParameters, mlir::DictionaryAttr());
   if (llvm::Error error = verifyNewOperation(sw, "Switch"))
     return std::move(error);
+  if (llvm::Error error = root.domainRelation.noteInternalMember(
+          sw.getOperation(), DomainMemberRole::Occurrence, 0))
+    return std::move(error);
 
   std::vector<SpatialValue> results;
   results.reserve(sw.getNumResults());
   for (mlir::Value result : sw.getResults())
     results.push_back(SpatialValue(*state, rootOrdinal_, result));
-  return results;
+  return SwitchResult(std::move(results),
+                      ModuleDomainMemberHandle::internal(
+                          state_, rootOrdinal_, sw.getOperation(),
+                          DomainMemberRole::Occurrence, 0));
 }
 
-llvm::Expected<std::vector<SpatialValue>>
+llvm::Expected<MemoryResult>
 SpatialCoreBuilder::addMemory(llvm::ArrayRef<SpatialValue> inputs,
                               const MemorySpec &spec) {
   auto state = activeState(state_);
@@ -1330,12 +1435,42 @@ SpatialCoreBuilder::addMemory(llvm::ArrayRef<SpatialValue> inputs,
       mlir::ArrayAttr(), operationPortsAttr);
   if (llvm::Error error = verifyNewOperation(memory, "memory"))
     return std::move(error);
+  if (llvm::Error error = root.domainRelation.noteInternalMember(
+          memory.getOperation(), DomainMemberRole::Occurrence, 0))
+    return std::move(error);
+  std::vector<ModuleDomainMemberHandle> operationPorts;
+  if (spec.engine_) {
+    operationPorts.reserve(spec.engine_->operationPorts_.size());
+    for (std::size_t port = 0; port < spec.engine_->operationPorts_.size();
+         ++port) {
+      if (llvm::Error error = root.domainRelation.noteInternalMember(
+              memory.getOperation(), DomainMemberRole::MemoryOperationPort,
+              port))
+        return std::move(error);
+      operationPorts.push_back(ModuleDomainMemberHandle::internal(
+          state_, rootOrdinal_, memory.getOperation(),
+          DomainMemberRole::MemoryOperationPort, port));
+    }
+  }
+  std::optional<ModuleDomainMemberHandle> localService;
+  if (spec.localService_) {
+    if (llvm::Error error = root.domainRelation.noteInternalMember(
+            memory.getOperation(), DomainMemberRole::LocalMemoryService, 0))
+      return std::move(error);
+    localService = ModuleDomainMemberHandle::internal(
+        state_, rootOrdinal_, memory.getOperation(),
+        DomainMemberRole::LocalMemoryService, 0);
+  }
 
   std::vector<SpatialValue> results;
   results.reserve(memory.getNumResults());
   for (mlir::Value result : memory.getResults())
     results.push_back(SpatialValue(*state, rootOrdinal_, result));
-  return results;
+  return MemoryResult(std::move(results),
+                      ModuleDomainMemberHandle::internal(
+                          state_, rootOrdinal_, memory.getOperation(),
+                          DomainMemberRole::Occurrence, 0),
+                      std::move(operationPorts), localService);
 }
 
 llvm::Expected<PeBuilder>
@@ -1477,9 +1612,20 @@ SpatialCoreBuilder::addPe(llvm::ArrayRef<SpatialValue> inputs,
   for (mlir::Type type : innerInputTypes)
     body->addArgument(type, operation.getLoc());
 
+  const std::size_t instructionContexts =
+      spec.temporal_ ? spec.temporal_->instructionCapacity : 1;
+  if (llvm::Error error = root.domainRelation.noteInternalMember(
+          operation.getOperation(), DomainMemberRole::Occurrence, 0))
+    return std::move(error);
+  for (std::size_t context = 0; context < instructionContexts; ++context)
+    if (llvm::Error error = root.domainRelation.noteInternalMember(
+            operation.getOperation(), DomainMemberRole::InstructionContext,
+            context))
+      return std::move(error);
   const std::size_t ordinal = (*state)->pes.size();
   (*state)->pes.push_back(detail::PeState{operation, rootOrdinal_, false});
-  return PeBuilder(*state, rootOrdinal_, ordinal);
+  return PeBuilder(*state, rootOrdinal_, ordinal, operation.getOperation(),
+                   instructionContexts);
 }
 
 llvm::Error SpatialCoreBuilder::close(llvm::ArrayRef<SpatialValue> outputs) {
@@ -1516,6 +1662,17 @@ llvm::Error SpatialCoreBuilder::close(llvm::ArrayRef<SpatialValue> outputs) {
           "SpatialCore output #{0} is incompatible with its declared type",
           ordinal));
     values.push_back(*resolved);
+  }
+
+  // Domain totality is validated before any output mutation is published:
+  // once the 2.0 carrier is active, every boundary face and every internal
+  // owner must carry exactly one Clock and one Reset assignment.
+  if (root.domainRelation.hasDomainAuthoring()) {
+    llvm::Error totality = root.domainRelation.validateTotality(
+        root.operation.getFunctionType().getNumInputs(),
+        root.operation.getFunctionType().getNumResults());
+    if (totality)
+      return totality;
   }
 
   mlir::OpBuilder builder(&(*state)->context);
@@ -1574,6 +1731,7 @@ DesignBuilder::createSpatialCore(llvm::StringRef label,
       label.str(),
       std::vector<mlir::Type>(resultTypes.begin(), resultTypes.end()),
       {},
+      {},
       false});
   return SpatialCoreBuilder(state_, ordinal);
 }
@@ -1581,9 +1739,14 @@ DesignBuilder::createSpatialCore(llvm::StringRef label,
 llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
   if (!state_ || state_->consumed)
     return invalid("DesignBuilder is already consumed");
-  for (const detail::SpatialRootState &root : state_->spatialRoots)
+  for (const detail::SpatialRootState &root : state_->spatialRoots) {
     if (!root.closed)
       return invalid("SpatialCore '" + root.label + "' is not closed");
+    if (root.domainRelation.hasDomainAuthoring())
+      return invalid("SpatialCore '" + root.label +
+                     "' authors Module domain slots or slot bindings, which "
+                     "the active loom.fabric 1.1 schema cannot publish");
+  }
   for (const detail::SystemRootState &root : state_->systemRoots)
     if (!root.closed)
       return invalid("System '" + root.label + "' is not closed");

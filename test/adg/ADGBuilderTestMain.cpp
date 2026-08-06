@@ -36,5 +36,6 @@ int main(int argc, char **argv) {
   loom::adg::test::runBuilderTests();
   loom::adg::test::runBuiltinTests();
   loom::adg::test::runTopologyTests();
+  loom::adg::test::runDomainAuthoringTests();
   return EXIT_SUCCESS;
 }

@@ -25,6 +25,7 @@ struct SpatialRootState final {
   std::string label;
   std::vector<mlir::Type> resultTypes;
   std::vector<mlir::Operation *> unresolvedBackedges;
+  ::fabric::ModuleDomainAuthoringRelation domainRelation;
   bool closed = false;
 };
 
@@ -117,6 +118,14 @@ llvm::Error invalid(const llvm::Twine &message);
 
 llvm::Expected<std::shared_ptr<DesignState>>
 activeState(const std::weak_ptr<DesignState> &weak);
+
+/// Validates that one domain authoring handle belongs to the exact open
+/// root. Handles resolve their owning design and root ordinal, nothing more.
+llvm::Error checkDomainHandleOwner(const std::shared_ptr<DesignState> &state,
+                                   std::size_t rootOrdinal,
+                                   const std::weak_ptr<DesignState> &owner,
+                                   std::size_t handleRootOrdinal,
+                                   llvm::StringRef description);
 
 mlir::Type materializePortType(mlir::MLIRContext &context,
                                const PortType &type);

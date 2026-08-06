@@ -1,6 +1,7 @@
 add_mlir_library(LoomADGBuilder
   Builtin.cpp
   Builder.cpp
+  BuilderDomainAuthoring.cpp
   Export.cpp
   FuLibrary.cpp
   MemoryLibrary.cpp

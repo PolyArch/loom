@@ -362,9 +362,16 @@ loom::fabric::FinalizedFabricRoot buildMemoryFabric(loom::ArtifactStore &store,
     values.push_back(take(spatial.input(ordinal)));
   auto memoryOutputs = take(spatial.addMemory(values, memory));
   auto storageOutputs = take(spatial.addMemory({}, storage));
-  memoryOutputs.insert(memoryOutputs.end(), storageOutputs.begin(),
-                       storageOutputs.end());
-  requireSuccess(spatial.close(memoryOutputs));
+  std::vector<loom::adg::SpatialValue> combinedOutputs;
+  combinedOutputs.reserve(memoryOutputs.values().size() +
+                          storageOutputs.values().size());
+  combinedOutputs.insert(combinedOutputs.end(),
+                         memoryOutputs.values().begin(),
+                         memoryOutputs.values().end());
+  combinedOutputs.insert(combinedOutputs.end(),
+                         storageOutputs.values().begin(),
+                         storageOutputs.values().end());
+  requireSuccess(spatial.close(combinedOutputs));
   auto design = take(std::move(builder).finalize());
   if (design.roots().size() != 1)
     fail("memory SpatialCore did not publish exactly one root");
@@ -432,7 +439,8 @@ buildBoundaryTemporalFabric(loom::ArtifactStore &store) {
     auto split = take(
         spatial.addBoundary({take(pe.output(output))},
                             BoundarySpec::t2s(tagged128, {bits128, bits4})));
-    untaggedOutputs.insert(untaggedOutputs.end(), split.begin(), split.end());
+    untaggedOutputs.insert(untaggedOutputs.end(), split.values().begin(),
+                           split.values().end());
   }
   requireSuccess(spatial.close(untaggedOutputs));
   auto design = take(std::move(builder).finalize());

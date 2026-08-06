@@ -185,4 +185,185 @@ decodeModuleInstanceDomainSlotBindings(mlir::DenseI64ArrayAttr encoded) {
   return bindings;
 }
 
+llvm::Expected<loom::fabric::FabricOrdinal>
+ModuleDomainAuthoringRelation::declareSlot(
+    loom::fabric::FabricClockResetKind kind) {
+  switch (kind) {
+  case loom::fabric::FabricClockResetKind::Clock:
+    if (clockSlots_ ==
+        std::numeric_limits<loom::fabric::FabricOrdinal>::max())
+      return invalid("Clock slot inventory overflows the ordinal domain");
+    return clockSlots_++;
+  case loom::fabric::FabricClockResetKind::Reset:
+    if (resetSlots_ ==
+        std::numeric_limits<loom::fabric::FabricOrdinal>::max())
+      return invalid("Reset slot inventory overflows the ordinal domain");
+    return resetSlots_++;
+  }
+  return invalid("domain slot kind is outside the catalog");
+}
+
+loom::fabric::FabricOrdinal ModuleDomainAuthoringRelation::declaredSlotCount(
+    loom::fabric::FabricClockResetKind kind) const {
+  switch (kind) {
+  case loom::fabric::FabricClockResetKind::Clock:
+    return clockSlots_;
+  case loom::fabric::FabricClockResetKind::Reset:
+    return resetSlots_;
+  }
+  return 0;
+}
+
+llvm::Error ModuleDomainAuthoringRelation::noteInstanceBindings(
+    mlir::Operation *instance,
+    std::vector<ModuleInstanceDomainSlotBinding> rows) {
+  if (!instance)
+    return invalid("instance domain slot binding has no draft operation");
+  // An explicit empty binding range is the slotless-Module form and records
+  // no transient state.
+  if (rows.empty())
+    return llvm::Error::success();
+  for (const InstanceBindingRecord &record : instanceBindings_)
+    if (record.instance == instance)
+      return invalid("instance domain slot binding is already recorded");
+  instanceBindings_.push_back({instance, std::move(rows)});
+  return llvm::Error::success();
+}
+
+llvm::Error ModuleDomainAuthoringRelation::noteInternalMember(
+    mlir::Operation *owner, InternalMemberRole role,
+    loom::fabric::FabricOrdinal subOrdinal) {
+  if (!owner)
+    return invalid("internal domain member has no draft operation");
+  // Exhaustive catalog check: no value outside the five roles is admitted.
+  if (role != InternalMemberRole::Occurrence &&
+      role != InternalMemberRole::InstructionContext &&
+      role != InternalMemberRole::FuNode &&
+      role != InternalMemberRole::MemoryOperationPort &&
+      role != InternalMemberRole::LocalMemoryService)
+    return invalid("internal domain member role is outside the catalog");
+  MemberKey key;
+  key.internal = true;
+  key.owner = owner;
+  key.role = role;
+  key.ordinal = subOrdinal;
+  for (const MemberKey &existing : internalMembers_)
+    if (existing == key)
+      return invalid("internal domain member is already registered");
+  internalMembers_.push_back(key);
+  return llvm::Error::success();
+}
+
+llvm::Error ModuleDomainAuthoringRelation::assignOne(
+    MemberKey member, loom::fabric::FabricClockResetKind slotKind,
+    loom::fabric::FabricOrdinal slotOrdinal) {
+  if (slotKind != loom::fabric::FabricClockResetKind::Clock &&
+      slotKind != loom::fabric::FabricClockResetKind::Reset)
+    return invalid("domain slot kind is outside the catalog");
+  const loom::fabric::FabricOrdinal limit =
+      slotCount({clockSlots_, resetSlots_}, slotKind);
+  if (slotOrdinal >= limit)
+    return invalid("assignment selects an out-of-range Module slot");
+  for (const AssignmentRow &row : assignments_)
+    if (row.member == member && row.slotKind == slotKind)
+      return invalid("domain member already has an assignment for this slot "
+                     "kind");
+  assignments_.push_back({member, slotKind, slotOrdinal});
+  return llvm::Error::success();
+}
+
+llvm::Error ModuleDomainAuthoringRelation::assignBoundary(
+    loom::fabric::FabricPortDirection direction,
+    loom::fabric::FabricOrdinal endpointOrdinal,
+    loom::fabric::FabricClockResetKind slotKind,
+    loom::fabric::FabricOrdinal slotOrdinal) {
+  if (direction != loom::fabric::FabricPortDirection::Input &&
+      direction != loom::fabric::FabricPortDirection::Output)
+    return invalid(
+        "boundary domain member direction is outside the catalog");
+  MemberKey key;
+  key.direction = direction;
+  key.ordinal = endpointOrdinal;
+  return assignOne(key, slotKind, slotOrdinal);
+}
+
+llvm::Error ModuleDomainAuthoringRelation::assignInternal(
+    mlir::Operation *owner, InternalMemberRole role,
+    loom::fabric::FabricOrdinal subOrdinal,
+    loom::fabric::FabricClockResetKind slotKind,
+    loom::fabric::FabricOrdinal slotOrdinal) {
+  MemberKey key;
+  key.internal = true;
+  key.owner = owner;
+  key.role = role;
+  key.ordinal = subOrdinal;
+  for (const MemberKey &existing : internalMembers_)
+    if (existing == key)
+      return assignOne(key, slotKind, slotOrdinal);
+  return invalid("assignment names an unregistered internal domain member");
+}
+
+bool ModuleDomainAuthoringRelation::empty() const {
+  return clockSlots_ == 0 && resetSlots_ == 0 && internalMembers_.empty() &&
+         assignments_.empty() && instanceBindings_.empty();
+}
+
+llvm::Error ModuleDomainAuthoringRelation::validateTotality(
+    loom::fabric::FabricOrdinal inputCount,
+    loom::fabric::FabricOrdinal outputCount) const {
+  const loom::fabric::FabricOrdinal max =
+      std::numeric_limits<loom::fabric::FabricOrdinal>::max();
+  if (internalMembers_.size() > max)
+    return invalid("internal member inventory exceeds the ordinal domain");
+  if (inputCount > max - outputCount)
+    return invalid("boundary member inventory overflows the ordinal domain");
+  const loom::fabric::FabricOrdinal boundaryCount = inputCount + outputCount;
+  if (boundaryCount >
+      max - static_cast<loom::fabric::FabricOrdinal>(internalMembers_.size()))
+    return invalid("member inventory overflows the ordinal domain");
+  const loom::fabric::FabricOrdinal memberCount =
+      boundaryCount +
+      static_cast<loom::fabric::FabricOrdinal>(internalMembers_.size());
+  if (memberCount > max / 2)
+    return invalid("member inventory overflows the assignment domain");
+  if (memberCount > std::numeric_limits<std::size_t>::max() / 2)
+    return invalid("member inventory exceeds the host container domain");
+  // Per-member exactness needs no second accounting authority: rows enter
+  // only through assignOne, which rejects a second same-kind row for one
+  // member; the sweep below rejects any row naming a member outside the
+  // signature or the registered internal inventory; and this cardinality
+  // check requires exactly two rows per member. Together these imply exactly
+  // one Clock row and one Reset row per valid member.
+  if (assignments_.size() != static_cast<std::size_t>(memberCount) * 2)
+    return invalid("domain assignments are not total over the Module member "
+                   "inventory");
+  for (const AssignmentRow &row : assignments_) {
+    if (!row.member.internal) {
+      loom::fabric::FabricOrdinal bound = 0;
+      switch (row.member.direction) {
+      case loom::fabric::FabricPortDirection::Input:
+        bound = inputCount;
+        break;
+      case loom::fabric::FabricPortDirection::Output:
+        bound = outputCount;
+        break;
+      }
+      if (row.member.ordinal >= bound)
+        return invalid("assignment names a boundary member outside the "
+                       "signature");
+      continue;
+    }
+    bool registered = false;
+    for (const MemberKey &existing : internalMembers_)
+      if (existing == row.member) {
+        registered = true;
+        break;
+      }
+    if (!registered)
+      return invalid("assignment names an unregistered internal domain "
+                     "member");
+  }
+  return llvm::Error::success();
+}
+
 } // namespace fabric

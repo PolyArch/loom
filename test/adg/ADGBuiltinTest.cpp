@@ -321,7 +321,8 @@ void builtinPresetsExpandThroughPublicBuilder() {
   customOutputs.front() =
       take(test, customExpansion.spatialCore.addFifo(
                      customOutputs.front(),
-                     FifoSpec{take(test, PortType::bits(128)), 3, false}));
+                     FifoSpec{take(test, PortType::bits(128)), 3, false}))
+          .value();
   if (llvm::Error error = customExpansion.spatialCore.close(customOutputs))
     fail(test, llvm::toString(std::move(error)));
   auto customModules = take(test, std::move(customModuleDesign).finalize());

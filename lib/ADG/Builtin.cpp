@@ -458,7 +458,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   for (std::uint32_t site = 0; site != scale.spatialPeCount; ++site) {
     std::vector<SpatialValue> inputs;
     for (std::size_t ordinal = 0; ordinal != 5; ++ordinal) {
-      auto value = indexed<SpatialValue>(*spatialRoutes, spatialCursor,
+      auto value = indexed<SpatialValue>(spatialRoutes->values(), spatialCursor,
                                          "spatial switch");
       if (!value)
         return value.takeError();
@@ -480,7 +480,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
         return fifo.takeError();
       if (llvm::Error error = spatial->resolveBackedge(
               std::move(spatialPeFeedback[spatialFeedbackCursor++].edge),
-              *fifo))
+              fifo->value()))
         return std::move(error);
     }
   }
@@ -493,7 +493,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     inputs.push_back(*manager);
     for (std::size_t ordinal = 1; ordinal != spatialMemory->inputTypes().size();
          ++ordinal) {
-      auto value = indexed<SpatialValue>(*spatialRoutes, spatialCursor,
+      auto value = indexed<SpatialValue>(spatialRoutes->values(), spatialCursor,
                                          "spatial switch");
       if (!value)
         return value.takeError();
@@ -502,7 +502,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     auto outputs = spatial->addMemory(inputs, *spatialMemory);
     if (!outputs)
       return outputs.takeError();
-    for (SpatialValue output : *outputs) {
+    for (SpatialValue output : outputs->values()) {
       auto fifo = spatial->addFifo(
           output, FifoSpec{*bits128, scale.temporalResidentContexts, true});
       if (!fifo)
@@ -510,7 +510,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       if (llvm::Error error = spatial->resolveBackedge(
               std::move(
                   spatialMemoryFeedback[spatialMemoryFeedbackCursor++].edge),
-              *fifo))
+              fifo->value()))
         return std::move(error);
     }
   }
@@ -528,7 +528,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   for (std::uint32_t site = 0; site != scale.temporalPeCount; ++site) {
     std::vector<SpatialValue> inputs;
     for (std::size_t ordinal = 0; ordinal != 5; ++ordinal) {
-      auto value = indexed<SpatialValue>(*temporalRoutes, temporalCursor,
+      auto value = indexed<SpatialValue>(temporalRoutes->values(), temporalCursor,
                                          "temporal switch");
       if (!value)
         return value.takeError();
@@ -551,7 +551,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
         return fifo.takeError();
       if (llvm::Error error = spatial->resolveBackedge(
               std::move(temporalPeFeedback[temporalFeedbackCursor++].edge),
-              *fifo))
+              fifo->value()))
         return std::move(error);
     }
   }
@@ -565,7 +565,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     inputs.push_back(*manager);
     for (std::size_t ordinal = 1;
          ordinal != temporalMemory->inputTypes().size(); ++ordinal) {
-      auto value = indexed<SpatialValue>(*temporalRoutes, temporalCursor,
+      auto value = indexed<SpatialValue>(temporalRoutes->values(), temporalCursor,
                                          "temporal switch");
       if (!value)
         return value.takeError();
@@ -574,7 +574,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     auto outputs = spatial->addMemory(inputs, *temporalMemory);
     if (!outputs)
       return outputs.takeError();
-    for (SpatialValue output : *outputs) {
+    for (SpatialValue output : outputs->values()) {
       auto fifo = spatial->addFifo(
           output, FifoSpec{*tagged128, scale.temporalResidentContexts, true});
       if (!fifo)
@@ -582,7 +582,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       if (llvm::Error error = spatial->resolveBackedge(
               std::move(
                   temporalMemoryFeedback[temporalMemoryFeedbackCursor++].edge),
-              *fifo))
+              fifo->value()))
         return std::move(error);
     }
   }
@@ -590,11 +590,11 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   std::size_t s2tFeedbackCursor = 0;
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway) {
     auto data =
-        indexed<SpatialValue>(*spatialRoutes, spatialCursor, "spatial switch");
+        indexed<SpatialValue>(spatialRoutes->values(), spatialCursor, "spatial switch");
     if (!data)
       return data.takeError();
     auto tag =
-        indexed<SpatialValue>(*spatialRoutes, spatialCursor, "spatial switch");
+        indexed<SpatialValue>(spatialRoutes->values(), spatialCursor, "spatial switch");
     if (!tag)
       return tag.takeError();
     auto outputs = spatial->addBoundary(
@@ -607,12 +607,12 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     if (!fifo)
       return fifo.takeError();
     if (llvm::Error error = spatial->resolveBackedge(
-            std::move(s2tFeedback[s2tFeedbackCursor++].edge), *fifo))
+            std::move(s2tFeedback[s2tFeedbackCursor++].edge), fifo->value()))
       return std::move(error);
   }
   std::size_t t2sFeedbackCursor = 0;
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway) {
-    auto tagged = indexed<SpatialValue>(*temporalRoutes, temporalCursor,
+    auto tagged = indexed<SpatialValue>(temporalRoutes->values(), temporalCursor,
                                         "temporal switch");
     if (!tagged)
       return tagged.takeError();
@@ -620,13 +620,13 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
         {*tagged}, BoundarySpec::t2s(*tagged128, {*bits128, *tagBits}));
     if (!outputs)
       return outputs.takeError();
-    for (SpatialValue output : *outputs) {
+    for (SpatialValue output : outputs->values()) {
       auto fifo = spatial->addFifo(
           output, FifoSpec{*bits128, scale.temporalResidentContexts, true});
       if (!fifo)
         return fifo.takeError();
       if (llvm::Error error = spatial->resolveBackedge(
-              std::move(t2sFeedback[t2sFeedbackCursor++].edge), *fifo))
+              std::move(t2sFeedback[t2sFeedbackCursor++].edge), fifo->value()))
         return std::move(error);
     }
   }
@@ -634,7 +634,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   std::vector<SpatialValue> moduleOutputs;
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway) {
     auto output =
-        indexed<SpatialValue>(*spatialRoutes, spatialCursor, "spatial switch");
+        indexed<SpatialValue>(spatialRoutes->values(), spatialCursor, "spatial switch");
     if (!output)
       return output.takeError();
     moduleOutputs.push_back(*output);

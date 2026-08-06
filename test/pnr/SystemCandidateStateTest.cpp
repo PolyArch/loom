@@ -304,7 +304,9 @@ loom::adg::FinalizedFabricDesign buildSpatialModule(loom::ArtifactStore &store,
   if (addBoundaryBuffer) {
     const auto bits128 = take(loom::adg::PortType::bits(128));
     expansion.outputs.front() = take(expansion.spatialCore.addFifo(
-        expansion.outputs.front(), loom::adg::FifoSpec{bits128, 2, true}));
+                                        expansion.outputs.front(),
+                                        loom::adg::FifoSpec{bits128, 2, true}))
+                                    .value();
   }
   if (llvm::Error error = expansion.spatialCore.close(expansion.outputs))
     fail(llvm::toString(std::move(error)));

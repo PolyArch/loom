@@ -443,7 +443,8 @@ void regularAndIrregularSpatialCoresFinalize() {
                                 BoundarySpec::s2t(bits32, bits4, tagged32x4)));
   SpatialValue regularQueued =
       take(test, regular.addFifo(regularBoundary.front(),
-                                 FifoSpec{tagged32x4, 2, true}));
+                                 FifoSpec{tagged32x4, 2, true}))
+          .value();
   if (llvm::Error error = regular.close({regularQueued}))
     fail(test, llvm::toString(std::move(error)));
 
@@ -456,7 +457,8 @@ void regularAndIrregularSpatialCoresFinalize() {
   SpatialValue irregularTag0 = take(test, irregular.input(2));
   SpatialValue irregularTag1 = take(test, irregular.input(3));
   SpatialValue narrowed =
-      take(test, irregular.addFifo(irregularData, FifoSpec{bits32, 3, false}));
+      take(test, irregular.addFifo(irregularData, FifoSpec{bits32, 3, false}))
+          .value();
   auto switched =
       take(test, irregular.addSwitch({narrowed, alternateData},
                                      SwitchSpec::spatial({bits32, bits32},
@@ -530,13 +532,14 @@ void spatialCoreTemplatesInstantiateAndElaborate() {
       take(test, design.createSpatialCore("pipeline", {bits16}, {bits16}));
   SpatialValue pipelineInput = take(test, pipeline.input(0));
   SpatialValue pipelineOutput =
-      take(test, pipeline.addFifo(pipelineInput, FifoSpec{bits16, 2, true}));
+      take(test, pipeline.addFifo(pipelineInput, FifoSpec{bits16, 2, true}))
+          .value();
   if (llvm::Error error = pipeline.close({pipelineOutput}))
     fail(test, llvm::toString(std::move(error)));
 
   auto top = take(test, design.createSpatialCore("top", {bits32}, {bits16}));
   SpatialValue topInput = take(test, top.input(0));
-  auto instance = take(test, top.instantiate(pipeline, {topInput}));
+  auto instance = take(test, top.instantiate(pipeline, {topInput}, {}));
   require(test, instance.size() == 1,
           "typed SpatialCore instance returned the wrong result count");
   if (llvm::Error error = top.close(instance))
@@ -706,7 +709,7 @@ void temporalResourceGrantFinalizes() {
           {take(test, spatial.input(0)), take(test, spatial.input(1))},
           SwitchSpec::temporal({tagged32, tagged32}, {tagged32}, {{0, 1}}, 4,
                                ::fabric::TemporalSwitchRoundRobin{{0, 1}, 0})));
-  if (llvm::Error error = spatial.close(routed))
+  if (llvm::Error error = spatial.close(routed.values()))
     fail(test, llvm::toString(std::move(error)));
 
   auto finalized = take(test, std::move(design).finalize());
@@ -805,7 +808,7 @@ void typedMemoryFormsFinalize() {
                         MemoryEngineSpec::spatial({loadPortDeclaration()}),
                         std::nullopt,
                         operationConnectivity(test, managerMemoryTarget(0))))));
-  if (llvm::Error error = spatial.close(outputs))
+  if (llvm::Error error = spatial.close(outputs.values()))
     fail(test, llvm::toString(std::move(error)));
 
   const PortType tagged0 = take(test, PortType::taggedBits(0, 4));
@@ -826,7 +829,7 @@ void typedMemoryFormsFinalize() {
                                         4096, localMemoryContract(
                                                   test, localContractContext))),
                          operationConnectivity(test, localMemoryTarget())))));
-  if (llvm::Error error = temporal.close(temporalOutputs))
+  if (llvm::Error error = temporal.close(temporalOutputs.values()))
     fail(test, llvm::toString(std::move(error)));
 
   auto storage =
@@ -841,7 +844,7 @@ void typedMemoryFormsFinalize() {
                                         4096, localMemoryContract(
                                                   test, localContractContext))),
                          storageConnectivity(test)))));
-  if (llvm::Error error = storage.close(storageOutputs))
+  if (llvm::Error error = storage.close(storageOutputs.values()))
     fail(test, llvm::toString(std::move(error)));
 
   auto duplicates = take(
@@ -866,8 +869,9 @@ void typedMemoryFormsFinalize() {
                                            test, managerMemoryTarget(0))
                                      : operationConnectivity(
                                            test, managerMemoryTarget(0))))));
-    duplicateOutputs.insert(duplicateOutputs.end(), memoryOutputs.begin(),
-                            memoryOutputs.end());
+    duplicateOutputs.insert(duplicateOutputs.end(),
+                            memoryOutputs.values().begin(),
+                            memoryOutputs.values().end());
   }
   if (llvm::Error error = duplicates.close(duplicateOutputs))
     fail(test, llvm::toString(std::move(error)));
@@ -1022,7 +1026,7 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
          ++ordinal)
       inputs.push_back(take(test, spatial.input(ordinal)));
     auto outputs = take(test, spatial.addMemory(inputs, memory));
-    if (llvm::Error error = spatial.close(outputs))
+    if (llvm::Error error = spatial.close(outputs.values()))
       fail(test, llvm::toString(std::move(error)));
   };
 
@@ -1045,7 +1049,7 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
   for (std::size_t ordinal = 0; ordinal < tiered.inputTypes().size(); ++ordinal)
     tieredInputs.push_back(take(test, tieredRoot.input(ordinal)));
   auto tieredOutputs = take(test, tieredRoot.addMemory(tieredInputs, tiered));
-  if (llvm::Error error = tieredRoot.close(tieredOutputs))
+  if (llvm::Error error = tieredRoot.close(tieredOutputs.values()))
     fail(test, llvm::toString(std::move(error)));
 
   auto finalized = take(test, std::move(design).finalize());
@@ -1168,7 +1172,7 @@ void publicMemoryRecipeKeepsIndependentEndpointWidths() {
        ++ordinal)
     inputs.push_back(take(test, spatial.input(ordinal)));
   auto outputs = take(test, spatial.addMemory(inputs, memory));
-  if (llvm::Error error = spatial.close(outputs))
+  if (llvm::Error error = spatial.close(outputs.values()))
     fail(test, llvm::toString(std::move(error)));
 
   auto finalized = take(test, std::move(design).finalize());

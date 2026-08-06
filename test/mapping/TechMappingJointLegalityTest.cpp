@@ -160,7 +160,7 @@ loom::fabric::FinalizedFabricRoot buildMemoryFabric(loom::ArtifactStore &store,
   for (std::size_t ordinal = 0; ordinal < inputs.size(); ++ordinal)
     values.push_back(take(spatial.input(ordinal)));
   auto memoryOutputs = take(spatial.addMemory(values, memory));
-  if (llvm::Error error = spatial.close(memoryOutputs))
+  if (llvm::Error error = spatial.close(memoryOutputs.values()))
     fail(llvm::toString(std::move(error)));
   auto design = take(std::move(builder).finalize());
   return design.roots().front();
