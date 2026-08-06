@@ -350,6 +350,11 @@ endpoint already is a transport endpoint. Protocol subchannels and encodings
 remain a later Interconnect Implementation refinement, so neither PnR nor the
 Mapping artifact becomes a protocol owner.
 
+The relation cites rather than copies the Dataflow-owned structural ordinal
+domain and the existing `CanonicalServiceLegKey` framing. A Fabric-local leg
+integer or codec would create a second authority for the same schema-local
+position without adding a hardware distinction.
+
 ## Why Placement And Routing Are Coupled
 
 Greedy placement followed by one routing pass cannot escape congestion,

@@ -384,7 +384,7 @@ memory-service leg to its non-empty physical carrier domain:
 ServiceLegCarrierAttachmentKey = {
   endpoint: FabricMemoryEndpointRef
   kind: ServiceKind
-  leg_ordinal: uint32
+  leg_ordinal: dataflow::StructuralOrdinal
 }
 
 ServiceLegCarrierAttachment = {
@@ -396,9 +396,20 @@ ServiceLegCarrierAttachment = {
 
 The key is a structural lookup key, not an entity or identity. The relation
 receives no `EntityId`, local reference kind, capability ordinal, or Mapping
-record. The endpoint capability set is unique by `(ServiceKind,
-EndpointRole)`, so the endpoint, kind, and schema-local leg ordinal select the
-exact capability without another ordinal.
+record. Every capability of one endpoint shares that endpoint's exact role and
+plane, and the capability set admits at most one record for each
+`(ServiceKind, EndpointRole)` pair. The endpoint and kind therefore select the
+exact capability; the schema-local leg ordinal then selects one leg of that
+kind. The key needs neither an endpoint-role field nor another capability
+ordinal.
+
+The leg ordinal uses the existing Dataflow-owned
+`dataflow::StructuralOrdinal` semantic domain. Its persistent field reuses the
+canonical unsigned 64-bit big-endian framing already used by
+`CanonicalServiceLegKey`; Fabric defines no local ordinal type or second
+ordinal codec. Finalization validates only that the ordinal is less than
+`CanonicalService(kind).legCount()` before deriving the leg's direction and
+payload semantics from that owner.
 
 The [Canonical Service Schema](#canonical-service-schema) remains the sole
 owner of the number, ordinal, direction, payload roles, and payload types of
@@ -870,7 +881,7 @@ fabric.system.service_endpoint
 fabric.system.service_leg_carrier_attachment
   FabricMemoryEndpointRef
   ServiceKind
-  schema-local leg ordinal
+  dataflow::StructuralOrdinal schema-local leg ordinal
   canonical non-empty sorted-unique FabricTransportEndpointRef set
 
 fabric.system.service_transform
