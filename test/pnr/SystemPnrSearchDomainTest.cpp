@@ -3,6 +3,7 @@
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 
@@ -40,10 +41,14 @@ template <typename T> T take(llvm::Expected<T> value) {
 }
 
 template <typename T>
-void requireFailure(llvm::Expected<T> value, const llvm::Twine &message) {
+void requireFailureContains(llvm::Expected<T> value,
+                            llvm::StringRef expectedDiagnostic,
+                            const llvm::Twine &message) {
   if (value)
     fail(message);
-  llvm::consumeError(value.takeError());
+  const std::string diagnostic = llvm::toString(value.takeError());
+  if (!llvm::StringRef(diagnostic).contains(expectedDiagnostic))
+    fail(message + ": " + diagnostic);
 }
 
 void require(bool condition, const llvm::Twine &message) {
@@ -89,10 +94,13 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   }
   dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
       %value: i32) ctrl (%ctrl: none) iv (%iv: index) {
-    %result, %done = dataflow.graph.launch @sync deps(%ctrl)
+    %first_result, %first_done = dataflow.graph.launch @sync deps(%ctrl)
         values(%value) stream_inputs() memories() stream_outputs()
         : (none, i32) -> (i32, none)
-    dataflow.thread.yield %done : none
+    %second_result, %second_done = dataflow.graph.launch @sync deps(%first_done)
+        values(%value) stream_inputs() memories() stream_outputs()
+        : (none, i32) -> (i32, none)
+    dataflow.thread.yield %second_done : none
   }
   func.func private @host() {
     %value = arith.constant 7 : i32
@@ -155,7 +163,7 @@ template <typename T>
 void requireUnsupported(
     llvm::Expected<T> value,
     loom::pnr::UnsupportedSystemPnrSearchDomainReason expectedReason,
-    const llvm::Twine &message) {
+    llvm::StringRef expectedDiagnostic, const llvm::Twine &message) {
   if (value)
     fail(message);
   bool matched = false;
@@ -165,10 +173,49 @@ void requireUnsupported(
         matched = true;
         require(error.reason() == expectedReason,
                 "unsupported search-domain reason changed");
+        std::string diagnostic;
+        llvm::raw_string_ostream stream(diagnostic);
+        error.log(stream);
+        stream.flush();
+        require(llvm::StringRef(diagnostic).contains(expectedDiagnostic),
+                "unsupported search-domain diagnostic changed");
       });
   if (remaining)
     fail(llvm::toString(std::move(remaining)));
   require(matched, message);
+}
+
+void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
+  for (int shift = 24; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+}
+
+void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+}
+
+std::vector<std::uint8_t>
+encodedThreadBindingKey(const loom::ArtifactIdentity &owner,
+                        dataflow::RootThreadLaunchRef reference) {
+  auto local = take(dataflow::encodeDataflowReference(owner, reference));
+  std::vector<std::uint8_t> bytes;
+  appendU32(bytes, 0);
+  appendU64(bytes, local.size());
+  bytes.insert(bytes.end(), local.begin(), local.end());
+  return bytes;
+}
+
+std::size_t uniqueSubsequenceOffset(llvm::ArrayRef<std::uint8_t> bytes,
+                                    llvm::ArrayRef<std::uint8_t> needle,
+                                    const llvm::Twine &description) {
+  const auto first =
+      std::search(bytes.begin(), bytes.end(), needle.begin(), needle.end());
+  require(first != bytes.end(), description + " is absent");
+  const auto second =
+      std::search(std::next(first), bytes.end(), needle.begin(), needle.end());
+  require(second == bytes.end(), description + " is not unique");
+  return static_cast<std::size_t>(std::distance(bytes.begin(), first));
 }
 
 } // namespace
@@ -183,6 +230,18 @@ int main() {
   auto dataflowView = take(dataflow.view());
   require(dataflowView.rootThreadLaunches().size() == 2,
           "fixture must contain two root launches");
+  require(dataflowView.staticGraphLaunches().size() == 2,
+          "fixture must contain two static launches of one graph definition");
+  const auto firstStaticLaunch = dataflowView.staticGraphLaunches()[0].ref;
+  const auto secondStaticLaunch = dataflowView.staticGraphLaunches()[1].ref;
+  const auto firstRoot = dataflowView.rootThreadLaunches()[0].ref;
+  const auto secondRoot = dataflowView.rootThreadLaunches()[1].ref;
+  require(firstStaticLaunch != secondStaticLaunch &&
+              take(dataflowView.resolve(dataflow::RootedGraphLaunchRef{
+                  firstRoot, firstStaticLaunch})) ==
+                  take(dataflowView.resolve(dataflow::RootedGraphLaunchRef{
+                      firstRoot, secondStaticLaunch})),
+          "repeated launch sites did not retain distinct keys for one graph");
   auto logicalDomain = take(dataflowView.projectRootThreadLogicalDomain(
       dataflowView.rootThreadLaunches().front().ref));
   require(logicalDomain.coordinateRank == 1 &&
@@ -193,22 +252,35 @@ int main() {
       store, loom::adg::BuiltinTargetPreset::Small));
   auto system =
       take(loom::fabric::requireSystemRoot(design.roots().front().view()));
-  std::vector<dataflow::RootThreadLaunchRef> roots{
-      dataflowView.rootThreadLaunches()[1].ref,
-      dataflowView.rootThreadLaunches()[0].ref};
+  std::vector<dataflow::RootThreadLaunchRef> roots{secondRoot, firstRoot};
   auto constraints =
       take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
           dataflowView, system, roots, store));
+  auto duplicateRootConstraints =
+      take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
+          dataflowView, system, {secondRoot, firstRoot, secondRoot}, store));
+  require(duplicateRootConstraints.reference() == constraints.reference() &&
+              duplicateRootConstraints.view().rootThreadLaunches() ==
+                  constraints.view().rootThreadLaunches(),
+          "duplicate root authoring changed the canonical constraint input");
   auto plan = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
-      dataflowView, roots));
+      dataflowView, constraints.view().rootThreadLaunches()));
   auto domain = take(loom::pnr::projectSystemPnrSearchDomain(
       dataflowView, system, constraints, plan, {}, store));
 
   require(domain.rootThreadLaunches().size() == 2 &&
-              domain.bindings().size() == 4,
+              domain.bindings().size() == 6,
           "search domain lost a root or rooted graph binding");
+  std::vector<dataflow::RootedGraphLaunchRef> expectedGraphKeys;
+  dataflowView.forEachRootedGraphLaunch(
+      [&](dataflow::RootedGraphLaunchRef reference) {
+        expectedGraphKeys.push_back(reference);
+      });
+  require(expectedGraphKeys.size() == 4,
+          "fixture did not expose four exact rooted launch keys");
   std::size_t threadBindings = 0;
   std::size_t graphBindings = 0;
+  std::vector<dataflow::RootedGraphLaunchRef> actualGraphKeys;
   for (const loom::pnr::SystemSearchBindingDomain &binding :
        domain.bindings()) {
     require(binding.atoms.size() == 1,
@@ -223,14 +295,19 @@ int main() {
               "thread atom target domain is incomplete or ill-typed");
     } else {
       ++graphBindings;
+      actualGraphKeys.push_back(
+          std::get<dataflow::RootedGraphLaunchRef>(binding.key));
       require(targets.compatibleSpatialMappings &&
                   targets.compatibleSpatialMappings->empty() &&
                   !targets.compatibleAccCores,
               "graph atom target domain is incomplete or ill-typed");
     }
   }
-  require(threadBindings == 2 && graphBindings == 2,
+  require(threadBindings == 2 && graphBindings == 4,
           "binding-key variants changed their complete coverage");
+  for (const auto &expected : expectedGraphKeys)
+    require(llvm::count(actualGraphKeys, expected) == 1,
+            "H lost or merged an exact RootedGraphLaunchRef binding key");
 
   std::reverse(plan.bindings.begin(), plan.bindings.end());
   auto reordered = take(loom::pnr::projectSystemPnrSearchDomain(
@@ -257,39 +334,98 @@ int main() {
               adopted.bindings().size() == domain.bindings().size(),
           "strict H adoption changed the owner view");
 
+  auto duplicatedBindingBytes = std::vector<std::uint8_t>(
+      domain.canonicalViewBytes().begin(), domain.canonicalViewBytes().end());
+  const auto firstThreadKey =
+      encodedThreadBindingKey(dataflowView.identity(), firstRoot);
+  const auto secondThreadKey =
+      encodedThreadBindingKey(dataflowView.identity(), secondRoot);
+  require(firstThreadKey.size() == secondThreadKey.size(),
+          "thread binding keys do not have equal replacement width");
+  const std::size_t secondThreadOffset = uniqueSubsequenceOffset(
+      duplicatedBindingBytes, secondThreadKey, "second thread binding key");
+  std::copy(firstThreadKey.begin(), firstThreadKey.end(),
+            duplicatedBindingBytes.begin() + secondThreadOffset);
+  auto duplicatedBindingDigest =
+      take(loom::pnr::computeSystemPnrSearchDomainDigest(
+          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
+          duplicatedBindingBytes));
+  requireFailureContains(
+      loom::pnr::adoptSystemPnrSearchDomain(
+          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
+          duplicatedBindingBytes, duplicatedBindingDigest, store),
+      "partition plan contains a duplicate binding",
+      "strict H adoption accepted a duplicate persisted binding key");
+
   auto badDigestBytes = domain.digest().bytes();
   badDigestBytes[0] ^= 1;
   auto badDigest =
       take(loom::pnr::SystemPnrSearchDomainDigest::fromBytes(badDigestBytes));
-  requireFailure(loom::pnr::adoptSystemPnrSearchDomain(
-                     loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-                     domain.canonicalViewBytes(), badDigest, store),
-                 "modified H digest was accepted");
+  requireFailureContains(
+      loom::pnr::adoptSystemPnrSearchDomain(
+          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
+          domain.canonicalViewBytes(), badDigest, store),
+      "digest does not match canonical view bytes",
+      "modified H digest was accepted");
+
+  auto integerEmpty = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
+      dataflowView, constraints.view().rootThreadLaunches()));
+  auto &emptyCell = integerEmpty.bindings.front().cells.front();
+  std::vector<std::int64_t> noIntegerPoint(
+      static_cast<std::size_t>(emptyCell.dimensionCount) +
+          emptyCell.symbolCount + 1,
+      0);
+  noIntegerPoint.front() = 2;
+  noIntegerPoint.back() = -1;
+  emptyCell.equalities.push_back(std::move(noIntegerPoint));
+  requireFailureContains(
+      loom::pnr::projectSystemPnrSearchDomain(dataflowView, system, constraints,
+                                              integerEmpty, {}, store),
+      "Presburger partition contains an empty cell",
+      "integer-empty Presburger cell was accepted");
 
   auto overlap = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
-      dataflowView, roots));
+      dataflowView, constraints.view().rootThreadLaunches()));
   overlap.bindings.front().cells.push_back(overlap.bindings.front().cells[0]);
-  requireFailure(loom::pnr::projectSystemPnrSearchDomain(
-                     dataflowView, system, constraints, overlap, {}, store),
-                 "overlapping Presburger cells were accepted");
+  requireFailureContains(
+      loom::pnr::projectSystemPnrSearchDomain(dataflowView, system, constraints,
+                                              overlap, {}, store),
+      "Presburger partition cells overlap",
+      "overlapping Presburger cells were accepted");
 
   auto gap = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
-      dataflowView, roots));
+      dataflowView, constraints.view().rootThreadLaunches()));
   gap.bindings.front().cells.front().inequalities.push_back({1, 0, 0, -1});
-  requireFailure(loom::pnr::projectSystemPnrSearchDomain(
-                     dataflowView, system, constraints, gap, {}, store),
-                 "gapped Presburger partition was accepted");
+  requireFailureContains(
+      loom::pnr::projectSystemPnrSearchDomain(dataflowView, system, constraints,
+                                              gap, {}, store),
+      "Presburger partition does not cover the Dataflow may-domain",
+      "gapped Presburger partition was accepted");
 
   auto conditional = buildConditionalDataflow(context);
   take(dataflow::publishCanonicalDataflow(conditional, store));
   auto conditionalView = take(conditional.view());
   auto conditionalRoot = conditionalView.rootThreadLaunches().front().ref;
+  std::vector<dataflow::RootedGraphLaunchRef> nestedGraphKeys;
+  conditionalView.forEachRootedGraphLaunch(
+      [&](dataflow::RootedGraphLaunchRef reference) {
+        nestedGraphKeys.push_back(reference);
+      });
+  require(nestedGraphKeys.size() == 1,
+          "conditional fixture lost its nested rooted graph launch");
+  const loom::pnr::SystemSearchBindingKey nestedKey(nestedGraphKeys.front());
+  require(std::holds_alternative<dataflow::RootedGraphLaunchRef>(nestedKey) &&
+              std::get<dataflow::RootedGraphLaunchRef>(nestedKey) ==
+                  nestedGraphKeys.front(),
+          "nested rooted launch did not preserve its exact binding-key kind");
   std::vector<dataflow::RootThreadLaunchRef> conditionalRoots{conditionalRoot};
   requireUnsupported(
       loom::pnr::projectWholeDomainPresburgerPartitionPlan(conditionalView,
                                                            conditionalRoots),
       loom::pnr::UnsupportedSystemPnrSearchDomainReason::
           RootedGraphMayDomainProjectionUnavailable,
+      "does not publish the exact may-domain of a nested or repeated rooted "
+      "graph launch",
       "conditional graph launch reused the complete parent thread domain");
 
   llvm::outs() << "System PnR search-domain anchors passed\n";
