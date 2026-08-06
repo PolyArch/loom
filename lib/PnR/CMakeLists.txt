@@ -45,6 +45,8 @@ add_mlir_library(LoomPnR
   SpatialTagAssignment.cpp
   SpatialTagConstraintModel.cpp
   SpatialTagContinuity.cpp
+  System/SystemPnrSearchDomain.cpp
+  System/SystemPresburgerPartition.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR
@@ -56,6 +58,7 @@ add_mlir_library(LoomPnR
   LoomFabricTemporalOperandBuffer
   LoomDSEObjective
   LoomMappingArtifact
+  MLIRPresburger
   LLVMSupport
 )
 

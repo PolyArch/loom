@@ -2,6 +2,23 @@ add_executable(loom-pnr-index-test
   PnrIndexTest.cpp
 )
 
+add_executable(loom-system-pnr-search-domain-test
+  SystemPnrSearchDomainTest.cpp
+)
+
+target_link_libraries(loom-system-pnr-search-domain-test PRIVATE
+  LoomADGBuilder
+  LoomPnR
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  MLIRSCFDialect
+  LLVMSupport
+)
+
 target_link_libraries(loom-pnr-index-test PRIVATE
   LoomPnR
   LLVMSupport

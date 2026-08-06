@@ -5,6 +5,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
+#include "Dataflow/IR/DataflowEnums.h"
 #include "Dataflow/IR/DataflowInterfaces.h"
 #include "Dataflow/IR/DataflowStructuralRefs.h"
 
@@ -64,6 +65,16 @@ struct CanonicalRootThreadLaunchView {
   RootThreadLaunchRef ref;
   mlir::Operation *op = nullptr;     // the dataflow.thread.launch site
   mlir::Operation *callee = nullptr; // the resolved dataflow.thread definition
+};
+
+/// Dataflow-owned logical input signature and may-domain discriminator for one
+/// exact root thread launch. Values borrow the imported canonical program.
+/// Extents occupy the leading launch-parameter slots in coordinate order.
+struct CanonicalRootThreadLogicalDomainView {
+  RootThreadLaunchRef launch;
+  ThreadDomainKind kind = ThreadDomainKind::DenseRectangular;
+  std::uint32_t coordinateRank = 0;
+  std::vector<mlir::Value> launchParameters;
 };
 
 struct CanonicalStaticGraphLaunchView {
@@ -131,6 +142,17 @@ public:
   llvm::Expected<CanonicalActorView> resolve(ActorRef ref) const;
   llvm::Expected<CanonicalRootThreadLaunchView>
   resolve(RootThreadLaunchRef ref) const;
+  llvm::Expected<CanonicalRootThreadLogicalDomainView>
+  projectRootThreadLogicalDomain(RootThreadLaunchRef ref) const;
+
+  /// Project the root launch's complete logical domain for one rooted graph
+  /// launch only when the graph invocation is a direct operation in the
+  /// thread entry block. Such an invocation executes exactly once for every
+  /// root-domain point. A nested invocation returns `std::nullopt`: its exact
+  /// conditional or repeated may-domain is not currently published by
+  /// Canonical Dataflow.
+  llvm::Expected<std::optional<CanonicalRootThreadLogicalDomainView>>
+  projectWholeRootedGraphLogicalDomain(RootedGraphLaunchRef ref) const;
   llvm::Expected<CanonicalStaticGraphLaunchView>
   resolve(StaticGraphLaunchRef ref) const;
   llvm::Expected<CanonicalLogicalMemoryRootView>
