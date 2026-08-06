@@ -280,6 +280,60 @@ const std::string kPortsAsArrayJson = R"json({
   }
 })json";
 
+const std::string kInoutJson = R"json({
+  "creator": "fixture",
+  "modules": {
+    "AND2X1": {
+      "attributes": {"blackbox": "00000000000000000000000000000001"},
+      "ports": {
+        "A": {"direction": "input", "bits": [0]},
+        "B": {"direction": "input", "bits": [0]},
+        "Y": {"direction": "output", "bits": [0]}
+      },
+      "cells": {},
+      "netnames": {}
+    },
+    "BIDIRX1": {
+      "attributes": {"blackbox": "00000000000000000000000000000001"},
+      "ports": {
+        "A": {"direction": "input", "bits": [0]},
+        "IO": {"direction": "inout", "bits": [0]},
+        "Y": {"direction": "output", "bits": [0]}
+      },
+      "cells": {},
+      "netnames": {}
+    },
+    "top": {
+      "attributes": {},
+      "ports": {
+        "a": {"direction": "input", "bits": [2]},
+        "y": {"direction": "output", "bits": [4]},
+        "io_free": {"direction": "inout", "bits": [5]},
+        "io_used": {"direction": "inout", "bits": [6]}
+      },
+      "cells": {
+        "_0_": {
+          "type": "AND2X1",
+          "port_directions": {"A": "input", "B": "input", "Y": "output"},
+          "connections": {"A": [2], "B": [2], "Y": [4]}
+        },
+        "_1_": {
+          "type": "BIDIRX1",
+          "port_directions": {"A": "input", "IO": "inout", "Y": "output"},
+          "connections": {"A": [2], "IO": [6], "Y": [7]}
+        }
+      },
+      "netnames": {
+        "a": {"bits": [2]},
+        "y": {"bits": [4]},
+        "io_free": {"bits": [5]},
+        "io_used": {"bits": [6]},
+        "extra": {"bits": [7]}
+      }
+    }
+  }
+})json";
+
 std::string replaceAll(std::string text, llvm::StringRef from,
                        llvm::StringRef to) {
   std::size_t position = 0;
@@ -363,6 +417,15 @@ void positiveStructuresAreAccepted() {
   require(__func__,
           !validateYosysSynthesizedStructure(constant, "top"),
           "zero-cell constant-only design was rejected");
+
+  // A bare externally driven top inout is not a required output, and a legal
+  // inout connected through a matching declared inout cell is not a
+  // multi-driver violation: the simple counter never proves tri-state
+  // ownership.
+  const YosysStructureFacts inout =
+      take(__func__, parseYosysStructureFacts(kInoutJson));
+  require(__func__, !validateYosysSynthesizedStructure(inout, "top"),
+          "legal inout topology was rejected");
 }
 
 void adverseStructuresAreRejected() {
@@ -468,6 +531,18 @@ void structuralConsistencyIsEnforced() {
                     "\"processes\": {\"p\": {}},\n      \"ports\""));
   reject("box-with-cells", kBoxWithCellsJson);
   reject("box-with-memory", kBoxWithMemoryJson);
+
+  // Attribute values admit only Yosys's scalar encodings; anything else
+  // fails closed instead of reading as false.
+  expectInvalid(__func__,
+                parseYosysStructureFacts(replaceAll(
+                    kMappedJson, "\"attributes\": {}",
+                    "\"attributes\": {\"blackbox\": {\"nested\": 1}}")));
+  expectInvalid(__func__,
+                parseYosysStructureFacts(replaceAll(
+                    kMappedJson,
+                    "\"blackbox\": \"00000000000000000000000000000001\"",
+                    "\"blackbox\": [1]")));
 
   // A port object without a direction must fail typed, never crash.
   reject("missing-direction",

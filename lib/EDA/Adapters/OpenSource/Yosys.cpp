@@ -32,14 +32,16 @@ bool isPortableIdentifier(llvm::StringRef value) {
   return llvm::all_of(value.drop_front(), isRest);
 }
 
-bool isNonzeroAttribute(const llvm::json::Value &value) {
+/// An attribute is a boolean fact only in Yosys's admitted scalar encodings;
+/// any other present value fails closed.
+llvm::Expected<bool> nonzeroAttribute(const llvm::json::Value &value) {
   if (std::optional<std::int64_t> integer = value.getAsInteger())
     return *integer != 0;
   if (std::optional<bool> boolean = value.getAsBoolean())
     return *boolean;
   if (std::optional<llvm::StringRef> text = value.getAsString())
     return text->contains('1');
-  return false;
+  return invalid("attribute value is not an admitted scalar encoding");
 }
 
 llvm::Expected<const llvm::json::Object &>
@@ -200,9 +202,12 @@ parseYosysStructureFacts(llvm::StringRef contents) {
       for (llvm::StringRef attributeName :
            {llvm::StringRef("blackbox"), llvm::StringRef("whitebox")})
         if (const llvm::json::Value *attribute =
-                (*attributes)->get(attributeName))
-          facts.declaredBox =
-              facts.declaredBox || isNonzeroAttribute(*attribute);
+                (*attributes)->get(attributeName)) {
+          auto nonzero = nonzeroAttribute(*attribute);
+          if (!nonzero)
+            return nonzero.takeError();
+          facts.declaredBox = facts.declaredBox || *nonzero;
+        }
     auto processes = optionalObject(*module, "processes", context);
     if (!processes)
       return processes.takeError();
@@ -355,9 +360,11 @@ validateYosysSynthesizedStructure(const YosysStructureFacts &structure,
     }
   }
 
-  // Every required top output bit needs exactly one defined driver.
+  // The exact-one-defined-driver obligation applies only to exact Output
+  // ports: this counter does not model tri-state ownership and never proves
+  // an inout against itself. Input and inout bits stay driver sources.
   for (const auto &[name, port] : top.ports) {
-    if (port.direction == YosysPortGeometry::Direction::Input)
+    if (port.direction != YosysPortGeometry::Direction::Output)
       continue;
     for (const YosysSignalBit &bit : port.bits) {
       if (const char *constant = std::get_if<char>(&bit.value)) {
