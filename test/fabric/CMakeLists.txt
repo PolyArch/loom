@@ -250,6 +250,10 @@ add_executable(loom-fabric-system-service-contract-test
   SystemServiceContractTest.cpp
 )
 
+add_executable(loom-fabric-service-leg-carrier-attachment-test
+  ServiceLegCarrierAttachmentTest.cpp
+)
+
 target_link_libraries(loom-fabric-persistent-ref-test PRIVATE
   LoomCommon
   LoomFabricIdentity
@@ -357,5 +361,10 @@ target_link_libraries(loom-fabric-system-service-contract-test PRIVATE
   MLIRIR
   MLIRParser
   MLIRSupport
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-service-leg-carrier-attachment-test PRIVATE
+  LoomFabricSystemServiceContract
   LLVMSupport
 )

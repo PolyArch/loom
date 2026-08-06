@@ -17,6 +17,7 @@
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/DataflowStructuralRefs.h"
 
 #include "Common/IndexWidth.h"
 #include "Common/VectorWidth.h"
@@ -1207,6 +1208,47 @@ bool checkSourceTracking(mlir::ModuleOp module) {
   return ok;
 }
 
+bool checkKindOwnedLegProjection() {
+  bool ok = true;
+  for (ServiceKind kind : {ServiceKind::MessageTransfer,
+                           ServiceKind::MemoryRead, ServiceKind::MemoryWrite,
+                           ServiceKind::MemoryAtomicRmw,
+                           ServiceKind::MemoryCompareExchange,
+                           ServiceKind::MemoryFence}) {
+    const StructuralOrdinal expectedCount =
+        kind == ServiceKind::MessageTransfer ? 1 : 2;
+    if (getCanonicalServiceLegCount(kind) != expectedCount) {
+      ok = fail("kind leg projection", "the leg count changed");
+      continue;
+    }
+    for (StructuralOrdinal ordinal = 0; ordinal != expectedCount; ++ordinal) {
+      auto direction = getCanonicalServiceLegDirection(kind, ordinal);
+      auto roles = getCanonicalServiceLegRoles(kind, ordinal);
+      if (!direction || !roles) {
+        llvm::consumeError(direction.takeError());
+        llvm::consumeError(roles.takeError());
+        ok = fail("kind leg projection", "a canonical leg was rejected");
+        continue;
+      }
+      const auto &schema = getServiceRoleSchema(kind);
+      const auto expectedRoles =
+          ordinal == 0 ? schema.arguments : schema.results;
+      if (*direction != (ordinal == 0
+                             ? ServiceLegDirection::InitiatorToServer
+                             : ServiceLegDirection::ServerToInitiator) ||
+          *roles != expectedRoles)
+        ok = fail("kind leg projection", "a canonical leg was reinterpreted");
+    }
+    auto outOfRange = getCanonicalServiceLegRoles(kind, expectedCount);
+    if (outOfRange) {
+      ok = fail("kind leg projection", "an out-of-range leg was accepted");
+    } else {
+      llvm::consumeError(outOfRange.takeError());
+    }
+  }
+  return ok;
+}
+
 } // namespace
 
 int main() {
@@ -1250,6 +1292,7 @@ int main() {
   ok &= checkUnrepresentableProjection(*module);
   ok &= checkCorrespondenceIncludesIndexScope(*module);
   ok &= checkSourceTracking(*module);
+  ok &= checkKindOwnedLegProjection();
   ok &= checkMemoryServiceRoleProjection();
   ok &= checkActorSlotProjection(*module);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;

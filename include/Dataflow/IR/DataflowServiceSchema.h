@@ -2,6 +2,7 @@
 #define LOOM_DATAFLOW_IR_DATAFLOW_SERVICE_SCHEMA_H
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
+#include "Dataflow/IR/DataflowStructuralRefs.h"
 #include "Dataflow/IR/OperationSchema.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -259,6 +260,15 @@ ServiceKind getServiceKind(MemoryAccessOperation operation);
 /// The maximal role order of one service kind. This is the sole static role
 /// authority consumed by hardware capability schemas.
 const ServiceRoleSchema &getServiceRoleSchema(ServiceKind kind);
+
+/// Static Canonical Service leg projections for consumers that validate a
+/// capability domain rather than one actor instance. The ordinal remains in
+/// the Dataflow-owned structural domain.
+StructuralOrdinal getCanonicalServiceLegCount(ServiceKind kind);
+llvm::Expected<ServiceLegDirection>
+getCanonicalServiceLegDirection(ServiceKind kind, StructuralOrdinal ordinal);
+llvm::Expected<llvm::ArrayRef<ServiceValueRole>>
+getCanonicalServiceLegRoles(ServiceKind kind, StructuralOrdinal ordinal);
 
 /// Projects a registered canonical memory actor schema to its service kind.
 /// A non-memory actor schema is rejected rather than assigned a fallback.

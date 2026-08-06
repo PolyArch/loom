@@ -568,6 +568,65 @@ loom::fabric::decodeCanonicalServiceCapabilitySet(
 }
 
 llvm::Expected<std::vector<std::uint8_t>>
+loom::fabric::encodeServiceLegCarrierAttachmentRecord(
+    const ServiceLegCarrierAttachmentRecord &record) {
+  Writer writer;
+  writeRef(writer, record.endpoint());
+  auto kind = dataflow::encodeServiceKind(record.kind());
+  if (!kind)
+    return kind.takeError();
+  writer.blob(kind->bytes());
+  writer.u64(record.legOrdinal());
+  writer.u64(record.carriers().size());
+  for (const FabricTransportEndpointRef &carrier : record.carriers())
+    writeRef(writer, carrier);
+  return writer.take();
+}
+
+llvm::Expected<ServiceLegCarrierAttachmentRecord>
+loom::fabric::decodeServiceLegCarrierAttachmentRecord(
+    llvm::ArrayRef<std::uint8_t> bytes) {
+  Reader reader(bytes);
+  auto endpoint =
+      readRef<FabricMemoryEndpointRef>(reader, "service memory endpoint");
+  if (!endpoint)
+    return endpoint.takeError();
+  auto kindBytes = reader.blob("service kind");
+  if (!kindBytes)
+    return kindBytes.takeError();
+  auto kind = dataflow::decodeServiceKind(*kindBytes);
+  if (!kind)
+    return kind.takeError();
+  auto legOrdinal = reader.u64("service leg ordinal");
+  if (!legOrdinal)
+    return legOrdinal.takeError();
+  auto carrierCount = reader.count(8, "service leg carrier count");
+  if (!carrierCount)
+    return carrierCount.takeError();
+  std::vector<FabricTransportEndpointRef> carriers;
+  carriers.reserve(static_cast<std::size_t>(*carrierCount));
+  for (std::uint64_t index = 0; index < *carrierCount; ++index) {
+    auto carrier = readRef<FabricTransportEndpointRef>(
+        reader, "service leg transport carrier");
+    if (!carrier)
+      return carrier.takeError();
+    carriers.push_back(std::move(*carrier));
+  }
+  if (llvm::Error error = reader.finish())
+    return std::move(error);
+  auto record = ServiceLegCarrierAttachmentRecord::fromCanonical(
+      std::move(*endpoint), *kind, *legOrdinal, std::move(carriers));
+  if (!record)
+    return record.takeError();
+  auto canonical = encodeServiceLegCarrierAttachmentRecord(*record);
+  if (!canonical)
+    return canonical.takeError();
+  if (llvm::ArrayRef<std::uint8_t>(*canonical) != bytes)
+    return malformed("service leg carrier attachment is not canonical");
+  return record;
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
 loom::fabric::encodeSystemServiceTransformRecord(
     const SystemServiceTransformRecord &record) {
   return encodeTransform(record);

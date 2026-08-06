@@ -235,6 +235,46 @@ CanonicalServiceCapabilityRecord::create(
                                           std::move(rate));
 }
 
+llvm::Expected<ServiceLegCarrierAttachmentRecord>
+ServiceLegCarrierAttachmentRecord::create(
+    FabricMemoryEndpointRef endpoint,
+    dataflow::semantics::ServiceKind kind,
+    dataflow::StructuralOrdinal legOrdinal,
+    std::vector<FabricTransportEndpointRef> carriers) {
+  if (kind == dataflow::semantics::ServiceKind::MessageTransfer)
+    return invalid("MessageTransfer does not use memory service leg carrier "
+                   "attachments");
+  if (carriers.empty())
+    return invalid("service leg carrier set must not be empty");
+  llvm::sort(carriers, [](const FabricTransportEndpointRef &left,
+                          const FabricTransportEndpointRef &right) {
+    return canonicalFabricBytes(left) < canonicalFabricBytes(right);
+  });
+  carriers.erase(std::unique(carriers.begin(), carriers.end()),
+                 carriers.end());
+  return ServiceLegCarrierAttachmentRecord(
+      std::move(endpoint), kind, legOrdinal, std::move(carriers));
+}
+
+llvm::Expected<ServiceLegCarrierAttachmentRecord>
+ServiceLegCarrierAttachmentRecord::fromCanonical(
+    FabricMemoryEndpointRef endpoint,
+    dataflow::semantics::ServiceKind kind,
+    dataflow::StructuralOrdinal legOrdinal,
+    std::vector<FabricTransportEndpointRef> carriers) {
+  if (kind == dataflow::semantics::ServiceKind::MessageTransfer)
+    return invalid("MessageTransfer does not use memory service leg carrier "
+                   "attachments");
+  if (carriers.empty())
+    return invalid("service leg carrier set must not be empty");
+  for (std::size_t index = 1; index < carriers.size(); ++index)
+    if (canonicalFabricBytes(carriers[index - 1]) >=
+        canonicalFabricBytes(carriers[index]))
+      return invalid("service leg carrier set is not sorted and unique");
+  return ServiceLegCarrierAttachmentRecord(
+      std::move(endpoint), kind, legOrdinal, std::move(carriers));
+}
+
 llvm::Expected<SystemServiceTransformRecord>
 SystemServiceTransformRecord::create(
     std::vector<FabricMemoryEndpointRef> inputs,

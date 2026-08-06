@@ -512,6 +512,32 @@ dataflow::semantics::getServiceRoleSchema(ServiceKind kind) {
   llvm_unreachable("unhandled canonical service kind");
 }
 
+dataflow::StructuralOrdinal
+dataflow::semantics::getCanonicalServiceLegCount(ServiceKind kind) {
+  return getKindSchema(kind).legCount;
+}
+
+llvm::Expected<ServiceLegDirection>
+dataflow::semantics::getCanonicalServiceLegDirection(
+    ServiceKind kind, dataflow::StructuralOrdinal ordinal) {
+  if (ordinal >= getCanonicalServiceLegCount(kind))
+    return schemaError("canonical service leg ordinal is out of range");
+  return ordinal == 0 ? ServiceLegDirection::InitiatorToServer
+                      : ServiceLegDirection::ServerToInitiator;
+}
+
+llvm::Expected<llvm::ArrayRef<ServiceValueRole>>
+dataflow::semantics::getCanonicalServiceLegRoles(
+    ServiceKind kind, dataflow::StructuralOrdinal ordinal) {
+  auto direction = getCanonicalServiceLegDirection(kind, ordinal);
+  if (!direction)
+    return direction.takeError();
+  const ServiceRoleSchema &schema = getServiceRoleSchema(kind);
+  return *direction == ServiceLegDirection::InitiatorToServer
+             ? schema.arguments
+             : schema.results;
+}
+
 llvm::Expected<ServiceKind>
 dataflow::semantics::getMemoryServiceKind(OperationSchemaId actorSchema) {
   switch (actorSchema) {
@@ -595,11 +621,12 @@ ServiceEffect CanonicalService::effect() const {
 }
 
 unsigned CanonicalService::legCount() const {
-  return getKindSchema(kind()).legCount;
+  return static_cast<unsigned>(getCanonicalServiceLegCount(kind()));
 }
 
 ServiceLegDirection CanonicalService::legDirection(unsigned ordinal) const {
-  assert(ordinal < legCount() && "leg ordinal is outside this service kind");
+  assert(ordinal < getCanonicalServiceLegCount(kind()) &&
+         "leg ordinal is outside this service kind");
   return ordinal == 0 ? ServiceLegDirection::InitiatorToServer
                       : ServiceLegDirection::ServerToInitiator;
 }

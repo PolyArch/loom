@@ -2,6 +2,7 @@
 #define LOOM_FABRIC_IR_SYSTEM_SERVICE_CONTRACT_H
 
 #include "Dataflow/IR/DataflowServiceSchema.h"
+#include "Dataflow/IR/DataflowStructuralRefs.h"
 #include "Fabric/IR/MemoryActorContractDomain.h"
 #include "Fabric/IR/MemoryCapabilityDomains.h"
 #include "Fabric/IR/MemoryConsistencyContract.h"
@@ -219,6 +220,49 @@ llvm::Expected<std::vector<std::uint8_t>> encodeCanonicalServiceCapabilitySet(
 llvm::Expected<CanonicalServiceCapabilitySet>
 decodeCanonicalServiceCapabilitySet(llvm::ArrayRef<std::uint8_t> bytes,
                                     mlir::MLIRContext *context);
+
+/// One Fabric-owned candidate-carrier relation for a canonical memory-service
+/// leg. Service schema semantics remain owned by Dataflow.
+class ServiceLegCarrierAttachmentRecord {
+public:
+  static llvm::Expected<ServiceLegCarrierAttachmentRecord> create(
+      FabricMemoryEndpointRef endpoint,
+      dataflow::semantics::ServiceKind kind,
+      dataflow::StructuralOrdinal legOrdinal,
+      std::vector<FabricTransportEndpointRef> carriers);
+  static llvm::Expected<ServiceLegCarrierAttachmentRecord> fromCanonical(
+      FabricMemoryEndpointRef endpoint,
+      dataflow::semantics::ServiceKind kind,
+      dataflow::StructuralOrdinal legOrdinal,
+      std::vector<FabricTransportEndpointRef> carriers);
+
+  const FabricMemoryEndpointRef &endpoint() const { return endpoint_; }
+  dataflow::semantics::ServiceKind kind() const { return kind_; }
+  dataflow::StructuralOrdinal legOrdinal() const { return legOrdinal_; }
+  llvm::ArrayRef<FabricTransportEndpointRef> carriers() const {
+    return carriers_;
+  }
+
+private:
+  ServiceLegCarrierAttachmentRecord(
+      FabricMemoryEndpointRef endpoint,
+      dataflow::semantics::ServiceKind kind,
+      dataflow::StructuralOrdinal legOrdinal,
+      std::vector<FabricTransportEndpointRef> carriers)
+      : endpoint_(std::move(endpoint)), kind_(kind),
+        legOrdinal_(legOrdinal), carriers_(std::move(carriers)) {}
+
+  FabricMemoryEndpointRef endpoint_;
+  dataflow::semantics::ServiceKind kind_;
+  dataflow::StructuralOrdinal legOrdinal_;
+  std::vector<FabricTransportEndpointRef> carriers_;
+};
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeServiceLegCarrierAttachmentRecord(
+    const ServiceLegCarrierAttachmentRecord &record);
+llvm::Expected<ServiceLegCarrierAttachmentRecord>
+decodeServiceLegCarrierAttachmentRecord(llvm::ArrayRef<std::uint8_t> bytes);
 
 struct AddressOffsetTransform {
   std::uint32_t addressWidth = 0;
