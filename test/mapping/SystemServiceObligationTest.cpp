@@ -136,6 +136,40 @@ void requireLegTotality(
   }
 }
 
+void requireUnderLengthKeyRejection(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const loom::mapping::SystemServiceObligationProjection &obligation) {
+  std::vector<std::uint8_t> keyBytes =
+      take(loom::mapping::encodeSystemServiceObligationKey(
+          dataflow.identity(), obligation.key));
+  constexpr std::size_t referenceFrameHeaderBytes =
+      sizeof(std::uint32_t) + sizeof(std::uint64_t);
+  require(keyBytes.size() > referenceFrameHeaderBytes,
+          "decoder fixture requires a nonempty framed reference");
+
+  std::vector<std::uint8_t> truncatedKind(keyBytes.begin(),
+                                          keyBytes.begin() + 3);
+  requireFailureContains(loom::mapping::decodeSystemServiceObligationKey(
+                             truncatedKind, dataflow.identity()),
+                         "truncated variant discriminant");
+
+  std::vector<std::uint8_t> truncatedReferenceFrame(
+      keyBytes.begin(), keyBytes.begin() + referenceFrameHeaderBytes);
+  requireFailureContains(loom::mapping::decodeSystemServiceObligationKey(
+                             truncatedReferenceFrame, dataflow.identity()),
+                         "framed reference exceeds remaining bytes");
+
+  require(!obligation.legs.empty(),
+          "decoder fixture requires one canonical service leg");
+  std::vector<std::uint8_t> truncatedOrdinal =
+      take(loom::mapping::encodeCanonicalServiceLegKey(
+          dataflow.identity(), obligation.legs.front()));
+  truncatedOrdinal.pop_back();
+  requireFailureContains(loom::mapping::decodeCanonicalServiceLegKey(
+                             truncatedOrdinal, dataflow.identity()),
+                         "truncated ordinal or size");
+}
+
 dataflow::CanonicalDataflowProgramView buildView(llvm::StringRef program) {
   static std::vector<std::unique_ptr<mlir::MLIRContext>> contexts;
   static std::vector<dataflow::CanonicalDataflowArtifact> artifacts;
@@ -282,6 +316,7 @@ void exactServiceClosure() {
               legCount == 22,
           "derived service closure has the wrong typed family counts");
   requireLegTotality(dataflow, roots, obligations);
+  requireUnderLengthKeyRejection(dataflow, obligations.front());
 
   std::vector<dataflow::RootThreadLaunchRef> alternateRoots{roots[1], roots[0],
                                                             roots[1]};
