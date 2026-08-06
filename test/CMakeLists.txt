@@ -154,6 +154,7 @@ set(LOOM_TEST_DEPENDS
   loom-pnr-incremental-topology-test
   loom-pnr-index-test
   loom-system-pnr-search-domain-test
+  loom-system-candidate-state-test
   loom-pnr-routing-negotiation-test
   loom-pnr-spatial-action-proposal-test
   loom-pnr-cp-sat-exact-protocol-test

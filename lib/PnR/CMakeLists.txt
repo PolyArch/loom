@@ -47,6 +47,8 @@ add_mlir_library(LoomPnR
   SpatialTagContinuity.cpp
   System/SystemPnrSearchDomain.cpp
   System/SystemPresburgerPartition.cpp
+  System/SystemPnrProblem.cpp
+  System/SystemCandidateState.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR

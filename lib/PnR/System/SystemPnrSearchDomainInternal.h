@@ -31,6 +31,10 @@ canonicalizeAndValidateSystemPartition(
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
     const SystemBindingPartitionPlan &plan);
 
+llvm::Expected<bool>
+systemPresburgerCellsIntersect(const SystemPresburgerCell &lhs,
+                               const SystemPresburgerCell &rhs);
+
 } // namespace loom::pnr::detail
 
 #endif // LOOM_LIB_PNR_SYSTEM_SYSTEMPNRSEARCHDOMAININTERNAL_H

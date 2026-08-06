@@ -294,6 +294,21 @@ llvm::Error validatePartition(llvm::ArrayRef<SystemPresburgerCell> cells,
 
 namespace detail {
 
+llvm::Expected<bool>
+systemPresburgerCellsIntersect(const SystemPresburgerCell &lhs,
+                               const SystemPresburgerCell &rhs) {
+  if (lhs.dimensionCount != rhs.dimensionCount ||
+      lhs.symbolCount != rhs.symbolCount)
+    return invalid("cannot intersect Presburger cells from different spaces");
+  auto left = makeSet(lhs);
+  if (!left)
+    return left.takeError();
+  auto right = makeSet(rhs);
+  if (!right)
+    return right.takeError();
+  return !left->intersect(*right).isIntegerEmpty();
+}
+
 llvm::Expected<std::vector<std::uint8_t>>
 canonicalBindingKeyBytes(const SystemSearchBindingKey &key,
                          const ArtifactIdentity &dataflowIdentity) {
