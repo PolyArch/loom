@@ -6,6 +6,10 @@ add_executable(loom-system-pnr-search-domain-test
   SystemPnrSearchDomainTest.cpp
 )
 
+add_executable(loom-system-pnr-service-domain-test
+  SystemPnrServiceDomainTest.cpp
+)
+
 add_executable(loom-system-candidate-state-test
   SystemCandidateStateTest.cpp
 )
@@ -20,6 +24,18 @@ target_link_libraries(loom-system-pnr-search-domain-test PRIVATE
   MLIRIR
   MLIRParser
   MLIRSCFDialect
+  LLVMSupport
+)
+
+target_link_libraries(loom-system-pnr-service-domain-test PRIVATE
+  LoomADGBuilder
+  LoomPnR
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
   LLVMSupport
 )
 

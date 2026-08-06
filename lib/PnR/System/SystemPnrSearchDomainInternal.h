@@ -35,6 +35,12 @@ llvm::Expected<bool> systemPresburgerCellsIntersect(
     const ::loom::mapping::SystemPresburgerCell &lhs,
     const ::loom::mapping::SystemPresburgerCell &rhs);
 
+llvm::Expected<std::vector<SystemSearchServiceDomain>>
+projectSystemServiceDomains(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots);
+
 } // namespace loom::pnr::detail
 
 #endif // LOOM_LIB_PNR_SYSTEM_SYSTEMPNRSEARCHDOMAININTERNAL_H

@@ -6,6 +6,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Mapping/Artifact/SystemPresburger.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -100,9 +101,35 @@ struct SystemSearchBindingDomain final {
   std::vector<SystemSearchAtom> atoms;
 };
 
+struct SystemTransferSourceTerminalKey final {
+  ::loom::mapping::CanonicalServiceLegKey leg;
+};
+
+struct SystemTransferSinkTerminalKey final {
+  ::loom::mapping::CanonicalServiceLegKey leg;
+  ::dataflow::StructuralOrdinal sinkOrdinal = 0;
+};
+
+using SystemTransferTerminalKey = std::variant<SystemTransferSourceTerminalKey,
+                                               SystemTransferSinkTerminalKey>;
+
+struct SystemSearchTransferTerminalDomain final {
+  SystemTransferTerminalKey key;
+  std::vector<::loom::fabric::FabricTransportEndpointRef>
+      compatibleTransportEndpoints;
+};
+
+struct SystemSearchServiceDomain final {
+  ::loom::mapping::SystemServiceObligationKey key;
+  std::optional<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>
+      compatibleServiceRegions;
+  std::vector<SystemSearchTransferTerminalDomain> transferTerminals;
+};
+
 enum class UnsupportedSystemPnrSearchDomainReason : std::uint32_t {
   DynamicWorkStableKeyProjectionUnavailable = 0,
   RootedGraphMayDomainProjectionUnavailable = 1,
+  ServiceTransformProjectionUnavailable = 2,
 };
 
 class UnsupportedSystemPnrSearchDomain final
@@ -140,6 +167,9 @@ public:
   llvm::ArrayRef<SystemSearchBindingDomain> bindings() const {
     return bindings_;
   }
+  llvm::ArrayRef<SystemSearchServiceDomain> serviceObligations() const {
+    return serviceObligations_;
+  }
   llvm::ArrayRef<std::uint8_t> canonicalViewBytes() const {
     return canonicalViewBytes_;
   }
@@ -152,6 +182,7 @@ private:
       ArtifactRootReference constraintReference,
       std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
       std::vector<SystemSearchBindingDomain> bindings,
+      std::vector<SystemSearchServiceDomain> serviceObligations,
       std::vector<std::uint8_t> canonicalViewBytes,
       SystemPnrSearchDomainDigest digest)
       : dataflowReference_(std::move(dataflowReference)),
@@ -159,6 +190,7 @@ private:
         constraintReference_(std::move(constraintReference)),
         rootThreadLaunches_(std::move(rootThreadLaunches)),
         bindings_(std::move(bindings)),
+        serviceObligations_(std::move(serviceObligations)),
         canonicalViewBytes_(std::move(canonicalViewBytes)),
         digest_(std::move(digest)) {}
 
@@ -167,6 +199,7 @@ private:
   ArtifactRootReference constraintReference_;
   std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches_;
   std::vector<SystemSearchBindingDomain> bindings_;
+  std::vector<SystemSearchServiceDomain> serviceObligations_;
   std::vector<std::uint8_t> canonicalViewBytes_;
   SystemPnrSearchDomainDigest digest_;
 

@@ -423,8 +423,10 @@ llvm::Error appendPeSelectorTraversals(detail::FabricArtifactViewData &data) {
 llvm::Expected<FabricArtifactView>
 buildModuleView(::fabric::ModuleOp root,
                 const detail::FabricCanonicalLabeling &labeling,
-                const ArtifactIdentity &identity) {
+                const ArtifactIdentity &identity,
+                std::shared_ptr<mlir::MLIRContext> contextOwner) {
   detail::FabricArtifactViewData data(identity, FabricRootKind::Module);
+  data.contextOwner = std::move(contextOwner);
   data.entities.resize(labeling.carriers.size());
 
   llvm::DenseMap<Operation *, const detail::FabricEntityCarrier *> carrierByOp;
@@ -765,7 +767,8 @@ strictImportModule(const ArtifactRootReference &reference,
   if (llvm::Error error =
           detail::setModuleBoundaryInventory(root, boundaryProjection))
     return std::move(error);
-  auto view = buildModuleView(root, *labeling, reference.artifact);
+  auto view =
+      buildModuleView(root, *labeling, reference.artifact, parsed->context);
   if (!view)
     return view.takeError();
   if (llvm::Error error = validateUnconditionalHandshakeClosure(*view))
@@ -1137,8 +1140,10 @@ llvm::Expected<FabricArtifactView>
 buildSystemView(::fabric::SystemOp root,
                 const detail::FabricSystemCanonicalLabeling &labeling,
                 const ArtifactIdentity &identity,
-                llvm::ArrayRef<StrictImportResult> importedModules) {
+                llvm::ArrayRef<StrictImportResult> importedModules,
+                std::shared_ptr<mlir::MLIRContext> contextOwner) {
   detail::FabricArtifactViewData data(identity, FabricRootKind::System);
+  data.contextOwner = std::move(contextOwner);
   data.entities.resize(labeling.carriers.size());
   data.importedModules.reserve(importedModules.size());
   for (const StrictImportResult &module : importedModules)
@@ -1502,8 +1507,8 @@ strictImportSystem(const ArtifactRootReference &reference,
     return rewritten.takeError();
   if (*rewritten != decoded.canonicalMlirBytecode)
     return invalid("canonical System MLIR bytecode is not byte stable");
-  auto view =
-      buildSystemView(root, *labeling, reference.artifact, importedModules);
+  auto view = buildSystemView(root, *labeling, reference.artifact,
+                              importedModules, parsed->context);
   if (!view)
     return view.takeError();
   return StrictImportResult{std::move(decoded), std::move(*view), {}, {}};

@@ -13,9 +13,14 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
+
+namespace mlir {
+class MLIRContext;
+}
 
 namespace loom::fabric::detail {
 
@@ -104,6 +109,7 @@ struct FabricArtifactViewData {
 
   ArtifactIdentity identity;
   FabricRootKind rootKind = FabricRootKind::Module;
+  std::shared_ptr<mlir::MLIRContext> contextOwner;
   std::vector<FabricEntityViewData> entities;
   std::vector<FabricPointConnectionPayload> pointConnections;
   std::vector<FabricPhysicalTraversalRef> admittedTraversals;

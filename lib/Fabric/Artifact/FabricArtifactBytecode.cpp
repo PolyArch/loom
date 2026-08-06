@@ -44,7 +44,7 @@ parseFabricBytecodeModule(llvm::ArrayRef<std::uint8_t> bytes) {
   DialectRegistry registry;
   registry.insert<::fabric::FabricDialect>();
   auto context =
-      std::make_unique<MLIRContext>(registry, MLIRContext::Threading::DISABLED);
+      std::make_shared<MLIRContext>(registry, MLIRContext::Threading::DISABLED);
   context->loadAllAvailableDialects();
 
   llvm::StringRef byteString(reinterpret_cast<const char *>(bytes.data()),

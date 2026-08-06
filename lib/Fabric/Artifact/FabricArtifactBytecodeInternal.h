@@ -19,7 +19,7 @@ class Operation;
 namespace loom::fabric::detail {
 
 struct ParsedFabricBytecodeModule {
-  std::unique_ptr<mlir::MLIRContext> context;
+  std::shared_ptr<mlir::MLIRContext> context;
   mlir::OwningOpRef<mlir::ModuleOp> module;
 };
 
