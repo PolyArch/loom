@@ -462,7 +462,7 @@ The only memory-service ownership chain is:
 ```text
 Canonical logical service
   -> SpatialMapping local service or explicit boundary proxy
-  -> Fabric module-to-AccCore attachment
+  -> Fabric memory spatial_attachment endpoint pair
   -> SystemMapping ServiceRealization
   -> system provider service or explicit external provider
 ```
@@ -470,8 +470,10 @@ Canonical logical service
 A Spatial-local service that completes the operation produces no system
 obligation. A boundary proxy creates an operation-service obligation, and
 SystemMapping uniquely selects the system route, provider region, and address
-transform. Partial closure may end only at an explicit external provider; it
-must not pretend that a proxy is final storage.
+transform within the service/transform closure of the attachment-bound System
+service endpoint. It does not select or replace that endpoint. Partial closure
+may end only at an explicit external provider; it must not pretend that a proxy
+is final storage.
 
 Whether service is local or crosses a manager endpoint does not change the
 runtime request schema. Both use the Runtime ABI's typed

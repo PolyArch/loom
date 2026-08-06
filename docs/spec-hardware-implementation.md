@@ -26,7 +26,7 @@ HardwareImplementation {
 }
 ```
 
-`fabric_ref` is an exact `loom.fabric 2.0` System root and
+`fabric_ref` is an exact `loom.fabric 3.0` System root and
 `configuration_abi_ref` is an exact `loom.configuration_abi 2.0` root bound to
 that same System. Imported Module internals referenced by interfaces, activity,
 configuration, memory, recipe, or external bindings use exact
@@ -650,7 +650,7 @@ as a complete implementation.
 
 These bindings are downstream `HardwareImplementation` facts. They are not
 Fabric `ImplementationInput` dependencies and cannot be used to make that
-reserved-unavailable `loom.fabric 2.x` role legal. An Interconnect
+reserved-unavailable `loom.fabric 3.x` role legal. An Interconnect
 Implementation remains self-contained apart from its exact RefinedSystem root;
 provider-owned external implementation state is selected and validated here.
 

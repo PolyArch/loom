@@ -341,14 +341,23 @@ those endpoints is a hardware-topology fact. Copying it into Mapping would let
 two mappings disagree about the same Fabric and would force Mapping identity to
 repeat capability and payload facts.
 
-The frozen search domain therefore derives terminal candidates from the exact
+The frozen search domain therefore follows the selected SpatialMapping memory
+endpoint through its exact Fabric spatial attachment, then derives terminal
+candidates from the role-selected member of that fixed endpoint pair and its
 Fabric-owned service-leg carrier relation. CandidateState chooses ordinary
 transport terminals and traversals, and the persistent RouteTree records only
 that selected route. Final verification repeats the same derivation from the
-exact Fabric. `MessageTransfer` needs no projection because its service
-endpoint already is a transport endpoint. Protocol subchannels and encodings
-remain a later Interconnect Implementation refinement, so neither PnR nor the
-Mapping artifact becomes a protocol owner.
+exact Fabric.
+`MessageTransfer` needs no projection because its service endpoint already is
+a transport endpoint. Protocol subchannels and encodings remain a later
+Interconnect Implementation refinement, so neither PnR nor the Mapping
+artifact becomes a hardware-topology or protocol owner.
+
+The same boundary applies to service targets. Mapping may choose a compatible
+region or consistency domain exposed through the bound endpoint's explicit
+service/transform closure, but it cannot use capability equivalence to jump to
+another endpoint. This keeps optimization choices in Mapping while the
+physical association remains one Fabric fact.
 
 The relation cites rather than copies the Dataflow-owned structural ordinal
 domain and the existing `CanonicalServiceLegKey` framing. A Fabric-local leg

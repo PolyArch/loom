@@ -254,7 +254,7 @@ cannot provide an assignment implicitly.
 For `instantiate`, each child handle must belong to `target` and each parent
 handle must belong to the receiving builder. The bindings must form the exact
 total same-kind correspondence required by `docs/spec-fabric-instantiate.md`.
-The two-argument overload is not retained for `loom.fabric 2.0`; a target with
+The two-argument overload is not retained for `loom.fabric 3.0`; a target with
 no slots is expressed by an explicit empty range rather than an implicit
 default.
 

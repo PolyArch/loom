@@ -834,19 +834,29 @@ The child is keyed by its `MemoryExposureRef` and provider terminal and has no
 `ServiceMemberRef`, service leg, or independent ID. Missing, extra, duplicate,
 or wrong-owner exposure children are completeness failures.
 
+The selected service region or consistency domain must belong to the explicit
+service/transform closure rooted at the System service endpoint bound by the
+corresponding memory `spatial_attachment`. A target binding selects within
+that closed domain; it never selects or replaces the endpoint itself.
+
 A fence plan contains exactly one `ConsistencyTarget`; its selected domain
 must cover all constrained effects in that execution context. A
 `TransferLegRealization` binds one transfer leg derived from the Canonical
 Service Schema to a flat `RouteTree` over system physical traversals. The
-route tree itself owns terminal endpoint choices. Protocol packets, flits,
-headers, concrete virtual-channel encoding, and implementation-specific bus
-encoding remain owned by the selected interconnect implementation.
+route tree selects transport terminals only within the role-selected carrier
+sets of the exact Fabric-bound endpoint pair; it does not choose that pair.
+Protocol packets, flits, headers, concrete virtual-channel encoding, and
+implementation-specific bus encoding remain owned by the selected interconnect
+implementation.
 
 For `MessageTransfer`, the terminal domain is derived directly from matching
 transport-plane service endpoints. For a memory or fence leg, the terminal
-domain is derived from the selected memory-service endpoint and the exact
-Fabric-owned `ServiceLegCarrierAttachment` row for its kind and schema-local
-leg ordinal. The selected `RouteTree` stores only its existing transport
+domain is derived from the exact SpatialCore memory endpoint and System service
+endpoint pair owned by the memory-plane `spatial_attachment`. Canonical leg
+direction and endpoint roles select one endpoint for each terminal, then that
+endpoint's Fabric-owned `ServiceLegCarrierAttachment` row supplies the carrier
+set for the kind and schema-local leg ordinal. The selected `RouteTree` stores
+only its existing transport
 terminal references and traversals. It does not copy the attachment row,
 memory endpoint, capability domain, payload, width, or protocol, and no new
 ServiceRealization child kind is introduced.

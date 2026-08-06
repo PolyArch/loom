@@ -216,17 +216,24 @@ SystemSearchAtomDomains {
 For a `SystemTransferTerminalKey`, `compatible_transport_endpoints` is derived
 without a target-owned pairing table. A `MessageTransfer` terminal uses the
 matching transport-plane service endpoint directly. A memory or fence
-terminal first resolves each compatible memory-service endpoint and its exact
-capability, then uses only that Fabric root's
-`ServiceLegCarrierAttachment(endpoint, kind, leg_ordinal)` carrier set.
+terminal first resolves the exact occurrence-qualified SpatialCore memory
+endpoint selected by its imported SpatialMapping, then follows its unique
+Fabric `spatial_attachment` to the bound System service endpoint. This fixes
+the complete endpoint pair. Canonical leg direction, the pair's complementary
+roles, and whether the queried terminal is source or destination select exactly
+one member of that pair. Only the selected endpoint's exact capability and
+`ServiceLegCarrierAttachment(endpoint, kind, leg_ordinal)` carrier set enter
+that terminal domain.
 Direction and payload compatibility are recomputed from endpoint role, the
 Canonical Service leg, and the capability domain. The singular payload width
 in the resulting System `RouteQuery` is the nonpersistent maximum-width
 service-leg envelope owned by the
 [Service-Leg Carrier Attachment](spec-fabric-system-adg.md#service-leg-carrier-attachment)
-contract. `H` neither copies those facts nor infers a carrier from entity
-ownership, endpoint ordinals, equal width, protocol names, or physical
-targets. An empty derived carrier union is proven infeasibility.
+contract. `H` neither copies those facts nor chooses either memory endpoint by
+capability search. It does not infer a carrier from entity ownership,
+endpoint ordinals, equal width, protocol names, or physical targets. A missing
+binding, incompatible bound endpoint, or empty derived carrier set is proven
+infeasibility.
 
 For each service obligation, `H` carries only the target-domain field selected
 by its exact obligation-key variant. A logical-memory operation obligation has
@@ -234,9 +241,12 @@ by its exact obligation-key variant. A logical-memory operation obligation has
 `compatible_consistency_domains`, derived from the matching
 `FenceCapabilityDomain` records and the exact Dataflow-owned fence effects; a
 `MessageTransfer` obligation has neither field. The two operation target
-domains are mutually exclusive. An empty applicable domain is proven
-infeasibility, not permission to substitute a memory region, manager endpoint,
-or candidate-private target.
+domains are mutually exclusive. Both memory-operation domains are restricted
+to the exact bound System service endpoint and its explicit service/transform
+closure. Capability compatibility can filter regions or consistency domains
+within that closure; it cannot introduce another endpoint. An empty applicable
+domain is proven infeasibility, not permission to substitute a memory region,
+manager endpoint, or candidate-private target.
 
 The owner-specific view descriptor identity is
 `loom.system_pnr_search_domain`, version 2.0. Its exact descriptor bytes are

@@ -159,7 +159,7 @@ AccCore = InstructionCore + SpatialCore
 ```
 
 Both HostCore and AccCore InstructionCore use one closed Architectural
-Contract. `loom.fabric 2.x` has one ISA variant, `RiscV`; adding another ISA is
+Contract. `loom.fabric 3.x` has one ISA variant, `RiscV`; adding another ISA is
 a schema change rather than an open string or opaque payload:
 
 ```text
@@ -1011,9 +1011,17 @@ fabric.system.connection
   exact destination endpoint or input-port reference
 
 fabric.system.spatial_attachment
-  exact (ImportedModule dependency ordinal,
-         FabricModuleBoundaryEndpointRef)
-  exact AccCore-local SpatialCore endpoint reference
+  Transport {
+    exact (ImportedModule dependency ordinal,
+           FabricModuleBoundaryEndpointRef)
+    exact AccCore-local SpatialCore transport endpoint reference
+  }
+  | Memory {
+    exact (ImportedModule dependency ordinal,
+           FabricModuleBoundaryEndpointRef)
+    exact AccCore-local SpatialCore memory endpoint reference
+    exact SystemServiceEndpointRef
+  }
 
 fabric.system.hardware_domain
   EntityId
@@ -1024,6 +1032,15 @@ fabric.system.hardware_domain
 fabric.system.external_boundary
   EntityId
 ```
+
+The attachment variant is derived from the two typed boundary endpoints; it is
+not a stored plane discriminant. A transport attachment has no System service
+endpoint. A memory attachment has exactly one, and that endpoint is the sole
+Fabric-owned continuation of the occurrence-qualified SpatialCore memory
+endpoint into the System service topology. Its plane, complementary role, and
+capability domain must be compatible with the SpatialCore endpoint. Capability
+equality, owner identity, entity order, or a unique candidate observed by one
+consumer cannot substitute for the explicit reference.
 
 `CanonicalServiceCapability` binds one exact Canonical Service kind, one
 operation-relative `Initiate | Serve` role, and a closed accepted access or
@@ -1234,7 +1251,7 @@ complete typed facts used by RTL and constraint derivation.
 
 Every stateful imported Module owner obtains exactly one effective Clock and
 the Reset coverage required by its exact resource contract through the slot
-relation. `loom.fabric 2.0` admits no implicit resetless stateful owner. A
+relation. `loom.fabric 3.0` admits no implicit resetless stateful owner. A
 backend cannot supply a default Reset contract or infer one from Clock
 membership.
 
@@ -1255,8 +1272,11 @@ or pattern.
 
 Connections are directed and one-to-one from one output to one input. Fanout,
 fan-in, multicast, arbitration, buffering, conversion, and protocol crossing
-must be represented by explicit resources and transfer patterns. A
-`spatial_attachment` is likewise one-to-one and has no hidden behavior.
+must be represented by explicit resources and transfer patterns. A transport
+`spatial_attachment` is one-to-one between its Module and occurrence faces. A
+memory attachment additionally binds that occurrence face to exactly one
+System service endpoint. Neither variant has hidden behavior, and Mapping
+cannot replace or select the bound endpoint.
 
 Every System operation-service reference in a connection, transform, or domain
 resolves through a `SystemServiceEndpointRef` at ordinal zero.
@@ -1297,7 +1317,7 @@ module-payload finalization. This provider-availability failure does not alter
 the stable root-kind ordinal or permit the reserved-unavailable
 `ImplementationInput` dependency role.
 
-In `loom.fabric 2.x`, the protocol-schema identity is a closed root-local schema
+In `loom.fabric 3.x`, the protocol-schema identity is a closed root-local schema
 tag interpreted by the typed interconnect implementation body. It is not an
 external Artifact reference and does not authorize a generic implementation
 dependency. The root has exactly one direct `RefinedSystem` dependency and no
@@ -1363,9 +1383,12 @@ canonical importer/finalizer rejects duplicate point connections, duplicate
 hardware-domain references, duplicate domain members, conflicting same-kind
 membership, duplicate crossing fields for one carrier, wrong-kind typed domain
 refinements, and any connection or attachment hidden from the complete
-relation. It also rejects invalid or foreign service-leg attachment endpoints,
-unsupported service kinds, out-of-range leg ordinals, direction or
-payload-domain incompatibility, missing memory-service leg coverage, and every
+relation. It rejects a memory spatial attachment with a missing, foreign,
+same-role, wrong-plane, or capability-incompatible System service endpoint and
+a transport spatial attachment carrying any System service endpoint. It also
+rejects invalid or foreign service-leg attachment endpoints, unsupported
+service kinds, out-of-range leg ordinals, direction or payload-domain
+incompatibility, missing memory-service leg coverage, and every
 `MessageTransfer` attachment. These checks are root validation, not optional
 consumer policy.
 
@@ -1373,7 +1396,10 @@ consumer policy.
 
 Anchor-level validation should cover:
 
-* exact module-to-AccCore attachment coverage and typed continuity;
+* exact module-to-AccCore attachment coverage and typed continuity, including
+  one required compatible System service endpoint on every memory attachment,
+  no such endpoint on a transport attachment, and rejection of missing,
+  foreign, same-role, wrong-plane, or capability-incompatible bindings;
 * one derived InstructionCore context whose atomic Fabric-owned execution use
   pattern, initial state, capacity, requester order, and exact grant contract
   reject a Mapping-defined scheduler or split claim;

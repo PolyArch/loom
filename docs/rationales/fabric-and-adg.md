@@ -248,6 +248,28 @@ direct inventories because their ordered port topology is intrinsic to those
 resources. They are not operation-service endpoints and collapsing them into
 service-endpoint entities would erase a real structural distinction.
 
+## Why A Memory Spatial Attachment Names Its System Service Endpoint
+
+A Module memory boundary and its occurrence-qualified SpatialCore memory
+endpoint describe only the two faces of one imported Module. They do not say
+which System service endpoint continues that memory path. Capability matching
+cannot recover the missing topology: two endpoints may intentionally expose
+the same capability while connecting to different services, transforms, or
+physical networks.
+
+The memory variant of the existing spatial attachment therefore names the
+exact System service endpoint. This adds the one missing fact to the relation
+that already owns the Module-to-occurrence correspondence. A second attachment
+table would split one physical relation across two owners and require another
+coverage proof. Letting Mapping choose among matching endpoints would instead
+make a software-placement artifact define hardware wiring. Transport
+attachments need no third endpoint and retain their two-face form.
+
+The old 2.x payload cannot be upgraded by selecting the only endpoint visible
+on one host: uniqueness is ambient state, not persisted hardware semantics.
+The closed relation consequently enters through a Fabric major-version
+boundary and fails closed rather than preserving an inference path.
+
 ## Why Memory-Service Legs Need An Explicit Carrier Relation
 
 A memory endpoint and a transport endpoint are deliberately different planes.
@@ -326,7 +348,7 @@ its efficient projection.
 An ordinal alone does not define the owner, schema, root kind, local target,
 or use of an implementation input. Reusing HardwareImplementation would create
 a dependency cycle, while broadening ImplementationPlatform would make it a
-generic IP container. Fabric 2.0 therefore recognizes the stable wire ordinal
+generic IP container. Fabric 3.0 therefore recognizes the stable wire ordinal
 but rejects authoring and import before any store lookup.
 
 This fail-closed reservation preserves format diagnosis without pretending

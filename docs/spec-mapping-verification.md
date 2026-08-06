@@ -398,17 +398,19 @@ Using that projection, the base verifier checks:
   logical-memory owner, with no exposure admitted as a `ServiceMemberRef` or
   assigned a service leg;
 * exact derivation of each memory or fence leg's source and sink terminal
-  domains from the selected memory endpoint and Fabric-owned
-  `ServiceLegCarrierAttachment`, including endpoint role, canonical leg
-  direction, and capability-domain compatibility, with no attachment row used
-  for `MessageTransfer`;
+  domains from the SpatialMapping-selected memory endpoint, its unique Fabric
+  `spatial_attachment` endpoint pair, and each role-selected
+  `ServiceLegCarrierAttachment`, including canonical leg direction and
+  capability-domain compatibility, with no attachment row used for
+  `MessageTransfer`;
 * reachable execution contexts, complete plan selection, valid service
   targets, canonical service legs, flat route-tree continuity, multicast
   ownership, and physical refinements;
 * total selection of one legal source and every legal sink terminal by each
   service-leg RouteTree, rejection of a terminal outside its exact attachment
-  domain, and no copied memory endpoint, capability ordinal, payload, width,
-  or protocol field in Mapping;
+  domain, rejection of a service target outside the bound endpoint's explicit
+  service/transform closure, and no copied memory endpoint, capability ordinal,
+  payload, width, or protocol field in Mapping;
 * one exact MemoryConsistencyDomain target for each fence plan, compatible
   with its synchronization scope and all constrained memory effects;
 * complete System ResourceUse ownership, exact `ServicePlanElementRef`

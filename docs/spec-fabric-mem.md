@@ -255,7 +255,7 @@ performance comparisons.
 
 ### Persistent Capability Schema
 
-`loom.fabric 2.0` persists one closed typed relation. It does not persist an
+`loom.fabric 3.0` persists one closed typed relation. It does not persist an
 exact actor geometry per alternative and does not replace domain records with
 counts or generic integer properties.
 
@@ -335,8 +335,8 @@ InactiveLaneSemantics = NotApplicable(0) | Suppress(1)
                       | SuppressAndZeroFill(2)
 ```
 
-These tags were introduced by `loom.fabric 1.0` and retain the same values in
-`loom.fabric 2.0`. They do not inherit C++ enum
+These tags were introduced by `loom.fabric 1.0` and retain the same values
+through `loom.fabric 3.0`. They do not inherit C++ enum
 ordinals, source declaration order, or printer spelling. A codec must reject
 an unknown tag rather than preserve it as an opaque future value.
 
@@ -554,7 +554,7 @@ MemoryPortTransactionProjection =
 ```
 
 The projection tags above were introduced by `loom.fabric 1.0` and retain the
-same values in `loom.fabric 2.0`. They do
+same values through `loom.fabric 3.0`. They do
 not inherit a C++ enum ordinal or printer spelling, and an unknown tag is
 invalid.
 
