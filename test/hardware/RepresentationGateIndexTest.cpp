@@ -432,6 +432,27 @@ void validityIsEstablishedOverTheWholeClosure(
                       "module helper(input a); endmodule\n"},
                      {"netlist/b_invalid.v",
                       "module other(input a); assign = a; endmodule\n"}}));
+
+  // A subset violation must not mask an intrinsic elaboration error in
+  // another unit, in either canonical unit order.
+  expectInvalid("gate-subset-after-intrinsic-error-blobs",
+                tryBuildGateIndexFromUnits(
+                    root, "gate-subset-after-intrinsic-error-blobs",
+                    {{"netlist/a_elab.v",
+                      "module other; wire w; assign w = missing_name; "
+                      "endmodule\n"},
+                     {"netlist/b_subset.v",
+                      "module top(input a, b, output y); "
+                      "assign y = a & b; endmodule\n"}}));
+  expectInvalid("gate-subset-before-intrinsic-error-blobs",
+                tryBuildGateIndexFromUnits(
+                    root, "gate-subset-before-intrinsic-error-blobs",
+                    {{"netlist/a_subset.v",
+                      "module top(input a, b, output y); "
+                      "assign y = a & b; endmodule\n"},
+                     {"netlist/b_elab.v",
+                      "module other; wire w; assign w = missing_name; "
+                      "endmodule\n"}}));
 }
 
 void gateLanguageValidityPrecedesSubsetAdmission(

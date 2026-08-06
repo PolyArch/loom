@@ -160,6 +160,8 @@ slang::parsing::LexerOptions lexerOptions(LanguageVersion version) {
 slang::parsing::PreprocessorOptions
 preprocessorOptions(LanguageVersion version) {
   slang::parsing::PreprocessorOptions options;
+  // isLanguageError relies on this zero depth: the include-depth report can
+  // then only come from the descriptor's fixed no-follow policy.
   options.maxIncludeDepth = 0;
   options.languageVersion = version;
   options.predefineSource = "<api>";
