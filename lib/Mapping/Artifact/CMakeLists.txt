@@ -9,6 +9,8 @@ add_library(LoomMappingArtifact
   SpatialProgressAnalysis.cpp
   SpatialMappingTagAssignments.cpp
   SpatialMappingMemoryImport.cpp
+  SystemMappingConstraintSet.cpp
+  SystemMappingConstraintSetBuilder.cpp
   TechMappingCanonicalKey.cpp
   TechMappingComputeVerification.cpp
   TechMappingArtifact.cpp

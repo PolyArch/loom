@@ -136,6 +136,7 @@ set(LOOM_TEST_DEPENDS
   loom-pointer-service-boundary-test
   loom-frontend-payload-framing-test
   loom-mapping-artifact-test
+  loom-system-mapping-constraint-set-test
   loom-configured-hardware-projection-test
   loom-tech-mapping-artifact-test
   loom-tech-mapping-config-test

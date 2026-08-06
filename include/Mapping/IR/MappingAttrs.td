@@ -37,6 +37,16 @@ def Mapping_RootedGraphLaunchRefAttr
           "RootedGraphLaunchRef", "rooted_graph_launch_ref",
           "Dataflow-owned rooted graph launch reference">;
 
+def Mapping_RootThreadLaunchRefAttr
+    : Mapping_CanonicalBytesAttr<
+          "RootThreadLaunchRef", "root_thread_launch_ref",
+          "Dataflow-owned root thread launch reference">;
+
+def Mapping_ArtifactRootReferenceAttr
+    : Mapping_CanonicalBytesAttr<
+          "ArtifactRootReference", "artifact_root_reference",
+          "exact Common ArtifactRootReference framing bytes">;
+
 def Mapping_LogicalMemoryRootRefAttr
     : Mapping_CanonicalBytesAttr<
           "LogicalMemoryRootRef", "logical_memory_root_ref",

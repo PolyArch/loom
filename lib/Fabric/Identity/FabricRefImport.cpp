@@ -216,6 +216,36 @@ FabricArtifactView::boundaryOccurrences() const {
   return storage_->boundaryOccurrences;
 }
 
+llvm::ArrayRef<HostCoreOccurrenceRef>
+FabricArtifactView::hostCoreOccurrences() const {
+  return storage_->hostCoreOccurrences;
+}
+
+llvm::ArrayRef<AccCoreOccurrenceRef>
+FabricArtifactView::accCoreOccurrences() const {
+  return storage_->accCoreOccurrences;
+}
+
+llvm::ArrayRef<SystemMemoryServiceRef>
+FabricArtifactView::systemMemoryServices() const {
+  return storage_->systemMemoryServices;
+}
+
+llvm::ArrayRef<SystemServiceEndpointRef>
+FabricArtifactView::systemServiceEndpoints() const {
+  return storage_->systemServiceEndpoints;
+}
+
+llvm::ArrayRef<SystemServiceTransformRef>
+FabricArtifactView::systemServiceTransforms() const {
+  return storage_->systemServiceTransforms;
+}
+
+llvm::ArrayRef<ExternalBoundaryRef>
+FabricArtifactView::externalBoundaries() const {
+  return storage_->externalBoundaries;
+}
+
 std::optional<FabricBoundaryTagContinuityPointView>
 FabricArtifactView::boundaryTagContinuityPoint(
     FabricBoundaryOccurrenceRef boundary) const {
@@ -1376,6 +1406,12 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
   std::vector<FabricSwitchOccurrenceRef> switchOccurrences;
   std::vector<FabricFifoOccurrenceRef> fifoOccurrences;
   std::vector<FabricBoundaryOccurrenceRef> boundaryOccurrences;
+  std::vector<HostCoreOccurrenceRef> hostCoreOccurrences;
+  std::vector<AccCoreOccurrenceRef> accCoreOccurrences;
+  std::vector<SystemMemoryServiceRef> systemMemoryServices;
+  std::vector<SystemServiceEndpointRef> systemServiceEndpoints;
+  std::vector<SystemServiceTransformRef> systemServiceTransforms;
+  std::vector<ExternalBoundaryRef> externalBoundaries;
   std::vector<FabricTransportEndpointRef> transportEndpoints;
   std::vector<FabricFuTemplateRef> fuTemplates;
   std::vector<FabricMemoryEngineTemplateRef> memoryEngineTemplates;
@@ -1412,13 +1448,29 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
       transportOwner = FabricTransportEndpointOwnerRef::of(
           FabricBoundaryOccurrenceRef(entityId));
       break;
+    case FabricEntityKind::HostCoreOccurrence:
+      hostCoreOccurrences.emplace_back(entityId);
+      break;
+    case FabricEntityKind::AccCoreOccurrence:
+      accCoreOccurrences.emplace_back(entityId);
+      break;
+    case FabricEntityKind::SystemMemoryService:
+      systemMemoryServices.emplace_back(entityId);
+      break;
     case FabricEntityKind::SystemServiceEndpoint:
+      systemServiceEndpoints.emplace_back(entityId);
       transportOwner = FabricTransportEndpointOwnerRef::of(
           SystemServiceEndpointRef(entityId));
+      break;
+    case FabricEntityKind::SystemServiceTransform:
+      systemServiceTransforms.emplace_back(entityId);
       break;
     case FabricEntityKind::SystemTransportResource:
       transportOwner = FabricTransportEndpointOwnerRef::of(
           SystemTransportResourceRef(entityId));
+      break;
+    case FabricEntityKind::ExternalBoundary:
+      externalBoundaries.emplace_back(entityId);
       break;
     default:
       break;
@@ -1461,6 +1513,12 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
   storage->switchOccurrences = std::move(switchOccurrences);
   storage->fifoOccurrences = std::move(fifoOccurrences);
   storage->boundaryOccurrences = std::move(boundaryOccurrences);
+  storage->hostCoreOccurrences = std::move(hostCoreOccurrences);
+  storage->accCoreOccurrences = std::move(accCoreOccurrences);
+  storage->systemMemoryServices = std::move(systemMemoryServices);
+  storage->systemServiceEndpoints = std::move(systemServiceEndpoints);
+  storage->systemServiceTransforms = std::move(systemServiceTransforms);
+  storage->externalBoundaries = std::move(externalBoundaries);
   storage->transportEndpoints = std::move(transportEndpoints);
   storage->fuTemplates = std::move(fuTemplates);
   storage->memoryEngineTemplates = std::move(memoryEngineTemplates);

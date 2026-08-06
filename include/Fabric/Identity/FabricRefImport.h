@@ -326,6 +326,12 @@ public:
   llvm::ArrayRef<FabricSwitchOccurrenceRef> switchOccurrences() const;
   llvm::ArrayRef<FabricFifoOccurrenceRef> fifoOccurrences() const;
   llvm::ArrayRef<FabricBoundaryOccurrenceRef> boundaryOccurrences() const;
+  llvm::ArrayRef<HostCoreOccurrenceRef> hostCoreOccurrences() const;
+  llvm::ArrayRef<AccCoreOccurrenceRef> accCoreOccurrences() const;
+  llvm::ArrayRef<SystemMemoryServiceRef> systemMemoryServices() const;
+  llvm::ArrayRef<SystemServiceEndpointRef> systemServiceEndpoints() const;
+  llvm::ArrayRef<SystemServiceTransformRef> systemServiceTransforms() const;
+  llvm::ArrayRef<ExternalBoundaryRef> externalBoundaries() const;
 
   /// Derive the exact continuity action of one validated boundary occurrence.
   /// Writers have no incoming tagged domain, removers have no outgoing tagged

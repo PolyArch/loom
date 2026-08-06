@@ -23,6 +23,12 @@ struct FabricArtifactView::Storage {
   std::vector<FabricSwitchOccurrenceRef> switchOccurrences;
   std::vector<FabricFifoOccurrenceRef> fifoOccurrences;
   std::vector<FabricBoundaryOccurrenceRef> boundaryOccurrences;
+  std::vector<HostCoreOccurrenceRef> hostCoreOccurrences;
+  std::vector<AccCoreOccurrenceRef> accCoreOccurrences;
+  std::vector<SystemMemoryServiceRef> systemMemoryServices;
+  std::vector<SystemServiceEndpointRef> systemServiceEndpoints;
+  std::vector<SystemServiceTransformRef> systemServiceTransforms;
+  std::vector<ExternalBoundaryRef> externalBoundaries;
   std::vector<FabricTransportEndpointRef> transportEndpoints;
   std::vector<FabricPhysicalTagMatchDomainView> physicalTagMatchDomains;
   std::map<std::vector<std::uint8_t>, FabricOrdinal> tagMatchDomainByEndpoint;

@@ -1,6 +1,7 @@
 #include "Mapping/IR/MappingAttrs.h"
 
 #include "Common/Artifact.h"
+#include "Common/ArtifactLocalReference.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -100,6 +101,27 @@ mapping::ActorRefAttr::verify(function_ref<InFlightDiagnostic()> emitError,
 LogicalResult mapping::RootedGraphLaunchRefAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
   return verifyDataflowRef<::dataflow::RootedGraphLaunchRef>(emitError, record);
+}
+
+LogicalResult mapping::RootThreadLaunchRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyDataflowRef<::dataflow::RootThreadLaunchRef>(emitError, record);
+}
+
+LogicalResult mapping::ArtifactRootReferenceAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  std::vector<std::uint8_t> bytes = unsignedBytes(record);
+  auto decoded = ::loom::decodeArtifactRootReferencePrefix(bytes);
+  if (!decoded) {
+    emitError() << llvm::toString(decoded.takeError());
+    return failure();
+  }
+  if (decoded->byteCount != bytes.size() ||
+      ::loom::encodeArtifactRootReference(decoded->reference) != bytes) {
+    emitError() << "ArtifactRootReference payload is not canonical";
+    return failure();
+  }
+  return success();
 }
 
 LogicalResult mapping::LogicalMemoryRootRefAttr::verify(

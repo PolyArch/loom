@@ -272,6 +272,24 @@ def Mapping_ConstraintsSpatialOp
   let hasVerifier = 1;
 }
 
+def Mapping_ConstraintsSystemOp
+    : Mapping_Op<"constraints.system", [IsolatedFromAbove, SingleBlock,
+                                         NoTerminator]> {
+  let summary = "complete loom.mapping_constraints 1.0 System root";
+  let arguments = (ins Mapping_ArtifactIdentityAttr:$dataflow,
+      Mapping_ArtifactIdentityAttr:$fabric,
+      ArrayAttr:$root_thread_launches,
+      ArrayAttr:$spatial_mapping_reference_table);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{`dataflow` `(` $dataflow `)`
+                         `fabric` `(` $fabric `)`
+                         `root_thread_launches` `(` $root_thread_launches `)`
+                         `spatial_mapping_reference_table`
+                         `(` $spatial_mapping_reference_table `)`
+                         $body attr-dict}];
+  let hasVerifier = 1;
+}
+
 def Mapping_ConstraintDomainRestrictionOp
     : Mapping_Op<"constraint.domain_restriction",
                  [HasParent<"ConstraintsSpatialOp">]> {

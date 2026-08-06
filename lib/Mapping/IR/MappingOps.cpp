@@ -912,6 +912,33 @@ LogicalResult mapping::ConstraintsSpatialOp::verify() {
   return success();
 }
 
+LogicalResult mapping::ConstraintsSystemOp::verify() {
+  if (failed(rejectUnknownAttributes(
+          *this, {"dataflow", "fabric", "root_thread_launches",
+                  "spatial_mapping_reference_table"})))
+    return failure();
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()))
+    return emitOpError("must contain exactly one declarative block");
+  if (getBody().front().getNumArguments() != 0)
+    return emitOpError("declarative block must not have arguments");
+  if (getRootThreadLaunches().empty())
+    return emitOpError("requires a non-empty root thread launch set");
+  for (Attribute attribute : getRootThreadLaunches()) {
+    if (!isa<mapping::RootThreadLaunchRefAttr>(attribute))
+      return emitOpError(
+          "root_thread_launches contains a non-root-thread reference");
+  }
+  for (Attribute attribute : getSpatialMappingReferenceTable()) {
+    if (!isa<mapping::ArtifactRootReferenceAttr>(attribute))
+      return emitOpError("spatial_mapping_reference_table contains a "
+                         "non-ArtifactRootReference value");
+  }
+  if (!getBody().front().empty())
+    return getBody().front().front().emitOpError(
+        "is not a closed System MappingConstraintSet clause kind");
+  return success();
+}
+
 namespace {
 
 ParseResult parseSpatialProjection(OpAsmParser &parser,

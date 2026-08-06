@@ -98,6 +98,14 @@ void builtinPresetsExpandThroughPublicBuilder() {
         "builtin lost its SpatialCore, AccCore, or System memory inventory");
 
     auto systemView = take(test, loom::fabric::requireSystemRoot(root.view()));
+    require(test,
+            systemView.artifact().hostCoreOccurrences().size() == 1 &&
+                systemView.artifact().accCoreOccurrences().size() ==
+                    expected.accCores &&
+                systemView.artifact().systemMemoryServices().size() == 1 &&
+                systemView.artifact().systemServiceEndpoints().size() == 1 &&
+                systemView.artifact().externalBoundaries().empty(),
+            "builtin System view lost a canonical Mapping candidate inventory");
     const loom::fabric::HostCoreOccurrenceRef host(uniqueEntity(
         test, root.view(), loom::fabric::FabricEntityKind::HostCoreOccurrence));
     const auto *hostArchitecture = systemView.instructionCoreArchitecture(host);
