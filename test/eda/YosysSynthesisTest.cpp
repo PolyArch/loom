@@ -229,6 +229,35 @@ const std::string kBoxWithCellsJson = R"json({
   }
 })json";
 
+const std::string kBoxWithMemoryJson = R"json({
+  "creator": "fixture",
+  "modules": {
+    "AND2X1": {
+      "attributes": {"blackbox": "00000000000000000000000000000001"},
+      "ports": {
+        "A": {"direction": "input", "bits": [0]},
+        "B": {"direction": "input", "bits": [0]},
+        "Y": {"direction": "output", "bits": [0]}
+      },
+      "cells": {},
+      "memories": {"m": {}},
+      "netnames": {}
+    },
+    "top": {
+      "attributes": {},
+      "ports": {
+        "a": {"direction": "input", "bits": [2]},
+        "y": {"direction": "output", "bits": ["0"]}
+      },
+      "cells": {},
+      "netnames": {
+        "a": {"bits": [2]},
+        "y": {"bits": ["0"]}
+      }
+    }
+  }
+})json";
+
 const std::string kPortsAsArrayJson = R"json({
   "creator": "fixture",
   "modules": {
@@ -438,6 +467,7 @@ void structuralConsistencyIsEnforced() {
                     "\"00000000000000000000000000000001\"},\n      "
                     "\"processes\": {\"p\": {}},\n      \"ports\""));
   reject("box-with-cells", kBoxWithCellsJson);
+  reject("box-with-memory", kBoxWithMemoryJson);
 
   // A port object without a direction must fail typed, never crash.
   reject("missing-direction",
@@ -581,6 +611,9 @@ const std::string kMappedDesign = "module top(input a, input b, output y);\n"
 const std::string kConstantDesign = "module top(input a, output y);\n"
                                     "  assign y = 1'b0;\n"
                                     "endmodule\n";
+const std::string kDollarDesign = "module dollar$1(input a, output y);\n"
+                                  "  assign y = a;\n"
+                                  "endmodule\n";
 
 void writeFile(const std::filesystem::path &path, llvm::StringRef contents) {
   std::ofstream stream(path, std::ios::binary | std::ios::trunc);
@@ -593,15 +626,20 @@ int emit(const std::string &root, const std::string &kind) {
   const std::filesystem::path base(root);
   std::filesystem::create_directories(base / "inputs");
   std::filesystem::create_directories(base / "outputs");
+  std::string top = "top";
   if (kind == "mapped")
     writeFile(base / "inputs" / "design.sv", kMappedDesign);
   else if (kind == "constant")
     writeFile(base / "inputs" / "design.sv", kConstantDesign);
-  else
+  else if (kind == "dollar") {
+    writeFile(base / "inputs" / "design.sv", kDollarDesign);
+    top = "dollar$1";
+  } else
     fail("emit", "unknown design kind");
   writeFile(base / "inputs" / "library.lib", syntheticLiberty);
+  writeFile(base / "top.txt", top);
   writeFile(base / "synthesize.ys",
-            take("emit", renderYosysSynthesisDriver("top")));
+            take("emit", renderYosysSynthesisDriver(top)));
   return EXIT_SUCCESS;
 }
 
@@ -616,15 +654,16 @@ std::string readFile(const std::filesystem::path &path) {
 
 int verify(const std::string &root) {
   const std::filesystem::path base(root);
+  const std::string top = readFile(base / "top.txt");
   const YosysStructureFacts pre = take(
       "verify", parseYosysStructureFacts(
                     readFile(base / "outputs" / "rtl-structure.json")));
   const YosysStructureFacts post = take(
       "verify", parseYosysStructureFacts(
                     readFile(base / "outputs" / "netlist-structure.json")));
-  if (llvm::Error error = validateYosysSynthesizedStructure(post, "top"))
+  if (llvm::Error error = validateYosysSynthesizedStructure(post, top))
     fail("verify", llvm::toString(std::move(error)));
-  if (llvm::Error error = compareYosysTopPortGeometry(pre, post, "top"))
+  if (llvm::Error error = compareYosysTopPortGeometry(pre, post, top))
     fail("verify", llvm::toString(std::move(error)));
   return EXIT_SUCCESS;
 }

@@ -190,8 +190,8 @@ parseYosysStructureFacts(llvm::StringRef contents) {
     const llvm::json::Object *module = value.getAsObject();
     if (!module)
       return invalid("structural JSON module is not an object");
-    const llvm::Twine context = llvm::Twine("module '") +
-                                llvm::StringRef(name) + "'";
+    const std::string context =
+        (llvm::Twine("module '") + llvm::StringRef(name) + "'").str();
     YosysModuleFacts facts;
     auto attributes = optionalObject(*module, "attributes", context);
     if (!attributes)
