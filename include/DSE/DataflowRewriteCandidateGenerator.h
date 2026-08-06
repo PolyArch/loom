@@ -60,6 +60,8 @@ adoptResolvedDataflowRewriteGeneratorConfigView(
 
 const CandidateGeneratorDescriptor &
 dataflowRewriteCandidateGeneratorDescriptor();
+const CandidateGeneratorOwnerLineagePayloadContract &
+dataflowRewriteCandidateLineagePayloadContract();
 llvm::Error registerDataflowRewriteCandidateGenerator();
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>

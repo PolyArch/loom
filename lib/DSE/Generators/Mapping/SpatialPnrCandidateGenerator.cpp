@@ -66,7 +66,6 @@ const CandidateGeneratorDescriptor descriptor{
         validateSpatialConfig},
     CandidateGeneratorDeterminism::Deterministic,
     spatialPnrCandidateGeneratorWorkUnits,
-    {},
 };
 
 llvm::Expected<CandidateGeneratorInvocationOutcome>

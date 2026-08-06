@@ -797,7 +797,7 @@ void artifactRoundTripAndReferenceValidation() {
     const auto *lhsSwitch =
         std::get_if<loom::fabric::FabricSwitchTraversalPayload>(
             &lhs.reference.payload);
-    if (!lhsSwitch || lhs.routeClaimCount == 0)
+    if (!lhsSwitch)
       continue;
     for (std::size_t second = first + 1;
          second < frozen->routing().traversals().size(); ++second) {
@@ -805,10 +805,15 @@ void artifactRoundTripAndReferenceValidation() {
       const auto *rhsSwitch =
           std::get_if<loom::fabric::FabricSwitchTraversalPayload>(
               &rhs.reference.payload);
-      if (!rhsSwitch || rhs.routeClaimCount == 0 ||
-          lhsSwitch->owner != rhsSwitch->owner ||
+      if (!rhsSwitch || lhsSwitch->owner != rhsSwitch->owner ||
           lhsSwitch->input != rhsSwitch->input ||
           lhsSwitch->output == rhsSwitch->output)
+        continue;
+      const auto groups = frozen->routing().traversalReplicationGroups();
+      if (groups[first] == loom::pnr::getInvalidPnrIndex() ||
+          groups[first] != groups[second])
+        fail("switch broadcast branches did not share one replication group");
+      if (lhs.routeClaimCount == 0 || rhs.routeClaimCount == 0)
         continue;
       const auto lhsClaims = frozen->routing().traversalClaimKeys().slice(
           lhs.routeClaimOffset, lhs.routeClaimCount);

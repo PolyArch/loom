@@ -68,7 +68,6 @@ const CandidateGeneratorDescriptor descriptor{
         validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
-    {},
 };
 
 llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(

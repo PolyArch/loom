@@ -120,12 +120,12 @@ constexpr PnrCapacityContext arcCountContext{
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.12\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.13\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 12;
+constexpr std::uint32_t cacheSchemaMinor = 13;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.12";
+    "loom.spatial_pnr.freeze.2.13";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
@@ -250,15 +250,41 @@ routeClaimKey(const FabricTraversalActivationGroupView &activationGroup,
   return byteKey(bytes);
 }
 
-std::string
-activationGroupKey(const FabricTraversalActivationGroupView &activationGroup) {
+std::string switchReplicationKey(const FabricSwitchTraversalPayload &payload) {
   std::vector<std::uint8_t> bytes;
-  const auto owner = canonicalFabricBytes(activationGroup.owner);
-  bytes.reserve(12 + owner.size());
-  appendU32Be(bytes, static_cast<std::uint32_t>(activationGroup.kind));
-  appendU64Be(bytes, activationGroup.ordinal);
+  const auto owner = canonicalFabricBytes(payload.owner);
+  bytes.reserve(8 + owner.size());
+  appendU64Be(bytes, payload.input);
   bytes.insert(bytes.end(), owner.begin(), owner.end());
   return byteKey(bytes);
+}
+
+const FabricSwitchTraversalPayload *
+switchTraversalPayload(const FabricPhysicalTraversalRef &traversal) {
+  return std::get_if<FabricSwitchTraversalPayload>(&traversal.payload);
+}
+
+llvm::Expected<PnrIndex>
+internReplicationGroup(llvm::StringMap<PnrIndex> &groups,
+                       const FabricSwitchTraversalPayload &payload) {
+  const std::string key = switchReplicationKey(payload);
+  auto found = groups.find(key);
+  if (found == groups.end()) {
+    auto group = checked(replicationGroupIndexContext, groups.size());
+    if (!group)
+      return group.takeError();
+    found = groups.try_emplace(key, *group).first;
+  }
+  return found->second;
+}
+
+bool matchesSwitchRequester(
+    const FabricTraversalActivationGroupView &activation,
+    const FabricSwitchTraversalPayload &payload) {
+  return activation.kind ==
+             FabricTraversalActivationGroupKind::SwitchRequester &&
+         activation.owner == FabricInventoryOwnerRef::of(payload.owner) &&
+         activation.ordinal == payload.input;
 }
 
 llvm::Error
@@ -1014,7 +1040,15 @@ public:
         firstClaim = false;
         previousClaim = claim;
       }
+      const auto *switchPayload = switchTraversalPayload(traversal.reference);
       PnrIndex expectedReplicationGroup = getInvalidPnrIndex();
+      if (switchPayload) {
+        auto group =
+            internReplicationGroup(expectedReplicationGroups, *switchPayload);
+        if (!group)
+          return group.takeError();
+        expectedReplicationGroup = *group;
+      }
       for (PnrIndex claimOrdinal : routing.traversalClaimKeys().slice(
                traversal.routeClaimOffset, traversal.routeClaimCount)) {
         const FabricTraversalActivationGroupView &activation =
@@ -1022,19 +1056,10 @@ public:
         if (activation.kind !=
             FabricTraversalActivationGroupKind::SwitchRequester)
           continue;
-        const std::string key = activationGroupKey(activation);
-        auto found = expectedReplicationGroups.find(key);
-        if (found == expectedReplicationGroups.end()) {
-          auto group = checked(replicationGroupIndexContext,
-                               expectedReplicationGroups.size());
-          if (!group)
-            return group.takeError();
-          found = expectedReplicationGroups.try_emplace(key, *group).first;
-        }
-        if (expectedReplicationGroup != getInvalidPnrIndex() &&
-            expectedReplicationGroup != found->second)
-          return invalid("one traversal names multiple replication groups");
-        expectedReplicationGroup = found->second;
+        if (!switchPayload ||
+            !matchesSwitchRequester(activation, *switchPayload))
+          return invalid(
+              "switch requester activation disagrees with its traversal");
       }
       if (routing.traversalReplicationGroups()[traversalOrdinal] !=
           expectedReplicationGroup)
@@ -1404,7 +1429,15 @@ private:
       if (!routeClaimOffset)
         return routeClaimOffset.takeError();
       std::vector<PnrIndex> traversalClaimKeys;
+      const auto *switchPayload = switchTraversalPayload(traversal.reference);
       PnrIndex replicationGroup = getInvalidPnrIndex();
+      if (switchPayload) {
+        auto group =
+            internReplicationGroup(replicationGroupByKey, *switchPayload);
+        if (!group)
+          return group.takeError();
+        replicationGroup = *group;
+      }
       for (const FabricTraversalUseView &use : traversal.impliedUses) {
         const auto patternFound =
             patternByCanonicalRef.find(refKey(use.pattern));
@@ -1425,21 +1458,10 @@ private:
           if (use.activationGroup.ordinal != pattern.requester)
             return invalid(
                 "a switch traversal activation disagrees with its requester");
-          {
-            const std::string key = activationGroupKey(use.activationGroup);
-            auto found = replicationGroupByKey.find(key);
-            if (found == replicationGroupByKey.end()) {
-              auto group = checked(replicationGroupIndexContext,
-                                   replicationGroupByKey.size());
-              if (!group)
-                return group.takeError();
-              found = replicationGroupByKey.try_emplace(key, *group).first;
-            }
-            if (replicationGroup != getInvalidPnrIndex() &&
-                replicationGroup != found->second)
-              return invalid("one traversal names multiple replication groups");
-            replicationGroup = found->second;
-          }
+          if (!switchPayload ||
+              !matchesSwitchRequester(use.activationGroup, *switchPayload))
+            return invalid(
+                "a switch requester activation disagrees with its traversal");
           break;
         }
 

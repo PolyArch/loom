@@ -363,17 +363,6 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
     if (unit.unit.ordinal() != index || !isCanonicalAscii(unit.spelling))
       return invalid("work units must be dense canonical records");
   }
-  for (std::size_t index = 0; index < descriptor.projectionSlots.size();
-       ++index) {
-    const CandidateGeneratorProjectionSlotDescriptor &slot =
-        descriptor.projectionSlots[index];
-    if (slot.slot.ordinal() != index || !isCanonicalAscii(slot.semanticRole))
-      return invalid("projection slots must be dense canonical records");
-    if (static_cast<std::uint32_t>(slot.kind) >
-        static_cast<std::uint32_t>(
-            CandidateGeneratorProjectionKind::EvaluationFinding))
-      return invalid("projection slot has an invalid kind");
-  }
   return llvm::Error::success();
 }
 

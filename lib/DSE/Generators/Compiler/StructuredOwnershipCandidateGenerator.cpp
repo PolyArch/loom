@@ -228,7 +228,6 @@ const CandidateGeneratorDescriptor descriptor{
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
-    {},
     &lineageContract,
 };
 

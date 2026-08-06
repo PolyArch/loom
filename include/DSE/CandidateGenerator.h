@@ -99,21 +99,6 @@ private:
   std::uint32_t ordinal_;
 };
 
-class CandidateGeneratorProjectionSlotRef final {
-public:
-  explicit constexpr CandidateGeneratorProjectionSlotRef(std::uint32_t ordinal)
-      : ordinal_(ordinal) {}
-  constexpr std::uint32_t ordinal() const { return ordinal_; }
-
-  friend constexpr bool operator==(CandidateGeneratorProjectionSlotRef lhs,
-                                   CandidateGeneratorProjectionSlotRef rhs) {
-    return lhs.ordinal_ == rhs.ordinal_;
-  }
-
-private:
-  std::uint32_t ordinal_;
-};
-
 struct CandidateGeneratorInputBinding final {
   CandidateGeneratorInputSlotRef slot;
   std::vector<ArtifactRootReference> artifacts;
@@ -143,19 +128,6 @@ enum class CandidateGeneratorDeterminism : std::uint32_t {
 struct CandidateGeneratorWorkUnitDescriptor final {
   CandidateGeneratorWorkUnitRef unit;
   llvm::StringRef spelling;
-};
-
-enum class CandidateGeneratorProjectionKind : std::uint32_t {
-  MappingViolation,
-  MappingMeasure,
-  EvaluationMetric,
-  EvaluationFinding,
-};
-
-struct CandidateGeneratorProjectionSlotDescriptor final {
-  CandidateGeneratorProjectionSlotRef slot;
-  llvm::StringRef semanticRole;
-  CandidateGeneratorProjectionKind kind;
 };
 
 struct CandidateGeneratorOwnerLineagePayloadContract final {
@@ -208,7 +180,6 @@ struct CandidateGeneratorDescriptor final {
   ResolvedDseConfigViewContract resolvedConfigView;
   CandidateGeneratorDeterminism determinism;
   llvm::ArrayRef<CandidateGeneratorWorkUnitDescriptor> workUnits;
-  llvm::ArrayRef<CandidateGeneratorProjectionSlotDescriptor> projectionSlots;
   const CandidateGeneratorOwnerLineagePayloadContract *ownerLineagePayload =
       nullptr;
 

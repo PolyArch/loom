@@ -135,9 +135,6 @@ validateDecisionPayload(llvm::ArrayRef<std::uint8_t> bytes,
   return llvm::Error::success();
 }
 
-const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
-    dataflow::dataflowRewriteDecisionSchemaBytes(), validateDecisionPayload};
-
 const CandidateGeneratorDescriptor descriptor{
     dataflowRewriteCandidateGeneratorKind,
     "compiler.dataflow_rewrite",
@@ -147,8 +144,7 @@ const CandidateGeneratorDescriptor descriptor{
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
-    {},
-    &lineageContract,
+    &dataflowRewriteCandidateLineagePayloadContract(),
 };
 
 const ArtifactRootReference &
@@ -390,6 +386,13 @@ adoptResolvedDataflowRewriteGeneratorConfigView(
 const CandidateGeneratorDescriptor &
 dataflowRewriteCandidateGeneratorDescriptor() {
   return descriptor;
+}
+
+const CandidateGeneratorOwnerLineagePayloadContract &
+dataflowRewriteCandidateLineagePayloadContract() {
+  static const CandidateGeneratorOwnerLineagePayloadContract contract{
+      dataflow::dataflowRewriteDecisionSchemaBytes(), validateDecisionPayload};
+  return contract;
 }
 
 llvm::Error registerDataflowRewriteCandidateGenerator() {

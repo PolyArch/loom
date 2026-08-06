@@ -107,7 +107,6 @@ const CandidateGeneratorDescriptor descriptor{
     ResolvedDseConfigViewContract{configSchema, validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
-    {},
     &lineageContract,
 };
 

@@ -1136,6 +1136,11 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
       imported.view().routeTrees().empty() ||
       imported.view().resourceUses().empty())
     fail("strict SpatialMapping round trip lost selected closure");
+  auto coldTraversalClaims =
+      take(loom::pnr::projectSpatialMappingTraversalClaims(*problem,
+                                                           imported.view()));
+  if (coldTraversalClaims.total != candidate->totalSelectedTraversalClaim())
+    fail("cold Spatial Mapping measure disagrees with Candidate state");
 
   if (temporal) {
     bool observedEnqueue = false;

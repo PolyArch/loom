@@ -71,7 +71,6 @@ const CandidateGeneratorDescriptor descriptor{
         validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
     spatialPnrCandidateGeneratorWorkUnits,
-    {},
 };
 
 struct CachedDataflow final {

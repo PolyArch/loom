@@ -86,6 +86,7 @@ target_link_libraries(loom-root-complete-tech-mapping-generator-test PRIVATE
 target_link_libraries(loom-root-complete-spatial-pnr-generator-test PRIVATE
   LoomADGBuilder
   LoomDSE
+  LoomDSEFeedback
   LoomDSEMappingGenerator
   LoomMappingArtifact
   LoomMappingInspection

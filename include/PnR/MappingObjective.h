@@ -2,16 +2,37 @@
 #define LOOM_PNR_MAPPINGOBJECTIVE_H
 
 #include "Common/ResolvedPnrPolicy.h"
+#include "Dataflow/IR/DataflowStructuralRefs.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <vector>
+
+namespace loom::mapping {
+class SpatialMappingView;
+}
 
 namespace loom::pnr {
 
+class FrozenSpatialPnrProblem;
 class SpatialCandidateState;
+
+struct SpatialMappingTraversalClaimContribution final {
+  ::dataflow::CanonicalGraphProducerEndpointRef logicalNet;
+  std::uint64_t value = 0;
+};
+
+/// Cold, removable reconstruction of the Mapping-owned
+/// TotalSelectedTraversalClaim measure. Each claim is counted once per
+/// selected logical-net RouteTree, matching CandidateState's incremental
+/// net-by-claim owner. The projection is never persisted or used as legality.
+struct SpatialMappingTraversalClaimProjection final {
+  std::uint64_t total = 0;
+  std::vector<SpatialMappingTraversalClaimContribution> logicalNets;
+};
 
 struct MappingObjectiveRegistryDescriptor final {
   llvm::StringRef identity;
@@ -61,6 +82,11 @@ spatialMappingViolationValue(const SpatialCandidateState &candidate,
 /// occupancy; this query does not cache or reconstruct that state.
 std::uint64_t spatialMappingMeasureValue(const SpatialCandidateState &candidate,
                                          MappingMeasureKind kind);
+
+llvm::Expected<SpatialMappingTraversalClaimProjection>
+projectSpatialMappingTraversalClaims(
+    const FrozenSpatialPnrProblem &problem,
+    const ::loom::mapping::SpatialMappingView &mapping);
 
 } // namespace loom::pnr
 
