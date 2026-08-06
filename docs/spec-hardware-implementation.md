@@ -210,10 +210,15 @@ Registry 2.0 admits only hierarchy paths expressible by its locator grammar.
 Every occurrence is explicitly named and scalar. A generate scope may
 contribute a path segment only when it is explicitly named and elaborates to
 one scalar scope. Implicit generate names, generate arrays, instance arrays,
-unnamed occurrences, and any elaborated path requiring an index or an escaped
-identifier are typed `Unsupported`. Cataloged contained declarations are
-directly owned by a reachable module occurrence or an admitted named scalar
-generate scope. Procedure, subroutine, package, class, and named-block locals,
+and any elaborated path requiring an index or an escaped identifier are typed
+`Unsupported`. An occurrence that is legal in the selected language profile
+but has no explicit source identifier, such as an unnamed generate scope or
+an unnamed primitive occurrence, is `Unsupported` because admission cannot
+express a locator for it. A syntactically invalid unnamed module instance is
+not an admission question at all: it is an intrinsic language error that
+`LanguageValid` alone classifies as `Invalid`. Cataloged contained
+declarations are directly owned by a reachable module occurrence or an
+admitted named scalar generate scope. Procedure, subroutine, package, class, and named-block locals,
 and elaboration-only symbols such as genvars, do not enter the locator catalog.
 
 For `systemverilog_rtl`, the exact top is a `Module`; every reachable resolved
@@ -246,11 +251,13 @@ assignment, every net-declaration initializer, and every nonempty explicit
 actual expression on a resolved module, user-defined primitive, or unresolved
 module occurrence. Static parameter values, generate conditions, and
 user-defined primitive truth tables are not electrical connection expressions
-and do not use this grammar. Built-in gate or switch primitives, unnamed
-occurrences, procedures, timing controls, runtime variables or memories,
-behavioral subroutines, and admitted-language connection expressions containing
-arithmetic, bitwise, comparison, logical, conditional, call, cast, or streaming
-operators are typed `Unsupported`.
+and do not use this grammar. Built-in gate or switch primitives, procedures,
+timing controls, runtime variables or memories, behavioral subroutines, and
+admitted-language connection expressions containing arithmetic, bitwise,
+comparison, logical, conditional, call, cast, or streaming operators are typed
+`Unsupported`. A named or unnamed built-in primitive occurrence is covered by
+that primitive exclusion alone; a syntactically unnamed module instance is a
+language error, not a subset violation.
 
 One index operation evaluates two descriptor-owned logical relations over one
 shared set of parse trees, followed by admission and index construction:
@@ -285,8 +292,14 @@ shared set of parse trees, followed by admission and index construction:
   language validity.
 
 The classification decision is total and order-free. Failed `InputIntegrity`
-or failed `LanguageValid` is `Invalid`. An exact-root claim that is absent or
-ambiguous is `Invalid`. A language-valid closure that fails
+or failed `LanguageValid` is `Invalid`. The exact-root claim is evaluated
+mechanically over the complete canonical payload closure: collect every
+definition whose name equals the claimed exact root. Zero candidates are
+`Invalid`, and more than one candidate is `Invalid`. Only exactly one
+candidate proceeds to definition-kind and admission checks, so one legal
+`interface` or `program` named as the exact root is `Unsupported` rather than
+a missing or ambiguous root, and one `Module` continues to the
+fixed-configuration elaboratability rule. A language-valid closure that fails
 `DescriptorAdmitted` is `Unsupported`. Contradictory facts found while
 constructing the index of an admitted closure, such as two objects with one
 canonical locator, are `Invalid`. `Invalid` dominates the complete canonical
