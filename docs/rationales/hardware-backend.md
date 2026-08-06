@@ -189,9 +189,9 @@ HardwareImplementation identity needs.
 The initial locator grammar admits only explicitly named scalar hierarchy.
 Inventing spellings for anonymous primitives, implicit generate blocks, or
 array indices would add a second naming scheme that every importer and report
-adapter must reproduce. Rejecting those cases in version 1.0 keeps names equal
-to source-owned identifiers; a later grammar can add indexed hierarchy only
-when it has one versioned canonical encoding.
+adapter must reproduce. Rejecting those cases in the initial grammar keeps
+names equal to source-owned identifiers; a later grammar can add indexed
+hierarchy only when it has one versioned canonical encoding.
 
 The gate-netlist descriptor uses a conservative structural subset for the same
 reason. A small whitelist of cells, nets, static elaboration, and wiring-only
@@ -215,6 +215,21 @@ would introduce a second language authority and would misclassify legal uses of
 those words as identifiers. The selected profile and pinned frontend therefore
 decide validity once; only a well-formed source can proceed to the structural
 subset check and receive `Unsupported`.
+
+Validity and admission are evaluated in two separated contexts of the same
+frontend over the same parse trees. A single exact-top-forced compilation
+cannot answer both questions: forcing the top makes the frontend report policy
+artifacts - an unconnected top-level `ref` port, an `interface` or `program`
+named as root, an unfollowed `include`, a module that needs a parameter
+override - as errors, which conflates illegal HDL with legal HDL the
+descriptor simply does not admit. The language-validation context applies no
+such policy, so every error it reports is intrinsic to the source. The
+alternative, cancelling the policy artifacts with a table of typed diagnostic
+codes, would create a second, silently growable classification authority that
+every frontend upgrade could perturb; one separated context is the smaller and
+more durable contract. Classification is observable behavior, so the contract
+moved from registry `1.0` to `2.0` without a compatibility path rather than
+keeping two classification regimes.
 
 QoR, pass/fail status, logs, and reports do not enter that artifact. They are
 Evaluation observations or attempt material. This prevents a tool result from

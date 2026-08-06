@@ -129,12 +129,14 @@ RepresentationObjectFacts {
 }
 ```
 
-The initial registry identity is
-`loom.hardware_representation_format`, version `1.0`. Its exact reference bytes
+The registry identity is
+`loom.hardware_representation_format`, version `2.0`. Its exact reference bytes
 are `u64be(identity length) || identity bytes || u32be(major) || u32be(minor) ||
-u32be(format kind)`. Existing format kinds retain their numeric meaning; an
-incompatible indexer, object-fact, or locator contract requires a new
-descriptor version.
+u32be(format kind)`. Existing format kinds retain their numeric meaning. A new
+major version owns an incompatible indexer, object-fact, locator, or
+failure-classification contract; a minor version is reserved for
+backward-compatible additions. A `1.x` reference is never reinterpreted as
+`2.0`: there is no compatibility execution path or alias.
 A canonical JSON reference is exactly the object fields `registry`, `major`,
 `minor`, and `kind` in that order, with the registry string above and canonical
 unsigned integers.
@@ -149,7 +151,7 @@ payload, locator, object fact, unresolved-definition fact, or failure
 classification, the registry version changes. A second semantic identity field
 or provider-private descriptor revision is forbidden.
 
-Registry 1.0 owns these initial format kinds:
+Registry 2.0 owns these initial format kinds:
 
 | Kind | Stable spelling | Admitted root | Payload contract |
 | ---: | --- | --- | --- |
@@ -167,7 +169,7 @@ units are compiled in canonical logical-name order. An unresolved external
 definition is accepted only when the complete HardwareImplementation closes it
 through an exact black-box contract and external implementation binding.
 
-Registry 1.0 has one fixed HDL frontend profile. `systemverilog_rtl` uses IEEE
+Registry 2.0 has one fixed HDL frontend profile. `systemverilog_rtl` uses IEEE
 1800-2017 and `structural_verilog_gate_netlist` uses IEEE 1364-2005. Every
 source or netlist payload is an independent preprocessing compilation unit;
 all admitted declarations then participate in one elaboration library. Units
@@ -204,7 +206,7 @@ inferred from a filename, source order, first definition, or frontend-selected
 root. A frontend-created top instance is not a second indexed object; the exact
 root is classified only as `Module`.
 
-Registry 1.0 admits only hierarchy paths expressible by its locator grammar.
+Registry 2.0 admits only hierarchy paths expressible by its locator grammar.
 Every occurrence is explicitly named and scalar. A generate scope may
 contribute a path segment only when it is explicitly named and elaborates to
 one scalar scope. Implicit generate names, generate arrays, instance arrays,
@@ -250,14 +252,74 @@ behavioral subroutines, and admitted-language connection expressions containing
 arithmetic, bitwise, comparison, logical, conditional, call, cast, or streaming
 operators are typed `Unsupported`.
 
-Failure classification is language-first. Source that is not well formed under
-the descriptor's selected language profile is `Invalid`; in particular,
-SystemVerilog-only assertion syntax is `Invalid` for the IEEE 1364-2005 gate
-descriptor. A source construct is `Unsupported` only after the sole selected
-frontend recognizes a well-formed IEEE 1364-2005 payload closure and the
-construct lies outside the fixed structural subset. The indexer cannot scan
-assertion-like words, retry another language profile, or use a second parser to
-change that classification.
+One index operation evaluates two descriptor-owned logical relations over one
+shared set of parse trees, followed by admission and index construction:
+
+* `InputIntegrity` covers the payload closure contract: exact payload roles,
+  cardinality, canonical order, and media types; `BlobDigest` re-reads through
+  BlobStore; UTF-8, LF-only, and NUL-free text payloads; and a well-formed
+  exact-root locator consistent with the descriptor's admitted root kind.
+* `LanguageValid` covers whether the complete payload closure is well formed
+  under the descriptor's one fixed language profile. Language facts come only
+  from the pinned frontend operating in a language-validation context that
+  applies no descriptor admission policy: the exact root is not preselected,
+  top-level interface and reference ports stay legal, and no default
+  elaboration or top-parameter rule participates. The context covers every
+  unit and every definition in the closure, including definitions no exact
+  root reaches. An intrinsic frontend error - malformed tokens or directives,
+  syntax errors, unnamed instances, connection expressions that are illegal
+  in the selected profile, undeclared identifiers, or invalid constant or
+  default expressions - is a language error wherever it occurs. Descriptor
+  policy never creates language errors; in particular the descriptors never
+  follow `include` directives, so the frontend's report that an include could
+  not be followed under that fixed policy is an admission fact, while a
+  malformed `include` directive is a language error.
+* `DescriptorAdmitted` covers whether a language-valid closure lies inside
+  the descriptor's indexable subset: the exact-root kind and its
+  elaborability under the descriptor's fixed configuration, payload and
+  directive policy, the canonical locator grammar, the named scalar hierarchy
+  rule, the per-descriptor structural subset, the object catalog, and the
+  unknown-module policy. Admission evaluates the complete closure, so an
+  excluded construct is rejected even inside a definition the exact root
+  never uses. The exact root is an admission claim, never a definition of
+  language validity.
+
+The classification decision is total and order-free. Failed `InputIntegrity`
+or failed `LanguageValid` is `Invalid`. An exact-root claim that is absent or
+ambiguous is `Invalid`. A language-valid closure that fails
+`DescriptorAdmitted` is `Unsupported`. Contradictory facts found while
+constructing the index of an admitted closure, such as two objects with one
+canonical locator, are `Invalid`. `Invalid` dominates the complete canonical
+payload closure: the result never depends on payload authoring order,
+frontend diagnostic order, or an admission marker found first. These fixed
+examples pin the boundary:
+
+* a legal, unique `interface` or `program` named as the exact root is
+  `Unsupported`, not `Invalid`;
+* a `ref` port or an interface-typed port on an otherwise legal module is
+  `Unsupported`;
+* a syntactically unnamed module instance such as `leaf(a);` is `Invalid`;
+* a port actual that is not a legal expression in the selected profile, such
+  as `.a(y = a)`, is `Invalid`, while a legal expression that only uses
+  operators outside the admitted wiring grammar, such as `.a(a & b)`, is
+  `Unsupported`;
+* a well-formed `include` directive is `Unsupported` and is never followed;
+  a malformed `include` directive is `Invalid`;
+* an escaped identifier in one unit combined with a syntax error in another
+  unit is `Invalid`;
+* an `interface`, `program`, `checker`, or `class` that the exact root never
+  uses is `Unsupported`, but an intrinsic semantic error inside an unused
+  module is `Invalid`;
+* a missing or ambiguous exact root is `Invalid`;
+* a legal, unique module that cannot elaborate under the descriptor's fixed
+  configuration, for example because it would need a top-level parameter
+  override the descriptor never supplies, is `Unsupported`, while an illegal
+  default or constant expression is `Invalid`;
+* an unknown referenced module remains the only unresolved non-error
+  condition and contributes one canonical `Module` locator with no guessed
+  pin facts; and
+* warnings are nonsemantic: a warning-only closure succeeds, and warnings
+  never enter index facts or identity.
 
 Every admitted `Port` or `Pin` has one fixed positive packed-integral bit-stream
 width and exact direction. An unresolved module occurrence is still indexed as
@@ -278,13 +340,16 @@ unresolved Module locator is closed by exactly one external implementation
 binding. One binding may close several locators; overlap between bindings is
 invalid.
 
-The frontend is configured to retain an unknown referenced module as the one
-descriptor-owned non-error condition described above. Every other parse or
-elaboration error makes the representation invalid. A payload closure that is
-otherwise well formed but uses a construct outside the fixed descriptor
-contract is typed `Unsupported`. Warnings may be reported as nonsemantic
-diagnostics, but they neither reject an otherwise admitted representation nor
-alter its index or identity.
+The pinned frontend retains an unknown referenced module as the one unresolved
+non-error condition. The same parse trees feed the language-validation context
+and the exact-top admission elaboration. There is no second parser, no retried
+language profile, no source rewriting or recovery parse, no source-word
+scanning, no diagnostic-text matching, and no typed-diagnostic-code exception
+table; the language-validation context is separated from admission precisely so
+that descriptor policy artifacts never reach the classification. Assertions and
+other SystemVerilog-only syntax under the IEEE 1364-2005 gate profile are
+`Invalid`, and their illegality is decided by the frontend under the selected
+profile, never by scanning source words.
 
 Indexing reads payload bytes only through BlobStore and is pure: it cannot
 execute a tool, inspect a workdir, or use a local path. The returned index is a
@@ -669,11 +734,16 @@ Anchor tests cover:
 * exact-top-dependent reachability, independent compilation-unit macro scope,
   canonical logical source names, rejection of ambient frontend inputs, and
   warning-invariant index results;
+* the fixed classification matrix: intrinsic language errors are `Invalid`
+  anywhere in the closure and dominate admission rejections in either payload
+  order, a non-module or non-elaboratable exact root is `Unsupported`, and a
+  missing or ambiguous exact root is `Invalid`;
 * RTL Port precedence over a backing net or variable, syntactic
   Register-versus-Memory classification, and rejection of unsupported dynamic
   or interface-like objects;
-* explicitly named scalar hierarchy and generate scopes, with unnamed,
-  arrayed, implicit-name, built-in-primitive, and non-grammar paths rejected;
+* explicitly named scalar hierarchy and generate scopes, with syntactically
+  unnamed occurrences classified `Invalid` and arrayed, implicit-name,
+  built-in-primitive, and non-grammar paths typed `Unsupported`;
 * gate module or named user-defined-primitive Cell and Pin classification,
   Port and Pin precedence over backing objects, wiring-only continuous
   assignments, and rejection of behavioral or operator-bearing structural
