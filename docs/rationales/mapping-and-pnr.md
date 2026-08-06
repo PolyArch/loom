@@ -355,6 +355,13 @@ domain and the existing `CanonicalServiceLegKey` framing. A Fabric-local leg
 integer or codec would create a second authority for the same schema-local
 position without adding a hardware distinction.
 
+System routing needs one scalar width bound even though a service leg contains
+several ordered values. Reusing the Fabric-owned maximum-width envelope gives
+the route search exactly the strongest per-value capacity requirement without
+making Mapping own a tuple layout or one route per role. Each value still obeys
+the no-split rule independently, so taking the maximum cannot legalize a path
+narrower than any value in the leg.
+
 ## Why Placement And Routing Are Coupled
 
 Greedy placement followed by one routing pass cannot escape congestion,

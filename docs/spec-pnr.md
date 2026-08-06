@@ -220,10 +220,13 @@ terminal first resolves each compatible memory-service endpoint and its exact
 capability, then uses only that Fabric root's
 `ServiceLegCarrierAttachment(endpoint, kind, leg_ordinal)` carrier set.
 Direction and payload compatibility are recomputed from endpoint role, the
-Canonical Service leg, and the capability domain. `H` neither copies those
-facts nor infers a carrier from entity ownership, endpoint ordinals, equal
-width, protocol names, or physical targets. An empty derived carrier union is
-proven infeasibility.
+Canonical Service leg, and the capability domain. The singular payload width
+in the resulting System `RouteQuery` is the nonpersistent maximum-width
+service-leg envelope owned by the
+[Service-Leg Carrier Attachment](spec-fabric-system-adg.md#service-leg-carrier-attachment)
+contract. `H` neither copies those facts nor infers a carrier from entity
+ownership, endpoint ordinals, equal width, protocol names, or physical
+targets. An empty derived carrier union is proven infeasibility.
 
 The owner-specific view descriptor identity is
 `loom.system_pnr_search_domain`, version 1.0. Its exact descriptor bytes are
@@ -1134,20 +1137,25 @@ direction, type, width, boundary conversion, and selected configuration.
 Predecessors store only physical traversals.
 
 Width legality is route-wide, not an endpoint-only approximation. The
-software payload width must fit the data field of every selected transport
-endpoint and traversal. Tag fields never contribute payload capacity. In a
-tagged domain, the assigned tag must independently be representable without
-loss by every tag field that still distinguishes the flow. Same-kind physical
+query payload width must fit the data field of every selected transport
+endpoint and traversal. For a canonical multi-value service leg, that one
+query width is the Fabric-owned derived envelope, while the ordered
+`ServiceValue` tokens remain independent values under one transaction and one
+shared route. Tag fields never contribute payload capacity. In a tagged
+domain, the assigned tag must independently be representable without loss by
+every tag field that still distinguishes the flow. Same-kind physical
 connections may widen and later narrow according to Fabric's low-bit-aligned
-rule, but no selected segment may narrow below the software payload width.
-Thus an `i16` transfer may use `bits<32> -> bits<64> -> bits<32>`, but it may
-not use `bits<8>` or borrow the tag field of `bits_tag<8,8>`. These checks are
+rule, but no selected segment may narrow below the query payload width. Thus
+an `i16` transfer may use `bits<32> -> bits<64> -> bits<32>`, but it may not
+use `bits<8>` or borrow the tag field of `bits_tag<8,8>`. These checks are
 structural legality and cannot be relaxed into congestion cost or repaired by
 an implicit adapter.
 
-The same rule applies independently to vector-memory address, data, and mask
-tokens. A route cannot split one token over several endpoints, serialize it by
-convention, or assign one Physical Tag per lane. Any lane or beat
+The no-split and no-serialize rule applies independently to every service
+value, including vector-memory address, data, and mask tokens. A route cannot
+split one value over several endpoints, serialize it by convention, or assign
+one Physical Tag per lane. The maximum-width envelope is not a packed tuple
+and does not authorize a narrower path for any value. Any lane or memory-beat
 decomposition occurs only inside the selected Fabric memory use pattern.
 
 For canonical target domain `T`, the production heuristic is exactly the

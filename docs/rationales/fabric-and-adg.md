@@ -197,6 +197,16 @@ Allowing one carrier in several attachment rows preserves real shared hardware;
 its capacity and arbitration remain visible through transfer patterns and
 resource use rather than being duplicated in the relation.
 
+The required carrier width is the maximum width of the independently
+transported values in the canonical leg, not the sum of their widths. Summing
+would silently invent a packed tuple, field offsets, and an interface layout;
+checking only one selected value would fail to cover the capability domain.
+The maximum is the smallest single routing bound that proves every value fits
+the shared route while leaving transactions, beats, packets, and physical
+serialization with their existing owners. Thus an address64, data128, mask16,
+control0 write request requires a 128-bit carrier envelope rather than a
+208-bit fabricated tuple.
+
 ## Why Fabric Finalization Is Root-Complete
 
 Canonical identity must reflect the complete elaborated hardware, including

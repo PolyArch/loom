@@ -423,12 +423,41 @@ canonical leg direction:
 | `Serve` | transport input | transport output |
 
 For every memory or fence capability and every leg of its exact service kind,
-finalization derives the canonical leg payload over the capability domain and
-retains only carriers whose direction and carrier type represent that entire
-domain. The relation does not copy a workload actor, payload, payload width,
-accepted domain, endpoint role, or protocol name. Compatibility is always
-recomputed from the endpoint capability, Canonical Service Schema, and
-transport endpoint inventory.
+finalization derives the canonical leg payload over the capability domain. A
+leg is one ordered collection of independent semantic `ServiceValue` tokens
+under one transaction and one shared logical `RouteTree`; it is not a packed
+tuple or a new Fabric payload type. Its nonpersistent required payload-width
+envelope is exactly:
+
+```text
+max(flattened transport width of each active ServiceValue role
+    at every point admitted by the capability domain)
+```
+
+An optional role participates when any admitted point activates it. A
+control or completion value of type `none` has width zero and creates no
+semantic bit. The payload field of `!fabric.bits_tag<W,T>` has capacity `W`;
+the tag field `T` never contributes payload capacity. For example, a
+`memory_write` request with a 64-bit address, 128-bit data, a 16-bit mask, and
+zero-bit control has required width 128, not 208.
+
+Every independent value must fit without splitting or serialization in every
+selected carrier endpoint and traversal under the canonical low-bit-aligned
+transport rule. Taking the maximum does not permit a 128-bit value on a
+64-bit segment. Widths are never summed, and this projection defines no tuple
+layout, field offset, byte order, role-specific attachment, role-specific
+route, persistent envelope field, schema field, configuration field, or codec.
+Memory beat decomposition remains owned by the selected Memory Service
+Contract and its declared use patterns. Protocol channels, request/response
+subchannels, packets, flits, headers, physical serialization or parallelism,
+occupancy, and timing remain Interconnect Implementation concerns.
+
+Finalization retains only carriers whose derived direction matches and whose
+payload data-field width is at least that entire envelope under canonical
+low-bit-aligned transport. The relation does not copy a workload actor,
+payload, payload width, accepted domain, endpoint role, or protocol name.
+Compatibility is always recomputed from the endpoint capability, Canonical
+Service Schema, and transport endpoint inventory.
 
 Every admitted memory or fence capability leg has exactly one attachment row
 and at least one compatible carrier. All memory and transport endpoint

@@ -851,6 +851,13 @@ terminal references and traversals. It does not copy the attachment row,
 memory endpoint, capability domain, payload, width, or protocol, and no new
 ServiceRealization child kind is introduced.
 
+One service-leg `RouteTree` is shared by the leg's ordered independent
+`ServiceValue` tokens. Its terminals and every traversal must satisfy the
+nonpersistent maximum-width envelope defined by the
+[Fabric System service-leg carrier contract](spec-fabric-system-adg.md#service-leg-carrier-attachment).
+Mapping derives and verifies that envelope from the exact upstream owners; it
+does not persist a width, packed tuple, role-specific route, or field layout.
+
 Plan selection first derives an `ExecutionContextKey` from the evaluated
 `B_thread` and `B_graph` targets. Only reachable contexts are stored. Within a
 context, the same closed binding-relation algebra may select a plan from
