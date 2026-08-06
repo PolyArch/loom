@@ -1,0 +1,2 @@
+# RUN: rm -rf %t.store
+# RUN: loom-dse-invocation-manifest-test %t.store

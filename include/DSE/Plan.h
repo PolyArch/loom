@@ -282,7 +282,7 @@ private:
 using DsePlanExecutionOutcome =
     std::variant<CompletedDsePlanExecution, IncompleteDsePlanExecution>;
 
-/// Invocation-local transfer projection for the future InvocationManifest.
+/// Invocation-local transfer projection for InvocationManifest.
 /// The component-view digest scopes every PlanNodeRef to one exact resolved
 /// plan. This record is not an Artifact or a candidate identity.
 class DsePlanGenerateInvocationRecords final {

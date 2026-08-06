@@ -10,6 +10,10 @@ add_executable(loom-dse-plan-test
   PlanTest.cpp
 )
 
+add_executable(loom-dse-invocation-manifest-test
+  InvocationManifestTest.cpp
+)
+
 add_executable(loom-dse-evidence-obligation-test
   EvidenceObligationTest.cpp
 )
@@ -45,6 +49,11 @@ target_link_libraries(loom-dse-candidate-generator-test PRIVATE
 )
 
 target_link_libraries(loom-dse-plan-test PRIVATE
+  LoomDSE
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-invocation-manifest-test PRIVATE
   LoomDSE
   LLVMSupport
 )

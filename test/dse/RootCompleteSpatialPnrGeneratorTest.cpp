@@ -2,6 +2,7 @@
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/DataflowEvaluationAcquisition.h"
+#include "DSE/InvocationManifest.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
@@ -46,6 +47,7 @@
 #include <array>
 #include <cstdlib>
 #include <limits>
+#include <optional>
 #include <system_error>
 #include <utility>
 #include <variant>
@@ -756,6 +758,74 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
       repeatedCompleted->resolve(loom::dse::PlanOutputRef{1, 0}) !=
           completed->resolve(loom::dse::PlanOutputRef{1, 0}))
     fail("root-complete Mapping plan is not deterministic");
+
+  const auto firstWork = completed->generateWorkSummaries();
+  const auto repeatedWork = repeatedCompleted->generateWorkSummaries();
+  if (firstWork.size() != repeatedWork.size())
+    fail("deterministic replay changed production work summary width");
+  for (std::size_t invocation = 0; invocation != firstWork.size(); ++invocation)
+    if (firstWork[invocation].planNodeOrdinal !=
+            repeatedWork[invocation].planNodeOrdinal ||
+        firstWork[invocation].units != repeatedWork[invocation].units)
+      fail("deterministic replay changed production provider work");
+
+  const std::vector<loom::dse::GenerateInvocationWorkSummary> expectedWork(
+      repeatedWork.begin(), repeatedWork.end());
+  const loom::ArtifactRootReference selectedMapping =
+      repeatedCompleted->resolve(loom::dse::PlanOutputRef{1, 0}).front();
+  const loom::ArtifactIdentity storedConfig =
+      take(store.put(loom::ResolvedConfig::artifactSchema,
+                     loom::canonicalResolvedConfigBytes(resolved)));
+  if (storedConfig != loom::resolvedConfigIdentity(resolved))
+    fail("Manifest anchor changed the exact ResolvedConfig identity");
+  auto manifestRecords =
+      loom::dse::takeDsePlanGenerateInvocationRecords(std::move(repeated));
+  auto closure = take(loom::dse::DseRunClosure::get(
+      take(loom::dse::DseProducerSemanticBuildIdentity::get(
+          "loom.test.root_complete_spatial_pnr.v1")),
+      {fixture.dataflowReference, fixture.fabric.reference()}, resolved, {},
+      store));
+  auto manifest = take(loom::dse::InvocationManifest::get(
+      std::move(closure), 0, std::nullopt, resolved, manifestRecords,
+      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store));
+  auto reorderedClosure = take(loom::dse::DseRunClosure::get(
+      take(loom::dse::DseProducerSemanticBuildIdentity::get(
+          "loom.test.root_complete_spatial_pnr.v1")),
+      {fixture.fabric.reference(), fixture.dataflowReference}, resolved, {},
+      store));
+  auto reorderedManifest = take(loom::dse::InvocationManifest::get(
+      std::move(reorderedClosure), 0, std::nullopt, resolved, manifestRecords,
+      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store));
+  if (reorderedManifest.canonicalBytes() != manifest.canonicalBytes())
+    fail("semantic-input authoring order changed production Manifest bytes");
+  auto adopted = take(loom::dse::adoptInvocationManifest(
+      manifest.canonicalBytes(), resolved, store));
+  if (adopted.generateRecords().size() != expectedWork.size())
+    fail("Manifest dropped a production Generate work summary");
+  for (std::size_t invocation = 0; invocation != expectedWork.size();
+       ++invocation) {
+    const auto &actual = adopted.generateRecords()[invocation].workSummary;
+    const auto &expected = expectedWork[invocation];
+    if (actual.planNodeOrdinal != expected.planNodeOrdinal ||
+        actual.units != expected.units)
+      fail("Manifest changed a production provider work summary");
+    for (const auto &unit : expected.units)
+      if (unit.planned != unit.consumed)
+        fail("completed production provider left a planned logical work slot "
+             "unconsumed");
+  }
+  auto workTotals = [](const loom::dse::InvocationManifest &value) {
+    std::pair<std::uint64_t, std::uint64_t> totals{0, 0};
+    for (const auto &record : value.generateRecords())
+      for (const auto &unit : record.workSummary.units) {
+        totals.first += unit.planned;
+        totals.second += unit.consumed;
+      }
+    return totals;
+  };
+  if (workTotals(manifest) != workTotals(adopted) ||
+      workTotals(manifest) != workTotals(reorderedManifest))
+    fail("production work totals changed across import or input reordering");
 }
 
 void descriptorAndEmptySetAreClosed() {

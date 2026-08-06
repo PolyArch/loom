@@ -1,6 +1,7 @@
 add_library(LoomDSE
   DataflowEvaluationAcquisition.cpp
   EvidenceObligationSetConfig.cpp
+  InvocationManifest.cpp
   SpatialMappingEvaluationAcquisition.cpp
   StructuredEvaluationAcquisition.cpp
   StructuredOwnership.cpp
