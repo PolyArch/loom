@@ -15,16 +15,16 @@ namespace fabric {
 /// The cardinality of one Module's dense symbolic Clock and Reset slot
 /// inventories. This is a transient projection of the root-owned relation.
 struct ModuleDomainSlotCounts final {
-  std::uint32_t clocks = 0;
-  std::uint32_t resets = 0;
+  loom::fabric::FabricOrdinal clocks = 0;
+  loom::fabric::FabricOrdinal resets = 0;
 };
 
 /// One authoring-only child-to-parent slot row owned by a Module instance.
 struct ModuleInstanceDomainSlotBinding final {
   loom::fabric::FabricClockResetKind kind =
       loom::fabric::FabricClockResetKind::Clock;
-  std::uint32_t childSlotOrdinal = 0;
-  std::uint32_t parentSlotOrdinal = 0;
+  loom::fabric::FabricOrdinal childSlotOrdinal = 0;
+  loom::fabric::FabricOrdinal parentSlotOrdinal = 0;
 
   friend bool operator==(const ModuleInstanceDomainSlotBinding &left,
                          const ModuleInstanceDomainSlotBinding &right) {

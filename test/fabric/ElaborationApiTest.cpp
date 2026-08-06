@@ -9,6 +9,7 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/Support/raw_ostream.h"
+#include <limits>
 
 using namespace mlir;
 
@@ -80,9 +81,39 @@ static bool verifyDomainBindingRelation() {
     llvm::consumeError(decoded.takeError());
     return true;
   };
-  if (!rejectsEncoding({0, 0}) || !rejectsEncoding({2, 0, 0}) ||
-      !rejectsEncoding({0, -1, 0}) || !rejectsEncoding({0, 4294967296LL, 0}))
+  auto roundTripsExactly = [&](ArrayRef<Binding> expected) {
+    DenseI64ArrayAttr encoded =
+        fabric::encodeModuleInstanceDomainSlotBindings(&context, expected);
+    auto decoded = fabric::decodeModuleInstanceDomainSlotBindings(encoded);
+    if (!decoded)
+      return false;
+    return ArrayRef<Binding>(*decoded) == expected;
+  };
+  if (!rejectsEncoding({0, 0}) || !rejectsEncoding({2, 0, 0}))
     return false;
+  // Ordinals are bit-preserved through the signed container: every u64
+  // pattern, including values above INT64_MAX, round-trips exactly.
+  const Binding wideOrdinals[] = {
+      {FabricClockResetKind::Clock, 0, 0x8000000000000000ULL},
+      {FabricClockResetKind::Clock, 1, 4294967296ULL},
+      {FabricClockResetKind::Reset, 0, 0xFFFFFFFFFFFFFFFFULL},
+  };
+  if (!roundTripsExactly(wideOrdinals))
+    return false;
+  // The widened counts must not wrap: a maximal child slot count with an
+  // empty binding list must fail with the exact overflow diagnostic, not
+  // proceed after wrapping to zero.
+  const fabric::ModuleDomainSlotCounts overflowingChild{
+      std::numeric_limits<std::uint64_t>::max(), 1};
+  {
+    llvm::Error error = fabric::validateModuleInstanceDomainSlotBindings(
+        overflowingChild, parent, {});
+    if (!error)
+      return false;
+    const std::string message = llvm::toString(std::move(error));
+    if (!llvm::StringRef(message).contains("overflows"))
+      return false;
+  }
 
   return !acceptsDomainBindings(child, parent, wrongOrder) &&
          !acceptsDomainBindings(child, parent, duplicateChild) &&
