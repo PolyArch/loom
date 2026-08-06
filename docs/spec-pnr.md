@@ -228,9 +228,19 @@ contract. `H` neither copies those facts nor infers a carrier from entity
 ownership, endpoint ordinals, equal width, protocol names, or physical
 targets. An empty derived carrier union is proven infeasibility.
 
+For each service obligation, `H` carries only the target-domain field selected
+by its exact obligation-key variant. A logical-memory operation obligation has
+`compatible_service_regions`; a fence operation obligation has
+`compatible_consistency_domains`, derived from the matching
+`FenceCapabilityDomain` records and the exact Dataflow-owned fence effects; a
+`MessageTransfer` obligation has neither field. The two operation target
+domains are mutually exclusive. An empty applicable domain is proven
+infeasibility, not permission to substitute a memory region, manager endpoint,
+or candidate-private target.
+
 The owner-specific view descriptor identity is
-`loom.system_pnr_search_domain`, version 1.0. Its exact descriptor bytes are
-the ASCII bytes `loom.system_pnr_search_domain.1.0`, without a trailing zero
+`loom.system_pnr_search_domain`, version 2.0. Its exact descriptor bytes are
+the ASCII bytes `loom.system_pnr_search_domain.2.0`, without a trailing zero
 byte. Canonical view bytes order thread bindings, rooted graph bindings, and
 service obligations by their complete typed semantic keys. Presburger cells
 use their canonical integer-set bytes. Stable keys are sorted within each
