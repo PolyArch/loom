@@ -3,6 +3,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -17,13 +18,19 @@ llvm::Error invalid(const llvm::Twine &message) {
 }
 
 void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
-  for (int shift = 24; shift >= 0; shift -= 8)
-    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+  const std::size_t offset = bytes.size();
+  bytes.resize(offset + 4);
+  for (unsigned index = 0; index < 4; ++index)
+    bytes[offset + index] =
+        static_cast<std::uint8_t>(value >> (8 * (3 - index)));
 }
 
 void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
-  for (int shift = 56; shift >= 0; shift -= 8)
-    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+  const std::size_t offset = bytes.size();
+  bytes.resize(offset + 8);
+  for (unsigned index = 0; index < 8; ++index)
+    bytes[offset + index] =
+        static_cast<std::uint8_t>(value >> (8 * (7 - index)));
 }
 
 void appendFramed(std::vector<std::uint8_t> &bytes,
@@ -288,84 +295,135 @@ rowCoveredFromField(const ReducedProductRow &subset,
   return true;
 }
 
-std::vector<std::uint8_t> encodeDomain(const ReducedProductDomain &domain) {
-  std::vector<std::uint8_t> bytes;
+std::size_t encodedDomainSize(const ReducedProductDomain &domain) {
+  if (const auto *finite = std::get_if<ReducedFiniteDomain>(&domain)) {
+    std::size_t size = 4 + 8;
+    for (const ReducedFiniteAtom &atom : finite->atoms)
+      size += 8 + atom.bytes.size();
+    return size;
+  }
+  return 4 + 8 + 16 * std::get<UnsignedDomain>(domain).intervals().size();
+}
+
+void appendDomain(std::vector<std::uint8_t> &bytes,
+                  const ReducedProductDomain &domain) {
   if (const auto *finite = std::get_if<ReducedFiniteDomain>(&domain)) {
     appendU32(bytes, 0);
     appendU64(bytes, finite->atoms.size());
     for (const ReducedFiniteAtom &atom : finite->atoms)
       appendFramed(bytes, atom.bytes);
-    return bytes;
+    return;
   }
-  appendU32(bytes, 1);
   const UnsignedDomain &unsignedDomain = std::get<UnsignedDomain>(domain);
+  appendU32(bytes, 1);
   appendU64(bytes, unsignedDomain.intervals().size());
   for (UnsignedInterval interval : unsignedDomain.intervals()) {
     appendU64(bytes, interval.lower);
     appendU64(bytes, interval.upper);
   }
-  return bytes;
+}
+
+std::size_t encodedRowSize(const ReducedProductRow &row) {
+  std::size_t size = 8;
+  for (const ReducedProductDomain &domain : row)
+    size += 8 + encodedDomainSize(domain);
+  return size;
+}
+
+void appendRow(std::vector<std::uint8_t> &bytes, const ReducedProductRow &row) {
+  appendU64(bytes, row.size());
+  for (const ReducedProductDomain &domain : row) {
+    appendU64(bytes, encodedDomainSize(domain));
+    appendDomain(bytes, domain);
+  }
 }
 
 std::vector<std::uint8_t> encodeRow(const ReducedProductRow &row) {
   std::vector<std::uint8_t> bytes;
-  appendU64(bytes, row.size());
-  for (const ReducedProductDomain &domain : row) {
-    std::vector<std::uint8_t> encoded = encodeDomain(domain);
-    appendFramed(bytes, encoded);
-  }
+  bytes.reserve(encodedRowSize(row));
+  appendRow(bytes, row);
   return bytes;
 }
 
 void sortRows(std::vector<ReducedProductRow> &rows) {
-  llvm::sort(rows,
-             [](const ReducedProductRow &lhs, const ReducedProductRow &rhs) {
-               return encodeRow(lhs) < encodeRow(rhs);
-             });
+  using KeyedRow = std::pair<std::vector<std::uint8_t>, ReducedProductRow>;
+  std::vector<KeyedRow> keyedRows;
+  keyedRows.reserve(rows.size());
+  for (ReducedProductRow &row : rows)
+    keyedRows.emplace_back(encodeRow(row), std::move(row));
+  llvm::sort(keyedRows, [](const KeyedRow &lhs, const KeyedRow &rhs) {
+    return lhs.first < rhs.first;
+  });
+  for (auto [destination, keyed] : llvm::zip(rows, keyedRows))
+    destination = std::move(keyed.second);
 }
 
-llvm::Expected<std::vector<ReducedProductRow>>
-reduceAtField(llvm::ArrayRef<ReducedProductRow> rows, std::size_t field,
-              llvm::ArrayRef<bool> groupFiniteFields) {
+using ReducedProductRowRef = const ReducedProductRow *;
+using ReducedProductRows = std::vector<ReducedProductRow>;
+using ReducedProductReduction = const ReducedProductRows *;
+
+struct ReductionKey {
+  std::size_t field = 0;
+  std::vector<ReducedProductRowRef> rows;
+};
+
+struct ReductionKeyLess {
+  bool operator()(const ReductionKey &lhs, const ReductionKey &rhs) const {
+    if (lhs.field != rhs.field)
+      return lhs.field < rhs.field;
+    return std::lexicographical_compare(lhs.rows.begin(), lhs.rows.end(),
+                                        rhs.rows.begin(), rhs.rows.end(),
+                                        std::less<ReducedProductRowRef>());
+  }
+};
+
+using ReductionCache =
+    std::map<ReductionKey, ReducedProductRows, ReductionKeyLess>;
+
+llvm::Expected<ReducedProductReduction>
+reduceAtField(llvm::ArrayRef<ReducedProductRowRef> rows, std::size_t field,
+              llvm::ArrayRef<bool> groupFiniteFields, ReductionCache &cache) {
   if (rows.empty())
     return invalid("relation partition must not be empty");
-  const std::size_t fieldCount = rows.front().size();
-  if (groupFiniteFields.size() != fieldCount)
-    return invalid("relation field policy has the wrong size");
-  for (const ReducedProductRow &row : rows)
-    if (row.size() != fieldCount)
-      return invalid("relation rows have inconsistent field counts");
-  if (field == fieldCount)
-    return std::vector<ReducedProductRow>{ReducedProductRow{}};
+  ReductionKey cacheKey{field, {rows.begin(), rows.end()}};
+  if (auto found = cache.find(cacheKey); found != cache.end())
+    return &found->second;
+  auto publish = [&](ReducedProductRows result) {
+    auto position = cache.emplace(std::move(cacheKey), std::move(result)).first;
+    return &position->second;
+  };
 
-  const std::size_t domainKind = rows.front()[field].index();
-  std::map<std::size_t, std::vector<ReducedProductRow>> kindPartitions;
-  for (const ReducedProductRow &row : rows)
-    kindPartitions[row[field].index()].push_back(row);
+  const std::size_t fieldCount = rows.front()->size();
+  if (field == fieldCount)
+    return publish({ReducedProductRow{}});
+
+  const std::size_t domainKind = (*rows.front())[field].index();
+  std::map<std::size_t, std::vector<ReducedProductRowRef>> kindPartitions;
+  for (ReducedProductRowRef row : rows)
+    kindPartitions[(*row)[field].index()].push_back(row);
   if (kindPartitions.size() != 1) {
-    std::vector<ReducedProductRow> partitioned;
+    ReducedProductRows partitioned;
     for (const auto &[kind, partition] : kindPartitions) {
-      auto reduced = reduceAtField(partition, field, groupFiniteFields);
+      auto reduced = reduceAtField(partition, field, groupFiniteFields, cache);
       if (!reduced)
         return reduced.takeError();
-      partitioned.insert(partitioned.end(),
-                         std::make_move_iterator(reduced->begin()),
-                         std::make_move_iterator(reduced->end()));
+      partitioned.insert(partitioned.end(), (*reduced)->begin(),
+                         (*reduced)->end());
     }
     sortRows(partitioned);
-    return partitioned;
+    return publish(std::move(partitioned));
   }
 
-  std::vector<ReducedProductRow> normalized;
+  ReducedProductRows normalized;
   if (domainKind == 0) {
     struct Cell {
       ReducedFiniteAtom atom;
-      std::vector<ReducedProductRow> rows;
+      std::vector<ReducedProductRowRef> rows;
     };
     std::map<std::vector<std::uint8_t>, Cell> cells;
-    for (const ReducedProductRow &row : rows) {
+    for (ReducedProductRowRef row : rows) {
       for (const ReducedFiniteAtom &atom :
-           std::get<ReducedFiniteDomain>(row[field]).atoms) {
+           std::get<ReducedFiniteDomain>((*row)[field]).atoms) {
         auto found = cells.find(atom.bytes);
         if (found == cells.end())
           found = cells.emplace(atom.bytes, Cell{atom, {}}).first;
@@ -375,14 +433,15 @@ reduceAtField(llvm::ArrayRef<ReducedProductRow> rows, std::size_t field,
 
     struct Group {
       std::vector<ReducedFiniteAtom> atoms;
-      std::vector<ReducedProductRow> suffix;
+      ReducedProductReduction suffix;
     };
     std::map<std::vector<std::uint8_t>, Group> groups;
     for (auto &[atomBytes, cell] : cells) {
-      auto suffix = reduceAtField(cell.rows, field + 1, groupFiniteFields);
+      auto suffix =
+          reduceAtField(cell.rows, field + 1, groupFiniteFields, cache);
       if (!suffix)
         return suffix.takeError();
-      std::vector<std::uint8_t> key = encodeReducedProductRelation(*suffix);
+      std::vector<std::uint8_t> key = encodeReducedProductRelation(**suffix);
       if (!groupFiniteFields[field])
         appendFramed(key, atomBytes);
       auto [group, inserted] = groups.try_emplace(key);
@@ -396,7 +455,7 @@ reduceAtField(llvm::ArrayRef<ReducedProductRow> rows, std::size_t field,
                                  const ReducedFiniteAtom &rhs) {
         return lhs.bytes < rhs.bytes;
       });
-      for (const ReducedProductRow &suffix : group.suffix) {
+      for (const ReducedProductRow &suffix : *group.suffix) {
         ReducedProductRow row;
         row.reserve(1 + suffix.size());
         row.push_back(ReducedFiniteDomain{group.atoms});
@@ -406,9 +465,9 @@ reduceAtField(llvm::ArrayRef<ReducedProductRow> rows, std::size_t field,
     }
   } else {
     std::set<std::uint64_t> boundarySet;
-    for (const ReducedProductRow &row : rows)
+    for (ReducedProductRowRef row : rows)
       for (UnsignedInterval interval :
-           std::get<UnsignedDomain>(row[field]).intervals()) {
+           std::get<UnsignedDomain>((*row)[field]).intervals()) {
         boundarySet.insert(interval.lower);
         if (interval.upper != std::numeric_limits<std::uint64_t>::max())
           boundarySet.insert(interval.upper + 1);
@@ -418,7 +477,7 @@ reduceAtField(llvm::ArrayRef<ReducedProductRow> rows, std::size_t field,
 
     struct Group {
       std::vector<UnsignedInterval> intervals;
-      std::vector<ReducedProductRow> suffix;
+      ReducedProductReduction suffix;
     };
     std::map<std::vector<std::uint8_t>, Group> groups;
     for (std::size_t index = 0; index < boundaries.size(); ++index) {
@@ -427,16 +486,17 @@ reduceAtField(llvm::ArrayRef<ReducedProductRow> rows, std::size_t field,
           index + 1 < boundaries.size()
               ? boundaries[index + 1] - 1
               : std::numeric_limits<std::uint64_t>::max();
-      std::vector<ReducedProductRow> selected;
-      for (const ReducedProductRow &row : rows)
-        if (std::get<UnsignedDomain>(row[field]).contains(lower))
+      std::vector<ReducedProductRowRef> selected;
+      for (ReducedProductRowRef row : rows)
+        if (std::get<UnsignedDomain>((*row)[field]).contains(lower))
           selected.push_back(row);
       if (selected.empty())
         continue;
-      auto suffix = reduceAtField(selected, field + 1, groupFiniteFields);
+      auto suffix =
+          reduceAtField(selected, field + 1, groupFiniteFields, cache);
       if (!suffix)
         return suffix.takeError();
-      std::vector<std::uint8_t> key = encodeReducedProductRelation(*suffix);
+      std::vector<std::uint8_t> key = encodeReducedProductRelation(**suffix);
       auto [group, inserted] = groups.try_emplace(key);
       if (inserted)
         group->second.suffix = *suffix;
@@ -447,7 +507,7 @@ reduceAtField(llvm::ArrayRef<ReducedProductRow> rows, std::size_t field,
       auto domain = UnsignedDomain::normalize(group.intervals);
       if (!domain)
         return domain.takeError();
-      for (const ReducedProductRow &suffix : group.suffix) {
+      for (const ReducedProductRow &suffix : *group.suffix) {
         ReducedProductRow row;
         row.reserve(1 + suffix.size());
         row.push_back(*domain);
@@ -458,7 +518,7 @@ reduceAtField(llvm::ArrayRef<ReducedProductRow> rows, std::size_t field,
   }
 
   sortRows(normalized);
-  return normalized;
+  return publish(std::move(normalized));
 }
 
 } // namespace
@@ -468,11 +528,25 @@ reduceProductRelation(llvm::ArrayRef<ReducedProductRow> rows,
                       llvm::ArrayRef<bool> groupFiniteFields) {
   if (rows.empty())
     return invalid("reduced product relation must not be empty");
+  const std::size_t fieldCount = rows.front().size();
+  if (groupFiniteFields.size() != fieldCount)
+    return invalid("relation field policy has the wrong size");
+  for (const ReducedProductRow &row : rows)
+    if (row.size() != fieldCount)
+      return invalid("relation rows have inconsistent field counts");
   for (std::size_t left = 0; left < rows.size(); ++left)
     for (std::size_t right = left + 1; right < rows.size(); ++right)
       if (relationRowsOverlap(rows[left], rows[right]))
         return invalid("reduced product relation rows overlap");
-  return reduceAtField(rows, 0, groupFiniteFields);
+  std::vector<ReducedProductRowRef> rowRefs;
+  rowRefs.reserve(rows.size());
+  for (const ReducedProductRow &row : rows)
+    rowRefs.push_back(&row);
+  ReductionCache cache;
+  auto reduced = reduceAtField(rowRefs, 0, groupFiniteFields, cache);
+  if (!reduced)
+    return reduced.takeError();
+  return **reduced;
 }
 
 llvm::Expected<bool>
@@ -525,11 +599,15 @@ reducedProductRelationsOverlap(llvm::ArrayRef<ReducedProductRow> left,
 
 std::vector<std::uint8_t>
 encodeReducedProductRelation(llvm::ArrayRef<ReducedProductRow> rows) {
+  std::size_t size = 8;
+  for (const ReducedProductRow &row : rows)
+    size += 8 + encodedRowSize(row);
   std::vector<std::uint8_t> bytes;
+  bytes.reserve(size);
   appendU64(bytes, rows.size());
   for (const ReducedProductRow &row : rows) {
-    std::vector<std::uint8_t> encoded = encodeRow(row);
-    appendFramed(bytes, encoded);
+    appendU64(bytes, encodedRowSize(row));
+    appendRow(bytes, row);
   }
   return bytes;
 }

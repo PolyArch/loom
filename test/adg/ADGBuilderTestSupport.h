@@ -79,7 +79,6 @@ void runBuiltinTests();
 void runTopologyTests();
 void runServiceLegCarrierTests();
 void runDomainAuthoringTests();
-void runConformanceAnchorTests();
 
 void regularAndIrregularSpatialCoresFinalize();
 void temporalResourceGrantFinalizes();
