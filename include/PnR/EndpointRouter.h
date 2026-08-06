@@ -87,6 +87,9 @@ public:
   llvm::Error prepare(EndpointRoutingGraphView graph);
   llvm::Expected<EndpointRouteSearchResult>
   search(const EndpointRouteSearchRequest &request);
+  std::uint64_t endpointExpansionCount() const {
+    return endpointExpansionCount_;
+  }
   std::size_t retainedStorageBytes() const;
 
 private:
@@ -135,6 +138,7 @@ private:
   std::uint64_t searchGeneration_ = 0;
   std::uint64_t targetGeneration_ = 0;
   std::uint64_t sourceGeneration_ = 0;
+  std::uint64_t endpointExpansionCount_ = 0;
   HeapMode heapMode_ = HeapMode::ReverseDistance;
   bool prepared_ = false;
 };

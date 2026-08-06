@@ -50,6 +50,9 @@ public:
       SpatialRouteCostState &costs, PnrIndex logicalNet, PnrIndex rootEndpoint,
       std::uint64_t endpointExpansionLimit);
 
+  std::uint64_t endpointExpansionCount() const {
+    return endpointSearch_.endpointExpansionCount();
+  }
   std::size_t retainedStorageBytes() const;
 
 private:

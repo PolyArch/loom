@@ -492,6 +492,24 @@ llvm::Error validateCandidateGeneratorInputBindings(
   return llvm::Error::success();
 }
 
+llvm::Error validateCandidateGeneratorWorkSummary(
+    CandidateGeneratorDescriptorRef descriptorRef,
+    llvm::ArrayRef<CandidateGeneratorWorkUnitSummary> summary) {
+  const CandidateGeneratorDescriptor *descriptor = descriptorRef.descriptor();
+  if (!descriptor)
+    return invalid("work summary references an unregistered descriptor");
+  if (summary.size() != descriptor->workUnits.size())
+    return invalid("work summary does not cover every descriptor work unit");
+  for (std::size_t ordinal = 0; ordinal != summary.size(); ++ordinal) {
+    const CandidateGeneratorWorkUnitSummary &entry = summary[ordinal];
+    if (entry.unit.ordinal() != ordinal)
+      return invalid("work summary entries must be dense and canonical");
+    if (entry.consumed > entry.planned)
+      return invalid("consumed work exceeds planned work");
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error
 registerCandidateGeneratorProvider(const CandidateGeneratorProvider &provider) {
   if (!provider.invoke || !provider.descriptor.descriptor())
@@ -543,11 +561,17 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeCandidateGenerator(
     for (const CandidateGeneratorOutputSlotDescriptor &slot :
          descriptor->outputSlots)
       outputs.push_back({slot.slot, {}});
+    std::vector<CandidateGeneratorWorkUnitSummary> workSummary;
+    workSummary.reserve(descriptor->workUnits.size());
+    for (const CandidateGeneratorWorkUnitDescriptor &unit :
+         descriptor->workUnits)
+      workSummary.push_back({unit.unit, 0, 0});
     return CandidateGeneratorInvocationOutcome{
         IncompleteCandidateGeneratorInvocation{
             CandidateGeneratorIncompleteReason::ProviderUnavailable,
             std::move(outputs),
-            {}}};
+            {},
+            std::move(workSummary)}};
   }
 
   auto outcome = invoke(inputBindings, binding, store);
@@ -555,6 +579,9 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeCandidateGenerator(
     return outcome.takeError();
   if (auto *completed =
           std::get_if<CompletedCandidateGeneratorInvocation>(&*outcome)) {
+    if (llvm::Error error = validateCandidateGeneratorWorkSummary(
+            binding.descriptorRef(), completed->workSummary))
+      return std::move(error);
     if (llvm::Error error = canonicalizeOutputBindings(
             *descriptor, completed->outputBindings, true, store))
       return std::move(error);
@@ -569,6 +596,9 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeCandidateGenerator(
         static_cast<std::uint32_t>(
             CandidateGeneratorIncompleteReason::Unsupported))
       return invalid("provider returned an invalid Incomplete reason");
+    if (llvm::Error error = validateCandidateGeneratorWorkSummary(
+            binding.descriptorRef(), incomplete.workSummary))
+      return std::move(error);
     if (llvm::Error error = canonicalizeOutputBindings(
             *descriptor, incomplete.retainedOutputBindings, false, store))
       return std::move(error);

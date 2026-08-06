@@ -11,9 +11,12 @@ using namespace loom::pnr;
 
 llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
     FrozenSpatialPnrProblemHandle problem, std::uint32_t attemptOrdinal,
+    SpatialPathFinderSeedWorkSummary &workSummary,
     llvm::ArrayRef<RouteCost> evaluationPriorities) {
+  workSummary = {};
   auto initialized = createSpatialCandidateInitializerAttempt(
-      std::move(problem), attemptOrdinal);
+      std::move(problem), attemptOrdinal,
+      workSummary.initializerAssignmentAttempts);
   if (!initialized)
     return initialized.takeError();
   SpatialCandidateStateHandle candidate = std::move(initialized->candidate);
@@ -36,18 +39,20 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
       *candidate, candidateScratch, *costs,
       {policy.endpointExpansionLimit, policy.negotiationIterationLimit},
       evaluationPriorities);
+  workSummary.endpointExpansions = router.endpointExpansionCount();
+  workSummary.negotiationIterations = router.negotiationIterationCount();
   if (!routing)
     return routing.takeError();
   if (llvm::Error error = candidate->verify())
     return std::move(error);
-  return SpatialPathFinderSeed{std::move(candidate), *routing,
-                               initialized->assignmentAttempts, attemptOrdinal};
+  return SpatialPathFinderSeed{std::move(candidate), attemptOrdinal};
 }
 
 llvm::Expected<SpatialPathFinderSeed>
 loom::pnr::createCanonicalPathFinderSpatialSeed(
     FrozenSpatialPnrProblemHandle problem,
+    SpatialPathFinderSeedWorkSummary &workSummary,
     llvm::ArrayRef<RouteCost> evaluationPriorities) {
-  return createPathFinderSpatialSeed(std::move(problem), 0,
+  return createPathFinderSpatialSeed(std::move(problem), 0, workSummary,
                                      evaluationPriorities);
 }

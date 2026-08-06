@@ -243,15 +243,15 @@ void constantGlobalStagingIsTypedAndMechanical() {
   auto decisions =
       take(loom::frontend::enumerateStructuredMemoryCommunicationDecisions(
           parent, 64));
-  if (decisions.size() != 1 ||
-      decisions.front().kind !=
+  if (decisions.decisions.size() != 1 ||
+      decisions.decisions.front().kind !=
           loom::frontend::StructuredMemoryCommunicationDecisionKind::
               StageConstantGlobal)
     fail("constant and mutable globals did not produce one exact decision");
 
   auto child =
       take(loom::frontend::materializeStructuredMemoryCommunicationDecision(
-          parent, decisions.front()));
+          parent, decisions.decisions.front()));
   if (countAllocations(parent) != 0 ||
       countAllocations(child.structuredProgram) != 1)
     fail("staging did not preserve the parent and add one logical buffer");
@@ -287,7 +287,7 @@ void constantGlobalStagingIsTypedAndMechanical() {
   auto foreign = parseProgram({.firstValue = 5});
   auto rejected =
       loom::frontend::materializeStructuredMemoryCommunicationDecision(
-          foreign, decisions.front());
+          foreign, decisions.decisions.front());
   if (rejected)
     fail("cross-parent memory decision was accepted");
   if (!llvm::StringRef(llvm::toString(rejected.takeError()))
@@ -298,35 +298,35 @@ void constantGlobalStagingIsTypedAndMechanical() {
   auto aliasDecisions =
       take(loom::frontend::enumerateStructuredMemoryCommunicationDecisions(
           aliasParent, 64));
-  if (!aliasDecisions.empty())
+  if (!aliasDecisions.decisions.empty())
     fail("derived constant-memory alias produced a staging decision");
 
   auto siblingAlias = parseProgram({.siblingConstantAlias = true});
   auto siblingAliasDecisions =
       take(loom::frontend::enumerateStructuredMemoryCommunicationDecisions(
           siblingAlias, 64));
-  if (siblingAliasDecisions.size() != 1)
+  if (siblingAliasDecisions.decisions.size() != 1)
     fail("a sibling formal alias invalidated constant staging");
 
   auto uninitialized = parseProgram({.uninitializedConstant = true});
   auto uninitializedDecisions =
       take(loom::frontend::enumerateStructuredMemoryCommunicationDecisions(
           uninitialized, 64));
-  if (!uninitializedDecisions.empty())
+  if (!uninitializedDecisions.decisions.empty())
     fail("uninitialized constant global produced a staging decision");
 
   auto multipleLaunches = parseProgram({.mutableTableLaunch = true});
   auto multipleLaunchDecisions =
       take(loom::frontend::enumerateStructuredMemoryCommunicationDecisions(
           multipleLaunches, 64));
-  if (!multipleLaunchDecisions.empty())
+  if (!multipleLaunchDecisions.decisions.empty())
     fail("mixed constant and mutable root launches produced a decision");
 
   auto differentConstants = parseProgram({.alternateConstantLaunch = true});
   auto differentConstantDecisions =
       take(loom::frontend::enumerateStructuredMemoryCommunicationDecisions(
           differentConstants, 64));
-  if (differentConstantDecisions.size() != 1)
+  if (differentConstantDecisions.decisions.size() != 1)
     fail("different constant roots across launches invalidated staging");
 }
 
@@ -335,11 +335,11 @@ void stagingPreservesAlignmentAndExpandsMemoryWork() {
   auto decisions =
       take(loom::frontend::enumerateStructuredMemoryCommunicationDecisions(
           parent, 64));
-  if (decisions.size() != 1)
+  if (decisions.decisions.size() != 1)
     fail("aligned constant input did not produce one decision");
   auto child =
       take(loom::frontend::materializeStructuredMemoryCommunicationDecision(
-          parent, decisions.front()));
+          parent, decisions.decisions.front()));
 
   std::optional<std::uint64_t> allocationAlignment;
   child.structuredProgram.module().walk([&](mlir::memref::AllocOp allocation) {
@@ -366,7 +366,7 @@ void stagingPreservesAlignmentAndExpandsMemoryWork() {
   auto invalidAlignmentDecisions =
       take(loom::frontend::enumerateStructuredMemoryCommunicationDecisions(
           invalidAlignment, 64));
-  if (!invalidAlignmentDecisions.empty())
+  if (!invalidAlignmentDecisions.decisions.empty())
     fail("staging accepted an alignment not established by the new buffer");
 
   auto parentD0 =
@@ -491,7 +491,7 @@ void providerPublishesParentAndAdmittedChild() {
   if (!(decodedDecision ==
         take(loom::frontend::enumerateStructuredMemoryCommunicationDecisions(
                  parent, 64))
-            .front()))
+            .decisions.front()))
     fail("memory decision lineage payload did not round-trip");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
@@ -545,19 +545,19 @@ void invalidInMemoryDecisionFailsClosed() {
   auto decisions =
       take(loom::frontend::enumerateStructuredMemoryCommunicationDecisions(
           parent, 64));
-  if (decisions.empty())
+  if (decisions.decisions.empty())
     fail("invalid-decision fixture has no legal memory decision");
-  decisions.front().kind =
+  decisions.decisions.front().kind =
       static_cast<loom::frontend::StructuredMemoryCommunicationDecisionKind>(
           99);
   auto encoded = loom::frontend::encodeStructuredMemoryCommunicationDecision(
-      decisions.front());
+      decisions.decisions.front());
   if (encoded)
     fail("memory encoder accepted an unknown in-memory decision kind");
   llvm::consumeError(encoded.takeError());
   auto materialized =
       loom::frontend::materializeStructuredMemoryCommunicationDecision(
-          parent, decisions.front());
+          parent, decisions.decisions.front());
   if (materialized)
     fail("memory materializer accepted an unknown in-memory decision kind");
   llvm::consumeError(materialized.takeError());

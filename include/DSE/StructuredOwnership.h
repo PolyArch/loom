@@ -160,6 +160,8 @@ struct StructuredOwnershipCandidateDisposition final {
 struct CompletedStructuredOwnershipGeneration final {
   CandidateSet candidates;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
+  std::uint64_t plannedScopeCount = 0;
+  std::uint64_t decisionAttemptCount = 0;
 };
 
 struct SelectedStructuredOwnershipCandidate final {

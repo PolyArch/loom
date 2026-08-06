@@ -371,8 +371,9 @@ generateStructuredOwnershipCandidatesImpl(
     return candidateSet.takeError();
 
   return OwnershipGenerationState{
-      CompletedStructuredOwnershipGeneration{std::move(*candidateSet),
-                                             std::move(dispositions)},
+      CompletedStructuredOwnershipGeneration{
+          std::move(*candidateSet), std::move(dispositions),
+          plannedScopeOrdinals.size(), workItems.size()},
       *parentReference, *workloadReference, *runtimeInputReference,
       std::move(materializedCandidates)};
 }

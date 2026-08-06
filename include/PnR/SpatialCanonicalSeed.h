@@ -10,10 +10,14 @@
 
 namespace loom::pnr {
 
+struct SpatialPathFinderSeedWorkSummary final {
+  std::uint64_t initializerAssignmentAttempts = 0;
+  std::uint64_t endpointExpansions = 0;
+  std::uint64_t negotiationIterations = 0;
+};
+
 struct SpatialPathFinderSeed final {
   SpatialCandidateStateHandle candidate;
-  SpatialPathFinderClosureResult routing;
-  std::uint64_t initializerAssignmentAttempts = 0;
   std::uint32_t attemptOrdinal = 0;
 };
 
@@ -22,6 +26,7 @@ struct SpatialPathFinderSeed final {
 /// replaced by another attempt ordinal.
 llvm::Expected<SpatialPathFinderSeed> createPathFinderSpatialSeed(
     FrozenSpatialPnrProblemHandle problem, std::uint32_t attemptOrdinal,
+    SpatialPathFinderSeedWorkSummary &workSummary,
     llvm::ArrayRef<RouteCost> evaluationPriorities = {});
 
 /// Builds initializer attempt zero and applies its explicit global PathFinder
@@ -30,6 +35,7 @@ llvm::Expected<SpatialPathFinderSeed> createPathFinderSpatialSeed(
 /// materializes or publishes a SpatialMapping.
 llvm::Expected<SpatialPathFinderSeed> createCanonicalPathFinderSpatialSeed(
     FrozenSpatialPnrProblemHandle problem,
+    SpatialPathFinderSeedWorkSummary &workSummary,
     llvm::ArrayRef<RouteCost> evaluationPriorities = {});
 
 } // namespace loom::pnr

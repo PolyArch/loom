@@ -30,12 +30,18 @@ llvm::Error invocationError(const llvm::Twine &detail) {
       "invalid Spatial exact-repair invocation: %s", detail.str().c_str());
 }
 
-SpatialExactRepairResult result(SpatialExactRepairResultKind kind,
-                                std::uint64_t regionDecisions,
-                                std::uint64_t solverCalls = 0,
-                                std::uint64_t actionCount = 0,
-                                std::string detail = {}) {
-  return {kind, regionDecisions, solverCalls, actionCount, std::move(detail)};
+SpatialExactRepairResult
+result(SpatialExactRepairResultKind kind, std::uint64_t regionDecisions,
+       std::uint64_t solverCalls = 0, std::uint64_t actionCount = 0,
+       std::string detail = {}, std::uint64_t endpointExpansions = 0,
+       std::uint64_t negotiationIterations = 0) {
+  return {kind,
+          regionDecisions,
+          solverCalls,
+          actionCount,
+          endpointExpansions,
+          negotiationIterations,
+          std::move(detail)};
 }
 
 template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
@@ -328,6 +334,13 @@ SpatialExactRepairScratch::repairCapacityOveruse(
     return result(SpatialExactRepairResultKind::InternalError,
                   *regionDecisionCount, solved->solverCalls, actions_.size(),
                   llvm::toString(std::move(error)));
+  const auto executedResult = [&](SpatialExactRepairResultKind kind,
+                                  std::string detail = {}) {
+    return result(kind, *regionDecisionCount, solved->solverCalls,
+                  actions_.size(), std::move(detail),
+                  actionExecutor_.endpointExpansionCount(),
+                  actionExecutor_.negotiationIterationCount());
+  };
   const std::uint64_t initialOveruse = candidate.atomicCapacityOveruse();
   auto probe = actionExecutor_.probeBatch(candidate, actions_);
   if (!probe) {
@@ -349,38 +362,31 @@ SpatialExactRepairScratch::repairCapacityOveruse(
       kind = *transitionFailure == SpatialActionTransitionFailureKind::WorkLimit
                  ? SpatialExactRepairResultKind::UnknownBudgetExhausted
                  : SpatialExactRepairResultKind::UnsupportedEncoding;
-    return result(kind, *regionDecisionCount, solved->solverCalls,
-                  actions_.size(), std::move(detail));
+    return executedResult(kind, std::move(detail));
   }
   for (PnrIndex decision : decisions_) {
     const PnrIndex context =
         candidate.computeBinding(decision).instructionContext;
     if (context >= contextOveruse.size() || contextOveruse[context] != 0) {
       if (llvm::Error error = probe->discard())
-        return result(SpatialExactRepairResultKind::InternalError,
-                      *regionDecisionCount, solved->solverCalls,
-                      actions_.size(), llvm::toString(std::move(error)));
-      return result(
-          SpatialExactRepairResultKind::InternalError, *regionDecisionCount,
-          solved->solverCalls, actions_.size(),
+        return executedResult(SpatialExactRepairResultKind::InternalError,
+                              llvm::toString(std::move(error)));
+      return executedResult(
+          SpatialExactRepairResultKind::InternalError,
           "ActionBatch did not realize the exact capacity assignment");
     }
   }
   if (candidate.atomicCapacityOveruse() >= initialOveruse) {
     if (llvm::Error error = probe->discard())
-      return result(SpatialExactRepairResultKind::InternalError,
-                    *regionDecisionCount, solved->solverCalls, actions_.size(),
-                    llvm::toString(std::move(error)));
-    return result(SpatialExactRepairResultKind::InternalError,
-                  *regionDecisionCount, solved->solverCalls, actions_.size(),
-                  "ActionBatch did not reduce CapacityOveruse");
+      return executedResult(SpatialExactRepairResultKind::InternalError,
+                            llvm::toString(std::move(error)));
+    return executedResult(SpatialExactRepairResultKind::InternalError,
+                          "ActionBatch did not reduce CapacityOveruse");
   }
   if (llvm::Error error = probe->commit())
-    return result(SpatialExactRepairResultKind::InternalError,
-                  *regionDecisionCount, solved->solverCalls, actions_.size(),
-                  llvm::toString(std::move(error)));
-  return result(SpatialExactRepairResultKind::Repaired, *regionDecisionCount,
-                solved->solverCalls, actions_.size());
+    return executedResult(SpatialExactRepairResultKind::InternalError,
+                          llvm::toString(std::move(error)));
+  return executedResult(SpatialExactRepairResultKind::Repaired);
 }
 
 std::size_t SpatialExactRepairScratch::retainedStorageBytes() const {

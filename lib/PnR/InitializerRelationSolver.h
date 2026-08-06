@@ -127,6 +127,8 @@ public:
   llvm::Expected<InitializerRelationSolveResult>
   solveDiversified(std::uint64_t assignmentLimit,
                    DeterministicPnrRandomStream &diversificationStream);
+
+  std::uint64_t assignmentAttempts() const { return assignmentAttempts_; }
   std::size_t retainedStorageBytes() const;
 
 private:

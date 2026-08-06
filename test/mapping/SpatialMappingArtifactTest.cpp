@@ -847,11 +847,14 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
           {}));
     }
   } else {
-    auto first = take(loom::pnr::createCanonicalPathFinderSpatialSeed(problem));
-    auto second =
-        take(loom::pnr::createCanonicalPathFinderSpatialSeed(problem));
-    if (first.routing.completedIterations !=
-            second.routing.completedIterations ||
+    loom::pnr::SpatialPathFinderSeedWorkSummary firstWork;
+    loom::pnr::SpatialPathFinderSeedWorkSummary secondWork;
+    auto first = take(
+        loom::pnr::createCanonicalPathFinderSpatialSeed(problem, firstWork));
+    auto second = take(
+        loom::pnr::createCanonicalPathFinderSpatialSeed(problem, secondWork));
+    if (firstWork.negotiationIterations != secondWork.negotiationIterations ||
+        firstWork.endpointExpansions != secondWork.endpointExpansions ||
         first.candidate->unroutedObligationCount() != 0 ||
         second.candidate->unroutedObligationCount() != 0)
       fail("canonical Spatial routing seed is not closed and deterministic");

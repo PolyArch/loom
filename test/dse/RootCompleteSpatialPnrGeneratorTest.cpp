@@ -399,6 +399,24 @@ loom::pnr::ResolvedPnrConfigView buildFeedbackSpatialConfig() {
   return take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
 }
 
+void requireSpatialWorkSummary(
+    llvm::ArrayRef<loom::dse::CandidateGeneratorWorkUnitSummary> summary,
+    bool expectConsumedWork) {
+  if (summary.size() != loom::dse::spatialPnrCandidateGeneratorWorkUnits.size())
+    fail("Spatial PnR work summary does not cover the owner catalog");
+  bool consumedAny = false;
+  for (std::size_t ordinal = 0; ordinal != summary.size(); ++ordinal) {
+    if (summary[ordinal].unit.ordinal() != ordinal ||
+        summary[ordinal].planned != summary[ordinal].consumed)
+      fail("Spatial PnR work summary is not dense and exact");
+    consumedAny |= summary[ordinal].consumed != 0;
+  }
+  if (consumedAny != expectConsumedWork)
+    fail("Spatial PnR work summary changed empty/nonempty accounting");
+  if (expectConsumedWork && summary[0].consumed == 0)
+    fail("Spatial PnR omitted a required executed search domain");
+}
+
 loom::ArtifactRootReference
 generateTechMapping(const loom::ArtifactRootReference &dataflow,
                     const loom::ArtifactRootReference &fabric,
@@ -791,6 +809,7 @@ void descriptorAndEmptySetAreClosed() {
       !completed->outputBindings.front().artifacts.empty() ||
       !completed->lineageEdges.empty())
     fail("empty TechMapping set did not propagate as completed empty");
+  requireSpatialWorkSummary(completed->workSummary, false);
 }
 
 void finiteSetTraversesEveryCanonicalTechMapping() {
@@ -822,6 +841,7 @@ void finiteSetTraversesEveryCanonicalTechMapping() {
       completed->outputBindings.front().artifacts.size() != 2 ||
       completed->lineageEdges.size() != 2)
     fail("finite TechMapping set did not produce one Spatial set");
+  requireSpatialWorkSummary(completed->workSummary, true);
 
   bool foundFirst = false;
   bool foundSecond = false;

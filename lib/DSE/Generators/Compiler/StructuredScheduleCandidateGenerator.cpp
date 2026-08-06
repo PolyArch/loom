@@ -17,6 +17,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -191,6 +192,8 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
   std::vector<ArtifactRootReference> outputs =
       inputBindings[StructuredProgramsInput].artifacts;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
+  std::uint64_t inspectedLoopScopes = 0;
+  std::uint64_t decisionAttempts = 0;
   for (const ArtifactRootReference &reference :
        inputBindings[StructuredProgramsInput].artifacts) {
     auto parent = frontend::importStructuredProgram(reference, store);
@@ -200,8 +203,17 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
         *parent, *exactFabric, config->scopeExpansionLimit());
     if (!decisions)
       return decisions.takeError();
-    outputs.reserve(outputs.size() + decisions->size());
-    for (const frontend::StructuredScheduleDecision &decision : *decisions) {
+    if (decisions->inspectedLoopScopes >
+        std::numeric_limits<std::uint64_t>::max() - inspectedLoopScopes)
+      return invalid("loop-scope accounting overflows u64");
+    inspectedLoopScopes += decisions->inspectedLoopScopes;
+    if (decisions->decisions.size() >
+        std::numeric_limits<std::uint64_t>::max() - decisionAttempts)
+      return invalid("schedule-decision accounting overflows u64");
+    decisionAttempts += decisions->decisions.size();
+    outputs.reserve(outputs.size() + decisions->decisions.size());
+    for (const frontend::StructuredScheduleDecision &decision :
+         decisions->decisions) {
       auto child =
           frontend::materializeStructuredScheduleDecision(*parent, decision);
       if (!child)
@@ -249,7 +261,11 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeScheduleProvider(
   return CandidateGeneratorInvocationOutcome{
       CompletedCandidateGeneratorInvocation{
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-          std::move(lineageEdges)}};
+          std::move(lineageEdges),
+          {{CandidateGeneratorWorkUnitRef(0), inspectedLoopScopes,
+            inspectedLoopScopes},
+           {CandidateGeneratorWorkUnitRef(1), decisionAttempts,
+            decisionAttempts}}}};
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),

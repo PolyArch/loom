@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -70,6 +71,44 @@ const CandidateGeneratorDescriptor descriptor{
     workUnits,
 };
 
+llvm::Error accumulate(std::uint64_t source, std::uint64_t &target,
+                       llvm::StringRef subject) {
+  if (source > std::numeric_limits<std::uint64_t>::max() - target)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "root_complete_tech_mapping_generator_invalid: " + subject +
+            " accounting overflows u64");
+  target += source;
+  return llvm::Error::success();
+}
+
+llvm::Error
+accumulate(const ::loom::mapping::TechMappingGenerationAccounting &source,
+           ::loom::mapping::TechMappingGenerationAccounting &target) {
+  if (llvm::Error error =
+          accumulate(source.matchRowAttempts, target.matchRowAttempts,
+                     "match-row attempt"))
+    return error;
+  if (llvm::Error error =
+          accumulate(source.partialCoverExpansions,
+                     target.partialCoverExpansions, "partial-cover expansion"))
+    return error;
+  return accumulate(source.publicationSlots, target.publicationSlots,
+                    "publication slot");
+}
+
+std::vector<CandidateGeneratorWorkUnitSummary> workSummary(
+    const ::loom::mapping::TechMappingGenerationAccounting &accounting) {
+  return {
+      {CandidateGeneratorWorkUnitRef(0), accounting.matchRowAttempts,
+       accounting.matchRowAttempts},
+      {CandidateGeneratorWorkUnitRef(1), accounting.partialCoverExpansions,
+       accounting.partialCoverExpansions},
+      {CandidateGeneratorWorkUnitRef(2), accounting.publicationSlots,
+       accounting.publicationSlots},
+  };
+}
+
 llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
@@ -87,6 +126,7 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
 
   std::vector<ArtifactRootReference> outputs;
   std::vector<CandidateGeneratorLineageEdge> lineage;
+  ::loom::mapping::TechMappingGenerationAccounting accounting;
   for (const ArtifactRootReference &dataflowReference :
        inputBindings[DataflowCandidatesInput].artifacts) {
     auto artifact =
@@ -107,6 +147,14 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
     ::loom::mapping::TechMappingGenerationOutcome outcome =
         ::loom::mapping::generateTechMappings(
             {*dataflow, covers, fabric->view(), *config, store});
+    const auto &currentAccounting = std::visit(
+        [](const auto &result)
+            -> const ::loom::mapping::TechMappingGenerationAccounting & {
+          return result.accounting;
+        },
+        outcome);
+    if (llvm::Error error = accumulate(currentAccounting, accounting))
+      return std::move(error);
     if (auto *generated =
             std::get_if<::loom::mapping::GeneratedTechMappings>(&outcome)) {
       for (ArtifactRootReference &candidate : generated->candidates) {
@@ -129,7 +177,8 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
           IncompleteCandidateGeneratorInvocation{
               CandidateGeneratorIncompleteReason::ProofNotEstablished,
               {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-              std::move(lineage)}};
+              std::move(lineage),
+              workSummary(accounting)}};
     if (const auto *invalid =
             std::get_if<::loom::mapping::InvalidTechMappingGeneration>(
                 &outcome))
@@ -148,7 +197,8 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
   return CandidateGeneratorInvocationOutcome{
       CompletedCandidateGeneratorInvocation{
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-          std::move(lineage)}};
+          std::move(lineage),
+          workSummary(accounting)}};
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),

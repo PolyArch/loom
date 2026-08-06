@@ -333,10 +333,13 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         IncompleteCandidateGeneratorInvocation{
             CandidateGeneratorIncompleteReason::SemanticLimitReached,
             {std::move(output)},
-            std::move(retainedLineageEdges)}};
+            std::move(retainedLineageEdges),
+            {{CandidateGeneratorWorkUnitRef(0), expansions, expansions}}}};
   return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{{std::move(output)},
-                                            std::move(retainedLineageEdges)}};
+      CompletedCandidateGeneratorInvocation{
+          {std::move(output)},
+          std::move(retainedLineageEdges),
+          {{CandidateGeneratorWorkUnitRef(0), expansions, expansions}}}};
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),

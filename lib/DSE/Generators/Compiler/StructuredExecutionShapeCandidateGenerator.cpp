@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -210,6 +211,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
 
   std::vector<ArtifactRootReference> outputs;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
+  std::uint64_t decisionAttempts = 0;
   for (const ArtifactRootReference &reference :
        inputBindings[StructuredProgramsInput].artifacts) {
     auto parent = cloneParentState(invocation, reference, store);
@@ -219,6 +221,10 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         parent->structuredProgram);
     if (!decisions)
       return decisions.takeError();
+    if (decisions->size() >
+        std::numeric_limits<std::uint64_t>::max() - decisionAttempts)
+      return invalid("execution-shape accounting overflows u64");
+    decisionAttempts += decisions->size();
 
     if (decisions->empty()) {
       auto finalized =
@@ -276,7 +282,9 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   return CandidateGeneratorInvocationOutcome{
       CompletedCandidateGeneratorInvocation{
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-          std::move(lineageEdges)}};
+          std::move(lineageEdges),
+          {{CandidateGeneratorWorkUnitRef(0), decisionAttempts,
+            decisionAttempts}}}};
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),

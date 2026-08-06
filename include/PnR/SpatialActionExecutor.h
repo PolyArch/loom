@@ -112,6 +112,12 @@ public:
              llvm::ArrayRef<SpatialMappingAction> actions);
 
   const dse::ObjectiveVector &currentObjective() const;
+  std::uint64_t endpointExpansionCount() const {
+    return router_.endpointExpansionCount();
+  }
+  std::uint64_t negotiationIterationCount() const {
+    return router_.negotiationIterationCount();
+  }
   std::size_t retainedStorageBytes() const;
 
 private:

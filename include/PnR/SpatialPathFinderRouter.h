@@ -94,6 +94,12 @@ public:
   llvm::Error beginConstraintSweep(llvm::ArrayRef<PnrIndex> logicalNets);
   llvm::Error finishConstraintNet(PnrIndex logicalNet);
 
+  std::uint64_t endpointExpansionCount() const {
+    return netRouter_.endpointExpansionCount();
+  }
+  std::uint64_t negotiationIterationCount() const {
+    return negotiationIterationCount_;
+  }
   std::size_t retainedStorageBytes() const;
 
 private:
@@ -127,6 +133,7 @@ private:
   std::vector<PnrIndex> touchedCapacities_;
   std::vector<PnrIndex> constraintSweepNets_;
   std::uint64_t projectionEpoch_ = 0;
+  std::uint64_t negotiationIterationCount_ = 0;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
 };
 

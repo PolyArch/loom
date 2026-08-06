@@ -169,6 +169,14 @@ struct GenerateInvocationRecord final {
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
 };
 
+/// Nonsemantic execution accounting paired to one GenerateInvocationRecord by
+/// exact PlanNodeRef. It remains separate from the lineage record because it
+/// cannot affect candidate identity or derivation.
+struct GenerateInvocationWorkSummary final {
+  std::uint64_t planNodeOrdinal;
+  std::vector<CandidateGeneratorWorkUnitSummary> units;
+};
+
 class CompletedDsePlanExecution final {
 public:
   CompletedDsePlanExecution(CompletedDsePlanExecution &&) = default;
@@ -185,6 +193,9 @@ public:
   llvm::ArrayRef<GenerateInvocationRecord> generateInvocations() const {
     return generateInvocations_;
   }
+  llvm::ArrayRef<GenerateInvocationWorkSummary> generateWorkSummaries() const {
+    return generateWorkSummaries_;
+  }
 
 private:
   struct GenerateNodeOutputs final {
@@ -199,12 +210,14 @@ private:
 
   explicit CompletedDsePlanExecution(ComponentViewDigest digest)
       : resolvedDseConfigViewDigest_(digest) {}
-  llvm::Error appendGenerate(GenerateInvocationRecord invocation);
+  llvm::Error appendGenerate(GenerateInvocationRecord invocation,
+                             GenerateInvocationWorkSummary workSummary);
   void
   appendPromote(std::vector<std::vector<ArtifactRootReference>> outputBindings);
 
   std::vector<NodeOutputs> nodeOutputs_;
   std::vector<GenerateInvocationRecord> generateInvocations_;
+  std::vector<GenerateInvocationWorkSummary> generateWorkSummaries_;
   ComponentViewDigest resolvedDseConfigViewDigest_;
 
   friend class DsePlanExecutionBuilder;
@@ -235,14 +248,20 @@ public:
   llvm::ArrayRef<ArtifactRootReference>
   retainedOutput(std::size_t outputSlotOrdinal) const;
   const GenerateInvocationRecord *incompleteGenerateInvocation() const;
+  const GenerateInvocationWorkSummary *incompleteGenerateWorkSummary() const;
 
 private:
   struct PromoteRetainedOutputs final {
     std::vector<std::vector<ArtifactRootReference>> outputBindings;
   };
 
+  struct IncompleteGenerateNode final {
+    GenerateInvocationRecord invocation;
+    GenerateInvocationWorkSummary workSummary;
+  };
+
   using IncompleteNode =
-      std::variant<GenerateInvocationRecord, PromoteRetainedOutputs>;
+      std::variant<IncompleteGenerateNode, PromoteRetainedOutputs>;
 
   IncompleteDsePlanExecution(std::uint64_t nodeOrdinal,
                              DsePlanIncompleteReason reason,
@@ -274,21 +293,35 @@ public:
   llvm::ArrayRef<GenerateInvocationRecord> completed() const {
     return completed_;
   }
+  llvm::ArrayRef<GenerateInvocationWorkSummary> completedWorkSummaries() const {
+    return completedWorkSummaries_;
+  }
   const std::optional<GenerateInvocationRecord> &incomplete() const {
     return incomplete_;
+  }
+  const std::optional<GenerateInvocationWorkSummary> &
+  incompleteWorkSummary() const {
+    return incompleteWorkSummary_;
   }
 
 private:
   DsePlanGenerateInvocationRecords(
       ComponentViewDigest resolvedDseConfigViewDigest,
       std::vector<GenerateInvocationRecord> completed,
-      std::optional<GenerateInvocationRecord> incomplete)
+      std::vector<GenerateInvocationWorkSummary> completedWorkSummaries,
+      std::optional<GenerateInvocationRecord> incomplete,
+      std::optional<GenerateInvocationWorkSummary> incompleteWorkSummary)
       : resolvedDseConfigViewDigest_(resolvedDseConfigViewDigest),
-        completed_(std::move(completed)), incomplete_(std::move(incomplete)) {}
+        completed_(std::move(completed)),
+        completedWorkSummaries_(std::move(completedWorkSummaries)),
+        incomplete_(std::move(incomplete)),
+        incompleteWorkSummary_(std::move(incompleteWorkSummary)) {}
 
   ComponentViewDigest resolvedDseConfigViewDigest_;
   std::vector<GenerateInvocationRecord> completed_;
+  std::vector<GenerateInvocationWorkSummary> completedWorkSummaries_;
   std::optional<GenerateInvocationRecord> incomplete_;
+  std::optional<GenerateInvocationWorkSummary> incompleteWorkSummary_;
 
   friend class DsePlanExecutionBuilder;
 };
@@ -308,6 +341,9 @@ struct DsePlanGenerateInvocationSummary final {
   std::uint64_t outputBindings = 0;
   std::uint64_t outputArtifacts = 0;
   std::uint64_t lineageEdges = 0;
+  std::uint64_t workUnitSummaries = 0;
+  std::uint64_t plannedWorkSlots = 0;
+  std::uint64_t consumedWorkSlots = 0;
 };
 
 llvm::Expected<DsePlanGenerateInvocationSummary>

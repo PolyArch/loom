@@ -75,6 +75,8 @@ constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputs = {{{
     &candidateSchema,
     PlanValueCardinality::FiniteSet,
 }}};
+constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 1> sourceWorkUnits =
+    {{{CandidateGeneratorWorkUnitRef(0), "source_candidate_attempt"}}};
 constexpr std::array<PromotionAcquisitionInputSlotDescriptor, 1>
     promotionInputs = {{{PromotionAcquisitionInputSlotRef(0), "candidate",
                          PlanValueRole::CandidateSet, &candidateSchema,
@@ -88,7 +90,7 @@ const CandidateGeneratorDescriptor sourceGenerator{
     outputs,
     ResolvedDseConfigViewContract{configSchema, validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
-    {},
+    sourceWorkUnits,
     {},
 };
 
@@ -190,7 +192,9 @@ generateSource(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                                    "source provider received invalid inputs");
   if (sourceGenerationReturnsEmpty)
     return CompletedCandidateGeneratorInvocation{
-        {{CandidateGeneratorOutputSlotRef(0), {}}}, {}};
+        {{CandidateGeneratorOutputSlotRef(0), {}}},
+        {},
+        {{CandidateGeneratorWorkUnitRef(0), 1, 1}}};
   const ArtifactRootReference first =
       publishReference(store, candidateSchema, 0x31);
   const ArtifactRootReference second =
@@ -211,9 +215,13 @@ generateSource(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   if (sourceGenerationStopsAfterRetainingOutputs)
     return IncompleteCandidateGeneratorInvocation{
         CandidateGeneratorIncompleteReason::SemanticLimitReached,
-        std::move(outputBindings), std::move(lineageEdges)};
-  return CompletedCandidateGeneratorInvocation{std::move(outputBindings),
-                                               std::move(lineageEdges)};
+        std::move(outputBindings),
+        std::move(lineageEdges),
+        {{CandidateGeneratorWorkUnitRef(0), 2, 2}}};
+  return CompletedCandidateGeneratorInvocation{
+      std::move(outputBindings),
+      std::move(lineageEdges),
+      {{CandidateGeneratorWorkUnitRef(0), 2, 2}}};
 }
 
 llvm::Expected<PromotionAcquisitionResolutionOutcome>
@@ -335,6 +343,12 @@ void exerciseOrderedTypedUseDef() {
     fail("mixed execution did not canonicalize and select its candidates");
   if (completed->generateInvocations().size() != 1)
     fail("completed plan lost its Generate invocation record");
+  if (completed->generateWorkSummaries().size() != 1 ||
+      completed->generateWorkSummaries().front().planNodeOrdinal != 0 ||
+      completed->generateWorkSummaries().front().units !=
+          std::vector<CandidateGeneratorWorkUnitSummary>{
+              {CandidateGeneratorWorkUnitRef(0), 2, 2}})
+    fail("completed plan lost its Generate work summary");
   const GenerateInvocationRecord &record =
       completed->generateInvocations().front();
   if (record.planNodeOrdinal != 0 || record.inputBindings.size() != 1 ||
@@ -359,6 +373,10 @@ void exerciseOrderedTypedUseDef() {
       std::get_if<IncompleteDsePlanExecution>(&retainedGeneration);
   if (!retainedIncomplete ||
       !retainedIncomplete->incompleteGenerateInvocation() ||
+      !retainedIncomplete->incompleteGenerateWorkSummary() ||
+      retainedIncomplete->incompleteGenerateWorkSummary()->units !=
+          std::vector<CandidateGeneratorWorkUnitSummary>{
+              {CandidateGeneratorWorkUnitRef(0), 2, 2}} ||
       retainedIncomplete->retainedOutputCount() != 1 ||
       retainedIncomplete->retainedOutput(0).data() !=
           retainedIncomplete->incompleteGenerateInvocation()
@@ -399,6 +417,8 @@ void exerciseOrderedTypedUseDef() {
       incomplete->completedPrefix().resolve(PlanOutputRef{0, 0}).size() != 2 ||
       incomplete->completedPrefix().generateInvocations().size() != 1 ||
       !incomplete->incompleteGenerateInvocation() ||
+      !incomplete->incompleteGenerateWorkSummary() ||
+      !incomplete->incompleteGenerateWorkSummary()->units.empty() ||
       incomplete->incompleteGenerateInvocation()->planNodeOrdinal != 1 ||
       incomplete->incompleteGenerateInvocation()
               ->generatorBinding.descriptorRef() !=
@@ -414,7 +434,13 @@ void exerciseOrderedTypedUseDef() {
   if (unavailableRecords.resolvedDseConfigViewDigest() !=
           unavailableView.digest() ||
       unavailableRecords.completed().size() != 1 ||
+      unavailableRecords.completedWorkSummaries().size() != 1 ||
+      unavailableRecords.completedWorkSummaries().front().units !=
+          std::vector<CandidateGeneratorWorkUnitSummary>{
+              {CandidateGeneratorWorkUnitRef(0), 2, 2}} ||
       !unavailableRecords.incomplete() ||
+      !unavailableRecords.incompleteWorkSummary() ||
+      !unavailableRecords.incompleteWorkSummary()->units.empty() ||
       unavailableRecords.incomplete()->planNodeOrdinal != 1)
     fail("outer controller projection lost incomplete Generate provenance");
   const DsePlanGenerateInvocationSummary unavailableSummary =
@@ -427,7 +453,10 @@ void exerciseOrderedTypedUseDef() {
       unavailableSummary.inputArtifacts != 3 ||
       unavailableSummary.outputBindings != 2 ||
       unavailableSummary.outputArtifacts != 2 ||
-      unavailableSummary.lineageEdges != 2)
+      unavailableSummary.lineageEdges != 2 ||
+      unavailableSummary.workUnitSummaries != 1 ||
+      unavailableSummary.plannedWorkSlots != 2 ||
+      unavailableSummary.consumedWorkSlots != 2)
     fail("Generate invocation consumer lost typed provenance facts");
 
   const std::vector<DsePlanNodeDefinition> unavailablePromotionNodes = {

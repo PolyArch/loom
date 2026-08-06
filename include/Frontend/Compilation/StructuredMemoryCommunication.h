@@ -30,6 +30,11 @@ struct MaterializedStructuredMemoryCommunicationCandidate final {
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
+struct StructuredMemoryCommunicationDecisionDomain final {
+  std::vector<StructuredMemoryCommunicationDecision> decisions;
+  std::uint64_t inspectedMemoryScopes = 0;
+};
+
 llvm::ArrayRef<std::uint8_t> structuredMemoryCommunicationDecisionSchemaBytes();
 llvm::Expected<std::vector<std::uint8_t>>
 encodeStructuredMemoryCommunicationDecision(
@@ -38,7 +43,7 @@ llvm::Expected<StructuredMemoryCommunicationDecision>
 adoptStructuredMemoryCommunicationDecision(
     llvm::ArrayRef<std::uint8_t> canonicalBytes);
 
-llvm::Expected<std::vector<StructuredMemoryCommunicationDecision>>
+llvm::Expected<StructuredMemoryCommunicationDecisionDomain>
 enumerateStructuredMemoryCommunicationDecisions(
     const StructuredProgramCandidate &parent,
     std::uint64_t scopeExpansionLimit);

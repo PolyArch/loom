@@ -88,12 +88,15 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     return CompletedCandidateGeneratorInvocation{
         {{CandidateGeneratorOutputSlotRef(0),
           std::move(generated->candidates)}},
-        std::move(lineageEdges)};
+        std::move(lineageEdges),
+        spatialPnrCandidateGeneratorWorkSummary(generated->accounting)};
   }
-  if (std::holds_alternative<::loom::pnr::ProvenInfeasibleSpatialMapping>(
-          outcome))
+  if (const auto *infeasible =
+          std::get_if<::loom::pnr::ProvenInfeasibleSpatialMapping>(&outcome))
     return CompletedCandidateGeneratorInvocation{
-        {{CandidateGeneratorOutputSlotRef(0), {}}}, {}};
+        {{CandidateGeneratorOutputSlotRef(0), {}}},
+        {},
+        spatialPnrCandidateGeneratorWorkSummary(infeasible->accounting)};
   if (const auto *incomplete =
           std::get_if<::loom::pnr::IncompleteSpatialPnrGeneration>(&outcome)) {
     const CandidateGeneratorIncompleteReason reason =
@@ -103,14 +106,18 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
             ? CandidateGeneratorIncompleteReason::SemanticLimitReached
             : CandidateGeneratorIncompleteReason::ProofNotEstablished;
     return IncompleteCandidateGeneratorInvocation{
-        reason, {{CandidateGeneratorOutputSlotRef(0), {}}}, {}};
+        reason,
+        {{CandidateGeneratorOutputSlotRef(0), {}}},
+        {},
+        spatialPnrCandidateGeneratorWorkSummary(incomplete->accounting)};
   }
-  if (std::holds_alternative<::loom::pnr::UnsupportedSpatialPnrGeneration>(
-          outcome))
+  if (const auto *unsupported =
+          std::get_if<::loom::pnr::UnsupportedSpatialPnrGeneration>(&outcome))
     return IncompleteCandidateGeneratorInvocation{
         CandidateGeneratorIncompleteReason::Unsupported,
         {{CandidateGeneratorOutputSlotRef(0), {}}},
-        {}};
+        {},
+        spatialPnrCandidateGeneratorWorkSummary(unsupported->accounting)};
   if (const auto *invalid =
           std::get_if<::loom::pnr::InvalidSpatialPnrGeneration>(&outcome))
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -143,6 +150,30 @@ singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
 
 const CandidateGeneratorDescriptor &spatialPnrCandidateGeneratorDescriptor() {
   return descriptor;
+}
+
+std::vector<CandidateGeneratorWorkUnitSummary>
+spatialPnrCandidateGeneratorWorkSummary(
+    const ::loom::pnr::SpatialPnrGenerationAccounting &accounting) {
+  const std::array<std::uint64_t, spatialPnrCandidateGeneratorWorkUnits.size()>
+      consumed = {
+          accounting.seedAttemptSlots,
+          accounting.initializerAssignmentAttempts,
+          accounting.endpointExpansionSlots,
+          accounting.negotiationIterationSlots,
+          accounting.calibrationProposalSlots,
+          accounting.annealingBaseProposalSlots,
+          accounting.annealingMovableProposalSlots,
+          accounting.focusedClosureProposalSlots,
+          accounting.exactRepairRegionDecisions,
+          accounting.exactRepairSolverCalls,
+      };
+  std::vector<CandidateGeneratorWorkUnitSummary> summary;
+  summary.reserve(consumed.size());
+  for (std::size_t ordinal = 0; ordinal != consumed.size(); ++ordinal)
+    summary.push_back({CandidateGeneratorWorkUnitRef(ordinal),
+                       consumed[ordinal], consumed[ordinal]});
+  return summary;
 }
 
 llvm::Error registerSpatialPnrCandidateGenerator() {

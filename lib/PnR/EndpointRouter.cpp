@@ -176,6 +176,7 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
   searchGeneration_ = 0;
   targetGeneration_ = 0;
   sourceGeneration_ = 0;
+  endpointExpansionCount_ = 0;
   prepared_ = true;
   return llvm::Error::success();
 }
@@ -448,7 +449,10 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
           EndpointRouteSearchFailureKind::WorkLimit,
           "endpoint expansion limit reached before optimality proof");
     const PnrIndex endpoint = popMinimum();
+    if (endpointExpansionCount_ == std::numeric_limits<std::uint64_t>::max())
+      return overflow("cumulative endpoint expansion count overflows u64");
     ++expansions;
+    ++endpointExpansionCount_;
     const RouteCost endpointDistance = distances_[endpoint];
     if (isTarget(endpoint)) {
       if (endpointDistance < bestCost ||

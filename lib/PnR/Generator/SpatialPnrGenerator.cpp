@@ -157,12 +157,25 @@ internal(InternalSpatialPnrGenerationReason reason,
 llvm::Error accumulateAnnealing(const SpatialAnnealingStatistics &source,
                                 SpatialPnrGenerationAccounting &target) {
   if (llvm::Error error = checkedAdd(source.calibrationProposalSlots,
-                                     target.annealingProposalSlots,
+                                     target.calibrationProposalSlots,
                                      "calibration proposal slots"))
     return error;
+  if (llvm::Error error = checkedAdd(source.annealingBaseProposalSlots,
+                                     target.annealingBaseProposalSlots,
+                                     "base annealing proposal slots"))
+    return error;
   if (llvm::Error error =
-          checkedAdd(source.annealingProposalSlots,
-                     target.annealingProposalSlots, "annealing proposal slots"))
+          checkedAdd(source.annealingMovableProposalSlots,
+                     target.annealingMovableProposalSlots,
+                     "movable-decision annealing proposal slots"))
+    return error;
+  if (llvm::Error error =
+          checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
+                     "annealing endpoint expansions"))
+    return error;
+  if (llvm::Error error = checkedAdd(source.negotiationIterations,
+                                     target.negotiationIterationSlots,
+                                     "annealing negotiation iterations"))
     return error;
   return checkedAdd(source.acceptedActionCount, target.annealingAcceptedActions,
                     "annealing accepted Actions");
@@ -250,7 +263,23 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   for (std::uint32_t attempt = 0;
        attempt != search.initializer.seedAttemptCount; ++attempt) {
     ++accounting.seedAttemptSlots;
-    auto seed = createPathFinderSpatialSeed(*problem, attempt);
+    SpatialPathFinderSeedWorkSummary seedWork;
+    auto seed = createPathFinderSpatialSeed(*problem, attempt, seedWork);
+    if (llvm::Error error = checkedAdd(seedWork.initializerAssignmentAttempts,
+                                       accounting.initializerAssignmentAttempts,
+                                       "initializer assignment attempts"))
+      return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
+                      accounting, std::move(error));
+    if (llvm::Error error = checkedAdd(seedWork.endpointExpansions,
+                                       accounting.endpointExpansionSlots,
+                                       "seed endpoint expansions"))
+      return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
+                      accounting, std::move(error));
+    if (llvm::Error error = checkedAdd(seedWork.negotiationIterations,
+                                       accounting.negotiationIterationSlots,
+                                       "seed negotiation iterations"))
+      return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
+                      accounting, std::move(error));
     if (!seed) {
       AttemptFailure failure = classifyAttemptFailure(seed.takeError());
       switch (failure.kind) {
@@ -270,17 +299,6 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     }
 
     ++accounting.preparedSeeds;
-    if (llvm::Error error = checkedAdd(seed->initializerAssignmentAttempts,
-                                       accounting.initializerAssignmentAttempts,
-                                       "initializer assignment attempts"))
-      return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
-                      accounting, std::move(error));
-    if (llvm::Error error = checkedAdd(seed->routing.completedIterations,
-                                       accounting.seedRoutingIterations,
-                                       "seed routing iterations"))
-      return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
-                      accounting, std::move(error));
-
     auto annealed = annealing.run(*seed->candidate, attempt);
     if (!annealed)
       return internal(InternalSpatialPnrGenerationReason::Annealing, accounting,
@@ -303,9 +321,24 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
       if (!repaired)
         return internal(InternalSpatialPnrGenerationReason::ExactRepair,
                         accounting, repaired.takeError());
+      if (llvm::Error error = checkedAdd(repaired->regionDecisions,
+                                         accounting.exactRepairRegionDecisions,
+                                         "exact-repair region decisions"))
+        return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
+                        accounting, std::move(error));
       if (llvm::Error error = checkedAdd(repaired->solverCalls,
                                          accounting.exactRepairSolverCalls,
                                          "exact-repair solver calls"))
+        return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
+                        accounting, std::move(error));
+      if (llvm::Error error = checkedAdd(repaired->endpointExpansions,
+                                         accounting.endpointExpansionSlots,
+                                         "exact-repair endpoint expansions"))
+        return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
+                        accounting, std::move(error));
+      if (llvm::Error error = checkedAdd(repaired->negotiationIterations,
+                                         accounting.negotiationIterationSlots,
+                                         "exact-repair negotiation iterations"))
         return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
                         accounting, std::move(error));
       switch (repaired->kind) {
@@ -332,8 +365,19 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     }
 
     ++accounting.finalClosureAttempts;
-    if (llvm::Error error = finalClosure.run(*seed->candidate)) {
-      AttemptFailure failure = classifyAttemptFailure(std::move(error));
+    llvm::Error closureError = finalClosure.run(*seed->candidate);
+    if (llvm::Error error = checkedAdd(finalClosure.endpointExpansionCount(),
+                                       accounting.endpointExpansionSlots,
+                                       "final-closure endpoint expansions"))
+      return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
+                      accounting, std::move(error));
+    if (llvm::Error error = checkedAdd(finalClosure.negotiationIterationCount(),
+                                       accounting.negotiationIterationSlots,
+                                       "final-closure negotiation iterations"))
+      return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
+                      accounting, std::move(error));
+    if (closureError) {
+      AttemptFailure failure = classifyAttemptFailure(std::move(closureError));
       switch (failure.kind) {
       case AttemptFailureKind::SemanticLimit:
         rememberIncomplete(failure.diagnostic, true);

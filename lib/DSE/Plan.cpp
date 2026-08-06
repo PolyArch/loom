@@ -501,8 +501,10 @@ public:
   }
 
   static llvm::Error appendGenerate(CompletedDsePlanExecution &completed,
-                                    GenerateInvocationRecord invocation) {
-    return completed.appendGenerate(std::move(invocation));
+                                    GenerateInvocationRecord invocation,
+                                    GenerateInvocationWorkSummary workSummary) {
+    return completed.appendGenerate(std::move(invocation),
+                                    std::move(workSummary));
   }
 
   static void appendPromote(
@@ -514,10 +516,13 @@ public:
   static IncompleteDsePlanExecution
   incompleteGenerate(std::uint64_t nodeOrdinal, DsePlanIncompleteReason reason,
                      CompletedDsePlanExecution completedPrefix,
-                     GenerateInvocationRecord invocation) {
+                     GenerateInvocationRecord invocation,
+                     GenerateInvocationWorkSummary workSummary) {
     return IncompleteDsePlanExecution(
         nodeOrdinal, std::move(reason), std::move(completedPrefix),
-        IncompleteDsePlanExecution::IncompleteNode(std::move(invocation)));
+        IncompleteDsePlanExecution::IncompleteNode(
+            IncompleteDsePlanExecution::IncompleteGenerateNode{
+                std::move(invocation), std::move(workSummary)}));
   }
 
   static IncompleteDsePlanExecution incompletePromote(
@@ -536,16 +541,23 @@ public:
     if (auto *completed = std::get_if<CompletedDsePlanExecution>(&outcome))
       return DsePlanGenerateInvocationRecords{
           completed->resolvedDseConfigViewDigest_,
-          std::move(completed->generateInvocations_), std::nullopt};
+          std::move(completed->generateInvocations_),
+          std::move(completed->generateWorkSummaries_), std::nullopt,
+          std::nullopt};
     auto &incomplete = std::get<IncompleteDsePlanExecution>(outcome);
     std::optional<GenerateInvocationRecord> stopped;
-    if (auto *record =
-            std::get_if<GenerateInvocationRecord>(&incomplete.incompleteNode_))
-      stopped.emplace(std::move(*record));
+    std::optional<GenerateInvocationWorkSummary> stoppedWork;
+    if (auto *node =
+            std::get_if<IncompleteDsePlanExecution::IncompleteGenerateNode>(
+                &incomplete.incompleteNode_)) {
+      stopped.emplace(std::move(node->invocation));
+      stoppedWork.emplace(std::move(node->workSummary));
+    }
     return DsePlanGenerateInvocationRecords{
         incomplete.completedPrefix_.resolvedDseConfigViewDigest_,
         std::move(incomplete.completedPrefix_.generateInvocations_),
-        std::move(stopped)};
+        std::move(incomplete.completedPrefix_.generateWorkSummaries_),
+        std::move(stopped), std::move(stoppedWork)};
   }
 };
 
@@ -734,12 +746,19 @@ bool CompletedDsePlanExecution::hasOutput(PlanOutputRef output) const {
          std::get<PromoteNodeOutputs>(node).outputBindings.size();
 }
 
-llvm::Error
-CompletedDsePlanExecution::appendGenerate(GenerateInvocationRecord invocation) {
+llvm::Error CompletedDsePlanExecution::appendGenerate(
+    GenerateInvocationRecord invocation,
+    GenerateInvocationWorkSummary workSummary) {
   if (invocation.planNodeOrdinal != nodeOutputs_.size())
     return invalid("Generate invocation ordinal does not follow plan order");
+  if (workSummary.planNodeOrdinal != invocation.planNodeOrdinal)
+    return invalid("Generate work summary names a different plan node");
+  if (llvm::Error error = validateCandidateGeneratorWorkSummary(
+          invocation.generatorBinding.descriptorRef(), workSummary.units))
+    return error;
   const std::size_t invocationOrdinal = generateInvocations_.size();
   generateInvocations_.push_back(std::move(invocation));
+  generateWorkSummaries_.push_back(std::move(workSummary));
   nodeOutputs_.push_back(GenerateNodeOutputs{invocationOrdinal});
   return llvm::Error::success();
 }
@@ -751,8 +770,8 @@ void CompletedDsePlanExecution::appendPromote(
 
 std::size_t IncompleteDsePlanExecution::retainedOutputCount() const {
   if (const auto *generate =
-          std::get_if<GenerateInvocationRecord>(&incompleteNode_))
-    return generate->outputBindings.size();
+          std::get_if<IncompleteGenerateNode>(&incompleteNode_))
+    return generate->invocation.outputBindings.size();
   return std::get<PromoteRetainedOutputs>(incompleteNode_)
       .outputBindings.size();
 }
@@ -761,10 +780,10 @@ llvm::ArrayRef<ArtifactRootReference>
 IncompleteDsePlanExecution::retainedOutput(
     std::size_t outputSlotOrdinal) const {
   if (const auto *generate =
-          std::get_if<GenerateInvocationRecord>(&incompleteNode_)) {
-    if (outputSlotOrdinal >= generate->outputBindings.size())
+          std::get_if<IncompleteGenerateNode>(&incompleteNode_)) {
+    if (outputSlotOrdinal >= generate->invocation.outputBindings.size())
       return {};
-    return generate->outputBindings[outputSlotOrdinal].artifacts;
+    return generate->invocation.outputBindings[outputSlotOrdinal].artifacts;
   }
   const auto &outputs =
       std::get<PromoteRetainedOutputs>(incompleteNode_).outputBindings;
@@ -775,7 +794,14 @@ IncompleteDsePlanExecution::retainedOutput(
 
 const GenerateInvocationRecord *
 IncompleteDsePlanExecution::incompleteGenerateInvocation() const {
-  return std::get_if<GenerateInvocationRecord>(&incompleteNode_);
+  const auto *generate = std::get_if<IncompleteGenerateNode>(&incompleteNode_);
+  return generate ? &generate->invocation : nullptr;
+}
+
+const GenerateInvocationWorkSummary *
+IncompleteDsePlanExecution::incompleteGenerateWorkSummary() const {
+  const auto *generate = std::get_if<IncompleteGenerateNode>(&incompleteNode_);
+  return generate ? &generate->workSummary : nullptr;
 }
 
 DsePlanGenerateInvocationRecords
@@ -796,8 +822,21 @@ validateAndSummarizeDsePlanGenerateInvocations(
     total += static_cast<std::uint64_t>(amount);
     return llvm::Error::success();
   };
+  auto addU64 = [](std::uint64_t &total, std::uint64_t amount,
+                   llvm::StringRef field) -> llvm::Error {
+    if (amount > std::numeric_limits<std::uint64_t>::max() - total)
+      return invalid("Generate invocation " + field + " count overflows u64");
+    total += amount;
+    return llvm::Error::success();
+  };
   auto consume = [&](const GenerateInvocationRecord &invocation,
+                     const GenerateInvocationWorkSummary &workSummary,
                      bool completed) -> llvm::Error {
+    if (workSummary.planNodeOrdinal != invocation.planNodeOrdinal)
+      return invalid("Generate work summary names a different plan node");
+    if (llvm::Error error = validateCandidateGeneratorWorkSummary(
+            invocation.generatorBinding.descriptorRef(), workSummary.units))
+      return error;
     if (llvm::Error error = validateCanonicalCandidateGeneratorInvocation(
             invocation.inputBindings, invocation.generatorBinding,
             invocation.outputBindings, invocation.lineageEdges, completed,
@@ -820,31 +859,59 @@ validateAndSummarizeDsePlanGenerateInvocations(
       if (llvm::Error error = add(summary.outputArtifacts,
                                   output.artifacts.size(), "output artifact"))
         return error;
-    return add(summary.lineageEdges, invocation.lineageEdges.size(),
-               "lineage edge");
+    if (llvm::Error error = add(summary.lineageEdges,
+                                invocation.lineageEdges.size(), "lineage edge"))
+      return error;
+    if (llvm::Error error = add(summary.workUnitSummaries,
+                                workSummary.units.size(), "work-unit summary"))
+      return error;
+    for (const CandidateGeneratorWorkUnitSummary &unit : workSummary.units) {
+      if (llvm::Error error = addU64(summary.plannedWorkSlots, unit.planned,
+                                     "planned work slot"))
+        return error;
+      if (llvm::Error error = addU64(summary.consumedWorkSlots, unit.consumed,
+                                     "consumed work slot"))
+        return error;
+    }
+    return llvm::Error::success();
   };
 
   for (const DsePlanGenerateInvocationRecords &planRecords : records) {
     if (llvm::Error error = add(summary.planExecutions, 1, "plan execution"))
       return std::move(error);
+    if (planRecords.completed().size() !=
+        planRecords.completedWorkSummaries().size())
+      return invalid("completed Generate records and work summaries differ "
+                     "in width");
     std::optional<std::uint64_t> previousNode;
-    for (const GenerateInvocationRecord &invocation : planRecords.completed()) {
+    for (std::size_t ordinal = 0; ordinal != planRecords.completed().size();
+         ++ordinal) {
+      const GenerateInvocationRecord &invocation =
+          planRecords.completed()[ordinal];
+      const GenerateInvocationWorkSummary &workSummary =
+          planRecords.completedWorkSummaries()[ordinal];
       if (previousNode && invocation.planNodeOrdinal <= *previousNode)
         return invalid("completed Generate invocation ordinals are not "
                        "strictly increasing");
-      if (llvm::Error error = consume(invocation, true))
+      if (llvm::Error error = consume(invocation, workSummary, true))
         return std::move(error);
       if (llvm::Error error =
               add(summary.completedInvocations, 1, "completed invocation"))
         return std::move(error);
       previousNode = invocation.planNodeOrdinal;
     }
+    if (planRecords.incomplete().has_value() !=
+        planRecords.incompleteWorkSummary().has_value())
+      return invalid("incomplete Generate record and work summary presence "
+                     "differs");
     if (planRecords.incomplete()) {
       const GenerateInvocationRecord &invocation = *planRecords.incomplete();
+      const GenerateInvocationWorkSummary &workSummary =
+          *planRecords.incompleteWorkSummary();
       if (previousNode && invocation.planNodeOrdinal <= *previousNode)
         return invalid("incomplete Generate invocation does not follow the "
                        "completed prefix");
-      if (llvm::Error error = consume(invocation, false))
+      if (llvm::Error error = consume(invocation, workSummary, false))
         return std::move(error);
       if (llvm::Error error =
               add(summary.incompleteInvocations, 1, "incomplete invocation"))
@@ -925,10 +992,14 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
             static_cast<std::uint64_t>(nodeIndex), std::move(inputs),
             std::move(*binding), std::move(incomplete->retainedOutputBindings),
             std::move(incomplete->lineageEdges)};
+        GenerateInvocationWorkSummary workSummary{
+            static_cast<std::uint64_t>(nodeIndex),
+            std::move(incomplete->workSummary)};
         return DsePlanExecutionOutcome{
             DsePlanExecutionBuilder::incompleteGenerate(
                 static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
-                std::move(completed), std::move(invocationRecord))};
+                std::move(completed), std::move(invocationRecord),
+                std::move(workSummary))};
       }
       auto &generated =
           std::get<CompletedCandidateGeneratorInvocation>(*outcome);
@@ -936,8 +1007,11 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store) {
           static_cast<std::uint64_t>(nodeIndex), std::move(inputs),
           std::move(*binding), std::move(generated.outputBindings),
           std::move(generated.lineageEdges)};
+      GenerateInvocationWorkSummary workSummary{
+          static_cast<std::uint64_t>(nodeIndex),
+          std::move(generated.workSummary)};
       if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
-              completed, std::move(invocationRecord)))
+              completed, std::move(invocationRecord), std::move(workSummary)))
         return std::move(error);
       continue;
     }

@@ -571,7 +571,9 @@ private:
 
 llvm::Expected<SpatialCandidateInitializerAttempt>
 loom::pnr::createSpatialCandidateInitializerAttempt(
-    FrozenSpatialPnrProblemHandle problem, std::uint32_t attemptOrdinal) {
+    FrozenSpatialPnrProblemHandle problem, std::uint32_t attemptOrdinal,
+    std::uint64_t &assignmentAttempts) {
+  assignmentAttempts = 0;
   if (!problem)
     return initializerError("FrozenSpatialPnrProblem owner is null");
   const auto &policy = problem->config().policy();
@@ -600,6 +602,7 @@ loom::pnr::createSpatialCandidateInitializerAttempt(
                 *diversificationStream)
           : relationSolver.solveCanonical(
                 policy.search.initializer.assignmentAttemptLimitPerSeed);
+  assignmentAttempts = relationSolver.assignmentAttempts();
   if (!relationChoices)
     return relationChoices.takeError();
 
@@ -667,21 +670,23 @@ loom::pnr::createSpatialCandidateInitializerAttempt(
       relationChoices->assignmentAttempts, std::move(computeBindings),
       std::move(memoryBindings), std::move(portAttachments),
       std::move(graphBoundaryAttachments));
-  if (llvm::Error error = builder.build())
-    return std::move(error);
+  llvm::Error buildError = builder.build();
+  assignmentAttempts = builder.assignmentAttempts();
+  if (buildError)
+    return std::move(buildError);
   auto candidate =
       SpatialCandidateState::create(problem, builder.initialization());
   if (!candidate)
     return candidate.takeError();
-  return SpatialCandidateInitializerAttempt{std::move(*candidate),
-                                            builder.assignmentAttempts()};
+  return SpatialCandidateInitializerAttempt{std::move(*candidate)};
 }
 
 llvm::Expected<SpatialCandidateStateHandle>
 loom::pnr::createCanonicalSpatialCandidate(
     FrozenSpatialPnrProblemHandle problem) {
-  auto attempt =
-      createSpatialCandidateInitializerAttempt(std::move(problem), 0);
+  std::uint64_t assignmentAttempts = 0;
+  auto attempt = createSpatialCandidateInitializerAttempt(std::move(problem), 0,
+                                                          assignmentAttempts);
   if (!attempt)
     return attempt.takeError();
   return std::move(attempt->candidate);

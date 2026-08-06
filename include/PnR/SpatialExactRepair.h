@@ -26,6 +26,8 @@ struct SpatialExactRepairResult final {
   std::uint64_t regionDecisions = 0;
   std::uint64_t solverCalls = 0;
   std::uint64_t actionCount = 0;
+  std::uint64_t endpointExpansions = 0;
+  std::uint64_t negotiationIterations = 0;
   std::string detail;
 };
 

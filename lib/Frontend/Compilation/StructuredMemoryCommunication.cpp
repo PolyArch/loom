@@ -281,7 +281,7 @@ adoptStructuredMemoryCommunicationDecision(
   return decision;
 }
 
-llvm::Expected<std::vector<StructuredMemoryCommunicationDecision>>
+llvm::Expected<StructuredMemoryCommunicationDecisionDomain>
 enumerateStructuredMemoryCommunicationDecisions(
     const StructuredProgramCandidate &parent,
     std::uint64_t scopeExpansionLimit) {
@@ -296,6 +296,7 @@ enumerateStructuredMemoryCommunicationDecisions(
        view->entities(StructuredEntityKind::Value))
     valueReferences.try_emplace(entity.value, entity.reference);
   std::vector<StructuredMemoryCommunicationDecision> decisions;
+  std::uint64_t inspectedMemoryScopes = 0;
   for (const StructuredEntity &entity :
        view->entities(StructuredEntityKind::Operation)) {
     auto spatial =
@@ -304,10 +305,12 @@ enumerateStructuredMemoryCommunicationDecisions(
       continue;
     for (std::uint64_t ordinal = 0; ordinal != spatial.getMemoryInputs().size();
          ++ordinal) {
+      ++inspectedMemoryScopes;
       if (!isStageableConstantInput(spatial, ordinal))
         continue;
       if (decisions.size() == scopeExpansionLimit)
-        return decisions;
+        return StructuredMemoryCommunicationDecisionDomain{
+            std::move(decisions), inspectedMemoryScopes};
       mlir::BlockArgument argument = memoryArgument(spatial, ordinal);
       auto found = valueReferences.find(argument);
       if (found == valueReferences.end())
@@ -317,7 +320,8 @@ enumerateStructuredMemoryCommunicationDecisions(
            StructuredMemoryCommunicationDecisionKind::StageConstantGlobal});
     }
   }
-  return decisions;
+  return StructuredMemoryCommunicationDecisionDomain{std::move(decisions),
+                                                     inspectedMemoryScopes};
 }
 
 llvm::Expected<MaterializedStructuredMemoryCommunicationCandidate>

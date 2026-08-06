@@ -74,6 +74,7 @@ llvm::Error SpatialPathFinderRouterScratch::prepare(
   constraintSweepNets_.clear();
   constraintSweepNets_.reserve(logicalNetCount);
   projectionEpoch_ = 0;
+  negotiationIterationCount_ = 0;
   preparedProblem_ = &problem;
   return llvm::Error::success();
 }
@@ -248,6 +249,9 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
 
   for (std::uint64_t iteration = 0; iteration < limits.iterationLimit;
        ++iteration) {
+    if (negotiationIterationCount_ == std::numeric_limits<std::uint64_t>::max())
+      return pathFinderError("negotiation iteration count overflows u64");
+    ++negotiationIterationCount_;
     if (llvm::Error error =
             buildCanonicalNetOrder(candidate, costs, evaluationPriorities))
       return std::move(error);

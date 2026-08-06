@@ -516,10 +516,15 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
         IncompleteCandidateGeneratorInvocation{
             CandidateGeneratorIncompleteReason::ProofNotEstablished,
             {std::move(output)},
-            std::move(lineage)}};
+            std::move(lineage),
+            {{CandidateGeneratorWorkUnitRef(0), mappings.size(),
+              mappings.size()}}}};
   return CandidateGeneratorInvocationOutcome{
-      CompletedCandidateGeneratorInvocation{{std::move(output)},
-                                            std::move(lineage)}};
+      CompletedCandidateGeneratorInvocation{
+          {std::move(output)},
+          std::move(lineage),
+          {{CandidateGeneratorWorkUnitRef(0), mappings.size(),
+            mappings.size()}}}};
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),

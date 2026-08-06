@@ -168,8 +168,9 @@ void loom::test::exerciseSpatialTagConstraintRelations(
       context, dataflow, techMapping, fabric, store);
   auto unconstrainedProblem = take(pnr::freezeSpatialPnrProblem(
       dataflow, techMapping, fabric, pnrConfig, unconstrained.view()));
-  auto unconstrainedSeed =
-      take(pnr::createCanonicalPathFinderSpatialSeed(unconstrainedProblem));
+  pnr::SpatialPathFinderSeedWorkSummary unconstrainedWork;
+  auto unconstrainedSeed = take(pnr::createCanonicalPathFinderSpatialSeed(
+      unconstrainedProblem, unconstrainedWork));
   const auto projectedValues = [&](pnr::PnrIndex net) {
     std::vector<llvm::APInt> projected;
     for (const auto &value : unconstrainedSeed.candidate->tagValues(net))
@@ -233,8 +234,9 @@ void loom::test::exerciseSpatialTagConstraintRelations(
   const auto equality = buildConstraints("equal", false);
   auto equalityProblem = take(pnr::freezeSpatialPnrProblem(
       dataflow, techMapping, fabric, pnrConfig, equality.view()));
-  auto equalitySeed = take(
-      pnr::createCanonicalPathFinderSpatialSeed(std::move(equalityProblem)));
+  pnr::SpatialPathFinderSeedWorkSummary equalityWork;
+  auto equalitySeed = take(pnr::createCanonicalPathFinderSpatialSeed(
+      std::move(equalityProblem), equalityWork));
   requireSuccess(equalitySeed.candidate->verify());
   std::array<std::vector<llvm::APInt>, 2> projected;
   for (pnr::PnrIndex member = 0; member < projected.size(); ++member) {
@@ -260,8 +262,9 @@ void loom::test::exerciseSpatialTagConstraintRelations(
   const auto disjoint = buildConstraints("disjoint", true);
   auto disjointProblem = take(pnr::freezeSpatialPnrProblem(
       dataflow, techMapping, fabric, pnrConfig, disjoint.view()));
-  auto disjointSeed =
-      take(pnr::createCanonicalPathFinderSpatialSeed(disjointProblem));
+  pnr::SpatialPathFinderSeedWorkSummary disjointWork;
+  auto disjointSeed = take(
+      pnr::createCanonicalPathFinderSpatialSeed(disjointProblem, disjointWork));
   pnr::SpatialGlobalRoutingClosureScratch closure;
   llvm::Error rejected = closure.run(*disjointSeed.candidate);
   if (!rejected)
@@ -837,8 +840,10 @@ void loom::test::exerciseCanonicalCandidateInitialization(
     const pnr::FrozenSpatialPnrProblemHandle &problem) {
   auto first = take(pnr::createCanonicalSpatialCandidate(problem));
   auto second = take(pnr::createCanonicalSpatialCandidate(problem));
+  std::uint64_t canonicalAssignmentAttempts = 0;
   const auto canonicalAttempt =
-      take(pnr::createSpatialCandidateInitializerAttempt(problem, 0));
+      take(pnr::createSpatialCandidateInitializerAttempt(
+          problem, 0, canonicalAssignmentAttempts));
   const auto &realizations = problem->realizations();
 
   for (pnr::PnrIndex index = 0;
@@ -936,7 +941,7 @@ void loom::test::exerciseCanonicalCandidateInitialization(
   requireSuccess(second->verify());
   requireSuccess(canonicalAttempt.candidate->verify());
 
-  if (canonicalAttempt.assignmentAttempts >
+  if (canonicalAssignmentAttempts >
       problem->config()
           .policy()
           .search.initializer.assignmentAttemptLimitPerSeed)
@@ -946,14 +951,16 @@ void loom::test::exerciseCanonicalCandidateInitialization(
   for (std::uint32_t attempt = 1;
        attempt < problem->config().policy().search.initializer.seedAttemptCount;
        ++attempt) {
-    const auto diversified =
-        take(pnr::createSpatialCandidateInitializerAttempt(problem, attempt));
-    const auto replay =
-        take(pnr::createSpatialCandidateInitializerAttempt(problem, attempt));
+    std::uint64_t diversifiedAssignmentAttempts = 0;
+    std::uint64_t replayAssignmentAttempts = 0;
+    const auto diversified = take(pnr::createSpatialCandidateInitializerAttempt(
+        problem, attempt, diversifiedAssignmentAttempts));
+    const auto replay = take(pnr::createSpatialCandidateInitializerAttempt(
+        problem, attempt, replayAssignmentAttempts));
     requireSuccess(diversified.candidate->verify());
     requireSuccess(replay.candidate->verify());
-    if (diversified.assignmentAttempts != replay.assignmentAttempts ||
-        diversified.assignmentAttempts >
+    if (diversifiedAssignmentAttempts != replayAssignmentAttempts ||
+        diversifiedAssignmentAttempts >
             problem->config()
                 .policy()
                 .search.initializer.assignmentAttemptLimitPerSeed)
@@ -1045,8 +1052,10 @@ void loom::test::exerciseCanonicalCandidateInitialization(
   if (!observedDependentDiversification)
     fail("fixed Spatial initializer slots did not diversify dependent choices");
 
+  std::uint64_t foreignAssignmentAttempts = 0;
   auto foreignAttempt = pnr::createSpatialCandidateInitializerAttempt(
-      problem, problem->config().policy().search.initializer.seedAttemptCount);
+      problem, problem->config().policy().search.initializer.seedAttemptCount,
+      foreignAssignmentAttempts);
   if (foreignAttempt)
     fail("Spatial initializer accepted an out-of-range fixed slot");
   llvm::consumeError(foreignAttempt.takeError());

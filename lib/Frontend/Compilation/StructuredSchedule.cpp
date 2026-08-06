@@ -294,7 +294,7 @@ adoptStructuredScheduleDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes) {
   return decision;
 }
 
-llvm::Expected<std::vector<StructuredScheduleDecision>>
+llvm::Expected<StructuredScheduleDecisionDomain>
 enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
                                      const fabric::FinalizedFabricRoot &fabric,
                                      std::uint64_t scopeExpansionLimit) {
@@ -357,7 +357,7 @@ enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
       decisions.push_back(
           {entity.reference, StructuredScheduleDecisionKind::Parallelize, 0});
   }
-  return decisions;
+  return StructuredScheduleDecisionDomain{std::move(decisions), expanded};
 }
 
 llvm::Expected<MaterializedStructuredScheduleCandidate>

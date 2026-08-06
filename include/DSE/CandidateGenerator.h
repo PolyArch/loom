@@ -130,6 +130,20 @@ struct CandidateGeneratorWorkUnitDescriptor final {
   llvm::StringRef spelling;
 };
 
+/// Invocation-local execution accounting for one descriptor-owned work-unit
+/// kind. Counts summarize logical slots, not policy limits or wall time.
+struct CandidateGeneratorWorkUnitSummary final {
+  CandidateGeneratorWorkUnitRef unit;
+  std::uint64_t planned = 0;
+  std::uint64_t consumed = 0;
+
+  friend bool operator==(const CandidateGeneratorWorkUnitSummary &lhs,
+                         const CandidateGeneratorWorkUnitSummary &rhs) {
+    return lhs.unit == rhs.unit && lhs.planned == rhs.planned &&
+           lhs.consumed == rhs.consumed;
+  }
+};
+
 struct CandidateGeneratorOwnerLineagePayloadContract final {
   llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes;
   llvm::Error (*validateCanonical)(
@@ -254,6 +268,7 @@ struct CandidateGeneratorLineageEdge final {
 struct CompletedCandidateGeneratorInvocation final {
   std::vector<CandidateGeneratorOutputBinding> outputBindings;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
+  std::vector<CandidateGeneratorWorkUnitSummary> workSummary;
 };
 
 enum class CandidateGeneratorIncompleteReason : std::uint32_t {
@@ -267,6 +282,7 @@ struct IncompleteCandidateGeneratorInvocation final {
   CandidateGeneratorIncompleteReason reason;
   std::vector<CandidateGeneratorOutputBinding> retainedOutputBindings;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
+  std::vector<CandidateGeneratorWorkUnitSummary> workSummary;
 };
 
 using CandidateGeneratorInvocationOutcome =
@@ -292,6 +308,10 @@ llvm::Expected<CandidateGeneratorInvocationOutcome>
 invokeCandidateGenerator(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                          const ResolvedCandidateGeneratorBinding &binding,
                          const ArtifactStore &store);
+
+llvm::Error validateCandidateGeneratorWorkSummary(
+    CandidateGeneratorDescriptorRef descriptor,
+    llvm::ArrayRef<CandidateGeneratorWorkUnitSummary> summary);
 
 /// Strictly revalidates one immutable invocation record at an external
 /// consumption boundary. The check imports every exact input, output, parent,

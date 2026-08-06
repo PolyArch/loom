@@ -22,10 +22,14 @@ struct SpatialAnnealingStatistics final {
   std::uint64_t temperatureLevelCount = 0;
   std::uint64_t minimumTemperatureLevelCount = 0;
   std::uint64_t annealingProposalSlots = 0;
+  std::uint64_t annealingBaseProposalSlots = 0;
+  std::uint64_t annealingMovableProposalSlots = 0;
   std::uint64_t annealingProbeCount = 0;
   std::uint64_t acceptedActionCount = 0;
   std::uint64_t rejectedActionCount = 0;
   std::uint64_t annealingTransitionFailureCount = 0;
+  std::uint64_t endpointExpansions = 0;
+  std::uint64_t negotiationIterations = 0;
 
   friend bool operator==(const SpatialAnnealingStatistics &lhs,
                          const SpatialAnnealingStatistics &rhs) {
@@ -38,11 +42,16 @@ struct SpatialAnnealingStatistics final {
            lhs.minimumTemperatureLevelCount ==
                rhs.minimumTemperatureLevelCount &&
            lhs.annealingProposalSlots == rhs.annealingProposalSlots &&
+           lhs.annealingBaseProposalSlots == rhs.annealingBaseProposalSlots &&
+           lhs.annealingMovableProposalSlots ==
+               rhs.annealingMovableProposalSlots &&
            lhs.annealingProbeCount == rhs.annealingProbeCount &&
            lhs.acceptedActionCount == rhs.acceptedActionCount &&
            lhs.rejectedActionCount == rhs.rejectedActionCount &&
            lhs.annealingTransitionFailureCount ==
-               rhs.annealingTransitionFailureCount;
+               rhs.annealingTransitionFailureCount &&
+           lhs.endpointExpansions == rhs.endpointExpansions &&
+           lhs.negotiationIterations == rhs.negotiationIterations;
   }
 };
 

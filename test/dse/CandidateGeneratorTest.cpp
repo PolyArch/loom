@@ -112,6 +112,8 @@ const CandidateGeneratorDescriptor descriptor{
 
 enum class ProviderMode {
   Valid,
+  MissingWorkSummary,
+  OverconsumedWork,
   MissingLineage,
   MalformedPayload,
   MechanicalDecisionFields,
@@ -251,8 +253,18 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
       output = *second;
     }
   }
+  std::vector<CandidateGeneratorWorkUnitSummary> workSummary;
+  if (providerMode != ProviderMode::MissingWorkSummary) {
+    const std::uint64_t planned = 1;
+    const std::uint64_t consumed =
+        providerMode == ProviderMode::OverconsumedWork ? 2 : 1;
+    workSummary.push_back(
+        {CandidateGeneratorWorkUnitRef(0), planned, consumed});
+  }
   return CompletedCandidateGeneratorInvocation{
-      {{CandidateGeneratorOutputSlotRef(0), {output}}}, std::move(edges)};
+      {{CandidateGeneratorOutputSlotRef(0), {output}}},
+      std::move(edges),
+      std::move(workSummary)};
 }
 
 void exerciseRegistryAndBinding() {
@@ -322,9 +334,24 @@ void exerciseRegistryAndBinding() {
   const auto *valid =
       std::get_if<CompletedCandidateGeneratorInvocation>(&validOutcome);
   if (!valid || valid->lineageEdges.size() != 1 ||
+      valid->workSummary !=
+          std::vector<CandidateGeneratorWorkUnitSummary>{
+              {CandidateGeneratorWorkUnitRef(0), 1, 1}} ||
       valid->lineageEdges.front().ownerPayload !=
           std::vector<std::uint8_t>{0xaa})
     fail("controller did not canonicalize valid owner lineage");
+
+  providerMode = ProviderMode::MissingWorkSummary;
+  auto missingWork = invokeCandidateGenerator(inputs, binding, store);
+  if (missingWork)
+    fail("controller accepted a missing work-unit summary");
+  requireErrorContains(missingWork.takeError(), "work summary");
+
+  providerMode = ProviderMode::OverconsumedWork;
+  auto overconsumed = invokeCandidateGenerator(inputs, binding, store);
+  if (overconsumed)
+    fail("controller accepted consumed work above planned work");
+  requireErrorContains(overconsumed.takeError(), "exceeds planned");
 
   providerMode = ProviderMode::MissingLineage;
   auto missing = invokeCandidateGenerator(inputs, binding, store);

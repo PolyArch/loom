@@ -46,6 +46,13 @@ class SpatialGlobalRoutingClosureScratch final {
 public:
   llvm::Error run(SpatialCandidateState &candidate);
 
+  std::uint64_t endpointExpansionCount() const {
+    return actionExecutor_.endpointExpansionCount();
+  }
+  std::uint64_t negotiationIterationCount() const {
+    return actionExecutor_.negotiationIterationCount();
+  }
+
   std::size_t retainedStorageBytes() const;
 
 private:

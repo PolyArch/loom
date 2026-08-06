@@ -112,6 +112,8 @@ void arbitraryTopologyAndCanonicalTieBreak() {
   Fixture fixture;
   EndpointRouteSearchScratch scratch;
   requireSuccess(__func__, scratch.prepare(fixture.graph()));
+  if (scratch.endpointExpansionCount() != 0)
+    fail(__func__, "fresh route scratch retained endpoint work");
   const std::size_t retained = scratch.retainedStorageBytes();
 
   const std::array<PnrIndex, 1> sources{{0}};
@@ -158,15 +160,20 @@ void widthFilteringAndWorkLimit() {
       take(__func__, scratch.search(request(fixture, sources, sourceGroups,
                                             targets, targetRanks, 32, 64)));
   requirePath(__func__, wide, 0, 4, 3, widePath);
+  if (scratch.endpointExpansionCount() == 0)
+    fail(__func__, "successful route did not report endpoint expansions");
 
   expectFailure(__func__,
                 scratch.search(request(fixture, sources, sourceGroups, targets,
                                        targetRanks, 128, 64)),
                 EndpointRouteSearchFailureKind::Unreachable);
+  const std::uint64_t beforeLimitedSearch = scratch.endpointExpansionCount();
   expectFailure(__func__,
                 scratch.search(request(fixture, sources, sourceGroups, targets,
                                        targetRanks, 1, 1)),
                 EndpointRouteSearchFailureKind::WorkLimit);
+  if (scratch.endpointExpansionCount() != beforeLimitedSearch + 1)
+    fail(__func__, "work-limited route did not report consumed expansion");
 }
 
 void checkedCostAndAdmissibility() {

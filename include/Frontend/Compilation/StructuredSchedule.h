@@ -39,6 +39,11 @@ struct MaterializedStructuredScheduleCandidate final {
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
+struct StructuredScheduleDecisionDomain final {
+  std::vector<StructuredScheduleDecision> decisions;
+  std::uint64_t inspectedLoopScopes = 0;
+};
+
 llvm::ArrayRef<std::uint8_t> structuredScheduleDecisionSchemaBytes();
 llvm::Expected<std::vector<std::uint8_t>>
 encodeStructuredScheduleDecision(const StructuredScheduleDecision &decision);
@@ -48,7 +53,7 @@ adoptStructuredScheduleDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes);
 /// Enumerates the finite legal schedule domain in canonical loop order. The
 /// Fabric is consumed only for proved aggregate-capacity pruning; a surviving
 /// decision is not a Mapping feasibility claim.
-llvm::Expected<std::vector<StructuredScheduleDecision>>
+llvm::Expected<StructuredScheduleDecisionDomain>
 enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
                                      const fabric::FinalizedFabricRoot &fabric,
                                      std::uint64_t scopeExpansionLimit);

@@ -14,8 +14,10 @@
 #include <array>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -99,22 +101,50 @@ mechanicalLineage(llvm::ArrayRef<ArtifactRootReference> outputs) {
 }
 
 CompletedCandidateGeneratorInvocation
-completed(std::vector<ArtifactRootReference> outputs) {
+completed(std::vector<ArtifactRootReference> outputs,
+          std::vector<CandidateGeneratorWorkUnitSummary> workSummary) {
   canonicalizeReferences(outputs);
   auto lineage = mechanicalLineage(outputs);
   std::vector<CandidateGeneratorOutputBinding> bindings = {
       {CandidateGeneratorOutputSlotRef(0), std::move(outputs)}};
-  return {std::move(bindings), std::move(lineage)};
+  return {std::move(bindings), std::move(lineage), std::move(workSummary)};
 }
 
 IncompleteCandidateGeneratorInvocation
 incomplete(CandidateGeneratorIncompleteReason reason,
-           std::vector<ArtifactRootReference> outputs) {
+           std::vector<ArtifactRootReference> outputs,
+           std::vector<CandidateGeneratorWorkUnitSummary> workSummary) {
   canonicalizeReferences(outputs);
   auto lineage = mechanicalLineage(outputs);
   std::vector<CandidateGeneratorOutputBinding> bindings = {
       {CandidateGeneratorOutputSlotRef(0), std::move(outputs)}};
-  return {reason, std::move(bindings), std::move(lineage)};
+  return {reason, std::move(bindings), std::move(lineage),
+          std::move(workSummary)};
+}
+
+llvm::Error
+accumulateWorkSummary(llvm::ArrayRef<CandidateGeneratorWorkUnitSummary> source,
+                      std::vector<CandidateGeneratorWorkUnitSummary> &target) {
+  if (source.size() != target.size())
+    return llvm::createStringError(
+        std::make_error_code(std::errc::invalid_argument),
+        "root-complete Spatial PnR work summaries have different widths");
+  for (std::size_t ordinal = 0; ordinal != source.size(); ++ordinal) {
+    if (!(source[ordinal].unit == target[ordinal].unit))
+      return llvm::createStringError(
+          std::make_error_code(std::errc::invalid_argument),
+          "root-complete Spatial PnR work summaries have different units");
+    if (source[ordinal].planned > std::numeric_limits<std::uint64_t>::max() -
+                                      target[ordinal].planned ||
+        source[ordinal].consumed > std::numeric_limits<std::uint64_t>::max() -
+                                       target[ordinal].consumed)
+      return llvm::createStringError(
+          std::make_error_code(std::errc::value_too_large),
+          "root-complete Spatial PnR work summary overflows u64");
+    target[ordinal].planned += source[ordinal].planned;
+    target[ordinal].consumed += source[ordinal].consumed;
+  }
+  return llvm::Error::success();
 }
 
 llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
@@ -135,6 +165,8 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
   std::map<ArtifactIdentity::Storage, std::unique_ptr<CachedDataflow>>
       dataflowCache;
   std::vector<ArtifactRootReference> outputs;
+  std::vector<CandidateGeneratorWorkUnitSummary> workSummary =
+      spatialPnrCandidateGeneratorWorkSummary({});
   for (const ArtifactRootReference &techReference :
        inputBindings[TechMappingCandidatesInput].artifacts) {
     auto tech = ::loom::mapping::importTechMapping(techReference, store);
@@ -180,6 +212,14 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
         ::loom::pnr::generateSpatialMappings({dataflow, tech->view(),
                                               fabric->view(), *config,
                                               constraints->view(), store});
+    const auto invocationWorkSummary = std::visit(
+        [](const auto &value) {
+          return spatialPnrCandidateGeneratorWorkSummary(value.accounting);
+        },
+        outcome);
+    if (llvm::Error error =
+            accumulateWorkSummary(invocationWorkSummary, workSummary))
+      return std::move(error);
     if (auto *generated =
             std::get_if<::loom::pnr::GeneratedSpatialMappings>(&outcome)) {
       outputs.insert(outputs.end(),
@@ -199,12 +239,13 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
               ? CandidateGeneratorIncompleteReason::SemanticLimitReached
               : CandidateGeneratorIncompleteReason::ProofNotEstablished;
       return CandidateGeneratorInvocationOutcome{
-          incomplete(reason, std::move(outputs))};
+          incomplete(reason, std::move(outputs), std::move(workSummary))};
     }
     if (std::holds_alternative<::loom::pnr::UnsupportedSpatialPnrGeneration>(
             outcome))
-      return CandidateGeneratorInvocationOutcome{incomplete(
-          CandidateGeneratorIncompleteReason::Unsupported, std::move(outputs))};
+      return CandidateGeneratorInvocationOutcome{
+          incomplete(CandidateGeneratorIncompleteReason::Unsupported,
+                     std::move(outputs), std::move(workSummary))};
     if (const auto *invalid =
             std::get_if<::loom::pnr::InvalidSpatialPnrGeneration>(&outcome))
       return llvm::createStringError(
@@ -219,7 +260,8 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeRootCompleteProvider(
             internal.diagnostic);
   }
 
-  return CandidateGeneratorInvocationOutcome{completed(std::move(outputs))};
+  return CandidateGeneratorInvocationOutcome{
+      completed(std::move(outputs), std::move(workSummary))};
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),

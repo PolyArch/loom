@@ -117,7 +117,7 @@ validateDecisionPayload(llvm::ArrayRef<std::uint8_t> bytes,
       *parent, std::numeric_limits<std::uint64_t>::max());
   if (!domain)
     return domain.takeError();
-  if (!llvm::is_contained(*domain, *adopted))
+  if (!llvm::is_contained(domain->decisions, *adopted))
     return invalid("memory decision is outside its exact parent domain");
   return llvm::Error::success();
 }
@@ -181,6 +181,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       inputBindings[StructuredProgramsInput].artifacts;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
   std::uint64_t remainingScopes = config->scopeExpansionLimit();
+  std::uint64_t inspectedMemoryScopes = 0;
+  std::uint64_t decisionAttempts = 0;
   for (const ArtifactRootReference &reference :
        inputBindings[StructuredProgramsInput].artifacts) {
     if (remainingScopes == 0)
@@ -192,10 +194,20 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         *parent, remainingScopes);
     if (!decisions)
       return decisions.takeError();
-    remainingScopes -= decisions->size();
-    outputs.reserve(outputs.size() + decisions->size());
+    if (decisions->inspectedMemoryScopes >
+        std::numeric_limits<std::uint64_t>::max() - inspectedMemoryScopes)
+      return invalid("memory-scope accounting overflows u64");
+    inspectedMemoryScopes += decisions->inspectedMemoryScopes;
+    if (decisions->decisions.size() > remainingScopes)
+      return invalid("memory decision domain exceeded its resolved limit");
+    remainingScopes -= decisions->decisions.size();
+    if (decisions->decisions.size() >
+        std::numeric_limits<std::uint64_t>::max() - decisionAttempts)
+      return invalid("memory-decision accounting overflows u64");
+    decisionAttempts += decisions->decisions.size();
+    outputs.reserve(outputs.size() + decisions->decisions.size());
     for (const frontend::StructuredMemoryCommunicationDecision &decision :
-         *decisions) {
+         decisions->decisions) {
       auto child = frontend::materializeStructuredMemoryCommunicationDecision(
           *parent, decision);
       if (!child)
@@ -236,7 +248,11 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   return CandidateGeneratorInvocationOutcome{
       CompletedCandidateGeneratorInvocation{
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-          std::move(lineageEdges)}};
+          std::move(lineageEdges),
+          {{CandidateGeneratorWorkUnitRef(0), inspectedMemoryScopes,
+            inspectedMemoryScopes},
+           {CandidateGeneratorWorkUnitRef(1), decisionAttempts,
+            decisionAttempts}}}};
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),

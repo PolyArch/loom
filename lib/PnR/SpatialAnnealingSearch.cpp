@@ -25,6 +25,13 @@ llvm::Error addCount(std::uint64_t &target, std::uint64_t amount,
   return llvm::Error::success();
 }
 
+llvm::Expected<std::uint64_t>
+multiplyCount(std::uint64_t lhs, std::uint64_t rhs, llvm::StringRef subject) {
+  if (lhs != 0 && rhs > std::numeric_limits<std::uint64_t>::max() / lhs)
+    return searchError(subject + " count overflows u64");
+  return lhs * rhs;
+}
+
 template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
   return values.capacity() * sizeof(T);
 }
@@ -126,10 +133,31 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
   do {
     if (llvm::Error error = actionDomain_.rebuild(candidate))
       return std::move(error);
-    auto proposalCount = annealingProposalsPerLevel(
-        annealing, actionDomain_.movableDecisionCount());
+    const std::uint64_t movableDecisionCount =
+        actionDomain_.movableDecisionCount();
+    auto proposalCount =
+        annealingProposalsPerLevel(annealing, movableDecisionCount);
     if (!proposalCount)
       return proposalCount.takeError();
+    auto movableProposalCount =
+        multiplyCount(annealing.proposalsPerMovableDecision,
+                      movableDecisionCount, "movable-decision proposal slot");
+    if (!movableProposalCount)
+      return movableProposalCount.takeError();
+    if (annealing.proposalsPerLevelBase >
+            std::numeric_limits<std::uint64_t>::max() - *movableProposalCount ||
+        annealing.proposalsPerLevelBase + *movableProposalCount !=
+            *proposalCount)
+      return searchError(
+          "proposal work projection disagrees with the search domain");
+    if (llvm::Error error =
+            addCount(statistics.annealingBaseProposalSlots,
+                     annealing.proposalsPerLevelBase, "base proposal slot"))
+      return std::move(error);
+    if (llvm::Error error =
+            addCount(statistics.annealingMovableProposalSlots,
+                     *movableProposalCount, "movable-decision proposal slot"))
+      return std::move(error);
     if (llvm::Error error = addCount(statistics.temperatureLevelCount, 1,
                                      "annealing temperature level"))
       return std::move(error);
@@ -186,6 +214,9 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
         "annealing schedule did not execute one minimum-temperature level");
   if (llvm::Error error = candidate.verify())
     return std::move(error);
+  statistics.endpointExpansions = actionExecutor_.endpointExpansionCount();
+  statistics.negotiationIterations =
+      actionExecutor_.negotiationIterationCount();
   return statistics;
 }
 

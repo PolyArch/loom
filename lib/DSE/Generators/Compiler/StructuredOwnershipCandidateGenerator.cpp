@@ -341,7 +341,11 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeOwnershipProvider(
           {{CandidateGeneratorOutputSlotRef(0), std::move(allCandidates)},
            {CandidateGeneratorOutputSlotRef(1),
             std::move(acceleratorCandidates)}},
-          std::move(lineageEdges)}};
+          std::move(lineageEdges),
+          {{CandidateGeneratorWorkUnitRef(0), generated->plannedScopeCount,
+            generated->plannedScopeCount},
+           {CandidateGeneratorWorkUnitRef(1), generated->decisionAttemptCount,
+            generated->decisionAttemptCount}}}};
 }
 
 const CandidateGeneratorProvider provider{descriptor.reference(),

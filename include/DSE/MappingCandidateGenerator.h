@@ -38,6 +38,10 @@ llvm::Expected<ResolvedCandidateGeneratorBinding>
 resolveSpatialPnrCandidateGeneratorBinding(
     const ::loom::pnr::ResolvedPnrConfigView &config);
 
+std::vector<CandidateGeneratorWorkUnitSummary>
+spatialPnrCandidateGeneratorWorkSummary(
+    const ::loom::pnr::SpatialPnrGenerationAccounting &accounting);
+
 /// Strictly imports one exact D/T/F/C/K binding and invokes the Spatial PnR
 /// owner. Import or coupling failures are returned through the owner's Invalid
 /// outcome; no partial candidate set is exposed.
