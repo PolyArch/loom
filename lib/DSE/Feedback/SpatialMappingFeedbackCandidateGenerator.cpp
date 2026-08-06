@@ -1,6 +1,7 @@
 #include "DSE/SpatialMappingFeedbackCandidateGenerator.h"
 
 #include "DSE/DataflowRewriteCandidateGenerator.h"
+#include "DSE/StructuredOwnershipInvocationInternal.h"
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
@@ -24,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <iterator>
 #include <optional>
 #include <utility>
 #include <variant>
@@ -152,44 +154,97 @@ validateCgraRequest(const ::loom::evaluation::EvaluationRequest &request,
 }
 
 struct MatchedEvidence final {
+  std::size_t mappingOrdinal = 0;
   bool completed = false;
 };
 
-llvm::Expected<MatchedEvidence>
-matchEvidence(const ArtifactRootReference &dataflow,
-              const ArtifactRootReference &fabric,
-              const ArtifactRootReference &spatialMapping,
-              const ArtifactRootReference &workload,
-              const ArtifactRootReference &runtimeInput,
-              llvm::ArrayRef<ArtifactRootReference> evidenceReferences,
-              std::vector<bool> &consumed, const ArtifactStore &store) {
-  auto resolved = ::loom::evaluation::models::resolveCgraSimulationCase(
-      spatialMapping, workload, runtimeInput, store);
-  if (!resolved)
-    return resolved.takeError();
-  if (resolved->canonicalDataflow != dataflow || resolved->fabric != fabric)
-    return invalid("CGRA case resolution differs from Mapping owners");
+struct PreparedSpatialMapping final {
+  ArtifactRootReference reference;
+  ::loom::mapping::FinalizedSpatialMapping mapping;
+  ::loom::evaluation::models::ResolvedCgraSimulationCase cgraCase;
+};
 
-  for (std::size_t ordinal = 0; ordinal != evidenceReferences.size();
-       ++ordinal) {
-    if (consumed[ordinal])
-      continue;
-    auto evidence = ::loom::evaluation::importEvaluationEvidence(
-        evidenceReferences[ordinal], resolved->resolution, store);
-    if (!evidence) {
-      llvm::consumeError(evidence.takeError());
+llvm::Expected<::loom::evaluation::CaseArtifactResolution>
+mergeCaseResolutions(llvm::ArrayRef<PreparedSpatialMapping> mappings) {
+  std::vector<::loom::evaluation::CaseArtifactResolution::Entry> entries;
+  for (const PreparedSpatialMapping &mapping : mappings)
+    entries.insert(entries.end(), mapping.cgraCase.resolution.entries().begin(),
+                   mapping.cgraCase.resolution.entries().end());
+  llvm::sort(entries, [](const auto &lhs, const auto &rhs) {
+    return artifactRootReferenceLess(lhs.artifact, rhs.artifact);
+  });
+
+  std::vector<::loom::evaluation::CaseArtifactResolution::Entry> merged;
+  merged.reserve(entries.size());
+  for (auto &entry : entries) {
+    if (!merged.empty() && merged.back().artifact == entry.artifact) {
+      if (merged.back().dependencyClosure != entry.dependencyClosure)
+        return invalid("CGRA case resolutions disagree on an artifact closure");
       continue;
     }
-    auto request = ::loom::evaluation::importEvaluationRequest(
-        evidence->requestRef(), resolved->resolution, store);
-    if (!request)
-      return request.takeError();
-    if (llvm::Error error = validateCgraRequest(
-            *request, dataflow, fabric, spatialMapping, workload, runtimeInput))
-      return std::move(error);
+    merged.push_back(std::move(entry));
+  }
+  return ::loom::evaluation::CaseArtifactResolution::get(std::move(merged));
+}
+
+llvm::Expected<MatchedEvidence>
+classifyEvidence(const ArtifactRootReference &reference,
+                 llvm::ArrayRef<PreparedSpatialMapping> mappings,
+                 const ::loom::evaluation::CaseArtifactResolution &resolution,
+                 const ArtifactRootReference &workload,
+                 const ArtifactRootReference &runtimeInput,
+                 const ArtifactStore &store) {
+  auto requestReference =
+      ::loom::evaluation::importEvaluationEvidenceRequestReference(reference,
+                                                                   store);
+  if (!requestReference)
+    return requestReference.takeError();
+
+  auto request = ::loom::evaluation::importEvaluationRequest(*requestReference,
+                                                             resolution, store);
+  if (!request)
+    return request.takeError();
+  if (request->modelBinding().descriptorRef() !=
+      ::loom::evaluation::models::cgraSimulationModelDescriptorRef())
+    return invalid("Evidence uses a non-CGRA model");
+  const auto subjects = request->subjectBindings().subjects(
+      ::loom::evaluation::models::cgraSimulationSpatialMappingRole());
+  if (subjects.size() != 1)
+    return invalid("Evidence subjects differ from the exact Mapping closure");
+  auto found = llvm::lower_bound(mappings, subjects.front(),
+                                 [](const PreparedSpatialMapping &mapping,
+                                    const ArtifactRootReference &sought) {
+                                   return artifactRootReferenceLess(
+                                       mapping.reference, sought);
+                                 });
+  if (found == mappings.end() || found->reference != subjects.front())
+    return invalid("Evidence subjects differ from the exact Mapping closure");
+  const std::size_t matchedMapping =
+      static_cast<std::size_t>(std::distance(mappings.begin(), found));
+
+  const PreparedSpatialMapping &mapping = mappings[matchedMapping];
+  auto evidence = ::loom::evaluation::importEvaluationEvidence(
+      reference, mapping.cgraCase.resolution, store);
+  if (!evidence)
+    return evidence.takeError();
+  if (llvm::Error error = validateCgraRequest(
+          *request, mapping.cgraCase.canonicalDataflow, mapping.cgraCase.fabric,
+          mapping.reference, workload, runtimeInput))
+    return std::move(error);
+  return MatchedEvidence{
+      matchedMapping, evidence->outcomeKind() ==
+                          ::loom::evaluation::EvidenceOutcomeKind::Completed};
+}
+
+llvm::Expected<MatchedEvidence>
+matchEvidence(std::size_t mappingOrdinal,
+              llvm::ArrayRef<MatchedEvidence> evidence,
+              std::vector<bool> &consumed) {
+  for (std::size_t ordinal = 0; ordinal != evidence.size(); ++ordinal) {
+    if (consumed[ordinal] || evidence[ordinal].mappingOrdinal != mappingOrdinal)
+      continue;
     consumed[ordinal] = true;
-    return MatchedEvidence{evidence->outcomeKind() ==
-                           ::loom::evaluation::EvidenceOutcomeKind::Completed};
+    return evidence[ordinal];
   }
   return invalid("no exact EvaluationEvidence exists for a SpatialMapping");
 }
@@ -308,6 +363,12 @@ llvm::Expected<std::optional<FeedbackCandidate>> materializeFeedback(
         auto published = ::dataflow::publishCanonicalDataflow(**child, store);
         if (!published)
           return published.takeError();
+        if (StructuredOwnershipInvocation *invocation =
+                detail::StructuredOwnershipInvocationAccess::current())
+          if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
+                  recordDataflowRewriteCandidate(*invocation, parentReference,
+                                                 *published, decision, store))
+            return std::move(error);
         auto payload = ::dataflow::encodeDataflowRewriteDecision(decision);
         if (!payload)
           return payload.takeError();
@@ -375,12 +436,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
 
   const ArtifactRootReference &workload = singleInput(inputs, WorkloadInput);
   const ArtifactRootReference &runtimeInput = singleInput(inputs, RuntimeInput);
-  std::vector<bool> consumedEvidence(inputs[EvidenceInput].artifacts.size(),
-                                     false);
-  std::vector<ArtifactRootReference> outputs;
-  std::vector<CandidateGeneratorLineageEdge> lineage;
-  bool proofNotEstablished = false;
-
+  std::vector<PreparedSpatialMapping> mappings;
+  mappings.reserve(inputs[SpatialMappingInput].artifacts.size());
   for (const ArtifactRootReference &mappingReference :
        inputs[SpatialMappingInput].artifacts) {
     auto mapping =
@@ -395,19 +452,48 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
             *dataflowView, tech->view(), fabric->view(), constraints->view(),
             mapping->view()))
       return std::move(error);
+    auto cgraCase = ::loom::evaluation::models::resolveCgraSimulationCase(
+        mappingReference, workload, runtimeInput, store);
+    if (!cgraCase)
+      return cgraCase.takeError();
+    if (cgraCase->canonicalDataflow != dataflowReference ||
+        cgraCase->fabric != fabricReference)
+      return invalid("CGRA case resolution differs from Mapping owners");
+    mappings.push_back(
+        {mappingReference, std::move(*mapping), std::move(*cgraCase)});
+  }
 
-    auto evidence = matchEvidence(
-        dataflowReference, fabricReference, mappingReference, workload,
-        runtimeInput, inputs[EvidenceInput].artifacts, consumedEvidence, store);
-    if (!evidence)
-      return evidence.takeError();
-    if (!evidence->completed) {
+  std::vector<MatchedEvidence> evidence;
+  evidence.reserve(inputs[EvidenceInput].artifacts.size());
+  auto mergedResolution = mergeCaseResolutions(mappings);
+  if (!mergedResolution)
+    return mergedResolution.takeError();
+  for (const ArtifactRootReference &reference :
+       inputs[EvidenceInput].artifacts) {
+    auto classified = classifyEvidence(reference, mappings, *mergedResolution,
+                                       workload, runtimeInput, store);
+    if (!classified)
+      return classified.takeError();
+    evidence.push_back(std::move(*classified));
+  }
+  std::vector<bool> consumedEvidence(evidence.size(), false);
+  std::vector<ArtifactRootReference> outputs;
+  std::vector<CandidateGeneratorLineageEdge> lineage;
+  bool proofNotEstablished = false;
+
+  for (std::size_t mappingOrdinal = 0; mappingOrdinal != mappings.size();
+       ++mappingOrdinal) {
+    PreparedSpatialMapping &mapping = mappings[mappingOrdinal];
+    auto matched = matchEvidence(mappingOrdinal, evidence, consumedEvidence);
+    if (!matched)
+      return matched.takeError();
+    if (!matched->completed) {
       proofNotEstablished = true;
       continue;
     }
 
     auto projection = ::loom::pnr::projectSpatialMappingTraversalClaims(
-        **frozen, mapping->view());
+        **frozen, mapping.mapping.view());
     if (!projection)
       return projection.takeError();
     auto candidate =

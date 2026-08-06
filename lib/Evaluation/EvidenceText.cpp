@@ -4,6 +4,7 @@
 #include "Evaluation/CaseText.h"
 #include "Evaluation/MetricText.h"
 
+#include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -37,6 +38,47 @@ llvm::Expected<std::uint32_t> requireOrdinal(const llvm::json::Object &object,
   return static_cast<std::uint32_t>(*value);
 }
 
+llvm::Expected<llvm::json::Value>
+parseEvidenceEnvelope(llvm::StringRef jsonText) {
+  auto value = llvm::json::parse(jsonText);
+  if (!value)
+    return value.takeError();
+  const llvm::json::Object *root = value->getAsObject();
+  if (!root)
+    return evaluationError("evaluation.evidence root must be an object");
+  if (llvm::Error error =
+          rejectUnknownFields(*root, "evaluation.evidence root",
+                              {"schema", "schema_version", "request_ref",
+                               "output_bindings", "outcome"}))
+    return std::move(error);
+  auto schema = requireString(*root, "schema", "evaluation.evidence root");
+  if (!schema)
+    return schema.takeError();
+  if (*schema != EvaluationEvidence::artifactSchema.identity)
+    return evaluationError("unsupported EvaluationEvidence schema '" + *schema +
+                           "'");
+  auto versionSpelling =
+      requireString(*root, "schema_version", "evaluation.evidence root");
+  if (!versionSpelling)
+    return versionSpelling.takeError();
+  auto version = parseSchemaVersion(*versionSpelling);
+  if (!version)
+    return version.takeError();
+  if (*version != EvaluationEvidence::artifactSchema.version)
+    return evaluationError("unsupported evaluation.evidence version '" +
+                           *versionSpelling + "'");
+  return std::move(*value);
+}
+
+llvm::Expected<ArtifactRootReference>
+parseEvidenceRequestReference(const llvm::json::Object &root) {
+  auto requestObject =
+      requireObject(root, "request_ref", "evaluation.evidence root");
+  if (!requestObject)
+    return requestObject.takeError();
+  return parseArtifactRootReferenceJson(**requestObject);
+}
+
 void writeOutputBindings(llvm::json::OStream &json,
                          llvm::ArrayRef<ModelOutputBinding> bindings) {
   json.array([&] {
@@ -64,14 +106,13 @@ parseOutputBindings(const llvm::json::Object &root) {
     const llvm::json::Object *object = value.getAsObject();
     if (!object)
       return evaluationError("model output binding must be an object");
-    if (llvm::Error error = rejectUnknownFields(
-            *object, "model output binding", {"slot", "artifacts"}))
+    if (llvm::Error error = rejectUnknownFields(*object, "model output binding",
+                                                {"slot", "artifacts"}))
       return std::move(error);
     auto slot = requireOrdinal(*object, "slot", "model output binding");
     if (!slot)
       return slot.takeError();
-    auto artifacts =
-        requireArray(*object, "artifacts", "model output binding");
+    auto artifacts = requireArray(*object, "artifacts", "model output binding");
     if (!artifacts)
       return artifacts.takeError();
     ModelOutputBinding binding{ModelOutputSlotRef(*slot), {}};
@@ -103,8 +144,7 @@ void writeMetricResult(llvm::json::OStream &json, const MetricResult &result) {
   });
 }
 
-llvm::Expected<MetricResult>
-parseMetricResult(const llvm::json::Value &value) {
+llvm::Expected<MetricResult> parseMetricResult(const llvm::json::Value &value) {
   const llvm::json::Object *object = value.getAsObject();
   if (!object)
     return evaluationError("metric result must be an object");
@@ -123,8 +163,7 @@ parseMetricResult(const llvm::json::Value &value) {
       requireObject(*object, "observation", "metric result");
   if (!observationObject)
     return observationObject.takeError();
-  auto observation =
-      parseMetricObservationValueJson(**observationObject);
+  auto observation = parseMetricObservationValueJson(**observationObject);
   if (!observation)
     return observation.takeError();
   auto slots =
@@ -177,8 +216,7 @@ void writeFindingResult(llvm::json::OStream &json,
       });
       return;
     }
-    const auto notApplicable =
-        std::get<NotApplicableFinding>(result.result);
+    const auto notApplicable = std::get<NotApplicableFinding>(result.result);
     json.attribute("state", "not_applicable");
     json.attribute("reason", toString(notApplicable.reason));
   });
@@ -198,18 +236,16 @@ parseFindingResult(const llvm::json::Value &value,
   if (!state)
     return state.takeError();
   if (*state == "absent") {
-    if (llvm::Error error = rejectUnknownFields(
-            *object, "absent finding result", {"state"}))
+    if (llvm::Error error =
+            rejectUnknownFields(*object, "absent finding result", {"state"}))
       return std::move(error);
     return FindingResult{AbsentFinding{}};
   }
   if (*state == "present") {
     if (llvm::Error error = rejectUnknownFields(
-            *object, "present finding result",
-            {"state", "occurrences"}))
+            *object, "present finding result", {"state", "occurrences"}))
       return std::move(error);
-    auto array =
-        requireArray(*object, "occurrences", "present finding result");
+    auto array = requireArray(*object, "occurrences", "present finding result");
     if (!array)
       return array.takeError();
     PresentFinding present;
@@ -223,8 +259,8 @@ parseFindingResult(const llvm::json::Value &value,
       return evaluationError("finding result kind is unregistered");
     if (llvm::Error error = requireFindingOccurrenceOwner(*descriptor))
       return std::move(error);
-    const FindingOccurrenceContext context(
-        request, ordinal, outputBindings, resolution, artifactStore);
+    const FindingOccurrenceContext context(request, ordinal, outputBindings,
+                                           resolution, artifactStore);
     for (const llvm::json::Value &occurrenceValue : **array) {
       auto occurrence = parseFindingOccurrence(
           occurrenceValue, descriptor->occurrenceCodec, context);
@@ -237,8 +273,7 @@ parseFindingResult(const llvm::json::Value &value,
   if (*state != "not_applicable")
     return evaluationError("unknown finding result state '" + *state + "'");
   if (llvm::Error error = rejectUnknownFields(
-          *object, "not-applicable finding result",
-          {"state", "reason"}))
+          *object, "not-applicable finding result", {"state", "reason"}))
     return std::move(error);
   auto reasonSpelling =
       requireString(*object, "reason", "not-applicable finding result");
@@ -265,14 +300,12 @@ void writeOutcome(llvm::json::OStream &json,
       });
       return;
     }
-    if (const auto *unsupported =
-            std::get_if<UnsupportedEvidence>(&outcome)) {
+    if (const auto *unsupported = std::get_if<UnsupportedEvidence>(&outcome)) {
       json.attribute("kind", "unsupported");
       json.attribute("reason", toString(unsupported->reason));
       return;
     }
-    if (const auto *failed =
-            std::get_if<ExecutionFailedEvidence>(&outcome)) {
+    if (const auto *failed = std::get_if<ExecutionFailedEvidence>(&outcome)) {
       json.attribute("kind", "execution_failed");
       json.attribute("reason", toString(failed->reason));
       return;
@@ -295,9 +328,9 @@ parseOutcome(const llvm::json::Object &root, const EvaluationRequest &request,
   if (!kind)
     return kind.takeError();
   if (*kind == "completed") {
-    if (llvm::Error error = rejectUnknownFields(
-            **object, "completed Evidence outcome",
-            {"kind", "metric_results", "finding_results"}))
+    if (llvm::Error error =
+            rejectUnknownFields(**object, "completed Evidence outcome",
+                                {"kind", "metric_results", "finding_results"}))
       return std::move(error);
     auto metrics =
         requireArray(**object, "metric_results", "completed Evidence outcome");
@@ -311,8 +344,8 @@ parseOutcome(const llvm::json::Object &root, const EvaluationRequest &request,
         return metric.takeError();
       completed.metricResults.push_back(std::move(*metric));
     }
-    auto findings = requireArray(**object, "finding_results",
-                                 "completed Evidence outcome");
+    auto findings =
+        requireArray(**object, "finding_results", "completed Evidence outcome");
     if (!findings)
       return findings.takeError();
     completed.findingResults.reserve((*findings)->size());
@@ -374,42 +407,15 @@ llvm::Expected<EvaluationEvidence>
 parseEvaluationEvidence(llvm::StringRef jsonText,
                         const CaseArtifactResolution &resolution,
                         const ArtifactStore &artifactStore) {
-  auto value = llvm::json::parse(jsonText);
+  auto value = parseEvidenceEnvelope(jsonText);
   if (!value)
     return value.takeError();
   const llvm::json::Object *root = value->getAsObject();
-  if (!root)
-    return evaluationError("evaluation.evidence root must be an object");
-  if (llvm::Error error = rejectUnknownFields(
-          *root, "evaluation.evidence root",
-          {"schema", "schema_version", "request_ref", "output_bindings",
-           "outcome"}))
-    return std::move(error);
-  auto schema = requireString(*root, "schema", "evaluation.evidence root");
-  if (!schema)
-    return schema.takeError();
-  if (*schema != EvaluationEvidence::artifactSchema.identity)
-    return evaluationError("unsupported EvaluationEvidence schema '" +
-                           *schema + "'");
-  auto versionSpelling =
-      requireString(*root, "schema_version", "evaluation.evidence root");
-  if (!versionSpelling)
-    return versionSpelling.takeError();
-  auto version = parseSchemaVersion(*versionSpelling);
-  if (!version)
-    return version.takeError();
-  if (*version != EvaluationEvidence::artifactSchema.version)
-    return evaluationError("unsupported evaluation.evidence version '" +
-                           *versionSpelling + "'");
-
-  auto requestObject =
-      requireObject(*root, "request_ref", "evaluation.evidence root");
-  if (!requestObject)
-    return requestObject.takeError();
-  auto requestRef = parseArtifactRootReferenceJson(**requestObject);
+  auto requestRef = parseEvidenceRequestReference(*root);
   if (!requestRef)
     return requestRef.takeError();
-  auto request = importEvaluationRequest(*requestRef, resolution, artifactStore);
+  auto request =
+      importEvaluationRequest(*requestRef, resolution, artifactStore);
   if (!request)
     return request.takeError();
   auto outputs = parseOutputBindings(*root);
@@ -419,9 +425,9 @@ parseEvaluationEvidence(llvm::StringRef jsonText,
       parseOutcome(*root, *request, *outputs, resolution, artifactStore);
   if (!outcome)
     return outcome.takeError();
-  auto evidence = EvaluationEvidence::get(
-      *request, std::move(*outputs), std::move(*outcome), resolution,
-      artifactStore);
+  auto evidence =
+      EvaluationEvidence::get(*request, std::move(*outputs),
+                              std::move(*outcome), resolution, artifactStore);
   if (!evidence)
     return evidence.takeError();
   if (evidence->requestRef() != *requestRef)
@@ -429,6 +435,25 @@ parseEvaluationEvidence(llvm::StringRef jsonText,
   if (serializeEvaluationEvidence(*evidence) != jsonText)
     return evaluationError("EvaluationEvidence JSON is not canonical");
   return evidence;
+}
+
+llvm::Expected<ArtifactRootReference>
+importEvaluationEvidenceRequestReference(const ArtifactRootReference &reference,
+                                         const ArtifactStore &artifactStore) {
+  if (reference.schemaIdentity != EvaluationEvidence::artifactSchema.identity ||
+      reference.schemaVersion != EvaluationEvidence::artifactSchema.version)
+    return evaluationError("foreign EvaluationEvidence reference schema");
+  auto bytes =
+      artifactStore.get(EvaluationEvidence::artifactSchema, reference.artifact);
+  if (!bytes)
+    return bytes.takeError();
+  const llvm::ArrayRef<std::uint8_t> payload = bytes->bytes();
+  const llvm::StringRef json(reinterpret_cast<const char *>(payload.data()),
+                             payload.size());
+  auto value = parseEvidenceEnvelope(json);
+  if (!value)
+    return value.takeError();
+  return parseEvidenceRequestReference(*value->getAsObject());
 }
 
 } // namespace loom::evaluation

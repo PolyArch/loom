@@ -1,17 +1,24 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "DSE/SpatialMappingEvaluationAcquisition.h"
 #include "DSE/SpatialMappingFeedbackCandidateGenerator.h"
+#include "DSE/StructuredOwnership.h"
+#include "DSE/StructuredOwnershipInvocation.h"
+#include "DSE/StructuredOwnershipInvocationInternal.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/Transforms/DataflowRewrite.h"
 #include "Evaluation/Models/CgraSimulation.h"
+#include "Evaluation/StandardFindings.h"
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Frontend/IR/LoomOps.h"
+#include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Inspection/SpatialMappingInspection.h"
@@ -25,12 +32,15 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
@@ -80,8 +90,86 @@ private:
 mlir::MLIRContext makeContext() {
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
-                  mlir::DLTIDialect, mlir::func::FuncDialect>();
+                  mlir::DLTIDialect, mlir::func::FuncDialect,
+                  mlir::LLVM::LLVMDialect, loom::LoomDialect>();
   return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
+}
+
+loom::frontend::StructuredEntityRef findStructuredCallable(
+    const loom::frontend::StructuredProgramCandidate &candidate,
+    llvm::StringRef name) {
+  auto view = take(candidate.view());
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto function =
+        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
+    if (function && function.getSymName() == name)
+      return entity.reference;
+  }
+  fail("callable is absent from the Structured Program: " + name);
+}
+
+loom::frontend::StructuredProgramCandidate
+buildVectorStructuredSource(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  llvm.func internal @kernel(%value: vector<4xi32>) -> vector<4xi32> {
+    %sum = arith.addi %value, %value : vector<4xi32>
+    llvm.return %sum : vector<4xi32>
+  }
+  llvm.func @main() -> i32 {
+    %value = arith.constant dense<[1, 2, 3, 4]> : vector<4xi32>
+    %result = llvm.call @kernel(%value)
+        : (vector<4xi32>) -> vector<4xi32>
+    %zero = arith.constant 0 : i32
+    llvm.return %zero : i32
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse vector Structured source fixture");
+  if (llvm::InitializeNativeTarget() ||
+      llvm::InitializeNativeTargetAsmPrinter())
+    fail("cannot initialize the native target");
+  auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
+  module->getOperation()->setAttr(
+      "llvm.target_triple",
+      mlir::StringAttr::get(&context, "riscv64-unknown-unknown-elf"));
+  module->getOperation()->setAttr(
+      "llvm.data_layout",
+      mlir::StringAttr::get(&context,
+                            take(target.getDefaultDataLayoutForTarget())
+                                .getStringRepresentation()));
+  return take(loom::frontend::finalizeStructuredProgram(module.get()));
+}
+
+struct PublishedStructuredInputs final {
+  loom::sim::CanonicalSimulationWorkload workload;
+  loom::sim::CanonicalSimulationRuntimeInput runtimeInput;
+  loom::ArtifactRootReference workloadReference;
+  loom::ArtifactRootReference runtimeInputReference;
+};
+
+PublishedStructuredInputs publishVectorStructuredInputs(
+    const loom::frontend::StructuredProgramCandidate &source,
+    loom::ArtifactStore &store) {
+  auto view = take(source.view());
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{
+      findStructuredCallable(source, "main")};
+  workloadDraft.observableContract.returnValue = true;
+  auto workload =
+      take(loom::sim::finalizeSimulationWorkload(workloadDraft, view));
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft runtimeDraft{
+      workload.identity()};
+  auto runtime = take(
+      loom::sim::finalizeSimulationRuntimeInput(runtimeDraft, workload, view));
+  auto workloadReference =
+      take(loom::sim::publishSimulationWorkload(workload, store));
+  auto runtimeInputReference =
+      take(loom::sim::publishSimulationRuntimeInput(runtime, store));
+  return {std::move(workload), std::move(runtime), std::move(workloadReference),
+          std::move(runtimeInputReference)};
 }
 
 dataflow::CanonicalDataflowArtifact buildDataflow(mlir::MLIRContext &context) {
@@ -1157,6 +1245,130 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
       !chunk || chunk->leadingBlocksPerChunk != 2)
     fail("Mapping feedback lost its typed Dataflow decision lineage");
 
+  auto preparedCgra =
+      take(loom::evaluation::models::prepareCgraSimulationEvaluation(
+          dataflowReference, fabric.reference(), spatialMapping,
+          simulationInputs.workload, simulationInputs.runtimeInput,
+          loom::defaultResolvedConfig(), store));
+  auto unsupportedEvidence = take(loom::evaluation::EvaluationEvidence::get(
+      preparedCgra.request, {{loom::evaluation::ModelOutputSlotRef(0), {}}},
+      loom::evaluation::UnsupportedEvidence{
+          loom::evaluation::OutcomeReason::RuntimeCapabilityUnavailable},
+      preparedCgra.resolution, store));
+  const loom::ArtifactRootReference unsupportedReference = take(
+      loom::evaluation::publishEvaluationEvidence(unsupportedEvidence, store));
+  auto feedbackBinding =
+      take(loom::dse::resolveSpatialMappingFeedbackCandidateGeneratorBinding(
+          feedbackConfig));
+  auto unsupportedInputs =
+      take(loom::dse::bindSpatialMappingFeedbackCandidateGeneratorInputs(
+          {dataflowReference}, {spatialMapping},
+          spatial.constraints.reference(), {unsupportedReference},
+          simulationInputs.workload, simulationInputs.runtimeInput));
+  auto unsupportedOutcome = take(loom::dse::invokeCandidateGenerator(
+      unsupportedInputs, feedbackBinding, store));
+  const auto *proofNotEstablished =
+      std::get_if<loom::dse::IncompleteCandidateGeneratorInvocation>(
+          &unsupportedOutcome);
+  if (!proofNotEstablished ||
+      proofNotEstablished->reason !=
+          loom::dse::CandidateGeneratorIncompleteReason::ProofNotEstablished ||
+      proofNotEstablished->retainedOutputBindings.size() != 1 ||
+      !proofNotEstablished->retainedOutputBindings.front().artifacts.empty() ||
+      !proofNotEstablished->lineageEdges.empty())
+    fail("non-Completed Mapping Evidence did not remain proof-incomplete");
+
+  auto impersonatingSubjects =
+      take(loom::evaluation::EvaluationSubjectBindings::get(
+          {{loom::evaluation::models::cgraSimulationProgramRole(),
+            {dataflowReference}},
+           {loom::evaluation::models::cgraSimulationHardwareRole(),
+            {fabric.reference()}},
+           {loom::evaluation::models::cgraSimulationSpatialMappingRole(),
+            {techMapping}}}));
+  auto impersonatingBinding =
+      take(loom::evaluation::ResolvedModelBinding::project(
+          loom::evaluation::models::cgraSimulationModelDescriptorRef(), {},
+          loom::defaultResolvedConfig()));
+  auto impersonatingRequest = take(loom::evaluation::EvaluationRequest::get(
+      std::move(impersonatingSubjects), simulationInputs.workload,
+      simulationInputs.runtimeInput, preparedCgra.request.baseConditions(),
+      preparedCgra.request.metricRequests(), {},
+      std::move(impersonatingBinding), 0, preparedCgra.resolution, store));
+  take(loom::evaluation::publishEvaluationRequest(impersonatingRequest, store));
+  auto impersonatingEvidence = take(loom::evaluation::EvaluationEvidence::get(
+      impersonatingRequest, {{loom::evaluation::ModelOutputSlotRef(0), {}}},
+      loom::evaluation::UnsupportedEvidence{
+          loom::evaluation::OutcomeReason::RuntimeCapabilityUnavailable},
+      preparedCgra.resolution, store));
+  const loom::ArtifactRootReference impersonatingReference =
+      take(loom::evaluation::publishEvaluationEvidence(impersonatingEvidence,
+                                                       store));
+  auto impersonatingInputs =
+      take(loom::dse::bindSpatialMappingFeedbackCandidateGeneratorInputs(
+          {dataflowReference}, {spatialMapping},
+          spatial.constraints.reference(), {impersonatingReference},
+          simulationInputs.workload, simulationInputs.runtimeInput));
+  auto impersonatingOutcome = loom::dse::invokeCandidateGenerator(
+      impersonatingInputs, feedbackBinding, store);
+  if (impersonatingOutcome)
+    fail("TechMapping Evidence impersonated a SpatialMapping subject");
+  const std::string impersonatingMessage =
+      llvm::toString(impersonatingOutcome.takeError());
+  if (!llvm::StringRef(impersonatingMessage)
+           .contains("Evidence subjects differ"))
+    fail("subject impersonation lost its exact rejection");
+
+  loom::ArtifactIdentity::Storage missingBytes{};
+  missingBytes.fill(0xff);
+  const loom::ArtifactRootReference missingEvidence{
+      loom::evaluation::EvaluationEvidence::artifactSchema.identity.str(),
+      loom::evaluation::EvaluationEvidence::artifactSchema.version,
+      take(loom::ArtifactIdentity::fromBytes(missingBytes))};
+  auto directMissing = loom::evaluation::importEvaluationEvidence(
+      missingEvidence, preparedCgra.resolution, store);
+  if (directMissing)
+    fail("missing Evidence unexpectedly exists in the ArtifactStore");
+  const std::string directMissingMessage =
+      llvm::toString(directMissing.takeError());
+  const loom::ArtifactRootReference completedReference =
+      completed->resolve({0, 1}).front();
+  auto requireExactMissingError =
+      [&](llvm::ArrayRef<loom::ArtifactRootReference> evidence) {
+        auto missingInputs =
+            take(loom::dse::bindSpatialMappingFeedbackCandidateGeneratorInputs(
+                {dataflowReference}, {spatialMapping},
+                spatial.constraints.reference(), evidence,
+                simulationInputs.workload, simulationInputs.runtimeInput));
+        auto missingOutcome = loom::dse::invokeCandidateGenerator(
+            missingInputs, feedbackBinding, store);
+        if (missingOutcome)
+          fail("missing Mapping Evidence was treated as an absent record");
+        if (llvm::toString(missingOutcome.takeError()) != directMissingMessage)
+          fail("Mapping feedback did not propagate the exact Evidence import "
+               "error");
+      };
+  const std::array<loom::ArtifactRootReference, 2> validThenMissing = {
+      completedReference, missingEvidence};
+  const std::array<loom::ArtifactRootReference, 2> missingThenValid = {
+      missingEvidence, completedReference};
+  requireExactMissingError(validThenMissing);
+  requireExactMissingError(missingThenValid);
+
+  auto extraInputs =
+      take(loom::dse::bindSpatialMappingFeedbackCandidateGeneratorInputs(
+          {dataflowReference}, {spatialMapping},
+          spatial.constraints.reference(),
+          {completedReference, unsupportedReference}, simulationInputs.workload,
+          simulationInputs.runtimeInput));
+  auto extraOutcome =
+      loom::dse::invokeCandidateGenerator(extraInputs, feedbackBinding, store);
+  if (extraOutcome)
+    fail("Mapping feedback ignored an unmatched extra Evidence record");
+  if (!llvm::StringRef(llvm::toString(extraOutcome.takeError()))
+           .contains("unmatched record"))
+    fail("unmatched Evidence lost its exact rejection");
+
   auto alternate = buildAlternateDataflow(context);
   const loom::ArtifactRootReference alternateReference =
       take(dataflow::publishCanonicalDataflow(alternate, store));
@@ -1180,6 +1392,143 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
     fail("finite Mapping feedback plan is not deterministic");
 }
 
+void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  auto source = buildVectorStructuredSource(context);
+  const loom::ArtifactRootReference sourceReference =
+      take(loom::frontend::publishStructuredProgram(source, store));
+  PublishedStructuredInputs sourceInputs =
+      publishVectorStructuredInputs(source, store);
+  auto fabric = buildBuiltinSpatialCore(store);
+
+  loom::dse::StructuredOwnershipInvocation invocation(
+      source, sourceInputs.workload, sourceInputs.runtimeInput, fabric,
+      loom::defaultResolvedConfig(), {}, 1,
+      {100000, 1000000, 256ULL * 1024ULL * 1024ULL});
+  loom::dse::StructuredOwnershipInvocationScope invocationScope(invocation);
+  loom::dse::StructuredOwnershipGenerationOptions ownership;
+  ownership.protocolCallableRoots = {findStructuredCallable(source, "kernel")};
+  auto generated = take(loom::dse::generateStructuredOwnershipCandidates(
+      source, sourceInputs.workload, sourceInputs.runtimeInput, fabric,
+      ownership, store));
+
+  std::optional<loom::ArtifactRootReference> structuredParent;
+  std::optional<loom::ArtifactRootReference> dataflowReference;
+  for (const loom::ArtifactRootReference &candidate :
+       generated.candidates.candidates()) {
+    if (candidate == sourceReference)
+      continue;
+    auto structured =
+        take(loom::frontend::importStructuredProgram(candidate, store));
+    bool hasVectorAdd = false;
+    structured.module().walk([&](loom::SpatialRegionOp spatial) {
+      spatial.walk([&](mlir::arith::AddIOp add) {
+        auto type = llvm::dyn_cast<mlir::VectorType>(add.getType());
+        hasVectorAdd |=
+            type && type.getShape() == llvm::ArrayRef<std::int64_t>{4};
+      });
+    });
+    if (!hasVectorAdd)
+      continue;
+    requireSuccess(loom::dse::detail::StructuredOwnershipInvocationAccess::
+                       primeFunctionalReplay(invocation, candidate, store));
+    structuredParent = candidate;
+    dataflowReference =
+        take(invocation.prepareDataflowGeneration(candidate, store));
+    break;
+  }
+  if (!structuredParent || !dataflowReference)
+    fail("source-backed feedback fixture produced no vector Dataflow root");
+
+  auto dataflow =
+      take(dataflow::importCanonicalDataflow(*dataflowReference, store));
+  const loom::ArtifactRootReference techMapping =
+      generateTechMapping(*dataflowReference, fabric.reference(), store);
+  auto spatial = generateSpatialFeedbackFixture(*dataflowReference, techMapping,
+                                                fabric, store);
+  const PublishedSpatialInputs spatialInputs =
+      publishVectorSpatialInputs(dataflow, store);
+  auto cgraObligation =
+      take(loom::dse::prepareCgraSimulationEvidenceObligationTemplate(
+          *dataflowReference, fabric.reference(), spatial.mapping,
+          spatialInputs.workload, spatialInputs.runtimeInput,
+          loom::defaultResolvedConfig(), store));
+  const std::array<loom::dse::EvidenceObligationTemplateRef, 1> cgraRefs = {
+      loom::dse::EvidenceObligationTemplateRef(0)};
+  auto cgraConfig =
+      take(loom::dse::projectResolvedEvidenceObligationSetConfigView(cgraRefs));
+  auto cgraBinding = take(
+      loom::dse::resolveSpatialMappingEvaluationPromotionAcquisitionBinding(
+          cgraConfig));
+  auto cgraInputs = take(loom::dse::bindSpatialMappingEvaluationPromotionInputs(
+      {spatial.mapping}, {*dataflowReference}, fabric.reference(),
+      spatialInputs.workload, spatialInputs.runtimeInput));
+  auto cgraOutcome = take(loom::dse::invokePromotionAcquisition(
+      cgraInputs, cgraBinding, {cgraObligation}, {{spatial.mapping}, cgraRefs},
+      store));
+  const auto *cgraCompleted =
+      std::get_if<loom::dse::CompletedPromotionAcquisition>(&cgraOutcome);
+  if (!cgraCompleted || cgraCompleted->evidence.size() != 1)
+    fail("source-backed feedback fixture produced no CGRA Evidence");
+  const loom::ArtifactRootReference cgraEvidence =
+      take(loom::evaluation::publishEvaluationEvidence(
+          cgraCompleted->evidence.front().evidence, store));
+
+  auto feedbackInputs =
+      take(loom::dse::bindSpatialMappingFeedbackCandidateGeneratorInputs(
+          {*dataflowReference}, {spatial.mapping},
+          spatial.constraints.reference(), {cgraEvidence},
+          spatialInputs.workload, spatialInputs.runtimeInput));
+  auto feedbackBinding =
+      take(loom::dse::resolveSpatialMappingFeedbackCandidateGeneratorBinding(
+          buildFeedbackSpatialConfig()));
+  auto feedbackOutcome = take(loom::dse::invokeCandidateGenerator(
+      feedbackInputs, feedbackBinding, store));
+  const auto *feedbackCompleted =
+      std::get_if<loom::dse::CompletedCandidateGeneratorInvocation>(
+          &feedbackOutcome);
+  if (!feedbackCompleted || feedbackCompleted->outputBindings.size() != 1 ||
+      feedbackCompleted->outputBindings.front().artifacts.size() != 1)
+    fail("source-backed Mapping feedback produced no immutable child");
+  const loom::ArtifactRootReference child =
+      feedbackCompleted->outputBindings.front().artifacts.front();
+
+  auto functionalObligation = take(
+      loom::dse::prepareCanonicalDataflowFunctionalEvidenceObligationTemplate(
+          child, *structuredParent, sourceInputs.workloadReference,
+          sourceInputs.runtimeInputReference, loom::defaultResolvedConfig(),
+          store));
+  const std::array<loom::dse::EvidenceObligationTemplateRef, 1> functionalRefs =
+      {loom::dse::EvidenceObligationTemplateRef(0)};
+  auto functionalConfig =
+      take(loom::dse::projectResolvedEvidenceObligationSetConfigView(
+          functionalRefs));
+  auto functionalBinding =
+      take(loom::dse::resolveDataflowEvaluationPromotionAcquisitionBinding(
+          functionalConfig));
+  auto functionalInputs = take(loom::dse::bindDataflowEvaluationPromotionInputs(
+      {child}, *structuredParent, fabric.reference(),
+      sourceInputs.workloadReference, sourceInputs.runtimeInputReference));
+  auto functionalOutcome = take(loom::dse::invokePromotionAcquisition(
+      functionalInputs, functionalBinding, {functionalObligation},
+      {{child}, functionalRefs}, store));
+  const auto *functionalCompleted =
+      std::get_if<loom::dse::CompletedPromotionAcquisition>(&functionalOutcome);
+  if (!functionalCompleted || functionalCompleted->evidence.size() != 1)
+    fail("Mapping feedback child received no functional Evidence");
+
+  auto selected = take(invocation.materializeSelectedDataflowCandidate(
+      *structuredParent, child, store));
+  if (selected.dataflowRewriteDerivations.size() != 1 ||
+      !selected.functionalReplay ||
+      selected.functionalReplay->status !=
+          loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
+      selected.functionalReplay->dynamicActivations == 0)
+    fail("Mapping feedback child lost source-backed replay or typed lineage");
+}
+
 } // namespace
 
 int main() {
@@ -1193,5 +1542,6 @@ int main() {
   spatialMappingPromotionExecutesExactCgraCase();
   spatialMappingPromotionKeepsEveryCandidateLineage();
   spatialMappingFeedbackPublishesNarrowImmutableDataflow();
+  spatialMappingFeedbackReplaysAgainstItsSourceWorkload();
   return EXIT_SUCCESS;
 }

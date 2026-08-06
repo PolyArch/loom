@@ -210,6 +210,14 @@ importEvaluationEvidence(const ArtifactRootReference &reference,
                          const CaseArtifactResolution &resolution,
                          const ArtifactStore &artifactStore);
 
+/// Reads only the owner-framed Request reference needed to select the exact
+/// case resolution for a subsequent strict import. This projection validates
+/// the stored Evidence schema and outer JSON envelope, but does not replace
+/// `importEvaluationEvidence` or make the reference a second Evidence view.
+llvm::Expected<ArtifactRootReference>
+importEvaluationEvidenceRequestReference(const ArtifactRootReference &reference,
+                                         const ArtifactStore &artifactStore);
+
 } // namespace loom::evaluation
 
 #endif // LOOM_EVALUATION_EVIDENCE_H
