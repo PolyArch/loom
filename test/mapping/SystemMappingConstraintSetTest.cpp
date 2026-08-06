@@ -3,11 +3,14 @@
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Mapping/IR/MappingDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -45,6 +48,17 @@ void requireFailure(llvm::Expected<T> value, const llvm::Twine &message) {
   if (value)
     fail(message);
   llvm::consumeError(value.takeError());
+}
+
+template <typename T>
+void requireFailureContains(llvm::Expected<T> value,
+                            llvm::StringRef expectedDiagnostic,
+                            const llvm::Twine &message) {
+  if (value)
+    fail(message);
+  const std::string diagnostic = llvm::toString(value.takeError());
+  if (!llvm::StringRef(diagnostic).contains(expectedDiagnostic))
+    fail(message + ": " + diagnostic);
 }
 
 class TemporaryDirectory final {
@@ -107,6 +121,66 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
+mlir::DenseI8ArrayAttr denseBytes(mlir::MLIRContext *context,
+                                  llvm::ArrayRef<std::uint8_t> bytes) {
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  return mlir::DenseI8ArrayAttr::get(context, signedBytes);
+}
+
+::mapping::ArtifactIdentityAttr
+identityAttr(mlir::MLIRContext *context,
+             const loom::ArtifactIdentity &identity) {
+  return ::mapping::ArtifactIdentityAttr::get(
+      context, denseBytes(context, identity.bytes()));
+}
+
+::mapping::RootThreadLaunchRefAttr
+rootThreadLaunchAttr(mlir::MLIRContext *context,
+                     const loom::ArtifactIdentity &owner,
+                     dataflow::RootThreadLaunchRef reference) {
+  return ::mapping::RootThreadLaunchRefAttr::get(
+      context,
+      denseBytes(context,
+                 take(dataflow::encodeDataflowReference(owner, reference))));
+}
+
+mlir::OwningOpRef<mlir::ModuleOp> buildRawConstraintModule(
+    mlir::MLIRContext &context, const loom::ArtifactIdentity &dataflowIdentity,
+    const loom::ArtifactIdentity &fabricIdentity,
+    llvm::ArrayRef<dataflow::RootThreadLaunchRef> rootThreadLaunches) {
+  mlir::OpBuilder builder(&context);
+  auto module = mlir::ModuleOp::create(builder.getUnknownLoc());
+  builder.setInsertionPointToStart(module.getBody());
+
+  std::vector<mlir::Attribute> roots;
+  roots.reserve(rootThreadLaunches.size());
+  for (const auto root : rootThreadLaunches)
+    roots.push_back(rootThreadLaunchAttr(&context, dataflowIdentity, root));
+
+  auto constraint = ::mapping::ConstraintsSystemOp::create(
+      builder, builder.getUnknownLoc(),
+      identityAttr(&context, dataflowIdentity),
+      identityAttr(&context, fabricIdentity), builder.getArrayAttr(roots),
+      builder.getArrayAttr({}));
+  constraint.getBody().emplaceBlock();
+  return module;
+}
+
+loom::CanonicalSemanticBytes rawConstraintBytes(mlir::ModuleOp module) {
+  auto root =
+      llvm::cast<::mapping::ConstraintsSystemOp>(module.getBody()->front());
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  root.print(stream, mlir::OpPrintingFlags().enableDebugInfo(false));
+  stream << '\n';
+  stream.flush();
+  return loom::CanonicalSemanticBytes(
+      std::vector<std::uint8_t>(text.begin(), text.end()));
+}
+
 } // namespace
 
 int main() {
@@ -131,9 +205,10 @@ int main() {
 
   const auto firstRoot = dataflowView.rootThreadLaunches()[0].ref;
   const auto secondRoot = dataflowView.rootThreadLaunches()[1].ref;
-  std::vector<dataflow::RootThreadLaunchRef> reversed{secondRoot, firstRoot};
+  std::vector<dataflow::RootThreadLaunchRef> noncanonicalAuthoring{
+      secondRoot, firstRoot, secondRoot};
   auto first = take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
-      dataflowView, system, reversed, store));
+      dataflowView, system, noncanonicalAuthoring, store));
   auto second = take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
       dataflowView, system, {firstRoot, secondRoot}, store));
 
@@ -161,6 +236,24 @@ int main() {
               imported.view().rootThreadLaunches() ==
                   first.view().rootThreadLaunches(),
           "strict roundtrip changed the System constraint set");
+
+  mlir::MLIRContext rawContext;
+  rawContext.loadDialect<::mapping::MappingDialect>();
+  auto rawModule = buildRawConstraintModule(rawContext, dataflowView.identity(),
+                                            system.artifact().identity(),
+                                            noncanonicalAuthoring);
+  auto rawBytes = rawConstraintBytes(*rawModule);
+  require(!rawBytes.bytes().equals(first.canonicalBytes().bytes()),
+          "raw persisted fixture accidentally became canonical");
+  auto rawIdentity =
+      take(store.put(loom::mapping::mappingConstraintSetSchema, rawBytes));
+  const loom::ArtifactRootReference rawReference{
+      loom::mapping::mappingConstraintSetSchema.identity.str(),
+      loom::mapping::mappingConstraintSetSchema.version, rawIdentity};
+  requireFailureContains(
+      loom::mapping::importSystemMappingConstraintSet(rawReference, store),
+      "stored System constraint payload is not canonical",
+      "strict import accepted persisted unsorted duplicate references");
 
   requireFailure(loom::mapping::finalizeEmptySystemMappingConstraintSet(
                      dataflowView, system, {}, store),

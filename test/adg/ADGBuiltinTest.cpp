@@ -30,6 +30,22 @@
 
 namespace loom::adg::test {
 
+template <typename Ref>
+void requireExactCanonicalEntityRange(
+    llvm::StringRef test, const loom::fabric::FabricArtifactView &view,
+    llvm::ArrayRef<Ref> actual, loom::fabric::FabricEntityKind expectedKind) {
+  std::vector<Ref> expected;
+  for (std::uint64_t id = 0;; ++id) {
+    const auto kind = view.entityKind(id);
+    if (!kind)
+      break;
+    if (*kind == expectedKind)
+      expected.emplace_back(id);
+  }
+  require(test, llvm::equal(actual, expected),
+          "typed System range changed its exact canonical entity sequence");
+}
+
 void builtinPresetsExpandThroughPublicBuilder() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -98,14 +114,24 @@ void builtinPresetsExpandThroughPublicBuilder() {
         "builtin lost its SpatialCore, AccCore, or System memory inventory");
 
     auto systemView = take(test, loom::fabric::requireSystemRoot(root.view()));
-    require(test,
-            systemView.artifact().hostCoreOccurrences().size() == 1 &&
-                systemView.artifact().accCoreOccurrences().size() ==
-                    expected.accCores &&
-                systemView.artifact().systemMemoryServices().size() == 1 &&
-                systemView.artifact().systemServiceEndpoints().size() == 1 &&
-                systemView.artifact().externalBoundaries().empty(),
-            "builtin System view lost a canonical Mapping candidate inventory");
+    requireExactCanonicalEntityRange(
+        test, root.view(), systemView.artifact().hostCoreOccurrences(),
+        loom::fabric::FabricEntityKind::HostCoreOccurrence);
+    requireExactCanonicalEntityRange(
+        test, root.view(), systemView.artifact().accCoreOccurrences(),
+        loom::fabric::FabricEntityKind::AccCoreOccurrence);
+    requireExactCanonicalEntityRange(
+        test, root.view(), systemView.artifact().systemMemoryServices(),
+        loom::fabric::FabricEntityKind::SystemMemoryService);
+    requireExactCanonicalEntityRange(
+        test, root.view(), systemView.artifact().systemServiceEndpoints(),
+        loom::fabric::FabricEntityKind::SystemServiceEndpoint);
+    requireExactCanonicalEntityRange(
+        test, root.view(), systemView.artifact().systemServiceTransforms(),
+        loom::fabric::FabricEntityKind::SystemServiceTransform);
+    requireExactCanonicalEntityRange(
+        test, root.view(), systemView.artifact().externalBoundaries(),
+        loom::fabric::FabricEntityKind::ExternalBoundary);
     const loom::fabric::HostCoreOccurrenceRef host(uniqueEntity(
         test, root.view(), loom::fabric::FabricEntityKind::HostCoreOccurrence));
     const auto *hostArchitecture = systemView.instructionCoreArchitecture(host);
@@ -153,6 +179,14 @@ void builtinPresetsExpandThroughPublicBuilder() {
     auto module =
         take(test, loom::fabric::importEntireFabricRoot(
                        root.directDependencies().front().root, store));
+    require(test,
+            module.view().hostCoreOccurrences().empty() &&
+                module.view().accCoreOccurrences().empty() &&
+                module.view().systemMemoryServices().empty() &&
+                module.view().systemServiceEndpoints().empty() &&
+                module.view().systemServiceTransforms().empty() &&
+                module.view().externalBoundaries().empty(),
+            "Module root exposed a System-only typed range");
     const loom::fabric::FabricModuleTemplateRef moduleTemplate(
         uniqueEntity(test, module.view(),
                      loom::fabric::FabricEntityKind::FabricModuleTemplate));
