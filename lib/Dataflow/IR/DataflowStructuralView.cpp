@@ -8,9 +8,9 @@
 // SSA def-use, per-thread channel endpoint counts, the channel multicast
 // relation from the one shared whole-program channel-topology owner, and the
 // static memory composition (thread-formal and fresh-allocation roots,
-// root-preserving views, and per-static-site launch exposures). Static transfer
-// events remain exact aliases of their Dataflow-owned producer or consumer
-// terminals and never receive a separate event identity. Hot queries take
+// root-preserving views, and per-static-site launch exposures). Static event
+// families reuse their Dataflow-owned transfer terminals or rooted actor
+// transitions and never receive a separate event identity. Hot queries take
 // direct owner-slot and ordinal offsets and collision-free typed keys; no query
 // walks MLIR or lossily packs an index.
 //
@@ -1409,6 +1409,35 @@ llvm::Error CanonicalDataflowProgramView::validate(
                                [&](const ConsumedTransferEventRef &e) {
                                  return validate(e.terminal);
                                }},
+                    event);
+}
+
+llvm::Error CanonicalDataflowProgramView::validate(
+    const ContextualActorTransitionEventRef &event) const {
+  if (llvm::Error error = validate(event.actor))
+    return error;
+  auto actor = resolve(event.actor.actor);
+  if (!actor)
+    return actor.takeError();
+  auto projection = projectRegisteredActorSchemaProjection(actor->op);
+  if (!projection)
+    return projection.takeError();
+  auto transitions = semantics::projectActorHandshakeCases(
+      projection->schema, actor->op->getNumOperands(),
+      actor->op->getNumResults());
+  if (!transitions)
+    return transitions.takeError();
+  if (event.transitionCaseOrdinal >= transitions->size() ||
+      (*transitions)[event.transitionCaseOrdinal].ordinal !=
+          event.transitionCaseOrdinal)
+    return invalid(
+        "canonical dataflow: actor transition-case ordinal out of range");
+  return llvm::Error::success();
+}
+
+llvm::Error
+CanonicalDataflowProgramView::validate(const EventFamilyKey &event) const {
+  return std::visit([&](const auto &reference) { return validate(reference); },
                     event);
 }
 

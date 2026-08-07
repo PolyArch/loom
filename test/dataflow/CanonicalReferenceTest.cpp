@@ -102,8 +102,8 @@ void entityAndRootedReferenceRoundTrip() {
 }
 
 void ownerLocalReferenceCatalogAnchors() {
-  static_assert(std::is_same_v<EventFamilyKey, StaticTransferEventRef>);
-  static_assert(dataflowArtifactLocalReferenceKindCount() == 26);
+  static_assert(!std::is_same_v<EventFamilyKey, StaticTransferEventRef>);
+  static_assert(dataflowArtifactLocalReferenceKindCount() == 28);
   static_assert(dataflowArtifactLocalReferenceKindOrdinal(
                     DataflowArtifactLocalReferenceKind::GraphRef) == 0);
   static_assert(dataflowArtifactLocalReferenceKindOrdinal(
@@ -120,8 +120,13 @@ void ownerLocalReferenceCatalogAnchors() {
   static_assert(
       dataflowArtifactLocalReferenceKindOrdinal(
           DataflowArtifactLocalReferenceKind::StaticTransferEventRef) == 25);
+  static_assert(dataflowArtifactLocalReferenceKindOrdinal(
+                    DataflowArtifactLocalReferenceKind::
+                        ContextualActorTransitionEventRef) == 26);
+  static_assert(dataflowArtifactLocalReferenceKindOrdinal(
+                    DataflowArtifactLocalReferenceKind::EventFamilyKey) == 27);
 
-  constexpr std::array<llvm::StringLiteral, 26> expectedTargets = {
+  constexpr std::array<llvm::StringLiteral, 28> expectedTargets = {
       "GraphRef",
       "ActorRef",
       "RootThreadLaunchRef",
@@ -148,6 +153,8 @@ void ownerLocalReferenceCatalogAnchors() {
       "MemoryExposureRef",
       "FenceActorFamilyRef",
       "StaticTransferEventRef",
+      "ContextualActorTransitionEventRef",
+      "EventFamilyKey",
   };
   llvm::ArrayRef<DataflowArtifactLocalReferenceKindDescriptor> catalog =
       dataflowArtifactLocalReferenceKindCatalog();
@@ -219,8 +226,27 @@ void terminalAndEventRoundTrip() {
           "event-family wire must use declaration-order discriminants");
 
   EventFamilyKey key = event;
-  require(take(encodeDataflowReference(key)) == expected,
-          "EventFamilyKey must be exactly StaticTransferEventRef");
+  std::vector<std::uint8_t> expectedTransferKey;
+  appendU32(expectedTransferKey, 0); // Transfer
+  expectedTransferKey.insert(expectedTransferKey.end(), expected.begin(),
+                             expected.end());
+  require(take(encodeDataflowReference(key)) == expectedTransferKey,
+          "transfer EventFamilyKey wire must retain its outer tag");
+  requireRoundTrip(owner, key);
+
+  ContextualActorTransitionEventRef actorTransition{
+      ContextualActorRef{rooted, ActorRef{owner, ActorId(23)}}, 4};
+  requireRoundTrip(owner, actorTransition);
+  EventFamilyKey actorKey = actorTransition;
+  requireRoundTrip(owner, actorKey);
+  std::vector<std::uint8_t> expectedActorKey;
+  appendU32(expectedActorKey, 1); // ActorTransition
+  appendU64(expectedActorKey, 9);
+  appendU64(expectedActorKey, 12);
+  appendU64(expectedActorKey, 23);
+  appendU64(expectedActorKey, 4);
+  require(take(encodeDataflowReference(actorKey)) == expectedActorKey,
+          "actor-transition EventFamilyKey wire changed");
 
   RootThreadBoundaryTransferRef rootTransfer =
       RootThreadValueInputTransferRef{rooted.rootThreadLaunch, 6};

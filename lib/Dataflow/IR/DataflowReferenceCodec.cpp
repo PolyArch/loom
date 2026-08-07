@@ -250,6 +250,8 @@ llvm::Error encodeReference(ReferenceWriter &writer,
                             const ProducedTransferEventRef &ref);
 llvm::Error encodeReference(ReferenceWriter &writer,
                             const ConsumedTransferEventRef &ref);
+llvm::Error encodeReference(ReferenceWriter &writer,
+                            const ContextualActorTransitionEventRef &ref);
 
 template <typename... Alternatives>
 llvm::Error encodeClosedVariant(ReferenceWriter &writer,
@@ -291,6 +293,14 @@ llvm::Error encodeReference(ReferenceWriter &writer,
   if (llvm::Error error = encodeReference(writer, ref.launch))
     return error;
   return encodeReference(writer, ref.actor);
+}
+
+llvm::Error encodeReference(ReferenceWriter &writer,
+                            const ContextualActorTransitionEventRef &ref) {
+  if (llvm::Error error = encodeReference(writer, ref.actor))
+    return error;
+  writer.putU64(ref.transitionCaseOrdinal);
+  return llvm::Error::success();
 }
 
 llvm::Error encodeReference(ReferenceWriter &writer,
@@ -537,6 +547,18 @@ decodeReference(ReferenceReader &reader, TypeTag<ContextualActorRef>) {
   if (!actor)
     return actor.takeError();
   return ContextualActorRef{*launch, *actor};
+}
+
+llvm::Expected<ContextualActorTransitionEventRef>
+decodeReference(ReferenceReader &reader,
+                TypeTag<ContextualActorTransitionEventRef>) {
+  auto actor = decodeReference(reader, TypeTag<ContextualActorRef>{});
+  if (!actor)
+    return actor.takeError();
+  auto transition = reader.getU64();
+  if (!transition)
+    return transition.takeError();
+  return ContextualActorTransitionEventRef{*actor, *transition};
 }
 
 llvm::Expected<MemoryExposureRef> decodeReference(ReferenceReader &reader,

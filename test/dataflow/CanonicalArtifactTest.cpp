@@ -1016,6 +1016,20 @@ void memoryViewExposureService() {
                    llvm::toString(member.takeError()));
   require(test, std::holds_alternative<AddressedMemoryActorMemberRef>(*member),
           "an addressed memory actor is an addressed-memory service member");
+  ContextualActorTransitionEventRef issue{ContextualActorRef{glLaunch, loadRef},
+                                          0};
+  EventFamilyKey issueKey{issue};
+  require(test, !errored(view.validate(issueKey)),
+          "the rooted memory issue transition was rejected");
+  llvm::Expected<EventLogicalProjection> issueProjection =
+      view.eventLogicalProjection(issueKey);
+  require(test, issueProjection && issueProjection->empty(),
+          "rank-zero memory issue has a nonempty logical projection");
+  require(
+      test,
+      errored(view.validate(EventFamilyKey{ContextualActorTransitionEventRef{
+          ContextualActorRef{glLaunch, loadRef}, 1}})),
+      "an absent memory transition case was accepted");
   llvm::Expected<LogicalMemoryRootOrViewRef> loadM0 =
       view.resolveAddressedMemory(
           ContextualActorRef{RootedGraphLaunchRef{root, *glSite[0]}, loadRef});

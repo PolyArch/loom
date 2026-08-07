@@ -268,11 +268,19 @@ public:
   pairedSinks(const CanonicalProducerTerminalRef &producer,
               llvm::function_ref<void(const CanonicalSinkTerminalRef &)>) const;
 
-  /// Validate a transfer terminal and a static transfer event, rejecting a
-  /// foreign-artifact or wrong-owner terminal.
+  /// Validate a transfer terminal or resource-time event, rejecting a
+  /// foreign-artifact, wrong-owner terminal, or absent actor transition.
   llvm::Error validate(const CanonicalProducerTerminalRef &terminal) const;
   llvm::Error validate(const CanonicalSinkTerminalRef &terminal) const;
   llvm::Error validate(const StaticTransferEventRef &event) const;
+  llvm::Error validate(const ContextualActorTransitionEventRef &event) const;
+  llvm::Error validate(const EventFamilyKey &event) const;
+
+  /// Derive the complete coordinate and launch-parameter slot inventory for
+  /// one event. An event whose exact rooted may-domain is not published is
+  /// rejected rather than widened to the whole root domain.
+  llvm::Expected<EventLogicalProjection>
+  eventLogicalProjection(const EventFamilyKey &event) const;
 
   /// The canonical root-local view inventory of one logical memory root: a
   /// range into the prebuilt view inventory (every admitted root-preserving

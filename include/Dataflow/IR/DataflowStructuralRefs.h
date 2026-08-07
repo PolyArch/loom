@@ -525,9 +525,24 @@ LOOM_DATAFLOW_DECLARE_CLOSED_UNION(
     StaticTransferEventRef,
     LOOM_DATAFLOW_STATIC_TRANSFER_EVENT_REF_ALTERNATIVES);
 
-/// The event-family key is exactly the static transfer event reference. It has
-/// no additional fields and no independently assigned entity identifier.
-using EventFamilyKey = StaticTransferEventRef;
+struct ContextualActorTransitionEventRef {
+  ContextualActorRef actor;
+  StructuralOrdinal transitionCaseOrdinal = 0;
+  friend bool operator==(const ContextualActorTransitionEventRef &a,
+                         const ContextualActorTransitionEventRef &b) {
+    return a.actor == b.actor &&
+           a.transitionCaseOrdinal == b.transitionCaseOrdinal;
+  }
+  friend bool operator!=(const ContextualActorTransitionEventRef &a,
+                         const ContextualActorTransitionEventRef &b) {
+    return !(a == b);
+  }
+};
+
+/// One Dataflow-owned system resource-time anchor. It has no independently
+/// assigned entity identifier or persisted logical projection.
+LOOM_DATAFLOW_DECLARE_CLOSED_UNION(EventFamilyKey,
+                                   LOOM_DATAFLOW_EVENT_FAMILY_KEY_ALTERNATIVES);
 
 struct CoordinateSlot {
   StructuralOrdinal ordinal = 0;

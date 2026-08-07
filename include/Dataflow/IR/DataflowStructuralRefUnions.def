@@ -72,6 +72,10 @@
   Macro(Union, 0, ProducedTransferEventRef)                                   \
   Macro(Union, 1, ConsumedTransferEventRef)
 
+#define LOOM_DATAFLOW_EVENT_FAMILY_KEY_ALTERNATIVES(Macro, Union)             \
+  Macro(Union, 0, StaticTransferEventRef)                                     \
+  Macro(Union, 1, ContextualActorTransitionEventRef)
+
 #define LOOM_DATAFLOW_EVENT_LOGICAL_INPUT_SLOT_ALTERNATIVES(Macro, Union)     \
   Macro(Union, 0, CoordinateSlot)                                             \
   Macro(Union, 1, LaunchParameterSlot)
@@ -102,7 +106,9 @@
   Macro(ServiceMemberRef, "service member",                                  \
         LOOM_DATAFLOW_SERVICE_MEMBER_REF_ALTERNATIVES)                        \
   Macro(StaticTransferEventRef, "static transfer event",                     \
-        LOOM_DATAFLOW_STATIC_TRANSFER_EVENT_REF_ALTERNATIVES)
+        LOOM_DATAFLOW_STATIC_TRANSFER_EVENT_REF_ALTERNATIVES)                 \
+  Macro(EventFamilyKey, "event family key",                                  \
+        LOOM_DATAFLOW_EVENT_FAMILY_KEY_ALTERNATIVES)
 
 #define LOOM_DATAFLOW_CLOSED_UNIONS(Macro)                                    \
   LOOM_DATAFLOW_STRUCTURAL_REFERENCE_UNIONS(Macro)                            \
