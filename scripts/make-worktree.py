@@ -98,8 +98,10 @@ except ModuleNotFoundError:
 
 try:
     from loom_or_tools_config import OR_TOOLS_SEMANTIC_CMAKE_ARGS
+    from loom_lit_summary import run_lit_with_unsupported_summary
 except ModuleNotFoundError:
     from scripts.loom_or_tools_config import OR_TOOLS_SEMANTIC_CMAKE_ARGS
+    from scripts.loom_lit_summary import run_lit_with_unsupported_summary
 
 resolve_compiler_executable = _resolve_compiler_executable
 
@@ -1734,16 +1736,13 @@ def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
             child_env = os.environ.copy()
             extra_args = shlex.split(child_env.pop("LIT_OPTS", ""))
             child_env.setdefault("LOOM_TEST_JOBS", str(args.jobs))
-            run(
-                [
-                    str(paths.llvm_lit),
-                    "-sv",
-                    "--time-tests",
-                    f"-j{args.jobs}",
-                    *extra_args,
-                    str(paths.loom_build / "test"),
-                ],
-                env=child_env,
+            run_lit_with_unsupported_summary(
+                paths.llvm_lit,
+                paths.loom_build / "test",
+                args.jobs,
+                extra_args,
+                child_env,
+                run,
             )
 
 

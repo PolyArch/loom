@@ -22,7 +22,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-
 SCRIPT = Path(__file__).with_name("make-worktree.py")
 REPO_ROOT = SCRIPT.parents[1]
 REPO_TEMP_ROOT = REPO_ROOT / "build" / "test-runs"
@@ -657,6 +656,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     lit_active.set()
                     if not release_lit.wait(2.0):
                         raise RuntimeError("lit release timed out")
+                    Path(cmd[cmd.index("--output") + 1]).write_text('{"tests": []}')
                     return
                 if cmd[:2] == ["cmake", "--build"]:
                     if cmd[2] == str(consumer.loom_build):
