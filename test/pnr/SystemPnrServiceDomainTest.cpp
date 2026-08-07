@@ -3,11 +3,11 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
-#include "Fabric/IR/MemoryConsistencyContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
@@ -28,7 +28,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
-#include <optional>
 #include <system_error>
 #include <utility>
 #include <variant>
@@ -95,15 +94,11 @@ struct FramedRange final {
   std::size_t end = 0;
 };
 
-struct FramedFabricDomain final {
-  std::size_t countOffset = 0;
-  std::uint64_t count = 0;
-  std::vector<FramedRange> entries;
-};
-
 struct FramedServiceEntry final {
   FramedRange bytes;
-  std::optional<FramedFabricDomain> targetDomain;
+  std::size_t targetCountOffset = 0;
+  std::uint64_t targetCount = 0;
+  std::vector<FramedRange> targets;
   std::size_t terminalCountOffset = 0;
   std::uint64_t terminalCount = 0;
   std::vector<FramedRange> terminals;
@@ -158,27 +153,10 @@ private:
   std::size_t offset_ = 0;
 };
 
-FramedFabricDomain locateFabricDomain(FramingCursor &cursor) {
-  FramedFabricDomain domain;
-  domain.countOffset = cursor.position();
-  domain.count = cursor.u64();
-  domain.entries.reserve(domain.count);
-  for (std::uint64_t index = 0; index < domain.count; ++index) {
-    const std::size_t begin = cursor.position();
-    cursor.skipSizedBytes();
-    domain.entries.push_back({begin, cursor.position()});
-  }
-  return domain;
-}
-
 void skipFabricDomain(FramingCursor &cursor) {
-  (void)locateFabricDomain(cursor);
-}
-
-void skipRootDomain(FramingCursor &cursor) {
   const std::uint64_t count = cursor.u64();
   for (std::uint64_t index = 0; index < count; ++index)
-    cursor.skipRootReference();
+    cursor.skipSizedBytes();
 }
 
 void skipPresburgerCell(FramingCursor &cursor) {
@@ -197,18 +175,9 @@ void skipPresburgerCell(FramingCursor &cursor) {
   skipRows(cursor.u64());
 }
 
-void skipAtomDomains(FramingCursor &cursor) {
-  const std::uint32_t presence = cursor.u32();
-  require((presence & ~0xfu) == 0,
-          "test target-domain framing has unknown fields");
-  if ((presence & (1u << 0)) != 0)
-    skipFabricDomain(cursor);
-  if ((presence & (1u << 1)) != 0)
-    skipRootDomain(cursor);
-  if ((presence & (1u << 2)) != 0)
-    skipFabricDomain(cursor);
-  if ((presence & (1u << 3)) != 0)
-    skipFabricDomain(cursor);
+void skipAtomDomain(FramingCursor &cursor) {
+  require(cursor.u32() <= 2, "test search-atom domain kind is not canonical");
+  cursor.skipSizedBytes();
 }
 
 FramedServiceSection locateServiceSection(llvm::ArrayRef<std::uint8_t> bytes) {
@@ -228,7 +197,7 @@ FramedServiceSection locateServiceSection(llvm::ArrayRef<std::uint8_t> bytes) {
     const std::uint64_t atomCount = cursor.u64();
     for (std::uint64_t atom = 0; atom < atomCount; ++atom) {
       skipPresburgerCell(cursor);
-      skipAtomDomains(cursor);
+      skipAtomDomain(cursor);
     }
   }
 
@@ -240,11 +209,19 @@ FramedServiceSection locateServiceSection(llvm::ArrayRef<std::uint8_t> bytes) {
     FramedServiceEntry entry;
     entry.bytes.begin = cursor.position();
     cursor.skipSizedBytes();
-    const std::uint32_t targetKind = cursor.u32();
-    require(targetKind <= 2,
-            "test service target-domain kind is not canonical");
-    if (targetKind != 0)
-      entry.targetDomain = locateFabricDomain(cursor);
+    entry.targetCountOffset = cursor.position();
+    entry.targetCount = cursor.u64();
+    entry.targets.reserve(entry.targetCount);
+    for (std::uint64_t target = 0; target < entry.targetCount; ++target) {
+      FramedRange range{cursor.position(), 0};
+      cursor.skipSizedBytes();
+      cursor.skipSizedBytes();
+      require(cursor.u32() <= 1,
+              "test target-compatibility kind is not canonical");
+      cursor.skipSizedBytes();
+      range.end = cursor.position();
+      entry.targets.push_back(range);
+    }
     entry.terminalCountOffset = cursor.position();
     entry.terminalCount = cursor.u64();
     entry.terminals.reserve(entry.terminalCount);
@@ -256,6 +233,9 @@ FramedServiceSection locateServiceSection(llvm::ArrayRef<std::uint8_t> bytes) {
       cursor.skipSizedBytes();
       if (kind == 1)
         cursor.u64();
+      require(cursor.u32() <= 1,
+              "test bound-terminal endpoint kind is not canonical");
+      cursor.skipSizedBytes();
       skipFabricDomain(cursor);
       range.end = cursor.position();
       entry.terminals.push_back(range);
@@ -284,6 +264,18 @@ duplicateFramedEntry(llvm::ArrayRef<std::uint8_t> bytes,
   std::vector<std::uint8_t> result(bytes.begin(), bytes.end());
   result.insert(result.begin() + entry.end, copy.begin(), copy.end());
   overwriteU64(result, countOffset, count + 1);
+  return result;
+}
+
+std::vector<std::uint8_t> removeFramedEntry(llvm::ArrayRef<std::uint8_t> bytes,
+                                            std::size_t countOffset,
+                                            std::uint64_t count,
+                                            FramedRange entry) {
+  require(count != 0 && entry.begin <= entry.end && entry.end <= bytes.size(),
+          "test entry removal is out of bounds");
+  std::vector<std::uint8_t> result(bytes.begin(), bytes.end());
+  result.erase(result.begin() + entry.begin, result.begin() + entry.end);
+  overwriteU64(result, countOffset, count - 1);
   return result;
 }
 
@@ -521,124 +513,6 @@ buildTransformFabric(const loom::ArtifactStore &store,
   return take(std::move(design).finalize());
 }
 
-::fabric::MemoryActorContractDomain
-fenceActorDomain(dataflow::AtomicOrdering ordering) {
-  return take(::fabric::MemoryActorContractDomain::create(
-      dataflow::OperationSchemaId::DataflowFence,
-      {::fabric::MemoryActorContractClause(::fabric::FenceContractClause{
-          {ordering}, {{dataflow::SyncScopeKind::System, {}, {}}}})}));
-}
-
-loom::adg::FinalizedFabricDesign
-buildFenceFabric(const loom::ArtifactStore &store,
-                 const loom::fabric::FinalizedFabricRoot &base) {
-  const auto baseSystem = take(loom::fabric::requireSystemRoot(base.view()));
-  require(!baseSystem.artifact().systemMemoryServices().empty(),
-          "builtin System has no memory service for the fence fixture");
-  const auto *memoryContract = baseSystem.memoryService(
-      baseSystem.artifact().systemMemoryServices().front());
-  require(memoryContract,
-          "builtin System memory service has no canonical contract");
-  require(!baseSystem.transportResources().empty(),
-          "builtin System has no transport resource for the fence fixture");
-  const auto *resourceContract = baseSystem.artifact().resourceContract(
-      loom::fabric::FabricInventoryOwnerRef::of(
-          baseSystem.transportResources().front()));
-  require(resourceContract,
-          "builtin System transport has no resource contract");
-
-  auto module = take(loom::fabric::importEntireFabricRoot(
-      base.directDependencies().front().root, store));
-  loom::adg::DesignBuilder design(store);
-  auto system = take(loom::adg::expandBuiltinSystem(
-      design, loom::adg::BuiltinTargetPreset::Small, module));
-  auto clock = take(system.createHardwareDomain());
-  auto rate = take(system.createServiceRate(
-      clock, 1, 1, 4,
-      loom::fabric::ServiceProgress(
-          std::in_place_type<::fabric::FairEventual>)));
-  const auto bits128 = take(loom::adg::PortType::bits(128));
-  auto transport = take(
-      system.addTransportResource({{bits128}, {bits128}, *resourceContract}));
-  auto pattern = take(system.addTransferPattern(transport, 0, {0}, 0));
-  auto input = take(transport.input(0));
-  auto output = take(transport.output(0));
-
-  std::vector<loom::adg::HardwareDomainMember> clockMembers{
-      transport.domainMember(), pattern.domainMember()};
-  for (dataflow::AtomicOrdering ordering :
-       {dataflow::AtomicOrdering::SeqCst, dataflow::AtomicOrdering::SeqCst,
-        dataflow::AtomicOrdering::Acquire}) {
-    auto memory = take(system.addMemoryService(*memoryContract));
-    auto consistency = take(system.createHardwareDomain());
-    const loom::fabric::MemoryConsistencyDomainRef consistencyRef(
-        consistency.reference());
-    auto domain = take(loom::fabric::FenceCapabilityDomain::create(
-        fenceActorDomain(ordering), consistencyRef));
-    auto initiateCapability =
-        take(loom::fabric::CanonicalServiceCapabilityRecord::create(
-            dataflow::semantics::ServiceKind::MemoryFence,
-            loom::fabric::CanonicalServiceEndpointRole::Initiate, domain,
-            rate));
-    auto serveCapability =
-        take(loom::fabric::CanonicalServiceCapabilityRecord::create(
-            dataflow::semantics::ServiceKind::MemoryFence,
-            loom::fabric::CanonicalServiceEndpointRole::Serve,
-            std::move(domain), rate));
-    auto initiateSet = take(loom::fabric::CanonicalServiceCapabilitySet::create(
-        {std::move(initiateCapability)}));
-    auto serveSet = take(loom::fabric::CanonicalServiceCapabilitySet::create(
-        {std::move(serveCapability)}));
-    auto initiate = take(system.addServiceEndpoint(memory, initiateSet));
-    auto serve = take(system.addServiceEndpoint(memory, serveSet));
-    auto initiateMemory = take(initiate.memory());
-    auto serveMemory = take(serve.memory());
-
-    if (llvm::Error error = system.attachServiceLegCarriers(
-            initiateMemory, dataflow::semantics::ServiceKind::MemoryFence, 0,
-            {output}))
-      fail(llvm::toString(std::move(error)));
-    if (llvm::Error error = system.attachServiceLegCarriers(
-            initiateMemory, dataflow::semantics::ServiceKind::MemoryFence, 1,
-            {input}))
-      fail(llvm::toString(std::move(error)));
-    if (llvm::Error error = system.attachServiceLegCarriers(
-            serveMemory, dataflow::semantics::ServiceKind::MemoryFence, 0,
-            {input}))
-      fail(llvm::toString(std::move(error)));
-    if (llvm::Error error = system.attachServiceLegCarriers(
-            serveMemory, dataflow::semantics::ServiceKind::MemoryFence, 1,
-            {output}))
-      fail(llvm::toString(std::move(error)));
-
-    auto consistencyContract = take(::fabric::MemoryConsistencyContract::create(
-        ::fabric::MemoryConsistencyContractDeclaration{
-            {::fabric::MemoryConsistencyParticipant::service(
-                loom::fabric::FabricMemoryServiceRef::system(
-                    memory.reference()))},
-            ::fabric::ReleaseVisibilityPoint::AtLinearization,
-            ::fabric::MemoryConsistencyProgress(
-                std::in_place_type<::fabric::FairEventual>),
-            *resourceContract}));
-    if (llvm::Error error =
-            consistency.close({memory.domainMember(), initiate.domainMember(),
-                               serve.domainMember()},
-                              std::move(consistencyContract)))
-      fail(llvm::toString(std::move(error)));
-    clockMembers.push_back(memory.domainMember());
-    clockMembers.push_back(initiate.domainMember());
-    clockMembers.push_back(serve.domainMember());
-  }
-
-  auto clockContract =
-      take(loom::fabric::ClockDomainContractRecord::create(1'000, 0));
-  if (llvm::Error error = clock.close(clockMembers, std::move(clockContract)))
-    fail(llvm::toString(std::move(error)));
-  if (llvm::Error error = system.close())
-    fail(llvm::toString(std::move(error)));
-  return take(std::move(design).finalize());
-}
-
 std::vector<loom::fabric::FabricTransportEndpointRef>
 directMessageEndpoints(const loom::fabric::FabricSystemRootView &system,
                        bool source) {
@@ -656,15 +530,8 @@ directMessageEndpoints(const loom::fabric::FabricSystemRootView &system,
       continue;
     const auto capability =
         llvm::find_if(capabilities->capabilities(), [](const auto &candidate) {
-          if (candidate.kind() !=
-              dataflow::semantics::ServiceKind::MessageTransfer)
-            return false;
-          const auto *domain =
-              std::get_if<loom::fabric::MessageTransferCapabilityDomain>(
-                  &candidate.domain());
-          return domain &&
-                 llvm::any_of(domain->payloadTypes(),
-                              [](mlir::Type t) { return t.isInteger(32); });
+          return candidate.kind() ==
+                 dataflow::semantics::ServiceKind::MessageTransfer;
         });
     if (capability == capabilities->capabilities().end())
       continue;
@@ -716,100 +583,6 @@ fenceServiceDomain(const loom::pnr::SystemPnrSearchDomainView &view) {
   return *found;
 }
 
-std::vector<loom::fabric::MemoryConsistencyDomainRef>
-matchingFenceConsistencyDomains(
-    const loom::fabric::FabricSystemRootView &system,
-    const dataflow::CanonicalDataflowProgramView &dataflow,
-    const loom::pnr::SystemSearchServiceDomain &service) {
-  const auto &operation =
-      std::get<loom::mapping::OperationServiceObligationFamilyKey>(service.key);
-  const auto family = std::get<dataflow::FenceActorFamilyRef>(operation);
-  auto actorView = take(dataflow.resolve(family.actor));
-  auto actor =
-      take(dataflow::projectRegisteredActorSchemaProjection(actorView.op));
-
-  std::vector<loom::fabric::MemoryConsistencyDomainRef> result;
-  for (const auto endpoint : system.artifact().systemServiceEndpoints()) {
-    const auto *capabilities = system.serviceEndpointCapabilities(endpoint);
-    if (!capabilities ||
-        capabilities->plane() !=
-            loom::fabric::CanonicalServiceEndpointPlane::Memory ||
-        capabilities->role() !=
-            loom::fabric::CanonicalServiceEndpointRole::Serve)
-      continue;
-    for (const auto &capability : capabilities->capabilities()) {
-      const auto *fence = std::get_if<loom::fabric::FenceCapabilityDomain>(
-          &capability.domain());
-      if (capability.kind() == dataflow::semantics::ServiceKind::MemoryFence &&
-          fence && fence->actorContracts().contains(actor))
-        result.push_back(fence->consistencyDomain());
-    }
-  }
-  llvm::sort(result, [](const auto &left, const auto &right) {
-    return loom::fabric::canonicalFabricBytes(left) <
-           loom::fabric::canonicalFabricBytes(right);
-  });
-  result.erase(std::unique(result.begin(), result.end()), result.end());
-  return result;
-}
-
-std::vector<loom::fabric::FabricTransportEndpointRef>
-attachmentCarriers(const loom::fabric::FabricSystemRootView &system,
-                   dataflow::StructuralOrdinal legOrdinal, bool source) {
-  std::vector<loom::fabric::FabricTransportEndpointRef> carriers;
-  auto direction = take(dataflow::semantics::getCanonicalServiceLegDirection(
-      dataflow::semantics::ServiceKind::MemoryRead, legOrdinal));
-  for (const loom::fabric::ServiceLegCarrierAttachmentRecord &attachment :
-       system.serviceLegCarrierAttachments()) {
-    if (attachment.kind() != dataflow::semantics::ServiceKind::MemoryRead ||
-        attachment.legOrdinal() != legOrdinal ||
-        attachment.endpoint().owner.kind() !=
-            loom::fabric::FabricMemoryEndpointOwnerKind::SystemServiceEndpoint)
-      continue;
-    const auto endpoint = std::get<loom::fabric::SystemServiceEndpointRef>(
-        attachment.endpoint().owner.payload);
-    const auto *capabilities = system.serviceEndpointCapabilities(endpoint);
-    require(capabilities, "attachment endpoint has no capability set");
-    const bool endpointIsInitiator =
-        capabilities->role() ==
-        loom::fabric::CanonicalServiceEndpointRole::Initiate;
-    const bool initiatorIsSource =
-        direction ==
-        dataflow::semantics::ServiceLegDirection::InitiatorToServer;
-    if (source ? endpointIsInitiator != initiatorIsSource
-               : endpointIsInitiator == initiatorIsSource)
-      continue;
-    carriers.insert(carriers.end(), attachment.carriers().begin(),
-                    attachment.carriers().end());
-  }
-  llvm::sort(carriers, [](const auto &left, const auto &right) {
-    return loom::fabric::canonicalFabricBytes(left) <
-           loom::fabric::canonicalFabricBytes(right);
-  });
-  carriers.erase(std::unique(carriers.begin(), carriers.end()), carriers.end());
-  return carriers;
-}
-
-const loom::pnr::SystemSearchTransferTerminalDomain &
-terminal(const loom::pnr::SystemSearchServiceDomain &service,
-         dataflow::StructuralOrdinal legOrdinal, bool source) {
-  const auto found =
-      llvm::find_if(service.transferTerminals, [&](const auto &candidate) {
-        if (const auto *key =
-                std::get_if<loom::mapping::SystemTransferSourceTerminalKey>(
-                    &candidate.key))
-          return source && key->leg.ordinal == legOrdinal;
-        const auto *key =
-            std::get_if<loom::mapping::SystemTransferSinkTerminalKey>(
-                &candidate.key);
-        return !source && key && key->leg.ordinal == legOrdinal &&
-               key->sinkOrdinal == 0;
-      });
-  require(found != service.transferTerminals.end(),
-          "H omitted a canonical memory service terminal");
-  return *found;
-}
-
 } // namespace
 
 int main() {
@@ -819,8 +592,10 @@ int main() {
       loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes();
   require(llvm::StringRef(reinterpret_cast<const char *>(descriptor.data()),
                           descriptor.size()) ==
-              "loom.system_pnr_search_domain.2.0",
-          "H schema descriptor did not switch atomically to version 2.0");
+              "loom.system_pnr_search_domain.3.0",
+          "H schema descriptor did not switch atomically to version 3.0");
+  static constexpr llvm::StringLiteral priorDescriptor =
+      "loom.system_pnr_search_domain.2.0";
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
                   mlir::DLTIDialect, mlir::func::FuncDialect>();
@@ -843,8 +618,23 @@ int main() {
           dataflowView, system, roots, store));
   auto plan = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
       dataflowView, constraints.view().rootThreadLaunches()));
+  const auto config = take(loom::pnr::projectResolvedSystemPnrConfigView(
+      loom::defaultResolvedConfig()));
   auto domain = take(loom::pnr::projectSystemPnrSearchDomain(
-      dataflowView, system, constraints, plan, {}, store));
+      dataflowView, system, config, constraints, plan, {}, store));
+  auto priorDigest = take(loom::pnr::computeSystemPnrSearchDomainDigest(
+      llvm::ArrayRef<std::uint8_t>(
+          reinterpret_cast<const std::uint8_t *>(priorDescriptor.data()),
+          priorDescriptor.size()),
+      domain.canonicalViewBytes()));
+  requireFailureContains(
+      loom::pnr::adoptSystemPnrSearchDomain(
+          llvm::ArrayRef<std::uint8_t>(
+              reinterpret_cast<const std::uint8_t *>(priorDescriptor.data()),
+              priorDescriptor.size()),
+          domain.canonicalViewBytes(), priorDigest, store),
+      "schema descriptor is not exact version 3.0",
+      "H 2.0 descriptor was accepted by the H 3.0 owner");
 
   auto obligations = take(loom::mapping::projectSystemServiceObligations(
       dataflowView, constraints.view().rootThreadLaunches()));
@@ -854,75 +644,20 @@ int main() {
        llvm::zip_equal(domain.serviceObligations(), obligations)) {
     require(service.key == obligation.key,
             "H service obligations are not in canonical key order");
-    std::size_t expectedTerminals = 0;
-    for (const auto &leg : obligation.legs) {
-      const auto member = llvm::find(obligation.members, leg.member);
-      require(member != obligation.members.end(),
-              "projected leg names a foreign service member");
-      expectedTerminals +=
-          1 +
-          (std::holds_alternative<dataflow::MessageTransferMemberRef>(*member)
-               ? obligation.sinks.size()
-               : 1);
-    }
-    require(service.transferTerminals.size() == expectedTerminals,
-            "H omitted or added a canonical service terminal");
-    if (std::holds_alternative<loom::mapping::TransferObligationFamilyKey>(
-            service.key)) {
-      require(!service.compatibleServiceRegions &&
-                  !service.compatibleConsistencyDomains,
-              "MessageTransfer acquired an operation-service target domain");
-      require(
-          llvm::all_of(service.transferTerminals,
-                       [](const auto &terminal) {
-                         return terminal.compatibleTransportEndpoints.empty();
-                       }),
-          "MessageTransfer reused a memory service-leg attachment");
-      continue;
-    }
-    const auto &operation =
-        std::get<loom::mapping::OperationServiceObligationFamilyKey>(
-            service.key);
-    if (std::holds_alternative<dataflow::FenceActorFamilyRef>(operation)) {
-      require(!service.compatibleServiceRegions &&
-                  service.compatibleConsistencyDomains,
-              "fence target domain is not the typed consistency alternative");
-    } else {
-      require(
-          service.compatibleServiceRegions &&
-              !service.compatibleConsistencyDomains,
-          "logical-memory target domain is not the typed region alternative");
-    }
+    require(service.targetCompatibility.empty() &&
+                service.transferTerminalCompatibility.empty(),
+            "operation service without a legal graph target acquired a row");
   }
 
   const auto &service = memoryServiceDomain(domain);
-  require(service.compatibleServiceRegions &&
-              !service.compatibleServiceRegions->empty(),
-          "H omitted the builtin memory service region domain");
-  require(service.transferTerminals.size() == 4,
-          "one MemoryRead member must have source and sink for both legs");
-
-  const auto requestCarriers = attachmentCarriers(system, 0, /*source=*/false);
-  const auto responseCarriers = attachmentCarriers(system, 1, /*source=*/true);
-  require(!requestCarriers.empty() && !responseCarriers.empty(),
-          "builtin fixture has no service-leg carrier attachment");
-  require(terminal(service, 0, false).compatibleTransportEndpoints ==
-              requestCarriers,
-          "MemoryRead request sink did not use the exact attachment union");
-  require(terminal(service, 1, true).compatibleTransportEndpoints ==
-              responseCarriers,
-          "MemoryRead response source did not use the exact attachment union");
-  require(terminal(service, 0, true).compatibleTransportEndpoints.empty() &&
-              terminal(service, 1, false).compatibleTransportEndpoints.empty(),
-          "H invented an unattached initiator endpoint for the builtin");
+  require(service.targetCompatibility.empty() &&
+              service.transferTerminalCompatibility.empty(),
+          "memory service scanned endpoints outside its graph domain");
 
   const auto &fence = fenceServiceDomain(domain);
-  require(
-      fence.compatibleConsistencyDomains &&
-          fence.compatibleConsistencyDomains->empty(),
-      "builtin without fence capability did not expose exact infeasibility");
-  require(fence.transferTerminals.size() == 4,
-          "one MemoryFence member must have source and sink for both legs");
+  require(fence.targetCompatibility.empty() &&
+              fence.transferTerminalCompatibility.empty(),
+          "fence service scanned endpoints outside its graph domain");
 
   constexpr llvm::StringLiteral oldDescriptor =
       "loom.system_pnr_search_domain.1.0";
@@ -931,7 +666,7 @@ int main() {
           {reinterpret_cast<const std::uint8_t *>(oldDescriptor.data()),
            oldDescriptor.size()},
           domain.canonicalViewBytes(), domain.digest(), store),
-      "schema descriptor is not exact version 2.0",
+      "schema descriptor is not exact version 3.0",
       "strict H adoption accepted the retired version 1.0 descriptor");
 
   auto adopted = take(loom::pnr::adoptSystemPnrSearchDomain(
@@ -950,36 +685,9 @@ int main() {
       static_cast<std::size_t>(&service - domain.serviceObligations().data());
   const FramedServiceEntry &memoryServiceFraming =
       framing.entries[memoryServiceIndex];
-  require(memoryServiceFraming.terminals.size() >= 2,
-          "terminal strict-order fixture requires two terminals");
-  auto duplicateTerminalBytes = duplicateFramedEntry(
-      domain.canonicalViewBytes(), memoryServiceFraming.terminalCountOffset,
-      memoryServiceFraming.terminalCount,
-      memoryServiceFraming.terminals.front());
-  auto duplicateTerminalDigest =
-      take(loom::pnr::computeSystemPnrSearchDomainDigest(
-          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-          duplicateTerminalBytes));
-  requireFailureContains(
-      loom::pnr::adoptSystemPnrSearchDomain(
-          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-          duplicateTerminalBytes, duplicateTerminalDigest, store),
-      "transfer-terminal domains are not strictly ordered",
-      "strict H adoption accepted a duplicate service-terminal key");
-
-  auto unorderedTerminalBytes = swapAdjacentFramedEntries(
-      domain.canonicalViewBytes(), memoryServiceFraming.terminals[0],
-      memoryServiceFraming.terminals[1]);
-  auto unorderedTerminalDigest =
-      take(loom::pnr::computeSystemPnrSearchDomainDigest(
-          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-          unorderedTerminalBytes));
-  requireFailureContains(
-      loom::pnr::adoptSystemPnrSearchDomain(
-          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-          unorderedTerminalBytes, unorderedTerminalDigest, store),
-      "transfer-terminal domains are not strictly ordered",
-      "strict H adoption accepted out-of-order service-terminal keys");
+  require(memoryServiceFraming.targetCount == 0 &&
+              memoryServiceFraming.terminalCount == 0,
+          "wire framing invented rows for an empty graph target domain");
 
   require(domain.serviceObligations().size() >= 2,
           "strict service-order fixture requires two obligations");
@@ -1011,6 +719,20 @@ int main() {
       "service-obligation domains are not strictly ordered",
       "strict H adoption accepted out-of-order service-obligation keys");
 
+  auto missingServiceBytes =
+      removeFramedEntry(domain.canonicalViewBytes(), framing.countOffset,
+                        framing.count, framing.entries.front().bytes);
+  auto missingServiceDigest =
+      take(loom::pnr::computeSystemPnrSearchDomainDigest(
+          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
+          missingServiceBytes));
+  requireFailureContains(
+      loom::pnr::adoptSystemPnrSearchDomain(
+          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
+          missingServiceBytes, missingServiceDigest, store),
+      "service-obligation closure differs from Dataflow",
+      "strict H adoption accepted a missing service obligation");
+
   auto transformDesign =
       buildTransformFabric(store, design.roots().front(), context);
   auto transformSystem = take(
@@ -1023,7 +745,7 @@ int main() {
           dataflowView, transformConstraints.view().rootThreadLaunches()));
   requireUnsupported(
       loom::pnr::projectSystemPnrSearchDomain(dataflowView, transformSystem,
-                                              transformConstraints,
+                                              config, transformConstraints,
                                               transformPlan, {}, store),
       loom::pnr::UnsupportedSystemPnrSearchDomainReason::
           ServiceTransformProjectionUnavailable,
@@ -1043,7 +765,7 @@ int main() {
   auto messagePlan = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
       messageView, messageConstraints.view().rootThreadLaunches()));
   auto messageDomain = take(loom::pnr::projectSystemPnrSearchDomain(
-      messageView, transformSystem, messageConstraints, messagePlan, {},
+      messageView, transformSystem, config, messageConstraints, messagePlan, {},
       store));
   require(!messageDomain.serviceObligations().empty() &&
               llvm::all_of(messageDomain.serviceObligations(),
@@ -1090,96 +812,92 @@ int main() {
         });
     require(obligation != messageObligations.end(),
             "H MessageTransfer obligation has no Dataflow projection");
+    require(messageService.targetCompatibility.empty(),
+            "MessageTransfer acquired an operation target row");
     std::size_t sourceCount = 0;
     std::size_t sinkCount = 0;
-    for (const auto &terminal : messageService.transferTerminals) {
+    for (const auto &terminal : messageService.transferTerminalCompatibility) {
+      const auto *bound = std::get_if<loom::pnr::SystemMessageTerminalEndpoint>(
+          &terminal.boundEndpoint);
+      require(bound, "MessageTransfer acquired a memory endpoint row");
+      const std::vector<loom::fabric::FabricTransportEndpointRef> expected =
+          directlyAdmitted
+              ? std::vector<
+                    loom::fabric::FabricTransportEndpointRef>{bound->endpoint}
+              : std::vector<loom::fabric::FabricTransportEndpointRef>{};
+      require(terminal.compatibleTransportEndpoints == expected,
+              "MessageTransfer row did not preserve its exact endpoint");
       if (std::holds_alternative<
-              loom::mapping::SystemTransferSourceTerminalKey>(terminal.key)) {
+              loom::mapping::SystemTransferSourceTerminalKey>(
+              terminal.terminal)) {
         ++sourceCount;
-        require(directlyAdmitted
-                    ? terminal.compatibleTransportEndpoints ==
-                          expectedMessageSources
-                    : terminal.compatibleTransportEndpoints.empty(),
-                "MessageTransfer source endpoint domain is not exact");
+        require(llvm::is_contained(expectedMessageSources, bound->endpoint),
+                "MessageTransfer source row bound the wrong endpoint");
       } else {
         ++sinkCount;
-        require(directlyAdmitted
-                    ? terminal.compatibleTransportEndpoints ==
-                          expectedMessageSinks
-                    : terminal.compatibleTransportEndpoints.empty(),
-                "MessageTransfer sink endpoint domain is not exact");
+        require(llvm::is_contained(expectedMessageSinks, bound->endpoint),
+                "MessageTransfer sink row bound the wrong endpoint");
       }
     }
-    require(sourceCount == obligation->legs.size(),
+    require(sourceCount ==
+                obligation->legs.size() * expectedMessageSources.size(),
             "MessageTransfer omitted or added a source terminal");
-    require(sinkCount == obligation->legs.size() * obligation->sinks.size(),
+    require(sinkCount == obligation->legs.size() * obligation->sinks.size() *
+                             expectedMessageSinks.size(),
             "MessageTransfer omitted or added a sink terminal");
   }
   require(directlyAdmittedObligations > 0,
           "message fixture did not exercise direct endpoint admission");
 
-  auto fenceDesign = buildFenceFabric(store, design.roots().front());
-  auto fenceSystem =
-      take(loom::fabric::requireSystemRoot(fenceDesign.roots().front().view()));
-  auto fenceConstraints =
-      take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
-          dataflowView, fenceSystem, roots, store));
-  auto fencePlan = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
-      dataflowView, fenceConstraints.view().rootThreadLaunches()));
-  auto fenceDomain = take(loom::pnr::projectSystemPnrSearchDomain(
-      dataflowView, fenceSystem, fenceConstraints, fencePlan, {}, store));
-  const auto &positiveFence = fenceServiceDomain(fenceDomain);
-  const auto expectedConsistencyDomains =
-      matchingFenceConsistencyDomains(fenceSystem, dataflowView, positiveFence);
-  require(
-      expectedConsistencyDomains.size() == 2,
-      "fence fixture did not distinguish compatible and incompatible effects");
-  require(positiveFence.compatibleConsistencyDomains &&
-              *positiveFence.compatibleConsistencyDomains ==
-                  expectedConsistencyDomains,
-          "H fence target domain does not equal the exact compatible domains");
-  auto adoptedFence = take(loom::pnr::adoptSystemPnrSearchDomain(
-      loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-      fenceDomain.canonicalViewBytes(), fenceDomain.digest(), store));
-  require(fenceServiceDomain(adoptedFence).compatibleConsistencyDomains ==
-              positiveFence.compatibleConsistencyDomains,
-          "strict H adoption changed the fence consistency-domain projection");
-
-  const FramedServiceSection fenceFraming =
-      locateServiceSection(fenceDomain.canonicalViewBytes());
-  const std::size_t fenceServiceIndex = static_cast<std::size_t>(
-      &positiveFence - fenceDomain.serviceObligations().data());
-  const auto &fenceTargetFraming =
-      fenceFraming.entries[fenceServiceIndex].targetDomain;
-  require(fenceTargetFraming && fenceTargetFraming->entries.size() == 2,
-          "fence target-domain framing differs from the typed H domain");
-  auto duplicateConsistencyBytes = duplicateFramedEntry(
-      fenceDomain.canonicalViewBytes(), fenceTargetFraming->countOffset,
-      fenceTargetFraming->count, fenceTargetFraming->entries.front());
-  auto duplicateConsistencyDigest =
+  const FramedServiceSection messageFraming =
+      locateServiceSection(messageDomain.canonicalViewBytes());
+  const auto framedMessage =
+      llvm::find_if(messageFraming.entries, [](const auto &entry) {
+        return entry.terminals.size() >= 2;
+      });
+  require(framedMessage != messageFraming.entries.end(),
+          "terminal strict-order fixture requires two rows");
+  auto duplicateTerminalBytes = duplicateFramedEntry(
+      messageDomain.canonicalViewBytes(), framedMessage->terminalCountOffset,
+      framedMessage->terminalCount, framedMessage->terminals.front());
+  auto duplicateTerminalDigest =
       take(loom::pnr::computeSystemPnrSearchDomainDigest(
           loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-          duplicateConsistencyBytes));
+          duplicateTerminalBytes));
   requireFailureContains(
       loom::pnr::adoptSystemPnrSearchDomain(
           loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-          duplicateConsistencyBytes, duplicateConsistencyDigest, store),
-      "Fabric target domain is not strictly ordered",
-      "strict H adoption accepted a duplicate consistency-domain ref");
+          duplicateTerminalBytes, duplicateTerminalDigest, store),
+      "transfer-terminal compatibility rows are not strictly ordered",
+      "strict H adoption accepted a duplicate terminal row");
 
-  auto unorderedConsistencyBytes = swapAdjacentFramedEntries(
-      fenceDomain.canonicalViewBytes(), fenceTargetFraming->entries[0],
-      fenceTargetFraming->entries[1]);
-  auto unorderedConsistencyDigest =
+  auto unorderedTerminalBytes = swapAdjacentFramedEntries(
+      messageDomain.canonicalViewBytes(), framedMessage->terminals[0],
+      framedMessage->terminals[1]);
+  auto unorderedTerminalDigest =
       take(loom::pnr::computeSystemPnrSearchDomainDigest(
           loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-          unorderedConsistencyBytes));
+          unorderedTerminalBytes));
   requireFailureContains(
       loom::pnr::adoptSystemPnrSearchDomain(
           loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-          unorderedConsistencyBytes, unorderedConsistencyDigest, store),
-      "Fabric target domain is not strictly ordered",
-      "strict H adoption accepted out-of-order consistency-domain refs");
+          unorderedTerminalBytes, unorderedTerminalDigest, store),
+      "transfer-terminal compatibility rows are not strictly ordered",
+      "strict H adoption accepted out-of-order terminal rows");
+
+  auto missingTerminalBytes = removeFramedEntry(
+      messageDomain.canonicalViewBytes(), framedMessage->terminalCountOffset,
+      framedMessage->terminalCount, framedMessage->terminals.front());
+  auto missingTerminalDigest =
+      take(loom::pnr::computeSystemPnrSearchDomainDigest(
+          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
+          missingTerminalBytes));
+  requireFailureContains(
+      loom::pnr::adoptSystemPnrSearchDomain(
+          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
+          missingTerminalBytes, missingTerminalDigest, store),
+      "transfer-terminal compatibility row closure differs",
+      "strict H adoption accepted a missing terminal row");
 
   llvm::outs() << "System PnR service-domain anchors passed\n";
   return EXIT_SUCCESS;

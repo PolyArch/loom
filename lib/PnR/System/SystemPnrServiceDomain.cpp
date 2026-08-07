@@ -51,8 +51,14 @@ template <typename Ref> void canonicalizeFabricRefs(std::vector<Ref> &values) {
 struct ResolvedServiceMember final {
   ServiceKind kind;
   std::optional<mlir::Type> messagePayload;
+  std::optional<::dataflow::ContextualActorRef> contextualActor;
   std::optional<::dataflow::CanonicalActorSchemaProjection> actor;
   std::optional<CanonicalMemoryAccessView> access;
+};
+
+struct BoundMemoryEndpointPair final {
+  ::loom::fabric::SystemServiceEndpointRef systemEndpoint;
+  ::loom::fabric::FabricMemoryEndpointRef occurrenceEndpoint;
 };
 
 llvm::Expected<std::map<std::string, mlir::Type>>
@@ -108,7 +114,7 @@ llvm::Expected<ResolvedServiceMember> resolveMember(
     if (found == messagePayloads.end())
       return invalid("message obligation has no Dataflow-owned payload type");
     return ResolvedServiceMember{ServiceKind::MessageTransfer, found->second,
-                                 std::nullopt, std::nullopt};
+                                 std::nullopt, std::nullopt, std::nullopt};
   }
 
   std::optional<::dataflow::ContextualActorRef> contextual;
@@ -140,11 +146,9 @@ llvm::Expected<ResolvedServiceMember> resolveMember(
     if (!resolved)
       return resolved.takeError();
     access.emplace(std::move(*resolved));
-  } else if (!std::holds_alternative<::dataflow::FenceActorMemberRef>(member)) {
-    return invalid("unknown canonical service-member variant");
   }
-  return ResolvedServiceMember{*kind, std::nullopt, std::move(*actor),
-                               std::move(access)};
+  return ResolvedServiceMember{*kind, std::nullopt, *contextual,
+                               std::move(*actor), std::move(access)};
 }
 
 llvm::Expected<bool>
@@ -180,94 +184,43 @@ capabilityMatches(const CanonicalServiceCapabilityRecord &capability,
          fence->actorContracts().contains(*member.actor);
 }
 
-llvm::Expected<const CanonicalServiceCapabilityRecord *> matchingCapability(
+llvm::Expected<const CanonicalServiceCapabilityRecord *> capabilityForKind(
     const ::loom::fabric::CanonicalServiceCapabilitySet &capabilities,
-    const ResolvedServiceMember &member) {
+    ServiceKind kind) {
   const CanonicalServiceCapabilityRecord *result = nullptr;
   for (const CanonicalServiceCapabilityRecord &capability :
        capabilities.capabilities()) {
-    auto matches = capabilityMatches(capability, member);
-    if (!matches)
-      return matches.takeError();
-    if (!*matches)
+    if (capability.kind() != kind)
       continue;
     if (result)
-      return invalid("one service endpoint repeats a matching service kind");
+      return invalid("one service endpoint repeats a service kind");
     result = &capability;
   }
   return result;
 }
 
+llvm::Expected<const CanonicalServiceCapabilityRecord *> matchingCapability(
+    const ::loom::fabric::CanonicalServiceCapabilitySet &capabilities,
+    const ResolvedServiceMember &member) {
+  auto capability = capabilityForKind(capabilities, member.kind);
+  if (!capability)
+    return capability.takeError();
+  if (!*capability)
+    return nullptr;
+  auto matches = capabilityMatches(**capability, member);
+  if (!matches)
+    return matches.takeError();
+  return *matches ? *capability : nullptr;
+}
+
 bool roleOwnsTerminal(CanonicalServiceEndpointRole role,
                       ::dataflow::semantics::ServiceLegDirection direction,
                       bool source) {
-  const bool initiatorIsSource =
-      direction ==
-      ::dataflow::semantics::ServiceLegDirection::InitiatorToServer;
-  const bool endpointIsInitiator =
-      role == CanonicalServiceEndpointRole::Initiate;
-  return source ? endpointIsInitiator == initiatorIsSource
-                : endpointIsInitiator != initiatorIsSource;
-}
-
-llvm::Expected<std::vector<::loom::fabric::FabricTransportEndpointRef>>
-terminalEndpoints(const ::loom::fabric::FabricSystemRootView &fabric,
-                  const ResolvedServiceMember &member,
-                  ::dataflow::StructuralOrdinal legOrdinal, bool source) {
-  auto direction = ::dataflow::semantics::getCanonicalServiceLegDirection(
-      member.kind, legOrdinal);
-  if (!direction)
-    return direction.takeError();
-
-  std::vector<::loom::fabric::FabricTransportEndpointRef> result;
-  for (const ::loom::fabric::SystemServiceEndpointRef endpoint :
-       fabric.artifact().systemServiceEndpoints()) {
-    const auto *capabilities = fabric.serviceEndpointCapabilities(endpoint);
-    if (!capabilities)
-      return invalid("System service endpoint has no capability set");
-    auto capability = matchingCapability(*capabilities, member);
-    if (!capability)
-      return capability.takeError();
-    if (!*capability ||
-        !roleOwnsTerminal((*capability)->role(), *direction, source))
-      continue;
-
-    const auto expectedPortDirection =
-        source ? ::loom::fabric::FabricPortDirection::Output
-               : ::loom::fabric::FabricPortDirection::Input;
-    if (capabilities->plane() == CanonicalServiceEndpointPlane::Transport) {
-      if (member.kind != ServiceKind::MessageTransfer)
-        return invalid("memory service uses a transport-plane capability");
-      const ::loom::fabric::FabricTransportEndpointRef carrier{
-          ::loom::fabric::FabricTransportEndpointOwnerRef::of(endpoint), 0};
-      if (fabric.artifact().transportEndpointDirection(carrier) !=
-          expectedPortDirection)
-        return invalid("message service carrier has the wrong direction");
-      result.push_back(carrier);
-      continue;
-    }
-    if (member.kind == ServiceKind::MessageTransfer)
-      return invalid("message service uses a memory-plane capability");
-    const ::loom::fabric::FabricMemoryEndpointRef memoryEndpoint{
-        ::loom::fabric::FabricMemoryEndpointOwnerRef::of(endpoint), 0};
-    const auto attachment = llvm::find_if(
-        fabric.serviceLegCarrierAttachments(), [&](const auto &candidate) {
-          return candidate.endpoint() == memoryEndpoint &&
-                 candidate.kind() == member.kind &&
-                 candidate.legOrdinal() == legOrdinal;
-        });
-    if (attachment == fabric.serviceLegCarrierAttachments().end())
-      return invalid("matching memory service leg has no carrier attachment");
-    for (const ::loom::fabric::FabricTransportEndpointRef &carrier :
-         attachment->carriers()) {
-      if (fabric.artifact().transportEndpointDirection(carrier) !=
-          expectedPortDirection)
-        return invalid("memory service carrier has the wrong direction");
-      result.push_back(carrier);
-    }
-  }
-  canonicalizeFabricRefs(result);
-  return result;
+  const bool terminalIsInitiator =
+      source == (direction ==
+                 ::dataflow::semantics::ServiceLegDirection::InitiatorToServer);
+  return terminalIsInitiator ==
+         (role == CanonicalServiceEndpointRole::Initiate);
 }
 
 llvm::Expected<bool>
@@ -290,102 +243,467 @@ memoryCapabilitySupports(const ::fabric::MemoryServiceContractRecord &service,
   return false;
 }
 
+const ::fabric::MemoryServiceContractRecord *
+directMemoryService(const ::loom::fabric::FabricSystemRootView &fabric,
+                    ::loom::fabric::SystemServiceEndpointRef endpoint) {
+  const auto *owner = fabric.serviceEndpointOwner(endpoint);
+  if (!owner)
+    return nullptr;
+  const auto *serviceRef = std::get_if<::loom::fabric::FabricMemoryServiceRef>(
+      &owner->owner().payload);
+  if (!serviceRef)
+    return nullptr;
+  const auto *systemRef =
+      std::get_if<::loom::fabric::SystemMemoryServiceRef>(&serviceRef->payload);
+  return systemRef ? fabric.memoryService(*systemRef) : nullptr;
+}
+
 llvm::Expected<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>
 compatibleServiceRegions(const ::loom::fabric::FabricSystemRootView &fabric,
-                         llvm::ArrayRef<ResolvedServiceMember> members) {
+                         ::loom::fabric::SystemServiceEndpointRef endpoint,
+                         const std::optional<ResolvedServiceMember> &member) {
   std::vector<::loom::fabric::FabricMemoryServiceRegionRef> result;
-  if (members.empty() ||
-      llvm::any_of(members, [](const auto &member) { return !member.access; }))
+  const auto *service = directMemoryService(fabric, endpoint);
+  if (!service)
     return result;
-
-  for (const ::loom::fabric::SystemServiceEndpointRef endpoint :
-       fabric.artifact().systemServiceEndpoints()) {
-    const auto *capabilities = fabric.serviceEndpointCapabilities(endpoint);
-    const auto *owner = fabric.serviceEndpointOwner(endpoint);
-    if (!capabilities || !owner ||
-        capabilities->plane() != CanonicalServiceEndpointPlane::Memory ||
-        capabilities->role() != CanonicalServiceEndpointRole::Serve)
-      continue;
-    bool endpointSupportsAll = true;
-    for (const ResolvedServiceMember &member : members) {
-      auto capability = matchingCapability(*capabilities, member);
-      if (!capability)
-        return capability.takeError();
-      endpointSupportsAll &= *capability != nullptr;
+  const auto *owner = fabric.serviceEndpointOwner(endpoint);
+  const auto *serviceRef = std::get_if<::loom::fabric::FabricMemoryServiceRef>(
+      &owner->owner().payload);
+  const auto &systemRef =
+      std::get<::loom::fabric::SystemMemoryServiceRef>(serviceRef->payload);
+  for (::loom::fabric::FabricOrdinal region = 0;
+       region < service->regions().size(); ++region) {
+    if (member) {
+      auto supports = memoryCapabilitySupports(*service, *member, region);
+      if (!supports)
+        return supports.takeError();
+      if (!*supports)
+        continue;
     }
-    if (!endpointSupportsAll)
-      continue;
+    result.push_back(
+        {::loom::fabric::FabricMemoryServiceRef::system(systemRef), region});
+  }
+  return result;
+}
 
-    const auto *serviceRef =
-        std::get_if<::loom::fabric::FabricMemoryServiceRef>(
-            &owner->owner().payload);
-    if (!serviceRef)
+void canonicalizePairs(std::vector<BoundMemoryEndpointPair> &pairs) {
+  llvm::sort(pairs, [](const auto &left, const auto &right) {
+    const auto leftSystem =
+        ::loom::fabric::canonicalFabricBytes(left.systemEndpoint);
+    const auto rightSystem =
+        ::loom::fabric::canonicalFabricBytes(right.systemEndpoint);
+    if (leftSystem != rightSystem)
+      return leftSystem < rightSystem;
+    return ::loom::fabric::canonicalFabricBytes(left.occurrenceEndpoint) <
+           ::loom::fabric::canonicalFabricBytes(right.occurrenceEndpoint);
+  });
+  pairs.erase(
+      std::unique(pairs.begin(), pairs.end(),
+                  [](const auto &left, const auto &right) {
+                    return left.systemEndpoint == right.systemEndpoint &&
+                           left.occurrenceEndpoint == right.occurrenceEndpoint;
+                  }),
+      pairs.end());
+}
+
+llvm::Error
+appendManagerPairs(const ::loom::fabric::FabricSystemRootView &fabric,
+                   const SpatialCatalogEntry &entry,
+                   ::loom::fabric::FabricMemoryEndpointRef moduleEndpoint,
+                   std::vector<BoundMemoryEndpointPair> &pairs) {
+  if (entry.moduleDependencyOrdinal >=
+      fabric.artifact().importedModules().size())
+    return invalid("SpatialMapping Module dependency ordinal is invalid");
+  const auto &module =
+      fabric.artifact().importedModules()[entry.moduleDependencyOrdinal];
+  for (const auto &moduleAttachment :
+       module.moduleBoundaryMemoryAttachments()) {
+    if (moduleAttachment.endpoint != moduleEndpoint)
       continue;
-    const auto *systemRef = std::get_if<::loom::fabric::SystemMemoryServiceRef>(
-        &serviceRef->payload);
-    if (!systemRef)
-      continue;
-    const auto *service = fabric.memoryService(*systemRef);
-    if (!service)
-      return invalid("service endpoint names an absent System memory service");
-    for (::loom::fabric::FabricOrdinal region = 0;
-         region < service->regions().size(); ++region) {
-      bool supportsAll = true;
-      for (const ResolvedServiceMember &member : members) {
-        auto supports = memoryCapabilitySupports(*service, member, region);
-        if (!supports)
-          return supports.takeError();
-        supportsAll &= *supports;
-      }
-      if (supportsAll)
-        result.push_back(
-            {::loom::fabric::FabricMemoryServiceRef::system(*systemRef),
-             region});
+    for (const auto &attachment : fabric.spatialAttachments()) {
+      if (attachment.moduleEndpoint.dependencyOrdinal !=
+              entry.moduleDependencyOrdinal ||
+          attachment.moduleEndpoint.target != moduleAttachment.boundary)
+        continue;
+      const auto *occurrence = attachment.spatialEndpoint.memory();
+      if (!occurrence || !attachment.serviceEndpoint)
+        return invalid("memory Module boundary has an incomplete System "
+                       "spatial attachment");
+      pairs.push_back({*attachment.serviceEndpoint, *occurrence});
     }
   }
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::vector<BoundMemoryEndpointPair>>
+boundPairsForMember(const ::loom::fabric::FabricSystemRootView &fabric,
+                    const ResolvedServiceMember &member,
+                    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog) {
+  std::vector<BoundMemoryEndpointPair> pairs;
+  if (!member.contextualActor)
+    return pairs;
+  for (const SpatialCatalogEntry &entry : spatialCatalog) {
+    for (const auto &engine : entry.mapping.view().memoryEngineBindings()) {
+      for (const auto &operation : engine.operations) {
+        if (const auto *addressed = std::get_if<
+                ::loom::mapping::SpatialAddressedMemoryOperationView>(
+                &operation)) {
+          if (!member.access ||
+              addressed->actor != member.contextualActor->actor)
+            continue;
+          for (const auto &use : addressed->uses) {
+            if (use.launch != member.contextualActor->launch)
+              continue;
+            const auto *manager =
+                std::get_if<::loom::fabric::ManagerEndpointRef>(&use.dispatch);
+            if (manager)
+              if (llvm::Error error = appendManagerPairs(
+                      fabric, entry, manager->underlying(), pairs))
+                return std::move(error);
+          }
+        } else {
+          const auto &fence =
+              std::get<::loom::mapping::SpatialFenceMemoryOperationView>(
+                  operation);
+          if (member.access || fence.actor != member.contextualActor->actor)
+            continue;
+          for (const auto &use : fence.uses) {
+            if (use.launch != member.contextualActor->launch)
+              continue;
+            const auto *manager =
+                std::get_if<::loom::fabric::ManagerEndpointRef>(
+                    &use.consistency);
+            if (manager)
+              if (llvm::Error error = appendManagerPairs(
+                      fabric, entry, manager->underlying(), pairs))
+                return std::move(error);
+          }
+        }
+      }
+    }
+  }
+  canonicalizePairs(pairs);
+  return pairs;
+}
+
+llvm::Expected<std::vector<BoundMemoryEndpointPair>>
+boundPairsForExposure(const ::loom::fabric::FabricSystemRootView &fabric,
+                      ::dataflow::MemoryExposureRef exposure,
+                      llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog) {
+  std::vector<BoundMemoryEndpointPair> pairs;
+  for (const SpatialCatalogEntry &entry : spatialCatalog)
+    for (const auto &binding : entry.mapping.view().memoryBindings())
+      for (const auto &entryExposure : binding.exposures) {
+        if (entryExposure.exposure != exposure)
+          continue;
+        const auto *manager = std::get_if<::loom::fabric::ManagerEndpointRef>(
+            &entryExposure.dispatch);
+        if (manager)
+          if (llvm::Error error = appendManagerPairs(
+                  fabric, entry, manager->underlying(), pairs))
+            return std::move(error);
+      }
+  canonicalizePairs(pairs);
+  return pairs;
+}
+
+std::vector<::loom::fabric::SystemServiceEndpointRef>
+systemEndpoints(llvm::ArrayRef<BoundMemoryEndpointPair> pairs) {
+  std::vector<::loom::fabric::SystemServiceEndpointRef> result;
+  result.reserve(pairs.size());
+  for (const auto &pair : pairs)
+    result.push_back(pair.systemEndpoint);
   canonicalizeFabricRefs(result);
   return result;
 }
 
-llvm::Expected<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>
-compatibleConsistencyDomains(const ::loom::fabric::FabricSystemRootView &fabric,
-                             llvm::ArrayRef<ResolvedServiceMember> members) {
-  std::vector<::loom::fabric::MemoryConsistencyDomainRef> result;
-  if (members.empty() || llvm::any_of(members, [](const auto &member) {
-        return member.kind != ServiceKind::MemoryFence || !member.actor ||
-               member.access;
-      }))
+llvm::Expected<std::vector<::loom::fabric::FabricTransportEndpointRef>>
+carriersForMemoryTerminal(const ::loom::fabric::FabricSystemRootView &fabric,
+                          ::loom::fabric::FabricMemoryEndpointRef endpoint,
+                          ServiceKind kind,
+                          ::dataflow::StructuralOrdinal legOrdinal, bool source,
+                          bool admitted) {
+  std::vector<::loom::fabric::FabricTransportEndpointRef> result;
+  if (!admitted)
     return result;
+  const auto attachment = llvm::find_if(
+      fabric.serviceLegCarrierAttachments(), [&](const auto &candidate) {
+        return candidate.endpoint() == endpoint && candidate.kind() == kind &&
+               candidate.legOrdinal() == legOrdinal;
+      });
+  if (attachment == fabric.serviceLegCarrierAttachments().end())
+    return result;
+  const auto expectedDirection =
+      source ? ::loom::fabric::FabricPortDirection::Output
+             : ::loom::fabric::FabricPortDirection::Input;
+  for (const auto carrier : attachment->carriers()) {
+    if (fabric.artifact().transportEndpointDirection(carrier) !=
+        expectedDirection)
+      return invalid("memory service carrier has the wrong direction");
+    result.push_back(carrier);
+  }
+  return result;
+}
 
-  for (const ::loom::fabric::SystemServiceEndpointRef endpoint :
-       fabric.artifact().systemServiceEndpoints()) {
+llvm::Expected<SystemBoundTerminalEndpoint> selectMemoryTerminalEndpoint(
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const BoundMemoryEndpointPair &pair,
+    ::dataflow::semantics::ServiceLegDirection direction, bool source) {
+  const ::loom::fabric::FabricMemoryEndpointRef systemEndpoint{
+      ::loom::fabric::FabricMemoryEndpointOwnerRef::of(pair.systemEndpoint), 0};
+  const auto occurrenceRole =
+      fabric.artifact().memoryEndpointRole(pair.occurrenceEndpoint);
+  const auto systemRole = fabric.artifact().memoryEndpointRole(systemEndpoint);
+  if (!occurrenceRole || !systemRole || *occurrenceRole == *systemRole)
+    return invalid("System memory attachment does not form a complementary "
+                   "endpoint pair");
+  const bool terminalIsManager =
+      source == (direction ==
+                 ::dataflow::semantics::ServiceLegDirection::InitiatorToServer);
+  const auto selected =
+      (*occurrenceRole == ::loom::fabric::FabricMemoryEndpointRole::Manager) ==
+              terminalIsManager
+          ? pair.occurrenceEndpoint
+          : systemEndpoint;
+  return SystemBoundTerminalEndpoint{
+      SystemMemoryOrFenceTerminalEndpoint{selected}};
+}
+
+bool sameBoundEndpoint(const SystemBoundTerminalEndpoint &left,
+                       const SystemBoundTerminalEndpoint &right) {
+  if (left.index() != right.index())
+    return false;
+  if (const auto *message = std::get_if<SystemMessageTerminalEndpoint>(&left))
+    return message->endpoint ==
+           std::get<SystemMessageTerminalEndpoint>(right).endpoint;
+  return std::get<SystemMemoryOrFenceTerminalEndpoint>(left).endpoint ==
+         std::get<SystemMemoryOrFenceTerminalEndpoint>(right).endpoint;
+}
+
+bool sameTargetSubject(const SystemServiceTargetSubject &left,
+                       const SystemServiceTargetSubject &right) {
+  if (left.index() != right.index())
+    return false;
+  if (const auto *member = std::get_if<SystemServiceMemberTargetSubject>(&left))
+    return member->member ==
+           std::get<SystemServiceMemberTargetSubject>(right).member;
+  return std::get<SystemMemoryExposureTargetSubject>(left).exposure ==
+         std::get<SystemMemoryExposureTargetSubject>(right).exposure;
+}
+
+template <typename Ref>
+bool isSubset(llvm::ArrayRef<Ref> values, llvm::ArrayRef<Ref> domain) {
+  return llvm::all_of(values, [&](const Ref &value) {
+    return llvm::is_contained(domain, value);
+  });
+}
+
+bool isTargetDomainSubset(
+    const SystemServiceTargetCompatibilityDomain &values,
+    const SystemServiceTargetCompatibilityDomain &domain) {
+  if (values.index() != domain.index())
+    return false;
+  if (const auto *regions = std::get_if<
+          std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(&values))
+    return isSubset(
+        llvm::ArrayRef(*regions),
+        llvm::ArrayRef(
+            std::get<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(
+                domain)));
+  const auto &consistency =
+      std::get<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(values);
+  return isSubset(
+      llvm::ArrayRef(consistency),
+      llvm::ArrayRef(
+          std::get<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(
+              domain)));
+}
+
+llvm::Error appendTerminalCompatibility(
+    SystemSearchServiceDomain &domain,
+    ::loom::mapping::SystemTransferTerminalKey terminal,
+    SystemBoundTerminalEndpoint bound,
+    std::vector<::loom::fabric::FabricTransportEndpointRef> carriers) {
+  const auto existing =
+      llvm::find_if(domain.transferTerminalCompatibility, [&](const auto &row) {
+        return row.terminal == terminal &&
+               sameBoundEndpoint(row.boundEndpoint, bound);
+      });
+  if (existing != domain.transferTerminalCompatibility.end()) {
+    if (existing->compatibleTransportEndpoints != carriers)
+      return invalid("one exact bound terminal has inconsistent carriers");
+    return llvm::Error::success();
+  }
+  domain.transferTerminalCompatibility.push_back(
+      {std::move(terminal), std::move(bound), std::move(carriers)});
+  return llvm::Error::success();
+}
+
+llvm::Error appendMemoryRows(
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const ::loom::mapping::SystemServiceObligationProjection &obligation,
+    const ::dataflow::ServiceMemberRef &memberRef,
+    const ResolvedServiceMember &member,
+    llvm::ArrayRef<BoundMemoryEndpointPair> pairs,
+    SystemSearchServiceDomain &domain) {
+  const SystemServiceTargetSubject subject{
+      SystemServiceMemberTargetSubject{memberRef}};
+  for (const auto endpoint : systemEndpoints(pairs)) {
     const auto *capabilities = fabric.serviceEndpointCapabilities(endpoint);
     if (!capabilities ||
-        capabilities->plane() != CanonicalServiceEndpointPlane::Memory ||
-        capabilities->role() != CanonicalServiceEndpointRole::Serve)
-      continue;
+        capabilities->plane() != CanonicalServiceEndpointPlane::Memory)
+      return invalid("bound System memory endpoint has no memory capability "
+                     "set");
+    auto capability = matchingCapability(*capabilities, member);
+    if (!capability)
+      return capability.takeError();
+    if (member.access) {
+      std::vector<::loom::fabric::FabricMemoryServiceRegionRef> regions;
+      if (*capability) {
+        auto compatible = compatibleServiceRegions(fabric, endpoint, member);
+        if (!compatible)
+          return compatible.takeError();
+        regions = std::move(*compatible);
+      }
+      domain.targetCompatibility.push_back(
+          {subject, endpoint, std::move(regions)});
+    } else {
+      std::vector<::loom::fabric::MemoryConsistencyDomainRef> consistency;
+      if (*capability) {
+        const auto *fence =
+            std::get_if<FenceCapabilityDomain>(&(*capability)->domain());
+        if (!fence)
+          return invalid("matching fence capability has a non-fence domain");
+        consistency.push_back(fence->consistencyDomain());
+      }
+      domain.targetCompatibility.push_back(
+          {subject, endpoint, std::move(consistency)});
+    }
+  }
 
-    const FenceCapabilityDomain *accepted = nullptr;
-    bool supportsAll = true;
-    for (const ResolvedServiceMember &member : members) {
+  for (const auto &leg : obligation.legs) {
+    if (leg.member != memberRef)
+      continue;
+    auto direction = ::dataflow::semantics::getCanonicalServiceLegDirection(
+        member.kind, leg.ordinal);
+    if (!direction)
+      return direction.takeError();
+    for (const BoundMemoryEndpointPair &pair : pairs) {
+      const auto *capabilities =
+          fabric.serviceEndpointCapabilities(pair.systemEndpoint);
+      if (!capabilities)
+        return invalid("bound System endpoint has no capability set");
       auto capability = matchingCapability(*capabilities, member);
       if (!capability)
         return capability.takeError();
-      if (!*capability) {
-        supportsAll = false;
-        break;
+      for (const bool source : {true, false}) {
+        auto bound =
+            selectMemoryTerminalEndpoint(fabric, pair, *direction, source);
+        if (!bound)
+          return bound.takeError();
+        const auto selected =
+            std::get<SystemMemoryOrFenceTerminalEndpoint>(*bound).endpoint;
+        auto carriers = carriersForMemoryTerminal(fabric, selected, member.kind,
+                                                  leg.ordinal, source,
+                                                  *capability != nullptr);
+        if (!carriers)
+          return carriers.takeError();
+        ::loom::mapping::SystemTransferTerminalKey terminal =
+            source
+                ? ::loom::mapping::SystemTransferTerminalKey(
+                      ::loom::mapping::SystemTransferSourceTerminalKey{leg})
+                : ::loom::mapping::SystemTransferTerminalKey(
+                      ::loom::mapping::SystemTransferSinkTerminalKey{leg, 0});
+        if (llvm::Error error = appendTerminalCompatibility(
+                domain, std::move(terminal), std::move(*bound),
+                std::move(*carriers)))
+          return error;
       }
-      const auto *fence =
-          std::get_if<FenceCapabilityDomain>(&(*capability)->domain());
-      if (!fence)
-        return invalid("matching fence capability has a non-fence domain");
-      accepted = fence;
     }
-    if (supportsAll && accepted)
-      result.push_back(accepted->consistencyDomain());
   }
-  canonicalizeFabricRefs(result);
-  return result;
+  return llvm::Error::success();
+}
+
+llvm::Error
+appendExposureRows(const ::loom::fabric::FabricSystemRootView &fabric,
+                   ::dataflow::MemoryExposureRef exposure,
+                   llvm::ArrayRef<BoundMemoryEndpointPair> pairs,
+                   SystemSearchServiceDomain &domain) {
+  const SystemServiceTargetSubject subject{
+      SystemMemoryExposureTargetSubject{exposure}};
+  for (const auto endpoint : systemEndpoints(pairs)) {
+    const auto *capabilities = fabric.serviceEndpointCapabilities(endpoint);
+    if (!capabilities ||
+        capabilities->plane() != CanonicalServiceEndpointPlane::Memory)
+      return invalid("bound System memory endpoint has no memory capability "
+                     "set");
+    auto regions = compatibleServiceRegions(
+        fabric, endpoint, std::optional<ResolvedServiceMember>());
+    if (!regions)
+      return regions.takeError();
+    domain.targetCompatibility.push_back(
+        {subject, endpoint, std::move(*regions)});
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error appendMessageRows(
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const ::loom::mapping::SystemServiceObligationProjection &obligation,
+    const ResolvedServiceMember &member, SystemSearchServiceDomain &domain) {
+  for (const auto &leg : obligation.legs) {
+    auto direction = ::dataflow::semantics::getCanonicalServiceLegDirection(
+        member.kind, leg.ordinal);
+    if (!direction)
+      return direction.takeError();
+    for (const bool source : {true, false}) {
+      const std::size_t sinkCount = source ? 1 : obligation.sinks.size();
+      for (std::size_t sink = 0; sink < sinkCount; ++sink) {
+        for (const auto endpoint : fabric.artifact().systemServiceEndpoints()) {
+          const auto *capabilities =
+              fabric.serviceEndpointCapabilities(endpoint);
+          if (!capabilities ||
+              capabilities->plane() != CanonicalServiceEndpointPlane::Transport)
+            continue;
+          auto capability = capabilityForKind(*capabilities, member.kind);
+          if (!capability)
+            return capability.takeError();
+          if (!*capability ||
+              !roleOwnsTerminal((*capability)->role(), *direction, source))
+            continue;
+          const ::loom::fabric::FabricTransportEndpointRef bound{
+              ::loom::fabric::FabricTransportEndpointOwnerRef::of(endpoint), 0};
+          const auto expectedDirection =
+              source ? ::loom::fabric::FabricPortDirection::Output
+                     : ::loom::fabric::FabricPortDirection::Input;
+          if (fabric.artifact().transportEndpointDirection(bound) !=
+              expectedDirection)
+            return invalid("message service endpoint has the wrong direction");
+          auto compatible = capabilityMatches(**capability, member);
+          if (!compatible)
+            return compatible.takeError();
+          std::vector<::loom::fabric::FabricTransportEndpointRef> targets;
+          if (*compatible)
+            targets.push_back(bound);
+          ::loom::mapping::SystemTransferTerminalKey terminal =
+              source
+                  ? ::loom::mapping::SystemTransferTerminalKey(
+                        ::loom::mapping::SystemTransferSourceTerminalKey{leg})
+                  : ::loom::mapping::SystemTransferTerminalKey(
+                        ::loom::mapping::SystemTransferSinkTerminalKey{
+                            leg,
+                            static_cast<::dataflow::StructuralOrdinal>(sink)});
+          if (llvm::Error error = appendTerminalCompatibility(
+                  domain, std::move(terminal),
+                  SystemBoundTerminalEndpoint{
+                      SystemMessageTerminalEndpoint{bound}},
+                  std::move(targets)))
+            return error;
+        }
+      }
+    }
+  }
+  return llvm::Error::success();
 }
 
 } // namespace
@@ -394,17 +712,26 @@ llvm::Expected<std::vector<SystemSearchServiceDomain>>
 projectSystemServiceDomains(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
-    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots) {
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
+    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog, bool flatGraphSearch) {
   auto obligations =
       ::loom::mapping::projectSystemServiceObligations(dataflow, roots);
   if (!obligations)
     return obligations.takeError();
-  if (!fabric.artifact().systemServiceTransforms().empty() &&
+  const bool hasOperationService =
       llvm::any_of(*obligations, [](const auto &obligation) {
         return std::holds_alternative<
             ::loom::mapping::OperationServiceObligationFamilyKey>(
             obligation.key);
-      }))
+      });
+  if (flatGraphSearch && hasOperationService)
+    return llvm::make_error<UnsupportedSystemPnrSearchDomain>(
+        UnsupportedSystemPnrSearchDomainReason::
+            FlatOperationServiceDomainProjectionUnavailable,
+        "flat operation-service compatibility projection is not implemented "
+        "by the System PnR search-domain projector");
+  if (!fabric.artifact().systemServiceTransforms().empty() &&
+      hasOperationService)
     return llvm::make_error<UnsupportedSystemPnrSearchDomain>(
         UnsupportedSystemPnrSearchDomainReason::
             ServiceTransformProjectionUnavailable,
@@ -416,77 +743,132 @@ projectSystemServiceDomains(
 
   std::vector<SystemSearchServiceDomain> result;
   result.reserve(obligations->size());
-  for (const ::loom::mapping::SystemServiceObligationProjection &obligation :
-       *obligations) {
+  for (const auto &obligation : *obligations) {
+    SystemSearchServiceDomain domain{obligation.key, {}, {}};
     std::vector<ResolvedServiceMember> members;
     members.reserve(obligation.members.size());
-    for (const ::dataflow::ServiceMemberRef &member : obligation.members) {
-      auto resolved =
-          resolveMember(dataflow, obligation, member, *messagePayloads);
-      if (!resolved)
-        return resolved.takeError();
-      members.push_back(std::move(*resolved));
+    for (const auto &memberRef : obligation.members) {
+      auto member =
+          resolveMember(dataflow, obligation, memberRef, *messagePayloads);
+      if (!member)
+        return member.takeError();
+      members.push_back(std::move(*member));
     }
 
-    SystemSearchServiceDomain domain{
-        obligation.key, std::nullopt, std::nullopt, {}};
-    if (const auto *operation =
-            std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
-                &obligation.key)) {
-      if (std::holds_alternative<::dataflow::LogicalMemoryRootOrViewRef>(
-              *operation)) {
-        auto regions = compatibleServiceRegions(fabric, members);
-        if (!regions)
-          return regions.takeError();
-        domain.compatibleServiceRegions = std::move(*regions);
-      } else {
-        auto domains = compatibleConsistencyDomains(fabric, members);
-        if (!domains)
-          return domains.takeError();
-        domain.compatibleConsistencyDomains = std::move(*domains);
+    if (std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
+            obligation.key)) {
+      if (members.size() != 1 ||
+          members.front().kind != ServiceKind::MessageTransfer)
+        return invalid("message obligation does not have one message member");
+      if (llvm::Error error =
+              appendMessageRows(fabric, obligation, members.front(), domain))
+        return std::move(error);
+    } else {
+      for (auto [memberRef, member] :
+           llvm::zip_equal(obligation.members, members)) {
+        auto pairs = boundPairsForMember(fabric, member, spatialCatalog);
+        if (!pairs)
+          return pairs.takeError();
+        if (llvm::Error error = appendMemoryRows(fabric, obligation, memberRef,
+                                                 member, *pairs, domain))
+          return std::move(error);
       }
-    }
-
-    std::size_t expectedLegCount = 0;
-    for (const ResolvedServiceMember &member : members)
-      expectedLegCount +=
-          ::dataflow::semantics::getCanonicalServiceLegCount(member.kind);
-    if (obligation.legs.size() != expectedLegCount)
-      return invalid("canonical service obligation has incomplete leg closure");
-    for (const ::loom::mapping::CanonicalServiceLegKey &leg : obligation.legs) {
-      const auto member = llvm::find(obligation.members, leg.member);
-      if (member == obligation.members.end())
-        return invalid("canonical service leg names a foreign member");
-      const std::size_t memberIndex =
-          static_cast<std::size_t>(member - obligation.members.begin());
-      auto sources =
-          terminalEndpoints(fabric, members[memberIndex], leg.ordinal,
-                            /*source=*/true);
-      if (!sources)
-        return sources.takeError();
-      domain.transferTerminals.push_back(
-          {::loom::mapping::SystemTransferSourceTerminalKey{leg},
-           std::move(*sources)});
-
-      const std::size_t sinkCount =
-          members[memberIndex].kind == ServiceKind::MessageTransfer
-              ? obligation.sinks.size()
-              : 1;
-      for (std::size_t sink = 0; sink < sinkCount; ++sink) {
-        auto sinks =
-            terminalEndpoints(fabric, members[memberIndex], leg.ordinal,
-                              /*source=*/false);
-        if (!sinks)
-          return sinks.takeError();
-        domain.transferTerminals.push_back(
-            {::loom::mapping::SystemTransferSinkTerminalKey{
-                 leg, static_cast<::dataflow::StructuralOrdinal>(sink)},
-             std::move(*sinks)});
+      for (const auto &exposure : obligation.exposures) {
+        auto pairs = boundPairsForExposure(fabric, exposure, spatialCatalog);
+        if (!pairs)
+          return pairs.takeError();
+        if (llvm::Error error =
+                appendExposureRows(fabric, exposure, *pairs, domain))
+          return std::move(error);
       }
     }
     result.push_back(std::move(domain));
   }
   return result;
+}
+
+llvm::Error validateSystemServiceDomains(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
+    llvm::ArrayRef<SystemSearchBindingDomain> bindings,
+    llvm::ArrayRef<SystemSearchServiceDomain> services,
+    const ArtifactStore &store) {
+  bool flatGraphSearch = false;
+  std::vector<ArtifactRootReference> spatialMappings;
+  for (const SystemSearchBindingDomain &binding : bindings) {
+    if (!std::holds_alternative<::dataflow::RootedGraphLaunchRef>(binding.key))
+      continue;
+    for (const SystemSearchAtom &atom : binding.atoms) {
+      if (const auto *hierarchical =
+              std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain)) {
+        spatialMappings.insert(spatialMappings.end(),
+                               hierarchical->compatibleSpatialMappings.begin(),
+                               hierarchical->compatibleSpatialMappings.end());
+      } else {
+        flatGraphSearch = true;
+      }
+    }
+  }
+  auto catalog = importSpatialCatalog(spatialMappings, dataflow, fabric, store);
+  if (!catalog)
+    return catalog.takeError();
+  auto expected = projectSystemServiceDomains(dataflow, fabric, roots, *catalog,
+                                              flatGraphSearch);
+  if (!expected)
+    return expected.takeError();
+  if (services.size() != expected->size())
+    return invalid("service-obligation closure differs from Dataflow");
+
+  for (const SystemSearchServiceDomain &service : services) {
+    const auto expectedService =
+        llvm::find_if(*expected, [&](const auto &candidate) {
+          return candidate.key == service.key;
+        });
+    if (expectedService == expected->end())
+      return invalid("service-obligation closure differs from Dataflow");
+    if (service.targetCompatibility.size() !=
+        expectedService->targetCompatibility.size())
+      return invalid("target-compatibility row closure differs from legal "
+                     "bindings");
+    for (const SystemSearchServiceTargetCompatibility &row :
+         service.targetCompatibility) {
+      const auto expectedRow = llvm::find_if(
+          expectedService->targetCompatibility, [&](const auto &candidate) {
+            return sameTargetSubject(candidate.subject, row.subject) &&
+                   candidate.boundEndpoint == row.boundEndpoint;
+          });
+      if (expectedRow == expectedService->targetCompatibility.end())
+        return invalid("target-compatibility row closure differs from legal "
+                       "bindings");
+      if (!isTargetDomainSubset(row.compatibleTargets,
+                                expectedRow->compatibleTargets))
+        return invalid("target-compatibility domain exceeds base legality");
+    }
+
+    if (service.transferTerminalCompatibility.size() !=
+        expectedService->transferTerminalCompatibility.size())
+      return invalid("transfer-terminal compatibility row closure differs "
+                     "from legal bindings");
+    for (const SystemSearchTransferTerminalCompatibility &row :
+         service.transferTerminalCompatibility) {
+      const auto expectedRow =
+          llvm::find_if(expectedService->transferTerminalCompatibility,
+                        [&](const auto &candidate) {
+                          return candidate.terminal == row.terminal &&
+                                 sameBoundEndpoint(candidate.boundEndpoint,
+                                                   row.boundEndpoint);
+                        });
+      if (expectedRow == expectedService->transferTerminalCompatibility.end())
+        return invalid("transfer-terminal compatibility row closure differs "
+                       "from legal bindings");
+      if (!isSubset(llvm::ArrayRef(row.compatibleTransportEndpoints),
+                    llvm::ArrayRef(expectedRow->compatibleTransportEndpoints)))
+        return invalid(
+            "transfer-terminal compatibility domain exceeds base legality");
+    }
+  }
+  return llvm::Error::success();
 }
 
 } // namespace loom::pnr::detail

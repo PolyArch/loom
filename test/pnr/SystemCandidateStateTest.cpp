@@ -5,6 +5,7 @@
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/ResourceContract.h"
@@ -13,6 +14,7 @@
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "Mapping/IR/MappingDialect.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
 #include "PnR/MappingObjective.h"
@@ -41,7 +43,9 @@
 #include <cstdlib>
 #include <limits>
 #include <optional>
+#include <string>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -72,6 +76,32 @@ void requireFailureContains(llvm::Expected<T> value,
   const std::string actual = llvm::toString(value.takeError());
   require(llvm::StringRef(actual).contains(diagnostic),
           "adverse diagnostic changed: " + actual);
+}
+
+template <typename T>
+void requireUnsupported(
+    llvm::Expected<T> value,
+    loom::pnr::UnsupportedSystemPnrSearchDomainReason expectedReason,
+    llvm::StringRef diagnostic) {
+  if (value)
+    fail("unsupported System search-domain input unexpectedly succeeded");
+  bool matched = false;
+  llvm::Error remaining = llvm::handleErrors(
+      value.takeError(),
+      [&](const loom::pnr::UnsupportedSystemPnrSearchDomain &error) {
+        matched = true;
+        require(error.reason() == expectedReason,
+                "unsupported System search-domain reason changed");
+        std::string actual;
+        llvm::raw_string_ostream stream(actual);
+        error.log(stream);
+        stream.flush();
+        require(llvm::StringRef(actual).contains(diagnostic),
+                "unsupported System search-domain diagnostic changed");
+      });
+  if (remaining)
+    fail(llvm::toString(std::move(remaining)));
+  require(matched, "System search-domain failure lost its typed reason");
 }
 
 void requireVerificationFailureContains(mlir::Operation *operation,
@@ -106,6 +136,52 @@ std::vector<std::uint8_t> unsignedBytes(mlir::DenseI8ArrayAttr attribute) {
   for (std::int8_t byte : attribute.asArrayRef())
     result.push_back(static_cast<std::uint8_t>(byte));
   return result;
+}
+
+std::string byteList(llvm::ArrayRef<std::uint8_t> bytes) {
+  std::string result = "[";
+  for (auto [ordinal, byte] : llvm::enumerate(bytes)) {
+    if (ordinal)
+      result += ", ";
+    result += std::to_string(static_cast<std::int8_t>(byte));
+  }
+  return result + "]";
+}
+
+std::vector<std::uint8_t>
+replaceEvery(llvm::ArrayRef<std::uint8_t> bytes,
+             llvm::ArrayRef<std::uint8_t> original,
+             llvm::ArrayRef<std::uint8_t> replacement) {
+  require(!original.empty() && original.size() == replacement.size(),
+          "wire replacement fixture has incompatible fields");
+  std::vector<std::uint8_t> result(bytes.begin(), bytes.end());
+  std::size_t replacements = 0;
+  auto cursor = result.begin();
+  while (cursor != result.end()) {
+    auto found =
+        std::search(cursor, result.end(), original.begin(), original.end());
+    if (found == result.end())
+      break;
+    std::copy(replacement.begin(), replacement.end(), found);
+    cursor = found + replacement.size();
+    ++replacements;
+  }
+  require(replacements != 0, "wire replacement fixture found no field");
+  return result;
+}
+
+std::string identityAttr(const loom::ArtifactIdentity &identity) {
+  return "#mapping.artifact_identity<" + byteList(identity.bytes()) + ">";
+}
+
+template <typename Ref>
+std::string dataflowAttr(llvm::StringRef spelling,
+                         const loom::ArtifactIdentity &identity,
+                         const Ref &reference) {
+  return "#mapping." + spelling.str() + "<" +
+         byteList(
+             take(dataflow::encodeDataflowReference(identity, reference))) +
+         ">";
 }
 
 ::mapping::ArtifactRootReferenceAttr
@@ -166,7 +242,8 @@ private:
 mlir::MLIRContext makeContext() {
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
-                  mlir::DLTIDialect, mlir::func::FuncDialect>();
+                  mapping::MappingDialect, mlir::DLTIDialect,
+                  mlir::func::FuncDialect>();
   return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
 }
 
@@ -205,6 +282,38 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
                                                         &context);
   if (!module)
     fail("cannot parse Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+dataflow::CanonicalDataflowArtifact
+buildMemoryDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @load(
+      %ctrl: none, %index: index, %memory: memref<4xi32>) -> i32
+      attributes {input_segments = array<i32: 1, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %value, %done = dataflow.load %memory[%index] %ctrl : memref<4xi32>
+    dataflow.graph.return values(%value : i32) streams() memories()
+        complete(%done : none)
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
+      %index: index, %memory: memref<4xi32>) ctrl (%ctrl: none) {
+    %value, %done = dataflow.graph.launch @load deps(%ctrl)
+        values(%index) stream_inputs() memories(%memory) stream_outputs()
+        : (none, index, memref<4xi32>) -> (i32, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host(%index: index, %memory: memref<4xi32>) {
+    %completion = dataflow.thread.launch @worker(%index, %memory)
+        : (index, memref<4xi32>) -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse memory Dataflow fixture");
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
@@ -304,8 +413,8 @@ loom::adg::FinalizedFabricDesign buildSpatialModule(loom::ArtifactStore &store,
   if (addBoundaryBuffer) {
     const auto bits128 = take(loom::adg::PortType::bits(128));
     expansion.outputs.front() = take(expansion.spatialCore.addFifo(
-                                        expansion.outputs.front(),
-                                        loom::adg::FifoSpec{bits128, 2, true}))
+                                         expansion.outputs.front(),
+                                         loom::adg::FifoSpec{bits128, 2, true}))
                                     .value();
   }
   if (llvm::Error error = expansion.spatialCore.close(expansion.outputs))
@@ -321,9 +430,8 @@ loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
     const loom::fabric::FinalizedFabricRoot &baselineSystem,
     const loom::fabric::FinalizedFabricRoot &primaryModule,
     const loom::fabric::FinalizedFabricRoot &alternateModule,
-    mlir::MLIRContext &context) {
-  auto baseline =
-      take(loom::fabric::requireSystemRoot(baselineSystem.view()));
+    mlir::MLIRContext &context, bool extraSupportsRead = true) {
+  auto baseline = take(loom::fabric::requireSystemRoot(baselineSystem.view()));
   require(!baseline.artifact().systemMemoryServices().empty() &&
               !baseline.artifact().systemServiceEndpoints().empty(),
           "builtin System has no memory service capability source");
@@ -379,10 +487,14 @@ loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
   std::vector<loom::fabric::CanonicalServiceCapabilityRecord>
       localMemoryCapabilities;
   localMemoryCapabilities.reserve(memoryCapabilities->capabilities().size());
-  for (const auto &capability : memoryCapabilities->capabilities())
+  for (const auto &capability : memoryCapabilities->capabilities()) {
+    if (!extraSupportsRead &&
+        capability.kind() == dataflow::semantics::ServiceKind::MemoryRead)
+      continue;
     localMemoryCapabilities.push_back(
         take(loom::fabric::CanonicalServiceCapabilityRecord::create(
             capability.kind(), capability.role(), capability.domain(), rate)));
+  }
   auto memoryCapabilitySet =
       take(loom::fabric::CanonicalServiceCapabilitySet::create(
           std::move(localMemoryCapabilities)));
@@ -398,8 +510,8 @@ loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
     const auto legCount =
         dataflow::semantics::getCanonicalServiceLegCount(capability.kind());
     for (dataflow::StructuralOrdinal leg = 0; leg != legCount; ++leg) {
-      const auto direction = take(
-          dataflow::semantics::getCanonicalServiceLegDirection(
+      const auto direction =
+          take(dataflow::semantics::getCanonicalServiceLegDirection(
               capability.kind(), leg));
       const bool endpointIsInitiator =
           capability.role() ==
@@ -479,7 +591,8 @@ loom::ArtifactRootReference
 generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
                        const loom::fabric::FinalizedFabricRoot &module,
                        const loom::ResolvedConfig &resolved,
-                       loom::ArtifactStore &store) {
+                       loom::ArtifactStore &store,
+                       mlir::MLIRContext *context = nullptr) {
   const auto techConfig =
       take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
   const std::array<dataflow::GraphRef, 1> covers = {
@@ -488,13 +601,47 @@ generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
       {dataflow, covers, module.view(), techConfig, store});
   const auto *techCandidates =
       std::get_if<loom::mapping::GeneratedTechMappings>(&techOutcome);
-  require(techCandidates && techCandidates->candidates.size() == 1,
+  if (!techCandidates) {
+    if (const auto *invalid =
+            std::get_if<loom::mapping::InvalidTechMappingGeneration>(
+                &techOutcome))
+      fail("TechMapping fixture is invalid: " + invalid->diagnostic);
+    if (const auto *internal =
+            std::get_if<loom::mapping::InternalTechMappingGeneration>(
+                &techOutcome))
+      fail("TechMapping fixture failed internally: " + internal->diagnostic);
+    if (std::holds_alternative<loom::mapping::ProvenInfeasibleTechMapping>(
+            techOutcome))
+      fail("TechMapping fixture is proven infeasible");
+    fail("TechMapping fixture ended without a proof or candidate");
+  }
+  require(techCandidates->candidates.size() == 1,
           "TechMapping fixture did not produce one candidate");
   auto tech = take(loom::mapping::importTechMapping(
       techCandidates->candidates.front(), store));
-  auto constraints =
-      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+  auto constraints = [&]() {
+    if (!context)
+      return take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
           dataflow, tech.view(), module.view(), store));
+    require(dataflow.logicalMemoryRoots().size() == 1,
+            "boundary-only Mapping fixture requires one logical memory root");
+    const std::string text =
+        "module {\n  mapping.constraints.spatial dataflow(" +
+        identityAttr(dataflow.identity()) + ") tech_mapping(" +
+        identityAttr(tech.view().identity()) + ") fabric(" +
+        identityAttr(module.view().identity()) +
+        ") {\n    mapping.constraint.domain_restriction "
+        "projection(memory_bound_services) subject(" +
+        dataflowAttr("logical_memory_root_ref", dataflow.identity(),
+                     dataflow.logicalMemoryRoots().front().ref) +
+        ") admissible_domain([])\n  }\n}\n";
+    auto parsed = mlir::parseSourceString<mlir::ModuleOp>(text, context);
+    if (!parsed)
+      fail("cannot parse boundary-only Spatial MappingConstraintSet");
+    auto roots = parsed->getOps<::mapping::ConstraintsSpatialOp>();
+    return take(loom::mapping::finalizeSpatialMappingConstraintSet(
+        *roots.begin(), dataflow, tech.view(), module.view(), store));
+  }();
   const auto spatialConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
   auto spatialOutcome = loom::pnr::generateSpatialMappings(
@@ -502,7 +649,17 @@ generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
        store});
   const auto *spatialCandidates =
       std::get_if<loom::pnr::GeneratedSpatialMappings>(&spatialOutcome);
-  require(spatialCandidates && spatialCandidates->candidates.size() == 1,
+  if (!spatialCandidates)
+    std::visit(
+        [&](const auto &outcome) {
+          using Outcome = std::decay_t<decltype(outcome)>;
+          if constexpr (!std::is_same_v<Outcome,
+                                        loom::pnr::GeneratedSpatialMappings>)
+            fail("SpatialMapping fixture did not produce one candidate: " +
+                 outcome.diagnostic);
+        },
+        spatialOutcome);
+  require(spatialCandidates->candidates.size() == 1,
           "SpatialMapping fixture did not produce one candidate");
   return spatialCandidates->candidates.front();
 }
@@ -534,12 +691,147 @@ int main() {
           "heterogeneous System did not retain both SpatialCores");
 
   const loom::ResolvedConfig resolved = buildResolvedConfig();
+  const auto config =
+      take(loom::pnr::projectResolvedSystemPnrConfigView(resolved));
+
+  auto memoryDataflowArtifact = buildMemoryDataflow(context);
+  take(dataflow::publishCanonicalDataflow(memoryDataflowArtifact, store));
+  auto memoryDataflow = take(memoryDataflowArtifact.view());
+  auto endpointDesign = buildHeterogeneousSystem(
+      store, baselineDesign.roots().front(), primaryModule, primaryModule,
+      context, /*extraSupportsRead=*/false);
+  auto endpointSystem = take(
+      loom::fabric::requireSystemRoot(endpointDesign.roots().front().view()));
+  loom::ResolvedConfig memoryResolved = resolved;
+  memoryResolved.dse.spatialPnr.search =
+      loom::defaultResolvedConfig().dse.spatialPnr.search;
+  const auto memoryMapping = generateSpatialMapping(
+      memoryDataflow, primaryModule, memoryResolved, store, &context);
+  std::vector<dataflow::RootThreadLaunchRef> memoryRoots{
+      memoryDataflow.rootThreadLaunches().front().ref};
+  auto memoryConstraints =
+      take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
+          memoryDataflow, endpointSystem, memoryRoots, store));
+  auto memoryPartition =
+      take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
+          memoryDataflow, memoryConstraints.view().rootThreadLaunches()));
+  auto memorySpatial =
+      take(loom::mapping::importSpatialMapping(memoryMapping, store));
+  loom::ArtifactRootReference memoryTechReference{
+      loom::mapping::mappingArtifactSchema.identity.str(),
+      loom::mapping::mappingArtifactSchema.version,
+      memorySpatial.view().techMappingIdentity()};
+  auto memoryTech =
+      take(loom::mapping::importTechMapping(memoryTechReference, store));
+  auto memorySpatialConstraints =
+      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+          memoryDataflow, memoryTech.view(), primaryModule.view(), store));
+  auto memorySpatialConfig =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(memoryResolved));
+  requireUnsupported(
+      loom::pnr::projectSystemPnrSearchDomain(
+          memoryDataflow, endpointSystem, config, memoryConstraints,
+          memoryPartition,
+          loom::pnr::SystemFlatGraphSearchInput{
+              {{memoryTechReference, memorySpatialConfig,
+                memorySpatialConstraints.reference()}},
+              {}},
+          store),
+      loom::pnr::UnsupportedSystemPnrSearchDomainReason::
+          FlatOperationServiceDomainProjectionUnavailable,
+      "flat operation-service compatibility projection is not implemented");
+  auto memorySearchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      memoryDataflow, endpointSystem, config, memoryConstraints,
+      memoryPartition,
+      loom::pnr::SystemHierarchicalGraphSearchInput{{memoryMapping}}, store));
+  const auto memoryService = llvm::find_if(
+      memorySearchDomain.serviceObligations(), [](const auto &service) {
+        const auto *operation =
+            std::get_if<loom::mapping::OperationServiceObligationFamilyKey>(
+                &service.key);
+        return operation &&
+               std::holds_alternative<dataflow::LogicalMemoryRootOrViewRef>(
+                   *operation);
+      });
+  require(memoryService != memorySearchDomain.serviceObligations().end(),
+          "endpoint-factorization fixture has no memory obligation");
+  std::vector<const loom::pnr::SystemSearchServiceTargetCompatibility *>
+      addressedRows;
+  for (const auto &row : memoryService->targetCompatibility) {
+    const auto *subject =
+        std::get_if<loom::pnr::SystemServiceMemberTargetSubject>(&row.subject);
+    if (subject &&
+        std::holds_alternative<dataflow::AddressedMemoryActorMemberRef>(
+            subject->member))
+      addressedRows.push_back(&row);
+  }
+  require(addressedRows.size() == 2 && addressedRows[0]->boundEndpoint !=
+                                           addressedRows[1]->boundEndpoint,
+          "same Module path did not produce two exact endpoint rows");
+  const loom::fabric::SystemServiceEndpointRef *unsupportedEndpoint = nullptr;
+  std::size_t compatibleEndpointCount = 0;
+  for (const auto *row : addressedRows) {
+    const auto *regions =
+        std::get_if<std::vector<loom::fabric::FabricMemoryServiceRegionRef>>(
+            &row->compatibleTargets);
+    require(regions, "memory target row has a non-region domain");
+    if (regions->empty())
+      unsupportedEndpoint = &row->boundEndpoint;
+    else
+      ++compatibleEndpointCount;
+  }
+  require(unsupportedEndpoint && compatibleEndpointCount == 1,
+          "endpoint rows unioned or intersected distinct read capabilities");
+
+  const loom::fabric::FabricMemoryEndpointRef *unsupportedOccurrence = nullptr;
+  for (const auto &attachment : endpointSystem.spatialAttachments()) {
+    if (attachment.serviceEndpoint != *unsupportedEndpoint)
+      continue;
+    require(!unsupportedOccurrence && attachment.spatialEndpoint.memory(),
+            "unsupported endpoint has an ambiguous memory attachment");
+    unsupportedOccurrence = attachment.spatialEndpoint.memory();
+  }
+  require(unsupportedOccurrence,
+          "unsupported endpoint has no exact occurrence attachment");
+  const loom::fabric::FabricMemoryEndpointRef unsupportedSystemEndpoint{
+      loom::fabric::FabricMemoryEndpointOwnerRef::of(*unsupportedEndpoint), 0};
+  std::size_t unsupportedTerminalRows = 0;
+  for (const auto &row : memoryService->transferTerminalCompatibility) {
+    const auto &bound =
+        std::get<loom::pnr::SystemMemoryOrFenceTerminalEndpoint>(
+            row.boundEndpoint)
+            .endpoint;
+    if (bound != unsupportedSystemEndpoint && bound != *unsupportedOccurrence)
+      continue;
+    ++unsupportedTerminalRows;
+    require(row.compatibleTransportEndpoints.empty(),
+            "unsupported occurrence borrowed another endpoint's carriers");
+  }
+  require(unsupportedTerminalRows == 4,
+          "unsupported memory pair did not retain every required empty row");
+
   std::vector<loom::ArtifactRootReference> spatialMappings;
+  std::vector<loom::pnr::FlatSpatialReopenProblem> flatProblems;
+  const auto spatialConfig =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
   for (const auto &dependency : systemRoot.directDependencies()) {
     auto module =
         take(loom::fabric::importEntireFabricRoot(dependency.root, store));
-    spatialMappings.push_back(
-        generateSpatialMapping(dataflow, module, resolved, store));
+    auto spatialReference =
+        generateSpatialMapping(dataflow, module, resolved, store);
+    spatialMappings.push_back(spatialReference);
+    auto spatial =
+        take(loom::mapping::importSpatialMapping(spatialReference, store));
+    loom::ArtifactRootReference techReference{
+        loom::mapping::mappingArtifactSchema.identity.str(),
+        loom::mapping::mappingArtifactSchema.version,
+        spatial.view().techMappingIdentity()};
+    auto tech = take(loom::mapping::importTechMapping(techReference, store));
+    auto spatialConstraints =
+        take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+            dataflow, tech.view(), module.view(), store));
+    flatProblems.push_back({std::move(techReference), spatialConfig,
+                            spatialConstraints.reference()});
   }
   std::vector<dataflow::RootThreadLaunchRef> roots;
   for (const dataflow::CanonicalRootThreadLaunchView &root :
@@ -550,12 +842,91 @@ int main() {
           dataflow, system, roots, store));
   auto partition = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
       dataflow, constraints.view().rootThreadLaunches()));
+  auto reversedProblems = flatProblems;
+  auto reversedSeeds = spatialMappings;
+  std::reverse(reversedProblems.begin(), reversedProblems.end());
+  std::reverse(reversedSeeds.begin(), reversedSeeds.end());
+  auto flatDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      dataflow, system, config, constraints, partition,
+      loom::pnr::SystemFlatGraphSearchInput{reversedProblems, reversedSeeds},
+      store));
+  auto canonicalFlatDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      dataflow, system, config, constraints, partition,
+      loom::pnr::SystemFlatGraphSearchInput{flatProblems, spatialMappings},
+      store));
+  require(flatDomain.canonicalViewBytes() ==
+              canonicalFlatDomain.canonicalViewBytes(),
+          "flat problem or seed authoring order changed canonical H");
+  auto adoptedFlat = take(loom::pnr::adoptSystemPnrSearchDomain(
+      loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
+      flatDomain.canonicalViewBytes(), flatDomain.digest(), store));
+  require(adoptedFlat.canonicalViewBytes() == flatDomain.canonicalViewBytes(),
+          "strict H adoption changed a valid flat graph domain");
+  for (const auto &binding : flatDomain.bindings()) {
+    if (!std::holds_alternative<dataflow::RootedGraphLaunchRef>(binding.key))
+      continue;
+    for (const auto &atom : binding.atoms) {
+      const auto *flat =
+          std::get_if<loom::pnr::SystemFlatGraphBindingDomain>(&atom.domain);
+      require(flat && flat->exactSpatialReopenProblems.size() == 2 &&
+                  flat->compatibleImmutableSeeds.size() == 2,
+              "flat graph atom lost its exact covered problems or seeds");
+    }
+  }
+  requireFailureContains(
+      loom::pnr::projectSystemPnrSearchDomain(
+          dataflow, system, config, constraints, partition,
+          loom::pnr::SystemFlatGraphSearchInput{}, store),
+      "flat graph search requires at least one reopen problem");
+  auto wrongConfigProblems = flatProblems;
+  wrongConfigProblems.front().spatialConfig = config;
+  requireFailureContains(
+      loom::pnr::projectSystemPnrSearchDomain(
+          dataflow, system, config, constraints, partition,
+          loom::pnr::SystemFlatGraphSearchInput{wrongConfigProblems, {}},
+          store),
+      "non-Spatial resolved config");
+  auto mismatchedConstraintProblems = flatProblems;
+  mismatchedConstraintProblems.front().spatialConstraintReference =
+      flatProblems.back().spatialConstraintReference;
+  requireFailureContains(loom::pnr::projectSystemPnrSearchDomain(
+                             dataflow, system, config, constraints, partition,
+                             loom::pnr::SystemFlatGraphSearchInput{
+                                 mismatchedConstraintProblems, {}},
+                             store),
+                         "Spatial MappingConstraintSet has foreign T/F owners");
+  requireFailureContains(
+      loom::pnr::projectSystemPnrSearchDomain(
+          dataflow, system, config, constraints, partition,
+          loom::pnr::SystemFlatGraphSearchInput{{flatProblems.front()},
+                                                {spatialMappings.back()}},
+          store),
+      "flat seed does not match a listed reopen problem");
+  auto singleFlatDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      dataflow, system, config, constraints, partition,
+      loom::pnr::SystemFlatGraphSearchInput{{flatProblems.front()},
+                                            {spatialMappings.front()}},
+      store));
+  auto mismatchedFlatBytes =
+      replaceEvery(singleFlatDomain.canonicalViewBytes(),
+                   loom::encodeArtifactRootReference(
+                       flatProblems.front().spatialConstraintReference),
+                   loom::encodeArtifactRootReference(
+                       flatProblems.back().spatialConstraintReference));
+  auto mismatchedFlatDigest =
+      take(loom::pnr::computeSystemPnrSearchDomainDigest(
+          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
+          mismatchedFlatBytes));
+  requireFailureContains(
+      loom::pnr::adoptSystemPnrSearchDomain(
+          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
+          mismatchedFlatBytes, mismatchedFlatDigest, store),
+      "Spatial MappingConstraintSet has foreign T/F owners");
   auto searchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
-      dataflow, system, constraints, partition, spatialMappings, store));
+      dataflow, system, config, constraints, partition,
+      loom::pnr::SystemHierarchicalGraphSearchInput{spatialMappings}, store));
   require(!searchDomain.serviceObligations().empty(),
           "System route fixture has no service obligation");
-  const auto config =
-      take(loom::pnr::projectResolvedSystemPnrConfigView(resolved));
   auto problem = take(loom::pnr::freezeSystemPnrProblem(
       dataflow, system, searchDomain, config, constraints, store));
 

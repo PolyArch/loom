@@ -1,6 +1,7 @@
 #include "SystemPnrSearchDomainInternal.h"
 
 #include "Common/ArtifactLocalReference.h"
+#include "Common/ComponentViewDigest.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
@@ -51,7 +52,7 @@ struct SystemPnrSearchDomainViewBuilder final {
 
 namespace {
 
-constexpr char kSchemaDescriptor[] = "loom.system_pnr_search_domain.2.0";
+constexpr char kSchemaDescriptor[] = "loom.system_pnr_search_domain.3.0";
 constexpr char kDigestDomain[] = "loom.system.pnr.search.domain.digest.v1\0";
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -255,35 +256,6 @@ void encodeRootDomain(WireWriter &writer,
     writer.rootReference(value);
 }
 
-llvm::Error encodeDomains(WireWriter &writer,
-                          const SystemSearchAtomDomains &domains) {
-  std::uint32_t presence = 0;
-  if (domains.compatibleAccCores)
-    presence |= 1u << 0;
-  if (domains.compatibleSpatialMappings)
-    presence |= 1u << 1;
-  if (domains.compatibleServiceRegions)
-    presence |= 1u << 2;
-  if (domains.compatibleTransportEndpoints)
-    presence |= 1u << 3;
-  writer.u32(presence);
-  if (domains.compatibleAccCores)
-    if (llvm::Error error = encodeFabricDomain(
-            writer, llvm::ArrayRef(*domains.compatibleAccCores)))
-      return error;
-  if (domains.compatibleSpatialMappings)
-    encodeRootDomain(writer, *domains.compatibleSpatialMappings);
-  if (domains.compatibleServiceRegions)
-    if (llvm::Error error = encodeFabricDomain(
-            writer, llvm::ArrayRef(*domains.compatibleServiceRegions)))
-      return error;
-  if (domains.compatibleTransportEndpoints)
-    if (llvm::Error error = encodeFabricDomain(
-            writer, llvm::ArrayRef(*domains.compatibleTransportEndpoints)))
-      return error;
-  return llvm::Error::success();
-}
-
 template <typename Ref>
 llvm::Expected<std::vector<Ref>>
 decodeFabricDomain(WireReader &reader,
@@ -335,45 +307,133 @@ decodeRootDomain(WireReader &reader) {
   return values;
 }
 
-llvm::Expected<SystemSearchAtomDomains>
-decodeDomains(WireReader &reader,
-              const ::loom::fabric::FabricArtifactView &fabric) {
-  auto presence = reader.u32();
-  if (!presence)
-    return presence.takeError();
-  if ((*presence & ~0xfu) != 0)
-    return invalid("target-domain presence mask has unknown fields");
-  SystemSearchAtomDomains domains;
-  if ((*presence & (1u << 0)) != 0) {
+llvm::Expected<std::vector<std::uint8_t>>
+encodeFlatProblem(const FlatSpatialReopenProblem &problem) {
+  WireWriter writer;
+  writer.rootReference(problem.techMappingReference);
+  writer.sizedBytes(problem.spatialConfig.schemaDescriptorBytes());
+  writer.sizedBytes(problem.spatialConfig.canonicalViewBytes());
+  writer.bytes(problem.spatialConfig.digest().bytes());
+  writer.rootReference(problem.spatialConstraintReference);
+  return writer.take();
+}
+
+llvm::Expected<FlatSpatialReopenProblem> decodeFlatProblem(WireReader &reader) {
+  auto tech = reader.rootReference();
+  if (!tech)
+    return tech.takeError();
+  auto descriptor = reader.sizedBytes();
+  if (!descriptor)
+    return descriptor.takeError();
+  auto canonical = reader.sizedBytes();
+  if (!canonical)
+    return canonical.takeError();
+  auto digestBytes = reader.take(ComponentViewDigest::byteSize);
+  if (!digestBytes)
+    return digestBytes.takeError();
+  auto digest = ComponentViewDigest::fromBytes(*digestBytes);
+  if (!digest)
+    return digest.takeError();
+  auto config =
+      adoptResolvedSpatialPnrConfigView(*descriptor, *canonical, *digest);
+  if (!config)
+    return config.takeError();
+  auto constraints = reader.rootReference();
+  if (!constraints)
+    return constraints.takeError();
+  return FlatSpatialReopenProblem{std::move(*tech), std::move(*config),
+                                  std::move(*constraints)};
+}
+
+llvm::Error encodeAtomDomain(WireWriter &writer,
+                             const SystemSearchAtomDomain &domain) {
+  WireWriter payload;
+  if (const auto *thread = std::get_if<SystemThreadBindingDomain>(&domain)) {
+    writer.u32(0);
+    if (llvm::Error error = encodeFabricDomain(
+            payload, llvm::ArrayRef(thread->compatibleAccCores)))
+      return error;
+  } else if (const auto *hierarchical =
+                 std::get_if<SystemHierarchicalGraphBindingDomain>(&domain)) {
+    writer.u32(1);
+    encodeRootDomain(payload, hierarchical->compatibleSpatialMappings);
+  } else if (const auto *flat =
+                 std::get_if<SystemFlatGraphBindingDomain>(&domain)) {
+    if (flat->exactSpatialReopenProblems.empty())
+      return invalid("flat graph domain has no reopen problem");
+    writer.u32(2);
+    payload.u64(flat->exactSpatialReopenProblems.size());
+    for (const FlatSpatialReopenProblem &problem :
+         flat->exactSpatialReopenProblems) {
+      auto bytes = encodeFlatProblem(problem);
+      if (!bytes)
+        return bytes.takeError();
+      payload.sizedBytes(*bytes);
+    }
+    encodeRootDomain(payload, flat->compatibleImmutableSeeds);
+  }
+  writer.sizedBytes(payload.take());
+  return llvm::Error::success();
+}
+
+llvm::Expected<SystemSearchAtomDomain>
+decodeAtomDomain(WireReader &reader,
+                 const ::loom::fabric::FabricArtifactView &fabric) {
+  auto kind = reader.u32();
+  if (!kind)
+    return kind.takeError();
+  auto payloadBytes = reader.sizedBytes();
+  if (!payloadBytes)
+    return payloadBytes.takeError();
+  WireReader payload(*payloadBytes);
+  SystemSearchAtomDomain result;
+  if (*kind == 0) {
     auto values = decodeFabricDomain<::loom::fabric::AccCoreOccurrenceRef>(
-        reader, fabric);
+        payload, fabric);
     if (!values)
       return values.takeError();
-    domains.compatibleAccCores = std::move(*values);
-  }
-  if ((*presence & (1u << 1)) != 0) {
-    auto values = decodeRootDomain(reader);
+    result = SystemThreadBindingDomain{std::move(*values)};
+  } else if (*kind == 1) {
+    auto values = decodeRootDomain(payload);
     if (!values)
       return values.takeError();
-    domains.compatibleSpatialMappings = std::move(*values);
+    result = SystemHierarchicalGraphBindingDomain{std::move(*values)};
+  } else if (*kind == 2) {
+    auto count = payload.count(/*minimumElementBytes=*/8, "flat problem");
+    if (!count)
+      return count.takeError();
+    if (*count == 0)
+      return invalid("flat graph domain has no reopen problem");
+    std::vector<FlatSpatialReopenProblem> problems;
+    problems.reserve(*count);
+    std::optional<FlatSpatialReopenProblem> previous;
+    for (std::size_t index = 0; index < *count; ++index) {
+      auto bytes = payload.sizedBytes();
+      if (!bytes)
+        return bytes.takeError();
+      WireReader problemReader(*bytes);
+      auto problem = decodeFlatProblem(problemReader);
+      if (!problem)
+        return problem.takeError();
+      if (!problemReader.empty())
+        return invalid("flat reopen problem has trailing bytes");
+      if (previous &&
+          !detail::flatSpatialReopenProblemLess(*previous, *problem))
+        return invalid("flat reopen problems are not strictly ordered");
+      previous = *problem;
+      problems.push_back(std::move(*problem));
+    }
+    auto seeds = decodeRootDomain(payload);
+    if (!seeds)
+      return seeds.takeError();
+    result =
+        SystemFlatGraphBindingDomain{std::move(problems), std::move(*seeds)};
+  } else {
+    return invalid("unknown System search-atom domain variant");
   }
-  if ((*presence & (1u << 2)) != 0) {
-    auto values =
-        decodeFabricDomain<::loom::fabric::FabricMemoryServiceRegionRef>(
-            reader, fabric);
-    if (!values)
-      return values.takeError();
-    domains.compatibleServiceRegions = std::move(*values);
-  }
-  if ((*presence & (1u << 3)) != 0) {
-    auto values =
-        decodeFabricDomain<::loom::fabric::FabricTransportEndpointRef>(reader,
-                                                                       fabric);
-    if (!values)
-      return values.takeError();
-    domains.compatibleTransportEndpoints = std::move(*values);
-  }
-  return domains;
+  if (!payload.empty())
+    return invalid("System search-atom domain has trailing bytes");
+  return result;
 }
 
 template <typename Ref>
@@ -470,6 +530,141 @@ decodeTerminalKey(WireReader &reader,
   return std::move(decoded->key);
 }
 
+template <typename Ref>
+llvm::Expected<Ref>
+decodeDataflowPayload(llvm::ArrayRef<std::uint8_t> bytes,
+                      const ArtifactIdentity &dataflowIdentity) {
+  auto decoded =
+      ::dataflow::decodeDataflowReference<Ref>(bytes, dataflowIdentity);
+  if (!decoded)
+    return decoded.takeError();
+  auto canonical =
+      ::dataflow::encodeDataflowReference(dataflowIdentity, *decoded);
+  if (!canonical)
+    return canonical.takeError();
+  if (llvm::ArrayRef(*canonical) != bytes)
+    return invalid("nested Dataflow reference is not canonical");
+  return std::move(*decoded);
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeTargetSubjectBytes(const SystemServiceTargetSubject &subject,
+                         const ArtifactIdentity &dataflowIdentity) {
+  WireWriter writer;
+  if (const auto *member =
+          std::get_if<SystemServiceMemberTargetSubject>(&subject)) {
+    writer.u32(0);
+    auto bytes =
+        ::dataflow::encodeDataflowReference(dataflowIdentity, member->member);
+    if (!bytes)
+      return bytes.takeError();
+    writer.sizedBytes(*bytes);
+  } else {
+    writer.u32(1);
+    auto bytes = ::dataflow::encodeDataflowReference(
+        dataflowIdentity,
+        std::get<SystemMemoryExposureTargetSubject>(subject).exposure);
+    if (!bytes)
+      return bytes.takeError();
+    writer.sizedBytes(*bytes);
+  }
+  return writer.take();
+}
+
+llvm::Expected<SystemServiceTargetSubject>
+decodeTargetSubject(WireReader &reader,
+                    const ArtifactIdentity &dataflowIdentity) {
+  auto kind = reader.u32();
+  if (!kind)
+    return kind.takeError();
+  auto payload = reader.sizedBytes();
+  if (!payload)
+    return payload.takeError();
+  if (*kind == 0) {
+    auto member = decodeDataflowPayload<::dataflow::ServiceMemberRef>(
+        *payload, dataflowIdentity);
+    if (!member)
+      return member.takeError();
+    if (std::holds_alternative<::dataflow::MessageTransferMemberRef>(*member))
+      return invalid("message member cannot be a service target subject");
+    return SystemServiceTargetSubject{
+        SystemServiceMemberTargetSubject{std::move(*member)}};
+  }
+  if (*kind == 1) {
+    auto exposure = decodeDataflowPayload<::dataflow::MemoryExposureRef>(
+        *payload, dataflowIdentity);
+    if (!exposure)
+      return exposure.takeError();
+    return SystemServiceTargetSubject{
+        SystemMemoryExposureTargetSubject{std::move(*exposure)}};
+  }
+  return invalid("unknown service-target subject variant");
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeBoundEndpointBytes(const SystemBoundTerminalEndpoint &endpoint) {
+  WireWriter writer;
+  if (const auto *message =
+          std::get_if<SystemMessageTerminalEndpoint>(&endpoint)) {
+    writer.u32(0);
+    writer.sizedBytes(::loom::fabric::canonicalFabricBytes(message->endpoint));
+  } else {
+    writer.u32(1);
+    writer.sizedBytes(::loom::fabric::canonicalFabricBytes(
+        std::get<SystemMemoryOrFenceTerminalEndpoint>(endpoint).endpoint));
+  }
+  return writer.take();
+}
+
+llvm::Expected<SystemBoundTerminalEndpoint>
+decodeBoundEndpoint(WireReader &reader,
+                    const ::loom::fabric::FabricArtifactView &fabric) {
+  auto kind = reader.u32();
+  if (!kind)
+    return kind.takeError();
+  auto payload = reader.sizedBytes();
+  if (!payload)
+    return payload.takeError();
+  if (*kind == 0) {
+    auto endpoint = ::loom::fabric::decodeFabricRef<
+        ::loom::fabric::FabricTransportEndpointRef>(*payload);
+    if (!endpoint)
+      return endpoint.takeError();
+    if (llvm::ArrayRef(::loom::fabric::canonicalFabricBytes(*endpoint)) !=
+        *payload)
+      return invalid("message terminal endpoint is not canonical");
+    if (llvm::Error error =
+            ::loom::fabric::validateFabricRef(fabric, *endpoint))
+      return std::move(error);
+    return SystemBoundTerminalEndpoint{
+        SystemMessageTerminalEndpoint{std::move(*endpoint)}};
+  }
+  if (*kind == 1) {
+    auto endpoint = ::loom::fabric::decodeFabricRef<
+        ::loom::fabric::FabricMemoryEndpointRef>(*payload);
+    if (!endpoint)
+      return endpoint.takeError();
+    if (llvm::ArrayRef(::loom::fabric::canonicalFabricBytes(*endpoint)) !=
+        *payload)
+      return invalid("memory terminal endpoint is not canonical");
+    if (llvm::Error error =
+            ::loom::fabric::validateFabricRef(fabric, *endpoint))
+      return std::move(error);
+    return SystemBoundTerminalEndpoint{
+        SystemMemoryOrFenceTerminalEndpoint{std::move(*endpoint)}};
+  }
+  return invalid("unknown bound-terminal endpoint variant");
+}
+
+const ::loom::mapping::CanonicalServiceLegKey &
+terminalLeg(const ::loom::mapping::SystemTransferTerminalKey &terminal) {
+  if (const auto *source =
+          std::get_if<::loom::mapping::SystemTransferSourceTerminalKey>(
+              &terminal))
+    return source->leg;
+  return std::get<::loom::mapping::SystemTransferSinkTerminalKey>(terminal).leg;
+}
+
 llvm::Error
 canonicalizeServiceDomains(std::vector<SystemSearchServiceDomain> &services,
                            const ArtifactIdentity &dataflowIdentity) {
@@ -477,59 +672,73 @@ canonicalizeServiceDomains(std::vector<SystemSearchServiceDomain> &services,
       ordered;
   ordered.reserve(services.size());
   for (SystemSearchServiceDomain &service : services) {
-    bool expectsRegions = false;
-    bool expectsConsistency = false;
-    if (const auto *operation =
-            std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
-                &service.key)) {
-      expectsRegions =
-          std::holds_alternative<::dataflow::LogicalMemoryRootOrViewRef>(
-              *operation);
-      expectsConsistency = !expectsRegions;
+    std::vector<std::uint8_t> previous;
+    std::vector<std::pair<std::vector<std::uint8_t>,
+                          SystemSearchServiceTargetCompatibility>>
+        targets;
+    targets.reserve(service.targetCompatibility.size());
+    for (SystemSearchServiceTargetCompatibility &target :
+         service.targetCompatibility) {
+      if (auto *regions = std::get_if<
+              std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(
+              &target.compatibleTargets))
+        canonicalizeFabricDomain(*regions);
+      else
+        canonicalizeFabricDomain(
+            std::get<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(
+                target.compatibleTargets));
+      auto subject = encodeTargetSubjectBytes(target.subject, dataflowIdentity);
+      if (!subject)
+        return subject.takeError();
+      WireWriter key;
+      key.bytes(*subject);
+      key.sizedBytes(
+          ::loom::fabric::canonicalFabricBytes(target.boundEndpoint));
+      targets.emplace_back(key.take(), std::move(target));
     }
-    if (expectsRegions != service.compatibleServiceRegions.has_value() ||
-        expectsConsistency != service.compatibleConsistencyDomains.has_value())
-      return invalid("service target domain has the wrong obligation kind");
-    if (service.transferTerminals.empty())
-      return invalid("service obligation has no transfer-terminal domains");
-    if (service.compatibleServiceRegions)
-      canonicalizeFabricDomain(*service.compatibleServiceRegions);
-    if (service.compatibleConsistencyDomains)
-      canonicalizeFabricDomain(*service.compatibleConsistencyDomains);
+    llvm::sort(targets, [](const auto &lhs, const auto &rhs) {
+      return lhs.first < rhs.first;
+    });
+    service.targetCompatibility.clear();
+    previous.clear();
+    for (auto &entry : targets) {
+      if (!previous.empty() && previous == entry.first)
+        return invalid("service target-compatibility row is duplicated");
+      previous = entry.first;
+      service.targetCompatibility.push_back(std::move(entry.second));
+    }
 
     std::vector<std::pair<std::vector<std::uint8_t>,
-                          SystemSearchTransferTerminalDomain>>
+                          SystemSearchTransferTerminalCompatibility>>
         terminals;
-    terminals.reserve(service.transferTerminals.size());
-    for (SystemSearchTransferTerminalDomain &terminal :
-         service.transferTerminals) {
+    terminals.reserve(service.transferTerminalCompatibility.size());
+    for (SystemSearchTransferTerminalCompatibility &terminal :
+         service.transferTerminalCompatibility) {
       canonicalizeFabricDomain(terminal.compatibleTransportEndpoints);
-      const auto &leg =
-          std::holds_alternative<
-              ::loom::mapping::SystemTransferSourceTerminalKey>(terminal.key)
-              ? std::get<::loom::mapping::SystemTransferSourceTerminalKey>(
-                    terminal.key)
-                    .leg
-              : std::get<::loom::mapping::SystemTransferSinkTerminalKey>(
-                    terminal.key)
-                    .leg;
-      if (leg.obligation != service.key)
+      if (terminalLeg(terminal.terminal).obligation != service.key)
         return invalid("transfer-terminal key belongs to another obligation");
-      auto bytes = terminalKeyBytes(terminal.key, dataflowIdentity);
-      if (!bytes)
-        return bytes.takeError();
-      terminals.emplace_back(std::move(*bytes), std::move(terminal));
+      auto terminalBytes =
+          terminalKeyBytes(terminal.terminal, dataflowIdentity);
+      if (!terminalBytes)
+        return terminalBytes.takeError();
+      auto endpointBytes = encodeBoundEndpointBytes(terminal.boundEndpoint);
+      if (!endpointBytes)
+        return endpointBytes.takeError();
+      WireWriter key;
+      key.bytes(*terminalBytes);
+      key.bytes(*endpointBytes);
+      terminals.emplace_back(key.take(), std::move(terminal));
     }
     llvm::sort(terminals, [](const auto &left, const auto &right) {
       return left.first < right.first;
     });
-    service.transferTerminals.clear();
-    std::vector<std::uint8_t> previousTerminal;
+    service.transferTerminalCompatibility.clear();
+    previous.clear();
     for (auto &entry : terminals) {
-      if (!previousTerminal.empty() && previousTerminal == entry.first)
-        return invalid("transfer-terminal key is duplicated");
-      previousTerminal = entry.first;
-      service.transferTerminals.push_back(std::move(entry.second));
+      if (!previous.empty() && previous == entry.first)
+        return invalid("transfer-terminal compatibility row is duplicated");
+      previous = entry.first;
+      service.transferTerminalCompatibility.push_back(std::move(entry.second));
     }
 
     auto bytes = ::loom::mapping::encodeSystemServiceObligationKey(
@@ -579,7 +788,7 @@ encodeView(const ArtifactRootReference &dataflowReference,
     writer.u64(binding.atoms.size());
     for (const SystemSearchAtom &atom : binding.atoms) {
       encodeCell(writer, atom.cell);
-      if (llvm::Error error = encodeDomains(writer, atom.domains))
+      if (llvm::Error error = encodeAtomDomain(writer, atom.domain))
         return std::move(error);
     }
   }
@@ -590,24 +799,45 @@ encodeView(const ArtifactRootReference &dataflowReference,
     if (!keyBytes)
       return keyBytes.takeError();
     writer.sizedBytes(*keyBytes);
-    const std::uint32_t targetKind = service.compatibleServiceRegions       ? 1
-                                     : service.compatibleConsistencyDomains ? 2
-                                                                            : 0;
-    writer.u32(targetKind);
-    if (service.compatibleServiceRegions)
-      if (llvm::Error error = encodeFabricDomain(
-              writer, llvm::ArrayRef(*service.compatibleServiceRegions)))
-        return std::move(error);
-    if (service.compatibleConsistencyDomains)
-      if (llvm::Error error = encodeFabricDomain(
-              writer, llvm::ArrayRef(*service.compatibleConsistencyDomains)))
-        return std::move(error);
-    writer.u64(service.transferTerminals.size());
-    for (const SystemSearchTransferTerminalDomain &terminal :
-         service.transferTerminals) {
-      if (llvm::Error error = encodeTerminalKey(writer, terminal.key,
+    writer.u64(service.targetCompatibility.size());
+    for (const SystemSearchServiceTargetCompatibility &target :
+         service.targetCompatibility) {
+      auto subject =
+          encodeTargetSubjectBytes(target.subject, dataflowReference.artifact);
+      if (!subject)
+        return subject.takeError();
+      writer.sizedBytes(*subject);
+      writer.sizedBytes(
+          ::loom::fabric::canonicalFabricBytes(target.boundEndpoint));
+      WireWriter payload;
+      if (const auto *regions = std::get_if<
+              std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(
+              &target.compatibleTargets)) {
+        writer.u32(0);
+        if (llvm::Error error =
+                encodeFabricDomain(payload, llvm::ArrayRef(*regions)))
+          return std::move(error);
+      } else {
+        writer.u32(1);
+        if (llvm::Error error = encodeFabricDomain(
+                payload,
+                llvm::ArrayRef(std::get<std::vector<
+                                   ::loom::fabric::MemoryConsistencyDomainRef>>(
+                    target.compatibleTargets))))
+          return std::move(error);
+      }
+      writer.sizedBytes(payload.take());
+    }
+    writer.u64(service.transferTerminalCompatibility.size());
+    for (const SystemSearchTransferTerminalCompatibility &terminal :
+         service.transferTerminalCompatibility) {
+      if (llvm::Error error = encodeTerminalKey(writer, terminal.terminal,
                                                 dataflowReference.artifact))
         return std::move(error);
+      auto endpoint = encodeBoundEndpointBytes(terminal.boundEndpoint);
+      if (!endpoint)
+        return endpoint.takeError();
+      writer.bytes(*endpoint);
       if (llvm::Error error = encodeFabricDomain(
               writer, llvm::ArrayRef(terminal.compatibleTransportEndpoints)))
         return std::move(error);
@@ -670,10 +900,10 @@ decodeView(llvm::ArrayRef<std::uint8_t> bytes,
       auto cell = decodeCell(reader);
       if (!cell)
         return cell.takeError();
-      auto domains = decodeDomains(reader, fabric);
-      if (!domains)
-        return domains.takeError();
-      binding.atoms.push_back({std::move(*cell), std::move(*domains)});
+      auto domain = decodeAtomDomain(reader, fabric);
+      if (!domain)
+        return domain.takeError();
+      binding.atoms.push_back({std::move(*cell), std::move(*domain)});
     }
     bindings.push_back(std::move(binding));
   }
@@ -698,85 +928,118 @@ decodeView(llvm::ArrayRef<std::uint8_t> bytes,
       return invalid("service-obligation domains are not strictly ordered");
     previousService = keyStorage;
 
-    auto targetKind = reader.u32();
-    if (!targetKind)
-      return targetKind.takeError();
-    if (*targetKind > 2)
-      return invalid("service target-domain kind is not canonical");
-    std::optional<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>
-        regions;
-    std::optional<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>
-        consistencyDomains;
-    if (*targetKind == 1) {
-      auto decoded =
-          decodeFabricDomain<::loom::fabric::FabricMemoryServiceRegionRef>(
-              reader, fabric);
-      if (!decoded)
-        return decoded.takeError();
-      regions = std::move(*decoded);
-    } else if (*targetKind == 2) {
-      auto decoded =
-          decodeFabricDomain<::loom::fabric::MemoryConsistencyDomainRef>(
-              reader, fabric);
-      if (!decoded)
-        return decoded.takeError();
-      consistencyDomains = std::move(*decoded);
-    }
-    bool expectsRegions = false;
-    bool expectsConsistency = false;
-    if (const auto *operation =
-            std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
-                &*key)) {
-      expectsRegions =
-          std::holds_alternative<::dataflow::LogicalMemoryRootOrViewRef>(
-              *operation);
-      expectsConsistency = !expectsRegions;
-    }
-    if (expectsRegions != regions.has_value() ||
-        expectsConsistency != consistencyDomains.has_value())
-      return invalid("service target domain has the wrong obligation kind");
+    SystemSearchServiceDomain service{std::move(*key), {}, {}};
 
-    auto terminalCount =
-        reader.count(/*minimumElementBytes=*/20, "transfer terminal");
+    auto targetCount =
+        reader.count(/*minimumElementBytes=*/28, "target compatibility");
+    if (!targetCount)
+      return targetCount.takeError();
+    std::vector<std::uint8_t> previousTarget;
+    service.targetCompatibility.reserve(*targetCount);
+    for (std::size_t targetIndex = 0; targetIndex < *targetCount;
+         ++targetIndex) {
+      auto subjectBytes = reader.sizedBytes();
+      if (!subjectBytes)
+        return subjectBytes.takeError();
+      WireReader subjectReader(*subjectBytes);
+      auto subject =
+          decodeTargetSubject(subjectReader, dataflowReference->artifact);
+      if (!subject)
+        return subject.takeError();
+      if (!subjectReader.empty())
+        return invalid("target-compatibility subject has trailing bytes");
+      auto endpointBytes = reader.sizedBytes();
+      if (!endpointBytes)
+        return endpointBytes.takeError();
+      auto endpoint = ::loom::fabric::decodeFabricRef<
+          ::loom::fabric::SystemServiceEndpointRef>(*endpointBytes);
+      if (!endpoint)
+        return endpoint.takeError();
+      if (llvm::ArrayRef(::loom::fabric::canonicalFabricBytes(*endpoint)) !=
+          *endpointBytes)
+        return invalid("bound System service endpoint is not canonical");
+      if (llvm::Error error =
+              ::loom::fabric::validateFabricRef(fabric, *endpoint))
+        return std::move(error);
+      WireWriter targetKey;
+      targetKey.bytes(*subjectBytes);
+      targetKey.sizedBytes(*endpointBytes);
+      std::vector<std::uint8_t> rowKey = targetKey.take();
+      if (!previousTarget.empty() && !(previousTarget < rowKey))
+        return invalid("target-compatibility rows are not strictly ordered");
+      previousTarget = std::move(rowKey);
+      auto targetKind = reader.u32();
+      if (!targetKind)
+        return targetKind.takeError();
+      auto domainBytes = reader.sizedBytes();
+      if (!domainBytes)
+        return domainBytes.takeError();
+      WireReader domainReader(*domainBytes);
+      SystemServiceTargetCompatibilityDomain compatible;
+      if (*targetKind == 0) {
+        auto values =
+            decodeFabricDomain<::loom::fabric::FabricMemoryServiceRegionRef>(
+                domainReader, fabric);
+        if (!values)
+          return values.takeError();
+        compatible = std::move(*values);
+      } else if (*targetKind == 1) {
+        auto values =
+            decodeFabricDomain<::loom::fabric::MemoryConsistencyDomainRef>(
+                domainReader, fabric);
+        if (!values)
+          return values.takeError();
+        compatible = std::move(*values);
+      } else {
+        return invalid("unknown target-compatibility domain variant");
+      }
+      if (!domainReader.empty())
+        return invalid("target-compatibility domain has trailing bytes");
+      service.targetCompatibility.push_back(
+          {std::move(*subject), std::move(*endpoint), std::move(compatible)});
+    }
+
+    auto terminalCount = reader.count(/*minimumElementBytes=*/32,
+                                      "transfer terminal compatibility");
     if (!terminalCount)
       return terminalCount.takeError();
-    if (*terminalCount == 0)
-      return invalid("service obligation has no transfer-terminal domains");
-    std::vector<SystemSearchTransferTerminalDomain> terminals;
-    terminals.reserve(*terminalCount);
     std::vector<std::uint8_t> previousTerminal;
+    service.transferTerminalCompatibility.reserve(*terminalCount);
     for (std::size_t terminalIndex = 0; terminalIndex < *terminalCount;
          ++terminalIndex) {
       auto terminalKey = decodeTerminalKey(reader, dataflowReference->artifact);
       if (!terminalKey)
         return terminalKey.takeError();
-      const auto &leg =
-          std::holds_alternative<
-              ::loom::mapping::SystemTransferSourceTerminalKey>(*terminalKey)
-              ? std::get<::loom::mapping::SystemTransferSourceTerminalKey>(
-                    *terminalKey)
-                    .leg
-              : std::get<::loom::mapping::SystemTransferSinkTerminalKey>(
-                    *terminalKey)
-                    .leg;
-      if (leg.obligation != *key)
+      if (terminalLeg(*terminalKey).obligation != service.key)
         return invalid("transfer-terminal key belongs to another obligation");
       auto terminalBytes =
           terminalKeyBytes(*terminalKey, dataflowReference->artifact);
       if (!terminalBytes)
         return terminalBytes.takeError();
-      if (!previousTerminal.empty() && !(previousTerminal < *terminalBytes))
-        return invalid("transfer-terminal domains are not strictly ordered");
-      previousTerminal = *terminalBytes;
+      auto boundEndpoint = decodeBoundEndpoint(reader, fabric);
+      if (!boundEndpoint)
+        return boundEndpoint.takeError();
+      auto boundBytes = encodeBoundEndpointBytes(*boundEndpoint);
+      if (!boundBytes)
+        return boundBytes.takeError();
+      WireWriter rowKeyWriter;
+      rowKeyWriter.bytes(*terminalBytes);
+      rowKeyWriter.bytes(*boundBytes);
+      std::vector<std::uint8_t> rowKey = rowKeyWriter.take();
+      if (!previousTerminal.empty() && !(previousTerminal < rowKey))
+        return invalid(
+            "transfer-terminal compatibility rows are not strictly ordered");
+      previousTerminal = std::move(rowKey);
       auto endpoints =
           decodeFabricDomain<::loom::fabric::FabricTransportEndpointRef>(
               reader, fabric);
       if (!endpoints)
         return endpoints.takeError();
-      terminals.push_back({std::move(*terminalKey), std::move(*endpoints)});
+      service.transferTerminalCompatibility.push_back(
+          {std::move(*terminalKey), std::move(*boundEndpoint),
+           std::move(*endpoints)});
     }
-    services.push_back({std::move(*key), std::move(regions),
-                        std::move(consistencyDomains), std::move(terminals)});
+    services.push_back(std::move(service));
   }
   if (!reader.empty())
     return invalid("trailing canonical view bytes");
@@ -786,80 +1049,6 @@ decodeView(llvm::ArrayRef<std::uint8_t> bytes,
                      std::move(roots),
                      std::move(bindings),
                      std::move(services)};
-}
-
-struct SpatialCatalogEntry final {
-  ArtifactRootReference reference;
-  ArtifactIdentity fabricIdentity;
-  std::vector<::dataflow::GraphRef> covers;
-};
-
-llvm::Expected<std::vector<SpatialCatalogEntry>>
-importSpatialCatalog(llvm::ArrayRef<ArtifactRootReference> references,
-                     const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                     const ::loom::fabric::FabricSystemRootView &system,
-                     const ArtifactStore &store) {
-  std::vector<ArtifactRootReference> canonical(references.begin(),
-                                               references.end());
-  llvm::sort(canonical, artifactRootReferenceLess);
-  canonical.erase(std::unique(canonical.begin(), canonical.end()),
-                  canonical.end());
-
-  std::vector<ArtifactIdentity> attachedModules;
-  for (::loom::fabric::AccCoreOccurrenceRef core :
-       system.artifact().accCoreOccurrences()) {
-    std::optional<::loom::fabric::FabricImportedModuleTargetRef> target =
-        system.spatialCoreTarget(core);
-    if (!target ||
-        target->dependencyOrdinal >= system.artifact().importedModules().size())
-      return invalid("AccCore SpatialCore target does not resolve");
-    attachedModules.push_back(system.artifact()
-                                  .importedModules()[target->dependencyOrdinal]
-                                  .identity());
-  }
-
-  std::vector<SpatialCatalogEntry> result;
-  result.reserve(canonical.size());
-  for (const ArtifactRootReference &reference : canonical) {
-    auto spatial = ::loom::mapping::importSpatialMapping(reference, store);
-    if (!spatial)
-      return spatial.takeError();
-    if (spatial->view().dataflowIdentity() != dataflow.identity())
-      return invalid(
-          "SpatialMapping catalog contains a foreign Dataflow owner");
-    if (!llvm::is_contained(attachedModules, spatial->view().fabricIdentity()))
-      return invalid(
-          "SpatialMapping Fabric is not attached to a System AccCore");
-
-    ArtifactRootReference techReference{
-        ::loom::mapping::mappingArtifactSchema.identity.str(),
-        ::loom::mapping::mappingArtifactSchema.version,
-        spatial->view().techMappingIdentity()};
-    auto tech = ::loom::mapping::importTechMapping(techReference, store);
-    if (!tech)
-      return tech.takeError();
-    if (tech->view().dataflowIdentity() != dataflow.identity() ||
-        tech->view().fabricIdentity() != spatial->view().fabricIdentity())
-      return invalid(
-          "SpatialMapping catalog has inconsistent TechMapping lineage");
-    result.push_back(
-        {reference, spatial->view().fabricIdentity(),
-         std::vector<::dataflow::GraphRef>(tech->view().covers().begin(),
-                                           tech->view().covers().end())});
-  }
-  return result;
-}
-
-std::vector<::loom::fabric::AccCoreOccurrenceRef>
-canonicalAccCores(const ::loom::fabric::FabricSystemRootView &system) {
-  std::vector<::loom::fabric::AccCoreOccurrenceRef> cores(
-      system.artifact().accCoreOccurrences().begin(),
-      system.artifact().accCoreOccurrences().end());
-  llvm::sort(cores, [](auto lhs, auto rhs) {
-    return ::loom::fabric::canonicalFabricBytes(lhs) <
-           ::loom::fabric::canonicalFabricBytes(rhs);
-  });
-  return cores;
 }
 
 llvm::Error validateConstraintInputs(
@@ -888,14 +1077,28 @@ llvm::Error validateConstraintInputs(
 llvm::Expected<SystemPnrSearchDomainView> buildView(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
+    const ResolvedPnrConfigView &config,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
     const SystemBindingPartitionPlan &partitionPlan,
-    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
-    const ArtifactStore &store) {
+    const SystemGraphSearchInput &graphSearch, const ArtifactStore &store) {
+  if (config.domain() != PnrConfigDomain::System)
+    return invalid("System search-domain projection received a non-System "
+                   "resolved config view");
+  if (llvm::Error error = validateComponentViewDigest(
+          config.schemaDescriptorBytes(), config.canonicalViewBytes(),
+          config.digest()))
+    return llvm::joinErrors(invalid("System resolved config digest is invalid"),
+                            std::move(error));
   auto roots = detail::canonicalRootThreadLaunchSet(
       dataflow, constraints.view().rootThreadLaunches());
   if (!roots)
     return roots.takeError();
+  const auto *hierarchical =
+      std::get_if<SystemHierarchicalGraphSearchInput>(&graphSearch);
+  const llvm::ArrayRef<ArtifactRootReference> spatialMappings =
+      hierarchical
+          ? llvm::ArrayRef<ArtifactRootReference>(hierarchical->spatialMappings)
+          : llvm::ArrayRef<ArtifactRootReference>();
   if (llvm::Error error = validateConstraintInputs(
           dataflow, fabric, constraints, *roots, spatialMappings))
     return std::move(error);
@@ -903,41 +1106,71 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
       dataflow, *roots, partitionPlan);
   if (!partitions)
     return partitions.takeError();
-  auto catalog = importSpatialCatalog(spatialMappings, dataflow, fabric, store);
+  auto catalog =
+      detail::importSpatialCatalog(spatialMappings, dataflow, fabric, store);
   if (!catalog)
     return catalog.takeError();
-  std::vector<::loom::fabric::AccCoreOccurrenceRef> cores =
-      canonicalAccCores(fabric);
-  auto services = detail::projectSystemServiceDomains(dataflow, fabric, *roots);
+  std::vector<::dataflow::GraphRef> requiredGraphs;
+  for (const detail::CanonicalSystemPartitionBinding &partition : *partitions) {
+    const auto *launch =
+        std::get_if<::dataflow::RootedGraphLaunchRef>(&partition.key);
+    if (!launch)
+      continue;
+    auto graph = dataflow.resolve(*launch);
+    if (!graph)
+      return graph.takeError();
+    if (!llvm::is_contained(requiredGraphs, *graph))
+      requiredGraphs.push_back(*graph);
+  }
+  std::optional<detail::CanonicalFlatGraphCatalog> flatCatalog;
+  if (!hierarchical) {
+    auto canonical = detail::canonicalizeAndValidateFlatGraphCatalog(
+        dataflow, fabric, requiredGraphs,
+        std::get<SystemFlatGraphSearchInput>(graphSearch), store);
+    if (!canonical)
+      return canonical.takeError();
+    flatCatalog.emplace(std::move(*canonical));
+  }
+  auto services = detail::projectSystemServiceDomains(
+      dataflow, fabric, *roots, *catalog, hierarchical == nullptr);
   if (!services)
     return services.takeError();
   if (llvm::Error error =
           canonicalizeServiceDomains(*services, dataflow.identity()))
     return std::move(error);
+  std::vector<::loom::fabric::AccCoreOccurrenceRef> cores =
+      detail::canonicalSystemAccCores(fabric);
 
   std::vector<SystemSearchBindingDomain> bindings;
   bindings.reserve(partitions->size());
   for (detail::CanonicalSystemPartitionBinding &partition : *partitions) {
-    SystemSearchAtomDomains domains;
+    SystemSearchAtomDomain domain;
     if (std::holds_alternative<::dataflow::RootThreadLaunchRef>(
             partition.key)) {
-      domains.compatibleAccCores = cores;
+      domain = SystemThreadBindingDomain{cores};
     } else {
       const auto graphLaunch =
           std::get<::dataflow::RootedGraphLaunchRef>(partition.key);
       auto graph = dataflow.resolve(graphLaunch);
       if (!graph)
         return graph.takeError();
-      std::vector<ArtifactRootReference> compatible;
-      for (const SpatialCatalogEntry &entry : *catalog)
-        if (llvm::is_contained(entry.covers, *graph))
-          compatible.push_back(entry.reference);
-      domains.compatibleSpatialMappings = std::move(compatible);
+      if (hierarchical) {
+        std::vector<ArtifactRootReference> compatible;
+        for (const detail::SpatialCatalogEntry &entry : *catalog)
+          if (llvm::is_contained(entry.covers, *graph))
+            compatible.push_back(entry.reference);
+        domain = SystemHierarchicalGraphBindingDomain{std::move(compatible)};
+      } else {
+        auto flat = detail::projectFlatGraphBindingDomain(*flatCatalog, *graph);
+        if (!flat)
+          return flat.takeError();
+        domain = std::move(*flat);
+      }
     }
     SystemSearchBindingDomain binding{std::move(partition.key), {}};
     binding.atoms.reserve(partition.cells.size());
     for (SystemPresburgerCell &cell : partition.cells)
-      binding.atoms.push_back({std::move(cell), domains});
+      binding.atoms.push_back({std::move(cell), domain});
     bindings.push_back(std::move(binding));
   }
 
@@ -1017,12 +1250,12 @@ llvm::Error validateSystemPnrSearchDomainDigest(
 llvm::Expected<SystemPnrSearchDomainView> projectSystemPnrSearchDomain(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
+    const ResolvedPnrConfigView &config,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
     const SystemBindingPartitionPlan &partitionPlan,
-    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
-    const ArtifactStore &store) {
-  return buildView(dataflow, fabric, constraints, partitionPlan,
-                   spatialMappings, store);
+    const SystemGraphSearchInput &graphSearch, const ArtifactStore &store) {
+  return buildView(dataflow, fabric, config, constraints, partitionPlan,
+                   graphSearch, store);
 }
 
 llvm::Expected<SystemPnrSearchDomainView>
@@ -1031,7 +1264,7 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
                            const SystemPnrSearchDomainDigest &digest,
                            const ArtifactStore &store) {
   if (schemaDescriptorBytes != systemPnrSearchDomainSchemaDescriptorBytes())
-    return invalid("schema descriptor is not exact version 2.0");
+    return invalid("schema descriptor is not exact version 3.0");
   if (llvm::Error error = validateSystemPnrSearchDomainDigest(
           schemaDescriptorBytes, canonicalViewBytes, digest))
     return std::move(error);
@@ -1068,34 +1301,71 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
       decoded->constraintReference, store);
   if (!constraints)
     return constraints.takeError();
+  if (constraints->view().dataflowIdentity() != dataflow->identity() ||
+      constraints->view().fabricIdentity() != system->artifact().identity())
+    return invalid("adopted search domain has foreign K owners");
+  auto roots = detail::canonicalRootThreadLaunchSet(
+      *dataflow, constraints->view().rootThreadLaunches());
+  if (!roots)
+    return roots.takeError();
+  if (llvm::ArrayRef(*roots) !=
+      llvm::ArrayRef<::dataflow::RootThreadLaunchRef>(decoded->roots))
+    return invalid("adopted search domain root closure differs from K");
 
   SystemBindingPartitionPlan plan;
-  std::vector<ArtifactRootReference> spatialMappings;
+  plan.bindings.reserve(decoded->bindings.size());
   for (const SystemSearchBindingDomain &binding : decoded->bindings) {
     SystemPresburgerBindingPartition partition{binding.key, {}};
-    for (const SystemSearchAtom &atom : binding.atoms) {
+    partition.cells.reserve(binding.atoms.size());
+    for (const SystemSearchAtom &atom : binding.atoms)
       partition.cells.push_back(atom.cell);
-      if (atom.domains.compatibleSpatialMappings)
-        spatialMappings.insert(spatialMappings.end(),
-                               atom.domains.compatibleSpatialMappings->begin(),
-                               atom.domains.compatibleSpatialMappings->end());
-    }
     plan.bindings.push_back(std::move(partition));
   }
-  llvm::sort(spatialMappings, artifactRootReferenceLess);
-  spatialMappings.erase(
-      std::unique(spatialMappings.begin(), spatialMappings.end()),
-      spatialMappings.end());
-  auto projected =
-      buildView(*dataflow, *system, *constraints, plan, spatialMappings, store);
-  if (!projected)
-    return projected.takeError();
-  if (projected->rootThreadLaunches() !=
-          llvm::ArrayRef<::dataflow::RootThreadLaunchRef>(decoded->roots) ||
-      projected->canonicalViewBytes() != canonicalViewBytes ||
-      projected->digest() != digest)
+  auto canonicalPartitions = detail::canonicalizeAndValidateSystemPartition(
+      *dataflow, decoded->roots, plan);
+  if (!canonicalPartitions)
+    return canonicalPartitions.takeError();
+  if (canonicalPartitions->size() != decoded->bindings.size())
+    return invalid("adopted binding partition is not canonical");
+  for (auto &&[canonical, decodedBinding] :
+       llvm::zip_equal(*canonicalPartitions, decoded->bindings)) {
+    auto canonicalKey =
+        detail::canonicalBindingKeyBytes(canonical.key, dataflow->identity());
+    if (!canonicalKey)
+      return canonicalKey.takeError();
+    auto decodedKey = detail::canonicalBindingKeyBytes(decodedBinding.key,
+                                                       dataflow->identity());
+    if (!decodedKey)
+      return decodedKey.takeError();
+    if (*canonicalKey != *decodedKey ||
+        canonical.cells.size() != decodedBinding.atoms.size())
+      return invalid("adopted binding partition is not canonical");
+    for (auto &&[cell, atom] :
+         llvm::zip_equal(canonical.cells, decodedBinding.atoms))
+      if (cell != atom.cell)
+        return invalid("adopted Presburger cell is not canonical");
+  }
+  if (llvm::Error error = detail::validateSystemBindingDomains(
+          *dataflow, *system, decoded->bindings, store))
+    return std::move(error);
+  if (llvm::Error error = detail::validateSystemServiceDomains(
+          *dataflow, *system, decoded->roots, decoded->bindings,
+          decoded->services, store))
+    return std::move(error);
+  auto encoded =
+      encodeView(decoded->dataflowReference, decoded->fabricReference,
+                 decoded->constraintReference, decoded->roots,
+                 decoded->bindings, decoded->services);
+  if (!encoded)
+    return encoded.takeError();
+  if (llvm::ArrayRef(*encoded) != canonicalViewBytes)
     return invalid("adopted view does not re-encode byte-exactly");
-  return projected;
+  return detail::SystemPnrSearchDomainViewBuilder::create(
+      std::move(decoded->dataflowReference),
+      std::move(decoded->fabricReference),
+      std::move(decoded->constraintReference), std::move(decoded->roots),
+      std::move(decoded->bindings), std::move(decoded->services),
+      std::move(*encoded), digest);
 }
 
 } // namespace loom::pnr

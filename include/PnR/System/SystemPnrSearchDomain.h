@@ -8,6 +8,7 @@
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Mapping/Artifact/SystemPresburger.h"
+#include "PnR/PnrConfig.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -81,19 +82,33 @@ struct SystemBindingPartitionPlan final {
   std::vector<SystemPresburgerBindingPartition> bindings;
 };
 
-struct SystemSearchAtomDomains final {
-  std::optional<std::vector<::loom::fabric::AccCoreOccurrenceRef>>
-      compatibleAccCores;
-  std::optional<std::vector<ArtifactRootReference>> compatibleSpatialMappings;
-  std::optional<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>
-      compatibleServiceRegions;
-  std::optional<std::vector<::loom::fabric::FabricTransportEndpointRef>>
-      compatibleTransportEndpoints;
+struct SystemThreadBindingDomain final {
+  std::vector<::loom::fabric::AccCoreOccurrenceRef> compatibleAccCores;
 };
+
+struct SystemHierarchicalGraphBindingDomain final {
+  std::vector<ArtifactRootReference> compatibleSpatialMappings;
+};
+
+struct FlatSpatialReopenProblem final {
+  ArtifactRootReference techMappingReference;
+  ResolvedPnrConfigView spatialConfig;
+  ArtifactRootReference spatialConstraintReference;
+};
+
+struct SystemFlatGraphBindingDomain final {
+  std::vector<FlatSpatialReopenProblem> exactSpatialReopenProblems;
+  std::vector<ArtifactRootReference> compatibleImmutableSeeds;
+};
+
+using SystemSearchAtomDomain =
+    std::variant<SystemThreadBindingDomain,
+                 SystemHierarchicalGraphBindingDomain,
+                 SystemFlatGraphBindingDomain>;
 
 struct SystemSearchAtom final {
   ::loom::mapping::SystemPresburgerCell cell;
-  SystemSearchAtomDomains domains;
+  SystemSearchAtomDomain domain;
 };
 
 struct SystemSearchBindingDomain final {
@@ -101,25 +116,71 @@ struct SystemSearchBindingDomain final {
   std::vector<SystemSearchAtom> atoms;
 };
 
-struct SystemSearchTransferTerminalDomain final {
-  ::loom::mapping::SystemTransferTerminalKey key;
+struct SystemHierarchicalGraphSearchInput final {
+  std::vector<ArtifactRootReference> spatialMappings;
+};
+
+struct SystemFlatGraphSearchInput final {
+  std::vector<FlatSpatialReopenProblem> reopenProblems;
+  std::vector<ArtifactRootReference> verifiedSeeds;
+};
+
+using SystemGraphSearchInput = std::variant<SystemHierarchicalGraphSearchInput,
+                                            SystemFlatGraphSearchInput>;
+
+struct SystemServiceMemberTargetSubject final {
+  ::dataflow::ServiceMemberRef member;
+};
+
+struct SystemMemoryExposureTargetSubject final {
+  ::dataflow::MemoryExposureRef exposure;
+};
+
+using SystemServiceTargetSubject =
+    std::variant<SystemServiceMemberTargetSubject,
+                 SystemMemoryExposureTargetSubject>;
+
+using SystemServiceTargetCompatibilityDomain =
+    std::variant<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>,
+                 std::vector<::loom::fabric::MemoryConsistencyDomainRef>>;
+
+struct SystemSearchServiceTargetCompatibility final {
+  SystemServiceTargetSubject subject;
+  ::loom::fabric::SystemServiceEndpointRef boundEndpoint;
+  SystemServiceTargetCompatibilityDomain compatibleTargets;
+};
+
+struct SystemMessageTerminalEndpoint final {
+  ::loom::fabric::FabricTransportEndpointRef endpoint;
+};
+
+struct SystemMemoryOrFenceTerminalEndpoint final {
+  ::loom::fabric::FabricMemoryEndpointRef endpoint;
+};
+
+using SystemBoundTerminalEndpoint =
+    std::variant<SystemMessageTerminalEndpoint,
+                 SystemMemoryOrFenceTerminalEndpoint>;
+
+struct SystemSearchTransferTerminalCompatibility final {
+  ::loom::mapping::SystemTransferTerminalKey terminal;
+  SystemBoundTerminalEndpoint boundEndpoint;
   std::vector<::loom::fabric::FabricTransportEndpointRef>
       compatibleTransportEndpoints;
 };
 
 struct SystemSearchServiceDomain final {
   ::loom::mapping::SystemServiceObligationKey key;
-  std::optional<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>
-      compatibleServiceRegions;
-  std::optional<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>
-      compatibleConsistencyDomains;
-  std::vector<SystemSearchTransferTerminalDomain> transferTerminals;
+  std::vector<SystemSearchServiceTargetCompatibility> targetCompatibility;
+  std::vector<SystemSearchTransferTerminalCompatibility>
+      transferTerminalCompatibility;
 };
 
 enum class UnsupportedSystemPnrSearchDomainReason : std::uint32_t {
   DynamicWorkStableKeyProjectionUnavailable = 0,
   RootedGraphMayDomainProjectionUnavailable = 1,
   ServiceTransformProjectionUnavailable = 2,
+  FlatOperationServiceDomainProjectionUnavailable = 3,
 };
 
 class UnsupportedSystemPnrSearchDomain final
@@ -196,8 +257,9 @@ private:
   friend llvm::Expected<SystemPnrSearchDomainView> projectSystemPnrSearchDomain(
       const ::dataflow::CanonicalDataflowProgramView &,
       const ::loom::fabric::FabricSystemRootView &,
+      const ResolvedPnrConfigView &,
       const ::loom::mapping::FinalizedSystemMappingConstraintSet &,
-      const SystemBindingPartitionPlan &, llvm::ArrayRef<ArtifactRootReference>,
+      const SystemBindingPartitionPlan &, const SystemGraphSearchInput &,
       const ArtifactStore &);
   friend llvm::Expected<SystemPnrSearchDomainView> adoptSystemPnrSearchDomain(
       llvm::ArrayRef<std::uint8_t>, llvm::ArrayRef<std::uint8_t>,
@@ -213,10 +275,10 @@ projectWholeDomainPresburgerPartitionPlan(
 llvm::Expected<SystemPnrSearchDomainView> projectSystemPnrSearchDomain(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
+    const ResolvedPnrConfigView &config,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
     const SystemBindingPartitionPlan &partitionPlan,
-    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
-    const ArtifactStore &store);
+    const SystemGraphSearchInput &graphSearch, const ArtifactStore &store);
 
 llvm::Expected<SystemPnrSearchDomainView>
 adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,

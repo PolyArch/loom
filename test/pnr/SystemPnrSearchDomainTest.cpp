@@ -1,6 +1,7 @@
 #include "PnR/System/SystemPnrSearchDomain.h"
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
@@ -265,8 +266,10 @@ int main() {
           "duplicate root authoring changed the canonical constraint input");
   auto plan = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
       dataflowView, constraints.view().rootThreadLaunches()));
+  const auto config = take(loom::pnr::projectResolvedSystemPnrConfigView(
+      loom::defaultResolvedConfig()));
   auto domain = take(loom::pnr::projectSystemPnrSearchDomain(
-      dataflowView, system, constraints, plan, {}, store));
+      dataflowView, system, config, constraints, plan, {}, store));
 
   require(domain.rootThreadLaunches().size() == 2 &&
               domain.bindings().size() == 6,
@@ -285,21 +288,22 @@ int main() {
        domain.bindings()) {
     require(binding.atoms.size() == 1,
             "whole-domain plan did not produce one atom per binding");
-    const auto &targets = binding.atoms.front().domains;
+    const auto &targets = binding.atoms.front().domain;
     if (std::holds_alternative<dataflow::RootThreadLaunchRef>(binding.key)) {
       ++threadBindings;
-      require(targets.compatibleAccCores &&
-                  targets.compatibleAccCores->size() ==
-                      system.artifact().accCoreOccurrences().size() &&
-                  !targets.compatibleSpatialMappings,
+      const auto *thread =
+          std::get_if<loom::pnr::SystemThreadBindingDomain>(&targets);
+      require(thread && thread->compatibleAccCores.size() ==
+                            system.artifact().accCoreOccurrences().size(),
               "thread atom target domain is incomplete or ill-typed");
     } else {
       ++graphBindings;
       actualGraphKeys.push_back(
           std::get<dataflow::RootedGraphLaunchRef>(binding.key));
-      require(targets.compatibleSpatialMappings &&
-                  targets.compatibleSpatialMappings->empty() &&
-                  !targets.compatibleAccCores,
+      const auto *graph =
+          std::get_if<loom::pnr::SystemHierarchicalGraphBindingDomain>(
+              &targets);
+      require(graph && graph->compatibleSpatialMappings.empty(),
               "graph atom target domain is incomplete or ill-typed");
     }
   }
@@ -311,7 +315,7 @@ int main() {
 
   std::reverse(plan.bindings.begin(), plan.bindings.end());
   auto reordered = take(loom::pnr::projectSystemPnrSearchDomain(
-      dataflowView, system, constraints, plan, {}, store));
+      dataflowView, system, config, constraints, plan, {}, store));
   require(reordered.canonicalViewBytes() == domain.canonicalViewBytes() &&
               reordered.digest() == domain.digest(),
           "partition authoring order changed canonical H");
@@ -322,7 +326,7 @@ int main() {
   std::reverse(redundantRows.begin(), redundantRows.end());
   redundantRows.push_back(redundantRows.front());
   auto normalized = take(loom::pnr::projectSystemPnrSearchDomain(
-      dataflowView, system, constraints, redundant, {}, store));
+      dataflowView, system, config, constraints, redundant, {}, store));
   require(normalized.canonicalViewBytes() == domain.canonicalViewBytes() &&
               normalized.digest() == domain.digest(),
           "redundant or reordered Presburger constraints changed canonical H");
@@ -379,8 +383,8 @@ int main() {
   noIntegerPoint.back() = -1;
   emptyCell.equalities.push_back(std::move(noIntegerPoint));
   requireFailureContains(
-      loom::pnr::projectSystemPnrSearchDomain(dataflowView, system, constraints,
-                                              integerEmpty, {}, store),
+      loom::pnr::projectSystemPnrSearchDomain(
+          dataflowView, system, config, constraints, integerEmpty, {}, store),
       "Presburger cell is integer-empty",
       "integer-empty Presburger cell was accepted");
 
@@ -388,8 +392,8 @@ int main() {
       dataflowView, constraints.view().rootThreadLaunches()));
   overlap.bindings.front().cells.push_back(overlap.bindings.front().cells[0]);
   requireFailureContains(
-      loom::pnr::projectSystemPnrSearchDomain(dataflowView, system, constraints,
-                                              overlap, {}, store),
+      loom::pnr::projectSystemPnrSearchDomain(dataflowView, system, config,
+                                              constraints, overlap, {}, store),
       "Presburger partition cells overlap",
       "overlapping Presburger cells were accepted");
 
@@ -397,8 +401,8 @@ int main() {
       dataflowView, constraints.view().rootThreadLaunches()));
   gap.bindings.front().cells.front().inequalities.push_back({1, 0, 0, -1});
   requireFailureContains(
-      loom::pnr::projectSystemPnrSearchDomain(dataflowView, system, constraints,
-                                              gap, {}, store),
+      loom::pnr::projectSystemPnrSearchDomain(dataflowView, system, config,
+                                              constraints, gap, {}, store),
       "Presburger partition does not cover the Dataflow may-domain",
       "gapped Presburger partition was accepted");
 

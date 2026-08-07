@@ -114,10 +114,15 @@ struct FrozenSystemRoutingData final {
   std::vector<PnrIndex> legSinks;
 };
 
+struct MergedServiceTerminal final {
+  ::loom::mapping::SystemTransferTerminalKey key;
+  std::vector<::loom::fabric::FabricTransportEndpointRef> endpoints;
+};
+
 struct ServiceLegDraft final {
   ::loom::mapping::CanonicalServiceLegKey key;
-  const SystemSearchTransferTerminalDomain *source = nullptr;
-  std::vector<const SystemSearchTransferTerminalDomain *> sinks;
+  const MergedServiceTerminal *source = nullptr;
+  std::vector<const MergedServiceTerminal *> sinks;
 };
 
 llvm::Expected<FrozenSystemRoutingData>
@@ -165,8 +170,8 @@ freezeSystemRouting(const ::dataflow::CanonicalDataflowProgramView &dataflow,
             }))
       return std::move(error);
 
-  auto appendTerminal = [&](const SystemSearchTransferTerminalDomain &domain)
-      -> llvm::Expected<PnrIndex> {
+  auto appendTerminal =
+      [&](const MergedServiceTerminal &domain) -> llvm::Expected<PnrIndex> {
     auto terminal = checked(serviceTerminalContext, result.terminals.size());
     if (!terminal)
       return terminal.takeError();
@@ -175,8 +180,8 @@ freezeSystemRouting(const ::dataflow::CanonicalDataflowProgramView &dataflow,
     if (!offset)
       return offset.takeError();
     std::vector<PnrIndex> choices;
-    choices.reserve(domain.compatibleTransportEndpoints.size());
-    for (const auto &endpoint : domain.compatibleTransportEndpoints) {
+    choices.reserve(domain.endpoints.size());
+    for (const auto &endpoint : domain.endpoints) {
       auto found = endpointOrdinals.find(
           bytesKey(::loom::fabric::canonicalFabricBytes(endpoint)));
       if (found == endpointOrdinals.end())
@@ -211,9 +216,39 @@ freezeSystemRouting(const ::dataflow::CanonicalDataflowProgramView &dataflow,
     if (payloadWidth == producerWidths.end())
       return invalid("H transfer obligation has no Dataflow producer");
 
+    std::map<std::string, MergedServiceTerminal> terminals;
+    for (const SystemSearchTransferTerminalCompatibility &row :
+         service.transferTerminalCompatibility) {
+      const auto *bound =
+          std::get_if<SystemMessageTerminalEndpoint>(&row.boundEndpoint);
+      if (!bound)
+        return invalid("transfer obligation has a memory terminal row");
+      if (row.compatibleTransportEndpoints.size() > 1 ||
+          (!row.compatibleTransportEndpoints.empty() &&
+           row.compatibleTransportEndpoints.front() != bound->endpoint))
+        return invalid("message terminal row is not factorized by its exact "
+                       "bound endpoint");
+      auto terminalBytes = ::loom::mapping::encodeSystemTransferTerminalKey(
+          dataflow.identity(), row.terminal);
+      if (!terminalBytes)
+        return terminalBytes.takeError();
+      auto [position, inserted] = terminals.try_emplace(
+          bytesKey(*terminalBytes), MergedServiceTerminal{row.terminal, {}});
+      if (!row.compatibleTransportEndpoints.empty())
+        position->second.endpoints.push_back(bound->endpoint);
+    }
+    for (auto &[key, terminal] : terminals) {
+      llvm::sort(terminal.endpoints, [](const auto &left, const auto &right) {
+        return ::loom::fabric::canonicalFabricBytes(left) <
+               ::loom::fabric::canonicalFabricBytes(right);
+      });
+      terminal.endpoints.erase(
+          std::unique(terminal.endpoints.begin(), terminal.endpoints.end()),
+          terminal.endpoints.end());
+    }
+
     std::map<std::string, ServiceLegDraft> drafts;
-    for (const SystemSearchTransferTerminalDomain &terminal :
-         service.transferTerminals) {
+    for (const auto &[terminalKey, terminal] : terminals) {
       const ::loom::mapping::CanonicalServiceLegKey &leg =
           std::holds_alternative<
               ::loom::mapping::SystemTransferSourceTerminalKey>(terminal.key)
@@ -247,11 +282,11 @@ freezeSystemRouting(const ::dataflow::CanonicalDataflowProgramView &dataflow,
         continue;
       if (!draft.source)
         return invalid("H service leg with sinks has no source terminal");
-      if (draft.source->compatibleTransportEndpoints.empty())
+      if (draft.source->endpoints.empty())
         return infeasible(
             "a service source terminal has no compatible endpoint");
       for (const auto *sink : draft.sinks)
-        if (sink->compatibleTransportEndpoints.empty())
+        if (sink->endpoints.empty())
           return infeasible(
               "a service sink terminal has no compatible endpoint");
 
@@ -355,11 +390,11 @@ buildCatalogs(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   for (const SystemSearchBindingDomain &binding : searchDomain.bindings())
     if (std::holds_alternative<::dataflow::RootedGraphLaunchRef>(binding.key))
       for (const SystemSearchAtom &atom : binding.atoms)
-        if (atom.domains.compatibleSpatialMappings)
-          result.mappings.insert(
-              result.mappings.end(),
-              atom.domains.compatibleSpatialMappings->begin(),
-              atom.domains.compatibleSpatialMappings->end());
+        if (const auto *domain =
+                std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain))
+          result.mappings.insert(result.mappings.end(),
+                                 domain->compatibleSpatialMappings.begin(),
+                                 domain->compatibleSpatialMappings.end());
   llvm::sort(result.mappings, artifactRootReferenceLess);
   result.mappings.erase(
       std::unique(result.mappings.begin(), result.mappings.end()),
@@ -458,16 +493,14 @@ buildDecisions(const SystemPnrSearchDomainView &searchDomain,
       continue;
     const auto root = std::get<::dataflow::RootThreadLaunchRef>(binding.key);
     for (const SystemSearchAtom &atom : binding.atoms) {
-      if (!atom.domains.compatibleAccCores ||
-          atom.domains.compatibleSpatialMappings ||
-          atom.domains.compatibleServiceRegions ||
-          atom.domains.compatibleTransportEndpoints)
+      const auto *domain = std::get_if<SystemThreadBindingDomain>(&atom.domain);
+      if (!domain)
         return invalid("thread atom has an ill-typed H target domain");
-      if (atom.domains.compatibleAccCores->empty())
+      if (domain->compatibleAccCores.empty())
         return infeasible("thread atom has no compatible AccCore");
       auto offset = checked(choiceOffsetContext, result.threadChoices.size());
       auto count =
-          checked(choiceCountContext, atom.domains.compatibleAccCores->size());
+          checked(choiceCountContext, domain->compatibleAccCores.size());
       auto decision = checked(decisionIndexContext, result.threads.size());
       if (!offset)
         return offset.takeError();
@@ -475,7 +508,7 @@ buildDecisions(const SystemPnrSearchDomainView &searchDomain,
         return count.takeError();
       if (!decision)
         return decision.takeError();
-      for (auto core : *atom.domains.compatibleAccCores) {
+      for (auto core : domain->compatibleAccCores) {
         auto found = coreOrdinals.find(coreKey(core));
         if (found == coreOrdinals.end())
           return invalid("thread atom names an AccCore outside F");
@@ -490,16 +523,15 @@ buildDecisions(const SystemPnrSearchDomainView &searchDomain,
       continue;
     const auto launch = std::get<::dataflow::RootedGraphLaunchRef>(binding.key);
     for (const SystemSearchAtom &atom : binding.atoms) {
-      if (!atom.domains.compatibleSpatialMappings ||
-          atom.domains.compatibleAccCores ||
-          atom.domains.compatibleServiceRegions ||
-          atom.domains.compatibleTransportEndpoints)
+      const auto *domain =
+          std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain);
+      if (!domain)
         return invalid("graph atom has an ill-typed H target domain");
-      if (atom.domains.compatibleSpatialMappings->empty())
+      if (domain->compatibleSpatialMappings.empty())
         return infeasible("graph atom has no compatible SpatialMapping");
       auto offset = checked(choiceOffsetContext, result.graphChoices.size());
-      auto count = checked(choiceCountContext,
-                           atom.domains.compatibleSpatialMappings->size());
+      auto count =
+          checked(choiceCountContext, domain->compatibleSpatialMappings.size());
       auto decision = checked(decisionIndexContext,
                               result.threads.size() + result.graphs.size());
       if (!offset)
@@ -509,7 +541,7 @@ buildDecisions(const SystemPnrSearchDomainView &searchDomain,
       if (!decision)
         return decision.takeError();
       for (const ArtifactRootReference &mapping :
-           *atom.domains.compatibleSpatialMappings) {
+           domain->compatibleSpatialMappings) {
         auto found = mappingOrdinals.find(mapping);
         if (found == mappingOrdinals.end())
           return invalid("graph atom names a SpatialMapping outside H");
