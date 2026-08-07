@@ -203,10 +203,55 @@ loom::pnr::detail::resolveSystemServiceTerminalDomain(
       terminalOrdinal >= problem.serviceTerminals().size())
     return invalid("service terminal lookup is out of range");
   const auto &leg = problem.serviceLegs()[legOrdinal];
-  if (leg.serviceContext == getInvalidPnrIndex())
-    return std::vector<PnrIndex>(
-        problem.serviceTerminalEndpointChoices(terminalOrdinal).begin(),
-        problem.serviceTerminalEndpointChoices(terminalOrdinal).end());
+  if (leg.serviceContext >= problem.serviceContexts().size())
+    return invalid("service leg has no execution context");
+  const auto &context = problem.serviceContexts()[leg.serviceContext];
+  if (context.service >= problem.serviceDomains().size())
+    return invalid("service context has no H service domain");
+  if (std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
+          problem.serviceDomains()[context.service].key)) {
+    const auto &terminal = problem.serviceTerminals()[terminalOrdinal];
+    FrozenSystemTransferTerminalOwner selectedOwner;
+    if (terminal.fixedHostOwner) {
+      const auto domains = problem.serviceTerminalOwnerDomains(terminalOrdinal);
+      const auto host = llvm::find_if(domains, [](const auto &domain) {
+        return std::holds_alternative<::loom::fabric::HostCoreOccurrenceRef>(
+            domain.owner);
+      });
+      if (host == domains.end())
+        return invalid(
+            "message terminal has no matching HostCore endpoint row");
+      selectedOwner = host->owner;
+    } else {
+      if (terminal.ownerThreadDecision >= problem.threadDecisions().size() ||
+          terminal.ownerThreadDecision >= threadChoices.size())
+        return invalid("message terminal has an invalid thread dependency");
+      const auto choices =
+          problem.threadChoiceCatalogOrdinals(terminal.ownerThreadDecision);
+      if (threadChoices[terminal.ownerThreadDecision] >= choices.size())
+        return invalid("message terminal owner choice is outside its H domain");
+      selectedOwner =
+          problem
+              .accCores()[choices[threadChoices[terminal.ownerThreadDecision]]];
+    }
+
+    const FrozenSystemTransferTerminalOwnerDomain *selectedDomain = nullptr;
+    for (const auto &domain :
+         problem.serviceTerminalOwnerDomains(terminalOrdinal)) {
+      if (domain.owner != selectedOwner)
+        continue;
+      if (selectedDomain)
+        return invalid("message terminal repeats one execution-owner domain");
+      selectedDomain = &domain;
+    }
+    if (!selectedDomain)
+      return invalid("message terminal has no matching execution-owner row");
+    const auto choices =
+        problem.serviceTerminalOwnerEndpointChoices(*selectedDomain);
+    if (choices.empty())
+      return invalid("matching message terminal row is empty");
+    return std::vector<PnrIndex>(choices.begin(), choices.end());
+  }
 
   const SystemServiceTargetSubject subject{
       SystemServiceMemberTargetSubject{leg.key.member}};
@@ -243,10 +288,18 @@ llvm::Error loom::pnr::detail::verifySystemServiceTargetDomains(
     llvm::ArrayRef<PnrIndex> threadChoices,
     llvm::ArrayRef<PnrIndex> graphChoices) {
   for (PnrIndex context = 0; context < problem.serviceContexts().size();
-       ++context)
+       ++context) {
+    if (problem.serviceContexts()[context].service >=
+        problem.serviceDomains().size())
+      return invalid("service context has no H service domain");
+    if (std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
+            problem.serviceDomains()[problem.serviceContexts()[context].service]
+                .key))
+      continue;
     if (auto domain = resolveSystemServiceTargetDomain(
             problem, context, threadChoices, graphChoices);
         !domain)
       return domain.takeError();
+  }
   return llvm::Error::success();
 }

@@ -251,20 +251,34 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
       return binding.takeError();
   }
 
-  struct ServiceGroup final {
-    ::loom::mapping::SystemServiceObligationKey key;
+  struct PlanGroup final {
     std::vector<PnrIndex> routes;
   };
+  struct ServiceGroup final {
+    ::loom::mapping::SystemServiceObligationKey key;
+    std::map<PnrIndex, PlanGroup> plans;
+  };
   std::map<std::vector<std::uint8_t>, ServiceGroup> serviceGroups;
-  for (const SystemServiceRouteSelection &route : candidate.serviceRoutes()) {
+  for (const auto &[routeOrdinal, route] :
+       llvm::enumerate(candidate.serviceRoutes())) {
+    if (route.leg >= problem.serviceLegs().size())
+      return invalid("service route leg is out of range");
     const auto &leg = problem.serviceLegs()[route.leg].key;
+    const PnrIndex serviceContext =
+        problem.serviceLegs()[route.leg].serviceContext;
+    if (serviceContext >= problem.serviceContexts().size())
+      return invalid("service route leg has no execution context");
     auto keyBytes = ::loom::mapping::encodeSystemServiceObligationKey(
         problem.dataflowIdentity(), leg.obligation);
     if (!keyBytes)
       return keyBytes.takeError();
-    auto [found, inserted] =
-        serviceGroups.try_emplace(*keyBytes, ServiceGroup{leg.obligation, {}});
-    found->second.routes.push_back(route.leg);
+    auto found = serviceGroups
+                     .try_emplace(*keyBytes,
+                                  ServiceGroup{leg.obligation, {}})
+                     .first;
+    auto plan =
+        found->second.plans.try_emplace(serviceContext, PlanGroup{}).first;
+    plan->second.routes.push_back(static_cast<PnrIndex>(routeOrdinal));
   }
   for (const auto &[keyBytes, group] : serviceGroups) {
     (void)keyBytes;
@@ -278,61 +292,138 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
         ::mapping::SystemServiceObligationKeyAttr::get(
             &context, bytesAttr(&context, *obligationBytes)));
     service.getBody().emplaceBlock();
-    builder.setInsertionPointToEnd(&service.getBody().front());
-    auto plan = ::mapping::ServicePlanOp::create(builder, location, 0);
-    plan.getBody().emplaceBlock();
-    for (PnrIndex routeOrdinal : group.routes) {
-      const SystemServiceRouteSelection &selected =
-          candidate.serviceRoutes()[routeOrdinal];
-      const FrozenSystemServiceLeg &leg = problem.serviceLegs()[selected.leg];
-      auto legBytes = ::loom::mapping::encodeCanonicalServiceLegKey(
-          problem.dataflowIdentity(), leg.key);
-      if (!legBytes)
-        return legBytes.takeError();
-      if (selected.rootEndpoint >= problem.routingTopology().endpoints().size())
-        return invalid("service route root endpoint is out of range");
-      builder.setInsertionPointToEnd(&plan.getBody().front());
-      auto route = ::mapping::TransferLegRealizationOp::create(
-          builder, location,
-          ::mapping::CanonicalServiceLegKeyAttr::get(
-              &context, bytesAttr(&context, *legBytes)),
-          transportEndpointAttr(&context,
-                                problem.routingTopology()
-                                    .endpoints()[selected.rootEndpoint]
-                                    .reference));
-      route.getBody().emplaceBlock();
-      builder.setInsertionPointToEnd(&route.getBody().front());
-      const auto nodes = candidate.serviceRouteNodes().slice(
-          selected.nodeOffset, selected.nodeCount);
-      for (PnrIndex nodeOrdinal = 1; nodeOrdinal < nodes.size();
-           ++nodeOrdinal) {
-        const auto &node = nodes[nodeOrdinal];
-        if (node.incomingTraversal >=
-            problem.routingTopology().traversals().size())
-          return invalid("service route traversal is out of range");
-        ::mapping::SystemRouteNodeOp::create(
-            builder, location, nodeOrdinal, node.parentNode,
-            physicalTraversalAttr(&context,
-                                  problem.routingTopology()
-                                      .traversals()[node.incomingTraversal]
-                                      .reference));
-      }
-      const auto sinks = candidate.serviceRouteSinks().slice(
-          selected.sinkOffset, selected.sinkCount);
-      for (const SystemServiceRouteSinkSelection &sink : sinks) {
-        if (sink.terminal >= problem.serviceTerminals().size())
-          return invalid("service route sink terminal is out of range");
-        auto terminalBytes = ::loom::mapping::encodeSystemTransferTerminalKey(
-            problem.dataflowIdentity(),
-            problem.serviceTerminals()[sink.terminal].key);
-        if (!terminalBytes)
-          return terminalBytes.takeError();
-        ::mapping::SystemRouteSinkOp::create(
+    std::map<PnrIndex, std::uint64_t> planOrdinals;
+    for (const auto &[contextOrdinal, groupedPlan] : group.plans) {
+      const std::uint64_t authoredOrdinal = planOrdinals.size();
+      planOrdinals.emplace(contextOrdinal, authoredOrdinal);
+      builder.setInsertionPointToEnd(&service.getBody().front());
+      auto plan =
+          ::mapping::ServicePlanOp::create(builder, location, authoredOrdinal);
+      plan.getBody().emplaceBlock();
+      for (PnrIndex routeOrdinal : groupedPlan.routes) {
+        const SystemServiceRouteSelection &selected =
+            candidate.serviceRoutes()[routeOrdinal];
+        const FrozenSystemServiceLeg &leg = problem.serviceLegs()[selected.leg];
+        auto legBytes = ::loom::mapping::encodeCanonicalServiceLegKey(
+            problem.dataflowIdentity(), leg.key);
+        if (!legBytes)
+          return legBytes.takeError();
+        if (selected.rootEndpoint >=
+            problem.routingTopology().endpoints().size())
+          return invalid("service route root endpoint is out of range");
+        builder.setInsertionPointToEnd(&plan.getBody().front());
+        auto route = ::mapping::TransferLegRealizationOp::create(
             builder, location,
-            ::mapping::SystemTransferTerminalKeyAttr::get(
-                &context, bytesAttr(&context, *terminalBytes)),
-            sink.node);
+            ::mapping::CanonicalServiceLegKeyAttr::get(
+                &context, bytesAttr(&context, *legBytes)),
+            transportEndpointAttr(&context,
+                                  problem.routingTopology()
+                                      .endpoints()[selected.rootEndpoint]
+                                      .reference));
+        route.getBody().emplaceBlock();
+        builder.setInsertionPointToEnd(&route.getBody().front());
+        const auto nodes = candidate.serviceRouteNodes().slice(
+            selected.nodeOffset, selected.nodeCount);
+        for (PnrIndex nodeOrdinal = 1; nodeOrdinal < nodes.size();
+             ++nodeOrdinal) {
+          const auto &node = nodes[nodeOrdinal];
+          if (node.incomingTraversal >=
+              problem.routingTopology().traversals().size())
+            return invalid("service route traversal is out of range");
+          ::mapping::SystemRouteNodeOp::create(
+              builder, location, nodeOrdinal, node.parentNode,
+              physicalTraversalAttr(&context,
+                                    problem.routingTopology()
+                                        .traversals()[node.incomingTraversal]
+                                        .reference));
+        }
+        const auto sinks = candidate.serviceRouteSinks().slice(
+            selected.sinkOffset, selected.sinkCount);
+        for (const SystemServiceRouteSinkSelection &sink : sinks) {
+          if (sink.terminal >= problem.serviceTerminals().size())
+            return invalid("service route sink terminal is out of range");
+          auto terminalBytes = ::loom::mapping::encodeSystemTransferTerminalKey(
+              problem.dataflowIdentity(),
+              problem.serviceTerminals()[sink.terminal].key);
+          if (!terminalBytes)
+            return terminalBytes.takeError();
+          ::mapping::SystemRouteSinkOp::create(
+              builder, location,
+              ::mapping::SystemTransferTerminalKeyAttr::get(
+                  &context, bytesAttr(&context, *terminalBytes)),
+              sink.node);
+        }
       }
+    }
+
+    struct SelectionDraft final {
+      std::vector<
+          std::pair<::loom::mapping::SystemPresburgerCell, std::uint64_t>>
+          clauses;
+    };
+    std::map<std::vector<std::uint8_t>, SelectionDraft> selections;
+    for (const auto &[contextOrdinal, authoredOrdinal] : planOrdinals) {
+      const auto &serviceContext = problem.serviceContexts()[contextOrdinal];
+      if (serviceContext.threadDecision >= problem.threadDecisions().size())
+        return invalid("service selection has an invalid thread dependency");
+      const auto core =
+          candidate.selectedAccCore(serviceContext.threadDecision);
+      ::loom::mapping::ExecutionContextKey executionContext;
+      const ::loom::mapping::SystemPresburgerCell *cell = nullptr;
+      if (serviceContext.graphDecision != getInvalidPnrIndex()) {
+        if (serviceContext.graphDecision >= problem.graphDecisions().size())
+          return invalid("service selection has an invalid graph dependency");
+        executionContext = ::loom::mapping::SpatialExecutionContextKey{
+            core, candidate.selectedSpatialMapping(serviceContext.graphDecision)
+                      .artifact};
+        cell = &problem.graphDecisions()[serviceContext.graphDecision].cell;
+      } else {
+        executionContext =
+            ::loom::mapping::InstructionExecutionContextKey{core};
+        cell = &problem.threadDecisions()[serviceContext.threadDecision].cell;
+      }
+      for (const SystemServiceTargetSubject &subject :
+           serviceContext.subjects) {
+        ::loom::mapping::ServicePlanSelectionAnchor anchor;
+        if (const auto *member =
+                std::get_if<SystemServiceMemberTargetSubject>(&subject))
+          anchor =
+              ::loom::mapping::ServiceMemberPlanSelectionAnchor{member->member};
+        else
+          anchor = ::loom::mapping::MemoryExposurePlanSelectionAnchor{
+              std::get<SystemMemoryExposureTargetSubject>(subject).exposure};
+        ::loom::mapping::ServicePlanSelectionKey selectionKey{std::move(anchor),
+                                                              executionContext};
+        auto selectionBytes = ::loom::mapping::encodeServicePlanSelectionKey(
+            problem.dataflowIdentity(), selectionKey);
+        if (!selectionBytes)
+          return selectionBytes.takeError();
+        auto selection =
+            selections.try_emplace(*selectionBytes, SelectionDraft{}).first;
+        selection->second.clauses.push_back({*cell, authoredOrdinal});
+      }
+    }
+    for (const auto &[selectionBytes, selection] : selections) {
+      builder.setInsertionPointToEnd(&service.getBody().front());
+      mlir::OperationState selectionState(
+          location, ::mapping::ServicePlanSelectionOp::getOperationName());
+      selectionState.addAttribute(
+          "key", ::mapping::ServicePlanSelectionKeyAttr::get(
+                     &context, bytesAttr(&context, selectionBytes)));
+      selectionState.addAttribute(
+          "relation_kind",
+          ::mapping::SystemBindingRelationKindAttr::get(
+              &context,
+              ::mapping::SystemBindingRelationKind::PresburgerPartition));
+      selectionState.addRegion();
+      auto selectionOp = mlir::cast<::mapping::ServicePlanSelectionOp>(
+          builder.create(selectionState));
+      selectionOp.getBody().emplaceBlock();
+      builder.setInsertionPointToEnd(&selectionOp.getBody().front());
+      for (const auto &[cell, target] : selection.clauses)
+        ::mapping::ServicePlanPresburgerClauseOp::create(
+            builder, location,
+            mlir::ArrayAttr::get(&context, {cellAttr(&context, cell)}), target);
     }
   }
   return result;

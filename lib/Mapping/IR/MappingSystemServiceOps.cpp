@@ -120,18 +120,43 @@ LogicalResult mapping::ServiceRealizationOp::verify() {
   if (failed(requireSingleBlock(*this, {"key"})))
     return failure();
   llvm::DenseSet<std::uint64_t> ordinals;
+  llvm::DenseSet<Attribute> selectionKeys;
+  llvm::DenseSet<std::uint64_t> selectedOrdinals;
   for (Operation &child : getBody().front()) {
-    auto plan = dyn_cast<mapping::ServicePlanOp>(child);
-    if (!plan)
-      return child.emitOpError("is not a closed ServicePlan record kind");
-    const std::int64_t ordinal = integerValue(plan, "plan_ordinal");
-    if (ordinal < 0)
-      return plan.emitOpError("plan ordinal must be nonnegative");
-    if (!ordinals.insert(static_cast<std::uint64_t>(ordinal)).second)
-      return plan.emitOpError("duplicates a ServicePlan ordinal");
+    if (auto plan = dyn_cast<mapping::ServicePlanOp>(child)) {
+      const std::int64_t ordinal = integerValue(plan, "plan_ordinal");
+      if (ordinal < 0)
+        return plan.emitOpError("plan ordinal must be nonnegative");
+      if (!ordinals.insert(static_cast<std::uint64_t>(ordinal)).second)
+        return plan.emitOpError("duplicates a ServicePlan ordinal");
+      continue;
+    }
+    auto selection = dyn_cast<mapping::ServicePlanSelectionOp>(child);
+    if (!selection)
+      return child.emitOpError(
+          "is not a closed ServiceRealization record kind");
+    if (!selectionKeys.insert(selection.getKey()).second)
+      return selection.emitOpError("duplicates a ServicePlanSelection key");
+    if (auto target =
+            selection->getAttrOfType<IntegerAttr>("default_plan_ordinal"))
+      selectedOrdinals.insert(static_cast<std::uint64_t>(target.getInt()));
+    for (auto clause : selection.getBody()
+                           .front()
+                           .getOps<mapping::ServicePlanPresburgerClauseOp>())
+      selectedOrdinals.insert(static_cast<std::uint64_t>(
+          integerValue(clause, "target_plan_ordinal")));
   }
   if (ordinals.empty())
     return emitOpError("requires at least one ServicePlan");
+  if (selectionKeys.empty())
+    return emitOpError("requires at least one ServicePlanSelection");
+  for (std::uint64_t selected : selectedOrdinals)
+    if (!ordinals.contains(selected))
+      return emitOpError(
+          "ServicePlanSelection names an absent ServicePlan ordinal");
+  for (std::uint64_t ordinal : ordinals)
+    if (!selectedOrdinals.contains(ordinal))
+      return emitOpError("contains an unselected ServicePlan ordinal");
   return success();
 }
 
@@ -151,6 +176,67 @@ LogicalResult mapping::ServicePlanOp::verify() {
   }
   if (legs.empty())
     return emitOpError("requires at least one TransferLegRealization");
+  return success();
+}
+
+LogicalResult mapping::ServicePlanSelectionOp::verify() {
+  if (failed(requireSingleBlock(
+          *this, {"key", "relation_kind", "default_plan_ordinal"})))
+    return failure();
+  if (getRelationKind() !=
+      mapping::SystemBindingRelationKind::PresburgerPartition)
+    return emitOpError(
+        "StableKeyLookup is unavailable without a Dataflow stable-key owner");
+  auto defaultTarget =
+      (*this)->getAttrOfType<IntegerAttr>("default_plan_ordinal");
+  if (defaultTarget && defaultTarget.getInt() < 0)
+    return emitOpError("default plan ordinal must be nonnegative");
+  if (getBody().front().empty() && !defaultTarget)
+    return emitOpError(
+        "Presburger relation requires a clause or default plan ordinal");
+  for (Operation &child : getBody().front())
+    if (!isa<mapping::ServicePlanPresburgerClauseOp>(child))
+      return child.emitOpError("is not a service-plan Presburger clause");
+
+  auto root = (*this)->getParentOfType<mapping::SystemOp>();
+  if (!root)
+    return emitOpError("must belong to a SystemMapping root");
+  auto dataflowOwner = identity(root.getDataflow());
+  if (!dataflowOwner)
+    return emitOpError() << llvm::toString(dataflowOwner.takeError());
+  auto key = ::loom::mapping::decodeServicePlanSelectionKey(
+      unsignedBytes(getKey().getRecord()), *dataflowOwner);
+  if (!key)
+    return emitOpError() << llvm::toString(key.takeError());
+  auto service = cast<mapping::ServiceRealizationOp>((*this)->getParentOp());
+  auto obligation = ::loom::mapping::decodeSystemServiceObligationKey(
+      unsignedBytes(service.getKey().getRecord()), *dataflowOwner);
+  if (!obligation)
+    return emitOpError() << llvm::toString(obligation.takeError());
+  if (std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
+          *obligation)) {
+    const auto *member =
+        std::get_if<::loom::mapping::ServiceMemberPlanSelectionAnchor>(
+            &key->anchor);
+    const auto message =
+        ::dataflow::ServiceMemberRef(::dataflow::MessageTransferMemberRef{});
+    if (!member || member->member != message)
+      return emitOpError(
+          "transfer obligation requires its singleton MessageTransfer anchor");
+  }
+  return success();
+}
+
+LogicalResult mapping::ServicePlanPresburgerClauseOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"cells", "target_plan_ordinal"})))
+    return failure();
+  if (integerValue(*this, "target_plan_ordinal") < 0)
+    return emitOpError("target plan ordinal must be nonnegative");
+  if (getCells().empty())
+    return emitOpError("requires at least one Presburger cell");
+  for (Attribute cell : getCells())
+    if (!isa<mapping::SystemPresburgerCellAttr>(cell))
+      return emitOpError("cells contains a non-Presburger value");
   return success();
 }
 

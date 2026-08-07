@@ -343,6 +343,31 @@ def Mapping_ServicePlanOp
   let hasVerifier = 1;
 }
 
+def Mapping_ServicePlanSelectionOp
+    : Mapping_Op<"service_plan_selection",
+                 [HasParent<"ServiceRealizationOp">, SingleBlock,
+                  NoTerminator]> {
+  let summary = "one contextual owner-local service-plan selection relation";
+  let arguments = (ins Mapping_ServicePlanSelectionKeyAttr:$key,
+      Mapping_SystemBindingRelationKindAttr:$relation_kind,
+      OptionalAttr<I64Attr>:$default_plan_ordinal);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{`key` `(` $key `)` `relation` $relation_kind
+                         (`default` $default_plan_ordinal^)?
+                         $body attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_ServicePlanPresburgerClauseOp
+    : Mapping_Op<"service_plan_presburger_clause",
+                 [HasParent<"ServicePlanSelectionOp">]> {
+  let summary = "one plan ordinal and canonical integer-set union";
+  let arguments = (ins ArrayAttr:$cells, I64Attr:$target_plan_ordinal);
+  let assemblyFormat = [{`cells` `(` $cells `)`
+                         `target` $target_plan_ordinal attr-dict}];
+  let hasVerifier = 1;
+}
+
 def Mapping_TransferLegRealizationOp
     : Mapping_Op<"transfer_leg_realization",
                  [HasParent<"ServicePlanOp">, SingleBlock, NoTerminator]> {

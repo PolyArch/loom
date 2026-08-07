@@ -10,6 +10,9 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/CheckedArithmetic.h"
 
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -824,6 +827,96 @@ expandBuiltinSystemImpl(DesignBuilder &design,
     return std::move(error);
   clockMembers.push_back(memoryService->domainMember());
   clockMembers.push_back(memoryEndpoint->domainMember());
+
+  mlir::MLIRContext messageTypeContext;
+  auto messageDomain = loom::fabric::MessageTransferCapabilityDomain::create(
+      {mlir::NoneType::get(&messageTypeContext),
+       mlir::IntegerType::get(&messageTypeContext, 1),
+       mlir::IntegerType::get(&messageTypeContext, 8),
+       mlir::IntegerType::get(&messageTypeContext, 16),
+       mlir::IntegerType::get(&messageTypeContext, 32),
+       mlir::IntegerType::get(&messageTypeContext, 64),
+       mlir::IndexType::get(&messageTypeContext)});
+  if (!messageDomain)
+    return messageDomain.takeError();
+  auto initiateCapability =
+      loom::fabric::CanonicalServiceCapabilityRecord::create(
+          dataflow::semantics::ServiceKind::MessageTransfer,
+          loom::fabric::CanonicalServiceEndpointRole::Initiate, *messageDomain,
+          *serviceRate);
+  if (!initiateCapability)
+    return initiateCapability.takeError();
+  auto serveCapability = loom::fabric::CanonicalServiceCapabilityRecord::create(
+      dataflow::semantics::ServiceKind::MessageTransfer,
+      loom::fabric::CanonicalServiceEndpointRole::Serve, *messageDomain,
+      *serviceRate);
+  if (!serveCapability)
+    return serveCapability.takeError();
+  auto initiateSet = loom::fabric::CanonicalServiceCapabilitySet::create(
+      {std::move(*initiateCapability)});
+  if (!initiateSet)
+    return initiateSet.takeError();
+  auto serveSet = loom::fabric::CanonicalServiceCapabilitySet::create(
+      {std::move(*serveCapability)});
+  if (!serveSet)
+    return serveSet.takeError();
+
+  std::vector<SystemServiceEndpoint> messageSources;
+  std::vector<SystemServiceEndpoint> messageSinks;
+  messageSources.reserve(cores.size() + 1);
+  messageSinks.reserve(cores.size() + 1);
+  const auto appendMessageEndpoints = [&](const auto &owner) -> llvm::Error {
+    auto source = system->addServiceEndpoint(owner, *initiateSet, *bits128);
+    if (!source)
+      return source.takeError();
+    auto sink = system->addServiceEndpoint(owner, *serveSet, *bits128);
+    if (!sink)
+      return sink.takeError();
+    clockMembers.push_back(source->domainMember());
+    clockMembers.push_back(sink->domainMember());
+    messageSources.push_back(*source);
+    messageSinks.push_back(*sink);
+    return llvm::Error::success();
+  };
+  if (llvm::Error error = appendMessageEndpoints(*host))
+    return std::move(error);
+  for (const AccCore &core : cores)
+    if (llvm::Error error = appendMessageEndpoints(core))
+      return std::move(error);
+
+  std::vector<PortType> messagePorts(messageSources.size(), *bits128);
+  auto messageTransport = system->addTransportResource(
+      {messagePorts, messagePorts, *transportContract});
+  if (!messageTransport)
+    return messageTransport.takeError();
+  clockMembers.push_back(messageTransport->domainMember());
+  std::vector<std::uint32_t> messageOutputs(messageSinks.size());
+  std::iota(messageOutputs.begin(), messageOutputs.end(), 0);
+  for (std::size_t ordinal = 0; ordinal != messageSources.size(); ++ordinal) {
+    auto source = messageSources[ordinal].transport();
+    if (!source)
+      return source.takeError();
+    auto input = messageTransport->input(ordinal);
+    if (!input)
+      return input.takeError();
+    if (llvm::Error error = system->connect(*source, *input))
+      return std::move(error);
+    auto pattern = system->addTransferPattern(*messageTransport, ordinal,
+                                              messageOutputs, 0);
+    if (!pattern)
+      return pattern.takeError();
+    clockMembers.push_back(pattern->domainMember());
+  }
+  for (std::size_t ordinal = 0; ordinal != messageSinks.size(); ++ordinal) {
+    auto output = messageTransport->output(ordinal);
+    if (!output)
+      return output.takeError();
+    auto sink = messageSinks[ordinal].transport();
+    if (!sink)
+      return sink.takeError();
+    if (llvm::Error error = system->connect(*output, *sink))
+      return std::move(error);
+  }
   if (llvm::Error error = clock->close(clockMembers, *clockContract))
     return std::move(error);
   return std::move(*system);

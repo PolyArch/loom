@@ -8,6 +8,7 @@ target_include_directories(LoomSystemMappingIdentity PUBLIC
 
 target_link_libraries(LoomSystemMappingIdentity PUBLIC
   LoomCommon
+  LoomFabricIdentity
   MLIRDataflow
   LLVMSupport
 )

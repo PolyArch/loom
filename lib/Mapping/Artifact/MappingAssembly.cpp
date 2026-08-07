@@ -696,6 +696,7 @@ canonicalizeServiceRealization(::mapping::ServiceRealizationOp service) {
     ::mapping::ServicePlanOp operation;
   };
   std::vector<Plan> plans;
+  llvm::DenseMap<std::uint64_t, std::uint64_t> planRenumbering;
   for (auto plan : body.getOps<::mapping::ServicePlanOp>()) {
     Block &planBody = plan.getBody().front();
     SmallVector<::mapping::TransferLegRealizationOp> routes;
@@ -714,18 +715,102 @@ canonicalizeServiceRealization(::mapping::ServiceRealizationOp service) {
   llvm::sort(plans, [](const Plan &left, const Plan &right) {
     return left.key < right.key;
   });
-  for (std::size_t index = 1; index < plans.size(); ++index)
-    if (plans[index - 1].key == plans[index].key)
+  Builder builder(service.getContext());
+  std::uint64_t canonicalOrdinal = 0;
+  for (std::size_t index = 0; index < plans.size(); ++index) {
+    const bool duplicate =
+        index != 0 && plans[index - 1].key == plans[index].key;
+    const std::uint64_t targetOrdinal =
+        duplicate ? canonicalOrdinal - 1 : canonicalOrdinal++;
+    planRenumbering.try_emplace(plans[index].operation.getPlanOrdinal(),
+                                targetOrdinal);
+    if (duplicate) {
+      plans[index].operation.erase();
+      continue;
+    }
+    plans[index].operation.setPlanOrdinalAttr(
+        builder.getI64IntegerAttr(targetOrdinal));
+    plans[index].operation->moveBefore(&body, body.end());
+  }
+
+  SmallVector<::mapping::ServicePlanSelectionOp> selections;
+  const auto rewrittenPlanOrdinal =
+      [&](std::int64_t authored) -> llvm::Expected<std::uint64_t> {
+    if (authored < 0)
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "service-plan ordinal is negative");
+    auto found = planRenumbering.find(static_cast<std::uint64_t>(authored));
+    if (found == planRenumbering.end())
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
-          "System service realization duplicates a complete plan semantic "
-          "key");
+          "service-plan selection names an absent authored plan ordinal");
+    return found->second;
+  };
+  for (auto selection : body.getOps<::mapping::ServicePlanSelectionOp>()) {
+    if (auto target =
+            selection->getAttrOfType<IntegerAttr>("default_plan_ordinal")) {
+      auto rewritten = rewrittenPlanOrdinal(target.getInt());
+      if (!rewritten)
+        return rewritten.takeError();
+      selection->setAttr("default_plan_ordinal",
+                         builder.getI64IntegerAttr(*rewritten));
+    }
 
-  Builder builder(service.getContext());
-  for (auto [ordinal, plan] : llvm::enumerate(plans)) {
-    plan.operation.setPlanOrdinalAttr(builder.getI64IntegerAttr(ordinal));
-    plan.operation->moveBefore(&body, body.end());
+    struct Group final {
+      std::uint64_t target = 0;
+      SmallVector<::mapping::SystemPresburgerCellAttr> cells;
+    };
+    std::map<std::uint64_t, Group> groups;
+    for (auto clause :
+         selection.getBody()
+             .front()
+             .getOps<::mapping::ServicePlanPresburgerClauseOp>()) {
+      auto rewritten = rewrittenPlanOrdinal(clause.getTargetPlanOrdinal());
+      if (!rewritten)
+        return rewritten.takeError();
+      const std::uint64_t target = *rewritten;
+      Group &group =
+          groups.try_emplace(target, Group{target, {}}).first->second;
+      for (Attribute rawCell : clause.getCells()) {
+        auto canonical = decodeSystemCell(
+            cast<::mapping::SystemPresburgerCellAttr>(rawCell));
+        if (!canonical)
+          return canonical.takeError();
+        group.cells.push_back(systemCellAttr(service.getContext(), *canonical));
+      }
+    }
+    if (auto target =
+            selection->getAttrOfType<IntegerAttr>("default_plan_ordinal"))
+      groups.erase(static_cast<std::uint64_t>(target.getInt()));
+
+    Block &selectionBody = selection.getBody().front();
+    while (!selectionBody.empty())
+      selectionBody.front().erase();
+    OpBuilder selectionBuilder(service.getContext());
+    selectionBuilder.setInsertionPointToEnd(&selectionBody);
+    for (auto &[target, group] : groups) {
+      llvm::sort(group.cells, [](auto lhs, auto rhs) {
+        return systemCellKey(lhs) < systemCellKey(rhs);
+      });
+      group.cells.erase(std::unique(group.cells.begin(), group.cells.end()),
+                        group.cells.end());
+      OperationState state(
+          selection.getLoc(),
+          ::mapping::ServicePlanPresburgerClauseOp::getOperationName());
+      SmallVector<Attribute> cells(group.cells.begin(), group.cells.end());
+      state.addAttribute("cells", ArrayAttr::get(service.getContext(), cells));
+      state.addAttribute("target_plan_ordinal",
+                         builder.getI64IntegerAttr(target));
+      selectionBuilder.create(state);
+    }
+    selections.push_back(selection);
   }
+  llvm::sort(selections, [](auto left, auto right) {
+    return recordKey(left.getKey().getRecord()) <
+           recordKey(right.getKey().getRecord());
+  });
+  for (auto selection : selections)
+    selection->moveBefore(&body, body.end());
   return llvm::Error::success();
 }
 

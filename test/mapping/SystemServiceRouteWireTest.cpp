@@ -42,6 +42,12 @@ template <typename T> T take(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
+template <typename T>
+void requireError(llvm::Expected<T> value, llvm::StringRef message) {
+  require(!value, message);
+  llvm::consumeError(value.takeError());
+}
+
 loom::ArtifactIdentity identity(std::uint8_t seed) {
   std::array<std::uint8_t, loom::ArtifactIdentity::byteSize> bytes{};
   for (std::size_t index = 0; index < bytes.size(); ++index)
@@ -197,6 +203,30 @@ buildSystem(mlir::MLIRContext &context, const Fixture &fixture,
                                                             fixture.traversal));
   if (!sinkFirst)
     emitSink();
+
+  builder.setInsertionPointToEnd(&service.getBody().front());
+  loom::mapping::ServicePlanSelectionKey selectionKey{
+      loom::mapping::ServiceMemberPlanSelectionAnchor{
+          dataflow::ServiceMemberRef(dataflow::MessageTransferMemberRef{})},
+      loom::mapping::InstructionExecutionContextKey{fixture.core}};
+  mlir::OperationState selectionState(
+      location, ::mapping::ServicePlanSelectionOp::getOperationName());
+  selectionState.addAttribute(
+      "key", ::mapping::ServicePlanSelectionKeyAttr::get(
+                 &context,
+                 denseBytes(&context,
+                            take(loom::mapping::encodeServicePlanSelectionKey(
+                                fixture.dataflowIdentity, selectionKey)))));
+  selectionState.addAttribute(
+      "relation_kind",
+      ::mapping::SystemBindingRelationKindAttr::get(
+          &context, ::mapping::SystemBindingRelationKind::PresburgerPartition));
+  selectionState.addAttribute("default_plan_ordinal",
+                              builder.getI64IntegerAttr(4));
+  selectionState.addRegion();
+  auto selection = mlir::cast<::mapping::ServicePlanSelectionOp>(
+      builder.create(selectionState));
+  selection.getBody().emplaceBlock();
   return mlir::OwningOpRef<mlir::Operation *>(root.getOperation());
 }
 
@@ -238,6 +268,164 @@ int main() {
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   context.getOrLoadDialect<::mapping::MappingDialect>();
   const Fixture fixture = makeFixture();
+  const dataflow::RootedGraphLaunchRef rootedGraph{
+      fixture.root,
+      dataflow::StaticGraphLaunchRef{fixture.dataflowIdentity,
+                                     dataflow::StaticGraphLaunchId(12)}};
+
+  const loom::mapping::ExecutionContextKey instructionContext =
+      loom::mapping::InstructionExecutionContextKey{fixture.core};
+  const auto instructionContextBytes =
+      take(loom::mapping::encodeExecutionContextKey(instructionContext));
+  require(take(loom::mapping::decodeExecutionContextKey(
+              instructionContextBytes)) == instructionContext,
+          "Instruction execution-context key did not round-trip");
+  const loom::mapping::ExecutionContextKey spatialContext =
+      loom::mapping::SpatialExecutionContextKey{fixture.core, identity(97)};
+  const auto spatialContextBytes =
+      take(loom::mapping::encodeExecutionContextKey(spatialContext));
+  require(take(loom::mapping::decodeExecutionContextKey(spatialContextBytes)) ==
+                  spatialContext &&
+              spatialContextBytes != instructionContextBytes,
+          "Spatial execution-context key did not preserve its identity");
+  auto trailingContextBytes = instructionContextBytes;
+  trailingContextBytes.push_back(0);
+  requireError(loom::mapping::decodeExecutionContextKey(trailingContextBytes),
+               "execution-context codec accepted trailing bytes");
+  auto unknownContextBytes = instructionContextBytes;
+  unknownContextBytes[3] = 2;
+  requireError(loom::mapping::decodeExecutionContextKey(unknownContextBytes),
+               "execution-context codec accepted an unknown variant");
+
+  const loom::mapping::ServicePlanSelectionKey encodedSelectionKey{
+      loom::mapping::ServiceMemberPlanSelectionAnchor{
+          dataflow::ServiceMemberRef(dataflow::MessageTransferMemberRef{})},
+      instructionContext};
+  const auto selectionKeyBytes =
+      take(loom::mapping::encodeServicePlanSelectionKey(
+          fixture.dataflowIdentity, encodedSelectionKey));
+  require(take(loom::mapping::decodeServicePlanSelectionKey(
+              selectionKeyBytes, fixture.dataflowIdentity)) ==
+              encodedSelectionKey,
+          "service-plan selection key did not round-trip");
+  const loom::mapping::ServicePlanSelectionKey exposureSelectionKey{
+      loom::mapping::MemoryExposurePlanSelectionAnchor{
+          dataflow::MemoryExposureRef{rootedGraph, 3}},
+      spatialContext};
+  const auto exposureSelectionKeyBytes =
+      take(loom::mapping::encodeServicePlanSelectionKey(
+          fixture.dataflowIdentity, exposureSelectionKey));
+  require(take(loom::mapping::decodeServicePlanSelectionKey(
+              exposureSelectionKeyBytes, fixture.dataflowIdentity)) ==
+                  exposureSelectionKey &&
+              exposureSelectionKeyBytes != selectionKeyBytes,
+          "exposure selection key did not preserve its closed variants");
+  auto trailingSelectionKeyBytes = selectionKeyBytes;
+  trailingSelectionKeyBytes.push_back(0);
+  requireError(loom::mapping::decodeServicePlanSelectionKey(
+                   trailingSelectionKeyBytes, fixture.dataflowIdentity),
+               "selection-key codec accepted trailing bytes");
+  auto unknownSelectionKeyBytes = selectionKeyBytes;
+  unknownSelectionKeyBytes[3] = 2;
+  requireError(loom::mapping::decodeServicePlanSelectionKey(
+                   unknownSelectionKeyBytes, fixture.dataflowIdentity),
+               "selection-key codec accepted an unknown anchor variant");
+
+  auto missingSelection = buildSystem(context, fixture);
+  auto missingSelectionRoot =
+      mlir::cast<::mapping::SystemOp>(missingSelection.get());
+  auto missingSelectionService = *missingSelectionRoot.getBody()
+                                      .front()
+                                      .getOps<::mapping::ServiceRealizationOp>()
+                                      .begin();
+  auto selectionToErase = *missingSelectionService.getBody()
+                               .front()
+                               .getOps<::mapping::ServicePlanSelectionOp>()
+                               .begin();
+  selectionToErase.erase();
+  requireVerificationFailure(missingSelection.get(),
+                             "requires at least one ServicePlanSelection");
+
+  auto duplicateSelection = buildSystem(context, fixture);
+  auto duplicateSelectionRoot =
+      mlir::cast<::mapping::SystemOp>(duplicateSelection.get());
+  auto duplicateSelectionService =
+      *duplicateSelectionRoot.getBody()
+           .front()
+           .getOps<::mapping::ServiceRealizationOp>()
+           .begin();
+  auto selectionToClone = *duplicateSelectionService.getBody()
+                               .front()
+                               .getOps<::mapping::ServicePlanSelectionOp>()
+                               .begin();
+  duplicateSelectionService.getBody().front().push_back(
+      selectionToClone->clone());
+  requireVerificationFailure(duplicateSelection.get(),
+                             "duplicates a ServicePlanSelection key");
+
+  auto absentPlan = buildSystem(context, fixture);
+  auto absentPlanRoot = mlir::cast<::mapping::SystemOp>(absentPlan.get());
+  auto absentPlanService = *absentPlanRoot.getBody()
+                                .front()
+                                .getOps<::mapping::ServiceRealizationOp>()
+                                .begin();
+  auto absentPlanSelection = *absentPlanService.getBody()
+                                  .front()
+                                  .getOps<::mapping::ServicePlanSelectionOp>()
+                                  .begin();
+  absentPlanSelection->setAttr("default_plan_ordinal",
+                               mlir::Builder(&context).getI64IntegerAttr(99));
+  requireVerificationFailure(absentPlan.get(),
+                             "names an absent ServicePlan ordinal");
+  {
+    mlir::ScopedDiagnosticHandler capture(
+        &context, [](mlir::Diagnostic &) { return mlir::success(); });
+    requireError(
+        loom::mapping::writeCanonicalSystemMappingAssembly(absentPlanRoot),
+        "canonical writer repaired an absent plan ordinal");
+  }
+
+  auto unusedPlan = buildSystem(context, fixture);
+  auto unusedPlanRoot = mlir::cast<::mapping::SystemOp>(unusedPlan.get());
+  auto unusedPlanService = *unusedPlanRoot.getBody()
+                                .front()
+                                .getOps<::mapping::ServiceRealizationOp>()
+                                .begin();
+  auto authoredPlan = *unusedPlanService.getBody()
+                           .front()
+                           .getOps<::mapping::ServicePlanOp>()
+                           .begin();
+  auto clonedPlan = mlir::cast<::mapping::ServicePlanOp>(authoredPlan->clone());
+  clonedPlan.setPlanOrdinalAttr(mlir::Builder(&context).getI64IntegerAttr(8));
+  unusedPlanService.getBody().front().push_back(clonedPlan);
+  requireVerificationFailure(unusedPlan.get(),
+                             "contains an unselected ServicePlan ordinal");
+
+  auto wrongAnchor = buildSystem(context, fixture);
+  auto wrongAnchorRoot = mlir::cast<::mapping::SystemOp>(wrongAnchor.get());
+  auto wrongAnchorService = *wrongAnchorRoot.getBody()
+                                 .front()
+                                 .getOps<::mapping::ServiceRealizationOp>()
+                                 .begin();
+  auto wrongAnchorSelection = *wrongAnchorService.getBody()
+                                   .front()
+                                   .getOps<::mapping::ServicePlanSelectionOp>()
+                                   .begin();
+  dataflow::ContextualActorRef actor{
+      rootedGraph,
+      dataflow::ActorRef{fixture.dataflowIdentity, dataflow::ActorId(13)}};
+  loom::mapping::ServicePlanSelectionKey wrongKey{
+      loom::mapping::ServiceMemberPlanSelectionAnchor{
+          dataflow::ServiceMemberRef(
+              dataflow::AddressedMemoryActorMemberRef{actor})},
+      instructionContext};
+  wrongAnchorSelection.setKeyAttr(::mapping::ServicePlanSelectionKeyAttr::get(
+      &context,
+      denseBytes(&context, take(loom::mapping::encodeServicePlanSelectionKey(
+                               fixture.dataflowIdentity, wrongKey)))));
+  requireVerificationFailure(
+      wrongAnchor.get(),
+      "transfer obligation requires its singleton MessageTransfer anchor");
 
   auto authored = buildSystem(context, fixture);
   auto first = take(loom::mapping::writeCanonicalSystemMappingAssembly(
@@ -246,6 +434,40 @@ int main() {
       mlir::cast<::mapping::SystemOp>(authored.get())));
   require(first.bytes() == second.bytes(),
           "System service route canonicalization is nondeterministic");
+  auto duplicatePlanSystem = buildSystem(context, fixture);
+  auto duplicatePlanRoot =
+      mlir::cast<::mapping::SystemOp>(duplicatePlanSystem.get());
+  auto duplicatePlanService = *duplicatePlanRoot.getBody()
+                                   .front()
+                                   .getOps<::mapping::ServiceRealizationOp>()
+                                   .begin();
+  auto originalPlan = *duplicatePlanService.getBody()
+                           .front()
+                           .getOps<::mapping::ServicePlanOp>()
+                           .begin();
+  auto equivalentPlan =
+      mlir::cast<::mapping::ServicePlanOp>(originalPlan->clone());
+  equivalentPlan.setPlanOrdinalAttr(
+      mlir::Builder(&context).getI64IntegerAttr(8));
+  duplicatePlanService.getBody().front().push_back(equivalentPlan);
+  auto duplicatePlanSelection =
+      *duplicatePlanService.getBody()
+           .front()
+           .getOps<::mapping::ServicePlanSelectionOp>()
+           .begin();
+  mlir::OpBuilder duplicateBuilder(&context);
+  duplicateBuilder.setInsertionPointToEnd(
+      &duplicatePlanSelection.getBody().front());
+  ::mapping::ServicePlanPresburgerClauseOp::create(
+      duplicateBuilder, duplicateBuilder.getUnknownLoc(),
+      duplicateBuilder.getArrayAttr({::mapping::SystemPresburgerCellAttr::get(
+          &context, 0, 0, duplicateBuilder.getArrayAttr({}),
+          duplicateBuilder.getArrayAttr({}))}),
+      8);
+  auto deduplicated = take(
+      loom::mapping::writeCanonicalSystemMappingAssembly(duplicatePlanRoot));
+  require(deduplicated.bytes() == first.bytes(),
+          "equivalent service plans were not canonically deduplicated");
   auto alternate = buildSystem(context, fixture, 41, 0, true);
   auto alternateBytes = take(loom::mapping::writeCanonicalSystemMappingAssembly(
       mlir::cast<::mapping::SystemOp>(alternate.get())));
@@ -268,6 +490,10 @@ int main() {
       *root.getBody().front().getOps<::mapping::ServiceRealizationOp>().begin();
   auto plan =
       *service.getBody().front().getOps<::mapping::ServicePlanOp>().begin();
+  auto selection = *service.getBody()
+                        .front()
+                        .getOps<::mapping::ServicePlanSelectionOp>()
+                        .begin();
   auto route = *plan.getBody()
                     .front()
                     .getOps<::mapping::TransferLegRealizationOp>()
@@ -276,9 +502,13 @@ int main() {
       *route.getBody().front().getOps<::mapping::SystemRouteNodeOp>().begin();
   auto sink =
       *route.getBody().front().getOps<::mapping::SystemRouteSinkOp>().begin();
-  require(plan.getPlanOrdinal() == 0 && node.getNodeOrdinal() == 1 &&
-              node.getParentNodeOrdinal() == 0 && sink.getNodeOrdinal() == 1,
-          "System route ordinals were not canonically renumbered");
+  require(
+      plan.getPlanOrdinal() == 0 &&
+          selection->getAttrOfType<mlir::IntegerAttr>("default_plan_ordinal")
+                  .getInt() == 0 &&
+          node.getNodeOrdinal() == 1 && node.getParentNodeOrdinal() == 0 &&
+          sink.getNodeOrdinal() == 1,
+      "System service ordinals were not canonically renumbered");
   require(route.getRootEndpoint() ==
               fabricAttr<::mapping::FabricTransportEndpointRefAttr>(
                   &context, fixture.source),

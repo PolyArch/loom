@@ -65,6 +65,11 @@ def Mapping_SystemServiceObligationKeyAttr
           "SystemServiceObligationKey", "system_service_obligation_key",
           "Mapping-owned System service-obligation key">;
 
+def Mapping_ServicePlanSelectionKeyAttr
+    : Mapping_CanonicalBytesAttr<
+          "ServicePlanSelectionKey", "service_plan_selection_key",
+          "Mapping-owned contextual System service-plan selection key">;
+
 def Mapping_CanonicalServiceLegKeyAttr
     : Mapping_CanonicalBytesAttr<
           "CanonicalServiceLegKey", "canonical_service_leg_key",

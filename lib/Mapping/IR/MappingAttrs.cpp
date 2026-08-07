@@ -137,6 +137,17 @@ LogicalResult mapping::SystemServiceObligationKeyAttr::verify(
   return success();
 }
 
+LogicalResult mapping::ServicePlanSelectionKeyAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  auto decoded = ::loom::mapping::decodeServicePlanSelectionKey(
+      unsignedBytes(record), dummyIdentity());
+  if (!decoded) {
+    emitError() << llvm::toString(decoded.takeError());
+    return failure();
+  }
+  return success();
+}
+
 LogicalResult mapping::CanonicalServiceLegKeyAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
   auto decoded = ::loom::mapping::decodeCanonicalServiceLegKey(

@@ -13,6 +13,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -650,7 +651,137 @@ appendExposureRows(const ::loom::fabric::FabricSystemRootView &fabric,
 llvm::Error appendMessageRows(
     const ::loom::fabric::FabricSystemRootView &fabric,
     const ::loom::mapping::SystemServiceObligationProjection &obligation,
-    const ResolvedServiceMember &member, SystemSearchServiceDomain &domain) {
+    const ResolvedServiceMember &member,
+    llvm::ArrayRef<SystemSearchBindingDomain> bindings,
+    SystemSearchServiceDomain &domain) {
+  const auto compatibleCores = [&](::dataflow::RootThreadLaunchRef root)
+      -> llvm::Expected<std::vector<::loom::fabric::AccCoreOccurrenceRef>> {
+    std::vector<::loom::fabric::AccCoreOccurrenceRef> result;
+    for (const SystemSearchBindingDomain &binding : bindings) {
+      const auto *boundRoot =
+          std::get_if<::dataflow::RootThreadLaunchRef>(&binding.key);
+      if (!boundRoot || *boundRoot != root)
+        continue;
+      for (const SystemSearchAtom &atom : binding.atoms) {
+        const auto *thread =
+            std::get_if<SystemThreadBindingDomain>(&atom.domain);
+        if (!thread)
+          return invalid("root thread binding has a non-thread atom domain");
+        result.insert(result.end(), thread->compatibleAccCores.begin(),
+                      thread->compatibleAccCores.end());
+      }
+    }
+    canonicalizeFabricRefs(result);
+    if (result.empty())
+      return invalid("message terminal has no legal AccCore owner domain");
+    return result;
+  };
+
+  struct AllowedOwnerDomain final {
+    bool host = false;
+    std::vector<::loom::fabric::AccCoreOccurrenceRef> accCores;
+  };
+  const auto rootBoundaryOwner =
+      [&](const ::dataflow::RootThreadBoundaryTransferRef &transfer,
+          bool source) -> llvm::Expected<AllowedOwnerDomain> {
+    const bool completion =
+        std::holds_alternative<::dataflow::RootThreadCompletionTransferRef>(
+            transfer);
+    const bool host = completion != source;
+    if (host)
+      return AllowedOwnerDomain{true, {}};
+    const ::dataflow::RootThreadLaunchRef root =
+        std::visit([](const auto &value) { return value.launch; }, transfer);
+    auto cores = compatibleCores(root);
+    if (!cores)
+      return cores.takeError();
+    return AllowedOwnerDomain{false, std::move(*cores)};
+  };
+  const auto producerOwner =
+      [&](const ::dataflow::CanonicalProducerTerminalRef &producer)
+      -> llvm::Expected<AllowedOwnerDomain> {
+    if (const auto *root =
+            std::get_if<::dataflow::RootThreadBoundarySourceRef>(&producer))
+      return rootBoundaryOwner(root->transfer, true);
+    if (const auto *graph =
+            std::get_if<::dataflow::GraphLaunchBoundarySourceRef>(&producer)) {
+      const auto root = std::visit(
+          [](const auto &value) { return value.launch.rootThreadLaunch; },
+          graph->transfer);
+      auto cores = compatibleCores(root);
+      if (!cores)
+        return cores.takeError();
+      return AllowedOwnerDomain{false, std::move(*cores)};
+    }
+    const auto &channel =
+        std::get<::dataflow::ChannelProducerTerminalRef>(producer).producer;
+    const auto root = std::visit(
+        [](const auto &value) {
+          if constexpr (std::is_same_v<
+                            std::decay_t<decltype(value)>,
+                            ::dataflow::GraphStreamOutputProducerRef>)
+            return value.launch.rootThreadLaunch;
+          else
+            return value.launch;
+        },
+        channel);
+    auto cores = compatibleCores(root);
+    if (!cores)
+      return cores.takeError();
+    return AllowedOwnerDomain{false, std::move(*cores)};
+  };
+  const auto sinkOwner = [&](const ::dataflow::CanonicalSinkTerminalRef &sink)
+      -> llvm::Expected<AllowedOwnerDomain> {
+    if (const auto *root =
+            std::get_if<::dataflow::RootThreadBoundarySinkRef>(&sink))
+      return rootBoundaryOwner(root->transfer, false);
+    if (const auto *graph =
+            std::get_if<::dataflow::GraphLaunchBoundarySinkRef>(&sink)) {
+      const auto root = std::visit(
+          [](const auto &value) { return value.launch.rootThreadLaunch; },
+          graph->transfer);
+      auto cores = compatibleCores(root);
+      if (!cores)
+        return cores.takeError();
+      return AllowedOwnerDomain{false, std::move(*cores)};
+    }
+    const auto &channel =
+        std::get<::dataflow::ChannelConsumerTerminalRef>(sink).consumer;
+    const auto root = std::visit(
+        [](const auto &value) {
+          if constexpr (std::is_same_v<std::decay_t<decltype(value)>,
+                                       ::dataflow::GraphStreamInputConsumerRef>)
+            return value.launch.rootThreadLaunch;
+          else
+            return value.launch;
+        },
+        channel);
+    auto cores = compatibleCores(root);
+    if (!cores)
+      return cores.takeError();
+    return AllowedOwnerDomain{false, std::move(*cores)};
+  };
+  const auto endpointAllowed =
+      [&](::loom::fabric::SystemServiceEndpointRef endpoint,
+          const AllowedOwnerDomain &allowed) -> llvm::Expected<bool> {
+    const auto *owner = fabric.serviceEndpointOwner(endpoint);
+    if (!owner)
+      return invalid("message service endpoint has no owner");
+    if (const auto *host = std::get_if<::loom::fabric::HostCoreOccurrenceRef>(
+            &owner->owner().payload))
+      return allowed.host &&
+             llvm::is_contained(fabric.artifact().hostCoreOccurrences(), *host);
+    if (const auto *core = std::get_if<::loom::fabric::AccCoreOccurrenceRef>(
+            &owner->owner().payload))
+      return !allowed.host && llvm::is_contained(allowed.accCores, *core);
+    return false;
+  };
+
+  const auto *producer =
+      std::get_if<::loom::mapping::TransferObligationFamilyKey>(
+          &obligation.key);
+  if (!producer)
+    return invalid("message obligation has a non-transfer key");
   for (const auto &leg : obligation.legs) {
     auto direction = ::dataflow::semantics::getCanonicalServiceLegDirection(
         member.kind, leg.ordinal);
@@ -659,7 +790,16 @@ llvm::Error appendMessageRows(
     for (const bool source : {true, false}) {
       const std::size_t sinkCount = source ? 1 : obligation.sinks.size();
       for (std::size_t sink = 0; sink < sinkCount; ++sink) {
+        auto allowed = source ? producerOwner(*producer)
+                              : sinkOwner(obligation.sinks[sink]);
+        if (!allowed)
+          return allowed.takeError();
         for (const auto endpoint : fabric.artifact().systemServiceEndpoints()) {
+          auto admitted = endpointAllowed(endpoint, *allowed);
+          if (!admitted)
+            return admitted.takeError();
+          if (!*admitted)
+            continue;
           const auto *capabilities =
               fabric.serviceEndpointCapabilities(endpoint);
           if (!capabilities ||
@@ -739,6 +879,7 @@ projectSystemServiceDomains(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
+    llvm::ArrayRef<SystemSearchBindingDomain> bindings,
     llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog,
     const SystemFrozenConstraintIndex &constraints, bool flatGraphSearch) {
   auto obligations =
@@ -787,8 +928,8 @@ projectSystemServiceDomains(
       if (members.size() != 1 ||
           members.front().kind != ServiceKind::MessageTransfer)
         return invalid("message obligation does not have one message member");
-      if (llvm::Error error =
-              appendMessageRows(fabric, obligation, members.front(), domain))
+      if (llvm::Error error = appendMessageRows(
+              fabric, obligation, members.front(), bindings, domain))
         return std::move(error);
     } else {
       for (auto [memberRef, member] :
@@ -919,8 +1060,9 @@ llvm::Error validateSystemServiceDomains(
   auto catalog = importSpatialCatalog(spatialMappings, dataflow, fabric, store);
   if (!catalog)
     return catalog.takeError();
-  auto expected = projectSystemServiceDomains(dataflow, fabric, roots, *catalog,
-                                              constraints, flatGraphSearch);
+  auto expected =
+      projectSystemServiceDomains(dataflow, fabric, roots, bindings, *catalog,
+                                  constraints, flatGraphSearch);
   if (!expected)
     return expected.takeError();
   if (services.size() != expected->size())

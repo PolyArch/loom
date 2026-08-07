@@ -6,6 +6,7 @@
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -644,9 +645,11 @@ int main() {
        llvm::zip_equal(domain.serviceObligations(), obligations)) {
     require(service.key == obligation.key,
             "H service obligations are not in canonical key order");
-    require(service.targetCompatibility.empty() &&
-                service.transferTerminalCompatibility.empty(),
-            "operation service without a legal graph target acquired a row");
+    if (std::holds_alternative<
+            loom::mapping::OperationServiceObligationFamilyKey>(service.key))
+      require(service.targetCompatibility.empty() &&
+                  service.transferTerminalCompatibility.empty(),
+              "operation service without a legal graph target acquired a row");
   }
 
   const auto &service = memoryServiceDomain(domain);
@@ -791,6 +794,44 @@ int main() {
       fail(llvm::toString(std::move(error)));
   auto messageObligations = take(loom::mapping::projectSystemServiceObligations(
       messageView, messageRoots));
+  const auto producerOwnedByHost =
+      [](const dataflow::CanonicalProducerTerminalRef &producer) {
+        const auto *root =
+            std::get_if<dataflow::RootThreadBoundarySourceRef>(&producer);
+        return root &&
+               !std::holds_alternative<
+                   dataflow::RootThreadCompletionTransferRef>(root->transfer);
+      };
+  const auto sinkOwnedByHost = [](const dataflow::CanonicalSinkTerminalRef
+                                      &sink) {
+    const auto *root = std::get_if<dataflow::RootThreadBoundarySinkRef>(&sink);
+    return root &&
+           std::holds_alternative<dataflow::RootThreadCompletionTransferRef>(
+               root->transfer);
+  };
+  const auto executionEndpointCount =
+      [&](llvm::ArrayRef<loom::fabric::FabricTransportEndpointRef> endpoints,
+          bool host) {
+        return static_cast<std::size_t>(
+            llvm::count_if(endpoints, [&](const auto &endpoint) {
+              const auto *service =
+                  std::get_if<loom::fabric::SystemServiceEndpointRef>(
+                      &endpoint.owner.payload);
+              if (!service)
+                return false;
+              const auto *owner =
+                  transformSystem.serviceEndpointOwner(*service);
+              if (!owner)
+                return false;
+              const bool isHost =
+                  std::holds_alternative<loom::fabric::HostCoreOccurrenceRef>(
+                      owner->owner().payload);
+              const bool isAcc =
+                  std::holds_alternative<loom::fabric::AccCoreOccurrenceRef>(
+                      owner->owner().payload);
+              return (isHost || isAcc) && isHost == host;
+            }));
+      };
   std::size_t directlyAdmittedObligations = 0;
   for (const auto &messageService : messageDomain.serviceObligations()) {
     const auto *producer =
@@ -820,8 +861,42 @@ int main() {
       const auto *bound = std::get_if<loom::pnr::SystemMessageTerminalEndpoint>(
           &terminal.boundEndpoint);
       require(bound, "MessageTransfer acquired a memory endpoint row");
+      const auto *endpoint =
+          std::get_if<loom::fabric::SystemServiceEndpointRef>(
+              &bound->endpoint.owner.payload);
+      require(endpoint,
+              "MessageTransfer row is not owned by a direct service endpoint");
+      const auto *owner = transformSystem.serviceEndpointOwner(*endpoint);
+      require(owner,
+              "MessageTransfer row has no direct service endpoint owner");
+      require(std::holds_alternative<loom::fabric::HostCoreOccurrenceRef>(
+                  owner->owner().payload) ||
+                  std::holds_alternative<loom::fabric::AccCoreOccurrenceRef>(
+                      owner->owner().payload),
+              "MessageTransfer admitted a nonexecution endpoint owner");
+      const auto *capabilities =
+          transformSystem.serviceEndpointCapabilities(*endpoint);
+      require(capabilities,
+              "MessageTransfer endpoint has no capability domain");
+      bool endpointAdmitted = false;
+      const auto wanted =
+          take(dataflow::encodeCanonicalType(producerView->payloadType));
+      for (const auto &capability : capabilities->capabilities()) {
+        if (capability.kind() !=
+            dataflow::semantics::ServiceKind::MessageTransfer)
+          continue;
+        const auto *messages =
+            std::get_if<loom::fabric::MessageTransferCapabilityDomain>(
+                &capability.domain());
+        require(messages,
+                "MessageTransfer capability has a non-message domain");
+        for (mlir::Type payload : messages->payloadTypes())
+          endpointAdmitted |=
+              take(dataflow::encodeCanonicalType(payload)).bytes() ==
+              wanted.bytes();
+      }
       const std::vector<loom::fabric::FabricTransportEndpointRef> expected =
-          directlyAdmitted
+          endpointAdmitted
               ? std::vector<
                     loom::fabric::FabricTransportEndpointRef>{bound->endpoint}
               : std::vector<loom::fabric::FabricTransportEndpointRef>{};
@@ -839,11 +914,18 @@ int main() {
                 "MessageTransfer sink row bound the wrong endpoint");
       }
     }
-    require(sourceCount ==
-                obligation->legs.size() * expectedMessageSources.size(),
+    const std::size_t expectedSourceCount =
+        obligation->legs.size() *
+        executionEndpointCount(expectedMessageSources,
+                               producerOwnedByHost(*producer));
+    std::size_t expectedSinkCount = 0;
+    for (const auto &sink : obligation->sinks)
+      expectedSinkCount +=
+          executionEndpointCount(expectedMessageSinks, sinkOwnedByHost(sink));
+    expectedSinkCount *= obligation->legs.size();
+    require(sourceCount == expectedSourceCount,
             "MessageTransfer omitted or added a source terminal");
-    require(sinkCount == obligation->legs.size() * obligation->sinks.size() *
-                             expectedMessageSinks.size(),
+    require(sinkCount == expectedSinkCount,
             "MessageTransfer omitted or added a sink terminal");
   }
   require(directlyAdmittedObligations > 0,

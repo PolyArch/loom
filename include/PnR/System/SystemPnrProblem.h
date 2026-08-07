@@ -76,6 +76,18 @@ struct FrozenSystemGraphExecutionDecision final {
 
 struct FrozenSystemTransferTerminal final {
   ::loom::mapping::SystemTransferTerminalKey key;
+  bool fixedHostOwner = false;
+  PnrIndex ownerThreadDecision = getInvalidPnrIndex();
+  PnrIndex ownerDomainOffset = 0;
+  PnrIndex ownerDomainCount = 0;
+};
+
+using FrozenSystemTransferTerminalOwner =
+    std::variant<::loom::fabric::HostCoreOccurrenceRef,
+                 ::loom::fabric::AccCoreOccurrenceRef>;
+
+struct FrozenSystemTransferTerminalOwnerDomain final {
+  FrozenSystemTransferTerminalOwner owner;
   PnrIndex endpointChoiceOffset = 0;
   PnrIndex endpointChoiceCount = 0;
 };
@@ -146,6 +158,10 @@ public:
   llvm::ArrayRef<FrozenSystemTransferTerminal> serviceTerminals() const {
     return serviceTerminals_;
   }
+  llvm::ArrayRef<FrozenSystemTransferTerminalOwnerDomain>
+  serviceTerminalOwnerDomains(PnrIndex terminal) const;
+  llvm::ArrayRef<PnrIndex> serviceTerminalOwnerEndpointChoices(
+      const FrozenSystemTransferTerminalOwnerDomain &domain) const;
   llvm::ArrayRef<SystemSearchServiceDomain> serviceDomains() const {
     return serviceDomains_;
   }
@@ -161,8 +177,6 @@ public:
   }
   llvm::ArrayRef<PnrIndex> threadChoiceCatalogOrdinals(PnrIndex decision) const;
   llvm::ArrayRef<PnrIndex> graphChoiceCatalogOrdinals(PnrIndex decision) const;
-  llvm::ArrayRef<PnrIndex>
-  serviceTerminalEndpointChoices(PnrIndex terminal) const;
   llvm::ArrayRef<PnrIndex> serviceLegSinkTerminals(PnrIndex leg) const;
   PnrIndex accCoreTargetClass(PnrIndex core) const;
   PnrIndex spatialMappingTargetClass(PnrIndex mapping) const;
@@ -187,6 +201,8 @@ private:
       std::vector<PnrIndex> graphThreadOverlaps,
       FrozenEndpointRoutingTopology routingTopology,
       std::vector<FrozenSystemTransferTerminal> serviceTerminals,
+      std::vector<FrozenSystemTransferTerminalOwnerDomain>
+          serviceTerminalOwnerDomains,
       std::vector<PnrIndex> serviceTerminalEndpointChoices,
       std::vector<SystemSearchServiceDomain> serviceDomains,
       std::vector<FrozenSystemServiceContext> serviceContexts,
@@ -214,6 +230,8 @@ private:
   std::vector<PnrIndex> graphThreadOverlaps_;
   FrozenEndpointRoutingTopology routingTopology_;
   std::vector<FrozenSystemTransferTerminal> serviceTerminals_;
+  std::vector<FrozenSystemTransferTerminalOwnerDomain>
+      serviceTerminalOwnerDomains_;
   std::vector<PnrIndex> serviceTerminalEndpointChoices_;
   std::vector<SystemSearchServiceDomain> serviceDomains_;
   std::vector<FrozenSystemServiceContext> serviceContexts_;

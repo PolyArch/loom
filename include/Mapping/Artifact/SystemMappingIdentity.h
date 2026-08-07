@@ -3,6 +3,7 @@
 
 #include "Common/Artifact.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/Identity/FabricRefs.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -21,6 +22,61 @@ using OperationServiceObligationFamilyKey =
 using SystemServiceObligationKey =
     std::variant<TransferObligationFamilyKey,
                  OperationServiceObligationFamilyKey>;
+
+struct InstructionExecutionContextKey final {
+  ::loom::fabric::AccCoreOccurrenceRef accCore;
+
+  friend bool operator==(const InstructionExecutionContextKey &lhs,
+                         const InstructionExecutionContextKey &rhs) {
+    return lhs.accCore == rhs.accCore;
+  }
+};
+
+struct SpatialExecutionContextKey final {
+  ::loom::fabric::AccCoreOccurrenceRef accCore;
+  ArtifactIdentity spatialMapping;
+
+  friend bool operator==(const SpatialExecutionContextKey &lhs,
+                         const SpatialExecutionContextKey &rhs) {
+    return lhs.accCore == rhs.accCore &&
+           lhs.spatialMapping == rhs.spatialMapping;
+  }
+};
+
+using ExecutionContextKey =
+    std::variant<InstructionExecutionContextKey, SpatialExecutionContextKey>;
+
+struct ServiceMemberPlanSelectionAnchor final {
+  ::dataflow::ServiceMemberRef member;
+
+  friend bool operator==(const ServiceMemberPlanSelectionAnchor &lhs,
+                         const ServiceMemberPlanSelectionAnchor &rhs) {
+    return lhs.member == rhs.member;
+  }
+};
+
+struct MemoryExposurePlanSelectionAnchor final {
+  ::dataflow::MemoryExposureRef exposure;
+
+  friend bool operator==(const MemoryExposurePlanSelectionAnchor &lhs,
+                         const MemoryExposurePlanSelectionAnchor &rhs) {
+    return lhs.exposure == rhs.exposure;
+  }
+};
+
+using ServicePlanSelectionAnchor =
+    std::variant<ServiceMemberPlanSelectionAnchor,
+                 MemoryExposurePlanSelectionAnchor>;
+
+struct ServicePlanSelectionKey final {
+  ServicePlanSelectionAnchor anchor;
+  ExecutionContextKey context;
+
+  friend bool operator==(const ServicePlanSelectionKey &lhs,
+                         const ServicePlanSelectionKey &rhs) {
+    return lhs.anchor == rhs.anchor && lhs.context == rhs.context;
+  }
+};
 
 struct CanonicalServiceLegKey final {
   SystemServiceObligationKey obligation;
@@ -73,6 +129,28 @@ encodeSystemServiceObligationKey(const ArtifactIdentity &dataflowIdentity,
 llvm::Expected<SystemServiceObligationKey>
 decodeSystemServiceObligationKey(llvm::ArrayRef<std::uint8_t> bytes,
                                  const ArtifactIdentity &dataflowIdentity);
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeExecutionContextKey(const ExecutionContextKey &key);
+
+llvm::Expected<ExecutionContextKey>
+decodeExecutionContextKey(llvm::ArrayRef<std::uint8_t> bytes);
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeServicePlanSelectionAnchor(const ArtifactIdentity &dataflowIdentity,
+                                 const ServicePlanSelectionAnchor &anchor);
+
+llvm::Expected<ServicePlanSelectionAnchor>
+decodeServicePlanSelectionAnchor(llvm::ArrayRef<std::uint8_t> bytes,
+                                 const ArtifactIdentity &dataflowIdentity);
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeServicePlanSelectionKey(const ArtifactIdentity &dataflowIdentity,
+                              const ServicePlanSelectionKey &key);
+
+llvm::Expected<ServicePlanSelectionKey>
+decodeServicePlanSelectionKey(llvm::ArrayRef<std::uint8_t> bytes,
+                              const ArtifactIdentity &dataflowIdentity);
 
 llvm::Expected<std::vector<std::uint8_t>>
 encodeCanonicalServiceLegKey(const ArtifactIdentity &dataflowIdentity,

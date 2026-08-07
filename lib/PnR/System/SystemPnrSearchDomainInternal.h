@@ -129,6 +129,7 @@ projectSystemServiceDomains(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
+    llvm::ArrayRef<SystemSearchBindingDomain> bindings,
     llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog,
     const SystemFrozenConstraintIndex &constraints, bool flatGraphSearch);
 

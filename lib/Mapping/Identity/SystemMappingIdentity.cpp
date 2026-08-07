@@ -2,6 +2,7 @@
 
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -136,6 +137,31 @@ struct MutableObligation final {
   SystemServiceObligationProjection projection;
 };
 
+llvm::Expected<ServicePlanSelectionAnchor>
+decodeServicePlanSelectionAnchorPrefix(Reader &reader,
+                                       const ArtifactIdentity &owner) {
+  auto kind = reader.u32();
+  if (!kind)
+    return kind.takeError();
+  if (*kind == 0) {
+    auto member =
+        decodeDataflowBytes<::dataflow::ServiceMemberRef>(reader, owner);
+    if (!member)
+      return member.takeError();
+    return ServicePlanSelectionAnchor{
+        ServiceMemberPlanSelectionAnchor{std::move(*member)}};
+  }
+  if (*kind == 1) {
+    auto exposure =
+        decodeDataflowBytes<::dataflow::MemoryExposureRef>(reader, owner);
+    if (!exposure)
+      return exposure.takeError();
+    return ServicePlanSelectionAnchor{
+        MemoryExposurePlanSelectionAnchor{std::move(*exposure)}};
+  }
+  return invalid("unknown service-plan selection-anchor kind");
+}
+
 } // namespace
 
 llvm::Expected<Bytes>
@@ -210,6 +236,146 @@ decodeSystemServiceObligationKey(llvm::ArrayRef<std::uint8_t> bytes,
   if (llvm::ArrayRef(*canonical) != bytes)
     return invalid("service-obligation key is not canonical");
   return std::move(*result);
+}
+
+llvm::Expected<Bytes>
+encodeExecutionContextKey(const ExecutionContextKey &key) {
+  Bytes result;
+  if (const auto *instruction =
+          std::get_if<InstructionExecutionContextKey>(&key)) {
+    appendU32(result, 0);
+    appendSized(result,
+                ::loom::fabric::canonicalFabricBytes(instruction->accCore));
+    return result;
+  }
+  const auto &spatial = std::get<SpatialExecutionContextKey>(key);
+  appendU32(result, 1);
+  appendSized(result, ::loom::fabric::canonicalFabricBytes(spatial.accCore));
+  appendSized(result, spatial.spatialMapping.bytes());
+  return result;
+}
+
+llvm::Expected<ExecutionContextKey>
+decodeExecutionContextKey(llvm::ArrayRef<std::uint8_t> bytes) {
+  Reader reader(bytes);
+  auto kind = reader.u32();
+  if (!kind)
+    return kind.takeError();
+  auto coreBytes = reader.sized();
+  if (!coreBytes)
+    return coreBytes.takeError();
+  auto core =
+      ::loom::fabric::decodeFabricRef<::loom::fabric::AccCoreOccurrenceRef>(
+          *coreBytes);
+  if (!core)
+    return core.takeError();
+  const Bytes canonicalCore = ::loom::fabric::canonicalFabricBytes(*core);
+  if (llvm::ArrayRef(canonicalCore) != *coreBytes)
+    return invalid("execution-context AccCore reference is not canonical");
+
+  std::optional<ExecutionContextKey> result;
+  if (*kind == 0) {
+    result = InstructionExecutionContextKey{std::move(*core)};
+  } else if (*kind == 1) {
+    auto identityBytes = reader.sized();
+    if (!identityBytes)
+      return identityBytes.takeError();
+    auto spatialMapping = ArtifactIdentity::fromBytes(*identityBytes);
+    if (!spatialMapping)
+      return spatialMapping.takeError();
+    result = SpatialExecutionContextKey{std::move(*core),
+                                        std::move(*spatialMapping)};
+  } else {
+    return invalid("unknown execution-context kind");
+  }
+  if (!reader.empty())
+    return invalid("trailing execution-context bytes");
+  auto canonical = encodeExecutionContextKey(*result);
+  if (!canonical)
+    return canonical.takeError();
+  if (llvm::ArrayRef(*canonical) != bytes)
+    return invalid("execution-context key is not canonical");
+  return std::move(*result);
+}
+
+llvm::Expected<Bytes>
+encodeServicePlanSelectionAnchor(const ArtifactIdentity &dataflowIdentity,
+                                 const ServicePlanSelectionAnchor &anchor) {
+  Bytes result;
+  if (const auto *member =
+          std::get_if<ServiceMemberPlanSelectionAnchor>(&anchor)) {
+    appendU32(result, 0);
+    auto payload = dataflowBytes(dataflowIdentity, member->member);
+    if (!payload)
+      return payload.takeError();
+    appendSized(result, *payload);
+    return result;
+  }
+  appendU32(result, 1);
+  auto payload = dataflowBytes(
+      dataflowIdentity,
+      std::get<MemoryExposurePlanSelectionAnchor>(anchor).exposure);
+  if (!payload)
+    return payload.takeError();
+  appendSized(result, *payload);
+  return result;
+}
+
+llvm::Expected<ServicePlanSelectionAnchor>
+decodeServicePlanSelectionAnchor(llvm::ArrayRef<std::uint8_t> bytes,
+                                 const ArtifactIdentity &dataflowIdentity) {
+  Reader reader(bytes);
+  auto result =
+      decodeServicePlanSelectionAnchorPrefix(reader, dataflowIdentity);
+  if (!result)
+    return result.takeError();
+  if (!reader.empty())
+    return invalid("trailing service-plan selection-anchor bytes");
+  auto canonical = encodeServicePlanSelectionAnchor(dataflowIdentity, *result);
+  if (!canonical)
+    return canonical.takeError();
+  if (llvm::ArrayRef(*canonical) != bytes)
+    return invalid("service-plan selection anchor is not canonical");
+  return std::move(*result);
+}
+
+llvm::Expected<Bytes>
+encodeServicePlanSelectionKey(const ArtifactIdentity &dataflowIdentity,
+                              const ServicePlanSelectionKey &key) {
+  auto anchor = encodeServicePlanSelectionAnchor(dataflowIdentity, key.anchor);
+  if (!anchor)
+    return anchor.takeError();
+  auto context = encodeExecutionContextKey(key.context);
+  if (!context)
+    return context.takeError();
+  Bytes result = std::move(*anchor);
+  appendSized(result, *context);
+  return result;
+}
+
+llvm::Expected<ServicePlanSelectionKey>
+decodeServicePlanSelectionKey(llvm::ArrayRef<std::uint8_t> bytes,
+                              const ArtifactIdentity &dataflowIdentity) {
+  Reader reader(bytes);
+  auto anchor =
+      decodeServicePlanSelectionAnchorPrefix(reader, dataflowIdentity);
+  if (!anchor)
+    return anchor.takeError();
+  auto contextBytes = reader.sized();
+  if (!contextBytes)
+    return contextBytes.takeError();
+  auto context = decodeExecutionContextKey(*contextBytes);
+  if (!context)
+    return context.takeError();
+  if (!reader.empty())
+    return invalid("trailing service-plan selection-key bytes");
+  ServicePlanSelectionKey result{std::move(*anchor), std::move(*context)};
+  auto canonical = encodeServicePlanSelectionKey(dataflowIdentity, result);
+  if (!canonical)
+    return canonical.takeError();
+  if (llvm::ArrayRef(*canonical) != bytes)
+    return invalid("service-plan selection key is not canonical");
+  return result;
 }
 
 llvm::Expected<Bytes>

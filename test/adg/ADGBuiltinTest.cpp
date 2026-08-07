@@ -110,7 +110,8 @@ void builtinPresetsExpandThroughPublicBuilder() {
                 1 &&
             entityCount(
                 root.view(),
-                loom::fabric::FabricEntityKind::SystemServiceEndpoint) == 1,
+                loom::fabric::FabricEntityKind::SystemServiceEndpoint) ==
+                1 + 2 * (expected.accCores + 1),
         "builtin lost its SpatialCore, AccCore, or System memory inventory");
 
     auto systemView = take(test, loom::fabric::requireSystemRoot(root.view()));
@@ -206,6 +207,35 @@ void builtinPresetsExpandThroughPublicBuilder() {
     }
     require(test, projectedAccCores == expected.accCores,
             "builtin System view lost an AccCore InstructionCore contract");
+    std::size_t hostMessageEndpoints = 0;
+    std::size_t accMessageEndpoints = 0;
+    for (const auto endpoint : systemView.artifact().systemServiceEndpoints()) {
+      const auto *capabilities =
+          systemView.serviceEndpointCapabilities(endpoint);
+      if (!capabilities ||
+          capabilities->plane() !=
+              loom::fabric::CanonicalServiceEndpointPlane::Transport)
+        continue;
+      require(test,
+              capabilities->capabilities().size() == 1 &&
+                  capabilities->capabilities().front().kind() ==
+                      dataflow::semantics::ServiceKind::MessageTransfer,
+              "builtin message endpoint has a foreign capability");
+      const auto *owner = systemView.serviceEndpointOwner(endpoint);
+      require(test, owner, "builtin message endpoint has no owner");
+      if (std::holds_alternative<loom::fabric::HostCoreOccurrenceRef>(
+              owner->owner().payload))
+        ++hostMessageEndpoints;
+      else if (std::holds_alternative<loom::fabric::AccCoreOccurrenceRef>(
+                   owner->owner().payload))
+        ++accMessageEndpoints;
+      else
+        fail(test, "builtin message endpoint has a nonexecution owner");
+    }
+    require(test,
+            hostMessageEndpoints == 2 &&
+                accMessageEndpoints == 2 * expected.accCores,
+            "builtin execution owners lack paired message endpoints");
     std::size_t memoryAttachments = 0;
     for (const auto &attachment : systemView.spatialAttachments()) {
       if (attachment.spatialEndpoint.plane() !=

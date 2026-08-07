@@ -953,14 +953,26 @@ int main() {
       memoryConstraints, store));
   std::vector<std::uint32_t> operationLegWidths;
   for (const auto &leg : bindingProblem->serviceLegs())
-    if (leg.serviceContext != loom::pnr::getInvalidPnrIndex())
+    if (std::holds_alternative<
+            loom::mapping::OperationServiceObligationFamilyKey>(
+            leg.key.obligation))
       operationLegWidths.push_back(leg.requiredPayloadWidthBits);
   llvm::sort(operationLegWidths);
   require(operationLegWidths == std::vector<std::uint32_t>({0, 32, 64, 64}),
           "operation service legs lost their maximum-width envelopes");
-  require(bindingProblem->serviceContexts().size() == 1,
+  std::vector<loom::pnr::PnrIndex> memoryContextOrdinals;
+  for (const auto &[ordinal, serviceContext] :
+       llvm::enumerate(bindingProblem->serviceContexts()))
+    if (serviceContext.service < bindingProblem->serviceDomains().size() &&
+        std::holds_alternative<
+            loom::mapping::OperationServiceObligationFamilyKey>(
+            bindingProblem->serviceDomains()[serviceContext.service].key))
+      memoryContextOrdinals.push_back(
+          static_cast<loom::pnr::PnrIndex>(ordinal));
+  require(memoryContextOrdinals.size() == 1,
           "one graph-backed memory obligation did not form one context");
-  const auto &memoryContext = bindingProblem->serviceContexts().front();
+  const auto &memoryContext =
+      bindingProblem->serviceContexts()[memoryContextOrdinals.front()];
   std::vector<loom::pnr::PnrIndex> memoryThreadChoices(
       bindingProblem->threadDecisions().size(), 0);
   std::vector<loom::pnr::PnrIndex> memoryGraphChoices(
@@ -983,7 +995,8 @@ int main() {
   memoryThreadChoices[memoryContext.threadDecision] = supportedChoice;
   auto supportedCandidate = take(loom::pnr::initializeSystemCandidate(
       bindingProblem, memoryThreadChoices, memoryGraphChoices));
-  auto selectedTargetDomain = take(supportedCandidate->serviceTargetDomain(0));
+  auto selectedTargetDomain = take(
+      supportedCandidate->serviceTargetDomain(memoryContextOrdinals.front()));
   const auto *selectedRegions =
       std::get_if<std::vector<loom::fabric::FabricMemoryServiceRegionRef>>(
           &selectedTargetDomain);
@@ -1349,6 +1362,14 @@ int main() {
   std::size_t materializedRouteCount = 0;
   for (auto service :
        firstRoot.getBody().front().getOps<::mapping::ServiceRealizationOp>()) {
+    auto selections =
+        service.getBody().front().getOps<::mapping::ServicePlanSelectionOp>();
+    require(selections.begin() != selections.end(),
+            "materialized service has no contextual plan selection");
+    for (auto selection : selections)
+      take(loom::mapping::decodeServicePlanSelectionKey(
+          unsignedBytes(selection.getKey().getRecord()),
+          problem->dataflowIdentity()));
     require(llvm::hasSingleElement(
                 service.getBody().front().getOps<::mapping::ServicePlanOp>()),
             "materialized service has more than one selected plan");
@@ -1717,11 +1738,17 @@ int main() {
     require(found, "graph domain lost a compatible target class");
   }
   threadChoices[0] = sameClassFirst;
-  auto sameClassBase = take(loom::pnr::SystemCandidateState::create(
-      problem, withCanonicalRoutes(threadChoices, graphChoices)));
+  auto sameClassBase = take(loom::pnr::initializeSystemCandidate(
+      problem, threadChoices, graphChoices));
   threadChoices[0] = sameClassSecond;
-  auto alternate = take(loom::pnr::SystemCandidateState::create(
-      problem, withCanonicalRoutes(threadChoices, graphChoices)));
+  requireFailureContains(
+      loom::pnr::SystemCandidateState::create(
+          problem, {threadChoices, graphChoices, sameClassBase->serviceRoutes(),
+                    sameClassBase->serviceRouteNodes(),
+                    sameClassBase->serviceRouteSinks()}),
+      "is not admitted by H");
+  auto alternate = take(loom::pnr::initializeSystemCandidate(
+      problem, threadChoices, graphChoices));
   if (llvm::Error error = alternate->verify())
     fail(llvm::toString(std::move(error)));
   require(alternate->selectedAccCore(0) != sameClassBase->selectedAccCore(0),

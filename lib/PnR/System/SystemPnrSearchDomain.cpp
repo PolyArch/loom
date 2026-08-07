@@ -1134,14 +1134,6 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
       return canonical.takeError();
     flatCatalog.emplace(std::move(*canonical));
   }
-  auto services = detail::projectSystemServiceDomains(
-      dataflow, fabric, *roots, *catalog, *constraintIndex,
-      hierarchical == nullptr);
-  if (!services)
-    return services.takeError();
-  if (llvm::Error error =
-          canonicalizeServiceDomains(*services, dataflow.identity()))
-    return std::move(error);
   std::vector<::loom::fabric::AccCoreOccurrenceRef> cores =
       detail::canonicalSystemAccCores(fabric);
 
@@ -1187,6 +1179,15 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
       binding.atoms.push_back({std::move(cell), domain});
     bindings.push_back(std::move(binding));
   }
+
+  auto services = detail::projectSystemServiceDomains(
+      dataflow, fabric, *roots, bindings, *catalog, *constraintIndex,
+      hierarchical == nullptr);
+  if (!services)
+    return services.takeError();
+  if (llvm::Error error =
+          canonicalizeServiceDomains(*services, dataflow.identity()))
+    return std::move(error);
 
   ArtifactRootReference dataflowReference = dataflowRootReference(dataflow);
   ArtifactRootReference fabricReference = fabricRootReference(fabric);
