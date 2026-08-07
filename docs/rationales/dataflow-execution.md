@@ -189,10 +189,21 @@ already have stable owners. Giving every leaf an EntityId would duplicate
 structure and amplify identity churn; generic paths would create a second
 schema interpreter. Dataflow therefore owns closed owner-relative references.
 
-An event family is the static produced or consumed transfer terminal. Its
-logical coordinate and launch-parameter projection is mechanically derived
-from the exact program rather than persisted again. Runtime occurrences and
-Physical Tags remain transient execution and Mapping facts.
+An event family is either a static produced or consumed transfer terminal or
+one rooted contextual actor transition already defined by OperationSchema.
+The latter is necessary when a selected System service resource is activated
+by an internal memory or fence actor: no thread, graph, or channel boundary
+terminal denotes that issue. Its logical coordinate and launch-parameter
+projection is mechanically derived from the exact program rather than
+persisted again. Runtime occurrences and Physical Tags remain transient
+execution and Mapping facts.
+
+Using a rooted actor transition avoids two competing authorities. Mapping does
+not invent a service request event, and operand order does not accidentally
+choose which consumption represents an atomic firing. Reserving the provider
+for a whole graph launch is also rejected because an exposed capability or an
+idle graph does not imply a dynamic access. Dataflow owns the firing event,
+while the selected Fabric UsePattern owns service timing and completion.
 
 The same ownership rule applies to thread definitions. A root launch already
 has persistent identity and an exact callee relation, while logical coordinates

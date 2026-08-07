@@ -2563,14 +2563,20 @@ Service kind and local legs from the actor semantics. A memory exposure is not
 a service member and has no request or response leg; it is a capability
 boundary selected by a service target binding or Mapping exposure entry.
 
-System resource-time anchors reuse transfer terminals:
+System resource-time anchors reuse transfer terminals and rooted actor
+transitions already owned by Dataflow:
 
 ```text
 StaticTransferEventRef =
     Produced(CanonicalProducerTerminalRef)
   | Consumed(CanonicalSinkTerminalRef)
 
-EventFamilyKey = StaticTransferEventRef
+ContextualActorTransitionEventRef =
+  (ContextualActorRef, transition_case_ordinal)
+
+EventFamilyKey =
+    Transfer(StaticTransferEventRef)
+  | ActorTransition(ContextualActorTransitionEventRef)
 
 EventLogicalInputSlot =
     Coordinate(event-domain coordinate ordinal)
@@ -2581,8 +2587,16 @@ EventLogicalProjection(EventFamilyKey) =
 ```
 
 There is no static-event `EntityId`, and the projection is not a field of the
-key. Every terminal resolves through the exact program to one rooted logical
-event domain. `Coordinate` indexes that domain's canonical coordinate
+key. Every terminal and contextual actor transition resolves through the exact
+program to one rooted logical event domain. The transition ordinal resolves
+in the exact actor's canonical `ActorHandshakeCase` projection from
+OperationSchema. It is not a service-local request ID, a Mapping event, or a
+second transition catalog. For every addressed-memory and fence actor, the
+unique transition-case commit is issue of one logical operation as specified
+by `docs/spec-dataflow-memory-consistency.md`; a missing or non-unique issue
+transition is invalid for a System resource-time anchor.
+
+`Coordinate` indexes the resolved event domain's canonical coordinate
 inventory. `LaunchParameter` indexes the owning root thread launch's canonical
 parameter inventory. That inventory contains the launch extents in coordinate
 order followed by ordinary `bodyOperands` of `index` or signless-integer type
@@ -2623,10 +2637,13 @@ repeat slot_count times:
   u64be(slot_ordinal)
 ```
 
-`EventFamilyKey` canonical comparison wire is exactly the
-`StaticTransferEventRef` wire: zero-based `u32be` `Produced` or `Consumed`,
-followed by the recursively encoded terminal reference. Closed-union variants
-use declaration-order `u32be` discriminants; Dataflow `EntityId` and
+`EventFamilyKey` canonical comparison wire starts with the zero-based `u32be`
+declaration-order discriminant `Transfer` or `ActorTransition`. `Transfer` is
+followed by the existing `StaticTransferEventRef` wire: its zero-based
+`u32be` `Produced` or `Consumed` discriminant and recursively encoded terminal
+reference. `ActorTransition` is followed by the recursively encoded
+`ContextualActorRef` and the `u64be` transition-case ordinal. Closed-union
+variants use declaration-order `u32be` discriminants; Dataflow `EntityId` and
 owner-local ordinals use `u64be`; nested structural references are encoded in
 field order. When the containing artifact already binds the exact Canonical
 Dataflow identity, the local wire omits that repeated identity; a standalone
@@ -2644,8 +2661,9 @@ derived projection, any applicable separately owned DynamicWork item identity,
 and a transient occurrence handle. Concrete values, dynamic item identity, and
 the handle never enter Artifact identity, Mapping keys, channel ordering, or
 Physical Tag assignment. SpatialMapping-local actor activity remains owned by
-the SpatialMapping and is rebased to these System-visible boundary events only
-by the derived SystemMapping closure.
+the SpatialMapping. System closure uses the rooted contextual form only when a
+selected System resource is activated by that exact actor transition; it does
+not copy the SpatialMapping record or create another dynamic occurrence.
 
 ### Canonical Semantic Relation Graph
 

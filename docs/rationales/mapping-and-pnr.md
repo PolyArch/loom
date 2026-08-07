@@ -743,6 +743,38 @@ Hierarchical System PnR reuses immutable SpatialMappings. A flattened global
 mode remains a search option, not a different artifact authority. Both produce
 the same SystemMapping schema and face the same final verifier.
 
+## Why System Service Uses Reuse Dataflow Actor Transitions
+
+System service occupancy needs a rooted event for each addressed-memory or
+fence actor issue. The existing system transfer-event domain covers thread,
+graph, and channel boundaries, but an internal graph actor is not one of those
+terminals. Choosing an arbitrary operand consumption would make operand order
+an accidental lifecycle authority, while reserving the provider for the whole
+graph launch would turn request capacity into coarse launch residency.
+
+Dataflow already owns the essential fact: the OperationSchema
+`ActorHandshakeCase` whose commit is one memory issue. `EventFamilyKey`
+therefore composes the existing static transfer reference with a rooted
+contextual actor-transition reference. Mapping stores only that reference;
+the Canonical Dataflow memory contract keeps issue semantics, and Fabric keeps
+UsePattern timing and completion. This adds no Mapping-local request ID,
+service state machine, or copied event projection.
+
+The same ownership split explains why a memory exposure creates no use on its
+own. It identifies that a memory capability crosses a graph boundary, not that
+an access occurred. Treating exposure as a graph-long reservation would reject
+otherwise legal overlap and charge resources for programs that never issue an
+external access. A future external-access workflow must first define its own
+invocation event domain; SystemMapping cannot manufacture one.
+
+Service ResourceUse points at the natural key of an existing ServicePlan
+child. The selected Fabric use-pattern reference records the only additional
+choice. Persisting a capability ordinal would duplicate a match that can be
+recomputed from the bound endpoint, actor contract, target region, and chosen
+pattern. Persisting a branch predicate would similarly duplicate the selected
+Fabric transform. Deriving both keeps one semantic owner and still allows PnR
+to compare genuinely different admissible patterns under capacity pressure.
+
 ## Why The System Search Domain Does Not Select Targets
 
 System binding relations can cover large Presburger domains or finite dynamic

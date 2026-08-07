@@ -872,10 +872,25 @@ A plan element referenced by ResourceUse has the structural reference:
 ```text
 ServicePlanElementRef =
   (ServiceRealizationKey, canonical plan ordinal, typed element key)
+
+ServicePlanElementKey =
+    TransferLegElement { CanonicalServiceLegKey }
+  | MemoryRegionElement {
+      LogicalMemoryRootOrViewRef
+      LogicalMemoryInterval
+      FabricMemoryServiceRegionRef
+      ordered array<SystemServiceTransformRef>
+    }
+  | ConsistencyElement {
+      FenceActorFamilyRef
+      MemoryConsistencyDomainRef
+    }
 ```
 
-The typed element key is the natural key of the closed child kind, such as a
-`CanonicalServiceLegKey` or a Fabric physical-refinement domain. A service
+The typed element key is exactly the natural structural key of the referenced
+closed `ServicePlan` child. A `MemoryRegionElement` deliberately excludes its
+derived exposure children, and no element key copies a selected use pattern,
+capability ordinal, execution context, or plan-selection predicate. A service
 leg always uses the member-relative structural key owned by
 `docs/spec-mapping-identity.md`. Its member reference selects the exact
 Dataflow-derived operation or transfer member. The Canonical Service Schema
@@ -1015,12 +1030,23 @@ or any other dynamic MemoryConsistencyDomain state.
 ### System ResourceUse
 
 SystemMapping uses the same closed ResourceUse shape as SpatialMapping.
-InstructionCore-resident uses reference their ExecutionBinding and derived
-`InstructionCoreContextRef`; service-plan uses reference the exact
-`ServicePlanElementRef`. Applicability is mechanically derived from the
-owning contextual plan-selection rows. A ResourceUse cannot copy that
-predicate or plan
-choice, nor select a different target, context, configuration, route, or
+Its closed owner union is:
+
+```text
+SystemResourceOwnerRef =
+    InstructionExecutionResourceOwnerRef {
+      RootThreadLaunchRef
+      InstructionCoreContextRef
+    }
+  | ServicePlanElementRef
+```
+
+The root-thread reference is the exact `ThreadExecutionBinding` key, and the
+context must be the one mechanically derived from an AccCore selected by that
+binding. Service-plan uses reference the exact child key defined above.
+Applicability is mechanically derived from the owning execution-binding or
+contextual plan-selection rows. A ResourceUse cannot copy that predicate or
+plan choice, nor select a different target, context, configuration, route, or
 service. Its use site must resolve a Fabric-owned use pattern exposed by the
 selected owner.
 
@@ -1033,14 +1059,45 @@ relative_activation:
           | causal_event(EventFamilyKey + optional guaranteed offset)
 ```
 
-`EventFamilyKey` is exactly the Dataflow-owned `StaticTransferEventRef` alias.
-It does not contain concrete coordinates, launch-parameter values, a copied
-logical projection, or a Mapping-local event ID. Every trigger and causal
-release imports the exact Dataflow-derived `EventLogicalProjection`; runtime
-binds concrete values for that schema when the corresponding occurrence is
-observed. Two records referring to the same static event therefore use one
-key, while context and parameter relations own any legal variation across its
-logical domain.
+`EventFamilyKey` is exactly the Dataflow-owned closed union of transfer events
+and rooted contextual actor transitions defined by the Closed Structural
+Reference Catalog in `docs/spec-compiler-part-3-dfg.md`. The latter is the
+rooted form of the same OperationSchema-owned actor-transition fact used by
+Spatial ResourceUse, not a service issue ID or a second event catalog. The key
+contains no concrete coordinates, launch-parameter values, copied logical
+projection, or Mapping-local event ID. Every trigger and causal release
+imports the exact Dataflow-derived `EventLogicalProjection`; runtime binds
+concrete values for that schema when the corresponding occurrence is observed.
+Two records referring to the same static event therefore use one key, while
+context and parameter relations own any legal variation across its logical
+domain.
+
+InstructionCore occupancy for one root/context pair triggers on the consumed
+root-start transfer event and uses the produced root-completion transfer event
+as its causal release. An addressed-memory or fence service use triggers on
+the unique issue transition of its exact contextual actor. The Canonical
+Dataflow memory contract defines that transition commit as issue of one
+logical operation; the selected Fabric UsePattern supplies intrinsic
+completion. A missing or non-unique issue transition rejects finalization.
+
+For every addressed or fence member selected by a plan, each independent
+Fabric ResourceContract required by the selected service capability and
+consistency target contributes exactly one ResourceUse. An addressed service
+use is owned by its exact `MemoryRegionElement`; a fence use is owned by its
+exact `ConsistencyElement`. The selected `use_site_ref` must be one admissible
+pattern of a matching capability on the derived bound provider. When several
+patterns remain legal, PnR selects one and persists that choice only as the
+ordinary `use_site_ref`; it never persists the capability ordinal. An
+interleaved or coherent target branch is applicable only on the source-address
+subset mechanically derived from the selected Fabric transform contract.
+
+A `MemoryExposureRef` identifies a capability crossing, not a dynamic service
+request, and Dataflow deliberately defines no event occurrence for it.
+Selecting an exposure target therefore creates no ResourceUse by itself.
+Actual external accesses require an independently specified invocation event
+domain before they can create occupancy; Mapping must not approximate them by
+holding a provider for the whole graph launch. Static claims implied by a
+selected transport traversal likewise remain derived and are not duplicated.
 
 Offsets are legal only when guaranteed by the Fabric service contract.
 `intrinsic` uses the Fabric pattern's finite or periodic completion contract.

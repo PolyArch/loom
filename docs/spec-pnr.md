@@ -1156,8 +1156,30 @@ Mapping 3.0 derives each Fabric-owned `InstructionCoreContextRef` from the
 selected AccCore and its one-per-AccCore cardinality. A selected service
 plan element is addressed by
 `ServicePlanElementRef = (ServiceRealizationKey, canonical plan ordinal,
-typed element key)`. Neither reference creates a second target-selection
-decision.
+typed element key)`, where the element key is exactly the natural key of the
+referenced TransferLeg, MemoryRegion, or Consistency child owned by
+`docs/spec-mapping-artifact.md`. Neither reference creates a second
+target-selection decision.
+
+System resource closure derives one InstructionCore use for every reachable
+root/context pair in `B_thread`. It triggers on consumed root start and releases
+causally on produced root completion. For an addressed-memory or fence member,
+closure derives the unique rooted actor issue transition from Dataflow's
+OperationSchema-owned `ActorHandshakeCase`, then selects exactly one admissible
+Fabric UsePattern for every independently required service or consistency
+ResourceContract. That pattern selection is a Candidate decision when more
+than one legal pattern remains; the persistent `use_site_ref` is its only
+authority. Capability ordinals, matching predicates, and selected-plan copies
+never enter Mapping.
+
+Provider-branch applicability is rebuilt from the exact selected Fabric
+transform relation and the source address domain. A branch-local claim cannot
+be charged to every address, omitted for an address it serves, or moved to a
+different provider with an equivalent pattern. A memory exposure alone derives
+no claim because it is not a Dataflow event. Static route claims remain
+traversal-derived. Missing, duplicate, foreign, non-admissible, or
+wrong-activation System ResourceUse records reject strict import and final
+verification.
 
 Any discrepancy between selected decisions and a rebuildable cache is an
 internal invariant failure. Full owners report the drift and terminate the
