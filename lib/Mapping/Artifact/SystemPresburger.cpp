@@ -13,6 +13,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <tuple>
 #include <utility>
 
 namespace loom::mapping {
@@ -116,6 +117,30 @@ SystemPresburgerCell cellFromPolyhedron(const IntegerPolyhedron &polyhedron) {
     cell.inequalities.emplace_back(row.begin(), row.end());
   }
   return cell;
+}
+
+llvm::Expected<std::vector<SystemPresburgerCell>>
+cellsFromSet(const PresburgerSet &set) {
+  std::vector<SystemPresburgerCell> cells;
+  cells.reserve(set.getNumDisjuncts());
+  for (const IntegerRelation &disjunct : set.getAllDisjuncts()) {
+    if (disjunct.isIntegerEmpty())
+      continue;
+    auto cell = canonicalizeSystemPresburgerCell(
+        cellFromPolyhedron(IntegerPolyhedron(disjunct)));
+    if (!cell)
+      return cell.takeError();
+    cells.push_back(std::move(*cell));
+  }
+  llvm::sort(cells, [](const SystemPresburgerCell &lhs,
+                       const SystemPresburgerCell &rhs) {
+    return std::tie(lhs.dimensionCount, lhs.symbolCount, lhs.localCount,
+                    lhs.equalities, lhs.inequalities) <
+           std::tie(rhs.dimensionCount, rhs.symbolCount, rhs.localCount,
+                    rhs.equalities, rhs.inequalities);
+  });
+  cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+  return cells;
 }
 
 } // namespace
@@ -295,6 +320,29 @@ intersectSystemPresburgerCells(const SystemPresburgerCell &lhs,
   if (!canonical)
     return canonical.takeError();
   return std::optional<SystemPresburgerCell>(std::move(*canonical));
+}
+
+llvm::Expected<SystemPresburgerSetSplit>
+splitSystemPresburgerSet(llvm::ArrayRef<SystemPresburgerCell> domain,
+                         llvm::ArrayRef<SystemPresburgerCell> predicate) {
+  if (domain.empty())
+    return SystemPresburgerSetSplit{};
+  const PresburgerSpace space = PresburgerSpace::getSetSpace(
+      domain.front().dimensionCount, domain.front().symbolCount,
+      /*numLocals=*/0);
+  auto domainSet = makeUnion(domain, space);
+  if (!domainSet)
+    return domainSet.takeError();
+  auto predicateSet = makeUnion(predicate, space);
+  if (!predicateSet)
+    return predicateSet.takeError();
+  auto inside = cellsFromSet(domainSet->intersect(*predicateSet).coalesce());
+  if (!inside)
+    return inside.takeError();
+  auto outside = cellsFromSet(domainSet->subtract(*predicateSet).coalesce());
+  if (!outside)
+    return outside.takeError();
+  return SystemPresburgerSetSplit{std::move(*inside), std::move(*outside)};
 }
 
 llvm::Expected<bool>

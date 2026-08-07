@@ -259,6 +259,21 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
     std::map<PnrIndex, PlanGroup> plans;
   };
   std::map<std::vector<std::uint8_t>, ServiceGroup> serviceGroups;
+  for (const auto &[contextOrdinal, context] :
+       llvm::enumerate(problem.serviceContexts())) {
+    if (context.service >= problem.serviceDomains().size())
+      return invalid("service context has no H service domain");
+    const auto &obligation = problem.serviceDomains()[context.service].key;
+    auto keyBytes = ::loom::mapping::encodeSystemServiceObligationKey(
+        problem.dataflowIdentity(), obligation);
+    if (!keyBytes)
+      return keyBytes.takeError();
+    auto service =
+        serviceGroups.try_emplace(*keyBytes, ServiceGroup{obligation, {}})
+            .first;
+    service->second.plans.try_emplace(static_cast<PnrIndex>(contextOrdinal),
+                                      PlanGroup{});
+  }
   for (const auto &[routeOrdinal, route] :
        llvm::enumerate(candidate.serviceRoutes())) {
     if (route.leg >= problem.serviceLegs().size())
@@ -272,10 +287,9 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
         problem.dataflowIdentity(), leg.obligation);
     if (!keyBytes)
       return keyBytes.takeError();
-    auto found = serviceGroups
-                     .try_emplace(*keyBytes,
-                                  ServiceGroup{leg.obligation, {}})
-                     .first;
+    auto found =
+        serviceGroups.try_emplace(*keyBytes, ServiceGroup{leg.obligation, {}})
+            .first;
     auto plan =
         found->second.plans.try_emplace(serviceContext, PlanGroup{}).first;
     plan->second.routes.push_back(static_cast<PnrIndex>(routeOrdinal));
@@ -369,19 +383,18 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
       const auto core =
           candidate.selectedAccCore(serviceContext.threadDecision);
       ::loom::mapping::ExecutionContextKey executionContext;
-      const ::loom::mapping::SystemPresburgerCell *cell = nullptr;
       if (serviceContext.graphDecision != getInvalidPnrIndex()) {
         if (serviceContext.graphDecision >= problem.graphDecisions().size())
           return invalid("service selection has an invalid graph dependency");
         executionContext = ::loom::mapping::SpatialExecutionContextKey{
             core, candidate.selectedSpatialMapping(serviceContext.graphDecision)
                       .artifact};
-        cell = &problem.graphDecisions()[serviceContext.graphDecision].cell;
       } else {
         executionContext =
             ::loom::mapping::InstructionExecutionContextKey{core};
-        cell = &problem.threadDecisions()[serviceContext.threadDecision].cell;
       }
+      if (serviceContext.cells.empty())
+        return invalid("service context has no selection relation cell");
       for (const SystemServiceTargetSubject &subject :
            serviceContext.subjects) {
         ::loom::mapping::ServicePlanSelectionAnchor anchor;
@@ -400,7 +413,8 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
           return selectionBytes.takeError();
         auto selection =
             selections.try_emplace(*selectionBytes, SelectionDraft{}).first;
-        selection->second.clauses.push_back({*cell, authoredOrdinal});
+        for (const auto &cell : serviceContext.cells)
+          selection->second.clauses.push_back({cell, authoredOrdinal});
       }
     }
     for (const auto &[selectionBytes, selection] : selections) {

@@ -175,7 +175,8 @@ llvm::Expected<TerminalOwnerDependency> terminalOwnerDependency(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::SystemTransferTerminalKey &terminal,
     const FrozenSystemServiceContext &context,
-    llvm::ArrayRef<FrozenSystemThreadExecutionDecision> threadDecisions) {
+    llvm::ArrayRef<FrozenSystemThreadExecutionDecision> threadDecisions,
+    std::optional<PnrIndex> exactOwnerThreadDecision = std::nullopt) {
   const bool source =
       std::holds_alternative<::loom::mapping::SystemTransferSourceTerminalKey>(
           terminal);
@@ -263,6 +264,13 @@ llvm::Expected<TerminalOwnerDependency> terminalOwnerDependency(
         },
         channel);
   }
+  if (exactOwnerThreadDecision) {
+    if (*exactOwnerThreadDecision >= threadDecisions.size() ||
+        threadDecisions[*exactOwnerThreadDecision].root != *ownerRoot)
+      return invalid("message sink applicability has a foreign owner decision");
+    return TerminalOwnerDependency{false, *exactOwnerThreadDecision};
+  }
+
   if (context.threadDecision < threadDecisions.size() &&
       threadDecisions[context.threadDecision].root == *ownerRoot)
     return TerminalOwnerDependency{false, context.threadDecision};
@@ -534,6 +542,35 @@ llvm::Expected<FrozenSystemRoutingData> freezeSystemRouting(
         return invalid("service leg has no execution context");
 
       for (PnrIndex context : contexts) {
+        struct ApplicableSink final {
+          const MergedServiceTerminal *terminal = nullptr;
+          std::optional<PnrIndex> ownerThreadDecision;
+        };
+        std::vector<ApplicableSink> applicableSinks;
+        if (producer &&
+            std::holds_alternative<::dataflow::ChannelProducerTerminalRef>(
+                *producer)) {
+          for (const FrozenSystemApplicableMessageSink &applicable :
+               serviceContexts[context].applicableMessageSinks) {
+            const auto found = llvm::find_if(
+                draft.sinks, [&](const MergedServiceTerminal *sink) {
+                  const auto *key = std::get_if<
+                      ::loom::mapping::SystemTransferSinkTerminalKey>(
+                      &sink->key);
+                  return key && key->sinkOrdinal == applicable.sinkOrdinal;
+                });
+            if (found == draft.sinks.end())
+              return invalid(
+                  "channel applicability names an absent sink terminal");
+            applicableSinks.push_back({*found, applicable.ownerThreadDecision});
+          }
+        } else {
+          for (const MergedServiceTerminal *sink : draft.sinks)
+            applicableSinks.push_back({sink, std::nullopt});
+        }
+        if (applicableSinks.empty())
+          continue;
+
         std::optional<TerminalOwnerDependency> sourceOwner;
         if (producer) {
           auto dependency = terminalOwnerDependency(dataflow, draft.source->key,
@@ -550,21 +587,22 @@ llvm::Expected<FrozenSystemRoutingData> freezeSystemRouting(
             checked(serviceLegSinkContext, result.legSinks.size());
         if (!sinkOffset)
           return sinkOffset.takeError();
-        for (const auto *sink : draft.sinks) {
+        for (const ApplicableSink &sink : applicableSinks) {
           std::optional<TerminalOwnerDependency> sinkOwner;
           if (producer) {
             auto dependency = terminalOwnerDependency(
-                dataflow, sink->key, serviceContexts[context], threadDecisions);
+                dataflow, sink.terminal->key, serviceContexts[context],
+                threadDecisions, sink.ownerThreadDecision);
             if (!dependency)
               return dependency.takeError();
             sinkOwner = *dependency;
           }
-          auto terminal = appendTerminal(*sink, sinkOwner);
+          auto terminal = appendTerminal(*sink.terminal, sinkOwner);
           if (!terminal)
             return terminal.takeError();
           result.legSinks.push_back(*terminal);
         }
-        auto sinkCount = checked(serviceLegSinkContext, draft.sinks.size());
+        auto sinkCount = checked(serviceLegSinkContext, applicableSinks.size());
         if (!sinkCount)
           return sinkCount.takeError();
         if (llvm::Error error = preflightPnrIndexCapacity(
@@ -910,6 +948,147 @@ buildRelations(const Catalogs &catalogs, const Decisions &decisions,
   return std::make_unique<detail::InitializerRelationModel>(std::move(*model));
 }
 
+llvm::Expected<::loom::mapping::SystemPresburgerCell>
+serviceContextCell(const Decisions &decisions, PnrIndex graphDecision,
+                   PnrIndex threadDecision) {
+  if (threadDecision >= decisions.threads.size())
+    return invalid("service context has an invalid thread decision");
+  if (graphDecision == getInvalidPnrIndex())
+    return decisions.threads[threadDecision].cell;
+  if (graphDecision >= decisions.graphs.size())
+    return invalid("service context has an invalid graph decision");
+  auto intersection = ::loom::mapping::intersectSystemPresburgerCells(
+      decisions.threads[threadDecision].cell,
+      decisions.graphs[graphDecision].cell);
+  if (!intersection)
+    return intersection.takeError();
+  if (!*intersection)
+    return invalid("service context execution cells do not intersect");
+  return std::move(**intersection);
+}
+
+llvm::Expected<::loom::mapping::SystemPresburgerCell>
+liftImageSymbols(::loom::mapping::SystemPresburgerCell image,
+                 std::uint32_t symbolCount) {
+  if (image.symbolCount == symbolCount)
+    return image;
+  if (image.symbolCount != 0)
+    return invalid("channel source_map image has a foreign symbol signature");
+  const std::size_t insertion = image.dimensionCount;
+  for (auto &row : image.equalities)
+    row.insert(row.begin() + insertion, symbolCount, 0);
+  for (auto &row : image.inequalities)
+    row.insert(row.begin() + insertion, symbolCount, 0);
+  image.symbolCount = symbolCount;
+  return ::loom::mapping::canonicalizeSystemPresburgerCell(image);
+}
+
+::dataflow::RootThreadLaunchRef
+channelConsumerRoot(const ::dataflow::ChannelConsumerRef &consumer) {
+  return std::visit(
+      [](const auto &value) {
+        using Consumer = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<Consumer,
+                                     ::dataflow::GraphStreamInputConsumerRef>)
+          return value.launch.rootThreadLaunch;
+        else
+          return value.launch;
+      },
+      consumer);
+}
+
+llvm::Expected<std::vector<FrozenSystemServiceContext>>
+partitionChannelServiceContext(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::dataflow::ChannelProducerTerminalRef &producer,
+    FrozenSystemServiceContext base, const Decisions &decisions) {
+  auto consumers = dataflow.channelConsumers(producer.producer);
+  if (!consumers)
+    return consumers.takeError();
+  if (base.cells.size() != 1)
+    return invalid(
+        "channel producer context must start from one execution cell");
+
+  std::vector<FrozenSystemServiceContext> partitions{std::move(base)};
+  for (const auto &[sinkOrdinal, consumer] : llvm::enumerate(*consumers)) {
+    const auto consumerRoot = channelConsumerRoot(consumer.consumer);
+    bool covered = false;
+    for (const auto &[ownerOrdinal, owner] :
+         llvm::enumerate(decisions.threads)) {
+      if (owner.root != consumerRoot)
+        continue;
+      covered = true;
+      ::loom::mapping::SystemPresburgerCell image;
+      if (consumer.sourceMap) {
+        auto projected = ::loom::mapping::imageSystemPresburgerCell(
+            owner.cell, *consumer.sourceMap);
+        if (!projected)
+          return projected.takeError();
+        auto lifted =
+            liftImageSymbols(std::move(*projected),
+                             partitions.front().cells.front().symbolCount);
+        if (!lifted)
+          return lifted.takeError();
+        image = std::move(*lifted);
+      } else {
+        if (owner.cell.dimensionCount != 0 ||
+            partitions.front().cells.front().dimensionCount != 0)
+          return invalid("ranked direct channel receive has no source_map");
+        image = partitions.front().cells.front();
+      }
+
+      std::vector<FrozenSystemServiceContext> refined;
+      for (FrozenSystemServiceContext &partition : partitions) {
+        auto split = ::loom::mapping::splitSystemPresburgerSet(
+            partition.cells, llvm::ArrayRef(image));
+        if (!split)
+          return split.takeError();
+        if (!split->outside.empty()) {
+          FrozenSystemServiceContext outside = partition;
+          outside.cells = std::move(split->outside);
+          refined.push_back(std::move(outside));
+        }
+        if (!split->inside.empty()) {
+          partition.cells = std::move(split->inside);
+          FrozenSystemApplicableMessageSink applicable{
+              static_cast<::dataflow::StructuralOrdinal>(sinkOrdinal),
+              static_cast<PnrIndex>(ownerOrdinal)};
+          if (!llvm::is_contained(partition.applicableMessageSinks, applicable))
+            partition.applicableMessageSinks.push_back(applicable);
+          llvm::sort(partition.applicableMessageSinks, [](const auto &lhs,
+                                                          const auto &rhs) {
+            return std::tie(lhs.sinkOrdinal, lhs.ownerThreadDecision) <
+                   std::tie(rhs.sinkOrdinal, rhs.ownerThreadDecision);
+          });
+          refined.push_back(std::move(partition));
+        }
+      }
+      partitions = std::move(refined);
+    }
+    if (!covered)
+      return invalid("channel consumer has no execution-owner decision");
+  }
+
+  std::map<std::vector<std::pair<std::uint64_t, PnrIndex>>, std::size_t>
+      groupOrdinals;
+  std::vector<FrozenSystemServiceContext> grouped;
+  for (FrozenSystemServiceContext &partition : partitions) {
+    std::vector<std::pair<std::uint64_t, PnrIndex>> key;
+    key.reserve(partition.applicableMessageSinks.size());
+    for (const auto &sink : partition.applicableMessageSinks)
+      key.emplace_back(sink.sinkOrdinal, sink.ownerThreadDecision);
+    auto [found, inserted] = groupOrdinals.try_emplace(key, grouped.size());
+    if (inserted) {
+      grouped.push_back(std::move(partition));
+      continue;
+    }
+    auto &cells = grouped[found->second].cells;
+    cells.insert(cells.end(), std::make_move_iterator(partition.cells.begin()),
+                 std::make_move_iterator(partition.cells.end()));
+  }
+  return grouped;
+}
+
 llvm::Expected<std::vector<FrozenSystemServiceContext>>
 buildServiceContexts(const ::dataflow::CanonicalDataflowProgramView &dataflow,
                      llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
@@ -967,8 +1146,30 @@ buildServiceContexts(const ::dataflow::CanonicalDataflowProgramView &dataflow,
              llvm::enumerate(decisions.threads)) {
           if (thread.root != *threadRoot)
             continue;
-          result.push_back({*serviceIndex, getInvalidPnrIndex(),
-                            static_cast<PnrIndex>(threadOrdinal), subjects});
+          auto cell = serviceContextCell(decisions, getInvalidPnrIndex(),
+                                         static_cast<PnrIndex>(threadOrdinal));
+          if (!cell)
+            return cell.takeError();
+          FrozenSystemServiceContext context{
+              *serviceIndex,
+              getInvalidPnrIndex(),
+              static_cast<PnrIndex>(threadOrdinal),
+              {std::move(*cell)},
+              subjects,
+              {}};
+          if (const auto *channel =
+                  std::get_if<::dataflow::ChannelProducerTerminalRef>(
+                      producer)) {
+            auto partitions = partitionChannelServiceContext(
+                dataflow, *channel, std::move(context), decisions);
+            if (!partitions)
+              return partitions.takeError();
+            result.insert(result.end(),
+                          std::make_move_iterator(partitions->begin()),
+                          std::make_move_iterator(partitions->end()));
+          } else {
+            result.push_back(std::move(context));
+          }
           covered = true;
         }
       } else if (graphLaunch) {
@@ -983,9 +1184,27 @@ buildServiceContexts(const ::dataflow::CanonicalDataflowProgramView &dataflow,
           if (begin > end || end > overlaps.size())
             return invalid("message graph-thread overlap range is invalid");
           for (PnrIndex thread : overlaps.slice(begin, end - begin)) {
-            result.push_back({*serviceIndex,
-                              static_cast<PnrIndex>(graphOrdinal), thread,
-                              subjects});
+            auto cell = serviceContextCell(
+                decisions, static_cast<PnrIndex>(graphOrdinal), thread);
+            if (!cell)
+              return cell.takeError();
+            FrozenSystemServiceContext context{
+                *serviceIndex, static_cast<PnrIndex>(graphOrdinal),
+                thread,        {std::move(*cell)},
+                subjects,      {}};
+            if (const auto *channel =
+                    std::get_if<::dataflow::ChannelProducerTerminalRef>(
+                        producer)) {
+              auto partitions = partitionChannelServiceContext(
+                  dataflow, *channel, std::move(context), decisions);
+              if (!partitions)
+                return partitions.takeError();
+              result.insert(result.end(),
+                            std::make_move_iterator(partitions->begin()),
+                            std::make_move_iterator(partitions->end()));
+            } else {
+              result.push_back(std::move(context));
+            }
             covered = true;
           }
         }
@@ -1056,7 +1275,15 @@ buildServiceContexts(const ::dataflow::CanonicalDataflowProgramView &dataflow,
         if (!serviceIndex)
           return serviceIndex.takeError();
         for (PnrIndex thread : overlaps.slice(begin, end - begin)) {
-          result.push_back({*serviceIndex, *graphIndex, thread, subjects});
+          auto cell = serviceContextCell(decisions, *graphIndex, thread);
+          if (!cell)
+            return cell.takeError();
+          result.push_back({*serviceIndex,
+                            *graphIndex,
+                            thread,
+                            {std::move(*cell)},
+                            subjects,
+                            {}});
           covered = true;
         }
       }

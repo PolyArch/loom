@@ -671,15 +671,17 @@ void canonicalizeSystemRoute(::mapping::TransferLegRealizationOp route) {
   SmallVector<::mapping::SystemRouteSinkOp> sinks(
       body.getOps<::mapping::SystemRouteSinkOp>().begin(),
       body.getOps<::mapping::SystemRouteSinkOp>().end());
-  llvm::sort(sinks, [](auto left, auto right) {
-    return recordKey(left.getTerminal().getRecord()) <
-           recordKey(right.getTerminal().getRecord());
-  });
-  for (auto sink : sinks) {
+  for (auto sink : sinks)
     sink.setNodeOrdinalAttr(
         builder.getI64IntegerAttr(renumbering.lookup(sink.getNodeOrdinal())));
+  llvm::sort(sinks, [](auto left, auto right) {
+    return std::make_tuple(recordKey(left.getTerminal().getRecord()),
+                           left.getNodeOrdinal()) <
+           std::make_tuple(recordKey(right.getTerminal().getRecord()),
+                           right.getNodeOrdinal());
+  });
+  for (auto sink : sinks)
     sink->moveBefore(&body, body.end());
-  }
 }
 
 std::string servicePlanSemanticKey(::mapping::ServicePlanOp plan) {

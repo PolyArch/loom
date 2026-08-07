@@ -92,11 +92,24 @@ struct FrozenSystemTransferTerminalOwnerDomain final {
   PnrIndex endpointChoiceCount = 0;
 };
 
+struct FrozenSystemApplicableMessageSink final {
+  ::dataflow::StructuralOrdinal sinkOrdinal = 0;
+  PnrIndex ownerThreadDecision = getInvalidPnrIndex();
+
+  friend bool operator==(const FrozenSystemApplicableMessageSink &lhs,
+                         const FrozenSystemApplicableMessageSink &rhs) {
+    return lhs.sinkOrdinal == rhs.sinkOrdinal &&
+           lhs.ownerThreadDecision == rhs.ownerThreadDecision;
+  }
+};
+
 struct FrozenSystemServiceContext final {
   PnrIndex service = 0;
-  PnrIndex graphDecision = 0;
-  PnrIndex threadDecision = 0;
+  PnrIndex graphDecision = getInvalidPnrIndex();
+  PnrIndex threadDecision = getInvalidPnrIndex();
+  std::vector<::loom::mapping::SystemPresburgerCell> cells;
   std::vector<SystemServiceTargetSubject> subjects;
+  std::vector<FrozenSystemApplicableMessageSink> applicableMessageSinks;
 };
 
 struct FrozenSystemMemoryServiceBinding final {

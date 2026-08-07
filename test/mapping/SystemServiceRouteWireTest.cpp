@@ -547,7 +547,7 @@ int main() {
   duplicateRoute.getBody().front().push_back(
       duplicateRoute.getBody().front().back().clone());
   requireVerificationFailure(duplicate.get(),
-                             "duplicates a System route sink key");
+                             "duplicates a System route sink attachment");
 
   mlir::OwningOpRef<mlir::Operation *> sourceAsSink(authored->clone());
   auto sourceRoot = mlir::cast<::mapping::SystemOp>(sourceAsSink.get());

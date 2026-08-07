@@ -14,6 +14,10 @@ add_executable(loom-system-candidate-state-test
   SystemCandidateStateTest.cpp
 )
 
+add_executable(loom-system-channel-applicability-test
+  SystemChannelApplicabilityTest.cpp
+)
+
 target_link_libraries(loom-system-pnr-search-domain-test PRIVATE
   LoomADGBuilder
   LoomPnR
@@ -40,6 +44,20 @@ target_link_libraries(loom-system-pnr-service-domain-test PRIVATE
 )
 
 target_link_libraries(loom-system-candidate-state-test PRIVATE
+  LoomADGBuilder
+  LoomPnR
+  LoomPnRGenerator
+  LoomTechMapping
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-system-channel-applicability-test PRIVATE
   LoomADGBuilder
   LoomPnR
   LoomPnRGenerator

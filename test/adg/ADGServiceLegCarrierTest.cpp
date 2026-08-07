@@ -8,6 +8,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "FabricArtifactBytecodeInternal.h"
+#include "FabricSystemCanonicalLabeling.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/MLIRContext.h"
@@ -113,7 +114,8 @@ mlir::DenseI8ArrayAttr denseBytes(mlir::MLIRContext *context,
 template <typename Mutate>
 void expectStoredSystemMutationRejected(
     llvm::StringRef test, const fabric::FinalizedFabricRoot &valid,
-    ArtifactStore &store, Mutate mutate, llvm::StringRef diagnostic) {
+    ArtifactStore &store, Mutate mutate, llvm::StringRef diagnostic,
+    bool rematerializeCanonicalForm = false) {
   fabric::DecodedFabricArtifact decoded = take(
       test,
       fabric::decodeFabricArtifactEnvelope(valid.canonicalBytes().bytes()));
@@ -124,6 +126,14 @@ void expectStoredSystemMutationRejected(
   require(test, llvm::hasSingleElement(systems),
           "canonical fixture does not contain one System root");
   mutate(*systems.begin());
+  if (rematerializeCanonicalForm) {
+    auto labeling = take(
+        test, fabric::detail::computeFabricSystemCanonicalLabeling(
+                  *systems.begin(), decoded.dependencies));
+    if (llvm::Error error = fabric::detail::materializeFabricSystemCanonicalForm(
+            *systems.begin(), labeling))
+      fail(test, llvm::toString(std::move(error)));
+  }
   decoded.canonicalMlirBytecode = take(
       test, fabric::detail::writeCanonicalFabricBytecode(parsed.module.get()));
   CanonicalSemanticBytes canonical =
@@ -370,7 +380,7 @@ void persistedIncompleteAttachmentRelationIsRejected() {
                 "incomplete-relation fixture has the wrong row count");
         rows.back().erase();
       },
-      "does not attach every admitted memory service leg exactly once");
+      "does not attach every admitted memory service leg exactly once", true);
 }
 
 FinalizedFabricDesign buildCanonicalBuiltinFixture(llvm::StringRef test,
@@ -398,7 +408,7 @@ void persistedIncompletePairMemberRelationIsRejected() {
         }
         fail(test, "builtin fixture has no occurrence-side carrier row");
       },
-      "does not attach every admitted memory service leg exactly once");
+      "does not attach every admitted memory service leg exactly once", true);
 }
 
 void persistedOccurrenceCarrierDirectionIsChecked() {
@@ -449,7 +459,7 @@ void persistedOccurrenceCarrierDirectionIsChecked() {
             test, fabric::encodeServiceLegCarrierAttachmentRecord(changed));
         requestRow.setRecordAttr(denseBytes(system.getContext(), bytes));
       },
-      "service-leg carrier has the wrong direction");
+      "service-leg carrier has the wrong direction", true);
 }
 
 void persistedUnknownAttachmentEndpointIsRejected() {

@@ -58,8 +58,17 @@ void appendU64Be(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
 std::string switchReplicationKey(const FabricSwitchTraversalPayload &payload) {
   std::vector<std::uint8_t> bytes;
   const auto owner = canonicalFabricBytes(payload.owner);
-  bytes.reserve(8 + owner.size());
+  bytes.reserve(9 + owner.size());
+  bytes.push_back(0);
   appendU64Be(bytes, payload.input);
+  bytes.insert(bytes.end(), owner.begin(), owner.end());
+  return byteKey(bytes);
+}
+
+std::string
+transferPatternReplicationKey(const FabricTransferPatternLegPayload &payload) {
+  std::vector<std::uint8_t> bytes{1};
+  const auto owner = canonicalFabricBytes(payload.owner);
   bytes.insert(bytes.end(), owner.begin(), owner.end());
   return byteKey(bytes);
 }
@@ -161,16 +170,23 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
       return destinationCount.takeError();
 
     PnrIndex replicationGroup = getInvalidPnrIndex();
+    std::string replicationKey;
     const auto *switchPayload =
         std::get_if<FabricSwitchTraversalPayload>(&traversal.reference.payload);
-    if (switchPayload) {
-      const std::string key = switchReplicationKey(*switchPayload);
-      auto found = replicationGroups.find(key);
+    const auto *transferPatternPayload =
+        std::get_if<FabricTransferPatternLegPayload>(
+            &traversal.reference.payload);
+    if (switchPayload)
+      replicationKey = switchReplicationKey(*switchPayload);
+    else if (transferPatternPayload)
+      replicationKey = transferPatternReplicationKey(*transferPatternPayload);
+    if (!replicationKey.empty()) {
+      auto found = replicationGroups.find(replicationKey);
       if (found == replicationGroups.end()) {
         auto group = checked(replicationGroupContext, replicationGroups.size());
         if (!group)
           return group.takeError();
-        found = replicationGroups.try_emplace(key, *group).first;
+        found = replicationGroups.try_emplace(replicationKey, *group).first;
       }
       replicationGroup = found->second;
     }

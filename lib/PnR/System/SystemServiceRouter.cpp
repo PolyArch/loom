@@ -9,8 +9,10 @@
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -52,6 +54,178 @@ struct MutableSink final {
   PnrIndex terminal = 0;
   PnrIndex node = 0;
 };
+
+struct AtomicPatternCatalog final {
+  std::vector<std::vector<PnrIndex>> traversalsByGroup;
+  std::vector<std::uint64_t> unicastEligibility;
+};
+
+void admitTraversal(std::vector<std::uint64_t> &eligibility,
+                    PnrIndex traversal) {
+  eligibility[traversal / 64] |= std::uint64_t{1} << (traversal % 64);
+}
+
+llvm::Expected<AtomicPatternCatalog>
+buildAtomicPatternCatalog(const FrozenEndpointRoutingTopology &topology) {
+  AtomicPatternCatalog catalog;
+  catalog.traversalsByGroup.resize(topology.traversals().size());
+  catalog.unicastEligibility.resize((topology.traversals().size() + 63) / 64);
+  for (PnrIndex traversal = 0; traversal < topology.traversals().size();
+       ++traversal) {
+    if (!std::holds_alternative<
+            ::loom::fabric::FabricTransferPatternLegPayload>(
+            topology.traversals()[traversal].reference.payload))
+      continue;
+    const PnrIndex group = topology.traversalReplicationGroups()[traversal];
+    if (group == getInvalidPnrIndex() ||
+        group >= catalog.traversalsByGroup.size())
+      return invalid("an atomic transfer-pattern leg has no replication group");
+    catalog.traversalsByGroup[group].push_back(traversal);
+  }
+  for (PnrIndex traversal = 0; traversal < topology.traversals().size();
+       ++traversal) {
+    const PnrIndex group = topology.traversalReplicationGroups()[traversal];
+    if (group == getInvalidPnrIndex() ||
+        catalog.traversalsByGroup[group].empty() ||
+        catalog.traversalsByGroup[group].size() == 1)
+      admitTraversal(catalog.unicastEligibility, traversal);
+  }
+  return catalog;
+}
+
+llvm::Expected<std::pair<PnrIndex, PnrIndex>>
+traversalEndpoints(const FrozenEndpointRoutingTopology &topology,
+                   PnrIndex traversal) {
+  if (traversal >= topology.traversals().size())
+    return invalid("an atomic pattern names an invalid traversal");
+  const auto &view = topology.traversals()[traversal];
+  if (view.sourceCount != 1 || view.destinationCount != 1)
+    return invalid("an atomic transfer-pattern leg is not point-to-point");
+  return std::pair<PnrIndex, PnrIndex>{
+      topology.traversalEndpoints()[view.sourceOffset],
+      topology.traversalEndpoints()[view.destinationOffset]};
+}
+
+std::vector<std::uint64_t>
+routeEligibility(const FrozenEndpointRoutingTopology &topology,
+                 const AtomicPatternCatalog &catalog,
+                 llvm::ArrayRef<MutableNode> nodes) {
+  std::vector<std::uint64_t> eligibility = catalog.unicastEligibility;
+  for (const MutableNode &node : nodes) {
+    if (node.incomingTraversal == getInvalidPnrIndex())
+      continue;
+    const PnrIndex group =
+        topology.traversalReplicationGroups()[node.incomingTraversal];
+    if (group == getInvalidPnrIndex() ||
+        catalog.traversalsByGroup[group].size() <= 1)
+      continue;
+    for (PnrIndex traversal : catalog.traversalsByGroup[group])
+      admitTraversal(eligibility, traversal);
+  }
+  return eligibility;
+}
+
+struct AtomicPatternUpgrade final {
+  PnrIndex node = 0;
+  PnrIndex group = 0;
+  PnrIndex extraTraversal = 0;
+  std::vector<std::pair<PnrIndex, PnrIndex>> childReplacements;
+};
+
+llvm::Expected<std::vector<AtomicPatternUpgrade>> findAtomicPatternUpgrades(
+    const FrozenEndpointRoutingTopology &topology,
+    const AtomicPatternCatalog &catalog, llvm::ArrayRef<MutableNode> nodes,
+    const llvm::DenseMap<PnrIndex, PnrIndex> &nodeByEndpoint) {
+  std::vector<AtomicPatternUpgrade> upgrades;
+  for (PnrIndex nodeOrdinal = 0; nodeOrdinal < nodes.size(); ++nodeOrdinal) {
+    std::vector<PnrIndex> children;
+    for (PnrIndex child = 1; child < nodes.size(); ++child)
+      if (nodes[child].parent == nodeOrdinal)
+        children.push_back(child);
+    if (children.empty())
+      continue;
+    for (PnrIndex group = 0; group < catalog.traversalsByGroup.size();
+         ++group) {
+      const auto &pattern = catalog.traversalsByGroup[group];
+      if (pattern.size() != children.size() + 1 ||
+          group == nodes[nodeOrdinal].outgoingReplicationGroup)
+        continue;
+      AtomicPatternUpgrade upgrade{
+          nodeOrdinal, group, getInvalidPnrIndex(), {}};
+      std::vector<std::uint8_t> matched(pattern.size(), 0);
+      bool compatible = true;
+      for (PnrIndex child : children) {
+        bool found = false;
+        for (std::size_t position = 0; position < pattern.size(); ++position) {
+          auto endpoints = traversalEndpoints(topology, pattern[position]);
+          if (!endpoints)
+            return endpoints.takeError();
+          if (endpoints->first == nodes[nodeOrdinal].endpoint &&
+              endpoints->second == nodes[child].endpoint &&
+              !matched[position]) {
+            matched[position] = 1;
+            upgrade.childReplacements.emplace_back(child, pattern[position]);
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          compatible = false;
+          break;
+        }
+      }
+      if (!compatible)
+        continue;
+      for (std::size_t position = 0; position < pattern.size(); ++position) {
+        if (matched[position])
+          continue;
+        auto endpoints = traversalEndpoints(topology, pattern[position]);
+        if (!endpoints)
+          return endpoints.takeError();
+        if (endpoints->first != nodes[nodeOrdinal].endpoint ||
+            nodeByEndpoint.contains(endpoints->second)) {
+          compatible = false;
+          break;
+        }
+        upgrade.extraTraversal = pattern[position];
+      }
+      if (compatible && upgrade.extraTraversal != getInvalidPnrIndex())
+        upgrades.push_back(std::move(upgrade));
+    }
+  }
+  llvm::sort(upgrades, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.node, lhs.group, lhs.extraTraversal) <
+           std::tie(rhs.node, rhs.group, rhs.extraTraversal);
+  });
+  return upgrades;
+}
+
+struct RouteProbe final {
+  PnrIndex source = 0;
+  PnrIndex target = 0;
+  RouteCost cost = 0;
+  std::vector<PnrIndex> forwardArcs;
+  std::optional<AtomicPatternUpgrade> upgrade;
+};
+
+bool isBetterProbe(const RouteProbe &candidate, const RouteProbe &current) {
+  if (candidate.cost != current.cost)
+    return candidate.cost < current.cost;
+  if (candidate.upgrade.has_value() != current.upgrade.has_value())
+    return !candidate.upgrade.has_value();
+  if (std::tie(candidate.source, candidate.target) !=
+      std::tie(current.source, current.target))
+    return std::tie(candidate.source, candidate.target) <
+           std::tie(current.source, current.target);
+  if (candidate.forwardArcs != current.forwardArcs)
+    return candidate.forwardArcs < current.forwardArcs;
+  if (!candidate.upgrade)
+    return false;
+  return std::tie(candidate.upgrade->node, candidate.upgrade->group,
+                  candidate.upgrade->extraTraversal) <
+         std::tie(current.upgrade->node, current.upgrade->group,
+                  current.upgrade->extraTraversal);
+}
 
 llvm::Error noteOutgoing(const FrozenEndpointRoutingTopology &topology,
                          std::vector<MutableNode> &nodes, PnrIndex parent,
@@ -175,6 +349,40 @@ llvm::Error canonicalizeTree(std::vector<MutableNode> &nodes,
   return llvm::Error::success();
 }
 
+struct ActiveServiceSink final {
+  PnrIndex terminal = 0;
+  std::vector<std::uint8_t> terminalKey;
+  std::vector<PnrIndex> endpoints;
+};
+
+llvm::Expected<std::vector<ActiveServiceSink>>
+activeServiceSinks(const FrozenSystemPnrProblem &problem, PnrIndex legOrdinal,
+                   llvm::ArrayRef<PnrIndex> threadChoices,
+                   llvm::ArrayRef<PnrIndex> graphChoices) {
+  std::vector<ActiveServiceSink> active;
+  for (PnrIndex terminal : problem.serviceLegSinkTerminals(legOrdinal)) {
+    auto endpoints = detail::resolveSystemServiceTerminalDomain(
+        problem, legOrdinal, terminal, threadChoices, graphChoices);
+    if (!endpoints)
+      return endpoints.takeError();
+    auto key = ::loom::mapping::encodeSystemTransferTerminalKey(
+        problem.dataflowIdentity(), problem.serviceTerminals()[terminal].key);
+    if (!key)
+      return key.takeError();
+    const auto duplicate = llvm::find_if(active, [&](const auto &candidate) {
+      return candidate.terminalKey == *key && candidate.endpoints == *endpoints;
+    });
+    if (duplicate != active.end())
+      continue;
+    active.push_back({terminal, std::move(*key), std::move(*endpoints)});
+  }
+  llvm::sort(active, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.terminalKey, lhs.endpoints) <
+           std::tie(rhs.terminalKey, rhs.endpoints);
+  });
+  return active;
+}
+
 } // namespace
 
 llvm::Expected<detail::CanonicalSystemServiceRoutes>
@@ -184,6 +392,9 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
     llvm::ArrayRef<PnrIndex> graphChoices) {
   CanonicalSystemServiceRoutes result;
   const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
+  auto atomicPatterns = buildAtomicPatternCatalog(topology);
+  if (!atomicPatterns)
+    return atomicPatterns.takeError();
   EndpointRouteSearchScratch search;
   if (llvm::Error error = search.prepare(endpointRoutingGraphView(topology)))
     return std::move(error);
@@ -192,8 +403,11 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
   for (PnrIndex legOrdinal = 0; legOrdinal < problem.serviceLegs().size();
        ++legOrdinal) {
     const FrozenSystemServiceLeg &leg = problem.serviceLegs()[legOrdinal];
-    const auto sinkTerminals = problem.serviceLegSinkTerminals(legOrdinal);
-    if (sinkTerminals.empty())
+    auto activeSinks =
+        activeServiceSinks(problem, legOrdinal, threadChoices, graphChoices);
+    if (!activeSinks)
+      return activeSinks.takeError();
+    if (activeSinks->empty())
       return invalid("a frozen service leg has no sink terminal");
     auto sourceDomain = resolveSystemServiceTerminalDomain(
         problem, legOrdinal, leg.sourceTerminal, threadChoices, graphChoices);
@@ -203,7 +417,7 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
     std::vector<MutableNode> nodes;
     std::vector<MutableSink> sinks;
     llvm::DenseMap<PnrIndex, PnrIndex> nodeByEndpoint;
-    for (PnrIndex sinkTerminal : sinkTerminals) {
+    for (const ActiveServiceSink &activeSink : *activeSinks) {
       std::vector<PnrIndex> sourceEndpoints;
       std::vector<PnrIndex> sourceReplicationGroups;
       if (nodes.empty()) {
@@ -225,60 +439,97 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
           sourceReplicationGroups.push_back(group);
         }
       }
-      auto targetEndpoints = resolveSystemServiceTerminalDomain(
-          problem, legOrdinal, sinkTerminal, threadChoices, graphChoices);
-      if (!targetEndpoints)
-        return targetEndpoints.takeError();
-      std::vector<PnrIndex> targetRanks(targetEndpoints->size());
+      std::vector<PnrIndex> targetRanks(activeSink.endpoints.size());
       for (PnrIndex rank = 0; rank < targetRanks.size(); ++rank)
         targetRanks[rank] = rank;
-      auto routed = search.search(
-          {sourceEndpoints,
-           sourceReplicationGroups,
-           *targetEndpoints,
-           targetRanks,
-           arcCosts,
-           arcCosts,
-           leg.requiredPayloadWidthBits,
-           0,
-           problem.config().policy().search.routing.endpointExpansionLimit,
-           {}});
-      if (!routed)
-        return llvm::handleErrors(
-            routed.takeError(),
-            [&](const EndpointRouteSearchFailure &failure) -> llvm::Error {
-              std::string routeDiagnostic;
-              llvm::raw_string_ostream stream(routeDiagnostic);
-              failure.log(stream);
-              stream.flush();
-              if (failure.kind() == EndpointRouteSearchFailureKind::Unreachable)
-                return llvm::make_error<detail::SystemCandidateInfeasible>(
-                    ("cannot route frozen service leg " +
-                     llvm::Twine(legOrdinal) + " in context " +
-                     llvm::Twine(leg.serviceContext) + ": " + routeDiagnostic)
-                        .str());
-              return llvm::make_error<EndpointRouteSearchFailure>(
-                  failure.kind(), std::move(routeDiagnostic));
-            });
+      auto eligibility = routeEligibility(topology, *atomicPatterns, nodes);
+      std::optional<RouteProbe> bestProbe;
+      std::string lastRouteDiagnostic;
+      const auto tryProbe =
+          [&](llvm::ArrayRef<PnrIndex> sources,
+              llvm::ArrayRef<PnrIndex> sourceGroups,
+              llvm::ArrayRef<std::uint64_t> eligibleTraversals,
+              std::optional<AtomicPatternUpgrade> upgrade) -> llvm::Error {
+        auto routed = search.search(
+            {sources, sourceGroups, activeSink.endpoints, targetRanks, arcCosts,
+             arcCosts, leg.requiredPayloadWidthBits, 0,
+             problem.config().policy().search.routing.endpointExpansionLimit,
+             eligibleTraversals});
+        if (!routed)
+          return llvm::handleErrors(
+              routed.takeError(),
+              [&](const EndpointRouteSearchFailure &failure) -> llvm::Error {
+                lastRouteDiagnostic.clear();
+                llvm::raw_string_ostream stream(lastRouteDiagnostic);
+                failure.log(stream);
+                stream.flush();
+                if (failure.kind() ==
+                    EndpointRouteSearchFailureKind::Unreachable)
+                  return llvm::Error::success();
+                return llvm::make_error<EndpointRouteSearchFailure>(
+                    failure.kind(), lastRouteDiagnostic);
+              });
+        RouteProbe probe{
+            routed->source,
+            routed->target,
+            routed->cost,
+            {routed->forwardArcs.begin(), routed->forwardArcs.end()},
+            std::move(upgrade)};
+        if (!bestProbe || isBetterProbe(probe, *bestProbe))
+          bestProbe = std::move(probe);
+        return llvm::Error::success();
+      };
+      if (llvm::Error error = tryProbe(sourceEndpoints, sourceReplicationGroups,
+                                       eligibility, std::nullopt))
+        return std::move(error);
+      if (!nodes.empty()) {
+        auto upgrades = findAtomicPatternUpgrades(topology, *atomicPatterns,
+                                                  nodes, nodeByEndpoint);
+        if (!upgrades)
+          return upgrades.takeError();
+        for (const AtomicPatternUpgrade &upgrade : *upgrades) {
+          auto upgradedEligibility = eligibility;
+          admitTraversal(upgradedEligibility, upgrade.extraTraversal);
+          const std::array<PnrIndex, 1> source = {nodes[upgrade.node].endpoint};
+          const std::array<PnrIndex, 1> group = {upgrade.group};
+          if (llvm::Error error =
+                  tryProbe(source, group, upgradedEligibility, upgrade))
+            return std::move(error);
+        }
+      }
+      if (!bestProbe)
+        return llvm::make_error<detail::SystemCandidateInfeasible>(
+            ("cannot route frozen service leg " + llvm::Twine(legOrdinal) +
+             " in context " + llvm::Twine(leg.serviceContext) + ": " +
+             lastRouteDiagnostic)
+                .str());
 
       PnrIndex sourceNode = 0;
       if (nodes.empty()) {
-        nodes.push_back({routed->source, getInvalidPnrIndex(),
+        nodes.push_back({bestProbe->source, getInvalidPnrIndex(),
                          getInvalidPnrIndex(), false, getInvalidPnrIndex()});
-        nodeByEndpoint.try_emplace(routed->source, 0);
+        nodeByEndpoint.try_emplace(bestProbe->source, 0);
+      } else if (bestProbe->upgrade) {
+        sourceNode = bestProbe->upgrade->node;
+        MutableNode &source = nodes[sourceNode];
+        source.hasOutgoing = true;
+        source.outgoingReplicationGroup = bestProbe->upgrade->group;
+        for (const auto &[child, traversal] :
+             bestProbe->upgrade->childReplacements)
+          nodes[child].incomingTraversal = traversal;
       } else {
-        auto found = findNodeForEndpoint(nodeByEndpoint, routed->source);
+        auto found = findNodeForEndpoint(nodeByEndpoint, bestProbe->source);
         if (!found)
           return found.takeError();
         sourceNode = *found;
       }
-      auto targetNode = appendPath(topology, routed->forwardArcs, sourceNode,
+      auto targetNode = appendPath(topology, bestProbe->forwardArcs, sourceNode,
                                    nodes, nodeByEndpoint);
       if (!targetNode)
         return targetNode.takeError();
-      if (nodes[*targetNode].endpoint != routed->target)
+      if (nodes[*targetNode].endpoint != bestProbe->target)
         return invalid("A-star result target disagrees with the route tree");
-      sinks.push_back({sinkTerminal, *targetNode});
+      sinks.push_back({activeSink.terminal, *targetNode});
     }
     if (llvm::Error error = canonicalizeTree(nodes, sinks))
       return std::move(error);
@@ -320,6 +571,9 @@ llvm::Error loom::pnr::detail::verifySystemServiceRoutes(
   if (routes.size() != problem.serviceLegs().size())
     return invalid("service route count does not match the frozen legs");
   const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
+  auto atomicPatterns = buildAtomicPatternCatalog(topology);
+  if (!atomicPatterns)
+    return atomicPatterns.takeError();
   PnrIndex expectedNodeOffset = 0;
   PnrIndex expectedSinkOffset = 0;
   for (PnrIndex routeOrdinal = 0; routeOrdinal < routes.size();
@@ -336,9 +590,13 @@ llvm::Error loom::pnr::detail::verifySystemServiceRoutes(
     const auto routeNodes = nodes.slice(route.nodeOffset, route.nodeCount);
     const auto routeSinks = sinks.slice(route.sinkOffset, route.sinkCount);
     const FrozenSystemServiceLeg &leg = problem.serviceLegs()[route.leg];
-    const auto expectedSinks = problem.serviceLegSinkTerminals(route.leg);
-    if (route.sinkCount != expectedSinks.size())
-      return invalid("service route does not cover every sink terminal");
+    auto activeSinks =
+        activeServiceSinks(problem, route.leg, threadChoices, graphChoices);
+    if (!activeSinks)
+      return activeSinks.takeError();
+    if (route.sinkCount != activeSinks->size())
+      return invalid(
+          "service route does not cover the applicable sink-owner set");
     auto sourceDomain = resolveSystemServiceTerminalDomain(
         problem, route.leg, leg.sourceTerminal, threadChoices, graphChoices);
     if (!sourceDomain)
@@ -390,14 +648,35 @@ llvm::Error loom::pnr::detail::verifySystemServiceRoutes(
       outgoingGroup[node.parentNode] = group;
     }
 
-    std::vector<std::uint8_t> sinkSeen(expectedSinks.size(), 0);
+    for (PnrIndex parent = 0; parent < routeNodes.size(); ++parent) {
+      const PnrIndex group = outgoingGroup[parent];
+      if (group == getInvalidPnrIndex() ||
+          atomicPatterns->traversalsByGroup[group].empty())
+        continue;
+      std::vector<std::uint8_t> selected(
+          atomicPatterns->traversalsByGroup[group].size(), 0);
+      for (PnrIndex child = 1; child < routeNodes.size(); ++child) {
+        if (routeNodes[child].parentNode != parent)
+          continue;
+        const auto found = llvm::find(atomicPatterns->traversalsByGroup[group],
+                                      routeNodes[child].incomingTraversal);
+        if (found == atomicPatterns->traversalsByGroup[group].end())
+          return invalid("service route mixes atomic transfer patterns");
+        selected[found - atomicPatterns->traversalsByGroup[group].begin()] = 1;
+      }
+      if (llvm::any_of(selected, [](std::uint8_t value) { return value == 0; }))
+        return invalid("service route splits an atomic transfer pattern");
+    }
+
+    std::vector<std::uint8_t> sinkSeen(activeSinks->size(), 0);
+    std::vector<std::uint8_t> nodeHasSink(routeNodes.size(), 0);
     for (const auto &sink : routeSinks) {
-      auto found = std::lower_bound(expectedSinks.begin(), expectedSinks.end(),
-                                    sink.terminal);
-      if (found == expectedSinks.end() || *found != sink.terminal ||
-          sink.node >= routeNodes.size())
+      auto found = llvm::find_if(*activeSinks, [&](const auto &candidate) {
+        return candidate.terminal == sink.terminal;
+      });
+      if (found == activeSinks->end() || sink.node >= routeNodes.size())
         return invalid("service route sink is outside its exact H domain");
-      const std::size_t sinkOrdinal = found - expectedSinks.begin();
+      const std::size_t sinkOrdinal = found - activeSinks->begin();
       if (sinkSeen[sinkOrdinal]++)
         return invalid("service route binds one sink more than once");
       auto terminalDomain = resolveSystemServiceTerminalDomain(
@@ -406,9 +685,13 @@ llvm::Error loom::pnr::detail::verifySystemServiceRoutes(
         return terminalDomain.takeError();
       if (!contains(*terminalDomain, routeNodes[sink.node].endpoint))
         return invalid("service route sink endpoint is not admitted by H");
+      nodeHasSink[sink.node] = 1;
     }
     if (llvm::any_of(sinkSeen, [](std::uint8_t seen) { return seen != 1; }))
       return invalid("service route omitted a sink terminal");
+    for (PnrIndex node = 0; node < routeNodes.size(); ++node)
+      if (!hasOutgoing[node] && !nodeHasSink[node])
+        return invalid("service route contains a non-sink leaf");
     expectedNodeOffset += route.nodeCount;
     expectedSinkOffset += route.sinkCount;
   }

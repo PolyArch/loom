@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <numeric>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -884,37 +883,50 @@ expandBuiltinSystemImpl(DesignBuilder &design,
     if (llvm::Error error = appendMessageEndpoints(core))
       return std::move(error);
 
-  std::vector<PortType> messagePorts(messageSources.size(), *bits128);
-  auto messageTransport = system->addTransportResource(
-      {messagePorts, messagePorts, *transportContract});
-  if (!messageTransport)
-    return messageTransport.takeError();
-  clockMembers.push_back(messageTransport->domainMember());
-  std::vector<std::uint32_t> messageOutputs(messageSinks.size());
-  std::iota(messageOutputs.begin(), messageOutputs.end(), 0);
+  std::vector<SystemTransportResource> messageRouters;
+  messageRouters.reserve(messageSources.size());
+  const std::array<std::vector<std::uint32_t>, 3> messagePatterns = {
+      std::vector<std::uint32_t>{0}, std::vector<std::uint32_t>{1},
+      std::vector<std::uint32_t>{0, 1}};
   for (std::size_t ordinal = 0; ordinal != messageSources.size(); ++ordinal) {
+    auto router = system->addTransportResource(
+        {{{*bits128, *bits128}}, {{*bits128, *bits128}}, *transportContract});
+    if (!router)
+      return router.takeError();
+    clockMembers.push_back(router->domainMember());
+    for (std::size_t input = 0; input != 2; ++input)
+      for (const auto &outputs : messagePatterns) {
+        auto pattern = system->addTransferPattern(*router, input, outputs, 0);
+        if (!pattern)
+          return pattern.takeError();
+        clockMembers.push_back(pattern->domainMember());
+      }
     auto source = messageSources[ordinal].transport();
     if (!source)
       return source.takeError();
-    auto input = messageTransport->input(ordinal);
+    auto input = router->input(0);
     if (!input)
       return input.takeError();
     if (llvm::Error error = system->connect(*source, *input))
       return std::move(error);
-    auto pattern = system->addTransferPattern(*messageTransport, ordinal,
-                                              messageOutputs, 0);
-    if (!pattern)
-      return pattern.takeError();
-    clockMembers.push_back(pattern->domainMember());
-  }
-  for (std::size_t ordinal = 0; ordinal != messageSinks.size(); ++ordinal) {
-    auto output = messageTransport->output(ordinal);
+    auto output = router->output(0);
     if (!output)
       return output.takeError();
     auto sink = messageSinks[ordinal].transport();
     if (!sink)
       return sink.takeError();
     if (llvm::Error error = system->connect(*output, *sink))
+      return std::move(error);
+    messageRouters.push_back(*router);
+  }
+  for (std::size_t ordinal = 0; ordinal != messageRouters.size(); ++ordinal) {
+    auto output = messageRouters[ordinal].output(1);
+    if (!output)
+      return output.takeError();
+    auto input = messageRouters[(ordinal + 1) % messageRouters.size()].input(1);
+    if (!input)
+      return input.takeError();
+    if (llvm::Error error = system->connect(*output, *input))
       return std::move(error);
   }
   if (llvm::Error error = clock->close(clockMembers, *clockContract))

@@ -43,6 +43,11 @@ struct SystemPresburgerPartitionAnalysis final {
   bool coversLegalDomain = false;
 };
 
+struct SystemPresburgerSetSplit final {
+  std::vector<SystemPresburgerCell> inside;
+  std::vector<SystemPresburgerCell> outside;
+};
+
 llvm::Expected<SystemPresburgerCell>
 canonicalizeSystemPresburgerCell(const SystemPresburgerCell &input);
 
@@ -53,6 +58,10 @@ imageSystemPresburgerCell(const SystemPresburgerCell &input,
 llvm::Expected<std::optional<SystemPresburgerCell>>
 intersectSystemPresburgerCells(const SystemPresburgerCell &lhs,
                                const SystemPresburgerCell &rhs);
+
+llvm::Expected<SystemPresburgerSetSplit>
+splitSystemPresburgerSet(llvm::ArrayRef<SystemPresburgerCell> domain,
+                         llvm::ArrayRef<SystemPresburgerCell> predicate);
 
 llvm::Expected<bool>
 systemPresburgerCellsIntersect(const SystemPresburgerCell &lhs,

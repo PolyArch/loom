@@ -1,0 +1,547 @@
+#include "ADG/Builtin.h"
+#include "Common/ArtifactStore.h"
+#include "Config/ResolvedConfig.h"
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingConstraintSet.h"
+#include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "Mapping/IR/MappingDialect.h"
+#include "Mapping/Tech/TechMappingConfig.h"
+#include "Mapping/Tech/TechMappingGenerator.h"
+#include "PnR/MappingObjective.h"
+#include "PnR/PnrConfig.h"
+#include "PnR/SpatialPnrGenerator.h"
+#include "PnR/System/SystemCandidateState.h"
+#include "PnR/System/SystemMappingMaterializer.h"
+#include "PnR/System/SystemPnrProblem.h"
+#include "PnR/System/SystemPnrSearchDomain.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
+
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <array>
+#include <cstdlib>
+#include <limits>
+#include <optional>
+#include <string>
+#include <system_error>
+#include <type_traits>
+#include <utility>
+#include <variant>
+#include <vector>
+
+namespace {
+
+[[noreturn]] void fail(const llvm::Twine &message) {
+  llvm::errs() << "System channel applicability anchor failed: " << message
+               << '\n';
+  std::exit(EXIT_FAILURE);
+}
+
+void require(bool condition, const llvm::Twine &message) {
+  if (!condition)
+    fail(message);
+}
+
+template <typename T>
+void requireFailureContains(llvm::Expected<T> value, llvm::StringRef expected) {
+  if (value)
+    fail("adverse channel applicability input unexpectedly succeeded");
+  const std::string diagnostic = llvm::toString(value.takeError());
+  require(llvm::StringRef(diagnostic).contains(expected),
+          "adverse diagnostic changed: " + diagnostic);
+}
+
+template <typename T> T take(llvm::Expected<T> value) {
+  if (!value)
+    fail(llvm::toString(value.takeError()));
+  return std::move(*value);
+}
+
+std::vector<std::uint8_t> unsignedBytes(mlir::DenseI8ArrayAttr attribute) {
+  std::vector<std::uint8_t> result;
+  result.reserve(attribute.size());
+  for (std::int8_t byte : attribute.asArrayRef())
+    result.push_back(static_cast<std::uint8_t>(byte));
+  return result;
+}
+
+class TemporaryDirectory final {
+public:
+  TemporaryDirectory() {
+    std::error_code error = llvm::sys::fs::createUniqueDirectory(
+        "loom-system-channel-applicability", path_);
+    if (error)
+      fail("cannot create ArtifactStore directory: " + error.message());
+  }
+
+  ~TemporaryDirectory() { llvm::sys::fs::remove_directories(path_); }
+
+  llvm::StringRef path() const { return path_; }
+
+private:
+  llvm::SmallString<128> path_;
+};
+
+mlir::MLIRContext makeContext() {
+  mlir::DialectRegistry registry;
+  registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
+                  mapping::MappingDialect, mlir::DLTIDialect,
+                  mlir::func::FuncDialect>();
+  return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
+}
+
+dataflow::CanonicalDataflowArtifact buildDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @consume(%start: none, %input: i32) -> ()
+      attributes {input_segments = array<i32: 0, 1, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %done = dataflow.sync %start : (none) -> (none)
+    dataflow.graph.return %done : none
+  }
+  dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(
+      %channel: !dataflow.channel<i32>) ctrl (%ctrl: none) iv (%iv: index) {
+    %value = arith.constant 7 : i32
+    dataflow.channel.send %channel, %value : !dataflow.channel<i32>
+    dataflow.thread.yield
+  }
+  dataflow.thread private @consumer domain(#dataflow.thread_domain<dense>)(
+      %channel: !dataflow.channel<i32>) ctrl (%ctrl: none) iv (%iv: index) {
+    %done = dataflow.graph.launch @consume deps(%ctrl) values()
+        stream_inputs(%channel source_map affine_map<(d0) -> (0)>) memories()
+        stream_outputs() : (none, !dataflow.channel<i32>) -> none
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host(%channel: !dataflow.channel<i32>) {
+    %producer_extent = arith.constant 2 : index
+    %consumer_extent = arith.constant 3 : index
+    %produced = dataflow.thread.launch @producer(%channel)
+        grid(%producer_extent)
+        : (!dataflow.channel<i32>) -> !dataflow.thread_token
+    %consumed = dataflow.thread.launch @consumer(%channel)
+        grid(%consumer_extent)
+        : (!dataflow.channel<i32>) -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+loom::ResolvedConfig buildResolvedConfig() {
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+  resolved.dse.objectiveCatalogs.dimensions = {
+      {loom::ResolvedMappingViolationObjectiveSource{
+           loom::ResolvedPnrViolationKind::UnroutedObligation},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
+       maximum},
+      {loom::ResolvedMappingViolationObjectiveSource{
+           loom::ResolvedPnrViolationKind::CapacityOveruse},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
+       maximum},
+      {loom::ResolvedMappingMeasureObjectiveSource{static_cast<std::uint32_t>(
+           loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim)},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
+       maximum}};
+  resolved.dse.objectiveCatalogs.weightedLevels = {{{{0, 1}, {1, 1}, {2, 1}}}};
+  resolved.dse.objectiveCatalogs.totalOrderings = {{{0}}};
+  resolved.dse.techMapping.candidatePublicationLimit = 1;
+  resolved.dse.spatialPnr.temporaryViolations.admitted = {
+      loom::ResolvedPnrViolationKind::UnroutedObligation,
+      loom::ResolvedPnrViolationKind::CapacityOveruse};
+  resolved.dse.spatialPnr.objectiveSelection = {0, 0, {}};
+  auto &search = resolved.dse.spatialPnr.search;
+  search.initializer.seedAttemptCount = 1;
+  search.actionProposal = {0, 1, 0};
+  search.annealing.calibrationProposalCount = 1;
+  search.annealing.fallbackTemperature = 1;
+  search.annealing.minimumTemperature = 1;
+  search.annealing.coolingRatio = {1, 2};
+  search.annealing.proposalsPerLevelBase = 1;
+  search.annealing.proposalsPerMovableDecision = 0;
+  search.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
+  resolved.dse.systemPnr.temporaryViolations.admitted = {
+      loom::ResolvedPnrViolationKind::UnroutedObligation,
+      loom::ResolvedPnrViolationKind::CapacityOveruse};
+  resolved.dse.systemPnr.objectiveSelection = {0, 0, {}};
+  return resolved;
+}
+
+loom::ArtifactRootReference
+generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
+                       const loom::fabric::FinalizedFabricRoot &module,
+                       const loom::ResolvedConfig &resolved,
+                       loom::ArtifactStore &store) {
+  const auto techConfig =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
+  const std::array<dataflow::GraphRef, 1> covers = {
+      dataflow.graphs().front().ref};
+  auto techOutcome = loom::mapping::generateTechMappings(
+      {dataflow, covers, module.view(), techConfig, store});
+  const auto *tech =
+      std::get_if<loom::mapping::GeneratedTechMappings>(&techOutcome);
+  require(tech && tech->candidates.size() == 1,
+          "TechMapping fixture did not produce one candidate");
+  auto imported =
+      take(loom::mapping::importTechMapping(tech->candidates.front(), store));
+  auto constraints =
+      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+          dataflow, imported.view(), module.view(), store));
+  const auto spatialConfig =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
+  auto spatialOutcome = loom::pnr::generateSpatialMappings(
+      {dataflow, imported.view(), module.view(), spatialConfig,
+       constraints.view(), store});
+  const auto *spatial =
+      std::get_if<loom::pnr::GeneratedSpatialMappings>(&spatialOutcome);
+  if (!spatial)
+    std::visit(
+        [&](const auto &outcome) {
+          using Outcome = std::decay_t<decltype(outcome)>;
+          if constexpr (!std::is_same_v<Outcome,
+                                        loom::pnr::GeneratedSpatialMappings>)
+            fail("SpatialMapping fixture did not produce one candidate: " +
+                 outcome.diagnostic);
+        },
+        spatialOutcome);
+  require(spatial->candidates.size() == 1,
+          "SpatialMapping fixture produced the wrong candidate count");
+  return spatial->candidates.front();
+}
+
+loom::mapping::SystemPresburgerCell
+bounded(loom::mapping::SystemPresburgerCell cell,
+        std::optional<std::int64_t> lower, std::optional<std::int64_t> upper) {
+  const std::size_t width = static_cast<std::size_t>(cell.dimensionCount) +
+                            cell.symbolCount + cell.localCount + 1;
+  require(cell.dimensionCount == 1, "fixture binding must be rank one");
+  if (lower) {
+    std::vector<std::int64_t> lowerRow(width, 0);
+    lowerRow.front() = 1;
+    lowerRow.back() = -*lower;
+    cell.inequalities.push_back(std::move(lowerRow));
+  }
+  if (upper) {
+    std::vector<std::int64_t> upperRow(width, 0);
+    upperRow.front() = -1;
+    upperRow.back() = *upper;
+    cell.inequalities.push_back(std::move(upperRow));
+  }
+  return take(loom::mapping::canonicalizeSystemPresburgerCell(cell));
+}
+
+} // namespace
+
+int main() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+
+  auto dataflowArtifact = buildDataflow(context);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflow = take(dataflowArtifact.view());
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  auto system =
+      take(loom::fabric::requireSystemRoot(design.roots().front().view()));
+  require(system.artifact().accCoreOccurrences().size() >= 2,
+          "built-in fixture must expose at least two AccCore occurrences");
+  std::size_t messageRouterCount = 0;
+  for (loom::fabric::SystemTransportResourceRef resource :
+       system.transportResources()) {
+    const auto owner =
+        loom::fabric::FabricTransportEndpointOwnerRef::of(resource);
+    if (system.artifact().transportEndpointCount(owner) != 4)
+      continue;
+    const auto patterns = system.transferPatterns(resource);
+    std::size_t unicastPatterns = 0;
+    std::size_t multicastPatterns = 0;
+    for (loom::fabric::FabricTransferPatternRef pattern : patterns) {
+      const auto *record = system.transferPattern(pattern);
+      require(record, "built-in message router has no transfer pattern");
+      if (record->egresses().size() == 1)
+        ++unicastPatterns;
+      else if (record->egresses().size() == 2)
+        ++multicastPatterns;
+    }
+    if (patterns.size() == 6 && unicastPatterns == 4 && multicastPatterns == 2)
+      ++messageRouterCount;
+  }
+  require(messageRouterCount ==
+              system.artifact().accCoreOccurrences().size() + 1,
+          "built-in message plane is not a finite-degree execution ring");
+  auto module = take(loom::fabric::importEntireFabricRoot(
+      design.roots().front().directDependencies().front().root, store));
+  auto resolved = buildResolvedConfig();
+  const auto spatialMapping =
+      generateSpatialMapping(dataflow, module, resolved, store);
+
+  std::vector<dataflow::RootThreadLaunchRef> roots;
+  for (const auto &root : dataflow.rootThreadLaunches())
+    roots.push_back(root.ref);
+  require(roots.size() == 2, "fixture must contain two root launches");
+  auto constraints =
+      take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
+          dataflow, system, roots, store));
+  auto partition = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
+      dataflow, constraints.view().rootThreadLaunches()));
+
+  std::optional<dataflow::RootThreadLaunchRef> consumerRoot;
+  std::optional<dataflow::CanonicalProducerTerminalRef> channelProducer;
+  for (const auto &root : dataflow.rootThreadLaunches()) {
+    if (llvm::Error error = dataflow.forEachProducerTerminal(
+            root.ref,
+            [&](const dataflow::CanonicalProducerTerminalView &producer)
+                -> llvm::Error {
+              const auto *channel =
+                  std::get_if<dataflow::ChannelProducerTerminalRef>(
+                      &producer.terminal);
+              if (!channel)
+                return llvm::Error::success();
+              channelProducer = producer.terminal;
+              auto consumers = dataflow.channelConsumers(channel->producer);
+              if (!consumers)
+                return consumers.takeError();
+              require(consumers->size() == 1,
+                      "fixture channel must have one static consumer");
+              const auto *stream =
+                  std::get_if<dataflow::GraphStreamInputConsumerRef>(
+                      &consumers->front().consumer);
+              require(stream,
+                      "fixture channel consumer must be a graph stream");
+              consumerRoot = stream->launch.rootThreadLaunch;
+              return llvm::Error::success();
+            }))
+      fail(llvm::toString(std::move(error)));
+  }
+  require(consumerRoot.has_value(),
+          "fixture did not identify its consumer root");
+  for (auto &binding : partition.bindings)
+    if (const auto *root =
+            std::get_if<dataflow::RootThreadLaunchRef>(&binding.key);
+        root && *root == *consumerRoot) {
+      require(binding.cells.size() == 1,
+              "whole-domain consumer binding is not singleton");
+      const auto legal = binding.cells.front();
+      binding.cells = {bounded(legal, std::nullopt, 1),
+                       bounded(legal, 2, std::nullopt)};
+    }
+
+  const auto config =
+      take(loom::pnr::projectResolvedSystemPnrConfigView(resolved));
+  auto searchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      dataflow, system, config, constraints, partition,
+      loom::pnr::SystemHierarchicalGraphSearchInput{{spatialMapping}}, store));
+  auto problem = take(loom::pnr::freezeSystemPnrProblem(
+      dataflow, system, searchDomain, config, constraints, store));
+
+  require(problem->threadDecisions().size() == 3,
+          "consumer partition did not create two execution decisions");
+
+  const auto channelService =
+      llvm::find_if(problem->serviceDomains(), [&](const auto &service) {
+        const auto *transfer =
+            std::get_if<loom::mapping::TransferObligationFamilyKey>(
+                &service.key);
+        return transfer && channelProducer && *transfer == *channelProducer;
+      });
+  require(channelService != problem->serviceDomains().end(),
+          "frozen problem omitted the channel obligation");
+  const loom::pnr::PnrIndex channelServiceOrdinal =
+      static_cast<loom::pnr::PnrIndex>(channelService -
+                                       problem->serviceDomains().begin());
+  std::vector<loom::pnr::PnrIndex> channelContexts;
+  for (const auto &[ordinal, serviceContext] :
+       llvm::enumerate(problem->serviceContexts()))
+    if (serviceContext.service == channelServiceOrdinal)
+      channelContexts.push_back(static_cast<loom::pnr::PnrIndex>(ordinal));
+  require(channelContexts.size() == 2,
+          "channel producer domain did not split into two plan contexts");
+  std::vector<std::size_t> applicableCounts;
+  for (loom::pnr::PnrIndex contextOrdinal : channelContexts) {
+    const auto &serviceContext = problem->serviceContexts()[contextOrdinal];
+    require(!serviceContext.cells.empty(),
+            "channel plan context has no selection relation");
+    applicableCounts.push_back(serviceContext.applicableMessageSinks.size());
+  }
+  llvm::sort(applicableCounts);
+  require(applicableCounts == std::vector<std::size_t>({0, 2}),
+          "source_map did not derive one empty and one two-owner plan");
+
+  std::vector<loom::pnr::PnrIndex> consumerDecisions;
+  for (const auto &[ordinal, decision] :
+       llvm::enumerate(problem->threadDecisions()))
+    if (decision.root == *consumerRoot)
+      consumerDecisions.push_back(static_cast<loom::pnr::PnrIndex>(ordinal));
+  require(consumerDecisions.size() == 2,
+          "consumer execution partition did not remain exact");
+
+  const auto selectedCoreOrdinal = [&](loom::pnr::PnrIndex decision,
+                                       loom::pnr::PnrIndex choice) {
+    const auto domain = problem->threadChoiceCatalogOrdinals(decision);
+    require(choice < domain.size(), "test choice is outside its thread domain");
+    return domain[choice];
+  };
+  const std::vector<loom::pnr::PnrIndex> graphChoices(
+      problem->graphDecisions().size(), 0);
+  auto findCandidate = [&](bool requireDistinctOwners) {
+    loom::pnr::SystemCandidateStateHandle selected;
+    std::string lastDiagnostic;
+    std::vector<loom::pnr::PnrIndex> threadChoices(
+        problem->threadDecisions().size(), 0);
+    const auto firstDomain =
+        problem->threadChoiceCatalogOrdinals(consumerDecisions[0]);
+    const auto secondDomain =
+        problem->threadChoiceCatalogOrdinals(consumerDecisions[1]);
+    for (loom::pnr::PnrIndex first = 0; first < firstDomain.size() && !selected;
+         ++first) {
+      for (loom::pnr::PnrIndex second = 0;
+           second < secondDomain.size() && !selected; ++second) {
+        const bool distinct =
+            selectedCoreOrdinal(consumerDecisions[0], first) !=
+            selectedCoreOrdinal(consumerDecisions[1], second);
+        if (distinct != requireDistinctOwners)
+          continue;
+        threadChoices[consumerDecisions[0]] = first;
+        threadChoices[consumerDecisions[1]] = second;
+        auto candidate = loom::pnr::initializeSystemCandidate(
+            problem, threadChoices, graphChoices);
+        if (candidate)
+          selected = std::move(*candidate);
+        else
+          lastDiagnostic = llvm::toString(candidate.takeError());
+      }
+    }
+    require(static_cast<bool>(selected),
+            requireDistinctOwners
+                ? "realistic Fabric has no routed distinct-owner assignment: " +
+                      lastDiagnostic
+                : "realistic Fabric has no routed same-owner assignment: " +
+                      lastDiagnostic);
+    return selected;
+  };
+
+  auto distinctOwners = findCandidate(true);
+  auto sameOwner = findCandidate(false);
+  require(distinctOwners->selectedAccCore(consumerDecisions[0]) !=
+                  distinctOwners->selectedAccCore(consumerDecisions[1]) &&
+              sameOwner->selectedAccCore(consumerDecisions[0]) ==
+                  sameOwner->selectedAccCore(consumerDecisions[1]),
+          "candidate fixtures do not select the requested owner relation");
+
+  std::optional<loom::pnr::PnrIndex> channelLeg;
+  for (const auto &[ordinal, leg] : llvm::enumerate(problem->serviceLegs()))
+    if (leg.key.obligation == channelService->key) {
+      require(!channelLeg, "channel applicability created duplicate legs");
+      channelLeg = static_cast<loom::pnr::PnrIndex>(ordinal);
+    }
+  require(channelLeg.has_value(),
+          "active channel plan has no frozen route leg");
+  require(distinctOwners->serviceRoutes()[*channelLeg].sinkCount == 2,
+          "distinct owners did not materialize two route branches");
+  require(sameOwner->serviceRoutes()[*channelLeg].sinkCount == 1,
+          "same-owner consumer points did not collapse to one route branch");
+
+  auto materialized = take(
+      loom::pnr::materializeSystemCandidateDraft(*distinctOwners, context));
+  auto mappingRoot = mlir::cast<::mapping::SystemOp>(materialized.get());
+  ::mapping::ServiceRealizationOp channelRealization;
+  for (auto service : mappingRoot.getBody()
+                          .front()
+                          .getOps<::mapping::ServiceRealizationOp>()) {
+    auto key = take(loom::mapping::decodeSystemServiceObligationKey(
+        unsignedBytes(service.getKey().getRecord()),
+        problem->dataflowIdentity()));
+    if (key == channelService->key)
+      channelRealization = service;
+  }
+  require(channelRealization,
+          "materialized Mapping omitted the channel realization");
+  std::size_t emptyPlans = 0;
+  std::size_t routedPlans = 0;
+  for (auto plan : channelRealization.getBody()
+                       .front()
+                       .getOps<::mapping::ServicePlanOp>()) {
+    auto routes =
+        plan.getBody().front().getOps<::mapping::TransferLegRealizationOp>();
+    if (routes.begin() == routes.end()) {
+      ++emptyPlans;
+      continue;
+    }
+    require(llvm::hasSingleElement(routes),
+            "channel plan contains more than one message leg");
+    auto route = *routes.begin();
+    auto nodes = route.getBody().front().getOps<::mapping::SystemRouteNodeOp>();
+    require(std::distance(nodes.begin(), nodes.end()) + 1 >= 8,
+            "distinct-owner channel did not exercise a multi-hop ring route");
+    auto sinks = route.getBody().front().getOps<::mapping::SystemRouteSinkOp>();
+    require(std::distance(sinks.begin(), sinks.end()) == 2,
+            "materialized distinct-owner route lost a branch");
+    auto first = *sinks.begin();
+    auto second = *std::next(sinks.begin());
+    require(first.getTerminal() == second.getTerminal() &&
+                first.getNodeOrdinal() != second.getNodeOrdinal(),
+            "same terminal was not attached to two distinct owner nodes");
+    ++routedPlans;
+  }
+  require(emptyPlans == 1 && routedPlans == 1,
+          "non-surjective source_map did not materialize exact plans");
+  const auto canonical =
+      take(loom::mapping::writeCanonicalSystemMappingAssembly(mappingRoot));
+  for (std::size_t replay = 1; replay != 3; ++replay) {
+    auto replayed = take(
+        loom::pnr::materializeSystemCandidateDraft(*distinctOwners, context));
+    auto replayedBytes =
+        take(loom::mapping::writeCanonicalSystemMappingAssembly(
+            mlir::cast<::mapping::SystemOp>(replayed.get())));
+    require(replayedBytes.bytes() == canonical.bytes(),
+            "channel Mapping changed across canonical replay");
+  }
+
+  std::vector<loom::pnr::SystemServiceRouteSelection> staleRoutes;
+  std::vector<loom::pnr::SystemServiceRouteNodeSelection> staleNodes;
+  std::vector<loom::pnr::SystemServiceRouteSinkSelection> staleSinks;
+  staleRoutes.reserve(sameOwner->serviceRoutes().size());
+  for (std::size_t ordinal = 0; ordinal != sameOwner->serviceRoutes().size();
+       ++ordinal) {
+    const auto &candidate =
+        ordinal == *channelLeg ? *distinctOwners : *sameOwner;
+    auto route = candidate.serviceRoutes()[ordinal];
+    const auto nodes =
+        candidate.serviceRouteNodes().slice(route.nodeOffset, route.nodeCount);
+    const auto sinks =
+        candidate.serviceRouteSinks().slice(route.sinkOffset, route.sinkCount);
+    route.nodeOffset = static_cast<loom::pnr::PnrIndex>(staleNodes.size());
+    route.sinkOffset = static_cast<loom::pnr::PnrIndex>(staleSinks.size());
+    staleRoutes.push_back(route);
+    staleNodes.insert(staleNodes.end(), nodes.begin(), nodes.end());
+    staleSinks.insert(staleSinks.end(), sinks.begin(), sinks.end());
+  }
+  requireFailureContains(
+      loom::pnr::SystemCandidateState::create(
+          problem, {sameOwner->threadChoices(), sameOwner->graphChoices(),
+                    staleRoutes, staleNodes, staleSinks}),
+      "applicable sink-owner set");
+  return EXIT_SUCCESS;
+}

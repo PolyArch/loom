@@ -174,8 +174,25 @@ LogicalResult mapping::ServicePlanOp::verify() {
     if (!legs.insert(route.getLeg()).second)
       return route.emitOpError("duplicates a TransferLegRealization key");
   }
-  if (legs.empty())
-    return emitOpError("requires at least one TransferLegRealization");
+  if (legs.empty()) {
+    auto root = (*this)->getParentOfType<mapping::SystemOp>();
+    if (!root)
+      return emitOpError("must belong to a SystemMapping root");
+    auto dataflowOwner = identity(root.getDataflow());
+    if (!dataflowOwner)
+      return emitOpError() << llvm::toString(dataflowOwner.takeError());
+    auto service = (*this)->getParentOfType<mapping::ServiceRealizationOp>();
+    if (!service)
+      return emitOpError("must belong to a ServiceRealization");
+    auto obligation = ::loom::mapping::decodeSystemServiceObligationKey(
+        unsignedBytes(service.getKey().getRecord()), *dataflowOwner);
+    if (!obligation)
+      return emitOpError() << llvm::toString(obligation.takeError());
+    if (!std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
+            *obligation))
+      return emitOpError(
+          "childless plan requires a MessageTransfer obligation");
+  }
   return success();
 }
 
@@ -256,7 +273,7 @@ LogicalResult mapping::TransferLegRealizationOp::verify() {
 
   llvm::DenseMap<std::uint64_t, mapping::SystemRouteNodeOp> nodes;
   llvm::DenseSet<Attribute> arcs;
-  llvm::DenseSet<Attribute> sinkKeys;
+  llvm::DenseSet<Attribute> sinkAttachments;
   for (Operation &child : getBody().front()) {
     if (auto node = dyn_cast<mapping::SystemRouteNodeOp>(child)) {
       const std::int64_t ordinal = integerValue(node, "node_ordinal");
@@ -279,8 +296,10 @@ LogicalResult mapping::TransferLegRealizationOp::verify() {
     if (!sink)
       return child.emitOpError(
           "is not a closed System transfer-leg route record kind");
-    if (!sinkKeys.insert(sink.getTerminal()).second)
-      return sink.emitOpError("duplicates a System route sink key");
+    Attribute attachment = ArrayAttr::get(
+        getContext(), {sink.getTerminal(), sink->getAttr("node_ordinal")});
+    if (!sinkAttachments.insert(attachment).second)
+      return sink.emitOpError("duplicates a System route sink attachment");
     auto terminal = ::loom::mapping::decodeSystemTransferTerminalKey(
         unsignedBytes(sink.getTerminal().getRecord()), *dataflowOwner);
     if (!terminal)
@@ -292,7 +311,7 @@ LogicalResult mapping::TransferLegRealizationOp::verify() {
     if (sinkKey->leg != *leg)
       return sink.emitOpError("names a terminal from another service leg");
   }
-  if (sinkKeys.empty())
+  if (sinkAttachments.empty())
     return emitOpError("requires at least one System route sink");
 
   for (auto [ordinal, node] : nodes) {

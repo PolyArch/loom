@@ -1331,7 +1331,7 @@ int main() {
           problem, {first.state->threadChoices(), first.state->graphChoices(),
                     incompleteRoutes, first.state->serviceRouteNodes(),
                     first.state->serviceRouteSinks()}),
-      "service route does not cover every sink terminal");
+      "service route does not cover the applicable sink-owner set");
 
   std::vector<loom::pnr::SystemServiceRouteSinkSelection> foreignSinks(
       first.state->serviceRouteSinks().begin(),

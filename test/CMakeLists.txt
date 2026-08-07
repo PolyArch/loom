@@ -165,6 +165,7 @@ set(LOOM_TEST_DEPENDS
   loom-system-pnr-search-domain-test
   loom-system-pnr-service-domain-test
   loom-system-candidate-state-test
+  loom-system-channel-applicability-test
   loom-pnr-routing-negotiation-test
   loom-pnr-spatial-action-proposal-test
   loom-pnr-cp-sat-exact-protocol-test
