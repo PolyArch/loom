@@ -172,9 +172,10 @@ LogicalResult mapping::SystemTransferTerminalKeyAttr::verify(
 
 LogicalResult mapping::SystemPresburgerCellAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, std::uint32_t dimensionCount,
-    std::uint32_t symbolCount, ArrayAttr equalities, ArrayAttr inequalities) {
+    std::uint32_t symbolCount, std::uint32_t localCount, ArrayAttr equalities,
+    ArrayAttr inequalities) {
   const std::uint64_t width =
-      static_cast<std::uint64_t>(dimensionCount) + symbolCount + 1;
+      static_cast<std::uint64_t>(dimensionCount) + symbolCount + localCount + 1;
   if (width > std::numeric_limits<std::size_t>::max()) {
     emitError() << "Presburger row width exceeds native size";
     return failure();

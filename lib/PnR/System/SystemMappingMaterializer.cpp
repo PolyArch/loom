@@ -91,7 +91,7 @@ cellAttr(mlir::MLIRContext *context,
   for (const auto &row : cell.inequalities)
     inequalities.push_back(mlir::DenseI64ArrayAttr::get(context, row));
   return ::mapping::SystemPresburgerCellAttr::get(
-      context, cell.dimensionCount, cell.symbolCount,
+      context, cell.dimensionCount, cell.symbolCount, cell.localCount,
       mlir::ArrayAttr::get(context, equalities),
       mlir::ArrayAttr::get(context, inequalities));
 }

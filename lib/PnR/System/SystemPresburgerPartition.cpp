@@ -40,8 +40,8 @@ denseMayDomain(const ::dataflow::CanonicalRootThreadLogicalDomainView &domain) {
   SystemPresburgerCell cell;
   cell.dimensionCount = domain.coordinateRank;
   cell.symbolCount = static_cast<std::uint32_t>(domain.launchParameters.size());
-  const std::size_t rowWidth =
-      static_cast<std::size_t>(cell.dimensionCount) + cell.symbolCount + 1;
+  const std::size_t rowWidth = static_cast<std::size_t>(cell.dimensionCount) +
+                               cell.symbolCount + cell.localCount + 1;
   for (std::uint32_t coordinate = 0; coordinate < cell.dimensionCount;
        ++coordinate) {
     std::vector<std::int64_t> lower(rowWidth, 0);
@@ -233,10 +233,10 @@ canonicalizeAndValidateSystemPartition(
     }
     llvm::sort(normalized.cells, [](const SystemPresburgerCell &lhs,
                                     const SystemPresburgerCell &rhs) {
-      return std::tie(lhs.dimensionCount, lhs.symbolCount, lhs.equalities,
-                      lhs.inequalities) <
-             std::tie(rhs.dimensionCount, rhs.symbolCount, rhs.equalities,
-                      rhs.inequalities);
+      return std::tie(lhs.dimensionCount, lhs.symbolCount, lhs.localCount,
+                      lhs.equalities, lhs.inequalities) <
+             std::tie(rhs.dimensionCount, rhs.symbolCount, rhs.localCount,
+                      rhs.equalities, rhs.inequalities);
     });
     auto analysis = ::loom::mapping::analyzeSystemPresburgerPartition(
         normalized.cells, expectedIt->second->legalDomain);

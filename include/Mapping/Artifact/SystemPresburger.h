@@ -5,7 +5,12 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
+
+namespace mlir {
+class AffineMap;
+}
 
 namespace loom::mapping {
 
@@ -14,6 +19,7 @@ namespace loom::mapping {
 struct SystemPresburgerCell final {
   std::uint32_t dimensionCount = 0;
   std::uint32_t symbolCount = 0;
+  std::uint32_t localCount = 0;
   std::vector<std::vector<std::int64_t>> equalities;
   std::vector<std::vector<std::int64_t>> inequalities;
 
@@ -21,6 +27,7 @@ struct SystemPresburgerCell final {
                          const SystemPresburgerCell &rhs) {
     return lhs.dimensionCount == rhs.dimensionCount &&
            lhs.symbolCount == rhs.symbolCount &&
+           lhs.localCount == rhs.localCount &&
            lhs.equalities == rhs.equalities &&
            lhs.inequalities == rhs.inequalities;
   }
@@ -38,6 +45,14 @@ struct SystemPresburgerPartitionAnalysis final {
 
 llvm::Expected<SystemPresburgerCell>
 canonicalizeSystemPresburgerCell(const SystemPresburgerCell &input);
+
+llvm::Expected<SystemPresburgerCell>
+imageSystemPresburgerCell(const SystemPresburgerCell &input,
+                          const mlir::AffineMap &map);
+
+llvm::Expected<std::optional<SystemPresburgerCell>>
+intersectSystemPresburgerCells(const SystemPresburgerCell &lhs,
+                               const SystemPresburgerCell &rhs);
 
 llvm::Expected<bool>
 systemPresburgerCellsIntersect(const SystemPresburgerCell &lhs,

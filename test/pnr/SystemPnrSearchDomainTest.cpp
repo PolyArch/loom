@@ -12,6 +12,7 @@
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -226,6 +227,28 @@ int main() {
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
 
+  loom::mapping::SystemPresburgerCell consumerCell;
+  consumerCell.dimensionCount = 1;
+  consumerCell.inequalities = {{1, 0}, {-1, 3}};
+  const mlir::AffineExpr consumerPoint = mlir::getAffineDimExpr(0, &context);
+  const mlir::AffineMap evenSourceMap =
+      mlir::AffineMap::get(1, 0, consumerPoint * 2);
+  const auto evenProducerPoints = take(
+      loom::mapping::imageSystemPresburgerCell(consumerCell, evenSourceMap));
+  loom::mapping::SystemPresburgerCell producerTwo;
+  producerTwo.dimensionCount = 1;
+  producerTwo.equalities = {{1, -2}};
+  loom::mapping::SystemPresburgerCell producerThree;
+  producerThree.dimensionCount = 1;
+  producerThree.equalities = {{1, -3}};
+  require(take(loom::mapping::intersectSystemPresburgerCells(evenProducerPoints,
+                                                             producerTwo))
+                  .has_value() &&
+              !take(loom::mapping::intersectSystemPresburgerCells(
+                        evenProducerPoints, producerThree))
+                   .has_value(),
+          "affine image convexified an exact non-unit-stride source_map");
+
   auto dataflow = buildDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflow, store));
   auto dataflowView = take(dataflow.view());
@@ -331,6 +354,41 @@ int main() {
               normalized.digest() == domain.digest(),
           "redundant or reordered Presburger constraints changed canonical H");
 
+  auto parity = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
+      dataflowView, roots));
+  auto even = parity.bindings.front().cells.front();
+  even.localCount = 1;
+  const std::size_t localColumn =
+      static_cast<std::size_t>(even.dimensionCount) + even.symbolCount;
+  for (auto &row : even.equalities)
+    row.insert(row.begin() + localColumn, 0);
+  for (auto &row : even.inequalities)
+    row.insert(row.begin() + localColumn, 0);
+  std::vector<std::int64_t> congruence(localColumn + even.localCount + 1, 0);
+  congruence.front() = 1;
+  congruence[localColumn] = -2;
+  even.equalities.push_back(congruence);
+  auto odd = even;
+  odd.equalities.back().back() = -1;
+  parity.bindings.front().cells = {odd, even};
+  auto parityDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      dataflowView, system, config, constraints, parity, {}, store));
+  const auto &parityAtoms = parityDomain.bindings().front().atoms;
+  require(
+      parityAtoms.size() == 2 && llvm::all_of(parityAtoms,
+                                              [](const auto &atom) {
+                                                return atom.cell.localCount ==
+                                                       1;
+                                              }),
+      "Presburger local variables were lost from an exact parity partition");
+  auto adoptedParity = take(loom::pnr::adoptSystemPnrSearchDomain(
+      loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
+      parityDomain.canonicalViewBytes(), parityDomain.digest(), store));
+  require(
+      adoptedParity.canonicalViewBytes() == parityDomain.canonicalViewBytes() &&
+          adoptedParity.bindings().front().atoms.front().cell.localCount == 1,
+      "strict H adoption changed a Presburger local-variable partition");
+
   auto adopted = take(loom::pnr::adoptSystemPnrSearchDomain(
       loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
       domain.canonicalViewBytes(), domain.digest(), store));
@@ -377,7 +435,7 @@ int main() {
   auto &emptyCell = integerEmpty.bindings.front().cells.front();
   std::vector<std::int64_t> noIntegerPoint(
       static_cast<std::size_t>(emptyCell.dimensionCount) +
-          emptyCell.symbolCount + 1,
+          emptyCell.symbolCount + emptyCell.localCount + 1,
       0);
   noIntegerPoint.front() = 2;
   noIntegerPoint.back() = -1;

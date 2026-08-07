@@ -84,9 +84,9 @@ def Mapping_SystemPresburgerCellAttr
     : Mapping_Attr<"SystemPresburgerCell", "system_presburger_cell"> {
   let summary = "one convex canonical integer-set disjunct";
   let parameters = (ins "uint32_t":$dimensionCount,
-      "uint32_t":$symbolCount, "::mlir::ArrayAttr":$equalities,
-      "::mlir::ArrayAttr":$inequalities);
-  let assemblyFormat = "`<` $dimensionCount `,` $symbolCount `,` "
+      "uint32_t":$symbolCount, "uint32_t":$localCount,
+      "::mlir::ArrayAttr":$equalities, "::mlir::ArrayAttr":$inequalities);
+  let assemblyFormat = "`<` $dimensionCount `,` $symbolCount `,` $localCount `,` "
                        "$equalities `,` $inequalities `>`";
   let genVerifyDecl = 1;
 }

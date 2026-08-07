@@ -114,6 +114,7 @@ decodeCell(::mapping::SystemPresburgerCellAttr attribute) {
   SystemPresburgerCell cell;
   cell.dimensionCount = attribute.getDimensionCount();
   cell.symbolCount = attribute.getSymbolCount();
+  cell.localCount = attribute.getLocalCount();
   const auto appendRows = [](mlir::ArrayAttr attributes,
                              std::vector<std::vector<std::int64_t>> &rows) {
     rows.reserve(attributes.size());
@@ -135,8 +136,8 @@ legalDomain(const ::dataflow::CanonicalRootThreadLogicalDomainView &domain) {
   SystemPresburgerCell cell;
   cell.dimensionCount = domain.coordinateRank;
   cell.symbolCount = static_cast<std::uint32_t>(domain.launchParameters.size());
-  const std::size_t width =
-      static_cast<std::size_t>(cell.dimensionCount) + cell.symbolCount + 1;
+  const std::size_t width = static_cast<std::size_t>(cell.dimensionCount) +
+                            cell.symbolCount + cell.localCount + 1;
   for (std::uint32_t coordinate = 0; coordinate < cell.dimensionCount;
        ++coordinate) {
     std::vector<std::int64_t> lower(width, 0);

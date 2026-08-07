@@ -33,6 +33,7 @@ target_link_libraries(LoomMappingArtifact PUBLIC
 )
 
 mlir_target_link_libraries(LoomMappingArtifact PUBLIC
+  MLIRAffineAnalysis
   MLIRIR
   MLIRParser
   MLIRPresburger

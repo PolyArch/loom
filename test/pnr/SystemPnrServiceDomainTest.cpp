@@ -161,8 +161,8 @@ void skipFabricDomain(FramingCursor &cursor) {
 }
 
 void skipPresburgerCell(FramingCursor &cursor) {
-  const std::uint64_t rowWidth =
-      static_cast<std::uint64_t>(cursor.u32()) + cursor.u32() + 1;
+  const std::uint64_t rowWidth = static_cast<std::uint64_t>(cursor.u32()) +
+                                 cursor.u32() + cursor.u32() + 1;
   require(rowWidth <= std::numeric_limits<std::size_t>::max() / 8,
           "test Presburger row width exceeds native range");
   const std::uint64_t rowBytes = rowWidth * 8;

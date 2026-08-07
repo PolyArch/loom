@@ -307,14 +307,14 @@ withFirstCoordinateLowerBound(::mapping::SystemPresburgerCellAttr cell,
       cell.getInequalities().begin(), cell.getInequalities().end());
   std::vector<std::int64_t> row(
       static_cast<std::size_t>(cell.getDimensionCount()) +
-          cell.getSymbolCount() + 1,
+          cell.getSymbolCount() + cell.getLocalCount() + 1,
       0);
   row.front() = 1;
   row.back() = -lowerBound;
   inequalities.push_back(mlir::DenseI64ArrayAttr::get(cell.getContext(), row));
   return ::mapping::SystemPresburgerCellAttr::get(
       cell.getContext(), cell.getDimensionCount(), cell.getSymbolCount(),
-      cell.getEqualities(),
+      cell.getLocalCount(), cell.getEqualities(),
       mlir::ArrayAttr::get(cell.getContext(), inequalities));
 }
 

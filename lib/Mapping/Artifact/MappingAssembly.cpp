@@ -491,6 +491,7 @@ decodeSystemCell(::mapping::SystemPresburgerCellAttr attribute) {
   SystemPresburgerCell cell;
   cell.dimensionCount = attribute.getDimensionCount();
   cell.symbolCount = attribute.getSymbolCount();
+  cell.localCount = attribute.getLocalCount();
   const auto appendRows = [](ArrayAttr attributes,
                              std::vector<std::vector<std::int64_t>> &rows) {
     rows.reserve(attributes.size());
@@ -513,7 +514,7 @@ systemCellAttr(MLIRContext *context, const SystemPresburgerCell &cell) {
   for (const auto &row : cell.inequalities)
     inequalities.push_back(DenseI64ArrayAttr::get(context, row));
   return ::mapping::SystemPresburgerCellAttr::get(
-      context, cell.dimensionCount, cell.symbolCount,
+      context, cell.dimensionCount, cell.symbolCount, cell.localCount,
       ArrayAttr::get(context, equalities),
       ArrayAttr::get(context, inequalities));
 }
@@ -522,6 +523,7 @@ std::string systemCellKey(::mapping::SystemPresburgerCellAttr cell) {
   std::string result;
   appendU32(result, cell.getDimensionCount());
   appendU32(result, cell.getSymbolCount());
+  appendU32(result, cell.getLocalCount());
   const auto appendRows = [&](ArrayAttr rows) {
     appendU64(result, rows.size());
     for (Attribute attribute : rows) {

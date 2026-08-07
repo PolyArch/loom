@@ -177,6 +177,7 @@ fabricRootReference(const ::loom::fabric::FabricSystemRootView &fabric) {
 void encodeCell(WireWriter &writer, const SystemPresburgerCell &cell) {
   writer.u32(cell.dimensionCount);
   writer.u32(cell.symbolCount);
+  writer.u32(cell.localCount);
   writer.u64(cell.equalities.size());
   for (const std::vector<std::int64_t> &row : cell.equalities)
     for (std::int64_t value : row)
@@ -194,8 +195,11 @@ llvm::Expected<SystemPresburgerCell> decodeCell(WireReader &reader) {
   auto symbols = reader.u32();
   if (!symbols)
     return symbols.takeError();
+  auto locals = reader.u32();
+  if (!locals)
+    return locals.takeError();
   const std::uint64_t rowWidth =
-      static_cast<std::uint64_t>(*dimensions) + *symbols + 1;
+      static_cast<std::uint64_t>(*dimensions) + *symbols + *locals + 1;
   if (rowWidth > std::numeric_limits<std::size_t>::max() / 8)
     return invalid("Presburger row width exceeds native range");
   const std::size_t minimumRowBytes = static_cast<std::size_t>(rowWidth) * 8;
@@ -203,6 +207,7 @@ llvm::Expected<SystemPresburgerCell> decodeCell(WireReader &reader) {
   SystemPresburgerCell cell;
   cell.dimensionCount = *dimensions;
   cell.symbolCount = *symbols;
+  cell.localCount = *locals;
   auto equalities = reader.count(minimumRowBytes, "equality row");
   if (!equalities)
     return equalities.takeError();

@@ -461,7 +461,7 @@ int main() {
   ::mapping::ServicePlanPresburgerClauseOp::create(
       duplicateBuilder, duplicateBuilder.getUnknownLoc(),
       duplicateBuilder.getArrayAttr({::mapping::SystemPresburgerCellAttr::get(
-          &context, 0, 0, duplicateBuilder.getArrayAttr({}),
+          &context, 0, 0, 0, duplicateBuilder.getArrayAttr({}),
           duplicateBuilder.getArrayAttr({}))}),
       8);
   auto deduplicated = take(
