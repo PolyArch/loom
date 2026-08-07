@@ -409,7 +409,8 @@ sets or contracts is copied into the key. Memory access and exposure therefore
 share one owner and cannot select contradictory services.
 
 Each `ServiceRealization` contains canonical owner-local `ServicePlan` values
-and a total plan-selection relation. A plan contains:
+and the complete contextual plan-selection rows owned by
+`docs/spec-mapping-artifact.md`. A plan contains:
 
 * one closed target-binding variant: logical-service interval to Fabric
   service region for addressed memory, or fence family to one
@@ -466,10 +467,10 @@ capability closure.
 
 System PnR domain construction is factorized by the exact bound endpoint; it
 neither unions capabilities across endpoints nor requires every occurrence to
-satisfy an intersection. Finalized plan selection is indexed by the
-`ExecutionContextKey` derived after `B_graph` targets immutable
-SpatialMappings. Incompatibility makes only a candidate using the affected
-endpoint infeasible.
+satisfy an intersection. Finalized plan selection uses the owner-relative
+anchor and `ExecutionContextKey` defined by Mapping identity after `B_graph`
+targets immutable SpatialMappings. Incompatibility makes only a candidate
+using the affected endpoint infeasible.
 
 Whether service is local or crosses a manager endpoint does not change the
 runtime request schema. Both use the Runtime ABI's typed
@@ -479,8 +480,9 @@ or manager Bridge without reinterpreting the Mapping binding.
 
 System `ResourceUse` for a selected plan element uses
 `ServicePlanElementRef = (ServiceRealizationKey, canonical plan ordinal,
-typed element key)`. Applicability is derived from `plan_selection`; the use
-does not copy its predicate, target, or selected plan. System `ResourceUse`
+typed element key)`. Applicability is derived from the owning contextual
+plan-selection rows; the use does not copy its predicate, target, or selected
+plan. System `ResourceUse`
 owns occupancy, event-relative activation, typed capacity demand, Physical
 Tags, and sharing assignments for selected system services and transport.
 Spatial `ResourceUse` remains inside the imported immutable

@@ -752,6 +752,30 @@ cannot alter coordinates, extents, launch parameters, channel correspondence,
 or introduce physical coordinates. Different shapes are different resolved
 invocations, not mutable hidden state within one run.
 
+## Why Service Plan Selection Uses Anchor Plus Context
+
+A ServicePlan can contain an obligation-wide route or service-target choice,
+while the legal physical endpoints may vary across the logical domain. A root
+thread can execute on one AccCore for one relation cell and another AccCore for
+another cell; a channel producer and its consumers may also execute in
+different contexts derived through `source_map`. One obligation-global route
+would either borrow endpoints across owners or reject a legal binding.
+
+Mapping therefore keys plan selection by an existing Dataflow-owned service
+anchor plus the existing finalized `ExecutionContextKey`. The anchor supplies
+the logical relation domain; the context is rederived from `B_thread` and,
+where applicable, `B_graph`; the relation selects only a canonical owner-local
+plan ordinal. Consumer contexts remain derived through Dataflow correspondence.
+This avoids a new producer-plus-sinks context tuple, which would copy the sink
+set and `source_map`, and avoids storing endpoints beside the RouteTree, which
+would duplicate Fabric and route facts.
+
+Mutable flat PnR uses its existing decision atoms until immutable
+SpatialMapping identities exist. Finalization replaces those native indices
+with the ordinary anchor/context selection rows. The same rule therefore
+supports hierarchical and flat search without provisional identity, rekeying,
+or a second plan-selection authority.
+
 ## Why System Spatial-Temporal Is A Spectrum
 
 System-level spatial-temporal allocation and resource-level temporal hardware

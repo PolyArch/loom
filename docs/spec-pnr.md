@@ -317,6 +317,18 @@ identity. Its nested row key sets are derived as follows:
   endpoint role. The row applies the exact endpoint-independent `C/K`
   restriction for that terminal.
 
+For a `MessageTransfer` terminal, mechanically bindable endpoints are further
+restricted by its Dataflow-defined execution owner. A root-thread runtime side
+uses the unique HostCore occurrence; its hardware side uses every AccCore in
+the legal `B_thread` range. Graph-boundary terminals use the legal parent
+AccCore range of their rooted graph, while a channel producer or consumer uses
+the legal AccCore range of its own rooted terminal. Rows cover only matching
+transport-plane service endpoints owned by those occurrences. Endpoints owned
+by a memory service, transform, transport resource, hardware domain, external
+boundary, or unrelated core are not mechanically bindable message terminals.
+Multiple role-compatible endpoints on one legal owner remain separate exact
+rows and may later be route alternatives.
+
 An empty domain for a reachable subject-and-endpoint or
 terminal-and-endpoint pair remains present. A missing, extra, duplicate,
 wrong-owner, wrong-plane, or unreachable pair is invalid. Target rows are not
@@ -1054,6 +1066,15 @@ occupancy and sharing assignments of already selected elements. These
 decisions are kept in the same candidate as reopened Spatial decisions in flat
 mode.
 
+For each service anchor, candidate-native relation atoms pair the applicable
+thread and graph decision atoms with one complete plan semantic key. They are
+mutable search state, not provisional `ExecutionContextKey` values. For a
+message anchor, the producer event and Dataflow-owned `source_map` mechanically
+derive every terminal's applicable execution decision. Each distinct selected
+terminal-owner combination has a distinct complete route plan; equal complete
+plan semantic keys may be deduplicated. A candidate cannot merge endpoints
+owned by different execution choices into one route domain.
+
 For each affected service subject or terminal, a service move mechanically
 resolves one exact bound endpoint from the selected `B_thread`, the selected
 hierarchical SpatialMapping or current flat Spatial decisions, and `F`. It
@@ -1064,12 +1085,24 @@ domains. A missing row is an invalid frozen view; an empty row or intersection
 is infeasible. Neither case may fall back to another occurrence, endpoint,
 global scan, union, or candidate-private compatibility cache.
 
+For `MessageTransfer`, the exact H rows considered for one terminal are only
+the factorized rows whose transport service endpoint belongs to that
+terminal's current owner: the fixed HostCore/runtime side or the AccCore
+selected by the applicable thread decision. Multiple compatible endpoints on
+that one owner remain route alternatives; endpoints on another HostCore or
+AccCore do not enter the domain. A thread, graph, or route move rebuilds the
+affected owner combination, plan semantic key, and route feasibility from the
+current decisions. Reusing a route after any terminal owner changes is an
+invariant failure even when its endpoint remains globally reachable.
+
 In flat mode this lookup occurs before a changed SpatialMapping has an
 ArtifactIdentity. After independent Spatial verification and identity
 assignment, finalization derives the persistent `ExecutionContextKey`,
-rewrites `B_graph` and ServiceRealization plan selection, and discards all
-native flat handles and H lookup state. Hierarchical and flat search therefore
-share one endpoint-compatibility rule without sharing mutable identity.
+rewrites `B_graph`, canonicalizes complete ServicePlan semantic keys, and emits
+the exact owner-relative anchor/context selection rows. It then discards all
+native flat handles, decision-atom ordinals, and H lookup state. Hierarchical
+and flat search therefore share one endpoint-compatibility rule without
+sharing mutable identity.
 
 Mapping 2.0 derives each Fabric-owned `InstructionCoreContextRef` from the
 selected AccCore and its one-per-AccCore cardinality. A selected service

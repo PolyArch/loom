@@ -781,7 +781,12 @@ selection relation:
 ServiceRealization {
   SystemServiceObligationKey
   plans: [ServicePlan]
-  plan_selection
+  plan_selections: [ServicePlanSelection]
+}
+
+ServicePlanSelection {
+  ServicePlanSelectionKey
+  relation: BindingRelation<ServicePlanOrdinal>
 }
 
 ServicePlan {
@@ -790,6 +795,45 @@ ServicePlan {
   physical_refinement_assignments
 }
 ```
+
+`ServicePlanSelectionKey` and its closed member-or-exposure anchor are owned by
+`docs/spec-mapping-identity.md`. The exact Dataflow program derives the
+complete anchor set. There is exactly one non-empty selection row for every
+reachable `(anchor, ExecutionContextKey)` pair and no other row. For one
+anchor, the row domains are disjoint and their union is exactly the anchor's
+legal may-domain. The relation in each row is total and single-valued over that
+row's context-restricted domain. Across all rows, the finite unique union of
+relation ranges is exactly the ServiceRealization's canonical plan-ordinal set;
+a missing selection, unreachable row, or unselected plan is invalid.
+
+For the singleton `MessageTransfer` anchor, relation inputs are the producer
+event's exact Dataflow-owned `EventLogicalProjection` and, for DynamicWork,
+its separately owned stable-item projection. The execution context is derived
+without a new transfer-context key:
+
+* a root-thread boundary transfer uses the root's Instruction context;
+* a graph-launch boundary transfer uses the rooted graph's Spatial context;
+* a thread-channel producer uses its root's Instruction context; and
+* a graph-stream producer uses its rooted graph's Spatial context.
+
+Root start and value-input sources are fixed HostCore/runtime endpoints and
+their sinks belong to the derived Instruction context; root completion uses
+the reverse ownership. Both terminals of a graph-launch boundary transfer are
+owned by the selected AccCore, with the InstructionCore/SpatialCore direction
+derived from the Dataflow transfer kind. Each channel consumer's exact logical
+point and execution binding are derived from the Dataflow-owned `source_map`;
+multicast does not copy a sink-context tuple into Mapping. Evaluating one
+selection row therefore determines one complete set of terminal owners and
+one plan whose RouteTrees use only endpoints owned by those terminals. A
+different endpoint-owner combination requires another plan and relation range,
+not a union of endpoint domains inside one route.
+
+An addressed-memory or fence member anchor and a memory-exposure anchor use
+their exact Dataflow-derived contextual logical input signature and legal
+may-domain within the rooted graph launch. Their context is the Spatial
+context derived from the applicable `B_thread` and `B_graph` results. This
+reuses the execution-binding functions; the selection relation chooses only an
+owner-local plan ordinal.
 
 A plan element referenced by ResourceUse has the structural reference:
 
@@ -869,23 +913,20 @@ nonpersistent maximum-width envelope defined by the
 Mapping derives and verifies that envelope from the exact upstream owners; it
 does not persist a width, packed tuple, role-specific route, or field layout.
 
-In a finalized SystemMapping, plan selection first derives the closed
-`ExecutionContextKey` owned by `docs/spec-mapping-identity.md` from the
-applicable evaluated execution bindings. A Spatial context uses the paired
-`B_thread` and immutable `B_graph` targets; an Instruction context uses only
-`B_thread`. Only reachable contexts are stored. The same SpatialMapping
-semantic target paired with two AccCore occurrences forms two keys because the
-exact Fabric attachment and service endpoint may differ between those
-occurrences. None of those derived Fabric facts is copied into the key or plan.
-This persistent key does not constrain how System PnR represents a mutable flat
-candidate before its SpatialMapping identities exist. Within a context, the
-same closed binding-relation algebra may select a plan from Dataflow-owned
-logical inputs. An event-rooted relation resolves its complete input universe
-from the exact Dataflow-owned `EventLogicalProjection` and, for a DynamicWork
-domain, its separately owned stable-item projection. It may reference any
-typed subset of those inputs but cannot persist another projection or
-reinterpret input order. Plans have no `EntityId`; the finalizer sorts and
-deduplicates complete plan semantic keys before assigning owner-local ordinals.
+In a finalized SystemMapping, each selection row uses the closed
+`ExecutionContextKey` owned by `docs/spec-mapping-identity.md`. A Spatial
+context uses the paired `B_thread` and immutable `B_graph` targets; an
+Instruction context uses only `B_thread`. The same SpatialMapping semantic
+target paired with two AccCore occurrences forms two keys because their exact
+Fabric attachments and service endpoints may differ. None of those derived
+Fabric facts is copied into the key or plan. This persistent key does not
+constrain how System PnR represents a mutable flat candidate before its
+SpatialMapping identities exist. Relations may reference only the anchor's
+derived typed input slots and cannot persist another projection or reinterpret
+input order. Plans have no `EntityId`; the finalizer sorts and deduplicates
+complete plan semantic keys, assigns owner-local ordinals, rewrites every
+selection relation to those ordinals, and sorts selection rows by their
+complete semantic keys.
 
 ServiceRealization is the only SystemMapping family for selected system
 routes, physical buffers, target service regions, address transforms, and
@@ -901,7 +942,8 @@ SystemMapping uses the same closed ResourceUse shape as SpatialMapping.
 InstructionCore-resident uses reference their ExecutionBinding and derived
 `InstructionCoreContextRef`; service-plan uses reference the exact
 `ServicePlanElementRef`. Applicability is mechanically derived from the
-existing `plan_selection`. A ResourceUse cannot copy that predicate or plan
+owning contextual plan-selection rows. A ResourceUse cannot copy that
+predicate or plan
 choice, nor select a different target, context, configuration, route, or
 service. Its use site must resolve a Fabric-owned use pattern exposed by the
 selected owner.
@@ -1003,8 +1045,8 @@ owner-local ordinals, run structural verification on the finalized root, emit
 canonical bytes, and invoke the Common finalizer.
 
 The SystemMapping writer resolves `D`, `F`, and the imported SpatialMappings;
-normalizes binding relations, plans, route
-trees, and resource uses; derives and checks the exact import table; verifies
+normalizes execution-binding and plan-selection relations, plans, route trees,
+and resource uses; derives and checks the exact import table; verifies
 complete cross-layer base closure; and runs separate admission against the
 exact invocation `K`. Only a verified and admitted draft may receive import
 and owner-local ordinals, pass finalized structural root verification,

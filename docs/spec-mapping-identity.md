@@ -274,6 +274,8 @@ The Mapping profiles also use these confirmed structural owners:
 * a GraphExecutionBinding is keyed by the Dataflow-owned
   `RootedGraphLaunchRef`;
 * a ServiceRealization is keyed by `SystemServiceObligationKey`;
+* a ServicePlan selection row is keyed by its exact owner-relative
+  `ServicePlanSelectionKey`;
 * an InstructionCore context is derived from the selected AccCore and fixed
   ordinal zero; and
 * a ServicePlan element is identified by the exact
@@ -427,6 +429,51 @@ failure. A malformed, foreign, wrong-kind, wrong-owner, or out-of-range
 reference is invalid. A well-formed obligation for which no compatible Fabric
 target exists is proven infeasible for that Mapping invocation rather than an
 identity error.
+
+### Service Plan Selection Key
+
+A ServiceRealization selects its owner-local plans through rows with this
+closed structural key:
+
+```text
+ServicePlanSelectionAnchor =
+    Member(ServiceMemberRef)
+  | Exposure(MemoryExposureRef)
+
+ServicePlanSelectionKey =
+  (ServicePlanSelectionAnchor, ExecutionContextKey)
+```
+
+The key is relative to its owning `SystemServiceObligationKey`. A transfer
+obligation admits exactly the singleton `MessageTransfer` member anchor; its
+owner key supplies the exact producer terminal. An operation-service
+obligation admits exactly its Dataflow-derived addressed-memory or fence
+member anchors and, where applicable, its separate Dataflow-derived exposure
+anchors. An exposure remains outside `ServiceMemberRef` and does not acquire a
+service leg. A foreign, missing, extra, duplicate, or wrong-kind anchor is
+invalid.
+
+The anchor variant ordinals are `Member = 0` and `Exposure = 1`. Canonical
+anchor comparison is lexicographic over the variant ordinal and the complete
+canonical Dataflow reference bytes of its payload. Canonical selection-key
+comparison then appends the complete semantic `ExecutionContextKey` bytes.
+The semantic framing is:
+
+```text
+u32be(anchor_variant_ordinal)
+|| u64be(length(anchor_payload_bytes))
+|| anchor_payload_bytes
+|| u64be(length(execution_context_key_bytes))
+|| execution_context_key_bytes
+```
+
+Within a SystemMapping root, a Spatial context may be serialized through its
+canonical `SpatialMappingImportRef`, but semantic comparison first resolves
+that alias to the complete imported ArtifactIdentity. A ServicePlan ordinal is
+assigned only after complete plan semantic keys are canonicalized, sorted, and
+deduplicated within the owning ServiceRealization. Neither the selection key
+nor the ordinal receives an `EntityId`, stores a Fabric endpoint, or creates a
+second execution-target decision.
 
 ## Canonical Labeling
 

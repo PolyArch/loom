@@ -413,9 +413,25 @@ Using that projection, the base verifier checks:
   no cross-endpoint union or intersection, Fabric-root workload compatibility
   result, Module-boundary capability projection, alternative-endpoint search,
   or attachment row used for `MessageTransfer`;
-* reachable execution contexts, complete plan selection, valid service
-  targets, canonical service legs, flat route-tree continuity, multicast
-  ownership, and physical refinements;
+* exact derivation of every ServiceRealization's complete member-or-exposure
+  selection-anchor set, including the singleton message anchor relative to its
+  producer obligation, and rejection of a missing, extra, foreign, duplicate,
+  or wrong-kind anchor;
+* exactly one non-empty plan-selection row for every reachable
+  `(anchor, ExecutionContextKey)` pair, no unreachable row, disjoint row
+  domains whose union is the anchor's legal may-domain, total single-valued
+  relations, exact plan-ordinal ranges with no unused plan, and canonical
+  selection-row ordering;
+* mechanical derivation of each message anchor's Instruction or Spatial
+  execution context from its root-boundary, graph-boundary, thread-channel, or
+  graph-stream producer kind, plus every consumer point from the
+  Dataflow-owned `source_map`, without a copied terminal-context tuple;
+* exact agreement between every selected message RouteTree terminal and the
+  fixed HostCore or evaluated AccCore owner at every point in its selection
+  relation, with no cross-owner endpoint union, stale route reuse, or endpoint
+  fallback;
+* valid service targets, canonical service legs, flat route-tree continuity,
+  multicast ownership, and physical refinements;
 * total selection of one legal source and every legal sink terminal by each
   service-leg RouteTree, rejection of a terminal outside its exact attachment
   domain, rejection of a service target outside the bound endpoint's explicit
