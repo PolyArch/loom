@@ -776,6 +776,41 @@ with the ordinary anchor/context selection rows. The same rule therefore
 supports hierarchical and flat search without provisional identity, rekeying,
 or a second plan-selection authority.
 
+The route itself must cover the applicable terminal-owner set, not the static
+terminal catalog. Consider a producer domain `{0, 1}` and a consumer point
+`q = 0` with `source_map(q) = 2q`. That terminal applies at producer point
+`0`, but it has no preimage at point `1`; forcing it into both plans invents a
+delivery at point `1`. Conversely, if consumer points `q = 0` and `q = 1` both
+map to producer point `0` and their execution bindings select different
+AccCores, one static terminal needs two physical branches. Requiring one
+attachment per terminal loses one owner. Both failures disappear when the
+plan is the exact unique set of `(terminal, owner)` pairs for its relation
+range.
+
+This pair is derived rather than stored. Dataflow remains the sole owner of
+consumer domains and `source_map`; execution binding remains the sole owner of
+the selected AccCore; Fabric remains the sole owner of endpoint membership;
+and the RouteTree stores the terminal and selected route node it already
+needs. Several consumer points on the same owner collapse to one physical
+attachment, while different owners remain separate branches. If no consumer
+point maps to a producer range, the canonical empty message plan records that
+no physical transfer exists instead of manufacturing a sinkless route.
+
+Adding a persistent delivery-branch identity would copy both Dataflow
+correspondence and execution partitioning into Mapping. Restricting channels
+to surjective, owner-functional `source_map` relations would instead reject
+valid rate conversion and multicast already admitted by Dataflow. Deriving the
+pair set changes only the necessary route-coverage invariant and therefore has
+the smallest conceptual surface while preserving one owner for every fact.
+
+The change uses Mapping 3.0 because a 2.0 reader rejects both a repeated
+terminal and a childless ServicePlan. Reusing 2.0 would give the same schema
+identity two incompatible accepted languages. The TechMapping and
+SpatialMapping payloads do not otherwise change, but all three profiles move
+together because one `loom.mapping` family declaration owns their shared
+version. This is a version boundary, not a compatibility mode or a second
+parser path.
+
 ## Why System Spatial-Temporal Is A Spectrum
 
 System-level spatial-temporal allocation and resource-level temporal hardware

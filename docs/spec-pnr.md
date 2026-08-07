@@ -1069,11 +1069,18 @@ mode.
 For each service anchor, candidate-native relation atoms pair the applicable
 thread and graph decision atoms with one complete plan semantic key. They are
 mutable search state, not provisional `ExecutionContextKey` values. For a
-message anchor, the producer event and Dataflow-owned `source_map` mechanically
-derive every terminal's applicable execution decision. Each distinct selected
-terminal-owner combination has a distinct complete route plan; equal complete
+message anchor and producer point `p`, the producer event, every consumer
+domain, and the Dataflow-owned `source_map` mechanically derive the canonical
+unique set of `(sink terminal, selected execution owner)` pairs whose consumer
+points map to `p`. Candidate relation atoms partition the producer domain so
+that this set and the complete plan semantic key are constant in each atom.
+One route sink is required for every pair. Repeated points for the same pair
+collapse, while the same terminal on distinct owners remains distinct. A
+terminal with no preimage in an atom is absent. An empty complete set selects
+the canonical childless message plan and creates no route tree. Equal complete
 plan semantic keys may be deduplicated. A candidate cannot merge endpoints
-owned by different execution choices into one route domain.
+owned by different execution choices into one route domain or add a terminal
+that is inactive in the current atom.
 
 For each affected service subject or terminal, a service move mechanically
 resolves one exact bound endpoint from the selected `B_thread`, the selected
@@ -1085,15 +1092,16 @@ domains. A missing row is an invalid frozen view; an empty row or intersection
 is infeasible. Neither case may fall back to another occurrence, endpoint,
 global scan, union, or candidate-private compatibility cache.
 
-For `MessageTransfer`, the exact H rows considered for one terminal are only
-the factorized rows whose transport service endpoint belongs to that
-terminal's current owner: the fixed HostCore/runtime side or the AccCore
-selected by the applicable thread decision. Multiple compatible endpoints on
-that one owner remain route alternatives; endpoints on another HostCore or
-AccCore do not enter the domain. A thread, graph, or route move rebuilds the
-affected owner combination, plan semantic key, and route feasibility from the
-current decisions. Reusing a route after any terminal owner changes is an
-invariant failure even when its endpoint remains globally reachable.
+For `MessageTransfer`, H lookup occurs only for pairs in the current applicable
+set. The exact H rows considered for one pair are the factorized rows whose
+transport service endpoint belongs to that pair's owner: the fixed
+HostCore/runtime side or the AccCore selected by the applicable thread
+decision. Multiple compatible endpoints on that one owner remain route
+alternatives; endpoints on another HostCore or AccCore do not enter the
+domain. A thread, graph, or route move rebuilds the applicable pair set, plan
+semantic key, and route feasibility from the current decisions. Reusing a
+route after a pair appears, disappears, or changes owner is an invariant
+failure even when its endpoint remains globally reachable.
 
 In flat mode this lookup occurs before a changed SpatialMapping has an
 ArtifactIdentity. After independent Spatial verification and identity
@@ -1104,7 +1112,7 @@ native flat handles, decision-atom ordinals, and H lookup state. Hierarchical
 and flat search therefore share one endpoint-compatibility rule without
 sharing mutable identity.
 
-Mapping 2.0 derives each Fabric-owned `InstructionCoreContextRef` from the
+Mapping 3.0 derives each Fabric-owned `InstructionCoreContextRef` from the
 selected AccCore and its one-per-AccCore cardinality. A selected service
 plan element is addressed by
 `ServicePlanElementRef = (ServiceRealizationKey, canonical plan ordinal,
@@ -1414,14 +1422,18 @@ open `f` exceeds the best target cost, then uses:
 ```text
 (total_branch_cost ascending,
  optional_evaluation_sink_priority descending,
- canonical_sink_obligation_index ascending,
+ canonical_sink_attachment_index ascending,
  selected_target_endpoint_index ascending)
 ```
 
+The sink-attachment index is derived from the persistent key owned by
+`docs/spec-mapping-artifact.md`: the sink obligation for a Spatial route or
+non-message service leg, and the `(terminal, execution owner)` pair for a
+System message leg. It is a dense search index, not persistent identity.
 The selected branch is normalized at its last intersection with the tree and
-discharges exactly one sink obligation. Overlapping target domains do not
-implicitly discharge multiple sinks. Failure of any sink rejects the whole
-tree proposal; partial trees are never committed.
+discharges exactly one sink attachment. Overlapping target domains do not
+implicitly discharge multiple attachments. Failure of any sink rejects the
+whole tree proposal; partial trees are never committed.
 
 ### Negotiated Routing
 
@@ -2759,6 +2771,10 @@ Tests protect semantic anchors rather than implementation shape:
   request-sink, response-source, and response-sink pair-member carrier rows,
   required empty rows, H 2.0 rejection, and no provisional SpatialMapping
   identity or fallback endpoint scan;
+* exact channel `source_map` image partitioning, including non-surjective
+  inactive terminals, a canonical empty message plan, one static terminal on
+  distinct execution owners, same-owner pair collapse, and rebuild after a
+  pair appears, disappears, or changes owner;
 * complete internal-edge accounting for configured FU, configured
   `fabric.mem`, temporal register-file absorption, and residual logical nets;
 * endpoint-only A*, multi-sink route trees, explicit broadcast, checked route

@@ -20,9 +20,9 @@ All persistent Mapping objects belong to the single schema family
 
 | Semantic root | Schema version | Required root bindings | Top-level record families |
 |---------------|----------------|------------------------|---------------------------|
-| `mapping.tech` | `2.0` | Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeRealization`, `MemoryRealization` |
-| `mapping.spatial` | `2.0` | TechMapping `T`, Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeBinding`, `MemoryEngineBinding`, `MemoryBinding`, `RouteTree`, `ResourceUse` |
-| `mapping.system` | `2.0` | Canonical Dataflow Program `D`, architecture-only Fabric Hardware Description `F`, canonical SpatialMapping import table | `ExecutionBinding`, `ServiceRealization`, `ResourceUse` |
+| `mapping.tech` | `3.0` | Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeRealization`, `MemoryRealization` |
+| `mapping.spatial` | `3.0` | TechMapping `T`, Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeBinding`, `MemoryEngineBinding`, `MemoryBinding`, `RouteTree`, `ResourceUse` |
+| `mapping.system` | `3.0` | Canonical Dataflow Program `D`, architecture-only Fabric Hardware Description `F`, canonical SpatialMapping import table | `ExecutionBinding`, `ServiceRealization`, `ResourceUse` |
 
 The root operation is the profile discriminator. A Mapping object does not
 also carry a profile enum, a generic artifact root, or inactive optional
@@ -37,12 +37,20 @@ version framing and Common `ArtifactSchemaDescriptor` are mechanically
 derived from that declaration. Callers must not construct schema strings or
 maintain parallel version facts.
 
-The current schema is the complete `loom.mapping 2.0` contract with all three
-roots. `loom.mapping 1.0`'s load/store-only `AccessEntry` and logical-memory-only
-operation-service owner are superseded by the closed `MemoryOperationEntry`
-and fence-aware ServiceRealization contract. An earlier draft assigned `1.0`,
-`1.1`, and `1.2` according to the order in which profiles were discussed; that
-unpublished history is retired.
+The current schema is the complete `loom.mapping 3.0` contract with all three
+roots. Version 3.0 replaces the incompatible System message-route rule in 2.0:
+one plan covers the exact applicable `(sink terminal, execution owner)` set,
+rather than requiring one attachment for every static sink terminal, and a
+message plan may be empty only when that applicable set is proven empty. These
+changes alter the accepted canonical content, so a 3.0 parser rejects every
+2.0 root rather than reinterpreting it. TechMapping and SpatialMapping retain
+their 2.0 payload shapes but use 3.0 because `loom.mapping` has one family
+version, not independent profile versions. `loom.mapping 1.0`'s
+load/store-only `AccessEntry` and logical-memory-only operation-service owner
+are superseded by the closed `MemoryOperationEntry` and fence-aware
+ServiceRealization contract. An earlier draft assigned `1.0`, `1.1`, and `1.2`
+according to the order in which profiles were discussed; that unpublished
+history is retired.
 Future minor-version upgrades must first parse and verify the source version
 under its own schema, then use an explicit typed adapter to construct and
 finalize a new artifact with a new identity. Text patching, implicit upgrades,
@@ -726,7 +734,7 @@ target SpatialCore parent must belong to the AccCore selected by `B_thread`.
 ExecutionBinding owns only where computation executes; it owns no service
 route, capacity, or relative-time facts.
 
-Mapping 2.0 consumes the Fabric-owned rule that each AccCore has exactly one
+Mapping 3.0 consumes the Fabric-owned rule that each AccCore has exactly one
 InstructionCore context. Its `InstructionCoreContextRef` is mechanically
 derived through the framing owned by `docs/spec-fabric-identity.md`.
 
@@ -748,10 +756,11 @@ A transfer obligation key contains only one exact
 `CanonicalProducerTerminalRef`. The exact Dataflow program, the root's
 canonical non-empty root-thread-launch set, and that producer mechanically
 derive one canonical sorted unique non-empty sink-terminal set. The sink set
-is not copied into the key. Channels, graph-launch transfers, external
-messages, and multicast use this rule; multicast sinks with one producer
-remain one family. Merge, zip, reorder, and reduction require an explicit
-Dataflow actor.
+is not copied into the key. This static universe does not require each sink to
+have a `source_map` preimage at every producer point. Channels, graph-launch
+transfers, external messages, and multicast use this rule; multicast sinks
+with one producer remain one family. Merge, zip, reorder, and reduction
+require an explicit Dataflow actor.
 
 For a channel obligation, the Canonical Dataflow Program remains the sole
 owner of `source_map` and flat dynamic message correspondence. Mapping does not
@@ -796,6 +805,12 @@ ServicePlan {
 }
 ```
 
+A plan may contain no child only for `MessageTransfer` over an exact selection
+range whose applicable sink-owner set is empty. Such a plan represents no
+physical transfer and contains no sinkless `TransferLegRealization`. Every
+other plan has the complete non-empty child set derived from its obligation,
+Canonical Service Schema, and selected targets.
+
 `ServicePlanSelectionKey` and its closed member-or-exposure anchor are owned by
 `docs/spec-mapping-identity.md`. The exact Dataflow program derives the
 complete anchor set. There is exactly one non-empty selection row for every
@@ -822,11 +837,28 @@ the reverse ownership. Both terminals of a graph-launch boundary transfer are
 owned by the selected AccCore, with the InstructionCore/SpatialCore direction
 derived from the Dataflow transfer kind. Each channel consumer's exact logical
 point and execution binding are derived from the Dataflow-owned `source_map`;
-multicast does not copy a sink-context tuple into Mapping. Evaluating one
-selection row therefore determines one complete set of terminal owners and
-one plan whose RouteTrees use only endpoints owned by those terminals. A
-different endpoint-owner combination requires another plan and relation range,
-not a union of endpoint domains inside one route.
+multicast does not copy a sink-context tuple into Mapping. For producer point
+`p`, Mapping derives the canonical applicable set
+
+```text
+ApplicableMessageSinks(p) = unique sorted {
+  (sink_terminal, execution_owner(q))
+  | q is in sink_terminal's consumer domain
+  | source_map_sink_terminal(q) = p
+}
+```
+
+`execution_owner(q)` is the fixed HostCore/runtime owner or the AccCore
+mechanically selected by the applicable `B_thread` and `B_graph` values. A
+plan-selection range may target one plan only when this complete set is
+constant throughout the range. The plan contains one route sink attachment
+for every pair. The same static terminal may therefore occur more than once
+when its consumer points execute on distinct owners; several points selecting
+the same terminal and owner collapse to one physical attachment. A terminal
+with no preimage at `p` is absent. If the complete set is empty, the selected
+message plan is the empty plan defined above. A different applicable set
+requires another plan and relation range, not a union of endpoint domains
+inside one route.
 
 An addressed-memory or fence member anchor and a memory-exposure anchor use
 their exact Dataflow-derived contextual logical input signature and legal
@@ -890,6 +922,15 @@ it chooses neither that pair nor the row's System service endpoint.
 Protocol packets, flits, headers, concrete virtual-channel encoding, and
 implementation-specific bus encoding remain owned by the selected interconnect
 implementation.
+
+Every materialized `TransferLegRealization` has at least one sink attachment.
+For `MessageTransfer`, the attachment's semantic key is
+`(SystemTransferTerminalKey, execution owner)`. The owner is derived from the
+attached route-node endpoint and exact Fabric; it is not a persistent field.
+Repeating one terminal is legal only for distinct derived owners, while a
+duplicate terminal-owner pair is invalid. Non-message service legs retain the
+terminal key as their sink-attachment key. Canonical System sink order uses
+this complete derived key, so authoring order is never semantic.
 
 For `MessageTransfer`, the terminal domain is derived directly from matching
 transport-plane service endpoints. For a memory or fence leg, the terminal

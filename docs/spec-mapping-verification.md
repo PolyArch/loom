@@ -59,7 +59,7 @@ error.
 
 ## TechMapping Verifier
 
-The TechMapping verifier consumes one `mapping.tech` `2.0` root and its exact
+The TechMapping verifier consumes one `mapping.tech` `3.0` root and its exact
 Canonical Dataflow Program `D` and Fabric Hardware Description `F`. It checks
 at least:
 
@@ -136,7 +136,7 @@ or FrozenModel caches, search history, Evaluation Evidence, or runtime state.
 
 The verifier checks in dependency order:
 
-* the `mapping.spatial` `2.0` root shape and exact `T`, `D`, and `F` bindings;
+* the `mapping.spatial` `3.0` root shape and exact `T`, `D`, and `F` bindings;
 * `T.D == D`, `T.F == F`, and complete inherited TechMapping coverage;
 * exactly one ComputeBinding per Compute Realization and one
   MemoryEngineBinding per Memory Realization;
@@ -336,7 +336,7 @@ The intrinsic verifier is:
 SystemMappingBaseVerifier(D, F, M, ExactSpatialMappingSet(M))
 ```
 
-`M` is a `mapping.system` `2.0` root. `F` supplies the architecture-only
+`M` is a `mapping.system` `3.0` root. `F` supplies the architecture-only
 Fabric system and exact Transport Architecture; protocol-specific
 Interconnect Implementation is not a Mapping input.
 
@@ -424,19 +424,29 @@ Using that projection, the base verifier checks:
   selection-row ordering;
 * mechanical derivation of each message anchor's Instruction or Spatial
   execution context from its root-boundary, graph-boundary, thread-channel, or
-  graph-stream producer kind, plus every consumer point from the
-  Dataflow-owned `source_map`, without a copied terminal-context tuple;
-* exact agreement between every selected message RouteTree terminal and the
-  fixed HostCore or evaluated AccCore owner at every point in its selection
-  relation, with no cross-owner endpoint union, stale route reuse, or endpoint
-  fallback;
+  graph-stream producer kind, plus the exact canonical applicable
+  `(sink terminal, execution owner)` set at every producer point from every
+  consumer domain and Dataflow-owned `source_map`, without a copied
+  terminal-context tuple;
+* exact agreement between every selected message route sink and that
+  applicable pair set throughout its plan-selection range: no missing or
+  inactive terminal, no extra owner, no cross-owner endpoint union, no stale
+  route reuse, and no endpoint fallback; one terminal may repeat only for
+  distinct owners derived from its attached Fabric endpoints, while a
+  duplicate terminal-owner pair is invalid;
+* acceptance of a childless `MessageTransfer` plan exactly when its complete
+  applicable sink-owner set is empty throughout the selected relation range,
+  and rejection of a childless non-message plan or a sinkless
+  `TransferLegRealization`;
 * valid service targets, canonical service legs, flat route-tree continuity,
   multicast ownership, and physical refinements;
-* total selection of one legal source and every legal sink terminal by each
-  service-leg RouteTree, rejection of a terminal outside its exact attachment
-  domain, rejection of a service target outside the bound endpoint's explicit
-  service/transform closure, and no copied memory endpoint, capability ordinal,
-  payload, width, or protocol field in Mapping;
+* total selection of one legal source and the exact required sink-attachment
+  set by every materialized service-leg RouteTree, including every static sink
+  for memory and fence legs and every applicable terminal-owner pair for a
+  message leg, rejection of a terminal outside its exact attachment domain,
+  rejection of a service target outside the bound endpoint's explicit
+  service/transform closure, and no copied memory endpoint, execution owner,
+  capability ordinal, payload, width, or protocol field in Mapping;
 * one exact MemoryConsistencyDomain target for each fence plan, compatible
   with its synchronization scope and all constrained memory effects;
 * complete System ResourceUse ownership, exact `ServicePlanElementRef`
@@ -510,8 +520,8 @@ Those fields do not exist in the Mapping schema.
 
 Tests should protect stable semantic anchors:
 
-* exact schema profile, UpstreamArtifactBinding, predecessor, and import
-  coupling;
+* exact 3.0 schema profile, rejection of every 2.0 profile root,
+  UpstreamArtifactBinding, predecessor, and import coupling;
 * authoring-order invariance of canonical bytes and ArtifactIdentity;
 * foreign, wrong-kind, wrong-owner, unknown-field, duplicate-key, and
   noncanonical-ID rejection;
@@ -532,7 +542,12 @@ Tests should protect stable semantic anchors:
   including a legal InstructionCore-only empty table;
 * System relation totality, parent-AccCore agreement, service continuity,
   service-leg carrier attachment continuity, imported-use occurrence
-  qualification, capacity, and positive and negative progress anchors; and
+  qualification, capacity, and positive and negative progress anchors;
+* message-plan projection for a non-surjective `source_map`, including an
+  inactive terminal and a childless plan; non-injective projection of one
+  terminal to distinct owners, including one branch per owner; collapse of
+  several consumer points to one terminal-owner pair; and rejection of a
+  missing, extra, or duplicate pair; and
 * separation of System base verification, exact `K` admission, and Evaluation
   quality gates.
 
