@@ -608,6 +608,11 @@ FabricArtifactView::moduleBoundaryTransportPassthroughs() const {
   return storage_->data.moduleBoundaryTransportPassthroughs;
 }
 
+llvm::ArrayRef<FabricModuleBoundaryMemoryAttachmentView>
+FabricArtifactView::moduleBoundaryMemoryAttachments() const {
+  return storage_->data.moduleBoundaryMemoryAttachments;
+}
+
 std::optional<FabricHardwareDomainKind>
 FabricArtifactView::hardwareDomainKind(HardwareDomainRef domain) const {
   const detail::FabricEntityViewData *record = storage_->entity(domain);

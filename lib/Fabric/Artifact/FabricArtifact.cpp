@@ -618,10 +618,66 @@ buildModuleView(::fabric::ModuleOp root,
   if (moduleCarrier == carrierByOp.end() ||
       moduleCarrier->second->kind != FabricEntityKind::FabricModuleTemplate)
     return invalid("a finalized Module has no canonical template owner");
+  const FabricModuleTemplateRef moduleTemplate(moduleCarrier->second->id);
   if (llvm::Error error = detail::appendFabricModuleBoundaryTransportRelations(
-          root, FabricModuleTemplateRef(moduleCarrier->second->id), carrierByOp,
-          data))
+          root, moduleTemplate, carrierByOp, data))
     return std::move(error);
+
+  for (const auto &entry : carrierByOp) {
+    auto memory = dyn_cast<::fabric::MemOp>(entry.first);
+    if (!memory ||
+        entry.second->kind != FabricEntityKind::FabricMemoryOccurrence)
+      continue;
+    const FabricMemoryEndpointOwnerRef owner = FabricMemoryEndpointOwnerRef::of(
+        FabricMemoryOccurrenceRef(entry.second->id));
+    FabricOrdinal managerOrdinal = 0;
+    for (OpOperand &operand : memory->getOpOperands()) {
+      if (!isa<MemRefType>(operand.get().getType()))
+        continue;
+      if (auto argument = dyn_cast<BlockArgument>(operand.get());
+          argument && argument.getOwner() == &root.getBody().front()) {
+        data.moduleBoundaryMemoryAttachments.push_back(
+            {{moduleTemplate, FabricPortDirection::Input,
+              argument.getArgNumber()},
+             {owner, managerOrdinal}});
+      }
+      ++managerOrdinal;
+    }
+  }
+
+  Operation *terminator = root.getBody().front().getTerminator();
+  for (auto [resultOrdinal, operand] :
+       llvm::enumerate(terminator->getOperands())) {
+    if (!isa<MemRefType>(operand.getType()))
+      continue;
+    auto result = dyn_cast<OpResult>(operand);
+    auto memory = result ? dyn_cast<::fabric::MemOp>(result.getOwner())
+                         : ::fabric::MemOp();
+    auto carrier =
+        memory ? carrierByOp.find(memory.getOperation()) : carrierByOp.end();
+    if (!memory || carrier == carrierByOp.end() ||
+        carrier->second->kind != FabricEntityKind::FabricMemoryOccurrence)
+      return invalid("a Module memory result has no physical provider");
+    FabricOrdinal endpointOrdinal = 0;
+    for (Type input : memory->getOperandTypes())
+      endpointOrdinal += isa<MemRefType>(input);
+    for (unsigned index = 0; index < result.getResultNumber(); ++index)
+      endpointOrdinal += isa<MemRefType>(memory->getResult(index).getType());
+    data.moduleBoundaryMemoryAttachments.push_back(
+        {{moduleTemplate, FabricPortDirection::Output, resultOrdinal},
+         {FabricMemoryEndpointOwnerRef::of(
+              FabricMemoryOccurrenceRef(carrier->second->id)),
+          endpointOrdinal}});
+  }
+  llvm::sort(data.moduleBoundaryMemoryAttachments,
+             [](const auto &lhs, const auto &rhs) {
+               const auto lhsBoundary = canonicalFabricBytes(lhs.boundary);
+               const auto rhsBoundary = canonicalFabricBytes(rhs.boundary);
+               if (lhsBoundary != rhsBoundary)
+                 return lhsBoundary < rhsBoundary;
+               return canonicalFabricBytes(lhs.endpoint) <
+                      canonicalFabricBytes(rhs.endpoint);
+             });
   if (llvm::Error error = appendPeSelectorTraversals(data))
     return std::move(error);
   for (const detail::FabricEntityCarrier &carrier : labeling.carriers) {

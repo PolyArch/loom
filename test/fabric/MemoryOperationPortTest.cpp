@@ -282,6 +282,12 @@ MemoryConnectivityContractAttr managerConnectivity(mlir::MLIRContext &context) {
   declaration.operationPorts = {
       {{{MemoryDispatchTarget(std::in_place_type<ManagerMemoryDispatchTarget>,
                               ManagerMemoryDispatchTarget{0})}}}};
+  declaration.subordinateEndpoints = {
+      {1,
+       {},
+       MemoryProviderAddressTransform::None,
+       {MemoryDispatchTarget(std::in_place_type<ManagerMemoryDispatchTarget>,
+                             ManagerMemoryDispatchTarget{0})}}};
   MemoryConnectivityContractRecord record =
       take("memory connectivity",
            MemoryConnectivityContractRecord::create(std::move(declaration)));
@@ -463,23 +469,28 @@ void checkExactFabricCarrier(mlir::MLIRContext &context) {
     signedBytes.push_back(static_cast<std::int8_t>(byte));
   auto records = builder.getArrayAttr(
       {mlir::DenseI8ArrayAttr::get(&context, signedBytes)});
-  auto noEndpoints = mlir::DenseI32ArrayAttr::get(&context, {});
   auto managers = mlir::DenseI32ArrayAttr::get(&context, {0});
+  auto subordinates = mlir::DenseI32ArrayAttr::get(&context, {0});
   auto contract = fabric::MemoryContractAttr::get(
       &context,
       fabric::MemoryEngineAttr::get(&context, fabric::Schedule::Spatial,
                                     fabric::MemoryResidentContextsAttr()),
       fabric::LocalMemoryServiceAttr(), managerConnectivity(context), managers,
-      noEndpoints);
+      subordinates);
   llvm::SmallVector<mlir::Value> inputs = {
       body.getArgument(0), fifo.getResult(), body.getArgument(2),
       body.getArgument(3)};
-  fabric::MemOp::create(builder, root.getLoc(),
-                        mlir::TypeRange{fabric::BitsType::get(&context, 128),
-                                        fabric::BitsType::get(&context, 0)},
-                        inputs, mlir::StringAttr(), mlir::TypeAttr(), contract,
-                        llvm::ArrayRef<mlir::Type>{}, mlir::ArrayAttr(),
-                        records);
+  auto memoryOp = fabric::MemOp::create(
+      builder, root.getLoc(),
+      mlir::TypeRange{body.getArgument(0).getType(),
+                      fabric::BitsType::get(&context, 128),
+                      fabric::BitsType::get(&context, 0)},
+      inputs, mlir::StringAttr(), mlir::TypeAttr(), contract,
+      llvm::ArrayRef<mlir::Type>{}, mlir::ArrayAttr(), records);
+  root.setFunctionType(
+      mlir::FunctionType::get(&context, root.getFunctionType().getInputs(),
+                              mlir::TypeRange{body.getArgument(0).getType()}));
+  body.getTerminator()->setOperands(memoryOp.getResult(0));
 
   require(test, succeeded(mlir::verify(*module)),
           "exact memory-operation inventory did not verify");
@@ -536,8 +547,28 @@ void checkExactFabricCarrier(mlir::MLIRContext &context) {
   auto memoryOwner = loom::fabric::FabricMemoryEndpointOwnerRef::of(*memory);
   require(test,
           finalized.view().transportEndpointCount(transportOwner) == 5 &&
-              finalized.view().memoryEndpointCount(memoryOwner) == 1,
+              finalized.view().memoryEndpointCount(memoryOwner) == 2,
           "token and memory endpoint inventories were not separated");
+  const auto memoryAttachments =
+      finalized.view().moduleBoundaryMemoryAttachments();
+  require(test, memoryAttachments.size() == 2,
+          "module memory boundary did not retain both capability paths");
+  const auto hasAttachment = [&](loom::fabric::FabricPortDirection direction,
+                                 loom::fabric::FabricOrdinal boundaryOrdinal,
+                                 loom::fabric::FabricOrdinal endpointOrdinal) {
+    return llvm::any_of(memoryAttachments, [&](const auto &attachment) {
+      return attachment.boundary ==
+                 loom::fabric::FabricModuleBoundaryEndpointRef{
+                     *finalized.view().moduleRootTemplate(), direction,
+                     boundaryOrdinal} &&
+             attachment.endpoint == loom::fabric::FabricMemoryEndpointRef{
+                                        memoryOwner, endpointOrdinal};
+    });
+  };
+  require(test, hasAttachment(loom::fabric::FabricPortDirection::Input, 0, 0),
+          "module memory input changed its exact manager endpoint");
+  require(test, hasAttachment(loom::fabric::FabricPortDirection::Output, 0, 1),
+          "module memory output changed its exact subordinate endpoint");
   bool fifoFeedsAddress = false;
   for (const loom::fabric::FabricPointConnectionPayload &connection :
        finalized.view().pointConnections())

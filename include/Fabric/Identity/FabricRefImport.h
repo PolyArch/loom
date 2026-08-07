@@ -176,6 +176,19 @@ struct FabricPhysicalTagAssignmentPointView final {
   }
 };
 
+/// One exact memory-capability path from a Module signature face to an
+/// internal memory endpoint. This relation is rebuilt from canonical SSA and
+/// carries no persistent identity or independent connectivity authority.
+struct FabricModuleBoundaryMemoryAttachmentView final {
+  FabricModuleBoundaryEndpointRef boundary;
+  FabricMemoryEndpointRef endpoint;
+
+  friend bool operator==(const FabricModuleBoundaryMemoryAttachmentView &lhs,
+                         const FabricModuleBoundaryMemoryAttachmentView &rhs) {
+    return lhs.boundary == rhs.boundary && lhs.endpoint == rhs.endpoint;
+  }
+};
+
 /// The owner-defined domain that makes statically implied traversal uses one
 /// atomic activation. Most traversals select one exact UsePattern. Temporal
 /// switch broadcast is the sole current exception: every selected egress from
@@ -454,6 +467,12 @@ public:
   /// attachments and has no row for memory-plane endpoints.
   llvm::ArrayRef<FabricModuleBoundaryTransportPassthroughView>
   moduleBoundaryTransportPassthroughs() const;
+
+  /// Complete canonical relation for memory-plane Module boundary paths.
+  /// Manager inputs may feed several internal manager endpoints and one
+  /// subordinate endpoint may be exported through several Module results.
+  llvm::ArrayRef<FabricModuleBoundaryMemoryAttachmentView>
+  moduleBoundaryMemoryAttachments() const;
 
   /// The declared kind of one hardware domain entity.
   std::optional<FabricHardwareDomainKind>
