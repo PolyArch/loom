@@ -1,5 +1,6 @@
 #include "Mapping/IR/MappingOps.h"
 
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -166,33 +167,147 @@ LogicalResult mapping::ServicePlanOp::verify() {
   if (integerValue(*this, "plan_ordinal") < 0)
     return emitOpError("plan ordinal must be nonnegative");
   llvm::DenseSet<Attribute> legs;
+  llvm::DenseSet<Attribute> memoryTargets;
+  llvm::DenseSet<Attribute> consistencyTargets;
   for (Operation &child : getBody().front()) {
-    auto route = dyn_cast<mapping::TransferLegRealizationOp>(child);
-    if (!route)
-      return child.emitOpError(
-          "is not an implemented closed ServicePlan record kind");
-    if (!legs.insert(route.getLeg()).second)
-      return route.emitOpError("duplicates a TransferLegRealization key");
+    if (auto route = dyn_cast<mapping::TransferLegRealizationOp>(child)) {
+      if (!legs.insert(route.getLeg()).second)
+        return route.emitOpError("duplicates a TransferLegRealization key");
+      continue;
+    }
+    if (auto target = dyn_cast<mapping::MemoryRegionTargetOp>(child)) {
+      Attribute key = ArrayAttr::get(
+          getContext(), {target.getLogicalMemory(), target.getInterval(),
+                         target.getServiceRegion(), target.getTransformPath()});
+      if (!memoryTargets.insert(key).second)
+        return target.emitOpError("duplicates a MemoryRegionTarget key");
+      continue;
+    }
+    if (auto target = dyn_cast<mapping::ConsistencyTargetOp>(child)) {
+      Attribute key = ArrayAttr::get(
+          getContext(), {target.getFence(), target.getConsistencyDomain()});
+      if (!consistencyTargets.insert(key).second)
+        return target.emitOpError("duplicates a ConsistencyTarget key");
+      continue;
+    }
+    return child.emitOpError("is not a closed ServicePlan record kind");
   }
-  if (legs.empty()) {
-    auto root = (*this)->getParentOfType<mapping::SystemOp>();
-    if (!root)
-      return emitOpError("must belong to a SystemMapping root");
-    auto dataflowOwner = identity(root.getDataflow());
-    if (!dataflowOwner)
-      return emitOpError() << llvm::toString(dataflowOwner.takeError());
-    auto service = (*this)->getParentOfType<mapping::ServiceRealizationOp>();
-    if (!service)
-      return emitOpError("must belong to a ServiceRealization");
-    auto obligation = ::loom::mapping::decodeSystemServiceObligationKey(
-        unsignedBytes(service.getKey().getRecord()), *dataflowOwner);
-    if (!obligation)
-      return emitOpError() << llvm::toString(obligation.takeError());
-    if (!std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
-            *obligation))
+  auto root = (*this)->getParentOfType<mapping::SystemOp>();
+  if (!root)
+    return emitOpError("must belong to a SystemMapping root");
+  auto dataflowOwner = identity(root.getDataflow());
+  if (!dataflowOwner)
+    return emitOpError() << llvm::toString(dataflowOwner.takeError());
+  auto service = (*this)->getParentOfType<mapping::ServiceRealizationOp>();
+  if (!service)
+    return emitOpError("must belong to a ServiceRealization");
+  auto obligation = ::loom::mapping::decodeSystemServiceObligationKey(
+      unsignedBytes(service.getKey().getRecord()), *dataflowOwner);
+  if (!obligation)
+    return emitOpError() << llvm::toString(obligation.takeError());
+  if (std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
+          *obligation)) {
+    if (!memoryTargets.empty() || !consistencyTargets.empty())
+      return emitOpError("transfer plan must not contain a service target");
+    return success();
+  }
+  if (legs.empty())
+    return emitOpError("non-message plan requires a TransferLegRealization");
+  const auto &operation =
+      std::get<::loom::mapping::OperationServiceObligationFamilyKey>(
+          *obligation);
+  if (std::holds_alternative<::dataflow::LogicalMemoryRootOrViewRef>(
+          operation)) {
+    if (memoryTargets.empty() || !consistencyTargets.empty())
       return emitOpError(
-          "childless plan requires a MessageTransfer obligation");
+          "memory plan requires a MemoryRegionTarget and no ConsistencyTarget");
+  } else if (memoryTargets.size() != 0 || consistencyTargets.size() != 1) {
+    return emitOpError("fence plan requires exactly one ConsistencyTarget");
   }
+  return success();
+}
+
+LogicalResult mapping::MemoryRegionTargetOp::verify() {
+  if (failed(requireSingleBlock(*this, {"logical_memory", "interval",
+                                        "service_region", "transform_path"})))
+    return failure();
+  llvm::DenseSet<Attribute> transforms;
+  for (Attribute transform : getTransformPath()) {
+    if (!isa<mapping::SystemServiceTransformRefAttr>(transform))
+      return emitOpError(
+          "transform_path must contain only SystemServiceTransformRef values");
+    if (!transforms.insert(transform).second)
+      return emitOpError("transform_path contains a duplicate transform");
+  }
+  llvm::DenseSet<Attribute> exposures;
+  for (Operation &child : getBody().front()) {
+    auto exposure = dyn_cast<mapping::SystemMemoryExposureOp>(child);
+    if (!exposure)
+      return child.emitOpError("is not a System memory-exposure target child");
+    Attribute key = ArrayAttr::get(
+        getContext(), {exposure.getExposure(), exposure.getTerminal()});
+    if (!exposures.insert(key).second)
+      return exposure.emitOpError("duplicates a memory exposure target");
+  }
+
+  auto root = (*this)->getParentOfType<mapping::SystemOp>();
+  auto service = (*this)->getParentOfType<mapping::ServiceRealizationOp>();
+  if (!root || !service)
+    return emitOpError("must belong to a System ServiceRealization");
+  auto dataflowOwner = identity(root.getDataflow());
+  if (!dataflowOwner)
+    return emitOpError() << llvm::toString(dataflowOwner.takeError());
+  auto obligation = ::loom::mapping::decodeSystemServiceObligationKey(
+      unsignedBytes(service.getKey().getRecord()), *dataflowOwner);
+  if (!obligation)
+    return emitOpError() << llvm::toString(obligation.takeError());
+  auto logicalMemory = ::dataflow::decodeDataflowReference<
+      ::dataflow::LogicalMemoryRootOrViewRef>(
+      unsignedBytes(getLogicalMemory().getRecord()), *dataflowOwner);
+  if (!logicalMemory)
+    return emitOpError() << llvm::toString(logicalMemory.takeError());
+  const auto *operation =
+      std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
+          &*obligation);
+  const auto *expected =
+      operation ? std::get_if<::dataflow::LogicalMemoryRootOrViewRef>(operation)
+                : nullptr;
+  if (!expected || *expected != *logicalMemory)
+    return emitOpError("logical memory differs from its service obligation");
+  return success();
+}
+
+LogicalResult mapping::SystemMemoryExposureOp::verify() {
+  return rejectUnknownAttributes(*this, {"exposure", "terminal"});
+}
+
+LogicalResult mapping::ConsistencyTargetOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"fence", "consistency_domain"})))
+    return failure();
+  auto root = (*this)->getParentOfType<mapping::SystemOp>();
+  auto service = (*this)->getParentOfType<mapping::ServiceRealizationOp>();
+  if (!root || !service)
+    return emitOpError("must belong to a System ServiceRealization");
+  auto dataflowOwner = identity(root.getDataflow());
+  if (!dataflowOwner)
+    return emitOpError() << llvm::toString(dataflowOwner.takeError());
+  auto obligation = ::loom::mapping::decodeSystemServiceObligationKey(
+      unsignedBytes(service.getKey().getRecord()), *dataflowOwner);
+  if (!obligation)
+    return emitOpError() << llvm::toString(obligation.takeError());
+  auto fence =
+      ::dataflow::decodeDataflowReference<::dataflow::FenceActorFamilyRef>(
+          unsignedBytes(getFence().getRecord()), *dataflowOwner);
+  if (!fence)
+    return emitOpError() << llvm::toString(fence.takeError());
+  const auto *operation =
+      std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
+          &*obligation);
+  const auto *expected =
+      operation ? std::get_if<::dataflow::FenceActorFamilyRef>(operation)
+                : nullptr;
+  if (!expected || *expected != *fence)
+    return emitOpError("fence family differs from its service obligation");
   return success();
 }
 

@@ -234,6 +234,11 @@ LogicalResult mapping::MemoryExposureRefAttr::verify(
   return verifyDataflowRef<::dataflow::MemoryExposureRef>(emitError, record);
 }
 
+LogicalResult mapping::FenceActorFamilyRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyDataflowRef<::dataflow::FenceActorFamilyRef>(emitError, record);
+}
+
 LogicalResult mapping::GraphProducerEndpointRefAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
   return verifyDataflowRef<::dataflow::CanonicalGraphProducerEndpointRef>(
@@ -302,6 +307,8 @@ LOOM_VERIFY_FABRIC_CONSTRAINT_REF(SubordinateEndpointRef,
                                   SubordinateEndpointRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(MemoryConsistencyDomainRef,
                                   MemoryConsistencyDomainRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(SystemServiceTransformRef,
+                                  SystemServiceTransformRef)
 
 #undef LOOM_VERIFY_FABRIC_CONSTRAINT_REF
 

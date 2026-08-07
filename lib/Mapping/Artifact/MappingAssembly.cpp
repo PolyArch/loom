@@ -684,11 +684,79 @@ void canonicalizeSystemRoute(::mapping::TransferLegRealizationOp route) {
     sink->moveBefore(&body, body.end());
 }
 
+std::string
+systemMemoryExposureSemanticKey(::mapping::SystemMemoryExposureOp exposure) {
+  std::string result;
+  appendFramed(result, recordKey(exposure.getExposure().getRecord()));
+  appendFramed(result, recordKey(exposure.getTerminal().getRecord()));
+  return result;
+}
+
+void canonicalizeSystemMemoryTarget(::mapping::MemoryRegionTargetOp target) {
+  Block &body = target.getBody().front();
+  SmallVector<::mapping::SystemMemoryExposureOp> exposures;
+  for (auto exposure : body.getOps<::mapping::SystemMemoryExposureOp>())
+    exposures.push_back(exposure);
+  llvm::sort(exposures, [](auto left, auto right) {
+    return systemMemoryExposureSemanticKey(left) <
+           systemMemoryExposureSemanticKey(right);
+  });
+  for (auto exposure : exposures)
+    exposure->moveBefore(&body, body.end());
+}
+
+std::string
+systemMemoryTargetSemanticKey(::mapping::MemoryRegionTargetOp target) {
+  std::string result;
+  appendFramed(result, recordKey(target.getLogicalMemory().getRecord()));
+  appendFramed(result, memoryIntervalKey(target.getInterval()));
+  appendFramed(result, recordKey(target.getServiceRegion().getRecord()));
+  appendU64(result, target.getTransformPath().size());
+  for (Attribute transform : target.getTransformPath())
+    appendFramed(
+        result,
+        recordKey(cast<::mapping::SystemServiceTransformRefAttr>(transform)
+                      .getRecord()));
+  auto exposures =
+      target.getBody().front().getOps<::mapping::SystemMemoryExposureOp>();
+  appendU64(result, static_cast<std::uint64_t>(
+                        std::distance(exposures.begin(), exposures.end())));
+  for (auto exposure : exposures)
+    appendFramed(result, systemMemoryExposureSemanticKey(exposure));
+  return result;
+}
+
+std::string
+consistencyTargetSemanticKey(::mapping::ConsistencyTargetOp target) {
+  std::string result;
+  appendFramed(result, recordKey(target.getFence().getRecord()));
+  appendFramed(result, recordKey(target.getConsistencyDomain().getRecord()));
+  return result;
+}
+
+std::string servicePlanChildSemanticKey(Operation &operation) {
+  std::string result;
+  if (auto target = dyn_cast<::mapping::MemoryRegionTargetOp>(operation)) {
+    appendU32(result, 0);
+    appendFramed(result, systemMemoryTargetSemanticKey(target));
+    return result;
+  }
+  if (auto target = dyn_cast<::mapping::ConsistencyTargetOp>(operation)) {
+    appendU32(result, 1);
+    appendFramed(result, consistencyTargetSemanticKey(target));
+    return result;
+  }
+  auto route = cast<::mapping::TransferLegRealizationOp>(operation);
+  appendU32(result, 2);
+  appendFramed(result, systemRouteSemanticKey(route));
+  return result;
+}
+
 std::string servicePlanSemanticKey(::mapping::ServicePlanOp plan) {
   std::string result;
-  for (auto route :
-       plan.getBody().front().getOps<::mapping::TransferLegRealizationOp>())
-    appendFramed(result, systemRouteSemanticKey(route));
+  appendU64(result, plan.getBody().front().getOperations().size());
+  for (Operation &operation : plan.getBody().front())
+    appendFramed(result, servicePlanChildSemanticKey(operation));
   return result;
 }
 
@@ -703,17 +771,24 @@ canonicalizeServiceRealization(::mapping::ServiceRealizationOp service) {
   llvm::DenseMap<std::uint64_t, std::uint64_t> planRenumbering;
   for (auto plan : body.getOps<::mapping::ServicePlanOp>()) {
     Block &planBody = plan.getBody().front();
-    SmallVector<::mapping::TransferLegRealizationOp> routes;
-    for (auto route : planBody.getOps<::mapping::TransferLegRealizationOp>()) {
-      canonicalizeSystemRoute(route);
-      routes.push_back(route);
+    struct Child final {
+      std::string key;
+      Operation *operation = nullptr;
+    };
+    std::vector<Child> children;
+    for (Operation &operation : planBody) {
+      if (auto route = dyn_cast<::mapping::TransferLegRealizationOp>(operation))
+        canonicalizeSystemRoute(route);
+      else if (auto target =
+                   dyn_cast<::mapping::MemoryRegionTargetOp>(operation))
+        canonicalizeSystemMemoryTarget(target);
+      children.push_back({servicePlanChildSemanticKey(operation), &operation});
     }
-    llvm::sort(routes, [](auto left, auto right) {
-      return recordKey(left.getLeg().getRecord()) <
-             recordKey(right.getLeg().getRecord());
+    llvm::sort(children, [](const Child &left, const Child &right) {
+      return left.key < right.key;
     });
-    for (auto route : routes)
-      route->moveBefore(&planBody, planBody.end());
+    for (const Child &child : children)
+      child.operation->moveBefore(&planBody, planBody.end());
     plans.push_back({servicePlanSemanticKey(plan), plan});
   }
   llvm::sort(plans, [](const Plan &left, const Plan &right) {

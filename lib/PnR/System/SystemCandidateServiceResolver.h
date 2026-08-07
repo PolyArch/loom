@@ -34,6 +34,13 @@ resolveSystemServiceTargetDomain(const FrozenSystemPnrProblem &problem,
                                  llvm::ArrayRef<PnrIndex> threadChoices,
                                  llvm::ArrayRef<PnrIndex> graphChoices);
 
+llvm::Expected<const FrozenSystemMemoryServiceBinding *>
+resolveSystemMemoryServiceBinding(const FrozenSystemPnrProblem &problem,
+                                  PnrIndex context,
+                                  const SystemServiceTargetSubject &subject,
+                                  llvm::ArrayRef<PnrIndex> threadChoices,
+                                  llvm::ArrayRef<PnrIndex> graphChoices);
+
 llvm::Expected<std::vector<PnrIndex>>
 resolveSystemServiceTerminalDomain(const FrozenSystemPnrProblem &problem,
                                    PnrIndex leg, PnrIndex terminal,

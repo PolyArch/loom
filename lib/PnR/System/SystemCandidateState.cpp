@@ -5,6 +5,7 @@
 #include "SystemPnrSearchDomainInternal.h"
 #include "SystemServiceRouter.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <cassert>
@@ -46,6 +47,84 @@ relationChoices(const FrozenSystemPnrProblem &problem,
   return choices;
 }
 
+bool targetInDomain(const SystemServiceTargetSelection &target,
+                    const SystemServiceTargetDomain &domain) {
+  if (const auto *region =
+          std::get_if<::loom::fabric::FabricMemoryServiceRegionRef>(&target)) {
+    const auto *regions =
+        std::get_if<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(
+            &domain);
+    return regions && llvm::is_contained(*regions, *region);
+  }
+  if (const auto *consistency =
+          std::get_if<::loom::fabric::MemoryConsistencyDomainRef>(&target)) {
+    const auto *domains =
+        std::get_if<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(
+            &domain);
+    return domains && llvm::is_contained(*domains, *consistency);
+  }
+  return false;
+}
+
+llvm::Error
+verifyServiceTargets(const FrozenSystemPnrProblem &problem,
+                     llvm::ArrayRef<PnrIndex> threadChoices,
+                     llvm::ArrayRef<PnrIndex> graphChoices,
+                     llvm::ArrayRef<SystemServiceTargetSelection> targets) {
+  if (targets.size() != problem.serviceContexts().size())
+    return invalid("service target count does not match its context closure");
+  for (const auto &[ordinal, context] :
+       llvm::enumerate(problem.serviceContexts())) {
+    if (context.service >= problem.serviceDomains().size())
+      return invalid("service target has no H service domain");
+    const bool transfer =
+        std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
+            problem.serviceDomains()[context.service].key);
+    const auto &target = targets[ordinal];
+    if (transfer) {
+      if (!std::holds_alternative<std::monostate>(target))
+        return invalid("transfer service context selects an operation target");
+      continue;
+    }
+    auto domain = detail::resolveSystemServiceTargetDomain(
+        problem, static_cast<PnrIndex>(ordinal), threadChoices, graphChoices);
+    if (!domain)
+      return domain.takeError();
+    if (!targetInDomain(target, *domain))
+      return invalid("selected service target is outside its exact H domain");
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::vector<SystemServiceTargetSelection>>
+selectCanonicalServiceTargets(const FrozenSystemPnrProblem &problem,
+                              llvm::ArrayRef<PnrIndex> threadChoices,
+                              llvm::ArrayRef<PnrIndex> graphChoices) {
+  std::vector<SystemServiceTargetSelection> result;
+  result.reserve(problem.serviceContexts().size());
+  for (const auto &[ordinal, context] :
+       llvm::enumerate(problem.serviceContexts())) {
+    if (context.service >= problem.serviceDomains().size())
+      return invalid("service target has no H service domain");
+    if (std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
+            problem.serviceDomains()[context.service].key)) {
+      result.emplace_back(std::monostate{});
+      continue;
+    }
+    auto domain = detail::resolveSystemServiceTargetDomain(
+        problem, static_cast<PnrIndex>(ordinal), threadChoices, graphChoices);
+    if (!domain)
+      return domain.takeError();
+    std::visit(
+        [&](const auto &values) {
+          assert(!values.empty());
+          result.emplace_back(values.front());
+        },
+        *domain);
+  }
+  return result;
+}
+
 } // namespace
 
 llvm::Expected<SystemCandidateStateHandle>
@@ -64,6 +143,10 @@ SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
         std::move(error));
   if (llvm::Error error = detail::verifySystemServiceTargetDomains(
           *problem, initialization.threadChoices, initialization.graphChoices))
+    return std::move(error);
+  if (llvm::Error error = verifyServiceTargets(
+          *problem, initialization.threadChoices, initialization.graphChoices,
+          initialization.serviceTargets))
     return std::move(error);
   if (llvm::Error error = detail::verifySystemServiceRoutes(
           *problem, initialization.threadChoices, initialization.graphChoices,
@@ -84,7 +167,10 @@ SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
           initialization.serviceRouteNodes.end()),
       std::vector<SystemServiceRouteSinkSelection>(
           initialization.serviceRouteSinks.begin(),
-          initialization.serviceRouteSinks.end())));
+          initialization.serviceRouteSinks.end()),
+      std::vector<SystemServiceTargetSelection>(
+          initialization.serviceTargets.begin(),
+          initialization.serviceTargets.end())));
   if (llvm::Error error = state->verify())
     return std::move(error);
   return state;
@@ -112,6 +198,12 @@ SystemCandidateState::selectedSpatialMapping(PnrIndex decision) const {
   return problem_->spatialMappings()[domain[graphChoice(decision)]];
 }
 
+const SystemServiceTargetSelection &
+SystemCandidateState::serviceTarget(PnrIndex context) const {
+  assert(context < serviceTargets_.size());
+  return serviceTargets_[context];
+}
+
 llvm::Expected<SystemServiceTargetDomain>
 SystemCandidateState::serviceTargetDomain(PnrIndex context) const {
   return detail::resolveSystemServiceTargetDomain(
@@ -124,6 +216,9 @@ llvm::Error SystemCandidateState::verify() const {
     return choices.takeError();
   if (llvm::Error error = detail::verifySystemServiceTargetDomains(
           *problem_, threadChoices_, graphChoices_))
+    return error;
+  if (llvm::Error error = verifyServiceTargets(*problem_, threadChoices_,
+                                               graphChoices_, serviceTargets_))
     return error;
   if (llvm::Error error = detail::verifySystemServiceRoutes(
           *problem_, threadChoices_, graphChoices_, serviceRoutes_,
@@ -235,7 +330,11 @@ loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
       *problem, threadChoices, graphChoices);
   if (!routes)
     return routes.takeError();
+  auto targets =
+      selectCanonicalServiceTargets(*problem, threadChoices, graphChoices);
+  if (!targets)
+    return targets.takeError();
   return SystemCandidateState::create(
       std::move(problem), {threadChoices, graphChoices, routes->routes,
-                           routes->nodes, routes->sinks});
+                           routes->nodes, routes->sinks, *targets});
 }

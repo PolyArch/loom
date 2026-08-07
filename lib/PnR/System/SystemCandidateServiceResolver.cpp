@@ -152,6 +152,19 @@ findTerminalRow(const SystemSearchServiceDomain &service,
 
 } // namespace
 
+llvm::Expected<const FrozenSystemMemoryServiceBinding *>
+loom::pnr::detail::resolveSystemMemoryServiceBinding(
+    const FrozenSystemPnrProblem &problem, PnrIndex context,
+    const SystemServiceTargetSubject &subject,
+    llvm::ArrayRef<PnrIndex> threadChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices) {
+  auto selected =
+      resolveBinding(problem, context, subject, threadChoices, graphChoices);
+  if (!selected)
+    return selected.takeError();
+  return selected->binding;
+}
+
 llvm::Expected<SystemServiceTargetDomain>
 loom::pnr::detail::resolveSystemServiceTargetDomain(
     const FrozenSystemPnrProblem &problem, PnrIndex contextOrdinal,

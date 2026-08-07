@@ -117,6 +117,11 @@ def Mapping_MemoryExposureRefAttr
     : Mapping_CanonicalBytesAttr<"MemoryExposureRef", "memory_exposure_ref",
                                  "Dataflow-owned memory exposure reference">;
 
+def Mapping_FenceActorFamilyRefAttr
+    : Mapping_CanonicalBytesAttr<"FenceActorFamilyRef",
+                                 "fence_actor_family_ref",
+                                 "Dataflow-owned fence actor-family reference">;
+
 def Mapping_ComputeRealizationRefAttr
     : Mapping_Attr<"ComputeRealizationRef", "compute_realization_ref"> {
   let summary = "TechMapping-owned ComputeRealizationRef";
@@ -259,6 +264,11 @@ def Mapping_MemoryConsistencyDomainRefAttr
     : Mapping_CanonicalBytesAttr<
           "MemoryConsistencyDomainRef", "memory_consistency_domain_ref",
           "Fabric-owned memory consistency-domain refinement">;
+
+def Mapping_SystemServiceTransformRefAttr
+    : Mapping_CanonicalBytesAttr<
+          "SystemServiceTransformRef", "system_service_transform_ref",
+          "Fabric-owned System service-transform reference">;
 
 def Mapping_MemoryWholeIntervalAttr
     : Mapping_Attr<"MemoryWholeInterval", "memory_whole_interval"> {

@@ -119,6 +119,8 @@ struct FrozenSystemMemoryServiceBinding final {
   ::loom::fabric::AccCoreOccurrenceRef accCore;
   ::loom::fabric::SystemServiceEndpointRef systemEndpoint;
   ::loom::fabric::FabricMemoryEndpointRef occurrenceEndpoint;
+  std::optional<::loom::mapping::SpatialMemoryIntervalView> interval;
+  std::optional<::loom::fabric::SubordinateEndpointRef> exposureTerminal;
 };
 
 struct FrozenSystemServiceLeg final {

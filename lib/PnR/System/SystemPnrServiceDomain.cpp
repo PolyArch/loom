@@ -973,10 +973,80 @@ projectSystemMemoryServiceBindings(
   if (!messagePayloads)
     return messagePayloads.takeError();
 
+  struct BindingMetadata final {
+    std::optional<::loom::mapping::SpatialMemoryIntervalView> interval;
+    std::optional<::loom::fabric::SubordinateEndpointRef> exposureTerminal;
+  };
+  const auto memberMetadata = [&](const SpatialCatalogEntry &entry,
+                                  const ResolvedServiceMember &member)
+      -> llvm::Expected<BindingMetadata> {
+    if (!member.access)
+      return BindingMetadata{};
+    if (!member.contextualActor)
+      return invalid("addressed service member has no contextual actor");
+    const ::loom::mapping::SpatialMemoryBindingView *selected = nullptr;
+    for (const auto &engine : entry.mapping.view().memoryEngineBindings())
+      for (const auto &operation : engine.operations) {
+        const auto *addressed =
+            std::get_if<::loom::mapping::SpatialAddressedMemoryOperationView>(
+                &operation);
+        if (!addressed || addressed->actor != member.contextualActor->actor)
+          continue;
+        for (const auto &use : addressed->uses) {
+          if (use.launch != member.contextualActor->launch)
+            continue;
+          const auto binding =
+              llvm::find_if(entry.mapping.view().memoryBindings(),
+                            [&](const auto &candidate) {
+                              return candidate.entityId == use.binding;
+                            });
+          if (binding == entry.mapping.view().memoryBindings().end())
+            return invalid("addressed service member names an absent binding");
+          if (!std::holds_alternative<
+                  ::loom::mapping::SpatialMemoryBoundaryProxyView>(
+                  binding->target))
+            return invalid(
+                "System service member does not use a boundary proxy");
+          if (selected && selected->entityId != binding->entityId)
+            return invalid("one addressed service member selects multiple "
+                           "logical intervals");
+          selected = &*binding;
+        }
+      }
+    if (!selected)
+      return invalid("addressed service member has no boundary binding");
+    return BindingMetadata{selected->interval, std::nullopt};
+  };
+  const auto exposureMetadata = [&](const SpatialCatalogEntry &entry,
+                                    ::dataflow::MemoryExposureRef exposure)
+      -> llvm::Expected<BindingMetadata> {
+    const ::loom::mapping::SpatialMemoryBindingView *selected = nullptr;
+    std::optional<::loom::fabric::SubordinateEndpointRef> terminal;
+    for (const auto &binding : entry.mapping.view().memoryBindings())
+      for (const auto &candidate : binding.exposures) {
+        if (candidate.exposure != exposure)
+          continue;
+        if (!std::holds_alternative<
+                ::loom::mapping::SpatialMemoryBoundaryProxyView>(
+                binding.target))
+          return invalid(
+              "System memory exposure does not use a boundary proxy");
+        if (selected && (selected->entityId != binding.entityId ||
+                         *terminal != candidate.terminal))
+          return invalid("one memory exposure selects multiple boundary "
+                         "providers");
+        selected = &binding;
+        terminal = candidate.terminal;
+      }
+    if (!selected || !terminal)
+      return invalid("memory exposure has no boundary provider");
+    return BindingMetadata{selected->interval, *terminal};
+  };
+
   std::vector<FrozenSystemMemoryServiceBinding> result;
   const auto append =
       [&](const auto &obligation, const SystemServiceTargetSubject &subject,
-          const SpatialCatalogEntry &entry,
+          const SpatialCatalogEntry &entry, const BindingMetadata &metadata,
           llvm::ArrayRef<BoundMemoryEndpointPair> pairs) -> llvm::Error {
     for (const BoundMemoryEndpointPair &pair : pairs) {
       const auto *spatialCore =
@@ -986,7 +1056,8 @@ projectSystemMemoryServiceBindings(
         return invalid("memory service binding is not occurrence-qualified");
       result.push_back({obligation.key, subject, entry.reference,
                         spatialCore->core, pair.systemEndpoint,
-                        pair.occurrenceEndpoint});
+                        pair.occurrenceEndpoint, metadata.interval,
+                        metadata.exposureTerminal});
     }
     return llvm::Error::success();
   };
@@ -1009,7 +1080,13 @@ projectSystemMemoryServiceBindings(
             constraints);
         if (!pairs)
           return pairs.takeError();
-        if (llvm::Error error = append(obligation, subject, entry, *pairs))
+        if (pairs->empty())
+          continue;
+        auto metadata = memberMetadata(entry, *member);
+        if (!metadata)
+          return metadata.takeError();
+        if (llvm::Error error =
+                append(obligation, subject, entry, *metadata, *pairs))
           return std::move(error);
       }
     }
@@ -1022,7 +1099,13 @@ projectSystemMemoryServiceBindings(
             constraints);
         if (!pairs)
           return pairs.takeError();
-        if (llvm::Error error = append(obligation, subject, entry, *pairs))
+        if (pairs->empty())
+          continue;
+        auto metadata = exposureMetadata(entry, exposure);
+        if (!metadata)
+          return metadata.takeError();
+        if (llvm::Error error =
+                append(obligation, subject, entry, *metadata, *pairs))
           return std::move(error);
       }
     }

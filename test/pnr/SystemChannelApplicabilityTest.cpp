@@ -540,8 +540,9 @@ int main() {
   }
   requireFailureContains(
       loom::pnr::SystemCandidateState::create(
-          problem, {sameOwner->threadChoices(), sameOwner->graphChoices(),
-                    staleRoutes, staleNodes, staleSinks}),
+          problem,
+          {sameOwner->threadChoices(), sameOwner->graphChoices(), staleRoutes,
+           staleNodes, staleSinks, sameOwner->serviceTargets()}),
       "applicable sink-owner set");
   return EXIT_SUCCESS;
 }

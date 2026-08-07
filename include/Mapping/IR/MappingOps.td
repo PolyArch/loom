@@ -343,6 +343,45 @@ def Mapping_ServicePlanOp
   let hasVerifier = 1;
 }
 
+def Mapping_MemoryRegionTargetOp
+    : Mapping_Op<"memory_region_target",
+                 [HasParent<"ServicePlanOp">, SingleBlock, NoTerminator]> {
+  let summary = "one logical service interval and selected Fabric region";
+  let arguments = (ins Mapping_LogicalMemoryRootOrViewRefAttr:$logical_memory,
+      Mapping_LogicalMemoryInterval:$interval,
+      Mapping_FabricMemoryServiceRegionRefAttr:$service_region,
+      ArrayAttr:$transform_path);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{`logical_memory` `(` $logical_memory `)`
+                         `interval` `(` $interval `)`
+                         `service_region` `(` $service_region `)`
+                         `transform_path` `(` $transform_path `)`
+                         $body attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_SystemMemoryExposureOp
+    : Mapping_Op<"system_memory_exposure",
+                 [HasParent<"MemoryRegionTargetOp">]> {
+  let summary = "one exposure and selected provider terminal";
+  let arguments = (ins Mapping_MemoryExposureRefAttr:$exposure,
+      Mapping_SubordinateEndpointRefAttr:$terminal);
+  let assemblyFormat = [{`exposure` `(` $exposure `)`
+                         `terminal` `(` $terminal `)` attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_ConsistencyTargetOp
+    : Mapping_Op<"consistency_target", [HasParent<"ServicePlanOp">]> {
+  let summary = "one fence family and selected consistency domain";
+  let arguments = (ins Mapping_FenceActorFamilyRefAttr:$fence,
+      Mapping_MemoryConsistencyDomainRefAttr:$consistency_domain);
+  let assemblyFormat = [{`fence` `(` $fence `)`
+                         `consistency_domain` `(` $consistency_domain `)`
+                         attr-dict}];
+  let hasVerifier = 1;
+}
+
 def Mapping_ServicePlanSelectionOp
     : Mapping_Op<"service_plan_selection",
                  [HasParent<"ServiceRealizationOp">, SingleBlock,

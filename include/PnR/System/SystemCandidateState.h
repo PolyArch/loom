@@ -17,6 +17,10 @@ using SystemServiceTargetDomain =
     std::variant<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>,
                  std::vector<::loom::fabric::MemoryConsistencyDomainRef>>;
 
+using SystemServiceTargetSelection =
+    std::variant<std::monostate, ::loom::fabric::FabricMemoryServiceRegionRef,
+                 ::loom::fabric::MemoryConsistencyDomainRef>;
+
 struct SystemServiceRouteNodeSelection final {
   PnrIndex endpoint = 0;
   PnrIndex parentNode = getInvalidPnrIndex();
@@ -43,6 +47,7 @@ struct SystemCandidateInitialization final {
   llvm::ArrayRef<SystemServiceRouteSelection> serviceRoutes;
   llvm::ArrayRef<SystemServiceRouteNodeSelection> serviceRouteNodes;
   llvm::ArrayRef<SystemServiceRouteSinkSelection> serviceRouteSinks;
+  llvm::ArrayRef<SystemServiceTargetSelection> serviceTargets;
 };
 
 class SystemCandidateState;
@@ -71,6 +76,10 @@ public:
   llvm::ArrayRef<SystemServiceRouteSinkSelection> serviceRouteSinks() const {
     return serviceRouteSinks_;
   }
+  llvm::ArrayRef<SystemServiceTargetSelection> serviceTargets() const {
+    return serviceTargets_;
+  }
+  const SystemServiceTargetSelection &serviceTarget(PnrIndex context) const;
   PnrIndex threadChoice(PnrIndex decision) const;
   PnrIndex graphChoice(PnrIndex decision) const;
   ::loom::fabric::AccCoreOccurrenceRef selectedAccCore(PnrIndex decision) const;
@@ -86,12 +95,14 @@ private:
       std::vector<PnrIndex> graphChoices,
       std::vector<SystemServiceRouteSelection> serviceRoutes,
       std::vector<SystemServiceRouteNodeSelection> serviceRouteNodes,
-      std::vector<SystemServiceRouteSinkSelection> serviceRouteSinks)
+      std::vector<SystemServiceRouteSinkSelection> serviceRouteSinks,
+      std::vector<SystemServiceTargetSelection> serviceTargets)
       : problem_(std::move(problem)), threadChoices_(std::move(threadChoices)),
         graphChoices_(std::move(graphChoices)),
         serviceRoutes_(std::move(serviceRoutes)),
         serviceRouteNodes_(std::move(serviceRouteNodes)),
-        serviceRouteSinks_(std::move(serviceRouteSinks)) {}
+        serviceRouteSinks_(std::move(serviceRouteSinks)),
+        serviceTargets_(std::move(serviceTargets)) {}
 
   FrozenSystemPnrProblemHandle problem_;
   std::vector<PnrIndex> threadChoices_;
@@ -99,6 +110,7 @@ private:
   std::vector<SystemServiceRouteSelection> serviceRoutes_;
   std::vector<SystemServiceRouteNodeSelection> serviceRouteNodes_;
   std::vector<SystemServiceRouteSinkSelection> serviceRouteSinks_;
+  std::vector<SystemServiceTargetSelection> serviceTargets_;
 };
 
 struct InitializedSystemCandidate final {

@@ -5,6 +5,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/IR/MappingDialect.h"
+#include "SystemCandidateServiceResolver.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OperationSupport.h"
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -79,6 +81,35 @@ accCoreAttr(mlir::MLIRContext *context,
   return ::mapping::FabricPhysicalTraversalRefAttr::get(
       context,
       bytesAttr(context, ::loom::fabric::canonicalFabricBytes(traversal)));
+}
+
+template <typename Attr, typename Ref>
+Attr fabricRefAttr(mlir::MLIRContext *context, const Ref &reference) {
+  return Attr::get(
+      context,
+      bytesAttr(context, ::loom::fabric::canonicalFabricBytes(reference)));
+}
+
+mlir::Attribute
+intervalAttr(mlir::MLIRContext *context,
+             const ::loom::mapping::SpatialMemoryIntervalView &interval) {
+  if (std::holds_alternative<::loom::mapping::SpatialMemoryWholeIntervalView>(
+          interval))
+    return ::mapping::MemoryWholeIntervalAttr::get(context);
+  const auto &range =
+      std::get<::loom::mapping::SpatialMemoryByteRangeView>(interval);
+  return ::mapping::MemoryByteRangeAttr::get(context, range.offsetBytes,
+                                             range.sizeBytes);
+}
+
+std::tuple<std::uint32_t, std::uint64_t, std::uint64_t>
+intervalKey(const ::loom::mapping::SpatialMemoryIntervalView &interval) {
+  if (std::holds_alternative<::loom::mapping::SpatialMemoryWholeIntervalView>(
+          interval))
+    return {0, 0, 0};
+  const auto &range =
+      std::get<::loom::mapping::SpatialMemoryByteRangeView>(interval);
+  return {1, range.offsetBytes, range.sizeBytes};
 }
 
 ::mapping::SystemPresburgerCellAttr
@@ -314,6 +345,101 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
       auto plan =
           ::mapping::ServicePlanOp::create(builder, location, authoredOrdinal);
       plan.getBody().emplaceBlock();
+      const auto &selectedTarget = candidate.serviceTarget(contextOrdinal);
+      if (const auto *region =
+              std::get_if<::loom::fabric::FabricMemoryServiceRegionRef>(
+                  &selectedTarget)) {
+        const auto *operation =
+            std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
+                &group.key);
+        const auto *logicalMemory =
+            operation
+                ? std::get_if<::dataflow::LogicalMemoryRootOrViewRef>(operation)
+                : nullptr;
+        if (!logicalMemory)
+          return invalid(
+              "memory region target belongs to a non-memory service");
+        struct MemoryTargetDraft final {
+          ::loom::mapping::SpatialMemoryIntervalView interval;
+          std::vector<std::pair<::dataflow::MemoryExposureRef,
+                                ::loom::fabric::SubordinateEndpointRef>>
+              exposures;
+        };
+        std::map<std::tuple<std::uint32_t, std::uint64_t, std::uint64_t>,
+                 MemoryTargetDraft>
+            targets;
+        const auto &serviceContext = problem.serviceContexts()[contextOrdinal];
+        for (const SystemServiceTargetSubject &subject :
+             serviceContext.subjects) {
+          auto binding = detail::resolveSystemMemoryServiceBinding(
+              problem, contextOrdinal, subject, candidate.threadChoices(),
+              candidate.graphChoices());
+          if (!binding)
+            return binding.takeError();
+          if (!(*binding)->interval)
+            return invalid("memory target subject has no logical interval");
+          const auto key = intervalKey(*(*binding)->interval);
+          auto inserted = targets.try_emplace(
+              key, MemoryTargetDraft{*(*binding)->interval, {}});
+          if (const auto *exposure =
+                  std::get_if<SystemMemoryExposureTargetSubject>(&subject)) {
+            if (!(*binding)->exposureTerminal)
+              return invalid("memory exposure target has no provider terminal");
+            inserted.first->second.exposures.push_back(
+                {exposure->exposure, *(*binding)->exposureTerminal});
+          }
+        }
+        auto logicalAttr =
+            dataflowRefAttr<::mapping::LogicalMemoryRootOrViewRefAttr>(
+                &context, problem.dataflowIdentity(), *logicalMemory);
+        if (!logicalAttr)
+          return logicalAttr.takeError();
+        for (auto &[key, target] : targets) {
+          (void)key;
+          builder.setInsertionPointToEnd(&plan.getBody().front());
+          auto targetOp = ::mapping::MemoryRegionTargetOp::create(
+              builder, location, *logicalAttr,
+              intervalAttr(&context, target.interval),
+              fabricRefAttr<::mapping::FabricMemoryServiceRegionRefAttr>(
+                  &context, *region),
+              builder.getArrayAttr({}));
+          targetOp.getBody().emplaceBlock();
+          builder.setInsertionPointToEnd(&targetOp.getBody().front());
+          for (const auto &[exposure, terminal] : target.exposures) {
+            auto exposureAttr =
+                dataflowRefAttr<::mapping::MemoryExposureRefAttr>(
+                    &context, problem.dataflowIdentity(), exposure);
+            if (!exposureAttr)
+              return exposureAttr.takeError();
+            ::mapping::SystemMemoryExposureOp::create(
+                builder, location, *exposureAttr,
+                fabricRefAttr<::mapping::SubordinateEndpointRefAttr>(&context,
+                                                                     terminal));
+          }
+        }
+      } else if (const auto *domain =
+                     std::get_if<::loom::fabric::MemoryConsistencyDomainRef>(
+                         &selectedTarget)) {
+        const auto *operation =
+            std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
+                &group.key);
+        const auto *fence =
+            operation ? std::get_if<::dataflow::FenceActorFamilyRef>(operation)
+                      : nullptr;
+        if (!fence)
+          return invalid("consistency target belongs to a non-fence service");
+        auto fenceAttr = dataflowRefAttr<::mapping::FenceActorFamilyRefAttr>(
+            &context, problem.dataflowIdentity(), *fence);
+        if (!fenceAttr)
+          return fenceAttr.takeError();
+        builder.setInsertionPointToEnd(&plan.getBody().front());
+        ::mapping::ConsistencyTargetOp::create(
+            builder, location, *fenceAttr,
+            fabricRefAttr<::mapping::MemoryConsistencyDomainRefAttr>(&context,
+                                                                     *domain));
+      } else if (!std::holds_alternative<std::monostate>(selectedTarget)) {
+        return invalid("service context has an unknown selected target kind");
+      }
       for (PnrIndex routeOrdinal : groupedPlan.routes) {
         const SystemServiceRouteSelection &selected =
             candidate.serviceRoutes()[routeOrdinal];
