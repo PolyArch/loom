@@ -2,15 +2,49 @@
 #define LOOM_LIB_PNR_SYSTEM_SYSTEMPNRSEARCHDOMAININTERNAL_H
 
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "PnR/FrozenConstraintIndex.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <variant>
 #include <vector>
 
 namespace loom::pnr::detail {
+
+template <typename Ref>
+bool systemConstraintAllows(
+    const SystemFrozenConstraintIndex &constraints,
+    ::mapping::SystemConstraintProjection projection,
+    const ::loom::mapping::SystemConstraintSubject &subject, const Ref &value) {
+  const auto restricted =
+      constraints.shard(projection).restrictedDomain(subject);
+  if (!restricted)
+    return true;
+  for (const ::loom::mapping::SystemConstraintDomainValue &candidate :
+       *restricted) {
+    const auto *typed = std::get_if<Ref>(&candidate);
+    if (typed && *typed == value)
+      return true;
+  }
+  return false;
+}
+
+template <typename Ref>
+void applySystemConstraintRestriction(
+    std::vector<Ref> &values, const SystemFrozenConstraintIndex &constraints,
+    ::mapping::SystemConstraintProjection projection,
+    const ::loom::mapping::SystemConstraintSubject &subject) {
+  values.erase(std::remove_if(values.begin(), values.end(),
+                              [&](const Ref &value) {
+                                return !systemConstraintAllows(
+                                    constraints, projection, subject, value);
+                              }),
+               values.end());
+}
 
 struct CanonicalSystemPartitionBinding final {
   SystemSearchBindingKey key;
@@ -66,6 +100,8 @@ llvm::Error validateSystemBindingDomains(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     llvm::ArrayRef<SystemSearchBindingDomain> bindings,
+    const SystemFrozenConstraintIndex &constraints,
+    llvm::ArrayRef<ArtifactRootReference> constraintSpatialMappings,
     const ArtifactStore &store);
 
 llvm::Expected<std::vector<std::uint8_t>>
@@ -92,7 +128,8 @@ projectSystemServiceDomains(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
-    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog, bool flatGraphSearch);
+    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog,
+    const SystemFrozenConstraintIndex &constraints, bool flatGraphSearch);
 
 llvm::Error validateSystemServiceDomains(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -100,6 +137,8 @@ llvm::Error validateSystemServiceDomains(
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
     llvm::ArrayRef<SystemSearchBindingDomain> bindings,
     llvm::ArrayRef<SystemSearchServiceDomain> services,
+    const SystemFrozenConstraintIndex &constraints,
+    llvm::ArrayRef<ArtifactRootReference> constraintSpatialMappings,
     const ArtifactStore &store);
 
 } // namespace loom::pnr::detail

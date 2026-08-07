@@ -309,7 +309,9 @@ void canonicalizePairs(std::vector<BoundMemoryEndpointPair> &pairs) {
 llvm::Error
 appendManagerPairs(const ::loom::fabric::FabricSystemRootView &fabric,
                    const SpatialCatalogEntry &entry,
+                   ::dataflow::RootedGraphLaunchRef launch,
                    ::loom::fabric::FabricMemoryEndpointRef moduleEndpoint,
+                   const SystemFrozenConstraintIndex &constraints,
                    std::vector<BoundMemoryEndpointPair> &pairs) {
   if (entry.moduleDependencyOrdinal >=
       fabric.artifact().importedModules().size())
@@ -329,6 +331,27 @@ appendManagerPairs(const ::loom::fabric::FabricSystemRootView &fabric,
       if (!occurrence || !attachment.serviceEndpoint)
         return invalid("memory Module boundary has an incomplete System "
                        "spatial attachment");
+      const auto *spatialCore =
+          std::get_if<::loom::fabric::SpatialCoreOccurrenceRef>(
+              &occurrence->owner.payload);
+      if (!spatialCore)
+        return invalid("memory spatial attachment is not occurrence-owned");
+      if (!systemConstraintAllows(
+              constraints,
+              ::mapping::SystemConstraintProjection::
+                  GraphSelectedSpatialMapping,
+              ::loom::mapping::SystemConstraintSubject{launch},
+              entry.reference) ||
+          !systemConstraintAllows(
+              constraints,
+              ::mapping::SystemConstraintProjection::GraphTargetSpatialCore,
+              ::loom::mapping::SystemConstraintSubject{launch}, *spatialCore) ||
+          !systemConstraintAllows(
+              constraints,
+              ::mapping::SystemConstraintProjection::ThreadTargetAccCore,
+              ::loom::mapping::SystemConstraintSubject{launch.rootThreadLaunch},
+              spatialCore->core))
+        continue;
       pairs.push_back({*attachment.serviceEndpoint, *occurrence});
     }
   }
@@ -338,7 +361,8 @@ appendManagerPairs(const ::loom::fabric::FabricSystemRootView &fabric,
 llvm::Expected<std::vector<BoundMemoryEndpointPair>>
 boundPairsForMember(const ::loom::fabric::FabricSystemRootView &fabric,
                     const ResolvedServiceMember &member,
-                    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog) {
+                    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog,
+                    const SystemFrozenConstraintIndex &constraints) {
   std::vector<BoundMemoryEndpointPair> pairs;
   if (!member.contextualActor)
     return pairs;
@@ -358,7 +382,8 @@ boundPairsForMember(const ::loom::fabric::FabricSystemRootView &fabric,
                 std::get_if<::loom::fabric::ManagerEndpointRef>(&use.dispatch);
             if (manager)
               if (llvm::Error error = appendManagerPairs(
-                      fabric, entry, manager->underlying(), pairs))
+                      fabric, entry, member.contextualActor->launch,
+                      manager->underlying(), constraints, pairs))
                 return std::move(error);
           }
         } else {
@@ -375,7 +400,8 @@ boundPairsForMember(const ::loom::fabric::FabricSystemRootView &fabric,
                     &use.consistency);
             if (manager)
               if (llvm::Error error = appendManagerPairs(
-                      fabric, entry, manager->underlying(), pairs))
+                      fabric, entry, member.contextualActor->launch,
+                      manager->underlying(), constraints, pairs))
                 return std::move(error);
           }
         }
@@ -389,7 +415,8 @@ boundPairsForMember(const ::loom::fabric::FabricSystemRootView &fabric,
 llvm::Expected<std::vector<BoundMemoryEndpointPair>>
 boundPairsForExposure(const ::loom::fabric::FabricSystemRootView &fabric,
                       ::dataflow::MemoryExposureRef exposure,
-                      llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog) {
+                      llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog,
+                      const SystemFrozenConstraintIndex &constraints) {
   std::vector<BoundMemoryEndpointPair> pairs;
   for (const SpatialCatalogEntry &entry : spatialCatalog)
     for (const auto &binding : entry.mapping.view().memoryBindings())
@@ -399,8 +426,9 @@ boundPairsForExposure(const ::loom::fabric::FabricSystemRootView &fabric,
         const auto *manager = std::get_if<::loom::fabric::ManagerEndpointRef>(
             &entryExposure.dispatch);
         if (manager)
-          if (llvm::Error error = appendManagerPairs(
-                  fabric, entry, manager->underlying(), pairs))
+          if (llvm::Error error =
+                  appendManagerPairs(fabric, entry, exposure.launch,
+                                     manager->underlying(), constraints, pairs))
             return std::move(error);
       }
   canonicalizePairs(pairs);
@@ -489,34 +517,6 @@ bool sameTargetSubject(const SystemServiceTargetSubject &left,
            std::get<SystemServiceMemberTargetSubject>(right).member;
   return std::get<SystemMemoryExposureTargetSubject>(left).exposure ==
          std::get<SystemMemoryExposureTargetSubject>(right).exposure;
-}
-
-template <typename Ref>
-bool isSubset(llvm::ArrayRef<Ref> values, llvm::ArrayRef<Ref> domain) {
-  return llvm::all_of(values, [&](const Ref &value) {
-    return llvm::is_contained(domain, value);
-  });
-}
-
-bool isTargetDomainSubset(
-    const SystemServiceTargetCompatibilityDomain &values,
-    const SystemServiceTargetCompatibilityDomain &domain) {
-  if (values.index() != domain.index())
-    return false;
-  if (const auto *regions = std::get_if<
-          std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(&values))
-    return isSubset(
-        llvm::ArrayRef(*regions),
-        llvm::ArrayRef(
-            std::get<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(
-                domain)));
-  const auto &consistency =
-      std::get<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(values);
-  return isSubset(
-      llvm::ArrayRef(consistency),
-      llvm::ArrayRef(
-          std::get<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(
-              domain)));
 }
 
 llvm::Error appendTerminalCompatibility(
@@ -706,6 +706,32 @@ llvm::Error appendMessageRows(
   return llvm::Error::success();
 }
 
+void applyServiceRestrictions(SystemSearchServiceDomain &domain,
+                              const SystemFrozenConstraintIndex &constraints) {
+  if (const auto *operation =
+          std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
+              &domain.key)) {
+    const ::loom::mapping::SystemConstraintSubject subject{*operation};
+    for (SystemSearchServiceTargetCompatibility &row :
+         domain.targetCompatibility) {
+      auto *regions = std::get_if<
+          std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(
+          &row.compatibleTargets);
+      if (regions)
+        applySystemConstraintRestriction(
+            *regions, constraints,
+            ::mapping::SystemConstraintProjection::ServiceTargetRegion,
+            subject);
+    }
+  }
+  for (SystemSearchTransferTerminalCompatibility &row :
+       domain.transferTerminalCompatibility)
+    applySystemConstraintRestriction(
+        row.compatibleTransportEndpoints, constraints,
+        ::mapping::SystemConstraintProjection::TransferTerminalAttachment,
+        ::loom::mapping::SystemConstraintSubject{row.terminal});
+}
+
 } // namespace
 
 llvm::Expected<std::vector<SystemSearchServiceDomain>>
@@ -713,7 +739,8 @@ projectSystemServiceDomains(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
-    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog, bool flatGraphSearch) {
+    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog,
+    const SystemFrozenConstraintIndex &constraints, bool flatGraphSearch) {
   auto obligations =
       ::loom::mapping::projectSystemServiceObligations(dataflow, roots);
   if (!obligations)
@@ -766,7 +793,8 @@ projectSystemServiceDomains(
     } else {
       for (auto [memberRef, member] :
            llvm::zip_equal(obligation.members, members)) {
-        auto pairs = boundPairsForMember(fabric, member, spatialCatalog);
+        auto pairs =
+            boundPairsForMember(fabric, member, spatialCatalog, constraints);
         if (!pairs)
           return pairs.takeError();
         if (llvm::Error error = appendMemoryRows(fabric, obligation, memberRef,
@@ -774,7 +802,8 @@ projectSystemServiceDomains(
           return std::move(error);
       }
       for (const auto &exposure : obligation.exposures) {
-        auto pairs = boundPairsForExposure(fabric, exposure, spatialCatalog);
+        auto pairs = boundPairsForExposure(fabric, exposure, spatialCatalog,
+                                           constraints);
         if (!pairs)
           return pairs.takeError();
         if (llvm::Error error =
@@ -782,6 +811,7 @@ projectSystemServiceDomains(
           return std::move(error);
       }
     }
+    applyServiceRestrictions(domain, constraints);
     result.push_back(std::move(domain));
   }
   return result;
@@ -793,9 +823,12 @@ llvm::Error validateSystemServiceDomains(
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
     llvm::ArrayRef<SystemSearchBindingDomain> bindings,
     llvm::ArrayRef<SystemSearchServiceDomain> services,
+    const SystemFrozenConstraintIndex &constraints,
+    llvm::ArrayRef<ArtifactRootReference> constraintSpatialMappings,
     const ArtifactStore &store) {
   bool flatGraphSearch = false;
-  std::vector<ArtifactRootReference> spatialMappings;
+  std::vector<ArtifactRootReference> spatialMappings(
+      constraintSpatialMappings.begin(), constraintSpatialMappings.end());
   for (const SystemSearchBindingDomain &binding : bindings) {
     if (!std::holds_alternative<::dataflow::RootedGraphLaunchRef>(binding.key))
       continue;
@@ -814,7 +847,7 @@ llvm::Error validateSystemServiceDomains(
   if (!catalog)
     return catalog.takeError();
   auto expected = projectSystemServiceDomains(dataflow, fabric, roots, *catalog,
-                                              flatGraphSearch);
+                                              constraints, flatGraphSearch);
   if (!expected)
     return expected.takeError();
   if (services.size() != expected->size())
@@ -841,9 +874,8 @@ llvm::Error validateSystemServiceDomains(
       if (expectedRow == expectedService->targetCompatibility.end())
         return invalid("target-compatibility row closure differs from legal "
                        "bindings");
-      if (!isTargetDomainSubset(row.compatibleTargets,
-                                expectedRow->compatibleTargets))
-        return invalid("target-compatibility domain exceeds base legality");
+      if (!(row.compatibleTargets == expectedRow->compatibleTargets))
+        return invalid("target-compatibility domain is not exact");
     }
 
     if (service.transferTerminalCompatibility.size() !=
@@ -862,10 +894,9 @@ llvm::Error validateSystemServiceDomains(
       if (expectedRow == expectedService->transferTerminalCompatibility.end())
         return invalid("transfer-terminal compatibility row closure differs "
                        "from legal bindings");
-      if (!isSubset(llvm::ArrayRef(row.compatibleTransportEndpoints),
-                    llvm::ArrayRef(expectedRow->compatibleTransportEndpoints)))
-        return invalid(
-            "transfer-terminal compatibility domain exceeds base legality");
+      if (row.compatibleTransportEndpoints !=
+          expectedRow->compatibleTransportEndpoints)
+        return invalid("transfer-terminal compatibility domain is not exact");
     }
   }
   return llvm::Error::success();

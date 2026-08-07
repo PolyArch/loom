@@ -14,6 +14,7 @@
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "Mapping/IR/MappingAttrs.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
@@ -27,6 +28,8 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -190,6 +193,99 @@ rootReferenceAttr(mlir::MLIRContext *context,
   return ::mapping::ArtifactRootReferenceAttr::get(
       context,
       bytesAttr(context, loom::encodeArtifactRootReference(reference)));
+}
+
+template <typename Attr, typename Ref>
+Attr constraintDataflowAttr(mlir::MLIRContext *context,
+                            const loom::ArtifactIdentity &owner,
+                            const Ref &reference) {
+  return Attr::get(context,
+                   bytesAttr(context, take(dataflow::encodeDataflowReference(
+                                          owner, reference))));
+}
+
+template <typename Attr, typename Ref>
+Attr constraintFabricAttr(mlir::MLIRContext *context, const Ref &reference) {
+  return Attr::get(
+      context,
+      bytesAttr(context, loom::fabric::canonicalFabricBytes(reference)));
+}
+
+::mapping::SystemServiceObligationKeyAttr
+serviceObligationAttr(mlir::MLIRContext *context,
+                      const loom::ArtifactIdentity &owner,
+                      const loom::mapping::SystemServiceObligationKey &key) {
+  return ::mapping::SystemServiceObligationKeyAttr::get(
+      context,
+      bytesAttr(context, take(loom::mapping::encodeSystemServiceObligationKey(
+                             owner, key))));
+}
+
+::mapping::SystemTransferTerminalKeyAttr
+transferTerminalAttr(mlir::MLIRContext *context,
+                     const loom::ArtifactIdentity &owner,
+                     const loom::mapping::SystemTransferTerminalKey &key) {
+  return ::mapping::SystemTransferTerminalKeyAttr::get(
+      context,
+      bytesAttr(context, take(loom::mapping::encodeSystemTransferTerminalKey(
+                             owner, key))));
+}
+
+mlir::OwningOpRef<mlir::ModuleOp> buildSystemConstraintModule(
+    mlir::MLIRContext &context, const loom::ArtifactIdentity &dataflowIdentity,
+    const loom::ArtifactIdentity &fabricIdentity,
+    llvm::ArrayRef<dataflow::RootThreadLaunchRef> roots) {
+  mlir::OpBuilder builder(&context);
+  auto module = mlir::ModuleOp::create(builder.getUnknownLoc());
+  builder.setInsertionPointToStart(module.getBody());
+  std::vector<mlir::Attribute> rootAttributes;
+  rootAttributes.reserve(roots.size());
+  for (const auto root : roots)
+    rootAttributes.push_back(
+        constraintDataflowAttr<::mapping::RootThreadLaunchRefAttr>(
+            &context, dataflowIdentity, root));
+  auto constraint = ::mapping::ConstraintsSystemOp::create(
+      builder, builder.getUnknownLoc(),
+      ::mapping::ArtifactIdentityAttr::get(
+          &context, bytesAttr(&context, dataflowIdentity.bytes())),
+      ::mapping::ArtifactIdentityAttr::get(
+          &context, bytesAttr(&context, fabricIdentity.bytes())),
+      builder.getArrayAttr(rootAttributes), builder.getArrayAttr({}));
+  constraint.getBody().emplaceBlock();
+  return module;
+}
+
+void addSystemRestriction(mlir::OpBuilder &builder,
+                          ::mapping::ConstraintsSystemOp root,
+                          ::mapping::SystemConstraintProjection projection,
+                          mlir::Attribute subject,
+                          llvm::ArrayRef<mlir::Attribute> domain) {
+  builder.setInsertionPointToEnd(&root.getBody().front());
+  mlir::OperationState state(
+      builder.getUnknownLoc(),
+      ::mapping::ConstraintDomainRestrictionOp::getOperationName());
+  state.addAttribute(
+      "projection",
+      ::mapping::SystemConstraintProjectionKeyAttr::get(
+          builder.getContext(), static_cast<std::uint32_t>(projection)));
+  state.addAttribute("subject", subject);
+  state.addAttribute("admissible_domain", builder.getArrayAttr(domain));
+  builder.create(state);
+}
+
+void addSystemEquality(mlir::OpBuilder &builder,
+                       ::mapping::ConstraintsSystemOp root,
+                       ::mapping::SystemConstraintProjection projection,
+                       llvm::ArrayRef<mlir::Attribute> subjects) {
+  builder.setInsertionPointToEnd(&root.getBody().front());
+  mlir::OperationState state(builder.getUnknownLoc(),
+                             ::mapping::ConstraintEqualOp::getOperationName());
+  state.addAttribute(
+      "projection",
+      ::mapping::SystemConstraintProjectionKeyAttr::get(
+          builder.getContext(), static_cast<std::uint32_t>(projection)));
+  state.addAttribute("subjects", builder.getArrayAttr(subjects));
+  builder.create(state);
 }
 
 loom::CanonicalSemanticBytes rawSystemBytes(::mapping::SystemOp root) {
@@ -768,6 +864,7 @@ int main() {
   require(addressedRows.size() == 2 && addressedRows[0]->boundEndpoint !=
                                            addressedRows[1]->boundEndpoint,
           "same Module path did not produce two exact endpoint rows");
+  const loom::fabric::SystemServiceEndpointRef *supportedEndpoint = nullptr;
   const loom::fabric::SystemServiceEndpointRef *unsupportedEndpoint = nullptr;
   std::size_t compatibleEndpointCount = 0;
   for (const auto *row : addressedRows) {
@@ -777,10 +874,13 @@ int main() {
     require(regions, "memory target row has a non-region domain");
     if (regions->empty())
       unsupportedEndpoint = &row->boundEndpoint;
-    else
+    else {
+      supportedEndpoint = &row->boundEndpoint;
       ++compatibleEndpointCount;
+    }
   }
-  require(unsupportedEndpoint && compatibleEndpointCount == 1,
+  require(supportedEndpoint && unsupportedEndpoint &&
+              compatibleEndpointCount == 1,
           "endpoint rows unioned or intersected distinct read capabilities");
 
   const loom::fabric::FabricMemoryEndpointRef *unsupportedOccurrence = nullptr;
@@ -809,6 +909,186 @@ int main() {
   }
   require(unsupportedTerminalRows == 4,
           "unsupported memory pair did not retain every required empty row");
+
+  std::vector<loom::fabric::AccCoreOccurrenceRef> supportedCores;
+  for (const auto &attachment : endpointSystem.spatialAttachments()) {
+    if (attachment.serviceEndpoint != *supportedEndpoint)
+      continue;
+    const auto *occurrence = attachment.spatialEndpoint.memory();
+    require(occurrence, "supported endpoint has an incomplete attachment");
+    const auto *spatialCore =
+        std::get_if<loom::fabric::SpatialCoreOccurrenceRef>(
+            &occurrence->owner.payload);
+    require(spatialCore,
+            "supported memory attachment is not occurrence-qualified");
+    if (!llvm::is_contained(supportedCores, spatialCore->core))
+      supportedCores.push_back(spatialCore->core);
+  }
+  require(!supportedCores.empty(),
+          "supported endpoint has no exact occurrence attachment");
+  llvm::sort(supportedCores, [](const auto left, const auto right) {
+    return loom::fabric::canonicalFabricBytes(left) <
+           loom::fabric::canonicalFabricBytes(right);
+  });
+
+  const auto belongsToSupportedExecution = [&](const auto &row) {
+    const auto &endpoint =
+        std::get<loom::pnr::SystemMemoryOrFenceTerminalEndpoint>(
+            row.boundEndpoint)
+            .endpoint;
+    if (const auto *system =
+            std::get_if<loom::fabric::SystemServiceEndpointRef>(
+                &endpoint.owner.payload))
+      return *system == *supportedEndpoint;
+    const auto *spatialCore =
+        std::get_if<loom::fabric::SpatialCoreOccurrenceRef>(
+            &endpoint.owner.payload);
+    return spatialCore && llvm::is_contained(supportedCores, spatialCore->core);
+  };
+  const auto restrictedTerminalRow = llvm::find_if(
+      memoryService->transferTerminalCompatibility, [&](const auto &row) {
+        return belongsToSupportedExecution(row) &&
+               !row.compatibleTransportEndpoints.empty();
+      });
+  require(restrictedTerminalRow !=
+              memoryService->transferTerminalCompatibility.end(),
+          "constraint fixture has no supported transfer terminal row");
+  const auto restrictedTerminal = restrictedTerminalRow->terminal;
+  const loom::mapping::SystemTransferTerminalKey peerTerminal = [&] {
+    if (const auto *source =
+            std::get_if<loom::mapping::SystemTransferSourceTerminalKey>(
+                &restrictedTerminal))
+      return loom::mapping::SystemTransferTerminalKey(
+          loom::mapping::SystemTransferSinkTerminalKey{source->leg, 0});
+    return loom::mapping::SystemTransferTerminalKey(
+        loom::mapping::SystemTransferSourceTerminalKey{
+            std::get<loom::mapping::SystemTransferSinkTerminalKey>(
+                restrictedTerminal)
+                .leg});
+  }();
+  const auto peerTerminalRow = llvm::find_if(
+      memoryService->transferTerminalCompatibility, [&](const auto &row) {
+        return row.terminal == peerTerminal &&
+               belongsToSupportedExecution(row) &&
+               !row.compatibleTransportEndpoints.empty();
+      });
+  require(peerTerminalRow != memoryService->transferTerminalCompatibility.end(),
+          "constraint fixture has no supported peer terminal");
+  std::size_t expectedConstrainedTerminalRows = 0;
+  bool expectedUnrestrictedTerminal = false;
+  for (const auto &row : memoryService->transferTerminalCompatibility) {
+    if (!belongsToSupportedExecution(row))
+      continue;
+    if (row.terminal == restrictedTerminal || row.terminal == peerTerminal)
+      ++expectedConstrainedTerminalRows;
+    else if (!row.compatibleTransportEndpoints.empty())
+      expectedUnrestrictedTerminal = true;
+  }
+  require(expectedConstrainedTerminalRows >= 2 && expectedUnrestrictedTerminal,
+          "constraint fixture lacks retained terminal coverage");
+  const auto memoryOperation =
+      std::get<loom::mapping::OperationServiceObligationFamilyKey>(
+          memoryService->key);
+
+  auto constrainedModule = buildSystemConstraintModule(
+      context, memoryDataflow.identity(), endpointSystem.artifact().identity(),
+      memoryRoots);
+  auto constrainedRoot = llvm::cast<::mapping::ConstraintsSystemOp>(
+      constrainedModule->getBody()->front());
+  mlir::OpBuilder constraintBuilder(&context);
+  std::vector<mlir::Attribute> supportedCoreAttributes;
+  supportedCoreAttributes.reserve(supportedCores.size());
+  for (const auto core : supportedCores)
+    supportedCoreAttributes.push_back(
+        constraintFabricAttr<::mapping::FabricAccCoreOccurrenceRefAttr>(
+            &context, core));
+  addSystemRestriction(
+      constraintBuilder, constrainedRoot,
+      ::mapping::SystemConstraintProjection::ThreadTargetAccCore,
+      constraintDataflowAttr<::mapping::RootThreadLaunchRefAttr>(
+          &context, memoryDataflow.identity(), memoryRoots.front()),
+      supportedCoreAttributes);
+  const auto memorySubject = serviceObligationAttr(
+      &context, memoryDataflow.identity(),
+      loom::mapping::SystemServiceObligationKey{memoryOperation});
+  addSystemRestriction(
+      constraintBuilder, constrainedRoot,
+      ::mapping::SystemConstraintProjection::ServiceTargetRegion, memorySubject,
+      {});
+  const auto restrictedTerminalSubject = transferTerminalAttr(
+      &context, memoryDataflow.identity(), restrictedTerminal);
+  const auto peerTerminalSubject =
+      transferTerminalAttr(&context, memoryDataflow.identity(), peerTerminal);
+  addSystemEquality(
+      constraintBuilder, constrainedRoot,
+      ::mapping::SystemConstraintProjection::TransferTerminalAttachment,
+      {restrictedTerminalSubject, peerTerminalSubject});
+  addSystemRestriction(
+      constraintBuilder, constrainedRoot,
+      ::mapping::SystemConstraintProjection::TransferTerminalAttachment,
+      peerTerminalSubject, {});
+  auto constrainedSystemConstraints =
+      take(loom::mapping::finalizeSystemMappingConstraintSet(
+          constrainedRoot, memoryDataflow, endpointSystem, store));
+  auto constrainedSearchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      memoryDataflow, endpointSystem, config, constrainedSystemConstraints,
+      memoryPartition,
+      loom::pnr::SystemHierarchicalGraphSearchInput{{memoryMapping}}, store));
+  require(constrainedSearchDomain.digest() != memorySearchDomain.digest(),
+          "exact System K did not change the H digest");
+  for (const auto &binding : constrainedSearchDomain.bindings()) {
+    if (!std::holds_alternative<dataflow::RootThreadLaunchRef>(binding.key))
+      continue;
+    const auto *thread = std::get_if<loom::pnr::SystemThreadBindingDomain>(
+        &binding.atoms.front().domain);
+    require(thread && thread->compatibleAccCores == supportedCores,
+            "thread constraint did not restrict the H atom domain");
+  }
+  const auto constrainedMemoryService = llvm::find_if(
+      constrainedSearchDomain.serviceObligations(),
+      [&](const auto &service) { return service.key == memoryService->key; });
+  require(constrainedMemoryService !=
+              constrainedSearchDomain.serviceObligations().end(),
+          "constrained H lost the memory obligation");
+  std::size_t constrainedAddressedRows = 0;
+  for (const auto &row : constrainedMemoryService->targetCompatibility) {
+    const auto *subject =
+        std::get_if<loom::pnr::SystemServiceMemberTargetSubject>(&row.subject);
+    if (!subject ||
+        !std::holds_alternative<dataflow::AddressedMemoryActorMemberRef>(
+            subject->member))
+      continue;
+    ++constrainedAddressedRows;
+    const auto *regions =
+        std::get_if<std::vector<loom::fabric::FabricMemoryServiceRegionRef>>(
+            &row.compatibleTargets);
+    require(regions && regions->empty(),
+            "service target restriction was not folded into its H row");
+  }
+  require(constrainedAddressedRows == 1,
+          "thread constraint did not restrict service row key coverage");
+  std::size_t constrainedTerminalRows = 0;
+  bool retainedUnrestrictedTerminal = false;
+  for (const auto &row :
+       constrainedMemoryService->transferTerminalCompatibility) {
+    if (row.terminal == restrictedTerminal || row.terminal == peerTerminal) {
+      ++constrainedTerminalRows;
+      require(row.compatibleTransportEndpoints.empty(),
+              "terminal restriction was not folded into its H row");
+    } else if (!row.compatibleTransportEndpoints.empty()) {
+      retainedUnrestrictedTerminal = true;
+    }
+  }
+  require(constrainedTerminalRows == expectedConstrainedTerminalRows &&
+              retainedUnrestrictedTerminal,
+          "terminal restriction removed a row or leaked across subjects");
+  auto adoptedConstrained = take(loom::pnr::adoptSystemPnrSearchDomain(
+      loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
+      constrainedSearchDomain.canonicalViewBytes(),
+      constrainedSearchDomain.digest(), store));
+  require(adoptedConstrained.canonicalViewBytes() ==
+              constrainedSearchDomain.canonicalViewBytes(),
+          "strict H adoption changed constraint-folded rows");
 
   std::vector<loom::ArtifactRootReference> spatialMappings;
   std::vector<loom::pnr::FlatSpatialReopenProblem> flatProblems;

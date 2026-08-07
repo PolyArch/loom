@@ -1102,6 +1102,9 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
   if (llvm::Error error = validateConstraintInputs(
           dataflow, fabric, constraints, *roots, spatialMappings))
     return std::move(error);
+  auto constraintIndex = detail::buildFrozenConstraintIndex(constraints.view());
+  if (!constraintIndex)
+    return constraintIndex.takeError();
   auto partitions = detail::canonicalizeAndValidateSystemPartition(
       dataflow, *roots, partitionPlan);
   if (!partitions)
@@ -1132,7 +1135,8 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
     flatCatalog.emplace(std::move(*canonical));
   }
   auto services = detail::projectSystemServiceDomains(
-      dataflow, fabric, *roots, *catalog, hierarchical == nullptr);
+      dataflow, fabric, *roots, *catalog, *constraintIndex,
+      hierarchical == nullptr);
   if (!services)
     return services.takeError();
   if (llvm::Error error =
@@ -1147,7 +1151,13 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
     SystemSearchAtomDomain domain;
     if (std::holds_alternative<::dataflow::RootThreadLaunchRef>(
             partition.key)) {
-      domain = SystemThreadBindingDomain{cores};
+      std::vector<::loom::fabric::AccCoreOccurrenceRef> compatible = cores;
+      detail::applySystemConstraintRestriction(
+          compatible, *constraintIndex,
+          ::mapping::SystemConstraintProjection::ThreadTargetAccCore,
+          ::loom::mapping::SystemConstraintSubject{
+              std::get<::dataflow::RootThreadLaunchRef>(partition.key)});
+      domain = SystemThreadBindingDomain{std::move(compatible)};
     } else {
       const auto graphLaunch =
           std::get<::dataflow::RootedGraphLaunchRef>(partition.key);
@@ -1159,6 +1169,10 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
         for (const detail::SpatialCatalogEntry &entry : *catalog)
           if (llvm::is_contained(entry.covers, *graph))
             compatible.push_back(entry.reference);
+        detail::applySystemConstraintRestriction(
+            compatible, *constraintIndex,
+            ::mapping::SystemConstraintProjection::GraphSelectedSpatialMapping,
+            ::loom::mapping::SystemConstraintSubject{graphLaunch});
         domain = SystemHierarchicalGraphBindingDomain{std::move(compatible)};
       } else {
         auto flat = detail::projectFlatGraphBindingDomain(*flatCatalog, *graph);
@@ -1304,6 +1318,10 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
   if (constraints->view().dataflowIdentity() != dataflow->identity() ||
       constraints->view().fabricIdentity() != system->artifact().identity())
     return invalid("adopted search domain has foreign K owners");
+  auto constraintIndex =
+      detail::buildFrozenConstraintIndex(constraints->view());
+  if (!constraintIndex)
+    return constraintIndex.takeError();
   auto roots = detail::canonicalRootThreadLaunchSet(
       *dataflow, constraints->view().rootThreadLaunches());
   if (!roots)
@@ -1346,11 +1364,13 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
         return invalid("adopted Presburger cell is not canonical");
   }
   if (llvm::Error error = detail::validateSystemBindingDomains(
-          *dataflow, *system, decoded->bindings, store))
+          *dataflow, *system, decoded->bindings, *constraintIndex,
+          constraints->view().spatialMappingReferences(), store))
     return std::move(error);
   if (llvm::Error error = detail::validateSystemServiceDomains(
           *dataflow, *system, decoded->roots, decoded->bindings,
-          decoded->services, store))
+          decoded->services, *constraintIndex,
+          constraints->view().spatialMappingReferences(), store))
     return std::move(error);
   auto encoded =
       encodeView(decoded->dataflowReference, decoded->fabricReference,

@@ -344,6 +344,8 @@ llvm::Error validateSystemBindingDomains(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     llvm::ArrayRef<SystemSearchBindingDomain> bindings,
+    const SystemFrozenConstraintIndex &constraints,
+    llvm::ArrayRef<ArtifactRootReference> constraintSpatialMappings,
     const ArtifactStore &store) {
   const auto cores = canonicalSystemAccCores(fabric);
   struct GraphBinding final {
@@ -353,15 +355,22 @@ llvm::Error validateSystemBindingDomains(
   std::vector<GraphBinding> graphBindings;
   std::vector<::dataflow::GraphRef> requiredGraphs;
   std::optional<bool> flatMode;
-  std::vector<ArtifactRootReference> hierarchicalReferences;
+  std::vector<ArtifactRootReference> hierarchicalReferences(
+      constraintSpatialMappings.begin(), constraintSpatialMappings.end());
   SystemFlatGraphSearchInput flatInput;
 
   for (const SystemSearchBindingDomain &binding : bindings) {
     if (std::holds_alternative<::dataflow::RootThreadLaunchRef>(binding.key)) {
+      std::vector<::loom::fabric::AccCoreOccurrenceRef> expected = cores;
+      applySystemConstraintRestriction(
+          expected, constraints,
+          ::mapping::SystemConstraintProjection::ThreadTargetAccCore,
+          ::loom::mapping::SystemConstraintSubject{
+              std::get<::dataflow::RootThreadLaunchRef>(binding.key)});
       for (const SystemSearchAtom &atom : binding.atoms) {
         const auto *thread =
             std::get_if<SystemThreadBindingDomain>(&atom.domain);
-        if (!thread || thread->compatibleAccCores != cores)
+        if (!thread || thread->compatibleAccCores != expected)
           return invalid(
               "thread binding atom has a noncanonical AccCore domain");
       }
@@ -436,6 +445,11 @@ llvm::Error validateSystemBindingDomains(
     for (const SpatialCatalogEntry &mapping : *catalog)
       if (llvm::is_contained(mapping.covers, entry.graph))
         expected.push_back(mapping.reference);
+    applySystemConstraintRestriction(
+        expected, constraints,
+        ::mapping::SystemConstraintProjection::GraphSelectedSpatialMapping,
+        ::loom::mapping::SystemConstraintSubject{
+            std::get<::dataflow::RootedGraphLaunchRef>(entry.binding->key)});
     for (const SystemSearchAtom &atom : entry.binding->atoms) {
       const auto *actual =
           std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain);

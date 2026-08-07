@@ -18,6 +18,7 @@ using namespace loom::mapping;
 using namespace loom::pnr;
 
 using SpatialConstraintProjection = ::mapping::SpatialConstraintProjection;
+using SystemConstraintProjection = ::mapping::SystemConstraintProjection;
 
 char SpatialPnrFreezeFailure::ID;
 
@@ -52,22 +53,29 @@ constexpr PnrCapacityContext relationCountContext{
     frozenArtifact, "relation_members", "relation_members",
     PnrCapacityMeasure::Count};
 
-llvm::Error invalid(const llvm::Twine &message) {
+llvm::Error spatialInvalid(const llvm::Twine &message) {
   return llvm::make_error<SpatialPnrFreezeFailure>(
       SpatialPnrFreezeFailureKind::Invalid, message.str());
 }
 
-llvm::Error infeasible(SpatialConstraintProjection projection,
-                       const llvm::Twine &message) {
+llvm::Error spatialInfeasible(SpatialConstraintProjection projection,
+                              const llvm::Twine &message) {
   return llvm::make_error<SpatialPnrFreezeFailure>(
       SpatialPnrFreezeFailureKind::ProvenInfeasible, message.str(), projection);
 }
 
-std::size_t projectionOrdinal(SpatialConstraintProjection projection) {
+llvm::Error systemInvalid(const llvm::Twine &message) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "system_constraint_freeze_invalid: " +
+                                     message);
+}
+
+template <typename Projection>
+std::size_t projectionOrdinal(Projection projection) {
   return static_cast<std::size_t>(projection);
 }
 
-bool allowsEmptyDomain(SpatialConstraintProjection projection) {
+bool spatialAllowsEmptyDomain(SpatialConstraintProjection projection) {
   switch (projection) {
   case SpatialConstraintProjection::NetAssignedTagValues:
   case SpatialConstraintProjection::NetSelectedPhysicalTraversals:
@@ -127,25 +135,68 @@ llvm::Error preflightAppend(PnrCapacityContext context, std::size_t current,
   return llvm::Error::success();
 }
 
-PnrIndex findSubject(const FrozenConstraintShard &shard,
-                     const SpatialConstraintSubject &subject) {
+template <typename Shard, typename Subject>
+PnrIndex findSubject(const Shard &shard, const Subject &subject) {
   const auto found = llvm::find(shard.subjects(), subject);
   assert(found != shard.subjects().end());
   return static_cast<PnrIndex>(found - shard.subjects().begin());
 }
 
+struct SpatialConstraintIndexTraits final {
+  using Index = FrozenConstraintIndex;
+  using Shard = FrozenConstraintShard;
+  using View = SpatialMappingConstraintSetView;
+  using Clause = SpatialConstraintClauseView;
+  using Restriction = SpatialDomainRestrictionView;
+  using Equal = SpatialEqualView;
+  using Disjoint = SpatialDisjointView;
+  using Projection = SpatialConstraintProjection;
+  using Subject = SpatialConstraintSubject;
+
+  static bool allowsEmptyDomain(Projection projection) {
+    return spatialAllowsEmptyDomain(projection);
+  }
+  static llvm::Error invalid(const llvm::Twine &message) {
+    return spatialInvalid(message);
+  }
+  static llvm::Error infeasible(Projection projection,
+                                const llvm::Twine &message) {
+    return spatialInfeasible(projection, message);
+  }
+};
+
+struct SystemConstraintIndexTraits final {
+  using Index = SystemFrozenConstraintIndex;
+  using Shard = SystemFrozenConstraintShard;
+  using View = SystemMappingConstraintSetView;
+  using Clause = SystemConstraintClauseView;
+  using Restriction = SystemDomainRestrictionView;
+  using Equal = SystemEqualView;
+  using Disjoint = SystemDisjointView;
+  using Projection = SystemConstraintProjection;
+  using Subject = SystemConstraintSubject;
+
+  static bool allowsEmptyDomain(Projection) { return true; }
+  static llvm::Error invalid(const llvm::Twine &message) {
+    return systemInvalid(message);
+  }
+  static llvm::Error infeasible(Projection, const llvm::Twine &message) {
+    return systemInvalid(message);
+  }
+};
+
 } // namespace
 
-class loom::pnr::FrozenConstraintIndexBuilder final {
+template <typename Traits> class loom::pnr::FrozenConstraintIndexBuilder final {
 public:
-  static llvm::Expected<FrozenConstraintIndex>
-  build(const SpatialMappingConstraintSetView &constraints) {
-    FrozenConstraintIndex result;
+  static llvm::Expected<typename Traits::Index>
+  build(const typename Traits::View &constraints) {
+    typename Traits::Index result;
 
     const auto remember =
-        [&](SpatialConstraintProjection projection,
-            const SpatialConstraintSubject &subject) -> llvm::Error {
-      FrozenConstraintShard &shard =
+        [&](typename Traits::Projection projection,
+            const typename Traits::Subject &subject) -> llvm::Error {
+      typename Traits::Shard &shard =
           result.shards_[projectionOrdinal(projection)];
       if (!llvm::is_contained(shard.subjects_, subject)) {
         if (llvm::Error error =
@@ -156,46 +207,46 @@ public:
       return llvm::Error::success();
     };
 
-    for (const SpatialConstraintClauseView &clause : constraints.clauses()) {
+    for (const typename Traits::Clause &clause : constraints.clauses()) {
       if (const auto *restriction =
-              std::get_if<SpatialDomainRestrictionView>(&clause)) {
+              std::get_if<typename Traits::Restriction>(&clause)) {
         if (llvm::Error error =
                 remember(restriction->projection, restriction->subject))
           return std::move(error);
         continue;
       }
-      if (const auto *equal = std::get_if<SpatialEqualView>(&clause)) {
-        for (const SpatialConstraintSubject &subject : equal->subjects)
+      if (const auto *equal = std::get_if<typename Traits::Equal>(&clause)) {
+        for (const typename Traits::Subject &subject : equal->subjects)
           if (llvm::Error error = remember(equal->projection, subject))
             return std::move(error);
         continue;
       }
-      const auto &disjoint = std::get<SpatialDisjointView>(clause);
-      for (const SpatialConstraintSubject &subject : disjoint.subjects)
+      const auto &disjoint = std::get<typename Traits::Disjoint>(clause);
+      for (const typename Traits::Subject &subject : disjoint.subjects)
         if (llvm::Error error = remember(disjoint.projection, subject))
           return std::move(error);
     }
 
     std::vector<DisjointSet> equality;
     equality.reserve(result.shards_.size());
-    for (const FrozenConstraintShard &shard : result.shards_)
+    for (const typename Traits::Shard &shard : result.shards_)
       equality.emplace_back(shard.subjects_.size());
 
-    for (const SpatialConstraintClauseView &clause : constraints.clauses()) {
-      const auto *equal = std::get_if<SpatialEqualView>(&clause);
+    for (const typename Traits::Clause &clause : constraints.clauses()) {
+      const auto *equal = std::get_if<typename Traits::Equal>(&clause);
       if (!equal)
         continue;
-      FrozenConstraintShard &shard =
+      typename Traits::Shard &shard =
           result.shards_[projectionOrdinal(equal->projection)];
       const PnrIndex first = findSubject(shard, equal->subjects.front());
-      for (const SpatialConstraintSubject &subject :
+      for (const typename Traits::Subject &subject :
            llvm::drop_begin(equal->subjects))
         equality[projectionOrdinal(equal->projection)].unite(
             first, findSubject(shard, subject));
     }
 
     for (std::size_t ordinal = 0; ordinal < result.shards_.size(); ++ordinal) {
-      FrozenConstraintShard &shard = result.shards_[ordinal];
+      typename Traits::Shard &shard = result.shards_[ordinal];
       shard.subjectRepresentatives_.reserve(shard.subjects_.size());
       for (std::size_t subject = 0; subject < shard.subjects_.size();
            ++subject) {
@@ -208,8 +259,8 @@ public:
     }
 
     const auto appendRelation =
-        [&](FrozenConstraintShard &shard,
-            llvm::ArrayRef<SpatialConstraintSubject> subjects,
+        [&](typename Traits::Shard &shard,
+            llvm::ArrayRef<typename Traits::Subject> subjects,
             std::vector<FrozenConstraintRelation> &rows) -> llvm::Error {
       auto offset =
           checkedIndex(relationOffsetContext, shard.relationMembers_.size());
@@ -219,7 +270,7 @@ public:
               preflightAppend(relationCountContext,
                               shard.relationMembers_.size(), subjects.size()))
         return error;
-      for (const SpatialConstraintSubject &subject : subjects)
+      for (const typename Traits::Subject &subject : subjects)
         shard.relationMembers_.push_back(findSubject(shard, subject));
       auto count = checkedIndex(relationCountContext, subjects.size());
       if (!count)
@@ -228,22 +279,23 @@ public:
       return llvm::Error::success();
     };
 
-    for (const SpatialConstraintClauseView &clause : constraints.clauses()) {
+    for (const typename Traits::Clause &clause : constraints.clauses()) {
       if (const auto *restriction =
-              std::get_if<SpatialDomainRestrictionView>(&clause)) {
-        FrozenConstraintShard &shard =
+              std::get_if<typename Traits::Restriction>(&clause)) {
+        typename Traits::Shard &shard =
             result.shards_[projectionOrdinal(restriction->projection)];
         const PnrIndex subject = findSubject(shard, restriction->subject);
         const PnrIndex representative = shard.subjectRepresentatives_[subject];
         if (restriction->admissibleDomain.empty() &&
-            !allowsEmptyDomain(restriction->projection))
-          return infeasible(restriction->projection,
-                            "an explicit empty domain contradicts the "
-                            "projection cardinality");
+            !Traits::allowsEmptyDomain(restriction->projection))
+          return Traits::infeasible(
+              restriction->projection,
+              "an explicit empty domain contradicts the projection "
+              "cardinality");
         if (llvm::any_of(shard.restrictions_, [&](const auto &row) {
               return row.subject == representative;
             }))
-          return invalid(
+          return Traits::invalid(
               "canonical MappingConstraintSet repeats a restriction");
         auto offset =
             checkedIndex(domainOffsetContext, shard.domainValues_.size());
@@ -263,16 +315,16 @@ public:
         shard.restrictions_.push_back({representative, *offset, *count});
         continue;
       }
-      if (const auto *equal = std::get_if<SpatialEqualView>(&clause)) {
-        FrozenConstraintShard &shard =
+      if (const auto *equal = std::get_if<typename Traits::Equal>(&clause)) {
+        typename Traits::Shard &shard =
             result.shards_[projectionOrdinal(equal->projection)];
         if (llvm::Error error =
                 appendRelation(shard, equal->subjects, shard.equalityClasses_))
           return std::move(error);
         continue;
       }
-      const auto &disjoint = std::get<SpatialDisjointView>(clause);
-      FrozenConstraintShard &shard =
+      const auto &disjoint = std::get<typename Traits::Disjoint>(clause);
+      typename Traits::Shard &shard =
           result.shards_[projectionOrdinal(disjoint.projection)];
       if (llvm::Error error =
               appendRelation(shard, disjoint.subjects, shard.disjointGroups_))
@@ -306,32 +358,84 @@ bool FrozenConstraintIndex::empty() const {
   });
 }
 
-std::optional<llvm::ArrayRef<SpatialConstraintDomainValue>>
-FrozenConstraintShard::restrictedDomain(
-    const SpatialConstraintSubject &subject) const {
-  const auto found = llvm::find(subjects_, subject);
-  if (found == subjects_.end())
+SystemFrozenConstraintIndex::SystemFrozenConstraintIndex() {
+  shards_.reserve(projectionCount);
+  for (std::uint32_t ordinal = 0; ordinal < projectionCount; ++ordinal) {
+    const auto projection =
+        ::mapping::symbolizeSystemConstraintProjection(ordinal);
+    if (!projection)
+      llvm_unreachable("System constraint projection catalog has a gap");
+    shards_.push_back(SystemFrozenConstraintShard(*projection));
+  }
+}
+
+const SystemFrozenConstraintShard &SystemFrozenConstraintIndex::shard(
+    SystemConstraintProjection projection) const {
+  const std::size_t ordinal = projectionOrdinal(projection);
+  assert(ordinal < shards_.size());
+  return shards_[ordinal];
+}
+
+bool SystemFrozenConstraintIndex::empty() const {
+  return llvm::all_of(shards_, [](const SystemFrozenConstraintShard &shard) {
+    return shard.empty();
+  });
+}
+
+namespace {
+
+template <typename DomainValue, typename Shard, typename Subject>
+std::optional<llvm::ArrayRef<DomainValue>>
+lookupRestrictedDomain(const Shard &shard, const Subject &subject) {
+  const auto found = llvm::find(shard.subjects(), subject);
+  if (found == shard.subjects().end())
     return std::nullopt;
   const PnrIndex subjectIndex =
-      static_cast<PnrIndex>(found - subjects_.begin());
-  const PnrIndex representative = subjectRepresentatives_[subjectIndex];
-  const auto restriction =
-      llvm::find_if(restrictions_, [&](const FrozenConstraintRestriction &row) {
+      static_cast<PnrIndex>(found - shard.subjects().begin());
+  const PnrIndex representative = shard.subjectRepresentatives()[subjectIndex];
+  const auto restriction = llvm::find_if(
+      shard.restrictions(), [&](const FrozenConstraintRestriction &row) {
         return row.subject == representative;
       });
-  if (restriction == restrictions_.end())
+  if (restriction == shard.restrictions().end())
     return std::nullopt;
-  return llvm::ArrayRef<SpatialConstraintDomainValue>(domainValues_)
+  return llvm::ArrayRef<DomainValue>(shard.domainValues())
       .slice(restriction->domainOffset, restriction->domainCount);
 }
 
-bool FrozenConstraintShard::empty() const {
-  return restrictions_.empty() && equalityClasses_.empty() &&
-         disjointGroups_.empty();
+template <typename Shard> bool shardIsEmpty(const Shard &shard) {
+  return shard.restrictions().empty() && shard.equalityClasses().empty() &&
+         shard.disjointGroups().empty();
 }
+
+} // namespace
+
+std::optional<llvm::ArrayRef<SpatialConstraintDomainValue>>
+FrozenConstraintShard::restrictedDomain(
+    const SpatialConstraintSubject &subject) const {
+  return lookupRestrictedDomain<SpatialConstraintDomainValue>(*this, subject);
+}
+
+bool FrozenConstraintShard::empty() const { return shardIsEmpty(*this); }
+
+std::optional<llvm::ArrayRef<SystemConstraintDomainValue>>
+SystemFrozenConstraintShard::restrictedDomain(
+    const SystemConstraintSubject &subject) const {
+  return lookupRestrictedDomain<SystemConstraintDomainValue>(*this, subject);
+}
+
+bool SystemFrozenConstraintShard::empty() const { return shardIsEmpty(*this); }
 
 llvm::Expected<FrozenConstraintIndex>
 loom::pnr::detail::buildFrozenConstraintIndex(
     const SpatialMappingConstraintSetView &constraints) {
-  return FrozenConstraintIndexBuilder::build(constraints);
+  return FrozenConstraintIndexBuilder<SpatialConstraintIndexTraits>::build(
+      constraints);
+}
+
+llvm::Expected<SystemFrozenConstraintIndex>
+loom::pnr::detail::buildFrozenConstraintIndex(
+    const SystemMappingConstraintSetView &constraints) {
+  return FrozenConstraintIndexBuilder<SystemConstraintIndexTraits>::build(
+      constraints);
 }
