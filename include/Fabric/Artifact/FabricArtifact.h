@@ -21,7 +21,7 @@ class SystemOp;
 namespace loom::fabric {
 
 /// The immutable result of publishing and independently importing one exact
-/// Fabric root. This is an owner result over loom.fabric 2.x, not another
+/// Fabric root. This is an owner result over loom.fabric 3.x, not another
 /// artifact family or a caller-constructible topology view.
 class FinalizedFabricRoot final {
 public:

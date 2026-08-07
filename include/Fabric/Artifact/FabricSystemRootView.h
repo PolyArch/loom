@@ -11,11 +11,13 @@ namespace loom::fabric {
 struct FabricSpatialAttachmentRecordView {
   FabricImportedModuleBoundaryEndpointRef moduleEndpoint;
   FabricSpatialAttachmentEndpointRef spatialEndpoint;
+  std::optional<SystemServiceEndpointRef> serviceEndpoint;
 
   friend bool operator==(const FabricSpatialAttachmentRecordView &lhs,
                          const FabricSpatialAttachmentRecordView &rhs) {
     return lhs.moduleEndpoint == rhs.moduleEndpoint &&
-           lhs.spatialEndpoint == rhs.spatialEndpoint;
+           lhs.spatialEndpoint == rhs.spatialEndpoint &&
+           lhs.serviceEndpoint == rhs.serviceEndpoint;
   }
 };
 

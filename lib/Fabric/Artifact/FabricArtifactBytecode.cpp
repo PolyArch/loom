@@ -30,7 +30,7 @@ llvm::Expected<std::vector<std::uint8_t>>
 writeBytecodeOnce(Operation *operation) {
   llvm::SmallVector<char> storage;
   llvm::raw_svector_ostream stream(storage);
-  BytecodeWriterConfig config("loom.fabric.2.0");
+  BytecodeWriterConfig config("loom.fabric.3.0");
   config.setElideLocations();
   if (failed(writeBytecodeToFile(operation, stream, config)))
     return invalid("MLIR bytecode writer rejected the canonical root");

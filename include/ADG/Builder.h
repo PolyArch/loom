@@ -1094,6 +1094,9 @@ public:
                      llvm::ArrayRef<std::uint32_t> outputOrdinals,
                      std::uint32_t usePatternOrdinal);
   llvm::Error
+  attachSpatialMemory(const SystemMemoryEndpoint &spatialEndpoint,
+                      const SystemServiceEndpoint &serviceEndpoint);
+  llvm::Error
   attachServiceLegCarriers(const SystemMemoryEndpoint &endpoint,
                            dataflow::semantics::ServiceKind kind,
                            dataflow::StructuralOrdinal legOrdinal,

@@ -747,11 +747,13 @@ def Fabric_SystemSpatialAttachmentOp
   }];
 
   let arguments = (ins DenseI8ArrayAttr:$module_endpoint,
-      DenseI8ArrayAttr:$spatial_endpoint);
+      DenseI8ArrayAttr:$spatial_endpoint,
+      OptionalAttr<DenseI8ArrayAttr>:$service_endpoint);
 
   let assemblyFormat = [{
     `module_endpoint` `=` $module_endpoint
-    `spatial_endpoint` `=` $spatial_endpoint attr-dict
+    `spatial_endpoint` `=` $spatial_endpoint
+    (`service_endpoint` `=` $service_endpoint^)? attr-dict
   }];
   let hasVerifier = 1;
 }

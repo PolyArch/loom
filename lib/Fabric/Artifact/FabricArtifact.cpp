@@ -1061,6 +1061,15 @@ validateSystemRelations(::fabric::SystemOp root,
           unsignedBytes(attachment.getSpatialEndpointAttr()));
       if (!spatialEndpoint)
         return spatialEndpoint.takeError();
+      std::optional<SystemServiceEndpointRef> serviceEndpoint;
+      if (DenseI8ArrayAttr serviceAttribute =
+              attachment.getServiceEndpointAttr()) {
+        auto decoded = decodeFabricRef<SystemServiceEndpointRef>(
+            unsignedBytes(serviceAttribute));
+        if (!decoded)
+          return decoded.takeError();
+        serviceEndpoint = *decoded;
+      }
 
       AccCoreOccurrenceRef core;
       FabricOrdinal occurrenceOrdinal = 0;
@@ -1086,7 +1095,33 @@ validateSystemRelations(::fabric::SystemOp root,
         if (llvm::Error error = validateFabricRef(view, memory))
           return error;
         occurrenceType = view.memoryEndpointType(memory);
+        if (!serviceEndpoint)
+          return invalid("memory spatial attachment has no service endpoint");
+        if (llvm::Error error = validateFabricRef(view, *serviceEndpoint))
+          return error;
+        const CanonicalServiceCapabilitySet *capabilities =
+            systemView.serviceEndpointCapabilities(*serviceEndpoint);
+        if (!capabilities)
+          return invalid(
+              "memory spatial attachment names an unknown service endpoint");
+        if (capabilities->plane() != CanonicalServiceEndpointPlane::Memory)
+          return invalid("memory spatial attachment names a transport-plane "
+                         "service endpoint");
+        const std::optional<FabricMemoryEndpointRole> spatialRole =
+            view.memoryEndpointRole(memory);
+        if (!spatialRole)
+          return invalid("memory spatial attachment has no endpoint role");
+        const FabricMemoryEndpointRole serviceRole =
+            capabilities->role() == CanonicalServiceEndpointRole::Initiate
+                ? FabricMemoryEndpointRole::Manager
+                : FabricMemoryEndpointRole::Subordinate;
+        if (*spatialRole == serviceRole)
+          return invalid("memory spatial attachment joins equal endpoint "
+                         "roles");
       }
+      if (spatialEndpoint->transport() && serviceEndpoint)
+        return invalid(
+            "transport spatial attachment has a service endpoint");
       std::optional<FabricImportedModuleTargetRef> target =
           systemView.spatialCoreTarget(core);
       if (!target)
@@ -1384,8 +1419,18 @@ buildSystemView(::fabric::SystemOp root,
           unsignedBytes(attachment.getSpatialEndpointAttr()));
       if (!spatialEndpoint)
         return spatialEndpoint.takeError();
-      data.spatialAttachments.push_back(
-          {*moduleEndpoint, std::move(*spatialEndpoint)});
+      std::optional<SystemServiceEndpointRef> serviceEndpoint;
+      if (DenseI8ArrayAttr serviceAttribute =
+              attachment.getServiceEndpointAttr()) {
+        auto decoded = decodeFabricRef<SystemServiceEndpointRef>(
+            unsignedBytes(serviceAttribute));
+        if (!decoded)
+          return decoded.takeError();
+        serviceEndpoint = *decoded;
+      }
+      data.spatialAttachments.push_back({*moduleEndpoint,
+                                         std::move(*spatialEndpoint),
+                                         std::move(serviceEndpoint)});
     }
   }
 
@@ -1400,10 +1445,10 @@ buildSystemView(::fabric::SystemOp root,
   if (!systemView)
     return systemView.takeError();
   if (llvm::Error error =
-          detail::validateSystemServiceLegCarrierAttachments(*systemView))
+          validateSystemRelations(root, *systemView, importedModules))
     return std::move(error);
   if (llvm::Error error =
-          validateSystemRelations(root, *systemView, importedModules))
+          detail::validateSystemServiceLegCarrierAttachments(*systemView))
     return std::move(error);
   auto clockReset = validateClockReset(*systemView);
   if (!clockReset)

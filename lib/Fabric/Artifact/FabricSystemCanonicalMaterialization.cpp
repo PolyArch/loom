@@ -731,6 +731,17 @@ remapSpatialAttachment(::fabric::SystemSpatialAttachmentOp attachment,
   attachment.setSpatialEndpointAttr(
       denseBytes(attachment.getContext(),
                  encodeFabricSpatialAttachmentEndpointRef(*mappedSpatial)));
+  if (DenseI8ArrayAttr serviceAttribute = attachment.getServiceEndpointAttr()) {
+    auto service = decodeFabricRef<SystemServiceEndpointRef>(
+        unsignedBytes(serviceAttribute));
+    if (!service)
+      return service.takeError();
+    auto mappedService = remapper.remap(*service);
+    if (!mappedService)
+      return mappedService.takeError();
+    attachment.setServiceEndpointAttr(denseBytes(
+        attachment.getContext(), canonicalFabricBytes(*mappedService)));
+  }
   return llvm::Error::success();
 }
 

@@ -211,6 +211,17 @@ void checkSystemStructuralRelations() {
           0}),
       "accepted a service endpoint outside its SpatialCore occurrence");
 
+  const FabricImportedModuleBoundaryEndpointRef moduleMemoryEndpoint{
+      3, FabricModuleBoundaryEndpointRef{FabricModuleTemplateRef(17),
+                                         FabricPortDirection::Input, 1}};
+  const FabricMemoryEndpointRef localMemoryEndpoint{
+      FabricMemoryEndpointOwnerRef::of(
+          SpatialCoreOccurrenceRef{AccCoreOccurrenceRef(23)}),
+      0};
+  const FabricSpatialAttachmentEndpointRef localMemory = take(
+      test, FabricSpatialAttachmentEndpointRef::create(localMemoryEndpoint));
+  const SystemServiceEndpointRef serviceEndpoint(25);
+
   const FabricTransportEndpointRef source{
       FabricTransportEndpointOwnerRef::of(SystemTransportResourceRef(31)), 0};
   const FabricTransportEndpointRef destination{
@@ -233,6 +244,16 @@ void checkSystemStructuralRelations() {
       "    fabric.system.spatial_attachment module_endpoint = " +
       denseI8Assembly(context, encodedModuleEndpoint) +
       " spatial_endpoint = " + denseI8Assembly(context, encodedLocalEndpoint) +
+      "\n"
+      "    fabric.system.spatial_attachment module_endpoint = " +
+      denseI8Assembly(
+          context,
+          encodeFabricImportedModuleBoundaryEndpointRef(moduleMemoryEndpoint)) +
+      " spatial_endpoint = " +
+      denseI8Assembly(context,
+                      encodeFabricSpatialAttachmentEndpointRef(localMemory)) +
+      " service_endpoint = " +
+      denseI8Assembly(context, canonicalFabricBytes(serviceEndpoint)) +
       "\n"
       "  }\n"
       "}\n";

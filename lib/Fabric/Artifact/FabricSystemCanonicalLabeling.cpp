@@ -67,6 +67,7 @@ enum class RelationKind : std::uint32_t {
   ConnectionSource,
   ConnectionDestination,
   SpatialAttachmentEndpoint,
+  SpatialAttachmentServiceEndpoint,
   ServiceLegAttachmentEndpoint,
   ServiceLegAttachmentCarrier,
 };
@@ -1087,11 +1088,21 @@ private:
            static_cast<std::uint32_t>(transport->owner.kind()),
            transport->ordinal});
     const FabricMemoryEndpointRef &memory = *endpoint->memory();
-    return addEntityRelation(vertex, entityReference(memory.owner),
-                             RelationKind::SpatialAttachmentEndpoint,
-                             {static_cast<std::uint32_t>(endpoint->plane()),
-                              static_cast<std::uint32_t>(memory.owner.kind()),
-                              memory.ordinal});
+    if (llvm::Error error = addEntityRelation(
+            vertex, entityReference(memory.owner),
+            RelationKind::SpatialAttachmentEndpoint,
+            {static_cast<std::uint32_t>(endpoint->plane()),
+             static_cast<std::uint32_t>(memory.owner.kind()), memory.ordinal}))
+      return error;
+    DenseI8ArrayAttr serviceAttribute = attachment.getServiceEndpointAttr();
+    if (!serviceAttribute)
+      return invalid("memory spatial attachment has no service endpoint");
+    auto service = decodeFabricRef<SystemServiceEndpointRef>(
+        unsignedBytes(serviceAttribute));
+    if (!service)
+      return service.takeError();
+    return addEntityRelation(vertex, entityReference(*service),
+                             RelationKind::SpatialAttachmentServiceEndpoint);
   }
 
   llvm::Error addServiceLegCarrierAttachmentRelations(

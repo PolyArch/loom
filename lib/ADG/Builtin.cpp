@@ -765,6 +765,14 @@ expandBuiltinSystemImpl(DesignBuilder &design,
       system->addServiceEndpoint(*memoryService, systemMemory->capabilities);
   if (!memoryEndpoint)
     return memoryEndpoint.takeError();
+  for (const AccCore &core : cores) {
+    auto spatialMemory = core.spatialMemoryManager(0);
+    if (!spatialMemory)
+      return spatialMemory.takeError();
+    if (llvm::Error error =
+            system->attachSpatialMemory(*spatialMemory, *memoryEndpoint))
+      return std::move(error);
+  }
   auto memoryEndpointRef = memoryEndpoint->memory();
   if (!memoryEndpointRef)
     return memoryEndpointRef.takeError();

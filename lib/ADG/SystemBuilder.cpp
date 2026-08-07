@@ -574,22 +574,17 @@ llvm::Expected<AccCore> SystemBuilder::addAccCore(
     for (auto indexedBoundary : llvm::enumerate(boundaries)) {
       const std::uint64_t ordinal = indexedBoundary.index();
       const detail::ImportedModuleBoundary &boundary = indexedBoundary.value();
+      if (boundary.plane ==
+          loom::fabric::FabricSpatialAttachmentEndpointRef::Plane::Memory)
+        continue;
       const loom::fabric::FabricImportedModuleBoundaryEndpointRef
           moduleEndpoint{spatialCore.importOrdinal_,
                          {imported.module, direction,
                           static_cast<std::uint64_t>(ordinal)}};
-      llvm::Expected<loom::fabric::FabricSpatialAttachmentEndpointRef>
-          spatialEndpoint = [&]()
-          -> llvm::Expected<loom::fabric::FabricSpatialAttachmentEndpointRef> {
-        if (boundary.plane ==
-            loom::fabric::FabricSpatialAttachmentEndpointRef::Plane::Transport)
-          return loom::fabric::FabricSpatialAttachmentEndpointRef::create(
+      auto spatialEndpoint =
+          loom::fabric::FabricSpatialAttachmentEndpointRef::create(
               loom::fabric::FabricTransportEndpointRef{
                   spatialTransportOwner(id), boundary.occurrenceOrdinal});
-        return loom::fabric::FabricSpatialAttachmentEndpointRef::create(
-            loom::fabric::FabricMemoryEndpointRef{spatialMemoryOwner(id),
-                                                  boundary.occurrenceOrdinal});
-      }();
       if (!spatialEndpoint)
         return spatialEndpoint.takeError();
       auto attachment = ::fabric::SystemSpatialAttachmentOp::create(
@@ -600,7 +595,8 @@ llvm::Expected<AccCore> SystemBuilder::addAccCore(
                   moduleEndpoint)),
           denseBytes((*state)->context,
                      loom::fabric::encodeFabricSpatialAttachmentEndpointRef(
-                         *spatialEndpoint)));
+                         *spatialEndpoint)),
+          mlir::DenseI8ArrayAttr());
       if (mlir::failed(mlir::verify(attachment))) {
         attachment->erase();
         return detail::invalid(
@@ -630,6 +626,117 @@ llvm::Expected<AccCore> SystemBuilder::addAccCore(
   entity.importedModule = spatialCore.importOrdinal_;
   (*root)->entities.push_back(std::move(entity));
   return AccCore(*state, rootOrdinal_, id);
+}
+
+llvm::Error SystemBuilder::attachSpatialMemory(
+    const SystemMemoryEndpoint &spatialEndpoint,
+    const SystemServiceEndpoint &serviceEndpoint) {
+  auto state = detail::activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto root = activeSystem(*state, rootOrdinal_);
+  if (!root)
+    return root.takeError();
+  if (llvm::Error error = checkOwned(spatialEndpoint, *state, rootOrdinal_))
+    return error;
+  if (llvm::Error error = checkOwned(serviceEndpoint, *state, rootOrdinal_))
+    return error;
+
+  if (spatialEndpoint.reference_.owner.kind() !=
+      loom::fabric::FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence)
+    return detail::invalid(
+        "spatial memory attachment requires a SpatialCore endpoint");
+  const auto spatialOwner =
+      std::get<loom::fabric::SpatialCoreOccurrenceRef>(
+          spatialEndpoint.reference_.owner.payload);
+  auto core = activeEntity(
+      *state, rootOrdinal_, spatialOwner.core.id(),
+      loom::fabric::FabricEntityKind::AccCoreOccurrence);
+  if (!core)
+    return core.takeError();
+  if (!(*core)->importedModule ||
+      *(*core)->importedModule >= (*root)->importedModules.size())
+    return detail::invalid("AccCore has no imported SpatialCore module");
+
+  auto service = activeEntity(
+      *state, rootOrdinal_, serviceEndpoint.entity_,
+      loom::fabric::FabricEntityKind::SystemServiceEndpoint);
+  if (!service)
+    return service.takeError();
+  if ((*service)->endpointPlane !=
+      loom::fabric::CanonicalServiceEndpointPlane::Memory)
+    return detail::invalid("bound service endpoint is not on the memory plane");
+  const auto serviceRole =
+      (*service)->endpointRole ==
+              loom::fabric::CanonicalServiceEndpointRole::Initiate
+          ? loom::fabric::FabricMemoryEndpointRole::Manager
+          : loom::fabric::FabricMemoryEndpointRole::Subordinate;
+  if (serviceRole == spatialEndpoint.role_)
+    return detail::invalid(
+        "spatial and service memory endpoints have the same role");
+
+  const std::size_t importOrdinal = *(*core)->importedModule;
+  const detail::ImportedModuleState &imported =
+      (*root)->importedModules[importOrdinal];
+  std::optional<loom::fabric::FabricImportedModuleBoundaryEndpointRef>
+      moduleEndpoint;
+  auto findBoundary =
+      [&](llvm::ArrayRef<detail::ImportedModuleBoundary> boundaries,
+          loom::fabric::FabricPortDirection direction) -> llvm::Error {
+    for (auto indexed : llvm::enumerate(boundaries)) {
+      const detail::ImportedModuleBoundary &boundary = indexed.value();
+      if (boundary.plane !=
+              loom::fabric::FabricSpatialAttachmentEndpointRef::Plane::Memory ||
+          boundary.occurrenceOrdinal != spatialEndpoint.reference_.ordinal)
+        continue;
+      const auto boundaryRole =
+          direction == loom::fabric::FabricPortDirection::Input
+              ? loom::fabric::FabricMemoryEndpointRole::Manager
+              : loom::fabric::FabricMemoryEndpointRole::Subordinate;
+      if (boundaryRole != spatialEndpoint.role_)
+        continue;
+      if (moduleEndpoint)
+        return detail::invalid(
+            "SpatialCore memory endpoint matches more than one module face");
+      moduleEndpoint = loom::fabric::FabricImportedModuleBoundaryEndpointRef{
+          importOrdinal,
+          {imported.module, direction,
+           static_cast<loom::fabric::FabricOrdinal>(indexed.index())}};
+    }
+    return llvm::Error::success();
+  };
+  if (llvm::Error error =
+          findBoundary(imported.inputs,
+                       loom::fabric::FabricPortDirection::Input))
+    return error;
+  if (llvm::Error error =
+          findBoundary(imported.outputs,
+                       loom::fabric::FabricPortDirection::Output))
+    return error;
+  if (!moduleEndpoint)
+    return detail::invalid(
+        "SpatialCore memory endpoint has no imported module face");
+
+  auto spatialReference =
+      loom::fabric::FabricSpatialAttachmentEndpointRef::create(
+          spatialEndpoint.reference_);
+  if (!spatialReference)
+    return spatialReference.takeError();
+  mlir::OpBuilder builder = systemInsertionBuilder(**state, **root);
+  auto attachment = ::fabric::SystemSpatialAttachmentOp::create(
+      builder, (*root)->operation.getLoc(),
+      denseBytes(
+          (*state)->context,
+          loom::fabric::encodeFabricImportedModuleBoundaryEndpointRef(
+              *moduleEndpoint)),
+      denseBytes((*state)->context,
+                 loom::fabric::encodeFabricSpatialAttachmentEndpointRef(
+                     *spatialReference)),
+      denseBytes((*state)->context,
+                 loom::fabric::canonicalFabricBytes(
+                     loom::fabric::SystemServiceEndpointRef(
+                         serviceEndpoint.entity_))));
+  return verifyCreated(attachment, "SpatialCore memory attachment");
 }
 
 llvm::Expected<SystemMemoryService> SystemBuilder::addMemoryService(

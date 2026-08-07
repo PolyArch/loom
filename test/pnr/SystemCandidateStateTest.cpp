@@ -318,9 +318,22 @@ loom::adg::FinalizedFabricDesign buildSpatialModule(loom::ArtifactStore &store,
 
 loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
     loom::ArtifactStore &store,
+    const loom::fabric::FinalizedFabricRoot &baselineSystem,
     const loom::fabric::FinalizedFabricRoot &primaryModule,
     const loom::fabric::FinalizedFabricRoot &alternateModule,
     mlir::MLIRContext &context) {
+  auto baseline =
+      take(loom::fabric::requireSystemRoot(baselineSystem.view()));
+  require(!baseline.artifact().systemMemoryServices().empty() &&
+              !baseline.artifact().systemServiceEndpoints().empty(),
+          "builtin System has no memory service capability source");
+  const auto *memoryContract = baseline.memoryService(
+      baseline.artifact().systemMemoryServices().front());
+  const auto *memoryCapabilities = baseline.serviceEndpointCapabilities(
+      baseline.artifact().systemServiceEndpoints().front());
+  require(memoryContract && memoryCapabilities,
+          "builtin System memory service contract is incomplete");
+
   loom::adg::DesignBuilder design(store);
   auto system = take(loom::adg::expandBuiltinSystem(
       design, loom::adg::BuiltinTargetPreset::Small, primaryModule));
@@ -335,17 +348,21 @@ loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
   std::vector<loom::adg::HardwareDomainMember> domainMembers = {
       extraCore.instructionCoreDomainMember(),
       extraCore.spatialCoreDomainMember()};
+  std::vector<loom::adg::SystemTransportEndpoint> requestCarriers;
+  std::vector<loom::adg::SystemTransportEndpoint> responseCarriers;
   for (std::uint32_t gateway = 0; gateway != 2; ++gateway) {
     auto transport = take(
         system.addTransportResource({{bits128}, {bits128}, transportContract}));
     auto pattern = take(system.addTransferPattern(transport, 0, {0}, 0));
-    if (llvm::Error error =
-            system.connect(take(extraCore.spatialTransportOutput(gateway)),
-                           take(transport.input(0))))
+    auto input = take(transport.input(0));
+    auto output = take(transport.output(0));
+    requestCarriers.push_back(input);
+    responseCarriers.push_back(output);
+    if (llvm::Error error = system.connect(
+            take(extraCore.spatialTransportOutput(gateway)), input))
       fail(llvm::toString(std::move(error)));
-    if (llvm::Error error =
-            system.connect(take(transport.output(0)),
-                           take(extraCore.spatialTransportInput(gateway))))
+    if (llvm::Error error = system.connect(
+            output, take(extraCore.spatialTransportInput(gateway))))
       fail(llvm::toString(std::move(error)));
     domainMembers.push_back(transport.domainMember());
     domainMembers.push_back(pattern.domainMember());
@@ -355,6 +372,48 @@ loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
       domain, 1, 1, 4,
       loom::fabric::ServiceProgress(
           std::in_place_type<::fabric::FairEventual>)));
+  std::vector<loom::fabric::CanonicalServiceCapabilityRecord>
+      localMemoryCapabilities;
+  localMemoryCapabilities.reserve(memoryCapabilities->capabilities().size());
+  for (const auto &capability : memoryCapabilities->capabilities())
+    localMemoryCapabilities.push_back(
+        take(loom::fabric::CanonicalServiceCapabilityRecord::create(
+            capability.kind(), capability.role(), capability.domain(), rate)));
+  auto memoryCapabilitySet =
+      take(loom::fabric::CanonicalServiceCapabilitySet::create(
+          std::move(localMemoryCapabilities)));
+  auto memoryService = take(system.addMemoryService(*memoryContract));
+  auto memoryEndpoint =
+      take(system.addServiceEndpoint(memoryService, memoryCapabilitySet));
+  auto spatialMemory = take(extraCore.spatialMemoryManager(0));
+  if (llvm::Error error =
+          system.attachSpatialMemory(spatialMemory, memoryEndpoint))
+    fail(llvm::toString(std::move(error)));
+  auto memoryEndpointRef = take(memoryEndpoint.memory());
+  for (const auto &capability : memoryCapabilitySet.capabilities()) {
+    const auto legCount =
+        dataflow::semantics::getCanonicalServiceLegCount(capability.kind());
+    for (dataflow::StructuralOrdinal leg = 0; leg != legCount; ++leg) {
+      const auto direction = take(
+          dataflow::semantics::getCanonicalServiceLegDirection(
+              capability.kind(), leg));
+      const bool endpointIsInitiator =
+          capability.role() ==
+          loom::fabric::CanonicalServiceEndpointRole::Initiate;
+      const bool legSourceIsInitiator =
+          direction ==
+          dataflow::semantics::ServiceLegDirection::InitiatorToServer;
+      const auto &carriers = endpointIsInitiator == legSourceIsInitiator
+                                 ? responseCarriers
+                                 : requestCarriers;
+      if (llvm::Error error = system.attachServiceLegCarriers(
+              memoryEndpointRef, capability.kind(), leg, carriers))
+        fail(llvm::toString(std::move(error)));
+    }
+  }
+  domainMembers.push_back(memoryService.domainMember());
+  domainMembers.push_back(memoryEndpoint.domainMember());
+
   auto initiateCapability =
       take(loom::fabric::CanonicalServiceCapabilityRecord::create(
           dataflow::semantics::ServiceKind::MessageTransfer,
@@ -447,11 +506,17 @@ int main() {
   auto dataflowArtifact = buildDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
-  auto primaryDesign = buildSpatialModule(store, false);
+  auto baselineDesign = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  require(baselineDesign.roots().size() == 1 &&
+              baselineDesign.roots().front().directDependencies().size() == 1,
+          "builtin System fixture did not publish one Module dependency");
+  auto primaryModule = take(loom::fabric::importEntireFabricRoot(
+      baselineDesign.roots().front().directDependencies().front().root, store));
   auto alternateDesign = buildSpatialModule(store, true);
-  auto design =
-      buildHeterogeneousSystem(store, primaryDesign.roots().front(),
-                               alternateDesign.roots().front(), context);
+  auto design = buildHeterogeneousSystem(
+      store, baselineDesign.roots().front(), primaryModule,
+      alternateDesign.roots().front(), context);
   const auto &systemRoot = design.roots().front();
   auto system = take(loom::fabric::requireSystemRoot(systemRoot.view()));
   require(systemRoot.directDependencies().size() == 2,

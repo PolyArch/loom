@@ -52,7 +52,7 @@ struct HasTwoArgumentInstantiate<
     : std::true_type {};
 
 static_assert(!HasTwoArgumentInstantiate<loom::adg::SpatialCoreBuilder>::value,
-              "loom.fabric 2.0 retains no two-argument instantiate overload");
+              "loom.fabric 3.0 retains no two-argument instantiate overload");
 
 static_assert(
     std::is_same<decltype(std::declval<const FifoResult &>().value()),

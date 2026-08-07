@@ -294,5 +294,21 @@ LogicalResult SystemSpatialAttachmentOp::verify() {
   if (!spatialEndpoint)
     return emitOpError("has invalid spatial_endpoint reference: ")
            << llvm::toString(spatialEndpoint.takeError());
+  DenseI8ArrayAttr serviceAttribute = getServiceEndpointAttr();
+  if (spatialEndpoint->plane() ==
+      loom::fabric::FabricSpatialAttachmentEndpointRef::Plane::Transport) {
+    if (serviceAttribute)
+      return emitOpError(
+          "transport attachment must not declare a service_endpoint");
+    return success();
+  }
+  if (!serviceAttribute)
+    return emitOpError("memory attachment requires a service_endpoint");
+  auto serviceEndpoint =
+      loom::fabric::decodeFabricRef<loom::fabric::SystemServiceEndpointRef>(
+          unsignedBytes(serviceAttribute));
+  if (!serviceEndpoint)
+    return emitOpError("has invalid service_endpoint reference: ")
+           << llvm::toString(serviceEndpoint.takeError());
   return success();
 }

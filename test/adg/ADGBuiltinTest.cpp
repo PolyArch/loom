@@ -207,10 +207,17 @@ void builtinPresetsExpandThroughPublicBuilder() {
     require(test, projectedAccCores == expected.accCores,
             "builtin System view lost an AccCore InstructionCore contract");
     std::size_t memoryAttachments = 0;
-    for (const auto &attachment : systemView.spatialAttachments())
-      memoryAttachments +=
-          attachment.spatialEndpoint.plane() ==
-          loom::fabric::FabricSpatialAttachmentEndpointRef::Plane::Memory;
+    for (const auto &attachment : systemView.spatialAttachments()) {
+      if (attachment.spatialEndpoint.plane() !=
+          loom::fabric::FabricSpatialAttachmentEndpointRef::Plane::Memory) {
+        require(test, !attachment.serviceEndpoint,
+                "transport attachment gained a service endpoint");
+        continue;
+      }
+      ++memoryAttachments;
+      require(test, attachment.serviceEndpoint == serviceEndpoint,
+              "memory attachment lost its exact System service endpoint");
+    }
     require(test, memoryAttachments == expected.accCores,
             "builtin did not attach one manager capability per AccCore");
 

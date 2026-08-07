@@ -15,7 +15,7 @@
 namespace loom::fabric {
 namespace {
 
-constexpr char semanticDomain[] = "loom.fabric.semantic.v2\0";
+constexpr char semanticDomain[] = "loom.fabric.semantic.v3\0";
 constexpr std::size_t payloadLengthFieldSize = 8;
 constexpr std::size_t dependencyFixedSuffixSize =
     4 + 4 + ArtifactIdentity::byteSize;
@@ -31,7 +31,7 @@ llvm::Error implementationInputOwnerUnavailable() {
   return llvm::createStringError(
       llvm::inconvertibleErrorCode(),
       "fabric_artifact_owner_contract_unavailable: ImplementationInput has "
-      "no closed artifact owner contract in loom.fabric 2.0");
+      "no closed artifact owner contract in loom.fabric 3.0");
 }
 
 bool dependencyRowsFit(std::uint64_t count, std::size_t remaining) {
