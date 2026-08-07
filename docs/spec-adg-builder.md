@@ -591,8 +591,10 @@ input. All of its Spatial and Temporal memory occurrences consume that same
 capability and declare both their Local Memory Service and manager endpoint as
 eligible dispatch targets. Reusing this capability is legal because a memref
 is a service capability rather than a token transfer. The System expansion
-creates the corresponding attachment for every AccCore; SystemMapping selects
-the exact System memory service and route for manager-targeted operations.
+binds each AccCore's memory attachment to its exact System service endpoint.
+SystemMapping may select a compatible service target within that bound
+endpoint's explicit service/transform closure and route the manager-targeted
+operation, but it cannot select or replace the endpoint itself.
 
 ### General-Purpose FU Library
 
