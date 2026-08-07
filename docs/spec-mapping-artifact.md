@@ -890,7 +890,9 @@ ServiceTargetBinding =
     MemoryRegionTarget {
       logical service interval
       selected Fabric service region
-      optional non-derived address transform
+      address_transform:
+          None
+        | ConstantBaseOffset { delta_bytes: i64 }
       exposures[] {
         MemoryExposureRef
         selected subordinate/provider terminal
@@ -901,6 +903,17 @@ ServiceTargetBinding =
       selected MemoryConsistencyDomainRef
     }
 ```
+
+The address transform is one inline closed value, not an independently
+referenceable Mapping entity or a generic expression language. `None` applies
+the logical byte address unchanged. `ConstantBaseOffset` applies
+`physical_address = logical_address + delta_bytes` using mathematical integer
+arithmetic; every translated address must then fit the unsigned address domain
+and the selected service region. Mapping owns the selected concrete delta.
+The selected Fabric subordinate/provider contract remains the sole owner of
+whether `None` or `ConstantBaseOffset` is supported, so Mapping cannot select a
+different transform kind. A zero delta remains `ConstantBaseOffset { 0 }` when
+that is the Fabric-declared kind and is not canonicalized to `None`.
 
 A memory-region target owns every exposure child that selects that region.
 The child is keyed by its `MemoryExposureRef` and provider terminal and has no

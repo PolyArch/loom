@@ -81,6 +81,30 @@ use range, and a binding or dispatch move touches one use and its reverse
 incidence. This avoids both graph cloning and a placement-by-launch Cartesian
 domain while preserving every semantically necessary contextual decision.
 
+## Why System Address Translation Is One Closed Inline Value
+
+A System memory target may need to translate a logical service interval into
+an externally selected Fabric service region. Fabric owns whether the selected
+subordinate or provider implements no translation or a constant base offset;
+the Mapping owns the concrete offset chosen for this logical interval. Keeping
+both facts is necessary because hardware capability and workload placement are
+different decisions.
+
+A generic address-expression language was rejected because the active Fabric
+contract exposes only identity and constant-base behavior. Reusing an opaque
+owner-typed value was also rejected: it would hide address arithmetic from the
+Mapping verifier and make region containment dependent on a private codec. A
+separate AddressTransform entity would add identity and lookup machinery for a
+value that is meaningful only inside one `MemoryRegionTarget`.
+
+The target therefore stores one closed inline `None | ConstantBaseOffset`
+value. The latter carries a signed byte delta so regions below or above the
+logical address base use the same rule. Verification performs mathematical
+integer addition before checking the unsigned Fabric address domain and exact
+region bounds. The explicit kind is retained even for a zero delta because it
+must agree with the Fabric provider contract; arithmetic equivalence does not
+authorize changing the selected hardware behavior.
+
 ## Why Dead Results Derive A Physical Discard
 
 Dataflow owns whether an actor result has consumers. A dead result therefore
