@@ -27,9 +27,11 @@ reader must reconcile two complete descriptions and can accidentally revive a
 superseded contract.
 
 The tracked split preserves the useful distinction without preserving the
-duplication. Specifications contain only implementable current contracts.
-Rationales retain motivations and rejected alternatives, but refer to the
-specification for every exact contract.
+duplication. Specifications contain the selected, internally closed product
+contracts, including contracts that implementation has not reached yet.
+`Current` describes the current normative design choice, not the subset already
+implemented in source code. Rationales retain motivations and rejected
+alternatives, but refer to the specification for every exact contract.
 
 ## Why WHAT And WHY Are Separate
 
@@ -54,10 +56,19 @@ contract. The corresponding rationale explains what requirement invalidated
 the old choice. It does not retain the old fields, state machine, or examples
 as an alternate implementable design.
 
-Open work belongs in the owning specification as an explicit unsupported or
-deferred boundary only when that boundary affects current behavior. Temporary
+Implementation lag never justifies deleting a coherent specification. A
+selected target contract may lead source code when its semantic owner, types,
+dependencies, failure rules, and relationship to active schema versions are
+closed. The implementation plan then makes HOW converge on that WHAT.
+
+An unsupported or deferred boundary belongs in the owning specification only
+when it constrains the selected product contract. It may state what the
+contract rejects or what a later compatible extension must preserve. An
+ownerless sketch, incomplete type dependency, or competing alternative does
+not become normative merely because it is labeled future. Such material stays
+in rationale or design discussion until it is selected and closed. Temporary
 discussion queues, implementation status, and worker coordination do not
-belong in either layer.
+belong in either tracked layer.
 
 External literature can motivate a change or provide an algorithmic component,
 but it cannot silently override Loom's owners. A proposed change must first be

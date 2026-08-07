@@ -33,11 +33,8 @@ or format-specific inheritance semantics.
 The EDA-style acceleration profile is orthogonal to hardware-target selection.
 It may contain one typed `hardware.target` domain, but `quick_explore`,
 `implementation`, and the other flow-intent names are not Fabric target names.
-The builtin hardware authoring enum is:
-
-```text
-BuiltinTargetPreset = Small | Default | Large
-```
+The builtin hardware authoring selection uses the exact
+`BuiltinTargetPreset` enum owned by `docs/spec-adg-builder.md`.
 
 Resolution replaces that enum with the selected ADG template identity,
 template schema version, and complete typed parameter values. The enum spelling
@@ -177,11 +174,11 @@ operation order into one invocation's finite domain. Every admitted scope
 retains its complete owner-derived decision domain. The value is a semantic
 work limit, not a worker count or wall-time budget.
 
-The schema-1.0 Structured ExecutionShape generator has no configurable semantic
+The current Structured ExecutionShape generator has no configurable semantic
 field. Its exact Fused/Split domain is owned by the
 [Structured ExecutionShape Generator](spec-compiler-part-2-scf.md#structured-executionshape-generator)
 contract. An empty canonical component view and its digest therefore select the
-complete schema-1.0 policy; process-local worker or cache settings cannot alter
+complete current policy; process-local worker or cache settings cannot alter
 it.
 
 The Structured MemoryCommunication generator policy owns:

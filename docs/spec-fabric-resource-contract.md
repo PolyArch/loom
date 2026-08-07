@@ -114,8 +114,9 @@ Every integer reference is decoded immediately to its distinct typed key class
 and range-checked; no public API exposes an untyped ordinal or a generic
 property path.
 
-Parameter and sharing-assignment schemas are closed positional arrays. Version
-1.0 admits the `PhysicalTag` sharing schema only. Its positive `bit_width`
+Parameter and sharing-assignment schemas are closed positional arrays. The
+current `ResourceContractRecord` admits the `PhysicalTag` sharing schema only.
+Its positive `bit_width`
 selects the production Physical Tag codec; decode, immutable adoption, and
 re-encode equality are mandatory. Unknown kinds, zero widths, a value of the
 wrong kind or width, noncanonical high padding bits, and missing or extra
@@ -204,9 +205,10 @@ temporary reservations only; durable occupancy, queue contents, cursors, and
 logical resource state are changed only by the optional commit transition.
 
 When a commit is present, its one owner-defined transition is applied atomically
-at its exact event. The commit event may equal the acquire event. Version 1.0
-admits no cancellation after acquisition: the declared timing and progress
-contract must lead an accepted use through its commit, when present, and claim
+at its exact event. The commit event may equal the acquire event. The current
+`ResourceContract` admits no cancellation after acquisition: the declared
+timing and progress contract must lead an accepted use through its commit,
+when present, and claim
 release. A resource that needs cancellation or rollback requires a future
 closed contract rather than a private convention.
 

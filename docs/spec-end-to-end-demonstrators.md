@@ -47,9 +47,8 @@ C/C++ -> LLVM IR -> S0 -> Sn -> D0 -> D* -> canonical verifier -> DFG-sim
 
 Every anchor proves functional terminal observables and stable actor
 references. Diagnostic cycle-ordered traces may be emitted to attempt or
-scratch storage, but they are not persistent schema-1.0 conformance inputs or
-outputs. A future Simulation Artifacts schema minor may add a representative
-persistent trace anchor after the exact raw detailed-bundle owner exists.
+scratch storage, but they are not persistent conformance inputs or outputs and
+carry no Artifact identity or coverage claim.
 Mapping is deliberately absent from this frontend gate. `attention` produces
 the logical multi-thread program; heterogeneous AccCore placement and NoC
 realization belong to the system anchor.
@@ -171,7 +170,7 @@ Fabric + ConfigurationABI -> RTL HardwareImplementation
 HardwareImplementation + Deployment -> mapped RTL SimulationExecution/Evidence
 RTL implementation -> physical HardwareImplementation
 physical implementation -> timing/area/power Evidence
-compatible Evidence -> derived runtime/energy Evidence
+compatible cycle/timing Evidence -> registered Runtime Evidence
 ```
 
 DFG, CGRA, and mapped RTL executions must satisfy the same independent terminal

@@ -59,17 +59,16 @@ cold-path representation of that model, not another schema authority.
 Raw execution material is deliberately outside normalized Evidence:
 
 - a workload-running simulator owns its exact `SimulationExecution` artifact;
-- a future raw detailed-bundle Artifact family will own scripts, logs, raw
-  reports, and process material after its exact schema and importer are
-  defined; and
+- owner-attempt or scratch storage retains scripts, logs, raw reports, and
+  process material; and
 - owner-specific attempt records own runtime provenance and retry history.
 
 Evidence binds evaluator-produced semantic Artifacts through descriptor-owned
 typed output slots. A workload-running simulator uses one
 `SimulationExecution` output slot. `evaluation.evidence.1.0` has no raw-bundle
-field or generic Artifact-reference escape hatch. Until the detailed-bundle
-owner lands, providers may retain raw material only through owner-specific
-attempt or scratch storage; it cannot enter Request or Evidence identity.
+field or generic Artifact-reference escape hatch. Providers retain raw
+material only through owner-specific attempt or scratch storage; it cannot
+enter Request or Evidence identity.
 
 ## Models, Metrics, and Findings
 
@@ -276,8 +275,10 @@ model at any point in the stack. The initial production profiles are:
 | physical implementation analysis | HardwareImplementation |
 | system simulation | Deployment, Gem5 Simulation Binding |
 
-Evaluation registry schema 2.0 registers these exact case signatures used by the
-pre-Mapping, DFG-simulation, FPA, and system-simulation flows described here:
+Evaluation registry schema 2.0 owns every case, model, MetricKind,
+FindingKind, condition-kind, capability-enum, scope-form, and related registry
+ordinal. It registers these exact case signatures used by the pre-Mapping,
+DFG-simulation, FPA, and system-simulation flows described here:
 
 Registry 2.0 is a new exact descriptor namespace. No 1.0 case or model
 descriptor reference is reinterpreted to accept Fabric, ConfigurationABI, or
@@ -433,7 +434,10 @@ FindingRequest {
 }
 ```
 
-`MetricQuery` also uses `EvaluationScope`. The two request sets are independent,
+`MetricQuery` also uses `EvaluationScope`. Standalone query serialization is
+owned by `evaluation.metric_query 1.0` and `evaluation.finding_query 1.0`;
+those wire roots carry registry-2.0 references and do not own their ordinals.
+The two request sets are independent,
 but their total cardinality must be nonzero. A finding-only Request is legal.
 The same query may appear with different request-specific conditions; only an
 exact duplicate request is invalid.
@@ -892,8 +896,8 @@ controller's `Incomplete` outcome, not a fifth Evidence outcome.
 `OutcomeReason` is a closed typed union and is the only normalized failure
 classification in Evidence. Evidence has no generic diagnostic string, list,
 or key-value bag. Human-readable messages, vendor warnings, stdout, stderr,
-and partial reports remain owner-attempt or scratch material until the raw
-detailed-bundle owner is defined. Timestamps, host details, retry history, and
+and partial reports remain owner-attempt or scratch material. Timestamps, host
+details, retry history, and
 execution-limit details remain owner-attempt material.
 
 Metric result position is the requested ordinal; the result contains only its
@@ -925,16 +929,16 @@ slot's canonical output binding. The referenced execution owns the typed
 witness instance; Evidence does not copy it. Both terminals produce Completed
 Evidence with total result arrays.
 
-Schema 1.0 deliberately contains no `detailed_bundle_refs`. The earlier generic
+`evaluation.evidence.1.0` deliberately contains no `detailed_bundle_refs`.
+The earlier generic
 `canonical set<ArtifactRootReference>` shape was removed because no exact raw
 detailed-bundle schema, root kind, canonical payload, or importer owns those
 references. Keeping an always-invalid generic field would be a second authority
-and permanent wire slop. A later schema minor may add one exact typed reference
-only after that Artifact owner defines immutable content inventory, exact
-Request lineage, canonical framing, and the prohibition on normalized outcome,
-MetricResult, or FindingResult copies.
+and permanent wire slop. Raw material therefore remains owner-attempt or
+scratch state; this contract does not predefine a future bundle reference.
 
-The schema-1.0 dependency direction is therefore:
+The `evaluation.request.1.0`, `evaluation.evidence.1.0`, and
+`loom.simulation_execution 1.0` dependency direction is therefore:
 
 ```text
 SimulationExecution -> EvaluationRequest
@@ -945,10 +949,10 @@ A simulator that executes a workload retains the exact `SimulationExecution`
 as a typed Artifact. It owns terminal
 execution observations, output values and streams, visible logical-memory final
 state or diffs, completion and retirement observations, typed activity
-summaries. Schema 1.0 contains no trace-manifest field. Trace-chunk and waveform
-persistence remains unavailable until the raw detailed-bundle owner and a
-Simulation Artifacts schema minor land; a simulator cannot replace them with
-paths, opaque bytes, or provider-private references. `SimulationExecution` contains no
+summaries. `loom.simulation_execution 1.0` contains no trace field; diagnostic
+traces and waveforms remain attempt or scratch state. A simulator cannot
+replace them with paths, opaque bytes, or provider-private references in the
+Artifact. `SimulationExecution` contains no
 normalized metrics, findings, Evaluation outcome, DSE decisions, or second
 simulator result schema.
 
@@ -1756,7 +1760,8 @@ obligations and retained finalized material but no formal selected output.
 
 ### Operational Observations
 
-`InvocationManifest` schema 1.1 is a compatible extension of schema 1.0. It
+`loom.dse.invocation_manifest 1.1` is a compatible extension of that Artifact
+family's 1.0 schema. It
 adds one optional nonsemantic `InvocationOperationalObservations` block:
 
 ```text
@@ -2156,8 +2161,8 @@ Mapping and Evaluation meet through `CostVector = (V, G, Q)`:
 - Mapping owns `G`, the closed domain-independent PnR measure catalog. Its
   initial member is the normalized total selected traversal claim defined by
   the PnR owner; dynamic congestion prices and search state are excluded.
-- Evaluation owns `Q`, accelerator-aware metrics and findings such as latency,
-  throughput, timing, memory performance, area, power, and energy.
+- Evaluation owns `Q`, registered accelerator-aware metrics and findings such
+  as runtime, cycle count, timing, area, power, and functional mismatch.
 
 Structural invalidity is rejected directly. Mapping does not copy `Q`, and
 Evaluation does not copy Mapping legality. Central resolved policy projects
@@ -2482,9 +2487,9 @@ Only these stable semantic anchors belong at this boundary:
 - Completed Evidence is exactly total over both request sets, while
   Unsupported, ExecutionFailed, and CancelledOrTimeout carry only a typed
   OutcomeReason and no result arrays.
-- EvaluationEvidence schema 1.0 rejects a `detailed_bundle_refs` field or any
-  other generic raw-material reference until the exact bundle owner and a
-  later schema minor define it.
+- `evaluation.evidence.1.0` rejects a `detailed_bundle_refs` field or any
+  other generic raw-material reference; raw material remains attempt or
+  scratch state.
 - Multiple lineage paths to one Artifact deduplicate candidate Evaluation, and
   replay or resume with the same run closure and stable work ordinals produces
   the same formal selection as uninterrupted execution.

@@ -218,8 +218,9 @@ without a target-owned pairing table. A `MessageTransfer` terminal uses the
 matching transport-plane service endpoint directly. A memory or fence
 terminal first resolves the exact occurrence-qualified SpatialCore memory
 endpoint selected by its imported SpatialMapping, then follows its unique
-Fabric `spatial_attachment` to the bound System service endpoint. This fixes
-the complete endpoint pair. Canonical leg direction, the pair's complementary
+Fabric memory `spatial_attachment` to the bound System service endpoint. This
+fixes the three-reference row and, within it, the Module/occurrence endpoint
+pair. Canonical leg direction, the pair's complementary
 roles, and whether the queried terminal is source or destination select exactly
 one member of that pair. Only the selected endpoint's exact capability and
 `ServiceLegCarrierAttachment(endpoint, kind, leg_ordinal)` carrier set enter
@@ -910,8 +911,8 @@ occupancy and sharing assignments of already selected elements. These
 decisions are kept in the same candidate as reopened Spatial decisions in flat
 mode.
 
-Version 1.0 derives each InstructionCore context from the selected AccCore as
-`InstructionCoreContextRef = (AccCoreOccurrenceRef, 0)`. A selected service
+Mapping 2.0 derives each Fabric-owned `InstructionCoreContextRef` from the
+selected AccCore and its one-per-AccCore cardinality. A selected service
 plan element is addressed by
 `ServicePlanElementRef = (ServiceRealizationKey, canonical plan ordinal,
 typed element key)`. Neither reference creates a second target-selection
@@ -1091,11 +1092,8 @@ does not consume a produced token, and routing the dead result to an ordinary
 transport endpoint would invent an obligation absent from `D`.
 
 For every residual producer endpoint, freeze groups all residual sink
-obligations into one deterministic multi-sink logical net:
-
-```text
-SpatialLogicalNetKey = CanonicalGraphProducerEndpointRef
-```
+obligations into one deterministic multi-sink logical net keyed by the
+`SpatialLogicalNetKey` defined above.
 
 The producer and every sink use the Dataflow-owned graph-local token endpoint
 catalog. Already internal sinks are omitted. If none remain, no logical net
@@ -1806,16 +1804,10 @@ Every typed policy that defines a semantic work unit owns its numeric limit.
 Initialization owns seed-attempt work; annealing owns calibration and Action
 proposal work; routing owns local A* and negotiated-iteration work; focused
 closure and exact repair own their work; and final global closure owns its
-Action work. The resolved controller derives only this read-only audit view:
-
-```text
-DeterministicWorkBudgetView =
-  canonical set<(owner-local WorkUnitDescriptorRef, uint64 limit)>
-```
-
-`WorkUnitDescriptorRef` is the stable owner policy schema/version plus an
-owner-local ordinal. The view has no independently authored numeric fields and
-cannot override or reinterpret a work unit. Worker count, wall time, memory
+Action work. The resolved controller derives only the read-only
+`DeterministicWorkBudgetView` owned by `docs/spec-dse-feedback.md`. Its
+owner-defined work-unit references and limits cannot be authored or
+reinterpreted by PnR. Worker count, wall time, memory
 reservation, licenses, process retries, and external cancellation are
 execution controls and cannot change the formal candidate sequence.
 
@@ -2523,14 +2515,9 @@ traces.
 required exact System `K` only after base verification. It also requires the
 root launch set in `K` to equal the Mapping coverage root exactly.
 
-System base verification returns only:
-
-```text
-Verified
-Rejected(typed closure findings)
-Incomplete(unsupported | proof_not_established)
-InternalError
-```
+System base verification returns only the closed result algebra owned by
+`docs/spec-mapping-verification.md#systemmapping-base-verifier`; PnR does not
+redefine its variants or failure classification.
 
 A proven closed wait set without a Fabric progress mechanism is the
 `HardProgressViolation` closure finding and is `Rejected`; an observed

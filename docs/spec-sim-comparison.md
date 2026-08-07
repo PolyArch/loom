@@ -106,8 +106,10 @@ functional mismatch.
 
 Only metrics with compatible central definitions can be related. DFG logical
 cycles, CGRA cycles, RTL cycles, wall time, frequency, latency, throughput,
-power, and dimensionless work scores are distinct metrics unless a named
-`DerivedMetricModel` defines the conversion or composition.
+power, and dimensionless work scores are distinct quantities. A reusable
+conversion or composition exists only when Evaluation registers an ordinary
+MetricKind and an exact model that owns the required inputs and compatibility
+proofs. Throughput and speedup are currently unsupported.
 
 Execution progress anchors are raw observations, not an alternate metric
 registry. A comparison model may derive an elapsed observation only from the
@@ -118,7 +120,8 @@ terminal horizon for another's graph-retirement boundary.
 
 For example, DFG operation count divided by CGRA cycle count is not a speedup.
 Likewise, cycle count multiplied by a frequency from another implementation is
-invalid unless exact subject compatibility is established by a derived model.
+invalid unless an exact registered model establishes subject compatibility and
+produces the registered requested MetricKind.
 
 Expected hardware-aware causes of a CGRA/DFG cycle difference include finite
 compute, route, memory, buffer, and tag resources; physical latency;

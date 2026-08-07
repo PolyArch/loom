@@ -325,8 +325,8 @@ ordinary non-pointer data point remains distinct from every pointer format.
 `CanonicalMemoryAccessView`; Fabric does not declare aliases for them.
 `ReadSubwordSemantics`, `WriteSubwordSemantics`, and
 `InactiveLaneSemantics` are Fabric-owned closed enums because they state
-physical guarantees. Their version 2.0 semantic values and stable Fabric wire
-tags are:
+physical guarantees. Their semantic values and stable wire tags in
+`loom.fabric 3.0` are:
 
 ```text
 ReadSubwordSemantics  = NotApplicable(0) | Exact(1) | ZeroExtend(2)
@@ -503,7 +503,7 @@ repeat it. Plain access derives alignment one for this compatibility query;
 atomic actors use their exact declared source alignment. Thus actor semantics
 and physical alignment capability each have one owner.
 
-The Fabric-owned clause tags are stable version 2.0 wire values:
+The Fabric-owned clause tags are stable `loom.fabric 3.0` wire values:
 
 ```text
 LoadStorePlain(0)
@@ -613,7 +613,8 @@ required by the selected OperationSchema are active. `ServiceValueRole::Mask`
 is present in the record exactly when at least one access class admits
 `MemoryMaskForm::Dynamic`, and is active exactly for a selected dynamic-mask
 access; it is inactive for an absent-mask access and then consumes nothing and
-exerts no backpressure. Version 2.0 has no other conditionally active role.
+exerts no backpressure. The current memory capability contract has no other
+conditionally active role.
 The active relation is therefore derived mechanically from the actor schema,
 selected access class, and this one binding record; no role predicate or
 second configured-role table is persisted.
@@ -625,9 +626,10 @@ architecture structurally owns one independent `(endpoint, PhysicalTag)`
 matcher and one ordered operand queue for every externally supplied input
 role. SpatialMapping must assign nonconflicting Physical Tags to every
 may-overlap incompatible interpretation in that ingress's local match domain.
-Active output roles within one capability alternative remain injective in
-version 2.0. Reusing one tagged egress across different resident rows remains
-legal under the existing Temporal grant, tag, and capacity contracts, but
+Active output roles within one capability alternative remain injective under
+`loom.fabric 3.0`. Reusing one tagged egress across different resident rows
+remains legal under the existing Temporal grant, tag, and capacity contracts,
+but
 serializing several result roles of one firing onto one egress would require
 a future closed retirement-serialization capability. No UsePattern comment or
 consumer convention may widen these structural rules.
@@ -925,7 +927,7 @@ case numbers, and declaration order are implementation details and cannot be
 used as a persistent codec. Pair arrays sort lexicographically by owner
 canonical bytes.
 
-### OperationSchema Dependency And Fail-Closed Boundary
+### OperationSchema Ownership And Fail-Closed Boundary
 
 The persistent capability record depends on the Dataflow owners for exact
 canonical codecs and validators for `OperationSchemaId`,
@@ -939,28 +941,18 @@ aggregate contract, including `source_alignment_bytes` for atomic access,
 RMW, and compare-exchange. Omitting that field is semantic loss and cannot be
 repaired by Fabric.
 
-Consequently, the typed memory-capability implementation must not merge before
-the OperationSchema owner has merged that complete projection and every
-referenced Dataflow owner exposes its stable codec and validator. Independent
-domain, ResourceContract, and transaction-projection helpers may be developed
-before that merge, but no public `MemoryOperationPortRecord`, capability
-alternative, importer, or
-Mapping admission path may substitute a Fabric-local operation enum, actor
-role enum, exact-geometry record, raw ordinal, wildcard contract, or empty
-domain while waiting.
+Every finalizer, importer, and Mapping admission path uses those current owner
+codecs and validators. None may substitute a Fabric-local operation enum,
+actor-role enum, exact-geometry record, raw ordinal, wildcard contract, or
+empty domain.
 
-Before that dependency is available, legacy `hw_params` remains authoring
-shorthand only. It cannot produce a canonical operation-port inventory,
-`FabricMemoryOperationPortRef`, or finalized Fabric root. Finalization fails
-closed with `Invalid(missing-memory-capability-contract)` rather than
-publishing a partial capability; an unavailable software implementation does
-not weaken the schema or become a permissive fallback.
-
-Legacy homogeneous `load_group_size`, `store_group_size`, and `data_width`
-fields may exist only as authoring shorthand mechanically expanded into this
-inventory before Fabric finalization. They are not canonical hardware
-authorities and cannot coexist with an independently editable expanded
-inventory.
+Legacy `hw_params`, including homogeneous `load_group_size`,
+`store_group_size`, and `data_width`, is authoring shorthand only. It is
+mechanically expanded into the canonical operation-port inventory before
+Fabric finalization and cannot coexist with an independently editable expanded
+inventory. If the shorthand does not determine the complete canonical record,
+finalization fails with `Invalid(missing-memory-capability-contract)` and
+publishes no Fabric root.
 
 `operation_schedule` belongs only to the Operation Engine:
 

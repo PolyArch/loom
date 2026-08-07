@@ -87,13 +87,15 @@ host/accelerator interface = typed service endpoints + system transport
 
 For a System containing `N` AccCores, execution therefore contains `N + 1`
 stored-program engines: one HostCore and one InstructionCore in each AccCore.
-The HostCore is not an additional AccCore and owns no SpatialCore attachment.
+The HostCore is not an additional AccCore and owns no SpatialCore occurrence
+binding or endpoint attachment.
 It executes the residual program, runtime, and fallback work and dispatches
 the exact thread and Spatial launches selected for the AccCore cluster.
 
-Schema 1.0 requires the HostCore and every AccCore InstructionCore in one
-System execution closure to belong to one compatible RISC-V ISA and ABI
-cohort. They may have different Microarchitectural Realizations, capacities,
+The `loom.fabric 3.0` System contract requires the HostCore and every AccCore
+InstructionCore in one System execution closure to belong to one compatible
+RISC-V ISA and ABI cohort. They may have different Microarchitectural
+Realizations, capacities,
 runtime-service sets, cache attachments, and performance. Compatibility is
 proved from their Fabric-owned Architectural Contracts and the selected
 Compiler Target Bindings; neither a common processor name nor a gem5 model
@@ -329,8 +331,8 @@ engine requires a registered model descriptor, not another execution schema.
 DFG-sim executes canonical Dataflow semantics without Fabric resource limits.
 CGRA-sim executes mapped SpatialCore behavior using exact Dataflow, Fabric,
 and Mapping inputs. Both are event-driven and may emit diagnostic ordered
-cycle-coordinate traces to attempt or scratch storage. Persistent traces require
-the future Simulation Artifacts schema minor and raw detailed-bundle owner.
+cycle-coordinate `SpatialDiagnosticTrace` values to attempt or scratch
+storage. They have no persistent Artifact or Evidence form.
 
 HostCore, InstructionCore, cache, coherence, and system-interconnect execution
 belong to an external system simulator integrated through Loom's bridge. Loom

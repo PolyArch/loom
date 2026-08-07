@@ -98,7 +98,8 @@ runtime, and simulation do not supply missing cycle-visible arbitration.
 
 Plain, atomic, volatile, RMW, compare-exchange, and fence software semantics
 are owned by `docs/spec-dataflow-memory-consistency.md`. Canonical Service
-Schema 2.0 owns their shared operation-service shapes. Mapping must not
+Canonical Service Schema 2.0 owns their shared operation-service shapes.
+Mapping must not
 reinterpret one actor contract as another or infer atomic, volatile, MMIO, or
 coherence behavior from an unrelated physical capability.
 
@@ -168,39 +169,19 @@ one `RootedGraphLaunchRef`. SpatialMapping owns that contextual association.
 
 ## SpatialMapping Records
 
-SpatialMapping has exactly five persistent record families:
-
-```text
-ComputeBinding
-MemoryEngineBinding
-MemoryBinding
-RouteTree
-ResourceUse
-```
+`docs/spec-mapping-artifact.md` solely owns SpatialMapping's persistent record
+families and their wire shapes. This specification defines the memory
+validity relations over those records.
 
 Memory does not add a generic binding bag, a string-key extension record, or a
 parallel configured-table authority.
 
 ### MemoryBinding
 
-One `MemoryBinding` is the atomic relation:
-
-```text
-LogicalMemoryInterval =
-    Whole
-  | ByteRange { offset_bytes : u64, size_bytes : positive u64 }
-
-MemoryBindingTarget =
-    LocalRegion {
-      service_region_ref : FabricMemoryServiceRegionRef
-      physical_offset_bytes : u64
-    }
-  | BoundaryProxy
-
-one LogicalMemoryInterval -> one MemoryBindingTarget
-```
-
-It stores a typed logical memory or view reference, logical interval, and one
+One `MemoryBinding` is the atomic relation owned by
+`docs/spec-mapping-artifact.md`: one owner-defined `LogicalMemoryInterval`
+maps to one owner-defined `MemoryBindingTarget`. It stores a typed logical
+memory or view reference, logical interval, and one
 closed target. It receives a Mapping-local identity because several rows may
 bind the same logical root and Access or Exposure children must reference an
 exact row. The same identity names a BoundaryProxy; Mapping defines no
@@ -248,13 +229,9 @@ the Memory Realization. It owns exactly one `MemoryOperationEntry` for every
 covered canonical memory actor. The entry owns the actor's physical placement
 once and a complete nested use inventory for its rooted launch contexts.
 
-Operation placement uses a closed typed reference:
-
-```text
-MemoryOperationPlacementRef =
-    Spatial  { FabricMemoryOperationPortRef }
-  | Temporal { FabricMemoryOperationContextRef }
-```
+Operation placement uses the closed typed `MemoryOperationPlacementRef` owned
+by `docs/spec-mapping-artifact.md`; this specification only validates its
+Spatial port or Temporal context against the selected engine.
 
 `MemoryOperationEntry` is the closed union defined by
 `docs/spec-mapping-artifact.md`:
@@ -327,8 +304,9 @@ logical-token, atomic-object, memory, or vector-lane identity.
 Several input roles in one Temporal row may select the same tagged ingress
 only because the Fabric-owned row architecture provides one independent
 matcher and ordered queue per role. Their may-overlap interpretations require
-distinct tags. Output role endpoints within one row remain injective in
-version 1.0; Mapping cannot synthesize an unmodeled result serializer.
+distinct tags. Output role endpoints within one row remain injective under
+`loom.fabric 3.0` and Mapping 2.0; Mapping cannot synthesize an unmodeled
+result serializer.
 
 Every addressed atomic operation and fence resolves through its selected
 target and use pattern to exactly one compatible MemoryConsistency domain. A
@@ -462,7 +440,8 @@ The only memory-service ownership chain is:
 ```text
 Canonical logical service
   -> SpatialMapping local service or explicit boundary proxy
-  -> Fabric memory spatial_attachment endpoint pair
+  -> Fabric memory spatial_attachment
+       (Module/occurrence endpoint pair + exact System service endpoint)
   -> SystemMapping ServiceRealization
   -> system provider service or explicit external provider
 ```

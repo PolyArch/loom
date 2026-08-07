@@ -46,14 +46,14 @@ An instantiate whose resolved target is a `fabric.module` additionally owns
 one required typed, authoring-only domain-slot correspondence property:
 
 ```text
-ModuleInstanceDomainSlotBinding = {
+::fabric::ModuleInstanceDomainSlotBinding = {
   kind : Clock | Reset
   child_slot_ordinal : ordinal
   parent_slot_ordinal : ordinal
 }
 
 domain_slot_bindings :
-  canonical array<ModuleInstanceDomainSlotBinding>
+  canonical array<::fabric::ModuleInstanceDomainSlotBinding>
 ```
 
 Both ordinal fields cite the one semantic ordinal domain owned by
@@ -69,6 +69,9 @@ exactly one row for every child Clock and Reset slot. Every selected parent
 ordinal must exist in the same kind. Several child slots may deliberately map
 to one parent slot, but one child slot cannot split across several parent
 slots.
+The ADG Builder's same-named `loom::adg` handle record is only an authoring
+input and must resolve mechanically to this `::fabric` owner record before
+Fabric finalization.
 
 The property is empty for every non-Module target and for a Module target with
 no slots. There is no omitted-property default, name matching, ordinal

@@ -289,7 +289,8 @@ cache. CGRA admission consumes that validated view, while configuration-image
 finalization passes the same semantic values to the exact
 `ConfigurationABI` encoder.
 
-Physical refinements are not part of this projection. Version 1 has no generic
+Physical refinements are not part of this projection. The current exact
+Mapping contract has no generic
 physical-refinement value codec, so strict Mapping import rejects every
 nonempty refinement assignment before configured-hardware projection. A
 concrete Fabric owner must first publish the domain's closed typed value codec
@@ -383,9 +384,8 @@ Using that projection, the base verifier checks:
   Dataflow-owned may-domains, including exact default-complement rules;
 * agreement between every selected SpatialMapping target and the AccCore
   selected by its parent thread binding;
-* derivation of exactly one
-  `InstructionCoreContextRef = (AccCoreOccurrenceRef, 0)` for each selected
-  AccCore, with no competing target in InstructionCore ResourceUse;
+* derivation of exactly one Fabric-owned `InstructionCoreContextRef` for each
+  selected AccCore, with no competing target in InstructionCore ResourceUse;
 * exact resolution of every InstructionCore use site to a Fabric-owned atomic
   `UsePattern`, including its initial state, capacity, requester order, grant
   contract, typed demand, activation, optional commit transition, and release;
@@ -399,7 +399,8 @@ Using that projection, the base verifier checks:
   assigned a service leg;
 * exact derivation of each memory or fence leg's source and sink terminal
   domains from the SpatialMapping-selected memory endpoint, its unique Fabric
-  `spatial_attachment` endpoint pair, and each role-selected
+  memory `spatial_attachment` row, the Module/occurrence endpoint pair and
+  exact System service endpoint within that row, and each role-selected
   `ServiceLegCarrierAttachment`, including canonical leg direction and
   capability-domain compatibility, with no attachment row used for
   `MessageTransfer`;

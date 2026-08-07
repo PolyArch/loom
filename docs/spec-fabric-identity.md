@@ -181,8 +181,8 @@ the exact Module-local target by the owning `SpatialCoreOccurrenceRef`, so two
 imports never alias capacity, state, configuration, provider realization,
 memory binding, activity, or physical identity.
 
-One AccCore has exactly one SpatialCore attachment. The structural occurrence
-reference is:
+One AccCore has exactly one SpatialCore occurrence binding. The structural
+occurrence reference is:
 
 ```text
 SpatialCoreOccurrenceRef = (AccCoreOccurrenceRef, fixed ordinal zero)
@@ -195,6 +195,11 @@ InstructionCoreContextRef = (AccCoreOccurrenceRef, fixed ordinal zero)
 ```
 
 Equal numeric ordinals do not make these references interchangeable.
+The occurrence binding is distinct from the endpoint-attachment relation
+owned by `fabric.system`: one occurrence has one
+`SpatialCoreOccurrenceRef` but one `spatial_attachment` row per imported
+Module boundary endpoint. A memory row also names its exact System service
+endpoint.
 
 ## Module Template Boundary References
 

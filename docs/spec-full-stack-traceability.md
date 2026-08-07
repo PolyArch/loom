@@ -41,8 +41,8 @@ Each persistent fact has one owner:
 * Deployment owns the complete selected executable closure, and
   RuntimePlatformBinding owns provider-facing installation compatibility;
 * `SimulationExecution` 1.0 owns workload terminal observables and activity;
-* owner-attempt or scratch storage retains large external payloads and tool
-  products until a raw detailed-bundle Artifact family is defined; and
+* owner-attempt or scratch storage retains large external payloads and raw
+  tool products that have no semantic Artifact owner; and
 * report/visualization exports are removable projections.
 
 File names, private symbol names, local paths, timestamps, and printer order
@@ -386,7 +386,8 @@ rollback state and no cleanup transaction.
 Publishing identical content deduplicates, including concurrent publication.
 Different content at an existing valid key is an identity collision; malformed
 framing or key/preimage mismatch is corruption. Publication never overwrites
-an existing object. Version 1.0 exposes no object mutation or deletion API;
+an existing object. The current ArtifactStore contract exposes no object
+mutation or deletion API;
 out-of-band removal is reported as missing and out-of-band modification as
 corruption.
 

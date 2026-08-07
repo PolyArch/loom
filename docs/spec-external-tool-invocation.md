@@ -62,11 +62,9 @@ semantic owner.
 
 ## Configuration Planes
 
-Semantic configuration continues to use:
-
-```text
---loom-accel-profile=<builtin-preset-or-config-path>
-```
+Semantic configuration continues to use the sole public selector owned by
+[Resolved Configuration](spec-config-ssot.md#public-selection). External-tool
+invocation does not repeat or alias its spelling.
 
 Machine-local binding configuration uses the separate explicit option:
 

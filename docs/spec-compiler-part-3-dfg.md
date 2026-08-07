@@ -2059,9 +2059,9 @@ Version 3.0 removes residual conversion bridges while admitting first-class
 LLVM pointer values through the closed pointer and address projections above.
 It removes pointer-to-memref launch adaptation entirely: the typed
 [graph launch memory binding](#graph-launch-memory-binding) accepts only an
-exact memref capability relation. Version 1.0 and 2.0 bytes are not accepted or
-silently upgraded; a producer must rebuild and finalize the program through
-the current graph ABI.
+exact memref capability relation. `loom.canonical_dataflow` 1.0 and 2.0 bytes
+are not accepted or silently upgraded; a producer must rebuild and finalize
+the program through the current graph ABI.
 
 The family owns its admitted module surface, canonical semantic relation
 graph, canonical writer, artifact-local entity catalog, and importer. Common

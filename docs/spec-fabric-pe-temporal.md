@@ -382,8 +382,9 @@ so the model has one acquisition and no split transaction.
 One enqueue and one dequeue may commit on the same allocation unit in one
 PE clock cycle. Let `O` be occupancy at the cycle start, `D` the selected
 dequeue count, and `E` the selected enqueue count for one allocation unit.
-Version 1.0 has `D` and `E` in `{0, 1}`. Dequeue eligibility observes only a
-token present at cycle start. Enqueue capacity is checked against `O - D`, and
+The current operand-buffer contract has `D` and `E` in `{0, 1}`. Dequeue
+eligibility observes only a token present at cycle start. Enqueue capacity is
+checked against `O - D`, and
 the next occupancy is exactly `O - D + E`. The two selected resource
 transitions commit atomically at the PE clock boundary. Consequently a dequeue
 may provide same-cycle capacity to an enqueue, while the newly enqueued token

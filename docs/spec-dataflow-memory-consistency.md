@@ -345,16 +345,14 @@ Coherence is likewise not a Dataflow actor attribute. Fabric owns consistency
 and coherence capability, Mapping binds the software requirement to it, and
 the selected implementation or simulator executes its dynamic state.
 
-## Future Persistent Simulation Projection
+## Diagnostic Simulation Projection
 
-SimulationExecution schema 1.0 has no persistent trace manifest or
-`MemoryLinearized` record. Diagnostic observations remain attempt or scratch
-material. After the exact raw detailed-bundle owner and a Simulation Artifacts
-schema minor exist, that typed trace schema will own the persistent
-`MemoryLinearized` record; this document will continue to own the semantic
-validity of its fields. The future record retains only primitive dynamic
-choices that cannot be recovered from the exact actor contract and program
-order:
+`loom.simulation_execution 1.0` has no trace field. The current invocation-
+local `SpatialDiagnosticTrace` owned by Simulation Artifacts includes the
+typed `MemoryLinearizedTraceEvent`, but that diagnostic value has no Artifact
+identity or persistent wire. This document owns the semantic validity of its
+memory-relation fields. The event retains only primitive dynamic choices that
+cannot be recovered from the exact actor contract and program order:
 
 ```text
 reads_from
@@ -362,14 +360,14 @@ modification_predecessor
 sequentially_consistent_predecessor
 ```
 
-In that future schema, an atomic load records `reads_from`; an atomic store
+An atomic load records `reads_from`; an atomic store
 records `modification_predecessor`; an RMW or successful compare-exchange
 records both; a failed compare-exchange records only `reads_from`. A `seq_cst`
 operation or fence records the preceding action in the exact sequentially
 consistent order when one exists. Plain actions and non-`seq_cst` fences carry
 no relation field.
 
-The future initial version is relative to the addressed action's exact
+The `Initial` version is relative to the addressed action's exact
 `AtomicObjectKey`. A written version must name a memory-action occurrence that
 writes the same object. Scalar, plain-vector, `WholePayload`, and fence actors
 use one actor-wide occurrence. `PerLane` uses one occurrence for each active
@@ -383,7 +381,7 @@ and consistency-engine cache state are derived from these primitive
 observations and the exact contracts. They are not serialized. Transient
 implementation names such as an atomic-version ID, atomic-read ID, sync-effect
 ID, frontier-cache entry, provider transaction, or physical beat cannot become
-persistent memory identities.
+memory identities.
 
 ## Derived Views And Downstream Ownership
 

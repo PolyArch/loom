@@ -203,8 +203,10 @@ consumer to understand arbitrary expressions. One grammar closes that side
 channel without creating per-connection rules or turning the read-only indexer
 into a source transformer. Unknown cell definitions remain explicit Module
 dependencies. Their occurrences and actual-expression shape can be checked
-without guessing pin geometry; a future versioned BlackBoxContract may own
-those pin facts when a consumer genuinely needs them. Exactly one external
+without guessing pin geometry. The current `BlackBoxContract` payload role is
+an opaque content role and does not itself define a pin schema. If consumers
+genuinely require pin facts, an approved versioned BlackBoxContract content
+schema must own them. Exactly one external
 binding closes each unresolved definition so two provider contracts cannot
 both claim authority, while one library binding can close several definitions
 without duplicating its dependency identity.

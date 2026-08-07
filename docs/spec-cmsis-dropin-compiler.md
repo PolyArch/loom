@@ -88,16 +88,18 @@ The driver must preserve ordinary compiler behavior for commonly used
 queries such as version reporting, target reporting, resource paths,
 search paths, preprocessing, and dependency generation.
 
-The stable Loom-specific options already owned by the full-stack contract are:
+The stable Loom-specific invocation-binding options already owned by the
+full-stack contract are:
 
 ```text
---loom-accel-profile=<builtin-preset-or-config-path>
 --loom-hardware=<fabric.mlir>
 --loom-viz-export=<directory>
 --loom-deploy-output=<path>
 ```
 
-The profile is the only public semantic policy selector. The external Fabric,
+The only public semantic policy selector and its exact spelling are owned by
+[Resolved Configuration](spec-config-ssot.md#public-selection). This
+specification does not define another spelling. The external Fabric,
 visualization, and Deployment paths are invocation bindings. Hardware import
 finalizes the exact Fabric Artifact that becomes the semantic target. Mapping
 constraints, Evaluation requests, and focused artifact inputs remain typed

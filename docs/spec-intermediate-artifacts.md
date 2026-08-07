@@ -15,14 +15,13 @@ Every report field that describes a semantic fact resolves to one exact owner:
 - a complete Mapping Artifact owns selected realization, placement, routes,
   resource use, tags, buffers, and other profile-specific decisions;
 - a `SimulationExecution` 1.0 owns typed terminal workload observations and
-  activity summaries; a trace manifest requires a later schema minor after its
-  raw detailed-bundle owner exists;
+  activity summaries but no trace field;
 - an `EvaluationRequest` owns the exact evaluation question;
 - an `EvaluationEvidence` owns normalized outcome, metric results, and finding
   results;
 - owner-attempt or scratch storage retains ExternalToolInvocationBundles,
-  scripts, logs, raw tool reports, diagnostic trace chunks, and other payloads
-  until their exact Artifact owner is defined; and
+  scripts, logs, raw tool reports, invocation-local diagnostic traces, and
+  other nonsemantic payloads; and
 - `InvocationManifest`, `ExecutionJournal`, and owner-specific attempt records
   own invocation provenance, recovery state, and retry history.
 
@@ -65,9 +64,9 @@ stream sequences, visible logical-memory state or diffs, completion, and
 activity only from the exact `SimulationExecution`. It obtains normalized
 outcome, metrics, and findings only from exact `EvaluationEvidence`, with query
 meaning recovered through the corresponding `EvaluationRequest` and
-registries. Persistent trace projection is unavailable in schema 1.0 and may
-be added only after the raw detailed-bundle owner and a Simulation Artifacts
-schema minor define the exact manifest and chunk import path.
+registries. Persistent trace projection is unavailable in
+`loom.simulation_execution 1.0`; an invocation-local diagnostic trace may be
+projected only when the current attempt explicitly supplies it.
 
 A simulator progress counter, event count, raw tool exit status, or
 human-oriented score is not a cycle metric unless an Evaluation model has

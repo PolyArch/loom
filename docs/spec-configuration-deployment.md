@@ -159,7 +159,7 @@ that realizes the ABI; the ABI does not contain a command-script language.
 
 ### Complete-Image Programming Model
 
-Version 2.0 has one closed programming model:
+`loom.configuration_abi 2.0` has one closed programming model:
 
 ```text
 CompleteImageAtomic {
@@ -609,11 +609,10 @@ visible; retry and recovery follow the Common single-object store contract.
 
 `loom-cc` and `loom-c++` retain ordinary compiler-driver output semantics.
 `-o` never changes meaning because acceleration is enabled. Semantic compiler,
-DSE, Mapping, Evaluation, and backend policy is selected only through:
-
-```text
---loom-accel-profile=<builtin-preset-or-config-path>
-```
+DSE, Mapping, Evaluation, and backend policy is selected only through the
+public semantic profile selector owned by
+[Resolved Configuration](spec-config-ssot.md#public-selection). This
+specification does not repeat or alias that option spelling.
 
 A final link or whole-program invocation requests a Deployment package only
 through:

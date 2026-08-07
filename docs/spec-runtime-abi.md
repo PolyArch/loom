@@ -487,7 +487,7 @@ admission joins the third:
   execution structure, timing, capacity, and mapping-visible resources; and
 * the compatible Compiler Target Binding used by the target-specific binary.
 
-Because `loom.fabric 3.x` admits only the `RiscV` Architectural Contract, the
+Because `loom.fabric 3.0` admits only the `RiscV` Architectural Contract, the
 selected gem5 build and every `Processor` correspondence must provide a
 compatible RISC-V ISA model. A build without that ISA or a correspondence to a
 different ISA is typed `Unsupported`; the binding cannot retarget the binary
@@ -555,10 +555,9 @@ later Linux/full-system provider from registering a distinct exact binding.
 ## Diagnostics And Evidence
 
 Runtime waits, actual arbitration, completion events, terminal observables,
-and typed activity summaries belong to `SimulationExecution` 1.0. Trace chunks
-and tool payloads remain attempt or scratch material until the raw
-detailed-bundle Artifact owner and a later Simulation Artifacts schema minor
-are defined. Attempt timestamps, host/tool bindings, retries, and
+and typed activity summaries belong to `SimulationExecution` 1.0. Diagnostic
+traces and tool payloads remain attempt or scratch material and have no
+persistent runtime schema. Attempt timestamps, host/tool bindings, retries, and
 execution-limit outcomes belong to the runtime owner's attempt record.
 Normalized outcome, metrics, and findings belong only to
 `EvaluationEvidence`; human-readable runtime reports are projections of those

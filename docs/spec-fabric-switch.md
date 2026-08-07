@@ -270,17 +270,14 @@ The architecture-level routing rules are:
 Temporal fan-in never means combinational merging. Each Active row still
 selects at most one input per output. Competing rows share a physical resource
 over time. Fabric owns request eligibility, output capacity, exact grant and
-state-update behavior, latency, and backpressure visibility. The first closed
-grant-policy domain is:
+state-update behavior, latency, and backpressure visibility. The shared
+`FixedPriority` and `RoundRobin` semantics are owned by
+`docs/spec-fabric-resource-contract.md`. This switch schema owns its exact
+input-port requester inventory, typed attribute syntax, ResourceState values,
+canonical initial state, capacity dimensions, stable typed requester order,
+and atomic transfer UsePatterns.
 
-```text
-fixed_priority(exact requester order)
-round_robin(exact requester order, reset cursor, advance on successful grant)
-```
-
-The switch schema is the unique owner of its typed `ResourceState` values,
-canonical initial state, capacity dimensions, atomic transfer UsePatterns,
-and stable typed requester order. Its normalized resource projection is
+Its normalized resource projection is
 linear in physical connectivity:
 
 * every input and output port owns one unit-capacity service state;

@@ -205,8 +205,8 @@ prevents expected outputs from contaminating the workload identity.
 
 The rooted launch already owns graph, thread context, ABI, and static launch
 identity, so the workload does not repeat them. Dense coordinates are admitted
-in schema 1.0; unresolved DynamicWork correspondence fails typed Unsupported
-rather than using temporary IDs.
+in `loom.simulation_workload 1.0`; unresolved DynamicWork correspondence fails
+with typed `Unsupported` rather than using temporary IDs.
 
 Value, stream, and memory inputs follow the graph ABI instead of carrying a
 second port-kind union. Aliasing uses shared canonical memory-object ordinals,
@@ -245,7 +245,7 @@ publication, memory, and physical lifecycle across many types. The shared trace
 uses a small closed set of actor, token, memory, and physical events with exact
 Dataflow, Fabric, and Mapping references.
 
-Dynamic occurrences are execution-local ordinals, not persistent EntityIds.
+Dynamic occurrences are execution-local ordinals, not EntityIds.
 Semantic token publication records exact values when that capture level is
 requested. Physical request, grant, and retirement are the irreducible facts;
 stall is derived from their interval, not stored as another event.
@@ -257,15 +257,17 @@ Unsupported.
 
 ## Why Raw Trace Persistence Is Deferred
 
-Inlining large traces into SimulationExecution would prevent streaming,
-deduplication, and selective loading. Opaque simulator-private chunks would
-prevent shared validation and visualization. A future raw detailed-bundle
-owner may provide typed manifest and chunk inventory, but no such field exists
-in schema 1.0.
+Inlining diagnostic traces into SimulationExecution would make optional debug
+history part of semantic identity and would force large retained data through
+every importer. Opaque simulator-private files cannot provide shared
+validation or become evidence merely because a viewer can read them.
 
-Until that owner closes, traces are diagnostic attempt or scratch material.
-Visualization may consume the shared typed in-memory wire but cannot turn a
-private file into semantic evidence.
+The current boundary is therefore exact: `SpatialDiagnosticTrace` is a shared
+typed invocation-local value retained only by an attempt context or scratch
+storage, and `loom.simulation_execution 1.0` has no trace field. A persistent
+design, if ever required, must be approved with its owner, identity, lineage,
+framing, validation, and loading semantics at that time; the current contract
+does not pre-encode that future schema.
 
 ## Why Simulation Comparison Is Gated
 

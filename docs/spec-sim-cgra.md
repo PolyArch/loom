@@ -3,7 +3,7 @@
 This document owns the execution contract for Loom's hardware-aware
 SpatialCore simulator. Persistent Evaluation schemas are owned by
 [DSE and Evaluation](spec-dse-feedback.md). Shared workload, runtime input,
-execution, activity, future trace, and terminal schemas are owned by
+execution, activity, diagnostic trace, and terminal contracts are owned by
 [Simulation Artifacts](spec-simulation-artifacts.md).
 
 ## Purpose And Subject
@@ -36,8 +36,8 @@ mandatory terminal FindingQuery set. It produces one execution, one
 `EvaluationEvidence`. Their ownership is identical to DFG-sim: execution owns
 contract-aligned functional observations, progress, and activity; Evidence owns
 normalized outcome, metrics, findings, and the typed execution output binding.
-Raw traces and tool material remain attempt or scratch state until the raw
-detailed-bundle owner and a later Simulation Artifacts schema minor are defined.
+Diagnostic traces and raw tool material remain attempt or scratch state and
+have no persistent Artifact or Evidence form.
 `Retired` returns every mandatory terminal finding as `Absent`; `Halted`
 returns the corresponding finding as `Present` and all others as `Absent`.
 
@@ -261,12 +261,10 @@ duplicated as trace events.
 
 Implementation lane or beat actions remain deterministic child physical
 actions of one canonical actor transition and do not appear as additional
-actor firings. In the future persistent trace schema, `SimulationExecution`
-owns the typed manifest, level, ordering, and complete or launch-rooted prefix
-coverage, while its one exact same-Request raw detailed bundle owns canonical
-chunk bytes and their Common `BlobDigest` inventory. That schema is unavailable
-in version 1.0; diagnostic traces remain attempt or scratch material and do not
-create a `SimulationTrace` artifact.
+actor firings. The current `SpatialDiagnosticTrace` remains invocation-local
+attempt or scratch material. It has no Artifact identity, persistent wire,
+manifest, chunk inventory, or coverage claim and does not create a
+`SimulationTrace` artifact.
 
 Launch, graph-retirement, and terminal markers are projected from
 `SpatialProgressObservations`; CGRA-sim does not serialize duplicate boundary
@@ -286,12 +284,12 @@ unknown semantics or rejects the request; it cannot infer zero activity.
 CGRA-sim does not fabricate implementation-signal activity from Fabric
 activity.
 
-Normalized Evidence may expose cycle count, latency, throughput, initiation
-behavior, stalls, occupancy, utilization, traffic, contention, and deadlock
-findings when the model supports them. These values are derived from exact
-execution facts and model semantics rather than copied into activity
-summaries. Metric names, units, and provenance come from the central registry.
-Evidence never becomes Mapping state.
+Normalized Evidence exposes only registry-owned kinds admitted by the exact
+model descriptor. The current CGRA descriptor produces whole-case
+`CycleCount` and its mandatory registered terminal findings. Latency,
+throughput, initiation behavior, stalls, occupancy, utilization, traffic, and
+contention remain diagnostics until exact MetricKind or FindingKind and model
+owners are registered. Evidence never becomes Mapping state.
 
 ## Standalone And System Integration
 
@@ -333,8 +331,8 @@ Stable anchor tests cover:
 * mechanically derived progress reference domain and ordered progress anchors;
 * complete and partial actor/Fabric activity inventory semantics and Fabric
   capacity bounds;
-* version-1 rejection of persistent trace-manifest fields and diagnostic trace
-  capture noninterference;
+* rejection of every persistent trace field in
+  `loom.simulation_execution 1.0` and diagnostic capture noninterference;
 * ordered-token preservation under temporal interleaving;
 * deadlock versus invalid-Mapping classification; and
 * deterministic or oracle-governed agreement with DFG-sim.

@@ -569,8 +569,8 @@ mapped-RTL producer must use that catalog for canonical
 `ImplementationSignals` summaries rather than emit private paths or ordinals.
 
 Waveforms, toggle files, testbench logs, and vendor-native products remain
-owner-attempt or scratch material until the raw detailed-bundle Artifact owner
-is defined. An architecture-evaluation descriptor references a
+owner-attempt or scratch material and have no current Artifact schema. An
+architecture-evaluation descriptor references a
 case signature with the `implementation` role. A mapped-RTL simulator
 descriptor references a case signature with ordered `implementation` and
 `deployment` roles. Requests bind exact

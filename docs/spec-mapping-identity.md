@@ -106,7 +106,8 @@ the typed Dataflow entity ID.
 Actor results and operands, graph boundaries, software edges, memory views,
 and channel branches remain Dataflow structural references. A thread
 definition is recovered from a `RootThreadLaunchRef` through the canonical
-launch-callee relation and has no Dataflow EntityId in schema 1.0. A
+launch-callee relation and has no Dataflow EntityId under Canonical Dataflow
+3.0. A
 `CanonicalMemoryActorRef` is an `ActorRef` whose imported actor kind is a
 canonical memory actor; it is not another ID type.
 
@@ -236,7 +237,7 @@ memory engine template internal connection = FabricMemoryEngineTemplateRef
 point connection   = source hardware endpoint + destination hardware endpoint
 switch traversal   = switch occurrence EntityId + input ordinal + output ordinal
 InstructionContextRef = Fabric PE occurrence ref + context ordinal
-InstructionCoreContextRef = AccCore occurrence ref + fixed ordinal zero
+InstructionCore context = exact Fabric-owned `InstructionCoreContextRef`
 ServicePlanElementRef = ServiceRealizationKey
                       + canonical plan ordinal
                       + typed element key

@@ -1,8 +1,12 @@
 # Full-Stack Architecture Rationale
 
 Normative boundaries are owned by
-[Loom Full-Stack Architecture](../spec-loom-stack.md) and
-[Core Dialect Boundary](../spec-core-dialect-boundary.md).
+[Loom Full-Stack Architecture](../spec-loom-stack.md),
+[Core Dialect Boundary](../spec-core-dialect-boundary.md),
+[End-To-End Conformance Anchors](../spec-end-to-end-demonstrators.md),
+[LoomBench](../spec-loombench.md),
+[CMSIS Drop-In Compiler](../spec-cmsis-dropin-compiler.md), and
+[Real Application Portfolio](../spec-application-portfolio.md).
 
 ## Why Loom Is A Full Stack
 

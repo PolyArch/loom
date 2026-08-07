@@ -163,9 +163,9 @@ defined one mean inactive and active, respectively. Poison or undef does not
 become an activity bit. An execution provider that cannot represent the
 resulting non-singleton cardinality or effect relation must reject the firing
 atomically as typed `Unsupported`; it may not choose a bit, consume operands,
-change memory, or report a blocked wait set. Version 1 DFG and CGRA execution
-provide only the exact single-path activity model and therefore reject such an
-exceptional mask firing.
+change memory, or report a blocked wait set. The current exact DFG and CGRA
+execution provide only the exact single-path activity model and therefore
+reject such an exceptional mask firing.
 
 ## Stream Cardinality Boundary
 

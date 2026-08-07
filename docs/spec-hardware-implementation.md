@@ -727,8 +727,11 @@ installation trees into BlobStore.
 
 Anchor tests cover:
 
-* manifest edges for `Fabric + ConfigurationABI -> RTL H0` and `H0 -> H1`
-  retaining exact typed inputs and resolved generator bindings;
+* manifest edges for `Fabric + ConfigurationABI -> H_rtl` and
+  `H_rtl -> H_next`, where `H_rtl` is the derived RTL implementation and
+  `H_next` is its direct derived successor, retaining exact typed inputs and
+  resolved generator bindings while neither output copies parent or generator
+  lineage into its Artifact body;
 * two distinct derivations with identical canonical implementation state
   converging on one HardwareImplementation identity;
 * a recipe-only structural change changing HardwareImplementation identity

@@ -305,6 +305,24 @@ semantic quantities from other quantiles, so they reuse the existing typed
 `Quantile` condition. This adds four physical-prediction error MetricKinds, not
 eight percentile-specific kinds or a generic metric-of-metric DSL.
 
+## Why Derived Quantities Use Ordinary Metrics And Models
+
+A generic formula registry would introduce a second semantic language beside
+the MetricKind and Evaluation-model registries. It would need its own kind
+identity, input typing, scope and case compatibility, unit algebra, bounds,
+uncertainty propagation, versioning, and failure rules. Those are already the
+responsibilities that distinguish one registered metric and model from
+another.
+
+Loom therefore promotes a reusable derived quantity only by registering an
+ordinary MetricKind and an exact producing model. For example, `Runtime` is a
+registered metric whose model must own the exact timing basis. Energy is not
+computed merely because power and runtime happen to be available: its
+integration window, activity basis, scope, units, and uncertainty semantics
+must first be owned by a registered metric and model. The same rule keeps
+throughput, speedup, and performance-per-area from becoming report-local
+formulas or silently comparable observations.
+
 ## Why Objective Facts Have Several Projections
 
 One semantic fact must have one source and normalization, but not every

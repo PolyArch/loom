@@ -39,7 +39,8 @@ directed-connectivity graph. For a System root, it contains:
   while leaving service-endpoint, hardware-domain, module-attachment, and
   individual transport-resource detail to the exact architecture view;
 * one architecture view with every HostCore, heterogeneous AccCore,
-  InstructionCore context, SpatialCore attachment, memory/service endpoint,
+  InstructionCore context, SpatialCore occurrence binding, per-boundary
+  endpoint attachment, memory/service endpoint,
   external boundary, transport resource, and explicit directed connection;
 * one detail view for every distinct imported Module artifact, showing its
   module boundary, PEs, FUs, memories, switches, FIFOs, boundaries, typed
@@ -105,9 +106,11 @@ observations:
 - typed actor and physical-resource activity summaries.
 
 The viewer obtains output, logical-memory, and activity from that exact
-`SimulationExecution`. Persistent trace ordering and chunk resolution are
-unavailable in schema 1.0 and require the future Simulation Artifacts schema
-minor plus its exact raw detailed-bundle owner. It cannot obtain normalized facts from
+`SimulationExecution`. `loom.simulation_execution 1.0` has no persistent trace
+or replay field. A viewer may additionally consume the invocation-local
+`SpatialDiagnosticTrace` only when the current simulator attempt explicitly
+supplies it with the exact execution context; the trace never becomes an
+Execution or Evidence fact. The viewer cannot obtain normalized facts from
 EvaluationEvidence, a human-readable simulator projection, a comparison projection, or
 another execution with a similar case. The execution's exact Request,
 observable contract, and subjects recovered through the Request determine which
@@ -119,14 +122,13 @@ their typed owner references and exact Request lineage. It respects the
 summary's progress-defined window and target-inventory coverage. For a partial
 summary, a missing actor, Fabric resource, or implementation activity point is
 unknown and must not be rendered as zero. Per-cycle or per-occurrence display
-requires that future trace manifest rather than reconstructing events from
-aggregates.
+requires an explicitly supplied current diagnostic trace and cannot be
+reconstructed from aggregates.
 
 Architecture-only RTL or EDA checks that do not execute a workload do not
 produce `SimulationExecution`. Their raw scripts, logs, and reports may be
-projected from owner-attempt or scratch state until the exact detailed-bundle
-owner exists, but the viewer cannot fabricate workload outputs, memory diffs,
-or activity for them.
+projected from owner-attempt or scratch state, but the viewer cannot fabricate
+workload outputs, memory diffs, or activity for them.
 
 ### Normalized Evaluation Results
 
@@ -150,10 +152,10 @@ only. They may reference or cache canonical facts for efficient presentation,
 but they are never semantic inputs to another projection and never become
 schema authorities.
 
-A future raw detailed bundle may provide scripts, stdout, stderr, vendor
-warnings, tool-native reports, canonical trace chunks, and other execution
-material. Until that owner lands, such records remain attempt or scratch
-material associated with the exact Request. They cannot
+Scripts, stdout, stderr, vendor warnings, tool-native reports, diagnostic
+traces, and other raw execution material remain attempt or scratch material
+associated with the exact Request. No current raw-bundle Artifact or trace
+chunk schema is implied. These records cannot
 replace `SimulationExecution` for workload observables or
 EvaluationEvidence for normalized outcome, metrics, and findings.
 
@@ -180,21 +182,16 @@ resolved visualization configuration reproduces the same semantic references.
 Interactive camera, filtering, selection, and visibility state can vary
 without changing any artifact or semantic identity.
 
-## Activity Replay
+## Diagnostic Activity Replay
 
-Activity replay is unavailable in persistent schema 1.0. After the future
-schema minor lands, it uses the exact trace manifest owned by
-`SimulationExecution` and the canonical chunks it orders by Common
-`BlobDigest` from the one exact same-Request detailed bundle. The viewer
-verifies each digest before decoding the chunk.
-Timed SpatialCore traces use:
-
-```text
-EventCoordinate = (reference_cycle, delta)
-```
+Persistent activity replay is unavailable. When the current attempt explicitly
+supplies a `SpatialDiagnosticTrace`, the viewer may project only its typed
+frames and events. Timed SpatialCore diagnostics use the `EventCoordinate`
+owned by `docs/spec-simulation-artifacts.md`; visualization does not redefine
+that reference.
 
 `reference_cycle` is always a canonical `ExactRatio`; an integral cycle `N`
-has the sole persistent encoding `N/1`. `delta` expresses same-cycle causal
+has the sole canonical form `N/1`. `delta` expresses same-cycle causal
 propagation and is not another cycle or a latency metric. Trace frames are
 strictly increasing by EventCoordinate. Events within one frame use a stable
 typed canonical serialization key; that ordering does not invent arbitration
@@ -209,7 +206,7 @@ reference-domain meaning.
 An actor firing is shown from `ActorCommitted`; `ActorRetired` may occur at a
 later coordinate. `TokenPublished` supplies the exact semantic token shown on
 an endpoint, and `MemoryLinearized` supplies only the primitive dynamic memory
-relations selected by the trace schema. Each record resolves through its
+relations selected by the diagnostic contract. Each record resolves through its
 execution-local graph invocation, actor transition, token, or memory-action
 occurrence to the exact Dataflow owner.
 
@@ -227,11 +224,10 @@ second authority. Final outputs, streams, and logical-memory state or diffs
 remain fields of the exact `SimulationExecution`; metrics, findings, and
 Evaluation outcome remain fields of exact EvaluationEvidence.
 
-Future trace capture level and chunking affect retained raw material and
-execution cost, not simulation behavior. The viewer respects the trace manifest's order
-and `Complete` or launch-rooted `Prefix` coverage. It never fills missing
-cycles or events from a report, interprets an absent manifest as an empty
-complete trace, or reorders chunks using a bundle inventory.
+Diagnostic capture level affects execution cost and scratch material, not
+simulation behavior. The viewer respects the supplied frame and event order,
+never fills missing cycles or events from a report, and never interprets an
+absent or empty diagnostic value as a complete execution history.
 
 ## Mapping and Layout Exclusion
 
@@ -267,9 +263,10 @@ Only this stable semantic anchor belongs at this boundary:
 - Given exact `D`, `F`, Mapping, and `SimulationExecution` references, activity
   views resolve actor and physical-resource summaries to those exact artifacts,
   preserve exact summary window and coverage semantics, and obtain no execution
-  or Evaluation fact from report or UI state. Persistent per-cycle replay is a
-  future conformance anchor gated by the Simulation Artifacts schema minor and
-  exact raw detailed-bundle owner.
+  or Evaluation fact from report or UI state. When the same current attempt
+  explicitly supplies an invocation-local `SpatialDiagnosticTrace`, replay
+  renders only its typed canonically ordered frames, claims no coverage, and
+  leaves Artifact identity unchanged.
 - Given an exact System Fabric root and its published imported Modules, a
   self-contained export displays every AccCore occurrence and every distinct
   SpatialCore topology using statically computed geometry, without browser-side

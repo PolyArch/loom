@@ -4,8 +4,8 @@ This document owns the execution contract for Loom's hardware-unaware
 Canonical Dataflow Program simulator. Persistent Evaluation schemas are owned
 by [DSE and Evaluation](spec-dse-feedback.md); this document defines only the
 model-specific subject, behavior, and observations. Shared workload, runtime
-input, execution, activity, future trace, and terminal schemas are owned by
-[Simulation Artifacts](spec-simulation-artifacts.md).
+input, execution, activity, diagnostic trace, and terminal contracts are owned
+by [Simulation Artifacts](spec-simulation-artifacts.md).
 
 ## Purpose And Boundary
 
@@ -47,7 +47,7 @@ fixture-oriented developer CLI. A typed workload returns memory state only
 through the byte-addressed Spatial functional-observation contract; simulator
 execution must not derive or validate a second element-level terminal state.
 
-The schema-1.0 descriptor is `dfg_simulator` under the exact
+The Evaluation registry 2.0 descriptor is `dfg_simulator` under the exact
 `canonical_dataflow_simulation` case signature. Its sole ordered subject is the
 Canonical Dataflow Program; both Spatial workload and runtime input are
 required. Its zero-field resolved config view contains no attempt limit. The
@@ -255,8 +255,9 @@ clock frequency. Timed events use the Simulation Artifact
 `EventCoordinate = (reference_cycle, delta)`, where an integral abstract cycle
 `N` has the sole persistent encoding `N/1`. `delta` orders causally related
 zero-registered-delay propagation inside one cycle and never increments a
-cycle metric. DFG-sim may therefore estimate logical latency and throughput in
-abstract cycles without claiming hardware-aware timing.
+cycle metric. DFG-sim may therefore expose abstract-cycle execution
+characteristics without claiming a registered throughput metric or
+hardware-aware timing.
 
 The Dataflow-owned registered `OperationSchemaId` projection owns actor
 identity, closed semantic attributes, instance validity, and transition
@@ -367,22 +368,20 @@ reinterpreted as plain load/store.
 
 ## Trace And Termination
 
-Schema 1.0 has no persistent trace-manifest field because the raw
-detailed-bundle owner and importer are not yet defined. DFG-sim may retain a
-diagnostic trace in attempt or scratch storage, but it cannot place paths,
-opaque bytes, or unchecked Artifact references in `SimulationExecution` or
-`EvaluationEvidence`. The future trace contract may encode a complete
-launch-to-terminal trace or a gap-free launch-rooted prefix; it cannot encode
-an interior loss as partial coverage. Frames are strictly ordered by
-`EventCoordinate`, cannot cross future chunk boundaries, and use canonical
-within-frame event order.
+`loom.simulation_execution 1.0` has no trace field. DFG-sim may produce the
+current invocation-local `SpatialDiagnosticTrace` owned by Simulation
+Artifacts and retain it only in the attempt context or scratch storage. It
+cannot place paths, opaque bytes, unchecked Artifact references, or diagnostic
+events in `SimulationExecution` or `EvaluationEvidence`. Frames are strictly
+ordered by `EventCoordinate` and use canonical within-frame event order. The
+diagnostic value makes no complete, prefix, or gap-coverage claim.
 
 DFG-sim supports the exact `Firing` and `Semantic` levels owned by Simulation
 Artifacts. `Firing` contains `ActorCommitted` and `ActorRetired`.
-`Semantic` strictly includes those events and adds every `TokenPublished` and
-`MemoryLinearized` event in the covered interval. Every semantic publication
-stores its exact one-token `CanonicalValueSequence`; payload omission is not a
-capture option. DFG-sim has no physical action source, so a
+`Semantic` includes those event kinds and adds `TokenPublished` and
+`MemoryLinearized` events in the retained diagnostic history. Every semantic
+publication stores its exact one-token `CanonicalValueSequence`; payload
+omission is not a capture option. DFG-sim has no physical action source, so a
 `Microarchitecture` trace request is `Unsupported`.
 
 Firing remains atomic actor-transition commit, not readiness. A transition
@@ -489,8 +488,8 @@ Stable anchor tests cover:
 * at-most-once volatile MMIO observation through an exact external model;
 * ordered progress anchors and required retirement presence;
 * complete and partial actor-activity inventory semantics;
-* version-1 rejection of persistent trace-manifest fields and diagnostic trace
-  capture noninterference;
+* rejection of every persistent trace field in
+  `loom.simulation_execution 1.0` and diagnostic capture noninterference;
 * exact terminal and Evidence outcome mapping, including deadlock witnesses;
 * explicit unsupported and deadlock outcomes; and
 * deterministic or oracle-governed comparison with one legal CGRA-sim

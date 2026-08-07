@@ -38,7 +38,7 @@ derived from that declaration. Callers must not construct schema strings or
 maintain parallel version facts.
 
 The current schema is the complete `loom.mapping 2.0` contract with all three
-roots. Version 1.0's load/store-only `AccessEntry` and logical-memory-only
+roots. `loom.mapping 1.0`'s load/store-only `AccessEntry` and logical-memory-only
 operation-service owner are superseded by the closed `MemoryOperationEntry`
 and fence-aware ServiceRealization contract. An earlier draft assigned `1.0`,
 `1.1`, and `1.2` according to the order in which profiles were discussed; that
@@ -726,12 +726,9 @@ target SpatialCore parent must belong to the AccCore selected by `B_thread`.
 ExecutionBinding owns only where computation executes; it owns no service
 route, capacity, or relative-time facts.
 
-Version 2.0 has exactly one InstructionCore per AccCore. Its context reference
-is mechanically derived as:
-
-```text
-InstructionCoreContextRef = (AccCoreOccurrenceRef, 0)
-```
+Mapping 2.0 consumes the Fabric-owned rule that each AccCore has exactly one
+InstructionCore context. Its `InstructionCoreContextRef` is mechanically
+derived through the framing owned by `docs/spec-fabric-identity.md`.
 
 `B_thread` selects only the AccCore. InstructionCore-resident ResourceUse
 records reference the derived context and own event-relative occupancy; they
@@ -844,15 +841,17 @@ must cover all constrained effects in that execution context. A
 `TransferLegRealization` binds one transfer leg derived from the Canonical
 Service Schema to a flat `RouteTree` over system physical traversals. The
 route tree selects transport terminals only within the role-selected carrier
-sets of the exact Fabric-bound endpoint pair; it does not choose that pair.
+sets of the exact Fabric-bound endpoint pair inside the owning attachment row;
+it chooses neither that pair nor the row's System service endpoint.
 Protocol packets, flits, headers, concrete virtual-channel encoding, and
 implementation-specific bus encoding remain owned by the selected interconnect
 implementation.
 
 For `MessageTransfer`, the terminal domain is derived directly from matching
 transport-plane service endpoints. For a memory or fence leg, the terminal
-domain is derived from the exact SpatialCore memory endpoint and System service
-endpoint pair owned by the memory-plane `spatial_attachment`. Canonical leg
+domain is derived from the exact three-reference memory-plane
+`spatial_attachment`: its Module/occurrence endpoint pair and exact System
+service endpoint. Canonical leg
 direction and endpoint roles select one endpoint for each terminal, then that
 endpoint's Fabric-owned `ServiceLegCarrierAttachment` row supplies the carrier
 set for the kind and schema-local leg ordinal. The selected `RouteTree` stores

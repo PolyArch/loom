@@ -32,7 +32,8 @@ SimulationWorkload =
 ```
 
 The root discriminants are zero, one, and two in declaration order. Version
-1.1 appends `StructuredProgram`; it does not renumber either version-1.0 root.
+1.1 appends `StructuredProgram`; it does not renumber either
+`loom.simulation_workload 1.0` root.
 The spatial root is:
 
 ```text
@@ -56,7 +57,8 @@ not copy a `canonical_dataflow_ref`, `GraphRef`, graph symbol, or logical
 invocation record.
 
 The dense coordinate count must equal the root thread domain rank. Every
-coordinate must be inside any statically known bound. Schema 1.0 admits only a
+coordinate must be inside any statically known bound.
+`loom.simulation_workload 1.0` admits only a
 dense rooted launch. A DynamicWork workload is `Unsupported`; a producer must
 not invent a string key, provisional occurrence, or channel correspondence to
 serialize it.
@@ -316,8 +318,8 @@ with an exact signed `A(address_space)`-bit byte offset. Re-encoding the target
 through the object registry must reproduce those stored representation bits.
 Poison or undef storage cannot carry pointer provenance. The bytes remain the
 content authority; this table supplies only the object provenance that a raw
-address representation cannot recover. Schema 2.0 adds this table and is
-therefore incompatible with runtime-input schema 1.x.
+address representation cannot recover. `loom.simulation_runtime_input 2.0`
+adds this table and is therefore incompatible with that family's 1.x schema.
 
 For a launch-derived imported linear view, the runtime input still binds only
 the owning `LogicalMemoryRootRef` to an object and byte offset. The simulator
@@ -497,9 +499,9 @@ request_ref
 
 The root field order, terminal record, Spatial and System functional and
 progress observations, and activity summaries are closed below. Together they
-define the complete `loom.simulation_execution 1.0` wire. The trace
-manifest/chunk envelope and typed Spatial trace-event algebra are a future
-schema-minor contract, not fields of version 1.0.
+define the complete `loom.simulation_execution 1.0` wire. The invocation-local
+typed Spatial diagnostic algebra defined below has no field in that Artifact
+root.
 
 The closed terminal algebra is:
 
@@ -796,8 +798,8 @@ These anchors do not copy a tick frequency, wall time, exit-code policy, or
 gem5 event priority. Evaluation derives metrics through the exact model. The
 first System wire does not standardize a typed gem5 event trace; its
 root has no trace field and raw gem5 traces remain attempt or scratch material.
-DFG and CGRA diagnostic traces may use the future typed Spatial event algebra
-below only outside persistent version-1.0 identity.
+DFG and CGRA diagnostic traces use the current typed Spatial event algebra
+below only outside `loom.simulation_execution 1.0` identity.
 
 ## Activity Summaries
 
@@ -910,8 +912,8 @@ because a transition is a state change, and the four exact residency values
 sum to the selected window duration. This basis permits mechanical SAIF or
 toggle-table projection without making HDL hierarchy names semantic.
 Waveforms, VCD, FSDB, raw SAIF, and simulator-native activity files remain raw
-owner-attempt or scratch material until the raw detailed-bundle Artifact owner
-is defined.
+owner-attempt or scratch material. No current raw-bundle Artifact schema is
+implied.
 
 An activity summary must contain at least one target entry across its payload;
 otherwise it is omitted. `activity_summaries` may therefore be empty. It
@@ -921,11 +923,13 @@ the `activity_summary_ordinal` used by Evaluation. Within each table, keys sort
 by their owner-defined canonical reference bytes.
 
 This specification is the semantic owner contract consumed by
-`ActivityBinding.ExecutionActivity`. Until a compiled `SimulationExecution`
-Artifact owner registers the exact root schema, importer, activity-summary
-adopter, ordinal resolver, and same-Request validator, that Evaluation variant
-is reserved-unavailable and every attempted authoring or import fails closed.
-Parsing the outer Evaluation wire does not prove that this owner is available.
+`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 1.0` root,
+publisher, and importer are current owners, but Evaluation consumption also
+requires an activity-summary adopter, ordinal resolver, same-Request validator,
+and exact source-to-target lineage adapter. Until that adapter is registered,
+the Evaluation source form is owner-unavailable and every attempted authoring
+or import fails closed. Parsing the outer Evaluation wire does not prove that
+the adapter is available.
 
 The summary wire encodes, in declaration order, the zero-based window,
 coverage, and payload discriminants as unsigned 32-bit big-endian values,
@@ -951,117 +955,36 @@ source attachment. A capture request is a nonsemantic invocation binding.
 Enabling activity capture cannot change scheduling, outputs, terminal form,
 progress anchors, normalized metrics, or findings.
 
-## Future Trace Manifest And Chunk Envelope
+## Invocation-Local Spatial Diagnostic Trace
 
-`SimulationExecution` schema 1.0 contains no trace-manifest field. The exact
-event and chunk algebra below remains the intended future contract, but it
-cannot enter a persistent execution until the raw detailed-bundle Artifact
-owner defines the typed bundle reference, content inventory, importer, and
-same-Request lineage. Adding the optional manifest requires a Simulation
-Artifacts schema minor update. Providers may emit nonsemantic diagnostic traces
-to scratch storage in the meantime, but no path, opaque payload, or unchecked
-Artifact reference enters `SimulationExecution` identity.
-
-The future optional trace field has one closed envelope and one level type:
+`loom.simulation_execution 1.0` contains no trace field. The current trace is
+an invocation-local `SpatialDiagnosticTrace`: it has no Artifact identity,
+persistent wire, manifest, chunk, coverage claim, or Evidence reference. It
+may be retained only in the current attempt context or scratch material and
+never enters SimulationExecution or Evaluation identity.
 
 ```text
-TraceCaptureLevel =
-    Firing
-  | Semantic
-  | Microarchitecture
+TraceCaptureLevel = Firing | Semantic | Microarchitecture
 
-TraceManifest {
+SpatialDiagnosticTrace {
   level: TraceCaptureLevel
-  completeness:
-      Complete
-    | Prefix {
-        captured_through: EventCoordinate
-      }
-  detailed_bundle_ref: exact raw detailed-bundle ArtifactReference
-  chunks: ordered array<BlobDigest>
+  frames: array<SpatialTraceFrame>
 }
 
-TraceChunk {
-  level: TraceCaptureLevel
-  frames: nonempty array<TraceFrame>
-}
-
-TraceFrame {
+SpatialTraceFrame {
   coordinate: EventCoordinate
-  events: nonempty canonical array<TraceEvent>
+  events: nonempty canonical array<SpatialTraceEvent>
 }
 ```
 
-In the future schema minor, an absent `trace_manifest` will mean that no
-canonical trace was retained. There is no `None` level inside a present
-manifest. A trace requested as an invocation output must produce a present
-manifest at the required level; otherwise the attempt has not satisfied that
-output requirement. This rule does not make
-capture policy part of the EvaluationRequest.
+A trace may contain no frames. Each appended frame is nonempty, has a
+coordinate strictly later than the preceding frame, contains only events
+admitted by the selected level, and is sorted by the one canonical diagnostic
+event key below. No path, opaque payload, unchecked Artifact reference, or
+claim of complete or prefix coverage may be inferred from this diagnostic
+value.
 
-`Complete` contains every event required by its level from
-`launch_accepted` through `terminal_observed`, including every required event
-whose coordinate equals either boundary. It does not manufacture a boundary
-event when the selected level has none. This definition is relative to the
-retained execution, so a `StoppedByLimit` execution may still own a complete
-trace through its terminal horizon. `Prefix` also begins at
-`launch_accepted`, is complete through `captured_through`, and stops there.
-Its coordinate must be no earlier than launch and strictly earlier than
-terminal. It may equal launch when no event has yet been retained.
-
-The future trace schema admits neither late-start capture, arbitrary intervals, interior
-gaps, nor a set of coverage ranges. Losing an interior event or chunk
-invalidates the canonical trace; it cannot be relabeled as a prefix. An empty
-chunk array is legal only when the selected complete or prefix coverage
-contains no event required by that level.
-
-The chunks array is semantic order, not a set, and duplicate digests are
-invalid. Every digest must resolve in the one exact detailed bundle named by
-the manifest, and that bundle must reference the same exact EvaluationRequest
-as the execution. The bundle may own other raw material, but it cannot reorder
-chunks, redefine coverage, or claim completeness.
-
-Every chunk contains at least one frame. Frame coordinates strictly increase
-inside a chunk and across adjacent chunks. One frame cannot be split across
-chunks. A chunk's self-describing level must equal its manifest's level.
-Events within a frame sort by the canonical typed event key owned by the
-trace-event algebra; a duplicate event key in one frame is invalid. Chunk
-boundaries, target chunk size, and generation buffering are nonsemantic
-invocation choices.
-
-The candidate future canonical chunk bytes are:
-
-```text
-bytes("loom.simulation.trace.chunk\0")
-|| u32be(schema_version.major)
-|| u32be(schema_version.minor)
-|| u32be(level)
-|| u64be(frame_count)
-|| frames_in_order
-```
-
-Each frame encodes its canonical `EventCoordinate`, an unsigned 64-bit
-big-endian event count, and its canonically ordered event records. The
-`BlobDigest` is computed over these complete uncompressed bytes using the
-Common contract in `docs/spec-full-stack-traceability.md`. Storage may
-compress or index a chunk transparently, but no compression algorithm, path,
-byte offset, or index enters the manifest or chunk wire.
-
-After the owner and schema minor are fixed, the manifest encodes the level and completeness discriminants as unsigned
-32-bit big-endian values. `Prefix` then encodes its coordinate. The exact
-detailed-bundle reference follows, then an unsigned 64-bit big-endian chunk
-count and the ordered 32-byte digests. A complete manifest carries no redundant
-terminal coordinate. The optional root field uses the ordinary zero-based
-unsigned 32-bit `Absent | Present` discriminant.
-
-The referenced canonical chunk payloads and their inventory belong to the raw
-detailed bundle, not to `SimulationExecution` and not to a separate trace
-Artifact family. The manifest alone owns level, order, coverage, and
-completeness. The chunk envelope owns frame structure. The typed event algebra
-below alone owns event variants, payloads, level membership, canonical event
-keys, and cross-reference validation.
-
-## Typed Trace Events
+## Typed Diagnostic Events
 
 Trace events use a small closed lifecycle and relation algebra over references
 owned by Dataflow, Fabric, Mapping, and the exact execution. They do not use a
@@ -1133,7 +1056,7 @@ Mapping entity, or independently referenceable Artifact object.
 The closed event union is:
 
 ```text
-TraceEvent =
+SpatialTraceEvent =
     ActorCommitted(ActorTransitionOccurrenceRef)
   | ActorRetired(ActorTransitionOccurrenceRef)
   | TokenPublished(
@@ -1190,7 +1113,7 @@ action. `WrittenBy` must name an action that writes that same object. A
 plain-vector, `WholePayload`, and fence actors use `ActorWide`. The actor
 contract and outcome determine which optional fields are required or
 forbidden. Modification order, reads-from, and the sequentially-consistent
-predecessor are persistent primitive observations. Synchronizes-with,
+predecessor are diagnostic primitive relations. Synchronizes-with,
 happens-before, release visibility, and acquire visibility are derived
 mechanically and must not be copied into the trace.
 
@@ -1239,26 +1162,27 @@ greater than that level. There is no event-local level, filter DSL, or
 independent flag combination. DFG-sim supports `Firing` and `Semantic`; a
 request for `Microarchitecture` is `Unsupported`. CGRA-sim supports all three
 when the exact `{Dataflow, Fabric, complete SpatialMapping}` closure provides
-the required physical references. System and mapped-RTL trace production do
-not create new event variants. System trace capture is unsupported in the first
-wire. Mapped RTL may emit this Spatial algebra only when its exact Deployment
+the required physical references. System and mapped-RTL diagnostic production
+do not create new event variants. System diagnostic trace capture is
+unsupported in the current contract. Mapped RTL may emit this invocation-local
+Spatial algebra only when its exact Deployment
 and HardwareImplementation activity catalog provide a total correlation to the
 required Dataflow, Fabric, and Mapping references; otherwise trace capture,
 not workload execution, is `Unsupported`.
 
-Launch, graph-retirement, and terminal markers are not `TraceEvent` variants.
-They are mechanically projected from `SpatialProgressObservations`. A viewer
+Launch, graph-retirement, and terminal markers are not
+`SpatialTraceEvent` variants. They are mechanically projected from
+`SpatialProgressObservations`. A viewer
 may render those markers together with a firing replay, but neither producer
 nor viewer serializes duplicate boundary events.
 
-### Canonical Wire And Validation
+### Canonical Diagnostic Ordering And Validation
 
-The seven `TraceEvent` variants receive zero-based unsigned 32-bit
-discriminants in the declaration order above. Every event record encodes its
-discriminant, primary occurrence reference, and remaining payload fields in
-declaration order. Nested unions and optionals use zero-based unsigned 32-bit
-discriminants; ordinals use unsigned 64-bit big-endian values; nested
-persistent references use their owner-defined canonical bytes.
+The seven `SpatialTraceEvent` variants use zero-based declaration-order
+discriminants for capture-level membership and canonical diagnostic keys.
+There is no persistent event-record encoding. References and values remain
+typed invocation-local values, and their owner-defined canonical bytes are
+used only where required to construct the deterministic key.
 
 The canonical event key is:
 
@@ -1297,8 +1221,8 @@ Finalization validates at least:
 * a higher capture level contains the exact lower-level projection over the
   same covered interval;
 * token publications agree with input and functional-observation projections,
-  and any activity summary whose complete window is covered by a sufficient
-  trace level agrees with the aggregate mechanically derived from that trace;
+  and any activity-summary facts observed in the diagnostic trace agree over
+  their shared horizon without treating omitted events as a coverage claim;
   and
 * no string key, property map, opaque extension payload, event-local
   coordinate, simulator-private ID, or copied owner fact appears.
@@ -1329,14 +1253,11 @@ MemoryLinearized(
 The exact contracts, program order, and reads-from relation derive
 synchronizes-with and happens-before; the trace does not serialize them.
 
-Trace capture is a nonsemantic invocation binding. Enabling it may change
-execution cost and retained raw material, but must not change scheduling,
-outputs, terminal form, cycle count, metrics, or findings. The exact capture
-request belongs only to `InvocationManifest`. The execution owner's attempt
-record references that request and owns attempt provenance and retained-
-material references. After the future schema minor lands, the
-`SimulationExecution` trace manifest alone owns the actual order, coverage, and
-completeness of captured trace data.
+Diagnostic capture is a nonsemantic invocation binding. Enabling it may
+change execution cost and scratch material, but must not change scheduling,
+outputs, terminal form, cycle count, metrics, findings, or Artifact identity.
+The current attempt context may retain the request and diagnostic value; no
+persistent record may claim trace order, coverage, or completeness.
 
 ## Ownership And Coupling
 
@@ -1382,7 +1303,8 @@ that excludes `delta`.
 
 System execution anchors cover positional functional arrays, retired versus
 partial publication, exact gem5 tick ordering, mandatory program-exit presence
-for `Retired`, and absence of any persistent trace manifest in version 1.
+for `Retired`, and absence of any trace field in
+`loom.simulation_execution 1.0`.
 
 Activity anchors cover the two progress-defined windows, rejection of a
 missing retirement anchor, complete versus partial target inventories,
@@ -1394,11 +1316,11 @@ Fabric resource case, and one four-state signal case are sufficient; tests do
 not build a cross-product over windows, coverage, actors, resource kinds, or
 signals.
 
-Version-1 trace anchors only reject a persistent `trace_manifest` field and
-verify that diagnostic capture cannot change execution semantics. The future
-trace-envelope and typed-event anchors in the preceding design input do not
-become implementation tests until the raw detailed-bundle owner and Simulation
-Artifacts schema minor are defined.
+Diagnostic-trace anchors cover the three capture levels, seven event variants,
+typed occurrence references, nonempty canonically ordered frames, strictly
+increasing coordinates, duplicate-key rejection, and capture
+noninterference. Persistent `loom.simulation_execution 1.0` import rejects any
+trace, manifest, chunk, coverage, path, or opaque diagnostic field.
 
 Tests do not pin report layouts, simulator class hierarchies, broad workload
 matrices, every finding kind, every witness payload, every partial-output

@@ -231,7 +231,8 @@ ambient default and lets proof-backed narrowing reject only the infeasible
 candidate rather than silently truncating source addresses.
 
 Schedule factors are derived from the exact loop rather than copied from a
-global tuning table. Proper divisors give schema 1.0 a compact, deterministic
+global tuning table. For the Schedule generator over
+`loom.structured_program 1.0`, proper divisors give a compact, deterministic
 domain with no cleanup tail; aggregate typed Fabric occurrence counts remove
 only replication factors already proved impossible. Adjacent interchange is
 the primitive relation because repeated lineage edges can express any legal
@@ -276,9 +277,9 @@ implementation invariants and therefore cannot be reported as normal search
 outcomes.
 
 Candidate failure classification must be owned where the distinction is
-known. A caller cannot tell whether an arbitrary lowering error means “this
-legal coordinate is not expressible” or “the implementation lost a tracked
-block.” The address normalizer therefore exposes a narrow typed proof
+known. A caller cannot tell whether an arbitrary lowering error means "this
+legal coordinate is not expressible" or "the implementation lost a tracked
+block." The address normalizer therefore exposes a narrow typed proof
 rejection, while graph structural preflight rejects unsupported leaves before
 the final transaction. All remaining errors stay untouched. This avoids both
 string-based dispatch and the tempting but incorrect rule that every failed

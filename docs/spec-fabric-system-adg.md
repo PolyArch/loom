@@ -62,7 +62,8 @@ module-local target.
 
 The Canonical Service Schema is the sole owner of logical operation semantics
 shared by software obligations, Fabric capabilities, Mapping, simulation, and
-implementation refinement. Version 2.0 has exactly six parameterized kinds:
+implementation refinement. Canonical Service Schema 2.0 has exactly six
+parameterized kinds:
 
 ```text
 message_transfer<Payload>
@@ -147,8 +148,9 @@ does not implicitly admit plain mode, and plain support does not imply
 atomicity. Volatile is an actor contract value, not another service kind.
 Coherence and MMIO are physical service or region properties, not operation
 names. There is no generic service name, property bag, callback, or operation
-DSL. Version 1.0's three-kind plain-only memory model is superseded because it
-cannot express these actor contracts without duplicated operation kinds.
+DSL. The three-kind plain-only memory model from Canonical Service Schema 1.0
+is superseded because it cannot express these actor contracts without
+duplicated operation kinds.
 
 ## AccCore And SpatialCore Attachment
 
@@ -159,7 +161,7 @@ AccCore = InstructionCore + SpatialCore
 ```
 
 Both HostCore and AccCore InstructionCore use one closed Architectural
-Contract. `loom.fabric 3.x` has one ISA variant, `RiscV`; adding another ISA is
+Contract. `loom.fabric 3.0` has one ISA variant, `RiscV`; adding another ISA is
 a schema change rather than an open string or opaque payload:
 
 ```text
@@ -191,7 +193,8 @@ RuntimeService =
 A root-complete `fabric.system` contains exactly one HostCore and one or more
 AccCores. For `N` AccCores, these are the `N + 1` stored-program engines of the
 System. The HostCore remains a distinct `HostCoreOccurrenceRef`; it is not an
-AccCore occurrence and owns no SpatialCore attachment.
+AccCore occurrence and owns no SpatialCore occurrence binding or endpoint
+attachment.
 
 All `N + 1` Architectural Contracts must form one executable ISA and ABI
 cohort: they have the same XLEN and endianness, and the intersection of their
@@ -222,7 +225,8 @@ Architectural Contract record bytes under the domain
 `loom.fabric.instruction_core_architecture.1.0`.
 
 An AccCore is one physical occurrence and contains exactly one InstructionCore
-plus exactly one SpatialCore attachment. The InstructionCore description has an
+plus exactly one SpatialCore occurrence binding. The InstructionCore
+description has an
 Architectural Contract for binary compatibility and a Microarchitectural
 Realization for execution structure, timing, and capacity. Simulator model
 names and compiler target spellings are bindings over that description, not
@@ -306,13 +310,9 @@ qualified by their exact `SpatialCoreOccurrenceRef` as defined by
 its definition-local identifiers.
 
 Because the InstructionCore cardinality is one, its Mapping reference is
-derived rather than allocated. `docs/spec-fabric-identity.md` owns the
-persistent reference framing; this specification owns the one-per-AccCore
-cardinality:
-
-```text
-InstructionCoreContextRef = (AccCoreOccurrenceRef, 0)
-```
+derived rather than allocated. `docs/spec-fabric-identity.md` solely owns the
+persistent `InstructionCoreContextRef` framing; this specification owns the
+rule that every AccCore has exactly one such context at its fixed ordinal.
 
 This reference is distinct from the instruction-context domain of a temporal
 PE. Thread binding selects the AccCore only; it never makes a second
@@ -341,18 +341,21 @@ grant state are transient and never persist in Fabric or Mapping.
 The Microarchitectural Realization owns the concrete closed values that use
 those atoms.
 
-Every fully elaborated occurrence has a typed one-to-one attachment between
-each module boundary endpoint and the corresponding AccCore-local SpatialCore
-endpoint. An attachment stores only the two structural references. Direction,
-type, service capability, and role are derived from the endpoints.
+Every fully elaborated occurrence has one `fabric.system.spatial_attachment`
+row for each imported Module boundary endpoint. Each row contains the Module
+boundary endpoint and the corresponding occurrence-qualified AccCore-local
+SpatialCore endpoint. A Transport row contains exactly that structural pair.
+A Memory row additionally contains the exact `SystemServiceEndpointRef` that
+continues the occurrence endpoint into the System service topology. Direction,
+type, service capability, and role are derived from the referenced endpoints.
 
-An attachment is not a route and cannot hide conversion, buffering,
+An endpoint attachment is not a route and cannot hide conversion, buffering,
 arbitration, clock-domain crossing, or any other stateful behavior. Such
 behavior requires an explicit Fabric resource or transfer pattern. Every
-module endpoint attaches exactly once. Its effective Clock and Reset are
-derived from the endpoint's Module slot and that occurrence slot's System
-domain membership; neither the AccCore nor SpatialCore parent supplies an
-inherited domain.
+Module boundary endpoint has exactly one endpoint attachment. Its effective
+Clock and Reset are derived from the endpoint's Module slot and that occurrence
+slot's System domain membership; neither the AccCore nor SpatialCore parent
+supplies an inherited domain.
 
 Value, stream, control, completion, and other token transfers remain typed
 transport contracts across the attachment. A memory endpoint remains a typed
@@ -583,12 +586,10 @@ It is not a free-form predicate program.
 Grant chooses a capacity-feasible subset of eligible requests. Each contended
 resource's typed Fabric contract owns the exact cycle-visible grant and
 state-update behavior, or exposes a closed exact refinement domain selected by
-Mapping. The first shared grant-policy atoms are:
-
-```text
-fixed_priority(exact requester order)
-round_robin(exact requester order, reset cursor, advance on successful grant)
-```
+Mapping. `docs/spec-fabric-resource-contract.md` solely owns the shared
+`FixedPriority` and `RoundRobin` grant-policy atoms, including requester order,
+reset cursor, and successful-grant advancement. Each System resource owns only
+its exact requester inventory and any specialized state or refinement domain.
 
 No policy is needed when complete Mapping proves at most one simultaneous
 requester. Reachable contention without an exact Fabric/refinement policy is
@@ -878,7 +879,8 @@ ClockCrossingContract = AsyncFifo {
 
 The contract is a typed variant on an existing transport resource and use
 pattern, not a hidden connection behavior or a new generic crossing graph.
-Version 1 admits only the `AsyncFifo` variant. A direct cross-domain
+The current `ClockCrossingContract` admits only the `AsyncFifo` variant. A
+direct cross-domain
 connection, an attachment that hides crossing state, or a backend-invented
 synchronizer is invalid.
 
@@ -1033,9 +1035,10 @@ fabric.system.external_boundary
   EntityId
 ```
 
-The attachment variant is derived from the two typed boundary endpoints; it is
-not a stored plane discriminant. A transport attachment has no System service
-endpoint. A memory attachment has exactly one, and that endpoint is the sole
+The attachment variant is derived from the Module and occurrence endpoint
+pair; it is not a stored plane discriminant. A transport attachment has no
+System service endpoint. A memory attachment has exactly one, and that
+endpoint is the sole
 Fabric-owned continuation of the occurrence-qualified SpatialCore memory
 endpoint into the System service topology. Its plane, complementary role, and
 capability domain must be compatible with the SpatialCore endpoint. Capability
@@ -1091,10 +1094,10 @@ admitted, and `LocalProvider` is rejected. It does not repeat service regions,
 actor or access admission, ResourceState, UsePattern, capacity, timing,
 progress, or grant fields as sibling System properties.
 
-`ServiceTransformContract` is a closed sum. Version 2.0 admits
+`ServiceTransformContract` is a closed sum. The current contract admits
 `AddressOffset`, `AddressMaskXor`, `StaticInterleave`, and `CoherentMemory`;
-each
-variant owns its exact typed parameters and total input-to-output relation:
+each variant owns its exact typed parameters and total input-to-output
+relation:
 
 ```text
 AddressOffset { address_width, signed_offset }
@@ -1129,8 +1132,8 @@ Cache behavior beyond this architecture-level coherence relation, arbitrary
 hashing, programmable callbacks, and opaque custom transforms require a future
 closed variant rather than an open extension bag.
 
-`hardware_domain` version 2.0 uses the closed kinds `Clock`, `Reset`, `Power`,
-`Address`, and `MemoryConsistency`. Their contracts are exactly:
+The current `hardware_domain` contract uses the closed kinds `Clock`, `Reset`,
+`Power`, `Address`, and `MemoryConsistency`. Their contracts are exactly:
 
 ```text
 Clock { period_fs: positive uint64, phase_fs: uint64 where phase_fs < period_fs }

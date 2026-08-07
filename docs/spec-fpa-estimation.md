@@ -9,11 +9,12 @@ Physical metrics are evaluated against one exact `HardwareImplementation`.
 Fabric alone may be the subject of an explicitly analytical architecture model,
 but such a result must not be labeled as synthesis, layout, or signoff evidence.
 
-Workload-dependent power or energy also requires compatible activity. Activity
-is owned by an exact `SimulationExecution`; an evaluator may mechanically
+Workload-dependent `DynamicPower` requires compatible activity. Activity is
+owned by an exact `SimulationExecution`; an evaluator may mechanically
 translate an actor or Fabric basis through exact Mapping and implementation
 lineage, or consume the exact implementation-signal basis directly. There is
-no independent `ActivityProfile` artifact.
+no independent `ActivityProfile` artifact. Energy is not a current registered
+MetricKind.
 
 The sole pre-Mapping exception is an explicitly analytical `(S,F)` or `(D,F)`
 model whose immutable descriptor semantics define a structure-derived
@@ -31,30 +32,16 @@ The physical-evaluation descriptor references case kind 5,
 implementation: HardwareImplementation
 ```
 
-Activity changes the physical question and is therefore one explicit base
-condition:
-
-```text
-ActivityBinding {
-  target: SubjectTargetRef
-  source:
-      ExecutionActivity {
-        simulation_execution_ref
-        activity_summary_ordinal: uint64
-      }
-    | ExplicitAssumption {
-        clock_domain: SubjectTargetRef
-        static_probability: ExactRatio
-        transitions_per_clock: ExactRatio
-      }
-}
-```
+Activity changes the physical question and is therefore represented by the
+exact `ActivityBinding` base condition owned by
+`docs/spec-evaluation-metrics.md`. Its source is either that owner's typed
+execution-summary reference or its explicit clock-relative assumption; this
+specification does not repeat the condition schema.
 
 Leakage-only queries may omit activity. A workload-dependent query with no
 required binding is `Unsupported`; there is no hidden default toggle rate.
 The exact target, probability, density, assignment-key, and duplicate rules
-are owned by `docs/spec-evaluation-metrics.md`; this document does not define a
-second activity-condition schema.
+remain with that owner.
 
 An evaluator declares which `ActivitySummary` payload kinds, windows, and
 coverage forms it accepts. A partial summary never makes unlisted targets
@@ -94,23 +81,22 @@ derive HardwareImplementation -> evaluate that exact implementation
 ## Metrics
 
 Metric kinds, dimensions, canonical units, scopes, and observation forms are
-owned by the central registry. The initial shared physical metrics are
+owned by Evaluation registry 2.0. The current shared physical metrics are
 `LimitingClockFrequency`, `TotalArea`, `DynamicPower`, and `LeakagePower`.
-Other representative future metrics include:
-
-* critical-path delay and timing slack;
-* cell, macro, or routing-area breakdowns; and
-* energy derived from compatible power and runtime observations.
+Critical-path delay, timing slack, physical breakdowns, and energy are
+unsupported until their exact MetricKind and producing model owners are
+registered.
 
 Every observation records its exact request ordinal and provenance. Point,
 interval, censored, and not-applicable results retain their ordinary Evaluation
 meaning. Missing activity, unsupported corners, failed tools, and timeouts do
 not become numeric zero.
 
-Runtime and energy are derived by named `DerivedMetricModel` evaluations. They
-must reference exact upstream Evidence and prove compatible implementation,
-workload, conditions, and units. A user-facing FPA table is only a projection of
-those Evidence records.
+A current `Runtime` result must be produced by an exact registered model that
+proves its timing basis and compatible implementation, workload, conditions,
+and units. A user-facing FPA table is only a projection of registered
+MetricKinds in Evidence; it cannot synthesize an unregistered energy or other
+derived quantity.
 
 ## Model Families
 
@@ -126,9 +112,8 @@ held-out cases use ordinary EvaluationRequest/EvaluationEvidence promotion.
 The bundle owns only its exact registry-owned parameter contract and canonical
 payload digest. `InvocationManifest` owns training provenance, and
 `ResolvedModelBinding` owns predictor consumption of the selected bundle.
-Expensive raw tool products remain owner-attempt or scratch material until an
-exact raw detailed-bundle Artifact owner exists; they are not committed as
-routine test fixtures.
+Expensive raw tool products remain owner-attempt or scratch material with no
+current Artifact schema; they are not committed as routine test fixtures.
 
 A released parameter bundle may be committed as that same canonical
 `ModelParameterBundle`; Loom does not define a public-weight projection or a

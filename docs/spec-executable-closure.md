@@ -121,7 +121,8 @@ resolved target policy mechanically:
 * the target triple and exact DataLayout spelling are produced by the resulting
   LLVM `TargetMachine`.
 
-For schema 1.0, `MediumLow` maps to LLVM's small RISC-V code model and
+For the `CompilerTargetBinding 1.0` RISC-V projection, `MediumLow` maps to
+LLVM's small RISC-V code model and
 `MediumAny` maps to its medium code model. `Static` and
 `PositionIndependent` map to LLVM static and PIC relocation respectively.
 Fabric `SingleThread` and `Hart` synchronization scopes map to LLVM
@@ -181,7 +182,8 @@ unresolved import must appear in the closed typed `runtime_imports` set and
 resolve to exactly one dynamic support component of that binding. ABI symbol
 names are externally visible linkage semantics, not entity identity.
 
-For ELF schema 1.0, the executable entry catalog is derived from defined global
+For the `InstructionCoreBinary 1.0` ELF payload, the executable entry catalog
+is derived from defined global
 function symbols named `__loom_thread_entry_<ordinal>`, where `<ordinal>` is
 the canonical unsigned decimal spelling with no leading zero except the value
 zero itself. The ordinals must form the dense interval `[0, entry_count)`.

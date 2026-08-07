@@ -293,8 +293,8 @@ COMDAT resolution, ODR, and all other module-level compatibility rules.
 
 ### LLVM Module Normalization
 
-Part 1 owns one deterministic LLVM parser and bitcode writer contract for
-payload version 1.0:
+Part 1 owns one deterministic LLVM parser and bitcode writer contract for the
+`loom.structured_program 1.0` payload:
 
 1. Parse with the pinned LLVM provider, fully materialize the module, and run
    the LLVM verifier.
@@ -381,8 +381,9 @@ provider/commit, canonical target triple, ABI compatibility key, and complete
 frontend config view. Each exact DataLayout spelling is reparsed by that pinned
 provider, and all selected modules must be structurally equal under LLVM
 `DataLayout::operator==`; spelling equality is neither required nor sufficient.
-Version 1.0 has no implicit config merge, precedence rule, or compatibility
-lattice; structural layout disagreement is a typed link error. This preflight
+`loom.structured_program 1.0` has no implicit config merge, precedence rule,
+or compatibility lattice; structural layout disagreement is a typed link
+error. This preflight
 is not sufficient proof that LLVM modules are link-compatible.
 
 Loom parses and verifies every normalized module, then uses the pinned LLVM

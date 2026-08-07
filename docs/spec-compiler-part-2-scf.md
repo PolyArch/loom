@@ -335,14 +335,15 @@ StructuredEntityRef {
 }
 ```
 
-Schema 1.0 keeps this one reference shape. `entity_kind` is a closed
+The current `StructuredEntityRef` contract keeps this one reference shape.
+`entity_kind` is a closed
 Structured Program family ordinal with exactly these structural categories:
 
 ```text
 StructuredEntityKind = Operation | Region | Block | Value
 ```
 
-The stable schema-1.0 ordinals are `Operation = 0`, `Region = 1`, `Block = 2`,
+The stable current ordinals are `Operation = 0`, `Region = 1`, `Block = 2`,
 and `Value = 3`. The standalone comparison and persistence wire is:
 
 ```text
@@ -619,13 +620,13 @@ backend advice.
 
 ### Structured Schedule Generator
 
-The schema-1.0 Schedule generator consumes a finite set of exact Structured
-Program references and one exact finalized Fabric. It emits the input set plus
-every distinct child obtained by one legal atomic schedule decision. An empty
-input set produces an empty output set, so an ordered central plan remains
-total when an earlier generator has no candidates. Its resolved component view
-contains only the positive `scope_expansion_limit` owned by the Resolved
-Configuration View.
+The current Structured Schedule generator consumes a finite set of exact
+Structured Program references and one exact finalized Fabric. It emits the
+input set plus every distinct child obtained by one legal atomic schedule
+decision. An empty input set produces an empty output set, so an ordered
+central plan remains total when an earlier generator has no candidates. Its
+resolved component view contains only the positive `scope_expansion_limit`
+owned by the Resolved Configuration View.
 
 Loop scopes are `scf.for` operations in the parent's canonical Structured
 operation order. The first `scope_expansion_limit` loop scopes form the finite
@@ -633,8 +634,8 @@ Generate domain; later loops are outside that invocation domain. Static tile,
 unroll, and unroll-and-jam factors are the sorted proper divisors of the exact
 static trip count. Factor one is a no-op and the full trip count is not emitted
 by this generator. Dynamic, non-host-representable, prime, and unit trip counts
-have no such factor decision in schema 1.0; other generator families or later
-invocations may still transform their enclosing structure.
+have no such factor decision in the current contract; other generator
+families or later invocations may still transform their enclosing structure.
 
 Unroll is hard-pruned only when exact aggregate Fabric capacity proves the
 replicated body impossible. Actor instances are grouped by the canonical
@@ -688,7 +689,7 @@ remain the only semantic owners.
 
 ### Structured ExecutionShape Generator
 
-The schema-1.0 ExecutionShape generator consumes a finite set of exact
+The current Structured ExecutionShape generator consumes a finite set of exact
 Structured Program references and one exact finalized Fabric. An empty input
 set produces an empty output set. A parent with no unresolved selected-Spatial
 execution-shape choice passes through only after mechanical D0 lowering and
@@ -705,7 +706,8 @@ One decision applies uniformly to every unresolved `fmuladd` in the selected
 Spatial ownership of that complete parent. It never rewrites residual
 InstructionCore operations or operations owned by nested callables. This is a
 two-element semantic policy domain, not one independent Boolean dimension per
-operation. Distinct per-operation combinations are not part of schema 1.0.
+operation. Distinct per-operation combinations are not part of the current
+contract.
 
 Each child preserves the exact floating type, fast-math contract, source
 location, Ownership lineage, and source-provenance projection. It is verified,
@@ -715,7 +717,7 @@ output set. A shape whose resulting canonical actors have no concrete admitted
 capability is excluded. No unresolved parent, mixed Fused/Split child, hidden
 backend default, or target-code-generation choice may cross this boundary.
 
-The resolved schema-1.0 component view is empty. Worker count, lowering
+The resolved current component view is empty. Worker count, lowering
 verification controls, cached typed candidates, and cached D0 projections are
 invocation-local execution policy and do not change the finite semantic
 domain. A cache entry is keyed by the exact Structured Artifact reference and
@@ -760,14 +762,14 @@ the exact selected tier byte for byte.
 
 ### Structured MemoryCommunication Generator
 
-The schema-1.0 MemoryCommunication generator consumes a finite set of exact
+The current Structured MemoryCommunication generator consumes a finite set of exact
 Structured Program references and one exact finalized Fabric. It emits every
 input parent plus each distinct child obtained by one legal atomic logical
 memory decision. An empty input set produces an empty output set. Its resolved
 component view contains only the positive `scope_expansion_limit` owned by the
 Resolved Configuration View.
 
-The first schema-1.0 decision is `StageConstantGlobal`. Its scope is an exact
+The first current decision is `StageConstantGlobal`. Its scope is an exact
 memory block argument of one selected `loom.spatial_region`, identified by the
 parent-local `StructuredEntityRef`. The decision exists only when all of the
 following are proved from the complete parent:
@@ -884,7 +886,7 @@ be specialized or inlined before closure, or remain in InstructionCore while
 independent regions on either side are considered. A canonical graph never
 contains a general call.
 
-`SpatialOwnershipDecisionPoint` schema 1.1 represents candidate-local direct
+The current `SpatialOwnershipDecisionPoint` contract represents candidate-local direct
 call inlining with an optional exact parent-local operation reference. The
 reference identifies the call site; a callee symbol is only an input to typed
 symbol resolution and never becomes candidate identity. The absent coordinate

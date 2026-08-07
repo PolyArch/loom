@@ -8,10 +8,13 @@ artifact or report schema.
 
 ## Ownership
 
-The Evaluation library has one typed registry for `MetricKind` and one typed
-registry for `FindingKind`. These registries are the semantic source of truth
-for compilation analysis, Mapping guidance, simulation, RTL and EDA models,
-training, calibration, and user-facing projections.
+The exact Evaluation registry schema 2.0 owns every `MetricKind`,
+`FindingKind`, `EvaluationConditionKind`, case, model, scope-form, and related
+registry ordinal. Its typed Metric and Finding registries are the semantic
+source of truth for compilation analysis, Mapping guidance, simulation, RTL
+and EDA models, training, calibration, and user-facing projections. Query and
+Artifact-root wire schemas remain separate owners and do not renumber these
+registry domains.
 
 A model descriptor declares which registered queries it supports. It does not
 copy their definitions. A DSE policy selects objectives, thresholds, weights,
@@ -142,8 +145,8 @@ checks its static source, type, and resolver contract, while Request admission
 executes that resolver for the exact case and returns the validated basis.
 Metric implementations do not hardcode metric names or call a private cycle
 resolver. The case-signature registry remains the sole owner of the actual
-basis; the Metric registry owns only which scope form requires it. Finding
-scope forms must use `NotRequired` in schema 1.0.
+basis; the Metric registry owns only which scope form requires it. Evaluation
+registry 2.0 Finding scope forms must use `NotRequired`.
 
 The persistent value is:
 
@@ -247,8 +250,9 @@ admission and Evidence validation use this one domain value; a model cannot add
 a private bound check or widen it. The four prediction-error kinds use
 `ClosedDecimalInterval[0,2]`.
 
-Every registered MetricKind has a nonempty scope-form table. Schema 1.0 gives
-each initial metric one owner-defined form at `ScopeFormRef(0)`:
+Every registered MetricKind has a nonempty scope-form table. Evaluation
+registry 2.0 gives each initial metric one owner-defined form at
+`ScopeFormRef(0)`:
 
 ```text
 CycleCount            form 0: WholeExactCase
@@ -272,9 +276,9 @@ locally. A later clock-domain-specific form uses an exact target pattern rather
 than changing form 0. An empty scope-form table, an unknown form ordinal, or a
 model capability naming a form not owned by the MetricKind is invalid.
 
-The schema-1.0 requirements are exact: `CycleCount` form 0 and `ClockPeriod`
-form 0 use `ExactCaseUniqueReferenceCycle`; every other form 0 uses
-`NotRequired`. These descriptor fields, not duplicated switches in model
+The Evaluation registry 2.0 requirements are exact: `CycleCount` form 0 and
+`ClockPeriod` form 0 use `ExactCaseUniqueReferenceCycle`; every other form 0
+uses `NotRequired`. These descriptor fields, not duplicated switches in model
 registration or Request validation, control admissibility.
 
 The initial physical metric semantics and canonical units are:
@@ -325,9 +329,10 @@ floating-point ordering, or per-sample early rounding. Median and P90 are
 therefore ordinary requests with `Quantile(1/2)` and `Quantile(9/10)` rather
 than separate MetricKinds.
 
-Cycle count and physical time are distinct kinds. Total energy and energy per
-work are distinct kinds. Quantities with different ground-truth definitions or
-scope semantics remain distinct even when a tool gives them similar labels.
+Cycle count and physical time are distinct kinds. Any future total-energy and
+energy-per-work metrics would likewise require distinct registered kinds.
+Quantities with different ground-truth definitions or scope semantics remain
+distinct even when a tool gives them similar labels.
 
 The descriptor never owns optimization direction, target, tolerance,
 normalization, threshold, weight, score, or candidate acceptance. Those facts
@@ -379,7 +384,8 @@ codec owned by Simulation Artifacts. The concrete witness instance is owned by
 the referenced `SimulationExecution`; Evidence never copies it. Nonterminal
 findings select their Finding-registry-owned inline occurrence codecs.
 
-Schema 1.0 reserves finding ordinal `0` for `functional_mismatch`. Its only
+Evaluation registry 2.0 reserves finding ordinal `0` for
+`functional_mismatch`. Its only
 scope form is `WholeExactCase`, and its occurrence schema is
 `evaluation.functional_mismatch.1.0`. The occurrence is a zero-field typed
 singleton. `Present` contains exactly that one occurrence when two exact
@@ -414,8 +420,8 @@ ExactRatio:
   positive unsigned denominator
 ```
 
-Discrete counts use `IntegerValue`. Physical time, area, power, energy,
-bandwidth, dimensionless observed metrics, and other continuous quantities use
+Discrete counts use `IntegerValue`. Physical time, area, power,
+dimensionless observed metrics, and other registered continuous quantities use
 normalized `DecimalValue` in the descriptor's canonical unit. A nonzero decimal
 removes trailing decimal zeros from its coefficient and adds them to its
 exponent; zero has coefficient zero and exponent zero. Overflow during
@@ -424,8 +430,7 @@ normalization is invalid.
 Evaluators may calculate with tool-native or floating-point values internally.
 Finalization converts them deterministically according to the exact model
 descriptor's precision and rounding contract. Original text and units remain
-owner-attempt or scratch material until the raw detailed-bundle Artifact owner
-is defined.
+owner-attempt or scratch material and have no current Artifact schema.
 
 `ExactRatio` is not a third `MetricValue` form. It is used only by exact typed
 configuration fields whose semantics are a ratio or probability, or an exact
@@ -505,7 +510,7 @@ For a Base pattern stored by a case signature, the pattern's exact
 patterns retain the explicit signature because their registry owners can serve
 more than one case.
 
-Schema 1.0 has these condition kinds:
+Evaluation registry 2.0 has these condition kinds:
 
 ```text
 ProcessCorner {
@@ -580,16 +585,15 @@ must prove that its model accepts the selected payload kind, window, coverage,
 and exact source-to-target lineage. Missing targets in a partial summary are
 unknown and cannot be interpreted as zero or filled by a hidden default.
 
-`ExecutionActivity` is a typed reserved-unavailable schema-1.0 variant until
-the exact `SimulationExecution` Artifact owner and importer are registered in
-the build. Evaluation may parse and print its closed reference-plus-ordinal
-shape, but case authoring, Request finalization, and import must resolve that
-owner, adopt the execution, validate the ordinal, require the same exact
-Request lineage, and validate source-to-target compatibility. If the owner or
-provider is absent, validation fails with a typed owner-unavailable error; it
-must not accept opaque execution bytes, skip lineage, or reinterpret the
-ordinal. Landing the already specified owner activates the existing variant
-without changing the Evaluation schema.
+Evaluation registry 2.0 contains the typed `ExecutionActivity` source form.
+Consuming it requires an activity-summary adopter for
+`loom.simulation_execution 1.0`, an ordinal resolver, same-Request validation,
+and exact source-to-target lineage validation. The SimulationExecution root,
+publisher, and importer do not by themselves provide that Evaluation adapter.
+When the adapter is unavailable, authoring, Request finalization, and import
+fail with a typed owner-unavailable error. Parsing or printing the closed
+reference-plus-ordinal shape does not activate the source form and cannot
+permit opaque execution bytes, skipped lineage, or a reinterpreted ordinal.
 
 `ExplicitAssumption` is a small uniform vectorless assumption, not an Activity
 Artifact or arbitrary per-signal map. Static probability is in `[0,1]`;
@@ -597,11 +601,11 @@ transition density is nonnegative and is measured per selected clock. An
 assumption requiring richer activity must use an exact execution summary or be
 introduced later as a new typed condition, never as an opaque property bag.
 
-`Quantile` is request-specific and Metric-only in schema 1.0. Its probability
-is in `[0,1]`. Sample aggregation uses nearest-rank semantics: after canonical
-sorting of a nonempty sample set, `q = 0` selects the first sample and otherwise
-selects zero-based index `ceil(q * N) - 1`. A different quantile definition is
-a different future typed condition or formula contract.
+`Quantile` is request-specific and Metric-only in Evaluation registry 2.0. Its
+probability is in `[0,1]`. Sample aggregation uses nearest-rank semantics:
+after canonical sorting of a nonempty sample set, `q = 0` selects the first
+sample and otherwise selects zero-based index `ceil(q * N) - 1`. A different
+quantile definition requires a distinct registered condition contract.
 
 MetricRequest and FindingRequest construction query the central Condition
 registry's location set. Therefore `Quantile` is accepted only in a
@@ -609,10 +613,10 @@ MetricRequest condition set and is rejected in Base and FindingRequest
 condition sets before request canonicalization. Finding descriptors and models
 cannot widen that location set through their capability tables.
 
-The other six kinds are Base-only in schema 1.0. Their assignment keys are,
-respectively, target, power domain, thermal domain or root, clock domain,
-ordered clock pair, and activity target. `Quantile` has one empty assignment
-key within its containing request.
+The other six kinds are Base-only in Evaluation registry 2.0. Their assignment
+keys are, respectively, target, power domain, thermal domain or root, clock
+domain, ordered clock pair, and activity target. `Quantile` has one empty
+assignment key within its containing request.
 
 Condition collections sort by:
 
@@ -687,16 +691,9 @@ Completed Evidence contains exactly one result for every requested metric and
 finding and no unsolicited results.
 
 For an execution-terminal `FindingKind`, `Present` contains exactly one
-registry-permitted reference carrier:
-
-```text
-TerminalWitnessRef {
-  execution_output_slot_ref: ModelOutputSlotRef
-  execution_output_ordinal: uint64
-}
-```
-
-The containing Evidence and its exact Request resolve this pair to one
+registry-permitted `TerminalWitnessRef` owned by
+`docs/spec-simulation-artifacts.md`. The containing Evidence and its exact
+Request resolve that owner-defined value to one
 `SimulationExecution` in `output_bindings`. The referenced execution must
 belong to the same Request and contain a `Halted` terminal of the requested
 kind. The witness payload remains in that terminal. No direct execution
@@ -712,26 +709,26 @@ so a `FindingOccurrence` does not repeat a kind tag.
 For `Present`, the wire is a nonempty array of owner-produced canonical payload
 bytes, represented as lowercase hexadecimal in canonical JSON. Payloads sort
 lexicographically by those exact bytes and duplicates are invalid. The
-Simulation Artifacts owner supplies the codec for `TerminalWitnessRef`; its
-canonical payload is exactly `u32be(execution_output_slot_ref.ordinal)` followed
-by `u64be(execution_output_ordinal)`. A terminal Finding descriptor references
-that codec rather than defining another encoding.
+Simulation Artifacts owner supplies the complete type and codec for
+`TerminalWitnessRef`; a terminal Finding descriptor references that codec
+rather than defining another encoding.
 
-## Derived Metrics
+## Derived Quantities
 
-A reusable derived quantity is produced by an ordinary typed
-`DerivedMetricModel`. Its Request binds exact upstream Evidence through
-descriptor-owned input slots and selects a versioned `FormulaKind`. The model
-checks input kinds, canonical units, scopes, case compatibility, and formula
-preconditions, then propagates bounds and uncertainty by the formula's typed
-rules.
+A reusable derived quantity is an ordinary registered `MetricKind` produced by
+an exact registered Evaluation model. The model descriptor owns its input
+slots and admissible case, scope, condition, unit, and compatibility rules.
+Evaluation has no generic formula registry or formula DSL beside those model
+descriptors.
 
-Representative formulas include runtime from cycle count and clock period,
-energy from power and runtime, throughput from work and runtime, speedup as one
-exact compatible reference runtime divided by one exact candidate runtime, and
-performance per area. Speedup is never stored as an independent observation or
-computed from unmatched workloads, inputs, scopes, or timing bases.
-Unsupported or not-applicable inputs never become zero, infinity, or NaN.
+`Runtime` is a current registered MetricKind and may be produced only by a
+registered model whose exact semantics establish its required timing basis.
+Energy, throughput, speedup, and performance-per-area are unsupported until
+their exact MetricKind semantics and producing model owners are registered.
+They are never inferred by a report, stored as independent observations under
+another kind, or computed from unmatched workloads, inputs, scopes, timing
+bases, or units. Unsupported or not-applicable inputs never become zero,
+infinity, or NaN.
 
 Active wall time, process CPU time, peak resident memory, worker count, and
 logical CPU count recorded by `InvocationManifest` are nonsemantic operational
@@ -741,18 +738,22 @@ only while preserving their distinct owners and execution-context limits.
 
 Benchmark weighting, normalization, Pareto preference, annealing cost, and
 other candidate-ranking aggregates remain DSE policy. They do not create a
-MetricKind, FormulaKind, or Evidence artifact.
+MetricKind, Evaluation model, or Evidence artifact.
 
 ## Persistence Boundary
 
-Metric, finding, scope, condition, Decimal, query, and result encodings are
-reusable value schemas inside `evaluation.request.1.0` and
-`evaluation.evidence.1.0`. `ExactRatio` is the same canonical scalar wire
-wherever an exact typed reference-cycle coordinate or phase is required,
-including `SimulationExecution`; consumers must not redefine it. None of these
-schemas creates an independent Metric, Finding, condition, query-set, or
-report artifact family. Canonical encoders use fixed field ordering and enum
-spellings, integer JSON tokens for integer values, Decimal components, and
+Metric, finding, scope, condition, Decimal, and result encodings are reusable
+value schemas inside `evaluation.request.1.0` and
+`evaluation.evidence.1.0`. Standalone query wires have their own exact roots:
+`evaluation.metric_query 1.0` and `evaluation.finding_query 1.0`. Those wire
+owners carry Evaluation registry 2.0 kind and scope-form references without
+owning or renumbering the referenced registries. `ExactRatio` is the same
+canonical scalar wire wherever an exact typed reference-cycle coordinate or
+phase is required, including `SimulationExecution`; consumers must not
+redefine it. None of these schemas creates an independent Metric, Finding,
+condition, query-set, or report artifact family. Canonical encoders use fixed
+field ordering and enum spellings, integer JSON tokens for integer values,
+Decimal components, and
 ExactRatio components, and strict rejection of unknown fields or noncanonical
 bytes. `SubjectTargetRef` uses the complete Common root/local-reference framing;
 the owner-local payload is emitted as lowercase hexadecimal and is never
@@ -765,11 +766,10 @@ precedes `ProcessCorner` persistence. Evaluation must report an unavailable
 owner codec as an implementation/capability error; it cannot publish a fallback
 integer, tuple, path, or opaque property payload.
 
-Raw tool reports, distributions, samples, logs, and trace chunks remain
-owner-attempt or scratch material until the raw detailed-bundle Artifact owner
-and importer are defined. A workload execution's exact typed activity summaries
-belong to `SimulationExecution`; a typed trace manifest may be added only by a
-later Simulation Artifacts schema minor after that bundle owner exists.
+Raw tool reports, distributions, samples, logs, and diagnostic traces remain
+owner-attempt or scratch material. A workload execution's exact typed activity
+summaries belong to `SimulationExecution`; its invocation-local
+`SpatialDiagnosticTrace` has no persistent Evaluation form.
 Normalized observations and findings belong only to exact Evaluation Evidence.
 
 ## Anchor Tests

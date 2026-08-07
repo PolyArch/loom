@@ -185,17 +185,12 @@ TechMapping for exact `D + F` selects the exact finalized
 `FabricFuCapabilityTemplateRef` and binds exact actors, attributes, ordered
 operation ports, and FU boundary ports. SpatialMapping selects the exact
 occurrence and instruction context for that realization. Complete Mapping
-verification then derives a temporary semantic projection:
+verification then derives the temporary `ConfiguredHardwareProjection`
+through the sole definition and derivation operation in
+`docs/spec-fabric-reconfigurable-op.md`.
 
-```text
-ConfiguredHardwareProjection =
-  DeriveFields(CanonicalDataflow,
-               TechMapping,
-               Fabric,
-               complete SpatialMapping)
-```
-
-Physical refinements are not an input to this projection. Version 1 has no
+Physical refinements are not an input to this projection. The current exact
+Mapping contract has no
 generic physical-refinement value codec, so strict Mapping import rejects every
 nonempty refinement assignment before deriving configured hardware. A concrete
 Fabric owner must first publish the domain's closed typed value codec and

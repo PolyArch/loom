@@ -114,8 +114,8 @@ outcomes and cannot hide a failure behind a mean, pass rate, or best case.
 
 Application execution produces only existing semantic records:
 
-* `EvaluationEvidence` owns normalized correctness, performance, energy, and
-  physical-quality observations;
+* `EvaluationEvidence` owns normalized registered correctness, performance,
+  and physical-quality observations;
 * `InvocationManifest` owns derivation lineage, deterministic work accounting,
   and nonsemantic operational observations; and
 * `ModelParameterBundle` owns immutable derived model parameters.

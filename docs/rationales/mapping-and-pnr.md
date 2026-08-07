@@ -314,7 +314,8 @@ unused boundary or direct boundary passthrough supplies no placeable routing
 terminal and therefore no row. Freeze filters the relation by the graph
 terminal's direction and payload requirements, while RouteTree uses only the
 resulting physical endpoint. SystemMapping later composes the same Module
-boundary correspondence with the selected AccCore SpatialCore attachment.
+boundary correspondence with the selected AccCore SpatialCore occurrence
+binding and its per-boundary endpoint attachment.
 This keeps one boundary identity owner and one physical routing graph without
 making Module boundary references routable resources.
 
@@ -342,8 +343,9 @@ two mappings disagree about the same Fabric and would force Mapping identity to
 repeat capability and payload facts.
 
 The frozen search domain therefore follows the selected SpatialMapping memory
-endpoint through its exact Fabric spatial attachment, then derives terminal
-candidates from the role-selected member of that fixed endpoint pair and its
+endpoint through its exact Fabric memory `spatial_attachment`, then derives
+terminal candidates from the role-selected member of the fixed Module and
+occurrence endpoint pair within that three-reference row and its
 Fabric-owned service-leg carrier relation. CandidateState chooses ordinary
 transport terminals and traversals, and the persistent RouteTree records only
 that selected route. Final verification repeats the same derivation from the
@@ -465,8 +467,9 @@ projection, but never change candidate legality or search semantics.
 
 Mapping's local solver cost can measure domain-independent facts such as
 unrouted nets, capacity violation, distance, congestion, and constraint
-violation. Accelerator latency, energy, frequency, memory behavior, or system
-performance belong to shared Evaluation models. Central policy combines these
+violation. Accelerator runtime, frequency, power, memory behavior, system
+performance, and any future registered energy metric belong to shared
+Evaluation models. Central policy combines these
 observations; PnR must not grow a private accelerator cost model.
 
 Some Fabric configurations preserve function but change performance, such as

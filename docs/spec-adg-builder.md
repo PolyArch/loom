@@ -81,8 +81,9 @@ facts from the presence of a local service or from endpoint count.
 
 System-family construction covers an architecture-only `fabric.system` object
 with heterogeneous AccCore occurrences, InstructionCore descriptions,
-SpatialCore attachments, memory and service capabilities, Transport
-Architecture, external boundaries, and hardware domains. It may separately
+SpatialCore occurrence bindings and endpoint attachments, memory and service
+capabilities, Transport Architecture, external boundaries, and hardware
+domains. It may separately
 construct Interconnect Implementation refinement objects as owned by
 `spec-fabric-system-adg.md`.
 
@@ -173,14 +174,14 @@ SpatialCoreBuilder::outputDomainMember(output ordinal)
 SpatialCoreBuilder::assignDomainSlot(ModuleDomainMemberHandle,
                                      ModuleDomainSlotHandle)
   -> Error
-ModuleInstanceDomainSlotBinding = {
+loom::adg::ModuleInstanceDomainSlotBinding = {
   child_slot : ModuleDomainSlotHandle
   parent_slot : ModuleDomainSlotHandle
 }
 SpatialCoreBuilder::instantiate(
     const SpatialCoreBuilder &target,
     canonical range<SpatialValue> inputs,
-    canonical range<ModuleInstanceDomainSlotBinding> domain_bindings)
+    canonical range<loom::adg::ModuleInstanceDomainSlotBinding> domain_bindings)
   -> Expected<canonical range<SpatialValue>>
 ImportedSpatialCore::domainSlots(Clock | Reset)
   -> Expected<canonical range<ImportedModuleDomainSlotHandle>>
@@ -192,6 +193,12 @@ HardwareDomainBuilder::close(canonical range<HardwareDomainMember>,
                              HardwareDomainContract)
   -> Error
 ```
+
+The C++ `loom::adg::ModuleInstanceDomainSlotBinding` is an authoring-handle
+record. Finalization mechanically resolves its handles to the ordinals in the
+Fabric-owned `::fabric::ModuleInstanceDomainSlotBinding` property specified by
+`docs/spec-fabric-instantiate.md`; it does not define a second persistent
+domain-slot relation.
 
 `ModuleDomainMemberHandle` is one opaque, owner-checked authoring handle local
 to an open `SpatialCoreBuilder`. It mechanically projects the closed member
