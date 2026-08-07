@@ -23,6 +23,7 @@
 #                    never builds CIRCT, but offers an already-built
 #                    shared CIRCT via -DCIRCT_DIR when one matches)
 #   make test      - run the complete Loom lit test suite (target: check-loom)
+#   make sync-worktree - preflight and synchronize a linked branch with main
 #   make clean     - remove this worktree's loom build only
 #   make distclean - main worktree: remove the loom build and shared LLVM,
 #                    CIRCT, and OR-Tools builds. Linked worktree: remove only
@@ -34,6 +35,7 @@ JOBS          ?= $(shell nproc)
 LOCK_TIMEOUT  ?= 1800
 
 WT_SCRIPT     := $(ROOT)/scripts/make-worktree.py
+SYNC_SCRIPT   := $(ROOT)/scripts/sync_branches.py
 WT            := $(PYTHON) $(WT_SCRIPT) \
                    --root $(ROOT) \
                    --jobs $(JOBS) \
@@ -44,7 +46,7 @@ WT            := $(PYTHON) $(WT_SCRIPT) \
 export LIT_OPTS
 export JOBS
 
-.PHONY: all doctor llvm circt or-tools loom test clean distclean
+.PHONY: all doctor llvm circt or-tools loom test sync-worktree clean distclean
 
 all: loom
 
@@ -65,6 +67,16 @@ loom:
 
 test:
 	@$(WT) test
+
+sync-worktree:
+	@git_dir="$$(git rev-parse --path-format=absolute --git-dir)"; \
+	 common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)"; \
+	 if [ "$$git_dir" = "$$common_dir" ]; then \
+	   echo "sync-worktree requires a linked worktree" >&2; \
+	   exit 2; \
+	 fi
+	@$(PYTHON) $(SYNC_SCRIPT) main --dry-run
+	@$(PYTHON) $(SYNC_SCRIPT) main
 
 clean:
 	@$(WT) clean
