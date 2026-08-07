@@ -303,6 +303,12 @@ Job model would duplicate bundle completion, the execution journal, and site
 schedulers. The two-call boundary provides parallelism and recovery without
 either extra authority.
 
+The completion record belongs only to the script attempt between those calls.
+Extending it backward into preparation or forward into import would make one
+record span separately owned API operations, or require import to rewrite
+already completed attempt state. Typed preparation and import errors preserve
+the same distinctions without another lifecycle record or mutable status.
+
 Generated scripts are part of the compiler output because they make the exact
 tool translation inspectable and reusable. The optional execution path merely
 invokes the top-level script. Containers, modules, licenses, resource limits,

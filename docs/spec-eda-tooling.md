@@ -394,10 +394,13 @@ Execution distinguishes at least:
 * parser/normalizer failure; and
 * completed Evaluation with adverse typed findings.
 
-The owner-specific completion record distinguishes bundle preparation,
-activation, tool execution, declared-output, and import failures. An
-interrupted script without a valid atomic completion record is an incomplete
-attempt, not an `ExecutionFailed` Evidence value.
+The bundle-owned completion record begins only when the finalized bundle's
+script is attempted. It distinguishes launch or activation failure, tool
+execution, declared-output failure, and successful driver completion. Bundle
+preparation and descriptor-owned import return their own typed API errors and
+do not create or mutate the completion record. An interrupted script without a
+valid atomic completion record is an incomplete attempt, not an
+`ExecutionFailed` Evidence value.
 
 Infrastructure failures and execution limits do not select a different formal
 candidate. Timeout or cancellation maps to `CancelledOrTimeout`; tool or
