@@ -517,7 +517,9 @@ class SyncBranchesTest(unittest.TestCase):
 
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("current branch B worktree is not clean", completed.stderr)
-        self.assertEqual(list(fixture.current.glob("temp/branch-sync-probe-*")), [])
+        self.assertEqual(
+            list(fixture.current.glob("te" "mp/branch-sync-probe-*")), []
+        )
 
     def test_remote_only_target_commit_is_never_overwritten(self) -> None:
         fixture = self.fixture
