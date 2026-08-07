@@ -65,6 +65,13 @@ shape, lane order, mask behavior, and token publication.
 
 ### Explicit Elementwise Decomposition
 
+This transform is the single
+`DataflowRewriteKind::ElementwiseVectorDecompose` rule owned by the
+[Canonical Dataflow Rewrite Catalog](spec-compiler-part-3-dfg.md#canonical-dataflow-rewrite-catalog).
+Its normalized decision has exactly two modes, `LeadingChunk(C)` and
+`Scalarize`. The modes are not independent rewrite kinds or an implicit
+Mapping fallback.
+
 The Dataflow rewrite owner may derive narrower candidates from one exact pure,
 total, regionless fixed-vector Compute actor with elementwise semantics. Every
 operand and the one result have the same nonempty shape; element types may
@@ -155,8 +162,9 @@ Exceptional state is not a physical bit pattern. The registered schemas for
 shape or cardinality boundaries. Every such relation must be closed and
 verified before the actor is admitted. A simulator or semantic provider that
 cannot represent the required mixed-lane state reports unsupported rather than
-coercing poison or undef to zero. The bit-level round-trip equations below
-apply to fully defined values.
+coercing poison or undef to zero. The bit-level round-trip equation below
+applies to fully defined values; the explicit `pack` and `unpack` projection
+below separately defines exceptional values and its exact identity domain.
 
 A mask consumer observes each lane as an activity decision. Defined zero and
 defined one mean inactive and active, respectively. Poison or undef does not
@@ -247,11 +255,27 @@ representations, including floating-point NaN payloads. Packing is not a
 numeric conversion.
 
 A mask is not implicit. A source-visible packed mask uses a separate
-`dataflow.pack` on its `vector<...xi1>` value. For every legal type pair:
+`dataflow.pack` on its `vector<...xi1>` value.
+
+For exceptional state, `pack` produces scalar poison when any vector lane is
+poison, otherwise scalar undef when any lane is undef, and otherwise the
+defined packed bits. `unpack` maps scalar poison to an all-poison vector,
+scalar undef to an all-undef vector, and defined bits to the corresponding
+all-defined lane values. It never invents per-lane defined bits for an
+exceptional scalar.
+
+Consequently, for every legal type pair, `pack(unpack(bits))` is an identity
+over defined, poison, and undef scalar states. `unpack(pack(vector))` is an
+identity exactly for all-defined vectors, all-poison vectors, and all-undef
+vectors. A mixed vector such as `[defined, poison]` packs to scalar poison and
+unpacks to an all-poison vector, so that composition is not an identity on the
+general vector value-state domain:
 
 ```text
-unpack(pack(vector)) = vector
 pack(unpack(bits)) = bits
+
+unpack(pack(vector)) = vector
+  iff vector is all-defined, all-poison, or all-undef
 ```
 
 The implementation uses arbitrary-width integers; a host integer width is not
@@ -505,6 +529,8 @@ Stable anchor tests cover:
 * exact and partial-tail activation closure;
 * rank-one and multi-rank `pack`/`unpack` round trips, including floating-point
   payload bits;
+* homogeneous defined, poison, and undef pack/unpack identities, plus rejection
+  of mixed-lane vector round-trip identity;
 * multi-rank contiguous and gather/scatter addressing in row-major lane order;
 * inactive-lane address suppression and all-zero-mask completion;
 * repeated gather addresses and rejected unresolved duplicate scatter

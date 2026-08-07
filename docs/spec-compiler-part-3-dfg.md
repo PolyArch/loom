@@ -45,10 +45,12 @@ tier into the actor's closed semantic projection. Every D0-to-D* rewrite
 preserves it exactly; changing, dropping, or newly choosing the tier is not a
 semantics-preserving Dataflow transformation.
 
-This document owns only the target contract: IR boundaries, structured-control
-flattening, memory-dependence integration, and verifier invariants. Pass
-decomposition, test layout, and maintenance sequencing are implementation
-choices and are not a second tracked specification.
+This document owns the target contract and the closed Canonical Dataflow
+rewrite catalog: IR boundaries, structured-control flattening,
+memory-dependence integration, rewrite equivalence and decision semantics, and
+verifier invariants. Pass decomposition, test layout, and maintenance
+sequencing are implementation choices and are not a second tracked
+specification.
 
 Fabric realization and actor grouping are TechMapping concerns. Part 3
 performs only structural eligibility and canonical graph publication inside
@@ -131,6 +133,251 @@ in canonical graph IR.
 Graph candidate eligibility and atomic publication are governed by this
 document. TechMapping, SpatialMapping, and SystemMapping realization are
 outside this IR.
+
+### Canonical Dataflow Rewrite Catalog
+
+This section is the sole normative owner of the closed Canonical Dataflow
+rewrite catalog, its decision wire, and the cross-rule equivalence boundary.
+Rule-specific documents may own a rule's detailed operation semantics, and
+the DSE specification owns enumeration and work accounting, but neither may
+add, remove, rename, or reorder a rewrite kind.
+
+Every rewrite preserves, for all legal input, value, stream, and memory
+response traces under the abstract fair and resource-unbounded Dataflow
+execution semantics, the same externally ordered values and streams, visible
+memory behavior, completion and retirement, and termination or nontermination.
+It may change internal actor identities, topology, firing traces, and cycle
+count. A rewrite may neither introduce permanent deadlock nor permanently
+refuse an input accepted by its parent. Concrete Fabric capacity, routing,
+latency, arbitration, and physical deadlock remain Mapping or Evaluation
+facts and cannot weaken this software-equivalence contract.
+
+The closed catalog is version 2.0:
+
+| Ordinal | `DataflowRewriteKind` | Normalized decision |
+|---:|---|---|
+| 0 | `SyncRendezvousRefactor` | exact root `ActorRef` and `DirectToTree` or `TreeToDirect` |
+| 1 | `PackUnpackRoundTripEliminate` | exact outer-adapter `ActorRef` |
+| 2 | `ParallelizeSerializeRoundTripEliminate` | exact outer `serialize` `ActorRef` |
+| 3 | `ElementwiseCardinalityCommute` | exact Compute `ActorRef`, complete cardinality-adapter `ActorRef` set, and `MoveInside` or `MoveOutside` |
+| 4 | `PureComputeFanoutRefactor` | `Replicate` with one exact Compute `ActorRef`, or `Factor` with the complete canonical Compute-replica `ActorRef` set |
+| 5 | `ActivationPreservingConstantFold` | exact Compute `ActorRef` |
+| 6 | `GraphDefinitionRefactor` | `Split` or `Merge` parameters below |
+| 7 | `ElementwiseVectorDecompose` | exact Compute `ActorRef` and `LeadingChunk(C)` or `Scalarize` |
+
+`GraphDefinitionRefactor::Split` carries one exact `GraphRef` and a canonical
+nonempty proper sorted-unique set of `StaticGraphLaunchRef` values that call
+that graph. The selected set's canonical sequence must be lexicographically
+smaller than its nonempty complement, so the two sides of one bipartition
+cannot encode two decisions. `GraphDefinitionRefactor::Merge` carries a
+canonically ordered pair of distinct `GraphRef` values. `LeadingChunk(C)`
+carries a positive `u64` per-chunk leading extent; the detailed divisor and
+scalarization domain is owned by
+[Explicit Elementwise Decomposition](spec-dataflow-vectorization.md#explicit-elementwise-decomposition).
+The two decomposition modes are parameters of one rule kind because they use
+one operation-schema eligibility owner and one observable-equivalence
+contract. They are not two catalog extensions.
+
+The cardinality-adapter set is nonempty, sorted, unique, and contains every
+source `parallelize` or `serialize` actor in the one connected shell crossed
+by the commute; a proper subset is not a match. A fanout `Factor` set is
+sorted, unique, contains at least two Compute actors, and names the complete
+coupled replica group selected by that decision. These sets are decision
+parameters rather than inferred matcher state because the same Compute actor
+or first replica can participate in more than one otherwise legal local
+match.
+
+Every decision reference must belong to the exact parent Canonical Dataflow
+Artifact on its sole lineage edge. That parent is the semantic context for the
+decision payload, so parent-local references encode only their canonical
+`EntityId` and never repeat the ArtifactIdentity. One decision applies exactly
+one matched source pattern and publishes at most one child. Applying the same
+kind at two matches requires two lineage edges, so intermediate immutable
+candidates remain available to DSE. Match enumeration uses complete typed
+references and canonical decision bytes, never textual positions, symbol
+spelling, pointer order, or pass traversal order. A no-op publishes no child.
+Equal finalized semantic content deduplicates by ArtifactIdentity even when
+reached by different decision paths.
+
+The decision schema identity is `loom.dataflow_rewrite.decision`, version
+2.0. Its exact descriptor bytes are the ASCII bytes
+`loom.dataflow_rewrite.decision.2.0` without a trailing zero byte. Canonical
+payload primitives are:
+
+```text
+kind = u32be(kind_ordinal)
+enum = u32be(owner_local_ordinal)
+ref  = u64be(parent_local_EntityId)
+refs = u64be(count), followed by the sorted unique ref values
+```
+
+Concatenation has no implicit tag, padding, terminator, or length other than
+the stated `refs` count. The exact payloads are:
+
+| Kind | Exact left-to-right payload |
+|---|---|
+| `SyncRendezvousRefactor` | `kind, root_ref, direction` |
+| `PackUnpackRoundTripEliminate` | `kind, outer_adapter_ref` |
+| `ParallelizeSerializeRoundTripEliminate` | `kind, outer_serialize_ref` |
+| `ElementwiseCardinalityCommute` | `kind, compute_ref, adapter_refs, direction` |
+| `PureComputeFanoutRefactor::Replicate` | `kind, variant, compute_ref` |
+| `PureComputeFanoutRefactor::Factor` | `kind, variant, replica_refs` |
+| `ActivationPreservingConstantFold` | `kind, compute_ref` |
+| `GraphDefinitionRefactor::Split` | `kind, variant, graph_ref, launch_refs` |
+| `GraphDefinitionRefactor::Merge` | `kind, variant, lower_graph_ref, higher_graph_ref` |
+| `ElementwiseVectorDecompose::LeadingChunk(C)` | `kind, compute_ref, mode, u64be(C)` |
+| `ElementwiseVectorDecompose::Scalarize` | `kind, compute_ref, mode` |
+
+The owner-local direction or variant ordinals are `DirectToTree = 0`,
+`TreeToDirect = 1`, `MoveInside = 0`, `MoveOutside = 1`, `Replicate = 0`,
+`Factor = 1`, `Split = 0`, `Merge = 1`, `LeadingChunk = 0`, and
+`Scalarize = 1`. Decoding requires exact length, known ordinals, parent
+ownership, canonical sets and pair order, semantic legality, and byte-for-byte
+re-encoding.
+
+Canonical decision enumeration compares kind ordinal first. Within a kind it
+compares, in order: root then direction for kind 0; outer adapter for kinds 1
+and 2; Compute, adapter-ref sequence, then direction for kind 3; variant then
+Compute or replica-ref sequence for kind 4; Compute for kind 5; variant then
+Graph and launch-ref sequence or Graph pair for kind 6; and Compute for kind
+7. For the same kind-7 Compute, proper leading divisors are enumerated by
+descending `C`, followed by `Scalarize` when legal. Reference sequences use
+unsigned `EntityId` order and ordinary lexicographic sequence order, with a
+strict prefix ordered before its extension. This semantic enumeration order
+is not inferred from lexicographic payload-byte order; in particular,
+`u64be(C)` would order chunks in the wrong direction.
+
+Version 1.0 admitted only
+`PackUnpackRoundTripEliminate`,
+`ParallelizeSerializeRoundTripEliminate`, and
+`ActivationPreservingConstantFold` as fixed kinds, plus chunk and
+scalarization as separate outer decision variants. Its fixed kinds carried no
+per-match anchor. It is incompatible and must be rejected rather than
+reinterpreted as this catalog.
+
+The eight rules have these exact legality boundaries:
+
+* `SyncRendezvousRefactor` converts an N-way `dataflow.sync`, for `N > 2`,
+  with exactly one externally live carried result to or from the rule's
+  canonical binary rendezvous tree. The ordered input range is recursively
+  split into contiguous halves with the left half receiving the extra element.
+  Every internal node remains an independent canonical actor. A subtree that
+  contains the original input corresponding to the sole live result carries
+  that value; every other subtree carries the value of its lowest original
+  input ordinal. An ancestor containing the live input therefore selects that
+  descendant's carrier, while every original input remains a prerequisite
+  even when its local result is dead. The reverse direction accepts only that
+  exact carrier choice and tree, with no side use of an internal result. This
+  is an optional topology alternative, not mandatory wide-to-binary lowering.
+* `PackUnpackRoundTripEliminate` removes exact `unpack(pack(vector))` or
+  `pack(unpack(bits))` round trips only when source and outer result have the
+  same complete type, total bit width, lane order, and bit representation and
+  the intermediate result has no side use. The composed registered
+  exceptional-state projections must be identity over the source's complete
+  proven value-state domain. The packed-scalar direction satisfies that
+  requirement for its defined, poison, and undef states. The vector direction
+  requires the source domain to contain only the homogeneous states admitted
+  by the vector owner, commonly by proving every runtime vector token fully
+  defined; a general mixed-lane vector is not eligible. The rule never inserts
+  or implies a physical transport adapter.
+* `ParallelizeSerializeRoundTripEliminate` removes only exact
+  `serialize(parallelize(scalar stream))` compositions whose width, data and
+  mask shape, phase connection, group order, partial-tail behavior, and
+  intermediate use counts agree. Every vector, mask, and group-phase result
+  of the `parallelize` has exactly its corresponding `serialize` operand use
+  and no side use. The reverse composition is not an identity:
+  serialization may discard inactive lanes before a later parallelizer
+  compacts values across the original group boundary.
+* `ElementwiseCardinalityCommute` moves one exact elementwise Compute actor
+  across already existing `parallelize` or `serialize` boundaries without
+  selecting a vector factor, tail policy, logical domain, or graph boundary.
+  The initial catalog admits a Compute with at least one operand and exactly
+  one result. Registered scalar and vector forms must be lane-wise identical;
+  attributes, phase, masks, and every operand correspondence must agree; and
+  the operation must have no state, memory effect, cross-lane behavior, or
+  blocking side use.
+
+  Let `P(x, phase)` denote one `parallelize` and `S(v, mask, group_phase)` one
+  `serialize`. Subscript `i` follows Compute operand ordinal. The only four
+  source-to-result shells are:
+
+  | Direction and source shell | Deterministic result shell |
+  |---|---|
+  | `MoveInside`: `compute_scalar(x_i) -> P(result, phase)` | `P_i(x_i, phase) -> compute_vector(v_i)` |
+  | `MoveInside`: `S_i(v_i, mask, group_phase) -> compute_scalar(x_i)` | `compute_vector(v_i) -> S(result, mask, group_phase)` |
+  | `MoveOutside`: `P_i(x_i, phase) -> compute_vector(v_i)` | `compute_scalar(x_i) -> P(result, phase)` |
+  | `MoveOutside`: `compute_vector(v_i) -> S(result, mask, group_phase)` | `S_i(v_i, mask, group_phase) -> compute_scalar(x_i)` |
+
+  The decision's adapter set is exactly the source shell's one result-side
+  adapter or all operand-side adapters. Operand-side adapters have identical
+  width and sideband inputs. The adapter at Compute operand ordinal zero is
+  the canonical sideband representative: only its mask and group-phase
+  results for `P_i`, or scalar-phase result for `S_i`, may escape an
+  operand-side shell; the corresponding results of every other operand-side
+  adapter have no side use. A result-side adapter's sideband results form the
+  source shell boundary. Result construction creates operand-side adapters in
+  Compute operand order, uses ordinal zero as the result boundary
+  representative, or creates the one result-side adapter. It replaces every
+  source boundary data and sideband use with that exact result boundary and
+  removes the complete source shell. Every source adapter data result has only
+  its matching Compute operand use, or the Compute result has only the one
+  result-side adapter data use. No other shell result may have a side use.
+  An inactive partial lane may be evaluated only when that evaluation is
+  proven unobservable and safe to speculate; otherwise the representative
+  mask must be proven all-active.
+* `PureComputeFanoutRefactor` converts between one single-result Compute actor
+  followed by broadcast and coupled-input broadcasts followed by replicas.
+  The Compute actor must be deterministic, total, stateless, regionless, and
+  effect-free. Replication preserves one common correspondence across every
+  operand and requires at least two result uses. It creates one replica per
+  member of the result's complete canonical sink set, ordered by the existing
+  `CanonicalGraphConsumerEndpointRef` wire. Factoring requires exact equality
+  of operation schema, attributes, types, ordered input sequences, and
+  activation correspondence for all replicas in the decision's complete set.
+  It uses the lowest canonical replica `ActorRef` as the construction source,
+  redirects every named replica result use to its one factored result, and
+  removes the other named replicas. Replication consumes the complete source
+  fanout and factoring consumes exactly the named replica group; no unlisted
+  branch or replica is silently rewritten. A generic purity trait alone is
+  insufficient.
+* `ActivationPreservingConstantFold` replaces one foldable single-result
+  Compute actor and its otherwise unused constant operands with one exact
+  typed `dataflow.constant` only when all constants use the same control
+  activation and the registered operation folds exactly. It cannot create a
+  timeless constant, merge distinct activation streams, or erase a constant
+  that has another consumer.
+* `GraphDefinitionRefactor::Split` clones one graph definition for the named
+  nonempty proper partition of its static launches and retargets only those
+  launches. The graph definition is private and every launch is a static,
+  module-local site inside a private thread definition under the baseline
+  graph ABI; the complement is derived from the parent's complete static call
+  set. `Merge` accepts only graph definitions
+  with equal signatures, protocols, memory and stream semantics, and complete
+  alpha-isomorphic actor graphs. Split assigns the normalized selected side to
+  the clone. Merge uses the lower canonical `GraphRef` as its source body and
+  retargets launches of the higher reference. Both preserve every launch
+  identity, launch-owned source map, and launch-local binding. Dynamic
+  invocations are never enumerated or individually cloned.
+* `ElementwiseVectorDecompose` has exactly the operation, shape, mask,
+  poison, activation, and construction contract defined by its linked owner.
+  It decomposes an already selected semantic vector actor; it does not revisit
+  Structured vectorization, memory atomicity, reduction order, or Mapping.
+
+The catalog excludes unrestricted graph CSE or DCE, a greedy canonicalizer,
+generic selector factoring, stateful or stream fusion, memory forwarding or
+coalescing, associative arithmetic reassociation, and hidden route, buffer,
+tag, grouping, or representation changes. A future rule requires a new
+catalog version and its own typed pattern, complete legality proof procedure,
+normalized parameters, deterministic result construction, and focused
+semantic anchors. Neither a plugin registry nor a generic rewrite-property
+DSL is part of this contract.
+
+Mandatory Canonical Dataflow finalization remains non-branching and separate.
+It canonicalizes and verifies the private result but cannot choose a rewrite,
+merge graph definitions, select synchronization topology, or prove arbitrary
+parent-child equivalence. Each rule's legality procedure is the sole authority
+for that edge. Differential simulation or formal tools may validate an
+implementation, but finite observations do not replace the rule contract.
 
 ## 2. Execution Ownership Model
 
@@ -2485,6 +2732,20 @@ relation. It never searches for or executes a graph-body conversion operation.
 
 Anchor-level tests cover:
 
+* exact catalog-2.0 kind membership and ordinals, every per-kind decision-wire
+  layout and round trip, canonical set and pair rejection, and rejection of
+  decision-1.0 payloads rather than reinterpretation;
+* deterministic complete match enumeration under presentation reordering,
+  including descending chunk divisors before scalarization, parent-qualified
+  attempted-decision keys, FIFO frontier discovery, and the exact semantic
+  limit boundary;
+* one positive edge, one decisive illegal precondition, and the necessary
+  liveness or memory counterexample for every rewrite kind, with both
+  directions exercised for bidirectional rules and no-op publication
+  rejected; and
+* preservation of one-match intermediate candidates, plus identical-content
+  deduplication and inverse-cycle termination without suppressing a legal
+  decision on a different parent;
 * invariance under private-symbol and SSA renaming, location changes, module
   definition reordering, and graph actor textual reordering;
 * identity changes for actor kind, type, semantic attribute, operand ordinal,

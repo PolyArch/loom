@@ -602,9 +602,26 @@ immutable candidate lineage after mechanical lowering.
 
 These rewrites may simplify actor networks, reshape synchronization, or remove
 provably redundant structure. They cannot revisit loop scheduling, reduction
-algebra, vector factors, or ownership. Functional equivalence preserves values,
-streams, memory effects, externally visible ordering, and abstract liveness;
-it need not preserve internal actor traces or hardware cycle count.
+algebra, the Structured vectorization factor, or ownership. Functional
+equivalence preserves values, streams, memory effects, externally visible
+ordering, and abstract liveness; it need not preserve internal actor traces or
+hardware cycle count.
+
+The cardinality-commutation and fixed-vector-decomposition rules express
+different semantic transformations. Decomposition splits one already selected
+semantic vector actor, while commutation moves an actor across existing
+cardinality adapters without choosing another vector factor. Neither replaces
+the other. Letting source implementation membership define the catalog would
+allow HOW to silently delete WHAT; treating chunking and scalarization as
+unrelated kinds would duplicate one eligibility and equivalence owner. One
+closed catalog with one parameterized decomposition kind preserves all three
+boundaries.
+
+The catalog is listed only in the compiler specification. Vectorization owns
+the decomposition details, DSE owns enumeration and work accounting, and this
+rationale owns only the reason for that split. A plugin registry or generic
+rewrite-law DSL would add an authority without making any current rule more
+expressive.
 
 ## Why Structured Vectorization Is Primary
 
@@ -618,6 +635,13 @@ types and vector memory operations before graph lowering.
 `pack` and `unpack` represent source-visible bit interpretation. Physical bus
 width adaptation belongs to Mapping and Fabric. These distinctions prevent a
 packed integer from becoming Loom's vector type system.
+
+Equal bit width also does not make a pack/unpack composition an unconditional
+vector identity. Packing collapses mixed lane-level poison or undef into one
+scalar exceptional state, so unpacking cannot recover the original lane
+mixture. Round-trip elimination therefore consumes the vector owner's exact
+exceptional-state projection and requires an identity proof for the source
+value domain; representation width alone is insufficient.
 
 A narrow target does not authorize Mapping to split a wide vector implicitly.
 Splitting can change floating reduction order, poison observation, memory

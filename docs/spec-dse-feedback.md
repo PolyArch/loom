@@ -1168,12 +1168,40 @@ parallel worker completion order cannot change the frontier or its stable work
 ordinals.
 
 The Dataflow rewrite generator uses the positive
-`dse.dataflow_rewrite.scope_expansion_limit`. For each exact input it probes
-the closed fixed-rule catalog in stable enum order, charging one expansion per
-probe. Every non-isomorphic child and the input itself then enters one
-deduplicated immutable-artifact frontier. A Fabric-admissible candidate enters
-the retained output set; a non-admissible candidate expands only the first
-missing actor in canonical Dataflow actor order.
+`dse.dataflow_rewrite.scope_expansion_limit`. For each exact frontier Artifact
+it enumerates the normalized decisions from the
+[Canonical Dataflow Rewrite Catalog](spec-compiler-part-3-dfg.md#canonical-dataflow-rewrite-catalog)
+in that catalog's exact canonical decision order. Each decision applies
+exactly one match and produces at most one immutable child. Kinds 0 through 6
+charge one expansion per attempted decision. An attempted-decision key is the
+tuple of exact parent ArtifactIdentity, decision-schema identity and version,
+and canonical decision payload bytes. Including the parent is mandatory
+because every payload reference is parent-local. Attempted keys and visited
+ArtifactIdentities terminate inverse cycles without suppressing a distinct
+intermediate candidate.
+
+All exact input Artifacts are ordered by complete ArtifactRootReference and
+inserted once into one FIFO frontier. A previously unseen finalized child is
+appended when its decision's logical slot is reached, even if workers build
+several children concurrently. The generator pops one Artifact, classifies it,
+enumerates and charges its decisions in catalog order, and only then pops the
+next Artifact. A no-op consumes its attempted-decision charge but appends
+nothing. This discovery order assigns all semantic work ordinals and cannot be
+changed by worker completion, cache state, or artifact-store insertion order.
+
+A Fabric-admissible candidate enters the retained output set. Fixed-rule
+decisions remain eligible when every frontier Artifact is popped, including a
+retained one. For a non-admissible candidate, vector-decomposition decisions
+are additionally enumerated only for the first missing actor in canonical
+Dataflow actor order, so Fabric affects candidate generation but never the
+rewrite's software legality.
+
+The provider for catalog and decision schema 2.0 has implementation semantic
+identity `loom.compiler.dataflow_rewrite.generator.v3`. The existing
+`loom.compiler.dataflow_rewrite.generator.v2` identity remains bound to the
+incompatible decision-1.0 behavior and cannot be reinterpreted. Registry,
+binding, manifest, cache, and lineage validation therefore distinguish the two
+providers without a compatibility flag or cache invalidation exception.
 
 The actor's typed decomposition domain is the one owned by
 [Explicit Elementwise Decomposition](spec-dataflow-vectorization.md#explicit-elementwise-decomposition):
