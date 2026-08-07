@@ -1080,17 +1080,21 @@ derived Fabric edges and do not enter the key. The candidate selects one
 complete domain member; it cannot independently select a region and later ask
 materialization to find a path.
 
-A one-output transform normally yields one branch group. A `StaticInterleave`
-or another contract with several outputs yields the exact terminal branches
-reached by those outputs, grouped only when their exact transform path and
-terminal region are equal. For every address in the complete source interval,
-the composed Fabric contracts must select exactly one branch and place the
-transformed address inside that branch's region. Thus an interleaved interval
-may repeat the same source logical interval across several persistent
-`MemoryRegionTarget` children without claiming that every address reaches
-every child. The branch relation, output ordinal, and transformed address are
-derived from Fabric; Mapping stores no strided-range language or copied
-interleave parameters.
+A one-output address transform normally yields one branch group. A
+`StaticInterleave` yields the exact terminal branches reached by every
+non-empty output-ordinal domain, grouped only when their exact transform path
+and terminal region are equal. A `CoherentMemory` correspondence maps one
+input-region domain to its unique output region by region-relative offset; its
+reachable output branches are provider alternatives, and the target plan
+selects only a canonical exact cover of the source interval. For every address
+in the complete source interval, the composed Fabric contracts must select
+exactly one branch and place the transformed address inside that branch's
+region. Thus an interleaved or coherent interval may repeat the same source
+logical interval across several persistent `MemoryRegionTarget` children
+without claiming that every address reaches every child. The branch relation,
+output ordinal, correspondence member, and transformed address are derived
+from Fabric; Mapping stores no strided-range language or copied transform
+parameters.
 
 The domain enumerates only finite simple paths, rejects repeated transforms or
 connections, and keeps distinct exact paths when endpoint plus terminal region

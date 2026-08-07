@@ -115,6 +115,16 @@ that every source address reaches exactly one selected branch. This keeps the
 only interleave semantics in Fabric while still making the physical plan an
 explicit Mapping choice.
 
+Not every multi-output transform is collective. `CoherentMemory` owns a
+partial bijection between equal-sized input and output regions, so an incoming
+address maps by relative offset and may have several coherent provider
+alternatives. Treating every reachable output as a required branch would turn
+replicas into a broadcast obligation. CandidateState instead selects the
+canonical subset of correspondence branches whose input domains cover the
+source interval exactly once. The selected terminal output regions and any
+necessary transform path identify that choice; correspondence members and
+endpoint ordinals remain derived Fabric facts.
+
 ## Why Dead Results Derive A Physical Discard
 
 Dataflow owns whether an actor result has consumers. A dead result therefore

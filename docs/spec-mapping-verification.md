@@ -451,9 +451,11 @@ Using that projection, the base verifier checks:
   Fabric MemoryService connections and selected service-transform paths,
   composition of Fabric-owned address width, offset, mask, interleave, and
   coherence contracts without copied parameters, arithmetic without overflow,
-  and exact collective branch coverage: every source address reaches exactly
-  one selected target child and its transformed address is contained in that
-  child's selected service region, with no missing or extra transform output;
+  exact collective coverage of every non-empty `StaticInterleave` output, and
+  exact-cover selection among `CoherentMemory` correspondence alternatives:
+  every source address reaches exactly one selected target child and its
+  transformed address is contained in that child's selected service region,
+  with no missing required output or extra alternative;
 * one exact MemoryConsistencyDomain target for each fence plan, compatible
   with its synchronization scope and all constrained memory effects;
 * complete System ResourceUse ownership, exact `ServicePlanElementRef`

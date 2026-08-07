@@ -907,12 +907,16 @@ target plan, not independent region choices. Each child carries the complete
 source logical interval and identifies one terminal branch. For every source
 address, the composed Fabric transform contracts select exactly one child and
 place its transformed address inside that child's selected region. A
-multi-output transform such as `StaticInterleave` therefore produces one child
-for each distinct `(transform path, terminal region)` branch group. Several
-output ordinals may collapse to one child only when Fabric derives that same
-group for all of them. Repeated source intervals do not mean that every address
-reaches every child. Output ordinals, strided subsets, and transformed intervals
-are derived from Fabric and are not copied into Mapping.
+`StaticInterleave` therefore produces one child for each distinct
+`(transform path, terminal region)` branch group reached by a non-empty output
+ordinal. Several output ordinals may collapse to one child only when Fabric
+derives that same group for all of them. `CoherentMemory` instead derives each
+branch domain from the input side of its selected region correspondence and
+the region-relative address map to the output side; unused coherent provider
+alternatives are absent. Repeated source intervals do not mean that every
+address reaches every child. Output ordinals, correspondence members, strided
+subsets, and transformed intervals are derived from Fabric and are not copied
+into Mapping.
 
 The transform path stores only non-derived selection. It is empty when the
 bound endpoint, explicit Fabric MemoryService connections, and complete target
@@ -924,11 +928,14 @@ ordered endpoint relation, and region correspondence; Mapping never copies an
 offset, mask, interleave rule, or coherence relation. Between consecutive path
 elements, and before the first or after the last element where applicable, the
 verifier follows only explicit Fabric MemoryService connections. The complete
-target plan must consume each selected transform's exact ordered subordinate
-input sequence and account for every ordered manager output through the next
-connection or a terminal branch group. A transform sequence uniquely implied
-by the bound endpoint and complete branch set is derived and must be omitted
-rather than redundantly persisted.
+target plan must honor each selected transform's exact ordered subordinate
+inputs and manager outputs through the next connection or a terminal branch
+group. The transform contract decides which outputs are collective and which
+are alternatives: every non-empty `StaticInterleave` output domain is covered,
+while `CoherentMemory` selects the canonical subset of correspondence branches
+whose input-region domains cover the source interval exactly once. A transform
+sequence uniquely implied by the bound endpoint and complete branch set is
+derived and must be omitted rather than redundantly persisted.
 
 A memory-region target owns every exposure child that selects that region.
 The child is keyed by its `MemoryExposureRef` and provider terminal and has no

@@ -1160,14 +1160,37 @@ StaticInterleave { granule_bytes, output_count }
 
 CoherentMemory {
   MemoryConsistencyDomainRef consistency_domain
-  canonical non-empty region correspondence
+  canonical non-empty region correspondence:
+    input_region -> output_region
 }
-  every input-region occurrence named by the correspondence is a physical
-  copy or proxy of its output service region under the exact domain contract
+  every input and output region reference occurs at most once
+  paired regions have the same nonzero size
+  an address a in input_region maps to
+    output_region.base + (a - input_region.base)
+  the input region is a physical copy or proxy of its paired output region
+  under the exact domain contract
 ```
 
 All non-address arguments and results pass unchanged, and the output endpoint
 capabilities must accept the transformed range and exact service signature.
+The `CoherentMemory` correspondence is a canonical partial bijection over
+Fabric-owned service-region references. All ordered input endpoints are ingress
+ports for that one relation. An ordered output endpoint can realize a
+correspondence only when its explicit downstream MemoryService closure reaches
+the correspondence's output region. The endpoint order and explicit
+connections therefore remain the topology owner; the correspondence remains
+the storage-identity and region-relative address owner. No input/output ordinal
+is copied into a correspondence.
+
+For one incoming address, every matching correspondence is a legal coherent
+provider alternative. A selected Mapping plan chooses a subset whose matching
+input-region domains cover each source address exactly once. Unlike
+`StaticInterleave`, unused `CoherentMemory` output alternatives are not missing
+collective branches. Multiple output endpoints that reach the same output
+region and have the same composed transform path form one derived branch group.
+Overlapping input regions therefore create alternatives that Mapping must
+disambiguate; they do not authorize duplicated requests.
+
 An identity transform is represented by a direct MemoryService connection and
 has no operation. `CoherentMemory` is the only authority that permits overlapping
 physical service regions to represent one coherent service identity. Domain
@@ -1496,7 +1519,9 @@ Anchor-level validation should cover:
 * one multi-participant MemoryConsistency domain, exact atomic and fence
   domain closure, and rejection when no one compatible domain covers a fence;
 * one `CoherentMemory` transform whose explicit region correspondence permits
-  coherent overlap, plus rejection of overlap inferred from domain membership;
+  coherent overlap, exact region-relative address translation, output closure,
+  and input-domain alternatives, plus rejection of duplicate region members,
+  unequal extents, or overlap inferred from domain membership;
 * one non-trapping at-most-once MMIO region plus rejection of a trapping or
   provider-replayed SpatialCore binding;
 * closed `fabric.system` child operations, Artifact-global `EntityId`

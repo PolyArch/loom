@@ -376,6 +376,35 @@ connections and represented identity transforms as direct connections, while
 the detailed variant and direction were missing. Transport keeps its existing
 variant-zero meaning; no previously valid record is reinterpreted.
 
+## Why Coherence Correspondence Is Region-Relative
+
+`CoherentMemory` must say which physical regions are copies or proxies of one
+another, not merely that their services participate in one consistency domain.
+The existing pair of Fabric service-region references already owns the two
+absolute ranges. Requiring equal nonzero extents makes their relative-offset
+mapping exact without adding an offset field or a second address-transform
+language.
+
+Adding input and output endpoint ordinals to every correspondence was rejected
+because the transform's ordered endpoint relation and explicit MemoryService
+connections already own topology. Restricting the whole transform to one input
+and one output was also rejected because a real coherent fabric can expose
+several ingress ports and provider alternatives. A canonical partial bijection
+over region references is the smaller complete rule: input and output regions
+remain unique, all input endpoints share that relation, and an output is usable
+only when its explicit closure reaches the paired output region. Mapping then
+selects an exact cover of the source-address domain rather than copying either
+endpoint ordinals or coherence payload.
+
+For example, a proxy region `[0x1000, 0x2000)` paired with a backing region
+`[0x8000, 0x9000)` maps source interval `[0x1400, 0x1500)` to
+`[0x8400, 0x8500)`. The difference is derived from the two Fabric-owned bases;
+there is no stored `0x7000` delta. If an explicit transform output cannot reach
+the backing region, that pair is not a target candidate. If another overlapping
+input region leads to a different coherent output, the two output-region
+branches are alternatives and one selected plan must still cover every source
+address exactly once.
+
 ## Why Handshake Owners Use Private Junctions
 
 Ready/valid behavior belongs to the concrete Fabric resource. A consumer-owned
