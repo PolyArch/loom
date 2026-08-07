@@ -27,6 +27,7 @@ class InitializerRelationModel;
 class FrozenSystemPnrProblem;
 class SystemCandidateState;
 struct InitializedSystemCandidate;
+using SystemCandidateStateHandle = std::shared_ptr<SystemCandidateState>;
 using FrozenSystemPnrProblemHandle =
     std::shared_ptr<const FrozenSystemPnrProblem>;
 
@@ -79,8 +80,25 @@ struct FrozenSystemTransferTerminal final {
   PnrIndex endpointChoiceCount = 0;
 };
 
+struct FrozenSystemServiceContext final {
+  PnrIndex service = 0;
+  PnrIndex graphDecision = 0;
+  PnrIndex threadDecision = 0;
+  std::vector<SystemServiceTargetSubject> subjects;
+};
+
+struct FrozenSystemMemoryServiceBinding final {
+  ::loom::mapping::SystemServiceObligationKey obligation;
+  SystemServiceTargetSubject subject;
+  ArtifactRootReference spatialMapping;
+  ::loom::fabric::AccCoreOccurrenceRef accCore;
+  ::loom::fabric::SystemServiceEndpointRef systemEndpoint;
+  ::loom::fabric::FabricMemoryEndpointRef occurrenceEndpoint;
+};
+
 struct FrozenSystemServiceLeg final {
   ::loom::mapping::CanonicalServiceLegKey key;
+  PnrIndex serviceContext = getInvalidPnrIndex();
   PnrIndex sourceTerminal = 0;
   PnrIndex sinkOffset = 0;
   PnrIndex sinkCount = 0;
@@ -128,6 +146,16 @@ public:
   llvm::ArrayRef<FrozenSystemTransferTerminal> serviceTerminals() const {
     return serviceTerminals_;
   }
+  llvm::ArrayRef<SystemSearchServiceDomain> serviceDomains() const {
+    return serviceDomains_;
+  }
+  llvm::ArrayRef<FrozenSystemServiceContext> serviceContexts() const {
+    return serviceContexts_;
+  }
+  llvm::ArrayRef<FrozenSystemMemoryServiceBinding>
+  memoryServiceBindings() const {
+    return memoryServiceBindings_;
+  }
   llvm::ArrayRef<FrozenSystemServiceLeg> serviceLegs() const {
     return serviceLegs_;
   }
@@ -160,6 +188,9 @@ private:
       FrozenEndpointRoutingTopology routingTopology,
       std::vector<FrozenSystemTransferTerminal> serviceTerminals,
       std::vector<PnrIndex> serviceTerminalEndpointChoices,
+      std::vector<SystemSearchServiceDomain> serviceDomains,
+      std::vector<FrozenSystemServiceContext> serviceContexts,
+      std::vector<FrozenSystemMemoryServiceBinding> memoryServiceBindings,
       std::vector<FrozenSystemServiceLeg> serviceLegs,
       std::vector<PnrIndex> serviceLegSinkTerminals,
       std::unique_ptr<detail::InitializerRelationModel> initializerRelations);
@@ -184,6 +215,9 @@ private:
   FrozenEndpointRoutingTopology routingTopology_;
   std::vector<FrozenSystemTransferTerminal> serviceTerminals_;
   std::vector<PnrIndex> serviceTerminalEndpointChoices_;
+  std::vector<SystemSearchServiceDomain> serviceDomains_;
+  std::vector<FrozenSystemServiceContext> serviceContexts_;
+  std::vector<FrozenSystemMemoryServiceBinding> memoryServiceBindings_;
   std::vector<FrozenSystemServiceLeg> serviceLegs_;
   std::vector<PnrIndex> serviceLegSinkTerminals_;
   std::unique_ptr<detail::InitializerRelationModel> initializerRelations_;
@@ -191,6 +225,10 @@ private:
   friend class SystemCandidateState;
   friend llvm::Expected<InitializedSystemCandidate>
       initializeCanonicalSystemCandidate(FrozenSystemPnrProblemHandle);
+  friend llvm::Expected<SystemCandidateStateHandle>
+      initializeSystemCandidate(FrozenSystemPnrProblemHandle,
+                                llvm::ArrayRef<PnrIndex>,
+                                llvm::ArrayRef<PnrIndex>);
   friend llvm::Expected<std::shared_ptr<const FrozenSystemPnrProblem>>
   freezeSystemPnrProblem(
       const ::dataflow::CanonicalDataflowProgramView &,

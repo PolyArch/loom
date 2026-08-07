@@ -8,9 +8,14 @@
 
 #include <cstdint>
 #include <memory>
+#include <variant>
 #include <vector>
 
 namespace loom::pnr {
+
+using SystemServiceTargetDomain =
+    std::variant<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>,
+                 std::vector<::loom::fabric::MemoryConsistencyDomainRef>>;
 
 struct SystemServiceRouteNodeSelection final {
   PnrIndex endpoint = 0;
@@ -41,7 +46,6 @@ struct SystemCandidateInitialization final {
 };
 
 class SystemCandidateState;
-using SystemCandidateStateHandle = std::shared_ptr<SystemCandidateState>;
 
 class SystemCandidateState final {
 public:
@@ -71,6 +75,8 @@ public:
   PnrIndex graphChoice(PnrIndex decision) const;
   ::loom::fabric::AccCoreOccurrenceRef selectedAccCore(PnrIndex decision) const;
   const ArtifactRootReference &selectedSpatialMapping(PnrIndex decision) const;
+  llvm::Expected<SystemServiceTargetDomain>
+  serviceTargetDomain(PnrIndex context) const;
 
   llvm::Error verify() const;
 
@@ -102,6 +108,11 @@ struct InitializedSystemCandidate final {
 
 llvm::Expected<InitializedSystemCandidate>
 initializeCanonicalSystemCandidate(FrozenSystemPnrProblemHandle problem);
+
+llvm::Expected<SystemCandidateStateHandle>
+initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
+                          llvm::ArrayRef<PnrIndex> threadChoices,
+                          llvm::ArrayRef<PnrIndex> graphChoices);
 
 } // namespace loom::pnr
 

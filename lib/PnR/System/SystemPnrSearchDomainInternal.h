@@ -3,6 +3,7 @@
 
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "PnR/FrozenConstraintIndex.h"
+#include "PnR/System/SystemPnrProblem.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -130,6 +131,14 @@ projectSystemServiceDomains(
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
     llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog,
     const SystemFrozenConstraintIndex &constraints, bool flatGraphSearch);
+
+llvm::Expected<std::vector<FrozenSystemMemoryServiceBinding>>
+projectSystemMemoryServiceBindings(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
+    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog,
+    const SystemFrozenConstraintIndex &constraints);
 
 llvm::Error validateSystemServiceDomains(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,

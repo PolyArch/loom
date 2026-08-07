@@ -1,5 +1,7 @@
 #include "SystemServiceRouter.h"
 
+#include "SystemCandidateServiceResolver.h"
+
 #include "PnR/EndpointRouter.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -177,7 +179,9 @@ llvm::Error canonicalizeTree(std::vector<MutableNode> &nodes,
 
 llvm::Expected<detail::CanonicalSystemServiceRoutes>
 loom::pnr::detail::buildCanonicalSystemServiceRoutes(
-    const FrozenSystemPnrProblem &problem) {
+    const FrozenSystemPnrProblem &problem,
+    llvm::ArrayRef<PnrIndex> threadChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices) {
   CanonicalSystemServiceRoutes result;
   const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
   EndpointRouteSearchScratch search;
@@ -191,8 +195,10 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
     const auto sinkTerminals = problem.serviceLegSinkTerminals(legOrdinal);
     if (sinkTerminals.empty())
       return invalid("a frozen service leg has no sink terminal");
-    const auto sourceDomain =
-        problem.serviceTerminalEndpointChoices(leg.sourceTerminal);
+    auto sourceDomain = resolveSystemServiceTerminalDomain(
+        problem, legOrdinal, leg.sourceTerminal, threadChoices, graphChoices);
+    if (!sourceDomain)
+      return sourceDomain.takeError();
 
     std::vector<MutableNode> nodes;
     std::vector<MutableSink> sinks;
@@ -201,7 +207,7 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
       std::vector<PnrIndex> sourceEndpoints;
       std::vector<PnrIndex> sourceReplicationGroups;
       if (nodes.empty()) {
-        sourceEndpoints.assign(sourceDomain.begin(), sourceDomain.end());
+        sourceEndpoints.assign(sourceDomain->begin(), sourceDomain->end());
         sourceReplicationGroups.assign(sourceEndpoints.size(),
                                        getInvalidPnrIndex());
       } else {
@@ -219,15 +225,17 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
           sourceReplicationGroups.push_back(group);
         }
       }
-      const auto targetEndpoints =
-          problem.serviceTerminalEndpointChoices(sinkTerminal);
-      std::vector<PnrIndex> targetRanks(targetEndpoints.size());
+      auto targetEndpoints = resolveSystemServiceTerminalDomain(
+          problem, legOrdinal, sinkTerminal, threadChoices, graphChoices);
+      if (!targetEndpoints)
+        return targetEndpoints.takeError();
+      std::vector<PnrIndex> targetRanks(targetEndpoints->size());
       for (PnrIndex rank = 0; rank < targetRanks.size(); ++rank)
         targetRanks[rank] = rank;
       auto routed = search.search(
           {sourceEndpoints,
            sourceReplicationGroups,
-           targetEndpoints,
+           *targetEndpoints,
            targetRanks,
            arcCosts,
            arcCosts,
@@ -236,7 +244,11 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
            problem.config().policy().search.routing.endpointExpansionLimit,
            {}});
       if (!routed)
-        return routed.takeError();
+        return llvm::joinErrors(invalid("cannot route frozen service leg " +
+                                        llvm::Twine(legOrdinal) +
+                                        " in context " +
+                                        llvm::Twine(leg.serviceContext)),
+                                routed.takeError());
 
       PnrIndex sourceNode = 0;
       if (nodes.empty()) {
@@ -280,14 +292,17 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
     result.routes.push_back({legOrdinal, nodes.front().endpoint, *nodeOffset,
                              *nodeCount, *sinkOffset, *sinkCount});
   }
-  if (llvm::Error error = verifySystemServiceRoutes(problem, result.routes,
-                                                    result.nodes, result.sinks))
+  if (llvm::Error error =
+          verifySystemServiceRoutes(problem, threadChoices, graphChoices,
+                                    result.routes, result.nodes, result.sinks))
     return std::move(error);
   return result;
 }
 
 llvm::Error loom::pnr::detail::verifySystemServiceRoutes(
     const FrozenSystemPnrProblem &problem,
+    llvm::ArrayRef<PnrIndex> threadChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices,
     llvm::ArrayRef<SystemServiceRouteSelection> routes,
     llvm::ArrayRef<SystemServiceRouteNodeSelection> nodes,
     llvm::ArrayRef<SystemServiceRouteSinkSelection> sinks) {
@@ -313,11 +328,14 @@ llvm::Error loom::pnr::detail::verifySystemServiceRoutes(
     const auto expectedSinks = problem.serviceLegSinkTerminals(route.leg);
     if (route.sinkCount != expectedSinks.size())
       return invalid("service route does not cover every sink terminal");
+    auto sourceDomain = resolveSystemServiceTerminalDomain(
+        problem, route.leg, leg.sourceTerminal, threadChoices, graphChoices);
+    if (!sourceDomain)
+      return sourceDomain.takeError();
     if (routeNodes.front().endpoint != route.rootEndpoint ||
         routeNodes.front().parentNode != getInvalidPnrIndex() ||
         routeNodes.front().incomingTraversal != getInvalidPnrIndex() ||
-        !contains(problem.serviceTerminalEndpointChoices(leg.sourceTerminal),
-                  route.rootEndpoint))
+        !contains(*sourceDomain, route.rootEndpoint))
       return invalid("service route root is not an admitted source endpoint");
 
     llvm::DenseMap<PnrIndex, PnrIndex> nodeByEndpoint;
@@ -371,8 +389,11 @@ llvm::Error loom::pnr::detail::verifySystemServiceRoutes(
       const std::size_t sinkOrdinal = found - expectedSinks.begin();
       if (sinkSeen[sinkOrdinal]++)
         return invalid("service route binds one sink more than once");
-      if (!contains(problem.serviceTerminalEndpointChoices(sink.terminal),
-                    routeNodes[sink.node].endpoint))
+      auto terminalDomain = resolveSystemServiceTerminalDomain(
+          problem, route.leg, sink.terminal, threadChoices, graphChoices);
+      if (!terminalDomain)
+        return terminalDomain.takeError();
+      if (!contains(*terminalDomain, routeNodes[sink.node].endpoint))
         return invalid("service route sink endpoint is not admitted by H");
     }
     if (llvm::any_of(sinkSeen, [](std::uint8_t seen) { return seen != 1; }))

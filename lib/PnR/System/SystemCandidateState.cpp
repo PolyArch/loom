@@ -1,6 +1,7 @@
 #include "PnR/System/SystemCandidateState.h"
 
 #include "PnR/InitializerRelationSolver.h"
+#include "SystemCandidateServiceResolver.h"
 #include "SystemPnrSearchDomainInternal.h"
 #include "SystemServiceRouter.h"
 
@@ -61,9 +62,13 @@ SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
     return llvm::joinErrors(
         invalid("thread and graph target classes are incompatible"),
         std::move(error));
+  if (llvm::Error error = detail::verifySystemServiceTargetDomains(
+          *problem, initialization.threadChoices, initialization.graphChoices))
+    return std::move(error);
   if (llvm::Error error = detail::verifySystemServiceRoutes(
-          *problem, initialization.serviceRoutes,
-          initialization.serviceRouteNodes, initialization.serviceRouteSinks))
+          *problem, initialization.threadChoices, initialization.graphChoices,
+          initialization.serviceRoutes, initialization.serviceRouteNodes,
+          initialization.serviceRouteSinks))
     return std::move(error);
   auto state = SystemCandidateStateHandle(new SystemCandidateState(
       std::move(problem),
@@ -107,12 +112,22 @@ SystemCandidateState::selectedSpatialMapping(PnrIndex decision) const {
   return problem_->spatialMappings()[domain[graphChoice(decision)]];
 }
 
+llvm::Expected<SystemServiceTargetDomain>
+SystemCandidateState::serviceTargetDomain(PnrIndex context) const {
+  return detail::resolveSystemServiceTargetDomain(
+      *problem_, context, threadChoices_, graphChoices_);
+}
+
 llvm::Error SystemCandidateState::verify() const {
   auto choices = relationChoices(*problem_, threadChoices_, graphChoices_);
   if (!choices)
     return choices.takeError();
+  if (llvm::Error error = detail::verifySystemServiceTargetDomains(
+          *problem_, threadChoices_, graphChoices_))
+    return error;
   if (llvm::Error error = detail::verifySystemServiceRoutes(
-          *problem_, serviceRoutes_, serviceRouteNodes_, serviceRouteSinks_))
+          *problem_, threadChoices_, graphChoices_, serviceRoutes_,
+          serviceRouteNodes_, serviceRouteSinks_))
     return error;
 
   std::map<std::uint64_t, std::vector<PnrIndex>> threadsByRoot;
@@ -170,16 +185,36 @@ loom::pnr::initializeCanonicalSystemCandidate(
   if (!solved)
     return solved.takeError();
   const std::size_t threadCount = problem->threadDecisions().size();
-  auto routes = detail::buildCanonicalSystemServiceRoutes(*problem);
-  if (!routes)
-    return routes.takeError();
-  SystemCandidateInitialization initialization{
-      llvm::ArrayRef(solved->choices).take_front(threadCount),
-      llvm::ArrayRef(solved->choices).drop_front(threadCount), routes->routes,
-      routes->nodes, routes->sinks};
-  auto state = SystemCandidateState::create(problem, initialization);
+  auto state = initializeSystemCandidate(
+      problem, llvm::ArrayRef(solved->choices).take_front(threadCount),
+      llvm::ArrayRef(solved->choices).drop_front(threadCount));
   if (!state)
     return state.takeError();
-  return InitializedSystemCandidate{std::move(*state),
-                                    solved->assignmentAttempts};
+  return InitializedSystemCandidate{*state, solved->assignmentAttempts};
+}
+
+llvm::Expected<SystemCandidateStateHandle>
+loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
+                                     llvm::ArrayRef<PnrIndex> threadChoices,
+                                     llvm::ArrayRef<PnrIndex> graphChoices) {
+  if (!problem)
+    return invalid("FrozenSystemPnrProblem owner is null");
+  auto choices = relationChoices(*problem, threadChoices, graphChoices);
+  if (!choices)
+    return choices.takeError();
+  if (llvm::Error error =
+          problem->initializerRelations_->verifyChoices(*choices))
+    return llvm::joinErrors(
+        invalid("thread and graph target classes are incompatible"),
+        std::move(error));
+  if (llvm::Error error = detail::verifySystemServiceTargetDomains(
+          *problem, threadChoices, graphChoices))
+    return std::move(error);
+  auto routes = detail::buildCanonicalSystemServiceRoutes(
+      *problem, threadChoices, graphChoices);
+  if (!routes)
+    return routes.takeError();
+  return SystemCandidateState::create(
+      std::move(problem), {threadChoices, graphChoices, routes->routes,
+                           routes->nodes, routes->sinks});
 }

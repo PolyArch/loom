@@ -52,6 +52,7 @@ add_mlir_library(LoomPnR
   System/SystemPresburgerPartition.cpp
   System/SystemPnrProblem.cpp
   System/SystemCandidateState.cpp
+  System/SystemCandidateServiceResolver.cpp
   System/SystemServiceRouter.cpp
   System/SystemMappingMaterializer.cpp
 

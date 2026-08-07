@@ -817,6 +817,79 @@ projectSystemServiceDomains(
   return result;
 }
 
+llvm::Expected<std::vector<FrozenSystemMemoryServiceBinding>>
+projectSystemMemoryServiceBindings(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
+    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog,
+    const SystemFrozenConstraintIndex &constraints) {
+  auto obligations =
+      ::loom::mapping::projectSystemServiceObligations(dataflow, roots);
+  if (!obligations)
+    return obligations.takeError();
+  auto messagePayloads = collectMessagePayloads(dataflow, roots);
+  if (!messagePayloads)
+    return messagePayloads.takeError();
+
+  std::vector<FrozenSystemMemoryServiceBinding> result;
+  const auto append =
+      [&](const auto &obligation, const SystemServiceTargetSubject &subject,
+          const SpatialCatalogEntry &entry,
+          llvm::ArrayRef<BoundMemoryEndpointPair> pairs) -> llvm::Error {
+    for (const BoundMemoryEndpointPair &pair : pairs) {
+      const auto *spatialCore =
+          std::get_if<::loom::fabric::SpatialCoreOccurrenceRef>(
+              &pair.occurrenceEndpoint.owner.payload);
+      if (!spatialCore)
+        return invalid("memory service binding is not occurrence-qualified");
+      result.push_back({obligation.key, subject, entry.reference,
+                        spatialCore->core, pair.systemEndpoint,
+                        pair.occurrenceEndpoint});
+    }
+    return llvm::Error::success();
+  };
+
+  for (const auto &obligation : *obligations) {
+    if (!std::holds_alternative<
+            ::loom::mapping::OperationServiceObligationFamilyKey>(
+            obligation.key))
+      continue;
+    for (const auto &memberRef : obligation.members) {
+      auto member =
+          resolveMember(dataflow, obligation, memberRef, *messagePayloads);
+      if (!member)
+        return member.takeError();
+      const SystemServiceTargetSubject subject{
+          SystemServiceMemberTargetSubject{memberRef}};
+      for (const SpatialCatalogEntry &entry : spatialCatalog) {
+        auto pairs = boundPairsForMember(
+            fabric, *member, llvm::ArrayRef<SpatialCatalogEntry>(&entry, 1),
+            constraints);
+        if (!pairs)
+          return pairs.takeError();
+        if (llvm::Error error = append(obligation, subject, entry, *pairs))
+          return std::move(error);
+      }
+    }
+    for (const auto &exposure : obligation.exposures) {
+      const SystemServiceTargetSubject subject{
+          SystemMemoryExposureTargetSubject{exposure}};
+      for (const SpatialCatalogEntry &entry : spatialCatalog) {
+        auto pairs = boundPairsForExposure(
+            fabric, exposure, llvm::ArrayRef<SpatialCatalogEntry>(&entry, 1),
+            constraints);
+        if (!pairs)
+          return pairs.takeError();
+        if (llvm::Error error = append(obligation, subject, entry, *pairs))
+          return std::move(error);
+      }
+    }
+  }
+
+  return result;
+}
+
 llvm::Error validateSystemServiceDomains(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,

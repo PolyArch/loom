@@ -17,10 +17,14 @@ struct CanonicalSystemServiceRoutes final {
 };
 
 llvm::Expected<CanonicalSystemServiceRoutes>
-buildCanonicalSystemServiceRoutes(const FrozenSystemPnrProblem &problem);
+buildCanonicalSystemServiceRoutes(const FrozenSystemPnrProblem &problem,
+                                  llvm::ArrayRef<PnrIndex> threadChoices,
+                                  llvm::ArrayRef<PnrIndex> graphChoices);
 
 llvm::Error verifySystemServiceRoutes(
     const FrozenSystemPnrProblem &problem,
+    llvm::ArrayRef<PnrIndex> threadChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices,
     llvm::ArrayRef<SystemServiceRouteSelection> routes,
     llvm::ArrayRef<SystemServiceRouteNodeSelection> nodes,
     llvm::ArrayRef<SystemServiceRouteSinkSelection> sinks);

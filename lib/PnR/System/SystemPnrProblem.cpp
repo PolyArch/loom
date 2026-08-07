@@ -6,6 +6,7 @@
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ComponentViewDigest.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
@@ -64,6 +65,8 @@ constexpr PnrCapacityContext serviceLegContext{
     frozenArtifact, "service_routing", "leg", PnrCapacityMeasure::Index};
 constexpr PnrCapacityContext serviceLegSinkContext{
     frozenArtifact, "service_routing", "sink", PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext serviceContextIndexContext{
+    frozenArtifact, "service_context", "context", PnrCapacityMeasure::Index};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::make_error<SystemPnrFreezeFailure>(
@@ -125,10 +128,45 @@ struct ServiceLegDraft final {
   std::vector<const MergedServiceTerminal *> sinks;
 };
 
-llvm::Expected<FrozenSystemRoutingData>
-freezeSystemRouting(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                    const ::loom::fabric::FabricSystemRootView &fabric,
-                    const SystemPnrSearchDomainView &searchDomain) {
+llvm::Expected<std::uint32_t> operationServiceLegPayloadWidth(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::mapping::CanonicalServiceLegKey &leg) {
+  const ::dataflow::ContextualActorRef *contextual = nullptr;
+  if (const auto *addressed =
+          std::get_if<::dataflow::AddressedMemoryActorMemberRef>(&leg.member))
+    contextual = &addressed->actor;
+  else if (const auto *fence =
+               std::get_if<::dataflow::FenceActorMemberRef>(&leg.member))
+    contextual = &fence->actor;
+  if (!contextual)
+    return invalid("operation-service leg has no contextual actor");
+  if (llvm::Error error = dataflow.validate(*contextual))
+    return std::move(error);
+  auto actor = dataflow.resolve(contextual->actor);
+  if (!actor)
+    return actor.takeError();
+  auto service = ::dataflow::semantics::CanonicalService::forActor(actor->op);
+  if (!service)
+    return service.takeError();
+  if (leg.ordinal >= service->legCount())
+    return invalid("operation-service leg ordinal is out of range");
+
+  std::uint32_t result = 0;
+  for (const auto &value : service->legPayload(leg.ordinal)) {
+    auto width = dataflow.transportPayloadBitWidth(value.type);
+    if (!width)
+      return width.takeError();
+    result = std::max(result, *width);
+  }
+  return result;
+}
+
+llvm::Expected<FrozenSystemRoutingData> freezeSystemRouting(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const SystemPnrSearchDomainView &searchDomain,
+    llvm::ArrayRef<FrozenSystemServiceContext> serviceContexts,
+    llvm::ArrayRef<FrozenSystemGraphExecutionDecision> graphDecisions) {
   FrozenSystemRoutingData result;
   auto topology = freezeEndpointRoutingTopology(fabric.artifact());
   if (!topology)
@@ -201,41 +239,47 @@ freezeSystemRouting(const ::dataflow::CanonicalDataflowProgramView &dataflow,
     return *terminal;
   };
 
-  for (const SystemSearchServiceDomain &service :
-       searchDomain.serviceObligations()) {
+  for (const auto &[serviceOrdinal, service] :
+       llvm::enumerate(searchDomain.serviceObligations())) {
     const auto *producer =
         std::get_if<::loom::mapping::TransferObligationFamilyKey>(&service.key);
-    if (!producer)
-      return invalid(
-          "operation-service target selection must precede System routing");
-    auto producerKey =
-        ::dataflow::encodeDataflowReference(dataflow.identity(), *producer);
-    if (!producerKey)
-      return producerKey.takeError();
-    auto payloadWidth = producerWidths.find(bytesKey(*producerKey));
-    if (payloadWidth == producerWidths.end())
-      return invalid("H transfer obligation has no Dataflow producer");
+    std::uint32_t payloadWidthBits = 0;
+    if (producer) {
+      auto producerKey =
+          ::dataflow::encodeDataflowReference(dataflow.identity(), *producer);
+      if (!producerKey)
+        return producerKey.takeError();
+      auto payloadWidth = producerWidths.find(bytesKey(*producerKey));
+      if (payloadWidth == producerWidths.end())
+        return invalid("H transfer obligation has no Dataflow producer");
+      payloadWidthBits = payloadWidth->second;
+    }
 
     std::map<std::string, MergedServiceTerminal> terminals;
     for (const SystemSearchTransferTerminalCompatibility &row :
          service.transferTerminalCompatibility) {
-      const auto *bound =
-          std::get_if<SystemMessageTerminalEndpoint>(&row.boundEndpoint);
-      if (!bound)
+      if (const auto *bound =
+              std::get_if<SystemMessageTerminalEndpoint>(&row.boundEndpoint)) {
+        if (!producer)
+          return invalid("operation-service obligation has a message row");
+        if (row.compatibleTransportEndpoints.size() > 1 ||
+            (!row.compatibleTransportEndpoints.empty() &&
+             row.compatibleTransportEndpoints.front() != bound->endpoint))
+          return invalid("message terminal row is not factorized by its exact "
+                         "bound endpoint");
+      } else if (producer) {
         return invalid("transfer obligation has a memory terminal row");
-      if (row.compatibleTransportEndpoints.size() > 1 ||
-          (!row.compatibleTransportEndpoints.empty() &&
-           row.compatibleTransportEndpoints.front() != bound->endpoint))
-        return invalid("message terminal row is not factorized by its exact "
-                       "bound endpoint");
+      }
       auto terminalBytes = ::loom::mapping::encodeSystemTransferTerminalKey(
           dataflow.identity(), row.terminal);
       if (!terminalBytes)
         return terminalBytes.takeError();
       auto [position, inserted] = terminals.try_emplace(
           bytesKey(*terminalBytes), MergedServiceTerminal{row.terminal, {}});
-      if (!row.compatibleTransportEndpoints.empty())
-        position->second.endpoints.push_back(bound->endpoint);
+      position->second.endpoints.insert(
+          position->second.endpoints.end(),
+          row.compatibleTransportEndpoints.begin(),
+          row.compatibleTransportEndpoints.end());
     }
     for (auto &[key, terminal] : terminals) {
       llvm::sort(terminal.endpoints, [](const auto &left, const auto &right) {
@@ -282,34 +326,63 @@ freezeSystemRouting(const ::dataflow::CanonicalDataflowProgramView &dataflow,
         continue;
       if (!draft.source)
         return invalid("H service leg with sinks has no source terminal");
-      if (draft.source->endpoints.empty())
-        return infeasible(
-            "a service source terminal has no compatible endpoint");
-      for (const auto *sink : draft.sinks)
-        if (sink->endpoints.empty())
-          return infeasible(
-              "a service sink terminal has no compatible endpoint");
 
-      auto source = appendTerminal(*draft.source);
-      if (!source)
-        return source.takeError();
-      auto sinkOffset = checked(serviceLegSinkContext, result.legSinks.size());
-      if (!sinkOffset)
-        return sinkOffset.takeError();
-      for (const auto *sink : draft.sinks) {
-        auto terminal = appendTerminal(*sink);
-        if (!terminal)
-          return terminal.takeError();
-        result.legSinks.push_back(*terminal);
+      std::uint32_t legPayloadWidthBits = payloadWidthBits;
+      if (!producer) {
+        auto width = operationServiceLegPayloadWidth(dataflow, draft.key);
+        if (!width)
+          return width.takeError();
+        legPayloadWidthBits = *width;
       }
-      auto sinkCount = checked(serviceLegSinkContext, draft.sinks.size());
-      if (!sinkCount)
-        return sinkCount.takeError();
-      if (llvm::Error error = preflightPnrIndexCapacity(serviceLegContext,
-                                                        result.legs.size() + 1))
-        return std::move(error);
-      result.legs.push_back({std::move(draft.key), *source, *sinkOffset,
-                             *sinkCount, payloadWidth->second});
+
+      std::vector<PnrIndex> contexts;
+      if (producer) {
+        contexts.push_back(getInvalidPnrIndex());
+      } else {
+        const ::dataflow::RootedGraphLaunchRef *launch = nullptr;
+        if (const auto *addressed =
+                std::get_if<::dataflow::AddressedMemoryActorMemberRef>(
+                    &draft.key.member))
+          launch = &addressed->actor.launch;
+        else if (const auto *fence =
+                     std::get_if<::dataflow::FenceActorMemberRef>(
+                         &draft.key.member))
+          launch = &fence->actor.launch;
+        if (!launch)
+          return invalid("operation-service leg has no graph-backed member");
+        for (const auto &[contextOrdinal, context] :
+             llvm::enumerate(serviceContexts))
+          if (context.service == serviceOrdinal &&
+              context.graphDecision < graphDecisions.size() &&
+              graphDecisions[context.graphDecision].launch == *launch)
+            contexts.push_back(static_cast<PnrIndex>(contextOrdinal));
+      }
+      if (contexts.empty())
+        return invalid("operation-service leg has no execution context");
+
+      for (PnrIndex context : contexts) {
+        auto source = appendTerminal(*draft.source);
+        if (!source)
+          return source.takeError();
+        auto sinkOffset =
+            checked(serviceLegSinkContext, result.legSinks.size());
+        if (!sinkOffset)
+          return sinkOffset.takeError();
+        for (const auto *sink : draft.sinks) {
+          auto terminal = appendTerminal(*sink);
+          if (!terminal)
+            return terminal.takeError();
+          result.legSinks.push_back(*terminal);
+        }
+        auto sinkCount = checked(serviceLegSinkContext, draft.sinks.size());
+        if (!sinkCount)
+          return sinkCount.takeError();
+        if (llvm::Error error = preflightPnrIndexCapacity(
+                serviceLegContext, result.legs.size() + 1))
+          return std::move(error);
+        result.legs.push_back({draft.key, context, *source, *sinkOffset,
+                               *sinkCount, legPayloadWidthBits});
+      }
     }
   }
   return result;
@@ -354,6 +427,7 @@ struct Catalogs final {
   std::vector<PnrIndex> coreTargetClasses;
   std::vector<ArtifactRootReference> mappings;
   std::vector<PnrIndex> mappingTargetClasses;
+  std::vector<detail::SpatialCatalogEntry> spatialCatalog;
 };
 
 llvm::Expected<Catalogs>
@@ -399,21 +473,21 @@ buildCatalogs(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   result.mappings.erase(
       std::unique(result.mappings.begin(), result.mappings.end()),
       result.mappings.end());
+  auto spatialCatalog =
+      detail::importSpatialCatalog(result.mappings, dataflow, system, store);
+  if (!spatialCatalog)
+    return spatialCatalog.takeError();
+  result.spatialCatalog = std::move(*spatialCatalog);
 
   std::vector<FrozenSystemSpatialTargetClass> mappingClasses;
   mappingClasses.reserve(result.mappings.size());
   std::set<std::string> attachedTargetClasses;
   for (const auto &targetClass : coreClasses)
     attachedTargetClasses.insert(targetClassKey(targetClass));
-  for (const ArtifactRootReference &reference : result.mappings) {
-    auto mapping = ::loom::mapping::importSpatialMapping(reference, store);
-    if (!mapping)
-      return mapping.takeError();
-    if (mapping->view().dataflowIdentity() != dataflow.identity())
-      return invalid("SpatialMapping catalog has a foreign Dataflow owner");
+  for (const detail::SpatialCatalogEntry &entry : result.spatialCatalog) {
     const ::loom::fabric::FabricArtifactView *module = nullptr;
     for (const auto &candidate : system.artifact().importedModules())
-      if (candidate.identity() == mapping->view().fabricIdentity()) {
+      if (candidate.identity() == entry.mapping.view().fabricIdentity()) {
         module = &candidate;
         break;
       }
@@ -646,6 +720,98 @@ buildRelations(const Catalogs &catalogs, const Decisions &decisions,
   return std::make_unique<detail::InitializerRelationModel>(std::move(*model));
 }
 
+llvm::Expected<std::vector<FrozenSystemServiceContext>>
+buildServiceContexts(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
+                     llvm::ArrayRef<SystemSearchServiceDomain> services,
+                     const Decisions &decisions,
+                     llvm::ArrayRef<PnrIndex> overlapOffsets,
+                     llvm::ArrayRef<PnrIndex> overlaps) {
+  auto obligations =
+      ::loom::mapping::projectSystemServiceObligations(dataflow, roots);
+  if (!obligations)
+    return obligations.takeError();
+  std::vector<FrozenSystemServiceContext> result;
+  for (const auto &[serviceOrdinal, service] : llvm::enumerate(services)) {
+    if (!std::holds_alternative<
+            ::loom::mapping::OperationServiceObligationFamilyKey>(service.key))
+      continue;
+    const auto serviceKey = service.key;
+    const auto projection =
+        llvm::find_if(*obligations, [&](const auto &candidate) {
+          return candidate.key == serviceKey;
+        });
+    if (projection == obligations->end())
+      return invalid("H operation service has no Dataflow obligation");
+
+    std::vector<::dataflow::RootedGraphLaunchRef> launches;
+    for (const auto &member : projection->members) {
+      const ::dataflow::RootedGraphLaunchRef *launch = nullptr;
+      if (const auto *addressed =
+              std::get_if<::dataflow::AddressedMemoryActorMemberRef>(&member))
+        launch = &addressed->actor.launch;
+      else if (const auto *fence =
+                   std::get_if<::dataflow::FenceActorMemberRef>(&member))
+        launch = &fence->actor.launch;
+      if (!launch)
+        return invalid("operation service has a non-graph member");
+      if (!llvm::is_contained(launches, *launch))
+        launches.push_back(*launch);
+    }
+    for (const auto &exposure : projection->exposures)
+      if (!llvm::is_contained(launches, exposure.launch))
+        launches.push_back(exposure.launch);
+
+    for (const auto &launch : launches) {
+      std::vector<SystemServiceTargetSubject> subjects;
+      for (const auto &member : projection->members) {
+        const ::dataflow::RootedGraphLaunchRef *memberLaunch = nullptr;
+        if (const auto *addressed =
+                std::get_if<::dataflow::AddressedMemoryActorMemberRef>(&member))
+          memberLaunch = &addressed->actor.launch;
+        else if (const auto *fence =
+                     std::get_if<::dataflow::FenceActorMemberRef>(&member))
+          memberLaunch = &fence->actor.launch;
+        if (memberLaunch && *memberLaunch == launch)
+          subjects.push_back(SystemServiceMemberTargetSubject{member});
+      }
+      for (const auto &exposure : projection->exposures)
+        if (exposure.launch == launch)
+          subjects.push_back(SystemMemoryExposureTargetSubject{exposure});
+      if (subjects.empty())
+        return invalid("operation-service context has no target subject");
+      bool covered = false;
+      for (const auto &[graphOrdinal, graph] :
+           llvm::enumerate(decisions.graphs)) {
+        if (graph.launch != launch)
+          continue;
+        if (graphOrdinal + 1 >= overlapOffsets.size())
+          return invalid("graph-thread overlap index is incomplete");
+        const PnrIndex begin = overlapOffsets[graphOrdinal];
+        const PnrIndex end = overlapOffsets[graphOrdinal + 1];
+        if (begin > end || end > overlaps.size())
+          return invalid("graph-thread overlap range is invalid");
+        auto graphIndex = checked(serviceContextIndexContext, graphOrdinal);
+        auto serviceIndex = checked(serviceContextIndexContext, serviceOrdinal);
+        if (!graphIndex)
+          return graphIndex.takeError();
+        if (!serviceIndex)
+          return serviceIndex.takeError();
+        for (PnrIndex thread : overlaps.slice(begin, end - begin)) {
+          result.push_back({*serviceIndex, *graphIndex, thread, subjects});
+          covered = true;
+        }
+      }
+      if (!covered)
+        return invalid("operation-service subject has no execution atom");
+    }
+  }
+  if (llvm::Error error =
+          preflightPnrIndexCapacity(serviceContextIndexContext, result.size()))
+    return std::move(error);
+  return result;
+}
+
 } // namespace
 
 FrozenSystemPnrProblem::FrozenSystemPnrProblem(
@@ -668,6 +834,9 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
     FrozenEndpointRoutingTopology routingTopology,
     std::vector<FrozenSystemTransferTerminal> serviceTerminals,
     std::vector<PnrIndex> serviceTerminalEndpointChoices,
+    std::vector<SystemSearchServiceDomain> serviceDomains,
+    std::vector<FrozenSystemServiceContext> serviceContexts,
+    std::vector<FrozenSystemMemoryServiceBinding> memoryServiceBindings,
     std::vector<FrozenSystemServiceLeg> serviceLegs,
     std::vector<PnrIndex> serviceLegSinkTerminals,
     std::unique_ptr<detail::InitializerRelationModel> initializerRelations)
@@ -691,6 +860,9 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
       serviceTerminals_(std::move(serviceTerminals)),
       serviceTerminalEndpointChoices_(
           std::move(serviceTerminalEndpointChoices)),
+      serviceDomains_(std::move(serviceDomains)),
+      serviceContexts_(std::move(serviceContexts)),
+      memoryServiceBindings_(std::move(memoryServiceBindings)),
       serviceLegs_(std::move(serviceLegs)),
       serviceLegSinkTerminals_(std::move(serviceLegSinkTerminals)),
       initializerRelations_(std::move(initializerRelations)) {}
@@ -762,9 +934,27 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       buildRelations(*catalogs, *decisions, overlapOffsets, overlaps);
   if (!relations)
     return relations.takeError();
-  auto routing = freezeSystemRouting(dataflow, fabric, searchDomain);
+  auto serviceContexts = buildServiceContexts(
+      dataflow, searchDomain.rootThreadLaunches(),
+      searchDomain.serviceObligations(), *decisions, overlapOffsets, overlaps);
+  if (!serviceContexts)
+    return serviceContexts.takeError();
+  auto constraintIndex = detail::buildFrozenConstraintIndex(constraints.view());
+  if (!constraintIndex)
+    return constraintIndex.takeError();
+  auto memoryBindings = detail::projectSystemMemoryServiceBindings(
+      dataflow, fabric, searchDomain.rootThreadLaunches(),
+      catalogs->spatialCatalog, *constraintIndex);
+  if (!memoryBindings)
+    return memoryBindings.takeError();
+  auto routing = freezeSystemRouting(dataflow, fabric, searchDomain,
+                                     *serviceContexts, decisions->graphs);
   if (!routing)
     return routing.takeError();
+
+  std::vector<SystemSearchServiceDomain> serviceDomains(
+      searchDomain.serviceObligations().begin(),
+      searchDomain.serviceObligations().end());
 
   return FrozenSystemPnrProblemHandle(new FrozenSystemPnrProblem(
       dataflow.identity(), fabric.artifact().identity(),
@@ -779,6 +969,7 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       std::move(decisions->graphChoices), std::move(overlapOffsets),
       std::move(overlaps), std::move(routing->topology),
       std::move(routing->terminals), std::move(routing->endpointChoices),
-      std::move(routing->legs), std::move(routing->legSinks),
-      std::move(*relations)));
+      std::move(serviceDomains), std::move(*serviceContexts),
+      std::move(*memoryBindings), std::move(routing->legs),
+      std::move(routing->legSinks), std::move(*relations)));
 }

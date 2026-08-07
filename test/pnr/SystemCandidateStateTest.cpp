@@ -389,7 +389,8 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
       %ctrl: none, %index: index, %memory: memref<4xi32>) -> i32
       attributes {input_segments = array<i32: 1, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
-    %value, %done = dataflow.load %memory[%index] %ctrl : memref<4xi32>
+    %value, %loaded = dataflow.load %memory[%index] %ctrl : memref<4xi32>
+    %done = dataflow.store %memory[%index] %value %loaded : memref<4xi32>
     dataflow.graph.return values(%value : i32) streams() memories()
         complete(%done : none)
   }
@@ -639,7 +640,8 @@ loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
           loom::fabric::CanonicalServiceEndpointRole::Initiate,
           take(loom::fabric::MessageTransferCapabilityDomain::create(
               {mlir::NoneType::get(&context),
-               mlir::IntegerType::get(&context, 32)})),
+               mlir::IntegerType::get(&context, 32),
+               mlir::IndexType::get(&context)})),
           rate));
   auto serveCapability =
       take(loom::fabric::CanonicalServiceCapabilityRecord::create(
@@ -647,19 +649,19 @@ loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
           loom::fabric::CanonicalServiceEndpointRole::Serve,
           take(loom::fabric::MessageTransferCapabilityDomain::create(
               {mlir::NoneType::get(&context),
-               mlir::IntegerType::get(&context, 32)})),
+               mlir::IntegerType::get(&context, 32),
+               mlir::IndexType::get(&context)})),
           rate));
   auto initiateSet = take(loom::fabric::CanonicalServiceCapabilitySet::create(
       {std::move(initiateCapability)}));
   auto serveSet = take(loom::fabric::CanonicalServiceCapabilitySet::create(
       {std::move(serveCapability)}));
-  const auto bits32 = take(loom::adg::PortType::bits(32));
   auto messageSource =
-      take(system.addServiceEndpoint(extraCore, initiateSet, bits32));
+      take(system.addServiceEndpoint(extraCore, initiateSet, bits128));
   auto messageSink =
-      take(system.addServiceEndpoint(extraCore, serveSet, bits32));
+      take(system.addServiceEndpoint(extraCore, serveSet, bits128));
   auto messageTransport = take(
-      system.addTransportResource({{bits32}, {bits32}, transportContract}));
+      system.addTransportResource({{bits128}, {bits128}, transportContract}));
   auto messagePattern =
       take(system.addTransferPattern(messageTransport, 0, {0}, 0));
   if (llvm::Error error = system.connect(take(messageSource.transport()),
@@ -861,26 +863,39 @@ int main() {
             subject->member))
       addressedRows.push_back(&row);
   }
-  require(addressedRows.size() == 2 && addressedRows[0]->boundEndpoint !=
-                                           addressedRows[1]->boundEndpoint,
-          "same Module path did not produce two exact endpoint rows");
+  require(addressedRows.size() == 4,
+          "two memory subjects did not produce endpoint-factorized rows");
   const loom::fabric::SystemServiceEndpointRef *supportedEndpoint = nullptr;
   const loom::fabric::SystemServiceEndpointRef *unsupportedEndpoint = nullptr;
-  std::size_t compatibleEndpointCount = 0;
-  for (const auto *row : addressedRows) {
-    const auto *regions =
-        std::get_if<std::vector<loom::fabric::FabricMemoryServiceRegionRef>>(
-            &row->compatibleTargets);
-    require(regions, "memory target row has a non-region domain");
-    if (regions->empty())
-      unsupportedEndpoint = &row->boundEndpoint;
+  std::vector<loom::fabric::SystemServiceEndpointRef> targetEndpoints;
+  for (const auto *row : addressedRows)
+    if (!llvm::is_contained(targetEndpoints, row->boundEndpoint))
+      targetEndpoints.push_back(row->boundEndpoint);
+  require(targetEndpoints.size() == 2,
+          "same Module path did not produce two exact endpoint keys");
+  for (const auto &endpoint : targetEndpoints) {
+    std::size_t emptyRows = 0;
+    std::size_t nonemptyRows = 0;
+    for (const auto *row : addressedRows) {
+      if (row->boundEndpoint != endpoint)
+        continue;
+      const auto *regions =
+          std::get_if<std::vector<loom::fabric::FabricMemoryServiceRegionRef>>(
+              &row->compatibleTargets);
+      require(regions, "memory target row has a non-region domain");
+      regions->empty() ? ++emptyRows : ++nonemptyRows;
+    }
+    require(emptyRows + nonemptyRows == 2,
+            "one endpoint did not retain both memory subjects");
+    if (emptyRows == 0)
+      supportedEndpoint = &endpoint;
     else {
-      supportedEndpoint = &row->boundEndpoint;
-      ++compatibleEndpointCount;
+      require(emptyRows == 1 && nonemptyRows == 1,
+              "adverse endpoint does not distinguish read from write");
+      unsupportedEndpoint = &endpoint;
     }
   }
-  require(supportedEndpoint && unsupportedEndpoint &&
-              compatibleEndpointCount == 1,
+  require(supportedEndpoint && unsupportedEndpoint,
           "endpoint rows unioned or intersected distinct read capabilities");
 
   const loom::fabric::FabricMemoryEndpointRef *unsupportedOccurrence = nullptr;
@@ -895,7 +910,8 @@ int main() {
           "unsupported endpoint has no exact occurrence attachment");
   const loom::fabric::FabricMemoryEndpointRef unsupportedSystemEndpoint{
       loom::fabric::FabricMemoryEndpointOwnerRef::of(*unsupportedEndpoint), 0};
-  std::size_t unsupportedTerminalRows = 0;
+  std::size_t unsupportedEmptyTerminalRows = 0;
+  std::size_t unsupportedNonemptyTerminalRows = 0;
   for (const auto &row : memoryService->transferTerminalCompatibility) {
     const auto &bound =
         std::get<loom::pnr::SystemMemoryOrFenceTerminalEndpoint>(
@@ -903,12 +919,13 @@ int main() {
             .endpoint;
     if (bound != unsupportedSystemEndpoint && bound != *unsupportedOccurrence)
       continue;
-    ++unsupportedTerminalRows;
-    require(row.compatibleTransportEndpoints.empty(),
-            "unsupported occurrence borrowed another endpoint's carriers");
+    row.compatibleTransportEndpoints.empty()
+        ? ++unsupportedEmptyTerminalRows
+        : ++unsupportedNonemptyTerminalRows;
   }
-  require(unsupportedTerminalRows == 4,
-          "unsupported memory pair did not retain every required empty row");
+  require(unsupportedEmptyTerminalRows != 0 &&
+              unsupportedNonemptyTerminalRows != 0,
+          "memory terminal rows lost per-member endpoint compatibility");
 
   std::vector<loom::fabric::AccCoreOccurrenceRef> supportedCores;
   for (const auto &attachment : endpointSystem.spatialAttachments()) {
@@ -930,6 +947,61 @@ int main() {
     return loom::fabric::canonicalFabricBytes(left) <
            loom::fabric::canonicalFabricBytes(right);
   });
+
+  auto bindingProblem = take(loom::pnr::freezeSystemPnrProblem(
+      memoryDataflow, endpointSystem, memorySearchDomain, config,
+      memoryConstraints, store));
+  std::vector<std::uint32_t> operationLegWidths;
+  for (const auto &leg : bindingProblem->serviceLegs())
+    if (leg.serviceContext != loom::pnr::getInvalidPnrIndex())
+      operationLegWidths.push_back(leg.requiredPayloadWidthBits);
+  llvm::sort(operationLegWidths);
+  require(operationLegWidths == std::vector<std::uint32_t>({0, 32, 64, 64}),
+          "operation service legs lost their maximum-width envelopes");
+  require(bindingProblem->serviceContexts().size() == 1,
+          "one graph-backed memory obligation did not form one context");
+  const auto &memoryContext = bindingProblem->serviceContexts().front();
+  std::vector<loom::pnr::PnrIndex> memoryThreadChoices(
+      bindingProblem->threadDecisions().size(), 0);
+  std::vector<loom::pnr::PnrIndex> memoryGraphChoices(
+      bindingProblem->graphDecisions().size(), 0);
+  const auto memoryThreadDomain =
+      bindingProblem->threadChoiceCatalogOrdinals(memoryContext.threadDecision);
+  loom::pnr::PnrIndex supportedChoice = loom::pnr::getInvalidPnrIndex();
+  loom::pnr::PnrIndex unsupportedChoice = loom::pnr::getInvalidPnrIndex();
+  for (loom::pnr::PnrIndex choice = 0; choice != memoryThreadDomain.size();
+       ++choice) {
+    const auto core = bindingProblem->accCores()[memoryThreadDomain[choice]];
+    if (llvm::is_contained(supportedCores, core))
+      supportedChoice = choice;
+    else
+      unsupportedChoice = choice;
+  }
+  require(supportedChoice != loom::pnr::getInvalidPnrIndex() &&
+              unsupportedChoice != loom::pnr::getInvalidPnrIndex(),
+          "memory context did not retain both occurrence choices");
+  memoryThreadChoices[memoryContext.threadDecision] = supportedChoice;
+  auto supportedCandidate = take(loom::pnr::initializeSystemCandidate(
+      bindingProblem, memoryThreadChoices, memoryGraphChoices));
+  auto selectedTargetDomain = take(supportedCandidate->serviceTargetDomain(0));
+  const auto *selectedRegions =
+      std::get_if<std::vector<loom::fabric::FabricMemoryServiceRegionRef>>(
+          &selectedTargetDomain);
+  require(selectedRegions && !selectedRegions->empty(),
+          "matching target rows did not retain their nonempty intersection");
+
+  memoryThreadChoices[memoryContext.threadDecision] = unsupportedChoice;
+  requireFailureContains(
+      loom::pnr::initializeSystemCandidate(bindingProblem, memoryThreadChoices,
+                                           memoryGraphChoices),
+      "matching service target rows have an empty intersection");
+  requireFailureContains(
+      loom::pnr::SystemCandidateState::create(
+          bindingProblem, {memoryThreadChoices, memoryGraphChoices,
+                           supportedCandidate->serviceRoutes(),
+                           supportedCandidate->serviceRouteNodes(),
+                           supportedCandidate->serviceRouteSinks()}),
+      "matching service target rows have an empty intersection");
 
   const auto belongsToSupportedExecution = [&](const auto &row) {
     const auto &endpoint =
@@ -1065,7 +1137,7 @@ int main() {
     require(regions && regions->empty(),
             "service target restriction was not folded into its H row");
   }
-  require(constrainedAddressedRows == 1,
+  require(constrainedAddressedRows == addressedRows.size() / 2,
           "thread constraint did not restrict service row key coverage");
   std::size_t constrainedTerminalRows = 0;
   bool retainedUnrestrictedTerminal = false;
