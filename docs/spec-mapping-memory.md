@@ -454,6 +454,23 @@ service endpoint. It does not select or replace that endpoint. Partial closure
 may end only at an explicit external provider; it must not pretend that a proxy
 is final storage.
 
+The attachment-bound endpoint is mechanically derived from the applicable
+execution-binding result, selected Module-local manager path, and Fabric. An
+immutable SpatialMapping supplies that path in hierarchical search and a
+current Spatial candidate supplies it in flat search. The selected AccCore
+occurrence qualifies the corresponding Module boundary and therefore fixes the
+one Fabric attachment row. This projection exists before a flat candidate has
+a SpatialMapping identity. Reusing one finalized SpatialMapping on another
+AccCore occurrence may reach another System endpoint with a different
+capability closure.
+
+System PnR domain construction is factorized by the exact bound endpoint; it
+neither unions capabilities across endpoints nor requires every occurrence to
+satisfy an intersection. Finalized plan selection is indexed by the
+`ExecutionContextKey` derived after `B_graph` targets immutable
+SpatialMappings. Incompatibility makes only a candidate using the affected
+endpoint infeasible.
+
 Whether service is local or crosses a manager endpoint does not change the
 runtime request schema. Both use the Runtime ABI's typed
 `SpatialServiceRequest` and `SpatialServiceResponse`; adapters translate that

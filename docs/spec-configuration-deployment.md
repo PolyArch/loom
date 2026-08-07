@@ -444,7 +444,7 @@ is invalid before runtime-image publication.
 SpatialLaunchPayload {
   rows[] keyed by GraphExecutionBindingKey {
     compiled_graph_execution_binding
-    target_cases[] keyed by GraphLaunchTargetKey {
+    target_cases[] keyed by SpatialExecutionContextKey {
       required_configuration_image_refs[]
       value_boundary_bindings[]
       stream_boundary_bindings[]
@@ -456,8 +456,6 @@ SpatialLaunchPayload {
     }
   }
 }
-
-GraphLaunchTargetKey = (AccCoreOccurrenceRef, SpatialMappingImportRef)
 ```
 
 There is exactly one row for each reachable static graph launch covered by a
@@ -471,12 +469,15 @@ The finite unique range of the relational join between the parent Thread
 Execution Binding and this compiled
 `BindingRelation<SpatialMappingImportRef>` is
 exactly the canonical `target_cases[]` key set. The key is structural, not a
-new entity. It distinguishes the same SpatialMapping instantiated on different
-AccCore occurrences. Each case contains only material mechanically derived for
-that already selected pair. `required_configuration_image_refs[]` is the exact
-sorted subset joined from the Deployment configuration-image closure; it is an
-access index, not a second configuration selection. The whole child is absent
-exactly when the imported SpatialMapping set is empty.
+new entity. It is exactly the Spatial variant of the `ExecutionContextKey`
+owned by `docs/spec-mapping-identity.md`, encoded through the SystemMapping's
+existing canonical SpatialMapping import table. It distinguishes the same
+SpatialMapping instantiated on different AccCore occurrences. Each case
+contains only material mechanically derived for that already selected pair.
+`required_configuration_image_refs[]` is the exact sorted subset joined from
+the Deployment configuration-image closure; it is an access index, not a
+second configuration selection. The whole child is absent exactly when the
+imported SpatialMapping set is empty.
 
 `AdmissionImage.payload` is:
 
@@ -494,6 +495,10 @@ AdmissionPayload {
   }
 }
 ```
+
+The `ExecutionContextKey` in this payload is the same key owned by
+`docs/spec-mapping-identity.md`; Deployment does not define another context
+tuple or context identity.
 
 Each `EventFamilyKey` is exactly the Dataflow-owned
 `Produced(CanonicalProducerTerminalRef)` or

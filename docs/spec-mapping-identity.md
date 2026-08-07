@@ -290,6 +290,72 @@ Runtime may add concrete projection values and a transient occurrence handle,
 but neither enters Mapping identity, persistent references, channel message
 order, or Physical Tag assignment.
 
+### Execution Context Key
+
+`ExecutionContextKey` is the closed structural key for the hardware execution
+context selected by the existing execution bindings:
+
+```text
+ExecutionContextKey =
+    InstructionExecutionContextKey {
+      AccCoreOccurrenceRef
+    }
+  | SpatialExecutionContextKey {
+      AccCoreOccurrenceRef
+      exact SpatialMapping semantic target
+    }
+```
+
+The Spatial variant is derived by evaluating `B_graph` at the Dataflow-owned
+graph logical point and `B_thread` at that point's Dataflow-owned parent thread
+point. Its SpatialMapping must cover the applicable graph and its target
+SpatialCore parent must belong to the selected AccCore. The Instruction
+variant is used only where no graph execution target exists. A graph-backed
+service member always uses the Spatial variant.
+
+The exact SpatialMapping semantic target is its complete immutable
+ArtifactIdentity. Within a finalized SystemMapping, the existing canonical
+import table encodes that target through `SpatialMappingImportRef`; ordering
+and comparison first resolve the alias back to the complete identity. A
+mutable flat System PnR candidate has no Spatial variant until its reopened
+Spatial decisions have passed independent verification and received that
+identity. It cannot use a provisional digest, native handle, reopen ordinal,
+or candidate generation as a substitute semantic target.
+
+The canonical semantic variant ordinals are `Instruction = 0` and
+`Spatial = 1`. Canonical comparison is lexicographic over the variant ordinal,
+the exact canonical Fabric-local bytes of `AccCoreOccurrenceRef`, and, for the
+Spatial variant, the complete canonical ArtifactIdentity bytes of the
+SpatialMapping target. Canonical semantic bytes use this framing:
+
+```text
+u32be(variant_ordinal)
+|| u64be(length(acc_core_ref_bytes))
+|| acc_core_ref_bytes
+|| if Spatial {
+     u64be(length(spatial_mapping_identity_bytes))
+     || spatial_mapping_identity_bytes
+   }
+```
+
+The containing root supplies the exact Fabric identity for the local AccCore
+reference and admits only the canonical Fabric reference encoding. A
+SystemMapping may serialize the Spatial target through its canonical
+`SpatialMappingImportRef`, but its finalizer must resolve that alias before
+semantic comparison and must reproduce the semantic bytes above. Deployment
+reuses the same finalized key and import-table encoding. System PnR `H` does
+not serialize or index `ExecutionContextKey`; its invocation-local service
+compatibility is factorized by existing Dataflow and Fabric endpoint
+references. Native dense indices, import ordinals, authoring order, and PnR
+candidate handles never enter semantic comparison.
+
+The key stores no thread or graph predicate, service endpoint, attachment,
+capability, route, or resource selection. Those facts remain derived from the
+Dataflow member, the applicable execution binding or bindings, Fabric, and,
+for the Spatial variant, the exact imported SpatialMapping. Reusing one
+SpatialMapping on two AccCore occurrences therefore yields two distinct
+execution contexts even when both occurrences import the same Module template.
+
 ## System Service Obligation Keys
 
 A SystemMapping root and a System MappingConstraintSet root each bind one

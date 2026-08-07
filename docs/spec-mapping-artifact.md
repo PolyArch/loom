@@ -867,16 +867,23 @@ nonpersistent maximum-width envelope defined by the
 Mapping derives and verifies that envelope from the exact upstream owners; it
 does not persist a width, packed tuple, role-specific route, or field layout.
 
-Plan selection first derives an `ExecutionContextKey` from the evaluated
-`B_thread` and `B_graph` targets. Only reachable contexts are stored. Within a
-context, the same closed binding-relation algebra may select a plan from
-Dataflow-owned logical inputs. An event-rooted relation resolves its complete
-input universe from the exact Dataflow-owned `EventLogicalProjection` and, for
-a DynamicWork domain, its separately owned stable-item projection. It may
-reference any typed subset of those inputs but cannot persist another
-projection or reinterpret input order. Plans have no `EntityId`; the
-finalizer sorts and deduplicates complete plan semantic keys before assigning
-owner-local ordinals.
+In a finalized SystemMapping, plan selection first derives the closed
+`ExecutionContextKey` owned by `docs/spec-mapping-identity.md` from the
+applicable evaluated execution bindings. A Spatial context uses the paired
+`B_thread` and immutable `B_graph` targets; an Instruction context uses only
+`B_thread`. Only reachable contexts are stored. The same SpatialMapping
+semantic target paired with two AccCore occurrences forms two keys because the
+exact Fabric attachment and service endpoint may differ between those
+occurrences. None of those derived Fabric facts is copied into the key or plan.
+This persistent key does not constrain how System PnR represents a mutable flat
+candidate before its SpatialMapping identities exist. Within a context, the
+same closed binding-relation algebra may select a plan from Dataflow-owned
+logical inputs. An event-rooted relation resolves its complete input universe
+from the exact Dataflow-owned `EventLogicalProjection` and, for a DynamicWork
+domain, its separately owned stable-item projection. It may reference any
+typed subset of those inputs but cannot persist another projection or
+reinterpret input order. Plans have no `EntityId`; the finalizer sorts and
+deduplicates complete plan semantic keys before assigning owner-local ordinals.
 
 ServiceRealization is the only SystemMapping family for selected system
 routes, physical buffers, target service regions, address transforms, and

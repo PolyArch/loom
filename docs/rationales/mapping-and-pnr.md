@@ -342,19 +342,18 @@ those endpoints is a hardware-topology fact. Copying it into Mapping would let
 two mappings disagree about the same Fabric and would force Mapping identity to
 repeat capability and payload facts.
 
-The frozen search domain therefore follows the selected SpatialMapping memory
-endpoint through its exact Fabric memory `spatial_attachment`, then derives
-terminal candidates from the role-selected member of the fixed Module and
-occurrence endpoint pair within that three-reference row and its
-Fabric-owned service-leg carrier relation. CandidateState chooses ordinary
-transport terminals and traversals, and the persistent RouteTree records only
-that selected route. Final verification repeats the same derivation from the
-exact Fabric. Domain construction tests the exact selected Dataflow memory or
-fence member against the capability set of the attachment-bound endpoint. An
-incompatible member makes the candidate infeasible; it does not authorize a
-capability search for another endpoint. Fabric root finalization cannot own
-this comparison because it has neither the selected member nor the
-SpatialMapping choice.
+CandidateState therefore follows its selected Module-local manager path
+through the AccCore occurrence's exact Fabric memory `spatial_attachment`.
+That mechanical projection yields the fixed Module/occurrence endpoint pair
+and System service endpoint; it is not another candidate choice. The frozen
+search domain indexes the selected Dataflow member's compatibility by that
+exact existing endpoint reference, while CandidateState chooses only ordinary
+transport terminals and traversals. The persistent RouteTree records only the
+selected route, and final verification repeats the same derivation from the
+exact Fabric. An incompatible member makes only a candidate bound to that
+endpoint infeasible; it does not authorize a capability search for another
+endpoint. Fabric root finalization cannot own this comparison because it does
+not know the selected Dataflow member or Mapping decisions.
 
 `MessageTransfer` needs no projection because its service endpoint already is
 a transport endpoint. Protocol subchannels and encodings remain a later
@@ -696,7 +695,7 @@ Hierarchical System PnR reuses immutable SpatialMappings. A flattened global
 mode remains a search option, not a different artifact authority. Both produce
 the same SystemMapping schema and face the same final verifier.
 
-## Why The System Search Domain Is Target-Free
+## Why The System Search Domain Does Not Select Targets
 
 System binding relations can cover large Presburger domains or finite dynamic
 stable-key domains. Expanding every point is impractical, while storing a
@@ -704,11 +703,32 @@ chosen target in the search-domain view would duplicate the candidate and
 eventually the SystemMapping.
 
 The immutable `H` view therefore owns only a complete partition into typed
-atoms and the legal target domains mechanically derived for each atom. The
-candidate selects targets, and finalization merges equal-target atoms into the
-existing persistent binding relation. This permits block, cyclic, affinity,
-and stable-key grouping without a new schedule, predicate language, or shadow
-mapping.
+atoms, legal hierarchical targets or flat reopen domains for each atom, and
+factorized compatibility relations over existing software subjects and exact
+Fabric endpoints. CandidateState still selects `B_thread`, an immutable
+`B_graph` target or flat Spatial decisions, and service targets. Those choices
+mechanically derive the endpoint used to query the relation. Finalization
+merges equal-target atoms into the existing persistent binding relation. This
+permits block, cyclic, affinity, and stable-key grouping without a new
+schedule, predicate language, shadow mapping, or provisional identity.
+
+Endpoint factorization is necessary when one Module and one SpatialMapping are
+reused by several AccCore occurrences. One occurrence boundary may attach to
+an endpoint that accepts a read while another attaches to an endpoint that
+does not. A global union would let the latter borrow the former's capability;
+an intersection would reject the former; selecting either endpoint while
+building `H` would preempt `B_thread`. Indexing the atomic compatibility fact
+by the already existing bound endpoint distinguishes those cases and lets two
+contexts correctly share a row when they really bind the same endpoint.
+
+Using the persistent `ExecutionContextKey` instead would require the complete
+immutable SpatialMapping identity. That identity exists for hierarchical
+imports but not while flat System search is still changing Spatial decisions.
+Creating a temporary identity would add rekeying and invalidation authority;
+freezing SpatialMapping first would remove joint flat search. `H` 3.0 needs
+neither. Flat candidates derive their bound endpoints directly, and only
+successful finalization creates the ordinary `ExecutionContextKey` used by
+SystemMapping and Deployment.
 
 Keeping partition shape target-free also preserves software ownership. A
 search policy may choose how coarsely to group a logical may-domain, but it

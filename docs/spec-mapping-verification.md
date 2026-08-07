@@ -384,6 +384,10 @@ Using that projection, the base verifier checks:
   Dataflow-owned may-domains, including exact default-complement rules;
 * agreement between every selected SpatialMapping target and the AccCore
   selected by its parent thread binding;
+* exact derivation of each reachable `ExecutionContextKey` from the applicable
+  execution-binding results, including `B_thread`-only Instruction contexts
+  and distinct Spatial contexts when one SpatialMapping is reused by different
+  AccCore occurrences;
 * derivation of exactly one Fabric-owned `InstructionCoreContextRef` for each
   selected AccCore, with no competing target in InstructionCore ResourceUse;
 * exact resolution of every InstructionCore use site to a Fabric-owned atomic
@@ -398,14 +402,16 @@ Using that projection, the base verifier checks:
   logical-memory owner, with no exposure admitted as a `ServiceMemberRef` or
   assigned a service leg;
 * exact derivation of each memory or fence leg's source and sink terminal
-  domains from the SpatialMapping-selected memory endpoint, its unique Fabric
-  memory `spatial_attachment` row, the Module/occurrence endpoint pair and
-  exact System service endpoint within that row, and each role-selected
-  `ServiceLegCarrierAttachment`, including canonical leg direction and
-  exact compatibility between every selected Dataflow service member and the
-  bound endpoint's capability domain, with no Fabric-root compatibility result,
-  Module-boundary capability projection, alternative-endpoint search, or
-  attachment row used for `MessageTransfer`;
+  domains from the evaluated execution bindings, immutable SpatialMapping-
+  selected Module-local manager path, occurrence-qualified memory endpoint,
+  unique Fabric memory `spatial_attachment` row, Module/occurrence endpoint
+  pair and exact System service endpoint within that row, and each
+  role-selected `ServiceLegCarrierAttachment`, including canonical leg
+  direction and exact compatibility between every selected Dataflow service
+  member and its bound endpoint's capability domain, with no cross-endpoint
+  union or intersection, Fabric-root compatibility result, Module-boundary
+  capability projection, alternative-endpoint search, or attachment row used
+  for `MessageTransfer`;
 * reachable execution contexts, complete plan selection, valid service
   targets, canonical service legs, flat route-tree continuity, multicast
   ownership, and physical refinements;

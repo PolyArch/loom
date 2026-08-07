@@ -267,13 +267,15 @@ attachments need no third endpoint and retain their two-face form.
 
 The Module boundary owns its exact memref type and endpoint-relative role, but
 it does not own a workload capability-domain copy. The complete read, write,
-atomic, compare-exchange, or fence requirement appears only after an exact
-Dataflow member and SpatialMapping selection are known. Fabric root
-finalization therefore validates the three-reference topology, memory plane,
-and complementary roles. SystemMapping domain construction and verification
-test the selected member against the capability set of that already-bound
-endpoint; failure makes that Mapping infeasible and never causes a search for
-another endpoint.
+atomic, compare-exchange, or fence requirement and exact attachment row appear
+only after an exact Dataflow member, selected Spatial semantics, and AccCore
+occurrence are known. The Spatial semantics may come from an immutable
+SpatialMapping or a mutable flat candidate; neither changes the Fabric-owned
+attachment. Fabric root finalization therefore validates the three-reference
+topology, memory plane, and complementary roles. SystemMapping domain
+construction and verification test the selected member against the capability
+set of the mechanically bound endpoint; failure makes only that binding
+infeasible and never causes a search for another endpoint.
 
 Deriving or persisting a Module-boundary capability catalog would require a
 new rule for combining every configurable internal use and would compete with
