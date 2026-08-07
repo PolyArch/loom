@@ -902,17 +902,33 @@ ServiceTargetBinding =
     }
 ```
 
-The transform path stores only non-derived selection. It is empty when a
-direct identity connection uniquely joins the bound endpoint to the selected
-region. Otherwise it is the exact ordered path of Fabric-owned
-`SystemServiceTransformRef` values needed to disambiguate the selected service
-chain. Fabric remains the sole owner of every transform's closed kind,
-parameters, endpoint relation, and region correspondence; Mapping never
-copies an offset, mask, interleave rule, or coherence relation. A path element
-must consume the previous selected endpoint set, and the composed final output
-must contain the selected service region. A transform sequence that is already
-uniquely implied by the bound endpoint and selected region is derived and must
-be omitted rather than redundantly persisted.
+The `MemoryRegionTarget` children for one addressed subject form one complete
+target plan, not independent region choices. Each child carries the complete
+source logical interval and identifies one terminal branch. For every source
+address, the composed Fabric transform contracts select exactly one child and
+place its transformed address inside that child's selected region. A
+multi-output transform such as `StaticInterleave` therefore produces one child
+for each distinct `(transform path, terminal region)` branch group. Several
+output ordinals may collapse to one child only when Fabric derives that same
+group for all of them. Repeated source intervals do not mean that every address
+reaches every child. Output ordinals, strided subsets, and transformed intervals
+are derived from Fabric and are not copied into Mapping.
+
+The transform path stores only non-derived selection. It is empty when the
+bound endpoint, explicit Fabric MemoryService connections, and complete target
+branch set uniquely imply the path, including the direct identity case.
+Otherwise each child stores the exact ordered path of Fabric-owned
+`SystemServiceTransformRef` values needed to disambiguate its service chain.
+Fabric remains the sole owner of every transform's closed kind, parameters,
+ordered endpoint relation, and region correspondence; Mapping never copies an
+offset, mask, interleave rule, or coherence relation. Between consecutive path
+elements, and before the first or after the last element where applicable, the
+verifier follows only explicit Fabric MemoryService connections. The complete
+target plan must consume each selected transform's exact ordered subordinate
+input sequence and account for every ordered manager output through the next
+connection or a terminal branch group. A transform sequence uniquely implied
+by the bound endpoint and complete branch set is derived and must be omitted
+rather than redundantly persisted.
 
 A memory-region target owns every exposure child that selects that region.
 The child is keyed by its `MemoryExposureRef` and provider terminal and has no

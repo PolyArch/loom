@@ -429,7 +429,10 @@ This digest is an invocation/cache integrity value, not Common
 Only fields applicable to each typed binding atom or service-compatibility row
 are present; an empty required domain is proven infeasibility for the affected
 candidate rather than permission to invent a target. CandidateState selects
-one legal target for each atom through the ordinary System Actions.
+one complete legal target plan for each atom through the ordinary System
+Actions. For an addressed target, a plan is derived from the exact Fabric
+memory-service closure plus the applicable H row; it is not another field of
+`H`.
 Finalization merges atoms with the same selected target and mechanically
 reconstructs the existing
 `BindingRelation<AccCoreOccurrenceRef>` or
@@ -1065,6 +1068,39 @@ physical-refinement selections; `ResourceUse` owns only the event-relative
 occupancy and sharing assignments of already selected elements. These
 decisions are kept in the same candidate as reopened Spatial decisions in flat
 mode.
+
+For each addressed target subject and its currently bound System service
+endpoint, the candidate mechanically derives a finite
+`ServiceTargetPlanDomain` from the frozen Fabric closure and that exact `H`
+compatibility row. One domain member contains the canonical non-empty set of
+terminal service-region branches needed to cover the subject's complete
+logical interval; every branch contains its exact ordered transform path and
+must end in a region admitted by the H row. MemoryService connections are
+derived Fabric edges and do not enter the key. The candidate selects one
+complete domain member; it cannot independently select a region and later ask
+materialization to find a path.
+
+A one-output transform normally yields one branch group. A `StaticInterleave`
+or another contract with several outputs yields the exact terminal branches
+reached by those outputs, grouped only when their exact transform path and
+terminal region are equal. For every address in the complete source interval,
+the composed Fabric contracts must select exactly one branch and place the
+transformed address inside that branch's region. Thus an interleaved interval
+may repeat the same source logical interval across several persistent
+`MemoryRegionTarget` children without claiming that every address reaches
+every child. The branch relation, output ordinal, and transformed address are
+derived from Fabric; Mapping stores no strided-range language or copied
+interleave parameters.
+
+The domain enumerates only finite simple paths, rejects repeated transforms or
+connections, and keeps distinct exact paths when endpoint plus terminal region
+does not imply one. Its canonical semantic key includes the exact path and
+canonical branch regions, so two physically different ambiguous paths never
+collapse. Finalization omits a path from Mapping only when the selected bound
+endpoint and complete branch set uniquely derive it. `H` remains the SSOT for
+endpoint-indexed target compatibility, Fabric remains the SSOT for topology
+and transform behavior, and CandidateState owns only the selected composed
+plan.
 
 For each service anchor, candidate-native relation atoms pair the applicable
 thread and graph decision atoms with one complete plan semantic key. They are

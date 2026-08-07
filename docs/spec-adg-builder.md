@@ -155,6 +155,29 @@ silently exchanged across owners or roles. There is no generic `NodeRef`,
 string `kind`, property bag, textual type, textual operation name, or
 user-managed SSA name as a semantic input.
 
+System point connections use one overloaded typed operation rather than a
+second connection graph:
+
+```text
+SystemBuilder::connect(SystemTransportEndpoint source,
+                       SystemTransportEndpoint destination) -> Error
+SystemBuilder::connect(SystemMemoryEndpoint manager,
+                       SystemMemoryEndpoint subordinate) -> Error
+ServiceTransformBuilder::close(
+    ordered range<SystemMemoryEndpoint> subordinate_inputs,
+    ordered range<SystemMemoryEndpoint> manager_outputs,
+    ServiceTransformContract) -> Error
+```
+
+The transport overload accepts only `Output -> Input`. The memory overload
+accepts only Memory-plane `Manager -> Subordinate`; roles are checked from the
+endpoint handles and are not caller-supplied flags. Transform input endpoints
+must be subordinate endpoints owned by that transform, and transform output
+endpoints must be manager endpoints owned by it. These calls emit the two
+closed `fabric.system.connection` variants and the transform relation directly.
+They do not keep a Builder-only adjacency list, infer a connection from equal
+capabilities, or insert an identity transform.
+
 Construction calls return `llvm::Expected<Handle>` or `llvm::Error`.
 Fluent calls that accumulate a hidden invalid state are not part of the public
 contract. Builder-local checks cover stale or foreign handles, incomplete

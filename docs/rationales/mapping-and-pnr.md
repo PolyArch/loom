@@ -99,9 +99,21 @@ and lookup machinery without owning independent semantics.
 `MemoryRegionTarget` therefore stores only an ordered path of existing Fabric
 transform references when endpoint and target region do not already imply a
 unique path. The empty path is the direct identity case. The verifier composes
-the referenced Fabric contracts, checks endpoint continuity and address/range
-legality, and proves that the final output reaches the selected region. A
-uniquely derivable path is omitted so the same fact is not stored twice.
+the referenced Fabric contracts across Fabric-owned MemoryService connections,
+checks endpoint continuity and address/range legality, and proves that the
+final output reaches the selected region. A uniquely derivable path is omitted
+so the same fact is not stored twice.
+
+A single target region was rejected as the unit of an addressed decision
+because `StaticInterleave` can send one logical interval to several terminal
+regions. Introducing a strided-range language in Mapping would duplicate the
+Fabric transform equation. Instead, one candidate target plan selects the
+complete canonical set of terminal branches. Its `MemoryRegionTarget` children
+may repeat the source interval; the Fabric transform and terminal region
+derive which addresses belong to each branch. Collective verification proves
+that every source address reaches exactly one selected branch. This keeps the
+only interleave semantics in Fabric while still making the physical plan an
+explicit Mapping choice.
 
 ## Why Dead Results Derive A Physical Discard
 
@@ -737,6 +749,17 @@ mechanically derive the endpoint used to query the relation. Finalization
 merges equal-target atoms into the existing persistent binding relation. This
 permits block, cyclic, affinity, and stable-key grouping without a new
 schedule, predicate language, shadow mapping, or provisional identity.
+
+Putting transform paths into `H` was rejected because paths are compositions
+of the already frozen Fabric topology, while H owns only endpoint-indexed
+compatibility. It would duplicate topology and require another search-domain
+schema whenever Fabric gains a compatible connection form. Choosing a region
+first and asking the materializer to find a path was also rejected because the
+materializer would become a hidden solver and ambiguous physical plans would
+collapse. CandidateState instead derives the finite complete target-plan domain
+from `F + H`, then selects one exact plan. This is the same ownership split as
+route selection: immutable hardware and compatibility define the legal domain;
+the candidate owns the choice; finalization only persists non-derived parts.
 
 Endpoint factorization is necessary when one Module and one SpatialMapping are
 reused by several AccCore occurrences. One occurrence boundary may attach to

@@ -352,6 +352,30 @@ Fabric dependencies are independently published artifacts. Root publication
 does not create a transaction over them. Every dependency is resolved and
 strictly imported before the root's one-object commit.
 
+## Why System Connections Cover Both Planes
+
+A service transform receives requests as a subordinate and emits transformed
+requests as a manager. Composing two transforms therefore requires an explicit
+identity edge from the first manager output to the second subordinate input;
+reaching an ordinary memory service requires the same edge. Capability
+equivalence cannot supply it because that would let Mapping or a backend invent
+hardware topology.
+
+Adding a separate memory-connection operation was rejected because transport
+and memory connections share the same essential directed one-to-one relation,
+canonical ownership, and no-hidden-behavior rule. An identity transform was
+also rejected: it would give a wire an unnecessary entity and behavior
+contract. Fabric 3.0 instead closes the existing connection operation with a
+`MemoryService` variant alongside `Transport`. The endpoints' plane and roles
+choose the variant's legal relation, so there is no generic edge or
+caller-authored kind flag.
+
+This closes an internal 3.0 omission rather than extending its semantic
+language. The existing schema already required operation-service references in
+connections and represented identity transforms as direct connections, while
+the detailed variant and direction were missing. Transport keeps its existing
+variant-zero meaning; no previously valid record is reinterpreted.
+
 ## Why Handshake Owners Use Private Junctions
 
 Ready/valid behavior belongs to the concrete Fabric resource. A consumer-owned

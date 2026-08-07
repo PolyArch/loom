@@ -1031,8 +1031,14 @@ fabric.system.transfer_pattern
   timing, ordering, progress, eligibility, and semantic controls
 
 fabric.system.connection
-  exact source endpoint or output-port reference
-  exact destination endpoint or input-port reference
+  Transport {
+    exact source transport endpoint or output-port reference
+    exact destination transport endpoint or input-port reference
+  }
+  | MemoryService {
+    exact source System service manager endpoint
+    exact destination System service subordinate endpoint
+  }
 
 fabric.system.spatial_attachment
   Transport {
@@ -1123,6 +1129,15 @@ admitted, and `LocalProvider` is rejected. It does not repeat service regions,
 actor or access admission, ResourceState, UsePattern, capacity, timing,
 progress, or grant fields as sibling System properties.
 
+Every service transform input is an exact ordered sequence of Memory-plane
+`Serve`/subordinate endpoints owned by that transform, and every output is an
+exact ordered sequence of Memory-plane `Initiate`/manager endpoints owned by
+the same transform. The input sequence is where upstream requests enter the
+transform; the output sequence is where transformed requests continue toward
+downstream providers. A transform endpoint cannot appear in both sequences,
+and every Memory-plane endpoint owned by the transform appears exactly once in
+the applicable sequence. Capability compatibility does not connect endpoints.
+
 `ServiceTransformContract` is a closed sum. The current contract admits
 `AddressOffset`, `AddressMaskXor`, `StaticInterleave`, and `CoherentMemory`;
 each variant owns its exact typed parameters and total input-to-output
@@ -1153,8 +1168,8 @@ CoherentMemory {
 
 All non-address arguments and results pass unchanged, and the output endpoint
 capabilities must accept the transformed range and exact service signature.
-An identity transform is represented by a direct connection and has no
-operation. `CoherentMemory` is the only authority that permits overlapping
+An identity transform is represented by a direct MemoryService connection and
+has no operation. `CoherentMemory` is the only authority that permits overlapping
 physical service regions to represent one coherent service identity. Domain
 membership alone never implies storage identity, replication, or coherence.
 Cache behavior beyond this architecture-level coherence relation, arbitrary
@@ -1302,13 +1317,33 @@ hidden multi-domain fence. The op does not use an open dictionary. Runtime
 a transport crossing; every crossing remains an explicit endpoint, resource,
 or pattern.
 
-Connections are directed and one-to-one from one output to one input. Fanout,
-fan-in, multicast, arbitration, buffering, conversion, and protocol crossing
-must be represented by explicit resources and transfer patterns. A transport
+`fabric.system.connection` is one closed union. Its canonical variant ordinals
+are `Transport = 0` and `MemoryService = 1`. A Transport connection is directed
+and one-to-one from one transport output to one transport input. A
+MemoryService connection is directed and one-to-one from one Memory-plane
+manager endpoint to one Memory-plane subordinate endpoint. A manager endpoint
+has at most one outgoing MemoryService connection, and a subordinate endpoint
+has at most one incoming MemoryService connection. The two variants never
+coerce, compare, or connect across planes.
+
+Fanout, fan-in, multicast, arbitration, buffering, conversion, and protocol
+crossing must be represented by explicit resources, transfer patterns, or
+service transforms with the exact applicable contract. A transport
 `spatial_attachment` is one-to-one between its Module and occurrence faces. A
 memory attachment additionally binds that occurrence face to exactly one
 System service endpoint. Neither variant has hidden behavior, and Mapping
 cannot replace or select the bound endpoint.
+
+The explicit memory-service closure rooted at a bound System service endpoint
+uses only two Fabric-owned transitions. From a manager endpoint it may follow
+the exact MemoryService connection to its subordinate destination without
+changing the request. From the exact ordered subordinate input sequence of a
+service transform it may apply that transform and continue from the transform's
+ordered manager output sequence. A subordinate endpoint owned by a memory
+service exposes that service's regions and terminates the branch. A transform
+with several outputs creates several ordered branches; the closure does not
+merge them or choose one implicitly. Only finite simple paths are selectable;
+a repeated connection or transform is not a legal service-target path.
 
 Every System operation-service reference in a connection, transform, or domain
 resolves through a `SystemServiceEndpointRef` at ordinal zero.

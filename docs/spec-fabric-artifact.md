@@ -32,6 +32,13 @@ binding when several memory-plane, complementary-role System service endpoints
 exist. The RootRelative memory index-width relation introduced in 2.0 remains
 part of this boundary.
 
+The 3.0 `fabric.system.connection` relation includes both its Transport and
+MemoryService variants. This closes the already required operation-service
+endpoint references and direct identity connection; it is not an optional
+extension or a second connection schema. A producer that encoded only the
+Transport variant implemented a strict subset of 3.0. Omitting required direct
+memory-service edges cannot be repaired by endpoint matching in a consumer.
+
 The three variants share one artifact family because they use the same Fabric
 semantic model, reference framing, canonicalization rules, and finalization
 boundary. They retain distinct typed root payloads and verifiers. The variant
