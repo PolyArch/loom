@@ -854,8 +854,10 @@ domain is derived from the exact three-reference memory-plane
 service endpoint. Canonical leg
 direction and endpoint roles select one endpoint for each terminal, then that
 endpoint's Fabric-owned `ServiceLegCarrierAttachment` row supplies the carrier
-set for the kind and schema-local leg ordinal. The selected `RouteTree` stores
-only its existing transport
+set for the kind and schema-local leg ordinal. The pair's System service
+endpoint remains the sole capability authority even when the selected carrier
+row belongs to the occurrence endpoint. The selected `RouteTree` stores only
+its existing transport
 terminal references and traversals. It does not copy the attachment row,
 memory endpoint, capability domain, payload, width, or protocol, and no new
 ServiceRealization child kind is introduced.

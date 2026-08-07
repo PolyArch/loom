@@ -320,11 +320,13 @@ identity. Its nested row key sets are derived as follows:
 
 An empty domain for a reachable subject-and-endpoint or
 terminal-and-endpoint pair remains present. A missing, extra, duplicate,
-wrong-owner, wrong-plane, or unreachable pair is invalid. Rows are not
+wrong-owner, wrong-plane, or unreachable pair is invalid. Target rows are not
 multiplied by SpatialMapping identity or AccCore occurrence when the exact
-bound endpoint is equal: endpoint capability is one Fabric fact and is reused
-as such. Different occurrences that bind different endpoints necessarily use
-different rows.
+bound System endpoint is equal: its capability is one Fabric fact and is
+reused as such. Terminal rows likewise collapse only when their exact selected
+typed endpoint is equal. Different occurrence endpoints necessarily use
+different terminal rows even when they share the same target-compatibility
+row.
 
 For a `SystemTransferTerminalKey`, `compatible_transport_endpoints` is derived
 without a target-owned pairing table. A `MessageTransfer` terminal uses the
@@ -337,15 +339,17 @@ AccCore occurrence, and follows the unique Fabric memory
 Module/occurrence endpoint pair and exact System service endpoint.
 Canonical leg direction, the pair's complementary
 roles, and whether the queried terminal is source or destination select exactly
-one member of that pair. Only the selected endpoint's exact capability and
-`ServiceLegCarrierAttachment(endpoint, kind, leg_ordinal)` carrier set enter
-that terminal domain. The exact selected Dataflow service member is tested
-against that capability before any terminal is admitted; incompatibility
-produces an empty domain and never causes a search for another endpoint.
-Direction and payload compatibility are recomputed from endpoint role, the
-Canonical Service leg, and the capability domain. The singular payload width
-in the resulting System `RouteQuery` is the nonpersistent maximum-width
-service-leg envelope owned by the
+one member of that pair. The pair's exact System service endpoint is the sole
+capability authority for both members. The selected pair member's
+`ServiceLegCarrierAttachment(endpoint, kind, leg_ordinal)` carrier set alone
+enters that terminal domain. The exact selected Dataflow service member is
+tested against the pair's System endpoint capability before either terminal
+is admitted; incompatibility produces required empty rows for both sides and
+never causes a search for another endpoint. Direction and payload
+compatibility are recomputed from the selected pair-member role, the Canonical
+Service leg, and that one capability domain. The singular payload width in the
+resulting System `RouteQuery` is the nonpersistent maximum-width service-leg
+envelope owned by the
 [Service-Leg Carrier Attachment](spec-fabric-system-adg.md#service-leg-carrier-attachment)
 contract. `H` neither copies those facts nor chooses either memory endpoint by
 capability search. It does not infer a carrier from entity ownership,
@@ -2720,9 +2724,10 @@ Tests protect semantic anchors rather than implementation shape:
 * H 3.0 endpoint-factorized service compatibility, including one immutable
   SpatialMapping reused by two AccCore occurrences whose bound endpoints have
   different capability domains, correct sharing when two contexts bind the
-  same endpoint, member-local intersection, required empty rows, H 2.0
-  rejection, and no provisional SpatialMapping identity or fallback endpoint
-  scan;
+  same endpoint, member-local intersection, exact request-source,
+  request-sink, response-source, and response-sink pair-member carrier rows,
+  required empty rows, H 2.0 rejection, and no provisional SpatialMapping
+  identity or fallback endpoint scan;
 * complete internal-edge accounting for configured FU, configured
   `fabric.mem`, temporal register-file absorption, and residual logical nets;
 * endpoint-only A*, multi-sink route trees, explicit broadcast, checked route

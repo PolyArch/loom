@@ -408,10 +408,11 @@ Using that projection, the base verifier checks:
   pair and exact System service endpoint within that row, and each
   role-selected `ServiceLegCarrierAttachment`, including canonical leg
   direction and exact compatibility between every selected Dataflow service
-  member and its bound endpoint's capability domain, with no cross-endpoint
-  union or intersection, Fabric-root compatibility result, Module-boundary
-  capability projection, alternative-endpoint search, or attachment row used
-  for `MessageTransfer`;
+  member and the pair's one System endpoint capability domain, including when
+  the selected terminal carrier row belongs to the occurrence endpoint, with
+  no cross-endpoint union or intersection, Fabric-root workload compatibility
+  result, Module-boundary capability projection, alternative-endpoint search,
+  or attachment row used for `MessageTransfer`;
 * reachable execution contexts, complete plan selection, valid service
   targets, canonical service legs, flat route-tree continuity, multicast
   ownership, and physical refinements;

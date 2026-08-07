@@ -345,15 +345,19 @@ repeat capability and payload facts.
 CandidateState therefore follows its selected Module-local manager path
 through the AccCore occurrence's exact Fabric memory `spatial_attachment`.
 That mechanical projection yields the fixed Module/occurrence endpoint pair
-and System service endpoint; it is not another candidate choice. The frozen
-search domain indexes the selected Dataflow member's compatibility by that
-exact existing endpoint reference, while CandidateState chooses only ordinary
-transport terminals and traversals. The persistent RouteTree records only the
-selected route, and final verification repeats the same derivation from the
-exact Fabric. An incompatible member makes only a candidate bound to that
-endpoint infeasible; it does not authorize a capability search for another
-endpoint. Fabric root finalization cannot own this comparison because it does
-not know the selected Dataflow member or Mapping decisions.
+and System service endpoint; it is not another candidate choice. The System
+endpoint is the pair's one capability authority. Canonical leg direction and
+source or sink position choose one pair member, whose existing carrier row
+supplies only that terminal's transport candidates. The frozen search domain
+indexes target compatibility by the exact System endpoint and terminal
+compatibility by the exact selected pair member. CandidateState chooses only
+ordinary transport terminals and traversals. The persistent RouteTree records
+only the selected route, and final verification repeats the same derivation
+from the exact Fabric. An incompatible member makes all affected rows for only
+that candidate's bound pair empty; it does not authorize a capability search
+for another endpoint. Fabric root finalization cannot own this workload
+comparison because it does not know the selected Dataflow member or Mapping
+decisions.
 
 `MessageTransfer` needs no projection because its service endpoint already is
 a transport endpoint. Protocol subchannels and encodings remain a later

@@ -300,16 +300,29 @@ soon as one service has several ports or one carrier is shared.
 Fabric therefore owns one structural relation from the existing memory
 endpoint, service kind, and schema-local leg to a non-empty set of existing
 transport endpoints. This is the minimum additional fact needed to expose a
-service leg to system routing. The Canonical Service Schema still owns what the
-leg means, the endpoint capability still owns what operations it admits, and
-the Transport Architecture still owns how messages traverse and contend.
+service leg to system routing. Both members of a memory spatial-attachment
+pair use this same relation rather than separate occurrence-side and
+service-side relation kinds. The Canonical Service Schema still owns what the
+leg means, the attachment's exact System endpoint capability still owns what
+operations the pair admits, each pair member's row owns only its carrier set,
+and the Transport Architecture still owns how messages traverse and contend.
 
-No capability ordinal is needed because one endpoint has at most one
-capability for a given kind and role. No payload, width, protocol, or workload
+The occurrence endpoint does not acquire a capability copy. Its unique memory
+spatial attachment supplies the one System capability authority, and its
+Module-derived manager or subordinate role supplies the complementary terminal
+direction. This lets a request source and response sink use the exact
+occurrence endpoint while the request sink and response source use the exact
+service endpoint. Adding a second carrier-relation schema or promoting the
+occurrence endpoint into another service entity would duplicate an existing
+key or capability owner without introducing a new hardware distinction.
+
+No capability ordinal is needed because one System endpoint has at most one
+capability for a given kind and role, and an occurrence endpoint has exactly
+one memory spatial attachment. No payload, width, protocol, or workload
 identity is stored because each is already derivable from an existing owner.
-Allowing one carrier in several attachment rows preserves real shared hardware;
-its capacity and arbitration remain visible through transfer patterns and
-resource use rather than being duplicated in the relation.
+Allowing one carrier in several attachment rows preserves real shared
+hardware; its capacity and arbitration remain visible through transfer
+patterns and resource use rather than being duplicated in the relation.
 
 The required carrier width is the maximum width of the independently
 transported values in the canonical leg, not the sum of their widths. Summing

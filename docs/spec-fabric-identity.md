@@ -617,6 +617,13 @@ projects to the memory plane. `SystemTransportResourceRef` separately owns its
 explicit token-port inventory and `SpatialCoreOccurrenceRef` retains the
 module-boundary inventories derived from its exact imported module.
 
+An occurrence-qualified SpatialCore memory endpoint may appear in a
+`ServiceLegCarrierAttachment` key only through its unique memory
+`spatial_attachment`. That use does not make it an operation-service endpoint
+owner: the referenced spatial attachment's exact `SystemServiceEndpointRef`
+remains the sole capability authority, while the occurrence reference supplies
+only its structural role and carrier relation.
+
 An endpoint ordinal is valid only in the inventory selected by the typed
 owner and reference plane. A token endpoint cannot be reinterpreted as a
 memory endpoint even when the integer ordinals happen to match.

@@ -592,9 +592,14 @@ capability and declare both their Local Memory Service and manager endpoint as
 eligible dispatch targets. Reusing this capability is legal because a memref
 is a service capability rather than a token transfer. The System expansion
 binds each AccCore's memory attachment to its exact System service endpoint.
-SystemMapping may select a compatible service target within that bound
-endpoint's explicit service/transform closure and route the manager-targeted
-operation, but it cannot select or replace the endpoint itself.
+For every capability leg of that endpoint, it emits the existing
+`ServiceLegCarrierAttachment` relation for both the occurrence-qualified
+SpatialCore memory endpoint and the System service memory endpoint. The bound
+System endpoint is the pair's sole capability authority; the two carrier rows
+do not copy it. SystemMapping may select a compatible service target within
+that bound endpoint's explicit service/transform closure and route the
+manager-targeted operation, but it cannot select or replace the endpoint
+itself.
 
 ### General-Purpose FU Library
 

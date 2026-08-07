@@ -407,12 +407,25 @@ ServiceLegCarrierAttachment = {
 
 The key is a structural lookup key, not an entity or identity. The relation
 receives no `EntityId`, local reference kind, capability ordinal, or Mapping
-record. Every capability of one endpoint shares that endpoint's exact role and
-plane, and the capability set admits at most one record for each
-`(ServiceKind, EndpointRole)` pair. The endpoint and kind therefore select the
-exact capability; the schema-local leg ordinal then selects one leg of that
-kind. The key needs neither an endpoint-role field nor another capability
-ordinal.
+record. It admits exactly two memory-endpoint cases:
+
+* a memory-plane `SystemServiceEndpointRef` at ordinal zero uses its own exact
+  capability set;
+* an occurrence-qualified SpatialCore memory endpoint uses the exact
+  `SystemServiceEndpointRef` in its unique memory `spatial_attachment` as its
+  capability authority.
+
+No other memory-endpoint owner is admitted. In the second case the occurrence
+endpoint remains a Module-derived structural endpoint: it gains no service
+entity, capability set, or independent operation-admission authority. Its
+manager or subordinate role is the complement of the bound System endpoint's
+role, while the bound System endpoint remains the sole owner of the accepted
+operation domain. The capability set admits at most one record for each
+`(ServiceKind, EndpointRole)` pair. For a System endpoint, that endpoint and
+kind select one exact capability. For an occurrence endpoint, its unique
+memory spatial attachment first selects the exact System endpoint, after which
+the kind selects one exact capability. Neither case needs a capability
+ordinal. The schema-local leg ordinal then selects one leg of that kind.
 
 The leg ordinal uses the existing Dataflow-owned
 `dataflow::StructuralOrdinal` semantic domain. Its persistent field reuses the
@@ -425,10 +438,11 @@ payload semantics from that owner.
 The [Canonical Service Schema](#canonical-service-schema) remains the sole
 owner of the number, ordinal, direction, payload roles, and payload types of
 the legs. Fabric owns only which physical transport endpoints can carry each
-leg. Carrier direction is derived mechanically from endpoint role and
-canonical leg direction:
+leg. For an occurrence endpoint, the effective `Initiate | Serve` role is
+derived from its manager or subordinate role. Carrier direction is derived
+mechanically from that effective endpoint role and canonical leg direction:
 
-| memory endpoint role | `InitiatorToServer` leg | `ServerToInitiator` leg |
+| effective service role | `InitiatorToServer` leg | `ServerToInitiator` leg |
 |---|---|---|
 | `Initiate` | transport output | transport input |
 | `Serve` | transport input | transport output |
@@ -467,16 +481,22 @@ Finalization retains only carriers whose derived direction matches and whose
 payload data-field width is at least that entire envelope under canonical
 low-bit-aligned transport. The relation does not copy a workload actor,
 payload, payload width, accepted domain, endpoint role, or protocol name.
-Compatibility is always recomputed from the endpoint capability, Canonical
-Service Schema, and transport endpoint inventory.
+Compatibility is always recomputed from the pair's exact System endpoint
+capability, Canonical Service Schema, selected memory endpoint role, and
+transport endpoint inventory.
 
 Every admitted memory or fence capability leg has exactly one attachment row
-and at least one compatible carrier. All memory and transport endpoint
-references resolve inside the same exact Fabric root. `MessageTransfer`
-already belongs to the transport plane and must not have an attachment row.
-One transport endpoint may appear in several rows; sharing, capacity,
-contention, and occupancy remain owned by transfer patterns, `ResourceUse`,
-and their selected routes.
+for its System service memory endpoint and at least one compatible carrier.
+For every memory `spatial_attachment`, each such leg of the row's bound System
+endpoint also has exactly one attachment row for the occurrence-qualified
+SpatialCore memory endpoint and at least one compatible carrier. Reusing one
+System endpoint across several occurrences reuses its one System-endpoint row
+while retaining one row for each distinct occurrence endpoint. All memory and
+transport endpoint references resolve inside the same exact Fabric root.
+`MessageTransfer` already belongs to the transport plane and must not have an
+attachment row. One transport endpoint may appear in several rows; sharing,
+capacity, contention, and occupancy remain owned by transfer patterns,
+`ResourceUse`, and their selected routes.
 
 Authoring rows with the same key are coalesced by set union. Finalization sorts
 rows by the complete key and sorts and deduplicates each carrier set. The
@@ -1081,11 +1101,13 @@ manager endpoint and `Serve` is a subordinate endpoint.
 A message endpoint has exactly one physical carrier type, either
 `!fabric.bits<W>` or `!fabric.bits_tag<W,T>`. The carrier must represent every
 admitted payload type under the canonical low-bit-aligned transport rule. A
-memory endpoint has no carrier type because its beat width and accepted
-operation domain are already owned by its capabilities. Its service legs use
-only the root-owned `ServiceLegCarrierAttachment` relation above. No owner,
-connection, or Mapping record may override these derived plane, direction,
-role, or type facts.
+System service memory endpoint has no carrier type because its beat width and
+accepted operation domain are already owned by its capabilities. An attached
+occurrence memory endpoint likewise remains on the memory plane and reuses the
+pair's System capability authority. Both endpoints' service legs use only the
+root-owned `ServiceLegCarrierAttachment` relation above. No owner, connection,
+or Mapping record may override these derived plane, direction, role, or type
+facts.
 
 `fabric.system.external_boundary` is only the identity of one external
 interface grouping. Its complete outward contract is the canonical non-empty
@@ -1395,15 +1417,17 @@ membership, duplicate crossing fields for one carrier, wrong-kind typed domain
 refinements, and any connection or attachment hidden from the complete
 relation. It rejects a memory spatial attachment with a missing, foreign,
 same-role, or wrong-plane System service endpoint and a transport spatial
-attachment carrying any System service endpoint. It also
-rejects invalid or foreign service-leg attachment endpoints, unsupported
-service kinds, out-of-range leg ordinals, direction or payload-domain
-incompatibility, missing memory-service leg coverage, and every
-`MessageTransfer` attachment. These checks are root validation, not optional
-consumer policy. Compatibility between a selected workload member and the
-bound endpoint's capability domain is SystemMapping base verification and
-System PnR domain construction; it is not a workload-independent Fabric root
-fact.
+attachment carrying any System service endpoint. It also rejects a
+service-leg attachment whose memory endpoint is neither a System service
+endpoint nor the occurrence member of one exact memory spatial attachment, or
+whose kind is absent from that endpoint case's exact System capability
+authority. Foreign endpoints, out-of-range leg ordinals, direction or
+payload-domain incompatibility, incomplete System-endpoint or
+occurrence-endpoint leg coverage, and every `MessageTransfer` attachment are
+invalid. These checks are root validation, not optional consumer policy.
+Compatibility between a selected workload member and the bound System
+endpoint's capability domain is SystemMapping base verification and System PnR
+domain construction; it is not a workload-independent Fabric root fact.
 
 ## Validation Anchors
 
@@ -1424,10 +1448,13 @@ Anchor-level validation should cover:
   exact dynamic-mask leg derivation, and rejection of implicit plain, atomic,
   volatile, or coherence semantics;
 * canonical service-leg carrier attachment order and duplicate normalization,
-  multiple carrier alternatives, one carrier reused by several kinds or legs,
-  and rejection of missing or foreign endpoints, unsupported kinds,
-  out-of-range legs, role-direction mismatch, incompatible payload domains,
-  incomplete memory-service coverage, and every `MessageTransfer` row;
+  complete rows on both members of a memory spatial-attachment pair, reuse of
+  one System-endpoint row across several occurrence endpoints, multiple
+  carrier alternatives, one carrier reused by several kinds or legs, and
+  rejection of unbound occurrence endpoints, missing or foreign endpoints,
+  unsupported kinds, out-of-range legs, role-direction mismatch, incompatible
+  payload domains, incomplete pair-member coverage, and every
+  `MessageTransfer` row;
 * structural confirmation that service-leg carrier attachments contain no
   actor, payload, width, protocol, capability-domain, capability-ordinal, or
   independent identity field;
