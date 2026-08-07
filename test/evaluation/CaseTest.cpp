@@ -567,7 +567,8 @@ const EvaluationModelDescriptor firstModelDescriptor{
     EvaluationExecutionMethod::Analytic,
     analyticInteractions,
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 const EvaluationModelDescriptor secondModelDescriptor{
     secondModelKind,
@@ -584,7 +585,8 @@ const EvaluationModelDescriptor secondModelDescriptor{
     EvaluationExecutionMethod::Analytic,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 const ArtifactSchemaDescriptor *const modelInputSchemas[] = {&subjectSchema};
 
@@ -622,7 +624,8 @@ const EvaluationModelDescriptor slottedModelDescriptor{
     EvaluationExecutionMethod::Simulation,
     {},
     DeterminismContract::Deterministic,
-    mandatoryTerminalFindings};
+    mandatoryTerminalFindings,
+    ProviderForm::InProcess};
 
 constexpr EvaluationModelKind clockAliasModelKind{40};
 constexpr EvaluationModelKind failingCycleModelKind{41};
@@ -645,7 +648,8 @@ const EvaluationModelDescriptor clockAliasModelDescriptor{
     EvaluationExecutionMethod::Analytic,
     analyticInteractions,
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 const EvaluationModelDescriptor failingCycleModelDescriptor{
     failingCycleModelKind,
@@ -662,7 +666,8 @@ const EvaluationModelDescriptor failingCycleModelDescriptor{
     EvaluationExecutionMethod::Analytic,
     analyticInteractions,
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 ResolvedModelBinding
 modelBinding(const char *test, const EvaluationModelDescriptor &descriptor,
@@ -890,7 +895,8 @@ void wholeCaseMetricRequiresSignatureCycleBasis() {
       EvaluationExecutionMethod::Analytic,
       {},
       DeterminismContract::Deterministic,
-      {}};
+      {},
+      ProviderForm::InProcess};
   expectErrorContains(__func__, registerEvaluationModelDescriptor(invalidModel),
                       "requires a unique whole-case reference cycle");
 }
@@ -1340,7 +1346,8 @@ void conditionsCheckLocationApplicabilityDuplicatesAndConflicts() {
       EvaluationExecutionMethod::Analytic,
       {},
       DeterminismContract::Deterministic,
-      {}};
+      {},
+      ProviderForm::InProcess};
   expectErrorContains(__func__,
                       validateModelCapability(widenedModel, current, {}),
                       "widens condition applicability");

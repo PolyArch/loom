@@ -160,7 +160,8 @@ const EvaluationModelDescriptor kModelDescriptor{
     EvaluationExecutionMethod::Simulation,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 using ReplayResultKind = detail::StructuredReplayResultKind;
 using CachedReplayResult = detail::StructuredCachedReplayResult;

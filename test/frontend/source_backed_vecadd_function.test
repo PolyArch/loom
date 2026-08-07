@@ -1,0 +1,10 @@
+# RUN: %loom-small-cc -emit-llvm -S -O1 -gline-tables-only %S/../app/vecadd/main_func.c -o %t.ll
+# RUN: mkdir -p %t.store
+# RUN: loom-dfg-run --builtin=small --artifact-store=%t.store \
+# RUN:   --candidate-jobs=4 --canonical-output=%t.mlir \
+# RUN:   --output=%t.json %t.ll
+# RUN: FileCheck %s --input-file=%t.mlir --check-prefix=DATAFLOW
+# RUN: %python -c "import json,pathlib; p=json.load(open(r'%t.json')); assert p['status']=='pass'; assert p['execution_terminal']=='retired'; assert set(p['artifacts']) == {'canonical_dataflow','simulation_workload','simulation_runtime_input'}; assert all(len(v)==64 and set(v)<=set('0123456789abcdef') for v in p['artifacts'].values()); assert p['graphs'] == 1; assert p['actors'] >= 20; assert p['dynamic_calls'] == 1; assert p['memory_bytes_compared'] == 3 * 64 * 4; assert p['floating_variance_bytes'] == 0; assert p['floating_variance_kind'] == 'none'; assert p['wavefront_steps'] > 0; assert p['event_count'] > 0; assert p['operation_firings']['arith.addf'] == 64; assert p['operation_firings']['dataflow.load'] == 128; assert p['operation_firings']['dataflow.store'] == 64; assert p['wavefront_steps_per_second'] > 0; d=p['dse_execution']; assert d['plan_executions'] > 0; assert d['generate_invocations'] > 0; assert d['incomplete_generate_invocations'] == 0; assert d['input_bindings'] > 0; assert d['input_artifacts'] > 0; assert d['output_bindings'] > 0; assert d['output_artifacts'] > 0; assert d['generate_lineage_edges'] > 0; assert pathlib.Path(r'%S/../app/vecadd/main_func.c').resolve() in {pathlib.Path(path).resolve() for path in p['selected_source_files']}"
+
+# DATAFLOW: dataflow.graph private
+# DATAFLOW: dataflow.graph.launch

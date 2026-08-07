@@ -138,7 +138,8 @@ const EvaluationModelDescriptor kModelDescriptor{
     EvaluationExecutionMethod::Analytic,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 bool isInsideGlobal(mlir::Operation *operation) {
   return static_cast<bool>(operation->getParentOfType<mlir::LLVM::GlobalOp>());

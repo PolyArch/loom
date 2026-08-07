@@ -14,6 +14,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
@@ -1720,23 +1721,47 @@ void operationSpatialOwnershipExternalizesEscapedResult() {
 
 } // namespace
 
-int main() {
-  exactFabricAndWholeProgramDataflow();
-  constantCallbackIsMechanicallyDevirtualized();
-  explicitWholeCallableSpatialOwnership();
-  wholeCallableExternalizesGlobalMemoryCapability();
-  wholeCallableExternalizesUndefValue();
-  wholeCallableRequiresCanonicalAddressIndexDecision();
-  wholeCallableNormalizesPointerInduction();
-  wholeCallableNormalizesNestedPointerInduction();
-  explicitOperationSpatialOwnership();
-  operationOwnershipInternalizesConstants();
-  wholeCallableScopesFollowCanonicalOrder();
-  operationOwnershipScopesFollowCanonicalOrder();
-  operationFmulAddDecisionIsCandidateLocal();
-  ownershipDecisionDomainIsScopeLocalAndTyped();
-  unifiedOwnershipDomainMaterializesExplicitDecision();
-  operationSpatialOwnershipExternalizesEscapedResult();
-  llvm::outs() << "pre-Mapping compilation anchor passed\n";
+int main(int argc, char **argv) {
+  if (argc != 2)
+    fail("test selection", "expected exactly one test case name");
+
+  using TestFunction = void (*)();
+  TestFunction test =
+      llvm::StringSwitch<TestFunction>(argv[1])
+          .Case("exact-fabric-whole-program-dataflow",
+                exactFabricAndWholeProgramDataflow)
+          .Case("constant-callback-devirtualization",
+                constantCallbackIsMechanicallyDevirtualized)
+          .Case("whole-callable-spatial-ownership",
+                explicitWholeCallableSpatialOwnership)
+          .Case("whole-callable-global-memory",
+                wholeCallableExternalizesGlobalMemoryCapability)
+          .Case("whole-callable-undef", wholeCallableExternalizesUndefValue)
+          .Case("whole-callable-address-index",
+                wholeCallableRequiresCanonicalAddressIndexDecision)
+          .Case("whole-callable-pointer-induction",
+                wholeCallableNormalizesPointerInduction)
+          .Case("whole-callable-nested-pointer-induction",
+                wholeCallableNormalizesNestedPointerInduction)
+          .Case("operation-spatial-ownership",
+                explicitOperationSpatialOwnership)
+          .Case("operation-internalized-constants",
+                operationOwnershipInternalizesConstants)
+          .Case("whole-callable-scope-order",
+                wholeCallableScopesFollowCanonicalOrder)
+          .Case("operation-scope-order",
+                operationOwnershipScopesFollowCanonicalOrder)
+          .Case("operation-fmul-add-decision",
+                operationFmulAddDecisionIsCandidateLocal)
+          .Case("ownership-decision-domain",
+                ownershipDecisionDomainIsScopeLocalAndTyped)
+          .Case("unified-ownership-materialization",
+                unifiedOwnershipDomainMaterializesExplicitDecision)
+          .Case("operation-escaped-result",
+                operationSpatialOwnershipExternalizesEscapedResult)
+          .Default(nullptr);
+  if (!test)
+    fail("test selection", "unknown test case: " + std::string(argv[1]));
+  test();
   return EXIT_SUCCESS;
 }

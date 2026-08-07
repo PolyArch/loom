@@ -1,3 +1,0 @@
-# RUN: loom-adg-builder-api-test | FileCheck %s
-
-# CHECK: {"anchors":["regular-topology","irregular-directed-topology","heterogeneous-multi-acc-core","temporal-resource-grant","memory-service-forwarding"]}

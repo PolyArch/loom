@@ -264,7 +264,7 @@ llvm::Error validateRepresentationRootAdmission(
     const RepresentationFormatDescriptor &descriptor,
     const ImplementationRepresentationRoot &root) {
   if (llvm::Error error = validateImplementationRepresentationRoot(root))
-    return std::move(error);
+    return error;
   if (root.formatRef != descriptor.formatRef)
     return invalid("representation root format reference does not match the "
                    "selected descriptor");

@@ -82,7 +82,8 @@ const EvaluationModelDescriptor kModelDescriptor{
     EvaluationExecutionMethod::Analytic,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 llvm::Expected<std::optional<detail::LowConfidenceMetricSet>>
 estimateMetrics(const dataflow::CanonicalDataflowArtifact &program,

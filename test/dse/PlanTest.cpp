@@ -93,7 +93,7 @@ const CandidateGeneratorDescriptor sourceGenerator{
     CandidateGeneratorDeterminism::Deterministic,
     sourceWorkUnits,
     {},
-};
+    ProviderForm::InProcess};
 
 const CandidateGeneratorDescriptor transformGenerator{
     CandidateGeneratorKind(0x7fff1001),
@@ -105,7 +105,7 @@ const CandidateGeneratorDescriptor transformGenerator{
     CandidateGeneratorDeterminism::Deterministic,
     {},
     {},
-};
+    ProviderForm::InProcess};
 
 const CandidateGeneratorDescriptor unavailableGenerator{
     CandidateGeneratorKind(0x7fff1002),
@@ -117,7 +117,7 @@ const CandidateGeneratorDescriptor unavailableGenerator{
     CandidateGeneratorDeterminism::Deterministic,
     {},
     {},
-};
+    ProviderForm::InProcess};
 
 const PromotionAcquisitionDescriptor objectiveAcquisition{
     PromotionAcquisitionKind(0x7fff2000),

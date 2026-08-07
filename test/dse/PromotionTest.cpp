@@ -133,7 +133,8 @@ const EvaluationModelDescriptor promotionModelDescriptor{
     EvaluationExecutionMethod::Analytic,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 PromotionEvidence makeRuntimeEvidence(const ArtifactRootReference &candidate,
                                       MetricObservationValue observation,

@@ -138,7 +138,8 @@ const EvaluationModelDescriptor modelDescriptor{
     EvaluationExecutionMethod::Analytic,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 llvm::Expected<EvaluationModelResult> evaluate(const EvaluationRequest &request,
                                                const CaseArtifactResolution &,

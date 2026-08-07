@@ -1,0 +1,1 @@
+# RUN: loom-pre-mapping-compilation-test exact-fabric-whole-program-dataflow

@@ -123,7 +123,8 @@ const EvaluationModelDescriptor modelDescriptor{
     EvaluationExecutionMethod::Analytic,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 ArtifactRootReference storeArtifact(const ArtifactStore &store,
                                     const ArtifactSchemaDescriptor &schema,

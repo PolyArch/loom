@@ -169,7 +169,8 @@ const EvaluationModelDescriptor kModelDescriptor{
     EvaluationExecutionMethod::Simulation,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 llvm::Expected<bool> hasDeterministicExactRelation(
     const sim::CanonicalSimulationExecution &execution,

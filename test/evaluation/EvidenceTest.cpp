@@ -275,7 +275,8 @@ const EvaluationModelDescriptor modelDescriptor{
     EvaluationExecutionMethod::Analytic,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 const EvaluationModelDescriptor externalModelDescriptor{
     EvaluationModelKind(45),

@@ -244,7 +244,8 @@ const EvaluationModelDescriptor kModelDescriptor{
     EvaluationExecutionMethod::Simulation,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 llvm::Expected<EvaluationModelResult> classifyNativeFailure(llvm::Error error) {
   std::error_code code;

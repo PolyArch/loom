@@ -39,6 +39,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -1202,8 +1203,7 @@ void spatialMappingPromotionKeepsEveryCandidateLineage() {
       generateTechMappingSet(dataflowReference, fabric.reference(), store,
                              blobs);
   std::vector<loom::ArtifactRootReference> mappings =
-      generateSpatialMappingSet(techMappings, fabric.reference(), store,
-                                blobs);
+      generateSpatialMappingSet(techMappings, fabric.reference(), store, blobs);
   mappings.erase(mappings.begin() + 2, mappings.end());
   const PublishedSpatialInputs simulationInputs =
       publishSpatialInputs(dataflow, store);
@@ -1607,8 +1607,7 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
   auto dataflow =
       take(dataflow::importCanonicalDataflow(*dataflowReference, store));
   const loom::ArtifactRootReference techMapping =
-      generateTechMapping(*dataflowReference, fabric.reference(), store,
-                          blobs);
+      generateTechMapping(*dataflowReference, fabric.reference(), store, blobs);
   auto spatial = generateSpatialFeedbackFixture(*dataflowReference, techMapping,
                                                 fabric, store);
   const PublishedSpatialInputs spatialInputs =
@@ -1694,17 +1693,36 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
 
 } // namespace
 
-int main() {
-  emptyConstraintOwnerPublishesExactArtifact();
-  rootCompleteAdapterPublishesPhysicalMapping();
-  descriptorAndEmptySetAreClosed();
-  finiteSetTraversesEveryCanonicalTechMapping();
-  unavailableNegotiationIsTypedIncomplete();
-  initializerSemanticLimitIsTypedIncomplete();
-  foreignFabricIsRejectedBeforeSearch();
-  spatialMappingPromotionExecutesExactCgraCase();
-  spatialMappingPromotionKeepsEveryCandidateLineage();
-  spatialMappingFeedbackPublishesNarrowImmutableDataflow();
-  spatialMappingFeedbackReplaysAgainstItsSourceWorkload();
+int main(int argc, char **argv) {
+  if (argc != 2)
+    fail("expected exactly one test case name");
+
+  using TestFunction = void (*)();
+  TestFunction test =
+      llvm::StringSwitch<TestFunction>(argv[1])
+          .Case("empty-constraint-owner",
+                emptyConstraintOwnerPublishesExactArtifact)
+          .Case("root-complete-adapter",
+                rootCompleteAdapterPublishesPhysicalMapping)
+          .Case("descriptor-and-empty-set", descriptorAndEmptySetAreClosed)
+          .Case("finite-set-traversal",
+                finiteSetTraversesEveryCanonicalTechMapping)
+          .Case("unavailable-negotiation",
+                unavailableNegotiationIsTypedIncomplete)
+          .Case("initializer-semantic-limit",
+                initializerSemanticLimitIsTypedIncomplete)
+          .Case("foreign-fabric-rejection", foreignFabricIsRejectedBeforeSearch)
+          .Case("spatial-mapping-promotion",
+                spatialMappingPromotionExecutesExactCgraCase)
+          .Case("spatial-mapping-lineage",
+                spatialMappingPromotionKeepsEveryCandidateLineage)
+          .Case("spatial-mapping-feedback",
+                spatialMappingFeedbackPublishesNarrowImmutableDataflow)
+          .Case("spatial-mapping-feedback-replay",
+                spatialMappingFeedbackReplaysAgainstItsSourceWorkload)
+          .Default(nullptr);
+  if (!test)
+    fail("unknown test case: " + llvm::Twine(argv[1]));
+  test();
   return EXIT_SUCCESS;
 }

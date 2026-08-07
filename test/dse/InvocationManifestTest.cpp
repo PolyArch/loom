@@ -86,7 +86,7 @@ const CandidateGeneratorDescriptor generator{
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
     nullptr,
-};
+    ProviderForm::InProcess};
 
 constexpr evaluation::EvaluationCaseKind evidenceCaseKind(0x7fff7100);
 constexpr evaluation::EvaluationModelKind evidenceModelKind(0x7fff7100);
@@ -174,7 +174,8 @@ const evaluation::EvaluationModelDescriptor evidenceModelDescriptor{
     evaluation::EvaluationExecutionMethod::Analytic,
     {},
     evaluation::DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 bool generationStopsEarly = false;
 

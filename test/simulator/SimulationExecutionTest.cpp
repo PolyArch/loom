@@ -275,7 +275,8 @@ const EvaluationModelDescriptor modelDescriptor{
     EvaluationExecutionMethod::Simulation,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 const ModelOutputSlotDescriptor retiredOnlyOutputSlots[] = {
     {ModelOutputSlotRef(0),
@@ -300,7 +301,8 @@ const EvaluationModelDescriptor retiredOnlyModelDescriptor{
     EvaluationExecutionMethod::Simulation,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 struct Inputs {
   ArtifactRootReference dataflowRef;

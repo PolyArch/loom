@@ -387,16 +387,16 @@ llvm::Error validateProviderResult(
     CandidateGeneratorProviderResult &result, const ArtifactStore &store) {
   if (llvm::Error error = validateCandidateGeneratorWorkSummary(
           binding.descriptorRef(), result.workSummary))
-    return std::move(error);
+    return error;
   if (auto *completed =
           std::get_if<CompletedCandidateGeneratorResult>(&result.outcome)) {
     if (llvm::Error error = canonicalizeOutputBindings(
             descriptor, completed->outputBindings, true, store))
-      return std::move(error);
+      return error;
     if (llvm::Error error = canonicalizeLineageEdges(
             descriptor, inputBindings, completed->outputBindings,
             completed->lineageEdges, store))
-      return std::move(error);
+      return error;
   } else {
     auto &incomplete =
         std::get<IncompleteCandidateGeneratorResult>(result.outcome);
@@ -406,11 +406,11 @@ llvm::Error validateProviderResult(
       return invalid("provider returned an invalid Incomplete reason");
     if (llvm::Error error = canonicalizeOutputBindings(
             descriptor, incomplete.retainedOutputBindings, false, store))
-      return std::move(error);
+      return error;
     if (llvm::Error error = canonicalizeLineageEdges(
             descriptor, inputBindings, incomplete.retainedOutputBindings,
             incomplete.lineageEdges, store))
-      return std::move(error);
+      return error;
   }
   return llvm::Error::success();
 }

@@ -147,7 +147,8 @@ const EvaluationModelDescriptor kModelDescriptor{
     EvaluationExecutionMethod::Simulation,
     {},
     DeterminismContract::Deterministic,
-    {}};
+    {},
+    ProviderForm::InProcess};
 
 llvm::Expected<EvaluationModelResult>
 classifyExecutionFailure(llvm::Error error) {
