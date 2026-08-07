@@ -159,10 +159,10 @@ includes the exact Evaluation binding table used by its
 
 `H` is the immutable, canonical-framed finite search-domain view mechanically
 elaborated from `D`, `F`, `R`, resolved Compilation and DSE policy, and `K`.
-It owns finite binding atoms and the legal AccCore, SpatialCore, service, and
-endpoint domains for each atom, plus endpoint-factorized service compatibility
-relations. Those relations are indexed only by exact existing Dataflow and
-Fabric references. They contain neither a selected endpoint nor the finalized
+It owns finite execution-binding atoms and each atom's legal AccCore or graph
+target domain, plus endpoint-factorized service compatibility relations. Those
+relations are indexed only by exact existing Dataflow and Fabric references.
+They contain neither a selected endpoint nor the finalized
 `ExecutionContextKey` owned by `docs/spec-mapping-identity.md`. `H` is not an
 artifact, Mapping result, or second config authority. Its canonical digest
 participates in the native cache key and its exact descriptor and digest are
@@ -183,8 +183,9 @@ SpatialMapping.
 
 ### System Search-Domain View
 
-`H` atomizes each Dataflow-owned execution or service relation without
-selecting a target. Its only binding-partition shape is:
+`H` atomizes each Dataflow-owned execution relation without selecting a
+target, then derives service compatibility from those legal execution choices.
+Its only binding-partition shape is:
 
 ```text
 BindingPartitionShape =
@@ -223,11 +224,6 @@ SystemSearchAtomDomain =
       compatible_immutable_seeds :
         canonical sorted unique set<ArtifactRootReference>
     }
-  | ServiceConstraint {
-      compatible_service_regions
-        | compatible_consistency_domains
-        | compatible_transport_endpoints
-    }
 
 FlatSpatialReopenProblem {
   tech_mapping_ref : exact TechMapping ArtifactRootReference
@@ -256,15 +252,16 @@ enter `H`, a cache key, canonical comparison, or persistent Mapping. Flat
 finalization first verifies and identifies each selected SpatialMapping and
 only then rewrites `B_graph` to its ordinary immutable target.
 
-Each `ServiceConstraint` atom is owned by exactly one typed System projection
-subject from the catalog below and its exact applicable execution partition
-atom. A parameterized service relation reuses the partition mechanically
-induced by its Dataflow owner and applicable execution binding; it cannot
-introduce a third partition shape. The constraint domain is the
-endpoint-independent restriction mechanically derived from `C/K`. If there is
-no narrower restriction, it contains the complete finite typed target universe
-from `F`; absence never means unrestricted. Endpoint capability and attachment
-closure are applied only through the compatibility relation below.
+Service restrictions do not create another binding-atom variant or a third
+partition shape. The System MappingConstraintSet catalog owns its restrictions
+by the exact obligation or transfer-terminal subject defined below; it does not
+own a partition-qualified service subject. While deriving each compatibility
+row, `H` mechanically intersects the applicable endpoint-independent
+restriction from exact `C/K` with compatibility from the row's exact Fabric
+endpoint. If there is no narrower restriction, the restriction input is the
+complete finite typed target universe from `F`; absence never means
+unrestricted. This intersection is one derived row domain, not two candidate
+authorities that CandidateState must reconcile.
 
 Service compatibility has this endpoint-factorized shape:
 
@@ -311,12 +308,14 @@ identity. Its nested row key sets are derived as follows:
 * For each target subject, rows cover exactly the sorted unique
   `SystemServiceEndpointRef` values that a legal execution binding and
   hierarchical SpatialMapping or flat reopen decision can mechanically bind.
-  The row derives compatibility from that subject and endpoint only.
+  The row derives compatibility from that subject and endpoint, then applies
+  the exact endpoint-independent `C/K` restriction for the obligation.
 * For each `SystemTransferTerminalKey`, terminal rows cover exactly the sorted
   unique typed Fabric endpoints that those same legal choices can
   mechanically bind. `MessageTransfer` uses the transport variant; memory and
   fence use the memory variant selected by canonical leg direction and
-  endpoint role.
+  endpoint role. The row applies the exact endpoint-independent `C/K`
+  restriction for that terminal.
 
 An empty domain for a reachable subject-and-endpoint or
 terminal-and-endpoint pair remains present. A missing, extra, duplicate,
@@ -363,12 +362,13 @@ obligation has `compatible_service_regions`; a fence operation obligation has
 `compatible_consistency_domains`, derived from the matching
 `FenceCapabilityDomain` records and the exact Dataflow-owned fence effects; a
 `MessageTransfer` obligation has neither field. The two operation target
-domains are mutually exclusive. Both memory-operation domains are restricted
-to the exact bound System service endpoint and its explicit service/transform
-closure. Capability compatibility can filter regions or consistency domains
-within that closure; it cannot introduce another endpoint. An empty applicable
-domain is proven infeasibility, not permission to substitute a memory region,
-manager endpoint, or candidate-private target.
+domains are mutually exclusive. Each row is the exact intersection of its
+applicable `C/K` restriction and compatibility with the bound System service
+endpoint and its explicit service/transform closure. Capability compatibility
+can filter regions or consistency domains within that closure; it cannot
+introduce another endpoint. An empty applicable domain is proven infeasibility,
+not permission to substitute a memory region, manager endpoint, or
+candidate-private target.
 
 The owner-specific view descriptor identity is
 `loom.system_pnr_search_domain`, version 3.0. Its exact descriptor bytes are
@@ -390,9 +390,7 @@ key. Counts and ordinals use fixed-width big-endian integer framing.
 
 The `SystemSearchAtomDomain` canonical variant ordinals are
 `ThreadBinding = 0`, `HierarchicalGraphBinding = 1`,
-`FlatGraphBinding = 2`, and `ServiceConstraint = 3`. The nested
-`ServiceConstraint` domain ordinals are `service_regions = 0`,
-`consistency_domains = 1`, and `transport_endpoints = 2`.
+and `FlatGraphBinding = 2`.
 `ServiceTargetSubject` uses `ServiceMember = 0` and `MemoryExposure = 1`; the
 nested `ServiceMemberRef` retains its Dataflow-owned variant framing. Every
 closed variant is framed as its `u32be` ordinal, followed by
@@ -1059,12 +1057,12 @@ mode.
 For each affected service subject or terminal, a service move mechanically
 resolves one exact bound endpoint from the selected `B_thread`, the selected
 hierarchical SpatialMapping or current flat Spatial decisions, and `F`. It
-then intersects the applicable binding atom's `ServiceConstraint` domain with
-the one matching `H` 3.0 endpoint-compatibility row. Several subjects in one
-obligation use the intersection of only their matching rows. A missing row is
-an invalid frozen view; an empty intersection is infeasible. Neither case may
-fall back to another occurrence, endpoint, global scan, union, or
-candidate-private compatibility cache.
+then selects the one matching H 3.0 endpoint-compatibility row, whose domain
+already incorporates the exact endpoint-independent `C/K` restriction. Several
+subjects in one obligation use the intersection of only their matching row
+domains. A missing row is an invalid frozen view; an empty row or intersection
+is infeasible. Neither case may fall back to another occurrence, endpoint,
+global scan, union, or candidate-private compatibility cache.
 
 In flat mode this lookup occurs before a changed SpatialMapping has an
 ArtifactIdentity. After independent Spatial verification and identity

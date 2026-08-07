@@ -725,6 +725,18 @@ building `H` would preempt `B_thread`. Indexing the atomic compatibility fact
 by the already existing bound endpoint distinguishes those cases and lets two
 contexts correctly share a row when they really bind the same endpoint.
 
+An additional partition-scoped service-constraint atom would have no semantic
+owner. The System MappingConstraintSet restricts service choices through its
+existing obligation and transfer-terminal subjects, while Fabric owns endpoint
+capability and attachment closure. `H` therefore applies the exact resolved
+constraint while deriving each subject-and-endpoint compatibility row. The row
+is a disposable projection of those two authorities, and its digest changes
+when either input changes. CandidateState performs one exact lookup instead of
+reconciling a shadow constraint domain with a compatibility domain. If a
+future contract needs service restrictions that vary independently by
+execution partition, the MappingConstraintSet projection catalog must first
+own that distinction explicitly.
+
 Using the persistent `ExecutionContextKey` instead would require the complete
 immutable SpatialMapping identity. That identity exists for hierarchical
 imports but not while flat System search is still changing Spatial decisions.
