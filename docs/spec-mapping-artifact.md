@@ -890,9 +890,7 @@ ServiceTargetBinding =
     MemoryRegionTarget {
       logical service interval
       selected Fabric service region
-      address_transform:
-          None
-        | ConstantBaseOffset { delta_bytes: i64 }
+      selected_transform_path : ordered array<SystemServiceTransformRef>
       exposures[] {
         MemoryExposureRef
         selected subordinate/provider terminal
@@ -904,16 +902,17 @@ ServiceTargetBinding =
     }
 ```
 
-The address transform is one inline closed value, not an independently
-referenceable Mapping entity or a generic expression language. `None` applies
-the logical byte address unchanged. `ConstantBaseOffset` applies
-`physical_address = logical_address + delta_bytes` using mathematical integer
-arithmetic; every translated address must then fit the unsigned address domain
-and the selected service region. Mapping owns the selected concrete delta.
-The selected Fabric subordinate/provider contract remains the sole owner of
-whether `None` or `ConstantBaseOffset` is supported, so Mapping cannot select a
-different transform kind. A zero delta remains `ConstantBaseOffset { 0 }` when
-that is the Fabric-declared kind and is not canonicalized to `None`.
+The transform path stores only non-derived selection. It is empty when a
+direct identity connection uniquely joins the bound endpoint to the selected
+region. Otherwise it is the exact ordered path of Fabric-owned
+`SystemServiceTransformRef` values needed to disambiguate the selected service
+chain. Fabric remains the sole owner of every transform's closed kind,
+parameters, endpoint relation, and region correspondence; Mapping never
+copies an offset, mask, interleave rule, or coherence relation. A path element
+must consume the previous selected endpoint set, and the composed final output
+must contain the selected service region. A transform sequence that is already
+uniquely implied by the bound endpoint and selected region is derived and must
+be omitted rather than redundantly persisted.
 
 A memory-region target owns every exposure child that selects that region.
 The child is keyed by its `MemoryExposureRef` and provider terminal and has no

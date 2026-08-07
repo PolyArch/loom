@@ -447,11 +447,11 @@ Using that projection, the base verifier checks:
   rejection of a service target outside the bound endpoint's explicit
   service/transform closure, and no copied memory endpoint, execution owner,
   capability ordinal, payload, width, or protocol field in Mapping;
-* exact agreement between each memory target's closed address-transform kind
-  and its selected Fabric subordinate/provider contract, signed
-  `ConstantBaseOffset` evaluation without integer overflow, and containment of
-  the complete translated logical service interval in the selected service
-  region;
+* exact continuity and minimality of each memory target's selected Fabric
+  service-transform path, composition of its Fabric-owned address width,
+  offset, mask, interleave, and coherence contracts without copied parameters,
+  arithmetic without overflow, and containment of the complete transformed
+  logical service interval in the selected service region;
 * one exact MemoryConsistencyDomain target for each fence plan, compatible
   with its synchronization scope and all constrained memory effects;
 * complete System ResourceUse ownership, exact `ServicePlanElementRef`
