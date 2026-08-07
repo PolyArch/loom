@@ -18,6 +18,24 @@ class Mapping_CanonicalBytesAttr<string name, string mnemonic,
   let genVerifyDecl = 1;
 }
 
+def Mapping_SpatialConstraintProjectionKeyAttr
+    : Mapping_Attr<"SpatialConstraintProjectionKey",
+                   "spatial_constraint_projection"> {
+  let summary = "one closed Spatial MappingConstraintSet projection";
+  let parameters = (ins "uint32_t":$value);
+  let assemblyFormat = "`<` $value `>`";
+  let genVerifyDecl = 1;
+}
+
+def Mapping_SystemConstraintProjectionKeyAttr
+    : Mapping_Attr<"SystemConstraintProjectionKey",
+                   "system_constraint_projection"> {
+  let summary = "one closed System MappingConstraintSet projection";
+  let parameters = (ins "uint32_t":$value);
+  let assemblyFormat = "`<` $value `>`";
+  let genVerifyDecl = 1;
+}
+
 def Mapping_ArtifactIdentityAttr
     : Mapping_CanonicalBytesAttr<"ArtifactIdentity", "artifact_identity",
                                  "exact Common ArtifactIdentity bytes">;
@@ -148,6 +166,12 @@ def Mapping_FabricAccCoreOccurrenceRefAttr
     : Mapping_CanonicalBytesAttr<"FabricAccCoreOccurrenceRef",
                                  "fabric_acc_core_occurrence_ref",
                                  "Fabric-owned AccCore occurrence reference">;
+
+def Mapping_FabricSpatialCoreOccurrenceRefAttr
+    : Mapping_CanonicalBytesAttr<
+          "FabricSpatialCoreOccurrenceRef",
+          "fabric_spatial_core_occurrence_ref",
+          "Fabric-owned SpatialCore occurrence reference">;
 
 def Mapping_FabricPeOccurrenceRefAttr
     : Mapping_CanonicalBytesAttr<"FabricPeOccurrenceRef",
@@ -367,6 +391,14 @@ def Mapping_ConstraintFuContextAttr
   let parameters = (ins "::mapping::FabricFuOccurrenceRefAttr":$fu,
       "::mapping::InstructionContextRefAttr":$instruction_context);
   let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def Mapping_ConstraintSpatialMappingReferenceAttr
+    : Mapping_Attr<"ConstraintSpatialMappingReference",
+                   "constraint_spatial_mapping_reference"> {
+  let summary = "System MappingConstraintSet SpatialMapping table ordinal";
+  let parameters = (ins "uint64_t":$ordinal);
+  let assemblyFormat = "`<` $ordinal `>`";
 }
 
 def Mapping_ConstraintUnsignedIntervalAttr

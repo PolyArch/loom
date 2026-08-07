@@ -6,6 +6,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
+#include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Mapping/IR/MappingOps.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -13,12 +14,48 @@
 
 #include <cstdint>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom::mapping {
 
 llvm::Expected<CanonicalSemanticBytes>
 writeCanonicalSystemConstraintAssembly(::mapping::ConstraintsSystemOp root);
+
+using SystemConstraintSubject =
+    std::variant<::dataflow::RootThreadLaunchRef,
+                 ::dataflow::RootedGraphLaunchRef,
+                 OperationServiceObligationFamilyKey, SystemTransferTerminalKey,
+                 CanonicalServiceLegKey>;
+
+using SystemConstraintDomainValue =
+    std::variant<::loom::fabric::AccCoreOccurrenceRef, ArtifactRootReference,
+                 ::loom::fabric::SpatialCoreOccurrenceRef,
+                 ::loom::fabric::FabricMemoryServiceRegionRef,
+                 ::loom::fabric::FabricTransportEndpointRef,
+                 ::loom::fabric::FabricPhysicalTraversalRef,
+                 ::loom::fabric::FabricResourceStateRef,
+                 SpatialConstraintUnsignedInterval>;
+
+struct SystemDomainRestrictionView final {
+  ::mapping::SystemConstraintProjection projection;
+  SystemConstraintSubject subject;
+  std::vector<SystemConstraintDomainValue> admissibleDomain;
+};
+
+struct SystemEqualView final {
+  ::mapping::SystemConstraintProjection projection;
+  std::vector<SystemConstraintSubject> subjects;
+};
+
+struct SystemDisjointView final {
+  ::mapping::SystemConstraintProjection projection;
+  std::vector<SystemConstraintSubject> subjects;
+};
+
+using SystemConstraintClauseView =
+    std::variant<SystemDomainRestrictionView, SystemEqualView,
+                 SystemDisjointView>;
 
 class SystemMappingConstraintSetView final {
 public:
@@ -37,7 +74,10 @@ public:
   llvm::ArrayRef<ArtifactRootReference> spatialMappingReferences() const {
     return spatialMappingReferences_;
   }
-  std::uint64_t clauseCount() const { return clauseCount_; }
+  llvm::ArrayRef<SystemConstraintClauseView> clauses() const {
+    return clauses_;
+  }
+  std::uint64_t clauseCount() const { return clauses_.size(); }
 
 private:
   SystemMappingConstraintSetView(
@@ -45,20 +85,20 @@ private:
       ArtifactIdentity fabricIdentity,
       std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
       std::vector<ArtifactRootReference> spatialMappingReferences,
-      std::uint64_t clauseCount)
+      std::vector<SystemConstraintClauseView> clauses)
       : identity_(std::move(identity)),
         dataflowIdentity_(std::move(dataflowIdentity)),
         fabricIdentity_(std::move(fabricIdentity)),
         rootThreadLaunches_(std::move(rootThreadLaunches)),
         spatialMappingReferences_(std::move(spatialMappingReferences)),
-        clauseCount_(clauseCount) {}
+        clauses_(std::move(clauses)) {}
 
   ArtifactIdentity identity_;
   ArtifactIdentity dataflowIdentity_;
   ArtifactIdentity fabricIdentity_;
   std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches_;
   std::vector<ArtifactRootReference> spatialMappingReferences_;
-  std::uint64_t clauseCount_ = 0;
+  std::vector<SystemConstraintClauseView> clauses_;
 };
 
 class FinalizedSystemMappingConstraintSet final {

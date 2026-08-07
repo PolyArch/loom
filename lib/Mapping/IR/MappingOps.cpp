@@ -1053,35 +1053,58 @@ LogicalResult mapping::ConstraintsSystemOp::verify() {
       return emitOpError("spatial_mapping_reference_table contains a "
                          "non-ArtifactRootReference value");
   }
-  if (!getBody().front().empty())
-    return getBody().front().front().emitOpError(
-        "is not a closed System MappingConstraintSet clause kind");
+  for (Operation &child : getBody().front()) {
+    if (!isa<mapping::ConstraintDomainRestrictionOp, mapping::ConstraintEqualOp,
+             mapping::ConstraintDisjointOp>(child))
+      return child.emitOpError(
+          "is not a closed System MappingConstraintSet clause kind");
+  }
   return success();
 }
 
 namespace {
 
-ParseResult parseSpatialProjection(OpAsmParser &parser,
-                                   OperationState &result) {
+ParseResult parseConstraintProjection(OpAsmParser &parser,
+                                      OperationState &result) {
   StringRef keyword;
   if (parser.parseKeyword("projection") || parser.parseLParen() ||
       parser.parseKeyword(&keyword) || parser.parseRParen())
     return failure();
-  std::optional<mapping::SpatialConstraintProjection> projection =
+  std::optional<mapping::SpatialConstraintProjection> spatial =
       mapping::symbolizeSpatialConstraintProjection(keyword);
-  if (!projection)
-    return parser.emitError(parser.getCurrentLocation(),
-                            "unknown Spatial constraint projection");
-  result.addAttribute("projection",
-                      mapping::SpatialConstraintProjectionAttr::get(
-                          parser.getContext(), *projection));
-  return success();
+  if (spatial) {
+    result.addAttribute(
+        "projection",
+        mapping::SpatialConstraintProjectionKeyAttr::get(
+            parser.getContext(), static_cast<std::uint32_t>(*spatial)));
+    return success();
+  }
+  std::optional<mapping::SystemConstraintProjection> system =
+      mapping::symbolizeSystemConstraintProjection(keyword);
+  if (system) {
+    result.addAttribute(
+        "projection",
+        mapping::SystemConstraintProjectionKeyAttr::get(
+            parser.getContext(), static_cast<std::uint32_t>(*system)));
+    return success();
+  }
+  return parser.emitError(parser.getCurrentLocation(),
+                          "unknown constraint projection");
 }
 
-void printSpatialProjection(OpAsmPrinter &printer,
-                            mapping::SpatialConstraintProjection projection) {
-  printer << " projection("
-          << mapping::stringifySpatialConstraintProjection(projection) << ')';
+void printConstraintProjection(OpAsmPrinter &printer, Attribute projection) {
+  printer << " projection(";
+  if (auto spatial =
+          dyn_cast<mapping::SpatialConstraintProjectionKeyAttr>(projection))
+    printer << mapping::stringifySpatialConstraintProjection(
+        static_cast<mapping::SpatialConstraintProjection>(spatial.getValue()));
+  else if (auto system =
+               dyn_cast<mapping::SystemConstraintProjectionKeyAttr>(projection))
+    printer << mapping::stringifySystemConstraintProjection(
+        static_cast<mapping::SystemConstraintProjection>(system.getValue()));
+  else
+    llvm_unreachable("unknown constraint projection attribute");
+  printer << ')';
 }
 
 bool isSpatialConstraintSubject(mapping::SpatialConstraintProjection projection,
@@ -1142,14 +1165,114 @@ bool isSpatialConstraintDomainValue(
   llvm_unreachable("unknown Spatial constraint projection");
 }
 
-LogicalResult
-verifyConstraintSubjects(Operation *operation,
-                         mapping::SpatialConstraintProjection projection,
-                         ArrayAttr subjects) {
+bool isSystemConstraintSubject(mapping::SystemConstraintProjection projection,
+                               Attribute subject) {
+  using Projection = mapping::SystemConstraintProjection;
+  switch (projection) {
+  case Projection::ThreadTargetAccCore:
+    return isa<mapping::RootThreadLaunchRefAttr>(subject);
+  case Projection::GraphSelectedSpatialMapping:
+  case Projection::GraphTargetSpatialCore:
+    return isa<mapping::RootedGraphLaunchRefAttr>(subject);
+  case Projection::ServiceTargetRegion:
+    return isa<mapping::SystemServiceObligationKeyAttr>(subject);
+  case Projection::TransferTerminalAttachment:
+    return isa<mapping::SystemTransferTerminalKeyAttr>(subject);
+  case Projection::TransferSelectedTraversals:
+  case Projection::TransferResourceStates:
+  case Projection::TransferAssignedTagValues:
+    return isa<mapping::CanonicalServiceLegKeyAttr>(subject);
+  }
+  llvm_unreachable("unknown System constraint projection");
+}
+
+bool isSystemConstraintDomainValue(
+    mapping::SystemConstraintProjection projection, Attribute value) {
+  using Projection = mapping::SystemConstraintProjection;
+  switch (projection) {
+  case Projection::ThreadTargetAccCore:
+    return isa<mapping::FabricAccCoreOccurrenceRefAttr>(value);
+  case Projection::GraphSelectedSpatialMapping:
+    return isa<mapping::ConstraintSpatialMappingReferenceAttr>(value);
+  case Projection::GraphTargetSpatialCore:
+    return isa<mapping::FabricSpatialCoreOccurrenceRefAttr>(value);
+  case Projection::ServiceTargetRegion:
+    return isa<mapping::FabricMemoryServiceRegionRefAttr>(value);
+  case Projection::TransferTerminalAttachment:
+    return isa<mapping::FabricTransportEndpointRefAttr>(value);
+  case Projection::TransferSelectedTraversals:
+    return isa<mapping::FabricPhysicalTraversalRefAttr>(value);
+  case Projection::TransferResourceStates:
+    return isa<mapping::FabricResourceStateRefAttr>(value);
+  case Projection::TransferAssignedTagValues:
+    return isa<mapping::ConstraintUnsignedIntervalAttr>(value);
+  }
+  llvm_unreachable("unknown System constraint projection");
+}
+
+LogicalResult verifyConstraintProjectionParent(Operation *operation,
+                                               Attribute projection) {
+  Operation *parent = operation->getParentOp();
+  if (isa<mapping::SpatialConstraintProjectionKeyAttr>(projection)) {
+    if (!isa_and_nonnull<mapping::ConstraintsSpatialOp>(parent))
+      return operation->emitOpError(
+          "Spatial projection requires a Spatial MappingConstraintSet root");
+    return success();
+  }
+  if (!isa<mapping::SystemConstraintProjectionKeyAttr>(projection))
+    return operation->emitOpError("has an unknown projection attribute");
+  if (!isa_and_nonnull<mapping::ConstraintsSystemOp>(parent))
+    return operation->emitOpError(
+        "System projection requires a System MappingConstraintSet root");
+  return success();
+}
+
+bool isConstraintSubject(Attribute projection, Attribute subject) {
+  if (auto spatial =
+          dyn_cast<mapping::SpatialConstraintProjectionKeyAttr>(projection))
+    return isSpatialConstraintSubject(
+        static_cast<mapping::SpatialConstraintProjection>(spatial.getValue()),
+        subject);
+  return isSystemConstraintSubject(
+      static_cast<mapping::SystemConstraintProjection>(
+          cast<mapping::SystemConstraintProjectionKeyAttr>(projection)
+              .getValue()),
+      subject);
+}
+
+bool isConstraintDomainValue(Attribute projection, Attribute value) {
+  if (auto spatial =
+          dyn_cast<mapping::SpatialConstraintProjectionKeyAttr>(projection))
+    return isSpatialConstraintDomainValue(
+        static_cast<mapping::SpatialConstraintProjection>(spatial.getValue()),
+        value);
+  return isSystemConstraintDomainValue(
+      static_cast<mapping::SystemConstraintProjection>(
+          cast<mapping::SystemConstraintProjectionKeyAttr>(projection)
+              .getValue()),
+      value);
+}
+
+StringRef constraintProjectionName(Attribute projection) {
+  if (auto spatial =
+          dyn_cast<mapping::SpatialConstraintProjectionKeyAttr>(projection))
+    return mapping::stringifySpatialConstraintProjection(
+        static_cast<mapping::SpatialConstraintProjection>(spatial.getValue()));
+  return mapping::stringifySystemConstraintProjection(
+      static_cast<mapping::SystemConstraintProjection>(
+          cast<mapping::SystemConstraintProjectionKeyAttr>(projection)
+              .getValue()));
+}
+
+LogicalResult verifyConstraintSubjects(Operation *operation,
+                                       Attribute projection,
+                                       ArrayAttr subjects) {
+  if (failed(verifyConstraintProjectionParent(operation, projection)))
+    return failure();
   if (subjects.size() < 2)
     return operation->emitOpError("requires at least two subjects");
   for (Attribute subject : subjects)
-    if (!isSpatialConstraintSubject(projection, subject))
+    if (!isConstraintSubject(projection, subject))
       return operation->emitOpError(
           "contains a subject of the wrong typed projection domain");
   return success();
@@ -1162,7 +1285,7 @@ mapping::ConstraintDomainRestrictionOp::parse(OpAsmParser &parser,
                                               OperationState &result) {
   Attribute subject;
   ArrayAttr domain;
-  if (failed(parseSpatialProjection(parser, result)) ||
+  if (failed(parseConstraintProjection(parser, result)) ||
       parser.parseKeyword("subject") || parser.parseLParen() ||
       parser.parseAttribute(subject, "subject", result.attributes) ||
       parser.parseRParen() || parser.parseKeyword("admissible_domain") ||
@@ -1174,7 +1297,7 @@ mapping::ConstraintDomainRestrictionOp::parse(OpAsmParser &parser,
 }
 
 void mapping::ConstraintDomainRestrictionOp::print(OpAsmPrinter &printer) {
-  printSpatialProjection(printer, getProjection());
+  printConstraintProjection(printer, getProjection());
   printer << " subject(" << getSubject() << ") admissible_domain("
           << getAdmissibleDomain() << ')';
   printer.printOptionalAttrDict((*this)->getAttrs(),
@@ -1184,7 +1307,7 @@ void mapping::ConstraintDomainRestrictionOp::print(OpAsmPrinter &printer) {
 ParseResult mapping::ConstraintEqualOp::parse(OpAsmParser &parser,
                                               OperationState &result) {
   ArrayAttr subjects;
-  if (failed(parseSpatialProjection(parser, result)) ||
+  if (failed(parseConstraintProjection(parser, result)) ||
       parser.parseKeyword("subjects") || parser.parseLParen() ||
       parser.parseAttribute(subjects, "subjects", result.attributes) ||
       parser.parseRParen() || parser.parseOptionalAttrDict(result.attributes))
@@ -1193,7 +1316,7 @@ ParseResult mapping::ConstraintEqualOp::parse(OpAsmParser &parser,
 }
 
 void mapping::ConstraintEqualOp::print(OpAsmPrinter &printer) {
-  printSpatialProjection(printer, getProjection());
+  printConstraintProjection(printer, getProjection());
   printer << " subjects(" << getSubjects() << ')';
   printer.printOptionalAttrDict((*this)->getAttrs(),
                                 {"projection", "subjects"});
@@ -1202,7 +1325,7 @@ void mapping::ConstraintEqualOp::print(OpAsmPrinter &printer) {
 ParseResult mapping::ConstraintDisjointOp::parse(OpAsmParser &parser,
                                                  OperationState &result) {
   ArrayAttr subjects;
-  if (failed(parseSpatialProjection(parser, result)) ||
+  if (failed(parseConstraintProjection(parser, result)) ||
       parser.parseKeyword("subjects") || parser.parseLParen() ||
       parser.parseAttribute(subjects, "subjects", result.attributes) ||
       parser.parseRParen() || parser.parseOptionalAttrDict(result.attributes))
@@ -1211,7 +1334,7 @@ ParseResult mapping::ConstraintDisjointOp::parse(OpAsmParser &parser,
 }
 
 void mapping::ConstraintDisjointOp::print(OpAsmPrinter &printer) {
-  printSpatialProjection(printer, getProjection());
+  printConstraintProjection(printer, getProjection());
   printer << " subjects(" << getSubjects() << ')';
   printer.printOptionalAttrDict((*this)->getAttrs(),
                                 {"projection", "subjects"});
@@ -1221,15 +1344,16 @@ LogicalResult mapping::ConstraintDomainRestrictionOp::verify() {
   if (failed(rejectUnknownAttributes(
           *this, {"projection", "subject", "admissible_domain"})))
     return failure();
-  if (!isSpatialConstraintSubject(getProjection(), getSubject()))
+  if (failed(verifyConstraintProjectionParent(*this, getProjection())))
+    return failure();
+  if (!isConstraintSubject(getProjection(), getSubject()))
     return emitOpError("subject has the wrong typed projection domain");
   for (Attribute value : getAdmissibleDomain())
-    if (!isSpatialConstraintDomainValue(getProjection(), value))
+    if (!isConstraintDomainValue(getProjection(), value))
       return emitOpError(
                  "admissible_domain contains a value of the wrong carrier "
                  "type for projection ")
-             << mapping::stringifySpatialConstraintProjection(getProjection())
-             << ": " << value;
+             << constraintProjectionName(getProjection()) << ": " << value;
   return success();
 }
 

@@ -86,6 +86,24 @@ LogicalResult mapping::ArtifactIdentityAttr::verify(
   return success();
 }
 
+LogicalResult mapping::SpatialConstraintProjectionKeyAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, std::uint32_t value) {
+  if (!mapping::symbolizeSpatialConstraintProjection(value)) {
+    emitError() << "unknown Spatial constraint projection ordinal " << value;
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult mapping::SystemConstraintProjectionKeyAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, std::uint32_t value) {
+  if (!mapping::symbolizeSystemConstraintProjection(value)) {
+    emitError() << "unknown System constraint projection ordinal " << value;
+    return failure();
+  }
+  return success();
+}
+
 LogicalResult
 mapping::GraphRefAttr::verify(function_ref<InFlightDiagnostic()> emitError,
                               DenseI8ArrayAttr record) {
@@ -243,6 +261,8 @@ LogicalResult mapping::FabricFuTemplatePortRefAttr::verify(
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricFuOccurrenceRef, FabricFuOccurrenceRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricAccCoreOccurrenceRef,
                                   AccCoreOccurrenceRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricSpatialCoreOccurrenceRef,
+                                  SpatialCoreOccurrenceRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricPeOccurrenceRef, FabricPeOccurrenceRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(InstructionContextRef, InstructionContextRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricUsePatternRef, FabricUsePatternRef)

@@ -52,8 +52,25 @@ def Mapping_SpatialConstraintProjection : I32EnumAttr<
   let cppNamespace = "::mapping";
 }
 
-def Mapping_SpatialConstraintProjectionAttr
-    : EnumAttr<Mapping_Dialect, Mapping_SpatialConstraintProjection,
-               "spatial_projection">;
+def Mapping_SystemConstraintProjection : I32EnumAttr<
+    "SystemConstraintProjection",
+    "closed System MappingConstraintSet projection catalog", [
+  I32EnumAttrCase<"ThreadTargetAccCore", 0, "thread_target_acc_core">,
+  I32EnumAttrCase<"GraphSelectedSpatialMapping", 1,
+                  "graph_selected_spatial_mapping">,
+  I32EnumAttrCase<"GraphTargetSpatialCore", 2,
+                  "graph_target_spatial_core">,
+  I32EnumAttrCase<"ServiceTargetRegion", 3, "service_target_region">,
+  I32EnumAttrCase<"TransferTerminalAttachment", 4,
+                  "transfer_terminal_attachment">,
+  I32EnumAttrCase<"TransferSelectedTraversals", 5,
+                  "transfer_selected_traversals">,
+  I32EnumAttrCase<"TransferResourceStates", 6,
+                  "transfer_resource_states">,
+  I32EnumAttrCase<"TransferAssignedTagValues", 7,
+                  "transfer_assigned_tag_values">
+]> {
+  let cppNamespace = "::mapping";
+}
 
 #endif // LOOM_MAPPING_IR_MAPPINGENUMS_TD

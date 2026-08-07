@@ -78,6 +78,9 @@ target_link_libraries(loom-mapping-artifact-test PRIVATE
 target_link_libraries(loom-system-mapping-constraint-set-test PRIVATE
   LoomADGBuilder
   LoomMappingArtifact
+  LoomPnR
+  LoomPnRGenerator
+  LoomTechMapping
   MLIRArithDialect
   MLIRDataflow
   MLIRDLTIDialect

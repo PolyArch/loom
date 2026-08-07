@@ -408,29 +408,33 @@ def Mapping_ConstraintsSystemOp
   let hasVerifier = 1;
 }
 
+def Mapping_ConstraintProjectionAttr
+    : AnyAttrOf<[Mapping_SpatialConstraintProjectionKeyAttr,
+                 Mapping_SystemConstraintProjectionKeyAttr],
+                "closed Spatial or System constraint projection">;
+
 def Mapping_ConstraintDomainRestrictionOp
-    : Mapping_Op<"constraint.domain_restriction",
-                 [HasParent<"ConstraintsSpatialOp">]> {
+    : Mapping_Op<"constraint.domain_restriction"> {
   let summary = "one typed projected-domain restriction";
-  let arguments = (ins Mapping_SpatialConstraintProjectionAttr:$projection,
+  let arguments = (ins Mapping_ConstraintProjectionAttr:$projection,
       AnyAttr:$subject, ArrayAttr:$admissible_domain);
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 
 def Mapping_ConstraintEqualOp
-    : Mapping_Op<"constraint.equal", [HasParent<"ConstraintsSpatialOp">]> {
+    : Mapping_Op<"constraint.equal"> {
   let summary = "one canonical variadic projected equality";
-  let arguments = (ins Mapping_SpatialConstraintProjectionAttr:$projection,
+  let arguments = (ins Mapping_ConstraintProjectionAttr:$projection,
       ArrayAttr:$subjects);
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 
 def Mapping_ConstraintDisjointOp
-    : Mapping_Op<"constraint.disjoint", [HasParent<"ConstraintsSpatialOp">]> {
+    : Mapping_Op<"constraint.disjoint"> {
   let summary = "one canonical variadic projected disjointness relation";
-  let arguments = (ins Mapping_SpatialConstraintProjectionAttr:$projection,
+  let arguments = (ins Mapping_ConstraintProjectionAttr:$projection,
       ArrayAttr:$subjects);
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
