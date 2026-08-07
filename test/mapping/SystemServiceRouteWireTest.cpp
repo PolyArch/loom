@@ -434,6 +434,19 @@ int main() {
       mlir::cast<::mapping::SystemOp>(authored.get())));
   require(first.bytes() == second.bytes(),
           "System service route canonicalization is nondeterministic");
+  std::string currentText(first.bytes().begin(), first.bytes().end());
+  const std::string currentVersion = "version<3, 0>";
+  const std::size_t versionPosition = currentText.find(currentVersion);
+  require(versionPosition != std::string::npos,
+          "canonical SystemMapping does not use version 3.0");
+  currentText.replace(versionPosition, currentVersion.size(), "version<2, 0>");
+  {
+    mlir::ScopedDiagnosticHandler capture(
+        &context, [](mlir::Diagnostic &) { return mlir::success(); });
+    auto legacy = mlir::parseSourceString<mlir::ModuleOp>(
+        "module {\n" + currentText + "}\n", &context);
+    require(!legacy, "mapping.system 2.0 was accepted by the 3.0 parser");
+  }
   auto duplicatePlanSystem = buildSystem(context, fixture);
   auto duplicatePlanRoot =
       mlir::cast<::mapping::SystemOp>(duplicatePlanSystem.get());

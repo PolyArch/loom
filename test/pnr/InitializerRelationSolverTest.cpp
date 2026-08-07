@@ -77,6 +77,37 @@ void canonicalSearchBacktracksWithoutCopyingState() {
     fail("warm canonical DFS expanded retained solver storage");
 }
 
+void completeAssignmentValidationBacktracks() {
+  InitializerRelationModel model = makeModel({2, 2}, {});
+  InitializerRelationSolver solver(model);
+  std::vector<std::vector<PnrIndex>> observed;
+  const auto result = take(solver.solveCanonical(
+      /*assignmentLimit=*/8,
+      [&](llvm::ArrayRef<PnrIndex> choices) -> llvm::Expected<bool> {
+        observed.emplace_back(choices.begin(), choices.end());
+        return choices == llvm::ArrayRef<PnrIndex>({0, 1});
+      }));
+  if (result.choices != std::vector<PnrIndex>({0, 1}) ||
+      observed != std::vector<std::vector<PnrIndex>>({{0, 0}, {0, 1}}) ||
+      result.assignmentAttempts != 3)
+    fail("complete-assignment rejection did not continue canonical DFS");
+
+  InitializerRelationSolver limited(model);
+  auto exhausted = limited.solveCanonical(
+      /*assignmentLimit=*/2,
+      [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return false; });
+  if (exhausted)
+    fail("complete-assignment rejection exceeded its work limit");
+  bool observedWorkLimit = false;
+  llvm::handleAllErrors(
+      exhausted.takeError(), [&](const InitializerRelationSolveFailure &error) {
+        observedWorkLimit =
+            error.kind() == InitializerRelationSolveFailureKind::WorkLimit;
+      });
+  if (!observedWorkLimit)
+    fail("complete-assignment work exhaustion became infeasibility");
+}
+
 void workLimitDoesNotBecomeInfeasibility() {
   InitializerRelationModel model =
       makeModel({2, 2, 2}, {{InitializerRelationKind::Disjoint,
@@ -239,6 +270,7 @@ void independentRootDecisionsParticipateInMrvOrdering() {
 int main() {
   equalityAndDisjointnessReachFixedPoint();
   canonicalSearchBacktracksWithoutCopyingState();
+  completeAssignmentValidationBacktracks();
   workLimitDoesNotBecomeInfeasibility();
   fixedRootFailureIsNotGlobalInfeasibility();
   fixedChoicesConstrainTheSharedRelationModel();

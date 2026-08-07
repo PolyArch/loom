@@ -181,6 +181,7 @@ InitializerRelationSolver::InitializerRelationSolver(
   canonicalActiveChoices_.resize(choiceCount);
   choiceOrder_.resize(choiceCount);
   choiceFenwick_.resize(choiceCount);
+  completeAssignment_.resize(domainCounts_.size());
   reset();
 }
 
@@ -435,9 +436,12 @@ void InitializerRelationSolver::rollback(std::size_t journalMark) {
   }
 }
 
-InitializerRelationSolver::SearchResult InitializerRelationSolver::search(
+llvm::Expected<InitializerRelationSolver::SearchResult>
+InitializerRelationSolver::search(
     std::uint64_t assignmentLimit,
-    DeterministicPnrRandomStream *diversificationStream) {
+    DeterministicPnrRandomStream *diversificationStream,
+    llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+        validateCompleteAssignment) {
   if (!propagate())
     return SearchResult::Contradiction;
 
@@ -453,7 +457,12 @@ InitializerRelationSolver::SearchResult InitializerRelationSolver::search(
     for (const InitializerRelationRecord &relation : model_->relations())
       if (!activeRelationSatisfied(relation))
         return SearchResult::Contradiction;
-    return SearchResult::Solved;
+    for (PnrIndex decision = 0; decision < domainCounts_.size(); ++decision)
+      completeAssignment_[decision] = soleChoice(decision);
+    auto accepted = validateCompleteAssignment(completeAssignment_);
+    if (!accepted)
+      return accepted.takeError();
+    return *accepted ? SearchResult::Solved : SearchResult::Contradiction;
   }
 
   const PnrIndex choiceCount =
@@ -469,11 +478,15 @@ InitializerRelationSolver::SearchResult InitializerRelationSolver::search(
     for (PnrIndex choice = 0; choice < choiceCount; ++choice)
       if (choice != selectedChoice && choiceActive(selected, choice))
         retainedChoice &= removeChoice(selected, choice);
-    const SearchResult result =
-        retainedChoice ? search(assignmentLimit, diversificationStream)
-                       : SearchResult::Contradiction;
-    if (result != SearchResult::Contradiction)
-      return result;
+    auto result =
+        retainedChoice
+            ? search(assignmentLimit, diversificationStream,
+                     validateCompleteAssignment)
+            : llvm::Expected<SearchResult>(SearchResult::Contradiction);
+    if (!result)
+      return result.takeError();
+    if (*result != SearchResult::Contradiction)
+      return *result;
     rollback(journalMark);
   }
   return SearchResult::Contradiction;
@@ -500,7 +513,17 @@ llvm::ArrayRef<PnrIndex> InitializerRelationSolver::buildChoiceOrder(
 
 llvm::Expected<InitializerRelationSolveResult>
 InitializerRelationSolver::solveCanonical(std::uint64_t assignmentLimit) {
-  return solve(assignmentLimit, nullptr);
+  return solve(
+      assignmentLimit, nullptr,
+      [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return true; });
+}
+
+llvm::Expected<InitializerRelationSolveResult>
+InitializerRelationSolver::solveCanonical(
+    std::uint64_t assignmentLimit,
+    llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+        validateCompleteAssignment) {
+  return solve(assignmentLimit, nullptr, validateCompleteAssignment);
 }
 
 llvm::Expected<InitializerRelationSolveResult>
@@ -525,12 +548,16 @@ InitializerRelationSolver::solveCanonicalWithFixedChoices(
             "Spatial initializer fixed choices are infeasible");
   }
 
-  const SearchResult result = search(assignmentLimit, nullptr);
-  if (result == SearchResult::WorkLimit)
+  auto result = search(
+      assignmentLimit, nullptr,
+      [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return true; });
+  if (!result)
+    return result.takeError();
+  if (*result == SearchResult::WorkLimit)
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::WorkLimit,
         "Spatial initializer exhausted its assignment work limit");
-  if (result == SearchResult::Contradiction)
+  if (*result == SearchResult::Contradiction)
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::FixedRootInfeasible,
         "Spatial initializer fixed choices are infeasible");
@@ -547,22 +574,29 @@ llvm::Expected<InitializerRelationSolveResult>
 InitializerRelationSolver::solveDiversified(
     std::uint64_t assignmentLimit,
     DeterministicPnrRandomStream &diversificationStream) {
-  return solve(assignmentLimit, &diversificationStream);
+  return solve(
+      assignmentLimit, &diversificationStream,
+      [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return true; });
 }
 
 llvm::Expected<InitializerRelationSolveResult> InitializerRelationSolver::solve(
     std::uint64_t assignmentLimit,
-    DeterministicPnrRandomStream *diversificationStream) {
+    DeterministicPnrRandomStream *diversificationStream,
+    llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+        validateCompleteAssignment) {
   reset();
-  const SearchResult result = search(assignmentLimit, diversificationStream);
-  if (result == SearchResult::WorkLimit)
+  auto result = search(assignmentLimit, diversificationStream,
+                       validateCompleteAssignment);
+  if (!result)
+    return result.takeError();
+  if (*result == SearchResult::WorkLimit)
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::WorkLimit,
         "Spatial initializer exhausted its assignment work limit");
-  if (result == SearchResult::Contradiction)
+  if (*result == SearchResult::Contradiction)
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::ProvenInfeasible,
-        "Spatial initializer relation domain is infeasible");
+        "initializer assignment domain is infeasible");
 
   InitializerRelationSolveResult solved;
   solved.choices.reserve(domainCounts_.size());
@@ -577,5 +611,5 @@ std::size_t InitializerRelationSolver::retainedStorageBytes() const {
          retainedBytes(domainCounts_) + retainedBytes(removalJournal_) +
          retainedBytes(relationQueue_) + retainedBytes(relationPending_) +
          retainedBytes(canonicalActiveChoices_) + retainedBytes(choiceOrder_) +
-         retainedBytes(choiceFenwick_);
+         retainedBytes(choiceFenwick_) + retainedBytes(completeAssignment_);
 }

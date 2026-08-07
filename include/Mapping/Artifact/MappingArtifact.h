@@ -23,7 +23,7 @@ namespace loom::mapping {
 class SpatialMappingConstraintSetView;
 
 inline constexpr ArtifactSchemaDescriptor mappingArtifactSchema{
-    "loom.mapping", SchemaVersion{2, 0}};
+    "loom.mapping", SchemaVersion{3, 0}};
 
 /// Canonicalizes one complete in-memory Mapping root for final verification.
 /// This syntax layer normalizes schema-owned record order and Mapping-local
@@ -194,7 +194,7 @@ private:
 };
 
 /// The immutable result of failure-atomic publication or strict import of one
-/// exact mapping.tech 2.0 object.
+/// exact mapping.tech 3.0 object.
 class FinalizedTechMapping final {
 public:
   const ArtifactRootReference &reference() const { return reference_; }

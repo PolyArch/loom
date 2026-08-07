@@ -244,11 +244,22 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
            problem.config().policy().search.routing.endpointExpansionLimit,
            {}});
       if (!routed)
-        return llvm::joinErrors(invalid("cannot route frozen service leg " +
-                                        llvm::Twine(legOrdinal) +
-                                        " in context " +
-                                        llvm::Twine(leg.serviceContext)),
-                                routed.takeError());
+        return llvm::handleErrors(
+            routed.takeError(),
+            [&](const EndpointRouteSearchFailure &failure) -> llvm::Error {
+              std::string routeDiagnostic;
+              llvm::raw_string_ostream stream(routeDiagnostic);
+              failure.log(stream);
+              stream.flush();
+              if (failure.kind() == EndpointRouteSearchFailureKind::Unreachable)
+                return llvm::make_error<detail::SystemCandidateInfeasible>(
+                    ("cannot route frozen service leg " +
+                     llvm::Twine(legOrdinal) + " in context " +
+                     llvm::Twine(leg.serviceContext) + ": " + routeDiagnostic)
+                        .str());
+              return llvm::make_error<EndpointRouteSearchFailure>(
+                  failure.kind(), std::move(routeDiagnostic));
+            });
 
       PnrIndex sourceNode = 0;
       if (nodes.empty()) {

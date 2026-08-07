@@ -178,19 +178,40 @@ loom::pnr::initializeCanonicalSystemCandidate(
   if (!problem)
     return invalid("FrozenSystemPnrProblem owner is null");
   detail::InitializerRelationSolver solver(*problem->initializerRelations_);
+  SystemCandidateStateHandle accepted;
   auto solved = solver.solveCanonical(
       problem->config()
           .policy()
-          .search.initializer.assignmentAttemptLimitPerSeed);
+          .search.initializer.assignmentAttemptLimitPerSeed,
+      [&](llvm::ArrayRef<PnrIndex> choices) -> llvm::Expected<bool> {
+        const std::size_t threadCount = problem->threadDecisions().size();
+        auto candidate =
+            initializeSystemCandidate(problem, choices.take_front(threadCount),
+                                      choices.drop_front(threadCount));
+        if (candidate) {
+          accepted = std::move(*candidate);
+          return true;
+        }
+        bool infeasible = false;
+        llvm::Error remaining =
+            llvm::handleErrors(candidate.takeError(),
+                               [&](const detail::SystemCandidateInfeasible &) {
+                                 infeasible = true;
+                               });
+        if (remaining)
+          return std::move(remaining);
+        if (!infeasible)
+          return llvm::createStringError(
+              llvm::inconvertibleErrorCode(),
+              "System candidate rejection lost its cause");
+        return false;
+      });
   if (!solved)
     return solved.takeError();
-  const std::size_t threadCount = problem->threadDecisions().size();
-  auto state = initializeSystemCandidate(
-      problem, llvm::ArrayRef(solved->choices).take_front(threadCount),
-      llvm::ArrayRef(solved->choices).drop_front(threadCount));
-  if (!state)
-    return state.takeError();
-  return InitializedSystemCandidate{*state, solved->assignmentAttempts};
+  if (!accepted)
+    return invalid("initializer accepted no System candidate");
+  return InitializedSystemCandidate{std::move(accepted),
+                                    solved->assignmentAttempts};
 }
 
 llvm::Expected<SystemCandidateStateHandle>

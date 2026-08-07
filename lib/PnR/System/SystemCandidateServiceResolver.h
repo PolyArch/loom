@@ -6,9 +6,27 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 namespace loom::pnr::detail {
+
+class SystemCandidateInfeasible final
+    : public llvm::ErrorInfo<SystemCandidateInfeasible> {
+public:
+  static char ID;
+
+  explicit SystemCandidateInfeasible(std::string message)
+      : message_(std::move(message)) {}
+
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  std::string message_;
+};
 
 llvm::Expected<SystemServiceTargetDomain>
 resolveSystemServiceTargetDomain(const FrozenSystemPnrProblem &problem,

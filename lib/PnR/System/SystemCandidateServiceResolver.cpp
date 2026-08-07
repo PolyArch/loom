@@ -13,11 +13,25 @@
 using namespace loom;
 using namespace loom::pnr;
 
+char detail::SystemCandidateInfeasible::ID;
+
+void detail::SystemCandidateInfeasible::log(llvm::raw_ostream &stream) const {
+  stream << "system_candidate_infeasible: " << message_;
+}
+
+std::error_code detail::SystemCandidateInfeasible::convertToErrorCode() const {
+  return std::make_error_code(std::errc::operation_not_supported);
+}
+
 namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "system_candidate_invalid: " + message);
+}
+
+llvm::Error infeasible(const llvm::Twine &message) {
+  return llvm::make_error<detail::SystemCandidateInfeasible>(message.str());
 }
 
 bool sameSubject(const SystemServiceTargetSubject &left,
@@ -190,7 +204,8 @@ loom::pnr::detail::resolveSystemServiceTargetDomain(
   const bool empty = std::visit(
       [](const auto &values) { return values.empty(); }, *intersection);
   if (empty)
-    return invalid("matching service target rows have an empty intersection");
+    return infeasible(
+        "matching service target rows have an empty intersection");
   return std::move(*intersection);
 }
 
@@ -249,7 +264,7 @@ loom::pnr::detail::resolveSystemServiceTerminalDomain(
     const auto choices =
         problem.serviceTerminalOwnerEndpointChoices(*selectedDomain);
     if (choices.empty())
-      return invalid("matching message terminal row is empty");
+      return infeasible("matching message terminal row is empty");
     return std::vector<PnrIndex>(choices.begin(), choices.end());
   }
 
@@ -279,7 +294,7 @@ loom::pnr::detail::resolveSystemServiceTerminalDomain(
   if (std::adjacent_find(result.begin(), result.end()) != result.end())
     return invalid("matching H terminal row repeats a transport endpoint");
   if (result.empty())
-    return invalid("matching service terminal row is empty");
+    return infeasible("matching service terminal row is empty");
   return result;
 }
 

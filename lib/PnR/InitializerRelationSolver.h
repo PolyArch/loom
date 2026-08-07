@@ -5,6 +5,7 @@
 #include "PnR/PnrIndex.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
@@ -121,6 +122,10 @@ public:
 
   llvm::Expected<InitializerRelationSolveResult>
   solveCanonical(std::uint64_t assignmentLimit);
+  llvm::Expected<InitializerRelationSolveResult> solveCanonical(
+      std::uint64_t assignmentLimit,
+      llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+          validateCompleteAssignment);
   llvm::Expected<InitializerRelationSolveResult>
   solveCanonicalWithFixedChoices(std::uint64_t assignmentLimit,
                                  llvm::ArrayRef<PnrIndex> fixedChoices);
@@ -157,8 +162,11 @@ private:
                                PnrIndex decision, PnrIndex localChoice) const;
   bool activeRelationSatisfied(const InitializerRelationRecord &relation) const;
   bool propagate();
-  SearchResult search(std::uint64_t assignmentLimit,
-                      DeterministicPnrRandomStream *diversificationStream);
+  llvm::Expected<SearchResult>
+  search(std::uint64_t assignmentLimit,
+         DeterministicPnrRandomStream *diversificationStream,
+         llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+             validateCompleteAssignment);
   llvm::ArrayRef<PnrIndex>
   buildChoiceOrder(PnrIndex decision,
                    DeterministicPnrRandomStream *diversificationStream);
@@ -166,7 +174,9 @@ private:
   PnrIndex soleChoice(PnrIndex decision) const;
   llvm::Expected<InitializerRelationSolveResult>
   solve(std::uint64_t assignmentLimit,
-        DeterministicPnrRandomStream *diversificationStream);
+        DeterministicPnrRandomStream *diversificationStream,
+        llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+            validateCompleteAssignment);
 
   const InitializerRelationModel *model_ = nullptr;
   std::vector<PnrIndex> decisionChoiceOffsets_;
@@ -178,6 +188,7 @@ private:
   std::vector<PnrIndex> canonicalActiveChoices_;
   std::vector<PnrIndex> choiceOrder_;
   std::vector<PnrIndex> choiceFenwick_;
+  std::vector<PnrIndex> completeAssignment_;
   std::size_t queueHead_ = 0;
   std::size_t queueTail_ = 0;
   std::size_t queueCount_ = 0;
