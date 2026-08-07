@@ -243,12 +243,16 @@ that materializes that dependency; it does not mutate the target manifest.
 
 ## Repository Boundary
 
+Repository eligibility for direct EDA attempts and results derived from them
+is owned by the [EDA Tooling](spec-eda-tooling.md) disclosure boundary. This
+specification defines no additional exception.
+
 Real platform Artifacts, resolved provider bindings, local input fingerprints,
-and every direct EDA product remain in ignored or external local storage. The
-public repository may contain schemas, deterministic generators, adapters, and
-small authored synthetic fixtures. It never tracks proprietary PDK, library,
-macro, user-IP, tool-database, bundle, implementation, report, or Evidence
-content.
+and proprietary platform inputs remain in ignored or external local storage.
+The public repository may contain schemas, deterministic generators, adapters,
+and small authored synthetic fixtures. It never tracks proprietary PDK,
+library, macro, user-IP, tool-database, bundle, implementation, report, or
+Evidence content.
 
 ## Anchor Verification
 

@@ -312,13 +312,14 @@ source. Small fixtures may be tracked only when they are authored synthetic
 data, contain no captured tool output or proprietary payload, and assert a
 stable semantic contract instead of vendor report wording.
 
-The only EDA-derived data product eligible for repository publication is an
-immutable predictive or analytical `ModelParameterBundle` permitted by
-[Frequency, Power, And Area Evaluation](spec-fpa-estimation.md). It is the
-open-source model-weight object; its source EDA corpus remains local.
-Publication does not include source Evidence or training provenance and does
-not create a sanitized Evidence format, public dataset Artifact, or second
-model-weight representation.
+No EDA-derived data product is eligible for repository publication. This
+includes predictive or analytical `ModelParameterBundle` roots and payloads
+trained, calibrated, or otherwise derived from direct EDA Evidence. Selection
+records, bindings, and provenance produced by an EDA attempt remain local even
+when they select independently authored parameters. The derived bundles remain
+valid machine-local semantic Artifacts, but repository disclosure does not
+create a sanitized Evidence format, public dataset Artifact, public weight
+projection, or second model-weight representation.
 
 All repository-local EDA material follows the ignored-root contract in
 [External Tool Invocation](spec-external-tool-invocation.md). A path outside

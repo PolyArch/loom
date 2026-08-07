@@ -113,19 +113,18 @@ The bundle owns only its exact registry-owned parameter contract and canonical
 payload digest. `InvocationManifest` owns training provenance, and
 `ResolvedModelBinding` owns predictor consumption of the selected bundle.
 Expensive raw tool products remain owner-attempt or scratch material with no
-current Artifact schema; they are not committed as routine test fixtures.
+current Artifact schema and are never committed as test fixtures.
 
-A released parameter bundle may be committed as that same canonical
-`ModelParameterBundle`; Loom does not define a public-weight projection or a
-second serialization. Repository eligibility requires the contract-owned
-payload to contain only derived predictive or analytical parameters. It must
-not encode training samples, Evidence or Invocation references, sample-group
-keys, report excerpts, tool paths, local platform paths, proprietary payloads,
-or other attempt data. The canonical bundle root and its canonical payload are
-the complete publishable model-weight unit. Source Evidence, partition
-membership, calibration Evidence, training invocation manifests, and all
-direct EDA products remain local under the disclosure boundary in
-[EDA Tooling](spec-eda-tooling.md).
+An EDA-derived parameter bundle remains the same canonical
+`ModelParameterBundle` in its machine-local Artifact Store; Loom does not
+define a public-weight projection or a second serialization. The canonical
+bundle root, its payload, source Evidence, partition membership, calibration
+Evidence, training invocation manifests, EDA-produced selection bindings and
+provenance, and all direct EDA products remain local under the disclosure
+boundary in [EDA Tooling](spec-eda-tooling.md).
+Analytical parameters authored without direct EDA lineage follow their own
+source and licensing disclosure rules, but the FPA schema does not grant them
+repository eligibility.
 
 The initial FPA parameter contract is exactly
 `ModelParameterContractRef("loom.fpa", 2.0, 0)`. Its prediction case signatures

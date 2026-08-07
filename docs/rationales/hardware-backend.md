@@ -323,13 +323,14 @@ vendor classification table, prevents a mixed flow from changing disclosure
 status halfway through, and keeps repository review mechanical. Parser tests
 use small authored semantic fixtures rather than captured report snapshots.
 
-Model parameters are a distinct derived semantic result, analogous to
-publishable model weights rather than their private training corpus. The
-existing `ModelParameterBundle` deliberately excludes datasets, training
-provenance, reports, paths, and confidence summaries, so its canonical weights
-can be published after disclosure review without inventing a sanitized
-Evidence schema or a duplicate model format. Exact training lineage remains
-local in the InvocationManifest.
+Model parameters remain distinct semantic results, but semantic validity does
+not make their bytes suitable for source publication. A disclosure-review
+exception for `ModelParameterBundle` would add a second authority that must
+decide whether weights reveal private training inputs and would make the rule
+depend on an unrecorded review state. Keeping EDA-derived bundles local uses
+one rule for raw Evidence, normalized Evidence, training corpora, and derived
+weights without inventing a sanitized Evidence schema, public-weight
+projection, or duplicate model format.
 
 ## Why Capabilities Compose Instead Of Ecosystem Flows
 
