@@ -232,7 +232,7 @@ parseLocalToolConfig(llvm::StringRef body, llvm::StringRef sourceName) {
     return configError(sourceName, "the top-level value must be an object");
   if (llvm::Error error =
           requireOnlyKeys(*root,
-                          {"schema", "version", "module",
+                          {"schema", "version", "experiment_root", "module",
                            "external_files", "runtime", "tools"},
                           sourceName, ""))
     return std::move(error);
@@ -242,6 +242,17 @@ parseLocalToolConfig(llvm::StringRef body, llvm::StringRef sourceName) {
     return configError(sourceName, "version must be 1.0");
 
   LocalToolConfig config;
+  if (const llvm::json::Value *rootValue = root->get("experiment_root")) {
+    std::optional<llvm::StringRef> path = rootValue->getAsString();
+    if (!path)
+      return configError(sourceName, "experiment_root must be a string");
+    if (containsNull(*path))
+      return configError(sourceName, "experiment_root contains NUL");
+    if (path->empty() || !llvm::sys::path::is_absolute(*path))
+      return configError(sourceName,
+                         "experiment_root must be an absolute path");
+    config.experimentRoot = path->str();
+  }
   if (const llvm::json::Value *moduleValue = root->get("module")) {
     const llvm::json::Object *module = moduleValue->getAsObject();
     if (!module)

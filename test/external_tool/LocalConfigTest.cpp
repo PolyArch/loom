@@ -41,6 +41,7 @@ void parsesExplicitBindings() {
   const char *body = R"json({
     "schema": "loom.local_tool_config",
     "version": "1.0",
+    "experiment_root": "/scratch/loom-tests",
     "module": {"init": "/opt/modules/init/bash"},
     "external_files": {
       "saed14_tt_liberty": "/opt/pdk/saed14/lib/tt.lib",
@@ -65,6 +66,8 @@ void parsesExplicitBindings() {
   })json";
 
   LocalToolConfig config = take(__func__, parseLocalToolConfig(body, "test"));
+  require(__func__, config.experimentRoot == "/scratch/loom-tests",
+          "experiment root was not preserved");
   require(__func__, config.moduleInit == "/opt/modules/init/bash",
           "module initialization path was not preserved");
   require(__func__,
@@ -130,6 +133,18 @@ void rejectsUnknownFields() {
 }
 
 void rejectsInvalidBindingsAndNames() {
+  expectErrorContains(
+      __func__,
+      parseLocalToolConfig(
+          R"json({"schema":"loom.local_tool_config","version":"1.0","experiment_root":"relative/root"})json",
+          "relative-experiment-root.json"),
+      "experiment_root must be an absolute path");
+  expectErrorContains(
+      __func__,
+      parseLocalToolConfig(
+          R"json({"schema":"loom.local_tool_config","version":"1.0","experiment_root":42})json",
+          "experiment-root-type.json"),
+      "experiment_root must be a string");
   expectErrorContains(
       __func__,
       parseLocalToolConfig(
@@ -211,6 +226,7 @@ void defaultsDoNotLoadMachineState() {
           "default runtime policy is not auto");
   require(__func__,
           !config.moduleInit && config.externalFiles.empty() &&
+              !config.experimentRoot &&
               config.tools.empty() &&
               !config.polyArchContainer.binding.isConfigured() &&
               !config.polyArchContainer.os,
@@ -227,6 +243,8 @@ int main(int argc, char **argv) {
   defaultsDoNotLoadMachineState();
   require(__func__, argc == 2, "expected the example config path");
   LocalToolConfig example = take(__func__, loadLocalToolConfig(argv[1]));
+  require(__func__, example.experimentRoot == "/scratch/loom-user",
+          "the example must show an explicit experiment root");
   require(__func__, example.runtimePolicy == RuntimePolicy::Auto,
           "the example must preserve automatic runtime selection");
   require(__func__,

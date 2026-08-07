@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+root="$(git rev-parse --show-toplevel)"
+exec python3 "$root/scripts/check_staged_local_paths.py"

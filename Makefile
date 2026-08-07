@@ -23,6 +23,8 @@
 #                    never builds CIRCT, but offers an already-built
 #                    shared CIRCT via -DCIRCT_DIR when one matches)
 #   make test      - run the complete Loom lit test suite (target: check-loom)
+#   make experiment-root - create and print the resolved local experiment root
+#   make install-hooks - install the repository's local Git hooks
 #   make sync-worktree - preflight and synchronize a linked branch with main
 #   make clean     - remove this worktree's loom build only
 #   make distclean - main worktree: remove the loom build and shared LLVM,
@@ -36,6 +38,8 @@ LOCK_TIMEOUT  ?= 1800
 
 WT_SCRIPT     := $(ROOT)/scripts/make-worktree.py
 SYNC_SCRIPT   := $(ROOT)/scripts/sync_branches.py
+EXPERIMENT_ROOT_SCRIPT := $(ROOT)/scripts/resolve_experiment_root.py
+LOOM_LOCAL_CONFIG ?=
 WT            := $(PYTHON) $(WT_SCRIPT) \
                    --root $(ROOT) \
                    --jobs $(JOBS) \
@@ -46,7 +50,7 @@ WT            := $(PYTHON) $(WT_SCRIPT) \
 export LIT_OPTS
 export JOBS
 
-.PHONY: all doctor llvm circt or-tools loom test sync-worktree clean distclean
+.PHONY: all doctor llvm circt or-tools loom test experiment-root install-hooks sync-worktree clean distclean
 
 all: loom
 
@@ -67,6 +71,17 @@ loom:
 
 test:
 	@$(WT) test
+
+experiment-root:
+	@if [ -n "$(LOOM_LOCAL_CONFIG)" ]; then \
+	  $(PYTHON) $(EXPERIMENT_ROOT_SCRIPT) --repository-root "$(ROOT)" \
+	    --loom-local-config "$(LOOM_LOCAL_CONFIG)"; \
+	else \
+	  $(PYTHON) $(EXPERIMENT_ROOT_SCRIPT) --repository-root "$(ROOT)"; \
+	fi
+
+install-hooks:
+	@git config core.hooksPath .githooks
 
 sync-worktree:
 	@git_dir="$$(git rev-parse --path-format=absolute --git-dir)"; \

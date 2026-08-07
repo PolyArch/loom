@@ -1,6 +1,7 @@
 {
   "schema": "loom.local_tool_config",
   "version": "1.0",
+  "experiment_root": "/scratch/loom-user",
   "external_files": {
     "asic_liberty": "/path/to/pdk/library/typical.lib"
   },

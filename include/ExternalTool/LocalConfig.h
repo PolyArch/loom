@@ -38,6 +38,7 @@ struct LocalContainerConfig : LocalProviderConfig {
 };
 
 struct LocalToolConfig {
+  std::optional<std::string> experimentRoot;
   std::optional<std::string> moduleInit;
   std::map<std::string, std::string> externalFiles;
   RuntimePolicy runtimePolicy = RuntimePolicy::Auto;
