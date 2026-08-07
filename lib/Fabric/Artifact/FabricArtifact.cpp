@@ -999,12 +999,58 @@ validateSystemRelations(::fabric::SystemOp root,
           unsignedBytes(transform.getContractAttr()));
       if (!record)
         return record.takeError();
-      for (const FabricMemoryEndpointRef &endpoint : record->inputs())
+      auto transformId = canonicalEntityId(transform);
+      if (!transformId)
+        return transformId.takeError();
+      const SystemServiceTransformRef transformRef(*transformId);
+      std::set<std::vector<std::uint8_t>> declaredEndpoints;
+      const auto validateEndpoint =
+          [&](const FabricMemoryEndpointRef &endpoint,
+              FabricMemoryEndpointRole role) -> llvm::Error {
         if (llvm::Error error = validateFabricRef(view, endpoint))
+          return error;
+        if (view.memoryEndpointRole(endpoint) != role)
+          return invalid("service transform endpoint has the wrong role");
+        const auto *serviceEndpoint =
+            std::get_if<SystemServiceEndpointRef>(&endpoint.owner.payload);
+        if (!serviceEndpoint)
+          return invalid("service transform relation does not use a System "
+                         "service endpoint");
+        const SystemServiceEndpointOwnerRef *owner =
+            systemView.serviceEndpointOwner(*serviceEndpoint);
+        const auto *ownerTransform =
+            owner ? std::get_if<SystemServiceTransformRef>(
+                        &owner->owner().payload)
+                  : nullptr;
+        if (!ownerTransform || *ownerTransform != transformRef)
+          return invalid(
+              "service transform relation selects a foreign endpoint");
+        declaredEndpoints.insert(canonicalFabricBytes(endpoint));
+        return llvm::Error::success();
+      };
+      for (const FabricMemoryEndpointRef &endpoint : record->inputs())
+        if (llvm::Error error = validateEndpoint(
+                endpoint, FabricMemoryEndpointRole::Subordinate))
           return error;
       for (const FabricMemoryEndpointRef &endpoint : record->outputs())
-        if (llvm::Error error = validateFabricRef(view, endpoint))
+        if (llvm::Error error =
+                validateEndpoint(endpoint, FabricMemoryEndpointRole::Manager))
           return error;
+      for (SystemServiceEndpointRef endpoint : view.systemServiceEndpoints()) {
+        const SystemServiceEndpointOwnerRef *owner =
+            systemView.serviceEndpointOwner(endpoint);
+        const auto *ownerTransform =
+            owner ? std::get_if<SystemServiceTransformRef>(
+                        &owner->owner().payload)
+                  : nullptr;
+        if (!ownerTransform || *ownerTransform != transformRef)
+          continue;
+        const FabricMemoryEndpointRef memory{
+            FabricMemoryEndpointOwnerRef::of(endpoint), 0};
+        if (!declaredEndpoints.count(canonicalFabricBytes(memory)))
+          return invalid(
+              "service transform endpoint is absent from its relation");
+      }
       if (const auto *coherent =
               std::get_if<CoherentMemoryTransform>(&record->contract())) {
         if (llvm::Error error =
@@ -1016,6 +1062,24 @@ validateSystemRelations(::fabric::SystemOp root,
             return error;
           if (llvm::Error error = validateFabricRef(view, region.output))
             return error;
+          const auto *inputService = std::get_if<SystemMemoryServiceRef>(
+              &region.input.service.payload);
+          const auto *outputService = std::get_if<SystemMemoryServiceRef>(
+              &region.output.service.payload);
+          const ::fabric::MemoryServiceContractRecord *inputContract =
+              inputService ? systemView.memoryService(*inputService) : nullptr;
+          const ::fabric::MemoryServiceContractRecord *outputContract =
+              outputService ? systemView.memoryService(*outputService)
+                            : nullptr;
+          if (!inputContract || !outputContract ||
+              region.input.ordinal >= inputContract->regions().size() ||
+              region.output.ordinal >= outputContract->regions().size())
+            return invalid(
+                "CoherentMemory correspondence has no System region");
+          if (inputContract->regions()[region.input.ordinal].sizeBytes !=
+              outputContract->regions()[region.output.ordinal].sizeBytes)
+            return invalid(
+                "CoherentMemory correspondence has unequal region sizes");
         }
       }
       continue;
@@ -1451,6 +1515,18 @@ buildSystemView(::fabric::SystemOp root,
     }
 
     if (auto connection = dyn_cast<::fabric::SystemConnectionOp>(&operation)) {
+      if (connection.getMemoryServiceAttr()) {
+        auto source = decodeFabricRef<FabricMemoryEndpointRef>(
+            unsignedBytes(connection.getSourceAttr()));
+        if (!source)
+          return source.takeError();
+        auto destination = decodeFabricRef<FabricMemoryEndpointRef>(
+            unsignedBytes(connection.getDestinationAttr()));
+        if (!destination)
+          return destination.takeError();
+        data.memoryServiceConnections.push_back({*source, *destination});
+        continue;
+      }
       auto source = decodeFabricRef<FabricTransportEndpointRef>(
           unsignedBytes(connection.getSourceAttr()));
       if (!source)

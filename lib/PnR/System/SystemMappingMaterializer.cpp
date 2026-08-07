@@ -112,6 +112,35 @@ intervalKey(const ::loom::mapping::SpatialMemoryIntervalView &interval) {
   return {1, range.offsetBytes, range.sizeBytes};
 }
 
+std::vector<std::vector<std::uint8_t>>
+targetRegionKey(const SystemMemoryServiceTargetPlan &plan) {
+  std::vector<std::vector<std::uint8_t>> result;
+  result.reserve(plan.branches.size());
+  for (const auto &branch : plan.branches)
+    result.push_back(::loom::fabric::canonicalFabricBytes(branch.region));
+  llvm::sort(result);
+  return result;
+}
+
+llvm::Expected<bool>
+requiresExplicitTransformPaths(const SystemCandidateState &candidate,
+                               PnrIndex context,
+                               const SystemMemoryServiceTargetPlan &selected) {
+  auto domain = candidate.serviceTargetDomain(context);
+  if (!domain)
+    return domain.takeError();
+  const auto *plans =
+      std::get_if<std::vector<SystemMemoryServiceTargetPlan>>(&*domain);
+  if (!plans)
+    return invalid("memory target has a non-memory target domain");
+  const auto selectedRegions = targetRegionKey(selected);
+  std::size_t matchingRegionSets = 0;
+  for (const SystemMemoryServiceTargetPlan &plan : *plans)
+    if (targetRegionKey(plan) == selectedRegions)
+      ++matchingRegionSets;
+  return matchingRegionSets != 1;
+}
+
 ::mapping::SystemPresburgerCellAttr
 cellAttr(mlir::MLIRContext *context,
          const ::loom::mapping::SystemPresburgerCell &cell) {
@@ -346,9 +375,10 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
           ::mapping::ServicePlanOp::create(builder, location, authoredOrdinal);
       plan.getBody().emplaceBlock();
       const auto &selectedTarget = candidate.serviceTarget(contextOrdinal);
-      if (const auto *region =
-              std::get_if<::loom::fabric::FabricMemoryServiceRegionRef>(
-                  &selectedTarget)) {
+      if (const auto *targetPlan =
+              std::get_if<SystemMemoryServiceTargetPlan>(&selectedTarget)) {
+        if (targetPlan->branches.empty())
+          return invalid("selected memory target plan has no terminal branch");
         const auto *operation =
             std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
                 &group.key);
@@ -394,27 +424,39 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
                 &context, problem.dataflowIdentity(), *logicalMemory);
         if (!logicalAttr)
           return logicalAttr.takeError();
-        for (auto &[key, target] : targets) {
-          (void)key;
-          builder.setInsertionPointToEnd(&plan.getBody().front());
-          auto targetOp = ::mapping::MemoryRegionTargetOp::create(
-              builder, location, *logicalAttr,
-              intervalAttr(&context, target.interval),
-              fabricRefAttr<::mapping::FabricMemoryServiceRegionRefAttr>(
-                  &context, *region),
-              builder.getArrayAttr({}));
-          targetOp.getBody().emplaceBlock();
-          builder.setInsertionPointToEnd(&targetOp.getBody().front());
-          for (const auto &[exposure, terminal] : target.exposures) {
-            auto exposureAttr =
-                dataflowRefAttr<::mapping::MemoryExposureRefAttr>(
-                    &context, problem.dataflowIdentity(), exposure);
-            if (!exposureAttr)
-              return exposureAttr.takeError();
-            ::mapping::SystemMemoryExposureOp::create(
-                builder, location, *exposureAttr,
-                fabricRefAttr<::mapping::SubordinateEndpointRefAttr>(&context,
-                                                                     terminal));
+        auto explicitPaths = requiresExplicitTransformPaths(
+            candidate, contextOrdinal, *targetPlan);
+        if (!explicitPaths)
+          return explicitPaths.takeError();
+        for (const auto &branch : targetPlan->branches) {
+          llvm::SmallVector<mlir::Attribute> transformPath;
+          if (*explicitPaths)
+            for (const auto transform : branch.transformPath)
+              transformPath.push_back(
+                  fabricRefAttr<::mapping::SystemServiceTransformRefAttr>(
+                      &context, transform));
+          for (auto &[key, target] : targets) {
+            (void)key;
+            builder.setInsertionPointToEnd(&plan.getBody().front());
+            auto targetOp = ::mapping::MemoryRegionTargetOp::create(
+                builder, location, *logicalAttr,
+                intervalAttr(&context, target.interval),
+                fabricRefAttr<::mapping::FabricMemoryServiceRegionRefAttr>(
+                    &context, branch.region),
+                builder.getArrayAttr(transformPath));
+            targetOp.getBody().emplaceBlock();
+            builder.setInsertionPointToEnd(&targetOp.getBody().front());
+            for (const auto &[exposure, terminal] : target.exposures) {
+              auto exposureAttr =
+                  dataflowRefAttr<::mapping::MemoryExposureRefAttr>(
+                      &context, problem.dataflowIdentity(), exposure);
+              if (!exposureAttr)
+                return exposureAttr.takeError();
+              ::mapping::SystemMemoryExposureOp::create(
+                  builder, location, *exposureAttr,
+                  fabricRefAttr<::mapping::SubordinateEndpointRefAttr>(
+                      &context, terminal));
+            }
           }
         }
       } else if (const auto *domain =

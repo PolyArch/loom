@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <set>
 #include <system_error>
 #include <utility>
 
@@ -237,8 +238,7 @@ CanonicalServiceCapabilityRecord::create(
 
 llvm::Expected<ServiceLegCarrierAttachmentRecord>
 ServiceLegCarrierAttachmentRecord::create(
-    FabricMemoryEndpointRef endpoint,
-    dataflow::semantics::ServiceKind kind,
+    FabricMemoryEndpointRef endpoint, dataflow::semantics::ServiceKind kind,
     dataflow::StructuralOrdinal legOrdinal,
     std::vector<FabricTransportEndpointRef> carriers) {
   if (kind == dataflow::semantics::ServiceKind::MessageTransfer)
@@ -250,16 +250,14 @@ ServiceLegCarrierAttachmentRecord::create(
                           const FabricTransportEndpointRef &right) {
     return canonicalFabricBytes(left) < canonicalFabricBytes(right);
   });
-  carriers.erase(std::unique(carriers.begin(), carriers.end()),
-                 carriers.end());
-  return ServiceLegCarrierAttachmentRecord(
-      std::move(endpoint), kind, legOrdinal, std::move(carriers));
+  carriers.erase(std::unique(carriers.begin(), carriers.end()), carriers.end());
+  return ServiceLegCarrierAttachmentRecord(std::move(endpoint), kind,
+                                           legOrdinal, std::move(carriers));
 }
 
 llvm::Expected<ServiceLegCarrierAttachmentRecord>
 ServiceLegCarrierAttachmentRecord::fromCanonical(
-    FabricMemoryEndpointRef endpoint,
-    dataflow::semantics::ServiceKind kind,
+    FabricMemoryEndpointRef endpoint, dataflow::semantics::ServiceKind kind,
     dataflow::StructuralOrdinal legOrdinal,
     std::vector<FabricTransportEndpointRef> carriers) {
   if (kind == dataflow::semantics::ServiceKind::MessageTransfer)
@@ -271,8 +269,8 @@ ServiceLegCarrierAttachmentRecord::fromCanonical(
     if (canonicalFabricBytes(carriers[index - 1]) >=
         canonicalFabricBytes(carriers[index]))
       return invalid("service leg carrier set is not sorted and unique");
-  return ServiceLegCarrierAttachmentRecord(
-      std::move(endpoint), kind, legOrdinal, std::move(carriers));
+  return ServiceLegCarrierAttachmentRecord(std::move(endpoint), kind,
+                                           legOrdinal, std::move(carriers));
 }
 
 llvm::Expected<SystemServiceTransformRecord>
@@ -326,6 +324,14 @@ SystemServiceTransformRecord::create(
       if (coherent.regions[index - 1] == coherent.regions[index])
         return invalid("CoherentMemory contains a duplicate region "
                        "correspondence");
+    std::set<std::vector<std::uint8_t>> inputs;
+    std::set<std::vector<std::uint8_t>> outputs;
+    for (const CoherentMemoryRegionCorrespondence &region : coherent.regions) {
+      if (!inputs.insert(canonicalFabricBytes(region.input)).second)
+        return invalid("CoherentMemory repeats an input region");
+      if (!outputs.insert(canonicalFabricBytes(region.output)).second)
+        return invalid("CoherentMemory repeats an output region");
+    }
   }
   return SystemServiceTransformRecord(std::move(inputs), std::move(outputs),
                                       std::move(contract));

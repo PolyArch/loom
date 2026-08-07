@@ -265,6 +265,21 @@ LogicalResult SystemTransferPatternOp::verify() {
 LogicalResult SystemConnectionOp::verify() {
   if (failed(verifyClosedAttributes(getOperation())))
     return failure();
+  if (getMemoryServiceAttr()) {
+    auto source =
+        loom::fabric::decodeFabricRef<loom::fabric::FabricMemoryEndpointRef>(
+            unsignedBytes(getSourceAttr()));
+    if (!source)
+      return emitOpError("has invalid memory-service source endpoint: ")
+             << llvm::toString(source.takeError());
+    auto destination =
+        loom::fabric::decodeFabricRef<loom::fabric::FabricMemoryEndpointRef>(
+            unsignedBytes(getDestinationAttr()));
+    if (!destination)
+      return emitOpError("has invalid memory-service destination endpoint: ")
+             << llvm::toString(destination.takeError());
+    return success();
+  }
   auto source =
       loom::fabric::decodeFabricRef<loom::fabric::FabricTransportEndpointRef>(
           unsignedBytes(getSourceAttr()));

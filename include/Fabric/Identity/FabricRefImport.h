@@ -561,6 +561,14 @@ public:
   bool hasPointConnection(const FabricTransportEndpointRef &source,
                           const FabricTransportEndpointRef &destination) const;
 
+  /// Complete explicit memory-service identity connections. They are not
+  /// transport traversals and carry no independently selectable resource.
+  llvm::ArrayRef<FabricMemoryServiceConnectionPayload>
+  memoryServiceConnections() const;
+  bool
+  hasMemoryServiceConnection(const FabricMemoryEndpointRef &manager,
+                             const FabricMemoryEndpointRef &subordinate) const;
+
   /// Whether the owning resource contract admits this traversal.
   llvm::ArrayRef<FabricPhysicalTraversalRef> admittedTraversals() const;
   llvm::ArrayRef<FabricPhysicalTraversalView> physicalTraversals() const;

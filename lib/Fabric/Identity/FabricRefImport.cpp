@@ -88,9 +88,9 @@ void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
     bytes.push_back(static_cast<std::uint8_t>(value >> shift));
 }
 
-std::vector<std::uint8_t>
-pointConnectionKey(const FabricTransportEndpointRef &source,
-                   const FabricTransportEndpointRef &destination) {
+template <typename Source, typename Destination>
+std::vector<std::uint8_t> connectionKey(const Source &source,
+                                        const Destination &destination) {
   std::vector<std::uint8_t> sourceBytes = canonicalFabricBytes(source);
   std::vector<std::uint8_t> destinationBytes =
       canonicalFabricBytes(destination);
@@ -796,12 +796,24 @@ bool FabricArtifactView::hasPointConnection(
     const FabricTransportEndpointRef &source,
     const FabricTransportEndpointRef &destination) const {
   return containsCanonicalRow(storage_->pointConnectionKeys,
-                              pointConnectionKey(source, destination));
+                              connectionKey(source, destination));
 }
 
 llvm::ArrayRef<FabricPointConnectionPayload>
 FabricArtifactView::pointConnections() const {
   return storage_->data.pointConnections;
+}
+
+bool FabricArtifactView::hasMemoryServiceConnection(
+    const FabricMemoryEndpointRef &manager,
+    const FabricMemoryEndpointRef &subordinate) const {
+  return containsCanonicalRow(storage_->memoryServiceConnectionKeys,
+                              connectionKey(manager, subordinate));
+}
+
+llvm::ArrayRef<FabricMemoryServiceConnectionPayload>
+FabricArtifactView::memoryServiceConnections() const {
+  return storage_->data.memoryServiceConnections;
 }
 
 bool FabricArtifactView::admitsTraversal(
@@ -1354,7 +1366,7 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
   pointConnectionRows.reserve(data.pointConnections.size());
   for (FabricPointConnectionPayload &connection : data.pointConnections)
     pointConnectionRows.emplace_back(
-        pointConnectionKey(connection.source, connection.destination),
+        connectionKey(connection.source, connection.destination),
         std::move(connection));
   std::sort(pointConnectionRows.begin(), pointConnectionRows.end(),
             [](const PointConnectionRow &lhs, const PointConnectionRow &rhs) {
@@ -1382,6 +1394,44 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
           "point connection destination is connected more than once");
     pointConnectionKeys.push_back(std::move(row.first));
     data.pointConnections.push_back(std::move(row.second));
+  }
+
+  using MemoryConnectionRow = std::pair<std::vector<std::uint8_t>,
+                                        FabricMemoryServiceConnectionPayload>;
+  std::vector<MemoryConnectionRow> memoryConnectionRows;
+  memoryConnectionRows.reserve(data.memoryServiceConnections.size());
+  for (FabricMemoryServiceConnectionPayload &connection :
+       data.memoryServiceConnections)
+    memoryConnectionRows.emplace_back(
+        connectionKey(connection.source, connection.destination),
+        std::move(connection));
+  llvm::sort(memoryConnectionRows, [](const MemoryConnectionRow &left,
+                                      const MemoryConnectionRow &right) {
+    return left.first < right.first;
+  });
+  for (std::size_t index = 1; index < memoryConnectionRows.size(); ++index)
+    if (memoryConnectionRows[index - 1].first ==
+        memoryConnectionRows[index].first)
+      return invalidView("memory-service connections contain a duplicate");
+
+  data.memoryServiceConnections.clear();
+  std::vector<std::vector<std::uint8_t>> memoryServiceConnectionKeys;
+  std::set<std::vector<std::uint8_t>> connectedMemoryManagers;
+  std::set<std::vector<std::uint8_t>> connectedMemorySubordinates;
+  data.memoryServiceConnections.reserve(memoryConnectionRows.size());
+  memoryServiceConnectionKeys.reserve(memoryConnectionRows.size());
+  for (MemoryConnectionRow &row : memoryConnectionRows) {
+    if (!connectedMemoryManagers.insert(canonicalFabricBytes(row.second.source))
+             .second)
+      return invalidView(
+          "memory-service manager endpoint is connected more than once");
+    if (!connectedMemorySubordinates
+             .insert(canonicalFabricBytes(row.second.destination))
+             .second)
+      return invalidView(
+          "memory-service subordinate endpoint is connected more than once");
+    memoryServiceConnectionKeys.push_back(std::move(row.first));
+    data.memoryServiceConnections.push_back(std::move(row.second));
   }
 
   using TraversalRow =
@@ -1534,6 +1584,7 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
   storage->memoryEngineTemplates = std::move(memoryEngineTemplates);
   storage->memoryPortRefs = std::move(memoryPortRefs);
   storage->pointConnectionKeys = std::move(pointConnectionKeys);
+  storage->memoryServiceConnectionKeys = std::move(memoryServiceConnectionKeys);
   storage->traversalKeys = std::move(traversalKeys);
   FabricArtifactView view(storage);
   std::map<std::vector<std::uint8_t>, FabricOrdinal> ownerWideTagDomains;
@@ -1636,6 +1687,27 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
             view.transportEndpointType(connection.source),
             view.transportEndpointType(connection.destination)))
       return invalidView("point connection changes transport port kind");
+  }
+  for (const FabricMemoryServiceConnectionPayload &connection :
+       view.memoryServiceConnections()) {
+    if (llvm::Error error = validateFabricRef(view, connection.source))
+      return std::move(error);
+    if (llvm::Error error = validateFabricRef(view, connection.destination))
+      return std::move(error);
+    if (!std::holds_alternative<SystemServiceEndpointRef>(
+            connection.source.owner.payload) ||
+        !std::holds_alternative<SystemServiceEndpointRef>(
+            connection.destination.owner.payload))
+      return invalidView(
+          "memory-service connection does not join System service endpoints");
+    if (view.memoryEndpointRole(connection.source) !=
+        FabricMemoryEndpointRole::Manager)
+      return invalidView(
+          "memory-service connection source is not a manager endpoint");
+    if (view.memoryEndpointRole(connection.destination) !=
+        FabricMemoryEndpointRole::Subordinate)
+      return invalidView("memory-service connection destination is not a "
+                         "subordinate endpoint");
   }
   if (llvm::Error error =
           detail::validateFabricModuleBoundaryTransportRelations(view))

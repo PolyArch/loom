@@ -461,6 +461,18 @@ llvm::Expected<Graph> buildSystemGraph(const FinalizedFabricRoot &root) {
     if (source != nodeByEntity.end() && destination != nodeByEntity.end())
       addEdge(graph, seen, source->second, destination->second, "transport");
   }
+  for (const FabricMemoryServiceConnectionPayload &connection :
+       root.view().memoryServiceConnections()) {
+    auto sourceId = memoryOwnerEntity(connection.source.owner);
+    auto destinationId = memoryOwnerEntity(connection.destination.owner);
+    if (!sourceId || !destinationId)
+      continue;
+    auto source = nodeByEntity.find(*sourceId);
+    auto destination = nodeByEntity.find(*destinationId);
+    if (source != nodeByEntity.end() && destination != nodeByEntity.end())
+      addEdge(graph, seen, source->second, destination->second,
+              "memory_service");
+  }
 
   for (const HardwareDomainRef &domain : system->hardwareDomains()) {
     auto domainNode = nodeByEntity.find(domain.id());

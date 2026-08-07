@@ -674,6 +674,27 @@ llvm::Error remapTransferPattern(::fabric::SystemTransferPatternOp pattern,
 
 llvm::Error remapConnection(::fabric::SystemConnectionOp connection,
                             const SystemReferenceRemapper &remapper) {
+  if (connection.getMemoryServiceAttr()) {
+    auto source = decodeFabricRef<FabricMemoryEndpointRef>(
+        unsignedBytes(connection.getSourceAttr()));
+    if (!source)
+      return source.takeError();
+    auto destination = decodeFabricRef<FabricMemoryEndpointRef>(
+        unsignedBytes(connection.getDestinationAttr()));
+    if (!destination)
+      return destination.takeError();
+    auto mappedSource = remapper.remap(*source);
+    if (!mappedSource)
+      return mappedSource.takeError();
+    auto mappedDestination = remapper.remap(*destination);
+    if (!mappedDestination)
+      return mappedDestination.takeError();
+    connection.setSourceAttr(denseBytes(connection.getContext(),
+                                        canonicalFabricBytes(*mappedSource)));
+    connection.setDestinationAttr(denseBytes(
+        connection.getContext(), canonicalFabricBytes(*mappedDestination)));
+    return llvm::Error::success();
+  }
   auto source = decodeFabricRef<FabricTransportEndpointRef>(
       unsignedBytes(connection.getSourceAttr()));
   if (!source)

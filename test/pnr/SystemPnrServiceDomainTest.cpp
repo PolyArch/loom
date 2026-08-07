@@ -8,6 +8,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/Artifact/FabricHardwareDomainContracts.h"
+#include "Fabric/Artifact/FabricMemoryServiceClosure.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
@@ -396,13 +397,17 @@ module {
 loom::adg::FinalizedFabricDesign
 buildTransformFabric(const loom::ArtifactStore &store,
                      const loom::fabric::FinalizedFabricRoot &base,
-                     mlir::MLIRContext &context) {
+                     mlir::MLIRContext &context, std::uint64_t xorMask = 1) {
   auto baseSystem = take(loom::fabric::requireSystemRoot(base.view()));
   const auto baseEndpoint =
       baseSystem.artifact().systemServiceEndpoints().front();
   const auto *baseCapabilities =
       baseSystem.serviceEndpointCapabilities(baseEndpoint);
   require(baseCapabilities, "builtin memory endpoint has no capabilities");
+  const auto *baseMemoryContract = baseSystem.memoryService(
+      baseSystem.artifact().systemMemoryServices().front());
+  require(baseMemoryContract,
+          "builtin memory service has no canonical contract");
   const auto capability = llvm::find_if(
       baseCapabilities->capabilities(), [](const auto &candidate) {
         return candidate.kind() == dataflow::semantics::ServiceKind::MemoryRead;
@@ -443,6 +448,10 @@ buildTransformFabric(const loom::ArtifactStore &store,
   auto serve = take(system.addServiceEndpoint(transform, serveSet));
   auto initiateMemory = take(initiate.memory());
   auto serveMemory = take(serve.memory());
+  auto downstreamService = take(system.addMemoryService(*baseMemoryContract));
+  auto downstreamEndpoint =
+      take(system.addServiceEndpoint(downstreamService, serveSet));
+  auto downstreamMemory = take(downstreamEndpoint.memory());
 
   auto boundary = take(system.addExternalBoundary());
   auto initiateMessage =
@@ -497,14 +506,25 @@ buildTransformFabric(const loom::ArtifactStore &store,
           serveMemory, dataflow::semantics::ServiceKind::MemoryRead, 1,
           {output}))
     fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = system.attachServiceLegCarriers(
+          downstreamMemory, dataflow::semantics::ServiceKind::MemoryRead, 0,
+          {input}))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = system.attachServiceLegCarriers(
+          downstreamMemory, dataflow::semantics::ServiceKind::MemoryRead, 1,
+          {output}))
+    fail(llvm::toString(std::move(error)));
 
-  if (llvm::Error error =
-          transform.close({initiateMemory}, {serveMemory},
-                          loom::fabric::AddressMaskXorTransform{64, 4095, 1}))
+  if (llvm::Error error = transform.close(
+          {serveMemory}, {initiateMemory},
+          loom::fabric::AddressMaskXorTransform{64, 4095, xorMask}))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = system.connect(initiateMemory, downstreamMemory))
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error = clock.close(
           {transform.domainMember(), initiate.domainMember(),
-           serve.domainMember(), boundary.domainMember(),
+           serve.domainMember(), downstreamService.domainMember(),
+           downstreamEndpoint.domainMember(), boundary.domainMember(),
            messageSource.domainMember(), messageSink.domainMember(),
            transport.domainMember()},
           take(loom::fabric::ClockDomainContractRecord::create(1'000, 0))))
@@ -512,6 +532,172 @@ buildTransformFabric(const loom::ArtifactStore &store,
   if (llvm::Error error = system.close())
     fail(llvm::toString(std::move(error)));
   return take(std::move(design).finalize());
+}
+
+loom::adg::FinalizedFabricDesign
+buildCoherentAlternativeFabric(const loom::ArtifactStore &store,
+                               const loom::fabric::FinalizedFabricRoot &base) {
+  auto baseSystem = take(loom::fabric::requireSystemRoot(base.view()));
+  const auto baseEndpoint =
+      baseSystem.artifact().systemServiceEndpoints().front();
+  const auto *baseCapabilities =
+      baseSystem.serviceEndpointCapabilities(baseEndpoint);
+  const auto *baseMemoryContract = baseSystem.memoryService(
+      baseSystem.artifact().systemMemoryServices().front());
+  require(baseCapabilities && baseMemoryContract &&
+              !baseMemoryContract->regions().empty(),
+          "builtin memory contract cannot seed a coherent fixture");
+  const auto capability = llvm::find_if(
+      baseCapabilities->capabilities(), [](const auto &candidate) {
+        return candidate.kind() == dataflow::semantics::ServiceKind::MemoryRead;
+      });
+  require(capability != baseCapabilities->capabilities().end(),
+          "builtin memory endpoint has no read capability");
+  const auto *addressed =
+      std::get_if<loom::fabric::AddressedMemoryCapabilityDomain>(
+          &capability->domain());
+  require(addressed, "builtin read capability is not addressed memory");
+
+  auto module = take(loom::fabric::importEntireFabricRoot(
+      base.directDependencies().front().root, store));
+  loom::adg::DesignBuilder design(store);
+  auto system = take(loom::adg::expandBuiltinSystem(
+      design, loom::adg::BuiltinTargetPreset::Small, module));
+  auto transform = take(system.createServiceTransform());
+  auto clock = take(system.createHardwareDomain());
+  auto rate = take(system.createServiceRate(
+      clock, 1, 1, 4,
+      loom::fabric::ServiceProgress(
+          std::in_place_type<::fabric::FairEventual>)));
+
+  auto initiateCapability =
+      take(loom::fabric::CanonicalServiceCapabilityRecord::create(
+          dataflow::semantics::ServiceKind::MemoryRead,
+          loom::fabric::CanonicalServiceEndpointRole::Initiate, *addressed,
+          rate));
+  auto serveCapability =
+      take(loom::fabric::CanonicalServiceCapabilityRecord::create(
+          dataflow::semantics::ServiceKind::MemoryRead,
+          loom::fabric::CanonicalServiceEndpointRole::Serve, *addressed, rate));
+  auto initiateSet = take(loom::fabric::CanonicalServiceCapabilitySet::create(
+      {std::move(initiateCapability)}));
+  auto serveSet = take(loom::fabric::CanonicalServiceCapabilitySet::create(
+      {std::move(serveCapability)}));
+
+  auto ingress = take(system.addServiceEndpoint(transform, serveSet));
+  auto firstOutput = take(system.addServiceEndpoint(transform, initiateSet));
+  auto secondOutput = take(system.addServiceEndpoint(transform, initiateSet));
+  auto inputServiceA = take(system.addMemoryService(*baseMemoryContract));
+  auto inputServiceB = take(system.addMemoryService(*baseMemoryContract));
+  auto outputServiceA = take(system.addMemoryService(*baseMemoryContract));
+  auto outputServiceB = take(system.addMemoryService(*baseMemoryContract));
+  auto outputEndpointA =
+      take(system.addServiceEndpoint(outputServiceA, serveSet));
+  auto outputEndpointB =
+      take(system.addServiceEndpoint(outputServiceB, serveSet));
+
+  const auto baseTransport = baseSystem.transportResources().front();
+  const auto *resourceContract = baseSystem.artifact().resourceContract(
+      loom::fabric::FabricInventoryOwnerRef::of(baseTransport));
+  require(resourceContract, "builtin transport has no resource contract");
+  const auto bits128 = take(loom::adg::PortType::bits(128));
+  auto transport = take(
+      system.addTransportResource({{bits128}, {bits128}, *resourceContract}));
+  auto input = take(transport.input(0));
+  auto output = take(transport.output(0));
+  const auto attachRead = [&](const loom::adg::SystemMemoryEndpoint &endpoint,
+                              bool initiate) -> llvm::Error {
+    if (llvm::Error error = system.attachServiceLegCarriers(
+            endpoint, dataflow::semantics::ServiceKind::MemoryRead, 0,
+            initiate
+                ? llvm::ArrayRef<loom::adg::SystemTransportEndpoint>(output)
+                : llvm::ArrayRef<loom::adg::SystemTransportEndpoint>(input)))
+      return error;
+    return system.attachServiceLegCarriers(
+        endpoint, dataflow::semantics::ServiceKind::MemoryRead, 1,
+        initiate ? llvm::ArrayRef<loom::adg::SystemTransportEndpoint>(input)
+                 : llvm::ArrayRef<loom::adg::SystemTransportEndpoint>(output));
+  };
+  auto ingressMemory = take(ingress.memory());
+  auto firstOutputMemory = take(firstOutput.memory());
+  auto secondOutputMemory = take(secondOutput.memory());
+  auto outputMemoryA = take(outputEndpointA.memory());
+  auto outputMemoryB = take(outputEndpointB.memory());
+  if (llvm::Error error = attachRead(ingressMemory, false))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = attachRead(firstOutputMemory, true))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = attachRead(secondOutputMemory, true))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = attachRead(outputMemoryA, false))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = attachRead(outputMemoryB, false))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = system.connect(firstOutputMemory, outputMemoryA))
+    fail(llvm::toString(std::move(error)));
+
+  auto consistency = take(system.createHardwareDomain());
+  const auto consistencyContract =
+      take(::fabric::MemoryConsistencyContract::create(
+          {{::fabric::MemoryConsistencyParticipant::service(
+                loom::fabric::FabricMemoryServiceRef::system(
+                    inputServiceA.reference())),
+            ::fabric::MemoryConsistencyParticipant::service(
+                loom::fabric::FabricMemoryServiceRef::system(
+                    inputServiceB.reference())),
+            ::fabric::MemoryConsistencyParticipant::service(
+                loom::fabric::FabricMemoryServiceRef::system(
+                    outputServiceA.reference())),
+            ::fabric::MemoryConsistencyParticipant::service(
+                loom::fabric::FabricMemoryServiceRef::system(
+                    outputServiceB.reference()))},
+           ::fabric::ReleaseVisibilityPoint::AtLinearization,
+           ::fabric::FairEventual{},
+           baseMemoryContract->resourceContract()}));
+  if (llvm::Error error = consistency.close(
+          {inputServiceA.domainMember(), inputServiceB.domainMember(),
+           outputServiceA.domainMember(), outputServiceB.domainMember()},
+          consistencyContract))
+    fail(llvm::toString(std::move(error)));
+
+  const auto memory = [](const loom::adg::SystemMemoryService &service) {
+    return loom::fabric::FabricMemoryServiceRef::system(service.reference());
+  };
+  if (llvm::Error error = transform.close(
+          {ingressMemory}, {firstOutputMemory, secondOutputMemory},
+          loom::fabric::CoherentMemoryTransform{
+              loom::fabric::MemoryConsistencyDomainRef(consistency.reference()),
+              {{{memory(inputServiceA), 0}, {memory(outputServiceA), 0}},
+               {{memory(inputServiceB), 0}, {memory(outputServiceB), 0}}}}))
+    fail(llvm::toString(std::move(error)));
+
+  if (llvm::Error error = clock.close(
+          {transform.domainMember(), ingress.domainMember(),
+           firstOutput.domainMember(), secondOutput.domainMember(),
+           inputServiceA.domainMember(), inputServiceB.domainMember(),
+           outputServiceA.domainMember(), outputServiceB.domainMember(),
+           outputEndpointA.domainMember(), outputEndpointB.domainMember(),
+           transport.domainMember()},
+          take(loom::fabric::ClockDomainContractRecord::create(1'000, 0))))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = system.close())
+    fail(llvm::toString(std::move(error)));
+  return take(std::move(design).finalize());
+}
+
+loom::fabric::SystemServiceEndpointRef
+transformRootEndpoint(const loom::fabric::FabricSystemRootView &system) {
+  for (const auto endpoint : system.artifact().systemServiceEndpoints()) {
+    const auto plans = take(
+        loom::fabric::projectFabricMemoryServiceTargetPlans(system, endpoint));
+    if (llvm::any_of(plans, [](const auto &plan) {
+          return llvm::any_of(plan.branches, [](const auto &branch) {
+            return !branch.transformPath.empty();
+          });
+        }))
+      return endpoint;
+  }
+  fail("transform Fabric has no transform-rooted memory endpoint");
 }
 
 std::vector<loom::fabric::FabricTransportEndpointRef>
@@ -740,20 +926,85 @@ int main() {
       buildTransformFabric(store, design.roots().front(), context);
   auto transformSystem = take(
       loom::fabric::requireSystemRoot(transformDesign.roots().front().view()));
+  require(transformSystem.artifact().memoryServiceConnections().size() == 1,
+          "memory service connection was not retained by Fabric");
+  const auto transformEndpoint = transformRootEndpoint(transformSystem);
+  require(!take(loom::fabric::projectFabricMemoryServiceTargetPlans(
+                    transformSystem, transformEndpoint,
+                    loom::fabric::FabricMemoryServiceSourceInterval{0, 64}))
+               .empty(),
+          "exact address closure rejected a contained transform interval");
+
+  auto adverseTransformDesign = buildTransformFabric(
+      store, design.roots().front(), context, std::uint64_t{1} << 63);
+  auto adverseTransformSystem = take(loom::fabric::requireSystemRoot(
+      adverseTransformDesign.roots().front().view()));
+  const auto adverseEndpoint = transformRootEndpoint(adverseTransformSystem);
+  require(!take(loom::fabric::projectFabricMemoryServiceTargetPlans(
+                    adverseTransformSystem, adverseEndpoint))
+               .empty(),
+          "adverse transform topology is not structurally reachable");
+  require(take(loom::fabric::projectFabricMemoryServiceTargetPlans(
+                   adverseTransformSystem, adverseEndpoint,
+                   loom::fabric::FabricMemoryServiceSourceInterval{0, 64}))
+              .empty(),
+          "exact address closure accepted an out-of-region transform");
+
+  auto coherentDesign =
+      buildCoherentAlternativeFabric(store, design.roots().front());
+  auto coherentSystem = take(
+      loom::fabric::requireSystemRoot(coherentDesign.roots().front().view()));
+  const auto coherentEndpoint = transformRootEndpoint(coherentSystem);
+  const auto coherentTopology =
+      take(loom::fabric::projectFabricMemoryServiceTargetPlans(
+          coherentSystem, coherentEndpoint));
+  require(coherentTopology.size() == 1 &&
+              coherentTopology.front().branches.size() == 1,
+          "an unconnected coherent alternative removed or duplicated the "
+          "connected provider");
+  const auto *coherentSource = coherentSystem.memoryService(
+      coherentSystem.artifact().systemMemoryServices().front());
+  require(coherentSource && !coherentSource->regions().empty(),
+          "coherent fixture lost its source region");
+  const auto &coherentRegion = coherentSource->regions().front();
+  const auto coherentExact =
+      take(loom::fabric::projectFabricMemoryServiceTargetPlans(
+          coherentSystem, coherentEndpoint,
+          loom::fabric::FabricMemoryServiceSourceInterval{
+              coherentRegion.addressBaseBytes,
+              std::min<std::uint64_t>(coherentRegion.sizeBytes, 64)}));
+  const bool coherentBranchCount =
+      coherentExact.size() == 1 && coherentExact.front().branches.size() == 1;
+  const bool coherentRegionMatches =
+      coherentBranchCount &&
+      coherentExact.front().branches.front().region ==
+          coherentTopology.front().branches.front().region;
+  const bool coherentPathMatches =
+      coherentBranchCount &&
+      coherentExact.front().branches.front().transformPath ==
+          coherentTopology.front().branches.front().transformPath;
+  require(
+      coherentBranchCount && coherentRegionMatches && coherentPathMatches,
+      "coherent exact closure changed the reachable provider alternative: " +
+          llvm::Twine(coherentExact.size()) + " plans, region match " +
+          llvm::Twine(coherentRegionMatches) + ", path match " +
+          llvm::Twine(coherentPathMatches) + ", exact path size " +
+          llvm::Twine(
+              coherentExact.front().branches.front().transformPath.size()) +
+          ", topology path size " +
+          llvm::Twine(
+              coherentTopology.front().branches.front().transformPath.size()));
   auto transformConstraints =
       take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
           dataflowView, transformSystem, roots, store));
   auto transformPlan =
       take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
           dataflowView, transformConstraints.view().rootThreadLaunches()));
-  requireUnsupported(
-      loom::pnr::projectSystemPnrSearchDomain(dataflowView, transformSystem,
-                                              config, transformConstraints,
-                                              transformPlan, {}, store),
-      loom::pnr::UnsupportedSystemPnrSearchDomainReason::
-          ServiceTransformProjectionUnavailable,
-      "service-transform closure is not implemented",
-      "H silently underapproximated a Fabric with service transforms");
+  auto transformDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      dataflowView, transformSystem, config, transformConstraints,
+      transformPlan, {}, store));
+  require(!transformDomain.serviceObligations().empty(),
+          "H dropped operation-service obligations in a transform Fabric");
 
   auto messageDataflow = buildMessageDataflow(context);
   take(dataflow::publishCanonicalDataflow(messageDataflow, store));

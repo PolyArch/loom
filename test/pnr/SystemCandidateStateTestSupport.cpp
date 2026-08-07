@@ -81,7 +81,8 @@ loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
     const loom::fabric::FinalizedFabricRoot &baselineSystem,
     const loom::fabric::FinalizedFabricRoot &primaryModule,
     const loom::fabric::FinalizedFabricRoot &alternateModule,
-    mlir::MLIRContext &context, bool extraSupportsRead) {
+    mlir::MLIRContext &context, bool extraSupportsRead,
+    bool routeExtraMemoryThroughTransform) {
   auto baseline = take(loom::fabric::requireSystemRoot(baselineSystem.view()));
   require(!baseline.artifact().systemMemoryServices().empty() &&
               !baseline.artifact().systemServiceEndpoints().empty(),
@@ -152,11 +153,77 @@ loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
   auto memoryService = take(system.addMemoryService(*memoryContract));
   auto memoryEndpoint =
       take(system.addServiceEndpoint(memoryService, memoryCapabilitySet));
+  std::optional<loom::adg::ServiceTransformBuilder> memoryTransform;
+  std::optional<loom::adg::SystemServiceEndpoint> transformInitiate;
+  std::optional<loom::adg::SystemServiceEndpoint> transformServe;
+  std::optional<loom::fabric::CanonicalServiceCapabilitySet>
+      initiateCapabilitySet;
+  if (routeExtraMemoryThroughTransform) {
+    std::vector<loom::fabric::CanonicalServiceCapabilityRecord>
+        initiateCapabilities;
+    initiateCapabilities.reserve(memoryCapabilitySet.capabilities().size());
+    for (const auto &capability : memoryCapabilitySet.capabilities())
+      initiateCapabilities.push_back(
+          take(loom::fabric::CanonicalServiceCapabilityRecord::create(
+              capability.kind(),
+              loom::fabric::CanonicalServiceEndpointRole::Initiate,
+              capability.domain(), rate)));
+    initiateCapabilitySet.emplace(
+        take(loom::fabric::CanonicalServiceCapabilitySet::create(
+            std::move(initiateCapabilities))));
+    memoryTransform.emplace(take(system.createServiceTransform()));
+    transformInitiate.emplace(take(
+        system.addServiceEndpoint(*memoryTransform, *initiateCapabilitySet)));
+    transformServe.emplace(
+        take(system.addServiceEndpoint(*memoryTransform, memoryCapabilitySet)));
+    if (llvm::Error error = system.connect(take(transformInitiate->memory()),
+                                           take(memoryEndpoint.memory())))
+      fail(llvm::toString(std::move(error)));
+  }
   auto spatialMemory = take(extraCore.spatialMemoryManager(0));
-  if (llvm::Error error =
-          system.attachSpatialMemory(spatialMemory, memoryEndpoint))
+  if (llvm::Error error = system.attachSpatialMemory(
+          spatialMemory,
+          routeExtraMemoryThroughTransform ? *transformServe : memoryEndpoint))
     fail(llvm::toString(std::move(error)));
   auto memoryEndpointRef = take(memoryEndpoint.memory());
+  const auto attachEndpointCarriers =
+      [&](const loom::adg::SystemMemoryEndpoint &endpoint,
+          const loom::fabric::CanonicalServiceCapabilitySet &capabilities)
+      -> llvm::Error {
+    for (const auto &capability : capabilities.capabilities()) {
+      const auto legCount =
+          dataflow::semantics::getCanonicalServiceLegCount(capability.kind());
+      for (dataflow::StructuralOrdinal leg = 0; leg != legCount; ++leg) {
+        const auto direction =
+            take(dataflow::semantics::getCanonicalServiceLegDirection(
+                capability.kind(), leg));
+        const bool endpointIsInitiator =
+            capability.role() ==
+            loom::fabric::CanonicalServiceEndpointRole::Initiate;
+        const bool legSourceIsInitiator =
+            direction ==
+            dataflow::semantics::ServiceLegDirection::InitiatorToServer;
+        const auto &carriers = endpointIsInitiator == legSourceIsInitiator
+                                   ? responseCarriers
+                                   : requestCarriers;
+        if (llvm::Error error = system.attachServiceLegCarriers(
+                endpoint, capability.kind(), leg, carriers))
+          return error;
+      }
+    }
+    return llvm::Error::success();
+  };
+  if (llvm::Error error =
+          attachEndpointCarriers(memoryEndpointRef, memoryCapabilitySet))
+    fail(llvm::toString(std::move(error)));
+  if (routeExtraMemoryThroughTransform) {
+    if (llvm::Error error = attachEndpointCarriers(
+            take(transformInitiate->memory()), *initiateCapabilitySet))
+      fail(llvm::toString(std::move(error)));
+    if (llvm::Error error = attachEndpointCarriers(
+            take(transformServe->memory()), memoryCapabilitySet))
+      fail(llvm::toString(std::move(error)));
+  }
   for (const auto &capability : memoryCapabilitySet.capabilities()) {
     const auto legCount =
         dataflow::semantics::getCanonicalServiceLegCount(capability.kind());
@@ -170,12 +237,6 @@ loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
       const bool legSourceIsInitiator =
           direction ==
           dataflow::semantics::ServiceLegDirection::InitiatorToServer;
-      const auto &carriers = endpointIsInitiator == legSourceIsInitiator
-                                 ? responseCarriers
-                                 : requestCarriers;
-      if (llvm::Error error = system.attachServiceLegCarriers(
-              memoryEndpointRef, capability.kind(), leg, carriers))
-        fail(llvm::toString(std::move(error)));
       const auto &occurrenceCarriers =
           endpointIsInitiator == legSourceIsInitiator
               ? occurrenceResponseCarriers
@@ -184,6 +245,16 @@ loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
               spatialMemory, capability.kind(), leg, occurrenceCarriers))
         fail(llvm::toString(std::move(error)));
     }
+  }
+  if (routeExtraMemoryThroughTransform) {
+    if (llvm::Error error = memoryTransform->close(
+            {take(transformServe->memory())},
+            {take(transformInitiate->memory())},
+            loom::fabric::AddressMaskXorTransform{64, 4095, 1}))
+      fail(llvm::toString(std::move(error)));
+    domainMembers.push_back(memoryTransform->domainMember());
+    domainMembers.push_back(transformInitiate->domainMember());
+    domainMembers.push_back(transformServe->domainMember());
   }
   domainMembers.push_back(memoryService.domainMember());
   domainMembers.push_back(memoryEndpoint.domainMember());

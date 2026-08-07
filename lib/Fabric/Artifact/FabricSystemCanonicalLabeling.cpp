@@ -667,8 +667,10 @@ private:
       appendText(intrinsic, "system.transfer_pattern");
       return intrinsic;
     }
-    if (isa<::fabric::SystemConnectionOp>(operation)) {
+    if (auto connection = dyn_cast<::fabric::SystemConnectionOp>(operation)) {
       appendText(intrinsic, "system.connection");
+      if (connection.getMemoryServiceAttr())
+        appendText(intrinsic, "memory_service");
       return intrinsic;
     }
     if (auto attachment =
@@ -1180,6 +1182,23 @@ private:
       auto connection = dyn_cast<::fabric::SystemConnectionOp>(&operation);
       if (!connection)
         continue;
+      if (connection.getMemoryServiceAttr()) {
+        auto source = decodeFabricRef<FabricMemoryEndpointRef>(
+            unsignedBytes(connection.getSourceAttr()));
+        if (!source)
+          return source.takeError();
+        auto destination = decodeFabricRef<FabricMemoryEndpointRef>(
+            unsignedBytes(connection.getDestinationAttr()));
+        if (!destination)
+          return destination.takeError();
+        if (llvm::Error error = addMemoryEndpointRelation(
+                vertex, *source, RelationKind::ConnectionSource))
+          return error;
+        if (llvm::Error error = addMemoryEndpointRelation(
+                vertex, *destination, RelationKind::ConnectionDestination))
+          return error;
+        continue;
+      }
       auto source = decodeFabricRef<FabricTransportEndpointRef>(
           unsignedBytes(connection.getSourceAttr()));
       if (!source)

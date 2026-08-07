@@ -42,6 +42,7 @@ struct FabricArtifactView::Storage {
   std::vector<FabricMemoryEngineTemplateRef> memoryEngineTemplates;
   std::vector<std::vector<FabricMemoryOperationPortRef>> memoryPortRefs;
   std::vector<std::vector<std::uint8_t>> pointConnectionKeys;
+  std::vector<std::vector<std::uint8_t>> memoryServiceConnectionKeys;
   std::vector<std::vector<std::uint8_t>> traversalKeys;
   std::map<std::vector<std::uint8_t>, std::vector<FabricFuPortAttachmentView>>
       fuPortAttachments;

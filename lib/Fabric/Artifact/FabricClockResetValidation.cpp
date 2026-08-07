@@ -58,6 +58,16 @@ effectiveClock(const FabricSystemRootView &system,
   return ordinaryClock(membership, projectFabricInventoryOwner(endpoint.owner));
 }
 
+llvm::Expected<std::optional<ClockDomainRef>>
+effectiveClock(const FabricSystemRootView &system,
+               const ClockMembership &membership,
+               const FabricMemoryEndpointRef &endpoint) {
+  const FabricArtifactView &artifact = system.artifact();
+  if (!artifact.memoryEndpointRole(endpoint))
+    return invalid("clock validation received an unknown memory endpoint");
+  return ordinaryClock(membership, projectFabricInventoryOwner(endpoint.owner));
+}
+
 } // namespace
 
 llvm::Expected<ValidatedClockResetView>
@@ -142,6 +152,19 @@ validateClockReset(FabricSystemRootView system) {
     if (*source != *destination)
       return invalid("point connection crosses Clock domains without an "
                      "explicit crossing resource");
+  }
+
+  for (const FabricMemoryServiceConnectionPayload &connection :
+       artifact.memoryServiceConnections()) {
+    auto source = effectiveClock(system, clockMembership, connection.source);
+    if (!source)
+      return source.takeError();
+    auto destination =
+        effectiveClock(system, clockMembership, connection.destination);
+    if (!destination)
+      return destination.takeError();
+    if (*source != *destination)
+      return invalid("memory-service connection crosses Clock domains");
   }
 
   return ValidatedClockResetView(std::move(system));

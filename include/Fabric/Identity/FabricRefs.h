@@ -1041,6 +1041,14 @@ struct FabricPointConnectionPayload {
                          visitor.ref(self.destination);)
 };
 
+struct FabricMemoryServiceConnectionPayload {
+  FabricMemoryEndpointRef source;
+  FabricMemoryEndpointRef destination;
+
+  LOOM_FABRIC_REF_FIELDS(visitor.ref(self.source);
+                         visitor.ref(self.destination);)
+};
+
 struct FabricPeSelectorPayload {
   FabricPeOccurrenceRef owner;
   FabricTransportEndpointRef source;
@@ -1096,6 +1104,9 @@ struct FabricTransferPatternLegPayload {
   }
 
 LOOM_FABRIC_TRAVERSAL_PAYLOAD_EQUALITY(FabricPointConnectionPayload,
+                                       lhs.source == rhs.source &&
+                                           lhs.destination == rhs.destination)
+LOOM_FABRIC_TRAVERSAL_PAYLOAD_EQUALITY(FabricMemoryServiceConnectionPayload,
                                        lhs.source == rhs.source &&
                                            lhs.destination == rhs.destination)
 LOOM_FABRIC_TRAVERSAL_PAYLOAD_EQUALITY(FabricPeSelectorPayload,

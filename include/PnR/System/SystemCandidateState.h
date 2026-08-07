@@ -13,12 +13,15 @@
 
 namespace loom::pnr {
 
+using SystemMemoryServiceTargetPlan =
+    ::loom::fabric::FabricMemoryServiceTargetPlan;
+
 using SystemServiceTargetDomain =
-    std::variant<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>,
+    std::variant<std::vector<SystemMemoryServiceTargetPlan>,
                  std::vector<::loom::fabric::MemoryConsistencyDomainRef>>;
 
 using SystemServiceTargetSelection =
-    std::variant<std::monostate, ::loom::fabric::FabricMemoryServiceRegionRef,
+    std::variant<std::monostate, SystemMemoryServiceTargetPlan,
                  ::loom::fabric::MemoryConsistencyDomainRef>;
 
 struct SystemServiceRouteNodeSelection final {

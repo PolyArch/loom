@@ -21,7 +21,8 @@ adg::FinalizedFabricDesign buildHeterogeneousSystem(
     ArtifactStore &store, const fabric::FinalizedFabricRoot &baselineSystem,
     const fabric::FinalizedFabricRoot &primaryModule,
     const fabric::FinalizedFabricRoot &alternateModule,
-    mlir::MLIRContext &context, bool extraSupportsRead = true);
+    mlir::MLIRContext &context, bool extraSupportsRead = true,
+    bool routeExtraMemoryThroughTransform = false);
 
 } // namespace pnr::test
 } // namespace loom

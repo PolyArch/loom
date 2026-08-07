@@ -608,7 +608,8 @@ int main() {
   auto memoryDataflow = take(memoryDataflowArtifact.view());
   auto endpointDesign = loom::pnr::test::buildHeterogeneousSystem(
       store, baselineDesign.roots().front(), primaryModule, primaryModule,
-      context, /*extraSupportsRead=*/false);
+      context, /*extraSupportsRead=*/false,
+      /*routeExtraMemoryThroughTransform=*/true);
   auto endpointSystem = take(
       loom::fabric::requireSystemRoot(endpointDesign.roots().front().view()));
   loom::ResolvedConfig memoryResolved = resolved;
@@ -678,6 +679,7 @@ int main() {
           "two memory subjects did not produce endpoint-factorized rows");
   const loom::fabric::SystemServiceEndpointRef *supportedEndpoint = nullptr;
   const loom::fabric::SystemServiceEndpointRef *unsupportedEndpoint = nullptr;
+  const loom::fabric::SystemServiceEndpointRef *transformedEndpoint = nullptr;
   std::vector<loom::fabric::SystemServiceEndpointRef> targetEndpoints;
   for (const auto *row : addressedRows)
     if (!llvm::is_contained(targetEndpoints, row->boundEndpoint))
@@ -685,6 +687,18 @@ int main() {
   require(targetEndpoints.size() == 2,
           "same Module path did not produce two exact endpoint keys");
   for (const auto &endpoint : targetEndpoints) {
+    const auto targetPlans =
+        take(loom::fabric::projectFabricMemoryServiceTargetPlans(endpointSystem,
+                                                                 endpoint));
+    if (llvm::any_of(targetPlans, [](const auto &plan) {
+          return llvm::any_of(plan.branches, [](const auto &branch) {
+            return !branch.transformPath.empty();
+          });
+        })) {
+      require(!transformedEndpoint,
+              "more than one endpoint unexpectedly uses a transform chain");
+      transformedEndpoint = &endpoint;
+    }
     std::size_t emptyRows = 0;
     std::size_t nonemptyRows = 0;
     for (const auto *row : addressedRows) {
@@ -708,6 +722,8 @@ int main() {
   }
   require(supportedEndpoint && unsupportedEndpoint,
           "endpoint rows unioned or intersected distinct read capabilities");
+  require(transformedEndpoint == unsupportedEndpoint,
+          "adverse endpoint did not exercise the explicit transform closure");
 
   const loom::fabric::FabricMemoryEndpointRef *unsupportedOccurrence = nullptr;
   for (const auto &attachment : endpointSystem.spatialAttachments()) {
@@ -808,23 +824,26 @@ int main() {
       bindingProblem, memoryThreadChoices, memoryGraphChoices));
   auto selectedTargetDomain = take(
       supportedCandidate->serviceTargetDomain(memoryContextOrdinals.front()));
-  const auto *selectedRegions =
-      std::get_if<std::vector<loom::fabric::FabricMemoryServiceRegionRef>>(
+  const auto *selectedPlans =
+      std::get_if<std::vector<loom::pnr::SystemMemoryServiceTargetPlan>>(
           &selectedTargetDomain);
-  require(selectedRegions && !selectedRegions->empty(),
+  require(selectedPlans && !selectedPlans->empty(),
           "matching target rows did not retain their nonempty intersection");
-  const auto *selectedRegion =
-      std::get_if<loom::fabric::FabricMemoryServiceRegionRef>(
+  const auto *selectedPlan =
+      std::get_if<loom::pnr::SystemMemoryServiceTargetPlan>(
           &supportedCandidate->serviceTarget(memoryContextOrdinals.front()));
-  require(selectedRegion && *selectedRegion == selectedRegions->front(),
+  require(selectedPlan && *selectedPlan == selectedPlans->front() &&
+              selectedPlan->branches.size() == 1,
           "canonical candidate did not select the first exact target");
+  const auto selectedRegion = selectedPlan->branches.front().region;
 
   std::vector<loom::pnr::SystemServiceTargetSelection> foreignTargets(
       supportedCandidate->serviceTargets().begin(),
       supportedCandidate->serviceTargets().end());
-  auto foreignRegion = *selectedRegion;
+  auto foreignPlan = *selectedPlan;
+  auto &foreignRegion = foreignPlan.branches.front().region;
   foreignRegion.ordinal += 1000;
-  foreignTargets[memoryContextOrdinals.front()] = foreignRegion;
+  foreignTargets[memoryContextOrdinals.front()] = foreignPlan;
   requireFailureContains(
       loom::pnr::SystemCandidateState::create(
           bindingProblem,
@@ -839,7 +858,7 @@ int main() {
       loom::pnr::materializeSystemCandidateDraft(*supportedCandidate, context));
   auto memoryRoot = mlir::cast<::mapping::SystemOp>(memoryDraft.get());
   const auto selectedRegionBytes =
-      loom::fabric::canonicalFabricBytes(*selectedRegion);
+      loom::fabric::canonicalFabricBytes(selectedRegion);
   std::size_t memoryTargetCount = 0;
   ::mapping::ServiceRealizationOp selectedMemoryService;
   ::mapping::ServicePlanOp selectedMemoryPlan;

@@ -112,6 +112,7 @@ struct FabricArtifactViewData {
   std::shared_ptr<mlir::MLIRContext> contextOwner;
   std::vector<FabricEntityViewData> entities;
   std::vector<FabricPointConnectionPayload> pointConnections;
+  std::vector<FabricMemoryServiceConnectionPayload> memoryServiceConnections;
   std::vector<FabricPhysicalTraversalRef> admittedTraversals;
   std::vector<FabricModuleBoundaryTransportAttachmentView>
       moduleBoundaryTransportAttachments;

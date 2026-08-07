@@ -49,12 +49,10 @@ relationChoices(const FrozenSystemPnrProblem &problem,
 
 bool targetInDomain(const SystemServiceTargetSelection &target,
                     const SystemServiceTargetDomain &domain) {
-  if (const auto *region =
-          std::get_if<::loom::fabric::FabricMemoryServiceRegionRef>(&target)) {
-    const auto *regions =
-        std::get_if<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(
-            &domain);
-    return regions && llvm::is_contained(*regions, *region);
+  if (const auto *plan = std::get_if<SystemMemoryServiceTargetPlan>(&target)) {
+    const auto *plans =
+        std::get_if<std::vector<SystemMemoryServiceTargetPlan>>(&domain);
+    return plans && llvm::is_contained(*plans, *plan);
   }
   if (const auto *consistency =
           std::get_if<::loom::fabric::MemoryConsistencyDomainRef>(&target)) {

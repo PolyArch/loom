@@ -1,6 +1,7 @@
 #ifndef LOOM_PNR_SYSTEM_SYSTEMPNRPROBLEM_H
 #define LOOM_PNR_SYSTEM_SYSTEMPNRPROBLEM_H
 
+#include "Fabric/Artifact/FabricMemoryServiceClosure.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "PnR/EndpointRoutingTopology.h"
@@ -119,6 +120,7 @@ struct FrozenSystemMemoryServiceBinding final {
   ::loom::fabric::AccCoreOccurrenceRef accCore;
   ::loom::fabric::SystemServiceEndpointRef systemEndpoint;
   ::loom::fabric::FabricMemoryEndpointRef occurrenceEndpoint;
+  std::vector<::loom::fabric::FabricMemoryServiceTargetPlan> targetPlans;
   std::optional<::loom::mapping::SpatialMemoryIntervalView> interval;
   std::optional<::loom::fabric::SubordinateEndpointRef> exposureTerminal;
 };

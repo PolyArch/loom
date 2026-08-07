@@ -720,14 +720,18 @@ def Fabric_SystemTransferPatternOp
 
 def Fabric_SystemConnectionOp
     : Fabric_Op<"system.connection", [HasParent<"::fabric::SystemOp">]> {
-  let summary = "fixed directed System transport connection";
+  let summary = "fixed directed System point connection";
   let description = [{
-    One exact point-to-point connection between existing transport endpoints.
-    It has no identity, capacity, buffering, arbitration, or hidden crossing
-    behavior; independently meaningful behavior is a transport resource.
+    One exact point-to-point Transport or MemoryService connection. Transport
+    connects an output to an input. MemoryService connects a manager to a
+    subordinate. It has no identity, capacity, buffering, arbitration, or
+    hidden crossing behavior; independently meaningful behavior is an
+    explicit resource or service transform.
   }];
 
-  let arguments = (ins DenseI8ArrayAttr:$source, DenseI8ArrayAttr:$destination);
+  let arguments = (ins DenseI8ArrayAttr:$source,
+                       DenseI8ArrayAttr:$destination,
+                       OptionalAttr<UnitAttr>:$memory_service);
 
   let assemblyFormat = [{
     `source` `=` $source `destination` `=` $destination attr-dict

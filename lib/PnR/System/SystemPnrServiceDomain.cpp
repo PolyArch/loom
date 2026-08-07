@@ -3,6 +3,7 @@
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
+#include "Fabric/Artifact/FabricMemoryServiceClosure.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
@@ -244,46 +245,38 @@ memoryCapabilitySupports(const ::fabric::MemoryServiceContractRecord &service,
   return false;
 }
 
-const ::fabric::MemoryServiceContractRecord *
-directMemoryService(const ::loom::fabric::FabricSystemRootView &fabric,
-                    ::loom::fabric::SystemServiceEndpointRef endpoint) {
-  const auto *owner = fabric.serviceEndpointOwner(endpoint);
-  if (!owner)
-    return nullptr;
-  const auto *serviceRef = std::get_if<::loom::fabric::FabricMemoryServiceRef>(
-      &owner->owner().payload);
-  if (!serviceRef)
-    return nullptr;
-  const auto *systemRef =
-      std::get_if<::loom::fabric::SystemMemoryServiceRef>(&serviceRef->payload);
-  return systemRef ? fabric.memoryService(*systemRef) : nullptr;
-}
-
 llvm::Expected<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>
 compatibleServiceRegions(const ::loom::fabric::FabricSystemRootView &fabric,
                          ::loom::fabric::SystemServiceEndpointRef endpoint,
                          const std::optional<ResolvedServiceMember> &member) {
   std::vector<::loom::fabric::FabricMemoryServiceRegionRef> result;
-  const auto *service = directMemoryService(fabric, endpoint);
-  if (!service)
-    return result;
-  const auto *owner = fabric.serviceEndpointOwner(endpoint);
-  const auto *serviceRef = std::get_if<::loom::fabric::FabricMemoryServiceRef>(
-      &owner->owner().payload);
-  const auto &systemRef =
-      std::get<::loom::fabric::SystemMemoryServiceRef>(serviceRef->payload);
-  for (::loom::fabric::FabricOrdinal region = 0;
-       region < service->regions().size(); ++region) {
-    if (member) {
-      auto supports = memoryCapabilitySupports(*service, *member, region);
-      if (!supports)
-        return supports.takeError();
-      if (!*supports)
-        continue;
+  auto plans =
+      ::loom::fabric::projectFabricMemoryServiceTargetPlans(fabric, endpoint);
+  if (!plans)
+    return plans.takeError();
+  for (const ::loom::fabric::FabricMemoryServiceTargetPlan &plan : *plans) {
+    for (const ::loom::fabric::FabricMemoryServiceTargetBranch &branch :
+         plan.branches) {
+      const auto *systemRef =
+          std::get_if<::loom::fabric::SystemMemoryServiceRef>(
+              &branch.region.service.payload);
+      if (!systemRef)
+        return invalid("System target closure names a non-System service");
+      const auto *service = fabric.memoryService(*systemRef);
+      if (!service || branch.region.ordinal >= service->regions().size())
+        return invalid("System target closure names an invalid service region");
+      if (member) {
+        auto supports =
+            memoryCapabilitySupports(*service, *member, branch.region.ordinal);
+        if (!supports)
+          return supports.takeError();
+        if (!*supports)
+          continue;
+      }
+      result.push_back(branch.region);
     }
-    result.push_back(
-        {::loom::fabric::FabricMemoryServiceRef::system(systemRef), region});
   }
+  canonicalizeFabricRefs(result);
   return result;
 }
 
@@ -898,13 +891,6 @@ projectSystemServiceDomains(
             FlatOperationServiceDomainProjectionUnavailable,
         "flat operation-service compatibility projection is not implemented "
         "by the System PnR search-domain projector");
-  if (!fabric.artifact().systemServiceTransforms().empty() &&
-      hasOperationService)
-    return llvm::make_error<UnsupportedSystemPnrSearchDomain>(
-        UnsupportedSystemPnrSearchDomainReason::
-            ServiceTransformProjectionUnavailable,
-        "service-transform closure is not implemented by the System PnR "
-        "search-domain projector");
   auto messagePayloads = collectMessagePayloads(dataflow, roots);
   if (!messagePayloads)
     return messagePayloads.takeError();
@@ -1048,16 +1034,56 @@ projectSystemMemoryServiceBindings(
       [&](const auto &obligation, const SystemServiceTargetSubject &subject,
           const SpatialCatalogEntry &entry, const BindingMetadata &metadata,
           llvm::ArrayRef<BoundMemoryEndpointPair> pairs) -> llvm::Error {
+    const auto *operation =
+        std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
+            &obligation.key);
+    const auto *logicalMemory =
+        operation
+            ? std::get_if<::dataflow::LogicalMemoryRootOrViewRef>(operation)
+            : nullptr;
+    std::optional<::loom::fabric::FabricMemoryServiceSourceInterval>
+        sourceInterval;
+    if (logicalMemory) {
+      if (!metadata.interval)
+        return invalid("addressed service binding has no logical interval");
+      if (const auto *range =
+              std::get_if<::loom::mapping::SpatialMemoryByteRangeView>(
+                  &*metadata.interval)) {
+        sourceInterval = ::loom::fabric::FabricMemoryServiceSourceInterval{
+            range->offsetBytes, range->sizeBytes};
+      } else {
+        auto extent = dataflow.staticMemoryByteExtent(*logicalMemory);
+        if (!extent)
+          return extent.takeError();
+        if (*extent)
+          sourceInterval =
+              ::loom::fabric::FabricMemoryServiceSourceInterval{0, **extent};
+      }
+    }
     for (const BoundMemoryEndpointPair &pair : pairs) {
       const auto *spatialCore =
           std::get_if<::loom::fabric::SpatialCoreOccurrenceRef>(
               &pair.occurrenceEndpoint.owner.payload);
       if (!spatialCore)
         return invalid("memory service binding is not occurrence-qualified");
+      llvm::Expected<std::vector<::loom::fabric::FabricMemoryServiceTargetPlan>>
+          targetPlans =
+              logicalMemory
+                  ? sourceInterval
+                        ? ::loom::fabric::projectFabricMemoryServiceTargetPlans(
+                              fabric, pair.systemEndpoint, *sourceInterval)
+                        : llvm::Expected<std::vector<
+                              ::loom::fabric::FabricMemoryServiceTargetPlan>>(
+                              std::vector<::loom::fabric::
+                                              FabricMemoryServiceTargetPlan>{})
+                  : ::loom::fabric::projectFabricMemoryServiceTargetPlans(
+                        fabric, pair.systemEndpoint);
+      if (!targetPlans)
+        return targetPlans.takeError();
       result.push_back({obligation.key, subject, entry.reference,
                         spatialCore->core, pair.systemEndpoint,
-                        pair.occurrenceEndpoint, metadata.interval,
-                        metadata.exposureTerminal});
+                        pair.occurrenceEndpoint, std::move(*targetPlans),
+                        metadata.interval, metadata.exposureTerminal});
     }
     return llvm::Error::success();
   };

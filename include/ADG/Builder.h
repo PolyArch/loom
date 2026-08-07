@@ -1109,6 +1109,8 @@ public:
                                std::uint32_t synchronizerStages);
   llvm::Error connect(const SystemTransportEndpoint &source,
                       const SystemTransportEndpoint &destination);
+  llvm::Error connect(const SystemMemoryEndpoint &manager,
+                      const SystemMemoryEndpoint &subordinate);
 
   llvm::Error close();
 

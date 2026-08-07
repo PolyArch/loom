@@ -1175,8 +1175,42 @@ llvm::Error SystemBuilder::connect(const SystemTransportEndpoint &source,
       denseBytes((*state)->context,
                  loom::fabric::canonicalFabricBytes(source.reference_)),
       denseBytes((*state)->context,
-                 loom::fabric::canonicalFabricBytes(destination.reference_)));
+                 loom::fabric::canonicalFabricBytes(destination.reference_)),
+      mlir::UnitAttr());
   return verifyCreated(operation, "System connection");
+}
+
+llvm::Error SystemBuilder::connect(const SystemMemoryEndpoint &manager,
+                                   const SystemMemoryEndpoint &subordinate) {
+  auto state = detail::activeState(state_);
+  if (!state)
+    return state.takeError();
+  if (llvm::Error error = checkOwned(manager, *state, rootOrdinal_))
+    return error;
+  if (llvm::Error error = checkOwned(subordinate, *state, rootOrdinal_))
+    return error;
+  if (manager.role_ != loom::fabric::FabricMemoryEndpointRole::Manager ||
+      subordinate.role_ != loom::fabric::FabricMemoryEndpointRole::Subordinate)
+    return detail::invalid(
+        "System memory connection must be manager-to-subordinate");
+  if (!std::holds_alternative<loom::fabric::SystemServiceEndpointRef>(
+          manager.reference_.owner.payload) ||
+      !std::holds_alternative<loom::fabric::SystemServiceEndpointRef>(
+          subordinate.reference_.owner.payload))
+    return detail::invalid(
+        "System memory connection endpoints must be System service endpoints");
+  auto root = activeSystem(*state, rootOrdinal_);
+  if (!root)
+    return root.takeError();
+  mlir::OpBuilder builder = systemInsertionBuilder(**state, **root);
+  auto operation = ::fabric::SystemConnectionOp::create(
+      builder, (*root)->operation.getLoc(),
+      denseBytes((*state)->context,
+                 loom::fabric::canonicalFabricBytes(manager.reference_)),
+      denseBytes((*state)->context,
+                 loom::fabric::canonicalFabricBytes(subordinate.reference_)),
+      mlir::UnitAttr::get(&(*state)->context));
+  return verifyCreated(operation, "System memory connection");
 }
 
 llvm::Error
@@ -1235,15 +1269,15 @@ llvm::Error ServiceTransformBuilder::close(
   for (const SystemMemoryEndpoint &input : inputs) {
     if (llvm::Error error = checkOwned(input, *state, rootOrdinal_))
       return error;
-    if (input.role_ != loom::fabric::FabricMemoryEndpointRole::Manager)
-      return detail::invalid("service transform input must be a manager");
+    if (input.role_ != loom::fabric::FabricMemoryEndpointRole::Subordinate)
+      return detail::invalid("service transform input must be a subordinate");
     inputRefs.push_back(input.reference_);
   }
   for (const SystemMemoryEndpoint &output : outputs) {
     if (llvm::Error error = checkOwned(output, *state, rootOrdinal_))
       return error;
-    if (output.role_ != loom::fabric::FabricMemoryEndpointRole::Subordinate)
-      return detail::invalid("service transform output must be a subordinate");
+    if (output.role_ != loom::fabric::FabricMemoryEndpointRole::Manager)
+      return detail::invalid("service transform output must be a manager");
     outputRefs.push_back(output.reference_);
   }
   auto record = loom::fabric::SystemServiceTransformRecord::create(

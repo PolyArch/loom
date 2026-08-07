@@ -67,9 +67,9 @@ std::string denseI8Assembly(mlir::MLIRContext &context,
       take("write semantics",
            ::fabric::ClosedEnumDomain<::fabric::WriteSubwordSemantics>::
                fromCanonical({::fabric::WriteSubwordSemantics::Exact}));
-  auto address = take(
-      "address domain",
-      ::fabric::MemoryAddressDomain::rootRelative(singleton(64, 64)));
+  auto address =
+      take("address domain",
+           ::fabric::MemoryAddressDomain::rootRelative(singleton(64, 64)));
   return take("element access",
               ::fabric::MemoryAccessClass::create(
                   dataflow::semantics::MemoryAccessForm::Element,
@@ -360,6 +360,23 @@ void checkOwnerAndTransform(mlir::MLIRContext &context) {
       coherentBytes)
     fail(test, "CoherentMemory roundtrip changed region correspondence");
 
+  expectRejected(
+      test,
+      SystemServiceTransformRecord::create(
+          {input},
+          {{FabricMemoryEndpointOwnerRef::of(SystemServiceEndpointRef(32)), 0}},
+          CoherentMemoryTransform{
+              MemoryConsistencyDomainRef(HardwareDomainRef(91)),
+              {{{memory, 0}, {memory, 1}}, {{memory, 0}, {memory, 2}}}}));
+  expectRejected(
+      test,
+      SystemServiceTransformRecord::create(
+          {input},
+          {{FabricMemoryEndpointOwnerRef::of(SystemServiceEndpointRef(32)), 0}},
+          CoherentMemoryTransform{
+              MemoryConsistencyDomainRef(HardwareDomainRef(91)),
+              {{{memory, 0}, {memory, 2}}, {{memory, 1}, {memory, 2}}}}));
+
   CanonicalServiceCapabilitySet capabilities = take(
       test,
       CanonicalServiceCapabilitySet::create({take(
@@ -406,8 +423,7 @@ void checkOwnerAndTransform(mlir::MLIRContext &context) {
 int main() {
   mlir::DialectRegistry registry;
   registry.insert<::fabric::FabricDialect>();
-  mlir::MLIRContext context(registry,
-                            mlir::MLIRContext::Threading::DISABLED);
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   checkCapabilityCatalog(context);
   checkOwnerAndTransform(context);
   return EXIT_SUCCESS;

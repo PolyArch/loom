@@ -17,6 +17,7 @@ add_mlir_library(LoomFabricArtifact
   FabricCapabilityProjection.cpp
   FabricFuCapabilityDerivation.cpp
   FabricMemoryEngineTemplate.cpp
+  FabricMemoryServiceClosure.cpp
   FabricModuleBoundaryTransport.cpp
   FabricOperationTransport.cpp
   FabricResourceContractFinalization.cpp
@@ -43,4 +44,5 @@ mlir_target_link_libraries(LoomFabricArtifact PUBLIC
   MLIRBytecodeReader
   MLIRBytecodeWriter
   MLIRIR
+  MLIRPresburger
 )

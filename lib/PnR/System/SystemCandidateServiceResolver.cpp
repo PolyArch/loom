@@ -189,19 +189,37 @@ loom::pnr::detail::resolveSystemServiceTargetDomain(
         findTargetRow(service, subject, selected->binding->systemEndpoint);
     if (!row)
       return row.takeError();
+    SystemServiceTargetDomain subjectDomain;
+    if (const auto *regions = std::get_if<
+            std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(
+            &(*row)->compatibleTargets)) {
+      std::vector<SystemMemoryServiceTargetPlan> plans;
+      for (const SystemMemoryServiceTargetPlan &plan :
+           selected->binding->targetPlans) {
+        if (plan.branches.empty())
+          return invalid("Fabric closure contains an empty memory target plan");
+        if (llvm::all_of(plan.branches, [&](const auto &branch) {
+              return llvm::is_contained(*regions, branch.region);
+            }))
+          plans.push_back(plan);
+      }
+      subjectDomain = std::move(plans);
+    } else {
+      subjectDomain =
+          std::get<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(
+              (*row)->compatibleTargets);
+    }
     if (!intersection) {
-      intersection = (*row)->compatibleTargets;
+      intersection = std::move(subjectDomain);
       continue;
     }
-    if (intersection->index() != (*row)->compatibleTargets.index())
+    if (intersection->index() != subjectDomain.index())
       return invalid("one service context mixes target-domain kinds");
-    if (auto *regions = std::get_if<
-            std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(
+    if (auto *plans = std::get_if<std::vector<SystemMemoryServiceTargetPlan>>(
             &*intersection)) {
-      *regions = intersectDomains(
-          *regions,
-          std::get<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(
-              (*row)->compatibleTargets));
+      *plans = intersectDomains(
+          *plans,
+          std::get<std::vector<SystemMemoryServiceTargetPlan>>(subjectDomain));
     } else {
       auto &domains =
           std::get<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(
@@ -209,7 +227,7 @@ loom::pnr::detail::resolveSystemServiceTargetDomain(
       domains = intersectDomains(
           domains,
           std::get<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(
-              (*row)->compatibleTargets));
+              subjectDomain));
     }
   }
   if (!intersection)
