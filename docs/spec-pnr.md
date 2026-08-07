@@ -224,7 +224,9 @@ pair. Canonical leg direction, the pair's complementary
 roles, and whether the queried terminal is source or destination select exactly
 one member of that pair. Only the selected endpoint's exact capability and
 `ServiceLegCarrierAttachment(endpoint, kind, leg_ordinal)` carrier set enter
-that terminal domain.
+that terminal domain. The exact selected Dataflow service member is tested
+against that capability before any terminal is admitted; incompatibility
+produces an empty domain and never causes a search for another endpoint.
 Direction and payload compatibility are recomputed from endpoint role, the
 Canonical Service leg, and the capability domain. The singular payload width
 in the resulting System `RouteQuery` is the nonpersistent maximum-width

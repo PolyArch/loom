@@ -349,7 +349,13 @@ occurrence endpoint pair within that three-reference row and its
 Fabric-owned service-leg carrier relation. CandidateState chooses ordinary
 transport terminals and traversals, and the persistent RouteTree records only
 that selected route. Final verification repeats the same derivation from the
-exact Fabric.
+exact Fabric. Domain construction tests the exact selected Dataflow memory or
+fence member against the capability set of the attachment-bound endpoint. An
+incompatible member makes the candidate infeasible; it does not authorize a
+capability search for another endpoint. Fabric root finalization cannot own
+this comparison because it has neither the selected member nor the
+SpatialMapping choice.
+
 `MessageTransfer` needs no projection because its service endpoint already is
 a transport endpoint. Protocol subchannels and encodings remain a later
 Interconnect Implementation refinement, so neither PnR nor the Mapping

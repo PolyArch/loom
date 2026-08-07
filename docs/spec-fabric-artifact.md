@@ -28,9 +28,9 @@ System spatial attachment over its exact System service endpoint. A Fabric
 owner accepts and emits only the exact `loom.fabric 3.0` descriptor; there is
 no 2.x compatibility owner, fallback importer, in-place upgrade, or alternate
 identity path. A 2.x System does not contain enough information to recover the
-binding when several compatible System service endpoints exist. The
-RootRelative memory index-width relation introduced in 2.0 remains part of
-this boundary.
+binding when several memory-plane, complementary-role System service endpoints
+exist. The RootRelative memory index-width relation introduced in 2.0 remains
+part of this boundary.
 
 The three variants share one artifact family because they use the same Fabric
 semantic model, reference framing, canonicalization rules, and finalization

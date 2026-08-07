@@ -265,6 +265,22 @@ coverage proof. Letting Mapping choose among matching endpoints would instead
 make a software-placement artifact define hardware wiring. Transport
 attachments need no third endpoint and retain their two-face form.
 
+The Module boundary owns its exact memref type and endpoint-relative role, but
+it does not own a workload capability-domain copy. The complete read, write,
+atomic, compare-exchange, or fence requirement appears only after an exact
+Dataflow member and SpatialMapping selection are known. Fabric root
+finalization therefore validates the three-reference topology, memory plane,
+and complementary roles. SystemMapping domain construction and verification
+test the selected member against the capability set of that already-bound
+endpoint; failure makes that Mapping infeasible and never causes a search for
+another endpoint.
+
+Deriving or persisting a Module-boundary capability catalog would require a
+new rule for combining every configurable internal use and would compete with
+the endpoint and selected Dataflow member as capability authorities. Deferring
+the workload-dependent comparison keeps both facts at their existing owners
+without weakening the exact hardware binding.
+
 The old 2.x payload cannot be upgraded by selecting the only endpoint visible
 on one host: uniqueness is ambient state, not persisted hardware semantics.
 The closed relation consequently enters through a Fabric major-version

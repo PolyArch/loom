@@ -347,7 +347,9 @@ boundary endpoint and the corresponding occurrence-qualified AccCore-local
 SpatialCore endpoint. A Transport row contains exactly that structural pair.
 A Memory row additionally contains the exact `SystemServiceEndpointRef` that
 continues the occurrence endpoint into the System service topology. Direction,
-type, service capability, and role are derived from the referenced endpoints.
+type, and role are derived from the Module and occurrence endpoints; the exact
+service capability set remains owned by the referenced System endpoint. The
+attachment copies neither that set nor a workload capability requirement.
 
 An endpoint attachment is not a route and cannot hide conversion, buffering,
 arbitration, clock-domain crossing, or any other stateful behavior. Such
@@ -1040,10 +1042,15 @@ pair; it is not a stored plane discriminant. A transport attachment has no
 System service endpoint. A memory attachment has exactly one, and that
 endpoint is the sole
 Fabric-owned continuation of the occurrence-qualified SpatialCore memory
-endpoint into the System service topology. Its plane, complementary role, and
-capability domain must be compatible with the SpatialCore endpoint. Capability
-equality, owner identity, entity order, or a unique candidate observed by one
-consumer cannot substitute for the explicit reference.
+endpoint into the System service topology. Its plane must be Memory and its
+role must complement the SpatialCore endpoint. The Module boundary owns no
+second capability-domain catalog against which Fabric root finalization could
+compare the endpoint. SystemMapping domain construction and base verification
+instead test each selected Dataflow memory or fence member against this bound
+endpoint's exact capability set. An incompatible selected member is
+infeasible; capability equality with another endpoint, owner identity, entity
+order, or a unique candidate observed by one consumer cannot substitute for
+the explicit reference.
 
 `CanonicalServiceCapability` binds one exact Canonical Service kind, one
 operation-relative `Initiate | Serve` role, and a closed accepted access or
@@ -1387,22 +1394,25 @@ hardware-domain references, duplicate domain members, conflicting same-kind
 membership, duplicate crossing fields for one carrier, wrong-kind typed domain
 refinements, and any connection or attachment hidden from the complete
 relation. It rejects a memory spatial attachment with a missing, foreign,
-same-role, wrong-plane, or capability-incompatible System service endpoint and
-a transport spatial attachment carrying any System service endpoint. It also
+same-role, or wrong-plane System service endpoint and a transport spatial
+attachment carrying any System service endpoint. It also
 rejects invalid or foreign service-leg attachment endpoints, unsupported
 service kinds, out-of-range leg ordinals, direction or payload-domain
 incompatibility, missing memory-service leg coverage, and every
 `MessageTransfer` attachment. These checks are root validation, not optional
-consumer policy.
+consumer policy. Compatibility between a selected workload member and the
+bound endpoint's capability domain is SystemMapping base verification and
+System PnR domain construction; it is not a workload-independent Fabric root
+fact.
 
 ## Validation Anchors
 
 Anchor-level validation should cover:
 
 * exact module-to-AccCore attachment coverage and typed continuity, including
-  one required compatible System service endpoint on every memory attachment,
-  no such endpoint on a transport attachment, and rejection of missing,
-  foreign, same-role, wrong-plane, or capability-incompatible bindings;
+  one required memory-plane, complementary-role System service endpoint on
+  every memory attachment, no such endpoint on a transport attachment, and
+  rejection of missing, foreign, same-role, or wrong-plane bindings;
 * one derived InstructionCore context whose atomic Fabric-owned execution use
   pattern, initial state, capacity, requester order, and exact grant contract
   reject a Mapping-defined scheduler or split claim;
