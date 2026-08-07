@@ -67,7 +67,7 @@ class SyncWorktreeMakeTest(unittest.TestCase):
             "arguments = sys.argv[1:]\n"
             "with Path(os.environ['SYNC_LOG']).open('a') as stream:\n"
             "    stream.write(' '.join(arguments) + '\\n')\n"
-            "if '--dry-run' in arguments and os.environ.get('FAIL_DRY_RUN'):\n"
+            "if os.environ.get('FAIL_PREFLIGHT'):\n"
             "    sys.exit(7)\n"
         )
         git(self.primary, "add", "Makefile", "scripts/sync_branches.py")
@@ -88,17 +88,17 @@ class SyncWorktreeMakeTest(unittest.TestCase):
             env={"SYNC_LOG": str(self.log), **environment},
         )
 
-    def test_linked_worktree_runs_preflight_before_real_sync(self) -> None:
+    def test_linked_worktree_invokes_sync_once(self) -> None:
         completed = self.invoke(self.linked)
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(self.log.read_text().splitlines(), ["main --dry-run", "main"])
+        self.assertEqual(self.log.read_text().splitlines(), ["main"])
 
-    def test_failed_preflight_prevents_real_sync(self) -> None:
-        completed = self.invoke(self.linked, FAIL_DRY_RUN="1")
+    def test_internal_preflight_failure_is_reported(self) -> None:
+        completed = self.invoke(self.linked, FAIL_PREFLIGHT="1")
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertEqual(self.log.read_text().splitlines(), ["main --dry-run"])
+        self.assertEqual(self.log.read_text().splitlines(), ["main"])
 
     def test_primary_worktree_is_rejected_before_sync(self) -> None:
         completed = self.invoke(self.primary)

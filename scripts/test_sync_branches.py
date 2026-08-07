@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -103,6 +104,12 @@ class RepositoryFixture:
         )
         return output.split()[0]
 
+    def probe_repository(self) -> Path:
+        common_dir = Path(git(self.current, "rev-parse", "--git-common-dir"))
+        if not common_dir.is_absolute():
+            common_dir = (self.current / common_dir).resolve()
+        return common_dir / "loom-branch-sync-probe"
+
     def invoke(
         self,
         *arguments: str,
@@ -173,6 +180,105 @@ class SyncBranchesTest(unittest.TestCase):
             (fixture.target / "untracked.txt").read_text(), "untracked WIP\n"
         )
         self.assertFalse((fixture.current / "temp").exists())
+
+    def test_dry_run_reuses_a_marked_probe_repository(self) -> None:
+        fixture = self.fixture
+        fixture.commit_current("current.txt", "from B\n", "Current change")
+        fixture.commit_target("target.txt", "from A\n", "Target change")
+        fixture.push_branches()
+
+        first = fixture.invoke("A", "--dry-run")
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        probe = fixture.probe_repository()
+        self.assertTrue(probe.is_dir())
+        self.assertEqual(git(probe, "config", "--get", "loom.branchSyncProbe"), "true")
+        git_dir_inode = (probe / ".git").stat().st_ino
+
+        second = fixture.invoke("A", "--dry-run")
+
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual((probe / ".git").stat().st_ino, git_dir_inode)
+
+    def test_unmarked_probe_directory_is_never_cleaned(self) -> None:
+        fixture = self.fixture
+        fixture.commit_current("current.txt", "from B\n", "Current change")
+        fixture.commit_target("target.txt", "from A\n", "Target change")
+        fixture.push_branches()
+        probe = fixture.probe_repository()
+        probe.mkdir()
+        sentinel = probe / "sentinel.txt"
+        fixture.write(sentinel, "preserve me\n")
+
+        completed = fixture.invoke("A", "--dry-run")
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("unrecognized probe repository", completed.stderr)
+        self.assertEqual(sentinel.read_text(), "preserve me\n")
+
+    def test_dry_run_reports_phase_and_total_timings(self) -> None:
+        fixture = self.fixture
+        fixture.commit_current("current.txt", "from B\n", "Current change")
+        fixture.commit_target("target.txt", "from A\n", "Target change")
+        fixture.push_branches()
+
+        completed = fixture.invoke("A", "--dry-run")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertRegex(
+            completed.stdout,
+            re.compile(
+                r"^timing: resolve=\d+\.\d{3}s fingerprint=\d+\.\d{3}s "
+                r"preflight=\d+\.\d{3}s total=\d+\.\d{3}s$",
+                re.MULTILINE,
+            ),
+        )
+
+    def test_dry_run_skips_fetch_when_remote_commit_is_already_available(self) -> None:
+        fixture = self.fixture
+        fixture.commit_current("current.txt", "from B\n", "Current change")
+        fixture.commit_target("target.txt", "from A\n", "Target change")
+        fixture.push_branches()
+        wrapper = self.git_wrapper(
+            "fetch",
+            "exit 73",
+            require_inject_worktree=False,
+        )
+
+        completed = fixture.invoke(
+            "A",
+            "--dry-run",
+            env={"PATH": f"{wrapper.parent}:{os.environ['PATH']}"},
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_ignored_scan_is_scoped_to_synchronized_paths(self) -> None:
+        fixture = self.fixture
+        fixture.commit_current("nested/current.txt", "from B\n", "Current change")
+        fixture.commit_target("nested/target.txt", "from A\n", "Target change")
+        fixture.push_branches()
+        wrapper = self.git_wrapper(
+            "ls-files",
+            "found_separator=; found_path=; "
+            'for argument in "$@"; do '
+            "  if [ \"$argument\" = ':(literal)nested' ]; then exit 75; fi; "
+            '  if [ "$found_separator" = yes ]; then found_path=yes; break; fi; '
+            '  if [ "$argument" = -- ]; then found_separator=yes; fi; '
+            "done; "
+            'if [ "$found_path" != yes ]; then exit 74; fi',
+            condition='[ "$1" = "ls-files" ] && '
+            'case " $* " in *" --ignored "*) true;; *) false;; esac',
+            require_inject_worktree=False,
+        )
+
+        completed = fixture.invoke(
+            "A",
+            "--dry-run",
+            env={"PATH": f"{wrapper.parent}:{os.environ['PATH']}"},
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_dry_run_reports_commit_conflict_without_changing_real_repo(self) -> None:
         fixture = self.fixture
@@ -285,6 +391,29 @@ class SyncBranchesTest(unittest.TestCase):
         )
         self.assertEqual(git(fixture.current, "status", "--porcelain=v1"), "")
         self.assertEqual((fixture.current / "target.txt").read_text(), "from A\n")
+
+    def test_actual_sync_queries_remote_oid_only_once(self) -> None:
+        fixture = self.fixture
+        fixture.commit_current("current.txt", "from B\n", "Current change")
+        fixture.commit_target("target.txt", "from A\n", "Target change")
+        fixture.push_branches()
+        call_log = fixture.root / "ls-remote.log"
+        wrapper = self.git_wrapper(
+            "ls-remote",
+            "printf 'call\\n' >> \"$CALL_LOG\"",
+            require_inject_worktree=False,
+        )
+
+        completed = fixture.invoke(
+            "A",
+            env={
+                "PATH": f"{wrapper.parent}:{os.environ['PATH']}",
+                "CALL_LOG": str(call_log),
+            },
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(call_log.read_text().splitlines(), ["call"])
 
     def test_exact_lease_refuses_concurrent_remote_update(self) -> None:
         fixture = self.fixture
@@ -439,6 +568,30 @@ class SyncBranchesTest(unittest.TestCase):
         self.assertEqual(
             (fixture.current / "target-added.txt").read_text(),
             "precious current WIP\n",
+        )
+        self.assertEqual(git(fixture.target, "rev-parse", "A"), target_before)
+        self.assertEqual(git(fixture.current, "rev-parse", "B"), current_before)
+        self.assertEqual(fixture.remote_oid("A"), remote_before)
+
+    def test_ignored_file_blocking_a_candidate_directory_is_rejected(self) -> None:
+        fixture = self.fixture
+        fixture.commit_target(".gitignore", "blocked\n", "Ignore local data")
+        fixture.write(fixture.target / "blocked", "precious target WIP\n")
+        fixture.commit_current(
+            "blocked/child.txt", "tracked by current branch\n", "Add nested data"
+        )
+        fixture.push_branches()
+        target_before = git(fixture.target, "rev-parse", "A")
+        current_before = git(fixture.current, "rev-parse", "B")
+        remote_before = fixture.remote_oid("A")
+
+        completed = fixture.invoke("A", "--dry-run")
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("ignored WIP", completed.stderr)
+        self.assertIn("blocked", completed.stderr)
+        self.assertEqual(
+            (fixture.target / "blocked").read_text(), "precious target WIP\n"
         )
         self.assertEqual(git(fixture.target, "rev-parse", "A"), target_before)
         self.assertEqual(git(fixture.current, "rev-parse", "B"), current_before)
@@ -711,6 +864,41 @@ class SyncBranchesTest(unittest.TestCase):
         self.assertEqual(git(fixture.current, "rev-parse", "B"), current_before)
         self.assertEqual(fixture.remote_oid("A"), remote_before)
 
+    def test_concurrent_wip_change_reports_the_changed_path(self) -> None:
+        fixture = self.fixture
+        fixture.commit_current("current.txt", "from B\n", "Current change")
+        fixture.commit_target("target.txt", "from A\n", "Target change")
+        fixture.push_branches()
+        fixture.write(fixture.target / "target.txt", "initial WIP\n")
+        target_before = git(fixture.target, "rev-parse", "A")
+        current_before = git(fixture.current, "rev-parse", "B")
+        remote_before = fixture.remote_oid("A")
+        wrapper = self.git_wrapper(
+            "push",
+            "printf 'concurrent WIP\\n' > \"$INJECT_PATH\"",
+            condition='[ "$1" = "-c" ] && [ "$3" = "push" ] && '
+            'case " $* " in *" --dry-run "*) true;; *) false;; esac',
+            require_inject_worktree=False,
+        )
+
+        completed = fixture.invoke(
+            "A",
+            env={
+                "PATH": f"{wrapper.parent}:{os.environ['PATH']}",
+                "INJECT_PATH": str(fixture.target / "target.txt"),
+            },
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("target WIP changed during isolated preflight", completed.stderr)
+        self.assertIn("target.txt", completed.stderr)
+        self.assertEqual(
+            (fixture.target / "target.txt").read_text(), "concurrent WIP\n"
+        )
+        self.assertEqual(git(fixture.target, "rev-parse", "A"), target_before)
+        self.assertEqual(git(fixture.current, "rev-parse", "B"), current_before)
+        self.assertEqual(fixture.remote_oid("A"), remote_before)
+
     def test_late_ignored_wip_is_not_overwritten(self) -> None:
         fixture = self.fixture
         fixture.commit_target(".gitignore", "late.txt\n", "Ignore local data")
@@ -779,6 +967,7 @@ class SyncBranchesTest(unittest.TestCase):
         injection: str,
         *,
         condition: str | None = None,
+        require_inject_worktree: bool = True,
     ) -> Path:
         real_git = shutil.which("git")
         self.assertIsNotNone(real_git)
@@ -786,9 +975,12 @@ class SyncBranchesTest(unittest.TestCase):
         directory.mkdir()
         wrapper = directory / "git"
         predicate = condition or f'[ "$1" = {shlex.quote(intercepted_command)} ]'
+        worktree_predicate = (
+            '[ "$PWD" = "$INJECT_WORKTREE" ]' if require_inject_worktree else "true"
+        )
         wrapper.write_text(
             "#!/bin/sh\n"
-            f'if {predicate} && [ "$PWD" = "$INJECT_WORKTREE" ]; then\n'
+            f"if {predicate} && {worktree_predicate}; then\n"
             f"  {injection}\n"
             "fi\n"
             f'exec {shlex.quote(real_git or "git")} "$@"\n'

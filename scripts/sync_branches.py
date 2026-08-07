@@ -11,7 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -54,6 +54,11 @@ class ProbeResult:
 @dataclass(frozen=True)
 class WipFingerprint:
     digest: str
+    status_digest: str
+    staged_digest: str
+    unstaged_digest: str
+    untracked_digest: str
+    path_states: tuple[tuple[bytes, str], ...]
 
 
 def run(
@@ -113,7 +118,11 @@ def parse_worktrees(raw: bytes) -> tuple[Worktree, ...]:
     return tuple(records)
 
 
-def resolve_state(target_branch: str, remote_override: str | None) -> SyncState:
+def resolve_state(
+    target_branch: str,
+    remote_override: str | None,
+    known_remote_oid: str | None = None,
+) -> SyncState:
     current_root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel")).resolve()
     current_branch = git(current_root, "symbolic-ref", "--quiet", "--short", "HEAD")
     if current_branch == target_branch:
@@ -162,16 +171,19 @@ def resolve_state(target_branch: str, remote_override: str | None) -> SyncState:
             f"remote {remote} must have exactly one push URL; found {len(push_urls)}"
         )
     push_url = push_urls[0]
-    remote_line = git(
-        current_root,
-        "ls-remote",
-        "--heads",
-        push_url,
-        f"refs/heads/{target_branch}",
-    )
-    if not remote_line:
-        raise SyncError(f"remote branch {remote}/{target_branch} does not exist")
-    remote_oid = remote_line.split()[0]
+    if known_remote_oid is None:
+        remote_line = git(
+            current_root,
+            "ls-remote",
+            "--heads",
+            push_url,
+            f"refs/heads/{target_branch}",
+        )
+        if not remote_line:
+            raise SyncError(f"remote branch {remote}/{target_branch} does not exist")
+        remote_oid = remote_line.split()[0]
+    else:
+        remote_oid = known_remote_oid
     committer_ident = git(target_worktree, "var", "GIT_COMMITTER_IDENT")
     match = re.fullmatch(r"(.*) <([^<>]+)> \d+ [+-]\d{4}", committer_ident)
     if match is None:
@@ -210,35 +222,143 @@ def copy_untracked(source_root: Path, destination_root: Path) -> None:
             raise SyncError(f"unsupported untracked entry: {relative}")
 
 
-def wip_fingerprint(worktree: Path) -> WipFingerprint:
+def hash_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def hash_path(path: Path) -> bytes:
     digest = hashlib.sha256()
-    for arguments in (
-        ("status", "--porcelain=v1", "-z"),
-        ("diff", "--cached", "--binary", "--full-index"),
-        ("diff", "--binary", "--full-index"),
-    ):
-        value = git_bytes(worktree, *arguments)
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return b"missing"
+    digest.update(metadata.st_mode.to_bytes(8, byteorder="big"))
+    if path.is_symlink():
+        digest.update(b"L")
+        digest.update(os.fsencode(os.readlink(path)))
+    elif path.is_file():
+        digest.update(b"F")
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+    elif path.is_dir():
+        digest.update(b"D")
+        nested_head = run(
+            path,
+            "git",
+            "rev-parse",
+            "--verify",
+            "HEAD",
+            check=False,
+        )
+        if nested_head.returncode == 0:
+            digest.update(nested_head.stdout)
+    else:
+        digest.update(b"O")
+    return digest.digest()
+
+
+def index_path_states(worktree: Path, paths: set[bytes]) -> dict[bytes, list[bytes]]:
+    states: dict[bytes, list[bytes]] = {}
+    pathspecs = tuple(f":(literal){os.fsdecode(path)}" for path in sorted(paths))
+    for offset in range(0, len(pathspecs), 128):
+        raw = git_bytes(
+            worktree,
+            "ls-files",
+            "--stage",
+            "-z",
+            "--",
+            *pathspecs[offset : offset + 128],
+        )
+        for record in (value for value in raw.split(b"\0") if value):
+            metadata, separator, path = record.partition(b"\t")
+            if not separator:
+                raise SyncError("cannot parse staged index entry")
+            states.setdefault(path, []).append(metadata)
+    return states
+
+
+def wip_fingerprint(worktree: Path) -> WipFingerprint:
+    status = git_bytes(worktree, "status", "--porcelain=v1", "-z")
+    staged = git_bytes(worktree, "diff", "--cached", "--binary", "--full-index")
+    unstaged = git_bytes(worktree, "diff", "--binary", "--full-index")
+    staged_paths = nul_paths(
+        git_bytes(worktree, "diff", "--cached", "--name-only", "-z")
+    )
+    unstaged_paths = nul_paths(git_bytes(worktree, "diff", "--name-only", "-z"))
+    untracked = sorted(
+        nul_paths(
+            git_bytes(worktree, "ls-files", "--others", "--exclude-standard", "-z")
+        )
+    )
+
+    digest = hashlib.sha256()
+    for value in (status, staged, unstaged):
         digest.update(len(value).to_bytes(8, byteorder="big"))
         digest.update(value)
-    untracked = git_bytes(worktree, "ls-files", "--others", "--exclude-standard", "-z")
-    for encoded in sorted(value for value in untracked.split(b"\0") if value):
+    untracked_state = hashlib.sha256()
+    for encoded in untracked:
         relative = Path(os.fsdecode(encoded))
-        path = worktree / relative
+        path_state = hash_path(worktree / relative)
         digest.update(len(encoded).to_bytes(8, byteorder="big"))
         digest.update(encoded)
-        if path.is_symlink():
-            content = os.fsencode(os.readlink(path))
-            digest.update(b"L")
-            digest.update(content)
-        elif path.is_file():
-            digest.update(b"F")
-            digest.update(path.stat().st_mode.to_bytes(8, byteorder="big"))
-            with path.open("rb") as stream:
-                while chunk := stream.read(1024 * 1024):
-                    digest.update(chunk)
-        else:
-            raise SyncError(f"unsupported untracked entry: {relative}")
-    return WipFingerprint(digest.hexdigest())
+        digest.update(path_state)
+        untracked_state.update(len(encoded).to_bytes(8, byteorder="big"))
+        untracked_state.update(encoded)
+        untracked_state.update(path_state)
+
+    untracked_paths = set(untracked)
+    paths = staged_paths | unstaged_paths | untracked_paths
+    index_states = index_path_states(worktree, paths)
+    path_states: list[tuple[bytes, str]] = []
+    for encoded in sorted(paths):
+        state = hashlib.sha256()
+        state.update(b"S" if encoded in staged_paths else b"-")
+        state.update(b"U" if encoded in unstaged_paths else b"-")
+        state.update(b"?" if encoded in untracked_paths else b"-")
+        for entry in index_states.get(encoded, []):
+            state.update(len(entry).to_bytes(8, byteorder="big"))
+            state.update(entry)
+        state.update(hash_path(worktree / Path(os.fsdecode(encoded))))
+        path_states.append((encoded, state.hexdigest()))
+
+    return WipFingerprint(
+        digest.hexdigest(),
+        hash_bytes(status),
+        hash_bytes(staged),
+        hash_bytes(unstaged),
+        untracked_state.hexdigest(),
+        tuple(path_states),
+    )
+
+
+def changed_wip_message(before: WipFingerprint, after: WipFingerprint) -> str:
+    before_paths = dict(before.path_states)
+    after_paths = dict(after.path_states)
+    changed_paths = sorted(
+        path
+        for path in before_paths.keys() | after_paths.keys()
+        if before_paths.get(path) != after_paths.get(path)
+    )
+    components = [
+        name
+        for name, old, new in (
+            ("status", before.status_digest, after.status_digest),
+            ("staged", before.staged_digest, after.staged_digest),
+            ("unstaged", before.unstaged_digest, after.unstaged_digest),
+            ("untracked", before.untracked_digest, after.untracked_digest),
+        )
+        if old != new
+    ]
+    lines = ["target WIP changed during isolated preflight"]
+    if changed_paths:
+        lines.append(
+            "changed paths:\n"
+            + "\n".join(f"  {os.fsdecode(path)}" for path in changed_paths)
+        )
+    if components:
+        lines.append("changed components: " + ", ".join(components))
+    return "\n".join(lines)
 
 
 def nul_paths(raw: bytes) -> set[bytes]:
@@ -251,17 +371,45 @@ def paths_collide(left: bytes, right: bytes) -> bool:
     )
 
 
-def ignored_paths(worktree: Path) -> set[bytes]:
-    return nul_paths(
-        git_bytes(
-            worktree,
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "-z",
-        )
+def operation_pathspecs(operation_paths: set[bytes]) -> tuple[str, ...]:
+    return tuple(f":(literal){os.fsdecode(path)}" for path in sorted(operation_paths))
+
+
+def blocking_parent_paths(worktree: Path, operation_paths: set[bytes]) -> set[bytes]:
+    blockers: set[bytes] = set()
+    for path in operation_paths:
+        components = path.split(b"/")
+        for end in range(1, len(components)):
+            encoded = b"/".join(components[:end])
+            candidate = worktree / Path(os.fsdecode(encoded))
+            if candidate.is_symlink() or (
+                candidate.exists() and not candidate.is_dir()
+            ):
+                blockers.add(encoded)
+    return blockers
+
+
+def ignored_paths(worktree: Path, operation_paths: set[bytes]) -> set[bytes]:
+    paths: set[bytes] = set()
+    pathspecs = operation_pathspecs(
+        operation_paths | blocking_parent_paths(worktree, operation_paths)
     )
+    for offset in range(0, len(pathspecs), 128):
+        paths.update(
+            nul_paths(
+                git_bytes(
+                    worktree,
+                    "ls-files",
+                    "--others",
+                    "--ignored",
+                    "--exclude-standard",
+                    "-z",
+                    "--",
+                    *pathspecs[offset : offset + 128],
+                )
+            )
+        )
+    return paths
 
 
 def ensure_ignored_wip_safe(
@@ -271,7 +419,7 @@ def ensure_ignored_wip_safe(
 ) -> None:
     collisions = sorted(
         ignored
-        for ignored in ignored_paths(worktree)
+        for ignored in ignored_paths(worktree, operation_paths)
         if any(paths_collide(ignored, affected) for affected in operation_paths)
     )
     if not collisions:
@@ -390,116 +538,161 @@ def push_target(
     return run(cwd, *arguments, check=check)
 
 
-@contextmanager
-def probe(state: SyncState) -> Iterator[ProbeResult]:
-    temp_parent = git_common_dir(state.current_root) / "loom-branch-sync-probes"
-    temp_parent.mkdir(exist_ok=True)
-    try:
-        with tempfile.TemporaryDirectory(prefix="probe-", dir=temp_parent) as raw:
-            probe_root = Path(raw) / "repository"
-            run(
-                temp_parent,
-                "git",
-                "clone",
-                "--shared",
-                "--no-checkout",
-                "--quiet",
-                str(state.current_root),
-                str(probe_root),
+def prepare_probe_repository(state: SyncState) -> Path:
+    common_dir = git_common_dir(state.current_root)
+    probe_root = common_dir / "loom-branch-sync-probe"
+    if probe_root.is_symlink():
+        raise SyncError(f"probe repository path must not be a symlink: {probe_root}")
+    if not probe_root.exists():
+        run(
+            common_dir,
+            "git",
+            "clone",
+            "--shared",
+            "--no-checkout",
+            "--quiet",
+            str(state.current_root),
+            str(probe_root),
+        )
+        git(probe_root, "config", "--local", "loom.branchSyncProbe", "true")
+    else:
+        if not probe_root.is_dir():
+            raise SyncError(
+                f"refusing to clean unrecognized probe repository: {probe_root}"
             )
-            git(probe_root, "config", "user.name", state.committer_name)
-            git(probe_root, "config", "user.email", state.committer_email)
-            git(probe_root, "switch", "--detach", state.target_oid)
-            has_wip = reproduce_wip(state, probe_root)
-            run(
-                probe_root,
-                "git",
-                "fetch",
-                "--quiet",
-                state.push_url,
-                f"refs/heads/{state.target_branch}",
+        is_repository = run(
+            probe_root,
+            "git",
+            "rev-parse",
+            "--is-inside-work-tree",
+            check=False,
+        )
+        marker = run(
+            probe_root,
+            "git",
+            "config",
+            "--local",
+            "--get",
+            "loom.branchSyncProbe",
+            check=False,
+        )
+        if (
+            is_repository.returncode != 0
+            or is_repository.stdout.strip() != b"true"
+            or marker.returncode != 0
+            or marker.stdout.strip() != b"true"
+        ):
+            raise SyncError(
+                f"refusing to clean unrecognized probe repository: {probe_root}"
             )
-            ancestor = run(
-                probe_root,
-                "git",
-                "merge-base",
-                "--is-ancestor",
-                state.remote_oid,
-                state.target_oid,
-                check=False,
-            )
-            if ancestor.returncode != 0:
-                raise SyncError(
-                    f"remote {state.remote}/{state.target_branch} contains commits "
-                    "that are not in the local target branch"
-                )
-            rebased = run(
-                probe_root,
-                "git",
-                "rebase",
-                "--rebase-merges",
-                "--reapply-cherry-picks",
-                "--empty=keep",
-                "--onto",
-                state.current_oid,
-                state.base_oid,
-                check=False,
-            )
-            if rebased.returncode != 0:
-                raise probe_conflict(probe_root, "commit-rebase", rebased)
-            candidate_oid = git(probe_root, "rev-parse", "HEAD")
-            target_changes = nul_paths(
-                git_bytes(
-                    probe_root,
-                    "diff",
-                    "--name-only",
-                    "-z",
-                    state.target_oid,
-                    candidate_oid,
-                )
-            )
-            ensure_ignored_wip_safe(
-                state.target_worktree,
-                state.target_branch,
-                target_changes,
-            )
-            current_changes = nul_paths(
-                git_bytes(
-                    probe_root,
-                    "diff",
-                    "--name-only",
-                    "-z",
-                    state.current_oid,
-                    candidate_oid,
-                )
-            )
-            ensure_ignored_wip_safe(
-                state.current_root,
-                state.current_branch,
-                current_changes,
-            )
-            if has_wip:
-                restored = run(
-                    probe_root,
-                    "git",
-                    "stash",
-                    "pop",
-                    "--index",
-                    check=False,
-                )
-                if restored.returncode != 0:
-                    raise probe_conflict(probe_root, "wip-restore", restored)
-            push_target(probe_root, state, candidate_oid, dry_run=True)
-            yield ProbeResult(candidate_oid, probe_root)
-    finally:
-        try:
-            temp_parent.rmdir()
-        except OSError:
-            pass
+        run(probe_root, "git", "rebase", "--abort", check=False)
+        run(probe_root, "git", "reset", "--hard", "--quiet")
+        run(probe_root, "git", "clean", "-ffdx", "--quiet")
+        run(probe_root, "git", "stash", "clear")
+    git(probe_root, "config", "user.name", state.committer_name)
+    git(probe_root, "config", "user.email", state.committer_email)
+    git(probe_root, "config", "core.hooksPath", "/dev/null")
+    git(probe_root, "config", "commit.gpgSign", "false")
+    git(probe_root, "switch", "--detach", "--discard-changes", state.target_oid)
+    return probe_root
 
 
-def print_dry_run(state: SyncState, result: ProbeResult) -> None:
-    print("dry-run: branch synchronization preflight succeeded")
+def probe(state: SyncState) -> ProbeResult:
+    probe_root = prepare_probe_repository(state)
+    has_wip = reproduce_wip(state, probe_root)
+    remote_present = run(
+        probe_root,
+        "git",
+        "cat-file",
+        "-e",
+        f"{state.remote_oid}^{{commit}}",
+        check=False,
+    )
+    if remote_present.returncode != 0:
+        run(
+            probe_root,
+            "git",
+            "fetch",
+            "--quiet",
+            state.push_url,
+            f"refs/heads/{state.target_branch}",
+        )
+    ancestor = run(
+        probe_root,
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        state.remote_oid,
+        state.target_oid,
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        raise SyncError(
+            f"remote {state.remote}/{state.target_branch} contains commits "
+            "that are not in the local target branch"
+        )
+    rebased = run(
+        probe_root,
+        "git",
+        "rebase",
+        "--rebase-merges",
+        "--reapply-cherry-picks",
+        "--empty=keep",
+        "--onto",
+        state.current_oid,
+        state.base_oid,
+        check=False,
+    )
+    if rebased.returncode != 0:
+        raise probe_conflict(probe_root, "commit-rebase", rebased)
+    candidate_oid = git(probe_root, "rev-parse", "HEAD")
+    target_changes = nul_paths(
+        git_bytes(
+            probe_root,
+            "diff",
+            "--name-only",
+            "-z",
+            state.target_oid,
+            candidate_oid,
+        )
+    )
+    ensure_ignored_wip_safe(
+        state.target_worktree,
+        state.target_branch,
+        target_changes,
+    )
+    current_changes = nul_paths(
+        git_bytes(
+            probe_root,
+            "diff",
+            "--name-only",
+            "-z",
+            state.current_oid,
+            candidate_oid,
+        )
+    )
+    ensure_ignored_wip_safe(
+        state.current_root,
+        state.current_branch,
+        current_changes,
+    )
+    if has_wip:
+        restored = run(
+            probe_root,
+            "git",
+            "stash",
+            "pop",
+            "--index",
+            check=False,
+        )
+        if restored.returncode != 0:
+            raise probe_conflict(probe_root, "wip-restore", restored)
+    push_target(probe_root, state, candidate_oid, dry_run=True)
+    return ProbeResult(candidate_oid, probe_root)
+
+
+def print_preflight(state: SyncState, result: ProbeResult) -> None:
+    print("preflight: isolated dry-run succeeded")
     print(f"base:    {state.base_oid}")
     print(
         f"current: {state.current_branch} {state.current_oid} -> {result.candidate_oid}"
@@ -616,11 +809,12 @@ def execute(
     fingerprint: WipFingerprint,
     result: ProbeResult,
 ) -> str:
-    refreshed = resolve_state(state.target_branch, state.remote)
+    refreshed = resolve_state(state.target_branch, state.remote, state.remote_oid)
     if refreshed != state:
         raise SyncError("branch or remote state changed during isolated preflight")
-    if wip_fingerprint(state.target_worktree) != fingerprint:
-        raise SyncError("target WIP changed during isolated preflight")
+    refreshed_fingerprint = wip_fingerprint(state.target_worktree)
+    if refreshed_fingerprint.digest != fingerprint.digest:
+        raise SyncError(changed_wip_message(fingerprint, refreshed_fingerprint))
     run(
         state.current_root,
         "git",
@@ -766,16 +960,23 @@ def execute(
         raise SyncError(
             "remote target was not updated; local branches are synchronized\n" + details
         )
-    remote_line = git(
-        state.current_root,
-        "ls-remote",
-        "--heads",
-        state.push_url,
-        f"refs/heads/{state.target_branch}",
-    )
-    if not remote_line or remote_line.split()[0] != synchronized_oid:
-        raise SyncError("remote target does not match the synchronized commit")
     return synchronized_oid
+
+
+@contextmanager
+def record_timing(timings: dict[str, float], name: str) -> Iterator[None]:
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        timings[name] = time.perf_counter() - started
+
+
+def print_timings(timings: dict[str, float], total: float) -> None:
+    order = ("resolve", "fingerprint", "preflight", "execute")
+    fields = [f"{name}={timings[name]:.3f}s" for name in order if name in timings]
+    fields.append(f"total={total:.3f}s")
+    print("timing: " + " ".join(fields))
 
 
 def parse_args() -> argparse.Namespace:
@@ -796,15 +997,21 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    started = time.perf_counter()
+    timings: dict[str, float] = {}
     try:
         current_root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
         with repository_lock(current_root):
-            state = resolve_state(args.target, args.remote)
-            fingerprint = wip_fingerprint(state.target_worktree)
-            with probe(state) as result:
-                if args.dry_run:
-                    print_dry_run(state, result)
-                    return 0
+            with record_timing(timings, "resolve"):
+                state = resolve_state(args.target, args.remote)
+            with record_timing(timings, "fingerprint"):
+                fingerprint = wip_fingerprint(state.target_worktree)
+            with record_timing(timings, "preflight"):
+                result = probe(state)
+            print_preflight(state, result)
+            if args.dry_run:
+                return 0
+            with record_timing(timings, "execute"):
                 synchronized_oid = execute(state, fingerprint, result)
             print(
                 f"synchronized local {state.current_branch} and "
@@ -818,6 +1025,8 @@ def main() -> int:
     except SyncError as error:
         print(f"warning: {error}", file=sys.stderr)
         return 2
+    finally:
+        print_timings(timings, time.perf_counter() - started)
 
 
 if __name__ == "__main__":

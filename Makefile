@@ -75,7 +75,6 @@ sync-worktree:
 	   echo "sync-worktree requires a linked worktree" >&2; \
 	   exit 2; \
 	 fi
-	@$(PYTHON) $(SYNC_SCRIPT) main --dry-run
 	@$(PYTHON) $(SYNC_SCRIPT) main
 
 clean:
