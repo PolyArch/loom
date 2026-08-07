@@ -362,6 +362,7 @@ class SyncBranchesTest(unittest.TestCase):
         self.assertEqual(target, current)
         self.assertNotEqual(target, original_target)
         self.assertEqual(fixture.remote_oid("A"), target)
+        self.assertEqual(git(fixture.target, "rev-parse", "A@{upstream}"), target)
         self.assertEqual(fixture.remote_oid("B"), remote_current)
         base = git(fixture.target, "merge-base", "A~2", "A")
         self.assertEqual(
@@ -391,6 +392,38 @@ class SyncBranchesTest(unittest.TestCase):
         )
         self.assertEqual(git(fixture.current, "status", "--porcelain=v1"), "")
         self.assertEqual((fixture.current / "target.txt").read_text(), "from A\n")
+
+    def test_actual_sync_reports_target_mutation_timing(self) -> None:
+        fixture = self.fixture
+        fixture.commit_current("current.txt", "from B\n", "Current change")
+        fixture.commit_target("target.txt", "from A\n", "Target change")
+        fixture.push_branches()
+        fixture.write(fixture.target / "target.txt", "target WIP\n")
+
+        completed = fixture.invoke("A")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertRegex(completed.stdout, r"\btarget-mutation=\d+\.\d{3}s\b")
+
+    def test_upstream_refresh_never_recurses_into_submodules(self) -> None:
+        fixture = self.fixture
+        fixture.commit_current("current.txt", "from B\n", "Current change")
+        fixture.commit_target("target.txt", "from A\n", "Target change")
+        fixture.push_branches()
+        wrapper = self.git_wrapper(
+            "fetch-upstream",
+            'case " $* " in *" --recurse-submodules=no "*) true;; *) exit 76;; esac',
+            condition='[ "$1" = "fetch" ] && '
+            'case " $* " in *"refs/remotes/origin/A"*) true;; *) false;; esac',
+            require_inject_worktree=False,
+        )
+
+        completed = fixture.invoke(
+            "A",
+            env={"PATH": f"{wrapper.parent}:{os.environ['PATH']}"},
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_actual_sync_queries_remote_oid_only_once(self) -> None:
         fixture = self.fixture

@@ -41,6 +41,7 @@ class SyncState:
     remote: str
     push_url: str
     remote_oid: str
+    upstream_ref: str | None
     committer_name: str
     committer_email: str
 
@@ -151,9 +152,10 @@ def resolve_state(
     current_oid = git(current_root, "rev-parse", f"refs/heads/{current_branch}")
     target_oid = git(current_root, "rev-parse", f"refs/heads/{target_branch}")
     base_oid = git(current_root, "merge-base", current_oid, target_oid)
-    remote = remote_override or git(
+    configured_remote = git(
         current_root, "config", "--get", f"branch.{target_branch}.remote"
     )
+    remote = remote_override or configured_remote
     if not remote:
         raise SyncError(
             f"target branch {target_branch} has no configured remote; use --remote"
@@ -184,6 +186,16 @@ def resolve_state(
         remote_oid = remote_line.split()[0]
     else:
         remote_oid = known_remote_oid
+    upstream_ref: str | None = None
+    if remote == configured_remote:
+        candidate_upstream = git(
+            current_root,
+            "for-each-ref",
+            "--format=%(upstream)",
+            f"refs/heads/{target_branch}",
+        )
+        if candidate_upstream.startswith("refs/remotes/"):
+            upstream_ref = candidate_upstream
     committer_ident = git(target_worktree, "var", "GIT_COMMITTER_IDENT")
     match = re.fullmatch(r"(.*) <([^<>]+)> \d+ [+-]\d{4}", committer_ident)
     if match is None:
@@ -200,6 +212,7 @@ def resolve_state(
         remote,
         push_url,
         remote_oid,
+        upstream_ref,
         committer_name,
         committer_email,
     )
@@ -804,10 +817,86 @@ def apply_candidate_tree(
         )
 
 
+def synchronize_local_worktrees(state: SyncState, candidate_oid: str) -> None:
+    stash_oid = real_stash(state.target_worktree)
+    apply_candidate_tree(
+        state.target_worktree,
+        state.target_branch,
+        state.target_oid,
+        candidate_oid,
+        stash_oid,
+    )
+    apply_candidate_tree(
+        state.current_root,
+        state.current_branch,
+        state.current_oid,
+        candidate_oid,
+        stash_oid,
+    )
+    transaction = (
+        "start\n"
+        f"update refs/heads/{state.target_branch} {candidate_oid} "
+        f"{state.target_oid}\n"
+        f"update refs/heads/{state.current_branch} {candidate_oid} "
+        f"{state.current_oid}\n"
+        "prepare\n"
+        "commit\n"
+    ).encode()
+    updated = run(
+        state.current_root,
+        "git",
+        "update-ref",
+        "--stdin",
+        "-m",
+        "synchronize branches",
+        input_bytes=transaction,
+        check=False,
+    )
+    if updated.returncode != 0:
+        details = (
+            b"\n".join((updated.stdout, updated.stderr))
+            .decode(errors="replace")
+            .strip()
+        )
+        raise SyncError(
+            "a local branch changed before the ref transaction; it was not overwritten "
+            f"and stash {stash_oid or 'none'} was preserved\n{details}"
+        )
+    restore_real_stash(state.target_worktree, stash_oid)
+
+
+def refresh_upstream_ref(state: SyncState) -> None:
+    if state.upstream_ref is None:
+        return
+    refreshed = run(
+        state.current_root,
+        "git",
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--recurse-submodules=no",
+        state.remote,
+        f"+refs/heads/{state.target_branch}:{state.upstream_ref}",
+        check=False,
+    )
+    if refreshed.returncode != 0:
+        details = (
+            b"\n".join((refreshed.stdout, refreshed.stderr))
+            .decode(errors="replace")
+            .strip()
+        )
+        raise SyncError(
+            "remote target was updated, but its local upstream ref was not refreshed\n"
+            + details
+        )
+
+
 def execute(
     state: SyncState,
     fingerprint: WipFingerprint,
     result: ProbeResult,
+    timings: dict[str, float],
 ) -> str:
     refreshed = resolve_state(state.target_branch, state.remote, state.remote_oid)
     if refreshed != state:
@@ -872,51 +961,8 @@ def execute(
     if git(state.current_root, "rev-parse", "HEAD") != state.current_oid:
         raise SyncError("current branch advanced during synchronization")
 
-    stash_oid = real_stash(state.target_worktree)
-    apply_candidate_tree(
-        state.target_worktree,
-        state.target_branch,
-        state.target_oid,
-        result.candidate_oid,
-        stash_oid,
-    )
-    apply_candidate_tree(
-        state.current_root,
-        state.current_branch,
-        state.current_oid,
-        result.candidate_oid,
-        stash_oid,
-    )
-    transaction = (
-        "start\n"
-        f"update refs/heads/{state.target_branch} {result.candidate_oid} "
-        f"{state.target_oid}\n"
-        f"update refs/heads/{state.current_branch} {result.candidate_oid} "
-        f"{state.current_oid}\n"
-        "prepare\n"
-        "commit\n"
-    ).encode()
-    updated = run(
-        state.current_root,
-        "git",
-        "update-ref",
-        "--stdin",
-        "-m",
-        "synchronize branches",
-        input_bytes=transaction,
-        check=False,
-    )
-    if updated.returncode != 0:
-        details = (
-            b"\n".join((updated.stdout, updated.stderr))
-            .decode(errors="replace")
-            .strip()
-        )
-        raise SyncError(
-            "a local branch changed before the ref transaction; it was not overwritten "
-            f"and stash {stash_oid or 'none'} was preserved\n{details}"
-        )
-    restore_real_stash(state.target_worktree, stash_oid)
+    with record_timing(timings, "target-mutation"):
+        synchronize_local_worktrees(state, result.candidate_oid)
 
     target_oid = git(
         state.current_root, "rev-parse", f"refs/heads/{state.target_branch}"
@@ -960,6 +1006,7 @@ def execute(
         raise SyncError(
             "remote target was not updated; local branches are synchronized\n" + details
         )
+    refresh_upstream_ref(state)
     return synchronized_oid
 
 
@@ -973,7 +1020,7 @@ def record_timing(timings: dict[str, float], name: str) -> Iterator[None]:
 
 
 def print_timings(timings: dict[str, float], total: float) -> None:
-    order = ("resolve", "fingerprint", "preflight", "execute")
+    order = ("resolve", "fingerprint", "preflight", "execute", "target-mutation")
     fields = [f"{name}={timings[name]:.3f}s" for name in order if name in timings]
     fields.append(f"total={total:.3f}s")
     print("timing: " + " ".join(fields))
@@ -1012,7 +1059,7 @@ def main() -> int:
             if args.dry_run:
                 return 0
             with record_timing(timings, "execute"):
-                synchronized_oid = execute(state, fingerprint, result)
+                synchronized_oid = execute(state, fingerprint, result, timings)
             print(
                 f"synchronized local {state.current_branch} and "
                 f"{state.target_branch} at {synchronized_oid}"
