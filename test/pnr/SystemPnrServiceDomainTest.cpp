@@ -762,7 +762,9 @@ attachmentCarriers(const loom::fabric::FabricSystemRootView &system,
   for (const loom::fabric::ServiceLegCarrierAttachmentRecord &attachment :
        system.serviceLegCarrierAttachments()) {
     if (attachment.kind() != dataflow::semantics::ServiceKind::MemoryRead ||
-        attachment.legOrdinal() != legOrdinal)
+        attachment.legOrdinal() != legOrdinal ||
+        attachment.endpoint().owner.kind() !=
+            loom::fabric::FabricMemoryEndpointOwnerKind::SystemServiceEndpoint)
       continue;
     const auto endpoint = std::get<loom::fabric::SystemServiceEndpointRef>(
         attachment.endpoint().owner.payload);

@@ -46,6 +46,11 @@ struct AttachmentGroup {
   llvm::SmallVector<Operation *> duplicates;
 };
 
+struct MemoryEndpointContext {
+  const loom::fabric::CanonicalServiceCapabilitySet *capabilities;
+  loom::fabric::CanonicalServiceEndpointRole effectiveRole;
+};
+
 AttachmentKey
 attachmentKey(const loom::fabric::ServiceLegCarrierAttachmentRecord &record) {
   return {loom::fabric::canonicalFabricBytes(record.endpoint()), record.kind(),
@@ -55,6 +60,63 @@ attachmentKey(const loom::fabric::ServiceLegCarrierAttachmentRecord &record) {
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "fabric_artifact_invalid: " + message);
+}
+
+llvm::Expected<MemoryEndpointContext> resolveMemoryEndpointContext(
+    const loom::fabric::FabricSystemRootView &system,
+    const loom::fabric::FabricMemoryEndpointRef &endpoint) {
+  using namespace loom::fabric;
+  const FabricArtifactView &fabric = system.artifact();
+  if (endpoint.owner.kind() ==
+      FabricMemoryEndpointOwnerKind::SystemServiceEndpoint) {
+    if (endpoint.ordinal != 0)
+      return invalid("service-leg System endpoint ordinal is not zero");
+    const auto serviceEndpoint =
+        std::get<SystemServiceEndpointRef>(endpoint.owner.payload);
+    const CanonicalServiceCapabilitySet *capabilities =
+        system.serviceEndpointCapabilities(serviceEndpoint);
+    if (!capabilities ||
+        capabilities->plane() != CanonicalServiceEndpointPlane::Memory)
+      return invalid(
+          "service-leg attachment endpoint has no memory capability set");
+    return MemoryEndpointContext{capabilities, capabilities->role()};
+  }
+
+  if (endpoint.owner.kind() !=
+      FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence)
+    return invalid("service-leg attachment endpoint is not an admitted "
+                   "memory attachment pair member");
+
+  const FabricSpatialAttachmentRecordView *binding = nullptr;
+  for (const FabricSpatialAttachmentRecordView &candidate :
+       system.spatialAttachments()) {
+    const FabricMemoryEndpointRef *memory = candidate.spatialEndpoint.memory();
+    if (!memory || *memory != endpoint)
+      continue;
+    if (binding)
+      return invalid(
+          "service-leg occurrence endpoint has multiple memory attachments");
+    binding = &candidate;
+  }
+  if (!binding || !binding->serviceEndpoint)
+    return invalid(
+        "service-leg occurrence endpoint has no memory spatial attachment");
+
+  const CanonicalServiceCapabilitySet *capabilities =
+      system.serviceEndpointCapabilities(*binding->serviceEndpoint);
+  if (!capabilities ||
+      capabilities->plane() != CanonicalServiceEndpointPlane::Memory)
+    return invalid(
+        "service-leg occurrence binding has no memory capability authority");
+  const std::optional<FabricMemoryEndpointRole> occurrenceRole =
+      fabric.memoryEndpointRole(endpoint);
+  if (!occurrenceRole)
+    return invalid("service-leg occurrence endpoint has no memory role");
+  const CanonicalServiceEndpointRole effectiveRole =
+      *occurrenceRole == FabricMemoryEndpointRole::Manager
+          ? CanonicalServiceEndpointRole::Initiate
+          : CanonicalServiceEndpointRole::Serve;
+  return MemoryEndpointContext{capabilities, effectiveRole};
 }
 
 llvm::Expected<std::uint64_t> serviceLegPayloadEnvelope(
@@ -201,25 +263,41 @@ llvm::Error loom::fabric::detail::validateSystemServiceLegCarrierAttachments(
         expected.insert({canonicalFabricBytes(memory), capability.kind(), leg});
     }
   }
+  for (const FabricSpatialAttachmentRecordView &attachment :
+       system.spatialAttachments()) {
+    const FabricMemoryEndpointRef *memory = attachment.spatialEndpoint.memory();
+    if (!memory)
+      continue;
+    if (!attachment.serviceEndpoint)
+      return invalid("memory spatial attachment has no service endpoint");
+    const CanonicalServiceCapabilitySet *capabilities =
+        system.serviceEndpointCapabilities(*attachment.serviceEndpoint);
+    if (!capabilities ||
+        capabilities->plane() != CanonicalServiceEndpointPlane::Memory)
+      return invalid(
+          "memory spatial attachment has no memory capability authority");
+    for (const CanonicalServiceCapabilityRecord &capability :
+         capabilities->capabilities()) {
+      if (capability.kind() ==
+          dataflow::semantics::ServiceKind::MessageTransfer)
+        continue;
+      const dataflow::StructuralOrdinal legCount =
+          dataflow::semantics::getCanonicalServiceLegCount(capability.kind());
+      for (dataflow::StructuralOrdinal leg = 0; leg < legCount; ++leg)
+        expected.insert(
+            {canonicalFabricBytes(*memory), capability.kind(), leg});
+    }
+  }
 
   std::set<AttachmentKey> actual;
   for (const ServiceLegCarrierAttachmentRecord &record :
        system.serviceLegCarrierAttachments()) {
     if (llvm::Error error = validateFabricRef(fabric, record.endpoint()))
       return error;
-    if (record.endpoint().owner.kind() !=
-            FabricMemoryEndpointOwnerKind::SystemServiceEndpoint ||
-        record.endpoint().ordinal != 0)
-      return invalid(
-          "service-leg attachment does not name a System service endpoint");
-    const auto endpoint =
-        std::get<SystemServiceEndpointRef>(record.endpoint().owner.payload);
-    const CanonicalServiceCapabilitySet *capabilities =
-        system.serviceEndpointCapabilities(endpoint);
-    if (!capabilities ||
-        capabilities->plane() != CanonicalServiceEndpointPlane::Memory)
-      return invalid(
-          "service-leg attachment endpoint has no memory capability set");
+    auto context = resolveMemoryEndpointContext(system, record.endpoint());
+    if (!context)
+      return context.takeError();
+    const CanonicalServiceCapabilitySet *capabilities = context->capabilities;
     const auto capability =
         llvm::find_if(capabilities->capabilities(), [&](const auto &candidate) {
           return candidate.kind() == record.kind();
@@ -236,7 +314,7 @@ llvm::Error loom::fabric::detail::validateSystemServiceLegCarrierAttachments(
     if (!legDirection)
       return legDirection.takeError();
     const bool endpointIsInitiator =
-        capability->role() == CanonicalServiceEndpointRole::Initiate;
+        context->effectiveRole == CanonicalServiceEndpointRole::Initiate;
     const bool legSourceIsInitiator =
         *legDirection ==
         dataflow::semantics::ServiceLegDirection::InitiatorToServer;

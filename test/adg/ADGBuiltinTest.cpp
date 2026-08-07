@@ -684,30 +684,94 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
   auto systemView = take(
       test, loom::fabric::requireSystemRoot(system.roots().front().view()));
   const auto attachments = systemView.serviceLegCarrierAttachments();
-  require(test, attachments.size() == 4,
-          "builtin System does not publish exactly four memory service legs");
-  const auto findAttachment = [&](dataflow::semantics::ServiceKind kind,
-                                  dataflow::StructuralOrdinal leg)
+  const auto &descriptor = loom::adg::getBuiltinTargetDescriptor(
+      loom::adg::BuiltinTargetPreset::Small);
+  const std::size_t expectedAttachmentCount =
+      4 * (descriptor.scale.accCoreCount + 1);
+  require(test, attachments.size() == expectedAttachmentCount,
+          "builtin System does not publish every pair-member service leg");
+  const auto findAttachment =
+      [&](const loom::fabric::FabricMemoryEndpointRef &endpoint,
+          dataflow::semantics::ServiceKind kind,
+          dataflow::StructuralOrdinal leg)
       -> const loom::fabric::ServiceLegCarrierAttachmentRecord * {
     const auto found = llvm::find_if(attachments, [&](const auto &attachment) {
-      return attachment.kind() == kind && attachment.legOrdinal() == leg;
+      return attachment.endpoint() == endpoint && attachment.kind() == kind &&
+             attachment.legOrdinal() == leg;
     });
     return found == attachments.end() ? nullptr : &*found;
   };
-  const auto *readRequest =
-      findAttachment(dataflow::semantics::ServiceKind::MemoryRead, 0);
-  const auto *readResponse =
-      findAttachment(dataflow::semantics::ServiceKind::MemoryRead, 1);
-  const auto *writeRequest =
-      findAttachment(dataflow::semantics::ServiceKind::MemoryWrite, 0);
-  const auto *writeResponse =
-      findAttachment(dataflow::semantics::ServiceKind::MemoryWrite, 1);
-  require(test, readRequest && readResponse && writeRequest && writeResponse,
-          "builtin System lost a canonical read or write service leg");
-  require(test,
-          llvm::equal(readRequest->carriers(), writeRequest->carriers()) &&
-              llvm::equal(readResponse->carriers(), writeResponse->carriers()),
-          "builtin System did not reuse carrier domains across service kinds");
+  const auto checkEndpointRows =
+      [&](const loom::fabric::FabricMemoryEndpointRef &endpoint,
+          loom::fabric::FabricTransportEndpointOwnerKind carrierOwner,
+          loom::fabric::FabricPortDirection requestDirection,
+          loom::fabric::FabricPortDirection responseDirection) {
+        const auto *readRequest = findAttachment(
+            endpoint, dataflow::semantics::ServiceKind::MemoryRead, 0);
+        const auto *readResponse = findAttachment(
+            endpoint, dataflow::semantics::ServiceKind::MemoryRead, 1);
+        const auto *writeRequest = findAttachment(
+            endpoint, dataflow::semantics::ServiceKind::MemoryWrite, 0);
+        const auto *writeResponse = findAttachment(
+            endpoint, dataflow::semantics::ServiceKind::MemoryWrite, 1);
+        require(test,
+                readRequest && readResponse && writeRequest && writeResponse,
+                "builtin System lost a pair-member service leg");
+        require(
+            test,
+            llvm::equal(readRequest->carriers(), writeRequest->carriers()) &&
+                llvm::equal(readResponse->carriers(),
+                            writeResponse->carriers()),
+            "builtin System did not reuse one endpoint carrier domain");
+        const std::size_t expectedCarrierCount =
+            descriptor.scale.gatewayCount *
+            (carrierOwner == loom::fabric::FabricTransportEndpointOwnerKind::
+                                 SystemTransportResource
+                 ? descriptor.scale.accCoreCount
+                 : 1);
+        require(test,
+                readRequest->carriers().size() == expectedCarrierCount &&
+                    readResponse->carriers().size() == expectedCarrierCount,
+                "builtin endpoint carrier domain lost a gateway");
+        for (const auto &carrier : readRequest->carriers())
+          require(test,
+                  carrier.owner.kind() == carrierOwner &&
+                      systemView.artifact().transportEndpointDirection(
+                          carrier) == requestDirection,
+                  "builtin request carrier has the wrong owner or direction");
+        for (const auto &carrier : readResponse->carriers())
+          require(test,
+                  carrier.owner.kind() == carrierOwner &&
+                      systemView.artifact().transportEndpointDirection(
+                          carrier) == responseDirection,
+                  "builtin response carrier has the wrong owner or direction");
+      };
+
+  std::size_t memoryAttachmentCount = 0;
+  for (const auto &spatialAttachment : systemView.spatialAttachments()) {
+    const auto *occurrenceEndpoint = spatialAttachment.spatialEndpoint.memory();
+    if (!occurrenceEndpoint)
+      continue;
+    require(test, spatialAttachment.serviceEndpoint.has_value(),
+            "builtin memory attachment lost its System endpoint");
+    const loom::fabric::FabricMemoryEndpointRef serviceEndpoint{
+        loom::fabric::FabricMemoryEndpointOwnerRef::of(
+            *spatialAttachment.serviceEndpoint),
+        0};
+    checkEndpointRows(
+        serviceEndpoint,
+        loom::fabric::FabricTransportEndpointOwnerKind::SystemTransportResource,
+        loom::fabric::FabricPortDirection::Input,
+        loom::fabric::FabricPortDirection::Output);
+    checkEndpointRows(
+        *occurrenceEndpoint,
+        loom::fabric::FabricTransportEndpointOwnerKind::SpatialCoreOccurrence,
+        loom::fabric::FabricPortDirection::Output,
+        loom::fabric::FabricPortDirection::Input);
+    ++memoryAttachmentCount;
+  }
+  require(test, memoryAttachmentCount == descriptor.scale.accCoreCount,
+          "builtin System lost an AccCore memory attachment");
   require(
       test,
       llvm::none_of(attachments,

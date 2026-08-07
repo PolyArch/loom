@@ -1,5 +1,7 @@
 #include "ADGBuilderTestSupport.h"
 
+#include "ADG/Builtin.h"
+
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -13,6 +15,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -370,6 +373,85 @@ void persistedIncompleteAttachmentRelationIsRejected() {
       "does not attach every admitted memory service leg exactly once");
 }
 
+FinalizedFabricDesign buildCanonicalBuiltinFixture(llvm::StringRef test,
+                                                   ArtifactStore &store) {
+  return take(test, buildBuiltinTarget(store, BuiltinTargetPreset::Small));
+}
+
+void persistedIncompletePairMemberRelationIsRejected() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  FinalizedFabricDesign fixture = buildCanonicalBuiltinFixture(test, store);
+  expectStoredSystemMutationRejected(
+      test, fixture.roots().front(), store,
+      [&](::fabric::SystemOp system) {
+        for (auto row : attachments(system)) {
+          auto record =
+              take(test, fabric::decodeServiceLegCarrierAttachmentRecord(
+                             unsignedBytes(row.getRecordAttr())));
+          if (record.endpoint().owner.kind() ==
+              fabric::FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence) {
+            row.erase();
+            return;
+          }
+        }
+        fail(test, "builtin fixture has no occurrence-side carrier row");
+      },
+      "does not attach every admitted memory service leg exactly once");
+}
+
+void persistedOccurrenceCarrierDirectionIsChecked() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  FinalizedFabricDesign fixture = buildCanonicalBuiltinFixture(test, store);
+  expectStoredSystemMutationRejected(
+      test, fixture.roots().front(), store,
+      [&](::fabric::SystemOp system) {
+        const auto rows = attachments(system);
+        std::optional<fabric::FabricMemoryEndpointRef> endpoint;
+        for (auto row : rows) {
+          auto record =
+              take(test, fabric::decodeServiceLegCarrierAttachmentRecord(
+                             unsignedBytes(row.getRecordAttr())));
+          if (record.endpoint().owner.kind() ==
+              fabric::FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence) {
+            endpoint = record.endpoint();
+            break;
+          }
+        }
+        require(test, endpoint.has_value(),
+                "builtin fixture has no occurrence-side endpoint");
+
+        ::fabric::SystemServiceLegCarrierAttachmentOp requestRow;
+        std::vector<fabric::FabricTransportEndpointRef> responseCarriers;
+        for (auto row : rows) {
+          auto record =
+              take(test, fabric::decodeServiceLegCarrierAttachmentRecord(
+                             unsignedBytes(row.getRecordAttr())));
+          if (record.endpoint() != *endpoint ||
+              record.kind() != dataflow::semantics::ServiceKind::MemoryRead)
+            continue;
+          if (record.legOrdinal() == 0)
+            requestRow = row;
+          if (record.legOrdinal() == 1)
+            responseCarriers.assign(record.carriers().begin(),
+                                    record.carriers().end());
+        }
+        require(test, requestRow && !responseCarriers.empty(),
+                "builtin fixture has no complete occurrence read pair");
+        auto changed = take(
+            test, fabric::ServiceLegCarrierAttachmentRecord::create(
+                      *endpoint, dataflow::semantics::ServiceKind::MemoryRead,
+                      0, std::move(responseCarriers)));
+        auto bytes = take(
+            test, fabric::encodeServiceLegCarrierAttachmentRecord(changed));
+        requestRow.setRecordAttr(denseBytes(system.getContext(), bytes));
+      },
+      "service-leg carrier has the wrong direction");
+}
+
 void persistedUnknownAttachmentEndpointIsRejected() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -412,6 +494,8 @@ void runServiceLegCarrierTests() {
   persistedAttachmentOrderIsStrict();
   persistedDuplicateAttachmentKeyIsRejected();
   persistedIncompleteAttachmentRelationIsRejected();
+  persistedIncompletePairMemberRelationIsRejected();
+  persistedOccurrenceCarrierDirectionIsChecked();
   persistedUnknownAttachmentEndpointIsRejected();
 }
 

@@ -696,6 +696,10 @@ expandBuiltinSystemImpl(DesignBuilder &design,
   }
   std::vector<SystemTransportEndpoint> memoryRequestCarriers;
   std::vector<SystemTransportEndpoint> memoryResponseCarriers;
+  std::vector<std::vector<SystemTransportEndpoint>> occurrenceRequestCarriers(
+      cores.size());
+  std::vector<std::vector<SystemTransportEndpoint>> occurrenceResponseCarriers(
+      cores.size());
   for (std::uint32_t source = 0; source != cores.size(); ++source) {
     for (std::uint32_t gateway = 0; gateway != descriptor.scale.gatewayCount;
          ++gateway) {
@@ -711,6 +715,7 @@ expandBuiltinSystemImpl(DesignBuilder &design,
       auto sourceEndpoint = cores[source].spatialTransportOutput(gateway);
       if (!sourceEndpoint)
         return sourceEndpoint.takeError();
+      occurrenceRequestCarriers[source].push_back(*sourceEndpoint);
       auto transportInput = transport->input(0);
       if (!transportInput)
         return transportInput.takeError();
@@ -725,6 +730,7 @@ expandBuiltinSystemImpl(DesignBuilder &design,
           cores[destination].spatialTransportInput(gateway);
       if (!destinationEndpoint)
         return destinationEndpoint.takeError();
+      occurrenceResponseCarriers[destination].push_back(*destinationEndpoint);
       if (llvm::Error error =
               system->connect(*transportOutput, *destinationEndpoint))
         return std::move(error);
@@ -765,12 +771,36 @@ expandBuiltinSystemImpl(DesignBuilder &design,
       system->addServiceEndpoint(*memoryService, systemMemory->capabilities);
   if (!memoryEndpoint)
     return memoryEndpoint.takeError();
-  for (const AccCore &core : cores) {
+  for (auto indexedCore : llvm::enumerate(cores)) {
+    const AccCore &core = indexedCore.value();
     auto spatialMemory = core.spatialMemoryManager(0);
     if (!spatialMemory)
       return spatialMemory.takeError();
     if (llvm::Error error =
             system->attachSpatialMemory(*spatialMemory, *memoryEndpoint))
+      return std::move(error);
+    const auto attachOccurrenceLeg =
+        [&](dataflow::semantics::ServiceKind kind,
+            dataflow::StructuralOrdinal leg,
+            llvm::ArrayRef<SystemTransportEndpoint> carriers) -> llvm::Error {
+      return system->attachServiceLegCarriers(*spatialMemory, kind, leg,
+                                              carriers);
+    };
+    if (llvm::Error error =
+            attachOccurrenceLeg(dataflow::semantics::ServiceKind::MemoryRead, 0,
+                                occurrenceRequestCarriers[indexedCore.index()]))
+      return std::move(error);
+    if (llvm::Error error = attachOccurrenceLeg(
+            dataflow::semantics::ServiceKind::MemoryRead, 1,
+            occurrenceResponseCarriers[indexedCore.index()]))
+      return std::move(error);
+    if (llvm::Error error = attachOccurrenceLeg(
+            dataflow::semantics::ServiceKind::MemoryWrite, 0,
+            occurrenceRequestCarriers[indexedCore.index()]))
+      return std::move(error);
+    if (llvm::Error error = attachOccurrenceLeg(
+            dataflow::semantics::ServiceKind::MemoryWrite, 1,
+            occurrenceResponseCarriers[indexedCore.index()]))
       return std::move(error);
   }
   auto memoryEndpointRef = memoryEndpoint->memory();

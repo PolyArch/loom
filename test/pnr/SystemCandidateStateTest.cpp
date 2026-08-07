@@ -350,6 +350,8 @@ loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
       extraCore.spatialCoreDomainMember()};
   std::vector<loom::adg::SystemTransportEndpoint> requestCarriers;
   std::vector<loom::adg::SystemTransportEndpoint> responseCarriers;
+  std::vector<loom::adg::SystemTransportEndpoint> occurrenceRequestCarriers;
+  std::vector<loom::adg::SystemTransportEndpoint> occurrenceResponseCarriers;
   for (std::uint32_t gateway = 0; gateway != 2; ++gateway) {
     auto transport = take(
         system.addTransportResource({{bits128}, {bits128}, transportContract}));
@@ -358,11 +360,13 @@ loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
     auto output = take(transport.output(0));
     requestCarriers.push_back(input);
     responseCarriers.push_back(output);
-    if (llvm::Error error = system.connect(
-            take(extraCore.spatialTransportOutput(gateway)), input))
+    auto occurrenceRequest = take(extraCore.spatialTransportOutput(gateway));
+    auto occurrenceResponse = take(extraCore.spatialTransportInput(gateway));
+    occurrenceRequestCarriers.push_back(occurrenceRequest);
+    occurrenceResponseCarriers.push_back(occurrenceResponse);
+    if (llvm::Error error = system.connect(occurrenceRequest, input))
       fail(llvm::toString(std::move(error)));
-    if (llvm::Error error = system.connect(
-            output, take(extraCore.spatialTransportInput(gateway))))
+    if (llvm::Error error = system.connect(output, occurrenceResponse))
       fail(llvm::toString(std::move(error)));
     domainMembers.push_back(transport.domainMember());
     domainMembers.push_back(pattern.domainMember());
@@ -408,6 +412,13 @@ loom::adg::FinalizedFabricDesign buildHeterogeneousSystem(
                                  : requestCarriers;
       if (llvm::Error error = system.attachServiceLegCarriers(
               memoryEndpointRef, capability.kind(), leg, carriers))
+        fail(llvm::toString(std::move(error)));
+      const auto &occurrenceCarriers =
+          endpointIsInitiator == legSourceIsInitiator
+              ? occurrenceResponseCarriers
+              : occurrenceRequestCarriers;
+      if (llvm::Error error = system.attachServiceLegCarriers(
+              spatialMemory, capability.kind(), leg, occurrenceCarriers))
         fail(llvm::toString(std::move(error)));
     }
   }
