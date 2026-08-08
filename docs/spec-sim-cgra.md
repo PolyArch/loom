@@ -261,13 +261,16 @@ firing and records every exact token publication and memory linearization.
 and retirement lifecycle of each selected physical action.
 
 A physical action names either one Fabric use pattern or the exact selected
-traversal set with an optional Fabric-owned atomic use pattern. Compute,
-memory, temporal-switch, broadcast, buffered-route, and direct point-transfer
-behavior therefore use the same closed algebra. The request-to-grant interval
-is the stall; equal coordinates mean no stall. Queue changes, occupancy,
-resource-state transitions, Tags, configurations, and blocker strings are
-derived from the exact Fabric contract, Mapping, and lifecycle and are not
-duplicated as trace events.
+traversal set with its canonical set of Fabric-owned use patterns. The set is
+empty for a contention-free direct transfer, a singleton for one ordinary
+resource-bearing traversal, and contains every per-traversal pattern in one
+derived atomic broadcast activation. Compute, memory, temporal-switch,
+broadcast, buffered-route, and direct point-transfer behavior therefore use
+the same closed algebra. The request-to-grant interval is the stall; equal
+coordinates mean no stall. Queue changes, occupancy, resource-state
+transitions, Tags, configurations, and blocker strings are derived from the
+exact Fabric contract, Mapping, and lifecycle and are not duplicated as trace
+events.
 
 Implementation lane or beat actions remain deterministic child physical
 actions of one canonical actor transition and do not appear as additional

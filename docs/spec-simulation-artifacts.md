@@ -1082,7 +1082,7 @@ PhysicalActionTarget =
     Use(FabricUsePatternRef)
   | Transfer(
       traversals: nonempty canonical set<FabricPhysicalTraversalRef>,
-      use_pattern: optional<FabricUsePatternRef>)
+      use_patterns: canonical set<FabricUsePatternRef>)
 ```
 
 Every `TokenPublished.value` contains exactly one semantic token. Its type is
@@ -1118,14 +1118,16 @@ happens-before, release visibility, and acquire visibility are derived
 mechanically and must not be copied into the trace.
 
 `PhysicalActionTarget::Use` names one Fabric-owned atomic use pattern.
-`Transfer` names the exact selected directed traversal set and, when the
-Fabric contract groups those traversals atomically, its use pattern. A direct
-contention-free point transfer needs only its traversal. A temporal-switch
-transfer carries its traversal and use pattern. A broadcast carries one
-atomic use pattern and all selected branch traversals. A compute or memory
-resource action uses `Use`. Legality and grouping derive from the exact Fabric
-and complete SpatialMapping; a producer cannot merge unrelated actions or
-invent another resource grouping.
+`Transfer` names the exact selected directed traversal set and the canonical
+set of Fabric-owned use patterns acquired by that one atomic action. A direct
+contention-free point transfer has an empty pattern set. A traversal with one
+resource pattern has a singleton set. A broadcast carries all branch
+traversals and every per-traversal pattern joined by its derived atomic
+activation. A compute or memory resource action uses `Use`. The pattern set is
+the execution-local projection of the exact Fabric, traversals, and complete
+SpatialMapping; it is not a second grouping authority. A producer cannot omit
+a selected pattern, merge unrelated actions, or invent another resource
+grouping.
 
 There is no independent stall, queue-change, occupancy, state-transition,
 Tag, configuration, or blocker event. The interval from `PhysicalRequested`

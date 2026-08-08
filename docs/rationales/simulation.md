@@ -250,6 +250,14 @@ Semantic token publication records exact values when that capture level is
 requested. Physical request, grant, and retirement are the irreducible facts;
 stall is derived from their interval, not stored as another event.
 
+A transfer target uses one canonical set of selected Fabric use patterns.
+Keeping only one optional pattern cannot represent a switch broadcast whose
+atomic activation joins one pattern per traversal. Emitting one physical
+action per pattern would instead erase that atomicity. The empty, singleton,
+and multi-pattern set is the smallest uniform representation of direct,
+ordinary resource-bearing, and broadcast transfers, and it remains a checked
+projection of Fabric and Mapping rather than another grouping decision.
+
 Trace capture levels are inclusive so Semantic contains Firing and
 Microarchitecture contains both. DFG-sim supports only the levels it can
 truthfully produce; requesting physical microarchitecture from DFG-sim is
