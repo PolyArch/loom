@@ -140,6 +140,15 @@ repeated per-resource System table and an implicit connectivity inference while
 remaining explicit enough to validate multi-clock reuse and to derive RTL ports
 and constraints mechanically.
 
+The omitted authoring form is a canonical shorthand for the common one-Clock,
+one-Reset Module, not a second source of domain semantics. Finalization expands
+it once into the same explicit total relation that a caller could author. Any
+explicit domain row disables the shorthand, so multi-domain Modules and partial
+relations cannot acquire inferred assignments. Requiring every simple authoring
+fixture to restate the total single-domain relation would add repetition without
+expressing another hardware distinction; making the choice configurable would
+create a competing policy owner.
+
 An SSA `SpatialValue` belongs only to the connectivity plane; making it also
 identify a physical owner would conflate two facts and fail for boundary faces
 or resources with several owners, such as a memory occurrence with operation

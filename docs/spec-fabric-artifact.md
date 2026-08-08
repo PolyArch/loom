@@ -213,8 +213,10 @@ do not enter dependency identity.
 Artifact identity is computed from one canonical semantic relation, not from
 authoring order or raw source text. Canonicalization:
 
-1. validates and composes every Module-instance domain-slot binding while
-   expanding every `fabric.instantiate` needed by the root;
+1. materializes an omitted Module relation as the complete single-domain
+   shorthand, or validates and composes every explicitly authored
+   Module-instance domain-slot binding, while expanding every
+   `fabric.instantiate` needed by the root;
 2. resolves typed direct references;
 3. strips nonsemantic names, locations, and visualization metadata;
 4. constructs one private, identifier-free, structurally root-complete
@@ -300,6 +302,7 @@ authoring draft
   -> get and strict-import every already-published direct dependency
   -> recursively validate the exact dependency closure
   -> decode every typed external use and reject missing or unused rows
+  -> materialize an entirely omitted Module relation as one Clock and one Reset
   -> validate and compose every Module-instance domain-slot binding
   -> expand instantiations
   -> reject every residual fabric.instantiate

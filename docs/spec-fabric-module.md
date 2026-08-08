@@ -52,6 +52,15 @@ metadata and does not enter identity. A Module slot owns no period, phase,
 polarity, synchronization, initial state, or release latency. A Module cannot
 declare or reference a concrete `HardwareDomainRef`.
 
+An authoring Module that omits the complete domain relation is canonical
+shorthand for exactly one Clock slot and one Reset slot, with every boundary
+face and physical owner assigned to ordinal zero of the corresponding kind.
+Finalization materializes that relation before canonical bytes are written.
+The shorthand applies only when no slot, assignment, or instance binding was
+authored. Once any row is authored, the complete explicit relation is required
+and missing rows fail closed. Canonical and imported Modules therefore never
+carry an implicit or partial relation.
+
 Every Module boundary face is assigned to exactly one Clock slot and exactly
 one Reset slot. Every `FabricModulePhysicalOwnerRef` is also assigned to exactly
 one Clock slot and exactly one Reset slot. These total assignments express
