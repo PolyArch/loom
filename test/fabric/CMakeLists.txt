@@ -212,6 +212,16 @@ target_link_libraries(loom-fabric-implementation-family-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-fabric-float-behavior-profile-test
+  FloatBehaviorProfileTest.cpp
+)
+
+target_link_libraries(loom-fabric-float-behavior-profile-test PRIVATE
+  LoomFabricImplementationFamily
+  MLIRDataflow
+  LLVMSupport
+)
+
 add_executable(loom-fabric-special-math-implementation-family-test
   SpecialMathImplementationFamilyTest.cpp
 )

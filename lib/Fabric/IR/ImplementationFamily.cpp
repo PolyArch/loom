@@ -1370,10 +1370,15 @@ llvm::Error validateFloatBehavior(const FloatBehaviorProfile &behavior) {
     return reject("invalid subnormal behavior set");
   if (behavior.subnormalBehaviors.empty())
     return reject("non-empty subnormal behavior domain required");
+  if (behavior.subnormalBehaviors.size() != 1 ||
+      !behavior.subnormalBehaviors.contains(FloatSubnormalBehavior::Preserve))
+    return reject("subnormal behavior domain must contain only Preserve");
   if (!behavior.signedZeroBehaviors.valid())
     return reject("invalid signed-zero behavior set");
   if (behavior.signedZeroBehaviors.empty())
     return reject("non-empty signed-zero behavior domain required");
+  if (behavior.signedZeroBehaviors.size() != 1)
+    return reject("signed-zero behavior domain must select one behavior");
 
   using FastMathBits = std::underlying_type_t<::mlir::arith::FastMathFlags>;
   FastMathBits required = static_cast<FastMathBits>(behavior.requiredFastMath);
