@@ -471,6 +471,19 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-control-stream-structure-test
+    ControlStreamStructureTest.cpp
+  )
+
+  target_link_libraries(loom-control-stream-structure-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRIR
+    LLVMSupport
+  )
+
   add_executable(loom-portable-scalar-bit-reinterpret-test
     PortableScalarBitReinterpretTest.cpp
   )

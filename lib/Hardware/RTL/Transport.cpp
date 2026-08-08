@@ -7,6 +7,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 
@@ -35,6 +36,32 @@ llvm::Error validateSignal(llvm::StringRef name, std::uint32_t width,
   if (!integer || !integer.isSignless() || integer.getWidth() != width)
     return transportError(name + " has the wrong signless integer width");
   return llvm::Error::success();
+}
+
+llvm::Error validateBit(llvm::StringRef name, mlir::Value signal) {
+  return validateSignal(name, 1, std::optional<mlir::Value>{signal});
+}
+
+mlir::Value bitConstant(mlir::OpBuilder &builder, mlir::Location location,
+                        bool value) {
+  return circt::hw::ConstantOp::create(builder, location,
+                                       llvm::APInt(1, value));
+}
+
+mlir::Value andAll(mlir::OpBuilder &builder, mlir::Location location,
+                   llvm::ArrayRef<mlir::Value> values) {
+  mlir::Value result = bitConstant(builder, location, true);
+  for (mlir::Value value : values)
+    result = circt::comb::AndOp::create(builder, location, result, value);
+  return result;
+}
+
+mlir::Value orAll(mlir::OpBuilder &builder, mlir::Location location,
+                  llvm::ArrayRef<mlir::Value> values) {
+  mlir::Value result = bitConstant(builder, location, false);
+  for (mlir::Value value : values)
+    result = circt::comb::OrOp::create(builder, location, result, value);
+  return result;
 }
 
 llvm::Error validateCirctCapacity(llvm::StringRef endpoint,
@@ -92,6 +119,73 @@ boundaryPortName(const loom::fabric::FabricModuleBoundaryEndpointRef &endpoint,
 }
 
 } // namespace
+
+llvm::Expected<llvm::SmallVector<mlir::Value, 4>>
+deriveAtomicInputReadiness(mlir::OpBuilder &builder, mlir::Location location,
+                           llvm::ArrayRef<mlir::Value> inputValids,
+                           mlir::Value capacityAvailable) {
+  if (inputValids.empty())
+    return transportError("atomic input tuple is empty");
+  if (llvm::Error error = validateBit("capacity signal", capacityAvailable))
+    return std::move(error);
+  for (mlir::Value valid : inputValids)
+    if (llvm::Error error = validateBit("input valid signal", valid))
+      return std::move(error);
+
+  llvm::SmallVector<mlir::Value, 4> result;
+  result.reserve(inputValids.size());
+  for (std::size_t ordinal = 0; ordinal < inputValids.size(); ++ordinal) {
+    llvm::SmallVector<mlir::Value, 4> terms{capacityAvailable};
+    for (std::size_t other = 0; other < inputValids.size(); ++other)
+      if (other != ordinal)
+        terms.push_back(inputValids[other]);
+    result.push_back(andAll(builder, location, terms));
+  }
+  return result;
+}
+
+llvm::Expected<AtomicResultTupleSignals>
+deriveAtomicResultTupleSignals(mlir::OpBuilder &builder,
+                               mlir::Location location,
+                               llvm::ArrayRef<mlir::Value> heldValids,
+                               llvm::ArrayRef<mlir::Value> downstreamReady) {
+  if (heldValids.empty())
+    return transportError("atomic result tuple is empty");
+  if (heldValids.size() != downstreamReady.size())
+    return transportError("atomic result tuple arity does not match ready");
+  for (mlir::Value valid : heldValids)
+    if (llvm::Error error = validateBit("held result valid signal", valid))
+      return std::move(error);
+  for (mlir::Value ready : downstreamReady)
+    if (llvm::Error error = validateBit("result ready signal", ready))
+      return std::move(error);
+
+  llvm::SmallVector<mlir::Value, 4> completedTerms;
+  completedTerms.reserve(heldValids.size());
+  for (auto [valid, ready] : llvm::zip_equal(heldValids, downstreamReady))
+    completedTerms.push_back(circt::comb::OrOp::create(
+        builder, location,
+        circt::comb::createOrFoldNot(builder, location, valid), ready));
+  mlir::Value allActiveReady = andAll(builder, location, completedTerms);
+  mlir::Value occupied = orAll(builder, location, heldValids);
+  mlir::Value released =
+      circt::comb::AndOp::create(builder, location, occupied, allActiveReady);
+  mlir::Value available = circt::comb::OrOp::create(
+      builder, location,
+      circt::comb::createOrFoldNot(builder, location, occupied), released);
+
+  llvm::SmallVector<mlir::Value, 4> published;
+  published.reserve(heldValids.size());
+  for (std::size_t ordinal = 0; ordinal < heldValids.size(); ++ordinal) {
+    llvm::SmallVector<mlir::Value, 4> terms{heldValids[ordinal]};
+    for (std::size_t other = 0; other < heldValids.size(); ++other)
+      if (other != ordinal)
+        terms.push_back(completedTerms[other]);
+    published.push_back(andAll(builder, location, terms));
+  }
+  return AtomicResultTupleSignals{std::move(published), occupied, released,
+                                  available};
+}
 
 llvm::Expected<std::vector<ModuleBoundaryTransportPortProjection>>
 deriveModuleBoundaryTransportPorts(

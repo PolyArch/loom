@@ -137,6 +137,7 @@ llvm::Error structuralUnsupported(const llvm::Twine &message) {
 struct BoundaryChannelPlan final {
   const ModuleBoundaryTransportPortProjection *projection = nullptr;
   fabric::FabricTransportEndpointRef endpoint;
+  ::fabric::DataPathType dataPath;
 };
 
 struct FieldDecoderPlan final {
@@ -172,13 +173,23 @@ struct ClockResetPlan final {
   bool activeLowReset = false;
 };
 
-struct InternalScalarAddPlan final {
+struct OperationConfigurationPlan final {
+  fabric::FabricOrdinal ordinal = 0;
+  FieldDecoderPlan decoder;
+};
+
+struct InternalOperationPlan final {
   ResolvedFabricPhysicalOperation operation;
+  FabricOperationLeafInterface interface;
+  std::optional<FabricOperationLeafStateLayout> stateLayout;
+  std::vector<const fabric::ResolvedFabricOpPhysicalPortView *> physicalInputs;
+  std::vector<const fabric::ResolvedFabricOpPhysicalPortView *> physicalOutputs;
   std::vector<BoundaryChannelPlan> inputs;
-  BoundaryChannelPlan output;
+  std::vector<BoundaryChannelPlan> outputs;
   ActivationPlan activation;
   std::vector<InputSelectorPlan> inputSelectors;
-  OutputSelectorPlan outputSelector;
+  std::vector<OutputSelectorPlan> outputSelectors;
+  std::vector<OperationConfigurationPlan> operationConfiguration;
   std::vector<const ProgrammingUnit *> programmingUnits;
   ClockResetPlan clockReset;
 };
@@ -195,36 +206,27 @@ qualifyConfigurationField(fabric::SpatialCoreOccurrenceRef spatialCore,
 }
 
 llvm::Expected<FieldDecoderPlan>
-prepareFieldDecoder(fabric::SpatialCoreOccurrenceRef spatialCore,
-                    const fabric::FabricSemanticConfigFieldRef &field,
+prepareFieldDecoder(const ConfigurationFieldEncoding &encoding,
                     const ConfigurationABI &configurationAbi) {
-  auto physical = qualifyConfigurationField(spatialCore, field);
-  if (!physical)
-    return physical.takeError();
-  const ConfigurationFieldEncoding *encoding =
-      configurationAbi.findField(*physical);
-  if (!encoding)
-    return skeletonError("PE configuration field is absent from the ABI");
-
   const ProgrammingUnit *owner = nullptr;
   for (const ProgrammingUnit &unit : configurationAbi.programmingUnits())
     for (const ConfigurationFieldEncoding &candidate : unit.fields)
-      if (candidate.field == *physical) {
+      if (&candidate == &encoding) {
         if (owner)
           return skeletonError(
-              "PE configuration field has duplicate programming owners");
+              "configuration field has duplicate programming owners");
         owner = &unit;
       }
   if (!owner)
-    return skeletonError("PE configuration field has no programming owner");
+    return skeletonError("configuration field has no programming owner");
 
-  const std::uint64_t width = encoding->encodedBitCount();
+  const std::uint64_t width = encoding.encodedBitCount();
   if (width == 0 || width > mlir::IntegerType::kMaxWidth)
     return structuralUnsupported(
         "PE configuration field width exceeds the CIRCT support envelope");
   std::vector<std::uint64_t> destinationBits(static_cast<std::size_t>(width),
                                              UINT64_MAX);
-  for (const DestinationSlice &slice : encoding->destinationSlices) {
+  for (const DestinationSlice &slice : encoding.destinationSlices) {
     if (slice.sourceBitOffset > width || slice.bitCount > width ||
         slice.sourceBitOffset + slice.bitCount > width ||
         slice.destinationBitOffset > owner->payloadBitCount ||
@@ -244,6 +246,20 @@ prepareFieldDecoder(fabric::SpatialCoreOccurrenceRef spatialCore,
     return skeletonError(
         "configuration destination slices do not cover the field");
   return FieldDecoderPlan{owner, width, std::move(destinationBits)};
+}
+
+llvm::Expected<FieldDecoderPlan>
+prepareFieldDecoder(fabric::SpatialCoreOccurrenceRef spatialCore,
+                    const fabric::FabricSemanticConfigFieldRef &field,
+                    const ConfigurationABI &configurationAbi) {
+  auto physical = qualifyConfigurationField(spatialCore, field);
+  if (!physical)
+    return physical.takeError();
+  const ConfigurationFieldEncoding *encoding =
+      configurationAbi.findField(*physical);
+  if (!encoding)
+    return skeletonError("PE configuration field is absent from the ABI");
+  return prepareFieldDecoder(*encoding, configurationAbi);
 }
 
 llvm::Expected<llvm::APInt>
@@ -294,22 +310,24 @@ bool hasTerminalEdge(
   return llvm::is_contained(edges, expected);
 }
 
-llvm::Error validateScalarAddCapabilityTopology(
+llvm::Error validateOperationCapabilityTopology(
     const fabric::FabricArtifactView &module,
     const ResolvedFabricPhysicalOperation &operation,
-    fabric::FabricFuOccurrenceRef fu) {
+    fabric::FabricFuOccurrenceRef fu,
+    llvm::ArrayRef<const fabric::ResolvedFabricOpPhysicalPortView *> inputs,
+    llvm::ArrayRef<const fabric::ResolvedFabricOpPhysicalPortView *> outputs) {
   const auto definition = module.fuTemplateOf(fu);
   if (!definition)
     return skeletonError("internal FU has no exact definition");
   const auto templates = module.fuCapabilityTemplates(*definition);
   if (templates.size() != 1)
     return structuralUnsupported(
-        "scalar add anchor requires one FU capability template");
+        "single-operation lowering requires one FU capability template");
   const fabric::FabricFuCapabilityTemplateRecord &record = templates.front();
   if (record.activeNodes.size() != 1 ||
       record.activeNodes.front() != operation.capability->occurrence)
     return structuralUnsupported(
-        "scalar add capability template has a different active node set");
+        "operation capability template has a different active node set");
   auto edges = fabric::projectFabricFuCapabilityTemplateTerminalEdges(record);
   if (!edges)
     return edges.takeError();
@@ -324,19 +342,24 @@ llvm::Error validateScalarAddCapabilityTopology(
     return fabric::FabricFuCapabilityTemplateEndpointRef::nodePort(
         {operation.capability->occurrence, direction, ordinal});
   };
-  const std::vector<fabric::FabricFuCapabilityTemplateEdge> expected{
-      {boundary(*definition, fabric::FabricPortDirection::Input, 0),
-       node(fabric::FabricPortDirection::Input, 0)},
-      {boundary(*definition, fabric::FabricPortDirection::Input, 1),
-       node(fabric::FabricPortDirection::Input, 1)},
-      {node(fabric::FabricPortDirection::Output, 0),
-       boundary(*definition, fabric::FabricPortDirection::Output, 0)}};
+  std::vector<fabric::FabricFuCapabilityTemplateEdge> expected;
+  expected.reserve(inputs.size() + outputs.size());
+  for (const auto *input : inputs)
+    expected.push_back(
+        {boundary(*definition, fabric::FabricPortDirection::Input,
+                  input->reference.ordinal),
+         node(fabric::FabricPortDirection::Input, input->reference.ordinal)});
+  for (const auto *output : outputs)
+    expected.push_back(
+        {node(fabric::FabricPortDirection::Output, output->reference.ordinal),
+         boundary(*definition, fabric::FabricPortDirection::Output,
+                  output->reference.ordinal)});
   if (edges->size() != expected.size() ||
       !llvm::all_of(expected, [&](const auto &edge) {
         return hasTerminalEdge(*edges, edge);
       }))
     return structuralUnsupported(
-        "scalar add capability template has a different terminal relation");
+        "operation capability template has a different terminal relation");
   auto local = fabric::deriveFabricFuOccurrenceNode(
       module, operation.capability->occurrence, fu);
   if (!local)
@@ -373,7 +396,7 @@ prepareClockReset(const fabric::FabricSystemRootView &system,
   }
   if (!clock || !reset || !clockReference)
     return structuralUnsupported(
-        "registered scalar add requires exact Clock and Reset domains");
+        "operation lowering requires exact Clock and Reset domains");
   if (!std::get_if<fabric::ClockDomainContractRecord>(&clock->contract()))
     return skeletonError("Clock domain carries a non-Clock contract");
   const auto *resetContract =
@@ -382,7 +405,7 @@ prepareClockReset(const fabric::FabricSystemRootView &system,
     return skeletonError("Reset domain carries a non-Reset contract");
   if (resetContract->initialState() != fabric::ResetInitialState::Asserted)
     return structuralUnsupported(
-        "registered scalar add requires an initially asserted Reset");
+        "operation lowering requires an initially asserted Reset");
   if (resetContract->releaseLatencyCycles() != 0)
     return structuralUnsupported(
         "reset release latency requires structural synchronization support");
@@ -415,7 +438,23 @@ const ModuleBoundaryTransportPortProjection *findProjection(
   return result;
 }
 
-llvm::Expected<InternalScalarAddPlan> prepareInternalScalarAdd(
+const ::fabric::ResourceContract &
+supportedOperationResourceContract(::fabric::ImplementationFamilyId family) {
+  switch (family) {
+  case ::fabric::ImplementationFamilyId::LoopStream:
+    return ::fabric::loopStreamOperationResourceContract();
+  case ::fabric::ImplementationFamilyId::LoopCarry:
+    return ::fabric::loopCarryOperationResourceContract();
+  case ::fabric::ImplementationFamilyId::LoopInvariant:
+    return ::fabric::loopInvariantOperationResourceContract();
+  case ::fabric::ImplementationFamilyId::LoopGate:
+    return ::fabric::loopGateOperationResourceContract();
+  default:
+    return ::fabric::oneCycleElasticOperationResourceContract();
+  }
+}
+
+llvm::Expected<InternalOperationPlan> prepareInternalOperation(
     fabric::SpatialCoreOccurrenceRef spatialCore,
     const ConfigurationABI &configurationAbi,
     const fabric::FabricArtifactView &module,
@@ -430,11 +469,11 @@ llvm::Expected<InternalScalarAddPlan> prepareInternalScalarAdd(
       !module.moduleBoundaryMemoryAttachments().empty() ||
       !module.moduleBoundaryTransportPassthroughs().empty())
     return structuralUnsupported(
-        "internal topology is outside the scalar add support envelope");
+        "internal topology is outside the single-operation support envelope");
   const auto pe = module.peOccurrences().front();
   const auto fu = module.fuOccurrences().front();
   if (module.parentPeOf(fu) != pe)
-    return structuralUnsupported("scalar add FU is not owned by its sole PE");
+    return structuralUnsupported("operation FU is not owned by its sole PE");
 
   auto operations =
       enumerateFabricPhysicalOperations(configurationAbi.fabricSystem());
@@ -452,17 +491,18 @@ llvm::Expected<InternalScalarAddPlan> prepareInternalScalarAdd(
   }
   if (selected.size() != 1)
     return structuralUnsupported(
-        "scalar add anchor requires one physical operation occurrence");
+        "single-operation lowering requires one physical occurrence");
   ResolvedFabricPhysicalOperation operation = std::move(selected.front());
-  if (operation.localOccurrence.fu != fu ||
-      operation.capability->implementationFamily !=
-          ::fabric::ImplementationFamilyId::ScalarIntegerAddSub ||
-      operation.capability->enabledOperationSchemas.size() != 1 ||
-      operation.capability->enabledOperationSchemas.front() !=
-          ::dataflow::OperationSchemaId::ArithAddI ||
-      !operation.capability->configurationFieldSchema.empty())
-    return structuralUnsupported(
-        "physical operation is not the singleton scalar integer add anchor");
+  if (operation.localOccurrence.fu != fu)
+    return skeletonError("physical operation belongs to a different FU");
+
+  auto interface = deriveFabricOperationLeafInterface(*operation.capability);
+  if (!interface)
+    return interface.takeError();
+  auto stateLayout =
+      deriveFabricOperationLeafStateLayout(*operation.capability);
+  if (!stateLayout)
+    return stateLayout.takeError();
   std::vector<const fabric::ResolvedFabricOpPhysicalPortView *> physicalInputs;
   std::vector<const fabric::ResolvedFabricOpPhysicalPortView *> physicalOutputs;
   for (const fabric::ResolvedFabricOpPhysicalPortView &port :
@@ -477,81 +517,97 @@ llvm::Expected<InternalScalarAddPlan> prepareInternalScalarAdd(
   llvm::sort(physicalOutputs, [](const auto *lhs, const auto *rhs) {
     return lhs->reference.ordinal < rhs->reference.ordinal;
   });
-  if (physicalInputs.size() != 2 || physicalOutputs.size() != 1 ||
-      physicalInputs[0]->reference.ordinal != 0 ||
-      physicalInputs[1]->reference.ordinal != 1 ||
-      physicalOutputs[0]->reference.ordinal != 0 ||
-      physicalInputs[0]->payloadWidthBits != 8 ||
-      physicalInputs[1]->payloadWidthBits != 8 ||
-      physicalOutputs[0]->payloadWidthBits != 8)
+  if (physicalInputs.empty() || physicalOutputs.empty())
     return structuralUnsupported(
-        "scalar add anchor requires two 8-bit inputs and one 8-bit output");
+        "single-operation lowering requires nonempty input and output tuples");
+  const auto denseAndRepresentable =
+      [](llvm::ArrayRef<const fabric::ResolvedFabricOpPhysicalPortView *>
+             ports) {
+        return llvm::all_of(llvm::enumerate(ports), [](const auto &entry) {
+          return entry.value()->reference.ordinal == entry.index() &&
+                 entry.value()->payloadWidthBits <=
+                     mlir::IntegerType::kMaxWidth;
+        });
+      };
+  if (!denseAndRepresentable(physicalInputs) ||
+      !denseAndRepresentable(physicalOutputs))
+    return structuralUnsupported(
+        "operation physical ports are not dense CIRCT-width carriers");
   auto actualContract = ::fabric::encodeResourceContractRecord(
       operation.capability->resourceStateAndTimingContract);
   if (!actualContract)
     return actualContract.takeError();
-  auto supportedContract = ::fabric::encodeResourceContractRecord(
-      ::fabric::oneCycleElasticOperationResourceContract());
+  auto supportedContract =
+      ::fabric::encodeResourceContractRecord(supportedOperationResourceContract(
+          operation.capability->implementationFamily));
   if (!supportedContract)
     return supportedContract.takeError();
   if (*actualContract != *supportedContract)
     return structuralUnsupported(
-        "scalar add anchor requires the one-cycle elastic contract");
-  if (llvm::Error error =
-          validateScalarAddCapabilityTopology(module, operation, fu))
+        "operation resource contract does not match its structural protocol");
+  if (llvm::Error error = validateOperationCapabilityTopology(
+          module, operation, fu, physicalInputs, physicalOutputs))
     return std::move(error);
 
   const auto root = module.moduleRootTemplate();
   if (!root ||
       module.moduleBoundaryEndpointCount(
-          *root, fabric::FabricPortDirection::Input) != 2 ||
-      module.moduleBoundaryEndpointCount(
-          *root, fabric::FabricPortDirection::Output) != 1 ||
-      module.moduleBoundaryTransportAttachments().size() != 3 ||
-      projections.size() != 3)
+          *root, fabric::FabricPortDirection::Input) != physicalInputs.size() ||
+      module.moduleBoundaryEndpointCount(*root,
+                                         fabric::FabricPortDirection::Output) !=
+          physicalOutputs.size() ||
+      module.moduleBoundaryTransportAttachments().size() !=
+          physicalInputs.size() + physicalOutputs.size() ||
+      projections.size() != physicalInputs.size() + physicalOutputs.size())
     return structuralUnsupported(
-        "scalar add anchor requires a two-input one-output Module boundary");
-  std::vector<BoundaryChannelPlan> inputs(2);
-  std::optional<BoundaryChannelPlan> output;
+        "operation Module boundary does not match its physical tuple arity");
+  std::vector<BoundaryChannelPlan> inputs(physicalInputs.size());
+  std::vector<BoundaryChannelPlan> outputs(physicalOutputs.size());
   const auto peOwner = fabric::FabricTransportEndpointOwnerRef::of(pe);
   for (const auto &attachment : module.moduleBoundaryTransportAttachments()) {
     if (attachment.endpoint.owner != peOwner)
       return structuralUnsupported(
-          "scalar add boundary attachment does not terminate on its PE");
+          "operation boundary attachment does not terminate on its PE");
     const auto type =
         module.moduleBoundaryEndpointDataPath(attachment.boundary);
     const auto *projection = findProjection(projections, attachment.boundary);
-    if (!type || type->kind != ::fabric::DataPathKind::Bits ||
-        type->payloadWidthBits != 8 || !projection || !projection->data ||
+    if (!type || type->kind != ::fabric::DataPathKind::Bits || !projection ||
+        static_cast<bool>(projection->data) != (type->payloadWidthBits != 0) ||
         projection->tag)
       return structuralUnsupported(
-          "scalar add boundary channel is not an untagged 8-bit token");
+          "operation boundary channel is not one canonical untagged token");
     if (attachment.boundary.direction == fabric::FabricPortDirection::Input) {
       if (attachment.boundary.ordinal >= inputs.size() ||
           inputs[attachment.boundary.ordinal].projection)
-        return skeletonError("scalar add input boundary is not one-to-one");
-      inputs[attachment.boundary.ordinal] = {projection, attachment.endpoint};
+        return skeletonError("operation input boundary is not one-to-one");
+      inputs[attachment.boundary.ordinal] = {projection, attachment.endpoint,
+                                             *type};
     } else {
-      if (attachment.boundary.ordinal != 0 || output)
-        return skeletonError("scalar add output boundary is not one-to-one");
-      output = BoundaryChannelPlan{projection, attachment.endpoint};
+      if (attachment.boundary.ordinal >= outputs.size() ||
+          outputs[attachment.boundary.ordinal].projection)
+        return skeletonError("operation output boundary is not one-to-one");
+      outputs[attachment.boundary.ordinal] = {projection, attachment.endpoint,
+                                              *type};
     }
   }
-  if (llvm::any_of(
-          inputs,
-          [](const auto &input) { return input.projection == nullptr; }) ||
-      !output)
-    return skeletonError("scalar add Module boundary is incomplete");
+  const auto incomplete = [](const BoundaryChannelPlan &channel) {
+    return channel.projection == nullptr;
+  };
+  if (llvm::any_of(inputs, incomplete) || llvm::any_of(outputs, incomplete))
+    return skeletonError("operation Module boundary is incomplete");
 
   auto schema = module.spatialPeConfigurationSchema(pe);
   if (!schema)
     return schema.takeError();
-  if (schema->fields().size() != 4)
+  if (schema->fields().size() !=
+      1 + physicalInputs.size() + physicalOutputs.size())
     return structuralUnsupported(
-        "scalar add PE requires activation and three selector fields");
+        "operation PE configuration schema has the wrong field count");
   std::optional<ActivationPlan> activation;
-  std::vector<std::optional<InputSelectorPlan>> inputSelectors(2);
-  std::optional<OutputSelectorPlan> outputSelector;
+  std::vector<std::optional<InputSelectorPlan>> inputSelectors(
+      physicalInputs.size());
+  std::vector<std::optional<OutputSelectorPlan>> outputSelectors(
+      physicalOutputs.size());
   std::map<ProgrammingUnitId, const ProgrammingUnit *> programmingUnits;
   for (const fabric::FabricPeConfigurationFieldView &descriptor :
        schema->fields()) {
@@ -630,7 +686,8 @@ llvm::Expected<InternalScalarAddPlan> prepareInternalScalarAdd(
     if (descriptor.kind !=
             fabric::FabricPeConfigurationFieldKind::OutputSelector ||
         descriptor.port->direction != fabric::FabricPortDirection::Output ||
-        descriptor.port->ordinal != 0 || outputSelector)
+        descriptor.port->ordinal >= outputSelectors.size() ||
+        outputSelectors[descriptor.port->ordinal])
       return skeletonError("PE output selector field is not one-to-one");
     OutputSelectorPlan selector{std::move(decoder), {}, std::nullopt};
     for (const fabric::FabricPeConfigurationValue &value : *domain) {
@@ -639,9 +696,11 @@ llvm::Expected<InternalScalarAddPlan> prepareInternalScalarAdd(
                           [&](const auto &attachment) {
                             return attachment.endpoint == route->endpoint;
                           }) ||
-            route->endpoint != output->endpoint)
+            !llvm::any_of(outputs, [&](const auto &output) {
+              return output.endpoint == route->endpoint;
+            }))
           return structuralUnsupported(
-              "PE output selector domain is outside its sealed attachment");
+              "PE output selector domain is outside sealed attachments");
         auto semantic = schema->encode(descriptor.reference, value);
         if (!semantic)
           return semantic.takeError();
@@ -661,14 +720,39 @@ llvm::Expected<InternalScalarAddPlan> prepareInternalScalarAdd(
         selector.discard = std::move(*code);
       }
     }
-    if (selector.routes.size() != 1 || !selector.discard)
+    if (selector.routes.empty() || !selector.discard)
       return structuralUnsupported(
           "PE output selector codebook is outside the support envelope");
-    outputSelector = std::move(selector);
+    outputSelectors[descriptor.port->ordinal] = std::move(selector);
   }
-  if (!activation || !inputSelectors[0] || !inputSelectors[1] ||
-      !outputSelector)
-    return skeletonError("scalar add PE configuration schema is incomplete");
+  if (!activation ||
+      llvm::any_of(inputSelectors,
+                   [](const auto &selector) { return !selector; }) ||
+      llvm::any_of(outputSelectors,
+                   [](const auto &selector) { return !selector; }))
+    return skeletonError("operation PE configuration schema is incomplete");
+
+  std::vector<fabric::FabricSemanticConfigFieldRef> configurationFields =
+      operation.capability->configurationFieldSchema;
+  llvm::sort(configurationFields, [](const auto &lhs, const auto &rhs) {
+    return fabric::canonicalFabricBytes(lhs) <
+           fabric::canonicalFabricBytes(rhs);
+  });
+  std::vector<OperationConfigurationPlan> operationConfiguration;
+  operationConfiguration.reserve(configurationFields.size());
+  for (const auto &field : configurationFields) {
+    const ConfigurationFieldEncoding *encoding =
+        configurationAbi.findOperationField(operation.physicalOccurrence,
+                                            field.ordinal);
+    if (!encoding)
+      return skeletonError(
+          "operation configuration field is absent from the ABI");
+    auto decoder = prepareFieldDecoder(*encoding, configurationAbi);
+    if (!decoder)
+      return decoder.takeError();
+    programmingUnits.emplace(decoder->unit->id, decoder->unit);
+    operationConfiguration.push_back({field.ordinal, std::move(*decoder)});
+  }
   auto clockReset =
       prepareClockReset(configurationAbi.fabricSystem(), spatialCore);
   if (!clockReset)
@@ -682,15 +766,28 @@ llvm::Expected<InternalScalarAddPlan> prepareInternalScalarAdd(
           "programming payload width exceeds the CIRCT support envelope");
     units.push_back(unit);
   }
-  return InternalScalarAddPlan{
-      std::move(operation),
-      std::move(inputs),
-      std::move(*output),
-      std::move(*activation),
-      {std::move(*inputSelectors[0]), std::move(*inputSelectors[1])},
-      std::move(*outputSelector),
-      std::move(units),
-      *clockReset};
+  std::vector<InputSelectorPlan> completeInputSelectors;
+  completeInputSelectors.reserve(inputSelectors.size());
+  for (auto &selector : inputSelectors)
+    completeInputSelectors.push_back(std::move(*selector));
+  std::vector<OutputSelectorPlan> completeOutputSelectors;
+  completeOutputSelectors.reserve(outputSelectors.size());
+  for (auto &selector : outputSelectors)
+    completeOutputSelectors.push_back(std::move(*selector));
+
+  return InternalOperationPlan{std::move(operation),
+                               *interface,
+                               std::move(*stateLayout),
+                               std::move(physicalInputs),
+                               std::move(physicalOutputs),
+                               std::move(inputs),
+                               std::move(outputs),
+                               std::move(*activation),
+                               std::move(completeInputSelectors),
+                               std::move(completeOutputSelectors),
+                               std::move(operationConfiguration),
+                               std::move(units),
+                               *clockReset};
 }
 
 std::string configurationPortName(ProgrammingUnitId id) {
@@ -752,12 +849,49 @@ channelFor(llvm::ArrayRef<BoundaryChannelPlan> channels,
   return *found;
 }
 
-llvm::Expected<ModuleRootCirctSkeleton> buildInternalScalarAddSkeleton(
+mlir::Value resizeUnsignedSignal(mlir::OpBuilder &builder,
+                                 mlir::Location location,
+                                 std::optional<mlir::Value> source,
+                                 unsigned sourceWidth,
+                                 unsigned destinationWidth) {
+  assert(destinationWidth != 0);
+  if (sourceWidth == 0)
+    return circt::hw::ConstantOp::create(builder, location,
+                                         llvm::APInt(destinationWidth, 0));
+  assert(source && *source);
+  if (sourceWidth == destinationWidth)
+    return *source;
+  if (sourceWidth > destinationWidth)
+    return circt::comb::ExtractOp::create(builder, location, *source, 0,
+                                          destinationWidth);
+  mlir::Value highZeros = circt::hw::ConstantOp::create(
+      builder, location, llvm::APInt(destinationWidth - sourceWidth, 0));
+  return circt::comb::ConcatOp::create(
+      builder, location, llvm::SmallVector<mlir::Value, 2>{highZeros, *source});
+}
+
+mlir::Value createOperationRegister(mlir::OpBuilder &builder,
+                                    mlir::Location location, mlir::Value next,
+                                    mlir::Value clock, mlir::Value reset,
+                                    const llvm::APInt &resetValue,
+                                    llvm::StringRef name,
+                                    bool asynchronousReset) {
+  mlir::Value resetConstant =
+      circt::hw::ConstantOp::create(builder, location, resetValue);
+  if (asynchronousReset)
+    return circt::seq::FirRegOp::create(
+        builder, location, next, clock, builder.getStringAttr(name), reset,
+        resetConstant, circt::hw::InnerSymAttr{}, true);
+  return circt::seq::CompRegOp::create(builder, location, next, clock, reset,
+                                       resetConstant, name);
+}
+
+llvm::Expected<ModuleRootCirctSkeleton> buildInternalOperationSkeleton(
     mlir::MLIRContext &context, fabric::SpatialCoreOccurrenceRef spatialCore,
     const ConfigurationABI &configurationAbi,
     const fabric::FabricArtifactView &module,
     llvm::ArrayRef<ModuleBoundaryTransportPortProjection> projections) {
-  auto plan = prepareInternalScalarAdd(spatialCore, configurationAbi, module,
+  auto plan = prepareInternalOperation(spatialCore, configurationAbi, module,
                                        projections);
   if (!plan)
     return plan.takeError();
@@ -796,6 +930,7 @@ llvm::Expected<ModuleRootCirctSkeleton> buildInternalScalarAddSkeleton(
   for (const ModuleBoundaryTransportPortProjection &projection : projections)
     appendBoundaryPorts(inputPorts, outputPorts, projection);
 
+  std::optional<std::string> materializationError;
   circt::hw::HWModuleOp::create(
       builder, location, builder.getStringAttr("loom_module"),
       circt::hw::ModulePortInfo(inputPorts, outputPorts),
@@ -808,6 +943,9 @@ llvm::Expected<ModuleRootCirctSkeleton> buildInternalScalarAddSkeleton(
             bodyBuilder, location, accessor, plan->activation.decoder);
         mlir::Value active = matchesCode(bodyBuilder, location, activeField,
                                          plan->activation.activeCode);
+        mlir::Value enabled = circt::comb::AndOp::create(
+            bodyBuilder, location, active,
+            circt::comb::createOrFoldNot(bodyBuilder, location, reset));
 
         struct InputRuntime final {
           mlir::Value data;
@@ -817,11 +955,15 @@ llvm::Expected<ModuleRootCirctSkeleton> buildInternalScalarAddSkeleton(
         };
         std::vector<InputRuntime> inputRuntime;
         inputRuntime.reserve(plan->inputSelectors.size());
-        for (const InputSelectorPlan &selector : plan->inputSelectors) {
+        for (auto [ordinal, selector] : llvm::enumerate(plan->inputSelectors)) {
           mlir::Value field = decodeFieldSignal(bodyBuilder, location, accessor,
                                                 selector.decoder);
-          mlir::Value data = circt::hw::ConstantOp::create(
-              bodyBuilder, location, llvm::APInt(8, 0));
+          const unsigned physicalWidth =
+              plan->physicalInputs[ordinal]->payloadWidthBits;
+          mlir::Value data;
+          if (physicalWidth != 0)
+            data = circt::hw::ConstantOp::create(bodyBuilder, location,
+                                                 llvm::APInt(physicalWidth, 0));
           llvm::SmallVector<mlir::Value> selectedValids;
           std::vector<std::pair<const CodeMatchPlan *, mlir::Value>> routes;
           for (const CodeMatchPlan &route : selector.routes) {
@@ -829,10 +971,17 @@ llvm::Expected<ModuleRootCirctSkeleton> buildInternalScalarAddSkeleton(
                 matchesCode(bodyBuilder, location, field, route.code);
             const BoundaryChannelPlan &channel =
                 channelFor(plan->inputs, route.endpoint);
-            data = circt::comb::MuxOp::create(
-                bodyBuilder, location, selected,
-                accessor.getInput(channel.projection->data->getName()), data,
-                true);
+            if (physicalWidth != 0) {
+              std::optional<mlir::Value> boundaryData;
+              if (channel.projection->data)
+                boundaryData =
+                    accessor.getInput(channel.projection->data->getName());
+              mlir::Value adapted = resizeUnsignedSignal(
+                  bodyBuilder, location, boundaryData,
+                  channel.dataPath.payloadWidthBits, physicalWidth);
+              data = circt::comb::MuxOp::create(bodyBuilder, location, selected,
+                                                adapted, data, true);
+            }
             selectedValids.push_back(circt::comb::AndOp::create(
                 bodyBuilder, location, selected,
                 accessor.getInput(channel.projection->valid.getName())));
@@ -847,72 +996,267 @@ llvm::Expected<ModuleRootCirctSkeleton> buildInternalScalarAddSkeleton(
                std::move(routes), std::move(discards)});
         }
 
-        mlir::Value outputField = decodeFieldSignal(
-            bodyBuilder, location, accessor, plan->outputSelector.decoder);
-        llvm::SmallVector<mlir::Value> routedOutputReady;
-        std::vector<std::pair<const CodeMatchPlan *, mlir::Value>> outputRoutes;
-        for (const CodeMatchPlan &route : plan->outputSelector.routes) {
-          mlir::Value selected =
-              matchesCode(bodyBuilder, location, outputField, route.code);
-          routedOutputReady.push_back(circt::comb::AndOp::create(
-              bodyBuilder, location, selected,
-              accessor.getInput(plan->output.projection->ready.getName())));
-          outputRoutes.emplace_back(&route, selected);
+        struct OutputRuntime final {
+          mlir::Value ready;
+          std::vector<std::pair<const CodeMatchPlan *, mlir::Value>> routes;
+        };
+        std::vector<OutputRuntime> outputRuntime;
+        outputRuntime.reserve(plan->outputSelectors.size());
+        for (const OutputSelectorPlan &selector : plan->outputSelectors) {
+          mlir::Value field = decodeFieldSignal(bodyBuilder, location, accessor,
+                                                selector.decoder);
+          llvm::SmallVector<mlir::Value> readyTerms;
+          std::vector<std::pair<const CodeMatchPlan *, mlir::Value>> routes;
+          for (const CodeMatchPlan &route : selector.routes) {
+            mlir::Value selected =
+                matchesCode(bodyBuilder, location, field, route.code);
+            const BoundaryChannelPlan &channel =
+                channelFor(plan->outputs, route.endpoint);
+            readyTerms.push_back(circt::comb::AndOp::create(
+                bodyBuilder, location, selected,
+                accessor.getInput(channel.projection->ready.getName())));
+            routes.emplace_back(&route, selected);
+          }
+          readyTerms.push_back(
+              matchesCode(bodyBuilder, location, field, *selector.discard));
+          outputRuntime.push_back(
+              {andValues(
+                   bodyBuilder, location,
+                   {enabled, orValues(bodyBuilder, location, readyTerms)}),
+               std::move(routes)});
         }
-        mlir::Value outputDiscard = matchesCode(
-            bodyBuilder, location, outputField, *plan->outputSelector.discard);
-        llvm::SmallVector<mlir::Value> outputReadyTerms(routedOutputReady);
-        outputReadyTerms.push_back(outputDiscard);
-        mlir::Value outputReady = andValues(
-            bodyBuilder, location,
-            {active, orValues(bodyBuilder, location, outputReadyTerms)});
 
         circt::BackedgeBuilder backedges(bodyBuilder, location);
-        circt::Backedge nextData = backedges.get(bodyBuilder.getIntegerType(8));
-        circt::Backedge nextValid = backedges.get(bodyBuilder.getI1Type());
-        mlir::Value zeroData = circt::hw::ConstantOp::create(
-            bodyBuilder, location, llvm::APInt(8, 0));
-        mlir::Value zeroBit = bitConstant(bodyBuilder, location, false);
-        mlir::Value dataRegister;
-        mlir::Value validRegister;
-        if (plan->clockReset.asynchronousReset) {
-          dataRegister = circt::seq::FirRegOp::create(
-              bodyBuilder, location, nextData, accessor.getInput("clock"),
-              bodyBuilder.getStringAttr("result_data_reg"), reset, zeroData,
-              circt::hw::InnerSymAttr{}, true);
-          validRegister = circt::seq::FirRegOp::create(
-              bodyBuilder, location, nextValid, accessor.getInput("clock"),
-              bodyBuilder.getStringAttr("result_valid_reg"), reset, zeroBit,
-              circt::hw::InnerSymAttr{}, true);
-        } else {
-          dataRegister = circt::seq::CompRegOp::create(
-              bodyBuilder, location, nextData, accessor.getInput("clock"),
-              reset, zeroData, "result_data_reg");
-          validRegister = circt::seq::CompRegOp::create(
-              bodyBuilder, location, nextValid, accessor.getInput("clock"),
-              reset, zeroBit, "result_valid_reg");
+        circt::Backedge stateNext;
+        mlir::Value stateRegister;
+        if (plan->stateLayout) {
+          stateNext = backedges.get(
+              bodyBuilder.getIntegerType(plan->stateLayout->encodedBitCount()));
+          stateRegister = createOperationRegister(
+              bodyBuilder, location, stateNext, accessor.getInput("clock"),
+              reset, plan->stateLayout->resetValue(), "operation_state_reg",
+              plan->clockReset.asynchronousReset);
         }
-        mlir::Value canAccept = circt::comb::OrOp::create(
-            bodyBuilder, location,
-            circt::comb::createOrFoldNot(bodyBuilder, location, validRegister),
-            outputReady);
-        mlir::Value accept = andValues(
-            bodyBuilder, location,
-            {active, inputRuntime[0].valid, inputRuntime[1].valid, canAccept});
 
-        llvm::SmallVector<mlir::Value> leafOperands{inputRuntime[0].data,
-                                                    inputRuntime[1].data};
+        std::vector<circt::Backedge> resultDataNext(
+            plan->physicalOutputs.size());
+        std::vector<mlir::Value> resultData(plan->physicalOutputs.size());
+        std::vector<circt::Backedge> resultValidNext;
+        std::vector<mlir::Value> resultValid;
+        circt::Backedge tupleValidNext;
+        mlir::Value tupleValid;
+        const bool hasResultStorage =
+            !plan->interface.hasDirectTokenPublication();
+        if (hasResultStorage) {
+          for (auto [ordinal, output] :
+               llvm::enumerate(plan->physicalOutputs)) {
+            if (output->payloadWidthBits == 0)
+              continue;
+            resultDataNext[ordinal] = backedges.get(
+                bodyBuilder.getIntegerType(output->payloadWidthBits));
+            resultData[ordinal] = createOperationRegister(
+                bodyBuilder, location, resultDataNext[ordinal],
+                accessor.getInput("clock"), reset,
+                llvm::APInt(output->payloadWidthBits, 0),
+                plan->physicalOutputs.size() == 1
+                    ? "result_data_reg"
+                    : "result_data_" + std::to_string(ordinal) + "_reg",
+                plan->clockReset.asynchronousReset);
+          }
+          if (plan->interface.protocol ==
+              FabricOperationLeafProtocol::Combinational) {
+            tupleValidNext = backedges.get(bodyBuilder.getI1Type());
+            tupleValid = createOperationRegister(
+                bodyBuilder, location, tupleValidNext,
+                accessor.getInput("clock"), reset, llvm::APInt(1, 0),
+                "result_valid_reg", plan->clockReset.asynchronousReset);
+            resultValid.assign(plan->physicalOutputs.size(), tupleValid);
+          } else {
+            resultValidNext.resize(plan->physicalOutputs.size());
+            resultValid.resize(plan->physicalOutputs.size());
+            for (std::size_t ordinal = 0;
+                 ordinal < plan->physicalOutputs.size(); ++ordinal) {
+              resultValidNext[ordinal] = backedges.get(bodyBuilder.getI1Type());
+              resultValid[ordinal] = createOperationRegister(
+                  bodyBuilder, location, resultValidNext[ordinal],
+                  accessor.getInput("clock"), reset, llvm::APInt(1, 0),
+                  "result_valid_" + std::to_string(ordinal) + "_reg",
+                  plan->clockReset.asynchronousReset);
+            }
+          }
+        }
+
+        std::optional<AtomicResultTupleSignals> heldTuple;
+        mlir::Value slotAvailable = bitConstant(bodyBuilder, location, true);
+        if (hasResultStorage) {
+          llvm::SmallVector<mlir::Value, 4> downstreamReady;
+          for (const OutputRuntime &output : outputRuntime)
+            downstreamReady.push_back(output.ready);
+          auto tuple = deriveAtomicResultTupleSignals(
+              bodyBuilder, location, resultValid, downstreamReady);
+          if (!tuple) {
+            materializationError = llvm::toString(tuple.takeError());
+            backedges.abandon();
+            return;
+          }
+          heldTuple = std::move(*tuple);
+          slotAvailable = heldTuple->available;
+        }
+
+        mlir::Value leafTransitionEnabled = enabled;
+        if (plan->interface.hasElasticResultStorage())
+          leafTransitionEnabled = circt::comb::AndOp::create(
+              bodyBuilder, location, enabled, slotAvailable);
+
+        std::map<std::string, mlir::Value> leafInputs;
+        for (auto [ordinal, input] : llvm::enumerate(plan->physicalInputs)) {
+          if (input->payloadWidthBits != 0)
+            leafInputs.emplace("data_input_" + std::to_string(ordinal),
+                               inputRuntime[ordinal].data);
+          if (plan->interface.hasTokenHandshake())
+            leafInputs.emplace("valid_input_" + std::to_string(ordinal),
+                               circt::comb::AndOp::create(
+                                   bodyBuilder, location, leafTransitionEnabled,
+                                   inputRuntime[ordinal].valid));
+        }
+        if (plan->interface.hasTokenHandshake())
+          for (std::size_t ordinal = 0; ordinal < plan->physicalOutputs.size();
+               ++ordinal) {
+            mlir::Value ready = outputRuntime[ordinal].ready;
+            if (plan->interface.hasElasticResultStorage())
+              ready = leafTransitionEnabled;
+            leafInputs.emplace("ready_output_" + std::to_string(ordinal),
+                               ready);
+          }
+        if (plan->stateLayout)
+          leafInputs.emplace("state_current", stateRegister);
+        for (const OperationConfigurationPlan &configuration :
+             plan->operationConfiguration)
+          leafInputs.emplace("config_" + std::to_string(configuration.ordinal),
+                             decodeFieldSignal(bodyBuilder, location, accessor,
+                                               configuration.decoder));
+
+        llvm::SmallVector<mlir::Value> leafOperands;
+        for (const circt::hw::PortInfo &port : *leafPorts) {
+          if (port.isOutput())
+            continue;
+          const auto found = leafInputs.find(port.getName().str());
+          if (found == leafInputs.end()) {
+            materializationError =
+                "derived operation leaf input has no structural signal";
+            backedges.abandon();
+            return;
+          }
+          leafOperands.push_back(found->second);
+        }
         circt::hw::InstanceOp instance = circt::hw::InstanceOp::create(
             bodyBuilder, location, leaf.getOperation(), "operation",
             leafOperands);
-        mlir::Value retainValid = circt::comb::AndOp::create(
-            bodyBuilder, location, validRegister,
-            circt::comb::createOrFoldNot(bodyBuilder, location, outputReady));
-        nextValid.setValue(circt::comb::OrOp::create(bodyBuilder, location,
-                                                     accept, retainValid));
-        nextData.setValue(circt::comb::MuxOp::create(
-            bodyBuilder, location, accept, instance.getResult(0), dataRegister,
-            true));
+
+        std::map<std::string, mlir::Value> leafOutputs;
+        unsigned resultOrdinal = 0;
+        for (const circt::hw::PortInfo &port : *leafPorts)
+          if (port.isOutput())
+            leafOutputs.emplace(port.getName().str(),
+                                instance.getResult(resultOrdinal++));
+
+        if (plan->stateLayout) {
+          mlir::Value write =
+              andValues(bodyBuilder, location,
+                        {leafTransitionEnabled, leafOutputs.at("state_write")});
+          stateNext.setValue(circt::comb::MuxOp::create(
+              bodyBuilder, location, write, leafOutputs.at("state_next"),
+              stateRegister, true));
+        }
+
+        llvm::SmallVector<mlir::Value, 4> publishedValid;
+        std::vector<mlir::Value> publishedData(plan->physicalOutputs.size());
+        llvm::SmallVector<mlir::Value, 4> operationInputReady;
+        if (plan->interface.protocol ==
+            FabricOperationLeafProtocol::Combinational) {
+          llvm::SmallVector<mlir::Value, 4> inputValids;
+          for (const InputRuntime &input : inputRuntime)
+            inputValids.push_back(input.valid);
+          mlir::Value capacity = circt::comb::AndOp::create(
+              bodyBuilder, location, enabled, slotAvailable);
+          auto ready = deriveAtomicInputReadiness(bodyBuilder, location,
+                                                  inputValids, capacity);
+          if (!ready) {
+            materializationError = llvm::toString(ready.takeError());
+            backedges.abandon();
+            return;
+          }
+          operationInputReady = std::move(*ready);
+          mlir::Value accept = andValues(
+              bodyBuilder, location,
+              {capacity, andValues(bodyBuilder, location, inputValids)});
+          mlir::Value retain = circt::comb::AndOp::create(
+              bodyBuilder, location, tupleValid,
+              circt::comb::createOrFoldNot(bodyBuilder, location,
+                                           heldTuple->released));
+          tupleValidNext.setValue(
+              circt::comb::OrOp::create(bodyBuilder, location, accept, retain));
+          publishedValid = heldTuple->publishedValids;
+          for (auto [ordinal, output] :
+               llvm::enumerate(plan->physicalOutputs)) {
+            if (output->payloadWidthBits == 0)
+              continue;
+            resultDataNext[ordinal].setValue(circt::comb::MuxOp::create(
+                bodyBuilder, location, accept,
+                leafOutputs.at("data_output_" + std::to_string(ordinal)),
+                resultData[ordinal], true));
+            publishedData[ordinal] = resultData[ordinal];
+          }
+        } else if (plan->interface.hasElasticResultStorage()) {
+          llvm::SmallVector<mlir::Value, 4> producedValid;
+          for (std::size_t ordinal = 0; ordinal < plan->physicalOutputs.size();
+               ++ordinal)
+            producedValid.push_back(
+                leafOutputs.at("valid_output_" + std::to_string(ordinal)));
+          mlir::Value capture =
+              andValues(bodyBuilder, location,
+                        {leafTransitionEnabled,
+                         orValues(bodyBuilder, location, producedValid)});
+          for (auto [ordinal, output] :
+               llvm::enumerate(plan->physicalOutputs)) {
+            mlir::Value retain = circt::comb::AndOp::create(
+                bodyBuilder, location, resultValid[ordinal],
+                circt::comb::createOrFoldNot(bodyBuilder, location,
+                                             heldTuple->released));
+            mlir::Value acquire = circt::comb::AndOp::create(
+                bodyBuilder, location, capture, producedValid[ordinal]);
+            resultValidNext[ordinal].setValue(circt::comb::OrOp::create(
+                bodyBuilder, location, retain, acquire));
+            if (output->payloadWidthBits != 0) {
+              resultDataNext[ordinal].setValue(circt::comb::MuxOp::create(
+                  bodyBuilder, location, capture,
+                  leafOutputs.at("data_output_" + std::to_string(ordinal)),
+                  resultData[ordinal], true));
+              publishedData[ordinal] = resultData[ordinal];
+            }
+          }
+          publishedValid = heldTuple->publishedValids;
+          for (std::size_t ordinal = 0; ordinal < plan->physicalInputs.size();
+               ++ordinal)
+            operationInputReady.push_back(circt::comb::AndOp::create(
+                bodyBuilder, location, leafTransitionEnabled,
+                leafOutputs.at("ready_input_" + std::to_string(ordinal))));
+        } else {
+          for (auto [ordinal, output] :
+               llvm::enumerate(plan->physicalOutputs)) {
+            publishedValid.push_back(circt::comb::AndOp::create(
+                bodyBuilder, location, enabled,
+                leafOutputs.at("valid_output_" + std::to_string(ordinal))));
+            if (output->payloadWidthBits != 0)
+              publishedData[ordinal] =
+                  leafOutputs.at("data_output_" + std::to_string(ordinal));
+          }
+          for (std::size_t ordinal = 0; ordinal < plan->physicalInputs.size();
+               ++ordinal)
+            operationInputReady.push_back(circt::comb::AndOp::create(
+                bodyBuilder, location, enabled,
+                leafOutputs.at("ready_input_" + std::to_string(ordinal))));
+        }
 
         for (std::size_t endpointIndex = 0; endpointIndex < plan->inputs.size();
              ++endpointIndex) {
@@ -920,34 +1264,55 @@ llvm::Expected<ModuleRootCirctSkeleton> buildInternalScalarAddSkeleton(
           llvm::SmallVector<mlir::Value> readyTerms;
           for (std::size_t selectorIndex = 0;
                selectorIndex < inputRuntime.size(); ++selectorIndex) {
-            mlir::Value operandReady = andValues(
-                bodyBuilder, location,
-                {active, canAccept, inputRuntime[1 - selectorIndex].valid});
             for (const auto &[route, selected] :
                  inputRuntime[selectorIndex].routes)
               if (route->endpoint == channel.endpoint)
                 readyTerms.push_back(circt::comb::AndOp::create(
-                    bodyBuilder, location, selected, operandReady));
+                    bodyBuilder, location, selected,
+                    operationInputReady[selectorIndex]));
             for (const auto &[discard, selected] :
                  inputRuntime[selectorIndex].discards)
               if (discard->endpoint == channel.endpoint)
                 readyTerms.push_back(circt::comb::AndOp::create(
-                    bodyBuilder, location, active, selected));
+                    bodyBuilder, location, enabled, selected));
           }
           accessor.setOutput(channel.projection->ready.getName(),
                              orValues(bodyBuilder, location, readyTerms));
         }
-        llvm::SmallVector<mlir::Value> outputValidTerms;
-        for (const auto &[route, selected] : outputRoutes) {
-          (void)route;
-          outputValidTerms.push_back(andValues(
-              bodyBuilder, location, {active, validRegister, selected}));
+        for (const BoundaryChannelPlan &channel : plan->outputs) {
+          llvm::SmallVector<mlir::Value> validTerms;
+          mlir::Value data;
+          if (channel.dataPath.payloadWidthBits != 0)
+            data = circt::hw::ConstantOp::create(
+                bodyBuilder, location,
+                llvm::APInt(channel.dataPath.payloadWidthBits, 0));
+          for (auto [ordinal, output] : llvm::enumerate(outputRuntime)) {
+            for (const auto &[route, selected] : output.routes) {
+              if (route->endpoint != channel.endpoint)
+                continue;
+              validTerms.push_back(
+                  andValues(bodyBuilder, location,
+                            {enabled, selected, publishedValid[ordinal]}));
+              if (channel.dataPath.payloadWidthBits != 0) {
+                mlir::Value adapted = resizeUnsignedSignal(
+                    bodyBuilder, location,
+                    std::optional<mlir::Value>{publishedData[ordinal]},
+                    plan->physicalOutputs[ordinal]->payloadWidthBits,
+                    channel.dataPath.payloadWidthBits);
+                data = circt::comb::MuxOp::create(
+                    bodyBuilder, location, selected, adapted, data, true);
+              }
+            }
+          }
+          accessor.setOutput(channel.projection->valid.getName(),
+                             orValues(bodyBuilder, location, validTerms));
+          if (channel.projection->data)
+            accessor.setOutput(channel.projection->data->getName(), data);
         }
-        accessor.setOutput(plan->output.projection->valid.getName(),
-                           orValues(bodyBuilder, location, outputValidTerms));
-        accessor.setOutput(plan->output.projection->data->getName(),
-                           dataRegister);
       });
+
+  if (materializationError)
+    return skeletonError(*materializationError);
 
   ModuleRootCirctSkeleton skeleton{
       std::move(result), {{leaf, plan->operation.physicalOccurrence}}};
@@ -983,7 +1348,7 @@ buildModuleRootCirctSkeleton(mlir::MLIRContext &context,
       !fabric.switchOccurrences().empty() ||
       !fabric.fifoOccurrences().empty() ||
       !fabric.boundaryOccurrences().empty())
-    return buildInternalScalarAddSkeleton(
+    return buildInternalOperationSkeleton(
         context, spatialCore, configurationAbi, fabric, *projections);
 
   const std::uint64_t inputCount = fabric.moduleBoundaryEndpointCount(

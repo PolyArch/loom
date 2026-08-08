@@ -18,6 +18,89 @@ class OpBuilder;
 
 namespace loom::hardware::rtl {
 
+/// The structural protocol exposed by one abstract operation leaf. Ordinary
+/// stateless families remain combinational behind the common elastic slot.
+/// One-cycle control/stream families use that same common slot. Managed token
+/// families retain their exact resource timing inside the provider transform,
+/// while transparent loops commit directly without a hidden result register.
+enum class FabricOperationLeafProtocol {
+  Combinational,
+  ElasticToken,
+  ManagedToken,
+  TransparentToken,
+};
+
+/// The transient structural interface derived from one exact sealed Fabric
+/// capability. It has no persistent identity and does not duplicate family
+/// semantics or resource timing.
+struct FabricOperationLeafInterface final {
+  FabricOperationLeafProtocol protocol =
+      FabricOperationLeafProtocol::Combinational;
+
+  bool hasTokenHandshake() const {
+    return protocol != FabricOperationLeafProtocol::Combinational;
+  }
+
+  bool hasElasticResultStorage() const {
+    return protocol == FabricOperationLeafProtocol::ElasticToken;
+  }
+
+  bool hasDirectTokenPublication() const {
+    return protocol == FabricOperationLeafProtocol::ManagedToken ||
+           protocol == FabricOperationLeafProtocol::TransparentToken;
+  }
+};
+
+/// Derives the protocol only from the exact implementation family, registered
+/// operation schema, and physical port inventory carried by the sealed
+/// capability. Invalid or incomplete control/stream shapes reject instead of
+/// falling back to a combinational convention.
+llvm::Expected<FabricOperationLeafInterface> deriveFabricOperationLeafInterface(
+    const fabric::ResolvedFabricOpCapabilityView &capability);
+
+/// Named fields in the structural owner's packed selected-context state. The
+/// operation schema remains the semantic owner of every transition; these
+/// names only make one capability-derived storage layout reusable by the
+/// common shell and its provider.
+enum class FabricOperationLeafStateFieldKind {
+  Mode,
+  RetainedValue,
+  Current,
+  Limit,
+  Step,
+  BufferedValue,
+  BufferedMask,
+};
+
+struct FabricOperationLeafStateFieldLayout final {
+  FabricOperationLeafStateFieldKind kind;
+  unsigned bitOffset = 0;
+  unsigned bitCount = 0;
+};
+
+struct FabricOperationLeafStateLayout final {
+  std::vector<FabricOperationLeafStateFieldLayout> fields;
+  unsigned bitCount = 0;
+
+  const FabricOperationLeafStateFieldLayout *
+  find(FabricOperationLeafStateFieldKind kind) const {
+    for (const FabricOperationLeafStateFieldLayout &field : fields)
+      if (field.kind == kind)
+        return &field;
+    return nullptr;
+  }
+
+  unsigned encodedBitCount() const { return bitCount; }
+  llvm::APInt resetValue() const { return llvm::APInt(bitCount, 0); }
+};
+
+/// Derives the opaque state-bank shape needed by one exact stateful schema.
+/// Stateless families return no layout. The packed representation is a
+/// transient lowering agreement and never becomes Fabric identity.
+llvm::Expected<std::optional<FabricOperationLeafStateLayout>>
+deriveFabricOperationLeafStateLayout(
+    const fabric::ResolvedFabricOpCapabilityView &capability);
+
 /// The transient packed-state encoding shared by the LoopCarry provider and
 /// its structural state-bank owner. Dataflow remains the semantic state owner.
 llvm::APInt encodeLoopCarryOperationLeafState(
@@ -50,10 +133,10 @@ deriveTransparentLoopOperationLeafStateLayout(
 
 /// Derives the transient provider boundary from the exact Fabric capability
 /// and ConfigurationABI. Nonzero physical payloads and encoded configuration
-/// fields form the ordinary combinational boundary. The initial transparent
-/// loop providers additionally expose ready/valid and a selected-context state
-/// transform. Context selection, state storage, clock, and reset remain
-/// structural-owner responsibilities.
+/// fields form the ordinary combinational boundary. Control/stream families
+/// additionally expose ready/valid and, where required, an opaque
+/// selected-context state transform. Context selection, state storage, clock,
+/// reset, and elastic result storage remain structural-owner responsibilities.
 llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
     mlir::OpBuilder &builder,
     const fabric::FabricPhysicalOccurrenceOwnerRef &occurrence,
