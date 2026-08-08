@@ -1,0 +1,18 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-float-fma-test %t
+# RUN: FileCheck %s --check-prefix=CONFIGURED < %t/generated/fixed_vector_float_fma.sv
+# RUN: FileCheck %s --check-prefix=SINGLETON < %t/singleton/generated/fixed_vector_float_fma_singleton.sv
+
+# CONFIGURED: module fixed_vector_float_fma
+# CONFIGURED: input [79:0] data_input_0
+# CONFIGURED: input [2:0] config_0
+# CONFIGURED: output [79:0] data_output_0
+# CONFIGURED: function automatic
+# CONFIGURED: loom_fixed_vector_fma_e11_f52
+# CONFIGURED-NOT: shortreal
+# CONFIGURED-NOT: DPI
+
+# SINGLETON: module fixed_vector_float_fma_singleton
+# SINGLETON: loom_fixed_vector_fma_e8_f23
+# SINGLETON-NOT: config_0
