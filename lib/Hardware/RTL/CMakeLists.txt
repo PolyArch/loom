@@ -14,6 +14,7 @@ add_library(LoomHardwareRTL
   Providers/FixedVectorValueSelect.cpp
   Providers/FloatAddSub.cpp
   Providers/FloatCompareMinMax.cpp
+  Providers/FloatDivideRemainder.cpp
   Providers/FloatMultiply.cpp
   Providers/FloatSign.cpp
   Providers/IntegerCountZeros.cpp

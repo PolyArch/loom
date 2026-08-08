@@ -577,6 +577,21 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-float-divide-remainder-test
+    PortableFloatDivideRemainderTest.cpp
+  )
+
+  target_link_libraries(loom-portable-float-divide-remainder-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-scalar-value-select-test
     PortableScalarValueSelectTest.cpp
   )
