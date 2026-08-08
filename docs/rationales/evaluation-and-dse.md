@@ -171,6 +171,15 @@ second way to say "root-complete"; a polymorphic Mapping-stage adapter would
 instead erase the materially different Tech, Spatial, and System input
 contracts. A dedicated thin descriptor is the smaller abstraction.
 
+The thin adapter also reuses the complete PnR work-unit catalog. System search
+does not become cheaper or semantically different merely because the adapter
+derives its root closure and empty constraints. Reporting only initializer and
+router work would hide fixed seed, Action, closure, and repair budgets, while
+adding a System-only summary would create a competing accounting authority.
+The ordinary PnR owner therefore supplies the same typed work ordinals to both
+Mapping adapters; root-free execution is the all-zero instance of that
+catalog.
+
 The adapter retains a canonical prefix only when valid search work terminates
 incompletely. A malformed later `T`, foreign owner tuple, or PnR invariant
 failure invalidates the whole invocation rather than converting already

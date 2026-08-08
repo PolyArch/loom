@@ -204,7 +204,10 @@ progress, or finalization semantics. `Generated` contributes only independently
 finalized SystemMapping references, `ProvenInfeasible` contributes a completed
 empty set, and `Incomplete` remains typed without publishing a partial
 Mapping. An invalid owner tuple or internal failure aborts the Generate
-invocation and produces no formal output or lineage edge.
+invocation and produces no formal output or lineage edge. Its descriptor
+references the ordinary PnR owner's complete work-unit catalog unchanged;
+adapter-local aggregation, omitted search work, and a second System-only work
+taxonomy are forbidden.
 
 ### System Search-Domain View
 

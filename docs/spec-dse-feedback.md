@@ -1442,7 +1442,7 @@ does not acquire a constraint language, Mapping state, or search algorithm.
 The built-in root-complete System PnR generator composes the final Mapping
 boundary without widening the central plan. Its descriptor has kind 9,
 spelling `mapping.root_complete_system_pnr`, schema
-`loom.mapping.root_complete_system_pnr.generator.v1`, and exact input slots
+`loom.mapping.root_complete_system_pnr.generator.v2`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, and
 `fabric: ExactlyOne`. Its sole output slot is
 `system_mapping: CandidateSet<loom.mapping 4.0>, FiniteSet`; its resolved view
@@ -1455,13 +1455,20 @@ For a nonempty root inventory the adapter publishes the exact empty System
 MappingConstraintSet, projects the whole-domain partition and hierarchical
 System search-domain view, and delegates to the ordinary System PnR owner. A
 root-free Dataflow input completes with an empty output set. The descriptor
-owns two work-unit ordinals: assignment attempt at ordinal 0 and endpoint
-expansion at ordinal 1. The provider reports only work consumed by the shared
-initializer and endpoint router. Outputs carry MechanicalDerivation lineage;
-the adapter owns no candidate decision payload. `ProvenInfeasible` completes
-with an empty set, proof or semantic limits remain the corresponding typed
+references the same complete PnR work-unit catalog used by the Spatial PnR
+generator: seed attempt, assignment attempt per seed, endpoint expansion,
+negotiation iteration, calibration proposal, proposal-per-level base,
+proposal-per-movable-decision, focused-closure proposal, exact-repair region
+decision, and exact-repair solver call at ordinals 0 through 9. The ordinary
+System PnR owner supplies those counts; the adapter neither aggregates nor
+reclassifies them. A root-free invocation reports the same catalog with zero
+planned and consumed work. Outputs carry MechanicalDerivation lineage; the
+adapter owns no candidate decision payload. `ProvenInfeasible` completes with
+an empty set, proof or semantic limits remain the corresponding typed
 incomplete result, unsupported `H` projection remains `Unsupported`, and an
-invalid or internal owner result aborts the Generate invocation.
+invalid or internal owner result aborts the Generate invocation. Descriptor
+v1, which exposed only assignment and endpoint work, is not compatible and is
+not registered.
 
 The built-in SpatialMapping CGRA acquisition consumes a finite SpatialMapping
 candidate set, a nonempty Canonical Dataflow owner set, one exact Fabric, one
