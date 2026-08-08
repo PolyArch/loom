@@ -17,7 +17,12 @@ struct PortableProviderArtifact final {
   std::string contents;
 };
 
-llvm::Expected<std::string> specializeAndExportPortableProvider(
+struct PortableProviderConformance final {
+  rtl::FabricOperationProviderOutput providerOutput;
+  std::string systemVerilog;
+};
+
+llvm::Expected<PortableProviderConformance> specializeAndExportPortableProvider(
     rtl::ModuleRootCirctSkeleton skeleton,
     const FinalizedConfigurationABI &configurationAbi,
     const rtl::FabricOperationProviderRegistry &providers,

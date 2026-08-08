@@ -346,8 +346,15 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
   ExternalImplementationContractCatalog externalContracts;
   ModuleRootCirctSkeleton module{std::move(skeleton.module),
                                  {{skeleton.leaf, fabric.physicalOccurrence}}};
-  return take(test, loom::hardware::test::specializeAndExportPortableProvider(
-                        std::move(module), abi, registry, externalContracts));
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     std::move(module), abi, registry, externalContracts));
+  require(test,
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
+          "portable add/sub provider emitted implementation metadata");
+  return std::move(conformance.systemVerilog);
 }
 
 std::string emitConfiguredAddSub(llvm::StringRef test,
@@ -430,9 +437,10 @@ check
 stat
 )ys";
   if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
-          root, {{"scalar_integer_add_sub.sv", first},
-                 {"testbench.sv", testbench},
-                 {"portable_scalar_integer_add_sub.ys", yosysScript}}))
+          root / "artifacts",
+          {{"scalar_integer_add_sub.sv", first},
+           {"testbench.sv", testbench},
+           {"portable_scalar_integer_add_sub.ys", yosysScript}}))
     fail(test, llvm::toString(std::move(error)));
 }
 
@@ -512,9 +520,10 @@ check
 stat
 )ys";
   if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
-          root, {{"scalar_integer_add_sub.sv", rtl},
-                 {"testbench.sv", testbench},
-                 {"portable_scalar_integer_add_sub.ys", yosysScript}}))
+          root / "artifacts",
+          {{"scalar_integer_add_sub.sv", rtl},
+           {"testbench.sv", testbench},
+           {"portable_scalar_integer_add_sub.ys", yosysScript}}))
     fail(test, llvm::toString(std::move(error)));
 }
 

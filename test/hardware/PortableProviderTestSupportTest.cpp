@@ -70,23 +70,43 @@ void artifactWriterIsExactAndConfined(const std::filesystem::path &root) {
                   root, {{"same.sv", "first"}, {"same.sv", "second"}}),
               "duplicate");
 
-  const std::filesystem::path outside = root.string() + "-outside";
-  std::filesystem::create_directories(outside);
-  std::filesystem::create_directory_symlink(std::filesystem::absolute(outside),
-                                            root / "escape");
-  expectError(
-      __func__,
-      writePortableProviderArtifacts(root, {{"escape/result.sv", "forbidden"}}),
-      "escapes");
-
   const std::filesystem::path atomic = root / "atomic";
   expectError(
       __func__,
       writePortableProviderArtifacts(
           atomic, {{"first.sv", "partial"}, {"../second.sv", "forbidden"}}),
       "relative");
-  require(__func__, !std::filesystem::exists(atomic / "first.sv"),
-          "invalid artifact list left a partial file");
+  require(__func__, !std::filesystem::exists(atomic),
+          "invalid artifact list left a partial root");
+
+  const std::filesystem::path hardlinkRoot = root.string() + "-hardlink";
+  const std::filesystem::path hardlinkOutside =
+      root.string() + "-hardlink-outside.sv";
+  std::filesystem::remove_all(hardlinkRoot);
+  std::filesystem::remove(hardlinkOutside);
+  std::filesystem::create_directories(hardlinkRoot);
+  {
+    std::ofstream output(hardlinkOutside, std::ios::binary);
+    output << "outside sentinel\n";
+  }
+  std::filesystem::create_hard_link(hardlinkOutside,
+                                    hardlinkRoot / "design.sv");
+  expectError(__func__,
+              writePortableProviderArtifacts(hardlinkRoot,
+                                             {{"design.sv", "replacement\n"}}),
+              "already exists");
+  require(__func__, readFile(hardlinkOutside) == "outside sentinel\n",
+          "artifact publication changed an inode outside its root");
+
+  const std::filesystem::path transactional = root.string() + "-transactional";
+  std::filesystem::remove_all(transactional);
+  expectError(
+      __func__,
+      writePortableProviderArtifacts(
+          transactional, {{"prefix", "partial"}, {"prefix/nested", "blocked"}}),
+      "could not create artifact directory");
+  require(__func__, !std::filesystem::exists(transactional),
+          "failed artifact publication left a partial root");
 }
 
 } // namespace

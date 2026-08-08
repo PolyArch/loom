@@ -719,9 +719,10 @@ InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
               providers))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::string systemVerilog = take(
+  auto conformance = take(
       test, loom::hardware::test::specializeAndExportPortableProvider(
                 std::move(skeleton), fabric.abi, providers, externalContracts));
+  const std::string systemVerilog = std::move(conformance.systemVerilog);
   const llvm::StringRef rtl(systemVerilog);
   require(test,
           rtl.contains("input_0_data") && rtl.contains("input_1_data") &&

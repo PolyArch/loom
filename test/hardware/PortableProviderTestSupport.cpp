@@ -1,8 +1,10 @@
 #include "PortableProviderTestSupport.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <filesystem>
@@ -28,21 +30,37 @@ std::string moduleText(mlir::ModuleOp module) {
   return text;
 }
 
-bool pathContains(const std::filesystem::path &root,
-                  const std::filesystem::path &path) {
-  auto rootPart = root.begin();
-  auto pathPart = path.begin();
-  while (rootPart != root.end() && pathPart != path.end() &&
-         *rootPart == *pathPart) {
-    ++rootPart;
-    ++pathPart;
+llvm::Expected<std::filesystem::path>
+createStagingDirectory(const std::filesystem::path &root) {
+  for (unsigned attempt = 0; attempt != 32; ++attempt) {
+    llvm::SmallString<256> model((root.string() + ".partial-%%%%%%").c_str());
+    llvm::SmallString<256> candidate;
+    llvm::sys::fs::createUniquePath(model, candidate, true);
+    std::error_code error;
+    if (std::filesystem::create_directory(candidate.str().str(), error))
+      return std::filesystem::path(candidate.str().str());
+    if (error != std::errc::file_exists)
+      return invalid("could not create artifact staging directory: " +
+                     error.message());
   }
-  return rootPart == root.end();
+  return invalid("could not allocate an artifact staging directory");
 }
+
+struct StagingCleanup final {
+  std::filesystem::path path;
+  bool published = false;
+
+  ~StagingCleanup() {
+    if (published)
+      return;
+    std::error_code ignored;
+    std::filesystem::remove_all(path, ignored);
+  }
+};
 
 } // namespace
 
-llvm::Expected<std::string> specializeAndExportPortableProvider(
+llvm::Expected<PortableProviderConformance> specializeAndExportPortableProvider(
     rtl::ModuleRootCirctSkeleton skeleton,
     const FinalizedConfigurationABI &configurationAbi,
     const rtl::FabricOperationProviderRegistry &providers,
@@ -75,16 +93,12 @@ llvm::Expected<std::string> specializeAndExportPortableProvider(
     }
     return std::move(error);
   }
-  if (!providerOutput->payloads.empty() ||
-      !providerOutput->activityPoints.empty() ||
-      !providerOutput->externalImplementationBindings.empty())
-    return invalid("portable recipe emitted external implementation state");
-
   auto systemVerilog =
       rtl::lowerAndExportSpecializedSystemVerilog(*skeleton.module);
   if (!systemVerilog)
     return systemVerilog.takeError();
-  return std::move(*systemVerilog);
+  return PortableProviderConformance{std::move(*providerOutput),
+                                     std::move(*systemVerilog)};
 }
 
 llvm::Error writePortableProviderArtifacts(
@@ -93,8 +107,6 @@ llvm::Error writePortableProviderArtifacts(
   if (root.empty())
     return invalid("artifact root is empty");
 
-  std::vector<std::filesystem::path> relativePaths;
-  relativePaths.reserve(artifacts.size());
   std::set<std::filesystem::path> uniquePaths;
   for (const PortableProviderArtifact &artifact : artifacts) {
     const std::filesystem::path relative =
@@ -105,40 +117,27 @@ llvm::Error writePortableProviderArtifacts(
       return invalid("artifact path must be a normalized relative file");
     if (!uniquePaths.insert(relative).second)
       return invalid("artifact path is duplicated");
-    relativePaths.push_back(relative);
   }
 
   std::error_code error;
-  std::filesystem::create_directories(root, error);
-  if (error)
-    return invalid("could not create artifact root: " + error.message());
-  const std::filesystem::path canonicalRoot =
-      std::filesystem::weakly_canonical(root, error);
-  if (error)
-    return invalid("could not resolve artifact root: " + error.message());
+  if (std::filesystem::exists(root, error) || error)
+    return invalid("artifact root already exists or is inaccessible");
+  const std::filesystem::path parent = root.parent_path().empty()
+                                           ? std::filesystem::path(".")
+                                           : root.parent_path();
+  if (!std::filesystem::is_directory(parent, error) || error)
+    return invalid("artifact parent must be an existing directory");
 
-  std::vector<std::filesystem::path> destinations;
-  destinations.reserve(relativePaths.size());
-  for (const std::filesystem::path &relative : relativePaths) {
-    const std::filesystem::path destination = root / relative;
+  auto staging = createStagingDirectory(root);
+  if (!staging)
+    return staging.takeError();
+  StagingCleanup cleanup{*staging};
+
+  for (const PortableProviderArtifact &artifact : artifacts) {
+    const std::filesystem::path destination = *staging / artifact.relativePath;
     std::filesystem::create_directories(destination.parent_path(), error);
     if (error)
       return invalid("could not create artifact directory: " + error.message());
-    const std::filesystem::path canonicalParent =
-        std::filesystem::weakly_canonical(destination.parent_path(), error);
-    if (error || !pathContains(canonicalRoot, canonicalParent))
-      return invalid("artifact path escapes its root");
-    if (std::filesystem::is_symlink(
-            std::filesystem::symlink_status(destination, error)))
-      return invalid("artifact target may not be a symbolic link");
-    if (error && error != std::errc::no_such_file_or_directory)
-      return invalid("could not inspect artifact target: " + error.message());
-    error.clear();
-    destinations.push_back(destination);
-  }
-
-  for (const auto &[artifact, destination] :
-       llvm::zip_equal(artifacts, destinations)) {
     std::ofstream output(destination, std::ios::binary | std::ios::trunc);
     output.write(artifact.contents.data(),
                  static_cast<std::streamsize>(artifact.contents.size()));
@@ -146,6 +145,11 @@ llvm::Error writePortableProviderArtifacts(
     if (!output)
       return invalid("could not write artifact file");
   }
+
+  std::filesystem::rename(*staging, root, error);
+  if (error)
+    return invalid("could not publish artifact root: " + error.message());
+  cleanup.published = true;
   return llvm::Error::success();
 }
 
