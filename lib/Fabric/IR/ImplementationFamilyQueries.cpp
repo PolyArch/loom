@@ -944,9 +944,26 @@ llvm::Expected<bool> semanticConfigurationRequiresField(
         !hasSchema(OperationSchemaId::DataflowSerialize))
       return false;
     const auto &typed = std::get<FixedVectorAdapterParams>(params);
-    return typed.integerElementWidths.size() +
-               typed.floatElementFormats.size() >
-           1;
+    std::optional<unsigned> firstReachableWidth;
+    const auto addWidth = [&](unsigned width) {
+      if (typed.maxPayloadBits < width)
+        return false;
+      if (typed.maxPayloadBits / width > 1)
+        return true;
+      if (firstReachableWidth && *firstReachableWidth != width)
+        return true;
+      firstReachableWidth = width;
+      return false;
+    };
+    for (IntegerWidth width : integerWidthDomain)
+      if (typed.integerElementWidths.contains(width) &&
+          addWidth(getBitWidth(width)))
+        return true;
+    for (FloatFormat format : floatFormatDomain)
+      if (typed.floatElementFormats.contains(format) &&
+          addWidth(getBitWidth(format)))
+        return true;
+    return false;
   }
   case TypedAdmissionProviderId::ConstantTokenAdmission:
     return true;

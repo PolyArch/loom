@@ -19,6 +19,30 @@ encodeImplementationFamilyBehaviorKey(
     ImplementationFamilyId family, llvm::StringRef role,
     llvm::ArrayRef<ImplementationFamilyBehaviorKeyComponent> components);
 
+llvm::Error validateImplementationFamilyBehaviorPoint(
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    llvm::ArrayRef<std::uint64_t> operandPorts,
+    llvm::ArrayRef<std::uint64_t> resultPorts,
+    llvm::ArrayRef<std::uint32_t> physicalInputWidths,
+    llvm::ArrayRef<std::uint32_t> physicalResultWidths,
+    std::optional<ResolvedIndexWidth> resolvedIndexWidth = std::nullopt);
+
+llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
+resolveControlBehaviorDomain(
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
+    llvm::ArrayRef<std::uint32_t> physicalInputWidths,
+    llvm::ArrayRef<std::uint32_t> physicalResultWidths,
+    ::mlir::MLIRContext &context);
+
+llvm::Expected<::loom::CanonicalSemanticBytes> projectControlBehaviorKey(
+    ImplementationFamilyId family,
+    llvm::ArrayRef<FiniteImplementationFamilyBehaviorPoint> domain,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    llvm::ArrayRef<std::uint64_t> operandPorts,
+    llvm::ArrayRef<std::uint64_t> resultPorts);
+
 /// Arity-only compatibility query used by the existing semantic codec. The
 /// sealed concrete-resource relation remains the authority for finalization.
 llvm::Expected<bool> semanticConfigurationRequiresField(

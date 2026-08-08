@@ -299,6 +299,193 @@ void physicalCapacityEliminatesRedundantBehavior() {
           "narrow physical ports retained an unreachable width selector");
 }
 
+void loopControlRelationOwnsTheReachableQuotient() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams params = LoopStreamParams{
+      IntegerWidthSet::get({IntegerWidth::I16, IntegerWidth::I32}),
+      ::dataflow::StreamStepKind::Add,
+      IntegerPredicateSet::get(
+          {mlir::arith::CmpIPredicate::slt, mlir::arith::CmpIPredicate::ult})};
+  constexpr std::array schemas = {OperationSchemaId::DataflowStream};
+  constexpr std::array inputWidths = {32U, 32U, 32U};
+  constexpr std::array resultWidths = {32U, 1U};
+  const FabricOpSemanticFieldRelation relation =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::LoopStream, params, schemas,
+                     inputWidths, resultWidths, context));
+  require(test, relation.kind() == FabricOpSemanticFieldRelationKind::Finite,
+          "loop stream did not resolve to a finite relation");
+  require(test, relation.finiteBehaviorDomain().size() == 4,
+          "loop stream quotient lost a width or predicate behavior");
+
+  constexpr std::array narrowInputs = {16U, 16U, 16U};
+  constexpr std::array narrowResults = {16U, 1U};
+  const FabricOpSemanticFieldRelation narrow =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::LoopStream, params, schemas,
+                     narrowInputs, narrowResults, context));
+  require(test,
+          narrow.kind() == FabricOpSemanticFieldRelationKind::Finite &&
+              narrow.finiteBehaviorDomain().size() == 2,
+          "physical filtering retained an unreachable stream width");
+  for (const auto &point : narrow.finiteBehaviorDomain()) {
+    require(
+        test,
+        point.representativeActor.type.getInput(0).getIntOrFloatBitWidth() ==
+            16,
+        "narrow stream relation retained a wide witness");
+    require(test, point.semanticConfiguration.has_value(),
+            "non-singleton stream behavior omitted its key");
+  }
+}
+
+void vectorAdaptersQuotientByElementWidthAndLaneCount() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams params =
+      FixedVectorAdapterParams{IntegerWidthSet::get({IntegerWidth::I16}),
+                               FloatFormatSet::get({FloatFormat::F16}), 64};
+
+  constexpr std::array parallelizeSchemas = {
+      OperationSchemaId::DataflowParallelize};
+  constexpr std::array parallelizeInputs = {16U, 1U};
+  constexpr std::array parallelizeResults = {64U, 4U, 1U};
+  const FabricOpSemanticFieldRelation parallelize =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::FixedVectorParallelize, params,
+                     parallelizeSchemas, parallelizeInputs, parallelizeResults,
+                     context));
+  require(test,
+          parallelize.kind() == FabricOpSemanticFieldRelationKind::Finite &&
+              parallelize.finiteBehaviorDomain().size() == 4,
+          "parallelize did not collapse equal-width integer and float actors");
+
+  constexpr std::array serializeSchemas = {
+      OperationSchemaId::DataflowSerialize};
+  constexpr std::array serializeInputs = {64U, 4U, 1U};
+  constexpr std::array serializeResults = {16U, 1U};
+  const FabricOpSemanticFieldRelation serialize = take(
+      test, resolveFabricOpSemanticFieldRelation(
+                ImplementationFamilyId::FixedVectorSerialize, params,
+                serializeSchemas, serializeInputs, serializeResults, context));
+  require(test,
+          serialize.kind() == FabricOpSemanticFieldRelationKind::Finite &&
+              serialize.finiteBehaviorDomain().size() == 4,
+          "serialize did not own every reachable lane count");
+
+  const FamilyCapabilityParams integerOnly = FixedVectorAdapterParams{
+      IntegerWidthSet::get({IntegerWidth::I16}), FloatFormatSet{}, 64};
+  const FabricOpSemanticFieldRelation laneOnly =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::FixedVectorParallelize,
+                     integerOnly, parallelizeSchemas, parallelizeInputs,
+                     parallelizeResults, context));
+  require(test,
+          laneOnly.kind() == FabricOpSemanticFieldRelationKind::Finite &&
+              laneOnly.finiteBehaviorDomain().size() == 4,
+          "single-element adapter omitted its lane-count quotient");
+}
+
+void routedTokensOwnOrderedPhysicalLaneImages() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams params = RoutedTokenParams{32, 3};
+
+  constexpr std::array syncSchemas = {OperationSchemaId::DataflowSync};
+  constexpr std::array syncWidths = {32U, 32U, 32U};
+  const FabricOpSemanticFieldRelation sync =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::TokenSync, params, syncSchemas,
+                     syncWidths, syncWidths, context));
+  require(test,
+          sync.kind() == FabricOpSemanticFieldRelationKind::Finite &&
+              sync.finiteBehaviorDomain().size() == 7,
+          "sync did not enumerate every nonempty ordered lane image");
+
+  const auto i32 = mlir::IntegerType::get(&context, 32);
+  const ::dataflow::CanonicalActorSchemaProjection twoLaneSync{
+      OperationSchemaId::DataflowSync,
+      mlir::FunctionType::get(&context, {i32, i32}, {i32, i32}),
+      ::dataflow::NoPayload{}};
+  constexpr std::array<std::uint64_t, 2> noncontiguous = {0, 2};
+  const ::loom::CanonicalSemanticBytes syncKey =
+      take(test, sync.projectSemanticValue(twoLaneSync, noncontiguous,
+                                           noncontiguous));
+  if (llvm::Error error = sync.validateSemanticValue(syncKey.bytes()))
+    fail(test, llvm::toString(std::move(error)));
+  constexpr std::array<std::uint8_t, 80> expectedSyncKey = {
+      'l', 'o', 'o', 'm', '.', 'f', 'a', 'b', 'r', 'i', 'c', '.', 'o', 'p',
+      'e', 'r', 'a', 't', 'i', 'o', 'n', '-', 'b', 'e', 'h', 'a', 'v', 'i',
+      'o', 'r', '-', 'k', 'e', 'y', 0,   0,   0,   0,   1,   0,   0,   0,
+      0,   0,   0,   0,   9,   'T', 'o', 'k', 'e', 'n', 'S', 'y', 'n', 'c',
+      0,   0,   0,   0,   0,   0,   0,   2,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   2};
+  require(test, syncKey.bytes().equals(expectedSyncKey),
+          "sync lane image escaped the canonical literal codec");
+  constexpr std::array<std::uint64_t, 2> reversed = {2, 0};
+  auto invalid = sync.projectSemanticValue(twoLaneSync, reversed, reversed);
+  require(test, !invalid, "sync accepted a reversed physical lane image");
+  const std::string invalidMessage = llvm::toString(invalid.takeError());
+  require(test, llvm::StringRef(invalidMessage).contains("ordered"),
+          "sync rejected a reversed lane image for an unrelated reason");
+
+  constexpr std::array muxSchemas = {OperationSchemaId::DataflowMux};
+  constexpr std::array muxInputs = {32U, 32U, 32U, 32U};
+  constexpr std::array muxResults = {32U};
+  const FabricOpSemanticFieldRelation mux =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::TokenMux, params, muxSchemas,
+                     muxInputs, muxResults, context));
+  require(test,
+          mux.kind() == FabricOpSemanticFieldRelationKind::Finite &&
+              mux.finiteBehaviorDomain().size() == 4,
+          "mux exposed " + std::to_string(mux.finiteBehaviorDomain().size()) +
+              " rather than four ordered data-input images");
+
+  constexpr std::array demuxSchemas = {OperationSchemaId::DataflowDemux};
+  constexpr std::array demuxInputs = {32U, 32U};
+  constexpr std::array demuxResults = {32U, 32U, 32U};
+  const FabricOpSemanticFieldRelation demux =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::TokenDemux, params, demuxSchemas,
+                     demuxInputs, demuxResults, context));
+  require(test,
+          demux.kind() == FabricOpSemanticFieldRelationKind::Finite &&
+              demux.finiteBehaviorDomain().size() == 4,
+          "demux exposed " +
+              std::to_string(demux.finiteBehaviorDomain().size()) +
+              " rather than four ordered data-result images");
+}
+
+void singletonControlRelationsStillValidateTheirCapability() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  constexpr std::array streamSchemas = {OperationSchemaId::DataflowStream};
+  constexpr std::array streamInputs = {16U, 16U, 16U};
+  constexpr std::array streamResults = {16U, 1U};
+  const FamilyCapabilityParams invalidStream = LoopStreamParams{
+      IntegerWidthSet::get({IntegerWidth::I16}),
+      static_cast<::dataflow::StreamStepKind>(255),
+      IntegerPredicateSet::get({mlir::arith::CmpIPredicate::slt})};
+  auto stream = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::LoopStream, invalidStream, streamSchemas,
+      streamInputs, streamResults, context);
+  require(test, !stream, "invalid singleton stream capability was accepted");
+  const std::string streamError = llvm::toString(stream.takeError());
+  require(test, llvm::StringRef(streamError).contains("step kind"),
+          "invalid singleton stream reported an unrelated failure");
+
+  constexpr std::array syncSchemas = {OperationSchemaId::DataflowSync};
+  constexpr std::array syncWidths = {32U};
+  const FamilyCapabilityParams invalidSync = RoutedTokenParams{32, 0};
+  auto sync = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::TokenSync, invalidSync, syncSchemas, syncWidths,
+      syncWidths, context);
+  require(test, !sync, "zero-fan singleton sync capability was accepted");
+  llvm::consumeError(sync.takeError());
+}
+
 } // namespace
 
 int main() {
@@ -307,5 +494,9 @@ int main() {
   compatibilityQueryDerivesFromTheRelation();
   finiteRelationKeysRemainCanonical();
   physicalCapacityEliminatesRedundantBehavior();
+  loopControlRelationOwnsTheReachableQuotient();
+  vectorAdaptersQuotientByElementWidthAndLaneCount();
+  routedTokensOwnOrderedPhysicalLaneImages();
+  singletonControlRelationsStillValidateTheirCapability();
   return EXIT_SUCCESS;
 }

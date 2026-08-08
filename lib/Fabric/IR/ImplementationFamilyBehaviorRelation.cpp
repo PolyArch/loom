@@ -30,6 +30,20 @@ llvm::Error reject(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
 }
 
+bool hasControlBehaviorQuotient(ImplementationFamilyId family) {
+  switch (family) {
+  case ImplementationFamilyId::LoopStream:
+  case ImplementationFamilyId::FixedVectorParallelize:
+  case ImplementationFamilyId::FixedVectorSerialize:
+  case ImplementationFamilyId::TokenSync:
+  case ImplementationFamilyId::TokenMux:
+  case ImplementationFamilyId::TokenDemux:
+    return true;
+  default:
+    return false;
+  }
+}
+
 llvm::Error validatePackedShape(llvm::ArrayRef<std::uint8_t> value,
                                 std::uint32_t bitCount) {
   const std::uint64_t byteCount =
@@ -320,6 +334,36 @@ projectConstant(const ::dataflow::CanonicalActorSchemaProjection &actor,
 
 } // namespace
 
+llvm::Error fabric::detail::validateImplementationFamilyBehaviorPoint(
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    llvm::ArrayRef<std::uint64_t> operandPorts,
+    llvm::ArrayRef<std::uint64_t> resultPorts,
+    llvm::ArrayRef<std::uint32_t> physicalInputWidths,
+    llvm::ArrayRef<std::uint32_t> physicalResultWidths,
+    std::optional<ResolvedIndexWidth> resolvedIndexWidth) {
+  if (llvm::Error error = verifyImplementationFamilyPortCorrespondence(
+          family, actor, operandPorts, resultPorts))
+    return error;
+  const TypedAdmissionProviderId provider =
+      implementationFamily(family).typedAdmissionProvider;
+  const bool routedSelector =
+      provider == TypedAdmissionProviderId::MuxTokenAdmission ||
+      provider == TypedAdmissionProviderId::DemuxTokenAdmission;
+  if (resolvedIndexWidth && !routedSelector) {
+    if (llvm::Error error = verifyImplementationFamilyAdmission(
+            family, &params, actor,
+            getResolvedIndexBitWidth(*resolvedIndexWidth)))
+      return error;
+  } else if (llvm::Error error =
+                 verifyImplementationFamilyAdmission(family, &params, actor)) {
+    return error;
+  }
+  return validatePhysicalCapacity(actor, operandPorts, resultPorts,
+                                  physicalInputWidths, physicalResultWidths,
+                                  resolvedIndexWidth);
+}
+
 llvm::Error fabric::FabricOpSemanticFieldRelation::validateSemanticValue(
     llvm::ArrayRef<std::uint8_t> value) const {
   if (kind_ == FabricOpSemanticFieldRelationKind::None)
@@ -357,30 +401,23 @@ fabric::FabricOpSemanticFieldRelation::projectSemanticValue(
     std::optional<ResolvedIndexWidth> resolvedIndexWidth) const {
   if (kind_ == FabricOpSemanticFieldRelationKind::None)
     return reject("capability has no semantic field");
-  if (llvm::Error error = verifyImplementationFamilyPortCorrespondence(
-          family_, actor, operandPorts, resultPorts))
+  if (llvm::Error error = detail::validateImplementationFamilyBehaviorPoint(
+          family_, params_, actor, operandPorts, resultPorts,
+          physicalInputWidths_, physicalResultWidths_, resolvedIndexWidth))
     return std::move(error);
-  if (llvm::Error error = validatePhysicalCapacity(
-          actor, operandPorts, resultPorts, physicalInputWidths_,
-          physicalResultWidths_, resolvedIndexWidth))
-    return std::move(error);
-  if (resolvedIndexWidth) {
-    if (llvm::Error error = verifyImplementationFamilyAdmission(
-            family_, &params_, actor,
-            getResolvedIndexBitWidth(*resolvedIndexWidth)))
-      return std::move(error);
-  } else if (llvm::Error error = verifyImplementationFamilyAdmission(
-                 family_, &params_, actor)) {
-    return std::move(error);
-  }
 
   llvm::Expected<::loom::CanonicalSemanticBytes> projected =
       family_ == ImplementationFamilyId::TokenConstant
           ? projectConstant(actor, directEncodedBitCount_)
-          : encodeImplementationFamilySemanticConfiguration(
-                family_, params_, enabledSchemas_, physicalInputWidths_.size(),
-                physicalResultWidths_.size(), actor, operandPorts, resultPorts,
-                resolvedIndexWidth);
+          : (hasControlBehaviorQuotient(family_)
+                 ? detail::projectControlBehaviorKey(
+                       family_, finiteBehaviorDomain_, actor, operandPorts,
+                       resultPorts)
+                 : encodeImplementationFamilySemanticConfiguration(
+                       family_, params_, enabledSchemas_,
+                       physicalInputWidths_.size(),
+                       physicalResultWidths_.size(), actor, operandPorts,
+                       resultPorts, resolvedIndexWidth));
   if (!projected)
     return projected.takeError();
   if (llvm::Error error = validateSemanticValue(projected->bytes()))
@@ -448,7 +485,8 @@ fabric::resolveFabricOpSemanticFieldRelation(
                                    physicalResultWidths.end()),
         {}, directBitCount, std::move(sliceLayout), std::move(shuffleLayout));
 
-  if (!*needsField)
+  const bool controlBehavior = hasControlBehaviorQuotient(family);
+  if (!*needsField && !controlBehavior)
     return FabricOpSemanticFieldRelation(
         FabricOpSemanticFieldRelationKind::None, family, params,
         std::vector<::dataflow::OperationSchemaId>(enabledSchemas.begin(),
@@ -459,11 +497,18 @@ fabric::resolveFabricOpSemanticFieldRelation(
                                    physicalResultWidths.end()),
         {}, 0, std::nullopt, std::nullopt);
 
-  auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
-      family, params, enabledSchemas, physicalInputWidths.size(),
-      physicalResultWidths.size(), context,
-      [](const ::dataflow::CanonicalActorSchemaProjection &,
-         std::optional<ResolvedIndexWidth>) { return llvm::Error::success(); });
+  llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>> domain =
+      controlBehavior
+          ? detail::resolveControlBehaviorDomain(family, params, enabledSchemas,
+                                                 physicalInputWidths,
+                                                 physicalResultWidths, context)
+          : resolveFiniteImplementationFamilyBehaviorDomain(
+                family, params, enabledSchemas, physicalInputWidths.size(),
+                physicalResultWidths.size(), context,
+                [](const ::dataflow::CanonicalActorSchemaProjection &,
+                   std::optional<ResolvedIndexWidth>) {
+                  return llvm::Error::success();
+                });
   if (!domain)
     return domain.takeError();
 
@@ -492,18 +537,21 @@ fabric::resolveFabricOpSemanticFieldRelation(
     }
   }
 
+  const bool domainIsPhysicallyFiltered = controlBehavior;
   std::vector<FiniteImplementationFamilyBehaviorPoint> reachable;
   std::string firstPhysicalRejection;
   for (auto &point : *domain) {
-    if (llvm::Error error = validatePhysicalCapacity(
-            point.representativeActor, point.operandPorts, point.resultPorts,
-            physicalInputWidths, physicalResultWidths,
-            point.resolvedIndexWidth)) {
-      if (firstPhysicalRejection.empty())
-        firstPhysicalRejection = llvm::toString(std::move(error));
-      else
-        llvm::consumeError(std::move(error));
-      continue;
+    if (!domainIsPhysicallyFiltered) {
+      if (llvm::Error error = validatePhysicalCapacity(
+              point.representativeActor, point.operandPorts, point.resultPorts,
+              physicalInputWidths, physicalResultWidths,
+              point.resolvedIndexWidth)) {
+        if (firstPhysicalRejection.empty())
+          firstPhysicalRejection = llvm::toString(std::move(error));
+        else
+          llvm::consumeError(std::move(error));
+        continue;
+      }
     }
     reachable.push_back(std::move(point));
   }
