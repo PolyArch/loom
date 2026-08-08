@@ -708,15 +708,20 @@ Load balance alone is not sufficient. A chain placed once on every PE of a
 bounded one-dimensional mesh can still follow a topology-independent
 occurrence permutation. About half of its logical nets then cross the same
 middle cut even though a neighboring placement exists. The equal-count
-tie-break therefore uses minimum directed hop distance to already processed
-dataflow neighbors. The score is derived from the existing frozen attachment
-domains and payload-compatible routing arcs, with no coordinate metadata and
-no mutable congestion term. It is a cheap placement preference, not a shadow
-capacity model, a second routing search, or an infeasibility certificate.
-Hard all-different contexts would still delete legal sharing, while an
-independent placer would duplicate relation and routing ownership. The
-load-then-locality refinement instead composes the two existing facts needed
-for a useful seed: exact context identity and exact frozen connectivity.
+tie-break therefore uses minimum directed hop distance to active topology
+anchors. Already processed compute neighbors provide the recurring anchor.
+Directly incident graph-boundary domains also anchor a graph's first compute
+root; without that anchor, a chain can begin in the middle of a bounded path,
+walk to one end, and require one schedule-wide jump to reach the unused half.
+The score is derived from the existing frozen attachment domains and
+payload-compatible routing arcs, with no coordinate metadata, premature
+boundary selection, or mutable congestion term. It is a cheap placement
+preference, not a shadow capacity model, a second routing search, or an
+infeasibility certificate. Hard all-different contexts would still delete
+legal sharing, while an independent placer would duplicate relation and
+routing ownership. The load-then-locality refinement instead composes the two
+existing facts needed for a useful seed: exact context identity and exact
+frozen connectivity.
 
 Attachment roots expose the same issue one level below placement. If two
 inputs or outputs of `dataflow.sync`, `dataflow.mux`, `dataflow.demux`, or

@@ -2284,14 +2284,17 @@ this closed protocol:
    legal choice whose exact `InstructionContextRef` currently has the least
    selected-root count;
 4. among equal-count choices, minimize the sum of directed frozen-topology hop
-   distances to already processed compute roots joined to this root by a
-   logical net. For each such producer-consumer incidence, the distance is the
-   minimum number of payload-compatible `FrozenSpatialRoutingGraph` arcs over
-   the attachment endpoints admitted by the two candidate placements. An
+   distances to active topology anchors joined to this root by a logical net.
+   An active anchor is either an already processed compute root or a directly
+   incident graph-boundary terminal. For a compute-compute incidence, the
+   distance is the minimum number of payload-compatible
+   `FrozenSpatialRoutingGraph` arcs over attachment endpoints admitted by the
+   two candidate placements. For a graph-boundary incidence, use the boundary
+   root's existing legal attachment domain and the candidate placement's
+   admitted attachment endpoints without selecting the boundary root. An
    unreachable incidence ranks after every finite distance but does not remove
-   the choice. If there is no already processed compute neighbor, or scores
-   remain equal, use circular canonical choice order beginning at that root's
-   baseline choice;
+   the choice. If there is no active anchor, or scores remain equal, use
+   circular canonical choice order beginning at that root's baseline choice;
 5. any attachment root participating in a constraint-owned relation retains
    its baseline choice. Process every other occurrence-relative
    `PortAttachment` root in canonical demand order and every other
@@ -2308,8 +2311,8 @@ this closed protocol:
    remaining initializer work, retain the complete baseline assignment.
 
 The selected-root count, frozen-topology distance, and selected-attachment
-endpoint count are only deterministic search preferences. None is capacity, none
-removes a legal choice, and none can prove infeasibility. The distance and
+endpoint count are only deterministic search preferences. None is capacity,
+none removes a legal choice, and none can prove infeasibility. The distance and
 endpoint identity use the same immutable endpoint, arc, payload-width, and
 attachment domains already owned by the FrozenModel; they ignore mutable route
 costs and resource occupancy and therefore do not form a second router or
