@@ -1138,9 +1138,9 @@ admitScalarSpecialMathAdmission(const FamilyCapabilityParams &capability,
     return error;
   (void)format;
 
-  if (llvm::Error error =
-          admitFloatBehavior(params.behavior, payload->flags, std::nullopt,
-                             FloatNaNBehavior::IEEE))
+  if (llvm::Error error = admitFloatBehavior(
+          params.behavior, payload->flags,
+          ::mlir::arith::RoundingMode::to_nearest_even, FloatNaNBehavior::IEEE))
     return error;
   auto refines = ::loom::specialMathAccuracyRefines(params.accuracyGuarantee,
                                                     payload->accuracy);

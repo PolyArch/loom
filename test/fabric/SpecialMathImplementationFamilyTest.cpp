@@ -96,6 +96,13 @@ FloatBehaviorProfile multiValuedBehavior() {
   return behavior;
 }
 
+FloatBehaviorProfile downwardOnlyBehavior() {
+  FloatBehaviorProfile behavior = FloatBehaviorProfile::strictIEEE();
+  behavior.roundingModes =
+      RoundingModeSet::get({arith::RoundingMode::downward});
+  return behavior;
+}
+
 FamilyCapabilityParams makeCapability(FloatFormatSet formats,
                                       FloatBehaviorProfile behavior,
                                       SpecialMathAccuracyTier guarantee) {
@@ -254,6 +261,9 @@ bool checkAdmission(MLIRContext &context) {
   FamilyCapabilityParams twoUlp =
       makeCapability(FloatFormatSet::get({FloatFormat::F32}),
                      approximateBehavior(), SpecialMathAccuracyTier::Max2Ulp);
+  FamilyCapabilityParams downwardOnly = makeCapability(
+      FloatFormatSet::get({FloatFormat::F32}), downwardOnlyBehavior(),
+      SpecialMathAccuracyTier::CorrectlyRounded);
 
   auto strictActor = makeSinActor(
       context, f32,
@@ -341,6 +351,10 @@ bool checkAdmission(MLIRContext &context) {
       verifyImplementationFamilyAdmission(ImplementationFamilyId::ScalarMathSin,
                                           &invalidGuarantee, fourUlpActor),
       "unknown");
+  ok &= expectError(
+      verifyImplementationFamilyAdmission(ImplementationFamilyId::ScalarMathSin,
+                                          &downwardOnly, strictActor),
+      "rounding");
   return ok;
 }
 
