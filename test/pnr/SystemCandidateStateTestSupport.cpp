@@ -2,9 +2,14 @@
 
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/ResourceContract.h"
+#include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Mapping/IR/MappingDialect.h"
+#include "PnR/System/SystemMappingMaterializer.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/MLIRContext.h"
@@ -77,6 +82,35 @@ inOrderMicroarchitecture() {
 }
 
 } // namespace
+
+mlir::DenseI8ArrayAttr
+loom::pnr::test::bytesAttr(mlir::MLIRContext *context,
+                           llvm::ArrayRef<std::uint8_t> bytes) {
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  return mlir::DenseI8ArrayAttr::get(context, signedBytes);
+}
+
+std::vector<std::uint8_t>
+loom::pnr::test::unsignedBytes(mlir::DenseI8ArrayAttr attribute) {
+  std::vector<std::uint8_t> result;
+  result.reserve(attribute.size());
+  for (std::int8_t byte : attribute.asArrayRef())
+    result.push_back(static_cast<std::uint8_t>(byte));
+  return result;
+}
+
+std::string loom::pnr::test::byteList(llvm::ArrayRef<std::uint8_t> bytes) {
+  std::string result = "[";
+  for (auto [ordinal, byte] : llvm::enumerate(bytes)) {
+    if (ordinal)
+      result += ", ";
+    result += std::to_string(static_cast<std::int8_t>(byte));
+  }
+  return result + "]";
+}
 
 loom::CanonicalSemanticBytes
 loom::pnr::test::rawSystemBytes(::mapping::SystemOp root) {
@@ -353,4 +387,205 @@ loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
   require(finalized.roots().size() == 1,
           "heterogeneous fixture did not publish one System root");
   return finalized;
+}
+
+void loom::pnr::test::verifyFinalizedSystemMappingWorkflow(
+    const SystemCandidateState &candidate,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const loom::fabric::FabricSystemRootView &fabric,
+    const loom::mapping::SystemMappingConstraintSetView &emptyConstraints,
+    ArtifactStore &store, mlir::MLIRContext &context,
+    std::size_t expectedServiceCount) {
+  auto finalized = take(finalizeSystemMappingCandidate(
+      candidate, dataflow, fabric, emptyConstraints, store, context));
+  auto imported =
+      take(loom::mapping::importSystemMapping(finalized.reference(), store));
+  auto replayed =
+      take(loom::mapping::importSystemMapping(finalized.reference(), store));
+  require(imported.canonicalBytes().bytes() ==
+                  finalized.canonicalBytes().bytes() &&
+              replayed.canonicalBytes().bytes() ==
+                  finalized.canonicalBytes().bytes() &&
+              imported.view().serviceRealizations().size() ==
+                  expectedServiceCount &&
+              imported.view().resourceUses().size() ==
+                  candidate.instructionResourceUses().size() +
+                      candidate.serviceResourceUses().size(),
+          "full SystemMapping finalization or replay lost closure");
+
+  auto draft = take(materializeSystemCandidateDraft(candidate, context));
+  mlir::OwningOpRef<mlir::Operation *> missingUse(draft->clone());
+  auto missingUseRoot = mlir::cast<::mapping::SystemOp>(missingUse.get());
+  auto omittedUse = *missingUseRoot.getBody()
+                         .front()
+                         .getOps<::mapping::ResourceUseOp>()
+                         .begin();
+  omittedUse.erase();
+  llvm::Error missingError = loom::mapping::verifySystemMappingBase(
+      missingUseRoot, dataflow, fabric, store);
+  require(static_cast<bool>(missingError),
+          "missing System ResourceUse unexpectedly verified");
+  const std::string missingDiagnostic = llvm::toString(std::move(missingError));
+  require(llvm::StringRef(missingDiagnostic)
+              .contains("ResourceUse closure is incomplete"),
+          "missing ResourceUse diagnostic changed: " + missingDiagnostic);
+
+  mlir::OwningOpRef<mlir::Operation *> missingSelection(draft->clone());
+  auto missingSelectionRoot =
+      mlir::cast<::mapping::SystemOp>(missingSelection.get());
+  auto service = *missingSelectionRoot.getBody()
+                      .front()
+                      .getOps<::mapping::ServiceRealizationOp>()
+                      .begin();
+  auto unreachableSelection = *service.getBody()
+                                   .front()
+                                   .getOps<::mapping::ServicePlanSelectionOp>()
+                                   .begin();
+  auto unreachableKey = take(loom::mapping::decodeServicePlanSelectionKey(
+      unsignedBytes(unreachableSelection.getKey().getRecord()),
+      dataflow.identity()));
+  if (std::holds_alternative<loom::mapping::InstructionExecutionContextKey>(
+          unreachableKey.context)) {
+    require(!candidate.problem().spatialMappings().empty(),
+            "workflow needs a SpatialMapping for an unreachable context");
+    unreachableKey.context = loom::mapping::SpatialExecutionContextKey{
+        candidate.selectedAccCore(0),
+        candidate.problem().spatialMappings().front().artifact};
+  } else {
+    unreachableKey.context = loom::mapping::InstructionExecutionContextKey{
+        candidate.selectedAccCore(0)};
+  }
+  auto unreachableKeyBytes = take(loom::mapping::encodeServicePlanSelectionKey(
+      dataflow.identity(), unreachableKey));
+  unreachableSelection->setAttr(
+      "key", ::mapping::ServicePlanSelectionKeyAttr::get(
+                 &context, bytesAttr(&context, unreachableKeyBytes)));
+  llvm::Error missingSelectionError = loom::mapping::verifySystemMappingBase(
+      missingSelectionRoot, dataflow, fabric, store);
+  require(static_cast<bool>(missingSelectionError),
+          "missing System plan selection unexpectedly verified");
+  const std::string missingSelectionDiagnostic =
+      llvm::toString(std::move(missingSelectionError));
+  require(llvm::StringRef(missingSelectionDiagnostic)
+              .contains("ServicePlanSelection closure is incomplete"),
+          "missing selection diagnostic changed: " +
+              missingSelectionDiagnostic);
+
+  mlir::OwningOpRef<mlir::Operation *> disconnectedRoute(draft->clone());
+  auto disconnectedRoot =
+      mlir::cast<::mapping::SystemOp>(disconnectedRoute.get());
+  ::mapping::TransferLegRealizationOp selectedRoute;
+  ::mapping::SystemRouteNodeOp selectedNode;
+  disconnectedRoot.walk([&](::mapping::TransferLegRealizationOp route) {
+    if (selectedRoute)
+      return;
+    auto nodes = route.getBody().front().getOps<::mapping::SystemRouteNodeOp>();
+    if (nodes.empty())
+      return;
+    selectedRoute = route;
+    selectedNode = *nodes.begin();
+  });
+  require(selectedRoute && selectedNode,
+          "workflow has no nontrivial System route to disconnect");
+  auto selectedTraversal = take(
+      loom::fabric::decodeFabricRef<loom::fabric::FabricPhysicalTraversalRef>(
+          unsignedBytes(selectedNode.getIncomingTraversal().getRecord())));
+  const loom::fabric::FabricPhysicalTraversalView *traversalView = nullptr;
+  for (const auto &traversal : fabric.artifact().physicalTraversals())
+    if (traversal.reference == selectedTraversal) {
+      traversalView = &traversal;
+      break;
+    }
+  require(traversalView, "selected System traversal is absent from Fabric");
+  std::optional<loom::fabric::FabricTransportEndpointRef> disconnectedEndpoint;
+  for (const auto endpoint : fabric.artifact().transportEndpoints())
+    if (!llvm::is_contained(traversalView->sources, endpoint)) {
+      disconnectedEndpoint = endpoint;
+      break;
+    }
+  require(disconnectedEndpoint.has_value(),
+          "workflow Fabric has no endpoint outside the selected traversal");
+  selectedRoute->setAttr(
+      "root_endpoint",
+      ::mapping::FabricTransportEndpointRefAttr::get(
+          &context, bytesAttr(&context, loom::fabric::canonicalFabricBytes(
+                                            *disconnectedEndpoint))));
+  llvm::Error disconnectedError = loom::mapping::verifySystemMappingBase(
+      disconnectedRoot, dataflow, fabric, store);
+  require(static_cast<bool>(disconnectedError),
+          "disconnected System route unexpectedly verified");
+  const std::string disconnectedDiagnostic =
+      llvm::toString(std::move(disconnectedError));
+  require(llvm::StringRef(disconnectedDiagnostic)
+              .contains("service route traversal is discontinuous"),
+          "disconnected route diagnostic changed: " + disconnectedDiagnostic);
+
+  const auto &problem = candidate.problem();
+  mlir::OpBuilder builder(&context);
+  auto module = mlir::ModuleOp::create(builder.getUnknownLoc());
+  builder.setInsertionPointToStart(module.getBody());
+  llvm::SmallVector<mlir::Attribute> rootAttrs;
+  for (const auto root : problem.rootThreadLaunches()) {
+    auto encoded = take(
+        ::dataflow::encodeDataflowReference(problem.dataflowIdentity(), root));
+    rootAttrs.push_back(::mapping::RootThreadLaunchRefAttr::get(
+        &context, bytesAttr(&context, encoded)));
+  }
+  auto constraintRoot = ::mapping::ConstraintsSystemOp::create(
+      builder, builder.getUnknownLoc(),
+      ::mapping::ArtifactIdentityAttr::get(
+          &context, bytesAttr(&context, problem.dataflowIdentity().bytes())),
+      ::mapping::ArtifactIdentityAttr::get(
+          &context, bytesAttr(&context, problem.fabricIdentity().bytes())),
+      builder.getArrayAttr(rootAttrs), builder.getArrayAttr({}));
+  constraintRoot.getBody().emplaceBlock();
+  llvm::SmallVector<mlir::Attribute> selectedCores;
+  const auto selectedRoot = problem.rootThreadLaunches().front();
+  for (const auto &[ordinal, decision] :
+       llvm::enumerate(problem.threadDecisions()))
+    if (decision.root == selectedRoot)
+      selectedCores.push_back(::mapping::FabricAccCoreOccurrenceRefAttr::get(
+          &context,
+          bytesAttr(&context, loom::fabric::canonicalFabricBytes(
+                                  candidate.selectedAccCore(ordinal)))));
+  builder.setInsertionPointToEnd(&constraintRoot.getBody().front());
+  mlir::OperationState restriction(
+      builder.getUnknownLoc(),
+      ::mapping::ConstraintDomainRestrictionOp::getOperationName());
+  restriction.addAttribute(
+      "projection",
+      ::mapping::SystemConstraintProjectionKeyAttr::get(
+          &context,
+          static_cast<std::uint32_t>(
+              ::mapping::SystemConstraintProjection::ThreadTargetAccCore)));
+  restriction.addAttribute("subject", rootAttrs.front());
+  restriction.addAttribute("admissible_domain",
+                           builder.getArrayAttr(selectedCores));
+  builder.create(restriction);
+  auto admittedConstraints =
+      take(loom::mapping::finalizeSystemMappingConstraintSet(
+          constraintRoot, dataflow, fabric, store));
+  auto admitted = take(finalizeSystemMappingCandidate(
+      candidate, dataflow, fabric, admittedConstraints.view(), store, context));
+  require(admitted.reference() == finalized.reference(),
+          "independent System constraint admission changed Mapping identity");
+
+  mlir::OwningOpRef<mlir::Operation *> rejectedOwner(constraintRoot->clone());
+  auto rejectedRoot =
+      mlir::cast<::mapping::ConstraintsSystemOp>(rejectedOwner.get());
+  auto rejectedRestriction =
+      *rejectedRoot.getBody()
+           .front()
+           .getOps<::mapping::ConstraintDomainRestrictionOp>()
+           .begin();
+  rejectedRestriction->setAttr("admissible_domain", builder.getArrayAttr({}));
+  auto rejectedConstraints =
+      take(loom::mapping::finalizeSystemMappingConstraintSet(
+          rejectedRoot, dataflow, fabric, store));
+  auto rejected = finalizeSystemMappingCandidate(
+      candidate, dataflow, fabric, rejectedConstraints.view(), store, context);
+  require(!rejected, "rejecting System constraint unexpectedly admitted");
+  require(llvm::StringRef(llvm::toString(rejected.takeError()))
+              .contains("system_mapping_rejected_by_constraint_set"),
+          "System constraint rejection lost its typed diagnostic");
 }

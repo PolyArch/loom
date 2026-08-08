@@ -56,6 +56,10 @@
 
 namespace {
 
+using loom::pnr::test::byteList;
+using loom::pnr::test::bytesAttr;
+using loom::pnr::test::unsignedBytes;
+
 [[noreturn]] void fail(const llvm::Twine &message) {
   llvm::errs() << "System CandidateState anchor failed: " << message << '\n';
   std::exit(EXIT_FAILURE);
@@ -123,33 +127,6 @@ void requireVerificationFailureContains(mlir::Operation *operation,
                          return llvm::StringRef(diagnostic).contains(expected);
                        }),
           "adverse SystemMapping diagnostic changed");
-}
-
-mlir::DenseI8ArrayAttr bytesAttr(mlir::MLIRContext *context,
-                                 llvm::ArrayRef<std::uint8_t> bytes) {
-  std::vector<std::int8_t> signedBytes;
-  signedBytes.reserve(bytes.size());
-  for (std::uint8_t byte : bytes)
-    signedBytes.push_back(static_cast<std::int8_t>(byte));
-  return mlir::DenseI8ArrayAttr::get(context, signedBytes);
-}
-
-std::vector<std::uint8_t> unsignedBytes(mlir::DenseI8ArrayAttr attribute) {
-  std::vector<std::uint8_t> result;
-  result.reserve(attribute.size());
-  for (std::int8_t byte : attribute.asArrayRef())
-    result.push_back(static_cast<std::uint8_t>(byte));
-  return result;
-}
-
-std::string byteList(llvm::ArrayRef<std::uint8_t> bytes) {
-  std::string result = "[";
-  for (auto [ordinal, byte] : llvm::enumerate(bytes)) {
-    if (ordinal)
-      result += ", ";
-    result += std::to_string(static_cast<std::int8_t>(byte));
-  }
-  return result + "]";
 }
 
 std::vector<std::uint8_t>
@@ -537,6 +514,7 @@ generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
 int main() {
   using loom::pnr::test::countOccurrences;
   using loom::pnr::test::rawSystemBytes;
+  using loom::pnr::test::verifyFinalizedSystemMappingWorkflow;
   using loom::pnr::test::withFirstCoordinateLowerBound;
 
   TemporaryDirectory directory;
@@ -1357,6 +1335,9 @@ int main() {
   auto secondDraft =
       take(loom::pnr::materializeSystemCandidateDraft(*first.state, context));
   auto firstRoot = mlir::cast<::mapping::SystemOp>(firstDraft.get());
+  verifyFinalizedSystemMappingWorkflow(*first.state, dataflow, system,
+                                       constraints.view(), store, context,
+                                       problem->serviceDomains().size());
   std::size_t materializedRouteCount = 0;
   for (auto service :
        firstRoot.getBody().front().getOps<::mapping::ServiceRealizationOp>()) {

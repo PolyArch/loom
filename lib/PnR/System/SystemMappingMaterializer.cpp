@@ -786,4 +786,22 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
   return result;
 }
 
+llvm::Expected<::loom::mapping::FinalizedSystemMapping>
+finalizeSystemMappingCandidate(
+    const SystemCandidateState &candidate,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const ::loom::mapping::SystemMappingConstraintSetView &constraints,
+    const ArtifactStore &store, mlir::MLIRContext &context) {
+  if (candidate.problem().dataflowIdentity() != dataflow.identity() ||
+      candidate.problem().fabricIdentity() != fabric.artifact().identity())
+    return invalid("candidate owner tuple does not match finalizer inputs");
+  auto draft = materializeSystemCandidateDraft(candidate, context);
+  if (!draft)
+    return draft.takeError();
+  return ::loom::mapping::finalizeSystemMapping(
+      mlir::cast<::mapping::SystemOp>(draft->get()), dataflow, fabric,
+      constraints, store);
+}
+
 } // namespace loom::pnr

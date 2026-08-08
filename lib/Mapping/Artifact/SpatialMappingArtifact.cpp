@@ -21,6 +21,7 @@
 #include "Mapping/Artifact/SpatialProgressAnalysis.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "MappingAssemblyInternal.h"
+#include "MappingResourceUseImport.h"
 #include "SpatialMappingCapacityVerification.h"
 #include "SpatialMappingMemoryImport.h"
 #include "SpatialMappingTagAssignments.h"
@@ -678,67 +679,6 @@ importEventPoint(::mapping::SpatialEventPointAttr point,
 using RequiredComputeUse = SpatialComputeUseRequirement;
 using RequiredMemoryUse = detail::SpatialMemoryResourceUseRequirement;
 
-llvm::Expected<std::vector<::fabric::UsePatternValue>>
-importPatternValues(ArrayAttr records,
-                    llvm::ArrayRef<::fabric::UsePatternValueSchema> schemas,
-                    llvm::StringRef field) {
-  if (records.size() != schemas.size())
-    return invalid("ResourceUse " + field +
-                   " count disagrees with its Fabric use pattern schema");
-
-  std::vector<::fabric::UsePatternValue> result;
-  result.reserve(records.size());
-  for (auto [record, schema] : llvm::zip_equal(records, schemas)) {
-    auto typed = dyn_cast<::mapping::OwnerTypedValueAttr>(record);
-    if (!typed)
-      return invalid("ResourceUse " + field +
-                     " contains a non-owner-typed value");
-    const std::vector<std::uint8_t> bytes = unsignedBytes(typed.getRecord());
-    auto value = ::fabric::decodeUsePatternValue(schema, bytes);
-    if (!value)
-      return invalid("ResourceUse " + field +
-                     " cannot be decoded by its Fabric owner: " +
-                     llvm::toString(value.takeError()));
-    auto canonical = ::fabric::encodeUsePatternValue(schema, *value);
-    if (!canonical)
-      return invalid("ResourceUse " + field +
-                     " cannot be re-encoded by its Fabric owner: " +
-                     llvm::toString(canonical.takeError()));
-    if (*canonical != bytes)
-      return invalid("ResourceUse " + field +
-                     " is not in its owner codec's canonical form");
-    result.push_back(std::move(*value));
-  }
-  return result;
-}
-
-struct ImportedPatternValues final {
-  std::vector<::fabric::UsePatternValue> parameters;
-  std::vector<::fabric::UsePatternValue> sharingAssignments;
-};
-
-llvm::Expected<ImportedPatternValues>
-importPatternValues(::mapping::ResourceUseOp record,
-                    const ::loom::fabric::FabricArtifactView &fabric,
-                    const ::loom::fabric::FabricUsePatternRef &pattern) {
-  const ::fabric::ResourceContract *contract =
-      fabric.resourceContract(pattern.owner.catalog());
-  if (!contract || pattern.ordinal >= contract->usePatternCount())
-    return invalid("ResourceUse does not resolve an exact Fabric use pattern");
-  const ::fabric::UsePattern declaration =
-      contract->usePattern(::fabric::UsePatternKey(pattern.ordinal));
-  auto parameters = importPatternValues(record.getParameters(),
-                                        declaration.parameters, "parameters");
-  if (!parameters)
-    return parameters.takeError();
-  auto sharing = importPatternValues(record.getSharingAssignments(),
-                                     declaration.sharingAssignments,
-                                     "sharing assignments");
-  if (!sharing)
-    return sharing.takeError();
-  return ImportedPatternValues{std::move(*parameters), std::move(*sharing)};
-}
-
 llvm::Expected<std::string>
 requiredUseKey(const RequiredComputeUse &use,
                const ArtifactIdentity &dataflowIdentity) {
@@ -879,7 +819,8 @@ llvm::Expected<SpatialResourceUseView> importResourceUse(
     return trigger.takeError();
   if (trigger->guaranteedOffset || activation.getRelease())
     return invalid("ResourceUse must use intrinsic event activation");
-  auto values = importPatternValues(record, fabric, *pattern);
+  auto values =
+      detail::importResourceUsePatternValues(record, fabric, *pattern);
   if (!values)
     return values.takeError();
   auto importedOwner = importSpatialResourceOwner(record.getOwner(), dataflow);

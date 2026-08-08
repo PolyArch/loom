@@ -13,11 +13,15 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <string>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
 
 namespace loom::mapping {
+
+class SystemMappingView;
 
 llvm::Expected<CanonicalSemanticBytes>
 writeCanonicalSystemConstraintAssembly(::mapping::ConstraintsSystemOp root);
@@ -134,6 +138,30 @@ private:
                                    const ArtifactStore &store);
 };
 
+class SystemMappingConstraintRejection final
+    : public llvm::ErrorInfo<SystemMappingConstraintRejection> {
+public:
+  static char ID;
+
+  SystemMappingConstraintRejection(
+      ::mapping::SystemConstraintProjection projection,
+      std::uint64_t clauseOrdinal, std::string message)
+      : projection_(projection), clauseOrdinal_(clauseOrdinal),
+        message_(std::move(message)) {}
+
+  ::mapping::SystemConstraintProjection projection() const {
+    return projection_;
+  }
+  std::uint64_t clauseOrdinal() const { return clauseOrdinal_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  ::mapping::SystemConstraintProjection projection_;
+  std::uint64_t clauseOrdinal_ = 0;
+  std::string message_;
+};
+
 llvm::Expected<FinalizedSystemMappingConstraintSet>
 finalizeSystemMappingConstraintSet(::mapping::ConstraintsSystemOp source,
                                    const ArtifactStore &store);
@@ -158,6 +186,12 @@ finalizeEmptySystemMappingConstraintSet(
 llvm::Expected<FinalizedSystemMappingConstraintSet>
 importSystemMappingConstraintSet(const ArtifactRootReference &reference,
                                  const ArtifactStore &store);
+
+llvm::Error admitSystemMappingConstraints(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const SystemMappingConstraintSetView &constraints,
+    const SystemMappingView &systemMapping);
 
 } // namespace loom::mapping
 

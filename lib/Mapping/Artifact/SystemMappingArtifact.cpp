@@ -1,12 +1,15 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 
 #include "MappingAssemblyInternal.h"
+#include "SystemMappingClosure.h"
 
+#include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactLocalReference.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -600,6 +603,154 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
   return SystemExecutionBindingView(std::move(roots), std::move(imports),
                                     std::move(threadBindings),
                                     std::move(graphBindings));
+}
+
+llvm::Expected<SystemMappingView> importSystemMappingView(
+    const ArtifactIdentity &mappingIdentity, ::mapping::SystemOp root,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const ArtifactStore &store) {
+  auto canonical = writeCanonicalSystemMappingAssembly(root);
+  if (!canonical)
+    return canonical.takeError();
+  if (finalizeArtifactIdentity(mappingArtifactSchema, *canonical) !=
+      mappingIdentity)
+    return invalid("mapping identity does not match canonical bytes");
+  auto execution =
+      strictImportSystemExecutionBindings(*canonical, dataflow, fabric, store);
+  if (!execution)
+    return execution.takeError();
+  auto closure =
+      detail::importSystemMappingClosure(root, dataflow, fabric, *execution);
+  if (!closure)
+    return closure.takeError();
+  return SystemMappingView(mappingIdentity, dataflow.identity(),
+                           fabric.artifact().identity(), std::move(*execution),
+                           std::move(closure->services),
+                           std::move(closure->resourceUses));
+}
+
+llvm::Error verifySystemMappingBase(
+    ::mapping::SystemOp source,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const ArtifactStore &store) {
+  auto assembly = detail::prepareCanonicalSystemMappingAssembly(source);
+  if (!assembly)
+    return assembly.takeError();
+  const ArtifactIdentity identity =
+      finalizeArtifactIdentity(mappingArtifactSchema, assembly->bytes);
+  auto view = importSystemMappingView(
+      identity, mlir::cast<::mapping::SystemOp>(assembly->root.get()), dataflow,
+      fabric, store);
+  if (!view)
+    return view.takeError();
+  return llvm::Error::success();
+}
+
+llvm::Expected<FinalizedSystemMapping>
+finalizeSystemMapping(::mapping::SystemOp source,
+                      const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                      const ::loom::fabric::FabricSystemRootView &fabric,
+                      const SystemMappingConstraintSetView &constraints,
+                      const ArtifactStore &store) {
+  if (constraints.dataflowIdentity() != dataflow.identity() ||
+      constraints.fabricIdentity() != fabric.artifact().identity())
+    return invalid("System constraint owner tuple does not match D/F");
+
+  const ArtifactRootReference upstream[] = {
+      {::dataflow::canonicalDataflowSchema.identity.str(),
+       ::dataflow::canonicalDataflowSchema.version, dataflow.identity()},
+      {::loom::fabric::fabricArtifactSchema.identity.str(),
+       ::loom::fabric::fabricArtifactSchema.version,
+       fabric.artifact().identity()},
+      {mappingConstraintSetSchema.identity.str(),
+       mappingConstraintSetSchema.version, constraints.identity()}};
+  for (const auto &reference : upstream) {
+    auto bytes = store.get(reference);
+    if (!bytes)
+      return bytes.takeError();
+  }
+
+  auto assembly = detail::prepareCanonicalSystemMappingAssembly(source);
+  if (!assembly)
+    return assembly.takeError();
+  const ArtifactIdentity identity =
+      finalizeArtifactIdentity(mappingArtifactSchema, assembly->bytes);
+  auto root = mlir::cast<::mapping::SystemOp>(assembly->root.get());
+  auto view = importSystemMappingView(identity, root, dataflow, fabric, store);
+  if (!view)
+    return view.takeError();
+  if (constraints.rootThreadLaunches() !=
+      view->executionBindings().rootThreadLaunches())
+    return invalid("System constraint root scope does not match Mapping");
+  if (llvm::Error error =
+          admitSystemMappingConstraints(dataflow, fabric, constraints, *view))
+    return std::move(error);
+
+  auto stored = store.put(mappingArtifactSchema, assembly->bytes);
+  if (!stored)
+    return stored.takeError();
+  if (*stored != identity)
+    return invalid("ArtifactStore returned a different Mapping identity");
+  ArtifactRootReference reference{mappingArtifactSchema.identity.str(),
+                                  mappingArtifactSchema.version, identity};
+  return FinalizedSystemMapping(std::move(reference),
+                                std::move(assembly->bytes), std::move(*view));
+}
+
+llvm::Expected<FinalizedSystemMapping>
+importSystemMapping(const ArtifactRootReference &reference,
+                    const ArtifactStore &store) {
+  if (reference.schemaIdentity != mappingArtifactSchema.identity ||
+      reference.schemaVersion != mappingArtifactSchema.version)
+    return invalid("root reference has the wrong Mapping schema");
+  auto canonical = store.get(reference);
+  if (!canonical)
+    return canonical.takeError();
+  if (finalizeArtifactIdentity(mappingArtifactSchema, *canonical) !=
+      reference.artifact)
+    return invalid("mapping identity does not match canonical bytes");
+  auto parsed = parseSystemRoot(*canonical);
+  if (!parsed)
+    return parsed.takeError();
+  auto replay = writeCanonicalSystemMappingAssembly(parsed->root);
+  if (!replay)
+    return replay.takeError();
+  if (replay->bytes() != canonical->bytes())
+    return invalid("stored SystemMapping payload is not canonical");
+  auto dataflowIdentity = ArtifactIdentity::fromBytes(
+      unsignedBytes(parsed->root.getDataflow().getRecord()));
+  auto fabricIdentity = ArtifactIdentity::fromBytes(
+      unsignedBytes(parsed->root.getFabric().getRecord()));
+  if (!dataflowIdentity)
+    return dataflowIdentity.takeError();
+  if (!fabricIdentity)
+    return fabricIdentity.takeError();
+  auto dataflow = ::dataflow::importCanonicalDataflow(
+      {::dataflow::canonicalDataflowSchema.identity.str(),
+       ::dataflow::canonicalDataflowSchema.version, *dataflowIdentity},
+      store);
+  if (!dataflow)
+    return dataflow.takeError();
+  auto dataflowView = dataflow->view();
+  if (!dataflowView)
+    return dataflowView.takeError();
+  auto fabric = ::loom::fabric::importEntireFabricRoot(
+      {::loom::fabric::fabricArtifactSchema.identity.str(),
+       ::loom::fabric::fabricArtifactSchema.version, *fabricIdentity},
+      store);
+  if (!fabric)
+    return fabric.takeError();
+  auto system = ::loom::fabric::requireSystemRoot(fabric->view());
+  if (!system)
+    return system.takeError();
+  auto view = importSystemMappingView(reference.artifact, parsed->root,
+                                      *dataflowView, *system, store);
+  if (!view)
+    return view.takeError();
+  return FinalizedSystemMapping(reference, std::move(*canonical),
+                                std::move(*view));
 }
 
 } // namespace loom::mapping

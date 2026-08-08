@@ -5,6 +5,9 @@
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/IR/UsePatternValue.h"
+#include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Mapping/Artifact/SystemPresburger.h"
 #include "Mapping/IR/MappingOps.h"
 
@@ -16,6 +19,8 @@
 #include <vector>
 
 namespace loom::mapping {
+
+class SystemMappingConstraintSetView;
 
 template <typename Target> struct SystemPresburgerClauseView final {
   std::vector<SystemPresburgerCell> cells;
@@ -75,6 +80,173 @@ private:
       const ::loom::fabric::FabricSystemRootView &, const ArtifactStore &);
 };
 
+struct SystemMemoryRegionElementView final {
+  ::dataflow::LogicalMemoryRootOrViewRef logicalMemory;
+  SpatialMemoryIntervalView interval;
+  ::loom::fabric::FabricMemoryServiceRegionRef serviceRegion;
+  std::vector<::loom::fabric::SystemServiceTransformRef> transformPath;
+};
+
+struct SystemConsistencyElementView final {
+  ::dataflow::FenceActorFamilyRef fence;
+  ::loom::fabric::MemoryConsistencyDomainRef consistencyDomain;
+};
+
+using SystemServicePlanElementView =
+    std::variant<CanonicalServiceLegKey, SystemMemoryRegionElementView,
+                 SystemConsistencyElementView>;
+
+struct SystemMemoryExposureView final {
+  ::dataflow::MemoryExposureRef exposure;
+  ::loom::fabric::SubordinateEndpointRef terminal;
+};
+
+struct SystemMemoryRegionTargetView final {
+  SystemMemoryRegionElementView element;
+  std::vector<SystemMemoryExposureView> exposures;
+};
+
+struct SystemTransferRouteNodeView final {
+  std::uint64_t ordinal = 0;
+  std::uint64_t parentOrdinal = 0;
+  ::loom::fabric::FabricPhysicalTraversalRef incomingTraversal;
+};
+
+struct SystemTransferRouteSinkView final {
+  SystemTransferTerminalKey terminal;
+  std::uint64_t nodeOrdinal = 0;
+};
+
+struct SystemTransferLegView final {
+  CanonicalServiceLegKey leg;
+  ::loom::fabric::FabricTransportEndpointRef rootEndpoint;
+  std::vector<SystemTransferRouteNodeView> nodes;
+  std::vector<SystemTransferRouteSinkView> sinks;
+};
+
+struct SystemServicePlanView final {
+  std::uint64_t ordinal = 0;
+  std::vector<SystemTransferLegView> transferLegs;
+  std::vector<SystemMemoryRegionTargetView> memoryTargets;
+  std::vector<SystemConsistencyElementView> consistencyTargets;
+};
+
+struct SystemServicePlanSelectionView final {
+  ServicePlanSelectionKey key;
+  std::vector<SystemPresburgerClauseView<std::uint64_t>> clauses;
+  std::optional<std::uint64_t> defaultPlanOrdinal;
+};
+
+struct SystemServiceRealizationView final {
+  SystemServiceObligationKey key;
+  std::vector<SystemServicePlanView> plans;
+  std::vector<SystemServicePlanSelectionView> selections;
+};
+
+struct SystemInstructionResourceOwnerView final {
+  ::dataflow::RootThreadLaunchRef root;
+  ::loom::fabric::InstructionCoreContextRef instructionContext;
+};
+
+struct SystemServicePlanResourceOwnerView final {
+  SystemServiceObligationKey service;
+  std::uint64_t planOrdinal = 0;
+  SystemServicePlanElementView element;
+};
+
+using SystemResourceOwnerView =
+    std::variant<SystemInstructionResourceOwnerView,
+                 SystemServicePlanResourceOwnerView>;
+
+struct SystemEventPointView final {
+  ::dataflow::EventFamilyKey event;
+  std::optional<std::vector<std::uint8_t>> guaranteedOffset;
+};
+
+struct SystemRelativeActivationView final {
+  SystemEventPointView trigger;
+  std::optional<SystemEventPointView> release;
+};
+
+struct SystemResourceUseView final {
+  SystemResourceOwnerView owner;
+  ::loom::fabric::FabricUsePatternRef useSite;
+  SystemRelativeActivationView activation;
+  std::vector<::fabric::UsePatternValue> parameters;
+  std::vector<::fabric::UsePatternValue> sharingAssignments;
+};
+
+class SystemMappingView final {
+public:
+  const ArtifactIdentity &identity() const { return identity_; }
+  const ArtifactIdentity &dataflowIdentity() const { return dataflowIdentity_; }
+  const ArtifactIdentity &fabricIdentity() const { return fabricIdentity_; }
+  const SystemExecutionBindingView &executionBindings() const {
+    return executionBindings_;
+  }
+  llvm::ArrayRef<SystemServiceRealizationView> serviceRealizations() const {
+    return serviceRealizations_;
+  }
+  llvm::ArrayRef<SystemResourceUseView> resourceUses() const {
+    return resourceUses_;
+  }
+
+private:
+  SystemMappingView(ArtifactIdentity identity,
+                    ArtifactIdentity dataflowIdentity,
+                    ArtifactIdentity fabricIdentity,
+                    SystemExecutionBindingView executionBindings,
+                    std::vector<SystemServiceRealizationView> services,
+                    std::vector<SystemResourceUseView> resourceUses)
+      : identity_(std::move(identity)),
+        dataflowIdentity_(std::move(dataflowIdentity)),
+        fabricIdentity_(std::move(fabricIdentity)),
+        executionBindings_(std::move(executionBindings)),
+        serviceRealizations_(std::move(services)),
+        resourceUses_(std::move(resourceUses)) {}
+
+  ArtifactIdentity identity_;
+  ArtifactIdentity dataflowIdentity_;
+  ArtifactIdentity fabricIdentity_;
+  SystemExecutionBindingView executionBindings_;
+  std::vector<SystemServiceRealizationView> serviceRealizations_;
+  std::vector<SystemResourceUseView> resourceUses_;
+
+  friend class FinalizedSystemMapping;
+  friend llvm::Expected<SystemMappingView>
+  importSystemMappingView(const ArtifactIdentity &, ::mapping::SystemOp,
+                          const ::dataflow::CanonicalDataflowProgramView &,
+                          const ::loom::fabric::FabricSystemRootView &,
+                          const ArtifactStore &);
+};
+
+class FinalizedSystemMapping final {
+public:
+  const ArtifactRootReference &reference() const { return reference_; }
+  const CanonicalSemanticBytes &canonicalBytes() const {
+    return canonicalBytes_;
+  }
+  const SystemMappingView &view() const { return view_; }
+
+private:
+  FinalizedSystemMapping(ArtifactRootReference reference,
+                         CanonicalSemanticBytes canonicalBytes,
+                         SystemMappingView view)
+      : reference_(std::move(reference)),
+        canonicalBytes_(std::move(canonicalBytes)), view_(std::move(view)) {}
+
+  ArtifactRootReference reference_;
+  CanonicalSemanticBytes canonicalBytes_;
+  SystemMappingView view_;
+
+  friend llvm::Expected<FinalizedSystemMapping> finalizeSystemMapping(
+      ::mapping::SystemOp, const ::dataflow::CanonicalDataflowProgramView &,
+      const ::loom::fabric::FabricSystemRootView &,
+      const SystemMappingConstraintSetView &, const ArtifactStore &);
+  friend llvm::Expected<FinalizedSystemMapping>
+  importSystemMapping(const ArtifactRootReference &, const ArtifactStore &);
+};
+
 llvm::Expected<CanonicalSemanticBytes>
 writeCanonicalSystemMappingAssembly(::mapping::SystemOp root);
 
@@ -85,6 +257,23 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const ArtifactStore &store);
+
+llvm::Error verifySystemMappingBase(
+    ::mapping::SystemOp source,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const ArtifactStore &store);
+
+llvm::Expected<FinalizedSystemMapping>
+finalizeSystemMapping(::mapping::SystemOp source,
+                      const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                      const ::loom::fabric::FabricSystemRootView &fabric,
+                      const SystemMappingConstraintSetView &constraints,
+                      const ArtifactStore &store);
+
+llvm::Expected<FinalizedSystemMapping>
+importSystemMapping(const ArtifactRootReference &reference,
+                    const ArtifactStore &store);
 
 } // namespace loom::mapping
 
