@@ -35,7 +35,7 @@ createStagingDirectory(const std::filesystem::path &root) {
   for (unsigned attempt = 0; attempt != 32; ++attempt) {
     llvm::SmallString<256> model((root.string() + ".partial-%%%%%%").c_str());
     llvm::SmallString<256> candidate;
-    llvm::sys::fs::createUniquePath(model, candidate, true);
+    llvm::sys::fs::createUniquePath(model, candidate, false);
     std::error_code error;
     if (std::filesystem::create_directory(candidate.str().str(), error))
       return std::filesystem::path(candidate.str().str());

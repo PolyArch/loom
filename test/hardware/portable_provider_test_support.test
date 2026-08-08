@@ -1,3 +1,5 @@
 # REQUIRES: circt
 # RUN: rm -rf %t
 # RUN: %loom-portable-provider-test-support-test %t
+# RUN: rm -rf %t-relative-parent && mkdir -p %t-relative-parent
+# RUN: cd %t-relative-parent && %loom-portable-provider-test-support-test workspace
