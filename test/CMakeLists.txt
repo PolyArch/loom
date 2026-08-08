@@ -89,7 +89,6 @@ set(LOOM_TEST_DEPENDS
   loom-external-tool-invocation-bundle-test
   loom-external-tool-runtime-binding-test
   loom-external-tool-provider-test
-  loom-yosys-synthesis-test
   loom-implementation-platform-test
   loom-fabric-artifact-gate-test
   loom-fabric-artifact-codec-test
@@ -193,7 +192,10 @@ set(LOOM_TEST_DEPENDS
   loom-tblgen
 )
 
-list(APPEND LOOM_TEST_DEPENDS ${LOOM_HARDWARE_TEST_TARGETS})
+list(APPEND LOOM_TEST_DEPENDS
+  ${LOOM_EDA_TEST_TARGETS}
+  ${LOOM_HARDWARE_TEST_TARGETS}
+)
 
 if(LOOM_HAVE_CIRCT)
   list(APPEND LOOM_TEST_DEPENDS

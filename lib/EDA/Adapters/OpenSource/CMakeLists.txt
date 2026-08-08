@@ -1,4 +1,5 @@
 add_library(LoomEDAOpenSource
+  Verilator.cpp
   Yosys.cpp
 )
 
