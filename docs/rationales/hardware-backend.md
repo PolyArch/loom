@@ -187,6 +187,13 @@ does not relax its defined siblings. This is the smallest refinement relation
 and applies uniformly to overflow, exactness, disjointness, and other
 promise-bearing schemas.
 
+This is why an ordinary floating-to-integer conversion and its matching
+saturating conversion do not need separate configuration modes. The clamp
+result required by the saturating schema is a valid concrete result wherever
+the ordinary schema produces poison, while both schemas agree on every defined
+ordinary result. The enabled schema set still determines whether clamp behavior
+is required; it does not duplicate that fact in a selector key.
+
 The relation observes rather than rewrites Canonical Dataflow semantics. Undef
 remains unconstrained until its owning observation or freeze, and a canonical
 Defined result from that operation must still be reproduced exactly. Fabric

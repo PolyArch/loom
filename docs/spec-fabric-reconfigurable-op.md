@@ -405,7 +405,7 @@ The finite floating-point quotients are:
 | `ScalarFloatCompareMinMax` | `Compare(predicate[, format])`, `Minimum(format)`, `Maximum(format)`, `MinNumber(format)`, or `MaxNumber(format)` |
 | `ScalarFloatWidthCast` | `(source_format, destination_format[, rounding_mode for truncation])` |
 | `ScalarIntegerToFloat` | `Signed(source_width, destination_format)` or `Unsigned(source_width, destination_format)` |
-| `ScalarFloatToInteger` | `Signed(source_format, destination_width)`, `Unsigned(source_format, destination_width)`, `SignedSaturating(source_format, destination_width)`, or `UnsignedSaturating(source_format, destination_width)` |
+| `ScalarFloatToInteger` | `Signed(source_format, destination_width)` or `Unsigned(source_format, destination_width)` |
 | `ScalarFloatMultiply` | `(format, rounding_mode)` |
 | `ScalarFloatFma` | `(format, rounding_mode)` |
 | `FixedVectorFloatSign` | `Negate(active_representation_width)` or `Absolute(active_representation_width)` |
@@ -439,6 +439,11 @@ transforms. Fixed-vector shape and lane count remain admission facts and do not
 enter a floating arithmetic key. Physical filtering must establish at least
 one positive-lane actor witness before quotienting.
 
+`active_representation_width` is the scalar format representation width for
+`ScalarFloatSign` and the element format representation width for
+`FixedVectorFloatSign`; it is never the flattened vector width or a physical
+port width.
+
 An absent actor rounding attribute canonicalizes to
 `to_nearest_even` wherever the row contains `rounding_mode`. Explicit
 `to_nearest_even` is the same behavior. A rounding component that is constant
@@ -452,6 +457,12 @@ Under the same `nnan` permission, `minnum` and `maxnum` collapse to `Minimum`
 and `Maximum`. `arith.uitofp` with its `nneg` promise collapses to the `Signed`
 conversion for equal endpoints. These promises restrict or relax defined
 software inputs; they do not create physical modes.
+
+Ordinary and saturating floating-to-integer schemas with equal signedness and
+endpoints also project to one key. The saturating schema requires the concrete
+resource to implement its defined clamp result. That same result is a valid
+refinement of the ordinary schema wherever the ordinary result is poison, so
+selecting the ordinary schema does not require a second physical mode.
 
 `FloatBehaviorProfile` is a typed admission profile, not an independent
 configuration product. Multiple rounding modes are valid only for a family
