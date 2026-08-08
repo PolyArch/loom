@@ -245,12 +245,11 @@ def Mapping_RouteSinkOp : Mapping_Op<"route_sink", [HasParent<"RouteTreeOp">]> {
   let hasVerifier = 1;
 }
 
-def Mapping_ResourceUseOp
-    : Mapping_Op<"resource_use", [HasParent<"SpatialOp">]> {
+def Mapping_ResourceUseOp : Mapping_Op<"resource_use"> {
   let summary = "one event-relative Mapping selection of a Fabric UsePattern";
-  let arguments = (ins Mapping_SpatialResourceOwnerRef:$owner,
+  let arguments = (ins Mapping_ResourceOwnerRef:$owner,
       Mapping_FabricUsePatternRefAttr:$use_site,
-      Mapping_SpatialRelativeActivationAttr:$activation, ArrayAttr:$parameters,
+      Mapping_RelativeActivation:$activation, ArrayAttr:$parameters,
       ArrayAttr:$sharing_assignments);
   let assemblyFormat = [{`owner` `(` $owner `)`
                          `use_site` `(` $use_site `)`

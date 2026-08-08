@@ -141,6 +141,46 @@ requiresExplicitTransformPaths(const SystemCandidateState &candidate,
   return matchingRegionSets != 1;
 }
 
+llvm::Expected<::mapping::EventFamilyKeyAttr>
+eventFamilyAttr(mlir::MLIRContext *context,
+                const ArtifactIdentity &dataflowIdentity,
+                const ::dataflow::EventFamilyKey &event) {
+  return dataflowRefAttr<::mapping::EventFamilyKeyAttr>(
+      context, dataflowIdentity, event);
+}
+
+llvm::Error emitSystemResourceUse(
+    mlir::OpBuilder &builder, mlir::Location location, mlir::Block &body,
+    mlir::Attribute owner, const ::loom::fabric::FabricUsePatternRef &pattern,
+    const ArtifactIdentity &dataflowIdentity,
+    const ::dataflow::EventFamilyKey &triggerEvent,
+    const std::optional<::dataflow::EventFamilyKey> &releaseEvent) {
+  auto triggerAttr =
+      eventFamilyAttr(builder.getContext(), dataflowIdentity, triggerEvent);
+  if (!triggerAttr)
+    return triggerAttr.takeError();
+  auto trigger = ::mapping::SystemEventPointAttr::get(
+      builder.getContext(), *triggerAttr, ::mapping::OwnerTypedValueAttr());
+  ::mapping::SystemEventPointAttr release;
+  if (releaseEvent) {
+    auto releaseAttr =
+        eventFamilyAttr(builder.getContext(), dataflowIdentity, *releaseEvent);
+    if (!releaseAttr)
+      return releaseAttr.takeError();
+    release = ::mapping::SystemEventPointAttr::get(
+        builder.getContext(), *releaseAttr, ::mapping::OwnerTypedValueAttr());
+  }
+  auto activation = ::mapping::SystemRelativeActivationAttr::get(
+      builder.getContext(), trigger, release);
+  builder.setInsertionPointToEnd(&body);
+  ::mapping::ResourceUseOp::create(
+      builder, location, owner,
+      fabricRefAttr<::mapping::FabricUsePatternRefAttr>(builder.getContext(),
+                                                        pattern),
+      activation, builder.getArrayAttr({}), builder.getArrayAttr({}));
+  return llvm::Error::success();
+}
+
 ::mapping::SystemPresburgerCellAttr
 cellAttr(mlir::MLIRContext *context,
          const ::loom::mapping::SystemPresburgerCell &cell) {
@@ -318,6 +358,9 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
     ::loom::mapping::SystemServiceObligationKey key;
     std::map<PnrIndex, PlanGroup> plans;
   };
+  std::map<PnrIndex, std::pair<::loom::mapping::SystemServiceObligationKey,
+                               std::uint64_t>>
+      persistentPlanByContext;
   std::map<std::vector<std::uint8_t>, ServiceGroup> serviceGroups;
   for (const auto &[contextOrdinal, context] :
        llvm::enumerate(problem.serviceContexts())) {
@@ -370,6 +413,8 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
     for (const auto &[contextOrdinal, groupedPlan] : group.plans) {
       const std::uint64_t authoredOrdinal = planOrdinals.size();
       planOrdinals.emplace(contextOrdinal, authoredOrdinal);
+      persistentPlanByContext.emplace(
+          contextOrdinal, std::make_pair(group.key, authoredOrdinal));
       builder.setInsertionPointToEnd(&service.getBody().front());
       auto plan =
           ::mapping::ServicePlanOp::create(builder, location, authoredOrdinal);
@@ -607,6 +652,136 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
             builder, location,
             mlir::ArrayAttr::get(&context, {cellAttr(&context, cell)}), target);
     }
+  }
+
+  for (const auto &selected : candidate.instructionResourceUses()) {
+    auto rootAttr = dataflowRefAttr<::mapping::RootThreadLaunchRefAttr>(
+        &context, problem.dataflowIdentity(), selected.root);
+    if (!rootAttr)
+      return rootAttr.takeError();
+    auto owner = ::mapping::InstructionExecutionResourceOwnerRefAttr::get(
+        &context, *rootAttr,
+        fabricRefAttr<::mapping::InstructionCoreContextRefAttr>(
+            &context, selected.context));
+    const ::dataflow::RootThreadBoundaryTransferRef startTransfer(
+        ::dataflow::RootThreadStartTransferRef{selected.root});
+    const ::dataflow::RootThreadBoundaryTransferRef completionTransfer(
+        ::dataflow::RootThreadCompletionTransferRef{selected.root});
+    const ::dataflow::EventFamilyKey trigger(
+        ::dataflow::StaticTransferEventRef(::dataflow::ConsumedTransferEventRef{
+            ::dataflow::CanonicalSinkTerminalRef(
+                ::dataflow::RootThreadBoundarySinkRef{startTransfer})}));
+    const ::dataflow::EventFamilyKey release(
+        ::dataflow::StaticTransferEventRef(::dataflow::ProducedTransferEventRef{
+            ::dataflow::CanonicalProducerTerminalRef(
+                ::dataflow::RootThreadBoundarySourceRef{completionTransfer})}));
+    if (llvm::Error error = emitSystemResourceUse(
+            builder, location, root.getBody().front(), owner, selected.pattern,
+            problem.dataflowIdentity(), trigger, release))
+      return std::move(error);
+  }
+
+  for (const auto &selected : candidate.serviceResourceUses()) {
+    if (selected.context >= problem.serviceContexts().size())
+      return invalid("service ResourceUse context is out of range");
+    const auto &serviceContext = problem.serviceContexts()[selected.context];
+    if (selected.subject >= serviceContext.subjects.size())
+      return invalid("service ResourceUse subject is out of range");
+    const auto *memberSubject = std::get_if<SystemServiceMemberTargetSubject>(
+        &serviceContext.subjects[selected.subject]);
+    if (!memberSubject)
+      return invalid("memory exposure unexpectedly selected a ResourceUse");
+    const auto persisted = persistentPlanByContext.find(selected.context);
+    if (persisted == persistentPlanByContext.end())
+      return invalid("service ResourceUse has no persistent ServicePlan");
+    auto serviceBytes = ::loom::mapping::encodeSystemServiceObligationKey(
+        problem.dataflowIdentity(), persisted->second.first);
+    if (!serviceBytes)
+      return serviceBytes.takeError();
+    auto serviceAttr = ::mapping::SystemServiceObligationKeyAttr::get(
+        &context, bytesAttr(&context, *serviceBytes));
+
+    mlir::Attribute element;
+    const auto &target = candidate.serviceTarget(selected.context);
+    if (const auto *plan =
+            std::get_if<SystemMemoryServiceTargetPlan>(&target)) {
+      if (selected.branch >= plan->branches.size())
+        return invalid("service ResourceUse branch is out of range");
+      auto binding = detail::resolveSystemMemoryServiceBinding(
+          problem, selected.context, serviceContext.subjects[selected.subject],
+          candidate.threadChoices(), candidate.graphChoices());
+      if (!binding)
+        return binding.takeError();
+      if (!(*binding)->interval)
+        return invalid("service ResourceUse has no logical interval");
+      const auto *operation =
+          std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
+              &persisted->second.first);
+      const auto *logicalMemory =
+          operation
+              ? std::get_if<::dataflow::LogicalMemoryRootOrViewRef>(operation)
+              : nullptr;
+      if (!logicalMemory)
+        return invalid("memory ResourceUse belongs to a non-memory service");
+      auto logicalAttr =
+          dataflowRefAttr<::mapping::LogicalMemoryRootOrViewRefAttr>(
+              &context, problem.dataflowIdentity(), *logicalMemory);
+      if (!logicalAttr)
+        return logicalAttr.takeError();
+      llvm::SmallVector<mlir::Attribute> transforms;
+      auto explicitPaths =
+          requiresExplicitTransformPaths(candidate, selected.context, *plan);
+      if (!explicitPaths)
+        return explicitPaths.takeError();
+      if (*explicitPaths)
+        for (const auto transform :
+             plan->branches[selected.branch].transformPath)
+          transforms.push_back(
+              fabricRefAttr<::mapping::SystemServiceTransformRefAttr>(
+                  &context, transform));
+      element = ::mapping::MemoryRegionElementKeyAttr::get(
+          &context, *logicalAttr, intervalAttr(&context, *(*binding)->interval),
+          fabricRefAttr<::mapping::FabricMemoryServiceRegionRefAttr>(
+              &context, plan->branches[selected.branch].region),
+          builder.getArrayAttr(transforms));
+    } else {
+      const auto *domain =
+          std::get_if<::loom::fabric::MemoryConsistencyDomainRef>(&target);
+      const auto *operation =
+          std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
+              &persisted->second.first);
+      const auto *fence =
+          operation ? std::get_if<::dataflow::FenceActorFamilyRef>(operation)
+                    : nullptr;
+      if (!domain || !fence)
+        return invalid("consistency ResourceUse has no fence target");
+      auto fenceAttr = dataflowRefAttr<::mapping::FenceActorFamilyRefAttr>(
+          &context, problem.dataflowIdentity(), *fence);
+      if (!fenceAttr)
+        return fenceAttr.takeError();
+      element = ::mapping::ConsistencyElementKeyAttr::get(
+          &context, *fenceAttr,
+          fabricRefAttr<::mapping::MemoryConsistencyDomainRefAttr>(&context,
+                                                                   *domain));
+    }
+    auto owner = ::mapping::ServicePlanElementRefAttr::get(
+        &context, serviceAttr, persisted->second.second, element);
+    const ::dataflow::ContextualActorRef *actor = nullptr;
+    if (const auto *addressed =
+            std::get_if<::dataflow::AddressedMemoryActorMemberRef>(
+                &memberSubject->member))
+      actor = &addressed->actor;
+    else if (const auto *fence = std::get_if<::dataflow::FenceActorMemberRef>(
+                 &memberSubject->member))
+      actor = &fence->actor;
+    if (!actor)
+      return invalid("service ResourceUse member has no contextual actor");
+    const ::dataflow::EventFamilyKey trigger(
+        ::dataflow::ContextualActorTransitionEventRef{*actor, 0});
+    if (llvm::Error error = emitSystemResourceUse(
+            builder, location, root.getBody().front(), owner, selected.pattern,
+            problem.dataflowIdentity(), trigger, std::nullopt))
+      return std::move(error);
   }
   return result;
 }

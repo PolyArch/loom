@@ -870,11 +870,14 @@ llvm::Expected<SpatialResourceUseView> importResourceUse(
     return pattern.takeError();
   if (llvm::Error error = ::loom::fabric::validateFabricRef(fabric, *pattern))
     return std::move(error);
-  auto trigger =
-      importEventPoint(record.getActivation().getTrigger(), dataflow);
+  auto activation = mlir::dyn_cast<::mapping::SpatialRelativeActivationAttr>(
+      record.getActivation());
+  if (!activation)
+    return invalid("Spatial ResourceUse has a non-Spatial activation");
+  auto trigger = importEventPoint(activation.getTrigger(), dataflow);
   if (!trigger)
     return trigger.takeError();
-  if (trigger->guaranteedOffset || record.getActivation().getRelease())
+  if (trigger->guaranteedOffset || activation.getRelease())
     return invalid("ResourceUse must use intrinsic event activation");
   auto values = importPatternValues(record, fabric, *pattern);
   if (!values)

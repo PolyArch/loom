@@ -257,7 +257,88 @@ void requireVerificationFailure(mlir::Operation *operation,
                        [&](const std::string &diagnostic) {
                          return llvm::StringRef(diagnostic).contains(expected);
                        }),
-          "adverse route diagnostic changed");
+          diagnostics.empty()
+              ? "adverse route diagnostic changed"
+              : llvm::Twine("adverse route diagnostic changed: ") +
+                    diagnostics.front());
+}
+
+void testSystemResourceUseWire(mlir::MLIRContext &context,
+                               const Fixture &fixture) {
+  auto authored = buildSystem(context, fixture);
+  auto root = mlir::cast<::mapping::SystemOp>(authored.get());
+  mlir::OpBuilder builder(&context);
+  builder.setInsertionPointToEnd(&root.getBody().front());
+
+  const loom::fabric::InstructionCoreContextRef instructionContext{
+      fixture.core};
+  const loom::fabric::FabricUsePatternRef usePattern{
+      loom::fabric::FabricUsePatternOwnerRef(
+          loom::fabric::FabricInventoryOwnerRef::of(instructionContext)),
+      0};
+  const dataflow::EventFamilyKey startEvent(dataflow::StaticTransferEventRef(
+      dataflow::ConsumedTransferEventRef{dataflow::CanonicalSinkTerminalRef(
+          dataflow::RootThreadBoundarySinkRef{
+              dataflow::RootThreadBoundaryTransferRef(
+                  dataflow::RootThreadStartTransferRef{fixture.root})})}));
+  const dataflow::EventFamilyKey completionEvent(
+      dataflow::StaticTransferEventRef(dataflow::ProducedTransferEventRef{
+          dataflow::CanonicalProducerTerminalRef(
+              dataflow::RootThreadBoundarySourceRef{
+                  dataflow::RootThreadBoundaryTransferRef(
+                      dataflow::RootThreadCompletionTransferRef{
+                          fixture.root})})}));
+  const auto eventAttr = [&](const dataflow::EventFamilyKey &event) {
+    return ::mapping::EventFamilyKeyAttr::get(
+        &context, denseBytes(&context, take(dataflow::encodeDataflowReference(
+                                           fixture.dataflowIdentity, event))));
+  };
+  const auto trigger = ::mapping::SystemEventPointAttr::get(
+      &context, eventAttr(startEvent), ::mapping::OwnerTypedValueAttr());
+  const auto release = ::mapping::SystemEventPointAttr::get(
+      &context, eventAttr(completionEvent), ::mapping::OwnerTypedValueAttr());
+  const auto activation =
+      ::mapping::SystemRelativeActivationAttr::get(&context, trigger, release);
+  const auto owner = ::mapping::InstructionExecutionResourceOwnerRefAttr::get(
+      &context,
+      dataflowAttr<::mapping::RootThreadLaunchRefAttr>(
+          &context, fixture.dataflowIdentity, fixture.root),
+      fabricAttr<::mapping::InstructionCoreContextRefAttr>(&context,
+                                                           instructionContext));
+  ::mapping::ResourceUseOp::create(
+      builder, builder.getUnknownLoc(), owner,
+      fabricAttr<::mapping::FabricUsePatternRefAttr>(&context, usePattern),
+      activation, builder.getArrayAttr({}), builder.getArrayAttr({}));
+
+  require(mlir::succeeded(mlir::verify(root)),
+          "typed SystemMapping ResourceUse did not verify");
+  auto canonical =
+      take(loom::mapping::writeCanonicalSystemMappingAssembly(root));
+  auto reparsed = parseCanonical(context, canonical);
+  require(mlir::succeeded(mlir::verify(*reparsed)),
+          "typed SystemMapping ResourceUse did not round trip");
+
+  auto wrongActivation = buildSystem(context, fixture);
+  auto wrongRoot = mlir::cast<::mapping::SystemOp>(wrongActivation.get());
+  mlir::OpBuilder wrongBuilder(&context);
+  wrongBuilder.setInsertionPointToEnd(&wrongRoot.getBody().front());
+  const auto spatialTrigger = ::mapping::SpatialEventPointAttr::get(
+      &context,
+      ::mapping::ActorTransitionEventAttr::get(
+          &context,
+          dataflowAttr<::mapping::ActorRefAttr>(
+              &context, fixture.dataflowIdentity,
+              dataflow::ActorRef{fixture.dataflowIdentity,
+                                 dataflow::ActorId(13)}),
+          0),
+      ::mapping::OwnerTypedValueAttr());
+  ::mapping::ResourceUseOp::create(
+      wrongBuilder, wrongBuilder.getUnknownLoc(), owner,
+      fabricAttr<::mapping::FabricUsePatternRefAttr>(&context, usePattern),
+      ::mapping::SpatialRelativeActivationAttr::get(
+          &context, spatialTrigger, ::mapping::SpatialEventPointAttr()),
+      wrongBuilder.getArrayAttr({}), wrongBuilder.getArrayAttr({}));
+  requireVerificationFailure(wrongRoot, "requires root start and completion");
 }
 
 } // namespace
@@ -268,6 +349,7 @@ int main() {
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   context.getOrLoadDialect<::mapping::MappingDialect>();
   const Fixture fixture = makeFixture();
+  testSystemResourceUseWire(context, fixture);
   const dataflow::RootedGraphLaunchRef rootedGraph{
       fixture.root,
       dataflow::StaticGraphLaunchRef{fixture.dataflowIdentity,

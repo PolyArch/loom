@@ -6,7 +6,9 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/ResourceContract.h"
 
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OperationSupport.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -75,6 +77,49 @@ inOrderMicroarchitecture() {
 }
 
 } // namespace
+
+loom::CanonicalSemanticBytes
+loom::pnr::test::rawSystemBytes(::mapping::SystemOp root) {
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  root.print(stream, mlir::OpPrintingFlags().enableDebugInfo(false));
+  stream << '\n';
+  stream.flush();
+  return CanonicalSemanticBytes(
+      std::vector<std::uint8_t>(text.begin(), text.end()));
+}
+
+std::size_t loom::pnr::test::countOccurrences(llvm::StringRef text,
+                                              llvm::StringRef needle) {
+  std::size_t count = 0;
+  while (true) {
+    const std::size_t found = text.find(needle);
+    if (found == llvm::StringRef::npos)
+      return count;
+    ++count;
+    text = text.drop_front(found + needle.size());
+  }
+}
+
+::mapping::SystemPresburgerCellAttr
+loom::pnr::test::withFirstCoordinateLowerBound(
+    ::mapping::SystemPresburgerCellAttr cell, std::int64_t lowerBound) {
+  if (cell.getDimensionCount() == 0)
+    fail("Presburger test cell has no logical coordinate");
+  llvm::SmallVector<mlir::Attribute> inequalities(
+      cell.getInequalities().begin(), cell.getInequalities().end());
+  std::vector<std::int64_t> row(
+      static_cast<std::size_t>(cell.getDimensionCount()) +
+          cell.getSymbolCount() + cell.getLocalCount() + 1,
+      0);
+  row.front() = 1;
+  row.back() = -lowerBound;
+  inequalities.push_back(mlir::DenseI64ArrayAttr::get(cell.getContext(), row));
+  return ::mapping::SystemPresburgerCellAttr::get(
+      cell.getContext(), cell.getDimensionCount(), cell.getSymbolCount(),
+      cell.getLocalCount(), cell.getEqualities(),
+      mlir::ArrayAttr::get(cell.getContext(), inequalities));
+}
 
 loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
     loom::ArtifactStore &store,

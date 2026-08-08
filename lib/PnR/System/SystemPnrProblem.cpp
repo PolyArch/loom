@@ -87,6 +87,60 @@ llvm::Expected<PnrIndex> checked(PnrCapacityContext context,
   return checkedPnrIndex(context, static_cast<std::uint64_t>(value));
 }
 
+std::vector<::loom::fabric::FabricUsePatternRef>
+patternRefs(::loom::fabric::FabricInventoryOwnerRef owner,
+            const ::fabric::ResourceContract &contract) {
+  std::vector<::loom::fabric::FabricUsePatternRef> result;
+  result.reserve(contract.usePatternCount());
+  const auto patternOwner = ::loom::fabric::FabricUsePatternOwnerRef(owner);
+  for (std::uint32_t ordinal = 0; ordinal < contract.usePatternCount();
+       ++ordinal)
+    result.push_back({patternOwner, ordinal});
+  return result;
+}
+
+llvm::Expected<std::vector<FrozenSystemInstructionUsePatternDomain>>
+freezeInstructionUsePatterns(
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    llvm::ArrayRef<::loom::fabric::AccCoreOccurrenceRef> cores) {
+  std::vector<FrozenSystemInstructionUsePatternDomain> result;
+  result.reserve(cores.size());
+  for (const auto core : cores) {
+    const ::loom::fabric::InstructionCoreContextRef context{core};
+    const auto *microarchitecture =
+        fabric.instructionCoreMicroarchitecture(context);
+    if (!microarchitecture)
+      return invalid("AccCore has no InstructionCore microarchitecture");
+    auto patterns =
+        patternRefs(::loom::fabric::FabricInventoryOwnerRef::of(context),
+                    microarchitecture->resourceContract());
+    if (patterns.empty())
+      return invalid("InstructionCore exposes no occupancy use pattern");
+    result.push_back({context, std::move(patterns)});
+  }
+  return result;
+}
+
+std::vector<FrozenSystemConsistencyUsePatternDomain>
+freezeConsistencyUsePatterns(
+    const ::loom::fabric::FabricSystemRootView &fabric) {
+  std::vector<FrozenSystemConsistencyUsePatternDomain> result;
+  for (const auto domain : fabric.hardwareDomains()) {
+    const auto *record = fabric.hardwareDomainContract(domain);
+    if (!record)
+      continue;
+    const auto *consistency =
+        std::get_if<::fabric::MemoryConsistencyContract>(&record->contract());
+    if (!consistency)
+      continue;
+    result.push_back(
+        {::loom::fabric::MemoryConsistencyDomainRef(domain),
+         patternRefs(::loom::fabric::FabricInventoryOwnerRef::of(domain),
+                     consistency->resourceContract())});
+  }
+  return result;
+}
+
 std::string bytesKey(llvm::ArrayRef<std::uint8_t> bytes) {
   return std::string(reinterpret_cast<const char *>(bytes.data()),
                      bytes.size());
@@ -1324,6 +1378,10 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
     std::vector<SystemSearchServiceDomain> serviceDomains,
     std::vector<FrozenSystemServiceContext> serviceContexts,
     std::vector<FrozenSystemMemoryServiceBinding> memoryServiceBindings,
+    std::vector<FrozenSystemInstructionUsePatternDomain>
+        instructionUsePatternDomains,
+    std::vector<FrozenSystemConsistencyUsePatternDomain>
+        consistencyUsePatternDomains,
     std::vector<FrozenSystemServiceLeg> serviceLegs,
     std::vector<PnrIndex> serviceLegSinkTerminals,
     std::unique_ptr<detail::InitializerRelationModel> initializerRelations)
@@ -1351,6 +1409,8 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
       serviceDomains_(std::move(serviceDomains)),
       serviceContexts_(std::move(serviceContexts)),
       memoryServiceBindings_(std::move(memoryServiceBindings)),
+      instructionUsePatternDomains_(std::move(instructionUsePatternDomains)),
+      consistencyUsePatternDomains_(std::move(consistencyUsePatternDomains)),
       serviceLegs_(std::move(serviceLegs)),
       serviceLegSinkTerminals_(std::move(serviceLegSinkTerminals)),
       initializerRelations_(std::move(initializerRelations)) {}
@@ -1447,6 +1507,11 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
                           decisions->threads, decisions->graphs);
   if (!routing)
     return routing.takeError();
+  auto instructionUsePatterns =
+      freezeInstructionUsePatterns(fabric, catalogs->cores);
+  if (!instructionUsePatterns)
+    return instructionUsePatterns.takeError();
+  auto consistencyUsePatterns = freezeConsistencyUsePatterns(fabric);
 
   std::vector<SystemSearchServiceDomain> serviceDomains(
       searchDomain.serviceObligations().begin(),
@@ -1467,6 +1532,7 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       std::move(routing->terminals), std::move(routing->ownerDomains),
       std::move(routing->endpointChoices), std::move(serviceDomains),
       std::move(*serviceContexts), std::move(*memoryBindings),
+      std::move(*instructionUsePatterns), std::move(consistencyUsePatterns),
       std::move(routing->legs), std::move(routing->legSinks),
       std::move(*relations)));
 }

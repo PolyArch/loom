@@ -542,7 +542,9 @@ int main() {
       loom::pnr::SystemCandidateState::create(
           problem,
           {sameOwner->threadChoices(), sameOwner->graphChoices(), staleRoutes,
-           staleNodes, staleSinks, sameOwner->serviceTargets()}),
+           staleNodes, staleSinks, sameOwner->serviceTargets(),
+           sameOwner->instructionResourceUses(),
+           sameOwner->serviceResourceUses()}),
       "applicable sink-owner set");
   return EXIT_SUCCESS;
 }

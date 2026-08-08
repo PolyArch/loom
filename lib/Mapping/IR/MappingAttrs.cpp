@@ -126,6 +126,11 @@ LogicalResult mapping::RootThreadLaunchRefAttr::verify(
   return verifyDataflowRef<::dataflow::RootThreadLaunchRef>(emitError, record);
 }
 
+LogicalResult mapping::EventFamilyKeyAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyDataflowRef<::dataflow::EventFamilyKey>(emitError, record);
+}
+
 LogicalResult mapping::SystemServiceObligationKeyAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
   auto decoded = ::loom::mapping::decodeSystemServiceObligationKey(
@@ -282,6 +287,8 @@ LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricSpatialCoreOccurrenceRef,
                                   SpatialCoreOccurrenceRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricPeOccurrenceRef, FabricPeOccurrenceRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(InstructionContextRef, InstructionContextRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(InstructionCoreContextRef,
+                                  InstructionCoreContextRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricUsePatternRef, FabricUsePatternRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricPhysicalRefinementDomainRef,
                                   FabricPhysicalRefinementDomainRef)
@@ -321,6 +328,40 @@ LogicalResult mapping::MemoryByteRangeAttr::verify(
   }
   if (offsetBytes > std::numeric_limits<std::uint64_t>::max() - sizeBytes) {
     emitError() << "memory byte range end overflows u64";
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult mapping::MemoryRegionElementKeyAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError,
+    LogicalMemoryRootOrViewRefAttr logicalMemory, Attribute interval,
+    FabricMemoryServiceRegionRefAttr serviceRegion, ArrayAttr transformPath) {
+  (void)logicalMemory;
+  (void)serviceRegion;
+  if (!isa<MemoryWholeIntervalAttr, MemoryByteRangeAttr>(interval)) {
+    emitError() << "interval must be a closed logical memory interval";
+    return failure();
+  }
+  for (Attribute transform : transformPath) {
+    if (!isa<SystemServiceTransformRefAttr>(transform)) {
+      emitError() << "transform_path must contain only System service "
+                     "transform references";
+      return failure();
+    }
+  }
+  return success();
+}
+
+LogicalResult mapping::ServicePlanElementRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError,
+    SystemServiceObligationKeyAttr service, std::uint64_t planOrdinal,
+    Attribute element) {
+  (void)service;
+  (void)planOrdinal;
+  if (!isa<TransferLegElementKeyAttr, MemoryRegionElementKeyAttr,
+           ConsistencyElementKeyAttr>(element)) {
+    emitError() << "element must be a closed ServicePlan child key";
     return failure();
   }
   return success();

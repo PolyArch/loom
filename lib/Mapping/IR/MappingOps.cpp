@@ -857,7 +857,25 @@ LogicalResult mapping::ResourceUseOp::verify() {
   if (failed(verifyOwnerTypedValues(*this, getParameters(), "parameters")) ||
       failed(verifyOwnerTypedValues(*this, getSharingAssignments(), "sharing")))
     return failure();
-  return success();
+  Operation *parent = (*this)->getParentOp();
+  if (isa_and_nonnull<mapping::SpatialOp>(parent)) {
+    if (!isa<mapping::ComputeRealizationRefAttr,
+             mapping::MemoryRealizationRefAttr, mapping::MemoryBindingRefAttr,
+             mapping::RouteTreeNodeRefAttr>(getOwner()))
+      return emitOpError("Spatial ResourceUse requires a Spatial owner");
+    if (!isa<mapping::SpatialRelativeActivationAttr>(getActivation()))
+      return emitOpError("Spatial ResourceUse requires Spatial activation");
+    return success();
+  }
+  if (isa_and_nonnull<mapping::SystemOp>(parent)) {
+    if (!isa<mapping::InstructionExecutionResourceOwnerRefAttr,
+             mapping::ServicePlanElementRefAttr>(getOwner()))
+      return emitOpError("System ResourceUse requires a System owner");
+    if (!isa<mapping::SystemRelativeActivationAttr>(getActivation()))
+      return emitOpError("System ResourceUse requires System activation");
+    return success();
+  }
+  return emitOpError("must be a direct child of a Mapping root");
 }
 
 ParseResult mapping::SystemOp::parse(OpAsmParser &parser,

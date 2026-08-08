@@ -121,8 +121,23 @@ struct FrozenSystemMemoryServiceBinding final {
   ::loom::fabric::SystemServiceEndpointRef systemEndpoint;
   ::loom::fabric::FabricMemoryEndpointRef occurrenceEndpoint;
   std::vector<::loom::fabric::FabricMemoryServiceTargetPlan> targetPlans;
+  struct UsePatternDomain final {
+    ::loom::fabric::FabricMemoryServiceRegionRef region;
+    std::vector<::loom::fabric::FabricUsePatternRef> patterns;
+  };
+  std::vector<UsePatternDomain> usePatternDomains;
   std::optional<::loom::mapping::SpatialMemoryIntervalView> interval;
   std::optional<::loom::fabric::SubordinateEndpointRef> exposureTerminal;
+};
+
+struct FrozenSystemInstructionUsePatternDomain final {
+  ::loom::fabric::InstructionCoreContextRef context;
+  std::vector<::loom::fabric::FabricUsePatternRef> patterns;
+};
+
+struct FrozenSystemConsistencyUsePatternDomain final {
+  ::loom::fabric::MemoryConsistencyDomainRef domain;
+  std::vector<::loom::fabric::FabricUsePatternRef> patterns;
 };
 
 struct FrozenSystemServiceLeg final {
@@ -189,6 +204,14 @@ public:
   memoryServiceBindings() const {
     return memoryServiceBindings_;
   }
+  llvm::ArrayRef<FrozenSystemInstructionUsePatternDomain>
+  instructionUsePatternDomains() const {
+    return instructionUsePatternDomains_;
+  }
+  llvm::ArrayRef<FrozenSystemConsistencyUsePatternDomain>
+  consistencyUsePatternDomains() const {
+    return consistencyUsePatternDomains_;
+  }
   llvm::ArrayRef<FrozenSystemServiceLeg> serviceLegs() const {
     return serviceLegs_;
   }
@@ -224,6 +247,10 @@ private:
       std::vector<SystemSearchServiceDomain> serviceDomains,
       std::vector<FrozenSystemServiceContext> serviceContexts,
       std::vector<FrozenSystemMemoryServiceBinding> memoryServiceBindings,
+      std::vector<FrozenSystemInstructionUsePatternDomain>
+          instructionUsePatternDomains,
+      std::vector<FrozenSystemConsistencyUsePatternDomain>
+          consistencyUsePatternDomains,
       std::vector<FrozenSystemServiceLeg> serviceLegs,
       std::vector<PnrIndex> serviceLegSinkTerminals,
       std::unique_ptr<detail::InitializerRelationModel> initializerRelations);
@@ -253,6 +280,10 @@ private:
   std::vector<SystemSearchServiceDomain> serviceDomains_;
   std::vector<FrozenSystemServiceContext> serviceContexts_;
   std::vector<FrozenSystemMemoryServiceBinding> memoryServiceBindings_;
+  std::vector<FrozenSystemInstructionUsePatternDomain>
+      instructionUsePatternDomains_;
+  std::vector<FrozenSystemConsistencyUsePatternDomain>
+      consistencyUsePatternDomains_;
   std::vector<FrozenSystemServiceLeg> serviceLegs_;
   std::vector<PnrIndex> serviceLegSinkTerminals_;
   std::unique_ptr<detail::InitializerRelationModel> initializerRelations_;

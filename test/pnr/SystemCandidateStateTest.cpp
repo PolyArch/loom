@@ -142,17 +142,6 @@ std::vector<std::uint8_t> unsignedBytes(mlir::DenseI8ArrayAttr attribute) {
   return result;
 }
 
-std::size_t countOccurrences(llvm::StringRef text, llvm::StringRef needle) {
-  std::size_t count = 0;
-  while (true) {
-    const std::size_t found = text.find(needle);
-    if (found == llvm::StringRef::npos)
-      return count;
-    ++count;
-    text = text.drop_front(found + needle.size());
-  }
-}
-
 std::string byteList(llvm::ArrayRef<std::uint8_t> bytes) {
   std::string result = "[";
   for (auto [ordinal, byte] : llvm::enumerate(bytes)) {
@@ -298,36 +287,6 @@ void addSystemEquality(mlir::OpBuilder &builder,
           builder.getContext(), static_cast<std::uint32_t>(projection)));
   state.addAttribute("subjects", builder.getArrayAttr(subjects));
   builder.create(state);
-}
-
-loom::CanonicalSemanticBytes rawSystemBytes(::mapping::SystemOp root) {
-  std::string text;
-  llvm::raw_string_ostream stream(text);
-  root.print(stream, mlir::OpPrintingFlags().enableDebugInfo(false));
-  stream << '\n';
-  stream.flush();
-  return loom::CanonicalSemanticBytes(
-      std::vector<std::uint8_t>(text.begin(), text.end()));
-}
-
-::mapping::SystemPresburgerCellAttr
-withFirstCoordinateLowerBound(::mapping::SystemPresburgerCellAttr cell,
-                              std::int64_t lowerBound) {
-  require(cell.getDimensionCount() != 0,
-          "Presburger test cell has no logical coordinate");
-  llvm::SmallVector<mlir::Attribute> inequalities(
-      cell.getInequalities().begin(), cell.getInequalities().end());
-  std::vector<std::int64_t> row(
-      static_cast<std::size_t>(cell.getDimensionCount()) +
-          cell.getSymbolCount() + cell.getLocalCount() + 1,
-      0);
-  row.front() = 1;
-  row.back() = -lowerBound;
-  inequalities.push_back(mlir::DenseI64ArrayAttr::get(cell.getContext(), row));
-  return ::mapping::SystemPresburgerCellAttr::get(
-      cell.getContext(), cell.getDimensionCount(), cell.getSymbolCount(),
-      cell.getLocalCount(), cell.getEqualities(),
-      mlir::ArrayAttr::get(cell.getContext(), inequalities));
 }
 
 class TemporaryDirectory final {
@@ -576,6 +535,10 @@ generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
 } // namespace
 
 int main() {
+  using loom::pnr::test::countOccurrences;
+  using loom::pnr::test::rawSystemBytes;
+  using loom::pnr::test::withFirstCoordinateLowerBound;
+
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
@@ -851,7 +814,9 @@ int main() {
            supportedCandidate->graphChoices(),
            supportedCandidate->serviceRoutes(),
            supportedCandidate->serviceRouteNodes(),
-           supportedCandidate->serviceRouteSinks(), foreignTargets}),
+           supportedCandidate->serviceRouteSinks(), foreignTargets,
+           supportedCandidate->instructionResourceUses(),
+           supportedCandidate->serviceResourceUses()}),
       "selected service target is outside its exact H domain");
 
   auto memoryDraft = take(
@@ -880,6 +845,84 @@ int main() {
       }
   require(memoryTargetCount == 1,
           "one memory service context did not materialize one target");
+
+  require(!supportedCandidate->instructionResourceUses().empty(),
+          "candidate omitted InstructionCore occupancy choices");
+  const std::size_t expectedServiceUseCount =
+      llvm::count_if(memoryContext.subjects,
+                     [](const auto &subject) {
+                       return std::holds_alternative<
+                           loom::pnr::SystemServiceMemberTargetSubject>(
+                           subject);
+                     }) *
+      selectedPlan->branches.size();
+  require(supportedCandidate->serviceResourceUses().size() ==
+              expectedServiceUseCount,
+          "addressed members and target branches did not select exact uses");
+  std::vector<loom::pnr::SystemServiceResourceUseSelection> foreignUses(
+      supportedCandidate->serviceResourceUses().begin(),
+      supportedCandidate->serviceResourceUses().end());
+  foreignUses.front().pattern.ordinal += 1000;
+  requireFailureContains(
+      loom::pnr::SystemCandidateState::create(
+          bindingProblem,
+          {supportedCandidate->threadChoices(),
+           supportedCandidate->graphChoices(),
+           supportedCandidate->serviceRoutes(),
+           supportedCandidate->serviceRouteNodes(),
+           supportedCandidate->serviceRouteSinks(),
+           supportedCandidate->serviceTargets(),
+           supportedCandidate->instructionResourceUses(), foreignUses}),
+      "service ResourceUse is foreign or inadmissible");
+  requireFailureContains(
+      loom::pnr::SystemCandidateState::create(
+          bindingProblem, {supportedCandidate->threadChoices(),
+                           supportedCandidate->graphChoices(),
+                           supportedCandidate->serviceRoutes(),
+                           supportedCandidate->serviceRouteNodes(),
+                           supportedCandidate->serviceRouteSinks(),
+                           supportedCandidate->serviceTargets(),
+                           {},
+                           supportedCandidate->serviceResourceUses()}),
+      "InstructionCore ResourceUse count is incomplete");
+  std::size_t instructionUseCount = 0;
+  std::size_t serviceUseCount = 0;
+  for (auto use :
+       memoryRoot.getBody().front().getOps<::mapping::ResourceUseOp>()) {
+    auto activation = mlir::dyn_cast<::mapping::SystemRelativeActivationAttr>(
+        use.getActivation());
+    require(static_cast<bool>(activation),
+            "System ResourceUse lost its typed activation");
+    if (mlir::isa<::mapping::InstructionExecutionResourceOwnerRefAttr>(
+            use.getOwner())) {
+      require(static_cast<bool>(activation.getRelease()),
+              "InstructionCore occupancy lost root completion release");
+      ++instructionUseCount;
+      continue;
+    }
+    auto owner =
+        mlir::dyn_cast<::mapping::ServicePlanElementRefAttr>(use.getOwner());
+    require(owner && mlir::isa<::mapping::MemoryRegionElementKeyAttr>(
+                         owner.getElement()),
+            "addressed service use lost its exact MemoryRegion owner");
+    require(!activation.getRelease(),
+            "addressed service use gained a causal release");
+    auto event =
+        take(dataflow::decodeDataflowReference<dataflow::EventFamilyKey>(
+            unsignedBytes(activation.getTrigger().getEvent().getRecord()),
+            memoryDataflow.identity()));
+    require(std::holds_alternative<dataflow::ContextualActorTransitionEventRef>(
+                event) &&
+                std::get<dataflow::ContextualActorTransitionEventRef>(event)
+                        .transitionCaseOrdinal == 0,
+            "addressed service use did not trigger on its issue transition");
+    ++serviceUseCount;
+  }
+  require(instructionUseCount ==
+                  supportedCandidate->instructionResourceUses().size() &&
+              serviceUseCount ==
+                  supportedCandidate->serviceResourceUses().size(),
+          "materializer did not preserve the candidate ResourceUse closure");
 
   const auto canonicalMemoryDraft =
       take(loom::mapping::writeCanonicalSystemMappingAssembly(memoryRoot));
@@ -954,7 +997,9 @@ int main() {
                            supportedCandidate->serviceRoutes(),
                            supportedCandidate->serviceRouteNodes(),
                            supportedCandidate->serviceRouteSinks(),
-                           supportedCandidate->serviceTargets()}),
+                           supportedCandidate->serviceTargets(),
+                           supportedCandidate->instructionResourceUses(),
+                           supportedCandidate->serviceResourceUses()}),
       "matching service target rows have an empty intersection");
 
   const auto belongsToSupportedExecution = [&](const auto &row) {
@@ -1272,7 +1317,9 @@ int main() {
           problem,
           {first.state->threadChoices(), first.state->graphChoices(),
            incompleteRoutes, first.state->serviceRouteNodes(),
-           first.state->serviceRouteSinks(), first.state->serviceTargets()}),
+           first.state->serviceRouteSinks(), first.state->serviceTargets(),
+           first.state->instructionResourceUses(),
+           first.state->serviceResourceUses()}),
       "service route does not cover the applicable sink-owner set");
 
   std::vector<loom::pnr::SystemServiceRouteSinkSelection> foreignSinks(
@@ -1286,7 +1333,9 @@ int main() {
           problem,
           {first.state->threadChoices(), first.state->graphChoices(),
            first.state->serviceRoutes(), first.state->serviceRouteNodes(),
-           foreignSinks, first.state->serviceTargets()}),
+           foreignSinks, first.state->serviceTargets(),
+           first.state->instructionResourceUses(),
+           first.state->serviceResourceUses()}),
       "service route sink is outside its exact H domain");
 
   auto withCanonicalRoutes =
@@ -1298,7 +1347,9 @@ int main() {
             first.state->serviceRoutes(),
             first.state->serviceRouteNodes(),
             first.state->serviceRouteSinks(),
-            first.state->serviceTargets()};
+            first.state->serviceTargets(),
+            {},
+            {}};
       };
 
   auto firstDraft =
@@ -1688,15 +1739,17 @@ int main() {
   auto sameClassBase = take(loom::pnr::initializeSystemCandidate(
       problem, threadChoices, graphChoices));
   threadChoices[0] = sameClassSecond;
-  requireFailureContains(
-      loom::pnr::SystemCandidateState::create(
-          problem, {threadChoices, graphChoices, sameClassBase->serviceRoutes(),
-                    sameClassBase->serviceRouteNodes(),
-                    sameClassBase->serviceRouteSinks(),
-                    sameClassBase->serviceTargets()}),
-      "is not admitted by H");
   auto alternate = take(loom::pnr::initializeSystemCandidate(
       problem, threadChoices, graphChoices));
+  requireFailureContains(
+      loom::pnr::SystemCandidateState::create(
+          problem,
+          {threadChoices, graphChoices, sameClassBase->serviceRoutes(),
+           sameClassBase->serviceRouteNodes(),
+           sameClassBase->serviceRouteSinks(), sameClassBase->serviceTargets(),
+           alternate->instructionResourceUses(),
+           alternate->serviceResourceUses()}),
+      "is not admitted by H");
   if (llvm::Error error = alternate->verify())
     fail(llvm::toString(std::move(error)));
   require(alternate->selectedAccCore(0) != sameClassBase->selectedAccCore(0),

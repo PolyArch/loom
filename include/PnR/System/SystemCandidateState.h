@@ -44,6 +44,19 @@ struct SystemServiceRouteSelection final {
   PnrIndex sinkCount = 0;
 };
 
+struct SystemInstructionResourceUseSelection final {
+  ::dataflow::RootThreadLaunchRef root;
+  ::loom::fabric::InstructionCoreContextRef context;
+  ::loom::fabric::FabricUsePatternRef pattern;
+};
+
+struct SystemServiceResourceUseSelection final {
+  PnrIndex context = getInvalidPnrIndex();
+  PnrIndex subject = getInvalidPnrIndex();
+  PnrIndex branch = 0;
+  ::loom::fabric::FabricUsePatternRef pattern;
+};
+
 struct SystemCandidateInitialization final {
   llvm::ArrayRef<PnrIndex> threadChoices;
   llvm::ArrayRef<PnrIndex> graphChoices;
@@ -51,6 +64,8 @@ struct SystemCandidateInitialization final {
   llvm::ArrayRef<SystemServiceRouteNodeSelection> serviceRouteNodes;
   llvm::ArrayRef<SystemServiceRouteSinkSelection> serviceRouteSinks;
   llvm::ArrayRef<SystemServiceTargetSelection> serviceTargets;
+  llvm::ArrayRef<SystemInstructionResourceUseSelection> instructionResourceUses;
+  llvm::ArrayRef<SystemServiceResourceUseSelection> serviceResourceUses;
 };
 
 class SystemCandidateState;
@@ -82,6 +97,14 @@ public:
   llvm::ArrayRef<SystemServiceTargetSelection> serviceTargets() const {
     return serviceTargets_;
   }
+  llvm::ArrayRef<SystemInstructionResourceUseSelection>
+  instructionResourceUses() const {
+    return instructionResourceUses_;
+  }
+  llvm::ArrayRef<SystemServiceResourceUseSelection>
+  serviceResourceUses() const {
+    return serviceResourceUses_;
+  }
   const SystemServiceTargetSelection &serviceTarget(PnrIndex context) const;
   PnrIndex threadChoice(PnrIndex decision) const;
   PnrIndex graphChoice(PnrIndex decision) const;
@@ -99,13 +122,18 @@ private:
       std::vector<SystemServiceRouteSelection> serviceRoutes,
       std::vector<SystemServiceRouteNodeSelection> serviceRouteNodes,
       std::vector<SystemServiceRouteSinkSelection> serviceRouteSinks,
-      std::vector<SystemServiceTargetSelection> serviceTargets)
+      std::vector<SystemServiceTargetSelection> serviceTargets,
+      std::vector<SystemInstructionResourceUseSelection>
+          instructionResourceUses,
+      std::vector<SystemServiceResourceUseSelection> serviceResourceUses)
       : problem_(std::move(problem)), threadChoices_(std::move(threadChoices)),
         graphChoices_(std::move(graphChoices)),
         serviceRoutes_(std::move(serviceRoutes)),
         serviceRouteNodes_(std::move(serviceRouteNodes)),
         serviceRouteSinks_(std::move(serviceRouteSinks)),
-        serviceTargets_(std::move(serviceTargets)) {}
+        serviceTargets_(std::move(serviceTargets)),
+        instructionResourceUses_(std::move(instructionResourceUses)),
+        serviceResourceUses_(std::move(serviceResourceUses)) {}
 
   FrozenSystemPnrProblemHandle problem_;
   std::vector<PnrIndex> threadChoices_;
@@ -114,6 +142,8 @@ private:
   std::vector<SystemServiceRouteNodeSelection> serviceRouteNodes_;
   std::vector<SystemServiceRouteSinkSelection> serviceRouteSinks_;
   std::vector<SystemServiceTargetSelection> serviceTargets_;
+  std::vector<SystemInstructionResourceUseSelection> instructionResourceUses_;
+  std::vector<SystemServiceResourceUseSelection> serviceResourceUses_;
 };
 
 struct InitializedSystemCandidate final {

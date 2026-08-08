@@ -133,6 +133,10 @@ llvm::Expected<ResolvedServiceMember> resolveMember(
     return actorView.takeError();
   if (llvm::Error error = dataflow.validate(*contextual))
     return std::move(error);
+  auto issue = ::loom::mapping::deriveSpatialMemoryIssueEvent(
+      dataflow, contextual->actor);
+  if (!issue)
+    return issue.takeError();
   auto actor =
       ::dataflow::projectRegisteredActorSchemaProjection(actorView->op);
   if (!actor)
@@ -1030,9 +1034,66 @@ projectSystemMemoryServiceBindings(
   };
 
   std::vector<FrozenSystemMemoryServiceBinding> result;
+  const auto usePatternDomains =
+      [&](const ResolvedServiceMember *member,
+          llvm::ArrayRef<::loom::fabric::FabricMemoryServiceTargetPlan> plans)
+      -> llvm::Expected<
+          std::vector<FrozenSystemMemoryServiceBinding::UsePatternDomain>> {
+    std::vector<FrozenSystemMemoryServiceBinding::UsePatternDomain> domains;
+    if (!member || !member->access || !member->actor)
+      return domains;
+    for (const auto &plan : plans) {
+      for (const auto &branch : plan.branches) {
+        if (llvm::any_of(domains, [&](const auto &domain) {
+              return domain.region == branch.region;
+            }))
+          continue;
+        const auto *systemService =
+            std::get_if<::loom::fabric::SystemMemoryServiceRef>(
+                &branch.region.service.payload);
+        if (!systemService)
+          return invalid("System target plan names a non-System service");
+        const auto *service = fabric.memoryService(*systemService);
+        if (!service || branch.region.ordinal >= service->regions().size())
+          return invalid("System target plan names an invalid service region");
+        auto matching =
+            service->matchingCapabilities(*member->actor, member->access);
+        if (!matching)
+          return matching.takeError();
+        std::vector<::loom::fabric::FabricUsePatternRef> patterns;
+        for (std::uint64_t capabilityOrdinal : *matching) {
+          if (capabilityOrdinal >= service->capabilities().size())
+            return invalid("memory service returned an invalid capability");
+          const auto &capability = service->capabilities()[capabilityOrdinal];
+          if (!llvm::is_contained(capability.serviceRegionOrdinals,
+                                  branch.region.ordinal))
+            continue;
+          const auto owner = ::loom::fabric::FabricUsePatternOwnerRef(
+              ::loom::fabric::FabricInventoryOwnerRef::of(
+                  branch.region.service));
+          for (const ::fabric::UsePatternKey pattern :
+               capability.admissibleUsePatterns)
+            patterns.push_back(
+                {owner, static_cast<::loom::fabric::FabricOrdinal>(
+                            pattern.ordinal())});
+        }
+        canonicalizeFabricRefs(patterns);
+        if (patterns.empty())
+          return invalid(
+              "selected memory service region has no admissible use pattern");
+        domains.push_back({branch.region, std::move(patterns)});
+      }
+    }
+    llvm::sort(domains, [](const auto &left, const auto &right) {
+      return ::loom::fabric::canonicalFabricBytes(left.region) <
+             ::loom::fabric::canonicalFabricBytes(right.region);
+    });
+    return domains;
+  };
   const auto append =
       [&](const auto &obligation, const SystemServiceTargetSubject &subject,
-          const SpatialCatalogEntry &entry, const BindingMetadata &metadata,
+          const ResolvedServiceMember *member, const SpatialCatalogEntry &entry,
+          const BindingMetadata &metadata,
           llvm::ArrayRef<BoundMemoryEndpointPair> pairs) -> llvm::Error {
     const auto *operation =
         std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
@@ -1080,10 +1141,14 @@ projectSystemMemoryServiceBindings(
                         fabric, pair.systemEndpoint);
       if (!targetPlans)
         return targetPlans.takeError();
+      auto patterns = usePatternDomains(member, *targetPlans);
+      if (!patterns)
+        return patterns.takeError();
       result.push_back({obligation.key, subject, entry.reference,
                         spatialCore->core, pair.systemEndpoint,
                         pair.occurrenceEndpoint, std::move(*targetPlans),
-                        metadata.interval, metadata.exposureTerminal});
+                        std::move(*patterns), metadata.interval,
+                        metadata.exposureTerminal});
     }
     return llvm::Error::success();
   };
@@ -1112,7 +1177,7 @@ projectSystemMemoryServiceBindings(
         if (!metadata)
           return metadata.takeError();
         if (llvm::Error error =
-                append(obligation, subject, entry, *metadata, *pairs))
+                append(obligation, subject, &*member, entry, *metadata, *pairs))
           return std::move(error);
       }
     }
@@ -1131,7 +1196,7 @@ projectSystemMemoryServiceBindings(
         if (!metadata)
           return metadata.takeError();
         if (llvm::Error error =
-                append(obligation, subject, entry, *metadata, *pairs))
+                append(obligation, subject, nullptr, entry, *metadata, *pairs))
           return std::move(error);
       }
     }

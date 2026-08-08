@@ -5,6 +5,9 @@
 #include "SystemPnrSearchDomainInternal.h"
 #include "SystemServiceRouter.h"
 
+#include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Fabric/Identity/FabricRefBytes.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
@@ -123,6 +126,183 @@ selectCanonicalServiceTargets(const FrozenSystemPnrProblem &problem,
   return result;
 }
 
+struct RequiredInstructionUse final {
+  ::dataflow::RootThreadLaunchRef root;
+  ::loom::fabric::InstructionCoreContextRef context;
+  llvm::ArrayRef<::loom::fabric::FabricUsePatternRef> patterns;
+};
+
+llvm::Expected<std::vector<RequiredInstructionUse>>
+requiredInstructionUses(const FrozenSystemPnrProblem &problem,
+                        llvm::ArrayRef<PnrIndex> threadChoices) {
+  std::map<std::string, RequiredInstructionUse> unique;
+  for (const auto &[decision, thread] :
+       llvm::enumerate(problem.threadDecisions())) {
+    const ::loom::fabric::InstructionCoreContextRef context{
+        problem.accCores()[problem.threadChoiceCatalogOrdinals(
+            decision)[threadChoices[decision]]]};
+    const auto domain = llvm::find_if(
+        problem.instructionUsePatternDomains(),
+        [&](const auto &candidate) { return candidate.context == context; });
+    if (domain == problem.instructionUsePatternDomains().end() ||
+        domain->patterns.empty())
+      return invalid("selected InstructionCore has no use-pattern domain");
+    auto rootBytes = ::dataflow::encodeDataflowReference(
+        problem.dataflowIdentity(), thread.root);
+    if (!rootBytes)
+      return rootBytes.takeError();
+    std::string key(reinterpret_cast<const char *>(rootBytes->data()),
+                    rootBytes->size());
+    const auto contextBytes = ::loom::fabric::canonicalFabricBytes(context);
+    key.append(reinterpret_cast<const char *>(contextBytes.data()),
+               contextBytes.size());
+    unique.try_emplace(
+        std::move(key),
+        RequiredInstructionUse{thread.root, context, domain->patterns});
+  }
+  std::vector<RequiredInstructionUse> result;
+  result.reserve(unique.size());
+  for (const auto &[key, use] : unique) {
+    (void)key;
+    result.push_back(use);
+  }
+  return result;
+}
+
+struct RequiredServiceUse final {
+  PnrIndex context = getInvalidPnrIndex();
+  PnrIndex subject = getInvalidPnrIndex();
+  PnrIndex branch = 0;
+  llvm::ArrayRef<::loom::fabric::FabricUsePatternRef> patterns;
+};
+
+llvm::Expected<std::vector<RequiredServiceUse>>
+requiredServiceUses(const FrozenSystemPnrProblem &problem,
+                    llvm::ArrayRef<PnrIndex> threadChoices,
+                    llvm::ArrayRef<PnrIndex> graphChoices,
+                    llvm::ArrayRef<SystemServiceTargetSelection> targets) {
+  std::vector<RequiredServiceUse> result;
+  for (const auto &[contextOrdinal, context] :
+       llvm::enumerate(problem.serviceContexts())) {
+    if (contextOrdinal >= targets.size())
+      return invalid("service target closure is incomplete");
+    for (const auto &[subjectOrdinal, subject] :
+         llvm::enumerate(context.subjects)) {
+      if (!std::holds_alternative<SystemServiceMemberTargetSubject>(subject))
+        continue;
+      if (const auto *plan = std::get_if<SystemMemoryServiceTargetPlan>(
+              &targets[contextOrdinal])) {
+        auto binding = detail::resolveSystemMemoryServiceBinding(
+            problem, static_cast<PnrIndex>(contextOrdinal), subject,
+            threadChoices, graphChoices);
+        if (!binding)
+          return binding.takeError();
+        for (const auto &[branchOrdinal, branch] :
+             llvm::enumerate(plan->branches)) {
+          const auto branchRegion = branch.region;
+          const auto domain = llvm::find_if(
+              (*binding)->usePatternDomains, [&](const auto &candidate) {
+                return candidate.region == branchRegion;
+              });
+          if (domain == (*binding)->usePatternDomains.end() ||
+              domain->patterns.empty())
+            return invalid(
+                "selected memory target has no admissible use pattern");
+          result.push_back({static_cast<PnrIndex>(contextOrdinal),
+                            static_cast<PnrIndex>(subjectOrdinal),
+                            static_cast<PnrIndex>(branchOrdinal),
+                            domain->patterns});
+        }
+        continue;
+      }
+      const auto *consistency =
+          std::get_if<::loom::fabric::MemoryConsistencyDomainRef>(
+              &targets[contextOrdinal]);
+      if (!consistency)
+        continue;
+      const auto domain = llvm::find_if(
+          problem.consistencyUsePatternDomains(), [&](const auto &candidate) {
+            return candidate.domain == *consistency;
+          });
+      if (domain == problem.consistencyUsePatternDomains().end() ||
+          domain->patterns.empty())
+        return invalid(
+            "selected consistency target has no admissible use pattern");
+      result.push_back({static_cast<PnrIndex>(contextOrdinal),
+                        static_cast<PnrIndex>(subjectOrdinal), 0,
+                        domain->patterns});
+    }
+  }
+  return result;
+}
+
+llvm::Expected<std::vector<SystemInstructionResourceUseSelection>>
+selectCanonicalInstructionUses(const FrozenSystemPnrProblem &problem,
+                               llvm::ArrayRef<PnrIndex> threadChoices) {
+  auto required = requiredInstructionUses(problem, threadChoices);
+  if (!required)
+    return required.takeError();
+  std::vector<SystemInstructionResourceUseSelection> result;
+  result.reserve(required->size());
+  for (const auto &use : *required)
+    result.push_back({use.root, use.context, use.patterns.front()});
+  return result;
+}
+
+llvm::Expected<std::vector<SystemServiceResourceUseSelection>>
+selectCanonicalServiceUses(
+    const FrozenSystemPnrProblem &problem,
+    llvm::ArrayRef<PnrIndex> threadChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices,
+    llvm::ArrayRef<SystemServiceTargetSelection> targets) {
+  auto required =
+      requiredServiceUses(problem, threadChoices, graphChoices, targets);
+  if (!required)
+    return required.takeError();
+  std::vector<SystemServiceResourceUseSelection> result;
+  result.reserve(required->size());
+  for (const auto &use : *required)
+    result.push_back(
+        {use.context, use.subject, use.branch, use.patterns.front()});
+  return result;
+}
+
+llvm::Error verifyResourceUses(
+    const FrozenSystemPnrProblem &problem,
+    llvm::ArrayRef<PnrIndex> threadChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices,
+    llvm::ArrayRef<SystemServiceTargetSelection> targets,
+    llvm::ArrayRef<SystemInstructionResourceUseSelection> instructionUses,
+    llvm::ArrayRef<SystemServiceResourceUseSelection> serviceUses) {
+  auto requiredInstructions = requiredInstructionUses(problem, threadChoices);
+  if (!requiredInstructions)
+    return requiredInstructions.takeError();
+  if (instructionUses.size() != requiredInstructions->size())
+    return invalid("InstructionCore ResourceUse count is incomplete");
+  for (const auto &[selected, required] :
+       llvm::zip_equal(instructionUses, *requiredInstructions)) {
+    if (selected.root != required.root ||
+        selected.context != required.context ||
+        !llvm::is_contained(required.patterns, selected.pattern))
+      return invalid("InstructionCore ResourceUse is foreign or inadmissible");
+  }
+  auto requiredServices =
+      requiredServiceUses(problem, threadChoices, graphChoices, targets);
+  if (!requiredServices)
+    return requiredServices.takeError();
+  if (serviceUses.size() != requiredServices->size())
+    return invalid("service ResourceUse count is incomplete");
+  for (const auto &[selected, required] :
+       llvm::zip_equal(serviceUses, *requiredServices)) {
+    if (selected.context != required.context ||
+        selected.subject != required.subject ||
+        selected.branch != required.branch ||
+        !llvm::is_contained(required.patterns, selected.pattern))
+      return invalid("service ResourceUse is foreign or inadmissible");
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Expected<SystemCandidateStateHandle>
@@ -146,6 +326,16 @@ SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
           *problem, initialization.threadChoices, initialization.graphChoices,
           initialization.serviceTargets))
     return std::move(error);
+  std::vector<SystemInstructionResourceUseSelection> instructionUses(
+      initialization.instructionResourceUses.begin(),
+      initialization.instructionResourceUses.end());
+  std::vector<SystemServiceResourceUseSelection> serviceUses(
+      initialization.serviceResourceUses.begin(),
+      initialization.serviceResourceUses.end());
+  if (llvm::Error error = verifyResourceUses(
+          *problem, initialization.threadChoices, initialization.graphChoices,
+          initialization.serviceTargets, instructionUses, serviceUses))
+    return std::move(error);
   if (llvm::Error error = detail::verifySystemServiceRoutes(
           *problem, initialization.threadChoices, initialization.graphChoices,
           initialization.serviceRoutes, initialization.serviceRouteNodes,
@@ -168,7 +358,8 @@ SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
           initialization.serviceRouteSinks.end()),
       std::vector<SystemServiceTargetSelection>(
           initialization.serviceTargets.begin(),
-          initialization.serviceTargets.end())));
+          initialization.serviceTargets.end()),
+      std::move(instructionUses), std::move(serviceUses)));
   if (llvm::Error error = state->verify())
     return std::move(error);
   return state;
@@ -217,6 +408,10 @@ llvm::Error SystemCandidateState::verify() const {
     return error;
   if (llvm::Error error = verifyServiceTargets(*problem_, threadChoices_,
                                                graphChoices_, serviceTargets_))
+    return error;
+  if (llvm::Error error = verifyResourceUses(
+          *problem_, threadChoices_, graphChoices_, serviceTargets_,
+          instructionResourceUses_, serviceResourceUses_))
     return error;
   if (llvm::Error error = detail::verifySystemServiceRoutes(
           *problem_, threadChoices_, graphChoices_, serviceRoutes_,
@@ -332,7 +527,16 @@ loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
       selectCanonicalServiceTargets(*problem, threadChoices, graphChoices);
   if (!targets)
     return targets.takeError();
+  auto instructionUses =
+      selectCanonicalInstructionUses(*problem, threadChoices);
+  if (!instructionUses)
+    return instructionUses.takeError();
+  auto serviceUses = selectCanonicalServiceUses(*problem, threadChoices,
+                                                graphChoices, *targets);
+  if (!serviceUses)
+    return serviceUses.takeError();
   return SystemCandidateState::create(
-      std::move(problem), {threadChoices, graphChoices, routes->routes,
-                           routes->nodes, routes->sinks, *targets});
+      std::move(problem),
+      {threadChoices, graphChoices, routes->routes, routes->nodes,
+       routes->sinks, *targets, *instructionUses, *serviceUses});
 }

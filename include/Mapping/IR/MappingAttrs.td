@@ -60,6 +60,11 @@ def Mapping_RootThreadLaunchRefAttr
           "RootThreadLaunchRef", "root_thread_launch_ref",
           "Dataflow-owned root thread launch reference">;
 
+def Mapping_EventFamilyKeyAttr
+    : Mapping_CanonicalBytesAttr<
+          "EventFamilyKey", "event_family_key",
+          "Dataflow-owned closed System resource event reference">;
+
 def Mapping_SystemServiceObligationKeyAttr
     : Mapping_CanonicalBytesAttr<
           "SystemServiceObligationKey", "system_service_obligation_key",
@@ -193,6 +198,11 @@ def Mapping_InstructionContextRefAttr
                                  "instruction_context_ref",
                                  "Fabric-owned instruction context reference">;
 
+def Mapping_InstructionCoreContextRefAttr
+    : Mapping_CanonicalBytesAttr<
+          "InstructionCoreContextRef", "instruction_core_context_ref",
+          "Fabric-owned AccCore instruction context reference">;
+
 def Mapping_FabricUsePatternRefAttr
     : Mapping_CanonicalBytesAttr<"FabricUsePatternRef",
                                  "fabric_use_pattern_ref",
@@ -288,6 +298,49 @@ def Mapping_LogicalMemoryInterval
     : AnyAttrOf<[Mapping_MemoryWholeIntervalAttr, Mapping_MemoryByteRangeAttr],
                 "closed Whole or ByteRange logical memory interval">;
 
+def Mapping_TransferLegElementKeyAttr
+    : Mapping_Attr<"TransferLegElementKey", "transfer_leg_element_key"> {
+  let summary = "natural key of one System service transfer leg";
+  let parameters = (ins "::mapping::CanonicalServiceLegKeyAttr":$leg);
+  let assemblyFormat = "`<` $leg `>`";
+}
+
+def Mapping_MemoryRegionElementKeyAttr
+    : Mapping_Attr<"MemoryRegionElementKey", "memory_region_element_key"> {
+  let summary = "natural key of one System memory-region target";
+  let parameters = (ins
+      "::mapping::LogicalMemoryRootOrViewRefAttr":$logical_memory,
+      "::mlir::Attribute":$interval,
+      "::mapping::FabricMemoryServiceRegionRefAttr":$service_region,
+      "::mlir::ArrayAttr":$transform_path);
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def Mapping_ConsistencyElementKeyAttr
+    : Mapping_Attr<"ConsistencyElementKey", "consistency_element_key"> {
+  let summary = "natural key of one System consistency target";
+  let parameters = (ins "::mapping::FenceActorFamilyRefAttr":$fence,
+      "::mapping::MemoryConsistencyDomainRefAttr":$consistency_domain);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def Mapping_ServicePlanElementKey
+    : AnyAttrOf<[Mapping_TransferLegElementKeyAttr,
+                 Mapping_MemoryRegionElementKeyAttr,
+                 Mapping_ConsistencyElementKeyAttr],
+                "closed natural key of one System ServicePlan child">;
+
+def Mapping_ServicePlanElementRefAttr
+    : Mapping_Attr<"ServicePlanElementRef", "service_plan_element_ref"> {
+  let summary = "one exact owner-local System ServicePlan child reference";
+  let parameters = (ins
+      "::mapping::SystemServiceObligationKeyAttr":$service,
+      "uint64_t":$plan_ordinal, "::mlir::Attribute":$element);
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
 def Mapping_MemoryLocalRegionAttr
     : Mapping_Attr<"MemoryLocalRegion", "memory_local_region"> {
   let summary = "one exact local memory service region and byte offset";
@@ -375,6 +428,31 @@ def Mapping_SpatialRelativeActivationAttr
   let assemblyFormat = "`<` struct(params) `>`";
 }
 
+def Mapping_SystemEventPointAttr
+    : Mapping_Attr<"SystemEventPoint", "system_event_point"> {
+  let summary = "Dataflow-owned System event with an optional guaranteed offset";
+  let parameters = (ins "::mapping::EventFamilyKeyAttr":$event,
+      OptionalParameter<"::mapping::OwnerTypedValueAttr">:$guaranteed_offset);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def Mapping_SystemRelativeActivationAttr
+    : Mapping_Attr<"SystemRelativeActivation", "system_relative_activation"> {
+  let summary = "one System trigger and intrinsic or causal release";
+  let parameters = (ins "::mapping::SystemEventPointAttr":$trigger,
+      OptionalParameter<"::mapping::SystemEventPointAttr">:$release);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def Mapping_InstructionExecutionResourceOwnerRefAttr
+    : Mapping_Attr<"InstructionExecutionResourceOwnerRef",
+                   "instruction_execution_resource_owner_ref"> {
+  let summary = "one root launch and its derived InstructionCore context";
+  let parameters = (ins "::mapping::RootThreadLaunchRefAttr":$root,
+      "::mapping::InstructionCoreContextRefAttr":$instruction_context);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
 def Mapping_PhysicalRefinementAssignmentAttr
     : Mapping_Attr<"PhysicalRefinementAssignment",
                    "physical_refinement_assignment"> {
@@ -390,6 +468,24 @@ def Mapping_SpatialResourceOwnerRef
                  Mapping_MemoryRealizationRefAttr, Mapping_MemoryBindingRefAttr,
                  Mapping_RouteTreeNodeRefAttr],
                 "closed Spatial ResourceUse owner reference">;
+
+def Mapping_SystemResourceOwnerRef
+    : AnyAttrOf<[Mapping_InstructionExecutionResourceOwnerRefAttr,
+                 Mapping_ServicePlanElementRefAttr],
+                "closed System ResourceUse owner reference">;
+
+def Mapping_ResourceOwnerRef
+    : AnyAttrOf<[Mapping_ComputeRealizationRefAttr,
+                 Mapping_MemoryRealizationRefAttr, Mapping_MemoryBindingRefAttr,
+                 Mapping_RouteTreeNodeRefAttr,
+                 Mapping_InstructionExecutionResourceOwnerRefAttr,
+                 Mapping_ServicePlanElementRefAttr],
+                "closed Spatial or System ResourceUse owner reference">;
+
+def Mapping_RelativeActivation
+    : AnyAttrOf<[Mapping_SpatialRelativeActivationAttr,
+                 Mapping_SystemRelativeActivationAttr],
+                "closed Spatial or System relative activation">;
 
 def Mapping_SpatialTransferTerminalAttr
     : Mapping_Attr<"SpatialTransferTerminal", "spatial_transfer_terminal"> {

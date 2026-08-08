@@ -1,6 +1,7 @@
 #include "Mapping/IR/MappingOps.h"
 
 #include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -28,6 +29,33 @@ llvm::Expected<::loom::ArtifactIdentity>
 identity(mapping::ArtifactIdentityAttr attribute) {
   return ::loom::ArtifactIdentity::fromBytes(
       unsignedBytes(attribute.getRecord()));
+}
+
+template <typename Ref, typename Attr>
+llvm::Expected<Ref> decodeDataflow(Attr attribute,
+                                   const ::loom::ArtifactIdentity &owner) {
+  return ::dataflow::decodeDataflowReference<Ref>(
+      unsignedBytes(attribute.getRecord()), owner);
+}
+
+template <typename Ref, typename Attr>
+llvm::Expected<Ref> decodeFabric(Attr attribute) {
+  return ::loom::fabric::decodeFabricRef<Ref>(
+      unsignedBytes(attribute.getRecord()));
+}
+
+Attribute servicePlanElementKey(Operation &operation) {
+  MLIRContext *context = operation.getContext();
+  if (auto route = dyn_cast<mapping::TransferLegRealizationOp>(operation))
+    return mapping::TransferLegElementKeyAttr::get(context, route.getLeg());
+  if (auto target = dyn_cast<mapping::MemoryRegionTargetOp>(operation))
+    return mapping::MemoryRegionElementKeyAttr::get(
+        context, target.getLogicalMemory(), target.getInterval(),
+        target.getServiceRegion(), target.getTransformPath());
+  if (auto target = dyn_cast<mapping::ConsistencyTargetOp>(operation))
+    return mapping::ConsistencyElementKeyAttr::get(
+        context, target.getFence(), target.getConsistencyDomain());
+  return {};
 }
 
 LogicalResult rejectUnknownAttributes(Operation *operation,
@@ -90,6 +118,8 @@ LogicalResult mapping::SystemOp::verify() {
   llvm::DenseSet<Attribute> threadKeys;
   llvm::DenseSet<Attribute> graphKeys;
   llvm::DenseSet<Attribute> serviceKeys;
+  llvm::DenseSet<Attribute> resourceUseKeys;
+  llvm::SmallVector<mapping::ResourceUseOp> resourceUses;
   for (Operation &child : getBody().front()) {
     if (auto binding = dyn_cast<mapping::ThreadExecutionBindingOp>(child)) {
       if (!roots.contains(binding.getKey()))
@@ -108,12 +138,120 @@ LogicalResult mapping::SystemOp::verify() {
         return service.emitOpError("duplicates a ServiceRealization key");
       continue;
     }
+    if (auto use = dyn_cast<mapping::ResourceUseOp>(child)) {
+      Attribute key = ArrayAttr::get(
+          getContext(), {use.getOwner(), use.getUseSite(), use.getActivation(),
+                         use.getParameters(), use.getSharingAssignments()});
+      if (!resourceUseKeys.insert(key).second)
+        return use.emitOpError("duplicates a ResourceUse structural key");
+      resourceUses.push_back(use);
+      continue;
+    }
     return child.emitOpError(
         "is not an implemented closed SystemMapping record kind");
   }
   if (threadKeys.size() != roots.size())
     return emitOpError(
         "requires exactly one ThreadExecutionBinding for every root launch");
+
+  auto dataflowOwner = identity(getDataflow());
+  if (!dataflowOwner)
+    return emitOpError() << llvm::toString(dataflowOwner.takeError());
+  for (mapping::ResourceUseOp use : resourceUses) {
+    if (auto instruction =
+            dyn_cast<mapping::InstructionExecutionResourceOwnerRefAttr>(
+                use.getOwner())) {
+      if (!roots.contains(instruction.getRoot()))
+        return use.emitOpError(
+            "InstructionCore owner names a root outside root_thread_launches");
+      auto context = decodeFabric<::loom::fabric::InstructionCoreContextRef>(
+          instruction.getInstructionContext());
+      auto pattern =
+          decodeFabric<::loom::fabric::FabricUsePatternRef>(use.getUseSite());
+      if (!context || !pattern) {
+        if (!context)
+          return use.emitOpError() << llvm::toString(context.takeError());
+        return use.emitOpError() << llvm::toString(pattern.takeError());
+      }
+      if (pattern->owner.catalog() !=
+          ::loom::fabric::FabricInventoryOwnerRef::of(*context))
+        return use.emitOpError(
+            "InstructionCore use site belongs to another Fabric owner");
+      auto root = decodeDataflow<::dataflow::RootThreadLaunchRef>(
+          instruction.getRoot(), *dataflowOwner);
+      auto activation =
+          dyn_cast<mapping::SystemRelativeActivationAttr>(use.getActivation());
+      if (!root || !activation || !activation.getRelease())
+        return use.emitOpError(
+            "InstructionCore occupancy requires root start and completion");
+      auto trigger = decodeDataflow<::dataflow::EventFamilyKey>(
+          activation.getTrigger().getEvent(), *dataflowOwner);
+      auto release = decodeDataflow<::dataflow::EventFamilyKey>(
+          activation.getRelease().getEvent(), *dataflowOwner);
+      if (!trigger || !release) {
+        if (!trigger)
+          return use.emitOpError() << llvm::toString(trigger.takeError());
+        return use.emitOpError() << llvm::toString(release.takeError());
+      }
+      const ::dataflow::EventFamilyKey expectedTrigger(
+          ::dataflow::StaticTransferEventRef(
+              ::dataflow::ConsumedTransferEventRef{
+                  ::dataflow::CanonicalSinkTerminalRef(
+                      ::dataflow::RootThreadBoundarySinkRef{
+                          ::dataflow::RootThreadBoundaryTransferRef(
+                              ::dataflow::RootThreadStartTransferRef{
+                                  *root})})}));
+      const ::dataflow::EventFamilyKey expectedRelease(
+          ::dataflow::StaticTransferEventRef(
+              ::dataflow::ProducedTransferEventRef{
+                  ::dataflow::CanonicalProducerTerminalRef(
+                      ::dataflow::RootThreadBoundarySourceRef{
+                          ::dataflow::RootThreadBoundaryTransferRef(
+                              ::dataflow::RootThreadCompletionTransferRef{
+                                  *root})})}));
+      if (*trigger != expectedTrigger || *release != expectedRelease)
+        return use.emitOpError(
+            "InstructionCore occupancy has the wrong root events");
+      continue;
+    }
+
+    auto owner = cast<mapping::ServicePlanElementRefAttr>(use.getOwner());
+    mapping::ServiceRealizationOp selectedService;
+    mapping::ServicePlanOp selectedPlan;
+    for (auto service :
+         getBody().front().getOps<mapping::ServiceRealizationOp>()) {
+      if (service.getKey() != owner.getService())
+        continue;
+      selectedService = service;
+      for (auto plan :
+           service.getBody().front().getOps<mapping::ServicePlanOp>())
+        if (plan.getPlanOrdinal() == owner.getPlanOrdinal())
+          selectedPlan = plan;
+    }
+    if (!selectedService || !selectedPlan)
+      return use.emitOpError("ServicePlanElement owner is absent");
+    bool foundElement = false;
+    for (Operation &child : selectedPlan.getBody().front())
+      if (servicePlanElementKey(child) == owner.getElement()) {
+        foundElement = true;
+        break;
+      }
+    if (!foundElement)
+      return use.emitOpError("ServicePlanElement owner is absent");
+    auto activation =
+        cast<mapping::SystemRelativeActivationAttr>(use.getActivation());
+    if (activation.getRelease())
+      return use.emitOpError(
+          "service ResourceUse requires intrinsic completion");
+    auto trigger = decodeDataflow<::dataflow::EventFamilyKey>(
+        activation.getTrigger().getEvent(), *dataflowOwner);
+    if (!trigger)
+      return use.emitOpError() << llvm::toString(trigger.takeError());
+    if (!std::holds_alternative<::dataflow::ContextualActorTransitionEventRef>(
+            *trigger))
+      return use.emitOpError(
+          "service ResourceUse requires a contextual actor issue event");
+  }
   return success();
 }
 

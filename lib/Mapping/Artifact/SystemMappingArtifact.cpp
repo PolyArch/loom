@@ -500,7 +500,8 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
       threadBindings.push_back(std::move(view));
       continue;
     }
-    if (mlir::isa<::mapping::ServiceRealizationOp>(operation))
+    if (mlir::isa<::mapping::ServiceRealizationOp, ::mapping::ResourceUseOp>(
+            operation))
       continue;
     auto binding =
         mlir::dyn_cast<::mapping::GraphExecutionBindingOp>(operation);

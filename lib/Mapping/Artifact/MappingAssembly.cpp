@@ -107,6 +107,45 @@ std::string eventPointKey(::mapping::SpatialEventPointAttr point) {
   return result;
 }
 
+std::string eventPointKey(::mapping::SystemEventPointAttr point) {
+  std::string result = recordKey(point.getEvent().getRecord());
+  auto offset = point.getGuaranteedOffset();
+  appendU32(result, offset ? 1 : 0);
+  if (offset)
+    appendFramed(result, recordKey(offset.getRecord()));
+  return result;
+}
+
+std::string memoryIntervalKey(Attribute interval);
+
+std::string servicePlanElementKey(Attribute element) {
+  std::string result;
+  if (auto leg = dyn_cast<::mapping::TransferLegElementKeyAttr>(element)) {
+    appendU32(result, 0);
+    appendFramed(result, recordKey(leg.getLeg().getRecord()));
+    return result;
+  }
+  if (auto memory = dyn_cast<::mapping::MemoryRegionElementKeyAttr>(element)) {
+    appendU32(result, 1);
+    appendFramed(result, recordKey(memory.getLogicalMemory().getRecord()));
+    appendFramed(result, memoryIntervalKey(memory.getInterval()));
+    appendFramed(result, recordKey(memory.getServiceRegion().getRecord()));
+    appendU64(result, memory.getTransformPath().size());
+    for (Attribute transform : memory.getTransformPath())
+      appendFramed(
+          result,
+          recordKey(cast<::mapping::SystemServiceTransformRefAttr>(transform)
+                        .getRecord()));
+    return result;
+  }
+  auto consistency = cast<::mapping::ConsistencyElementKeyAttr>(element);
+  appendU32(result, 2);
+  appendFramed(result, recordKey(consistency.getFence().getRecord()));
+  appendFramed(result,
+               recordKey(consistency.getConsistencyDomain().getRecord()));
+  return result;
+}
+
 std::string ownerKey(Attribute owner) {
   std::string result;
   if (auto compute = dyn_cast<::mapping::ComputeRealizationRefAttr>(owner)) {
@@ -124,10 +163,26 @@ std::string ownerKey(Attribute owner) {
     appendU64(result, binding.getEntity());
     return result;
   }
-  auto route = cast<::mapping::RouteTreeNodeRefAttr>(owner);
-  appendU32(result, 3);
-  appendFramed(result, recordKey(route.getLogicalNet().getRecord()));
-  appendU64(result, route.getNodeOrdinal());
+  if (auto route = dyn_cast<::mapping::RouteTreeNodeRefAttr>(owner)) {
+    appendU32(result, 3);
+    appendFramed(result, recordKey(route.getLogicalNet().getRecord()));
+    appendU64(result, route.getNodeOrdinal());
+    return result;
+  }
+  if (auto instruction =
+          dyn_cast<::mapping::InstructionExecutionResourceOwnerRefAttr>(
+              owner)) {
+    appendU32(result, 4);
+    appendFramed(result, recordKey(instruction.getRoot().getRecord()));
+    appendFramed(result,
+                 recordKey(instruction.getInstructionContext().getRecord()));
+    return result;
+  }
+  auto service = cast<::mapping::ServicePlanElementRefAttr>(owner);
+  appendU32(result, 5);
+  appendFramed(result, recordKey(service.getService().getRecord()));
+  appendU64(result, service.getPlanOrdinal());
+  appendFramed(result, servicePlanElementKey(service.getElement()));
   return result;
 }
 
@@ -143,11 +198,21 @@ std::string resourceUseSemanticKey(::mapping::ResourceUseOp use) {
   std::string result = ownerKey(use.getOwner());
   appendFramed(result, recordKey(use.getUseSite().getRecord()));
   auto activation = use.getActivation();
-  appendFramed(result, eventPointKey(activation.getTrigger()));
-  auto release = activation.getRelease();
-  appendU32(result, release ? 1 : 0);
-  if (release)
-    appendFramed(result, eventPointKey(release));
+  if (auto spatial =
+          dyn_cast<::mapping::SpatialRelativeActivationAttr>(activation)) {
+    appendFramed(result, eventPointKey(spatial.getTrigger()));
+    auto release = spatial.getRelease();
+    appendU32(result, release ? 1 : 0);
+    if (release)
+      appendFramed(result, eventPointKey(release));
+  } else {
+    auto system = cast<::mapping::SystemRelativeActivationAttr>(activation);
+    appendFramed(result, eventPointKey(system.getTrigger()));
+    auto release = system.getRelease();
+    appendU32(result, release ? 1 : 0);
+    if (release)
+      appendFramed(result, eventPointKey(release));
+  }
   appendTypedValues(result, use.getParameters());
   appendTypedValues(result, use.getSharingAssignments());
   return result;
@@ -760,8 +825,12 @@ std::string servicePlanSemanticKey(::mapping::ServicePlanOp plan) {
   return result;
 }
 
+using SystemPlanRenumbering =
+    std::map<std::pair<std::string, std::uint64_t>, std::uint64_t>;
+
 llvm::Error
-canonicalizeServiceRealization(::mapping::ServiceRealizationOp service) {
+canonicalizeServiceRealization(::mapping::ServiceRealizationOp service,
+                               SystemPlanRenumbering &systemPlanRenumbering) {
   Block &body = service.getBody().front();
   struct Plan final {
     std::string key;
@@ -803,6 +872,10 @@ canonicalizeServiceRealization(::mapping::ServiceRealizationOp service) {
         duplicate ? canonicalOrdinal - 1 : canonicalOrdinal++;
     planRenumbering.try_emplace(plans[index].operation.getPlanOrdinal(),
                                 targetOrdinal);
+    systemPlanRenumbering.emplace(
+        std::make_pair(recordKey(service.getKey().getRecord()),
+                       plans[index].operation.getPlanOrdinal()),
+        targetOrdinal);
     if (duplicate) {
       plans[index].operation.erase();
       continue;
@@ -933,6 +1006,8 @@ llvm::Error canonicalizeSystem(::mapping::SystemOp root) {
   SmallVector<::mapping::ThreadExecutionBindingOp> threadBindings;
   SmallVector<::mapping::GraphExecutionBindingOp> graphBindings;
   SmallVector<::mapping::ServiceRealizationOp> services;
+  SmallVector<::mapping::ResourceUseOp> uses;
+  SystemPlanRenumbering systemPlanRenumbering;
   for (Operation &operation : body) {
     if (auto graph = dyn_cast<::mapping::GraphExecutionBindingOp>(operation)) {
       if (graph.getDefaultTarget())
@@ -963,10 +1038,27 @@ llvm::Error canonicalizeSystem(::mapping::SystemOp root) {
       threadBindings.push_back(thread);
     } else if (auto service =
                    dyn_cast<::mapping::ServiceRealizationOp>(operation)) {
-      if (llvm::Error error = canonicalizeServiceRealization(service))
+      if (llvm::Error error =
+              canonicalizeServiceRealization(service, systemPlanRenumbering))
         return error;
       services.push_back(service);
+    } else if (auto use = dyn_cast<::mapping::ResourceUseOp>(operation)) {
+      uses.push_back(use);
     }
+  }
+  for (auto use : uses) {
+    auto owner = dyn_cast<::mapping::ServicePlanElementRefAttr>(use.getOwner());
+    if (!owner)
+      continue;
+    auto rewritten = systemPlanRenumbering.find(
+        {recordKey(owner.getService().getRecord()), owner.getPlanOrdinal()});
+    if (rewritten == systemPlanRenumbering.end())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "System ResourceUse names an absent authored ServicePlan");
+    use->setAttr("owner", ::mapping::ServicePlanElementRefAttr::get(
+                              root.getContext(), owner.getService(),
+                              rewritten->second, owner.getElement()));
   }
   llvm::sort(threadBindings, [](auto left, auto right) {
     return recordKey(left.getKey().getRecord()) <
@@ -980,12 +1072,27 @@ llvm::Error canonicalizeSystem(::mapping::SystemOp root) {
     return recordKey(left.getKey().getRecord()) <
            recordKey(right.getKey().getRecord());
   });
+  llvm::sort(uses, [](auto left, auto right) {
+    return resourceUseSemanticKey(left) < resourceUseSemanticKey(right);
+  });
   for (auto binding : threadBindings)
     binding->moveBefore(&body, body.end());
   for (auto binding : graphBindings)
     binding->moveBefore(&body, body.end());
   for (auto service : services)
     service->moveBefore(&body, body.end());
+  std::string previousUseKey;
+  bool hasPreviousUse = false;
+  for (auto use : uses) {
+    const std::string key = resourceUseSemanticKey(use);
+    if (hasPreviousUse && key == previousUseKey) {
+      use.erase();
+      continue;
+    }
+    previousUseKey = key;
+    hasPreviousUse = true;
+    use->moveBefore(&body, body.end());
+  }
   return llvm::Error::success();
 }
 
