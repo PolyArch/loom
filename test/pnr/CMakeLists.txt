@@ -60,6 +60,8 @@ target_link_libraries(loom-system-candidate-state-test PRIVATE
 
 target_link_libraries(loom-system-channel-applicability-test PRIVATE
   LoomADGBuilder
+  LoomDSE
+  LoomDSEMappingGenerator
   LoomPnR
   LoomPnRGenerator
   LoomTechMapping

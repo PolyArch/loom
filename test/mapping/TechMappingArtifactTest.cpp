@@ -208,6 +208,7 @@ module {
   dataflow.graph private @feedback(%start: none, %phase: i1) -> ()
       attributes {input_segments = array<i32: 1, 0, 0>,
                   result_segments = array<i32: 0, 0, 0>} {
+    %stable = dataflow.invariant %phase, %start : none
     %carried = dataflow.carry %phase, %start, %lanes#1 : none
     %lanes:2 = dataflow.demux %phase, %carried
         : (i1, none) -> (none, none)

@@ -1,6 +1,11 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/CandidateGenerator.h"
+#include "DSE/Plan.h"
+#include "DSE/ResolvedConfigView.h"
+#include "DSE/RootCompleteSystemPnrCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -31,6 +36,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
@@ -222,6 +228,42 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
+dataflow::CanonicalDataflowArtifact
+buildInstructionOnlyDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    dataflow.thread.yield
+  }
+  func.func private @host() {
+    %token = dataflow.thread.launch @worker()
+        : () -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse instruction-only Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+dataflow::CanonicalDataflowArtifact
+buildRootFreeDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  func.func private @helper() {
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse root-free Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
 loom::ResolvedConfig buildResolvedConfig() {
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
@@ -328,6 +370,153 @@ bounded(loom::mapping::SystemPresburgerCell cell,
   return take(loom::mapping::canonicalizeSystemPresburgerCell(cell));
 }
 
+void verifyRootCompleteSystemAdapter(
+    const loom::ArtifactRootReference &dataflowReference,
+    llvm::ArrayRef<loom::ArtifactRootReference> spatialMappings,
+    const loom::ArtifactRootReference &systemReference,
+    const loom::ResolvedConfig &resolved, loom::ArtifactStore &store,
+    llvm::StringRef directory) {
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
+  if (llvm::Error error =
+          loom::dse::registerRootCompleteSystemPnrCandidateGenerator())
+    fail(llvm::toString(std::move(error)));
+  const auto config =
+      take(loom::pnr::projectResolvedSystemPnrConfigView(resolved));
+  const auto &descriptor =
+      loom::dse::rootCompleteSystemPnrCandidateGeneratorDescriptor();
+  require(descriptor.kind ==
+                  loom::dse::rootCompleteSystemPnrCandidateGeneratorKind &&
+              descriptor.inputSlots.size() == 3 &&
+              descriptor.outputSlots.size() == 1 &&
+              descriptor.workUnits.size() == 2 &&
+              descriptor.inputSlots[0].semanticRole == "dataflow" &&
+              descriptor.inputSlots[1].semanticRole == "spatial_mapping" &&
+              descriptor.inputSlots[2].semanticRole == "fabric",
+          "root-complete System descriptor lost its exact D/Spatial/F shape");
+  auto inputs =
+      take(loom::dse::bindRootCompleteSystemPnrCandidateGeneratorInputs(
+          dataflowReference, spatialMappings, systemReference));
+  auto binding = take(
+      loom::dse::resolveRootCompleteSystemPnrCandidateGeneratorBinding(config));
+  auto first =
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  const auto *completed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(&first.outcome);
+  require(completed && completed->outputBindings.size() == 1 &&
+              completed->outputBindings.front().artifacts.size() == 1 &&
+              completed->lineageEdges.size() == 1,
+          "root-complete System adapter did not publish one SystemMapping");
+  require(first.workSummary.size() == 2 &&
+              first.workSummary.front().consumed != 0,
+          "root-complete System adapter lost real bounded work");
+  for (const auto &unit : first.workSummary)
+    require(unit.planned == unit.consumed,
+            "completed System provider left planned work unconsumed");
+  const auto output = completed->outputBindings.front().artifacts.front();
+  auto imported = take(loom::mapping::importSystemMapping(output, store));
+  require(imported.view().dataflowIdentity() == dataflowReference.artifact &&
+              imported.view().fabricIdentity() == systemReference.artifact,
+          "root-complete System adapter published a foreign Mapping");
+
+  auto replay =
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  const auto *replayed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &replay.outcome);
+  require(replayed &&
+              replayed->outputBindings.front().artifacts ==
+                  completed->outputBindings.front().artifacts &&
+              replay.workSummary == first.workSummary,
+          "root-complete System adapter changed output or work on replay");
+
+  loom::ResolvedConfig planned = resolved;
+  planned.dse.planNodes = {loom::dse::GeneratePlanNodeDefinition{
+      descriptor.reference(),
+      {loom::dse::ExactPlanArtifacts{{dataflowReference}},
+       loom::dse::ExactPlanArtifacts{spatialMappings.vec()},
+       loom::dse::ExactPlanArtifacts{{systemReference}}},
+      config.canonicalViewBytes().vec(),
+      config.digest()}};
+  auto planView = take(loom::dse::projectResolvedDseConfigView(planned));
+  auto planOutcome = take(loom::dse::executeDsePlan(planView, store, blobs));
+  const auto *planCompleted =
+      std::get_if<loom::dse::CompletedDsePlanExecution>(&planOutcome);
+  require(planCompleted &&
+              planCompleted->resolve(loom::dse::PlanOutputRef{0, 0}) ==
+                  llvm::ArrayRef(completed->outputBindings.front().artifacts) &&
+              planCompleted->generateWorkSummaries().size() == 1 &&
+              planCompleted->generateWorkSummaries().front().units ==
+                  first.workSummary,
+          "central Generate plan changed System output or work");
+
+  if (!spatialMappings.empty()) {
+    loom::ResolvedConfig limited = resolved;
+    limited.dse.systemPnr.search.initializer.assignmentAttemptLimitPerSeed = 1;
+    limited.dse.systemPnr.search.routing.endpointExpansionLimit = 1;
+    const auto limitedConfig =
+        take(loom::pnr::projectResolvedSystemPnrConfigView(limited));
+    auto limitedBinding =
+        take(loom::dse::resolveRootCompleteSystemPnrCandidateGeneratorBinding(
+            limitedConfig));
+    auto limitedResult = take(loom::dse::invokeCandidateGenerator(
+        inputs, limitedBinding, store, blobs));
+    const auto *incomplete =
+        std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+            &limitedResult.outcome);
+    require(incomplete &&
+                incomplete->reason ==
+                    loom::dse::CandidateGeneratorIncompleteReason::
+                        SemanticLimitReached &&
+                limitedResult.workSummary.size() == 2 &&
+                limitedResult.workSummary.front().consumed == 1,
+            "bounded System search did not report typed semantic exhaustion");
+  }
+}
+
+void verifyRootFreeSystemAdapter(
+    const loom::ArtifactRootReference &dataflowReference,
+    const loom::ArtifactRootReference &foreignSpatialMapping,
+    const loom::ArtifactRootReference &systemReference,
+    const loom::ResolvedConfig &resolved, loom::ArtifactStore &store,
+    llvm::StringRef directory) {
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "root-free-blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create root-free BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
+  const auto config =
+      take(loom::pnr::projectResolvedSystemPnrConfigView(resolved));
+  auto binding = take(
+      loom::dse::resolveRootCompleteSystemPnrCandidateGeneratorBinding(config));
+  auto emptyInputs =
+      take(loom::dse::bindRootCompleteSystemPnrCandidateGeneratorInputs(
+          dataflowReference, {}, systemReference));
+  auto result = take(
+      loom::dse::invokeCandidateGenerator(emptyInputs, binding, store, blobs));
+  const auto *completed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &result.outcome);
+  require(completed && completed->outputBindings.front().artifacts.empty() &&
+              completed->lineageEdges.empty() &&
+              result.workSummary.size() == 2 &&
+              llvm::all_of(result.workSummary,
+                           [](const auto &unit) {
+                             return unit.planned == 0 && unit.consumed == 0;
+                           }),
+          "root-free System adapter did not complete with exact zero work");
+
+  auto foreignInputs =
+      take(loom::dse::bindRootCompleteSystemPnrCandidateGeneratorInputs(
+          dataflowReference, {foreignSpatialMapping}, systemReference));
+  auto foreign =
+      loom::dse::invokeCandidateGenerator(foreignInputs, binding, store, blobs);
+  requireFailureContains(std::move(foreign), "foreign Dataflow owner");
+}
+
 } // namespace
 
 int main() {
@@ -336,7 +525,8 @@ int main() {
   mlir::MLIRContext context = makeContext();
 
   auto dataflowArtifact = buildDataflow(context);
-  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  const auto dataflowReference =
+      take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
@@ -373,6 +563,21 @@ int main() {
   auto resolved = buildResolvedConfig();
   const auto spatialMapping =
       generateSpatialMapping(dataflow, module, resolved, store);
+  verifyRootCompleteSystemAdapter(dataflowReference, {spatialMapping},
+                                  design.roots().front().reference(), resolved,
+                                  store, directory.path());
+  auto instructionOnlyArtifact = buildInstructionOnlyDataflow(context);
+  const auto instructionOnlyReference =
+      take(dataflow::publishCanonicalDataflow(instructionOnlyArtifact, store));
+  verifyRootCompleteSystemAdapter(instructionOnlyReference, {},
+                                  design.roots().front().reference(), resolved,
+                                  store, directory.path());
+  auto rootFreeArtifact = buildRootFreeDataflow(context);
+  const auto rootFreeReference =
+      take(dataflow::publishCanonicalDataflow(rootFreeArtifact, store));
+  verifyRootFreeSystemAdapter(rootFreeReference, spatialMapping,
+                              design.roots().front().reference(), resolved,
+                              store, directory.path());
 
   std::vector<dataflow::RootThreadLaunchRef> roots;
   for (const auto &root : dataflow.rootThreadLaunches())

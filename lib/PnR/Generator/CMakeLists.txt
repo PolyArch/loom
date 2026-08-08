@@ -1,5 +1,6 @@
 add_mlir_library(LoomPnRGenerator
   SpatialPnrGenerator.cpp
+  SystemPnrGenerator.cpp
 
   LINK_LIBS PUBLIC
   LoomPnR

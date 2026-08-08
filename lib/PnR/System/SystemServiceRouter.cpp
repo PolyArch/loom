@@ -477,7 +477,8 @@ llvm::Expected<detail::CanonicalSystemServiceRoutes>
 loom::pnr::detail::buildCanonicalSystemServiceRoutes(
     const FrozenSystemPnrProblem &problem,
     llvm::ArrayRef<PnrIndex> threadChoices,
-    llvm::ArrayRef<PnrIndex> graphChoices) {
+    llvm::ArrayRef<PnrIndex> graphChoices, std::uint64_t &endpointExpansions) {
+  endpointExpansions = 0;
   CanonicalSystemServiceRoutes result;
   const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
   auto atomicPatterns = buildAtomicPatternCatalog(topology);
@@ -550,6 +551,7 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
              arcCosts, leg.requiredPayloadWidthBits, 0,
              problem.config().policy().search.routing.endpointExpansionLimit,
              eligibleTraversals});
+        endpointExpansions = search.endpointExpansionCount();
         if (!routed)
           return llvm::handleErrors(
               routed.takeError(),

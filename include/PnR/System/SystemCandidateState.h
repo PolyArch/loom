@@ -8,6 +8,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <system_error>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -149,6 +152,38 @@ private:
 struct InitializedSystemCandidate final {
   SystemCandidateStateHandle state;
   std::uint64_t assignmentAttempts = 0;
+  std::uint64_t endpointExpansions = 0;
+};
+
+enum class SystemCandidateInitializationFailureKind : std::uint8_t {
+  ProvenInfeasible,
+  SemanticLimitReached,
+  Internal,
+};
+
+class SystemCandidateInitializationFailure final
+    : public llvm::ErrorInfo<SystemCandidateInitializationFailure> {
+public:
+  static char ID;
+
+  SystemCandidateInitializationFailure(
+      SystemCandidateInitializationFailureKind kind,
+      std::uint64_t assignmentAttempts, std::uint64_t endpointExpansions,
+      std::string message)
+      : kind_(kind), assignmentAttempts_(assignmentAttempts),
+        endpointExpansions_(endpointExpansions), message_(std::move(message)) {}
+
+  SystemCandidateInitializationFailureKind kind() const { return kind_; }
+  std::uint64_t assignmentAttempts() const { return assignmentAttempts_; }
+  std::uint64_t endpointExpansions() const { return endpointExpansions_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  SystemCandidateInitializationFailureKind kind_;
+  std::uint64_t assignmentAttempts_ = 0;
+  std::uint64_t endpointExpansions_ = 0;
+  std::string message_;
 };
 
 llvm::Expected<InitializedSystemCandidate>
@@ -157,7 +192,8 @@ initializeCanonicalSystemCandidate(FrozenSystemPnrProblemHandle problem);
 llvm::Expected<SystemCandidateStateHandle>
 initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
                           llvm::ArrayRef<PnrIndex> threadChoices,
-                          llvm::ArrayRef<PnrIndex> graphChoices);
+                          llvm::ArrayRef<PnrIndex> graphChoices,
+                          std::uint64_t *endpointExpansions = nullptr);
 
 } // namespace loom::pnr
 

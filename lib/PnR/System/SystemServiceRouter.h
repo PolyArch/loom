@@ -19,7 +19,8 @@ struct CanonicalSystemServiceRoutes final {
 llvm::Expected<CanonicalSystemServiceRoutes>
 buildCanonicalSystemServiceRoutes(const FrozenSystemPnrProblem &problem,
                                   llvm::ArrayRef<PnrIndex> threadChoices,
-                                  llvm::ArrayRef<PnrIndex> graphChoices);
+                                  llvm::ArrayRef<PnrIndex> graphChoices,
+                                  std::uint64_t &endpointExpansions);
 
 llvm::Error verifySystemServiceRoutes(
     const FrozenSystemPnrProblem &problem,

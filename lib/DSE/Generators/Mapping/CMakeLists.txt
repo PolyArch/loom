@@ -1,5 +1,6 @@
 add_library(LoomDSEMappingGenerator
   RootCompleteSpatialPnrCandidateGenerator.cpp
+  RootCompleteSystemPnrCandidateGenerator.cpp
   RootCompleteTechMappingCandidateGenerator.cpp
   SpatialPnrCandidateGenerator.cpp
 )

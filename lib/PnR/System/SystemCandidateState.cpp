@@ -1,5 +1,6 @@
 #include "PnR/System/SystemCandidateState.h"
 
+#include "PnR/EndpointRouter.h"
 #include "PnR/InitializerRelationSolver.h"
 #include "SystemCandidateServiceResolver.h"
 #include "SystemPnrSearchDomainInternal.h"
@@ -10,8 +11,10 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cassert>
+#include <limits>
 #include <map>
 #include <string>
 #include <utility>
@@ -20,11 +23,68 @@
 using namespace loom;
 using namespace loom::pnr;
 
+char SystemCandidateInitializationFailure::ID;
+
+void SystemCandidateInitializationFailure::log(
+    llvm::raw_ostream &stream) const {
+  stream << message_;
+}
+
+std::error_code
+SystemCandidateInitializationFailure::convertToErrorCode() const {
+  return std::make_error_code(
+      kind_ == SystemCandidateInitializationFailureKind::SemanticLimitReached
+          ? std::errc::resource_unavailable_try_again
+          : std::errc::invalid_argument);
+}
+
 namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "system_candidate_invalid: " + message);
+}
+
+std::string errorMessage(const llvm::ErrorInfoBase &error) {
+  std::string message;
+  llvm::raw_string_ostream stream(message);
+  error.log(stream);
+  return message;
+}
+
+llvm::Error initializationFailure(llvm::Error error,
+                                  std::uint64_t assignmentAttempts,
+                                  std::uint64_t endpointExpansions) {
+  SystemCandidateInitializationFailureKind kind =
+      SystemCandidateInitializationFailureKind::Internal;
+  std::string diagnostic;
+  llvm::handleAllErrors(
+      std::move(error),
+      [&](const detail::InitializerRelationSolveFailure &failure) {
+        switch (failure.kind()) {
+        case detail::InitializerRelationSolveFailureKind::ProvenInfeasible:
+        case detail::InitializerRelationSolveFailureKind::FixedRootInfeasible:
+          kind = SystemCandidateInitializationFailureKind::ProvenInfeasible;
+          break;
+        case detail::InitializerRelationSolveFailureKind::WorkLimit:
+          kind = SystemCandidateInitializationFailureKind::SemanticLimitReached;
+          break;
+        }
+        diagnostic = errorMessage(failure);
+      },
+      [&](const EndpointRouteSearchFailure &failure) {
+        kind =
+            failure.kind() == EndpointRouteSearchFailureKind::WorkLimit
+                ? SystemCandidateInitializationFailureKind::SemanticLimitReached
+                : SystemCandidateInitializationFailureKind::Internal;
+        diagnostic = errorMessage(failure);
+      },
+      [&](const llvm::ErrorInfoBase &failure) {
+        kind = SystemCandidateInitializationFailureKind::Internal;
+        diagnostic = errorMessage(failure);
+      });
+  return llvm::make_error<SystemCandidateInitializationFailure>(
+      kind, assignmentAttempts, endpointExpansions, std::move(diagnostic));
 }
 
 llvm::Expected<std::vector<PnrIndex>>
@@ -467,15 +527,23 @@ loom::pnr::initializeCanonicalSystemCandidate(
     return invalid("FrozenSystemPnrProblem owner is null");
   detail::InitializerRelationSolver solver(*problem->initializerRelations_);
   SystemCandidateStateHandle accepted;
+  std::uint64_t endpointExpansions = 0;
   auto solved = solver.solveCanonical(
       problem->config()
           .policy()
           .search.initializer.assignmentAttemptLimitPerSeed,
       [&](llvm::ArrayRef<PnrIndex> choices) -> llvm::Expected<bool> {
         const std::size_t threadCount = problem->threadDecisions().size();
-        auto candidate =
-            initializeSystemCandidate(problem, choices.take_front(threadCount),
-                                      choices.drop_front(threadCount));
+        std::uint64_t candidateEndpointExpansions = 0;
+        auto candidate = initializeSystemCandidate(
+            problem, choices.take_front(threadCount),
+            choices.drop_front(threadCount), &candidateEndpointExpansions);
+        if (candidateEndpointExpansions >
+            std::numeric_limits<std::uint64_t>::max() - endpointExpansions)
+          return llvm::createStringError(
+              std::make_error_code(std::errc::value_too_large),
+              "System initializer endpoint expansion accounting overflow");
+        endpointExpansions += candidateEndpointExpansions;
         if (candidate) {
           accepted = std::move(*candidate);
           return true;
@@ -495,17 +563,24 @@ loom::pnr::initializeCanonicalSystemCandidate(
         return false;
       });
   if (!solved)
-    return solved.takeError();
+    return initializationFailure(
+        solved.takeError(), solver.assignmentAttempts(), endpointExpansions);
   if (!accepted)
-    return invalid("initializer accepted no System candidate");
-  return InitializedSystemCandidate{std::move(accepted),
-                                    solved->assignmentAttempts};
+    return llvm::make_error<SystemCandidateInitializationFailure>(
+        SystemCandidateInitializationFailureKind::Internal,
+        solved->assignmentAttempts, endpointExpansions,
+        "initializer accepted no System candidate");
+  return InitializedSystemCandidate{
+      std::move(accepted), solved->assignmentAttempts, endpointExpansions};
 }
 
 llvm::Expected<SystemCandidateStateHandle>
 loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
                                      llvm::ArrayRef<PnrIndex> threadChoices,
-                                     llvm::ArrayRef<PnrIndex> graphChoices) {
+                                     llvm::ArrayRef<PnrIndex> graphChoices,
+                                     std::uint64_t *endpointExpansions) {
+  if (endpointExpansions)
+    *endpointExpansions = 0;
   if (!problem)
     return invalid("FrozenSystemPnrProblem owner is null");
   auto choices = relationChoices(*problem, threadChoices, graphChoices);
@@ -519,8 +594,11 @@ loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
   if (llvm::Error error = detail::verifySystemServiceTargetDomains(
           *problem, threadChoices, graphChoices))
     return std::move(error);
+  std::uint64_t routeEndpointExpansions = 0;
   auto routes = detail::buildCanonicalSystemServiceRoutes(
-      *problem, threadChoices, graphChoices);
+      *problem, threadChoices, graphChoices, routeEndpointExpansions);
+  if (endpointExpansions)
+    *endpointExpansions = routeEndpointExpansions;
   if (!routes)
     return routes.takeError();
   auto targets =
