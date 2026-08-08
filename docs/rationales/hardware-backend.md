@@ -35,6 +35,50 @@ capability removes those competing tables. `None`, finite, and direct carriers
 are the three essential cases; adding per-family selector mechanisms would only
 rename them and enlarge the semantic surface.
 
+The quotient keys and direct carriers belong to the sealed Fabric relation
+because only the concrete intersection of registered actor semantics, HSG
+eligibility, typed parameters, physical ports, and constraints can determine
+physical-behavior equality. The generated HSG TableGen registry owns family
+identity and member eligibility, not this concrete quotient. Giving TableGen a
+second behavior-key or direct-bit table would either duplicate the normative
+Fabric relation or ignore concrete physical narrowing. A backend-local codec
+would duplicate both the quotient and ConfigurationABI's physical encoding.
+Moving the three Direct carriers into a new standalone codec specification was
+also rejected: it would add a document owner without separating an independent
+concept from the family relation that already determines the carrier.
+The specification therefore defines component order and validity once; the
+Fabric resolver implements that contract, and every provider consumes the
+sealed result.
+
+The direct carrier is intersected with exact physical ports for the same
+reason. A constant field sized to a parameter maximum wider than its result
+port would retain values that no admitted actor can emit. Slice and shuffle
+validators therefore use constructive minimum geometries rather than a
+width-only check. This keeps the validator equal to the projector image and
+lets ConfigurationABI reject same-width spare codes without learning family
+semantics.
+
+Poison shuffle lanes canonicalize to ordinary selector zero. The software
+contract permits any defined refinement there, so a dedicated poison selector
+would create an unobservable configuration mode and a backend comparison that
+has no semantic owner. Likewise, constant type tags remain in actor identity
+but not in the physical bit carrier; equal emitted bits are one configured
+behavior.
+
+Direct GEP support was deferred instead of assigning its unbounded static
+layout and index tuple a backend-private encoding. Normalizing stable-integral
+GEP to explicit DataLayout-derived integer address arithmetic uses existing
+bounded relations. A future address-generation resource can add one typed
+bound and one Direct carrier when that distinction is physically required.
+
+These rules close existing `loom.fabric 3.0` invariants rather than preserving
+the incomplete implementation as a compatible behavior. The generic 3.0
+relation already rejected a missing total projector and stated that poison
+creates no mode. Consequently, a GEP capability with no bounded projector and
+a shuffle poison sentinel were never specification-conforming artifacts whose
+identity could be retained. A future incompatible carrier still requires a
+new Fabric major version.
+
 This boundary also exposes the backend's natural implementation parallelism.
 Providers for independent implementation families or provider ecosystems share
 only the stable capability-view, ConfigurationABI, RTL protocol, and recipe

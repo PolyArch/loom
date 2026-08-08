@@ -106,14 +106,15 @@ canonical or reinterpret the schema's semantic projection.
 
 ### Initial Scalar Compute Families
 
-`ScalarIntegerAddSub` may include `LLVMGetElementPtr` as an optional concrete
-member because a stable integral GEP's final address formation can share a real
-integer add/sub datapath. This is physical sharing, not semantic equivalence.
-The family descriptor makes the schema eligible; a concrete `fabric.op` must
-still list `LLVMGetElementPtr` in `op_list` and its typed parameters must admit
-the exact pointer representation width, address-arithmetic width, address
-space, and stable-integral pointer kind. An ordinary adder that omits that
-member does not support GEP.
+`ScalarIntegerAddSub` reserves `LLVMGetElementPtr` as an eligible family member
+because a stable-integral GEP's final address formation may share a real
+integer add/sub datapath. Eligibility is not a complete concrete capability.
+The current `ScalarIntegerParams` does not bound the static layout or index
+tuple and therefore cannot derive the fixed semantic-field carrier required by
+Fabric. A current concrete `fabric.op` must omit `LLVMGetElementPtr` and keep
+its pointer-format relation empty. The compiler normalizes a selected GEP,
+under its exact DataLayout, to explicit canonical integer address arithmetic
+before binding the current resource.
 
 The same `LLVMGetElementPtr` schema may also belong to a dedicated address-
 generation implementation family. TechMapping selects one concrete family and
@@ -259,6 +260,10 @@ Neither parameter record owns vector shape, static position, shuffle mask, or
 lane count. Those remain exact OperationSchema facts. A custom architecture
 may register another physically justified family containing one of these
 schemas, but FU co-location or equal flattened width is not sufficient.
+Their exact Direct carrier layouts and validity domains are owned by the
+`Derived Semantic Field Relation` section of
+`docs/spec-fabric-reconfigurable-op.md`; this family registry does not repeat
+them.
 
 ### Initial Adapter And Token Families
 
@@ -282,6 +287,9 @@ width within capacity, and the operation schema's exact scalar/vector/mask
 relation. `TokenConstant` owns a payload-capacity domain. The other token
 families own payload capacity and positive maximum fan; actor arity and exact
 types remain part of the canonical actor projection.
+The exact constant Direct carrier and routed-token finite lane-image quotients
+are owned by the `Derived Semantic Field Relation` section of
+`docs/spec-fabric-reconfigurable-op.md`.
 
 ### Initial Special-Math Families
 

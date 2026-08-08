@@ -119,8 +119,8 @@ Operations that do not share a real implementation family require separate
 
 ## `hw_params` And Physical Ports
 
-Pointer-capable scalar integer parameters extend the ordinary integer-width
-domain with a finite relation of exact pointer formats:
+The scalar integer parameter schema contains a finite relation of exact pointer
+formats:
 
 ```text
 PointerFormat = {
@@ -131,12 +131,17 @@ PointerFormat = {
 }
 ```
 
-The relation is empty for an ordinary integer-only resource. It is nonempty
-only when the concrete resource's `op_list` enables a pointer schema. Endpoint
-capacity must cover `representation_bits`; GEP index operands must be admitted
-by their own integer widths. `representation_bits`, `address_bits`, and the
-software candidate's selected `index` width are independently validated and
-must never be inferred from one another.
+The current reconfigurable-operation relation requires this pointer-format
+relation to be empty. `LLVMGetElementPtr` has an unbounded static layout and
+index tuple, while `ScalarIntegerParams` provides no rank, layout, or direct-bit
+carrier bound from which a total finite-width configuration relation can be
+derived. A selected stable-integral GEP must therefore be normalized, under its
+exact DataLayout, to explicit canonical integer address arithmetic before
+TechMapping binds it to the current `ScalarIntegerAddSub` resource. A future
+resource may admit GEP directly only after one typed capability record closes
+the address-expression domain and its semantic-field carrier. Endpoint
+capacity, `representation_bits`, `address_bits`, and selected `index` width
+remain independent facts and must never be inferred from one another.
 
 `hw_params` stores hardware facts: fixed implementation parameters, supported
 typed semantic parameter domains, configurable arity and port-selection
@@ -313,22 +318,236 @@ sidebands. `Disabled` is not an additional Fabric behavior key. An ABI
 resource/topology contract, rather than that member's active semantics, proves
 that the encoded value is unobservable.
 
-For scalar integer division and remainder, each finite behavior key is exactly:
+#### Canonical Behavior Quotients
+
+The finalizer first intersects the enabled schemas, typed parameters, exact
+physical port capacities, the complete domain of admitted ordered
+actor-to-port correspondences, and typed constraints. It then projects every
+admitted actor-and-correspondence point to the physical behavior required to
+implement that point. Equality of those projected behaviors is the quotient
+relation. The finite key domain is exactly the sorted, duplicate-free image of
+that projection; it is not the Cartesian product of parameter fields.
+
+Each finite key codec starts with the exact ASCII domain
+`loom.fabric.operation-behavior-key`, one zero byte, and `u32be(1), u32be(0)`.
+It then contains the length-prefixed implementation-family keyword and the
+length-prefixed role spelling shown below. Role-local components follow from
+left to right. Lengths and widths use `u32be`. Predicates use their registered
+canonical semantic codec as a length-prefixed value. A lane image uses
+`u32be(count)` followed by `count` `u64be` direction-local ordinals. C++ enum
+values, generated TableGen ordinals, operation-schema IDs, `op_list` order,
+discovery order, and backend mode numbers are not encodings. Unknown roles,
+noncanonical predicate bytes, duplicate or out-of-range lane ordinals,
+truncation, and trailing bytes are invalid. Lexicographic canonical bytes
+determine key ordering.
+
+A row without a tagged alternative uses an empty role spelling. Within a
+non-singleton quotient, a component that is equal across the complete reachable
+image is omitted with no placeholder. This is the same quotient rule, not a
+second compression or field-presence heuristic.
+
+After exact physical admission, a quotient image containing one behavior is
+`None`, even when the family row below describes a nominal finite key. No
+selector is emitted for a hardwired value. An empty image, an actor with no
+total projection, or a key not accepted by the canonical codec is invalid
+Fabric. A row declared unconditionally `None` must have one physical behavior
+for every valid concrete capability; an implementation that needs another
+behavior must use a different capability contract rather than adding a local
+selector.
+
+These families have an unconditional `None` relation after valid admission:
+
+| Implementation family | Why no actor-selected physical behavior remains |
+| --------------------- | ------------------------------------------------- |
+| `ScalarValueSelect` | The condition is a runtime operand and the data path is bit selection. |
+| `ScalarBitReinterpret` | The exact admitted source and result types select one fixed bit-preserving wiring. |
+| `ScalarIntegerMultiply` | One modular multiplier realizes every admitted scalar width; narrower high bits are not an actor-selected mode. |
+| `LoopCarry`, `LoopInvariant`, `LoopGate` | Their transition case, phase, and payload are runtime token and state facts. |
+| `FixedVectorPack`, `FixedVectorUnpack` | Lane zero is always the least-significant slice and the complete operation is fixed bit wiring. |
+
+The finite integer, loop-control, adapter, and routed-token quotients are:
+
+| Implementation family | Canonical key, in component order |
+| --------------------- | --------------------------------- |
+| `ScalarIntegerAddSub` | `Add` or `Sub` |
+| `ScalarIntegerLogic` | `And`, `Or`, or `Xor` |
+| `ScalarIntegerShift` | `Left`, `LogicalRight`, or `ArithmeticRight(active_integer_width)` |
+| `ScalarIntegerCompareMinMax` | `Compare(predicate[, active_integer_width when predicate is signed])`, `SignedMin(active_integer_width)`, `SignedMax(active_integer_width)`, `UnsignedMin`, or `UnsignedMax` |
+| `ScalarIntegerCast` | `Identity(source_width, destination_width)`, `SignExtend(source_width, destination_width)`, `ZeroExtend(source_width, destination_width)`, or `Truncate(source_width, destination_width)` |
+| `FixedVectorIntegerAddSub` | `(Add | Sub, active_element_width)` |
+| `FixedVectorIntegerLogic` | `And`, `Or`, or `Xor` |
+| `FixedVectorIntegerShift` | `(Left | LogicalRight | ArithmeticRight, active_element_width)` |
+| `FixedVectorIntegerCompareMinMax` | `(Compare(predicate) | SignedMin | SignedMax | UnsignedMin | UnsignedMax, active_element_width)` |
+| `FixedVectorValueSelect` | `active_element_width` |
+| `FixedVectorIntegerMultiply` | `active_element_width` |
+| `ScalarSignedIntegerDivRem` | `(Quotient | Remainder, active_integer_width)` |
+| `ScalarUnsignedIntegerDivRem` | `(Quotient | Remainder, active_integer_width)` |
+| `ScalarIntegerSaturatingAddSub` | `(SignedAdd | UnsignedAdd | SignedSub | UnsignedSub, active_integer_width)` |
+| `FixedVectorIntegerSaturatingAddSub` | `(SignedAdd | UnsignedAdd | SignedSub | UnsignedSub, active_element_width)` |
+| `ScalarIntegerCountZeros` | `(Leading | Trailing, active_integer_width)` |
+| `FixedVectorIntegerCountZeros` | `(Leading | Trailing, active_element_width)` |
+| `LoopStream` | `(active_integer_width, continuation_predicate)` |
+| `FixedVectorParallelize` | `(element_bit_width, lane_count)` |
+| `FixedVectorSerialize` | `(element_bit_width, lane_count)` |
+| `TokenSync` | `ordered_sync_lane_image[]` |
+| `TokenMux` | `ordered_data_input_lane_image[]` |
+| `TokenDemux` | `ordered_data_result_lane_image[]` |
+
+`active_integer_width` and `active_element_width` are exact semantic bit
+widths, not physical port widths. Where a row has no element-kind component,
+equal integer and floating representation widths collapse only when the
+registered family semantics are bit-identical. `lane_count` is the positive
+rank-one stream group cardinality. Integer and floating element types of equal
+representation width therefore collapse for `FixedVectorParallelize` and
+`FixedVectorSerialize` because those families observe grouping and all-zero
+representation, not arithmetic type identity. The complete exact actor type
+still participates in admission.
+
+The routed-token lane images contain concrete physical port ordinals in actor
+lane order. `TokenSync` uses its equal ordered operand/result image, `TokenMux`
+uses data inputs after the runtime selector operand, and `TokenDemux` uses data
+results. Noncontiguous images are valid. A different order is a different key;
+payload type spelling, token availability, and the runtime mux or demux
+selector are not key components.
+
+Semantic aliases collapse before quotienting. `llvm.or` with the disjoint
+promise maps to `Or`; the promise restricts defined inputs but does not select
+a circuit. Math and LLVM count-zero schemas map to `Leading` or `Trailing`;
+an LLVM zero-poison promise does not add a behavior because a defined hardware
+result is a valid refinement. Integer overflow and exactness promises are
+excluded for the same reason. Integer and index cast spellings map to the
+resolved width-transform role. An alias may collapse only when registered
+schema semantics prove equal required physical behavior; equal names or equal
+bit widths alone are insufficient.
+
+A `ScalarIntegerAddSub` capability that enables `LLVMGetElementPtr` cannot
+finalize its semantic-field relation. HSG membership still states that a
+stable-integral GEP may share a physical add/sub organization, but it does not
+define the bounded address-generation carrier needed for layout, static-index,
+and dynamic-scale semantics. Finalization remains fail-closed until this
+document normatively defines a dedicated bounded address-generation `Direct`
+relation. GEP must not be projected to `Add`, enumerated as a nominal finite
+mode, or interpreted by a backend-private codec.
+
+#### Canonical Direct Carriers
+
+For the fixed-width formulas below:
 
 ```text
-(role, active integer width)
-
-role = Quotient | Remainder
+cardinality_bits(M) = 0                    when M <= 1
+                      ceil(log2(M))        otherwise
+inclusive_bits(M)   = 0                    when M = 0
+                      ceil(log2(M + 1))    otherwise
 ```
 
-The concrete implementation family fixes signedness; `role` distinguishes its
-quotient and remainder behaviors. The active width is the canonical singleton
-semantic width selected by that actor point. A provider cannot collapse roles,
-omit width, include a full operation-schema identity, or derive a second mode
-number from `op_list` order. For a Direct vector index or selector, the fixed
-carrier width and validity domain are resolved by the registered operation
-schema before this relation is sealed; native host width and backend defaults
-never enter the relation.
+`cardinality_bits(M)` encodes `[0, M)`, while `inclusive_bits(M)` encodes
+`[0, M]`. An arithmetic overflow while deriving a width is invalid Fabric.
+
+`TokenConstant` has a `Direct` relation. Its positive carrier width is
+`N = min(PayloadCapacityParams.maxPayloadBits,
+physical_result_role_0_width)`. Physical narrowing removes distinctions that
+the concrete resource cannot emit; retaining the parameter maximum would
+create unreachable field bits. The domain is the complete `N`-bit domain. The
+registered actor codec admits exactly scalar integer, scalar floating-point,
+dense integer-element, and dense floating-point-element constants. For one of
+those admitted constants with `W <= N` representation bits, semantic bit zero
+maps to carrier bit zero, scalar raw bits are preserved, dense lane zero is
+least significant, and bits `[W, N)` are zero. Floating values retain signed
+zero and NaN payload bits. Pointer and other TypedAttr forms are invalid until
+the registered actor codec and this projector share one raw-bit rule. The
+codec stores carrier bit `k` at bit `k % 8` of byte `floor(k / 8)` and requires
+unused high bits of the last byte to be zero. It never sign-extends, hashes, or
+serializes textual attribute spelling or type tags; equal emitted bit patterns
+are one physical behavior while the actor identity retains the exact type.
+
+`FixedVectorSliceAlignMerge` has one `Direct` carrier with these fields in
+order:
+
+```text
+optional mode
+static_offset_bits
+slice_width_minus_one
+dynamic_stride_bits[0 .. max_dynamic_position_rank)
+```
+
+The one-bit `mode` exists exactly when both extract and insert schemas are
+enabled. `static_offset_bits` is the low-bit offset with every dynamic position
+set to zero. Each dynamic stride is the flattened bit stride of its dynamic
+position in actor operand order; unused trailing stride slots are zero.
+Field widths are the minimum fixed widths required by the corresponding typed
+capacity maxima: `mode` has one bit when present, `static_offset_bits` has
+`cardinality_bits(max_container_payload_bits)` bits,
+`slice_width_minus_one` has `cardinality_bits(max_slice_payload_bits)` bits,
+and each dynamic stride has
+`inclusive_bits(max_container_payload_bits)` bits. Their sum is the exact
+carrier width.
+
+Decode the value as mode, static offset `O`, slice width `B`, and the maximal
+nonzero stride prefix `S`; every later stride slot must be zero. The value is in
+the exact projector image only when one admitted element width divides `B`,
+`O` is divisible by `B`, every stride is positive, each stride divides its
+predecessor, and the last stride is divisible by `B`. Let `G = B` when `S` is
+empty and `G = S.front()` otherwise. The minimum constructible container width
+is `(floor(O / G) + 1) * G`. Extract requires that width to fit parameter
+container capacity and physical input role 0, and requires `B` to fit parameter
+slice capacity and result role 0. Insert requires `B` to fit parameter slice
+capacity and input role 0, and requires the container width to fit parameter
+container capacity, input role 1, and result role 0. For every used stride,
+physical input roles beginning at 2 must all fit one common admitted resolved
+index width. The mode must select an enabled schema. Dynamic position values
+remain runtime operands and never enter this carrier.
+
+`FixedVectorShuffle` has one `Direct` carrier with these fields in order:
+
+```text
+block_width_minus_one
+left_block_count_minus_one
+selectors[0 .. max_result_blocks)
+```
+
+Each selector has `cardinality_bits(max_source_blocks)` bits. Actor poison
+positions and slots after the exact result-block count canonicalize to selector
+zero. Selecting any defined source is a valid refinement of poison, so a
+sentinel would add an unobservable mode and an unnecessary RTL comparison.
+The left count distinguishes the two source images; no right-count or
+result-count field is added.
+
+Decode block width `B`, left count `L`, and selector array `S`. Every selector
+must be below `max_source_blocks`, including binary overcodes when the maximum
+is not a power of two. Let `Rmin` be one when all selectors are zero and
+otherwise one past the final nonzero selector. Let
+`Nmin = max(L + 1, max(S) + 1)` and `Q = Nmin - L`. The value is in the exact
+projector image only when one admitted element width divides `B`, `B` fits the
+block capacity, `Nmin` fits source-block capacity, and the fixed physical roles
+can carry `L * B`, `Q * B`, and `Rmin * B` in input 0, input 1, and result 0.
+The corresponding operand and result parameter capacities intersect those
+physical limits. These minima are constructively sufficient: additional
+active selector-zero result blocks are indistinguishable from canonical
+trailing padding.
+
+All capacity products, offsets, and minimum-geometry arithmetic are checked;
+overflow is invalid Fabric rather than wraparound.
+
+The block-width field has
+`cardinality_bits(max_block_payload_bits)` bits, the left-count field has
+`cardinality_bits(max_source_blocks)` bits, and every selector has
+`cardinality_bits(max_source_blocks)` bits. The exact carrier width is the sum
+of those first two widths and `max_result_blocks` selector widths.
+
+The slice and shuffle codecs use the same least-significant-bit-first packing
+rule as `TokenConstant`. Their fixed carrier widths are derived solely from
+the typed capability maxima above. Values that fit the carrier width but do
+not satisfy the exact schema-derived domain are invalid; ConfigurationABI and
+providers must call the sealed Fabric validator rather than accepting padding
+or spare binary codes.
+
+Runtime shift amounts, select conditions, stream current/limit/step values,
+phase and mask tokens, mux/demux selectors, dynamic vector positions, token
+availability, stalls, and state-machine modes are operation inputs or runtime
+state. They never become semantic-field components. The fixed `LoopStream`
+step kind is capability, not configuration. Static shuffle selectors and
+structural slice geometry are actor semantics and therefore enter their
+`Direct` carriers as specified above.
 
 Mapping owns the authoritative actor and refinement selections. The relation's
 projector mechanically derives one transient selected semantic value from each
