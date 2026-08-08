@@ -181,6 +181,31 @@ Spatial subproblem. That case still uses the ordinary SystemMapping and System
 MappingConstraintSet profiles; it never creates a dummy graph or
 SpatialMapping.
 
+The built-in root-complete System PnR candidate generator is a typed
+composition over the same exact invocation. It consumes exactly one Canonical
+Dataflow Artifact `D`, a finite canonical set of immutable SpatialMapping
+Artifacts, and exactly one System Fabric Artifact `F`. It derives `R` as the
+complete canonical root-thread-launch inventory of `D`. When that inventory is
+empty, the descriptor completes with an empty SystemMapping output set and
+does not invent a System PnR invocation. Otherwise it asks the System
+MappingConstraintSet owner to publish the exact empty `K(D,F,R)`, projects the
+whole-domain Presburger partition and hierarchical `H` through their existing
+owners, and invokes `generateSystemMappings(D,F,R,H,C,K)` unchanged. Every
+SpatialMapping input must bind `D` and an attached Module lineage admitted by
+`F`; an InstructionCore-only invocation may supply an empty SpatialMapping
+set.
+
+This descriptor is only the root-complete unconstrained hierarchical path. A
+caller with System constraint clauses, a strict subset of root launches, a
+precomputed exact partition, or a flat Spatial reopen domain uses the ordinary
+six-authority System PnR invocation. The adapter has no optional constraint,
+root, partition, or search-domain slot and no private binding, routing,
+progress, or finalization semantics. `Generated` contributes only independently
+finalized SystemMapping references, `ProvenInfeasible` contributes a completed
+empty set, and `Incomplete` remains typed without publishing a partial
+Mapping. An invalid owner tuple or internal failure aborts the Generate
+invocation and produces no formal output or lineage edge.
+
 ### System Search-Domain View
 
 `H` atomizes each Dataflow-owned execution relation without selecting a

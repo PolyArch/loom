@@ -159,6 +159,18 @@ use the exact owner directly. This keeps the central plan generic while making
 the common unconstrained `D -> T -> SpatialMapping` chain explicit and fully
 replayable.
 
+The root-complete System adapter completes that chain with the same ownership
+rule. It keeps an explicit `D` input because the SpatialMapping set is legally
+empty for InstructionCore-only execution and therefore cannot be used as a
+surrogate Dataflow owner. It keeps one exact System `F` because imported Module
+lineage and System transport belong to that root. The remaining inputs are
+mechanical: Dataflow owns the root inventory, the constraint owner publishes
+empty `K`, and the PnR owners derive the whole-domain partition and
+hierarchical `H`. Exposing any of those as optional plan slots would create a
+second way to say "root-complete"; a polymorphic Mapping-stage adapter would
+instead erase the materially different Tech, Spatial, and System input
+contracts. A dedicated thin descriptor is the smaller abstraction.
+
 The adapter retains a canonical prefix only when valid search work terminates
 incompletely. A malformed later `T`, foreign owner tuple, or PnR invariant
 failure invalidates the whole invocation rather than converting already

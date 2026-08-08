@@ -1439,6 +1439,30 @@ Artifacts. A constrained invocation remains a direct five-authority Spatial
 PnR call; the central plan does not interpret absent constraints as empty and
 does not acquire a constraint language, Mapping state, or search algorithm.
 
+The built-in root-complete System PnR generator composes the final Mapping
+boundary without widening the central plan. Its descriptor has kind 9,
+spelling `mapping.root_complete_system_pnr`, schema
+`loom.mapping.root_complete_system_pnr.generator.v1`, and exact input slots
+`dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, and
+`fabric: ExactlyOne`. Its sole output slot is
+`system_mapping: CandidateSet<loom.mapping 4.0>, FiniteSet`; its resolved view
+is the exact System PnR component view. The explicit Dataflow input remains
+necessary because an InstructionCore-only closure has no SpatialMapping from
+which to recover `D`, and because `D` uniquely owns the complete root-launch
+inventory.
+
+For a nonempty root inventory the adapter publishes the exact empty System
+MappingConstraintSet, projects the whole-domain partition and hierarchical
+System search-domain view, and delegates to the ordinary System PnR owner. A
+root-free Dataflow input completes with an empty output set. The descriptor
+owns two work-unit ordinals: assignment attempt at ordinal 0 and endpoint
+expansion at ordinal 1. The provider reports only work consumed by the shared
+initializer and endpoint router. Outputs carry MechanicalDerivation lineage;
+the adapter owns no candidate decision payload. `ProvenInfeasible` completes
+with an empty set, proof or semantic limits remain the corresponding typed
+incomplete result, unsupported `H` projection remains `Unsupported`, and an
+invalid or internal owner result aborts the Generate invocation.
+
 The built-in SpatialMapping CGRA acquisition consumes a finite SpatialMapping
 candidate set, a nonempty Canonical Dataflow owner set, one exact Fabric, one
 exact Spatial workload, and one exact runtime input. For each candidate it
