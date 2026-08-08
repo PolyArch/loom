@@ -11,6 +11,7 @@
 #include "DSE/StructuredOwnershipCandidateGenerator.h"
 #include "DSE/StructuredOwnershipInvocation.h"
 #include "DSE/StructuredScheduleCandidateGenerator.h"
+#include "DSE/StructuredSpecialMathAccuracyCandidateGenerator.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
@@ -134,13 +135,14 @@ struct BaselineMetric final {
 using BaselineMetricOutcome =
     std::variant<BaselineMetric, IncompletePreMappingExploration>;
 
-llvm::Expected<BaselineMetricOutcome> acquireBaselineMetric(
-    const CompilerObligations &obligations,
-    evaluation::MetricRequestOrdinal metricRequest,
-    const ArtifactRootReference &source, const ArtifactRootReference &fabric,
-    const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput, const ArtifactStore &store,
-    const BlobStore &blobs) {
+llvm::Expected<BaselineMetricOutcome>
+acquireBaselineMetric(const CompilerObligations &obligations,
+                      evaluation::MetricRequestOrdinal metricRequest,
+                      const ArtifactRootReference &source,
+                      const ArtifactRootReference &fabric,
+                      const ArtifactRootReference &workload,
+                      const ArtifactRootReference &runtimeInput,
+                      const ArtifactStore &store, const BlobStore &blobs) {
   auto acquisitionConfig =
       projectResolvedEvidenceObligationSetConfigView({obligations.analytic});
   if (!acquisitionConfig)
@@ -157,10 +159,9 @@ llvm::Expected<BaselineMetricOutcome> acquireBaselineMetric(
   const std::array<ArtifactRootReference, 1> candidates = {source};
   const std::array<EvidenceObligationTemplateRef, 1> selectedObligations = {
       obligations.analytic};
-  auto acquired =
-      invokePromotionAcquisition(*inputs, *binding, obligations.templates,
-                                 {candidates, selectedObligations}, store,
-                                 blobs);
+  auto acquired = invokePromotionAcquisition(
+      *inputs, *binding, obligations.templates,
+      {candidates, selectedObligations}, store, blobs);
   if (!acquired)
     return acquired.takeError();
   if (auto *incomplete =
@@ -431,6 +432,9 @@ exploreStructuredCompilationToPreMapping(
     return std::move(error);
   if (llvm::Error error = registerStructuredExecutionShapeCandidateGenerator())
     return std::move(error);
+  if (llvm::Error error =
+          registerStructuredSpecialMathAccuracyCandidateGenerator())
+    return std::move(error);
   if (llvm::Error error = registerStructuredScheduleCandidateGenerator())
     return std::move(error);
   if (llvm::Error error =
@@ -524,6 +528,10 @@ exploreStructuredCompilationToPreMapping(
       projectResolvedStructuredExecutionShapeGeneratorConfigView();
   if (!executionShapeConfig)
     return executionShapeConfig.takeError();
+  auto specialMathAccuracyConfig =
+      projectResolvedStructuredSpecialMathAccuracyGeneratorConfigView();
+  if (!specialMathAccuracyConfig)
+    return specialMathAccuracyConfig.takeError();
   auto memoryCommunicationConfig =
       projectResolvedStructuredMemoryCommunicationGeneratorConfigView(config);
   if (!memoryCommunicationConfig)
@@ -545,23 +553,29 @@ exploreStructuredCompilationToPreMapping(
           generatorConfig->digest()},
       GeneratePlanNodeDefinition{
           structuredExecutionShapeCandidateGeneratorDescriptor().reference(),
-          {PlanOutputRef{0, 1}, ExactPlanArtifacts{{fabric.reference()}}},
+          {PlanOutputRef{0, 1}},
           executionShapeConfig->canonicalViewBytes().vec(),
           executionShapeConfig->digest()},
       GeneratePlanNodeDefinition{
-          structuredScheduleCandidateGeneratorDescriptor().reference(),
+          structuredSpecialMathAccuracyCandidateGeneratorDescriptor()
+              .reference(),
           {PlanOutputRef{1, 0}, ExactPlanArtifacts{{fabric.reference()}}},
+          specialMathAccuracyConfig->canonicalViewBytes().vec(),
+          specialMathAccuracyConfig->digest()},
+      GeneratePlanNodeDefinition{
+          structuredScheduleCandidateGeneratorDescriptor().reference(),
+          {PlanOutputRef{2, 0}, ExactPlanArtifacts{{fabric.reference()}}},
           scheduleConfig->canonicalViewBytes().vec(),
           scheduleConfig->digest()},
       GeneratePlanNodeDefinition{
           structuredMemoryCommunicationCandidateGeneratorDescriptor()
               .reference(),
-          {PlanOutputRef{2, 0}, ExactPlanArtifacts{{fabric.reference()}}},
+          {PlanOutputRef{3, 0}, ExactPlanArtifacts{{fabric.reference()}}},
           memoryCommunicationConfig->canonicalViewBytes().vec(),
           memoryCommunicationConfig->digest()},
       PromotePlanNodeDefinition{
           structuredEvaluationPromotionAcquisitionDescriptor().reference(),
-          {PlanOutputRef{3, 0}, ExactPlanArtifacts{{fabric.reference()}},
+          {PlanOutputRef{4, 0}, ExactPlanArtifacts{{fabric.reference()}},
            ExactPlanArtifacts{{*workloadReference}},
            ExactPlanArtifacts{{*runtimeInputReference}}},
           acquisitionConfig->canonicalViewBytes().vec(),
@@ -589,9 +603,9 @@ exploreStructuredCompilationToPreMapping(
 
   auto &completed = std::get<CompletedDsePlanExecution>(*executed);
   std::vector<ArtifactRootReference> selectedReferences(
-      completed.resolve({4, 0}).begin(), completed.resolve({4, 0}).end());
+      completed.resolve({5, 0}).begin(), completed.resolve({5, 0}).end());
   std::vector<ArtifactRootReference> satisfiedEvidence = baselineEvidence;
-  mergeReferences(satisfiedEvidence, completed.resolve({4, 1}));
+  mergeReferences(satisfiedEvidence, completed.resolve({5, 1}));
   std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
   planGenerateInvocations.push_back(
       takeDsePlanGenerateInvocationRecords(std::move(*executed)));
@@ -621,6 +635,7 @@ exploreStructuredCompilationToPreMapping(
               std::move(candidate->candidate.canonicalDataflow)},
           std::move(candidate->derivations),
           std::move(candidate->executionShapeDerivations),
+          std::move(candidate->specialMathAccuracyDerivations),
           std::move(candidate->scheduleDerivations),
           std::move(candidate->memoryCommunicationDerivations),
           std::move(candidate->dataflowRewriteDerivations),
@@ -665,6 +680,7 @@ exploreStructuredCompilationToPreMapping(
               std::move(candidate->candidate.canonicalDataflow)},
           std::move(candidate->derivations),
           std::move(candidate->executionShapeDerivations),
+          std::move(candidate->specialMathAccuracyDerivations),
           std::move(candidate->scheduleDerivations),
           std::move(candidate->memoryCommunicationDerivations),
           std::move(candidate->dataflowRewriteDerivations),

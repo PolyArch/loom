@@ -54,6 +54,8 @@ llvm::Error validateIntegerWidths(IntegerWidthSet widths,
 llvm::Error validateFloatFormats(FloatFormatSet formats,
                                  llvm::StringRef description);
 llvm::Error validateFloatBehavior(const FloatBehaviorProfile &behavior);
+bool hasFastMathFlag(::mlir::arith::FastMathFlags flags,
+                     ::mlir::arith::FastMathFlags flag);
 llvm::Expected<IntegerWidth> integerWidth(::mlir::Type type,
                                           llvm::StringRef relation);
 llvm::Expected<FloatFormat> floatFormat(::mlir::Type type,
@@ -103,6 +105,9 @@ admitScalarValueSelectAdmission(const FamilyCapabilityParams &capability,
 llvm::Error
 admitScalarUniformFloatAdmission(const FamilyCapabilityParams &capability,
                                  const CanonicalActorSchemaProjection &actor);
+llvm::Error
+admitScalarSpecialMathAdmission(const FamilyCapabilityParams &capability,
+                                const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitScalarFloatCompareAdmission(const FamilyCapabilityParams &capability,
                                  const CanonicalActorSchemaProjection &actor);
@@ -1071,27 +1076,6 @@ admitScalarUniformFloatAdmission(const FamilyCapabilityParams &capability,
   switch (actor.schema) {
   case OperationSchemaId::ArithNegF:
   case OperationSchemaId::MathAbsF:
-  case OperationSchemaId::MathSin:
-  case OperationSchemaId::MathCos:
-  case OperationSchemaId::MathTan:
-  case OperationSchemaId::MathSinh:
-  case OperationSchemaId::MathCosh:
-  case OperationSchemaId::MathTanh:
-  case OperationSchemaId::MathExp:
-  case OperationSchemaId::MathExp2:
-  case OperationSchemaId::MathExpM1:
-  case OperationSchemaId::MathLog:
-  case OperationSchemaId::MathLog2:
-  case OperationSchemaId::MathLog10:
-  case OperationSchemaId::MathLog1p:
-  case OperationSchemaId::MathFloor:
-  case OperationSchemaId::MathCeil:
-  case OperationSchemaId::MathRound:
-  case OperationSchemaId::MathTrunc:
-  case OperationSchemaId::MathRoundEven:
-  case OperationSchemaId::MathSqrt:
-  case OperationSchemaId::MathRsqrt:
-  case OperationSchemaId::MathErf:
     inputCount = 1;
     break;
   case OperationSchemaId::ArithAddF:
@@ -1101,9 +1085,6 @@ admitScalarUniformFloatAdmission(const FamilyCapabilityParams &capability,
   case OperationSchemaId::ArithRemF:
     inputCount = 2;
     hasArithmeticRounding = true;
-    break;
-  case OperationSchemaId::MathPowF:
-    inputCount = 2;
     break;
   case OperationSchemaId::MathFma:
     inputCount = 3;
@@ -1124,6 +1105,51 @@ admitScalarUniformFloatAdmission(const FamilyCapabilityParams &capability,
       hasArithmeticRounding ? arithmeticRounding(actor) : std::nullopt;
   return admitFloatBehavior(params.behavior, *flags, rounding,
                             FloatNaNBehavior::IEEE);
+}
+
+llvm::Error
+admitScalarSpecialMathAdmission(const FamilyCapabilityParams &capability,
+                                const CanonicalActorSchemaProjection &actor) {
+  const auto &params = std::get<fabric::ScalarSpecialMathParams>(capability);
+  if (llvm::Error error = validateFloatFormats(params.formats, "special math"))
+    return error;
+  const auto *payload =
+      std::get_if<::dataflow::SpecialMathPayload>(&actor.payload);
+  if (!payload)
+    return reject("special-math actor has no typed accuracy projection");
+
+  const bool implementationPermitsApproximation = hasFastMathFlag(
+      params.behavior.requiredFastMath, ::mlir::arith::FastMathFlags::afn);
+  if (llvm::Error error = ::loom::validateSpecialMathAccuracyContract(
+          params.accuracyGuarantee, implementationPermitsApproximation))
+    return error;
+  const bool actorPermitsApproximation =
+      hasFastMathFlag(payload->flags, ::mlir::arith::FastMathFlags::afn);
+  if (llvm::Error error = ::loom::validateSpecialMathAccuracyContract(
+          payload->accuracy, actorPermitsApproximation))
+    return error;
+
+  unsigned inputCount = 1;
+  if (actor.schema == OperationSchemaId::MathPowF)
+    inputCount = 2;
+  FloatFormat format;
+  if (llvm::Error error =
+          admitUniformFloatType(actor, params.formats, inputCount, format))
+    return error;
+  (void)format;
+
+  if (llvm::Error error =
+          admitFloatBehavior(params.behavior, payload->flags, std::nullopt,
+                             FloatNaNBehavior::IEEE))
+    return error;
+  auto refines = ::loom::specialMathAccuracyRefines(params.accuracyGuarantee,
+                                                    payload->accuracy);
+  if (!refines)
+    return refines.takeError();
+  if (!*refines)
+    return reject("special-math accuracy guarantee is weaker than the actor "
+                  "accepted maximum");
+  return llvm::Error::success();
 }
 
 llvm::Expected<::mlir::arith::CmpFPredicate>
@@ -1464,6 +1490,9 @@ floatingFlags(const CanonicalActorSchemaProjection &actor) {
     return payload->flags;
   if (const auto *payload =
           std::get_if<::dataflow::FloatComparePayload>(&actor.payload))
+    return payload->flags;
+  if (const auto *payload =
+          std::get_if<::dataflow::SpecialMathPayload>(&actor.payload))
     return payload->flags;
   return reject(
       "registered floating actor has no floating behavior projection");

@@ -2,7 +2,6 @@
 #include "DSE/StructuredOwnershipInvocationInternal.h"
 
 #include "Common/ArtifactStore.h"
-#include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StructuredExecutionShape.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
@@ -25,7 +24,6 @@ constexpr llvm::StringLiteral configDescriptor =
 
 enum InputSlot : std::uint32_t {
   StructuredProgramsInput,
-  FabricInput,
   InputSlotCount,
 };
 
@@ -35,9 +33,6 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
          "structured_program", PlanValueRole::CandidateSet,
          &frontend::structuredProgramArtifactSchema,
          PlanValueCardinality::FiniteSet},
-        {CandidateGeneratorInputSlotRef(FabricInput), "fabric",
-         PlanValueRole::CandidateSet, &fabric::fabricArtifactSchema,
-         PlanValueCardinality::ExactlyOne},
     }};
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
@@ -103,7 +98,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredExecutionShapeCandidateGeneratorKind,
     "compiler.structured_execution_shape",
-    "loom.compiler.structured_execution_shape.generator.v1",
+    "loom.compiler.structured_execution_shape.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -113,56 +108,18 @@ const CandidateGeneratorDescriptor descriptor{
     ProviderForm::InProcess,
 };
 
-const ArtifactRootReference &
-singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> bindings,
-            InputSlot slot) {
-  return bindings[slot].artifacts.front();
-}
-
-llvm::Expected<std::optional<frontend::MaterializedOwnershipCandidate>>
-finalizeCandidate(
-    frontend::MaterializedStructuredOwnershipCandidate candidate,
-    const fabric::FinalizedFabricRoot &fabric,
-    const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
-  auto finalized = frontend::finalizeSpatialOwnershipCandidate(
-      std::move(candidate), fabric, loweringOptions);
-  if (finalized)
-    return std::optional<frontend::MaterializedOwnershipCandidate>(
-        std::move(*finalized));
-
-  bool rejected = false;
-  llvm::Error unhandled = llvm::handleErrors(
-      finalized.takeError(),
-      [&](const frontend::SpatialOwnershipCandidateRejection &) {
-        rejected = true;
-      });
-  if (unhandled)
-    return std::move(unhandled);
-  if (!rejected)
-    return invalid("candidate failed without a classified rejection");
-  return std::optional<frontend::MaterializedOwnershipCandidate>{};
-}
-
-llvm::Error recordFinalizedCandidate(
+llvm::Error recordStructuredCandidate(
     const ArtifactRootReference &parent, const ArtifactRootReference &child,
     std::optional<frontend::StructuredExecutionShapeDecision> decision,
-    frontend::MaterializedOwnershipCandidate candidate,
+    frontend::MaterializedStructuredOwnershipCandidate candidate,
     const ArtifactStore &store) {
   StructuredOwnershipInvocation *invocation =
       detail::StructuredOwnershipInvocationAccess::current();
   if (!invocation)
     return llvm::Error::success();
-  lowering::ProjectedCanonicalDataflow projected{
-      std::move(candidate.canonicalDataflow),
-      std::move(candidate.spatialGraphs)};
-  frontend::MaterializedStructuredOwnershipCandidate structured{
-      std::move(candidate.structuredProgram),
-      std::move(candidate.blockActivityLineage),
-      std::move(candidate.sourceProvenance)};
   return detail::StructuredOwnershipInvocationAccess::
       recordExecutionShapeCandidate(*invocation, parent, child, decision,
-                                    std::move(structured), std::move(projected),
-                                    store);
+                                    std::move(candidate), store);
 }
 
 llvm::Expected<frontend::MaterializedStructuredOwnershipCandidate>
@@ -170,8 +127,8 @@ cloneParentState(StructuredOwnershipInvocation *invocation,
                  const ArtifactRootReference &reference,
                  const ArtifactStore &store) {
   if (invocation)
-    return detail::StructuredOwnershipInvocationAccess::cloneOwnershipCandidate(
-        *invocation, reference);
+    return detail::StructuredOwnershipInvocationAccess::
+        clonePreClosureCandidate(*invocation, reference);
   auto clone = frontend::importStructuredProgram(reference, store);
   if (!clone)
     return clone.takeError();
@@ -190,25 +147,6 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     return config.takeError();
   StructuredOwnershipInvocation *invocation =
       detail::StructuredOwnershipInvocationAccess::current();
-  std::optional<fabric::FinalizedFabricRoot> importedFabric;
-  const fabric::FinalizedFabricRoot *exactFabric = nullptr;
-  if (invocation) {
-    exactFabric =
-        &detail::StructuredOwnershipInvocationAccess::fabric(*invocation);
-    if (singleInput(inputBindings, FabricInput) != exactFabric->reference())
-      return invalid("Fabric input differs from the bound invocation");
-  } else {
-    auto imported = fabric::importEntireFabricRoot(
-        singleInput(inputBindings, FabricInput), store);
-    if (!imported)
-      return imported.takeError();
-    importedFabric.emplace(std::move(*imported));
-    exactFabric = &*importedFabric;
-  }
-  const lowering::CanonicalDataflowLoweringOptions loweringOptions =
-      invocation ? detail::StructuredOwnershipInvocationAccess::loweringOptions(
-                       *invocation)
-                 : lowering::CanonicalDataflowLoweringOptions{};
 
   std::vector<ArtifactRootReference> outputs;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
@@ -228,15 +166,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     decisionAttempts += decisions->size();
 
     if (decisions->empty()) {
-      auto finalized =
-          finalizeCandidate(std::move(*parent), *exactFabric, loweringOptions);
-      if (!finalized)
-        return finalized.takeError();
-      if (!*finalized)
-        continue;
-      if (llvm::Error error =
-              recordFinalizedCandidate(reference, reference, std::nullopt,
-                                       std::move(**finalized), store))
+      if (llvm::Error error = recordStructuredCandidate(
+              reference, reference, std::nullopt, std::move(*parent), store))
         return std::move(error);
       outputs.push_back(reference);
       continue;
@@ -254,18 +185,12 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
           std::move(*candidate), decision);
       if (!child)
         return child.takeError();
-      auto finalized =
-          finalizeCandidate(std::move(*child), *exactFabric, loweringOptions);
-      if (!finalized)
-        return finalized.takeError();
-      if (!*finalized)
-        continue;
-      auto published = frontend::publishStructuredProgram(
-          (*finalized)->structuredProgram, store);
+      auto published =
+          frontend::publishStructuredProgram(child->structuredProgram, store);
       if (!published)
         return published.takeError();
-      if (llvm::Error error = recordFinalizedCandidate(
-              reference, *published, decision, std::move(**finalized), store))
+      if (llvm::Error error = recordStructuredCandidate(
+              reference, *published, decision, std::move(*child), store))
         return std::move(error);
       auto ownerPayload =
           frontend::encodeStructuredExecutionShapeDecision(decision);
@@ -284,12 +209,12 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       CompletedCandidateGeneratorResult{
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
           std::move(lineageEdges)},
-      {{CandidateGeneratorWorkUnitRef(0), decisionAttempts,
-        decisionAttempts}}};
+      {{CandidateGeneratorWorkUnitRef(0), decisionAttempts, decisionAttempts}}};
 }
 
 const CandidateGeneratorProvider provider{
-    descriptor.reference(), CandidateGeneratorInProcessProvider{invokeProvider}};
+    descriptor.reference(),
+    CandidateGeneratorInProcessProvider{invokeProvider}};
 
 } // namespace
 
@@ -336,14 +261,12 @@ llvm::Error registerStructuredExecutionShapeCandidateGenerator() {
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
 bindStructuredExecutionShapeCandidateGeneratorInputs(
-    llvm::ArrayRef<ArtifactRootReference> structuredPrograms,
-    const ArtifactRootReference &fabric) {
+    llvm::ArrayRef<ArtifactRootReference> structuredPrograms) {
   if (llvm::Error error = registerStructuredExecutionShapeCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings = {
       {CandidateGeneratorInputSlotRef(StructuredProgramsInput),
        structuredPrograms.vec()},
-      {CandidateGeneratorInputSlotRef(FabricInput), {fabric}},
   };
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           descriptor.reference(), bindings))

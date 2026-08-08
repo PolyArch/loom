@@ -91,8 +91,8 @@ public:
       const ArtifactStore &store);
 
   static llvm::Expected<frontend::MaterializedStructuredOwnershipCandidate>
-  cloneOwnershipCandidate(StructuredOwnershipInvocation &invocation,
-                          const ArtifactRootReference &reference);
+  clonePreClosureCandidate(StructuredOwnershipInvocation &invocation,
+                           const ArtifactRootReference &reference);
 
   static llvm::Error recordScheduleCandidate(
       StructuredOwnershipInvocation &invocation,
@@ -107,7 +107,23 @@ public:
       const ArtifactRootReference &parent, const ArtifactRootReference &child,
       std::optional<frontend::StructuredExecutionShapeDecision> decision,
       frontend::MaterializedStructuredOwnershipCandidate candidate,
-      lowering::ProjectedCanonicalDataflow projected,
+      const ArtifactStore &store);
+
+  static llvm::Error recordSpecialMathAccuracyDerivation(
+      StructuredOwnershipInvocation &invocation,
+      const ArtifactRootReference &parent, const ArtifactRootReference &child,
+      const frontend::StructuredSpecialMathAccuracyDecision &decision,
+      const ArtifactStore &store);
+
+  static llvm::Error recordSpecialMathAccuracyMechanicalCandidate(
+      StructuredOwnershipInvocation &invocation,
+      const ArtifactRootReference &parent, const ArtifactRootReference &child,
+      const ArtifactStore &store);
+
+  static llvm::Error recordSpecialMathAccuracyFinalCandidate(
+      StructuredOwnershipInvocation &invocation,
+      const ArtifactRootReference &child,
+      frontend::MaterializedOwnershipCandidate candidate,
       const ArtifactStore &store);
 
   static llvm::Error recordMemoryCommunicationCandidate(

@@ -9,9 +9,13 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <system_error>
 #include <utility>
-#include <vector>
+
+using dataflow::detail::invalid;
+using dataflow::detail::readDomain;
+using dataflow::detail::Reader;
+using dataflow::detail::writeDomain;
+using dataflow::detail::Writer;
 
 namespace {
 
@@ -29,135 +33,8 @@ constexpr char kOptionalVectorAtomicGranularityDomain[] =
     "loom.dataflow.optional-vector-atomic-granularity\0";
 constexpr char kSyncScopeRefDomain[] = "loom.dataflow.sync-scope-ref\0";
 constexpr char kCanonicalBooleanDomain[] = "loom.dataflow.canonical-boolean\0";
-constexpr std::uint32_t kCodecMajor = 1;
-constexpr std::uint32_t kCodecMinor = 0;
 
 static_assert(mlir::arith::getMaxEnumValForCmpIPredicate() == 9);
-
-llvm::Error invalid(const llvm::Twine &message) {
-  return llvm::createStringError(
-      std::make_error_code(std::errc::invalid_argument),
-      "operation_schema_codec_invalid: " + message);
-}
-
-class Writer {
-public:
-  void byte(std::uint8_t value) { bytes_.push_back(value); }
-
-  void bytes(llvm::ArrayRef<std::uint8_t> values) {
-    bytes_.insert(bytes_.end(), values.begin(), values.end());
-  }
-
-  void u32(std::uint32_t value) {
-    byte(static_cast<std::uint8_t>(value >> 24));
-    byte(static_cast<std::uint8_t>(value >> 16));
-    byte(static_cast<std::uint8_t>(value >> 8));
-    byte(static_cast<std::uint8_t>(value));
-  }
-
-  void u64(std::uint64_t value) {
-    for (unsigned shift = 56; shift != 0; shift -= 8)
-      byte(static_cast<std::uint8_t>(value >> shift));
-    byte(static_cast<std::uint8_t>(value));
-  }
-
-  void boolean(bool value) { u32(value ? 1 : 0); }
-
-  void string(llvm::StringRef value) {
-    u64(value.size());
-    bytes(llvm::ArrayRef<std::uint8_t>(
-        reinterpret_cast<const std::uint8_t *>(value.data()), value.size()));
-  }
-
-  std::vector<std::uint8_t> take() { return std::move(bytes_); }
-
-private:
-  std::vector<std::uint8_t> bytes_;
-};
-
-class Reader {
-public:
-  explicit Reader(llvm::ArrayRef<std::uint8_t> bytes) : remaining_(bytes) {}
-
-  llvm::Expected<llvm::ArrayRef<std::uint8_t>> take(std::uint64_t count,
-                                                    const llvm::Twine &what) {
-    if (count > remaining_.size())
-      return invalid(llvm::Twine("truncated ") + what);
-    llvm::ArrayRef<std::uint8_t> prefix =
-        remaining_.take_front(static_cast<std::size_t>(count));
-    remaining_ = remaining_.drop_front(static_cast<std::size_t>(count));
-    return prefix;
-  }
-
-  llvm::Expected<std::uint32_t> u32(const llvm::Twine &what) {
-    auto value = take(4, what);
-    if (!value)
-      return value.takeError();
-    return (static_cast<std::uint32_t>((*value)[0]) << 24) |
-           (static_cast<std::uint32_t>((*value)[1]) << 16) |
-           (static_cast<std::uint32_t>((*value)[2]) << 8) |
-           static_cast<std::uint32_t>((*value)[3]);
-  }
-
-  llvm::Expected<std::uint64_t> u64(const llvm::Twine &what) {
-    auto value = take(8, what);
-    if (!value)
-      return value.takeError();
-    std::uint64_t result = 0;
-    for (std::uint8_t byte : *value)
-      result = (result << 8) | byte;
-    return result;
-  }
-
-  llvm::Expected<bool> boolean(const llvm::Twine &what) {
-    auto value = u32(what);
-    if (!value)
-      return value.takeError();
-    if (*value > 1)
-      return invalid(llvm::Twine(what) + " is not a canonical boolean");
-    return *value == 1;
-  }
-
-  llvm::Expected<llvm::ArrayRef<std::uint8_t>> string(const llvm::Twine &what) {
-    auto size = u64(llvm::Twine(what) + " length");
-    if (!size)
-      return size.takeError();
-    return take(*size, what);
-  }
-
-  bool empty() const { return remaining_.empty(); }
-
-private:
-  llvm::ArrayRef<std::uint8_t> remaining_;
-};
-
-template <std::size_t Size>
-void writeDomain(Writer &writer, const char (&domain)[Size]) {
-  writer.bytes(llvm::ArrayRef<std::uint8_t>(
-      reinterpret_cast<const std::uint8_t *>(domain), Size - 1));
-  writer.u32(kCodecMajor);
-  writer.u32(kCodecMinor);
-}
-
-template <std::size_t Size>
-llvm::Error readDomain(Reader &reader, const char (&domain)[Size]) {
-  auto actual = reader.take(Size - 1, "semantic domain");
-  if (!actual)
-    return actual.takeError();
-  llvm::ArrayRef<std::uint8_t> expected(
-      reinterpret_cast<const std::uint8_t *>(domain), Size - 1);
-  if (*actual != expected)
-    return invalid("wrong semantic domain");
-  auto major = reader.u32("codec major version");
-  if (!major)
-    return major.takeError();
-  auto minor = reader.u32("codec minor version");
-  if (!minor)
-    return minor.takeError();
-  if (*major != kCodecMajor || *minor != kCodecMinor)
-    return invalid("unsupported version");
-  return llvm::Error::success();
-}
 
 llvm::Error finish(Reader &reader) {
   if (!reader.empty())

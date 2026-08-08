@@ -12,6 +12,7 @@
 
 #include <array>
 #include <optional>
+#include <type_traits>
 
 using namespace fabric;
 using namespace mlir;
@@ -508,6 +509,35 @@ parseParams(CapabilityParamsSchemaId schema, DictionaryAttr params) {
     if (!behavior)
       return behavior.takeError();
     return FamilyCapabilityParams(ScalarFloatParams{*formats, *behavior});
+  }
+  case Schema::ScalarSpecialMathParams: {
+    if (llvm::Error error = checkFields(
+            params, {"float_formats", "behavior", "accuracy_guarantee"}))
+      return std::move(error);
+    auto formats = parseFloatFormats(params, "float_formats");
+    if (!formats)
+      return formats.takeError();
+    if (formats->empty())
+      return reject("hw_params field 'float_formats' must not be empty");
+    auto behavior = parseFloatBehavior(params);
+    if (!behavior)
+      return behavior.takeError();
+    auto accuracy = requireString(params, "accuracy_guarantee");
+    if (!accuracy)
+      return accuracy.takeError();
+    std::optional<loom::SpecialMathAccuracyTier> guarantee =
+        loom::symbolizeSpecialMathAccuracyTier(accuracy->getValue());
+    if (!guarantee)
+      return reject("hw_params field 'accuracy_guarantee' is invalid");
+    using Bits = std::underlying_type_t<arith::FastMathFlags>;
+    const bool requiresApproximateFunctions =
+        (static_cast<Bits>(behavior->requiredFastMath) &
+         static_cast<Bits>(arith::FastMathFlags::afn)) != 0;
+    if (llvm::Error error = loom::validateSpecialMathAccuracyContract(
+            *guarantee, requiresApproximateFunctions))
+      return std::move(error);
+    return FamilyCapabilityParams(
+        ScalarSpecialMathParams{*formats, *behavior, *guarantee});
   }
   case Schema::ScalarFloatCompareMinMaxParams: {
     if (llvm::Error error =
@@ -1052,6 +1082,17 @@ fabric::getFamilyCapabilityParamsAttr(MLIRContext *context,
                                    floatFormatsAttr(builder, typed.formats)),
               builder.getNamedAttr("behavior",
                                    floatBehaviorAttr(builder, typed.behavior)),
+          });
+        } else if constexpr (std::is_same_v<T, ScalarSpecialMathParams>) {
+          return builder.getDictionaryAttr({
+              builder.getNamedAttr("float_formats",
+                                   floatFormatsAttr(builder, typed.formats)),
+              builder.getNamedAttr("behavior",
+                                   floatBehaviorAttr(builder, typed.behavior)),
+              builder.getNamedAttr(
+                  "accuracy_guarantee",
+                  builder.getStringAttr(loom::stringifySpecialMathAccuracyTier(
+                      typed.accuracyGuarantee))),
           });
         } else if constexpr (std::is_same_v<T,
                                             ScalarFloatCompareMinMaxParams>) {

@@ -429,12 +429,22 @@ void checkDeterministicCosineProvider() {
   require(__func__,
           loom::sim::isSupportedPrimitiveOperation(OperationSchemaId::MathCos),
           "typed cosine has no deterministic primitive provider");
+  PrimitiveOperationDescriptor wrongPayload = descriptor(
+      OperationSchemaId::MathCos,
+      mlir::FunctionType::get(&context, {cases[0].type}, {cases[0].type}),
+      dataflow::FloatingPointPayload{}, 32, 32);
+  requireRejected(
+      __func__,
+      loom::sim::evaluatePrimitiveOperation(wrongPayload, {cases[0].zero}),
+      "does not match operation schema");
   for (const CosineCase &entry : cases) {
     PrimitiveOperationDescriptor cosine = descriptor(
         OperationSchemaId::MathCos,
         mlir::FunctionType::get(&context, {entry.type}, {entry.type}),
-        dataflow::FloatingPointPayload{}, entry.one.getBitWidth(),
-        entry.one.getBitWidth());
+        dataflow::SpecialMathPayload{
+            mlir::arith::FastMathFlags::none,
+            loom::SpecialMathAccuracyTier::CorrectlyRounded},
+        entry.one.getBitWidth(), entry.one.getBitWidth());
     PrimitiveValue result = takeValue(
         __func__, loom::sim::evaluatePrimitiveOperation(cosine, {entry.zero}));
     require(__func__, definedBits(__func__, result) == entry.one,
@@ -444,7 +454,10 @@ void checkDeterministicCosineProvider() {
 
 void checkDeterministicElementaryMathProvider() {
   mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  mlir::Type f16 = mlir::Float16Type::get(&context);
+  mlir::Type bf16 = mlir::BFloat16Type::get(&context);
   mlir::Type f32 = mlir::Float32Type::get(&context);
+  mlir::Type f64 = mlir::Float64Type::get(&context);
   mlir::FunctionType unaryF32 = mlir::FunctionType::get(&context, {f32}, {f32});
   const struct MathCase {
     OperationSchemaId schema;
@@ -459,8 +472,12 @@ void checkDeterministicElementaryMathProvider() {
   for (const MathCase &entry : cases) {
     require(__func__, loom::sim::isSupportedPrimitiveOperation(entry.schema),
             "registered elementary math has no deterministic provider");
-    PrimitiveOperationDescriptor operation = descriptor(
-        entry.schema, unaryF32, dataflow::FloatingPointPayload{}, 32, 32);
+    PrimitiveOperationDescriptor operation =
+        descriptor(entry.schema, unaryF32,
+                   dataflow::SpecialMathPayload{
+                       mlir::arith::FastMathFlags::none,
+                       loom::SpecialMathAccuracyTier::CorrectlyRounded},
+                   32, 32);
     PrimitiveValue result =
         takeValue(__func__, loom::sim::evaluatePrimitiveOperation(
                                 operation, {floating32(entry.input)}));
@@ -469,19 +486,89 @@ void checkDeterministicElementaryMathProvider() {
             "elementary math produced the wrong IEEE result");
   }
 
+  const struct SubnormalCase {
+    mlir::Type type;
+    const llvm::fltSemantics *semantics;
+    unsigned bitWidth;
+    std::uint64_t input;
+    std::uint64_t expected;
+  } subnormalCases[] = {
+      {f16, &llvm::APFloat::IEEEhalf(), 16, 0xc8deU, 0x03e1U},
+      {bf16, &llvm::APFloat::BFloat(), 16, 0xc2afU, 0x006dU},
+      {f32, &llvm::APFloat::IEEEsingle(), 32, 0xc2aeac7eU, 0x007ff467U},
+      {f64, &llvm::APFloat::IEEEdouble(), 64, 0xc086232bdd7d34c6ULL,
+       0x000ffffffb10187dULL},
+  };
+  for (const SubnormalCase &entry : subnormalCases) {
+    PrimitiveOperationDescriptor operation = descriptor(
+        OperationSchemaId::MathExp,
+        mlir::FunctionType::get(&context, {entry.type}, {entry.type}),
+        dataflow::SpecialMathPayload{
+            mlir::arith::FastMathFlags::none,
+            loom::SpecialMathAccuracyTier::CorrectlyRounded},
+        entry.bitWidth, entry.bitWidth);
+    PrimitiveValue operand = PrimitiveValue::floating(llvm::APFloat(
+        *entry.semantics, llvm::APInt(entry.bitWidth, entry.input)));
+    PrimitiveValue result = takeValue(
+        __func__, loom::sim::evaluatePrimitiveOperation(operation, {operand}));
+    require(__func__,
+            definedBits(__func__, result) ==
+                llvm::APInt(entry.bitWidth, entry.expected),
+            "elementary math rounded a subnormal result twice");
+  }
+
   require(__func__,
           loom::sim::isSupportedPrimitiveOperation(OperationSchemaId::MathPowF),
           "typed power has no deterministic primitive provider");
   PrimitiveOperationDescriptor power =
       descriptor(OperationSchemaId::MathPowF,
                  mlir::FunctionType::get(&context, {f32, f32}, {f32}),
-                 dataflow::FloatingPointPayload{}, 32, 32);
+                 dataflow::SpecialMathPayload{
+                     mlir::arith::FastMathFlags::none,
+                     loom::SpecialMathAccuracyTier::CorrectlyRounded},
+                 32, 32);
   PrimitiveValue powerResult = takeValue(
       __func__, loom::sim::evaluatePrimitiveOperation(
                     power, {floating32(0x40000000U), floating32(0x40400000U)}));
   require(__func__,
           definedBits(__func__, powerResult) == llvm::APInt(32, 0x41000000U),
           "typed power produced the wrong IEEE result");
+
+  PrimitiveOperationDescriptor relaxed = descriptor(
+      OperationSchemaId::MathExp, unaryF32,
+      dataflow::SpecialMathPayload{mlir::arith::FastMathFlags::afn,
+                                   loom::SpecialMathAccuracyTier::Max2Ulp},
+      32, 32);
+  PrimitiveValue relaxedResult =
+      takeValue(__func__, loom::sim::evaluatePrimitiveOperation(
+                              relaxed, {floating32(0x3f800000U)}));
+  require(__func__,
+          definedBits(__func__, relaxedResult) == llvm::APInt(32, 0x402df854U),
+          "legal relaxed special math lost the deterministic reference");
+
+  PrimitiveOperationDescriptor unauthorized = relaxed;
+  std::get<dataflow::SpecialMathPayload>(unauthorized.actor.payload).flags =
+      mlir::arith::FastMathFlags::none;
+  requireRejected(__func__,
+                  loom::sim::evaluatePrimitiveOperation(
+                      unauthorized, {floating32(0x3f800000U)}),
+                  "requires afn");
+
+  PrimitiveOperationDescriptor invalidAccuracy = relaxed;
+  std::get<dataflow::SpecialMathPayload>(invalidAccuracy.actor.payload)
+      .accuracy = static_cast<loom::SpecialMathAccuracyTier>(0xff);
+  requireRejected(__func__,
+                  loom::sim::evaluatePrimitiveOperation(
+                      invalidAccuracy, {floating32(0x3f800000U)}),
+                  "unknown special-math accuracy tier");
+
+  PrimitiveOperationDescriptor invalidFlags = relaxed;
+  std::get<dataflow::SpecialMathPayload>(invalidFlags.actor.payload).flags =
+      static_cast<mlir::arith::FastMathFlags>(0x80);
+  requireRejected(__func__,
+                  loom::sim::evaluatePrimitiveOperation(
+                      invalidFlags, {floating32(0x3f800000U)}),
+                  "unknown fast-math flags");
 }
 
 } // namespace

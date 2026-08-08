@@ -1,5 +1,6 @@
 #include "Dataflow/IR/OperationSchemaCodec.h"
 
+#include "Common/SpecialMathAccuracy.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
 
@@ -41,6 +42,8 @@ constexpr char kOptionalVectorAtomicGranularityDomain[] =
     "loom.dataflow.optional-vector-atomic-granularity\0";
 constexpr char kSyncScopeRefDomain[] = "loom.dataflow.sync-scope-ref\0";
 constexpr char kCanonicalBooleanDomain[] = "loom.dataflow.canonical-boolean\0";
+constexpr char kSpecialMathAccuracyDomain[] =
+    "loom.special-math-accuracy-tier\0";
 
 void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
   bytes.push_back(static_cast<std::uint8_t>(value >> 24));
@@ -188,6 +191,94 @@ bool checkVocabularyCodecs() {
   ok &= expectFailure(encodeOperationSchemaId(static_cast<OperationSchemaId>(
                           std::numeric_limits<std::uint32_t>::max())),
                       "unknown operation schema");
+  return ok;
+}
+
+bool checkSpecialMathAccuracyCodec() {
+  constexpr struct {
+    loom::SpecialMathAccuracyTier tier;
+    std::uint32_t wireTag;
+  } cases[] = {
+      {loom::SpecialMathAccuracyTier::CorrectlyRounded, 0x4c534101},
+      {loom::SpecialMathAccuracyTier::Max1Ulp, 0x4c534102},
+      {loom::SpecialMathAccuracyTier::Max2Ulp, 0x4c534103},
+      {loom::SpecialMathAccuracyTier::Max4Ulp, 0x4c534104},
+  };
+
+  bool ok = true;
+  for (const auto &testCase : cases) {
+    auto encoded = loom::encodeSpecialMathAccuracyTier(testCase.tier);
+    const std::vector<std::uint8_t> expected = expectedVocabularyBytes(
+        llvm::StringRef(kSpecialMathAccuracyDomain,
+                        sizeof(kSpecialMathAccuracyDomain) - 1),
+        testCase.wireTag);
+    if (!encoded || encoded->bytes() != llvm::ArrayRef(expected)) {
+      if (!encoded)
+        llvm::errs() << llvm::toString(encoded.takeError()) << '\n';
+      else
+        llvm::errs() << "special-math tier did not keep stable bytes\n";
+      ok = false;
+      continue;
+    }
+    auto decoded = loom::decodeSpecialMathAccuracyTier(expected);
+    if (!decoded || *decoded != testCase.tier) {
+      if (!decoded)
+        llvm::errs() << llvm::toString(decoded.takeError()) << '\n';
+      else
+        llvm::errs() << "special-math tier wire roundtrip changed value\n";
+      ok = false;
+    }
+  }
+
+  for (std::size_t guarantee = 0; guarantee != std::size(cases); ++guarantee) {
+    for (std::size_t accepted = 0; accepted != std::size(cases); ++accepted) {
+      auto refines = loom::specialMathAccuracyRefines(cases[guarantee].tier,
+                                                      cases[accepted].tier);
+      if (!refines || *refines != (guarantee <= accepted)) {
+        if (!refines)
+          llvm::errs() << llvm::toString(refines.takeError()) << '\n';
+        else
+          llvm::errs() << "special-math refinement order is incorrect\n";
+        ok = false;
+      }
+    }
+  }
+  for (std::size_t tier = 0; tier != std::size(cases); ++tier) {
+    for (bool approximationPermitted : {false, true}) {
+      llvm::Error validation = loom::validateSpecialMathAccuracyContract(
+          cases[tier].tier, approximationPermitted);
+      const bool shouldSucceed = approximationPermitted || tier == 0;
+      if (validation) {
+        if (shouldSucceed) {
+          llvm::errs() << llvm::toString(std::move(validation)) << '\n';
+          ok = false;
+        } else {
+          llvm::consumeError(std::move(validation));
+        }
+      } else if (!shouldSucceed) {
+        llvm::errs() << "relaxed special-math tier was accepted without afn\n";
+        ok = false;
+      }
+    }
+  }
+  constexpr auto invalidTier = static_cast<loom::SpecialMathAccuracyTier>(0xff);
+  ok &= expectFailure(
+      loom::specialMathAccuracyRefines(
+          loom::SpecialMathAccuracyTier::CorrectlyRounded, invalidTier),
+      "unknown special-math accuracy tier");
+  ok &=
+      expectFailure(loom::specialMathAccuracyRefines(invalidTier, invalidTier),
+                    "unknown special-math accuracy tier");
+
+  std::vector<std::uint8_t> unknown = expectedVocabularyBytes(
+      llvm::StringRef(kSpecialMathAccuracyDomain,
+                      sizeof(kSpecialMathAccuracyDomain) - 1),
+      0x4c534105);
+  ok &= expectFailure(loom::decodeSpecialMathAccuracyTier(unknown),
+                      "unknown special-math accuracy tier");
+  unknown.push_back(0);
+  ok &= expectFailure(loom::decodeSpecialMathAccuracyTier(unknown),
+                      "trailing bytes");
   return ok;
 }
 
@@ -483,6 +574,16 @@ makeFloatingProjection(MLIRContext &context, arith::FastMathFlags flags) {
 }
 
 CanonicalActorSchemaProjection
+makeSpecialMathProjection(MLIRContext &context,
+                          loom::SpecialMathAccuracyTier accuracy) {
+  Builder builder(&context);
+  Type f32 = builder.getF32Type();
+  return {
+      OperationSchemaId::MathSin, builder.getFunctionType({f32}, {f32}),
+      SemanticPayload{SpecialMathPayload{arith::FastMathFlags::afn, accuracy}}};
+}
+
+CanonicalActorSchemaProjection
 makeAtomicLoadProjection(MLIRContext &context, std::uint64_t alignment) {
   Builder builder(&context);
   Type i32 = builder.getI32Type();
@@ -516,6 +617,25 @@ bool checkProjectionCodec(MLIRContext &context) {
       llvm::errs() << llvm::toString(firstAgain.takeError()) << '\n';
     ok = false;
   } else {
+    std::vector<std::uint8_t> projectionPrefix(
+        reinterpret_cast<const std::uint8_t *>(kProjectionDomain),
+        reinterpret_cast<const std::uint8_t *>(kProjectionDomain) +
+            sizeof(kProjectionDomain) - 1);
+    appendU32(projectionPrefix, 2);
+    appendU32(projectionPrefix, 0);
+    if (firstBytes->bytes().size() < projectionPrefix.size() ||
+        firstBytes->bytes().take_front(projectionPrefix.size()) !=
+            llvm::ArrayRef<std::uint8_t>(projectionPrefix)) {
+      llvm::errs() << "actor projection did not use codec 2.0\n";
+      ok = false;
+    }
+    std::vector<std::uint8_t> oldProjection(firstBytes->bytes().begin(),
+                                            firstBytes->bytes().end());
+    const std::size_t versionOffset = sizeof(kProjectionDomain) - 1;
+    std::fill(oldProjection.begin() + versionOffset,
+              oldProjection.begin() + versionOffset + 4, 0);
+    oldProjection[versionOffset + 3] = 1;
+    ok &= expectValidationFailure(oldProjection, "unsupported version");
     if (firstBytes->bytes() != firstAgain->bytes()) {
       llvm::errs() << "equal typed projections produced different bytes\n";
       ok = false;
@@ -542,6 +662,49 @@ bool checkProjectionCodec(MLIRContext &context) {
   wrongPayload.payload = NoPayload{};
   ok &= expectFailure(encodeCanonicalActorSchemaProjection(wrongPayload),
                       "does not match operation schema");
+
+  CanonicalActorSchemaProjection oneUlp = makeSpecialMathProjection(
+      context, loom::SpecialMathAccuracyTier::Max1Ulp);
+  CanonicalActorSchemaProjection twoUlp = makeSpecialMathProjection(
+      context, loom::SpecialMathAccuracyTier::Max2Ulp);
+  auto oneUlpBytes = encodeCanonicalActorSchemaProjection(oneUlp);
+  auto twoUlpBytes = encodeCanonicalActorSchemaProjection(twoUlp);
+  if (!oneUlpBytes || !twoUlpBytes) {
+    if (!oneUlpBytes)
+      llvm::errs() << llvm::toString(oneUlpBytes.takeError()) << '\n';
+    if (!twoUlpBytes)
+      llvm::errs() << llvm::toString(twoUlpBytes.takeError()) << '\n';
+    ok = false;
+  } else if (oneUlpBytes->bytes() == twoUlpBytes->bytes()) {
+    llvm::errs() << "special-math accuracy did not change projection bytes\n";
+    ok = false;
+  } else {
+    if (llvm::Error error =
+            validateCanonicalActorSchemaProjectionBytes(oneUlpBytes->bytes())) {
+      llvm::errs() << llvm::toString(std::move(error)) << '\n';
+      ok = false;
+    }
+    std::vector<std::uint8_t> unknownTier(twoUlpBytes->bytes().begin(),
+                                          twoUlpBytes->bytes().end());
+    std::fill(unknownTier.end() - 4, unknownTier.end(), 0xff);
+    ok &= expectValidationFailure(unknownTier,
+                                  "unknown special-math accuracy tier");
+
+    std::vector<std::uint8_t> missingAfn(oneUlpBytes->bytes().begin(),
+                                         oneUlpBytes->bytes().end());
+    std::fill(missingAfn.end() - 8, missingAfn.end() - 4, 0);
+    ok &= expectValidationFailure(missingAfn, "requires afn");
+  }
+  CanonicalActorSchemaProjection unauthorized = oneUlp;
+  std::get<SpecialMathPayload>(unauthorized.payload).flags =
+      arith::FastMathFlags::none;
+  ok &= expectFailure(encodeCanonicalActorSchemaProjection(unauthorized),
+                      "requires afn");
+  CanonicalActorSchemaProjection invalidAccuracy = oneUlp;
+  std::get<SpecialMathPayload>(invalidAccuracy.payload).accuracy =
+      static_cast<loom::SpecialMathAccuracyTier>(0xff);
+  ok &= expectFailure(encodeCanonicalActorSchemaProjection(invalidAccuracy),
+                      "unknown special-math accuracy tier");
 
   CanonicalActorSchemaProjection four = makeAtomicLoadProjection(context, 4);
   CanonicalActorSchemaProjection eight = makeAtomicLoadProjection(context, 8);
@@ -677,6 +840,7 @@ int main() {
 
   bool ok = true;
   ok &= checkVocabularyCodecs();
+  ok &= checkSpecialMathAccuracyCodec();
   ok &= checkOwnedAtomCodecs(context);
   ok &= checkProjectionCodec(context);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;

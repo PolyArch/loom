@@ -1,6 +1,7 @@
 #ifndef DATAFLOW_IR_OPERATIONSCHEMA_H
 #define DATAFLOW_IR_OPERATIONSCHEMA_H
 
+#include "Common/SpecialMathAccuracy.h"
 #include "Dataflow/IR/DataflowEnums.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -39,6 +40,8 @@ enum class OperationSemanticsCase : std::uint32_t {
 #define LOOM_OPERATION_SEMANTICS_CASE(Name, Id, WireTag) Name = Id,
 #include "Dataflow/IR/OperationSchemas.inc"
 };
+
+bool isValidFastMathFlags(::mlir::arith::FastMathFlags flags);
 
 enum class CanonicalDataflowActorKind : std::uint32_t {
   Compute,
@@ -117,6 +120,17 @@ struct FloatingPointPayload {
 
   friend bool operator==(FloatingPointPayload lhs, FloatingPointPayload rhs) {
     return lhs.flags == rhs.flags && lhs.roundingMode == rhs.roundingMode;
+  }
+};
+
+/// Native floating permissions and the selected special-math accuracy.
+struct SpecialMathPayload {
+  ::mlir::arith::FastMathFlags flags = ::mlir::arith::FastMathFlags::none;
+  ::loom::SpecialMathAccuracyTier accuracy =
+      ::loom::SpecialMathAccuracyTier::CorrectlyRounded;
+
+  friend bool operator==(SpecialMathPayload lhs, SpecialMathPayload rhs) {
+    return lhs.flags == rhs.flags && lhs.accuracy == rhs.accuracy;
   }
 };
 
@@ -364,12 +378,12 @@ using MemoryContractPayload =
 
 /// The closed payload sum, one alternative per declared semantic case.
 using SemanticPayload = std::variant<
-    NoPayload, FloatingPointPayload, ExactPayload, NonNegativePayload,
-    IntegerOverflowPayload, IntegerComparePayload, FloatComparePayload,
-    ConstantValuePayload, StreamRecurrencePayload, MemoryContractPayload,
-    ZeroPoisonPayload, IntegerMinPoisonPayload, AggregatePositionPayload,
-    VectorStaticPositionPayload, VectorShuffleMaskPayload, DisjointPayload,
-    GetElementPtrPayload>;
+    NoPayload, FloatingPointPayload, SpecialMathPayload, ExactPayload,
+    NonNegativePayload, IntegerOverflowPayload, IntegerComparePayload,
+    FloatComparePayload, ConstantValuePayload, StreamRecurrencePayload,
+    MemoryContractPayload, ZeroPoisonPayload, IntegerMinPoisonPayload,
+    AggregatePositionPayload, VectorStaticPositionPayload,
+    VectorShuffleMaskPayload, DisjointPayload, GetElementPtrPayload>;
 
 /// The complete identity-critical projection of one canonical actor instance.
 struct CanonicalActorSchemaProjection {

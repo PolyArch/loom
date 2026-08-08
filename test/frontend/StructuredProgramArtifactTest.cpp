@@ -359,6 +359,24 @@ module { func.func @main(%arg0: i32) -> i32 { return %arg0 : i32 } }
           "pool");
 }
 
+void moveAssignmentKeepsContextAliveUntilModuleRelease() {
+  const char *test = __func__;
+  StructuredProgramCandidate replaced = finalize(test, R"mlir(
+module { func.func @old(%arg0: i32) -> i32 { return %arg0 : i32 } }
+)mlir");
+  StructuredProgramCandidate replacement = finalize(test, R"mlir(
+module { func.func @new(%arg0: i32) -> i32 { return %arg0 : i32 } }
+)mlir");
+  const loom::ArtifactIdentity replacementIdentity = replacement.identity();
+
+  replaced = std::move(replacement);
+
+  require(test, replaced.identity() == replacementIdentity,
+          "move assignment did not retain the replacement identity");
+  require(test, replaced.module().lookupSymbol<mlir::func::FuncOp>("new"),
+          "move assignment did not retain the replacement module");
+}
+
 } // namespace
 
 int main() {
@@ -371,6 +389,7 @@ int main() {
   importedCandidateReencodesExactly();
   graphFreeInstructionCoreProgramPublishesDataflowArtifact();
   finalizedArtifactsDoNotOwnThreadPools();
+  moveAssignmentKeepsContextAliveUntilModuleRelease();
   llvm::outs() << "structured program artifact anchors passed\n";
   return EXIT_SUCCESS;
 }

@@ -20,6 +20,8 @@ struct SelectedPreMappingCompilation final {
   frontend::PreMappingCompilation compilation;
   std::vector<StructuredOwnershipDerivation> derivations;
   std::vector<StructuredExecutionShapeDerivation> executionShapeDerivations;
+  std::vector<StructuredSpecialMathAccuracyDerivation>
+      specialMathAccuracyDerivations;
   std::vector<StructuredScheduleDerivation> scheduleDerivations;
   std::vector<StructuredMemoryCommunicationDerivation>
       memoryCommunicationDerivations;

@@ -9,6 +9,7 @@
 
 #include <optional>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 using namespace loom::sim;
@@ -121,8 +122,16 @@ llvm::StringRef spelling(dataflow::OperationSchemaId schema) {
 template <typename Payload>
 llvm::Expected<const Payload *>
 requirePayload(const PrimitiveOperationDescriptor &descriptor) {
-  if (const auto *payload = std::get_if<Payload>(&descriptor.actor.payload))
+  if (const auto *payload = std::get_if<Payload>(&descriptor.actor.payload)) {
+    if constexpr (std::is_same_v<Payload, dataflow::FloatingPointPayload> ||
+                  std::is_same_v<Payload, dataflow::SpecialMathPayload> ||
+                  std::is_same_v<Payload, dataflow::FloatComparePayload>) {
+      if (!dataflow::isValidFastMathFlags(payload->flags))
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "unknown fast-math flags");
+    }
     return payload;
+  }
   return llvm::createStringError(
       std::errc::invalid_argument,
       "%s typed semantic payload does not match operation schema",
@@ -285,6 +294,14 @@ bool violatesFloatingAssumptions(const dataflow::FloatingPointPayload &payload,
          llvm::any_of(operands, [](const llvm::APFloat &value) {
            return value.isInfinity();
          });
+}
+
+llvm::Error
+validateSpecialMathPayload(const dataflow::SpecialMathPayload &payload) {
+  const bool approximationPermitted = mlir::arith::bitEnumContainsAny(
+      payload.flags, mlir::arith::FastMathFlags::afn);
+  return loom::validateSpecialMathAccuracyContract(payload.accuracy,
+                                                   approximationPermitted);
 }
 
 llvm::Expected<PrimitiveValue>
@@ -793,9 +810,11 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   case Schema::MathPowF: {
     if (llvm::Error arity = requireArity(schema, operands, 2))
       return std::move(arity);
-    auto payload = requirePayload<dataflow::FloatingPointPayload>(descriptor);
+    auto payload = requirePayload<dataflow::SpecialMathPayload>(descriptor);
     if (!payload)
       return payload.takeError();
+    if (llvm::Error error = validateSpecialMathPayload(**payload))
+      return std::move(error);
     if (auto exceptional = strictExceptionalResult(operands))
       return *exceptional;
     auto type = floatInputType(descriptor, 0);
@@ -808,7 +827,9 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     if (!rhs)
       return rhs.takeError();
     llvm::APFloat values[] = {*lhs, *rhs};
-    if (violatesFloatingAssumptions(**payload, values))
+    const dataflow::FloatingPointPayload assumptions{(*payload)->flags,
+                                                     std::nullopt};
+    if (violatesFloatingAssumptions(assumptions, values))
       return PrimitiveValue::poison();
     auto result =
         loom::sim::detail::evaluateDeterministicBinaryMath(schema, *lhs, *rhs);
@@ -842,9 +863,21 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   case Schema::MathErf: {
     if (llvm::Error arity = requireArity(schema, operands, 1))
       return std::move(arity);
-    auto payload = requirePayload<dataflow::FloatingPointPayload>(descriptor);
-    if (!payload)
-      return payload.takeError();
+    dataflow::FloatingPointPayload assumptions;
+    if (schema == Schema::ArithNegF || schema == Schema::MathAbsF) {
+      auto payload = requirePayload<dataflow::FloatingPointPayload>(descriptor);
+      if (!payload)
+        return payload.takeError();
+      assumptions = **payload;
+    } else {
+      auto payload = requirePayload<dataflow::SpecialMathPayload>(descriptor);
+      if (!payload)
+        return payload.takeError();
+      if (llvm::Error error = validateSpecialMathPayload(**payload))
+        return std::move(error);
+      assumptions.flags = (*payload)->flags;
+      assumptions.roundingMode = std::nullopt;
+    }
     if (auto exceptional = strictExceptionalResult(operands))
       return *exceptional;
     auto type = floatInputType(descriptor, 0);
@@ -854,7 +887,7 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     if (!value)
       return value.takeError();
     llvm::APFloat values[] = {*value};
-    if (violatesFloatingAssumptions(**payload, values))
+    if (violatesFloatingAssumptions(assumptions, values))
       return PrimitiveValue::poison();
     switch (schema) {
     case Schema::ArithNegF:

@@ -1,6 +1,7 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Common/SpecialMathAccuracy.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/PreMappingExploration.h"
@@ -26,6 +27,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Parser/Parser.h"
@@ -47,6 +49,8 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <map>
 #include <memory>
@@ -155,7 +159,7 @@ parseFunctionallyIncorrectModule(llvm::LLVMContext &context) {
 loom::frontend::StructuredProgramCandidate makeScheduledLoopProgram() {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::LLVM::LLVMDialect,
-                  mlir::scf::SCFDialect>();
+                  mlir::math::MathDialect, mlir::scf::SCFDialect>();
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
@@ -169,7 +173,10 @@ module {
       %address = llvm.getelementptr inbounds %out[%wide]
           : (!llvm.ptr, i64) -> !llvm.ptr, i32
       %value = arith.index_cast %index : index to i32
-      llvm.store %value, %address : i32, !llvm.ptr
+      %floating = arith.sitofp %value : i32 to f32
+      %sine = math.sin %floating : f32
+      %bits = arith.bitcast %sine : f32 to i32
+      llvm.store %bits, %address : i32, !llvm.ptr
     }
     llvm.return
   }
@@ -452,23 +459,50 @@ void centralPlanEvaluatesScheduleChildren() {
   }
 
   bool sawStructuredMemoryCommunication = false;
+  bool sawSpecialMathAccuracy = false;
   bool sawDataflowRewrite = false;
+  bool sawCanonicalGeneratorOrder = false;
+  const std::vector<std::string> expectedGeneratorOrder = {
+      "compiler.structured_ownership", "compiler.structured_execution_shape",
+      "compiler.structured_special_math_accuracy",
+      "compiler.structured_schedule",
+      "compiler.structured_memory_communication"};
   for (const loom::dse::DsePlanGenerateInvocationRecords &planInvocation :
        selection->planGenerateInvocations) {
     if (planInvocation.incomplete())
       fail("completed pre-Mapping selection retained an incomplete Generate");
+    std::map<std::uint64_t, std::string> generatorByPlanNode;
     for (const loom::dse::GenerateInvocationRecord &record :
          planInvocation.completed()) {
       const loom::dse::CandidateGeneratorDescriptor *descriptor =
           record.generatorBinding.descriptorRef().descriptor();
       if (!descriptor)
         fail("pre-Mapping Generate provenance lost its exact descriptor");
+      auto [position, inserted] = generatorByPlanNode.try_emplace(
+          record.planNodeOrdinal, descriptor->spelling.str());
+      if (!inserted && position->second != descriptor->spelling)
+        fail("one pre-Mapping plan node used conflicting generators");
       sawStructuredMemoryCommunication |=
           descriptor->spelling == "compiler.structured_memory_communication";
+      sawSpecialMathAccuracy |=
+          descriptor->spelling == "compiler.structured_special_math_accuracy";
       sawDataflowRewrite |= descriptor->spelling == "compiler.dataflow_rewrite";
     }
+    auto first = generatorByPlanNode.find(0);
+    if (first == generatorByPlanNode.end() ||
+        first->second != expectedGeneratorOrder.front())
+      continue;
+    for (std::size_t ordinal = 0; ordinal != expectedGeneratorOrder.size();
+         ++ordinal) {
+      auto found = generatorByPlanNode.find(ordinal);
+      if (found == generatorByPlanNode.end() ||
+          found->second != expectedGeneratorOrder[ordinal])
+        fail("production pre-Mapping generator order is not canonical");
+    }
+    sawCanonicalGeneratorOrder = true;
   }
-  if (!sawStructuredMemoryCommunication || !sawDataflowRewrite)
+  if (!sawStructuredMemoryCommunication || !sawSpecialMathAccuracy ||
+      !sawDataflowRewrite || !sawCanonicalGeneratorOrder)
     fail("production pre-Mapping boundary discarded Generate provenance");
 
   bool sawScheduleChild = false;
@@ -486,6 +520,19 @@ void centralPlanEvaluatesScheduleChildren() {
       fail("selected schedule child lacks equivalent source-backed replay");
     if (selected.scheduleDerivations.empty())
       fail("selected schedule child lost its typed parent lineage");
+    if (!selected.specialMathAccuracyDerivations.empty())
+      fail("strict special math created an accuracy decision lineage");
+    bool sawCorrectlyRoundedSine = false;
+    selected.compilation.structuredProgram.module().walk(
+        [&](mlir::math::SinOp operation) {
+          auto accuracy = llvm::dyn_cast_or_null<mlir::StringAttr>(
+              operation->getDiscardableAttr(
+                  loom::kSpecialMathAccuracyAttrName));
+          sawCorrectlyRoundedSine |=
+              accuracy && accuracy.getValue() == "CorrectlyRounded";
+        });
+    if (!sawCorrectlyRoundedSine)
+      fail("strict special math lost its mechanical accuracy closure");
     auto miss = take(capabilities.firstInadmissibleActor(
         selected.compilation.canonicalDataflow));
     if (miss)
@@ -1348,9 +1395,9 @@ void runEvaluationAnchor() {
   EvaluatedFunctional spatialFunctional =
       evaluateStructuredFunctional(spatialRef, inputs.workloadReference,
                                    inputs.runtimeInputReference, store, blobs);
-  EvaluatedFunctional coldFunctional = evaluateStructuredFunctional(
-      coldRef, inputs.workloadReference, inputs.runtimeInputReference, store,
-      blobs);
+  EvaluatedFunctional coldFunctional =
+      evaluateStructuredFunctional(coldRef, inputs.workloadReference,
+                                   inputs.runtimeInputReference, store, blobs);
   EvaluatedFunctional incorrectFunctional =
       evaluateStructuredFunctional(incorrectRef, inputs.workloadReference,
                                    inputs.runtimeInputReference, store, blobs);
@@ -1459,8 +1506,8 @@ void runEvaluationAnchor() {
       parseModule(context), design.roots().front()));
   auto explored = take(loom::dse::exploreStructuredCompilationToPreMapping(
       std::move(exploredSource), inputs.workload, inputs.runtimeInput,
-      design.roots().front(), loom::defaultResolvedConfig(), exploration,
-      store, blobs));
+      design.roots().front(), loom::defaultResolvedConfig(), exploration, store,
+      blobs));
   const auto *exploredSelection =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!exploredSelection || exploredSelection->selected.size() != 1)

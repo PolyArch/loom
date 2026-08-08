@@ -155,6 +155,8 @@ std::uint64_t familyComplexity(::fabric::ImplementationFamilyId family,
 
   using Schema = ::fabric::CapabilityParamsSchemaId;
   switch (schema) {
+  case Schema::ScalarSpecialMathParams:
+    return 28;
   case Schema::ScalarFloatParams:
   case Schema::ScalarFloatCompareMinMaxParams:
   case Schema::ScalarFloatWidthCastParams:

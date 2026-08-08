@@ -430,7 +430,24 @@ module {
   }
 }
 
-void centralGeneratorPublishesOnlyAdmittedUniformShapes() {
+void descriptorOwnsOnlyStructuredPreClosure() {
+  const loom::dse::CandidateGeneratorDescriptor &descriptor =
+      loom::dse::structuredExecutionShapeCandidateGeneratorDescriptor();
+  if (descriptor.implementationSemanticIdentity !=
+      "loom.compiler.structured_execution_shape.generator.v2")
+    fail("execution-shape descriptor retained its D0 semantic identity");
+  if (descriptor.inputSlots.size() != 1)
+    fail("execution-shape descriptor retained a non-Structured input");
+  const loom::dse::CandidateGeneratorInputSlotDescriptor &input =
+      descriptor.inputSlots.front();
+  if (input.semanticRole != "structured_program" ||
+      input.role != loom::dse::PlanValueRole::CandidateSet ||
+      input.schema != &loom::frontend::structuredProgramArtifactSchema ||
+      input.cardinality != loom::dse::PlanValueCardinality::FiniteSet)
+    fail("execution-shape descriptor does not consume exact Structured input");
+}
+
+void centralGeneratorPublishesFinalizedUniformShapes() {
   llvm::SmallString<128> directory;
   std::error_code error = llvm::sys::fs::createUniqueDirectory(
       "loom-execution-shape-generator", directory);
@@ -442,8 +459,6 @@ void centralGeneratorPublishesOnlyAdmittedUniformShapes() {
   if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
     fail("cannot create BlobStore directory: " + error.message());
   const loom::BlobStore blobs(blobPath);
-  auto design = take(loom::adg::buildBuiltinTarget(
-      store, loom::adg::BuiltinTargetPreset::Small));
   auto parent = parseProgram();
   auto parentReference =
       take(loom::frontend::publishStructuredProgram(parent, store));
@@ -451,7 +466,7 @@ void centralGeneratorPublishesOnlyAdmittedUniformShapes() {
       loom::dse::projectResolvedStructuredExecutionShapeGeneratorConfigView());
   auto inputs =
       take(loom::dse::bindStructuredExecutionShapeCandidateGeneratorInputs(
-          {parentReference}, design.roots().front().reference()));
+          {parentReference}));
   auto binding =
       take(loom::dse::resolveStructuredExecutionShapeCandidateGeneratorBinding(
           config));
@@ -496,6 +511,25 @@ void centralGeneratorPublishesOnlyAdmittedUniformShapes() {
   }
   if (fused != 1 || split != 1)
     fail("central generator duplicated or omitted one execution shape");
+
+  const loom::ArtifactRootReference closedReference =
+      completed->outputBindings.front().artifacts.front();
+  auto closedInputs =
+      take(loom::dse::bindStructuredExecutionShapeCandidateGeneratorInputs(
+          {closedReference}));
+  auto closedOutcome = take(
+      loom::dse::invokeCandidateGenerator(closedInputs, binding, store, blobs));
+  auto *closed = std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+      &closedOutcome.outcome);
+  if (!closed || closed->outputBindings.size() != 1 ||
+      closed->outputBindings.front().artifacts !=
+          std::vector<loom::ArtifactRootReference>{closedReference} ||
+      !closed->lineageEdges.empty())
+    fail("closed Structured parent did not pass through unchanged");
+  if (closedOutcome.workSummary.size() != 1 ||
+      closedOutcome.workSummary.front().planned != 0 ||
+      closedOutcome.workSummary.front().consumed != 0)
+    fail("execution-shape pass-through reported a semantic decision");
 }
 
 void invalidInMemoryDecisionFailsClosed() {
@@ -522,9 +556,6 @@ void ownerPayloadMustBelongToExactParentDecisionDomain() {
   if (error)
     fail("cannot create ArtifactStore directory: " + error.message());
   loom::ArtifactStore store(directory);
-  auto design = take(loom::adg::buildBuiltinTarget(
-      store, loom::adg::BuiltinTargetPreset::Small));
-
   auto unresolved = parseProgram();
   auto fused = take(loom::frontend::materializeStructuredExecutionShapeDecision(
       unresolved, {loom::raising::FMulAddExecutionShape::Fused}));
@@ -539,7 +570,7 @@ void ownerPayloadMustBelongToExactParentDecisionDomain() {
       loom::dse::projectResolvedStructuredExecutionShapeGeneratorConfigView());
   auto inputs =
       take(loom::dse::bindStructuredExecutionShapeCandidateGeneratorInputs(
-          {fusedReference}, design.roots().front().reference()));
+          {fusedReference}));
   auto binding =
       take(loom::dse::resolveStructuredExecutionShapeCandidateGeneratorBinding(
           config));
@@ -573,7 +604,8 @@ int main() {
   finiteUniformDomainAndScopedMaterialization();
   selectedShapesRemainNativeObservable();
   ownershipLineageIsMechanicallyReprojected();
-  centralGeneratorPublishesOnlyAdmittedUniformShapes();
+  descriptorOwnsOnlyStructuredPreClosure();
+  centralGeneratorPublishesFinalizedUniformShapes();
   invalidInMemoryDecisionFailsClosed();
   ownerPayloadMustBelongToExactParentDecisionDomain();
   return EXIT_SUCCESS;

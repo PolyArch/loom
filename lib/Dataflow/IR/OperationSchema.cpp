@@ -15,6 +15,7 @@
 
 #include "Dataflow/IR/OperationSchema.h"
 
+#include "Common/SpecialMathAccuracy.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowAttrs.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
@@ -39,6 +40,7 @@
 #include <cstddef>
 #include <string>
 #include <system_error>
+#include <type_traits>
 
 using namespace mlir;
 
@@ -355,9 +357,13 @@ readPayload(Operation *op, dataflow::OperationSchemaId schema) {
   const dataflow::OperationSemanticsCase kind = dataflow::semanticsCase(schema);
   using Case = dataflow::OperationSemanticsCase;
   for (NamedAttribute attr : op->getDiscardableAttrDictionary()) {
-    if (attr.getName().getValue() != dataflow::kEntityIdAttrName ||
-        !llvm::isa<dataflow::EntityIdAttr>(attr.getValue()))
-      return mismatch(op, kind);
+    if (attr.getName().getValue() == dataflow::kEntityIdAttrName &&
+        llvm::isa<dataflow::EntityIdAttr>(attr.getValue()))
+      continue;
+    if (kind == Case::SpecialMathAccuracy &&
+        attr.getName().getValue() == loom::kSpecialMathAccuracyAttrName)
+      continue;
+    return mismatch(op, kind);
   }
   switch (kind) {
   case Case::NoSemanticPayload: {
@@ -411,6 +417,29 @@ readPayload(Operation *op, dataflow::OperationSchemaId schema) {
     }
     return dataflow::SemanticPayload{
         dataflow::FloatingPointPayload{flags, roundingMode}};
+  }
+  case Case::SpecialMathAccuracy: {
+    auto fastMath = llvm::dyn_cast<arith::ArithFastMathInterface>(op);
+    auto accuracy = llvm::dyn_cast_or_null<StringAttr>(
+        op->getDiscardableAttr(loom::kSpecialMathAccuracyAttrName));
+    if (!fastMath || !accuracy)
+      return mismatch(op, kind);
+    std::optional<loom::SpecialMathAccuracyTier> tier =
+        loom::symbolizeSpecialMathAccuracyTier(accuracy.getValue());
+    if (!tier)
+      return mismatch(op, kind);
+    arith::FastMathFlags flags = arith::FastMathFlags::none;
+    if (arith::FastMathFlagsAttr attr = fastMath.getFastMathFlagsAttr())
+      flags = attr.getValue();
+    const bool permitsApproximation =
+        arith::bitEnumContainsAny(flags, arith::FastMathFlags::afn);
+    if (llvm::Error error = loom::validateSpecialMathAccuracyContract(
+            *tier, permitsApproximation)) {
+      llvm::consumeError(std::move(error));
+      return mismatch(op, kind);
+    }
+    return dataflow::SemanticPayload{
+        dataflow::SpecialMathPayload{flags, *tier}};
   }
   case Case::ArithExact: {
     return llvm::TypeSwitch<Operation *,
@@ -539,6 +568,10 @@ template <typename OpTy> void attachActorModel(MLIRContext &context) {
 
 std::uint32_t dataflow::operationSchemaCount() {
   return static_cast<std::uint32_t>(kSchemaCount);
+}
+
+bool dataflow::isValidFastMathFlags(arith::FastMathFlags flags) {
+  return (flags | arith::FastMathFlags::fast) == arith::FastMathFlags::fast;
 }
 
 llvm::StringRef dataflow::operationSchemaSpelling(OperationSchemaId schema) {

@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Fabric/IR/ImplementationFamily.h"
+#include "ImplementationFamilySpecialMath.h"
 
 #include "Common/IndexWidth.h"
 #include "Common/VectorWidth.h"
@@ -16,6 +17,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -1001,6 +1003,10 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
     const auto &typed = std::get<ScalarFloatParams>(params);
     return typed.formats.size() > 1 || floatBehaviorVaries(typed.behavior);
   }
+  case TypedAdmissionProviderId::ScalarSpecialMathAdmission: {
+    const auto &typed = std::get<ScalarSpecialMathParams>(params);
+    return typed.formats.size() > 1;
+  }
   case TypedAdmissionProviderId::ScalarFloatCompareAdmission: {
     const auto &typed = std::get<ScalarFloatCompareMinMaxParams>(params);
     return typed.formats.size() > 1 || typed.predicates.size() > 1 ||
@@ -1322,6 +1328,11 @@ fabric::encodeImplementationFamilySemanticConfiguration(
 
   if (selectionOnly)
     return ::dataflow::encodeOperationSchemaId(actor.schema);
+
+  if (implementationFamily(family).typedAdmissionProvider ==
+      TypedAdmissionProviderId::ScalarSpecialMathAdmission)
+    return detail::encodeScalarSpecialMathSemanticConfiguration(family, params,
+                                                                actor);
 
   if (family == ImplementationFamilyId::ScalarFloatFma) {
     const auto *parameters = std::get_if<ScalarFloatParams>(&params);
@@ -1697,6 +1708,14 @@ fabric::resolveFiniteImplementationFamilyBehaviorDomain(
       if (parameters->formats.contains(format))
         actors.push_back(
             {makeScalarFloatFmaActor(context, format), std::nullopt});
+  } else if (implementationFamily(family).typedAdmissionProvider ==
+             TypedAdmissionProviderId::ScalarSpecialMathAdmission) {
+    auto specialActors = detail::enumerateScalarSpecialMathBehaviorActors(
+        family, params, enabledSchemas, context);
+    if (!specialActors)
+      return specialActors.takeError();
+    for (auto &actor : *specialActors)
+      actors.push_back({std::move(actor), std::nullopt});
   } else if (family == ImplementationFamilyId::FixedVectorSliceAlignMerge ||
              family == ImplementationFamilyId::FixedVectorShuffle) {
     return reject("direct structural vector configuration has no finite "

@@ -121,8 +121,7 @@ public:
   StructuredProgramCandidate &
   operator=(const StructuredProgramCandidate &) = delete;
   StructuredProgramCandidate(StructuredProgramCandidate &&) = default;
-  StructuredProgramCandidate &
-  operator=(StructuredProgramCandidate &&) = default;
+  StructuredProgramCandidate &operator=(StructuredProgramCandidate &&other);
 
   const ArtifactIdentity &identity() const { return identity_; }
   const CanonicalSemanticBytes &canonicalBytes() const {

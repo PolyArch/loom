@@ -378,6 +378,15 @@ SelectableResource scalarFloat(ImplementationFamilyId family,
           std::move(inputs)};
 }
 
+SelectableResource scalarSpecialMath(ImplementationFamilyId family,
+                                     std::vector<std::uint32_t> inputs) {
+  return {family,
+          ::fabric::ScalarSpecialMathParams{
+              floatFormats(), ::fabric::FloatBehaviorProfile::strictIEEE(),
+              SpecialMathAccuracyTier::CorrectlyRounded},
+          std::move(inputs)};
+}
+
 } // namespace
 
 llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
@@ -1214,7 +1223,7 @@ llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
   resources.push_back(
       scalarFloat(ImplementationFamilyId::ScalarFloatRemainder, {0, 1}));
   resources.push_back(
-      scalarFloat(ImplementationFamilyId::ScalarMathPow, {0, 1}));
+      scalarSpecialMath(ImplementationFamilyId::ScalarMathPow, {0, 1}));
   constexpr std::array<ImplementationFamilyId, 21> unaryFamilies = {
       ImplementationFamilyId::ScalarMathSin,
       ImplementationFamilyId::ScalarMathCos,
@@ -1238,7 +1247,7 @@ llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
       ImplementationFamilyId::ScalarMathRsqrt,
       ImplementationFamilyId::ScalarMathErf};
   for (ImplementationFamilyId family : unaryFamilies)
-    resources.push_back(scalarFloat(family, {0}));
+    resources.push_back(scalarSpecialMath(family, {0}));
   return addSelectableFu(pe, inputs, {*bits64, *bits64}, *bits64, *bits128,
                          resources);
 }

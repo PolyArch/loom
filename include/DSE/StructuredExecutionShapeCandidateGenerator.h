@@ -56,8 +56,7 @@ llvm::Error registerStructuredExecutionShapeCandidateGenerator();
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
 bindStructuredExecutionShapeCandidateGeneratorInputs(
-    llvm::ArrayRef<ArtifactRootReference> structuredPrograms,
-    const ArtifactRootReference &fabric);
+    llvm::ArrayRef<ArtifactRootReference> structuredPrograms);
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
 resolveStructuredExecutionShapeCandidateGeneratorBinding(

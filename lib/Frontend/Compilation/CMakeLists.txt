@@ -10,6 +10,7 @@ add_library(LoomFrontendCompilation
   StructuredCallSpecialization.cpp
   StructuredOwnershipAnalysis.cpp
   StructuredExecutionShape.cpp
+  StructuredSpecialMathAccuracy.cpp
   StructuredMemoryCommunication.cpp
   StructuredSchedule.cpp
 )

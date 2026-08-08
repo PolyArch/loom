@@ -63,6 +63,7 @@ def VectorShuffleMask : SemanticsCase<14, 0x4c53010f>;
 def LLVMDisjoint : SemanticsCase<15, 0x4c530110>;
 def LLVMRegisteredIntrinsic : SemanticsCase<16, 0x4c530111>;
 def LLVMGetElementPtrSemantics : SemanticsCase<17, 0x4c530112>;
+def SpecialMathAccuracy : SemanticsCase<18, 0x4c530113>;
 
 //===----------------------------------------------------------------------===//
 // Closed typed capability-parameter record schemas
@@ -89,6 +90,7 @@ def PayloadCapacityParams : CapabilityParamsSchema<17>;
 def RoutedTokenParams : CapabilityParamsSchema<18>;
 def FixedVectorSliceAlignMergeParams : CapabilityParamsSchema<19>;
 def FixedVectorShuffleParams : CapabilityParamsSchema<20>;
+def ScalarSpecialMathParams : CapabilityParamsSchema<21>;
 
 //===----------------------------------------------------------------------===//
 // Closed typed admission providers
@@ -121,6 +123,7 @@ def ScalarUnaryIntegerAdmission : TypedAdmissionProvider<23>;
 def FixedVectorUnaryIntegerAdmission : TypedAdmissionProvider<24>;
 def FixedVectorSliceAlignMergeAdmission : TypedAdmissionProvider<25>;
 def FixedVectorShuffleAdmission : TypedAdmissionProvider<26>;
+def ScalarSpecialMathAdmission : TypedAdmissionProvider<27>;
 
 //===----------------------------------------------------------------------===//
 // Standard integer, floating-point, and cast compute schemas
@@ -221,52 +224,53 @@ def MathAbsF : ElementwiseActorSchema<43, 0x4c53022c, "::mlir::math::AbsFOp", "C
     ArithFloatingPoint>;
 def MathAbsI : ElementwiseActorSchema<44, 0x4c53022d, "::mlir::math::AbsIOp", "Compute",
     NoSemanticPayload>;
-def MathSin : ElementwiseActorSchema<45, 0x4c53022e, "::mlir::math::SinOp", "Compute",
-    ArithFloatingPoint>;
-def MathCos : ElementwiseActorSchema<46, 0x4c53022f, "::mlir::math::CosOp", "Compute",
-    ArithFloatingPoint>;
-def MathTan : ElementwiseActorSchema<47, 0x4c530230, "::mlir::math::TanOp", "Compute",
-    ArithFloatingPoint>;
-def MathSinh : ElementwiseActorSchema<48, 0x4c530231, "::mlir::math::SinhOp", "Compute",
-    ArithFloatingPoint>;
-def MathCosh : ElementwiseActorSchema<49, 0x4c530232, "::mlir::math::CoshOp", "Compute",
-    ArithFloatingPoint>;
-def MathTanh : ElementwiseActorSchema<50, 0x4c530233, "::mlir::math::TanhOp", "Compute",
-    ArithFloatingPoint>;
-def MathExp : ElementwiseActorSchema<51, 0x4c530234, "::mlir::math::ExpOp", "Compute",
-    ArithFloatingPoint>;
-def MathExp2 : ElementwiseActorSchema<52, 0x4c530235, "::mlir::math::Exp2Op", "Compute",
-    ArithFloatingPoint>;
-def MathExpM1 : ElementwiseActorSchema<53, 0x4c530236, "::mlir::math::ExpM1Op", "Compute",
-    ArithFloatingPoint>;
-def MathLog : ElementwiseActorSchema<54, 0x4c530237, "::mlir::math::LogOp", "Compute",
-    ArithFloatingPoint>;
-def MathLog2 : ElementwiseActorSchema<55, 0x4c530238, "::mlir::math::Log2Op", "Compute",
-    ArithFloatingPoint>;
-def MathLog10 : ElementwiseActorSchema<56, 0x4c530239, "::mlir::math::Log10Op", "Compute",
-    ArithFloatingPoint>;
-def MathLog1p : ElementwiseActorSchema<57, 0x4c53023a, "::mlir::math::Log1pOp", "Compute",
-    ArithFloatingPoint>;
-def MathFloor : ElementwiseActorSchema<58, 0x4c53023b, "::mlir::math::FloorOp", "Compute",
-    ArithFloatingPoint>;
-def MathCeil : ElementwiseActorSchema<59, 0x4c53023c, "::mlir::math::CeilOp", "Compute",
-    ArithFloatingPoint>;
-def MathRound : ElementwiseActorSchema<60, 0x4c53023d, "::mlir::math::RoundOp", "Compute",
-    ArithFloatingPoint>;
-def MathTrunc : ElementwiseActorSchema<61, 0x4c53023e, "::mlir::math::TruncOp", "Compute",
-    ArithFloatingPoint>;
-def MathRoundEven : ElementwiseActorSchema<62, 0x4c53023f, "::mlir::math::RoundEvenOp", "Compute",
-    ArithFloatingPoint>;
-def MathSqrt : ElementwiseActorSchema<63, 0x4c530240, "::mlir::math::SqrtOp", "Compute",
-    ArithFloatingPoint>;
-def MathRsqrt : ElementwiseActorSchema<64, 0x4c530241, "::mlir::math::RsqrtOp", "Compute",
-    ArithFloatingPoint>;
-def MathErf : ElementwiseActorSchema<65, 0x4c530242, "::mlir::math::ErfOp", "Compute",
-    ArithFloatingPoint>;
+def MathSin : ElementwiseActorSchema<45, 0x4c53022e, "::mlir::math::SinOp",
+                                     "Compute", SpecialMathAccuracy>;
+def MathCos : ElementwiseActorSchema<46, 0x4c53022f, "::mlir::math::CosOp",
+                                     "Compute", SpecialMathAccuracy>;
+def MathTan : ElementwiseActorSchema<47, 0x4c530230, "::mlir::math::TanOp",
+                                     "Compute", SpecialMathAccuracy>;
+def MathSinh : ElementwiseActorSchema<48, 0x4c530231, "::mlir::math::SinhOp",
+                                      "Compute", SpecialMathAccuracy>;
+def MathCosh : ElementwiseActorSchema<49, 0x4c530232, "::mlir::math::CoshOp",
+                                      "Compute", SpecialMathAccuracy>;
+def MathTanh : ElementwiseActorSchema<50, 0x4c530233, "::mlir::math::TanhOp",
+                                      "Compute", SpecialMathAccuracy>;
+def MathExp : ElementwiseActorSchema<51, 0x4c530234, "::mlir::math::ExpOp",
+                                     "Compute", SpecialMathAccuracy>;
+def MathExp2 : ElementwiseActorSchema<52, 0x4c530235, "::mlir::math::Exp2Op",
+                                      "Compute", SpecialMathAccuracy>;
+def MathExpM1 : ElementwiseActorSchema<53, 0x4c530236, "::mlir::math::ExpM1Op",
+                                       "Compute", SpecialMathAccuracy>;
+def MathLog : ElementwiseActorSchema<54, 0x4c530237, "::mlir::math::LogOp",
+                                     "Compute", SpecialMathAccuracy>;
+def MathLog2 : ElementwiseActorSchema<55, 0x4c530238, "::mlir::math::Log2Op",
+                                      "Compute", SpecialMathAccuracy>;
+def MathLog10 : ElementwiseActorSchema<56, 0x4c530239, "::mlir::math::Log10Op",
+                                       "Compute", SpecialMathAccuracy>;
+def MathLog1p : ElementwiseActorSchema<57, 0x4c53023a, "::mlir::math::Log1pOp",
+                                       "Compute", SpecialMathAccuracy>;
+def MathFloor : ElementwiseActorSchema<58, 0x4c53023b, "::mlir::math::FloorOp",
+                                       "Compute", SpecialMathAccuracy>;
+def MathCeil : ElementwiseActorSchema<59, 0x4c53023c, "::mlir::math::CeilOp",
+                                      "Compute", SpecialMathAccuracy>;
+def MathRound : ElementwiseActorSchema<60, 0x4c53023d, "::mlir::math::RoundOp",
+                                       "Compute", SpecialMathAccuracy>;
+def MathTrunc : ElementwiseActorSchema<61, 0x4c53023e, "::mlir::math::TruncOp",
+                                       "Compute", SpecialMathAccuracy>;
+def MathRoundEven
+    : ElementwiseActorSchema<62, 0x4c53023f, "::mlir::math::RoundEvenOp",
+                             "Compute", SpecialMathAccuracy>;
+def MathSqrt : ElementwiseActorSchema<63, 0x4c530240, "::mlir::math::SqrtOp",
+                                      "Compute", SpecialMathAccuracy>;
+def MathRsqrt : ElementwiseActorSchema<64, 0x4c530241, "::mlir::math::RsqrtOp",
+                                       "Compute", SpecialMathAccuracy>;
+def MathErf : ElementwiseActorSchema<65, 0x4c530242, "::mlir::math::ErfOp",
+                                     "Compute", SpecialMathAccuracy>;
 def MathFma : ElementwiseActorSchema<66, 0x4c530243, "::mlir::math::FmaOp", "Compute",
     ArithFloatingPoint>;
-def MathPowF : ElementwiseActorSchema<106, 0x4c53026b, "::mlir::math::PowFOp", "Compute",
-    ArithFloatingPoint>;
+def MathPowF : ElementwiseActorSchema<106, 0x4c53026b, "::mlir::math::PowFOp",
+                                      "Compute", SpecialMathAccuracy>;
 def MathCountLeadingZeros : ElementwiseActorSchema<93, 0x4c53025e,
     "::mlir::math::CountLeadingZerosOp", "Compute", NoSemanticPayload>;
 def MathCountTrailingZeros : ElementwiseActorSchema<101, 0x4c530266,
@@ -524,48 +528,63 @@ def ScalarFloatDivide : ImplementationFamily<41, [ArithDivF],
     ScalarFloatParams, ScalarUniformFloatAdmission>;
 def ScalarFloatRemainder : ImplementationFamily<42, [ArithRemF],
     ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathSin : ImplementationFamily<43, [MathSin],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathCos : ImplementationFamily<44, [MathCos],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathTan : ImplementationFamily<45, [MathTan],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathSinh : ImplementationFamily<46, [MathSinh],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathCosh : ImplementationFamily<47, [MathCosh],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathTanh : ImplementationFamily<48, [MathTanh],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathExp : ImplementationFamily<49, [MathExp],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathExp2 : ImplementationFamily<50, [MathExp2],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathExpM1 : ImplementationFamily<51, [MathExpM1],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathLog : ImplementationFamily<52, [MathLog],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathLog2 : ImplementationFamily<53, [MathLog2],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathLog10 : ImplementationFamily<54, [MathLog10],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathLog1p : ImplementationFamily<55, [MathLog1p],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathFloor : ImplementationFamily<56, [MathFloor],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathCeil : ImplementationFamily<57, [MathCeil],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathRound : ImplementationFamily<58, [MathRound],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathTrunc : ImplementationFamily<59, [MathTrunc],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathRoundEven : ImplementationFamily<60, [MathRoundEven],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathSqrt : ImplementationFamily<61, [MathSqrt],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathRsqrt : ImplementationFamily<62, [MathRsqrt],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
-def ScalarMathErf : ImplementationFamily<63, [MathErf],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathSin : ImplementationFamily<43, [MathSin], ScalarSpecialMathParams,
+                                         ScalarSpecialMathAdmission>;
+def ScalarMathCos : ImplementationFamily<44, [MathCos], ScalarSpecialMathParams,
+                                         ScalarSpecialMathAdmission>;
+def ScalarMathTan : ImplementationFamily<45, [MathTan], ScalarSpecialMathParams,
+                                         ScalarSpecialMathAdmission>;
+def ScalarMathSinh
+    : ImplementationFamily<46, [MathSinh], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathCosh
+    : ImplementationFamily<47, [MathCosh], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathTanh
+    : ImplementationFamily<48, [MathTanh], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathExp : ImplementationFamily<49, [MathExp], ScalarSpecialMathParams,
+                                         ScalarSpecialMathAdmission>;
+def ScalarMathExp2
+    : ImplementationFamily<50, [MathExp2], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathExpM1
+    : ImplementationFamily<51, [MathExpM1], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathLog : ImplementationFamily<52, [MathLog], ScalarSpecialMathParams,
+                                         ScalarSpecialMathAdmission>;
+def ScalarMathLog2
+    : ImplementationFamily<53, [MathLog2], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathLog10
+    : ImplementationFamily<54, [MathLog10], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathLog1p
+    : ImplementationFamily<55, [MathLog1p], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathFloor
+    : ImplementationFamily<56, [MathFloor], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathCeil
+    : ImplementationFamily<57, [MathCeil], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathRound
+    : ImplementationFamily<58, [MathRound], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathTrunc
+    : ImplementationFamily<59, [MathTrunc], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathRoundEven
+    : ImplementationFamily<60, [MathRoundEven], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathSqrt
+    : ImplementationFamily<61, [MathSqrt], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathRsqrt
+    : ImplementationFamily<62, [MathRsqrt], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
+def ScalarMathErf : ImplementationFamily<63, [MathErf], ScalarSpecialMathParams,
+                                         ScalarSpecialMathAdmission>;
 def ScalarIntegerSaturatingAddSub : ImplementationFamily<64,
     [LLVMSAddSat, LLVMUAddSat, LLVMSSubSat, LLVMUSubSat],
     ScalarIntegerParams, ScalarOrdinaryIntegerAdmission>;
@@ -580,8 +599,9 @@ def FixedVectorIntegerCountZeros : ImplementationFamily<67,
     [MathCountLeadingZeros, MathCountTrailingZeros, LLVMCountLeadingZeros,
      LLVMCountTrailingZeros], FixedVectorIntegerParams,
     FixedVectorUnaryIntegerAdmission>;
-def ScalarMathPow : ImplementationFamily<68, [MathPowF],
-    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathPow
+    : ImplementationFamily<68, [MathPowF], ScalarSpecialMathParams,
+                           ScalarSpecialMathAdmission>;
 def FixedVectorSliceAlignMerge : ImplementationFamily<69,
     [VectorExtract, VectorInsert], FixedVectorSliceAlignMergeParams,
     FixedVectorSliceAlignMergeAdmission>;

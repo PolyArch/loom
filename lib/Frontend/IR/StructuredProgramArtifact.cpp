@@ -3,6 +3,7 @@
 #include "Common/ArtifactFinalizer.h"
 #include "Common/CanonicalRelation.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/OperationSchema.h"
 #include "Frontend/IR/LoomDialect.h"
 
 #include "mlir/Bytecode/BytecodeReader.h"
@@ -50,6 +51,22 @@
 using namespace mlir;
 
 namespace loom::frontend {
+
+StructuredProgramCandidate &
+StructuredProgramCandidate::operator=(StructuredProgramCandidate &&other) {
+  if (this == &other)
+    return *this;
+
+  module_ = nullptr;
+  context_.reset();
+  identity_ = std::move(other.identity_);
+  canonicalBytes_ = std::move(other.canonicalBytes_);
+  context_ = std::move(other.context_);
+  module_ = std::move(other.module_);
+  view_ = std::move(other.view_);
+  return *this;
+}
+
 namespace {
 
 constexpr char semanticDomain[] = "loom.structured_program.semantic.v1\0";
@@ -149,6 +166,24 @@ llvm::Error removeTransients(ModuleOp module) {
             invalid(llvm::Twine("malformed root-relative address marker on ") +
                     op->getName().getStringRef());
         return WalkResult::interrupt();
+      }
+      if (name == loom::kSpecialMathAccuracyAttrName) {
+        std::optional<dataflow::OperationSchemaId> schema =
+            dataflow::operationSchemaOf(op);
+        if (!schema ||
+            dataflow::semanticsCase(*schema) !=
+                dataflow::OperationSemanticsCase::SpecialMathAccuracy) {
+          result =
+              invalid(llvm::Twine("special-math accuracy on non-special ") +
+                      op->getName().getStringRef());
+          return WalkResult::interrupt();
+        }
+        auto projection = dataflow::projectRegisteredActorSchemaProjection(op);
+        if (!projection) {
+          result = projection.takeError();
+          return WalkResult::interrupt();
+        }
+        continue;
       }
       if (name.starts_with("loom.")) {
         result = invalid(llvm::Twine("unresolved Loom-specific attribute '") +
@@ -267,7 +302,8 @@ operationIntrinsic(Operation *op, SmallVectorImpl<SymbolRefAttr> &symbols,
       if (name == symbolName && redacted)
         continue;
       if (registeredOnly && !registered.contains(name) &&
-          name != loom::rootRelativeAddressAttrName)
+          name != loom::rootRelativeAddressAttrName &&
+          name != loom::kSpecialMathAccuracyAttrName)
         continue;
       stream << name << '=';
       serializeAttribute(stream, entry.getValue(), symbols, asmState);

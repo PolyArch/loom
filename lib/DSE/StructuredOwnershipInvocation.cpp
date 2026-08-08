@@ -242,6 +242,7 @@ public:
   struct ResolvedLineage final {
     std::vector<StructuredOwnershipDerivation> ownership;
     std::vector<StructuredExecutionShapeDerivation> executionShape;
+    std::vector<StructuredSpecialMathAccuracyDerivation> specialMathAccuracy;
     std::vector<StructuredScheduleDerivation> schedule;
     std::vector<StructuredMemoryCommunicationDerivation> memoryCommunication;
   };
@@ -260,8 +261,9 @@ public:
         lowering(lowering), candidateWorkerCount(candidateWorkerCount),
         functionalReplayLimits(functionalReplayLimits),
         sourceProvenance(sourceProvenance.begin(), sourceProvenance.end()),
-        ownershipCandidates(&artifactRootReferenceLess),
+        structuredCandidates(&artifactRootReferenceLess),
         materialized(&artifactRootReferenceLess),
+        specialMathMechanicalParents(&artifactRootReferenceLess),
         finalCandidates(&artifactRootReferenceLess) {}
 
   const frontend::StructuredProgramCandidate &sourceProgram;
@@ -285,13 +287,18 @@ public:
   std::map<ArtifactRootReference,
            frontend::MaterializedStructuredOwnershipCandidate,
            decltype(&artifactRootReferenceLess)>
-      ownershipCandidates;
+      structuredCandidates;
   std::map<ArtifactRootReference, frontend::MaterializedOwnershipCandidate,
            decltype(&artifactRootReferenceLess)>
       materialized;
   CanonicalDerivationIndex<StructuredOwnershipDerivation> ownershipLineage;
   CanonicalDerivationIndex<StructuredExecutionShapeDerivation>
       executionShapeLineage;
+  CanonicalDerivationIndex<StructuredSpecialMathAccuracyDerivation>
+      specialMathAccuracyLineage;
+  std::map<ArtifactRootReference, ArtifactRootReference,
+           decltype(&artifactRootReferenceLess)>
+      specialMathMechanicalParents;
   CanonicalDerivationIndex<StructuredScheduleDerivation> scheduleLineage;
   CanonicalDerivationIndex<StructuredMemoryCommunicationDerivation>
       memoryCommunicationLineage;
@@ -339,6 +346,19 @@ public:
         }
       }
       auto executionEdges = executionShapeLineage.find(reference);
+      auto accuracyEdges = specialMathAccuracyLineage.find(reference);
+      auto mechanicalParent = specialMathMechanicalParents.find(reference);
+      if (mechanicalParent != specialMathMechanicalParents.end())
+        if (llvm::Error error = visit(mechanicalParent->second))
+          return error;
+      if (accuracyEdges != specialMathAccuracyLineage.end()) {
+        for (const auto &entry : accuracyEdges->second) {
+          const StructuredSpecialMathAccuracyDerivation &edge = entry.second;
+          if (llvm::Error error = visit(edge.parent))
+            return error;
+          result.specialMathAccuracy.push_back(edge);
+        }
+      }
       if (executionEdges != executionShapeLineage.end()) {
         for (const auto &entry : executionEdges->second) {
           const StructuredExecutionShapeDerivation &edge = entry.second;
@@ -510,6 +530,8 @@ StructuredOwnershipInvocation::materializeSelectedCandidate(
 
   std::vector<StructuredOwnershipDerivation> derivations;
   std::vector<StructuredExecutionShapeDerivation> executionShapeDerivations;
+  std::vector<StructuredSpecialMathAccuracyDerivation>
+      specialMathAccuracyDerivations;
   std::vector<StructuredScheduleDerivation> scheduleDerivations;
   std::vector<StructuredMemoryCommunicationDerivation>
       memoryCommunicationDerivations;
@@ -519,6 +541,7 @@ StructuredOwnershipInvocation::materializeSelectedCandidate(
       return lineage.takeError();
     derivations = std::move(lineage->ownership);
     executionShapeDerivations = std::move(lineage->executionShape);
+    specialMathAccuracyDerivations = std::move(lineage->specialMathAccuracy);
     scheduleDerivations = std::move(lineage->schedule);
     memoryCommunicationDerivations = std::move(lineage->memoryCommunication);
   }
@@ -539,6 +562,7 @@ StructuredOwnershipInvocation::materializeSelectedCandidate(
       std::move(*materialized),
       std::move(derivations),
       std::move(executionShapeDerivations),
+      std::move(specialMathAccuracyDerivations),
       std::move(scheduleDerivations),
       std::move(memoryCommunicationDerivations),
       {},
@@ -603,6 +627,7 @@ StructuredOwnershipInvocation::materializeSelectedDataflowCandidate(
       std::move(materialized),
       std::move(lineage->ownership),
       std::move(lineage->executionShape),
+      std::move(lineage->specialMathAccuracy),
       std::move(lineage->schedule),
       std::move(lineage->memoryCommunication),
       std::move(*dataflowDerivations),
@@ -725,7 +750,7 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::recordGeneration(
       *impl.workloadReference != workloadReference ||
       *impl.runtimeInputReference != runtimeInputReference)
     return invalid("generated roots differ from the bound invocation");
-  if (!impl.ownershipCandidates.empty())
+  if (!impl.structuredCandidates.empty())
     return invalid("Ownership cache is initialized before generation");
   std::map<ArtifactRootReference, std::size_t,
            decltype(&artifactRootReferenceLess)>
@@ -779,7 +804,7 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::recordGeneration(
       return invalid("Ownership lineage key has conflicting decisions");
   }
   for (auto [reference, index] : uniqueCandidates)
-    if (impl.ownershipCandidates
+    if (impl.structuredCandidates
             .try_emplace(reference, std::move(candidates[index].candidate))
             .second)
       impl.structuredReachable.insert(reference);
@@ -788,15 +813,15 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::recordGeneration(
 }
 
 llvm::Expected<frontend::MaterializedStructuredOwnershipCandidate>
-detail::StructuredOwnershipInvocationAccess::cloneOwnershipCandidate(
+detail::StructuredOwnershipInvocationAccess::clonePreClosureCandidate(
     StructuredOwnershipInvocation &invocation,
     const ArtifactRootReference &reference) {
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
   if (!impl.generationRecorded)
     return invalid("ExecutionShape generation precedes Ownership generation");
-  auto found = impl.ownershipCandidates.find(reference);
-  if (found == impl.ownershipCandidates.end())
-    return invalid("ExecutionShape input has no Ownership candidate state");
+  auto found = impl.structuredCandidates.find(reference);
+  if (found == impl.structuredCandidates.end())
+    return invalid("pre-closure input has no Structured candidate state");
   auto clone = frontend::importStructuredProgram(
       found->second.structuredProgram.identity(),
       found->second.structuredProgram.canonicalBytes());
@@ -932,7 +957,6 @@ detail::StructuredOwnershipInvocationAccess::recordExecutionShapeCandidate(
     const ArtifactRootReference &parent, const ArtifactRootReference &child,
     std::optional<frontend::StructuredExecutionShapeDecision> decision,
     frontend::MaterializedStructuredOwnershipCandidate candidate,
-    lowering::ProjectedCanonicalDataflow projected,
     const ArtifactStore &store) {
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
   if (!impl.generationRecorded || !impl.sourceReference)
@@ -971,6 +995,123 @@ detail::StructuredOwnershipInvocationAccess::recordExecutionShapeCandidate(
   }
   impl.structuredReachable.insert(child);
 
+  auto found = impl.structuredCandidates.find(child);
+  if (found == impl.structuredCandidates.end()) {
+    impl.structuredCandidates.try_emplace(child, std::move(candidate));
+  } else if (found->second.structuredProgram.canonicalBytes().bytes() !=
+             candidate.structuredProgram.canonicalBytes().bytes()) {
+    return invalid("deduplicated ExecutionShape child changed canonical bytes");
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error detail::StructuredOwnershipInvocationAccess::
+    recordSpecialMathAccuracyDerivation(
+        StructuredOwnershipInvocation &invocation,
+        const ArtifactRootReference &parent, const ArtifactRootReference &child,
+        const frontend::StructuredSpecialMathAccuracyDecision &decision,
+        const ArtifactStore &store) {
+  StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
+  if (!impl.generationRecorded || !impl.sourceReference)
+    return invalid(
+        "SpecialMathAccuracy generation precedes Ownership generation");
+  if (parent.schemaIdentity !=
+          frontend::structuredProgramArtifactSchema.identity ||
+      parent.schemaVersion !=
+          frontend::structuredProgramArtifactSchema.version ||
+      child.schemaIdentity !=
+          frontend::structuredProgramArtifactSchema.identity ||
+      child.schemaVersion !=
+          frontend::structuredProgramArtifactSchema.version ||
+      parent == child)
+    return invalid(
+        "SpecialMathAccuracy lineage contains invalid Structured references");
+  if (impl.structuredReachable.find(parent) == impl.structuredReachable.end())
+    return invalid("SpecialMathAccuracy parent has no Structured lineage");
+  auto stored = store.get(child);
+  if (!stored)
+    return stored.takeError();
+
+  auto payload =
+      frontend::encodeStructuredSpecialMathAccuracyDecision(decision);
+  if (!payload)
+    return payload.takeError();
+  StructuredSpecialMathAccuracyDerivation derivation{parent, decision};
+  auto [lineage, inserted] = impl.specialMathAccuracyLineage[child].try_emplace(
+      CanonicalDerivationKey{parent, std::move(*payload)}, derivation);
+  if (!inserted && !(lineage->second == derivation))
+    return invalid("SpecialMathAccuracy lineage key has conflicting decisions");
+  impl.structuredReachable.insert(child);
+  return llvm::Error::success();
+}
+
+llvm::Error detail::StructuredOwnershipInvocationAccess::
+    recordSpecialMathAccuracyMechanicalCandidate(
+        StructuredOwnershipInvocation &invocation,
+        const ArtifactRootReference &parent, const ArtifactRootReference &child,
+        const ArtifactStore &store) {
+  StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
+  if (!impl.generationRecorded || !impl.sourceReference)
+    return invalid(
+        "SpecialMathAccuracy generation precedes Ownership generation");
+  if (parent.schemaIdentity !=
+          frontend::structuredProgramArtifactSchema.identity ||
+      parent.schemaVersion !=
+          frontend::structuredProgramArtifactSchema.version ||
+      child.schemaIdentity !=
+          frontend::structuredProgramArtifactSchema.identity ||
+      child.schemaVersion !=
+          frontend::structuredProgramArtifactSchema.version ||
+      parent == child)
+    return invalid(
+        "SpecialMathAccuracy mechanical lineage contains invalid Structured "
+        "references");
+  if (impl.structuredReachable.find(parent) == impl.structuredReachable.end())
+    return invalid(
+        "SpecialMathAccuracy mechanical parent has no Structured lineage");
+  auto stored = store.get(child);
+  if (!stored)
+    return stored.takeError();
+  auto [position, inserted] =
+      impl.specialMathMechanicalParents.try_emplace(child, parent);
+  if (!inserted && position->second != parent)
+    return invalid(
+        "SpecialMathAccuracy mechanical child has conflicting parents");
+  impl.structuredReachable.insert(child);
+  return llvm::Error::success();
+}
+
+llvm::Error detail::StructuredOwnershipInvocationAccess::
+    recordSpecialMathAccuracyFinalCandidate(
+        StructuredOwnershipInvocation &invocation,
+        const ArtifactRootReference &child,
+        frontend::MaterializedOwnershipCandidate candidate,
+        const ArtifactStore &store) {
+  StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
+  if (!impl.generationRecorded || !impl.sourceReference)
+    return invalid(
+        "SpecialMathAccuracy finalization precedes Ownership generation");
+  if (child.schemaIdentity !=
+          frontend::structuredProgramArtifactSchema.identity ||
+      child.schemaVersion !=
+          frontend::structuredProgramArtifactSchema.version ||
+      child.artifact != candidate.structuredProgram.identity())
+    return invalid(
+        "SpecialMathAccuracy final candidate has a foreign Structured root");
+  if (impl.structuredReachable.find(child) == impl.structuredReachable.end())
+    return invalid(
+        "SpecialMathAccuracy final candidate has no Structured lineage");
+  auto stored = store.get(child);
+  if (!stored)
+    return stored.takeError();
+  if (!stored->bytes().equals(
+          candidate.structuredProgram.canonicalBytes().bytes()))
+    return invalid(
+        "SpecialMathAccuracy final candidate differs from published bytes");
+
+  lowering::ProjectedCanonicalDataflow projected{
+      std::move(candidate.canonicalDataflow),
+      std::move(candidate.spatialGraphs)};
   auto found = impl.finalCandidates.find(child);
   if (found == impl.finalCandidates.end()) {
     impl.finalCandidates.try_emplace(
@@ -981,7 +1122,8 @@ detail::StructuredOwnershipInvocationAccess::recordExecutionShapeCandidate(
             std::move(candidate.sourceProvenance), std::move(projected)});
   } else if (found->second.structuredProgram.canonicalBytes().bytes() !=
              candidate.structuredProgram.canonicalBytes().bytes()) {
-    return invalid("deduplicated ExecutionShape child changed canonical bytes");
+    return invalid(
+        "deduplicated SpecialMathAccuracy candidate changed canonical bytes");
   }
   return llvm::Error::success();
 }

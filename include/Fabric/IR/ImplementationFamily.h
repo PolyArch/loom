@@ -437,6 +437,15 @@ struct ScalarFloatParams {
   FloatBehaviorProfile behavior;
 };
 
+struct ScalarSpecialMathParams {
+  static constexpr CapabilityParamsSchemaId schemaId =
+      CapabilityParamsSchemaId::ScalarSpecialMathParams;
+  FloatFormatSet formats;
+  FloatBehaviorProfile behavior;
+  ::loom::SpecialMathAccuracyTier accuracyGuarantee =
+      ::loom::SpecialMathAccuracyTier::CorrectlyRounded;
+};
+
 struct ScalarFloatCompareMinMaxParams {
   static constexpr CapabilityParamsSchemaId schemaId =
       CapabilityParamsSchemaId::ScalarFloatCompareMinMaxParams;
@@ -561,9 +570,9 @@ using FamilyCapabilityParams =
     std::variant<ScalarIntegerParams, ScalarIntegerCompareMinMaxParams,
                  ScalarValueSelectParams, ScalarIntegerCastParams,
                  ScalarBitReinterpretParams, ScalarFloatParams,
-                 ScalarFloatCompareMinMaxParams, ScalarFloatWidthCastParams,
-                 ScalarIntegerFloatConversionParams, LoopStreamParams,
-                 TokenPlaneParams, FixedVectorIntegerParams,
+                 ScalarSpecialMathParams, ScalarFloatCompareMinMaxParams,
+                 ScalarFloatWidthCastParams, ScalarIntegerFloatConversionParams,
+                 LoopStreamParams, TokenPlaneParams, FixedVectorIntegerParams,
                  FixedVectorIntegerCompareMinMaxParams,
                  FixedVectorValueSelectParams, FixedVectorFloatParams,
                  FixedVectorFloatCompareMinMaxParams, FixedVectorAdapterParams,

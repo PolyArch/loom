@@ -8,6 +8,7 @@
 
 #include "Dataflow/IR/OperationSchema.h"
 
+#include "Common/SpecialMathAccuracy.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
 
@@ -54,6 +55,7 @@ bool nativeSemanticInterfacesAreClassified(OperationSemanticsCase semantics) {
     return semantics == OperationSemanticsCase::ArithFloatingPoint;
   if constexpr (OpTy::template hasTrait<arith::ArithFastMathInterface::Trait>())
     return semantics == OperationSemanticsCase::ArithFloatingPoint ||
+           semantics == OperationSemanticsCase::SpecialMathAccuracy ||
            semantics == OperationSemanticsCase::ArithFloatCompare;
   if constexpr (OpTy::template hasTrait<
                     arith::ArithIntegerOverflowFlagsInterface::Trait>())
@@ -259,6 +261,79 @@ bool checkSemanticProjection(MLIRContext &context) {
                         ok);
   expectProjectionDelta(plainDivision, exactDivision, "exact state", ok);
   expectProjectionDelta(plainExtension, nonNegativeExtension, "nneg state", ok);
+  return ok;
+}
+
+bool expectProjectionFailure(Operation *op, llvm::StringRef state) {
+  llvm::Expected<CanonicalActorSchemaProjection> projection =
+      projectRegisteredActorSchemaProjection(op);
+  if (!projection) {
+    llvm::consumeError(projection.takeError());
+    return true;
+  }
+  llvm::errs() << op->getName().getStringRef() << " projected " << state
+               << '\n';
+  return false;
+}
+
+bool checkSpecialMathAccuracyProjection(MLIRContext &context) {
+  OpFixture fixture(context);
+  Value input = fixture.poison(fixture.builder.getF32Type());
+  auto makeSin = [&](arith::FastMathFlags flags,
+                     std::optional<llvm::StringRef> accuracy) -> Operation * {
+    Operation *op =
+        math::SinOp::create(fixture.builder, fixture.loc, input, flags);
+    if (accuracy)
+      op->setDiscardableAttr(
+          fixture.builder.getStringAttr(loom::kSpecialMathAccuracyAttrName),
+          fixture.builder.getStringAttr(*accuracy));
+    return op;
+  };
+
+  Operation *missing = makeSin(arith::FastMathFlags::none, std::nullopt);
+  Operation *strict = makeSin(arith::FastMathFlags::none, "CorrectlyRounded");
+  Operation *relaxed = makeSin(arith::FastMathFlags::afn, "Max2Ulp");
+  Operation *unauthorized = makeSin(arith::FastMathFlags::none, "Max1Ulp");
+  Operation *malformed =
+      makeSin(arith::FastMathFlags::afn, "approximately_two_ulp");
+
+  bool ok = true;
+  ok &= expectProjectionFailure(missing, "a missing special-math tier");
+  ok &= expectProjectionFailure(unauthorized, "a relaxed tier without afn");
+  ok &= expectProjectionFailure(malformed, "an unknown special-math tier");
+
+  std::optional<CanonicalActorSchemaProjection> strictProjection =
+      projectActor(strict, ok);
+  std::optional<CanonicalActorSchemaProjection> relaxedProjection =
+      projectActor(relaxed, ok);
+  const auto *strictPayload =
+      strictProjection
+          ? std::get_if<SpecialMathPayload>(&strictProjection->payload)
+          : nullptr;
+  const auto *relaxedPayload =
+      relaxedProjection
+          ? std::get_if<SpecialMathPayload>(&relaxedProjection->payload)
+          : nullptr;
+  if (!strictPayload ||
+      strictPayload->accuracy !=
+          loom::SpecialMathAccuracyTier::CorrectlyRounded ||
+      strictPayload->flags != arith::FastMathFlags::none || !relaxedPayload ||
+      relaxedPayload->accuracy != loom::SpecialMathAccuracyTier::Max2Ulp ||
+      relaxedPayload->flags != arith::FastMathFlags::afn ||
+      (strictProjection && relaxedProjection &&
+       *strictProjection == *relaxedProjection)) {
+    llvm::errs() << "special-math accuracy was not projected exactly\n";
+    ok = false;
+  }
+
+  Operation *ordinary = arith::AddFOp::create(
+      fixture.builder, fixture.loc, input, input, arith::FastMathFlags::afn,
+      arith::RoundingModeAttr{});
+  ordinary->setDiscardableAttr(
+      fixture.builder.getStringAttr(loom::kSpecialMathAccuracyAttrName),
+      fixture.builder.getStringAttr("Max2Ulp"));
+  ok &= expectProjectionFailure(ordinary,
+                                "a special-math tier on an ordinary actor");
   return ok;
 }
 
@@ -746,6 +821,7 @@ int main() {
   bool ok = true;
   ok &= checkRegistry(context);
   ok &= checkSemanticProjection(context);
+  ok &= checkSpecialMathAccuracyProjection(context);
   ok &= checkVectorStructure(context);
   ok &= checkPoisonAndAggregateState(context);
   ok &= checkRegisteredLLVMIntrinsicSelectors(context);

@@ -235,6 +235,26 @@ target_link_libraries(loom-structured-execution-shape-generator-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-structured-special-math-accuracy-generator-test
+  StructuredSpecialMathAccuracyGeneratorTest.cpp
+)
+
+target_link_libraries(loom-structured-special-math-accuracy-generator-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomDSECompilerGenerator
+  LoomFrontendCompilation
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRLoom
+  MLIRMathDialect
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
 add_executable(loom-dataflow-rewrite-generator-test
   DataflowRewriteGeneratorTest.cpp
 )

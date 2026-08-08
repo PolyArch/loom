@@ -4,6 +4,7 @@
 
 #include <limits>
 #include <mpfr.h>
+#include <mutex>
 #include <system_error>
 
 namespace loom::sim::detail {
@@ -22,6 +23,52 @@ public:
 
 private:
   mpfr_t value_;
+};
+
+std::mutex &mpfrEnvironmentMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+class ScopedMpfrEnvironment final {
+public:
+  ScopedMpfrEnvironment() : lock_(mpfrEnvironmentMutex(), std::defer_lock) {
+    if (!mpfr_buildopt_tls_p())
+      lock_.lock();
+    previousMinimumExponent_ = mpfr_get_emin();
+    previousMaximumExponent_ = mpfr_get_emax();
+    previousFlags_ = mpfr_flags_save();
+  }
+
+  ~ScopedMpfrEnvironment() {
+    (void)mpfr_set_emax(previousMaximumExponent_);
+    (void)mpfr_set_emin(previousMinimumExponent_);
+    mpfr_flags_restore(previousFlags_, MPFR_FLAGS_ALL);
+  }
+
+  ScopedMpfrEnvironment(const ScopedMpfrEnvironment &) = delete;
+  ScopedMpfrEnvironment &operator=(const ScopedMpfrEnvironment &) = delete;
+
+  llvm::Error select(const llvm::fltSemantics &semantics) {
+    const mpfr_exp_t precision = llvm::APFloat::semanticsPrecision(semantics);
+    const mpfr_exp_t minimumExponent =
+        llvm::APFloat::semanticsMinExponent(semantics) - precision + 2;
+    const mpfr_exp_t maximumExponent =
+        llvm::APFloat::semanticsMaxExponent(semantics) + 1;
+    if (mpfr_set_emin(minimumExponent) != 0 ||
+        mpfr_set_emax(maximumExponent) != 0)
+      return llvm::createStringError(
+          std::errc::not_supported,
+          "cannot select the target IEEE exponent range");
+    mpfr_clear_flags();
+    return llvm::Error::success();
+  }
+
+private:
+  std::unique_lock<std::mutex> lock_;
+  mpfr_exp_t previousMinimumExponent_ = 0;
+  mpfr_exp_t previousMaximumExponent_ = 0;
+  mpfr_flags_t previousFlags_ = 0;
 };
 
 bool isSupportedSemantic(const llvm::fltSemantics &semantics) {
@@ -116,11 +163,15 @@ evaluateDeterministicUnaryMath(dataflow::OperationSchemaId schema,
   if (operand.isNaN())
     return operand.makeQuiet();
 
+  ScopedMpfrEnvironment environment;
+  if (llvm::Error error = environment.select(semantics))
+    return std::move(error);
   MpfrValue input(
       llvm::APFloat::semanticsPrecision(llvm::APFloat::IEEEdouble()));
   MpfrValue result(llvm::APFloat::semanticsPrecision(semantics));
   mpfr_set_d(input.get(), operand.convertToDouble(), MPFR_RNDN);
-  operation(result.get(), input.get(), MPFR_RNDN);
+  const int ternary = operation(result.get(), input.get(), MPFR_RNDN);
+  (void)mpfr_subnormalize(result.get(), ternary, MPFR_RNDN);
 
   return roundedResult(result.get(), semantics);
 }
@@ -147,6 +198,9 @@ evaluateDeterministicBinaryMath(dataflow::OperationSchemaId schema,
         std::errc::not_supported,
         "deterministic binary math supports only f16, bf16, f32, and f64");
 
+  ScopedMpfrEnvironment environment;
+  if (llvm::Error error = environment.select(semantics))
+    return std::move(error);
   const mpfr_prec_t inputPrecision =
       llvm::APFloat::semanticsPrecision(llvm::APFloat::IEEEdouble());
   MpfrValue left(inputPrecision);
@@ -154,7 +208,9 @@ evaluateDeterministicBinaryMath(dataflow::OperationSchemaId schema,
   MpfrValue result(llvm::APFloat::semanticsPrecision(semantics));
   mpfr_set_d(left.get(), lhs.convertToDouble(), MPFR_RNDN);
   mpfr_set_d(right.get(), rhs.convertToDouble(), MPFR_RNDN);
-  operation(result.get(), left.get(), right.get(), MPFR_RNDN);
+  const int ternary =
+      operation(result.get(), left.get(), right.get(), MPFR_RNDN);
+  (void)mpfr_subnormalize(result.get(), ternary, MPFR_RNDN);
   return roundedResult(result.get(), semantics);
 }
 

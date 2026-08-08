@@ -7,6 +7,7 @@
 #include "Frontend/Compilation/StructuredExecutionShape.h"
 #include "Frontend/Compilation/StructuredMemoryCommunication.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
+#include "Frontend/Compilation/StructuredSpecialMathAccuracy.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SourceBackedDfgValidation.h"
 
@@ -91,6 +92,16 @@ struct StructuredExecutionShapeDerivation final {
   }
 };
 
+struct StructuredSpecialMathAccuracyDerivation final {
+  ArtifactRootReference parent;
+  frontend::StructuredSpecialMathAccuracyDecision decision;
+
+  friend bool operator==(const StructuredSpecialMathAccuracyDerivation &lhs,
+                         const StructuredSpecialMathAccuracyDerivation &rhs) {
+    return lhs.parent == rhs.parent && lhs.decision == rhs.decision;
+  }
+};
+
 struct StructuredMemoryCommunicationDerivation final {
   ArtifactRootReference parent;
   frontend::StructuredMemoryCommunicationDecision decision;
@@ -168,6 +179,8 @@ struct SelectedStructuredOwnershipCandidate final {
   frontend::MaterializedOwnershipCandidate candidate;
   std::vector<StructuredOwnershipDerivation> derivations;
   std::vector<StructuredExecutionShapeDerivation> executionShapeDerivations;
+  std::vector<StructuredSpecialMathAccuracyDerivation>
+      specialMathAccuracyDerivations;
   std::vector<StructuredScheduleDerivation> scheduleDerivations;
   std::vector<StructuredMemoryCommunicationDerivation>
       memoryCommunicationDerivations;

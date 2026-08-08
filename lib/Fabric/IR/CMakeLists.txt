@@ -41,6 +41,7 @@ add_mlir_library(LoomFabricImplementationFamily
   ImplementationFamily.cpp
   ImplementationFamilyPortCorrespondence.cpp
   ImplementationFamilyQueries.cpp
+  ImplementationFamilySpecialMath.cpp
   ImplementationFamilyVectorStructure.cpp
 
   PARTIAL_SOURCES_INTENDED

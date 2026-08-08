@@ -72,7 +72,8 @@ module {
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %zero = dataflow.constant %ctrl {const_value = 0.000000e+00 : f32} : f32
-    %sin = math.sin %zero : f32
+    %sin = math.sin %zero
+        {loom.special_math_accuracy = "CorrectlyRounded"} : f32
     %published:2 = dataflow.sync %ctrl, %sin
         : (none, f32) -> (none, f32)
     dataflow.graph.return %published#0, %published#1 : none, f32
@@ -83,14 +84,19 @@ module {
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 5, 0, 0>} {
     %floor_in = dataflow.constant %ctrl {const_value = 2.750000e+00 : f32} : f32
-    %floor = math.floor %floor_in : f32
+    %floor = math.floor %floor_in
+        {loom.special_math_accuracy = "CorrectlyRounded"} : f32
     %ceil_in = dataflow.constant %ctrl {const_value = 2.250000e+00 : f32} : f32
-    %ceil = math.ceil %ceil_in : f32
+    %ceil = math.ceil %ceil_in
+        {loom.special_math_accuracy = "CorrectlyRounded"} : f32
     %round_in = dataflow.constant %ctrl {const_value = 2.500000e+00 : f32} : f32
-    %round = math.round %round_in : f32
+    %round = math.round %round_in
+        {loom.special_math_accuracy = "CorrectlyRounded"} : f32
     %trunc_in = dataflow.constant %ctrl {const_value = -2.750000e+00 : f32} : f32
-    %trunc = math.trunc %trunc_in : f32
-    %even = math.roundeven %round_in : f32
+    %trunc = math.trunc %trunc_in
+        {loom.special_math_accuracy = "CorrectlyRounded"} : f32
+    %even = math.roundeven %round_in
+        {loom.special_math_accuracy = "CorrectlyRounded"} : f32
     %published:6 = dataflow.sync %ctrl, %floor, %ceil, %round, %trunc, %even
         : (none, f32, f32, f32, f32, f32)
           -> (none, f32, f32, f32, f32, f32)
@@ -104,15 +110,20 @@ module {
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 5, 0, 0>} {
     %neg_half_in = dataflow.constant %ctrl {const_value = -5.000000e-01 : f32} : f32
-    %neg_half = math.roundeven %neg_half_in : f32
+    %neg_half = math.roundeven %neg_half_in
+        {loom.special_math_accuracy = "CorrectlyRounded"} : f32
     %pos_half_in = dataflow.constant %ctrl {const_value = 5.000000e-01 : f32} : f32
-    %pos_half = math.roundeven %pos_half_in : f32
+    %pos_half = math.roundeven %pos_half_in
+        {loom.special_math_accuracy = "CorrectlyRounded"} : f32
     %one_half_in = dataflow.constant %ctrl {const_value = 1.500000e+00 : f32} : f32
-    %one_half = math.roundeven %one_half_in : f32
+    %one_half = math.roundeven %one_half_in
+        {loom.special_math_accuracy = "CorrectlyRounded"} : f32
     %two_half_in = dataflow.constant %ctrl {const_value = 2.500000e+00 : f32} : f32
-    %two_half = math.roundeven %two_half_in : f32
+    %two_half = math.roundeven %two_half_in
+        {loom.special_math_accuracy = "CorrectlyRounded"} : f32
     %three_half_in = dataflow.constant %ctrl {const_value = 3.500000e+00 : f32} : f32
-    %three_half = math.roundeven %three_half_in : f32
+    %three_half = math.roundeven %three_half_in
+        {loom.special_math_accuracy = "CorrectlyRounded"} : f32
     %published:6 = dataflow.sync %ctrl, %neg_half, %pos_half, %one_half,
         %two_half, %three_half
         : (none, f32, f32, f32, f32, f32)

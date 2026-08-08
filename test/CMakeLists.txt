@@ -103,6 +103,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-canonical-labeling-test
   loom-fabric-elaboration-alias-chain-test
   loom-fabric-implementation-family-test
+  loom-fabric-special-math-implementation-family-test
   loom-fabric-elaboration-api-test
   loom-fabric-elaboration-header-test
   loom-fabric-fifo-resource-contract-test
@@ -135,6 +136,7 @@ set(LOOM_TEST_DEPENDS
   loom-structured-schedule-generator-test
   loom-structured-memory-communication-generator-test
   loom-structured-execution-shape-generator-test
+  loom-structured-special-math-accuracy-generator-test
   loom-dataflow-rewrite-generator-test
   loom-pre-mapping-compilation-test
   loom-pointer-service-boundary-test
