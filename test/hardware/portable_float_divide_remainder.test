@@ -1,0 +1,19 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-divide-remainder-test %t
+# RUN: FileCheck %s --check-prefix=DIVIDE < %t/generated/scalar_float_divide.sv
+# RUN: FileCheck %s --check-prefix=REMAINDER < %t/generated/scalar_float_remainder.sv
+
+# DIVIDE: module scalar_float_divide
+# DIVIDE: input [5:0] config_0
+# DIVIDE: function automatic
+# DIVIDE: loom_float_divide_e11_f52_rna
+# DIVIDE-NOT: shortreal
+# DIVIDE-NOT: DPI
+
+# REMAINDER: module scalar_float_remainder
+# REMAINDER: input [5:0] config_0
+# REMAINDER: function automatic
+# REMAINDER: loom_float_remainder_e11_f52
+# REMAINDER-NOT: shortreal
+# REMAINDER-NOT: DPI

@@ -1,0 +1,8 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-divide-remainder-test %t
+# RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
+# RUN: cd %t/generated && yosys -q -s portable_scalar_float_divide.ys
+# RUN: cd %t/generated && yosys -q -s portable_scalar_float_remainder.ys
+
+# YOSYS: Yosys 0.67
