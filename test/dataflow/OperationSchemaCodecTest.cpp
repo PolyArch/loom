@@ -13,6 +13,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -30,6 +31,9 @@ constexpr char kSemanticsDomain[] = "loom.dataflow.operation-semantics-case\0";
 constexpr char kProjectionDomain[] = "loom.dataflow.actor-schema-projection\0";
 constexpr char kIntegerPredicateDomain[] =
     "loom.dataflow.integer-compare-predicate\0";
+constexpr char kFloatPredicateDomain[] =
+    "loom.dataflow.float-compare-predicate\0";
+constexpr char kRoundingModeDomain[] = "loom.dataflow.rounding-mode\0";
 constexpr char kServiceKindDomain[] = "loom.dataflow.service-kind\0";
 constexpr char kServiceRoleDomain[] = "loom.dataflow.service-value-role\0";
 constexpr char kMemoryAccessFormDomain[] = "loom.dataflow.memory-access-form\0";
@@ -283,9 +287,9 @@ bool checkSpecialMathAccuracyCodec() {
 }
 
 template <typename Value, typename Encoder, typename Decoder>
-bool checkOwnedEnumCodec(Value value, Encoder encode, Decoder decode,
-                         llvm::StringRef domain, std::uint32_t wireTag,
-                         llvm::StringRef label) {
+bool checkOwnedEnumMember(Value value, Encoder encode, Decoder decode,
+                          llvm::StringRef domain, std::uint32_t wireTag,
+                          llvm::StringRef label) {
   auto bytes = encode(value);
   if (!bytes) {
     llvm::errs() << llvm::toString(bytes.takeError()) << '\n';
@@ -309,10 +313,37 @@ bool checkOwnedEnumCodec(Value value, Encoder encode, Decoder decode,
     ok = false;
   }
 
-  std::vector<std::uint8_t> unknown = expected;
+  return ok;
+}
+
+template <typename Value, typename Encoder, typename Decoder>
+bool checkOwnedEnumCodec(Value value, Encoder encode, Decoder decode,
+                         llvm::StringRef domain, std::uint32_t wireTag,
+                         llvm::StringRef label) {
+  bool ok = checkOwnedEnumMember(value, encode, decode, domain, wireTag, label);
+  std::vector<std::uint8_t> unknown = expectedVocabularyBytes(domain, wireTag);
   std::fill(unknown.end() - 4, unknown.end(), 0xff);
   ok &= expectFailure(decode(unknown), "unknown");
-  std::vector<std::uint8_t> trailing = expected;
+  std::vector<std::uint8_t> trailing = expectedVocabularyBytes(domain, wireTag);
+  trailing.push_back(0);
+  ok &= expectFailure(decode(trailing), "trailing bytes");
+  return ok;
+}
+
+template <typename Value, std::size_t N, typename Encoder, typename Decoder>
+bool checkOwnedEnumCodecs(
+    const std::array<std::pair<Value, std::uint32_t>, N> &cases, Encoder encode,
+    Decoder decode, llvm::StringRef domain, llvm::StringRef label) {
+  bool ok = true;
+  for (const auto &[value, wireTag] : cases)
+    ok &= checkOwnedEnumMember(value, encode, decode, domain, wireTag, label);
+  ok &= expectFailure(encode(static_cast<Value>(0xff)), "unknown");
+  std::vector<std::uint8_t> unknown =
+      expectedVocabularyBytes(domain, cases.front().second);
+  std::fill(unknown.end() - 4, unknown.end(), 0xff);
+  ok &= expectFailure(decode(unknown), "unknown");
+  std::vector<std::uint8_t> trailing =
+      expectedVocabularyBytes(domain, cases.front().second);
   trailing.push_back(0);
   ok &= expectFailure(decode(trailing), "trailing bytes");
   return ok;
@@ -336,6 +367,49 @@ bool checkOwnedAtomCodecs(MLIRContext &context) {
       llvm::StringRef(kIntegerPredicateDomain,
                       sizeof(kIntegerPredicateDomain) - 1),
       6, "integer compare predicate");
+  constexpr std::array floatPredicates = {
+      std::pair{arith::CmpFPredicate::AlwaysFalse, 1U},
+      std::pair{arith::CmpFPredicate::OEQ, 2U},
+      std::pair{arith::CmpFPredicate::OGT, 3U},
+      std::pair{arith::CmpFPredicate::OGE, 4U},
+      std::pair{arith::CmpFPredicate::OLT, 5U},
+      std::pair{arith::CmpFPredicate::OLE, 6U},
+      std::pair{arith::CmpFPredicate::ONE, 7U},
+      std::pair{arith::CmpFPredicate::ORD, 8U},
+      std::pair{arith::CmpFPredicate::UEQ, 9U},
+      std::pair{arith::CmpFPredicate::UGT, 10U},
+      std::pair{arith::CmpFPredicate::UGE, 11U},
+      std::pair{arith::CmpFPredicate::ULT, 12U},
+      std::pair{arith::CmpFPredicate::ULE, 13U},
+      std::pair{arith::CmpFPredicate::UNE, 14U},
+      std::pair{arith::CmpFPredicate::UNO, 15U},
+      std::pair{arith::CmpFPredicate::AlwaysTrue, 16U},
+  };
+  ok &= checkOwnedEnumCodecs(
+      floatPredicates,
+      [](arith::CmpFPredicate value) {
+        return encodeFloatComparePredicate(value);
+      },
+      [](llvm::ArrayRef<std::uint8_t> bytes) {
+        return decodeFloatComparePredicate(bytes);
+      },
+      llvm::StringRef(kFloatPredicateDomain, sizeof(kFloatPredicateDomain) - 1),
+      "floating compare predicate");
+  constexpr std::array roundingModes = {
+      std::pair{arith::RoundingMode::to_nearest_even, 1U},
+      std::pair{arith::RoundingMode::downward, 2U},
+      std::pair{arith::RoundingMode::upward, 3U},
+      std::pair{arith::RoundingMode::toward_zero, 4U},
+      std::pair{arith::RoundingMode::to_nearest_away, 5U},
+  };
+  ok &= checkOwnedEnumCodecs(
+      roundingModes,
+      [](arith::RoundingMode value) { return encodeRoundingMode(value); },
+      [](llvm::ArrayRef<std::uint8_t> bytes) {
+        return decodeRoundingMode(bytes);
+      },
+      llvm::StringRef(kRoundingModeDomain, sizeof(kRoundingModeDomain) - 1),
+      "rounding mode");
   ok &= checkOwnedEnumCodec(
       ServiceKind::MemoryCompareExchange,
       [](ServiceKind value) { return encodeServiceKind(value); },
@@ -574,6 +648,31 @@ makeFloatingProjection(MLIRContext &context, arith::FastMathFlags flags) {
 }
 
 CanonicalActorSchemaProjection
+makeFloatCompareProjection(MLIRContext &context,
+                           arith::CmpFPredicate predicate) {
+  Builder builder(&context);
+  Type f32 = builder.getF32Type();
+  Type i1 = builder.getI1Type();
+  return {OperationSchemaId::ArithCmpF,
+          builder.getFunctionType({f32, f32}, {i1}),
+          SemanticPayload{
+              FloatComparePayload{predicate, arith::FastMathFlags::none}}};
+}
+
+bool checkGoldenBytes(llvm::ArrayRef<std::uint8_t> actual,
+                      llvm::ArrayRef<std::uint8_t> expected,
+                      llvm::StringRef label) {
+  if (actual == expected)
+    return true;
+  llvm::errs() << label << " changed persistent bytes (actual " << actual.size()
+               << ", expected " << expected.size() << "); actual = {";
+  for (std::uint8_t byte : actual)
+    llvm::errs() << static_cast<unsigned>(byte) << ", ";
+  llvm::errs() << "}\n";
+  return false;
+}
+
+CanonicalActorSchemaProjection
 makeSpecialMathProjection(MLIRContext &context,
                           loom::SpecialMathAccuracyTier accuracy) {
   Builder builder(&context);
@@ -617,6 +716,17 @@ bool checkProjectionCodec(MLIRContext &context) {
       llvm::errs() << llvm::toString(firstAgain.takeError()) << '\n';
     ok = false;
   } else {
+    constexpr std::array<std::uint8_t, 106> expectedFloatingProjection = {
+        108, 111, 111, 109, 46,  100, 97,  116, 97,  102, 108, 111, 119, 46,
+        97,  99,  116, 111, 114, 45,  115, 99,  104, 101, 109, 97,  45,  112,
+        114, 111, 106, 101, 99,  116, 105, 111, 110, 0,   0,   0,   0,   2,
+        0,   0,   0,   0,   76,  83,  2,   27,  76,  83,  1,   2,   0,   0,
+        0,   0,   0,   0,   0,   2,   0,   0,   0,   4,   0,   0,   0,   15,
+        0,   0,   0,   4,   0,   0,   0,   15,  0,   0,   0,   0,   0,   0,
+        0,   1,   0,   0,   0,   4,   0,   0,   0,   15,  0,   0,   0,   2,
+        0,   0,   0,   1,   0,   0,   0,   2};
+    ok &= checkGoldenBytes(firstBytes->bytes(), expectedFloatingProjection,
+                           "floating actor projection");
     std::vector<std::uint8_t> projectionPrefix(
         reinterpret_cast<const std::uint8_t *>(kProjectionDomain),
         reinterpret_cast<const std::uint8_t *>(kProjectionDomain) +
@@ -645,6 +755,25 @@ bool checkProjectionCodec(MLIRContext &context) {
       llvm::errs() << llvm::toString(std::move(error)) << '\n';
       ok = false;
     }
+  }
+
+  auto compareBytes = encodeCanonicalActorSchemaProjection(
+      makeFloatCompareProjection(context, arith::CmpFPredicate::UNO));
+  if (!compareBytes) {
+    llvm::errs() << llvm::toString(compareBytes.takeError()) << '\n';
+    ok = false;
+  } else {
+    constexpr std::array<std::uint8_t, 106> expectedCompareProjection = {
+        108, 111, 111, 109, 46,  100, 97,  116, 97,  102, 108, 111, 119, 46,
+        97,  99,  116, 111, 114, 45,  115, 99,  104, 101, 109, 97,  45,  112,
+        114, 111, 106, 101, 99,  116, 105, 111, 110, 0,   0,   0,   0,   2,
+        0,   0,   0,   0,   76,  83,  2,   37,  76,  83,  1,   5,   0,   0,
+        0,   0,   0,   0,   0,   2,   0,   0,   0,   4,   0,   0,   0,   15,
+        0,   0,   0,   4,   0,   0,   0,   15,  0,   0,   0,   0,   0,   0,
+        0,   1,   0,   0,   0,   3,   0,   0,   0,   1,   0,   0,   0,   1,
+        0,   0,   0,   15,  0,   0,   0,   0};
+    ok &= checkGoldenBytes(compareBytes->bytes(), expectedCompareProjection,
+                           "floating compare actor projection");
   }
 
   CanonicalActorSchemaProjection delta =

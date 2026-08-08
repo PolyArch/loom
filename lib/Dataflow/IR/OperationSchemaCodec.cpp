@@ -122,63 +122,6 @@ llvm::Expected<std::uint32_t> unknownEnum(llvm::StringRef name) {
   return invalid(llvm::Twine("unknown ") + name);
 }
 
-llvm::Expected<std::uint32_t>
-floatPredicateWireTag(arith::CmpFPredicate predicate) {
-  using Predicate = arith::CmpFPredicate;
-  switch (predicate) {
-  case Predicate::AlwaysFalse:
-    return 1;
-  case Predicate::OEQ:
-    return 2;
-  case Predicate::OGT:
-    return 3;
-  case Predicate::OGE:
-    return 4;
-  case Predicate::OLT:
-    return 5;
-  case Predicate::OLE:
-    return 6;
-  case Predicate::ONE:
-    return 7;
-  case Predicate::ORD:
-    return 8;
-  case Predicate::UEQ:
-    return 9;
-  case Predicate::UGT:
-    return 10;
-  case Predicate::UGE:
-    return 11;
-  case Predicate::ULT:
-    return 12;
-  case Predicate::ULE:
-    return 13;
-  case Predicate::UNE:
-    return 14;
-  case Predicate::UNO:
-    return 15;
-  case Predicate::AlwaysTrue:
-    return 16;
-  }
-  return unknownEnum("floating predicate");
-}
-
-llvm::Expected<std::uint32_t> roundingModeWireTag(arith::RoundingMode mode) {
-  using Mode = arith::RoundingMode;
-  switch (mode) {
-  case Mode::to_nearest_even:
-    return 1;
-  case Mode::downward:
-    return 2;
-  case Mode::upward:
-    return 3;
-  case Mode::toward_zero:
-    return 4;
-  case Mode::to_nearest_away:
-    return 5;
-  }
-  return unknownEnum("rounding mode");
-}
-
 llvm::Expected<std::uint32_t> streamStepWireTag(dataflow::StreamStepKind kind) {
   using Kind = dataflow::StreamStepKind;
   switch (kind) {
@@ -718,7 +661,8 @@ llvm::Error encodePayload(Writer &writer,
     writer.boolean(floating->roundingMode.has_value());
     if (!floating->roundingMode)
       return llvm::Error::success();
-    return writeMappedTag(writer, roundingModeWireTag(*floating->roundingMode));
+    return writeMappedTag(
+        writer, dataflow::detail::roundingModeWireTag(*floating->roundingMode));
   }
   case Case::SpecialMathAccuracy: {
     const auto *special = std::get_if<dataflow::SpecialMathPayload>(&payload);
@@ -762,8 +706,9 @@ llvm::Error encodePayload(Writer &writer,
     const auto *compare = std::get_if<dataflow::FloatComparePayload>(&payload);
     if (!compare)
       break;
-    if (llvm::Error error =
-            writeMappedTag(writer, floatPredicateWireTag(compare->predicate)))
+    if (llvm::Error error = writeMappedTag(
+            writer,
+            dataflow::detail::floatPredicateWireTag(compare->predicate)))
       return error;
     bool valid = false;
     const std::uint32_t flags = fastMathWireBits(compare->flags, valid);
@@ -890,9 +835,12 @@ llvm::Error validatePayload(Reader &reader,
       return hasRounding.takeError();
     if (!*hasRounding)
       return llvm::Error::success();
-    auto rounding = readClosedTag(reader, 5, "rounding mode tag");
+    auto rounding = reader.u32("rounding mode tag");
     if (!rounding)
       return rounding.takeError();
+    auto mode = dataflow::detail::roundingModeFromWireTag(*rounding);
+    if (!mode)
+      return mode.takeError();
     return llvm::Error::success();
   }
   case Case::SpecialMathAccuracy: {
@@ -925,9 +873,12 @@ llvm::Error validatePayload(Reader &reader,
     return llvm::Error::success();
   }
   case Case::ArithFloatCompare: {
-    auto predicate = readClosedTag(reader, 16, "floating predicate tag");
+    auto predicate = reader.u32("floating predicate tag");
     if (!predicate)
       return predicate.takeError();
+    auto value = dataflow::detail::floatPredicateFromWireTag(*predicate);
+    if (!value)
+      return value.takeError();
     auto flags = reader.u32("fast-math flags");
     if (!flags)
       return flags.takeError();

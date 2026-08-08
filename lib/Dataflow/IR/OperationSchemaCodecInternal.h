@@ -201,6 +201,16 @@ llvm::Expected<::mlir::arith::CmpIPredicate>
 integerPredicateFromWireTag(std::uint32_t wireTag);
 
 llvm::Expected<std::uint32_t>
+floatPredicateWireTag(::mlir::arith::CmpFPredicate predicate);
+llvm::Expected<::mlir::arith::CmpFPredicate>
+floatPredicateFromWireTag(std::uint32_t wireTag);
+
+llvm::Expected<std::uint32_t>
+roundingModeWireTag(::mlir::arith::RoundingMode mode);
+llvm::Expected<::mlir::arith::RoundingMode>
+roundingModeFromWireTag(std::uint32_t wireTag);
+
+llvm::Expected<std::uint32_t>
 serviceValueRoleWireTag(semantics::ServiceValueRole role);
 llvm::Expected<semantics::ServiceValueRole>
 serviceValueRoleFromWireTag(std::uint32_t wireTag);

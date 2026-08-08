@@ -37,6 +37,18 @@ encodeIntegerComparePredicate(::mlir::arith::CmpIPredicate predicate);
 llvm::Expected<::mlir::arith::CmpIPredicate>
 decodeIntegerComparePredicate(llvm::ArrayRef<std::uint8_t> bytes);
 
+/// Stable codecs for Dataflow-owned floating behavior atoms. Actor projection
+/// and downstream field domains share these wire tables.
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeFloatComparePredicate(::mlir::arith::CmpFPredicate predicate);
+llvm::Expected<::mlir::arith::CmpFPredicate>
+decodeFloatComparePredicate(llvm::ArrayRef<std::uint8_t> bytes);
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeRoundingMode(::mlir::arith::RoundingMode mode);
+llvm::Expected<::mlir::arith::RoundingMode>
+decodeRoundingMode(llvm::ArrayRef<std::uint8_t> bytes);
+
 /// Stable codecs for closed Dataflow-owned atoms embedded by downstream
 /// capability records. Decoders reject wrong domains, unknown tags, malformed
 /// payloads, truncation, and trailing bytes.

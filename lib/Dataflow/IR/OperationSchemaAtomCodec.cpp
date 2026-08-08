@@ -7,6 +7,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -21,6 +22,9 @@ namespace {
 
 constexpr char kIntegerPredicateDomain[] =
     "loom.dataflow.integer-compare-predicate\0";
+constexpr char kFloatPredicateDomain[] =
+    "loom.dataflow.float-compare-predicate\0";
+constexpr char kRoundingModeDomain[] = "loom.dataflow.rounding-mode\0";
 constexpr char kServiceRoleDomain[] = "loom.dataflow.service-value-role\0";
 constexpr char kServiceKindDomain[] = "loom.dataflow.service-kind\0";
 constexpr char kMemoryAccessFormDomain[] = "loom.dataflow.memory-access-form\0";
@@ -35,6 +39,57 @@ constexpr char kSyncScopeRefDomain[] = "loom.dataflow.sync-scope-ref\0";
 constexpr char kCanonicalBooleanDomain[] = "loom.dataflow.canonical-boolean\0";
 
 static_assert(mlir::arith::getMaxEnumValForCmpIPredicate() == 9);
+static_assert(mlir::arith::getMaxEnumValForCmpFPredicate() == 15);
+static_assert(mlir::arith::getMaxEnumValForRoundingMode() == 4);
+
+constexpr std::array kFloatPredicateWireRelation = {
+    std::pair{mlir::arith::CmpFPredicate::AlwaysFalse, 1U},
+    std::pair{mlir::arith::CmpFPredicate::OEQ, 2U},
+    std::pair{mlir::arith::CmpFPredicate::OGT, 3U},
+    std::pair{mlir::arith::CmpFPredicate::OGE, 4U},
+    std::pair{mlir::arith::CmpFPredicate::OLT, 5U},
+    std::pair{mlir::arith::CmpFPredicate::OLE, 6U},
+    std::pair{mlir::arith::CmpFPredicate::ONE, 7U},
+    std::pair{mlir::arith::CmpFPredicate::ORD, 8U},
+    std::pair{mlir::arith::CmpFPredicate::UEQ, 9U},
+    std::pair{mlir::arith::CmpFPredicate::UGT, 10U},
+    std::pair{mlir::arith::CmpFPredicate::UGE, 11U},
+    std::pair{mlir::arith::CmpFPredicate::ULT, 12U},
+    std::pair{mlir::arith::CmpFPredicate::ULE, 13U},
+    std::pair{mlir::arith::CmpFPredicate::UNE, 14U},
+    std::pair{mlir::arith::CmpFPredicate::UNO, 15U},
+    std::pair{mlir::arith::CmpFPredicate::AlwaysTrue, 16U},
+};
+
+constexpr std::array kRoundingModeWireRelation = {
+    std::pair{mlir::arith::RoundingMode::to_nearest_even, 1U},
+    std::pair{mlir::arith::RoundingMode::downward, 2U},
+    std::pair{mlir::arith::RoundingMode::upward, 3U},
+    std::pair{mlir::arith::RoundingMode::toward_zero, 4U},
+    std::pair{mlir::arith::RoundingMode::to_nearest_away, 5U},
+};
+
+template <typename Value, std::size_t N>
+llvm::Expected<std::uint32_t>
+wireTagFor(Value value,
+           const std::array<std::pair<Value, std::uint32_t>, N> &relation,
+           llvm::StringRef name) {
+  for (const auto &[member, wireTag] : relation)
+    if (member == value)
+      return wireTag;
+  return invalid("unknown " + name);
+}
+
+template <typename Value, std::size_t N>
+llvm::Expected<Value>
+valueForWireTag(std::uint32_t wireTag,
+                const std::array<std::pair<Value, std::uint32_t>, N> &relation,
+                llvm::StringRef name) {
+  for (const auto &[member, memberWireTag] : relation)
+    if (memberWireTag == wireTag)
+      return member;
+  return invalid("unknown " + name + " wire tag");
+}
 
 llvm::Error finish(Reader &reader) {
   if (!reader.empty())
@@ -136,6 +191,28 @@ integerPredicateFromWireTag(std::uint32_t wireTag) {
   default:
     return invalid("unknown integer predicate wire tag");
   }
+}
+
+llvm::Expected<std::uint32_t>
+floatPredicateWireTag(mlir::arith::CmpFPredicate predicate) {
+  return wireTagFor(predicate, kFloatPredicateWireRelation,
+                    "floating predicate");
+}
+
+llvm::Expected<mlir::arith::CmpFPredicate>
+floatPredicateFromWireTag(std::uint32_t wireTag) {
+  return valueForWireTag(wireTag, kFloatPredicateWireRelation,
+                         "floating predicate");
+}
+
+llvm::Expected<std::uint32_t>
+roundingModeWireTag(mlir::arith::RoundingMode mode) {
+  return wireTagFor(mode, kRoundingModeWireRelation, "rounding mode");
+}
+
+llvm::Expected<mlir::arith::RoundingMode>
+roundingModeFromWireTag(std::uint32_t wireTag) {
+  return valueForWireTag(wireTag, kRoundingModeWireRelation, "rounding mode");
 }
 
 llvm::Expected<std::uint32_t> serviceKindWireTag(semantics::ServiceKind kind) {
@@ -498,6 +575,34 @@ dataflow::decodeIntegerComparePredicate(llvm::ArrayRef<std::uint8_t> bytes) {
                           mlir::arith::CmpIPredicate>(
       bytes, kIntegerPredicateDomain, detail::integerPredicateFromWireTag,
       "integer predicate");
+}
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+dataflow::encodeFloatComparePredicate(mlir::arith::CmpFPredicate predicate) {
+  return encodeVocabulary(predicate, kFloatPredicateDomain,
+                          detail::floatPredicateWireTag);
+}
+
+llvm::Expected<mlir::arith::CmpFPredicate>
+dataflow::decodeFloatComparePredicate(llvm::ArrayRef<std::uint8_t> bytes) {
+  return decodeVocabulary<sizeof(kFloatPredicateDomain),
+                          mlir::arith::CmpFPredicate>(
+      bytes, kFloatPredicateDomain, detail::floatPredicateFromWireTag,
+      "floating predicate");
+}
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+dataflow::encodeRoundingMode(mlir::arith::RoundingMode mode) {
+  return encodeVocabulary(mode, kRoundingModeDomain,
+                          detail::roundingModeWireTag);
+}
+
+llvm::Expected<mlir::arith::RoundingMode>
+dataflow::decodeRoundingMode(llvm::ArrayRef<std::uint8_t> bytes) {
+  return decodeVocabulary<sizeof(kRoundingModeDomain),
+                          mlir::arith::RoundingMode>(
+      bytes, kRoundingModeDomain, detail::roundingModeFromWireTag,
+      "rounding mode");
 }
 
 llvm::Expected<loom::CanonicalSemanticBytes>
