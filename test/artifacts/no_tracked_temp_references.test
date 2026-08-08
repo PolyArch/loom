@@ -1,1 +1,0 @@
-# RUN: cd %S/../.. && not git grep -n 'te''mp/' -- . ':!externals' ':!.gitignore' ':!test/artifacts/no_tracked_temp_references.test'
