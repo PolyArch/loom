@@ -1,8 +1,8 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-scalar-float-fma-test %t
-# RUN: FileCheck %s --check-prefix=RTL < %t/scalar_float_fma.sv
-# RUN: FileCheck %s --check-prefix=SINGLETON < %t/singleton/scalar_float_fma_singleton.sv
+# RUN: FileCheck %s --check-prefix=RTL < %t/artifacts/scalar_float_fma.sv
+# RUN: FileCheck %s --check-prefix=SINGLETON < %t/singleton/artifacts/scalar_float_fma_singleton.sv
 
 # RTL: module scalar_float_fma
 # RTL: function automatic

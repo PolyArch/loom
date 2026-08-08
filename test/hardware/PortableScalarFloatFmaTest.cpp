@@ -3,6 +3,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarFloatFma.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -37,7 +38,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -352,13 +352,6 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
   return SkeletonFixture{std::move(module), leaf};
 }
 
-std::string moduleText(mlir::ModuleOp module) {
-  std::string result;
-  llvm::raw_string_ostream stream(result);
-  module.print(stream);
-  return result;
-}
-
 std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
                        const FabricFixture &fabric,
                        const FinalizedConfigurationABI &abi) {
@@ -366,19 +359,17 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
   if (llvm::Error error = registerPortableScalarFloatFmaProvider(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
-                                                 associations, recipes,
-                                                 registry, externalContracts));
+  ModuleRootCirctSkeleton module{std::move(skeleton.module),
+                                 {{skeleton.leaf, fabric.physicalOccurrence}}};
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     std::move(module), abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable FMA provider emitted external implementation state");
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
 struct TestVector final {
@@ -527,8 +518,8 @@ std::string hex64(std::uint64_t value) {
   return stream.str();
 }
 
-void writeTestbench(const std::filesystem::path &path) {
-  std::ofstream output(path);
+std::string testbench() {
+  std::ostringstream output;
   output << R"sv(module testbench;
   logic [63:0] data_input_0;
   logic [63:0] data_input_1;
@@ -598,6 +589,7 @@ void writeTestbench(const std::filesystem::path &path) {
   end
 endmodule
 )sv";
+  return output.str();
 }
 
 void configuredBehaviorAndDeterminism(const std::filesystem::path &root) {
@@ -634,9 +626,7 @@ void configuredBehaviorAndDeterminism(const std::filesystem::path &root) {
               !rtl.contains("DPI"),
           "portable scalar FMA is not self-contained synthesizable RTL");
 
-  std::ofstream(root / "scalar_float_fma.sv") << first;
-  writeTestbench(root / "testbench.sv");
-  std::ofstream(root / "portable_scalar_float_fma.ys") << R"ys(
+  const std::string yosysScript = R"ys(
 read_verilog -sv scalar_float_fma.sv
 hierarchy -check -top scalar_float_fma
 proc
@@ -648,6 +638,11 @@ check -assert
 select -assert-none scalar_float_fma/t:$*ff* scalar_float_fma/t:$*latch* scalar_float_fma/t:$_*FF* scalar_float_fma/t:$_*LATCH* scalar_float_fma/t:$mem* scalar_float_fma/m:*
 stat
 )ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "artifacts", {{"scalar_float_fma.sv", first},
+                               {"testbench.sv", testbench()},
+                               {"portable_scalar_float_fma.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void singletonNeedsNoSelector(const std::filesystem::path &root) {
@@ -682,8 +677,7 @@ void singletonNeedsNoSelector(const std::filesystem::path &root) {
               !llvm::StringRef(first).contains("config_0"),
           "singleton scalar FMA emitted configurable or non-f32 logic");
 
-  std::ofstream(root / "scalar_float_fma_singleton.sv") << first;
-  std::ofstream(root / "testbench_singleton.sv") << R"sv(
+  const std::string singletonTestbench = R"sv(
 module testbench_singleton;
   logic [63:0] data_input_0;
   logic [63:0] data_input_1;
@@ -703,6 +697,10 @@ module testbench_singleton;
   end
 endmodule
 )sv";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "artifacts", {{"scalar_float_fma_singleton.sv", first},
+                               {"testbench_singleton.sv", singletonTestbench}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void invalidInputsFailClosed(const std::filesystem::path &root) {
@@ -715,24 +713,18 @@ void invalidInputsFailClosed(const std::filesystem::path &root) {
   if (llvm::Error error = registerPortableScalarFloatFmaProvider(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-
   auto rejects = [&](const FinalizedConfigurationABI &abi,
                      bool wrongConfigurationWidth, llvm::StringRef message) {
     std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
     SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi(),
                                             wrongConfigurationWidth);
-    const std::string before = moduleText(*skeleton.module);
-    const std::vector<FabricOperationLeafAssociation> associations = {
-        {skeleton.leaf, fabric.physicalOccurrence}};
+    ModuleRootCirctSkeleton module{
+        std::move(skeleton.module),
+        {{skeleton.leaf, fabric.physicalOccurrence}}};
     expectError(test,
-                specializeFabricOperationLeaves(*skeleton.module, abi,
-                                                associations, recipes, registry,
-                                                externalContracts),
+                loom::hardware::test::specializeAndExportPortableProvider(
+                    std::move(module), abi, registry, externalContracts),
                 message);
-    require(test, moduleText(*skeleton.module) == before,
-            "invalid scalar FMA input partially mutated the skeleton");
   };
   rejects(valid, true, "leaf port");
   expectError(test,
@@ -755,16 +747,12 @@ void invalidInputsFailClosed(const std::filesystem::path &root) {
   std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
   SkeletonFixture skeleton =
       makeSkeleton(test, *context, wrongContract, wrongContractAbi.abi());
-  const std::string before = moduleText(*skeleton.module);
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, wrongContract.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> wrongContractRecipes = {
-      {wrongContract.physicalOccurrence,
-       BackendRecipeKey::PortableSystemVerilog,
-       {}}};
-  auto unsupportedContract = specializeFabricOperationLeaves(
-      *skeleton.module, wrongContractAbi, associations, wrongContractRecipes,
-      registry, externalContracts);
+  ModuleRootCirctSkeleton module{
+      std::move(skeleton.module),
+      {{skeleton.leaf, wrongContract.physicalOccurrence}}};
+  auto unsupportedContract =
+      loom::hardware::test::specializeAndExportPortableProvider(
+          std::move(module), wrongContractAbi, registry, externalContracts);
   require(test, !unsupportedContract,
           "FMA provider accepted an unsupported resource contract");
   bool classifiedUnsupported = false;
@@ -782,8 +770,6 @@ void invalidInputsFailClosed(const std::filesystem::path &root) {
       });
   require(test, classifiedUnsupported,
           "resource contract lost its typed Unsupported classification");
-  require(test, moduleText(*skeleton.module) == before,
-          "invalid FMA capability partially mutated the skeleton");
 }
 
 void physicalCapacityNarrowsTheFormatDomain(const std::filesystem::path &root) {
