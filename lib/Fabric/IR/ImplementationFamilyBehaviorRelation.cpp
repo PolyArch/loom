@@ -7,6 +7,10 @@
 
 #include "Fabric/IR/ImplementationFamily.h"
 #include "ImplementationFamilyBehaviorInternal.h"
+#include "ImplementationFamilyScalarIntegerBehavior.h"
+#include "ImplementationFamilyVectorIntegerBehavior.h"
+
+#include "Dataflow/IR/OperationSchemaCodec.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -30,18 +34,22 @@ llvm::Error reject(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
 }
 
-bool hasControlBehaviorQuotient(ImplementationFamilyId family) {
-  switch (family) {
-  case ImplementationFamilyId::LoopStream:
-  case ImplementationFamilyId::FixedVectorParallelize:
-  case ImplementationFamilyId::FixedVectorSerialize:
-  case ImplementationFamilyId::TokenSync:
-  case ImplementationFamilyId::TokenMux:
-  case ImplementationFamilyId::TokenDemux:
-    return true;
-  default:
-    return false;
-  }
+enum class FiniteBehaviorRelationOwner : std::uint8_t {
+  Generic,
+  ScalarInteger,
+  FixedVectorInteger,
+  Control,
+};
+
+FiniteBehaviorRelationOwner
+finiteBehaviorRelationOwner(ImplementationFamilyId family) {
+  if (detail::ownsScalarIntegerBehaviorRelation(family))
+    return FiniteBehaviorRelationOwner::ScalarInteger;
+  if (detail::ownsFixedVectorIntegerBehaviorRelation(family))
+    return FiniteBehaviorRelationOwner::FixedVectorInteger;
+  if (detail::ownsControlBehaviorRelation(family))
+    return FiniteBehaviorRelationOwner::Control;
+  return FiniteBehaviorRelationOwner::Generic;
 }
 
 llvm::Error validatePackedShape(llvm::ArrayRef<std::uint8_t> value,
@@ -401,23 +409,37 @@ fabric::FabricOpSemanticFieldRelation::projectSemanticValue(
     std::optional<ResolvedIndexWidth> resolvedIndexWidth) const {
   if (kind_ == FabricOpSemanticFieldRelationKind::None)
     return reject("capability has no semantic field");
+  if (!llvm::is_contained(enabledSchemas_, actor.schema))
+    return reject("actor schema is not enabled by the concrete capability");
+  auto canonicalActor = ::dataflow::encodeCanonicalActorSchemaProjection(actor);
+  if (!canonicalActor)
+    return canonicalActor.takeError();
   if (llvm::Error error = detail::validateImplementationFamilyBehaviorPoint(
           family_, params_, actor, operandPorts, resultPorts,
           physicalInputWidths_, physicalResultWidths_, resolvedIndexWidth))
     return std::move(error);
 
-  llvm::Expected<::loom::CanonicalSemanticBytes> projected =
-      family_ == ImplementationFamilyId::TokenConstant
-          ? projectConstant(actor, directEncodedBitCount_)
-          : (hasControlBehaviorQuotient(family_)
-                 ? detail::projectControlBehaviorKey(
-                       family_, finiteBehaviorDomain_, actor, operandPorts,
-                       resultPorts)
-                 : encodeImplementationFamilySemanticConfiguration(
-                       family_, params_, enabledSchemas_,
-                       physicalInputWidths_.size(),
-                       physicalResultWidths_.size(), actor, operandPorts,
-                       resultPorts, resolvedIndexWidth));
+  auto projected = [&]() -> llvm::Expected<::loom::CanonicalSemanticBytes> {
+    if (family_ == ImplementationFamilyId::TokenConstant)
+      return projectConstant(actor, directEncodedBitCount_);
+    switch (finiteBehaviorRelationOwner(family_)) {
+    case FiniteBehaviorRelationOwner::ScalarInteger:
+      return detail::projectScalarIntegerBehavior(
+          family_, actor, resolvedIndexWidth, finiteBehaviorDomain_);
+    case FiniteBehaviorRelationOwner::FixedVectorInteger:
+      return detail::projectFixedVectorIntegerBehavior(family_, actor,
+                                                       finiteBehaviorDomain_);
+    case FiniteBehaviorRelationOwner::Control:
+      return detail::projectControlBehaviorKey(
+          family_, finiteBehaviorDomain_, actor, operandPorts, resultPorts);
+    case FiniteBehaviorRelationOwner::Generic:
+      return encodeImplementationFamilySemanticConfiguration(
+          family_, params_, enabledSchemas_, physicalInputWidths_.size(),
+          physicalResultWidths_.size(), actor, operandPorts, resultPorts,
+          resolvedIndexWidth);
+    }
+    llvm_unreachable("unhandled finite behavior relation owner");
+  }();
   if (!projected)
     return projected.takeError();
   if (llvm::Error error = validateSemanticValue(projected->bytes()))
@@ -437,11 +459,16 @@ fabric::resolveFabricOpSemanticFieldRelation(
     return reject("GEP behavior relation requires canonical integer address "
                   "normalization");
 
-  auto needsField = requiresSemanticConfigurationField(
-      family, params, enabledSchemas, physicalInputWidths.size(),
-      physicalResultWidths.size());
-  if (!needsField)
-    return needsField.takeError();
+  const FiniteBehaviorRelationOwner owner = finiteBehaviorRelationOwner(family);
+  bool genericNeedsField = true;
+  if (owner == FiniteBehaviorRelationOwner::Generic) {
+    auto needsField = requiresSemanticConfigurationField(
+        family, params, enabledSchemas, physicalInputWidths.size(),
+        physicalResultWidths.size());
+    if (!needsField)
+      return needsField.takeError();
+    genericNeedsField = *needsField;
+  }
 
   std::optional<FixedVectorSliceAlignMergeConfigurationLayout> sliceLayout;
   std::optional<FixedVectorShuffleConfigurationLayout> shuffleLayout;
@@ -485,8 +512,7 @@ fabric::resolveFabricOpSemanticFieldRelation(
                                    physicalResultWidths.end()),
         {}, directBitCount, std::move(sliceLayout), std::move(shuffleLayout));
 
-  const bool controlBehavior = hasControlBehaviorQuotient(family);
-  if (!*needsField && !controlBehavior)
+  if (!genericNeedsField)
     return FabricOpSemanticFieldRelation(
         FabricOpSemanticFieldRelationKind::None, family, params,
         std::vector<::dataflow::OperationSchemaId>(enabledSchemas.begin(),
@@ -497,47 +523,37 @@ fabric::resolveFabricOpSemanticFieldRelation(
                                    physicalResultWidths.end()),
         {}, 0, std::nullopt, std::nullopt);
 
-  llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>> domain =
-      controlBehavior
-          ? detail::resolveControlBehaviorDomain(family, params, enabledSchemas,
-                                                 physicalInputWidths,
-                                                 physicalResultWidths, context)
-          : resolveFiniteImplementationFamilyBehaviorDomain(
-                family, params, enabledSchemas, physicalInputWidths.size(),
-                physicalResultWidths.size(), context,
-                [](const ::dataflow::CanonicalActorSchemaProjection &,
-                   std::optional<ResolvedIndexWidth>) {
-                  return llvm::Error::success();
-                });
+  auto domain = [&]()
+      -> llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>> {
+    switch (owner) {
+    case FiniteBehaviorRelationOwner::ScalarInteger:
+      return detail::resolveScalarIntegerBehaviorDomain(
+          family, params, enabledSchemas, physicalInputWidths,
+          physicalResultWidths, context);
+    case FiniteBehaviorRelationOwner::FixedVectorInteger:
+      return detail::resolveFixedVectorIntegerBehaviorDomain(
+          family, params, enabledSchemas, physicalInputWidths,
+          physicalResultWidths, context);
+    case FiniteBehaviorRelationOwner::Control:
+      return detail::resolveControlBehaviorDomain(
+          family, params, enabledSchemas, physicalInputWidths,
+          physicalResultWidths, context);
+    case FiniteBehaviorRelationOwner::Generic:
+      return resolveFiniteImplementationFamilyBehaviorDomain(
+          family, params, enabledSchemas, physicalInputWidths.size(),
+          physicalResultWidths.size(), context,
+          [](const ::dataflow::CanonicalActorSchemaProjection &,
+             std::optional<ResolvedIndexWidth>) {
+            return llvm::Error::success();
+          });
+    }
+    llvm_unreachable("unhandled finite behavior relation owner");
+  }();
   if (!domain)
     return domain.takeError();
 
-  if (family == ImplementationFamilyId::ScalarIntegerLogic) {
-    for (FiniteImplementationFamilyBehaviorPoint &point : *domain) {
-      llvm::StringRef role;
-      switch (point.representativeActor.schema) {
-      case ::dataflow::OperationSchemaId::ArithAndI:
-        role = "And";
-        break;
-      case ::dataflow::OperationSchemaId::ArithOrI:
-      case ::dataflow::OperationSchemaId::LLVMOrDisjoint:
-        role = "Or";
-        break;
-      case ::dataflow::OperationSchemaId::ArithXOrI:
-        role = "Xor";
-        break;
-      default:
-        return reject("scalar integer logic behavior has no canonical role");
-      }
-      auto key =
-          detail::encodeImplementationFamilyBehaviorKey(family, role, {});
-      if (!key)
-        return key.takeError();
-      point.semanticConfiguration = std::move(*key);
-    }
-  }
-
-  const bool domainIsPhysicallyFiltered = controlBehavior;
+  const bool domainIsPhysicallyFiltered =
+      owner != FiniteBehaviorRelationOwner::Generic;
   std::vector<FiniteImplementationFamilyBehaviorPoint> reachable;
   std::string firstPhysicalRejection;
   for (auto &point : *domain) {

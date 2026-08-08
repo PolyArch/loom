@@ -480,6 +480,21 @@ bool sameProjectedBehavior(
 
 } // namespace
 
+bool fabric::detail::ownsControlBehaviorRelation(
+    ImplementationFamilyId family) {
+  switch (family) {
+  case ImplementationFamilyId::LoopStream:
+  case ImplementationFamilyId::FixedVectorParallelize:
+  case ImplementationFamilyId::FixedVectorSerialize:
+  case ImplementationFamilyId::TokenSync:
+  case ImplementationFamilyId::TokenMux:
+  case ImplementationFamilyId::TokenDemux:
+    return true;
+  default:
+    return false;
+  }
+}
+
 llvm::Expected<std::vector<fabric::FiniteImplementationFamilyBehaviorPoint>>
 fabric::detail::resolveControlBehaviorDomain(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,

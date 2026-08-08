@@ -36,6 +36,16 @@ template <typename T> T take(const char *test, llvm::Expected<T> value) {
   return std::move(*value);
 }
 
+template <typename T>
+void expectError(const char *test, llvm::Expected<T> value,
+                 llvm::StringRef fragment) {
+  if (value)
+    fail(test, "expected relation rejection");
+  const std::string message = llvm::toString(value.takeError());
+  require(test, llvm::StringRef(message).contains(fragment),
+          "unexpected rejection: " + message);
+}
+
 FabricOpSemanticFieldRelation resolve(const char *test,
                                       ImplementationFamilyId family,
                                       const FamilyCapabilityParams &params,
@@ -232,6 +242,40 @@ void aliasesCollapseBeforeQuotienting() {
           "equivalent logic aliases projected to different behavior keys");
 }
 
+void concreteRelationRejectsDisabledAliasesAndInvalidSingletons() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams params =
+      FixedVectorIntegerParams{IntegerWidthSet::get({IntegerWidth::I8}), 64};
+  constexpr std::array schemas = {OperationSchemaId::ArithAndI,
+                                  OperationSchemaId::ArithOrI};
+  constexpr std::array inputs = {64U, 64U};
+  constexpr std::array results = {64U};
+  const auto relation =
+      resolve(test, ImplementationFamilyId::FixedVectorIntegerLogic, params,
+              schemas, inputs, results, context);
+  mlir::Type vector = mlir::VectorType::get(
+      {2}, mlir::IntegerType::get(&context, getBitWidth(IntegerWidth::I8)));
+  const dataflow::CanonicalActorSchemaProjection disabledAlias{
+      OperationSchemaId::LLVMOrDisjoint,
+      mlir::FunctionType::get(&context, {vector, vector}, {vector}),
+      dataflow::DisjointPayload{true}};
+  expectError(test,
+              relation.projectSemanticValue(disabledAlias,
+                                            std::array<std::uint64_t, 2>{0, 1},
+                                            std::array<std::uint64_t, 1>{0}),
+              "enabled");
+
+  const FamilyCapabilityParams invalid =
+      FixedVectorIntegerParams{IntegerWidthSet::get({IntegerWidth::I8}), 0};
+  constexpr std::array multiply = {OperationSchemaId::ArithMulI};
+  expectError(test,
+              resolveFabricOpSemanticFieldRelation(
+                  ImplementationFamilyId::FixedVectorIntegerMultiply, invalid,
+                  multiply, inputs, results, context),
+              "invalid parameters");
+}
+
 void everyVectorIntegerFamilyOwnsItsExactImage() {
   const char *test = __func__;
   mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
@@ -342,6 +386,7 @@ int main() {
   physicalFilteringPrecedesQuotientEncoding();
   unreachableWidthsCollapseToNone();
   aliasesCollapseBeforeQuotienting();
+  concreteRelationRejectsDisabledAliasesAndInvalidSingletons();
   everyVectorIntegerFamilyOwnsItsExactImage();
   projectionIgnoresIncidentalVectorShape();
   return EXIT_SUCCESS;

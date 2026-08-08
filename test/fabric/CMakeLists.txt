@@ -233,6 +233,32 @@ target_link_libraries(loom-fabric-implementation-family-behavior-inventory-test 
   LLVMSupport
 )
 
+add_executable(loom-fabric-scalar-integer-behavior-test
+  ImplementationFamilyScalarIntegerBehaviorTest.cpp
+)
+
+target_include_directories(loom-fabric-scalar-integer-behavior-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Fabric/IR
+)
+
+target_link_libraries(loom-fabric-scalar-integer-behavior-test PRIVATE
+  LoomFabricImplementationFamily
+  MLIRDataflow
+  MLIRIR
+  LLVMSupport
+)
+
+add_executable(loom-fabric-fixed-vector-integer-behavior-test
+  FixedVectorIntegerBehaviorRelationTest.cpp
+)
+
+target_link_libraries(loom-fabric-fixed-vector-integer-behavior-test PRIVATE
+  LoomFabricImplementationFamily
+  MLIRDataflow
+  MLIRIR
+  LLVMSupport
+)
+
 add_executable(loom-fabric-persistent-ref-test
   PersistentRefTest.cpp
 )

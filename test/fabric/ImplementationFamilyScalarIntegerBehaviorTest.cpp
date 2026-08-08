@@ -182,6 +182,99 @@ void addSubUsesRolesAndRejectsGep() {
               "GEP");
 }
 
+void publicRelationProjectsItsOwnedBehaviorKey() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams params =
+      ScalarIntegerParams{IntegerWidthSet::get({IntegerWidth::I32})};
+  constexpr std::array schemas = {OperationSchemaId::ArithSubI,
+                                  OperationSchemaId::ArithAddI};
+  constexpr std::array inputs = {32U, 32U};
+  constexpr std::array results = {32U};
+  auto relation = take(test, fabric::resolveFabricOpSemanticFieldRelation(
+                                 ImplementationFamilyId::ScalarIntegerAddSub,
+                                 params, schemas, inputs, results, context));
+  require(test,
+          relation.kind() ==
+                  fabric::FabricOpSemanticFieldRelationKind::Finite &&
+              relation.finiteBehaviorDomain().size() == 2,
+          "public scalar relation does not own the exact behavior quotient");
+
+  mlir::Type integer = mlir::IntegerType::get(&context, 32);
+  const dataflow::CanonicalActorSchemaProjection actor{
+      OperationSchemaId::ArithAddI,
+      mlir::FunctionType::get(&context, {integer, integer}, {integer}),
+      dataflow::IntegerOverflowPayload{}};
+  const auto projected = take(
+      test,
+      relation.projectSemanticValue(actor, std::array<std::uint64_t, 2>{0, 1},
+                                    std::array<std::uint64_t, 1>{0}));
+  const auto &expected = findPoint(test, relation.finiteBehaviorDomain(),
+                                   OperationSchemaId::ArithAddI, 32);
+  require(test,
+          expected.semanticConfiguration &&
+              projected.bytes().equals(expected.semanticConfiguration->bytes()),
+          "public scalar projector diverges from its sealed relation");
+}
+
+void publicRelationRejectsDisabledAliases() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams params =
+      ScalarIntegerParams{IntegerWidthSet::get({IntegerWidth::I32})};
+  constexpr std::array schemas = {OperationSchemaId::ArithAndI,
+                                  OperationSchemaId::ArithOrI};
+  constexpr std::array inputs = {32U, 32U};
+  constexpr std::array results = {32U};
+  auto relation = take(test, fabric::resolveFabricOpSemanticFieldRelation(
+                                 ImplementationFamilyId::ScalarIntegerLogic,
+                                 params, schemas, inputs, results, context));
+
+  mlir::Type integer = mlir::IntegerType::get(&context, 32);
+  const dataflow::CanonicalActorSchemaProjection disabledAlias{
+      OperationSchemaId::LLVMOrDisjoint,
+      mlir::FunctionType::get(&context, {integer, integer}, {integer}),
+      dataflow::DisjointPayload{true}};
+  expectError(test,
+              relation.projectSemanticValue(disabledAlias,
+                                            std::array<std::uint64_t, 2>{0, 1},
+                                            std::array<std::uint64_t, 1>{0}),
+              "enabled");
+}
+
+void publicRelationRejectsMalformedActorsAndInvalidSingletons() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams params =
+      ScalarIntegerParams{IntegerWidthSet::get({IntegerWidth::I32})};
+  constexpr std::array schemas = {OperationSchemaId::ArithAddI,
+                                  OperationSchemaId::ArithSubI};
+  constexpr std::array inputs = {32U, 32U};
+  constexpr std::array results = {32U};
+  auto relation = take(test, fabric::resolveFabricOpSemanticFieldRelation(
+                                 ImplementationFamilyId::ScalarIntegerAddSub,
+                                 params, schemas, inputs, results, context));
+  mlir::Type integer = mlir::IntegerType::get(&context, 32);
+  const dataflow::CanonicalActorSchemaProjection malformed{
+      OperationSchemaId::ArithAddI,
+      mlir::FunctionType::get(&context, {integer, integer}, {integer}),
+      dataflow::NoPayload{}};
+  expectError(test,
+              relation.projectSemanticValue(malformed,
+                                            std::array<std::uint64_t, 2>{0, 1},
+                                            std::array<std::uint64_t, 1>{0}),
+              "payload");
+
+  const FamilyCapabilityParams emptyParams =
+      ScalarIntegerParams{IntegerWidthSet::get({})};
+  constexpr std::array singletonSchema = {OperationSchemaId::ArithAddI};
+  expectError(test,
+              fabric::resolveFabricOpSemanticFieldRelation(
+                  ImplementationFamilyId::ScalarIntegerAddSub, emptyParams,
+                  singletonSchema, inputs, results, context),
+              "width domain");
+}
+
 void logicAliasesCollapse() {
   const char *test = __func__;
   mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
@@ -434,6 +527,9 @@ void saturatingAndCountZeroRolesRetainWidths() {
 
 int main() {
   addSubUsesRolesAndRejectsGep();
+  publicRelationProjectsItsOwnedBehaviorKey();
+  publicRelationRejectsDisabledAliases();
+  publicRelationRejectsMalformedActorsAndInvalidSingletons();
   logicAliasesCollapse();
   shiftsRetainOnlyVariableSignedWidths();
   compareUsesRegisteredPredicates();

@@ -185,6 +185,74 @@ requireScalarIntegerParams(const FamilyCapabilityParams &params) {
   return typed;
 }
 
+struct OrdinaryBehaviorShape final {
+  llvm::StringRef role;
+  bool unary = false;
+  bool activeWidth = false;
+};
+
+llvm::Expected<OrdinaryBehaviorShape>
+describeOrdinaryBehavior(ImplementationFamilyId family,
+                         ::dataflow::OperationSchemaId schema) {
+  using Schema = ::dataflow::OperationSchemaId;
+  switch (family) {
+  case ImplementationFamilyId::ScalarIntegerAddSub:
+    if (schema == Schema::ArithAddI)
+      return OrdinaryBehaviorShape{"Add"};
+    if (schema == Schema::ArithSubI)
+      return OrdinaryBehaviorShape{"Sub"};
+    return reject("scalar add/sub capability contains a non-add/sub schema");
+  case ImplementationFamilyId::ScalarIntegerLogic:
+    if (schema == Schema::ArithAndI)
+      return OrdinaryBehaviorShape{"And"};
+    if (schema == Schema::ArithOrI || schema == Schema::LLVMOrDisjoint)
+      return OrdinaryBehaviorShape{"Or"};
+    if (schema == Schema::ArithXOrI)
+      return OrdinaryBehaviorShape{"Xor"};
+    return reject("scalar logic capability contains a non-logic schema");
+  case ImplementationFamilyId::ScalarIntegerShift:
+    if (schema == Schema::ArithShLI)
+      return OrdinaryBehaviorShape{"Left"};
+    if (schema == Schema::ArithShRUI)
+      return OrdinaryBehaviorShape{"LogicalRight"};
+    if (schema == Schema::ArithShRSI)
+      return OrdinaryBehaviorShape{"ArithmeticRight", false, true};
+    return reject("scalar shift capability contains a non-shift schema");
+  case ImplementationFamilyId::ScalarSignedIntegerDivRem:
+    if (schema == Schema::ArithDivSI)
+      return OrdinaryBehaviorShape{"Quotient", false, true};
+    if (schema == Schema::ArithRemSI)
+      return OrdinaryBehaviorShape{"Remainder", false, true};
+    return reject("signed divider capability contains a foreign schema");
+  case ImplementationFamilyId::ScalarUnsignedIntegerDivRem:
+    if (schema == Schema::ArithDivUI)
+      return OrdinaryBehaviorShape{"Quotient", false, true};
+    if (schema == Schema::ArithRemUI)
+      return OrdinaryBehaviorShape{"Remainder", false, true};
+    return reject("unsigned divider capability contains a foreign schema");
+  case ImplementationFamilyId::ScalarIntegerSaturatingAddSub:
+    if (schema == Schema::LLVMSAddSat)
+      return OrdinaryBehaviorShape{"SignedAdd", false, true};
+    if (schema == Schema::LLVMUAddSat)
+      return OrdinaryBehaviorShape{"UnsignedAdd", false, true};
+    if (schema == Schema::LLVMSSubSat)
+      return OrdinaryBehaviorShape{"SignedSub", false, true};
+    if (schema == Schema::LLVMUSubSat)
+      return OrdinaryBehaviorShape{"UnsignedSub", false, true};
+    return reject("saturating integer capability contains a foreign schema");
+  case ImplementationFamilyId::ScalarIntegerCountZeros:
+    if (schema == Schema::MathCountLeadingZeros ||
+        schema == Schema::LLVMCountLeadingZeros)
+      return OrdinaryBehaviorShape{"Leading", true, true};
+    if (schema == Schema::MathCountTrailingZeros ||
+        schema == Schema::LLVMCountTrailingZeros)
+      return OrdinaryBehaviorShape{"Trailing", true, true};
+    return reject("count-zero capability contains a foreign schema");
+  default:
+    return reject("family is not an ordinary scalar integer quotient");
+  }
+}
+
 llvm::Error appendOrdinaryCandidates(
     ImplementationFamilyId family, const ScalarIntegerParams &params,
     llvm::ArrayRef<::dataflow::OperationSchemaId> orderedSchemas,
@@ -192,88 +260,9 @@ llvm::Error appendOrdinaryCandidates(
     std::vector<ScalarIntegerBehaviorCandidate> &candidates) {
   using Schema = ::dataflow::OperationSchemaId;
   for (Schema schema : orderedSchemas) {
-    llvm::StringRef role;
-    bool unary = false;
-    bool activeWidth = false;
-    switch (family) {
-    case ImplementationFamilyId::ScalarIntegerAddSub:
-      if (schema == Schema::ArithAddI)
-        role = "Add";
-      else if (schema == Schema::ArithSubI)
-        role = "Sub";
-      else
-        return reject(
-            "scalar add/sub capability contains a non-add/sub schema");
-      break;
-    case ImplementationFamilyId::ScalarIntegerLogic:
-      if (schema == Schema::ArithAndI)
-        role = "And";
-      else if (schema == Schema::ArithOrI || schema == Schema::LLVMOrDisjoint)
-        role = "Or";
-      else if (schema == Schema::ArithXOrI)
-        role = "Xor";
-      else
-        return reject("scalar logic capability contains a non-logic schema");
-      break;
-    case ImplementationFamilyId::ScalarIntegerShift:
-      if (schema == Schema::ArithShLI)
-        role = "Left";
-      else if (schema == Schema::ArithShRUI)
-        role = "LogicalRight";
-      else if (schema == Schema::ArithShRSI) {
-        role = "ArithmeticRight";
-        activeWidth = true;
-      } else {
-        return reject("scalar shift capability contains a non-shift schema");
-      }
-      break;
-    case ImplementationFamilyId::ScalarSignedIntegerDivRem:
-      if (schema == Schema::ArithDivSI)
-        role = "Quotient";
-      else if (schema == Schema::ArithRemSI)
-        role = "Remainder";
-      else
-        return reject("signed divider capability contains a foreign schema");
-      activeWidth = true;
-      break;
-    case ImplementationFamilyId::ScalarUnsignedIntegerDivRem:
-      if (schema == Schema::ArithDivUI)
-        role = "Quotient";
-      else if (schema == Schema::ArithRemUI)
-        role = "Remainder";
-      else
-        return reject("unsigned divider capability contains a foreign schema");
-      activeWidth = true;
-      break;
-    case ImplementationFamilyId::ScalarIntegerSaturatingAddSub:
-      if (schema == Schema::LLVMSAddSat)
-        role = "SignedAdd";
-      else if (schema == Schema::LLVMUAddSat)
-        role = "UnsignedAdd";
-      else if (schema == Schema::LLVMSSubSat)
-        role = "SignedSub";
-      else if (schema == Schema::LLVMUSubSat)
-        role = "UnsignedSub";
-      else
-        return reject(
-            "saturating integer capability contains a foreign schema");
-      activeWidth = true;
-      break;
-    case ImplementationFamilyId::ScalarIntegerCountZeros:
-      if (schema == Schema::MathCountLeadingZeros ||
-          schema == Schema::LLVMCountLeadingZeros)
-        role = "Leading";
-      else if (schema == Schema::MathCountTrailingZeros ||
-               schema == Schema::LLVMCountTrailingZeros)
-        role = "Trailing";
-      else
-        return reject("count-zero capability contains a foreign schema");
-      unary = true;
-      activeWidth = true;
-      break;
-    default:
-      return reject("family is not an ordinary scalar integer quotient");
-    }
+    auto shape = describeOrdinaryBehavior(family, schema);
+    if (!shape)
+      return shape.takeError();
 
     auto payload = payloadForScalarIntegerSchema(schema);
     if (!payload)
@@ -282,13 +271,13 @@ llvm::Error appendOrdinaryCandidates(
       if (!params.integerWidths.contains(width))
         continue;
       std::vector<BehaviorComponent> components;
-      if (activeWidth)
+      if (shape->activeWidth)
         components.push_back(
             {BehaviorComponentSlot::ActiveWidth, getBitWidth(width)});
       appendCandidate(candidates,
                       makeUniformActor(context, getBitWidth(width), schema,
-                                       *payload, unary ? 1 : 2),
-                      role, std::move(components));
+                                       *payload, shape->unary ? 1 : 2),
+                      shape->role, std::move(components));
     }
   }
   return llvm::Error::success();
@@ -386,10 +375,8 @@ struct CastCase final {
   std::optional<ResolvedIndexWidth> resolvedIndexWidth;
 };
 
-CastRole classifyCast(::dataflow::OperationSchemaId schema, IntegerWidth source,
-                      IntegerWidth destination) {
-  const unsigned sourceBits = getBitWidth(source);
-  const unsigned destinationBits = getBitWidth(destination);
+CastRole classifyCastBits(::dataflow::OperationSchemaId schema,
+                          unsigned sourceBits, unsigned destinationBits) {
   if (sourceBits == destinationBits)
     return CastRole::Identity;
   if (sourceBits > destinationBits)
@@ -398,6 +385,12 @@ CastRole classifyCast(::dataflow::OperationSchemaId schema, IntegerWidth source,
       schema == ::dataflow::OperationSchemaId::ArithIndexCast)
     return CastRole::SignExtend;
   return CastRole::ZeroExtend;
+}
+
+CastRole classifyCast(::dataflow::OperationSchemaId schema, IntegerWidth source,
+                      IntegerWidth destination) {
+  return classifyCastBits(schema, getBitWidth(source),
+                          getBitWidth(destination));
 }
 
 llvm::StringRef castRoleSpelling(CastRole role) {
@@ -581,6 +574,111 @@ encodeCandidate(ImplementationFamilyId family,
                                                        components);
 }
 
+llvm::Expected<std::uint32_t>
+scalarWidth(mlir::Type type,
+            std::optional<ResolvedIndexWidth> resolvedIndexWidth) {
+  if (auto integer = llvm::dyn_cast<mlir::IntegerType>(type)) {
+    if (!integer.isSignless())
+      return reject("scalar integer behavior has a non-signless endpoint");
+    return integer.getWidth();
+  }
+  if (llvm::isa<mlir::IndexType>(type)) {
+    if (!resolvedIndexWidth)
+      return reject("scalar integer behavior has no resolved index width");
+    return getResolvedIndexBitWidth(*resolvedIndexWidth);
+  }
+  return reject("scalar integer behavior has a non-integer endpoint");
+}
+
+llvm::Expected<ScalarIntegerBehaviorCandidate>
+describeActorBehavior(ImplementationFamilyId family,
+                      const ::dataflow::CanonicalActorSchemaProjection &actor,
+                      std::optional<ResolvedIndexWidth> resolvedIndexWidth) {
+  std::vector<BehaviorComponent> components;
+  llvm::StringRef role;
+  if (family == ImplementationFamilyId::ScalarIntegerCompareMinMax) {
+    using Schema = ::dataflow::OperationSchemaId;
+    if (actor.schema == Schema::ArithCmpI) {
+      const auto *compare =
+          std::get_if<::dataflow::IntegerComparePayload>(&actor.payload);
+      if (!compare)
+        return reject("scalar integer comparison has no predicate");
+      auto predicate =
+          ::dataflow::encodeIntegerComparePredicate(compare->predicate);
+      if (!predicate)
+        return predicate.takeError();
+      role = "Compare";
+      components.push_back(
+          {BehaviorComponentSlot::Predicate, std::move(*predicate)});
+      if (isSignedPredicate(compare->predicate)) {
+        auto width = scalarWidth(actor.type.getInput(0), resolvedIndexWidth);
+        if (!width)
+          return width.takeError();
+        components.push_back({BehaviorComponentSlot::ActiveWidth, *width});
+      }
+    } else {
+      bool signedBehavior = false;
+      if (actor.schema == Schema::ArithMinSI) {
+        role = "SignedMin";
+        signedBehavior = true;
+      } else if (actor.schema == Schema::ArithMaxSI) {
+        role = "SignedMax";
+        signedBehavior = true;
+      } else if (actor.schema == Schema::ArithMinUI) {
+        role = "UnsignedMin";
+      } else if (actor.schema == Schema::ArithMaxUI) {
+        role = "UnsignedMax";
+      } else {
+        return reject("actor has no scalar compare/min/max behavior");
+      }
+      if (signedBehavior) {
+        auto width = scalarWidth(actor.type.getInput(0), resolvedIndexWidth);
+        if (!width)
+          return width.takeError();
+        components.push_back({BehaviorComponentSlot::ActiveWidth, *width});
+      }
+    }
+  } else if (family == ImplementationFamilyId::ScalarIntegerCast) {
+    if (actor.type.getNumInputs() != 1 || actor.type.getNumResults() != 1)
+      return reject("scalar integer cast behavior has the wrong arity");
+    auto source = scalarWidth(actor.type.getInput(0), resolvedIndexWidth);
+    if (!source)
+      return source.takeError();
+    auto destination = scalarWidth(actor.type.getResult(0), resolvedIndexWidth);
+    if (!destination)
+      return destination.takeError();
+    role =
+        castRoleSpelling(classifyCastBits(actor.schema, *source, *destination));
+    components.push_back({BehaviorComponentSlot::SourceWidth, *source});
+    components.push_back(
+        {BehaviorComponentSlot::DestinationWidth, *destination});
+  } else {
+    auto shape = describeOrdinaryBehavior(family, actor.schema);
+    if (!shape)
+      return shape.takeError();
+    role = shape->role;
+    if (shape->activeWidth) {
+      auto width = scalarWidth(actor.type.getInput(0), resolvedIndexWidth);
+      if (!width)
+        return width.takeError();
+      components.push_back({BehaviorComponentSlot::ActiveWidth, *width});
+    }
+  }
+  return ScalarIntegerBehaviorCandidate{
+      actor, resolvedIndexWidth, role, std::move(components), {}, {}};
+}
+
+bool sameBehavior(const ScalarIntegerBehaviorCandidate &lhs,
+                  const ScalarIntegerBehaviorCandidate &rhs) {
+  if (lhs.role != rhs.role || lhs.components.size() != rhs.components.size())
+    return false;
+  for (auto [left, right] : llvm::zip(lhs.components, rhs.components))
+    if (left.slot != right.slot ||
+        !equalComponentValue(left.value, right.value))
+      return false;
+  return true;
+}
+
 bool lessKey(const FiniteImplementationFamilyBehaviorPoint &lhs,
              const FiniteImplementationFamilyBehaviorPoint &rhs) {
   return std::lexicographical_compare(
@@ -591,6 +689,24 @@ bool lessKey(const FiniteImplementationFamilyBehaviorPoint &lhs,
 }
 
 } // namespace
+
+bool fabric::detail::ownsScalarIntegerBehaviorRelation(
+    ImplementationFamilyId family) {
+  switch (family) {
+  case ImplementationFamilyId::ScalarIntegerAddSub:
+  case ImplementationFamilyId::ScalarIntegerLogic:
+  case ImplementationFamilyId::ScalarIntegerShift:
+  case ImplementationFamilyId::ScalarIntegerCompareMinMax:
+  case ImplementationFamilyId::ScalarIntegerCast:
+  case ImplementationFamilyId::ScalarSignedIntegerDivRem:
+  case ImplementationFamilyId::ScalarUnsignedIntegerDivRem:
+  case ImplementationFamilyId::ScalarIntegerSaturatingAddSub:
+  case ImplementationFamilyId::ScalarIntegerCountZeros:
+    return true;
+  default:
+    return false;
+  }
+}
 
 llvm::Expected<std::vector<fabric::FiniteImplementationFamilyBehaviorPoint>>
 fabric::detail::resolveScalarIntegerBehaviorDomain(
@@ -707,4 +823,29 @@ fabric::detail::resolveScalarIntegerBehaviorDomain(
   if (points.size() == 1)
     points.front().semanticConfiguration = std::nullopt;
   return points;
+}
+
+llvm::Expected<::loom::CanonicalSemanticBytes>
+fabric::detail::projectScalarIntegerBehavior(
+    ImplementationFamilyId family,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    std::optional<ResolvedIndexWidth> resolvedIndexWidth,
+    llvm::ArrayRef<FiniteImplementationFamilyBehaviorPoint> domain) {
+  if (!ownsScalarIntegerBehaviorRelation(family))
+    return reject("capability family has no scalar integer projector");
+  auto projected = describeActorBehavior(family, actor, resolvedIndexWidth);
+  if (!projected)
+    return projected.takeError();
+  for (const FiniteImplementationFamilyBehaviorPoint &point : domain) {
+    auto witness = describeActorBehavior(family, point.representativeActor,
+                                         point.resolvedIndexWidth);
+    if (!witness)
+      return witness.takeError();
+    if (!sameBehavior(*projected, *witness))
+      continue;
+    if (!point.semanticConfiguration)
+      return reject("scalar integer relation has no semantic field");
+    return *point.semanticConfiguration;
+  }
+  return reject("actor is outside the scalar integer behavior image");
 }

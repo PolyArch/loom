@@ -28,6 +28,8 @@ llvm::Error validateImplementationFamilyBehaviorPoint(
     llvm::ArrayRef<std::uint32_t> physicalResultWidths,
     std::optional<ResolvedIndexWidth> resolvedIndexWidth = std::nullopt);
 
+bool ownsControlBehaviorRelation(ImplementationFamilyId family);
+
 llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
 resolveControlBehaviorDomain(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,
