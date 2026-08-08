@@ -124,12 +124,6 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-system-service-contract-test
   loom-fabric-temporal-operand-buffer-test
   loom-fabric-temporal-switch-resource-contract-test
-  loom-hardware-configuration-abi-test
-  loom-hardware-implementation-test
-  loom-implementation-payload-test
-  loom-implementation-representation-root-test
-  loom-representation-format-test
-  loom-representation-locator-test
   loom-frontend-dfg-integration-test
   loom-static-global-memory-test
   loom-structured-address-index-narrowing-test
@@ -198,38 +192,10 @@ set(LOOM_TEST_DEPENDS
   loom-tblgen
 )
 
-if(LOOM_HAVE_CIRCT)
-  list(APPEND LOOM_TEST_DEPENDS
-    loom-representation-gate-index-test
-    loom-representation-index-test
-  )
-endif()
+list(APPEND LOOM_TEST_DEPENDS ${LOOM_HARDWARE_TEST_TARGETS})
 
 if(LOOM_HAVE_CIRCT)
   list(APPEND LOOM_TEST_DEPENDS
-    loom-circt-conformance-test
-    loom-common-skeleton-test
-    loom-hardware-transport-test
-    loom-module-boundary-ports-test
-    loom-operation-leaf-state-layout-test
-    loom-portable-fixed-vector-integer-add-sub-test
-    loom-portable-fixed-vector-integer-multiply-test
-    loom-portable-fixed-vector-pack-unpack-test
-    loom-portable-fixed-vector-shuffle-test
-    loom-portable-fixed-vector-slice-align-merge-test
-    loom-portable-fixed-vector-value-select-test
-    loom-portable-integer-logic-test
-    loom-portable-loop-carry-test
-    loom-portable-loop-gate-test
-    loom-portable-loop-invariant-test
-    loom-portable-scalar-bit-reinterpret-test
-    loom-portable-scalar-float-fma-test
-    loom-portable-scalar-integer-add-sub-test
-    loom-portable-scalar-integer-cast-test
-    loom-portable-scalar-integer-compare-min-max-test
-    loom-portable-scalar-integer-multiply-test
-    loom-portable-scalar-value-select-test
-    loom-specialization-test
     loom-hw-probe
   )
 endif()

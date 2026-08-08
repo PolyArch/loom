@@ -105,6 +105,15 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-provider-coverage-test
+    PortableProviderCoverageTest.cpp
+  )
+
+  target_link_libraries(loom-portable-provider-coverage-test PRIVATE
+    LoomHardwareRTL
+    LLVMSupport
+  )
+
   add_executable(loom-portable-scalar-integer-add-sub-test
     PortableScalarIntegerAddSubTest.cpp
   )
@@ -385,3 +394,12 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 endif()
+
+get_property(LOOM_HARDWARE_TEST_TARGETS
+  DIRECTORY
+  PROPERTY BUILDSYSTEM_TARGETS
+)
+set(LOOM_HARDWARE_TEST_TARGETS
+  ${LOOM_HARDWARE_TEST_TARGETS}
+  PARENT_SCOPE
+)
