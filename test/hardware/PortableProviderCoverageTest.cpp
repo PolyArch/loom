@@ -1,4 +1,5 @@
 #include "Hardware/RTL/PortableProviders.h"
+#include "Hardware/RTL/Providers/FixedVectorFloatFma.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerAddSub.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerCompareMinMax.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerMultiply.h"
@@ -96,6 +97,9 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
   requireRegistration(
       loom::hardware::rtl::registerPortableScalarFloatFmaProvider(registry));
   requireRegistration(
+      loom::hardware::rtl::registerPortableFixedVectorFloatFmaProvider(
+          registry));
+  requireRegistration(
       loom::hardware::rtl::registerPortableLoopCarryProvider(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableLoopInvariantProvider(registry));
@@ -189,6 +193,7 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::FixedVectorFloatSign,
       ::fabric::ImplementationFamilyId::FixedVectorFloatAddSub,
       ::fabric::ImplementationFamilyId::FixedVectorFloatMultiply,
+      ::fabric::ImplementationFamilyId::FixedVectorFloatFma,
       ::fabric::ImplementationFamilyId::FixedVectorPack,
       ::fabric::ImplementationFamilyId::FixedVectorUnpack,
       ::fabric::ImplementationFamilyId::ScalarSignedIntegerDivRem,
@@ -212,7 +217,7 @@ void aggregateRegistrationIsTheCoverageAuthority() {
 void aggregateRegistrationIsTransactional() {
   FabricOperationProviderRegistry registry;
   if (llvm::Error error =
-          loom::hardware::rtl::registerPortableScalarFloatFmaProvider(registry))
+          loom::hardware::rtl::registerPortableLoopCarryProvider(registry))
     fail(llvm::toString(std::move(error)));
   const std::vector<FabricOperationProviderCoverage> before =
       registry.coverage();

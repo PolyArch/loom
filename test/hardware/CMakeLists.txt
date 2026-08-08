@@ -501,6 +501,21 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-fixed-vector-float-fma-test
+    PortableFixedVectorFloatFmaTest.cpp
+  )
+
+  target_link_libraries(loom-portable-fixed-vector-float-fma-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-float-sign-test
     PortableFloatSignTest.cpp
   )

@@ -1,5 +1,6 @@
 #include "Hardware/RTL/PortableProviders.h"
 
+#include "Hardware/RTL/Providers/FixedVectorFloatFma.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerAddSub.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerCompareMinMax.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerMultiply.h"
@@ -61,6 +62,9 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
           registerPortableScalarIntegerMultiplyProvider(candidate))
     return error;
   if (llvm::Error error = registerPortableScalarFloatFmaProvider(candidate))
+    return error;
+  if (llvm::Error error =
+          registerPortableFixedVectorFloatFmaProvider(candidate))
     return error;
   if (llvm::Error error = registerPortableLoopCarryProvider(candidate))
     return error;

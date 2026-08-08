@@ -6,9 +6,9 @@
 #include "mlir/IR/Value.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
-
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace mlir {
 class Location;
@@ -35,6 +35,9 @@ struct PortableFloatFormat final {
 };
 
 std::optional<PortableFloatFormat> resolvePortableFloatFormat(mlir::Type type);
+
+std::string buildPortableFloatFmaFunction(const PortableFloatFormat &format,
+                                          const std::string &functionName);
 
 llvm::APInt decodePhysicalCode(llvm::ArrayRef<std::uint8_t> bytes,
                                std::uint64_t bitCount);

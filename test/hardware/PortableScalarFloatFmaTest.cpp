@@ -468,6 +468,11 @@ std::vector<TestVector> testVectors() {
         TestVector{format, infinity | 1, one, one},
     };
     result.insert(result.end(), curated.begin(), curated.end());
+    result.push_back({format, sign | quietNaN | 5, one, quietNaN | 3});
+    result.push_back({format, one, sign | quietNaN | 7, quietNaN | 3});
+    result.push_back({format, sign | quietNaN | 5, infinity | 3, one});
+    result.push_back({format, one, one, sign | infinity | 5});
+    result.push_back({format, sign | infinity | 3, one, quietNaN | 5});
     result.push_back({format, 0, 0, sign});
     result.push_back({format, sign, 0, 0});
     const TestVector singleRound{format, one | 1, one | 1, sign | one | 2};
@@ -534,29 +539,14 @@ std::string testbench() {
       input logic [63:0] lhs,
       input logic [63:0] rhs,
       input logic [63:0] addend,
-      input logic [63:0] expected,
-      input bit expect_nan);
+      input logic [63:0] expected);
     begin
       config_0 = mode;
       data_input_0 = lhs;
       data_input_1 = rhs;
       data_input_2 = addend;
       #1;
-      if (expect_nan) begin
-        case (mode)
-          3'd1: if (data_output_0[14:10] !== 5'b11111 ||
-                    !data_output_0[9]) $fatal(1, "f16 result is not quiet NaN");
-          3'd2: if (data_output_0[14:7] !== 8'b11111111 ||
-                    !data_output_0[6]) $fatal(1, "bf16 result is not quiet NaN");
-          3'd4: if (data_output_0[30:23] !== 8'b11111111 ||
-                    !data_output_0[22]) $fatal(1, "f32 result is not quiet NaN");
-          3'd6: if (data_output_0[62:52] !== 11'b11111111111 ||
-                    !data_output_0[51]) $fatal(1, "f64 result is not quiet NaN");
-          default: if (data_output_0[30:23] !== 8'b11111111 ||
-                       !data_output_0[22])
-            $fatal(1, "inactive f32 result is not quiet NaN");
-        endcase
-      end else if (data_output_0 !== expected) begin
+      if (data_output_0 !== expected) begin
         $fatal(1, "FMA mismatch mode=%0d lhs=%h rhs=%h addend=%h got=%h expected=%h",
                mode, lhs, rhs, addend, data_output_0, expected);
       end
@@ -577,14 +567,13 @@ std::string testbench() {
     const std::uint64_t expectedBits = bits(expected);
     output << "    check_value(3'd" << unsigned(physicalCode(vector.format))
            << ", " << hex64(vector.lhs) << ", " << hex64(vector.rhs) << ", "
-           << hex64(vector.addend) << ", " << hex64(expectedBits) << ", 1'b"
-           << expected.isNaN() << ");\n";
+           << hex64(vector.addend) << ", " << hex64(expectedBits) << ");\n";
   }
   const TestVector inactive{::fabric::FloatFormat::F32, 0x3f800000, 0x40000000,
                             0x3f800000};
   output << "    check_value(3'd0, " << hex64(inactive.lhs) << ", "
          << hex64(inactive.rhs) << ", " << hex64(inactive.addend) << ", "
-         << hex64(bits(fused(inactive))) << ", 1'b0);\n";
+         << hex64(bits(fused(inactive))) << ");\n";
   output << R"sv(    $finish;
   end
 endmodule
