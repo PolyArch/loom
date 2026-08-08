@@ -50,6 +50,35 @@ The specification therefore defines component order and validity once; the
 Fabric resolver implements that contract, and every provider consumes the
 sealed result.
 
+Floating arithmetic uses exact formats rather than representation widths in
+its quotient because equal-width formats can have different exponent and
+significand behavior. Sign manipulation is the deliberate exception: negate
+and absolute value only transform the sign bit, so equal-width `f16` and
+`bf16` actors require the same configured circuit. Fixed-vector shape remains
+an admission fact because one configured vector datapath can serve every
+reachable positive lane shape with the same element behavior. This preserves
+the smallest observable physical quotient without treating type identity or
+shape spelling as a mode.
+
+Fast-math flags and accepted special-math accuracy are permissions on an actor,
+while required fast-math and accuracy guarantee are fixed resource facts.
+Encoding either side into a configuration key would create modes that no
+resource selector chooses. The same reasoning permits registered refinements
+such as unordered-to-ordered comparison under `nnan` to collapse before key
+construction. A profile member with no actor-selected image is rejected rather
+than retained as a phantom field, so parameter cardinality cannot compete with
+the reachable behavior quotient.
+
+Encoding the complete actor projection as a floating key was rejected because
+it would duplicate OperationSchema identity and preserve permissions that do
+not change hardware behavior. Splitting the behavior profile into a distinct
+parameter record for every family and mode was rejected because it would
+multiply capability schemas and concrete Fabric resources without adding a
+semantic distinction. A backend-owned floating mode registry was rejected
+because it would let portable and vendor providers disagree with Fabric. The
+single family-local quotient in the sealed relation is the only necessary
+owner.
+
 The direct carrier is intersected with exact physical ports for the same
 reason. A constant field sized to a parameter maximum wider than its result
 port would retain values that no admitted actor can emit. Slice and shuffle

@@ -235,10 +235,10 @@ hardware guarantee also requires `afn` in the capability's required fast-math
 mask. Fast-math proves permission to approximate; it never selects or implies
 an accuracy guarantee.
 
-`FloatBehaviorProfile.fastmath` is the permission mask required by the
+`FloatBehaviorProfile.required_fast_math` is the permission mask required by the
 physical implementation, not a list of actor spellings it recognizes. The
 registered floating admission relation requires
-`hardware_required_fastmath` to be a subset of the actor's fast-math mask. A
+`required_fast_math` to be a subset of the actor's fast-math mask. A
 strict implementation therefore has an empty requirement and refines an actor
 that permits `nnan`, `ninf`, `nsz`, reassociation, contraction, reciprocal, or
 approximate functions. An implementation that relies on one of those
@@ -333,13 +333,16 @@ Each finite key codec starts with the exact ASCII domain
 It then contains the length-prefixed implementation-family keyword and the
 length-prefixed role spelling shown below. Role-local components follow from
 left to right. Lengths and widths use `u32be`. Predicates use their registered
-canonical semantic codec as a length-prefixed value. A lane image uses
-`u32be(count)` followed by `count` `u64be` direction-local ordinals. C++ enum
-values, generated TableGen ordinals, operation-schema IDs, `op_list` order,
-discovery order, and backend mode numbers are not encodings. Unknown roles,
-noncanonical predicate bytes, duplicate or out-of-range lane ordinals,
-truncation, and trailing bytes are invalid. Lexicographic canonical bytes
-determine key ordering.
+canonical semantic codec as a length-prefixed value. Floating formats use the
+Dataflow-owned `encodeCanonicalType` bytes of their scalar floating type as a
+length-prefixed value. Floating predicates and rounding modes likewise use
+Dataflow-owned closed canonical atom codecs rather than MLIR enum ordinals. A
+lane image uses `u32be(count)` followed by `count` `u64be` direction-local
+ordinals. C++ enum values, generated TableGen ordinals, operation-schema IDs,
+`op_list` order, discovery order, and backend mode numbers are not encodings.
+Unknown roles, noncanonical component bytes, duplicate or out-of-range lane
+ordinals, truncation, and trailing bytes are invalid. Lexicographic canonical
+bytes determine key ordering.
 
 A row without a tagged alternative uses an empty role spelling. Within a
 non-singleton quotient, a component that is equal across the complete reachable
@@ -392,6 +395,75 @@ The finite integer, loop-control, adapter, and routed-token quotients are:
 | `TokenSync` | `ordered_sync_lane_image[]` |
 | `TokenMux` | `ordered_data_input_lane_image[]` |
 | `TokenDemux` | `ordered_data_result_lane_image[]` |
+
+The finite floating-point quotients are:
+
+| Implementation family | Canonical key, in component order |
+| --------------------- | --------------------------------- |
+| `ScalarFloatSign` | `Negate(active_representation_width)` or `Absolute(active_representation_width)` |
+| `ScalarFloatAddSub` | `Add(format, rounding_mode)` or `Sub(format, rounding_mode)` |
+| `ScalarFloatCompareMinMax` | `Compare(predicate[, format])`, `Minimum(format)`, `Maximum(format)`, `MinNumber(format)`, or `MaxNumber(format)` |
+| `ScalarFloatWidthCast` | `(source_format, destination_format[, rounding_mode for truncation])` |
+| `ScalarIntegerToFloat` | `Signed(source_width, destination_format)` or `Unsigned(source_width, destination_format)` |
+| `ScalarFloatToInteger` | `Signed(source_format, destination_width)`, `Unsigned(source_format, destination_width)`, `SignedSaturating(source_format, destination_width)`, or `UnsignedSaturating(source_format, destination_width)` |
+| `ScalarFloatMultiply` | `(format, rounding_mode)` |
+| `ScalarFloatFma` | `(format, rounding_mode)` |
+| `FixedVectorFloatSign` | `Negate(active_representation_width)` or `Absolute(active_representation_width)` |
+| `FixedVectorFloatAddSub` | `Add(element_format, rounding_mode)` or `Sub(element_format, rounding_mode)` |
+| `FixedVectorFloatCompareMinMax` | `Compare(predicate[, element_format])`, `Minimum(element_format)`, `Maximum(element_format)`, `MinNumber(element_format)`, or `MaxNumber(element_format)` |
+| `FixedVectorFloatMultiply` | `(element_format, rounding_mode)` |
+| `FixedVectorFloatFma` | `(element_format, rounding_mode)` |
+| `ScalarFloatDivide` | `(format, rounding_mode)` |
+| `ScalarFloatRemainder` | `format` |
+| Each `ScalarMath*` family | `format` |
+
+The 22 `ScalarMath*` rows are `ScalarMathSin`, `ScalarMathCos`,
+`ScalarMathTan`, `ScalarMathSinh`, `ScalarMathCosh`, `ScalarMathTanh`,
+`ScalarMathExp`, `ScalarMathExp2`, `ScalarMathExpM1`, `ScalarMathLog`,
+`ScalarMathLog2`, `ScalarMathLog10`, `ScalarMathLog1p`, `ScalarMathFloor`,
+`ScalarMathCeil`, `ScalarMathRound`, `ScalarMathTrunc`, `ScalarMathRoundEven`,
+`ScalarMathSqrt`, `ScalarMathRsqrt`, `ScalarMathErf`, and `ScalarMathPow`. The
+family identity already fixes the mathematical function. `ScalarMathPow` has
+two operands and the other rows have one. The actor's accepted
+`SpecialMathAccuracyTier` and fast-math permissions do not enter the key. The
+resource's `accuracy_guarantee` and required fast-math mask are fixed capability
+facts used by admission. All accepted actor accuracy tiers for one format
+therefore project to one physical behavior.
+
+`format`, `source_format`, and `destination_format` are exact scalar floating
+types. `element_format` is the exact vector element type. Equal representation
+width does not make arithmetic formats equivalent. The only width-based
+floating rows are scalar and fixed-vector sign manipulation: `f16` and `bf16`
+collapse there because negate and absolute value are bit-identical sign-bit
+transforms. Fixed-vector shape and lane count remain admission facts and do not
+enter a floating arithmetic key. Physical filtering must establish at least
+one positive-lane actor witness before quotienting.
+
+An absent actor rounding attribute canonicalizes to
+`to_nearest_even` wherever the row contains `rounding_mode`. Explicit
+`to_nearest_even` is the same behavior. A rounding component that is constant
+across the complete reachable image is omitted by the common quotient rule.
+Floating compare predicates use these registered semantic refinements when the
+actor grants `nnan`: unordered equality, ordering, and inequality predicates
+collapse to their ordered counterparts; `ord` collapses to `AlwaysTrue`; and
+`uno` collapses to `AlwaysFalse`. `AlwaysTrue` and `AlwaysFalse` compare keys
+omit the format because their result is independent of the operand value.
+Under the same `nnan` permission, `minnum` and `maxnum` collapse to `Minimum`
+and `Maximum`. `arith.uitofp` with its `nneg` promise collapses to the `Signed`
+conversion for equal endpoints. These promises restrict or relax defined
+software inputs; they do not create physical modes.
+
+`FloatBehaviorProfile` is a typed admission profile, not an independent
+configuration product. Multiple rounding modes are valid only for a family
+whose registered actor projection selects rounding. Multiple NaN behaviors
+are valid only when enabled compare or min/max roles select their observable
+distinction. No registered actor currently selects subnormal handling, so the
+profile must contain only `Preserve`. Signed-zero relaxation is an actor
+permission; until a separate registered refinement owns a selector, one
+concrete profile must identify one signed-zero hardware behavior.
+`requiredFastMath` is always one fixed admission requirement and never a key
+component. A profile value with no admitted actor projector image is invalid
+rather than an orphan configuration value or a reason to emit a field.
 
 `active_integer_width` and `active_element_width` are exact semantic bit
 widths, not physical port widths. Where a row has no element-kind component,
