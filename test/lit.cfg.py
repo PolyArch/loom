@@ -89,6 +89,7 @@ tools = [
     "loom-fabric-implementation-family-behavior-inventory-test",
     "loom-fabric-implementation-family-fixed-behavior-test",
     "loom-fabric-implementation-family-test",
+    "loom-fabric-scalar-float-behavior-test",
     "loom-fabric-scalar-integer-behavior-test",
     "loom-fabric-special-math-implementation-family-test",
     "loom-fabric-elaboration-api-test",

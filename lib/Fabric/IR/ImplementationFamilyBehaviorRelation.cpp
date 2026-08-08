@@ -8,7 +8,9 @@
 #include "Fabric/IR/ImplementationFamily.h"
 #include "ImplementationFamilyBehaviorInternal.h"
 #include "ImplementationFamilyFixedBehavior.h"
+#include "ImplementationFamilyScalarFloatBehavior.h"
 #include "ImplementationFamilyScalarIntegerBehavior.h"
+#include "ImplementationFamilySpecialMath.h"
 #include "ImplementationFamilyVectorIntegerBehavior.h"
 
 #include "Dataflow/IR/OperationSchemaCodec.h"
@@ -38,21 +40,27 @@ llvm::Error reject(const llvm::Twine &message) {
 enum class FiniteBehaviorRelationOwner : std::uint8_t {
   Generic,
   Fixed,
+  ScalarFloat,
   ScalarInteger,
   FixedVectorInteger,
   Control,
+  SpecialMath,
 };
 
 FiniteBehaviorRelationOwner
 finiteBehaviorRelationOwner(ImplementationFamilyId family) {
   if (detail::ownsFixedBehaviorRelation(family))
     return FiniteBehaviorRelationOwner::Fixed;
+  if (detail::ownsScalarFloatBehaviorRelation(family))
+    return FiniteBehaviorRelationOwner::ScalarFloat;
   if (detail::ownsScalarIntegerBehaviorRelation(family))
     return FiniteBehaviorRelationOwner::ScalarInteger;
   if (detail::ownsFixedVectorIntegerBehaviorRelation(family))
     return FiniteBehaviorRelationOwner::FixedVectorInteger;
   if (detail::ownsControlBehaviorRelation(family))
     return FiniteBehaviorRelationOwner::Control;
+  if (detail::ownsScalarSpecialMathBehaviorRelation(family))
+    return FiniteBehaviorRelationOwner::SpecialMath;
   return FiniteBehaviorRelationOwner::Generic;
 }
 
@@ -429,6 +437,9 @@ fabric::FabricOpSemanticFieldRelation::projectSemanticValue(
     switch (finiteBehaviorRelationOwner(family_)) {
     case FiniteBehaviorRelationOwner::Fixed:
       return reject("fixed behavior relation has no semantic field");
+    case FiniteBehaviorRelationOwner::ScalarFloat:
+      return detail::projectScalarFloatBehavior(family_, actor,
+                                                finiteBehaviorDomain_);
     case FiniteBehaviorRelationOwner::ScalarInteger:
       return detail::projectScalarIntegerBehavior(
           family_, actor, resolvedIndexWidth, finiteBehaviorDomain_);
@@ -438,6 +449,9 @@ fabric::FabricOpSemanticFieldRelation::projectSemanticValue(
     case FiniteBehaviorRelationOwner::Control:
       return detail::projectControlBehaviorKey(
           family_, finiteBehaviorDomain_, actor, operandPorts, resultPorts);
+    case FiniteBehaviorRelationOwner::SpecialMath:
+      return detail::projectScalarSpecialMathBehavior(family_, actor,
+                                                      finiteBehaviorDomain_);
     case FiniteBehaviorRelationOwner::Generic:
       return encodeImplementationFamilySemanticConfiguration(
           family_, params_, enabledSchemas_, physicalInputWidths_.size(),
@@ -536,6 +550,10 @@ fabric::resolveFabricOpSemanticFieldRelation(
       return detail::resolveFixedBehaviorDomain(family, params, enabledSchemas,
                                                 physicalInputWidths,
                                                 physicalResultWidths, context);
+    case FiniteBehaviorRelationOwner::ScalarFloat:
+      return detail::resolveScalarFloatBehaviorDomain(
+          family, params, enabledSchemas, physicalInputWidths,
+          physicalResultWidths, context);
     case FiniteBehaviorRelationOwner::ScalarInteger:
       return detail::resolveScalarIntegerBehaviorDomain(
           family, params, enabledSchemas, physicalInputWidths,
@@ -546,6 +564,10 @@ fabric::resolveFabricOpSemanticFieldRelation(
           physicalResultWidths, context);
     case FiniteBehaviorRelationOwner::Control:
       return detail::resolveControlBehaviorDomain(
+          family, params, enabledSchemas, physicalInputWidths,
+          physicalResultWidths, context);
+    case FiniteBehaviorRelationOwner::SpecialMath:
+      return detail::resolveScalarSpecialMathBehaviorDomain(
           family, params, enabledSchemas, physicalInputWidths,
           physicalResultWidths, context);
     case FiniteBehaviorRelationOwner::Generic:

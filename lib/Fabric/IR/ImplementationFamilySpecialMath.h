@@ -12,6 +12,9 @@ namespace fabric::detail {
 
 bool ownsScalarSpecialMathBehaviorRelation(ImplementationFamilyId family);
 
+llvm::Error
+validateScalarSpecialMathBehaviorProfile(const FloatBehaviorProfile &behavior);
+
 llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
 resolveScalarSpecialMathBehaviorDomain(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,

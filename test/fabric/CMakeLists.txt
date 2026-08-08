@@ -277,6 +277,21 @@ target_link_libraries(loom-fabric-scalar-integer-behavior-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-fabric-scalar-float-behavior-test
+  ImplementationFamilyScalarFloatBehaviorTest.cpp
+)
+
+target_include_directories(loom-fabric-scalar-float-behavior-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Fabric/IR
+)
+
+target_link_libraries(loom-fabric-scalar-float-behavior-test PRIVATE
+  LoomFabricImplementationFamily
+  MLIRDataflow
+  MLIRIR
+  LLVMSupport
+)
+
 add_executable(loom-fabric-fixed-vector-integer-behavior-test
   FixedVectorIntegerBehaviorRelationTest.cpp
 )

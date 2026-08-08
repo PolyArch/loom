@@ -795,6 +795,121 @@ bool checkSealedBehaviorRelation(MLIRContext &context) {
   return true;
 }
 
+bool checkPublicBehaviorRelation(MLIRContext &context) {
+  constexpr std::array inputWidths = {64U};
+  constexpr std::array resultWidths = {64U};
+  constexpr std::array schemas = {OperationSchemaId::MathSin};
+  FamilyCapabilityParams capability = makeCapability(
+      FloatFormatSet::get({FloatFormat::F32, FloatFormat::F64}),
+      approximateBehavior(), SpecialMathAccuracyTier::CorrectlyRounded);
+  auto expected = fabric::detail::resolveScalarSpecialMathBehaviorDomain(
+      ImplementationFamilyId::ScalarMathSin, capability, schemas, inputWidths,
+      resultWidths, context);
+  auto relation = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::ScalarMathSin, capability, schemas, inputWidths,
+      resultWidths, context);
+  if (!expected || !relation ||
+      relation->kind() != FabricOpSemanticFieldRelationKind::Finite ||
+      relation->finiteBehaviorDomain().size() != expected->size()) {
+    if (!expected)
+      llvm::errs() << llvm::toString(expected.takeError()) << '\n';
+    if (!relation)
+      llvm::errs() << llvm::toString(relation.takeError()) << '\n';
+    llvm::errs() << "public special-math relation bypassed its sealed owner\n";
+    return false;
+  }
+  for (const auto &expectedPoint : *expected) {
+    const bool present = llvm::any_of(
+        relation->finiteBehaviorDomain(), [&](const auto &actualPoint) {
+          return expectedPoint.semanticConfiguration &&
+                 actualPoint.semanticConfiguration &&
+                 actualPoint.semanticConfiguration->bytes().equals(
+                     expectedPoint.semanticConfiguration->bytes());
+        });
+    if (!present) {
+      llvm::errs() << "public special-math relation changed a sealed key\n";
+      return false;
+    }
+  }
+
+  Type f32 = Float32Type::get(&context);
+  std::optional<loom::CanonicalSemanticBytes> projected;
+  for (SpecialMathAccuracyTier tier : loom::specialMathAccuracyTiers()) {
+    auto actor = makeSinActor(
+        context, f32,
+        dataflow::SpecialMathPayload{arith::FastMathFlags::afn, tier});
+    auto value =
+        relation->projectSemanticValue(actor, std::array<std::uint64_t, 1>{0},
+                                       std::array<std::uint64_t, 1>{0});
+    if (!value || (projected && !projected->bytes().equals(value->bytes()))) {
+      if (!value)
+        llvm::errs() << llvm::toString(value.takeError()) << '\n';
+      llvm::errs() << "accepted accuracy changed the public format key\n";
+      return false;
+    }
+    projected = std::move(*value);
+  }
+
+  using FastMathBits = std::underlying_type_t<arith::FastMathFlags>;
+  const auto extraPermissions = static_cast<arith::FastMathFlags>(
+      static_cast<FastMathBits>(arith::FastMathFlags::afn) |
+      static_cast<FastMathBits>(arith::FastMathFlags::nnan));
+  auto extraActor =
+      makeSinActor(context, f32,
+                   dataflow::SpecialMathPayload{
+                       extraPermissions, SpecialMathAccuracyTier::Max4Ulp});
+  auto extraValue = relation->projectSemanticValue(
+      extraActor, std::array<std::uint64_t, 1>{0},
+      std::array<std::uint64_t, 1>{0});
+  if (!extraValue || !projected ||
+      !projected->bytes().equals(extraValue->bytes())) {
+    if (!extraValue)
+      llvm::errs() << llvm::toString(extraValue.takeError()) << '\n';
+    llvm::errs() << "extra permission changed the public format key\n";
+    return false;
+  }
+
+  auto missingRequired = makeSinActor(
+      context, f32,
+      dataflow::SpecialMathPayload{arith::FastMathFlags::none,
+                                   SpecialMathAccuracyTier::CorrectlyRounded});
+  if (!expectFailure(relation->projectSemanticValue(
+                         missingRequired, std::array<std::uint64_t, 1>{0},
+                         std::array<std::uint64_t, 1>{0}),
+                     "fast-math"))
+    return false;
+
+  FamilyCapabilityParams max2Capability =
+      makeCapability(FloatFormatSet::get({FloatFormat::F32, FloatFormat::F64}),
+                     approximateBehavior(), SpecialMathAccuracyTier::Max2Ulp);
+  auto max2Relation = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::ScalarMathSin, max2Capability, schemas,
+      inputWidths, resultWidths, context);
+  if (!max2Relation) {
+    llvm::errs() << llvm::toString(max2Relation.takeError()) << '\n';
+    return false;
+  }
+  auto max1Actor = makeSinActor(
+      context, f32,
+      dataflow::SpecialMathPayload{arith::FastMathFlags::afn,
+                                   SpecialMathAccuracyTier::Max1Ulp});
+  if (!expectFailure(max2Relation->projectSemanticValue(
+                         max1Actor, std::array<std::uint64_t, 1>{0},
+                         std::array<std::uint64_t, 1>{0}),
+                     "accuracy"))
+    return false;
+
+  FamilyCapabilityParams orphan = makeCapability(
+      FloatFormatSet::get({FloatFormat::F32}), multiValuedBehavior(),
+      SpecialMathAccuracyTier::CorrectlyRounded);
+  constexpr std::array narrowInputs = {32U};
+  constexpr std::array narrowResults = {32U};
+  return expectFailure(resolveFabricOpSemanticFieldRelation(
+                           ImplementationFamilyId::ScalarMathSin, orphan,
+                           schemas, narrowInputs, narrowResults, context),
+                       "rounding");
+}
+
 } // namespace
 
 int main() {
@@ -808,5 +923,6 @@ int main() {
   ok &= checkBehaviorWitnesses(context);
   ok &= checkPowBehavior(context);
   ok &= checkSealedBehaviorRelation(context);
+  ok &= checkPublicBehaviorRelation(context);
   return ok ? 0 : 1;
 }

@@ -629,6 +629,53 @@ void singletonQuotientHasNoSemanticField() {
           "hardwired scalar FMA retained a semantic field");
 }
 
+void publicRelationUsesTheSealedScalarFloatOwner() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  FloatBehaviorProfile behavior = behaviorWith(
+      RoundingModeSet::get({mlir::arith::RoundingMode::to_nearest_even,
+                            mlir::arith::RoundingMode::downward}));
+  const FamilyCapabilityParams params = ScalarFloatParams{
+      FloatFormatSet::get({FloatFormat::F16, FloatFormat::BF16}), behavior};
+  constexpr std::array schemas = {OperationSchemaId::ArithSubF,
+                                  OperationSchemaId::ArithAddF};
+  constexpr std::array inputs = {16U, 16U};
+  constexpr std::array results = {16U};
+  auto expected = resolve(test, ImplementationFamilyId::ScalarFloatAddSub,
+                          params, schemas, inputs, results, context);
+  auto relation = take(test, resolveFabricOpSemanticFieldRelation(
+                                 ImplementationFamilyId::ScalarFloatAddSub,
+                                 params, schemas, inputs, results, context));
+  require(test,
+          relation.kind() == FabricOpSemanticFieldRelationKind::Finite &&
+              relation.finiteBehaviorDomain().size() == expected.size(),
+          "public relation did not select the scalar floating owner");
+  for (const auto &expectedPoint : expected) {
+    require(test, expectedPoint.semanticConfiguration.has_value(),
+            "expected scalar floating point has no key");
+    const bool present = llvm::any_of(
+        relation.finiteBehaviorDomain(), [&](const auto &actualPoint) {
+          return actualPoint.semanticConfiguration &&
+                 actualPoint.semanticConfiguration->bytes().equals(
+                     expectedPoint.semanticConfiguration->bytes());
+        });
+    require(test, present,
+            "public relation changed a sealed scalar floating key");
+  }
+
+  auto actor =
+      uniformFloatActor(context, OperationSchemaId::ArithAddF, FloatFormat::F16,
+                        mlir::arith::RoundingMode::downward);
+  auto expectedValue = take(
+      test, detail::projectScalarFloatBehavior(
+                ImplementationFamilyId::ScalarFloatAddSub, actor, expected));
+  auto actualValue = take(test, relation.projectSemanticValue(
+                                    actor, std::array<std::uint64_t, 2>{0, 1},
+                                    std::array<std::uint64_t, 1>{0}));
+  require(test, sameBytes(actualValue, expectedValue),
+          "public scalar floating projection bypassed its sealed owner");
+}
+
 } // namespace
 
 int main() {
@@ -641,5 +688,6 @@ int main() {
   singleRoleArithmeticUsesAnEmptyRoleAndExactComponents();
   invalidDomainsFailClosed();
   singletonQuotientHasNoSemanticField();
+  publicRelationUsesTheSealedScalarFloatOwner();
   return EXIT_SUCCESS;
 }

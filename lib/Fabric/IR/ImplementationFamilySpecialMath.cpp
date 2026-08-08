@@ -85,18 +85,6 @@ minimalActorFlags(const fabric::FloatBehaviorProfile &behavior) {
   return flags;
 }
 
-llvm::Error validateSpecialMathBehaviorProfile(
-    const fabric::FloatBehaviorProfile &behavior) {
-  if (!behavior.roundingModes.valid() || behavior.roundingModes.size() != 1 ||
-      !behavior.roundingModes.contains(
-          mlir::arith::RoundingMode::to_nearest_even))
-    return reject("special-math behavior requires exactly "
-                  "round-to-nearest-even rounding");
-  if (!behavior.nanBehaviors.valid() || behavior.nanBehaviors.size() != 1)
-    return reject("special-math behavior requires exactly one NaN behavior");
-  return llvm::Error::success();
-}
-
 bool lessPoint(const fabric::FiniteImplementationFamilyBehaviorPoint &lhs,
                const fabric::FiniteImplementationFamilyBehaviorPoint &rhs) {
   return std::lexicographical_compare(
@@ -118,6 +106,18 @@ encodeBehaviorKey(fabric::ImplementationFamilyId family, mlir::Type type) {
 }
 
 } // namespace
+
+llvm::Error fabric::detail::validateScalarSpecialMathBehaviorProfile(
+    const FloatBehaviorProfile &behavior) {
+  if (!behavior.roundingModes.valid() || behavior.roundingModes.size() != 1 ||
+      !behavior.roundingModes.contains(
+          mlir::arith::RoundingMode::to_nearest_even))
+    return reject("special-math behavior requires exactly "
+                  "round-to-nearest-even rounding");
+  if (!behavior.nanBehaviors.valid() || behavior.nanBehaviors.size() != 1)
+    return reject("special-math behavior requires exactly one NaN behavior");
+  return llvm::Error::success();
+}
 
 bool fabric::detail::ownsScalarSpecialMathBehaviorRelation(
     ImplementationFamilyId family) {
@@ -154,7 +154,7 @@ fabric::detail::resolveScalarSpecialMathBehaviorDomain(
   if (descriptor.admittedSchemas.size() != 1 || enabledSchemas.size() != 1)
     return reject("special-math family requires its exact generated schema");
   if (llvm::Error error =
-          validateSpecialMathBehaviorProfile(parameters->behavior))
+          validateScalarSpecialMathBehaviorProfile(parameters->behavior))
     return std::move(error);
 
   const unsigned inputCount =

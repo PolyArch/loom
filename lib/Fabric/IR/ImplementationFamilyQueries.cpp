@@ -886,6 +886,9 @@ llvm::Expected<bool> semanticConfigurationRequiresField(
   }
   case TypedAdmissionProviderId::ScalarSpecialMathAdmission: {
     const auto &typed = std::get<ScalarSpecialMathParams>(params);
+    if (llvm::Error error =
+            validateScalarSpecialMathBehaviorProfile(typed.behavior))
+      return std::move(error);
     return typed.formats.size() > 1;
   }
   case TypedAdmissionProviderId::ScalarFloatCompareAdmission: {
