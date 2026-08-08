@@ -22,8 +22,10 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/APFloat.h"
@@ -264,10 +266,28 @@ void expectFabricRejected(llvm::StringRef test, const ArtifactStore &store,
                           llvm::StringRef schema, llvm::StringRef expected) {
   const std::string sourceText =
       fabricSource(family, FixtureKind::Configured, subnormal, schema);
+  mlir::ParserConfig parserConfig(&fabricContext(), false);
   auto source =
-      mlir::parseSourceString<mlir::ModuleOp>(sourceText, &fabricContext());
-  if (!source)
+      mlir::parseSourceString<mlir::ModuleOp>(sourceText, parserConfig);
+  require(test, static_cast<bool>(source),
+          "negative Fabric fixture did not parse");
+  std::vector<std::string> diagnostics;
+  mlir::ScopedDiagnosticHandler capture(
+      &fabricContext(), [&](mlir::Diagnostic &diagnostic) {
+        diagnostics.push_back(diagnostic.str());
+        return mlir::success();
+      });
+  if (mlir::failed(mlir::verify(*source))) {
+    require(
+        test,
+        llvm::any_of(diagnostics,
+                     [&](const std::string &diagnostic) {
+                       return llvm::StringRef(diagnostic).contains(expected);
+                     }),
+        diagnostics.empty() ? "Fabric verifier produced no diagnostic"
+                            : diagnostics.front());
     return;
+  }
   attachContract(test, *source, FixtureKind::Configured);
   ::fabric::ModuleOp root;
   source->walk([&](::fabric::ModuleOp candidate) { root = candidate; });
@@ -596,7 +616,7 @@ std::vector<ScalarVector> scalarVectors() {
     const std::uint64_t minimumNormal = std::uint64_t{1} << shape.fractionBits;
     const auto sensitive = roundingSensitiveInputs("scalarVectors", format);
     for (mlir::arith::RoundingMode rounding : roundings) {
-      const std::array<std::pair<std::uint64_t, std::uint64_t>, 13> curated = {
+      std::vector<std::pair<std::uint64_t, std::uint64_t>> curated = {
           std::pair{one, two},
           std::pair{sign | one, two},
           std::pair{std::uint64_t{0}, sign | one},
@@ -608,9 +628,16 @@ std::vector<ScalarVector> scalarVectors() {
           std::pair{quietNaN, signalingNaN},
           std::pair{std::uint64_t{1}, one},
           std::pair{minimumNormal, half},
+          std::pair{minimumNormal, one - 1},
+          std::pair{maximumFinite, one},
+          std::pair{maximumFinite, one + 1},
           std::pair{maximumFinite, two},
           std::pair{std::uint64_t{1}, half},
       };
+      if (format == ::fabric::FloatFormat::F16) {
+        curated.emplace_back(0x55b5, 0x619b);
+        curated.emplace_back(0x470e, 0x7089);
+      }
       for (const auto &[lhs, rhs] : curated)
         result.push_back(
             {format, rounding, lhs, rhs, multiply(format, rounding, lhs, rhs)});
@@ -1084,7 +1111,7 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
     expectFabricRejected(test, store, family, "flush_to_zero", "arith.mulf",
                          "subnormal");
     expectFabricRejected(test, store, family, "preserve", "arith.addf",
-                         "schema");
+                         "not admitted");
   }
 }
 
