@@ -1,4 +1,6 @@
+#include "ConfigurationABI2TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
+#include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/LoopCarry.h"
 
 #include "Common/ArtifactStore.h"
@@ -87,6 +89,8 @@ enum class ResourceContractKind { LoopCarry, OneCycleElastic };
 struct FabricFixture final {
   FinalizedFabricRoot fabric;
   FabricFuOccurrenceNodeRef occurrence;
+  FinalizedFabricRoot system;
+  loom::fabric::FabricPhysicalOccurrenceOwnerRef physicalOccurrence;
 };
 
 FabricFixture makeFabricWithWidths(
@@ -161,7 +165,20 @@ FabricFixture makeFabricWithWidths(
       FabricFuOccurrenceNodeRef occurrence =
           take(test, loom::fabric::deriveFabricFuOccurrenceNode(
                          fabric.view(), capability.occurrence, fuOccurrence));
-      return FabricFixture{std::move(fabric), occurrence};
+      FinalizedFabricRoot system =
+          take(test, loom::hardware::test::makeSingleSpatialCoreSystem(fabric,
+                                                                       store));
+      auto systemView =
+          take(test, loom::fabric::requireSystemRoot(system.view()));
+      auto operations =
+          take(test, enumerateFabricPhysicalOperations(systemView));
+      const auto physical = llvm::find_if(operations, [&](const auto &entry) {
+        return entry.localOccurrence == occurrence;
+      });
+      require(test, physical != operations.end(),
+              "System has no physical loop carry occurrence");
+      return FabricFixture{std::move(fabric), occurrence, std::move(system),
+                           physical->physicalOccurrence};
     }
   }
   fail(test, "Fabric fixture has no loop carry occurrence");
@@ -179,8 +196,11 @@ FinalizedConfigurationABI makeConfigurationAbi(llvm::StringRef test,
                                                const ArtifactStore &store,
                                                const FabricFixture &fixture) {
   return take(
-      test, finalizeConfigurationABI(
-                ConfigurationABIDraft{fixture.fabric.reference(), {}}, store));
+      test,
+      finalizeConfigurationABI(
+          take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                         fixture.system)),
+          store));
 }
 
 std::unique_ptr<mlir::MLIRContext> makeCirctContext() {
@@ -213,7 +233,8 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
       builder, location, fabricOperationGeneratorSchemaSymbol,
       fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
   std::vector<circt::hw::PortInfo> ports =
-      take(test, deriveFabricOperationLeafPorts(builder, *capability, abi));
+      take(test, deriveFabricOperationLeafPorts(
+                     builder, fabric.physicalOccurrence, *capability, abi));
   if (wrongStateWidth) {
     const auto state = llvm::find_if(ports, [](const auto &port) {
       return port.getName() == "state_current";
@@ -244,13 +265,13 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
+      {skeleton.leaf, fabric.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(
-                     *skeleton.module, fabric.fabric, abi, associations,
-                     recipes, registry, externalContracts));
+      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
+                                                 associations, recipes,
+                                                 registry, externalContracts));
   require(test,
           output.payloads.empty() && output.activityPoints.empty() &&
               output.externalImplementationBindings.empty(),
@@ -550,14 +571,14 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> contractAssociations = {
-      {contractSkeleton.leaf, malformedContract.occurrence}};
+      {contractSkeleton.leaf, malformedContract.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> contractRecipes = {
-      {malformedContract.occurrence,
+      {malformedContract.physicalOccurrence,
        BackendRecipeKey::PortableSystemVerilog,
        {}}};
   auto unsupportedContract = specializeFabricOperationLeaves(
-      *contractSkeleton.module, malformedContract.fabric, malformedAbi,
-      contractAssociations, contractRecipes, registry, externalContracts);
+      *contractSkeleton.module, malformedAbi, contractAssociations,
+      contractRecipes, registry, externalContracts);
   require(test, !unsupportedContract,
           "loop-carry provider accepted an unsupported resource contract");
   bool classifiedUnsupported = false;
@@ -584,13 +605,13 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
       makeSkeleton(test, *context, valid, validAbi.abi(), true);
   const std::string beforeLeaf = moduleText(*malformedLeaf.module);
   const std::vector<FabricOperationLeafAssociation> leafAssociations = {
-      {malformedLeaf.leaf, valid.occurrence}};
+      {malformedLeaf.leaf, valid.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> leafRecipes = {
-      {valid.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {valid.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   expectError(test,
-              specializeFabricOperationLeaves(
-                  *malformedLeaf.module, valid.fabric, validAbi,
-                  leafAssociations, leafRecipes, registry, externalContracts),
+              specializeFabricOperationLeaves(*malformedLeaf.module, validAbi,
+                                              leafAssociations, leafRecipes,
+                                              registry, externalContracts),
               "leaf port");
   require(test, moduleText(*malformedLeaf.module) == beforeLeaf,
           "leaf-contract failure modified the common skeleton");

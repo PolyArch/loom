@@ -1,0 +1,13 @@
+#ifndef LOOM_HARDWARE_IMPLEMENTATION_LOCAL_REFERENCE_KIND
+#error "Define LOOM_HARDWARE_IMPLEMENTATION_LOCAL_REFERENCE_KIND before including this file"
+#endif
+
+LOOM_HARDWARE_IMPLEMENTATION_LOCAL_REFERENCE_KIND(
+    0, Interface, HardwareImplementationInterfaceRef, interfaces)
+LOOM_HARDWARE_IMPLEMENTATION_LOCAL_REFERENCE_KIND(
+    1, ActivityPoint, HardwareImplementationActivityPointRef, activityPoints)
+LOOM_HARDWARE_IMPLEMENTATION_LOCAL_REFERENCE_KIND(
+    2, ExternalImplementationBinding, ExternalImplementationBindingRef,
+    externalImplementationBindings)
+
+#undef LOOM_HARDWARE_IMPLEMENTATION_LOCAL_REFERENCE_KIND

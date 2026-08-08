@@ -113,7 +113,8 @@ materializePortableLoopCarry(FabricOperationProviderRequest request) {
   if (inputs[0]->payloadWidthBits == 0)
     return invalid("phase input has no low semantic bit");
   if (llvm::Error error = verifyFabricOperationLeafPorts(
-          request.leaf, request.capability, request.configurationAbi))
+          request.leaf, request.occurrence, request.capability,
+          request.configurationAbi))
     return std::move(error);
 
   mlir::OpBuilder builder(request.leaf.getContext());

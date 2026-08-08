@@ -88,14 +88,6 @@ struct ResolvedFabricOpCapabilityView {
       llvm::ArrayRef<std::uint64_t> resultPorts,
       const ::loom::PointerLayout *pointerLayout = nullptr) const;
 
-  /// Encodes one enabled operation-schema choice using the ConfigurationABI
-  /// 1.0 schema-ID carrier after proving that the field has no semantic
-  /// dimension beyond member selection.
-  llvm::Expected<CanonicalSemanticBytes>
-  encodeOperationSelection(const FabricSemanticConfigFieldRef &field,
-                           ::dataflow::OperationSchemaId schema,
-                           ::mlir::MLIRContext &context) const;
-
   /// Encodes one admitted actor and its exact TechMapping-owned ordered port
   /// correspondence through this resource's semantic field domain. Facts that
   /// do not change configured hardware behavior are projected out.
@@ -107,11 +99,11 @@ struct ResolvedFabricOpCapabilityView {
       llvm::ArrayRef<std::uint64_t> resultPorts,
       const ::loom::PointerLayout *pointerLayout = nullptr) const;
 
-  /// Resolves the exact finite configured behavior domain through Fabric's
-  /// typed implementation-family owner. No program index-width guess or
-  /// backend-local mode inventory participates in this projection.
-  llvm::Expected<std::vector<::fabric::FiniteImplementationFamilyBehaviorPoint>>
-  resolveFiniteBehaviorDomain(::mlir::MLIRContext &context) const;
+  /// Rebuilds the exact sealed relation that owns this capability's semantic
+  /// field. ConfigurationABI 2.0 consumes this relation directly; it does not
+  /// reinterpret family parameters or maintain a second behavior domain.
+  llvm::Expected<::fabric::FabricOpSemanticFieldRelation>
+  resolveSemanticFieldRelation(::mlir::MLIRContext &context) const;
 };
 
 /// One boundary's exact role in Physical Tag continuity. The point is a

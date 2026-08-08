@@ -162,11 +162,24 @@ materializePortableFixedVectorSliceAlignMerge(
   if (!parameters)
     return invalid("capability has the wrong parameter schema");
 
-  auto layout = ::fabric::resolveFixedVectorSliceAlignMergeConfigurationLayout(
-      *parameters, request.capability.enabledOperationSchemas);
+  auto relation = request.capability.resolveSemanticFieldRelation(
+      *request.leaf.getContext());
+  if (!relation)
+    return relation.takeError();
+  const auto *layout = relation->fixedVectorSliceAlignMergeLayout();
   if (!layout)
-    return layout.takeError();
-  const bool hasConfigurationField = layout->encodedBitCount != 0;
+    return invalid("slice semantic field relation has no exact layout");
+  const bool hasConfigurationField = relation->hasConfigurationField();
+  if ((hasConfigurationField &&
+       relation->kind() !=
+           ::fabric::FabricOpSemanticFieldRelationKind::Direct) ||
+      (!hasConfigurationField &&
+       relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::None))
+    return invalid("slice semantic field relation has the wrong kind");
+  if (hasConfigurationField &&
+      (!relation->directEncodedBitCount() ||
+       *relation->directEncodedBitCount() != layout->encodedBitCount))
+    return invalid("slice semantic field relation has the wrong bit count");
   if (request.capability.configurationFieldSchema.size() !=
       static_cast<std::size_t>(hasConfigurationField))
     return invalid("capability semantic field does not match its layout");
@@ -235,20 +248,22 @@ materializePortableFixedVectorSliceAlignMerge(
 
   const ConfigurationFieldEncoding *field = nullptr;
   if (hasConfigurationField) {
-    field = request.configurationAbi.findField(
-        request.capability.configurationFieldSchema.front());
+    field = request.configurationAbi.findOperationField(
+        request.occurrence,
+        request.capability.configurationFieldSchema.front().ordinal);
     if (!field)
       return invalid("configured field is absent from the ABI");
     const auto *direct =
         std::get_if<DirectBitsEncoding>(&field->semanticEncoding);
     if (!direct)
       return invalid("configured field is not DirectBits");
-    if (direct->encodedBitCount != layout->encodedBitCount)
+    if (direct->encodedBitCount != *relation->directEncodedBitCount())
       return invalid("DirectBits width does not match the resolved layout");
   }
 
   if (llvm::Error error = verifyFabricOperationLeafPorts(
-          request.leaf, request.capability, request.configurationAbi))
+          request.leaf, request.occurrence, request.capability,
+          request.configurationAbi))
     return std::move(error);
 
   mlir::OpBuilder builder(request.leaf.getContext());
@@ -267,7 +282,9 @@ materializePortableFixedVectorSliceAlignMerge(
         mlir::Value sliceWidth;
         if (field) {
           configuration = accessor.getInput(
-              "config_" + std::to_string(field->field.ordinal));
+              "config_" +
+              std::to_string(
+                  request.capability.configurationFieldSchema.front().ordinal));
           offset = materializeEffectiveOffset(bodyBuilder, location, accessor,
                                               configuration, *layout,
                                               arithmeticWidth);

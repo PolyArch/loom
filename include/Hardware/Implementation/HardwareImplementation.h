@@ -2,16 +2,17 @@
 #define LOOM_HARDWARE_IMPLEMENTATION_HARDWAREIMPLEMENTATION_H
 
 #include "Common/Artifact.h"
-#include "Common/ArtifactLocalReference.h"
-#include "Common/BlobDigest.h"
 #include "Common/ExternalFileFingerprint.h"
+#include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/Identity/FabricRefs.h"
-#include "Hardware/Implementation/ImplementationPayload.h"
-#include "Hardware/Implementation/RepresentationLocator.h"
+#include "Hardware/Configuration/ConfigurationABI.h"
+#include "Hardware/Implementation/ImplementationRepresentationRoot.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <utility>
@@ -28,87 +29,135 @@ class ImplementationPlatform;
 }
 
 namespace loom::fabric {
-class FabricArtifactView;
+class FabricSystemRootView;
 }
 
 namespace loom::hardware {
 
 inline constexpr ArtifactSchemaDescriptor hardwareImplementationSchema{
-    "loom.hardware_implementation", SchemaVersion{1, 0}};
+    "loom.hardware_implementation", SchemaVersion{2, 0}};
 
-enum class HardwareRepresentation {
-  Rtl,
-  GateNetlist,
-  AsicPlaced,
-  AsicRouted,
-  AsicExtracted,
-  FpgaPlaced,
-  FpgaRouted,
-  FpgaImage,
-};
+struct ImplementationDataInterfaceRef final {
+  fabric::FabricSpatialAttachmentEndpointRef endpoint;
 
-enum class ImplementationInterfaceRole {
-  Data,
-  Clock,
-  Reset,
-  Configuration,
-  Memory,
-  ExternalProtocol,
-};
-
-struct HardwarePayload final {
-  PayloadRole role;
-  std::string logicalName;
-  std::string mediaType;
-  BlobDigest content;
-
-  friend bool operator==(const HardwarePayload &lhs,
-                         const HardwarePayload &rhs) {
-    return lhs.role == rhs.role && lhs.logicalName == rhs.logicalName &&
-           lhs.mediaType == rhs.mediaType && lhs.content == rhs.content;
+  friend bool operator==(const ImplementationDataInterfaceRef &lhs,
+                         const ImplementationDataInterfaceRef &rhs) {
+    return lhs.endpoint == rhs.endpoint;
   }
 };
 
+struct ImplementationMemoryInterfaceRef final {
+  fabric::FabricSpatialAttachmentEndpointRef endpoint;
+
+  friend bool operator==(const ImplementationMemoryInterfaceRef &lhs,
+                         const ImplementationMemoryInterfaceRef &rhs) {
+    return lhs.endpoint == rhs.endpoint;
+  }
+};
+
+struct ImplementationClockInterfaceRef final {
+  fabric::HardwareDomainRef domain;
+
+  friend bool operator==(const ImplementationClockInterfaceRef &lhs,
+                         const ImplementationClockInterfaceRef &rhs) {
+    return lhs.domain == rhs.domain;
+  }
+};
+
+struct ImplementationResetInterfaceRef final {
+  fabric::HardwareDomainRef domain;
+
+  friend bool operator==(const ImplementationResetInterfaceRef &lhs,
+                         const ImplementationResetInterfaceRef &rhs) {
+    return lhs.domain == rhs.domain;
+  }
+};
+
+struct ImplementationConfigurationInterfaceRef final {
+  ProgrammingUnitRef programmingUnit;
+
+  friend bool operator==(const ImplementationConfigurationInterfaceRef &lhs,
+                         const ImplementationConfigurationInterfaceRef &rhs) {
+    return lhs.programmingUnit == rhs.programmingUnit;
+  }
+};
+
+struct ImplementationExternalProtocolInterfaceRef final {
+  fabric::ExternalBoundaryRef boundary;
+
+  friend bool
+  operator==(const ImplementationExternalProtocolInterfaceRef &lhs,
+             const ImplementationExternalProtocolInterfaceRef &rhs) {
+    return lhs.boundary == rhs.boundary;
+  }
+};
+
+enum class ImplementationInterfaceSemanticRefKind : std::uint32_t {
+  Data = 0,
+  Memory = 1,
+  Clock = 2,
+  Reset = 3,
+  Configuration = 4,
+  ExternalProtocol = 5,
+};
+
+constexpr std::uint32_t implementationInterfaceSemanticRefKindOrdinal(
+    ImplementationInterfaceSemanticRefKind kind) {
+  return static_cast<std::uint32_t>(kind);
+}
+
+using ImplementationInterfaceSemanticRef = std::variant<
+    ImplementationDataInterfaceRef, ImplementationMemoryInterfaceRef,
+    ImplementationClockInterfaceRef, ImplementationResetInterfaceRef,
+    ImplementationConfigurationInterfaceRef,
+    ImplementationExternalProtocolInterfaceRef>;
+
 struct ImplementationInterface final {
-  std::string interfaceKey;
-  ImplementationInterfaceRole role;
-  EncodedArtifactLocalReference semanticFabricRef;
+  ImplementationInterfaceSemanticRef semanticRef;
   RepresentationLocator representationLocator;
   std::optional<std::string> devicePinRef;
 
   friend bool operator==(const ImplementationInterface &lhs,
                          const ImplementationInterface &rhs) {
-    return lhs.interfaceKey == rhs.interfaceKey && lhs.role == rhs.role &&
-           lhs.semanticFabricRef == rhs.semanticFabricRef &&
+    return lhs.semanticRef == rhs.semanticRef &&
            lhs.representationLocator == rhs.representationLocator &&
            lhs.devicePinRef == rhs.devicePinRef;
   }
 };
 
 struct ActivityPoint final {
-  std::string activityPointId;
   RepresentationLocator representationLocator;
-  std::optional<EncodedArtifactLocalReference> semanticFabricRef;
+  std::optional<fabric::FabricPhysicalOccurrenceOwnerRef> semanticFabricRef;
 
   friend bool operator==(const ActivityPoint &lhs, const ActivityPoint &rhs) {
-    return lhs.activityPointId == rhs.activityPointId &&
-           lhs.representationLocator == rhs.representationLocator &&
+    return lhs.representationLocator == rhs.representationLocator &&
            lhs.semanticFabricRef == rhs.semanticFabricRef;
   }
 };
 
 struct ExplicitFileDependency final {
   ExternalFileFingerprint contentSha256;
+
+  friend bool operator==(const ExplicitFileDependency &lhs,
+                         const ExplicitFileDependency &rhs) {
+    return lhs.contentSha256 == rhs.contentSha256;
+  }
 };
 
 struct ToolBundledResourceDependency final {
   std::string stableProviderBuildIdentity;
   std::string resourceKey;
+
+  friend bool operator==(const ToolBundledResourceDependency &lhs,
+                         const ToolBundledResourceDependency &rhs) {
+    return lhs.stableProviderBuildIdentity == rhs.stableProviderBuildIdentity &&
+           lhs.resourceKey == rhs.resourceKey;
+  }
 };
 
-enum class ExternalDependencyKind {
-  ExplicitFile,
-  ToolBundledResource,
+enum class ExternalDependencyKind : std::uint32_t {
+  ExplicitFile = 0,
+  ToolBundledResource = 1,
 };
 
 using ExternalDependencyIdentity =
@@ -117,20 +166,68 @@ using ExternalDependencyIdentity =
 struct ExternalInputBinding final {
   std::string providerInputSlotRef;
   ExternalDependencyIdentity dependencyIdentity;
+
+  friend bool operator==(const ExternalInputBinding &lhs,
+                         const ExternalInputBinding &rhs) {
+    return lhs.providerInputSlotRef == rhs.providerInputSlotRef &&
+           lhs.dependencyIdentity == rhs.dependencyIdentity;
+  }
 };
 
-struct HardwarePayloadRef final {
+/// Authoring-time payload identity. Finalization resolves it to the dense
+/// ordinal owned by the canonical representation-root payload catalog.
+struct ImplementationPayloadKey final {
   PayloadRole role;
-  std::string logicalName;
+  std::string canonicalLogicalName;
+
+  friend bool operator==(const ImplementationPayloadKey &lhs,
+                         const ImplementationPayloadKey &rhs) {
+    return lhs.role == rhs.role &&
+           lhs.canonicalLogicalName == rhs.canonicalLogicalName;
+  }
+};
+
+struct ImplementationPayloadRef final {
+  std::uint64_t ordinal = 0;
+
+  friend bool operator==(ImplementationPayloadRef lhs,
+                         ImplementationPayloadRef rhs) {
+    return lhs.ordinal == rhs.ordinal;
+  }
+};
+
+struct ExternalImplementationBindingDraft final {
+  std::string providerContractRef;
+  std::vector<ExternalInputBinding> externalInputs;
+  std::vector<fabric::FabricPhysicalOccurrenceOwnerRef> fabricResourceRefs;
+  std::vector<RepresentationLocator> representationLocators;
+  std::optional<ImplementationPayloadKey> blackBoxContractPayload;
+
+  friend bool operator==(const ExternalImplementationBindingDraft &lhs,
+                         const ExternalImplementationBindingDraft &rhs) {
+    return lhs.providerContractRef == rhs.providerContractRef &&
+           lhs.externalInputs == rhs.externalInputs &&
+           lhs.fabricResourceRefs == rhs.fabricResourceRefs &&
+           lhs.representationLocators == rhs.representationLocators &&
+           lhs.blackBoxContractPayload == rhs.blackBoxContractPayload;
+  }
 };
 
 struct ExternalImplementationBinding final {
-  std::string bindingId;
   std::string providerContractRef;
   std::vector<ExternalInputBinding> externalInputs;
-  std::vector<EncodedArtifactLocalReference> fabricResourceRefs;
+  std::vector<fabric::FabricPhysicalOccurrenceOwnerRef> fabricResourceRefs;
   std::vector<RepresentationLocator> representationLocators;
-  std::optional<HardwarePayloadRef> blackBoxContractPayloadRef;
+  std::optional<ImplementationPayloadRef> blackBoxContractPayloadRef;
+};
+
+struct ExternalImplementationBindingRef final {
+  std::uint64_t ordinal = 0;
+
+  friend bool operator==(ExternalImplementationBindingRef lhs,
+                         ExternalImplementationBindingRef rhs) {
+    return lhs.ordinal == rhs.ordinal;
+  }
 };
 
 struct ExternalInputSlotContract final {
@@ -138,14 +235,15 @@ struct ExternalInputSlotContract final {
   std::vector<ExternalDependencyKind> acceptedDependencyKinds;
 };
 
-using ExternalImplementationBindingValidator = llvm::Error (*)(
-    const ExternalImplementationBinding &, HardwareRepresentation,
-    const platform::ImplementationPlatform *);
+using ExternalImplementationBindingValidator =
+    llvm::Error (*)(const ExternalImplementationBindingDraft &,
+                    const ImplementationRepresentationRoot &,
+                    const platform::ImplementationPlatform *);
 
 struct ExternalImplementationContract final {
   std::string contractRef;
   std::vector<ExternalInputSlotContract> inputSlots;
-  std::vector<HardwareRepresentation> supportedRepresentations;
+  std::vector<RepresentationRootVariant> supportedRepresentations;
   bool blackBoxContractRequired = false;
   bool memoryMacroCapable = false;
   ExternalImplementationBindingValidator validator = nullptr;
@@ -160,21 +258,28 @@ public:
   canonicalizeAndValidateInputs(
       llvm::StringRef contractRef,
       llvm::ArrayRef<ExternalInputBinding> externalInputs,
-      HardwareRepresentation representation) const;
+      RepresentationRootVariant representation) const;
   llvm::Error canonicalizeAndValidateBindings(
-      std::vector<ExternalImplementationBinding> &bindings,
-      HardwareRepresentation representation,
+      std::vector<ExternalImplementationBindingDraft> &bindings,
+      const ImplementationRepresentationRoot &representation,
       const platform::ImplementationPlatform *implementationPlatform,
-      llvm::ArrayRef<HardwarePayload> payloads,
-      const fabric::FabricArtifactView &fabric) const;
+      const fabric::FabricSystemRootView &fabric) const;
 
 private:
   std::vector<ExternalImplementationContract> contracts_;
 };
 
+/// The draft index is ephemeral authoring state. Finalization remaps it after
+/// canonical binding ordering and persists only the derived dense reference.
+struct MemoryMacroBindingDraft final {
+  fabric::FabricPhysicalOccurrenceOwnerRef fabricMemoryRef;
+  std::uint64_t externalImplementationBindingDraftIndex = 0;
+  RepresentationLocator representationLocator;
+};
+
 struct MemoryMacroBinding final {
-  ArtifactReference<fabric::FabricMemoryOccurrenceRef> fabricMemoryRef;
-  std::string externalImplementationBindingId;
+  fabric::FabricPhysicalOccurrenceOwnerRef fabricMemoryRef;
+  ExternalImplementationBindingRef externalImplementationBindingRef;
   RepresentationLocator representationLocator;
 };
 
@@ -182,13 +287,13 @@ struct HardwareImplementationDraft final {
   ArtifactRootReference fabric;
   ArtifactRootReference configurationAbi;
   std::vector<ArtifactRootReference> interconnectImplementations;
-  HardwareRepresentation representation;
+  ImplementationRepresentationRoot representationRoot;
   std::optional<ArtifactRootReference> implementationPlatform;
-  std::vector<HardwarePayload> payloads;
   std::vector<ImplementationInterface> interfaces;
   std::vector<ActivityPoint> activityPoints;
-  std::vector<MemoryMacroBinding> memoryMacroBindings;
-  std::vector<ExternalImplementationBinding> externalImplementationBindings;
+  std::vector<MemoryMacroBindingDraft> memoryMacroBindings;
+  std::vector<ExternalImplementationBindingDraft>
+      externalImplementationBindings;
 };
 
 namespace detail {
@@ -204,11 +309,12 @@ public:
   llvm::ArrayRef<ArtifactRootReference> interconnectImplementations() const {
     return interconnectImplementations_;
   }
-  HardwareRepresentation representation() const { return representation_; }
+  const ImplementationRepresentationRoot &representationRoot() const {
+    return representationRoot_;
+  }
   const std::optional<ArtifactRootReference> &implementationPlatform() const {
     return implementationPlatform_;
   }
-  llvm::ArrayRef<HardwarePayload> payloads() const { return payloads_; }
   llvm::ArrayRef<ImplementationInterface> interfaces() const {
     return interfaces_;
   }
@@ -227,9 +333,8 @@ private:
   HardwareImplementation(
       ArtifactRootReference fabric, ArtifactRootReference configurationAbi,
       std::vector<ArtifactRootReference> interconnectImplementations,
-      HardwareRepresentation representation,
+      ImplementationRepresentationRoot representationRoot,
       std::optional<ArtifactRootReference> implementationPlatform,
-      std::vector<HardwarePayload> payloads,
       std::vector<ImplementationInterface> interfaces,
       std::vector<ActivityPoint> activityPoints,
       std::vector<MemoryMacroBinding> memoryMacroBindings,
@@ -237,9 +342,9 @@ private:
       : fabric_(std::move(fabric)),
         configurationAbi_(std::move(configurationAbi)),
         interconnectImplementations_(std::move(interconnectImplementations)),
-        representation_(representation),
+        representationRoot_(std::move(representationRoot)),
         implementationPlatform_(std::move(implementationPlatform)),
-        payloads_(std::move(payloads)), interfaces_(std::move(interfaces)),
+        interfaces_(std::move(interfaces)),
         activityPoints_(std::move(activityPoints)),
         memoryMacroBindings_(std::move(memoryMacroBindings)),
         externalImplementationBindings_(
@@ -248,9 +353,8 @@ private:
   ArtifactRootReference fabric_;
   ArtifactRootReference configurationAbi_;
   std::vector<ArtifactRootReference> interconnectImplementations_;
-  HardwareRepresentation representation_;
+  ImplementationRepresentationRoot representationRoot_;
   std::optional<ArtifactRootReference> implementationPlatform_;
-  std::vector<HardwarePayload> payloads_;
   std::vector<ImplementationInterface> interfaces_;
   std::vector<ActivityPoint> activityPoints_;
   std::vector<MemoryMacroBinding> memoryMacroBindings_;

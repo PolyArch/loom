@@ -1,7 +1,5 @@
 #include "Fabric/Identity/FabricRefImport.h"
 
-#include "Dataflow/IR/OperationSchemaCodec.h"
-
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -127,24 +125,16 @@ resolveOrderedPhysicalWidths(const ResolvedFabricOpCapabilityView &capability) {
 }
 
 llvm::Expected<::fabric::FabricOpSemanticFieldRelation>
-resolveSemanticFieldRelation(
+resolveCurrentSemanticFieldRelation(
     const ResolvedFabricOpCapabilityView &capability,
-    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
     mlir::MLIRContext &context) {
   auto widths = resolveOrderedPhysicalWidths(capability);
   if (!widths)
     return widths.takeError();
   return ::fabric::resolveFabricOpSemanticFieldRelation(
       capability.implementationFamily, capability.parameterizedCapability,
-      enabledSchemas, widths->inputs, widths->results, context);
-}
-
-llvm::Expected<::fabric::FabricOpSemanticFieldRelation>
-resolveCurrentSemanticFieldRelation(
-    const ResolvedFabricOpCapabilityView &capability,
-    mlir::MLIRContext &context) {
-  return resolveSemanticFieldRelation(
-      capability, capability.enabledOperationSchemas, context);
+      capability.enabledOperationSchemas, widths->inputs, widths->results,
+      context);
 }
 
 } // namespace
@@ -232,60 +222,6 @@ llvm::Error ResolvedFabricOpCapabilityView::admitCorrespondence(
 }
 
 llvm::Expected<loom::CanonicalSemanticBytes>
-ResolvedFabricOpCapabilityView::encodeOperationSelection(
-    const FabricSemanticConfigFieldRef &field,
-    ::dataflow::OperationSchemaId schema, mlir::MLIRContext &context) const {
-  const auto rejected = [](const llvm::Twine &message) {
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "fabric_operation_selection_codec_rejected: " + message);
-  };
-  if (configurationFieldSchema.size() != 1 ||
-      configurationFieldSchema.front() != field)
-    return rejected("field is not the exact operation configuration field");
-  auto relation = resolveCurrentSemanticFieldRelation(*this, context);
-  if (!relation)
-    return relation.takeError();
-  if (relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::Finite)
-    return rejected("operation selection requires a finite field relation");
-  if (enabledOperationSchemas.size() < 2)
-    return rejected("capability does not select among operation schemas");
-  if (!llvm::is_contained(enabledOperationSchemas, schema))
-    return rejected("operation schema is not enabled by the capability");
-  if (relation->finiteBehaviorDomain().size() != enabledOperationSchemas.size())
-    return rejected("field has semantic dimensions beyond operation selection");
-
-  for (::dataflow::OperationSchemaId enabled : enabledOperationSchemas) {
-    auto singleton = resolveSemanticFieldRelation(
-        *this, llvm::ArrayRef<::dataflow::OperationSchemaId>(&enabled, 1),
-        context);
-    if (!singleton)
-      return singleton.takeError();
-    if (singleton->kind() !=
-            ::fabric::FabricOpSemanticFieldRelationKind::None ||
-        singleton->finiteBehaviorDomain().size() != 1)
-      return rejected(
-          "field has semantic dimensions beyond operation selection");
-    const auto &point = singleton->finiteBehaviorDomain().front();
-    auto schemaValue = relation->projectSemanticValue(
-        point.representativeActor, point.operandPorts, point.resultPorts,
-        point.resolvedIndexWidth);
-    if (!schemaValue)
-      return schemaValue.takeError();
-  }
-  auto domain =
-      ::fabric::projectConfigurationABI1FiniteBehaviorDomain(*relation);
-  if (!domain)
-    return domain.takeError();
-  const auto selected = llvm::find_if(*domain, [&](const auto &point) {
-    return point.representativeActor.schema == schema;
-  });
-  if (selected == domain->end() || !selected->semanticConfiguration)
-    return rejected("operation schema has no finite behavior point");
-  return std::move(*selected->semanticConfiguration);
-}
-
-llvm::Expected<loom::CanonicalSemanticBytes>
 ResolvedFabricOpCapabilityView::encodeSemanticConfiguration(
     const FabricSemanticConfigFieldRef &field,
     const ::dataflow::CanonicalActorSchemaProjection &actor,
@@ -309,21 +245,13 @@ ResolvedFabricOpCapabilityView::encodeSemanticConfiguration(
     return relation.takeError();
   if (!relation->hasConfigurationField())
     return rejected("operation capability has no semantic field relation");
-  return ::fabric::encodeConfigurationABI1SemanticValue(
-      *relation, actor, operandPorts, resultPorts,
+  return relation->projectSemanticValue(
+      actor, operandPorts, resultPorts,
       ::fabric::symbolizeResolvedIndexWidth(indexBitWidth));
 }
 
-llvm::Expected<std::vector<::fabric::FiniteImplementationFamilyBehaviorPoint>>
-ResolvedFabricOpCapabilityView::resolveFiniteBehaviorDomain(
+llvm::Expected<::fabric::FabricOpSemanticFieldRelation>
+ResolvedFabricOpCapabilityView::resolveSemanticFieldRelation(
     mlir::MLIRContext &context) const {
-  auto relation = resolveCurrentSemanticFieldRelation(*this, context);
-  if (!relation)
-    return relation.takeError();
-  if (relation->kind() == ::fabric::FabricOpSemanticFieldRelationKind::Direct)
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "fabric_operation_behavior_domain_rejected: direct field relation "
-        "has no finite enumeration");
-  return ::fabric::projectConfigurationABI1FiniteBehaviorDomain(*relation);
+  return resolveCurrentSemanticFieldRelation(*this, context);
 }

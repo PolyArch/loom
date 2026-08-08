@@ -120,7 +120,8 @@ materializePortableLoopGate(FabricOperationProviderRequest request) {
   if (outputs[0]->payloadWidthBits == 0)
     return invalid("phase output has no low semantic bit");
   if (llvm::Error error = verifyFabricOperationLeafPorts(
-          request.leaf, request.capability, request.configurationAbi))
+          request.leaf, request.occurrence, request.capability,
+          request.configurationAbi))
     return std::move(error);
 
   mlir::OpBuilder builder(request.leaf.getContext());

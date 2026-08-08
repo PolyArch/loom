@@ -1,4 +1,6 @@
+#include "ConfigurationABI2TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
+#include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/IntegerLogic.h"
 
 #include "Common/ArtifactStore.h"
@@ -63,6 +65,14 @@ template <typename T> T take(llvm::StringRef test, llvm::Expected<T> value) {
   return std::move(*value);
 }
 
+template <typename T>
+void expectRejected(llvm::StringRef test, llvm::Expected<T> value,
+                    llvm::StringRef expected) {
+  require(test, !value, "accepted malformed integer logic input");
+  const std::string message = llvm::toString(value.takeError());
+  require(test, llvm::StringRef(message).contains(expected), message);
+}
+
 enum class FamilyKind { Scalar, FixedVector };
 enum class BehaviorSet { AllLogic, EquivalentOr };
 enum class AbiKind { Complete, MissingXor, ExtraSemanticValue };
@@ -118,6 +128,8 @@ mlir::MLIRContext &fabricContext() {
 struct FabricFixture final {
   FinalizedFabricRoot fabric;
   FabricFuOccurrenceNodeRef occurrence;
+  FinalizedFabricRoot system;
+  loom::fabric::FabricPhysicalOccurrenceOwnerRef physicalOccurrence;
   FamilyKind family;
 };
 
@@ -266,7 +278,20 @@ FabricFixture makeFabric(llvm::StringRef test, const ArtifactStore &store,
       FabricFuOccurrenceNodeRef occurrence =
           take(test, loom::fabric::deriveFabricFuOccurrenceNode(
                          fabric.view(), capability.occurrence, fuOccurrence));
-      return FabricFixture{std::move(fabric), occurrence, family};
+      FinalizedFabricRoot system =
+          take(test, loom::hardware::test::makeSingleSpatialCoreSystem(fabric,
+                                                                       store));
+      auto systemView =
+          take(test, loom::fabric::requireSystemRoot(system.view()));
+      auto operations =
+          take(test, enumerateFabricPhysicalOperations(systemView));
+      const auto physical = llvm::find_if(operations, [&](const auto &entry) {
+        return entry.localOccurrence == occurrence;
+      });
+      require(test, physical != operations.end(),
+              "System has no physical integer logic occurrence");
+      return FabricFixture{std::move(fabric), occurrence, std::move(system),
+                           physical->physicalOccurrence, family};
     }
   }
   fail(test, "Fabric fixture has no integer logic occurrence");
@@ -280,19 +305,23 @@ capability(llvm::StringRef test, const FabricFixture &fixture) {
   return *result;
 }
 
-FinalizedConfigurationABI
-makeConfigurationAbi(llvm::StringRef test, const ArtifactStore &store,
-                     const FabricFixture &fixture,
-                     AbiKind kind = AbiKind::Complete) {
+ConfigurationABIDraft
+makeConfigurationAbiDraft(llvm::StringRef test, const ArtifactStore &store,
+                          const FabricFixture &fixture,
+                          AbiKind kind = AbiKind::Complete) {
   const auto &resolved = capability(test, fixture);
   if (resolved.configurationFieldSchema.empty())
-    return take(test, finalizeConfigurationABI(
-                          ConfigurationABIDraft{fixture.fabric.reference(), {}},
-                          store));
+    return take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                          fixture.system));
   require(test, resolved.configurationFieldSchema.size() == 1,
           "logic capability has more than one configuration field");
-  auto domain =
-      take(test, resolved.resolveFiniteBehaviorDomain(fabricContext()));
+  auto relation =
+      take(test, resolved.resolveSemanticFieldRelation(fabricContext()));
+  require(test,
+          relation.kind() ==
+              ::fabric::FabricOpSemanticFieldRelationKind::Finite,
+          "configured logic relation is not finite");
+  const auto domain = relation.finiteBehaviorDomain();
   require(test, domain.size() == 3,
           "full logic capability did not resolve three physical behaviors");
 
@@ -316,16 +345,24 @@ makeConfigurationAbi(llvm::StringRef test, const ArtifactStore &store,
   if (kind == AbiKind::ExtraSemanticValue)
     entries.push_back({{0xfe}, {0x07}});
 
-  ConfigurationFieldEncoding field{
-      resolved.configurationFieldSchema.front(),
-      FiniteCodebookEncoding{3, std::move(entries)},
-      {{0, 0, 3}},
+  auto physicalField =
+      take(test, loom::hardware::test::qualifyPhysicalConfigurationField(
+                     fixture.physicalOccurrence,
+                     resolved.configurationFieldSchema.front().ordinal));
+  loom::hardware::test::ConfigurationFieldEncodingOverride field{
+      std::move(physicalField), FiniteCodebookEncoding{3, std::move(entries)},
       std::move(inactiveValue)};
-  ProgrammingUnitDraft unit{{field.field.owner.catalog()}, 3, {field}};
-  return take(test, finalizeConfigurationABI(
-                        ConfigurationABIDraft{fixture.fabric.reference(),
-                                              {std::move(unit)}},
-                        store));
+  return take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                        fixture.system, {std::move(field)}));
+}
+
+FinalizedConfigurationABI
+makeConfigurationAbi(llvm::StringRef test, const ArtifactStore &store,
+                     const FabricFixture &fixture,
+                     AbiKind kind = AbiKind::Complete) {
+  return take(
+      test, finalizeConfigurationABI(
+                makeConfigurationAbiDraft(test, store, fixture, kind), store));
 }
 
 std::unique_ptr<mlir::MLIRContext> makeCirctContext() {
@@ -356,7 +393,8 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
       builder, location, fabricOperationGeneratorSchemaSymbol,
       fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
   std::vector<circt::hw::PortInfo> ports =
-      take(test, deriveFabricOperationLeafPorts(builder, resolved, abi));
+      take(test, deriveFabricOperationLeafPorts(
+                     builder, fabric.physicalOccurrence, resolved, abi));
   if (wrongConfigurationWidth) {
     const auto config = llvm::find_if(ports, [](const auto &port) {
       return port.getName().starts_with("config_");
@@ -399,13 +437,13 @@ SpecializedRtl specialize(llvm::StringRef test, SkeletonFixture &skeleton,
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
+      {skeleton.leaf, fabric.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(
-                     *skeleton.module, fabric.fabric, abi, associations,
-                     recipes, registry, externalContracts));
+      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
+                                                 associations, recipes,
+                                                 registry, externalContracts));
   require(test,
           output.payloads.empty() && output.activityPoints.empty() &&
               output.externalImplementationBindings.empty(),
@@ -437,42 +475,35 @@ void checkFullDomain(llvm::StringRef test, const FabricFixture &fixture) {
                   descriptor.admittedSchemas.size() &&
               resolved.configurationFieldSchema.size() == 1,
           "sealed logic capability does not match its generated family");
-  auto domain =
-      take(test, resolved.resolveFiniteBehaviorDomain(fabricContext()));
+  auto relation =
+      take(test, resolved.resolveSemanticFieldRelation(fabricContext()));
+  require(test,
+          relation.kind() ==
+              ::fabric::FabricOpSemanticFieldRelationKind::Finite,
+          "configured logic relation is not finite");
+  const auto domain = relation.finiteBehaviorDomain();
   require(test, domain.size() == 3,
           "Fabric did not collapse logic witnesses to three behaviors");
-
-  auto aliasedSelection = resolved.encodeOperationSelection(
-      resolved.configurationFieldSchema.front(),
-      ::dataflow::OperationSchemaId::ArithOrI, fabricContext());
-  require(test, !aliasedSelection,
-          "operation selection accepted an aliased behavior domain");
-  const std::string message = llvm::toString(aliasedSelection.takeError());
-  require(test, llvm::StringRef(message).contains("beyond operation selection"),
-          message);
+  const auto orBehavior = llvm::find_if(domain, [](const auto &point) {
+    return point.representativeActor.schema ==
+           ::dataflow::OperationSchemaId::ArithOrI;
+  });
+  require(test, orBehavior != domain.end() && orBehavior->semanticConfiguration,
+          "aliased OR schemas did not collapse to one semantic behavior");
 
   auto distinctSelection = resolved;
   distinctSelection.enabledOperationSchemas = {
       ::dataflow::OperationSchemaId::ArithAndI,
       ::dataflow::OperationSchemaId::ArithOrI};
-  const auto distinctDomain = take(
-      test, distinctSelection.resolveFiniteBehaviorDomain(fabricContext()));
+  auto distinctRelation = take(
+      test, distinctSelection.resolveSemanticFieldRelation(fabricContext()));
+  require(test,
+          distinctRelation.kind() ==
+              ::fabric::FabricOpSemanticFieldRelationKind::Finite,
+          "distinct logic relation is not finite");
+  const auto distinctDomain = distinctRelation.finiteBehaviorDomain();
   require(test, distinctDomain.size() == 2,
           "distinct logic selection did not expose two behaviors");
-  const auto andPoint = llvm::find_if(distinctDomain, [](const auto &point) {
-    return point.representativeActor.schema ==
-           ::dataflow::OperationSchemaId::ArithAndI;
-  });
-  require(test,
-          andPoint != distinctDomain.end() && andPoint->semanticConfiguration,
-          "distinct logic domain has no AND semantic value");
-  const auto andSelection = take(
-      test, distinctSelection.encodeOperationSelection(
-                distinctSelection.configurationFieldSchema.front(),
-                ::dataflow::OperationSchemaId::ArithAndI, fabricContext()));
-  require(test,
-          andSelection.bytes().equals(andPoint->semanticConfiguration->bytes()),
-          "operation selection disagrees with the ABI 1.0 finite domain");
 }
 
 SpecializedRtl emitDeterministically(llvm::StringRef test,
@@ -521,10 +552,13 @@ void equivalentOrUsesOneUnconfiguredDatapath(llvm::StringRef test,
   FabricFixture fabric =
       makeFabric(test, store, family, BehaviorSet::EquivalentOr);
   const auto &resolved = capability(test, fabric);
-  auto domain =
-      take(test, resolved.resolveFiniteBehaviorDomain(fabricContext()));
+  auto relation =
+      take(test, resolved.resolveSemanticFieldRelation(fabricContext()));
+  const auto domain = relation.finiteBehaviorDomain();
   require(test,
-          resolved.configurationFieldSchema.empty() && domain.size() == 1 &&
+          relation.kind() ==
+                  ::fabric::FabricOpSemanticFieldRelationKind::None &&
+              resolved.configurationFieldSchema.empty() && domain.size() == 1 &&
               !domain.front().semanticConfiguration,
           "equivalent OR schemas did not collapse before RTL lowering");
   FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
@@ -719,12 +753,11 @@ trySpecialize(SkeletonFixture &skeleton, const FabricFixture &fabric,
               const FabricOperationProviderRegistry &registry) {
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
+      {skeleton.leaf, fabric.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, recipe, {}}};
-  return specializeFabricOperationLeaves(*skeleton.module, fabric.fabric, abi,
-                                         associations, recipes, registry,
-                                         externalContracts);
+      {fabric.physicalOccurrence, recipe, {}}};
+  return specializeFabricOperationLeaves(*skeleton.module, abi, associations,
+                                         recipes, registry, externalContracts);
 }
 
 void failuresAreTransactional(const std::filesystem::path &root) {
@@ -772,21 +805,11 @@ void failuresAreTransactional(const std::filesystem::path &root) {
             "malformed leaf mutated the caller module");
 
     for (AbiKind kind : {AbiKind::MissingXor, AbiKind::ExtraSemanticValue}) {
-      FinalizedConfigurationABI malformedAbi =
-          makeConfigurationAbi(test, store, valid, kind);
-      std::unique_ptr<mlir::MLIRContext> abiContext = makeCirctContext();
-      SkeletonFixture malformed =
-          makeSkeleton(test, *abiContext, valid, malformedAbi.abi(),
-                       "malformed_logic_codebook");
-      const std::string before = moduleText(*malformed.module);
-      expectInvalid(test,
-                    trySpecialize(malformed, valid, malformedAbi,
-                                  BackendRecipeKey::PortableSystemVerilog,
-                                  registry),
-                    kind == AbiKind::MissingXor ? "semantic value"
-                                                : "configuration domain");
-      require(test, moduleText(*malformed.module) == before,
-              "malformed ABI mutated the caller module");
+      expectRejected(
+          test,
+          finalizeConfigurationABI(
+              makeConfigurationAbiDraft(test, store, valid, kind), store),
+          "semantic");
     }
 
     constexpr std::array nativeRecipes = {

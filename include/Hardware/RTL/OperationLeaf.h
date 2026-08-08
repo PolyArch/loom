@@ -56,11 +56,13 @@ deriveTransparentLoopOperationLeafStateLayout(
 /// structural-owner responsibilities.
 llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
     mlir::OpBuilder &builder,
+    const fabric::FabricPhysicalOccurrenceOwnerRef &occurrence,
     const fabric::ResolvedFabricOpCapabilityView &capability,
     const ConfigurationABI &configurationAbi);
 
 llvm::Error verifyFabricOperationLeafPorts(
     circt::hw::HWModuleGeneratedOp leaf,
+    const fabric::FabricPhysicalOccurrenceOwnerRef &occurrence,
     const fabric::ResolvedFabricOpCapabilityView &capability,
     const ConfigurationABI &configurationAbi);
 

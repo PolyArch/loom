@@ -419,12 +419,6 @@ void constantDirectProjectionPreservesRawBits() {
         test,
         relation.projectSemanticValue(actor, std::array<std::uint64_t, 1>{0},
                                       std::array<std::uint64_t, 1>{0}));
-    const loom::CanonicalSemanticBytes abi1 =
-        take(test, encodeConfigurationABI1SemanticValue(
-                       relation, actor, std::array<std::uint64_t, 1>{0},
-                       std::array<std::uint64_t, 1>{0}));
-    require(test, projected.bytes().equals(abi1.bytes()),
-            "ConfigurationABI 1.0 changed a Direct constant value");
     return std::vector<std::uint8_t>(projected.bytes().begin(),
                                      projected.bytes().end());
   };
@@ -525,63 +519,6 @@ void zeroBitDirectCarrierCollapsesToNone() {
           relation.finiteBehaviorDomain().front().representativeActor.schema ==
               OperationSchemaId::VectorExtract,
       "zero-bit singleton slice lost its unique behavior witness");
-}
-
-void configurationABI1RejectsNonInjectiveFiniteRelations() {
-  const char *test = __func__;
-  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
-  const auto expectCollision = [&](ImplementationFamilyId family,
-                                   const FamilyCapabilityParams &params,
-                                   llvm::ArrayRef<OperationSchemaId> schemas,
-                                   llvm::ArrayRef<std::uint32_t> inputs,
-                                   llvm::ArrayRef<std::uint32_t> results) {
-    const FabricOpSemanticFieldRelation relation =
-        take(test, resolveFabricOpSemanticFieldRelation(
-                       family, params, schemas, inputs, results, context));
-    require(test, relation.kind() == FabricOpSemanticFieldRelationKind::Finite,
-            "collision fixture did not resolve a finite relation");
-    require(test, relation.finiteBehaviorDomain().size() == 4,
-            "collision fixture did not expose four sealed behaviors");
-    auto projected = projectConfigurationABI1FiniteBehaviorDomain(relation);
-    require(test, !projected,
-            "ConfigurationABI 1.0 accepted a non-injective relation");
-    const std::string message = llvm::toString(projected.takeError());
-    require(test, llvm::StringRef(message).contains("injectively"),
-            "non-injective relation reported an unrelated failure: " + message);
-
-    const auto &point = relation.finiteBehaviorDomain().front();
-    auto encoded = encodeConfigurationABI1SemanticValue(
-        relation, point.representativeActor, point.operandPorts,
-        point.resultPorts, point.resolvedIndexWidth);
-    require(test, !encoded,
-            "ConfigurationABI 1.0 encoded one point of a non-injective "
-            "relation");
-    const std::string pointMessage = llvm::toString(encoded.takeError());
-    require(test, llvm::StringRef(pointMessage).contains("injectively"),
-            "non-injective point reported an unrelated failure: " +
-                pointMessage);
-  };
-
-  const FamilyCapabilityParams saturatingParams = ScalarIntegerParams{
-      IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16})};
-  constexpr std::array saturatingSchemas = {OperationSchemaId::LLVMSAddSat,
-                                            OperationSchemaId::LLVMUAddSat};
-  constexpr std::array scalarInputs = {16U, 16U};
-  constexpr std::array scalarResults = {16U};
-  expectCollision(ImplementationFamilyId::ScalarIntegerSaturatingAddSub,
-                  saturatingParams, saturatingSchemas, scalarInputs,
-                  scalarResults);
-
-  const FamilyCapabilityParams countZerosParams = FixedVectorIntegerParams{
-      IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16}), 32};
-  constexpr std::array countZerosSchemas = {
-      OperationSchemaId::MathCountLeadingZeros,
-      OperationSchemaId::MathCountTrailingZeros};
-  constexpr std::array vectorInputs = {32U};
-  constexpr std::array vectorResults = {32U};
-  expectCollision(ImplementationFamilyId::FixedVectorIntegerCountZeros,
-                  countZerosParams, countZerosSchemas, vectorInputs,
-                  vectorResults);
 }
 
 void finiteRelationKeysRemainCanonical() {
@@ -842,7 +779,6 @@ int main() {
   directRelationsRequireAReachableWitness();
   constantDirectProjectionPreservesRawBits();
   zeroBitDirectCarrierCollapsesToNone();
-  configurationABI1RejectsNonInjectiveFiniteRelations();
   finiteRelationKeysRemainCanonical();
   physicalCapacityEliminatesRedundantBehavior();
   loopControlRelationOwnsTheReachableQuotient();

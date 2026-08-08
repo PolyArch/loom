@@ -1,7 +1,7 @@
 #include "Hardware/RTL/Specialization.h"
 
-#include "Fabric/Artifact/FabricArtifactLocalReference.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Hardware/RTL/PhysicalOperation.h"
 
 #include "circt/Dialect/HW/HWOpInterfaces.h"
 #include "mlir/IR/Builders.h"
@@ -56,7 +56,8 @@ struct SpecializationJob final {
   std::vector<std::uint8_t> occurrenceKey;
   circt::hw::HWModuleGeneratedOp leaf;
   std::string leafSymbol;
-  fabric::FabricFuOccurrenceNodeRef occurrence;
+  fabric::FabricPhysicalOccurrenceOwnerRef occurrence;
+  fabric::FabricFuOccurrenceNodeRef localOccurrence;
   const fabric::ResolvedFabricOpCapabilityView *capability = nullptr;
   const FabricOperationProviderRegistration *provider = nullptr;
   std::vector<ExternalInputBinding> externalInputs;
@@ -114,16 +115,11 @@ bool sameExternalInputs(llvm::ArrayRef<ExternalInputBinding> lhs,
 }
 
 void addOccurrenceRelation(const SpecializationJob &job,
-                           const ConfigurationABI &configurationAbi,
                            FabricOperationProviderOutput &output) {
-  const EncodedArtifactLocalReference occurrence =
-      fabric::encodeFabricArtifactLocalReference(
-          ArtifactReference<fabric::FabricFuOccurrenceNodeRef>{
-              configurationAbi.fabric().artifact, job.occurrence});
-  for (ExternalImplementationBinding &binding :
+  for (ExternalImplementationBindingDraft &binding :
        output.externalImplementationBindings)
-    if (!llvm::is_contained(binding.fabricResourceRefs, occurrence))
-      binding.fabricResourceRefs.push_back(occurrence);
+    if (!llvm::is_contained(binding.fabricResourceRefs, job.occurrence))
+      binding.fabricResourceRefs.push_back(job.occurrence);
 }
 
 mlir::ArrayAttr parametersOf(mlir::Operation *operation) {
@@ -153,7 +149,7 @@ validateProviderOutput(const SpecializationJob &job,
     return invalid("external provider input closure is empty");
   if (output.externalImplementationBindings.empty())
     return invalid("external provider produced no implementation binding");
-  for (const ExternalImplementationBinding &binding :
+  for (const ExternalImplementationBindingDraft &binding :
        output.externalImplementationBindings) {
     if (binding.providerContractRef != contract)
       return invalid("provider output changed the external contract ref");
@@ -164,30 +160,21 @@ validateProviderOutput(const SpecializationJob &job,
 }
 
 bool hasBlackBoxPayload(const FabricOperationProviderOutput &output,
-                        const HardwarePayloadRef &reference) {
+                        const ImplementationPayloadKey &reference) {
   if (reference.role != PayloadRole::BlackBoxContract)
     return false;
-  return llvm::any_of(output.payloads,
-                      [&](const FabricOperationProviderPayload &payload) {
-                        return payload.role == reference.role &&
-                               payload.logicalName == reference.logicalName;
-                      });
-}
-
-std::vector<HardwarePayload>
-describePayloads(const FabricOperationProviderOutput &output) {
-  std::vector<HardwarePayload> descriptors;
-  descriptors.reserve(output.payloads.size());
-  for (const FabricOperationProviderPayload &payload : output.payloads)
-    descriptors.push_back(payload.descriptor());
-  return descriptors;
+  return llvm::any_of(
+      output.payloads, [&](const FabricOperationProviderPayload &payload) {
+        return payload.role == reference.role &&
+               payload.canonicalLogicalName == reference.canonicalLogicalName;
+      });
 }
 
 llvm::Error
 validateExternalModule(llvm::StringRef symbol,
                        const FabricOperationProviderOutput &output) {
   bool hasModuleBinding = false;
-  for (const ExternalImplementationBinding &binding :
+  for (const ExternalImplementationBindingDraft &binding :
        output.externalImplementationBindings) {
     const bool locatesModule = llvm::any_of(
         binding.representationLocators,
@@ -198,8 +185,8 @@ validateExternalModule(llvm::StringRef symbol,
     if (!locatesModule)
       continue;
     hasModuleBinding = true;
-    if (binding.blackBoxContractPayloadRef &&
-        hasBlackBoxPayload(output, *binding.blackBoxContractPayloadRef))
+    if (binding.blackBoxContractPayload &&
+        hasBlackBoxPayload(output, *binding.blackBoxContractPayload))
       return llvm::Error::success();
   }
   if (!hasModuleBinding)
@@ -264,7 +251,7 @@ llvm::Expected<PreparedSpecialization> prepareSpecialization(
       job.provider->externalImplementationContractRef, job.externalInputs});
   if (!output)
     return output.takeError();
-  addOccurrenceRelation(job, configurationAbi, *output);
+  addOccurrenceRelation(job, *output);
   if (llvm::Error error = validateProviderOutput(job, *output))
     return std::move(error);
   if (llvm::Error error = validatePreparedFragment(job, *fragment, *output))
@@ -332,9 +319,9 @@ void appendOutput(FabricOperationProviderOutput &destination,
 
 } // namespace
 
-HardwarePayload FabricOperationProviderPayload::descriptor() const {
-  return HardwarePayload{role, logicalName, mediaType,
-                         computeBlobDigest(bytes)};
+ImplementationPayload FabricOperationProviderPayload::descriptor() const {
+  return ImplementationPayload{role, canonicalLogicalName,
+                               computeBlobDigest(bytes)};
 }
 
 llvm::StringRef backendRecipeKeyword(BackendRecipeKey recipe) {
@@ -427,15 +414,14 @@ FabricOperationProviderUnsupportedError::convertToErrorCode() const {
 }
 
 llvm::Expected<FabricOperationProviderOutput> specializeFabricOperationLeaves(
-    mlir::ModuleOp module, const fabric::FinalizedFabricRoot &fabric,
-    const FinalizedConfigurationABI &configurationAbi,
+    mlir::ModuleOp module, const FinalizedConfigurationABI &configurationAbi,
     llvm::ArrayRef<FabricOperationLeafAssociation> operationLeaves,
     llvm::ArrayRef<FabricOperationRecipeBinding> operationRecipes,
     const FabricOperationProviderRegistry &providers,
     const ExternalImplementationContractCatalog &externalContracts,
     const platform::ImplementationPlatform *implementationPlatform) {
   if (llvm::Error error = verifyCommonCirctSkeleton(
-          module, fabric.view(), configurationAbi.abi(), operationLeaves))
+          module, configurationAbi.abi(), operationLeaves))
     return error;
 
   std::map<std::vector<std::uint8_t>, const FabricOperationRecipeBinding *>
@@ -443,9 +429,10 @@ llvm::Expected<FabricOperationProviderOutput> specializeFabricOperationLeaves(
   for (const FabricOperationRecipeBinding &binding : operationRecipes) {
     if (!validRecipe(binding.recipe))
       return invalid("occurrence recipe binding has an unknown recipe");
-    if (llvm::Error error =
-            fabric::validateFabricRef(fabric.view(), binding.occurrence)) {
-      llvm::consumeError(std::move(error));
+    auto operation = resolveFabricPhysicalOperation(
+        configurationAbi.abi().fabricSystem(), binding.occurrence);
+    if (!operation) {
+      llvm::consumeError(operation.takeError());
       return invalid("occurrence recipe binding does not resolve in Fabric");
     }
     auto inserted = recipes.emplace(
@@ -465,10 +452,11 @@ llvm::Expected<FabricOperationProviderOutput> specializeFabricOperationLeaves(
     auto recipe = recipes.find(occurrenceKey);
     if (recipe == recipes.end())
       return invalid("recipe bindings do not match the operation leaves");
-    const auto *capability =
-        fabric.view().resolvedFabricOpCapability(association.occurrence);
-    if (!capability)
+    auto operation = resolveFabricPhysicalOperation(
+        configurationAbi.abi().fabricSystem(), association.occurrence);
+    if (!operation)
       return invalid("operation leaf has no resolved Fabric capability");
+    const auto *capability = operation->capability;
     const FabricOperationProviderRegistration *provider = providers.find(
         capability->implementationFamily, recipe->second->recipe);
     if (!provider)
@@ -481,15 +469,15 @@ llvm::Expected<FabricOperationProviderOutput> specializeFabricOperationLeaves(
     } else {
       auto canonicalInputs = externalContracts.canonicalizeAndValidateInputs(
           provider->externalImplementationContractRef,
-          recipe->second->externalInputs, HardwareRepresentation::Rtl);
+          recipe->second->externalInputs, RepresentationRootVariant::Rtl);
       if (!canonicalInputs)
         return canonicalInputs.takeError();
       externalInputs = std::move(*canonicalInputs);
     }
     jobs.push_back(SpecializationJob{
         std::move(occurrenceKey), leaf, leaf.getSymName().str(),
-        association.occurrence, capability, provider, std::move(externalInputs),
-        recipe->second->recipe});
+        association.occurrence, operation->localOccurrence, capability,
+        provider, std::move(externalInputs), recipe->second->recipe});
   }
 
   llvm::sort(jobs,
@@ -511,12 +499,6 @@ llvm::Expected<FabricOperationProviderOutput> specializeFabricOperationLeaves(
   FabricOperationProviderOutput output;
   for (PreparedSpecialization &specialization : prepared)
     appendOutput(output, std::move(specialization.output));
-  const std::vector<HardwarePayload> payloads = describePayloads(output);
-  if (llvm::Error error = externalContracts.canonicalizeAndValidateBindings(
-          output.externalImplementationBindings, HardwareRepresentation::Rtl,
-          implementationPlatform, payloads, fabric.view()))
-    return std::move(error);
-
   mlir::OwningOpRef<mlir::ModuleOp> working(
       llvm::cast<mlir::ModuleOp>(module->clone()));
   if (llvm::Error error = applySpecializations(*working, prepared))

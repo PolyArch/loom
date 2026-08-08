@@ -88,7 +88,8 @@ materializePortableScalarIntegerAddSub(FabricOperationProviderRequest request) {
     return invalid("capability does not have the binary integer port shape");
 
   if (llvm::Error error = verifyFabricOperationLeafPorts(
-          request.leaf, request.capability, request.configurationAbi))
+          request.leaf, request.occurrence, request.capability,
+          request.configurationAbi))
     return std::move(error);
 
   const ConfigurationFieldEncoding *field = nullptr;
@@ -97,42 +98,54 @@ materializePortableScalarIntegerAddSub(FabricOperationProviderRequest request) {
   if (hasAdd && hasSubtract) {
     if (request.capability.configurationFieldSchema.size() != 1)
       return invalid("configured add/sub capability requires one field");
-    field = request.configurationAbi.findField(
-        request.capability.configurationFieldSchema.front());
+    field = request.configurationAbi.findOperationField(
+        request.occurrence,
+        request.capability.configurationFieldSchema.front().ordinal);
     if (!field)
       return invalid("configured add/sub field is absent from the ABI");
     const auto *codebook =
         std::get_if<FiniteCodebookEncoding>(&field->semanticEncoding);
     if (!codebook)
       return invalid("configured add/sub field is not a finite codebook");
-    if (codebook->entries.size() !=
-        request.capability.enabledOperationSchemas.size())
+    auto relation = request.capability.resolveSemanticFieldRelation(
+        *request.leaf.getContext());
+    if (!relation)
+      return relation.takeError();
+    if (relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::Finite)
+      return invalid("configured add/sub field relation is not finite");
+    const auto &domain = relation->finiteBehaviorDomain();
+    if (codebook->entries.size() != domain.size())
       return invalid(
           "codebook does not exactly cover the operation-selection domain");
-    auto addValue = request.capability.encodeOperationSelection(
-        field->field, ::dataflow::OperationSchemaId::ArithAddI,
-        *request.leaf.getContext());
+    const auto semanticValue = [&](::dataflow::OperationSchemaId schema)
+        -> llvm::Expected<llvm::ArrayRef<std::uint8_t>> {
+      const auto point = llvm::find_if(domain, [&](const auto &candidate) {
+        return candidate.representativeActor.schema == schema;
+      });
+      if (point == domain.end() || !point->semanticConfiguration)
+        return invalid("operation has no finite behavior key");
+      return point->semanticConfiguration->bytes();
+    };
+    auto addValue = semanticValue(::dataflow::OperationSchemaId::ArithAddI);
     if (!addValue)
       return addValue.takeError();
-    auto subtractValue = request.capability.encodeOperationSelection(
-        field->field, ::dataflow::OperationSchemaId::ArithSubI,
-        *request.leaf.getContext());
+    auto subtractValue =
+        semanticValue(::dataflow::OperationSchemaId::ArithSubI);
     if (!subtractValue)
       return subtractValue.takeError();
     const FiniteCodebookEntry *addEntry =
-        detail::findFiniteCodebookEntry(*codebook, addValue->bytes());
+        detail::findFiniteCodebookEntry(*codebook, *addValue);
     if (!addEntry)
       return invalid("codebook has no add semantic value");
     const FiniteCodebookEntry *subtractEntry =
-        detail::findFiniteCodebookEntry(*codebook, subtractValue->bytes());
+        detail::findFiniteCodebookEntry(*codebook, *subtractValue);
     if (!subtractEntry)
       return invalid("codebook has no subtract semantic value");
-    if (llvm::ArrayRef<std::uint8_t>(field->inactiveValue)
-            .equals(addValue->bytes())) {
+    if (llvm::ArrayRef<std::uint8_t>(field->inactiveValue).equals(*addValue)) {
       nonInactiveEntry = subtractEntry;
       inactiveSubtract = false;
     } else if (llvm::ArrayRef<std::uint8_t>(field->inactiveValue)
-                   .equals(subtractValue->bytes())) {
+                   .equals(*subtractValue)) {
       nonInactiveEntry = addEntry;
       inactiveSubtract = true;
     } else {
@@ -170,8 +183,11 @@ materializePortableScalarIntegerAddSub(FabricOperationProviderRequest request) {
                                          codebook.encodedBitCount));
           mlir::Value selected = circt::comb::ICmpOp::create(
               bodyBuilder, location, circt::comb::ICmpPredicate::eq,
-              accessor.getInput("config_" +
-                                std::to_string(field->field.ordinal)),
+              accessor.getInput(
+                  "config_" +
+                  std::to_string(
+                      request.capability.configurationFieldSchema.front()
+                          .ordinal)),
               code, true);
           mlir::Value selectedSubtract = circt::hw::ConstantOp::create(
               bodyBuilder, location, llvm::APInt(1, !inactiveSubtract));

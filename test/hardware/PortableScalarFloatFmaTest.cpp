@@ -1,10 +1,11 @@
+#include "ConfigurationABI2TestSupport.h"
 #include "Hardware/RTL/CirctConformance.h"
 #include "Hardware/RTL/OperationLeaf.h"
+#include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarFloatFma.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
-#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
@@ -95,6 +96,8 @@ mlir::MLIRContext &fabricContext() {
 struct FabricFixture final {
   FinalizedFabricRoot fabric;
   FabricFuOccurrenceNodeRef occurrence;
+  FinalizedFabricRoot system;
+  loom::fabric::FabricPhysicalOccurrenceOwnerRef physicalOccurrence;
 };
 
 enum class FabricFixtureKind {
@@ -197,7 +200,20 @@ makeFabric(llvm::StringRef test, const ArtifactStore &store,
       FabricFuOccurrenceNodeRef occurrence =
           take(test, loom::fabric::deriveFabricFuOccurrenceNode(
                          fabric.view(), capability.occurrence, fuOccurrence));
-      return FabricFixture{std::move(fabric), occurrence};
+      FinalizedFabricRoot system =
+          take(test, loom::hardware::test::makeSingleSpatialCoreSystem(fabric,
+                                                                       store));
+      auto systemView =
+          take(test, loom::fabric::requireSystemRoot(system.view()));
+      auto operations =
+          take(test, enumerateFabricPhysicalOperations(systemView));
+      const auto physical = llvm::find_if(operations, [&](const auto &entry) {
+        return entry.localOccurrence == occurrence;
+      });
+      require(test, physical != operations.end(),
+              "System has no physical scalar float FMA occurrence");
+      return FabricFixture{std::move(fabric), occurrence, std::move(system),
+                           physical->physicalOccurrence};
     }
   }
   fail(test, "Fabric fixture has no scalar float FMA occurrence");
@@ -232,21 +248,25 @@ std::uint8_t physicalCode(::fabric::FloatFormat format) {
   llvm_unreachable("unknown floating format");
 }
 
-FinalizedConfigurationABI makeConfigurationAbi(
-    llvm::StringRef test, const ArtifactStore &store,
-    const FabricFixture &fixture,
+ConfigurationABIDraft makeConfigurationAbiDraft(
+    llvm::StringRef test, const FabricFixture &fixture,
     ConfigurationAbiKind kind = ConfigurationAbiKind::Complete) {
   const auto *capability =
       fixture.fabric.view().resolvedFabricOpCapability(fixture.occurrence);
   require(test, capability != nullptr, "Fabric capability did not resolve");
   if (capability->configurationFieldSchema.empty())
-    return take(test, finalizeConfigurationABI(
-                          ConfigurationABIDraft{fixture.fabric.reference(), {}},
-                          store));
+    return take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                          fixture.system));
   require(test, capability->configurationFieldSchema.size() == 1,
           "scalar FMA fixture has an unexpected field count");
-  const auto domain =
-      take(test, capability->resolveFiniteBehaviorDomain(fabricContext()));
+  const auto fieldReference = capability->configurationFieldSchema.front();
+  auto relation =
+      take(test, capability->resolveSemanticFieldRelation(fabricContext()));
+  require(test,
+          relation.kind() ==
+              ::fabric::FabricOpSemanticFieldRelationKind::Finite,
+          "scalar FMA semantic field relation is not finite");
+  const auto &domain = relation.finiteBehaviorDomain();
   require(test, !domain.empty(), "Fabric projected no scalar FMA formats");
 
   std::vector<FiniteCodebookEntry> entries;
@@ -268,18 +288,21 @@ FinalizedConfigurationABI makeConfigurationAbi(
   if (kind == ConfigurationAbiKind::ExtraSemanticValue)
     entries.push_back({{0xfe}, {0x05}});
   require(test, !inactive.empty(), "FMA domain has no f32 inactive value");
-  constexpr std::uint64_t encodedBits = 3;
-  ConfigurationFieldEncoding field{
-      capability->configurationFieldSchema.front(),
-      FiniteCodebookEncoding{encodedBits, std::move(entries)},
-      {{0, 0, encodedBits}},
+  auto physicalField =
+      take(test, loom::hardware::test::qualifyPhysicalConfigurationField(
+                     fixture.physicalOccurrence, fieldReference.ordinal));
+  loom::hardware::test::ConfigurationFieldEncodingOverride field{
+      physicalField, FiniteCodebookEncoding{3, std::move(entries)},
       std::move(inactive)};
-  ProgrammingUnitDraft unit{
-      {field.field.owner.catalog()}, encodedBits, {field}};
+  return take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                        fixture.system, {std::move(field)}));
+}
+
+FinalizedConfigurationABI makeConfigurationAbi(llvm::StringRef test,
+                                               const ArtifactStore &store,
+                                               const FabricFixture &fixture) {
   return take(test, finalizeConfigurationABI(
-                        ConfigurationABIDraft{fixture.fabric.reference(),
-                                              {std::move(unit)}},
-                        store));
+                        makeConfigurationAbiDraft(test, fixture), store));
 }
 
 std::unique_ptr<mlir::MLIRContext> makeCirctContext() {
@@ -313,7 +336,8 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
       builder, location, fabricOperationGeneratorSchemaSymbol,
       fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
   std::vector<circt::hw::PortInfo> ports =
-      take(test, deriveFabricOperationLeafPorts(builder, *capability, abi));
+      take(test, deriveFabricOperationLeafPorts(
+                     builder, fabric.physicalOccurrence, *capability, abi));
   if (wrongConfigurationWidth) {
     const auto field = llvm::find_if(
         ports, [](const auto &port) { return port.getName() == "config_0"; });
@@ -343,13 +367,13 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
+      {skeleton.leaf, fabric.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(
-                     *skeleton.module, fabric.fabric, abi, associations,
-                     recipes, registry, externalContracts));
+      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
+                                                 associations, recipes,
+                                                 registry, externalContracts));
   require(test,
           output.payloads.empty() && output.activityPoints.empty() &&
               output.externalImplementationBindings.empty(),
@@ -692,7 +716,7 @@ void invalidInputsFailClosed(const std::filesystem::path &root) {
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
 
   auto rejects = [&](const FinalizedConfigurationABI &abi,
                      bool wrongConfigurationWidth, llvm::StringRef message) {
@@ -701,22 +725,28 @@ void invalidInputsFailClosed(const std::filesystem::path &root) {
                                             wrongConfigurationWidth);
     const std::string before = moduleText(*skeleton.module);
     const std::vector<FabricOperationLeafAssociation> associations = {
-        {skeleton.leaf, fabric.occurrence}};
+        {skeleton.leaf, fabric.physicalOccurrence}};
     expectError(test,
-                specializeFabricOperationLeaves(*skeleton.module, fabric.fabric,
-                                                abi, associations, recipes,
-                                                registry, externalContracts),
+                specializeFabricOperationLeaves(*skeleton.module, abi,
+                                                associations, recipes, registry,
+                                                externalContracts),
                 message);
     require(test, moduleText(*skeleton.module) == before,
             "invalid scalar FMA input partially mutated the skeleton");
   };
   rejects(valid, true, "leaf port");
-  rejects(makeConfigurationAbi(test, store, fabric,
-                               ConfigurationAbiKind::MissingBF16),
-          false, "semantic value");
-  rejects(makeConfigurationAbi(test, store, fabric,
-                               ConfigurationAbiKind::ExtraSemanticValue),
-          false, "configuration domain");
+  expectError(test,
+              finalizeConfigurationABI(
+                  makeConfigurationAbiDraft(test, fabric,
+                                            ConfigurationAbiKind::MissingBF16),
+                  store),
+              "semantic");
+  expectError(test,
+              finalizeConfigurationABI(
+                  makeConfigurationAbiDraft(
+                      test, fabric, ConfigurationAbiKind::ExtraSemanticValue),
+                  store),
+              "semantic");
 
   FabricFixture wrongContract =
       makeFabric(test, store, FabricFixtureKind::WrongContract);
@@ -727,12 +757,14 @@ void invalidInputsFailClosed(const std::filesystem::path &root) {
       makeSkeleton(test, *context, wrongContract, wrongContractAbi.abi());
   const std::string before = moduleText(*skeleton.module);
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, wrongContract.occurrence}};
+      {skeleton.leaf, wrongContract.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> wrongContractRecipes = {
-      {wrongContract.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {wrongContract.physicalOccurrence,
+       BackendRecipeKey::PortableSystemVerilog,
+       {}}};
   auto unsupportedContract = specializeFabricOperationLeaves(
-      *skeleton.module, wrongContract.fabric, wrongContractAbi, associations,
-      wrongContractRecipes, registry, externalContracts);
+      *skeleton.module, wrongContractAbi, associations, wrongContractRecipes,
+      registry, externalContracts);
   require(test, !unsupportedContract,
           "FMA provider accepted an unsupported resource contract");
   bool classifiedUnsupported = false;
@@ -763,8 +795,13 @@ void physicalCapacityNarrowsTheFormatDomain(const std::filesystem::path &root) {
   const auto *capability =
       narrow.fabric.view().resolvedFabricOpCapability(narrow.occurrence);
   require(test, capability != nullptr, "narrow FMA capability did not resolve");
-  const auto domain =
-      take(test, capability->resolveFiniteBehaviorDomain(fabricContext()));
+  auto relation =
+      take(test, capability->resolveSemanticFieldRelation(fabricContext()));
+  require(test,
+          relation.kind() ==
+              ::fabric::FabricOpSemanticFieldRelationKind::Finite,
+          "narrow FMA semantic field relation is not finite");
+  const auto &domain = relation.finiteBehaviorDomain();
   require(test, domain.size() == 3,
           "32-bit physical ports did not remove only the f64 behavior");
   bool sawF16 = false;
@@ -774,10 +811,11 @@ void physicalCapacityNarrowsTheFormatDomain(const std::filesystem::path &root) {
     require(test, point.semanticConfiguration.has_value(),
             "reachable FMA behavior has no semantic value");
     const loom::CanonicalSemanticBytes expected =
-        take(test, dataflow::encodeCanonicalType(
-                       point.representativeActor.type.getInput(0)));
+        take(test, relation.projectSemanticValue(
+                       point.representativeActor, point.operandPorts,
+                       point.resultPorts, point.resolvedIndexWidth));
     require(test, point.semanticConfiguration->bytes().equals(expected.bytes()),
-            "FMA behavior changed the ConfigurationABI 1.0 semantic codec");
+            "FMA behavior disagrees with its sealed semantic relation");
     switch (behaviorFormat(test, point)) {
     case ::fabric::FloatFormat::F16:
       sawF16 = true;

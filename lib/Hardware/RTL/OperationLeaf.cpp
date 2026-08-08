@@ -96,6 +96,7 @@ deriveTransparentLoopOperationLeafStateLayout(
 
 llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
     mlir::OpBuilder &builder,
+    const fabric::FabricPhysicalOccurrenceOwnerRef &occurrence,
     const fabric::ResolvedFabricOpCapabilityView &capability,
     const ConfigurationABI &configurationAbi) {
   std::vector<const fabric::ResolvedFabricOpPhysicalPortView *> inputs;
@@ -165,11 +166,8 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
   }
   for (const fabric::FabricSemanticConfigFieldRef &field :
        configurationFields) {
-    if (field.owner.catalog() !=
-        fabric::FabricInventoryOwnerRef::of(capability.occurrence))
-      return invalid("configuration field belongs to a different operation");
     const ConfigurationFieldEncoding *encoding =
-        configurationAbi.findField(field);
+        configurationAbi.findOperationField(occurrence, field.ordinal);
     if (!encoding)
       return invalid("configuration field is absent from ConfigurationABI");
     const std::uint64_t width = encoding->encodedBitCount();
@@ -212,13 +210,14 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
 
 llvm::Error verifyFabricOperationLeafPorts(
     circt::hw::HWModuleGeneratedOp leaf,
+    const fabric::FabricPhysicalOccurrenceOwnerRef &occurrence,
     const fabric::ResolvedFabricOpCapabilityView &capability,
     const ConfigurationABI &configurationAbi) {
   if (!leaf)
     return invalid("operation leaf is absent");
   mlir::OpBuilder builder(leaf.getContext());
-  auto expected =
-      deriveFabricOperationLeafPorts(builder, capability, configurationAbi);
+  auto expected = deriveFabricOperationLeafPorts(builder, occurrence,
+                                                 capability, configurationAbi);
   if (!expected)
     return expected.takeError();
   const auto actual = leaf.getPortList();

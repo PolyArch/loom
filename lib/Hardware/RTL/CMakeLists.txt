@@ -2,6 +2,7 @@ add_library(LoomHardwareRTL
   CirctConformance.cpp
   CommonSkeleton.cpp
   OperationLeaf.cpp
+  PhysicalOperation.cpp
   PortableProviders.cpp
   Providers/FixedVectorIntegerAddSub.cpp
   Providers/FixedVectorIntegerMultiply.cpp

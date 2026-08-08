@@ -26,7 +26,7 @@ inline constexpr llvm::StringLiteral fabricOperationGeneratorDescriptor =
 /// Fabric operation occurrence that owns its capability semantics.
 struct FabricOperationLeafAssociation final {
   circt::hw::HWModuleGeneratedOp module;
-  fabric::FabricFuOccurrenceNodeRef occurrence;
+  fabric::FabricPhysicalOccurrenceOwnerRef occurrence;
 };
 
 /// One standalone CIRCT container built from an exact Fabric Module root.
@@ -61,12 +61,11 @@ private:
 /// no partial skeleton.
 llvm::Expected<ModuleRootCirctSkeleton>
 buildModuleRootCirctSkeleton(mlir::MLIRContext &context,
-                             const fabric::FabricArtifactView &fabric,
+                             fabric::SpatialCoreOccurrenceRef spatialCore,
                              const ConfigurationABI &configurationAbi);
 
 llvm::Error verifyCommonCirctSkeleton(
-    mlir::ModuleOp module, const fabric::FabricArtifactView &fabric,
-    const ConfigurationABI &configurationAbi,
+    mlir::ModuleOp module, const ConfigurationABI &configurationAbi,
     llvm::ArrayRef<FabricOperationLeafAssociation> operationLeaves);
 
 /// Verifies a specialized module and rejects any remaining Loom abstract leaf.

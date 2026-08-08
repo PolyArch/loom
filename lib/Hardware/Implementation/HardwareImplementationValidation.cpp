@@ -16,7 +16,7 @@ llvm::Error invalid(const llvm::Twine &message) {
 
 llvm::Error
 validateRepresentationLocator(const RepresentationLocator &locator,
-                              HardwareRepresentation representation) {
+                              const ImplementationRepresentationRoot &root) {
   if (locator.canonicalName.empty())
     return invalid("representation locator name must be nonempty");
   for (char character : locator.canonicalName) {
@@ -30,7 +30,7 @@ validateRepresentationLocator(const RepresentationLocator &locator,
                          locator.kind == RepresentationObjectKind::Net ||
                          locator.kind == RepresentationObjectKind::Register ||
                          locator.kind == RepresentationObjectKind::Memory;
-  if (representation == HardwareRepresentation::Rtl && !rtlObject)
+  if (root.variant == RepresentationRootVariant::Rtl && !rtlObject)
     return invalid("RTL representation uses an incompatible locator kind");
   return llvm::Error::success();
 }

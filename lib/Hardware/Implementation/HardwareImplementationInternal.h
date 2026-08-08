@@ -11,14 +11,15 @@ namespace loom::hardware::detail {
 
 llvm::Error
 validateRepresentationLocator(const RepresentationLocator &locator,
-                              HardwareRepresentation representation);
+                              const ImplementationRepresentationRoot &root);
 
-llvm::Error canonicalizeMemoryMacroBindings(
-    std::vector<MemoryMacroBinding> &bindings,
+llvm::Expected<std::vector<MemoryMacroBinding>> canonicalizeMemoryMacroBindings(
+    llvm::ArrayRef<MemoryMacroBindingDraft> bindings,
     llvm::ArrayRef<ExternalImplementationBinding> externalBindings,
+    llvm::ArrayRef<std::uint64_t> authoredToCanonicalBinding,
     const ExternalImplementationContractCatalog &contracts,
-    HardwareRepresentation representation,
-    const fabric::FabricArtifactView &fabric);
+    const ImplementationRepresentationRoot &representation,
+    const fabric::FabricSystemRootView &fabric);
 
 } // namespace loom::hardware::detail
 

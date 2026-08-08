@@ -390,6 +390,21 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
   const auto fields = spatial.view().configuredHardware().fields();
   if (fields.size() != 2)
     fail("complete Mapping did not derive both semantic fields");
+  for (const auto &field : fields) {
+    const auto &owner = field.slot.field.owner.catalog();
+    if (owner.kind() !=
+        loom::fabric::FabricInventoryOwnerKind::FuOccurrenceNode)
+      fail("configured operation field has a non-operation owner");
+    const auto occurrence =
+        std::get<loom::fabric::FabricFuOccurrenceNodeRef>(owner.payload);
+    const auto *fieldCapability =
+        fabric.view().resolvedFabricOpCapability(occurrence);
+    if (!fieldCapability)
+      fail("configured operation field has no sealed capability");
+    auto relation =
+        take(fieldCapability->resolveSemanticFieldRelation(context));
+    requireSuccess(relation.validateSemanticValue(field.value.bytes()));
+  }
   const auto bindings = spatial.view().computeBindings();
   const auto realizations = tech.view().computeRealizations();
   const loom::mapping::TechComputeActorView *actorBinding = nullptr;

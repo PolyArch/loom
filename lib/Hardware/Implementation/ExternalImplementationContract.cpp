@@ -2,7 +2,8 @@
 
 #include "HardwareImplementationInternal.h"
 
-#include "Fabric/Artifact/FabricArtifactLocalReference.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -10,12 +11,15 @@
 #include <algorithm>
 #include <cctype>
 #include <optional>
+#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
 
 namespace loom::hardware {
 namespace {
+
+using ByteVector = std::vector<std::uint8_t>;
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -44,16 +48,13 @@ bool validDependencyKind(ExternalDependencyKind kind) {
          kind == ExternalDependencyKind::ToolBundledResource;
 }
 
-bool validRepresentation(HardwareRepresentation representation) {
+bool validRepresentation(RepresentationRootVariant representation) {
   switch (representation) {
-  case HardwareRepresentation::Rtl:
-  case HardwareRepresentation::GateNetlist:
-  case HardwareRepresentation::AsicPlaced:
-  case HardwareRepresentation::AsicRouted:
-  case HardwareRepresentation::AsicExtracted:
-  case HardwareRepresentation::FpgaPlaced:
-  case HardwareRepresentation::FpgaRouted:
-  case HardwareRepresentation::FpgaImage:
+  case RepresentationRootVariant::Rtl:
+  case RepresentationRootVariant::GateNetlist:
+  case RepresentationRootVariant::AsicPhysical:
+  case RepresentationRootVariant::FpgaPhysical:
+  case RepresentationRootVariant::FpgaImage:
     return true;
   }
   return false;
@@ -61,14 +62,31 @@ bool validRepresentation(HardwareRepresentation representation) {
 
 ExternalDependencyKind
 dependencyKind(const ExternalDependencyIdentity &identity) {
-  if (std::holds_alternative<ExplicitFileDependency>(identity))
-    return ExternalDependencyKind::ExplicitFile;
-  return ExternalDependencyKind::ToolBundledResource;
+  return std::holds_alternative<ExplicitFileDependency>(identity)
+             ? ExternalDependencyKind::ExplicitFile
+             : ExternalDependencyKind::ToolBundledResource;
 }
 
-bool localReferenceLess(const EncodedArtifactLocalReference &lhs,
-                        const EncodedArtifactLocalReference &rhs) {
-  return encodeArtifactLocalReference(lhs) < encodeArtifactLocalReference(rhs);
+bool dependencyLess(const ExternalDependencyIdentity &lhs,
+                    const ExternalDependencyIdentity &rhs) {
+  if (dependencyKind(lhs) != dependencyKind(rhs))
+    return dependencyKind(lhs) < dependencyKind(rhs);
+  if (const auto *lhsFile = std::get_if<ExplicitFileDependency>(&lhs))
+    return lhsFile->contentSha256.bytes() <
+           std::get<ExplicitFileDependency>(rhs).contentSha256.bytes();
+  const auto &lhsBundled = std::get<ToolBundledResourceDependency>(lhs);
+  const auto &rhsBundled = std::get<ToolBundledResourceDependency>(rhs);
+  return std::tie(lhsBundled.stableProviderBuildIdentity,
+                  lhsBundled.resourceKey) <
+         std::tie(rhsBundled.stableProviderBuildIdentity,
+                  rhsBundled.resourceKey);
+}
+
+bool externalInputLess(const ExternalInputBinding &lhs,
+                       const ExternalInputBinding &rhs) {
+  if (lhs.providerInputSlotRef != rhs.providerInputSlotRef)
+    return lhs.providerInputSlotRef < rhs.providerInputSlotRef;
+  return dependencyLess(lhs.dependencyIdentity, rhs.dependencyIdentity);
 }
 
 bool locatorLess(const RepresentationLocator &lhs,
@@ -77,26 +95,19 @@ bool locatorLess(const RepresentationLocator &lhs,
          std::tie(rhs.kind, rhs.canonicalName);
 }
 
-const HardwarePayload *findPayload(llvm::ArrayRef<HardwarePayload> payloads,
-                                   const HardwarePayloadRef &reference) {
-  auto found = llvm::find_if(payloads, [&](const HardwarePayload &payload) {
-    return payload.role == reference.role &&
-           payload.logicalName == reference.logicalName;
-  });
-  return found == payloads.end() ? nullptr : &*found;
+bool physicalOwnerLess(const fabric::FabricPhysicalOccurrenceOwnerRef &lhs,
+                       const fabric::FabricPhysicalOccurrenceOwnerRef &rhs) {
+  return fabric::canonicalFabricBytes(lhs) < fabric::canonicalFabricBytes(rhs);
 }
 
 llvm::Error
 validateInputsAgainstContract(std::vector<ExternalInputBinding> &inputs,
                               const ExternalImplementationContract &contract,
-                              HardwareRepresentation representation) {
+                              RepresentationRootVariant representation) {
   if (!llvm::is_contained(contract.supportedRepresentations, representation))
     return invalid("provider contract does not support the representation");
 
-  llvm::sort(inputs, [](const ExternalInputBinding &lhs,
-                        const ExternalInputBinding &rhs) {
-    return lhs.providerInputSlotRef < rhs.providerInputSlotRef;
-  });
+  llvm::sort(inputs, externalInputLess);
   if (inputs.size() != contract.inputSlots.size())
     return invalid("provider input slot closure is incomplete");
   for (std::size_t index = 0; index < inputs.size(); ++index) {
@@ -118,6 +129,41 @@ validateInputsAgainstContract(std::vector<ExternalInputBinding> &inputs,
     }
   }
   return llvm::Error::success();
+}
+
+bool externalBindingLess(const ExternalImplementationBindingDraft &lhs,
+                         const ExternalImplementationBindingDraft &rhs) {
+  if (lhs.providerContractRef != rhs.providerContractRef)
+    return lhs.providerContractRef < rhs.providerContractRef;
+  if (lhs.externalInputs != rhs.externalInputs)
+    return std::lexicographical_compare(
+        lhs.externalInputs.begin(), lhs.externalInputs.end(),
+        rhs.externalInputs.begin(), rhs.externalInputs.end(),
+        externalInputLess);
+  if (lhs.fabricResourceRefs != rhs.fabricResourceRefs)
+    return std::lexicographical_compare(
+        lhs.fabricResourceRefs.begin(), lhs.fabricResourceRefs.end(),
+        rhs.fabricResourceRefs.begin(), rhs.fabricResourceRefs.end(),
+        physicalOwnerLess);
+  if (lhs.representationLocators != rhs.representationLocators)
+    return std::lexicographical_compare(
+        lhs.representationLocators.begin(), lhs.representationLocators.end(),
+        rhs.representationLocators.begin(), rhs.representationLocators.end(),
+        locatorLess);
+  if (lhs.blackBoxContractPayload.has_value() !=
+      rhs.blackBoxContractPayload.has_value())
+    return !lhs.blackBoxContractPayload;
+  if (!lhs.blackBoxContractPayload)
+    return false;
+  return std::tie(lhs.blackBoxContractPayload->role,
+                  lhs.blackBoxContractPayload->canonicalLogicalName) <
+         std::tie(rhs.blackBoxContractPayload->role,
+                  rhs.blackBoxContractPayload->canonicalLogicalName);
+}
+
+bool sameExternalBinding(const ExternalImplementationBindingDraft &lhs,
+                         const ExternalImplementationBindingDraft &rhs) {
+  return !externalBindingLess(lhs, rhs) && !externalBindingLess(rhs, lhs);
 }
 
 } // namespace
@@ -187,7 +233,7 @@ llvm::Expected<std::vector<ExternalInputBinding>>
 ExternalImplementationContractCatalog::canonicalizeAndValidateInputs(
     llvm::StringRef contractRef,
     llvm::ArrayRef<ExternalInputBinding> externalInputs,
-    HardwareRepresentation representation) const {
+    RepresentationRootVariant representation) const {
   std::optional<ExternalImplementationContract> contract = find(contractRef);
   if (!contract)
     return invalid("provider contract is not registered: " + contractRef);
@@ -201,43 +247,31 @@ ExternalImplementationContractCatalog::canonicalizeAndValidateInputs(
 
 llvm::Error
 ExternalImplementationContractCatalog::canonicalizeAndValidateBindings(
-    std::vector<ExternalImplementationBinding> &bindings,
-    HardwareRepresentation representation,
+    std::vector<ExternalImplementationBindingDraft> &bindings,
+    const ImplementationRepresentationRoot &representation,
     const platform::ImplementationPlatform *implementationPlatform,
-    llvm::ArrayRef<HardwarePayload> payloads,
-    const fabric::FabricArtifactView &fabric) const {
-  llvm::sort(bindings, [](const ExternalImplementationBinding &lhs,
-                          const ExternalImplementationBinding &rhs) {
-    return lhs.bindingId < rhs.bindingId;
-  });
-  for (std::size_t bindingIndex = 0; bindingIndex < bindings.size();
-       ++bindingIndex) {
-    ExternalImplementationBinding &binding = bindings[bindingIndex];
-    if (bindingIndex != 0 &&
-        bindings[bindingIndex - 1].bindingId == binding.bindingId)
-      return invalid("external implementation binding ID is duplicated");
-    if (llvm::Error error = validateKey(binding.bindingId, "binding ID"))
-      return error;
-
+    const fabric::FabricSystemRootView &fabric) const {
+  for (ExternalImplementationBindingDraft &binding : bindings) {
     std::optional<ExternalImplementationContract> contract =
         find(binding.providerContractRef);
     if (!contract)
       return invalid("provider contract is not registered: " +
                      binding.providerContractRef);
     if (llvm::Error error = validateInputsAgainstContract(
-            binding.externalInputs, *contract, representation))
+            binding.externalInputs, *contract, representation.variant))
       return error;
 
-    llvm::sort(binding.fabricResourceRefs, localReferenceLess);
+    llvm::sort(binding.fabricResourceRefs, physicalOwnerLess);
     if (std::adjacent_find(binding.fabricResourceRefs.begin(),
                            binding.fabricResourceRefs.end()) !=
         binding.fabricResourceRefs.end())
       return invalid("external Fabric resource reference is duplicated");
-    for (const EncodedArtifactLocalReference &reference :
-         binding.fabricResourceRefs)
-      if (llvm::Error error =
-              fabric::validateFabricArtifactLocalReference(fabric, reference))
-        return error;
+    for (const fabric::FabricPhysicalOccurrenceOwnerRef &reference :
+         binding.fabricResourceRefs) {
+      auto resolved = fabric.resolvePhysicalOwner(reference);
+      if (!resolved)
+        return resolved.takeError();
+    }
 
     llvm::sort(binding.representationLocators, locatorLess);
     if (std::adjacent_find(binding.representationLocators.begin(),
@@ -249,78 +283,81 @@ ExternalImplementationContractCatalog::canonicalizeAndValidateBindings(
               detail::validateRepresentationLocator(locator, representation))
         return error;
 
-    if (contract->blackBoxContractRequired &&
-        !binding.blackBoxContractPayloadRef)
+    if (contract->blackBoxContractRequired && !binding.blackBoxContractPayload)
       return invalid("provider contract requires a BlackBoxContract payload");
-    if (binding.blackBoxContractPayloadRef) {
-      if (binding.blackBoxContractPayloadRef->role !=
-          PayloadRole::BlackBoxContract)
-        return invalid("external payload reference is not a BlackBoxContract");
-      if (!findPayload(payloads, *binding.blackBoxContractPayloadRef))
-        return invalid("BlackBoxContract payload reference is unresolved");
-    }
+    if (binding.blackBoxContractPayload &&
+        binding.blackBoxContractPayload->role != PayloadRole::BlackBoxContract)
+      return invalid("external payload reference is not a BlackBoxContract");
 
     if (contract->validator)
       if (llvm::Error error = contract->validator(binding, representation,
                                                   implementationPlatform))
         return error;
   }
+  llvm::sort(bindings, externalBindingLess);
+  bindings.erase(
+      std::unique(bindings.begin(), bindings.end(), sameExternalBinding),
+      bindings.end());
   return llvm::Error::success();
 }
 
-llvm::Error detail::canonicalizeMemoryMacroBindings(
-    std::vector<MemoryMacroBinding> &bindings,
+llvm::Expected<std::vector<MemoryMacroBinding>>
+detail::canonicalizeMemoryMacroBindings(
+    llvm::ArrayRef<MemoryMacroBindingDraft> bindings,
     llvm::ArrayRef<ExternalImplementationBinding> externalBindings,
+    llvm::ArrayRef<std::uint64_t> authoredToCanonicalBinding,
     const ExternalImplementationContractCatalog &contracts,
-    HardwareRepresentation representation,
-    const fabric::FabricArtifactView &fabric) {
-  const auto memoryKey = [](const MemoryMacroBinding &binding) {
-    return encodeArtifactLocalReference(
-        fabric::encodeFabricArtifactLocalReference(binding.fabricMemoryRef));
-  };
-  llvm::sort(bindings,
-             [&](const MemoryMacroBinding &lhs, const MemoryMacroBinding &rhs) {
-               return memoryKey(lhs) < memoryKey(rhs);
-             });
-  for (std::size_t index = 0; index < bindings.size(); ++index) {
-    MemoryMacroBinding &binding = bindings[index];
-    if (index != 0 && memoryKey(bindings[index - 1]) == memoryKey(binding))
+    const ImplementationRepresentationRoot &representation,
+    const fabric::FabricSystemRootView &fabric) {
+  std::vector<MemoryMacroBinding> canonical;
+  canonical.reserve(bindings.size());
+  std::set<ByteVector> memories;
+  for (const MemoryMacroBindingDraft &binding : bindings) {
+    auto resolved = fabric.resolvePhysicalOwner(binding.fabricMemoryRef);
+    if (!resolved)
+      return resolved.takeError();
+    if (resolved->localOwner.kind() !=
+        fabric::FabricInventoryOwnerKind::MemoryOccurrence)
+      return invalid(
+          "memory macro Fabric reference is not a memory occurrence");
+    ByteVector key = fabric::canonicalFabricBytes(binding.fabricMemoryRef);
+    if (!memories.insert(key).second)
       return invalid("memory macro binding is duplicated");
-
-    const EncodedArtifactLocalReference encodedMemory =
-        fabric::encodeFabricArtifactLocalReference(binding.fabricMemoryRef);
-    if (llvm::Error error =
-            fabric::validateFabricArtifactLocalReference(fabric, encodedMemory))
-      return error;
-    if (llvm::Error error = validateKey(binding.externalImplementationBindingId,
-                                        "external implementation binding ID"))
-      return error;
-    if (llvm::Error error = validateRepresentationLocator(
-            binding.representationLocator, representation))
-      return error;
-
-    auto external = llvm::lower_bound(
-        externalBindings, binding.externalImplementationBindingId,
-        [](const ExternalImplementationBinding &candidate,
-           llvm::StringRef bindingId) {
-          return candidate.bindingId < bindingId;
-        });
-    if (external == externalBindings.end() ||
-        external->bindingId != binding.externalImplementationBindingId)
-      return invalid("memory macro external binding is unresolved");
+    if (binding.externalImplementationBindingDraftIndex >=
+        authoredToCanonicalBinding.size())
+      return invalid("memory macro external binding draft index is unresolved");
+    const std::uint64_t ordinal =
+        authoredToCanonicalBinding[static_cast<std::size_t>(
+            binding.externalImplementationBindingDraftIndex)];
+    if (ordinal >= externalBindings.size())
+      return invalid("memory macro external binding reference is unresolved");
+    const ExternalImplementationBinding &external =
+        externalBindings[static_cast<std::size_t>(ordinal)];
     std::optional<ExternalImplementationContract> contract =
-        contracts.find(external->providerContractRef);
+        contracts.find(external.providerContractRef);
     if (!contract || !contract->memoryMacroCapable)
       return invalid("memory macro provider contract is not memory-capable");
-    if (!llvm::is_contained(external->fabricResourceRefs, encodedMemory))
+    if (!llvm::is_contained(external.fabricResourceRefs,
+                            binding.fabricMemoryRef))
       return invalid("memory macro Fabric reference is absent from its "
                      "external binding");
-    if (!llvm::is_contained(external->representationLocators,
+    if (!llvm::is_contained(external.representationLocators,
                             binding.representationLocator))
       return invalid(
           "memory macro locator is absent from its external binding");
+    if (llvm::Error error = validateRepresentationLocator(
+            binding.representationLocator, representation))
+      return std::move(error);
+    canonical.push_back(MemoryMacroBinding{
+        binding.fabricMemoryRef, ExternalImplementationBindingRef{ordinal},
+        binding.representationLocator});
   }
-  return llvm::Error::success();
+  llvm::sort(canonical,
+             [](const MemoryMacroBinding &lhs, const MemoryMacroBinding &rhs) {
+               return fabric::canonicalFabricBytes(lhs.fabricMemoryRef) <
+                      fabric::canonicalFabricBytes(rhs.fabricMemoryRef);
+             });
+  return canonical;
 }
 
 } // namespace loom::hardware

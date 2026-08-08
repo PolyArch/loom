@@ -1,4 +1,6 @@
+#include "ConfigurationABI2TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
+#include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/LoopInvariant.h"
 
 #include "Common/ArtifactStore.h"
@@ -109,6 +111,8 @@ enum class ResourceContractKind { LoopInvariant, OneCycleElastic };
 struct FabricFixture final {
   FinalizedFabricRoot fabric;
   FabricFuOccurrenceNodeRef occurrence;
+  FinalizedFabricRoot system;
+  loom::fabric::FabricPhysicalOccurrenceOwnerRef physicalOccurrence;
 };
 
 FabricFixture makeFabric(
@@ -177,7 +181,20 @@ FabricFixture makeFabric(
       FabricFuOccurrenceNodeRef occurrence =
           take(test, loom::fabric::deriveFabricFuOccurrenceNode(
                          fabric.view(), capability.occurrence, fuOccurrence));
-      return FabricFixture{std::move(fabric), occurrence};
+      FinalizedFabricRoot system =
+          take(test, loom::hardware::test::makeSingleSpatialCoreSystem(fabric,
+                                                                       store));
+      auto systemView =
+          take(test, loom::fabric::requireSystemRoot(system.view()));
+      auto operations =
+          take(test, enumerateFabricPhysicalOperations(systemView));
+      const auto physical = llvm::find_if(operations, [&](const auto &entry) {
+        return entry.localOccurrence == occurrence;
+      });
+      require(test, physical != operations.end(),
+              "System has no physical loop invariant occurrence");
+      return FabricFixture{std::move(fabric), occurrence, std::move(system),
+                           physical->physicalOccurrence};
     }
   }
   fail(test, "Fabric fixture has no loop invariant occurrence");
@@ -187,8 +204,11 @@ FinalizedConfigurationABI makeConfigurationAbi(llvm::StringRef test,
                                                const ArtifactStore &store,
                                                const FabricFixture &fixture) {
   return take(
-      test, finalizeConfigurationABI(
-                ConfigurationABIDraft{fixture.fabric.reference(), {}}, store));
+      test,
+      finalizeConfigurationABI(
+          take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                         fixture.system)),
+          store));
 }
 
 std::unique_ptr<mlir::MLIRContext> makeCirctContext() {
@@ -221,7 +241,8 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
       builder, location, fabricOperationGeneratorSchemaSymbol,
       fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
   std::vector<circt::hw::PortInfo> ports =
-      take(test, deriveFabricOperationLeafPorts(builder, *capability, abi));
+      take(test, deriveFabricOperationLeafPorts(
+                     builder, fabric.physicalOccurrence, *capability, abi));
   if (wrongStateWidth) {
     const auto state = llvm::find_if(ports, [](const auto &port) {
       return port.getName() == "state_current";
@@ -253,13 +274,13 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
+      {skeleton.leaf, fabric.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(
-                     *skeleton.module, fabric.fabric, abi, associations,
-                     recipes, registry, externalContracts));
+      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
+                                                 associations, recipes,
+                                                 registry, externalContracts));
   require(test,
           output.payloads.empty() && output.activityPoints.empty() &&
               output.externalImplementationBindings.empty(),
@@ -551,14 +572,16 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
       makeSkeleton(test, *context, unsupported, unsupportedAbi.abi());
   const std::string beforeContract = moduleText(*unsupportedSkeleton.module);
   const std::vector<FabricOperationLeafAssociation> unsupportedAssociations = {
-      {unsupportedSkeleton.leaf, unsupported.occurrence}};
+      {unsupportedSkeleton.leaf, unsupported.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> unsupportedRecipes = {
-      {unsupported.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {unsupported.physicalOccurrence,
+       BackendRecipeKey::PortableSystemVerilog,
+       {}}};
   expectTypedUnsupported(test,
                          specializeFabricOperationLeaves(
-                             *unsupportedSkeleton.module, unsupported.fabric,
-                             unsupportedAbi, unsupportedAssociations,
-                             unsupportedRecipes, registry, externalContracts),
+                             *unsupportedSkeleton.module, unsupportedAbi,
+                             unsupportedAssociations, unsupportedRecipes,
+                             registry, externalContracts),
                          "unsupported invariant resource contract");
   require(test, moduleText(*unsupportedSkeleton.module) == beforeContract,
           "unsupported contract partially mutated the caller module");
@@ -569,14 +592,13 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
       makeSkeleton(test, *context, valid, validAbi.abi(), true);
   const std::string beforeLeaf = moduleText(*malformed.module);
   const std::vector<FabricOperationLeafAssociation> malformedAssociations = {
-      {malformed.leaf, valid.occurrence}};
+      {malformed.leaf, valid.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> validRecipes = {
-      {valid.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {valid.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   expectError(test,
-              specializeFabricOperationLeaves(*malformed.module, valid.fabric,
-                                              validAbi, malformedAssociations,
-                                              validRecipes, registry,
-                                              externalContracts),
+              specializeFabricOperationLeaves(
+                  *malformed.module, validAbi, malformedAssociations,
+                  validRecipes, registry, externalContracts),
               "leaf port");
   require(test, moduleText(*malformed.module) == beforeLeaf,
           "malformed leaf partially mutated the caller module");

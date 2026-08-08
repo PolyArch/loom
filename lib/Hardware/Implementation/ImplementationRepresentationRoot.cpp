@@ -21,7 +21,8 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "representation_root_invalid: " + message);
 }
 
-llvm::Expected<llvm::StringRef> variantSpelling(RepresentationRootVariant variant) {
+llvm::Expected<llvm::StringRef>
+variantSpelling(RepresentationRootVariant variant) {
   switch (variant) {
   case RepresentationRootVariant::Rtl:
     return llvm::StringRef("Rtl");
@@ -37,7 +38,8 @@ llvm::Expected<llvm::StringRef> variantSpelling(RepresentationRootVariant varian
   return invalid("representation root variant is unsupported");
 }
 
-std::optional<RepresentationRootVariant> parseVariant(llvm::StringRef spelling) {
+std::optional<RepresentationRootVariant>
+parseVariant(llvm::StringRef spelling) {
   if (spelling == "Rtl")
     return RepresentationRootVariant::Rtl;
   if (spelling == "GateNetlist")
@@ -64,7 +66,8 @@ stageSpelling(RepresentationPhysicalStage stage) {
   return invalid("representation physical stage is unsupported");
 }
 
-std::optional<RepresentationPhysicalStage> parseStage(llvm::StringRef spelling) {
+std::optional<RepresentationPhysicalStage>
+parseStage(llvm::StringRef spelling) {
   if (spelling == "Placed")
     return RepresentationPhysicalStage::Placed;
   if (spelling == "Routed")
@@ -207,8 +210,7 @@ jsonFieldObject(const llvm::json::Object &object, llvm::StringRef key) {
     return invalid("representation root field '" + key + "' is required");
   const llvm::json::Object *child = value->getAsObject();
   if (!child)
-    return invalid("representation root field '" + key +
-                   "' must be an object");
+    return invalid("representation root field '" + key + "' must be an object");
   return *child;
 }
 
@@ -388,23 +390,17 @@ llvm::Expected<std::string> serializeImplementationRepresentationRootJson(
 }
 
 llvm::Expected<ImplementationRepresentationRoot>
-parseImplementationRepresentationRootJson(llvm::StringRef bytes) {
-  auto parsed = llvm::json::parse(bytes);
-  if (!parsed)
-    return invalid("invalid representation root JSON: " +
-                   llvm::toString(parsed.takeError()));
-  const llvm::json::Object *object = parsed->getAsObject();
-  if (!object)
-    return invalid("representation root JSON must be an object");
-
-  for (const auto &field : *object) {
+parseImplementationRepresentationRootJsonValue(
+    const llvm::json::Object &object) {
+  for (const auto &field : object) {
     const llvm::StringRef key = field.getFirst();
     if (key != "variant" && key != "stage" && key != "format_ref" &&
         key != "top" && key != "payloads")
       return invalid("representation root has unknown field '" + key + "'");
   }
 
-  const std::optional<llvm::StringRef> variantText = object->getString("variant");
+  const std::optional<llvm::StringRef> variantText =
+      object.getString("variant");
   if (!variantText)
     return invalid("representation root field 'variant' must be a string");
   const std::optional<RepresentationRootVariant> variant =
@@ -413,7 +409,7 @@ parseImplementationRepresentationRootJson(llvm::StringRef bytes) {
     return invalid("representation root variant is unsupported");
 
   std::optional<RepresentationPhysicalStage> stage;
-  if (const llvm::json::Value *stageValue = object->get("stage")) {
+  if (const llvm::json::Value *stageValue = object.get("stage")) {
     if (!variantHasStage(*variant))
       return invalid("representation root variant carries no stage");
     if (const std::optional<llvm::StringRef> stageText =
@@ -426,7 +422,7 @@ parseImplementationRepresentationRootJson(llvm::StringRef bytes) {
     return invalid("representation root variant requires an exact stage");
   }
 
-  auto formatObject = jsonFieldObject(*object, "format_ref");
+  auto formatObject = jsonFieldObject(object, "format_ref");
   if (!formatObject)
     return formatObject.takeError();
   auto formatRef =
@@ -434,14 +430,14 @@ parseImplementationRepresentationRootJson(llvm::StringRef bytes) {
   if (!formatRef)
     return formatRef.takeError();
 
-  auto topObject = jsonFieldObject(*object, "top");
+  auto topObject = jsonFieldObject(object, "top");
   if (!topObject)
     return topObject.takeError();
   auto top = parseRepresentationLocatorJsonValue(*topObject);
   if (!top)
     return top.takeError();
 
-  const llvm::json::Array *payloads = object->getArray("payloads");
+  const llvm::json::Array *payloads = object.getArray("payloads");
   if (!payloads)
     return invalid("representation root field 'payloads' must be an array");
   std::vector<ImplementationPayload> catalog;
@@ -458,6 +454,21 @@ parseImplementationRepresentationRootJson(llvm::StringRef bytes) {
 
   auto root = createImplementationRepresentationRoot(
       *variant, stage, *formatRef, std::move(*top), std::move(catalog));
+  if (!root)
+    return root.takeError();
+  return root;
+}
+
+llvm::Expected<ImplementationRepresentationRoot>
+parseImplementationRepresentationRootJson(llvm::StringRef bytes) {
+  auto parsed = llvm::json::parse(bytes);
+  if (!parsed)
+    return invalid("invalid representation root JSON: " +
+                   llvm::toString(parsed.takeError()));
+  const llvm::json::Object *object = parsed->getAsObject();
+  if (!object)
+    return invalid("representation root JSON must be an object");
+  auto root = parseImplementationRepresentationRootJsonValue(*object);
   if (!root)
     return root.takeError();
   auto canonical = serializeImplementationRepresentationRootJson(*root);

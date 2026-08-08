@@ -21,6 +21,14 @@ struct FabricSpatialAttachmentRecordView {
   }
 };
 
+/// One occurrence-qualified owner resolved back to the exact Artifact that
+/// owns its local inventory. Direct System owners retain the System Artifact;
+/// imported Module owners retain the selected dependency Artifact.
+struct ResolvedFabricPhysicalOwnerView final {
+  FabricArtifactView artifact;
+  FabricInventoryOwnerRef localOwner;
+};
+
 /// Zero-copy typed refinement of one complete immutable System root view.
 /// It adds no storage or relation authority of its own.
 class FabricSystemRootView final {
@@ -41,6 +49,9 @@ public:
   /// inference. A wrong-kind or unknown occurrence has no target.
   std::optional<FabricImportedModuleTargetRef>
   spatialCoreTarget(AccCoreOccurrenceRef core) const;
+
+  llvm::Expected<ResolvedFabricPhysicalOwnerView>
+  resolvePhysicalOwner(const FabricPhysicalOccurrenceOwnerRef &owner) const;
 
   /// Exact owner records of the closed System service entities. These are
   /// sealed projections of the canonical Fabric fields already validated at

@@ -1,4 +1,6 @@
+#include "ConfigurationABI2TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
+#include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarIntegerCast.h"
 
 #include "Common/ArtifactStore.h"
@@ -86,6 +88,15 @@ void expectInvalid(llvm::StringRef test,
   require(test, classified, "malformed input lost its diagnostic");
 }
 
+template <typename T>
+void expectError(llvm::StringRef test, llvm::Expected<T> value,
+                 llvm::StringRef expected) {
+  if (value)
+    fail(test, "accepted invalid scalar integer cast input");
+  const std::string message = llvm::toString(value.takeError());
+  require(test, llvm::StringRef(message).contains(expected), message);
+}
+
 void expectTypedUnsupported(llvm::StringRef test,
                             llvm::Expected<FabricOperationProviderOutput> value,
                             BackendRecipeKey expectedRecipe,
@@ -138,6 +149,8 @@ enum class ContractKind { OneCycleElastic, Wrong };
 struct FabricFixture final {
   FinalizedFabricRoot fabric;
   FabricFuOccurrenceNodeRef occurrence;
+  FinalizedFabricRoot system;
+  loom::fabric::FabricPhysicalOccurrenceOwnerRef physicalOccurrence;
   FixtureKind kind;
   unsigned inputWidth = 0;
   unsigned outputWidth = 0;
@@ -247,7 +260,25 @@ makeFabric(llvm::StringRef test, const ArtifactStore &store,
       FabricFuOccurrenceNodeRef occurrence =
           take(test, loom::fabric::deriveFabricFuOccurrenceNode(
                          fabric.view(), capability.occurrence, fuOccurrence));
-      return {std::move(fabric), occurrence, kind, inputWidth, outputWidth};
+      FinalizedFabricRoot system =
+          take(test, loom::hardware::test::makeSingleSpatialCoreSystem(fabric,
+                                                                       store));
+      auto systemView =
+          take(test, loom::fabric::requireSystemRoot(system.view()));
+      auto operations =
+          take(test, enumerateFabricPhysicalOperations(systemView));
+      const auto physical = llvm::find_if(operations, [&](const auto &entry) {
+        return entry.localOccurrence == occurrence;
+      });
+      require(test, physical != operations.end(),
+              "System has no physical scalar integer cast occurrence");
+      return {std::move(fabric),
+              occurrence,
+              std::move(system),
+              physical->physicalOccurrence,
+              kind,
+              inputWidth,
+              outputWidth};
     }
   }
   fail(test, "Fabric fixture has no scalar integer cast occurrence");
@@ -294,13 +325,24 @@ castActor(llvm::StringRef test, ::dataflow::OperationSchemaId schema,
 std::vector<std::uint8_t>
 semanticValue(llvm::StringRef test,
               const loom::fabric::ResolvedFabricOpCapabilityView &capability,
-              const loom::fabric::FabricSemanticConfigFieldRef &field,
               const ::dataflow::CanonicalActorSchemaProjection &actor) {
   constexpr std::array<std::uint64_t, 1> operandPorts = {0};
   constexpr std::array<std::uint64_t, 1> resultPorts = {0};
-  const loom::CanonicalSemanticBytes encoded =
-      take(test, capability.encodeSemanticConfiguration(
-                     field, actor, 32, operandPorts, resultPorts));
+  auto relation =
+      take(test, capability.resolveSemanticFieldRelation(fabricContext()));
+  require(test,
+          relation.kind() ==
+              ::fabric::FabricOpSemanticFieldRelationKind::Finite,
+          "configured cast semantic field relation is not finite");
+  const bool hasIndexEndpoint =
+      llvm::isa<mlir::IndexType>(actor.type.getInput(0)) ||
+      llvm::isa<mlir::IndexType>(actor.type.getResult(0));
+  const loom::CanonicalSemanticBytes encoded = take(
+      test, relation.projectSemanticValue(
+                actor, operandPorts, resultPorts,
+                hasIndexEndpoint ? std::optional<::fabric::ResolvedIndexWidth>(
+                                       ::fabric::ResolvedIndexWidth::I32)
+                                 : std::nullopt));
   return std::vector<std::uint8_t>(encoded.bytes().begin(),
                                    encoded.bytes().end());
 }
@@ -317,30 +359,29 @@ CastSemanticValues configuredSemanticValues(
     const loom::fabric::ResolvedFabricOpCapabilityView &capability) {
   require(test, capability.configurationFieldSchema.size() == 1,
           "configured cast has an unexpected field count");
-  const auto field = capability.configurationFieldSchema.front();
   mlir::Type i8 = mlir::IntegerType::get(&fabricContext(), 8);
   mlir::Type i32 = mlir::IntegerType::get(&fabricContext(), 32);
   mlir::Type index = mlir::IndexType::get(&fabricContext());
 
   CastSemanticValues values{
-      semanticValue(test, capability, field,
+      semanticValue(test, capability,
                     castActor(test,
                               ::dataflow::OperationSchemaId::ArithIndexCast,
                               index, i32)),
       semanticValue(
-          test, capability, field,
+          test, capability,
           castActor(test, ::dataflow::OperationSchemaId::ArithExtSI, i8, i32)),
       semanticValue(
-          test, capability, field,
+          test, capability,
           castActor(test, ::dataflow::OperationSchemaId::ArithExtUI, i8, i32)),
-      semanticValue(test, capability, field,
+      semanticValue(test, capability,
                     castActor(test, ::dataflow::OperationSchemaId::ArithTruncI,
                               i32, i8))};
 
   require(test,
           values.signExtend ==
               semanticValue(
-                  test, capability, field,
+                  test, capability,
                   castActor(test, ::dataflow::OperationSchemaId::ArithIndexCast,
                             i8, index)),
           "signed ordinary and index extension did not physically deduplicate");
@@ -348,7 +389,7 @@ CastSemanticValues configuredSemanticValues(
       test,
       values.zeroExtend ==
           semanticValue(
-              test, capability, field,
+              test, capability,
               castActor(test, ::dataflow::OperationSchemaId::ArithIndexCastUI,
                         i8, index)),
       "unsigned ordinary and index extension did not physically deduplicate");
@@ -356,12 +397,12 @@ CastSemanticValues configuredSemanticValues(
       test,
       values.truncate ==
               semanticValue(
-                  test, capability, field,
+                  test, capability,
                   castActor(test, ::dataflow::OperationSchemaId::ArithIndexCast,
                             index, i8)) &&
           values.truncate ==
               semanticValue(
-                  test, capability, field,
+                  test, capability,
                   castActor(test,
                             ::dataflow::OperationSchemaId::ArithIndexCastUI,
                             index, i8)),
@@ -370,7 +411,7 @@ CastSemanticValues configuredSemanticValues(
       test,
       values.identity ==
           semanticValue(
-              test, capability, field,
+              test, capability,
               castActor(test, ::dataflow::OperationSchemaId::ArithIndexCastUI,
                         i32, index)),
       "signed and unsigned index identity did not physically deduplicate");
@@ -379,17 +420,15 @@ CastSemanticValues configuredSemanticValues(
 
 enum class AbiKind { Complete, MissingTruncate };
 
-FinalizedConfigurationABI
-makeConfigurationAbi(llvm::StringRef test, const ArtifactStore &store,
-                     const FabricFixture &fixture,
-                     AbiKind kind = AbiKind::Complete) {
+ConfigurationABIDraft
+makeConfigurationAbiDraft(llvm::StringRef test, const FabricFixture &fixture,
+                          AbiKind kind = AbiKind::Complete) {
   const auto *capability =
       fixture.fabric.view().resolvedFabricOpCapability(fixture.occurrence);
   require(test, capability != nullptr, "Fabric capability did not resolve");
   if (capability->configurationFieldSchema.empty())
-    return take(test, finalizeConfigurationABI(
-                          ConfigurationABIDraft{fixture.fabric.reference(), {}},
-                          store));
+    return take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                          fixture.system));
 
   const CastSemanticValues values = configuredSemanticValues(test, *capability);
   const auto fieldReference = capability->configurationFieldSchema.front();
@@ -400,16 +439,22 @@ makeConfigurationAbi(llvm::StringRef test, const ArtifactStore &store,
       {kind == AbiKind::MissingTruncate ? std::vector<std::uint8_t>{0xff}
                                         : values.truncate,
        {0x02}}};
-  ConfigurationFieldEncoding field{
-      fieldReference,
-      FiniteCodebookEncoding{3, std::move(entries)},
-      {{0, 0, 3}},
+  auto physicalField =
+      take(test, loom::hardware::test::qualifyPhysicalConfigurationField(
+                     fixture.physicalOccurrence, fieldReference.ordinal));
+  loom::hardware::test::ConfigurationFieldEncodingOverride field{
+      physicalField, FiniteCodebookEncoding{3, std::move(entries)},
       values.identity};
-  ProgrammingUnitDraft unit{{field.field.owner.catalog()}, 3, {field}};
+  return take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                        fixture.system, {std::move(field)}));
+}
+
+FinalizedConfigurationABI
+makeConfigurationAbi(llvm::StringRef test, const ArtifactStore &store,
+                     const FabricFixture &fixture,
+                     AbiKind kind = AbiKind::Complete) {
   return take(test, finalizeConfigurationABI(
-                        ConfigurationABIDraft{fixture.fabric.reference(),
-                                              {std::move(unit)}},
-                        store));
+                        makeConfigurationAbiDraft(test, fixture, kind), store));
 }
 
 std::unique_ptr<mlir::MLIRContext> makeCirctContext() {
@@ -445,7 +490,8 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
       builder, location, fabricOperationGeneratorSchemaSymbol,
       fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
   std::vector<circt::hw::PortInfo> ports =
-      take(test, deriveFabricOperationLeafPorts(builder, *capability, abi));
+      take(test, deriveFabricOperationLeafPorts(
+                     builder, fabric.physicalOccurrence, *capability, abi));
   if (mutation == LeafMutation::WrongConfigurationWidth) {
     require(test, ports.size() == 3,
             "configured scalar integer cast has unexpected leaf ports");
@@ -472,12 +518,11 @@ trySpecialize(SkeletonFixture &skeleton, const FabricFixture &fabric,
               const FabricOperationProviderRegistry &registry) {
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
+      {skeleton.leaf, fabric.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, recipe, {}}};
-  return specializeFabricOperationLeaves(*skeleton.module, fabric.fabric, abi,
-                                         associations, recipes, registry,
-                                         externalContracts);
+      {fabric.physicalOccurrence, recipe, {}}};
+  return specializeFabricOperationLeaves(*skeleton.module, abi, associations,
+                                         recipes, registry, externalContracts);
 }
 
 std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
@@ -567,8 +612,9 @@ void fabricOwnsBehaviorDomain(const std::filesystem::path &root) {
               inputs.front()->payloadWidthBits == configured.inputWidth &&
               outputs.front()->payloadWidthBits == configured.outputWidth,
           "configured capability changed its exact physical ports");
-  const auto domain =
-      take(test, capability->resolveFiniteBehaviorDomain(fabricContext()));
+  const auto relation =
+      take(test, capability->resolveSemanticFieldRelation(fabricContext()));
+  const auto domain = relation.finiteBehaviorDomain();
   require(test, domain.size() == 4,
           "cross-schema cast behaviors did not collapse to four modes");
   for (const auto &point : domain) {
@@ -592,8 +638,9 @@ void fabricOwnsBehaviorDomain(const std::filesystem::path &root) {
       identity.fabric.view().resolvedFabricOpCapability(identity.occurrence);
   require(test, identityCapability != nullptr,
           "identity capability did not resolve");
-  const auto identityDomain = take(
-      test, identityCapability->resolveFiniteBehaviorDomain(fabricContext()));
+  const auto identityRelation = take(
+      test, identityCapability->resolveSemanticFieldRelation(fabricContext()));
+  const auto identityDomain = identityRelation.finiteBehaviorDomain();
   require(test,
           identityCapability->configurationFieldSchema.empty() &&
               identityDomain.size() == 1 &&
@@ -772,19 +819,12 @@ void failuresAreTransactional(const std::filesystem::path &root) {
   require(test, moduleText(*malformedLeaf.module) == leafBefore,
           "malformed leaf mutated the caller module");
 
-  FinalizedConfigurationABI malformedAbi =
-      makeConfigurationAbi(test, store, valid, AbiKind::MissingTruncate);
-  std::unique_ptr<mlir::MLIRContext> abiContext = makeCirctContext();
-  SkeletonFixture malformedCodebook = makeSkeleton(
-      test, *abiContext, valid, malformedAbi.abi(), "malformed_cast_codebook");
-  const std::string abiBefore = moduleText(*malformedCodebook.module);
-  expectInvalid(test,
-                trySpecialize(malformedCodebook, valid, malformedAbi,
-                              BackendRecipeKey::PortableSystemVerilog,
-                              registry),
-                "admitted semantic value");
-  require(test, moduleText(*malformedCodebook.module) == abiBefore,
-          "malformed ABI mutated the caller module");
+  expectError(
+      test,
+      finalizeConfigurationABI(
+          makeConfigurationAbiDraft(test, valid, AbiKind::MissingTruncate),
+          store),
+      "semantic");
 
   FabricFixture wrongContract =
       makeFabric(test, store, FixtureKind::Configured, ContractKind::Wrong);

@@ -1,4 +1,6 @@
+#include "ConfigurationABI2TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
+#include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarIntegerAddSub.h"
 
 #include "Common/ArtifactStore.h"
@@ -74,13 +76,24 @@ mlir::MLIRContext &fabricContext();
 std::vector<std::uint8_t>
 operationValue(llvm::StringRef test,
                const loom::fabric::ResolvedFabricOpCapabilityView &capability,
-               const loom::fabric::FabricSemanticConfigFieldRef &field,
                dataflow::OperationSchemaId schema) {
-  const loom::CanonicalSemanticBytes encoded =
-      take(test,
-           capability.encodeOperationSelection(field, schema, fabricContext()));
-  return std::vector<std::uint8_t>(encoded.bytes().begin(),
-                                   encoded.bytes().end());
+  auto relation =
+      take(test, capability.resolveSemanticFieldRelation(fabricContext()));
+  require(test,
+          relation.kind() ==
+              ::fabric::FabricOpSemanticFieldRelationKind::Finite,
+          "add/sub capability does not have a finite relation");
+  const auto point = llvm::find_if(
+      relation.finiteBehaviorDomain(), [&](const auto &candidate) {
+        return candidate.representativeActor.schema == schema;
+      });
+  require(test,
+          point != relation.finiteBehaviorDomain().end() &&
+              point->semanticConfiguration.has_value(),
+          "add/sub schema has no finite behavior key");
+  return std::vector<std::uint8_t>(
+      point->semanticConfiguration->bytes().begin(),
+      point->semanticConfiguration->bytes().end());
 }
 
 mlir::MLIRContext &fabricContext() {
@@ -99,6 +112,8 @@ mlir::MLIRContext &fabricContext() {
 struct FabricFixture final {
   FinalizedFabricRoot fabric;
   FabricFuOccurrenceNodeRef occurrence;
+  FinalizedFabricRoot system;
+  loom::fabric::FabricPhysicalOccurrenceOwnerRef physicalOccurrence;
 };
 
 enum class ConfigurationAbiKind {
@@ -205,13 +220,26 @@ makeFabric(llvm::StringRef test, const ArtifactStore &store,
       FabricFuOccurrenceNodeRef occurrence =
           take(test, loom::fabric::deriveFabricFuOccurrenceNode(
                          fabric.view(), capability.occurrence, fuOccurrence));
-      return FabricFixture{std::move(fabric), occurrence};
+      FinalizedFabricRoot system =
+          take(test, loom::hardware::test::makeSingleSpatialCoreSystem(fabric,
+                                                                       store));
+      auto systemView =
+          take(test, loom::fabric::requireSystemRoot(system.view()));
+      auto operations =
+          take(test, enumerateFabricPhysicalOperations(systemView));
+      const auto physical = llvm::find_if(operations, [&](const auto &entry) {
+        return entry.localOccurrence == occurrence;
+      });
+      require(test, physical != operations.end(),
+              "System has no physical add/sub occurrence");
+      return FabricFixture{std::move(fabric), occurrence, std::move(system),
+                           physical->physicalOccurrence};
     }
   }
   fail(test, "Fabric fixture has no scalar integer add/sub occurrence");
 }
 
-FinalizedConfigurationABI makeConfigurationAbi(
+ConfigurationABIDraft makeConfigurationAbiDraft(
     llvm::StringRef test, const ArtifactStore &store,
     const FabricFixture &fixture,
     ConfigurationAbiKind kind = ConfigurationAbiKind::Complete) {
@@ -219,18 +247,15 @@ FinalizedConfigurationABI makeConfigurationAbi(
       fixture.fabric.view().resolvedFabricOpCapability(fixture.occurrence);
   require(test, capability != nullptr, "Fabric capability did not resolve");
   if (capability->configurationFieldSchema.empty())
-    return take(test, finalizeConfigurationABI(
-                          ConfigurationABIDraft{fixture.fabric.reference(), {}},
-                          store));
+    return take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                          fixture.system));
   require(test, capability->configurationFieldSchema.size() == 1,
           "add/sub fixture has an unexpected configuration field count");
   const auto fieldReference = capability->configurationFieldSchema.front();
   const std::vector<std::uint8_t> addValue =
-      operationValue(test, *capability, fieldReference,
-                     dataflow::OperationSchemaId::ArithAddI);
+      operationValue(test, *capability, dataflow::OperationSchemaId::ArithAddI);
   const std::vector<std::uint8_t> subtractValue =
-      operationValue(test, *capability, fieldReference,
-                     dataflow::OperationSchemaId::ArithSubI);
+      operationValue(test, *capability, dataflow::OperationSchemaId::ArithSubI);
 
   std::vector<FiniteCodebookEntry> entries{
       {addValue, {0x02}},
@@ -240,17 +265,24 @@ FinalizedConfigurationABI makeConfigurationAbi(
        {0x01}}};
   if (kind == ConfigurationAbiKind::ExtraSemanticValue)
     entries.push_back({{0xfe}, {0x03}});
-  ConfigurationFieldEncoding field{
-      fieldReference,
-      FiniteCodebookEncoding{2, std::move(entries)},
-      {{0, 0, 2}},
+  auto physicalField =
+      take(test, loom::hardware::test::qualifyPhysicalConfigurationField(
+                     fixture.physicalOccurrence, fieldReference.ordinal));
+  loom::hardware::test::ConfigurationFieldEncodingOverride field{
+      physicalField, FiniteCodebookEncoding{2, std::move(entries)},
       kind == ConfigurationAbiKind::SubtractInactive ? subtractValue
                                                      : addValue};
-  ProgrammingUnitDraft unit{{field.field.owner.catalog()}, 2, {field}};
-  return take(test, finalizeConfigurationABI(
-                        ConfigurationABIDraft{fixture.fabric.reference(),
-                                              {std::move(unit)}},
-                        store));
+  return take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                        fixture.system, {std::move(field)}));
+}
+
+FinalizedConfigurationABI makeConfigurationAbi(
+    llvm::StringRef test, const ArtifactStore &store,
+    const FabricFixture &fixture,
+    ConfigurationAbiKind kind = ConfigurationAbiKind::Complete) {
+  return take(
+      test, finalizeConfigurationABI(
+                makeConfigurationAbiDraft(test, store, fixture, kind), store));
 }
 
 std::unique_ptr<mlir::MLIRContext> makeCirctContext() {
@@ -283,7 +315,8 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
       builder, location, fabricOperationGeneratorSchemaSymbol,
       fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
   std::vector<circt::hw::PortInfo> ports =
-      take(test, deriveFabricOperationLeafPorts(builder, *capability, abi));
+      take(test, deriveFabricOperationLeafPorts(
+                     builder, fabric.physicalOccurrence, *capability, abi));
   if (wrongConfigurationWidth) {
     require(test, ports.size() == 4,
             "multi-member add/sub leaf did not have four ports");
@@ -312,13 +345,13 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
+      {skeleton.leaf, fabric.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(
-                     *skeleton.module, fabric.fabric, abi, associations,
-                     recipes, registry, externalContracts));
+      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
+                                                 associations, recipes,
+                                                 registry, externalContracts));
   require(test,
           output.payloads.empty() && output.activityPoints.empty() &&
               output.externalImplementationBindings.empty(),
@@ -406,57 +439,6 @@ synth -top scalar_integer_add_sub
 check
 stat
 )ys";
-}
-
-void operationSelectionPreservesConfigurationABI1Codec(
-    const std::filesystem::path &root) {
-  const llvm::StringRef test = __func__;
-  std::filesystem::create_directories(root);
-  ArtifactStore store(root.string());
-  FabricFixture fixture = makeFabric(test, store);
-  const auto *capability =
-      fixture.fabric.view().resolvedFabricOpCapability(fixture.occurrence);
-  require(test, capability != nullptr, "Fabric capability did not resolve");
-  require(test, capability->configurationFieldSchema.size() == 1,
-          "configured add/sub capability has no semantic field");
-  const auto &field = capability->configurationFieldSchema.front();
-  const auto domain =
-      take(test, capability->resolveFiniteBehaviorDomain(fabricContext()));
-  require(test, domain.size() == 2,
-          "configured add/sub capability changed its ABI 1.0 domain");
-
-  for (dataflow::OperationSchemaId schema : {
-           dataflow::OperationSchemaId::ArithAddI,
-           dataflow::OperationSchemaId::ArithSubI,
-       }) {
-    const loom::CanonicalSemanticBytes expected =
-        take(test, dataflow::encodeOperationSchemaId(schema));
-    const std::vector<std::uint8_t> actual =
-        operationValue(test, *capability, field, schema);
-    require(test, llvm::ArrayRef(actual).equals(expected.bytes()),
-            "operation selection changed the ConfigurationABI 1.0 semantic "
-            "codec");
-
-    mlir::Type i8 = mlir::IntegerType::get(&fabricContext(), 8);
-    const dataflow::CanonicalActorSchemaProjection actor{
-        schema, mlir::FunctionType::get(&fabricContext(), {i8, i8}, {i8}),
-        dataflow::IntegerOverflowPayload{}};
-    const loom::CanonicalSemanticBytes projected =
-        take(test, capability->encodeSemanticConfiguration(
-                       field, actor, 64, std::array<std::uint64_t, 2>{0, 1},
-                       std::array<std::uint64_t, 1>{0}));
-    require(test, projected.bytes().equals(expected.bytes()),
-            "actor projection changed the ConfigurationABI 1.0 semantic "
-            "codec");
-
-    const auto point = llvm::find_if(domain, [&](const auto &candidate) {
-      return candidate.representativeActor.schema == schema;
-    });
-    require(test,
-            point != domain.end() && point->semanticConfiguration &&
-                point->semanticConfiguration->bytes().equals(expected.bytes()),
-            "finite domain changed the ConfigurationABI 1.0 semantic codec");
-  }
 }
 
 void singletonNeedsNoSelector(const std::filesystem::path &root) {
@@ -554,12 +536,12 @@ void unsupportedResourceContractIsTransactional(
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
+      {skeleton.leaf, fabric.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  auto result = specializeFabricOperationLeaves(*skeleton.module, fabric.fabric,
-                                                abi, associations, recipes,
-                                                registry, externalContracts);
+      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+  auto result =
+      specializeFabricOperationLeaves(*skeleton.module, abi, associations,
+                                      recipes, registry, externalContracts);
   require(test, !result, "unsupported resource contract specialized");
   bool classifiedUnsupported = false;
   llvm::handleAllErrors(
@@ -597,48 +579,32 @@ void malformedInputsFailClosed(const std::filesystem::path &root) {
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {wrongPorts.leaf, fabric.occurrence}};
+      {wrongPorts.leaf, fabric.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   expectError(test,
-              specializeFabricOperationLeaves(*wrongPorts.module, fabric.fabric,
-                                              abi, associations, recipes,
-                                              registry, externalContracts),
+              specializeFabricOperationLeaves(*wrongPorts.module, abi,
+                                              associations, recipes, registry,
+                                              externalContracts),
               "leaf port");
   require(test, moduleText(*wrongPorts.module) == before,
           "invalid leaf ports partially mutated the common skeleton");
 
-  FinalizedConfigurationABI missing = makeConfigurationAbi(
-      test, store, fabric, ConfigurationAbiKind::MissingSubtract);
-  std::unique_ptr<mlir::MLIRContext> missingContext = makeCirctContext();
-  SkeletonFixture wrongCodebook =
-      makeSkeleton(test, *missingContext, fabric, missing.abi());
-  const std::string codebookBefore = moduleText(*wrongCodebook.module);
-  const std::vector<FabricOperationLeafAssociation> codebookAssociations = {
-      {wrongCodebook.leaf, fabric.occurrence}};
-  expectError(test,
-              specializeFabricOperationLeaves(
-                  *wrongCodebook.module, fabric.fabric, missing,
-                  codebookAssociations, recipes, registry, externalContracts),
-              "subtract semantic value");
-  require(test, moduleText(*wrongCodebook.module) == codebookBefore,
-          "invalid codebook partially mutated the common skeleton");
+  expectError(
+      test,
+      finalizeConfigurationABI(
+          makeConfigurationAbiDraft(test, store, fabric,
+                                    ConfigurationAbiKind::MissingSubtract),
+          store),
+      "semantic");
 
-  FinalizedConfigurationABI extra = makeConfigurationAbi(
-      test, store, fabric, ConfigurationAbiKind::ExtraSemanticValue);
-  std::unique_ptr<mlir::MLIRContext> extraContext = makeCirctContext();
-  SkeletonFixture extraCodebook =
-      makeSkeleton(test, *extraContext, fabric, extra.abi());
-  const std::string extraBefore = moduleText(*extraCodebook.module);
-  const std::vector<FabricOperationLeafAssociation> extraAssociations = {
-      {extraCodebook.leaf, fabric.occurrence}};
-  expectError(test,
-              specializeFabricOperationLeaves(
-                  *extraCodebook.module, fabric.fabric, extra,
-                  extraAssociations, recipes, registry, externalContracts),
-              "operation-selection domain");
-  require(test, moduleText(*extraCodebook.module) == extraBefore,
-          "overcomplete codebook partially mutated the common skeleton");
+  expectError(
+      test,
+      finalizeConfigurationABI(
+          makeConfigurationAbiDraft(test, store, fabric,
+                                    ConfigurationAbiKind::ExtraSemanticValue),
+          store),
+      "semantic");
 }
 
 } // namespace
@@ -647,7 +613,6 @@ int main(int argc, char **argv) {
   if (argc != 2)
     fail("main", "expected one temporary directory argument");
   const std::filesystem::path root(argv[1]);
-  operationSelectionPreservesConfigurationABI1Codec(root / "abi1_codec");
   configuredCodebookAndDeterminism(root);
   singletonNeedsNoSelector(root / "singleton");
   subtractInactiveControlsUnassignedCode(root / "subtract_inactive");

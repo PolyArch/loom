@@ -1,5 +1,6 @@
 add_library(LoomHardwareConfiguration
   ConfigurationABI.cpp
+  ProgrammingUnitRef.cpp
 )
 
 target_include_directories(LoomHardwareConfiguration PUBLIC

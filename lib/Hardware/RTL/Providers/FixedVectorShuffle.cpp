@@ -53,11 +53,11 @@ mlir::Value extractConfiguration(mlir::OpBuilder &builder,
 void materializeShuffleNetwork(
     mlir::OpBuilder &builder, mlir::Location location,
     circt::hw::HWModulePortAccessor &accessor,
-    const ConfigurationFieldEncoding &field,
+    fabric::FabricOrdinal fieldOrdinal,
     const ::fabric::FixedVectorShuffleConfigurationLayout &layout,
     unsigned outputWidth, unsigned arithmeticWidth) {
   mlir::Value configuration =
-      accessor.getInput("config_" + std::to_string(field.field.ordinal));
+      accessor.getInput("config_" + std::to_string(fieldOrdinal));
   mlir::Value zero = constant(builder, location, arithmeticWidth, 0);
   mlir::Value one = constant(builder, location, arithmeticWidth, 1);
   mlir::Value blockWidth = circt::comb::AddOp::create(
@@ -142,10 +142,16 @@ materializePortableFixedVectorShuffle(FabricOperationProviderRequest request) {
       std::vector<Schema>{Schema::VectorShuffle})
     return invalid("capability does not contain exactly vector.shuffle");
 
-  auto layout =
-      ::fabric::resolveFixedVectorShuffleConfigurationLayout(*parameters);
-  if (!layout)
-    return layout.takeError();
+  auto relation = request.capability.resolveSemanticFieldRelation(
+      *request.leaf.getContext());
+  if (!relation)
+    return relation.takeError();
+  if (relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::Direct)
+    return invalid("shuffle semantic field relation is not direct");
+  const auto *layout = relation->fixedVectorShuffleLayout();
+  if (!layout || !relation->directEncodedBitCount() ||
+      *relation->directEncodedBitCount() != layout->encodedBitCount)
+    return invalid("shuffle semantic field relation has no exact layout");
 
   auto actualContract = ::fabric::encodeResourceContractRecord(
       request.capability.resourceStateAndTimingContract);
@@ -186,19 +192,22 @@ materializePortableFixedVectorShuffle(FabricOperationProviderRequest request) {
 
   if (request.capability.configurationFieldSchema.size() != 1)
     return invalid("shuffle capability does not contain exactly one field");
-  const ConfigurationFieldEncoding *field = request.configurationAbi.findField(
-      request.capability.configurationFieldSchema.front());
+  const ConfigurationFieldEncoding *field =
+      request.configurationAbi.findOperationField(
+          request.occurrence,
+          request.capability.configurationFieldSchema.front().ordinal);
   if (!field)
     return invalid("configured field is absent from the ABI");
   const auto *direct =
       std::get_if<DirectBitsEncoding>(&field->semanticEncoding);
   if (!direct)
     return invalid("shuffle configuration field is not DirectBits");
-  if (direct->encodedBitCount != layout->encodedBitCount)
+  if (direct->encodedBitCount != *relation->directEncodedBitCount())
     return invalid("shuffle DirectBits field has the wrong bit count");
 
   if (llvm::Error error = verifyFabricOperationLeafPorts(
-          request.leaf, request.capability, request.configurationAbi))
+          request.leaf, request.occurrence, request.capability,
+          request.configurationAbi))
     return std::move(error);
 
   const unsigned arithmeticWidth =
@@ -213,9 +222,10 @@ materializePortableFixedVectorShuffle(FabricOperationProviderRequest request) {
       circt::hw::ModulePortInfo(request.leaf.getPortList()),
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
-        materializeShuffleNetwork(bodyBuilder, location, accessor, *field,
-                                  *layout, outputs[0]->payloadWidthBits,
-                                  arithmeticWidth);
+        materializeShuffleNetwork(
+            bodyBuilder, location, accessor,
+            request.capability.configurationFieldSchema.front().ordinal,
+            *layout, outputs[0]->payloadWidthBits, arithmeticWidth);
       },
       request.leaf.getParametersAttr());
   request.leaf.erase();

@@ -14,12 +14,13 @@
 #include <string>
 #include <vector>
 
+namespace llvm::json {
+class Object;
+}
+
 namespace loom::hardware {
 
-/// The dormant schema-2.0 typed representation root. It is a pure canonical
-/// value: no HardwareImplementation 1.0 publisher, importer, or execution path
-/// consumes it, and no translation helper to or from the 1.0 representation
-/// exists.
+/// Canonical typed representation root for HardwareImplementation 2.0.
 struct ImplementationRepresentationRoot final {
   RepresentationRootVariant variant;
   /// Present exactly for the physical variants.
@@ -70,6 +71,10 @@ decodeImplementationRepresentationRoot(llvm::ArrayRef<std::uint8_t> bytes);
 /// Canonical JSON uses the exact displayed variant and stage spellings.
 llvm::Expected<std::string> serializeImplementationRepresentationRootJson(
     const ImplementationRepresentationRoot &root);
+
+llvm::Expected<ImplementationRepresentationRoot>
+parseImplementationRepresentationRootJsonValue(
+    const llvm::json::Object &object);
 
 llvm::Expected<ImplementationRepresentationRoot>
 parseImplementationRepresentationRootJson(llvm::StringRef bytes);

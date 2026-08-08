@@ -1,10 +1,12 @@
 add_library(LoomHardwareImplementation
   ExternalImplementationContract.cpp
   HardwareImplementation.cpp
+  HardwareImplementationLocalReference.cpp
   HardwareImplementationValidation.cpp
   ImplementationPayload.cpp
   ImplementationRepresentationRoot.cpp
   RepresentationFormat.cpp
+  RepresentationIndexCore.cpp
   RepresentationLocator.cpp
 )
 
@@ -26,26 +28,27 @@ if(LOOM_HAVE_CIRCT)
       "Pinned CIRCT package does not export the required slang target")
   endif()
 
-  add_library(LoomHardwareRepresentationIndex
+  target_sources(LoomHardwareImplementation PRIVATE
     RepresentationIndex.cpp
     RepresentationIndexGate.cpp
     RepresentationIndexRtl.cpp
   )
 
-  target_compile_features(LoomHardwareRepresentationIndex PRIVATE cxx_std_20)
-  target_compile_options(LoomHardwareRepresentationIndex PRIVATE
+  target_compile_features(LoomHardwareImplementation PRIVATE cxx_std_20)
+  target_compile_options(LoomHardwareImplementation PRIVATE
     -fno-exceptions
     -fno-rtti
   )
-
-  target_include_directories(LoomHardwareRepresentationIndex PUBLIC
-    $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+  target_link_libraries(LoomHardwareImplementation PRIVATE
+    slang
   )
 
-  target_link_libraries(LoomHardwareRepresentationIndex PUBLIC
+  add_library(LoomHardwareRepresentationIndex INTERFACE)
+  target_link_libraries(LoomHardwareRepresentationIndex INTERFACE
     LoomHardwareImplementation
-    LLVMSupport
-  PRIVATE
-    slang
+  )
+else()
+  target_sources(LoomHardwareImplementation PRIVATE
+    RepresentationIndexUnavailable.cpp
   )
 endif()

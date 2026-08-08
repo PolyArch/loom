@@ -1,14 +1,22 @@
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/OperationLeaf.h"
+#include "Hardware/RTL/PhysicalOperation.h"
+#include "Hardware/RTL/Providers/ScalarIntegerAddSub.h"
+#include "Hardware/RTL/Specialization.h"
 
-#include "ADG/Builtin.h"
+#include "ConfigurationABI2TestSupport.h"
+
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
+#include "Fabric/Identity/FabricPeConfiguration.h"
+#include "Hardware/Implementation/HardwareImplementation.h"
 
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
@@ -22,6 +30,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -38,10 +47,14 @@
 namespace {
 
 using loom::ArtifactStore;
-using loom::fabric::FabricFuOccurrenceNodeRef;
 using loom::fabric::FinalizedFabricRoot;
+using loom::hardware::ExternalImplementationContractCatalog;
 using loom::hardware::FinalizedConfigurationABI;
+using loom::hardware::rtl::BackendRecipeKey;
 using loom::hardware::rtl::FabricOperationLeafAssociation;
+using loom::hardware::rtl::FabricOperationProviderRegistry;
+using loom::hardware::rtl::FabricOperationRecipeBinding;
+using loom::hardware::rtl::ResolvedFabricPhysicalOperation;
 
 [[noreturn]] void fail(llvm::StringRef test, const std::string &message) {
   llvm::errs() << test << ": " << message << '\n';
@@ -209,16 +222,6 @@ FinalizedFabricRoot makeOperationFabric(llvm::StringRef test,
   return take(test, loom::fabric::finalizeFabricRoot(root, store));
 }
 
-FinalizedFabricRoot makeSystemFabric(llvm::StringRef test,
-                                     const ArtifactStore &store) {
-  auto design = take(test, loom::adg::buildBuiltinTarget(
-                               store, loom::adg::BuiltinTargetPreset::Small));
-  require(test, design.roots().size() == 1,
-          "builtin target did not produce one System root");
-  return take(test, loom::fabric::importEntireFabricRoot(
-                        design.roots().front().reference(), store));
-}
-
 FinalizedFabricRoot makeBoundaryOnlyFabric(llvm::StringRef test,
                                            const ArtifactStore &store) {
   mlir::DialectRegistry registry;
@@ -250,41 +253,191 @@ FinalizedFabricRoot makeBoundaryOnlyFabric(llvm::StringRef test,
   return take(test, loom::fabric::finalizeFabricRoot(root, store));
 }
 
-std::vector<FabricFuOccurrenceNodeRef>
-findOperationOccurrences(llvm::StringRef test,
-                         const loom::fabric::FabricArtifactView &view) {
-  std::vector<FabricFuOccurrenceNodeRef> result;
-  for (const auto occurrence : view.fuOccurrences()) {
-    const auto definition = view.fuTemplateOf(occurrence);
-    if (!definition)
-      continue;
-    const auto capabilities = view.resolvedFabricOpCapabilities(*definition);
-    for (const auto &capability : capabilities)
-      result.push_back(
-          take(test, loom::fabric::deriveFabricFuOccurrenceNode(
-                         view, capability.occurrence, occurrence)));
-  }
-  require(test, !result.empty(), "Fabric has no concrete operation occurrence");
-  return result;
+struct SystemFixture final {
+  FinalizedFabricRoot module;
+  FinalizedFabricRoot system;
+  FinalizedConfigurationABI abi;
+  loom::fabric::SpatialCoreOccurrenceRef spatialCore;
+  std::vector<ResolvedFabricPhysicalOperation> operations;
+};
+
+loom::fabric::FabricPhysicalConfigurationFieldRef qualifyConfigurationField(
+    llvm::StringRef test, loom::fabric::SpatialCoreOccurrenceRef spatialCore,
+    const loom::fabric::FabricSemanticConfigFieldRef &field) {
+  auto target =
+      take(test, loom::fabric::FabricModulePhysicalTargetRef::create(field));
+  return take(test, loom::fabric::FabricPhysicalConfigurationFieldRef::create(
+                        loom::fabric::SpatialCoreInternalOccurrenceRef{
+                            spatialCore, std::move(target)}));
 }
 
-FinalizedConfigurationABI
-makeEmptyConfigurationAbi(llvm::StringRef test, const ArtifactStore &store,
-                          const FinalizedFabricRoot &fabric) {
-  return take(test, loom::hardware::finalizeConfigurationABI(
-                        {fabric.reference(), {}}, store));
+const loom::fabric::FabricTransportEndpointRef &
+boundaryEndpoint(llvm::StringRef test,
+                 const loom::fabric::FabricArtifactView &module,
+                 loom::fabric::FabricPortDirection direction,
+                 loom::fabric::FabricOrdinal ordinal) {
+  const loom::fabric::FabricTransportEndpointRef *result = nullptr;
+  for (const auto &attachment : module.moduleBoundaryTransportAttachments()) {
+    if (attachment.boundary.direction != direction ||
+        attachment.boundary.ordinal != ordinal)
+      continue;
+    require(test, result == nullptr,
+            "Module boundary endpoint has duplicate attachments");
+    result = &attachment.endpoint;
+  }
+  require(test, result != nullptr, "Module boundary endpoint is unattached");
+  return *result;
+}
+
+struct ConfigurationImages final {
+  std::string portName;
+  loom::hardware::ProgrammingUnitId unitId = 0;
+  std::uint64_t bitCount = 0;
+  std::vector<std::uint8_t> inactive;
+  std::vector<std::uint8_t> route;
+  std::vector<std::uint8_t> discard;
+};
+
+ConfigurationImages makeConfigurationImages(llvm::StringRef test,
+                                            const SystemFixture &fixture) {
+  const auto &module = fixture.module.view();
+  require(test,
+          module.peOccurrences().size() == 1 &&
+              module.fuOccurrences().size() == 1,
+          "configuration fixture changed its PE/FU shape");
+  const auto pe = module.peOccurrences().front();
+  const auto fu = module.fuOccurrences().front();
+  auto schema = take(test, module.spatialPeConfigurationSchema(pe));
+
+  std::vector<loom::hardware::SemanticConfigurationValue> routeValues;
+  std::vector<loom::hardware::SemanticConfigurationValue> discardValues;
+  const loom::hardware::ProgrammingUnit *owner = nullptr;
+  for (const auto &descriptor : schema.fields()) {
+    loom::fabric::FabricPeConfigurationValue routeValue;
+    loom::fabric::FabricPeConfigurationValue discardValue;
+    if (descriptor.kind ==
+        loom::fabric::FabricPeConfigurationFieldKind::Activation) {
+      routeValue = loom::fabric::FabricPeActive{fu};
+      discardValue = loom::fabric::FabricPeActive{fu};
+    } else {
+      require(test, descriptor.port.has_value(),
+              "selector field has no FU port");
+      const auto &port = *descriptor.port;
+      const auto &endpoint =
+          boundaryEndpoint(test, module, port.direction, port.ordinal);
+      routeValue = loom::fabric::FabricPeRoute{endpoint};
+      if (descriptor.kind ==
+              loom::fabric::FabricPeConfigurationFieldKind::InputSelector &&
+          port.ordinal == 0)
+        discardValue = loom::fabric::FabricPeInputDiscard{endpoint};
+      else if (descriptor.kind ==
+               loom::fabric::FabricPeConfigurationFieldKind::InputSelector)
+        discardValue = loom::fabric::FabricPeDisconnected{};
+      else
+        discardValue = loom::fabric::FabricPeRoute{endpoint};
+    }
+
+    const auto physical = qualifyConfigurationField(test, fixture.spatialCore,
+                                                    descriptor.reference);
+    const loom::hardware::ProgrammingUnit *fieldOwner = nullptr;
+    for (const auto &unit : fixture.abi.abi().programmingUnits())
+      for (const auto &field : unit.fields)
+        if (field.field == physical) {
+          require(test, fieldOwner == nullptr,
+                  "configuration field has duplicate programming owners");
+          fieldOwner = &unit;
+        }
+    require(test, fieldOwner != nullptr,
+            "configuration field has no programming owner");
+    if (owner)
+      require(test, owner->id == fieldOwner->id,
+              "fixture PE fields span multiple programming units");
+    else
+      owner = fieldOwner;
+
+    const auto routeBytes =
+        take(test, schema.encode(descriptor.reference, routeValue));
+    routeValues.push_back(
+        {physical, std::vector<std::uint8_t>(routeBytes.bytes().begin(),
+                                             routeBytes.bytes().end())});
+    const auto discardBytes =
+        take(test, schema.encode(descriptor.reference, discardValue));
+    discardValues.push_back(
+        {physical, std::vector<std::uint8_t>(discardBytes.bytes().begin(),
+                                             discardBytes.bytes().end())});
+  }
+  require(test, owner != nullptr, "fixture has no programming unit");
+  return ConfigurationImages{
+      "configuration_" + std::to_string(owner->id),
+      owner->id,
+      owner->payloadBitCount,
+      take(test, fixture.abi.abi().encode(owner->id, {})),
+      take(test, fixture.abi.abi().encode(owner->id, routeValues)),
+      take(test, fixture.abi.abi().encode(owner->id, discardValues))};
+}
+
+SystemFixture makeSystemFixture(llvm::StringRef test,
+                                const ArtifactStore &store,
+                                FinalizedFabricRoot module,
+                                std::uint64_t spatialCoreCount = 1) {
+  FinalizedFabricRoot system =
+      take(test, loom::hardware::test::makeSpatialCoreSystem(module, store,
+                                                             spatialCoreCount));
+  auto abiDraft = take(
+      test, loom::hardware::test::makeCompleteConfigurationABIDraft(system));
+  FinalizedConfigurationABI abi =
+      take(test, loom::hardware::finalizeConfigurationABI(std::move(abiDraft),
+                                                          store));
+  auto systemView = take(test, loom::fabric::requireSystemRoot(system.view()));
+  require(test,
+          systemView.artifact().accCoreOccurrences().size() == spatialCoreCount,
+          "test System changed its accelerator core count");
+  const loom::fabric::SpatialCoreOccurrenceRef spatialCore{
+      systemView.artifact().accCoreOccurrences().front()};
+  auto operations = take(
+      test, loom::hardware::rtl::enumerateFabricPhysicalOperations(systemView));
+  return SystemFixture{std::move(module), std::move(system), std::move(abi),
+                       spatialCore, std::move(operations)};
+}
+
+void repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  SystemFixture fabric =
+      makeSystemFixture(test, store, makeOperationFabric(test, store), 2);
+  require(test, fabric.operations.size() == 2,
+          "repeated Module did not produce two physical operations");
+  const auto system =
+      take(test, loom::fabric::requireSystemRoot(fabric.system.view()));
+  require(test, system.artifact().accCoreOccurrences().size() == 2,
+          "repeated Module did not produce two SpatialCores");
+  for (const auto core : system.artifact().accCoreOccurrences()) {
+    const loom::fabric::SpatialCoreOccurrenceRef spatialCore{core};
+    mlir::MLIRContext context;
+    context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
+                        circt::seq::SeqDialect, circt::sv::SVDialect>();
+    auto skeleton =
+        take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                       context, spatialCore, fabric.abi.abi()));
+    require(test, skeleton.operationLeaves.size() == 1,
+            "one SpatialCore skeleton covered a foreign occurrence");
+    const auto &internal =
+        std::get<loom::fabric::SpatialCoreInternalOccurrenceRef>(
+            skeleton.operationLeaves.front().occurrence.payload());
+    require(test, internal.spatialCore == spatialCore,
+            "one SpatialCore skeleton associated a foreign operation");
+  }
 }
 
 void commonSkeletonRejectsUnresolvedOrUnboundLeaves() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   ArtifactStore store(directory.path());
-  FinalizedFabricRoot fabric = makeOperationFabric(test, store);
-  FinalizedConfigurationABI abi =
-      makeEmptyConfigurationAbi(test, store, fabric);
-  const std::vector<FabricFuOccurrenceNodeRef> occurrences =
-      findOperationOccurrences(test, fabric.view());
-  const FabricFuOccurrenceNodeRef occurrence = occurrences.front();
+  SystemFixture fabric =
+      makeSystemFixture(test, store, makeOperationFabric(test, store));
+  require(test, !fabric.operations.empty(),
+          "System has no physical operation occurrence");
 
   mlir::MLIRContext context;
   context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
@@ -301,11 +454,8 @@ void commonSkeletonRejectsUnresolvedOrUnboundLeaves() {
       builder.getArrayAttr({}));
   std::vector<circt::hw::HWModuleGeneratedOp> leaves;
   std::vector<FabricOperationLeafAssociation> association;
-  for (std::size_t index = 0; index < occurrences.size(); ++index) {
-    const auto *capability =
-        fabric.view().resolvedFabricOpCapability(occurrences[index]);
-    require(test, capability != nullptr,
-            "operation capability did not resolve");
+  for (std::size_t index = 0; index < fabric.operations.size(); ++index) {
+    const ResolvedFabricPhysicalOperation &operation = fabric.operations[index];
     auto leaf = circt::hw::HWModuleGeneratedOp::create(
         builder, location,
         mlir::FlatSymbolRefAttr::get(
@@ -314,9 +464,10 @@ void commonSkeletonRejectsUnresolvedOrUnboundLeaves() {
         builder.getStringAttr(
             (llvm::Twine("loom_fabric_operation_") + llvm::Twine(index)).str()),
         take(test, loom::hardware::rtl::deriveFabricOperationLeafPorts(
-                       builder, *capability, abi.abi())));
+                       builder, operation.physicalOccurrence,
+                       *operation.capability, fabric.abi.abi())));
     leaves.push_back(leaf);
-    association.push_back({leaf, occurrences[index]});
+    association.push_back({leaf, operation.physicalOccurrence});
   }
   circt::hw::HWModuleGeneratedOp leaf = leaves.front();
   const llvm::SmallVector<circt::hw::PortInfo> firstLeafPorts =
@@ -329,7 +480,7 @@ void commonSkeletonRejectsUnresolvedOrUnboundLeaves() {
       [](mlir::OpBuilder &, circt::hw::HWModulePortAccessor &) {});
 
   if (llvm::Error error = loom::hardware::rtl::verifyCommonCirctSkeleton(
-          *module, fabric.view(), abi.abi(), association))
+          *module, fabric.abi.abi(), association))
     fail(test, llvm::toString(std::move(error)));
 
   const circt::hw::PortInfo unresolvedInput{
@@ -351,7 +502,7 @@ void commonSkeletonRejectsUnresolvedOrUnboundLeaves() {
       });
   expectError(test,
               loom::hardware::rtl::verifyCommonCirctSkeleton(
-                  *module, fabric.view(), abi.abi(), association),
+                  *module, fabric.abi.abi(), association),
               "unresolved structural lowering");
   expectError(test, loom::hardware::rtl::verifySpecializedCirctModule(*module),
               "unresolved structural lowering");
@@ -370,27 +521,26 @@ void commonSkeletonRejectsUnresolvedOrUnboundLeaves() {
   leaf.setModuleType(circt::hw::ModuleType::get(&context, wrongLeafPorts));
   expectError(test,
               loom::hardware::rtl::verifyCommonCirctSkeleton(
-                  *module, fabric.view(), abi.abi(), association),
+                  *module, fabric.abi.abi(), association),
               "does not match its derived contract");
   leaf.setModuleType(exactLeafType);
 
-  FinalizedFabricRoot foreignFabric = makeBoundaryOnlyFabric(test, store);
-  FinalizedConfigurationABI foreignAbi =
-      makeEmptyConfigurationAbi(test, store, foreignFabric);
+  SystemFixture foreignFabric =
+      makeSystemFixture(test, store, makeBoundaryOnlyFabric(test, store));
   expectError(test,
               loom::hardware::rtl::verifyCommonCirctSkeleton(
-                  *module, fabric.view(), foreignAbi.abi(), association),
-              "ConfigurationABI does not implement the exact Fabric");
+                  *module, foreignFabric.abi.abi(), association),
+              "does not resolve to a concrete Fabric operation capability");
 
   expectError(test,
               loom::hardware::rtl::verifyCommonCirctSkeleton(
-                  *module, fabric.view(), abi.abi(), {}),
+                  *module, fabric.abi.abi(), {}),
               "has no exact Fabric occurrence association");
   std::vector<FabricOperationLeafAssociation> duplicate = association;
-  duplicate.push_back({leaf, occurrence});
+  duplicate.push_back({leaf, fabric.operations.front().physicalOccurrence});
   expectError(test,
               loom::hardware::rtl::verifyCommonCirctSkeleton(
-                  *module, fabric.view(), abi.abi(), duplicate),
+                  *module, fabric.abi.abi(), duplicate),
               "associated more than once");
 
   auto secondLeaf = circt::hw::HWModuleGeneratedOp::create(
@@ -399,10 +549,11 @@ void commonSkeletonRejectsUnresolvedOrUnboundLeaves() {
           &context, loom::hardware::rtl::fabricOperationGeneratorSchemaSymbol),
       builder.getStringAttr("loom_fabric_operation_1"), operationPorts);
   std::vector<FabricOperationLeafAssociation> duplicateOccurrence = association;
-  duplicateOccurrence.push_back({secondLeaf, occurrence});
+  duplicateOccurrence.push_back(
+      {secondLeaf, fabric.operations.front().physicalOccurrence});
   expectError(test,
               loom::hardware::rtl::verifyCommonCirctSkeleton(
-                  *module, fabric.view(), abi.abi(), duplicateOccurrence),
+                  *module, fabric.abi.abi(), duplicateOccurrence),
               "occurrence is associated more than once");
   secondLeaf.erase();
 
@@ -423,35 +574,30 @@ void commonSkeletonRejectsUnresolvedOrUnboundLeaves() {
   foreignAssociation.front().module = foreignLeaf;
   expectError(test,
               loom::hardware::rtl::verifyCommonCirctSkeleton(
-                  *module, fabric.view(), abi.abi(), foreignAssociation),
+                  *module, fabric.abi.abi(), foreignAssociation),
               "does not name a Loom leaf in this module");
 
   schema.setDescriptor("unexpected.fabric.operation");
   expectError(test,
               loom::hardware::rtl::verifyCommonCirctSkeleton(
-                  *module, fabric.view(), abi.abi(), association),
+                  *module, fabric.abi.abi(), association),
               "schema has an unexpected descriptor");
   schema.setDescriptor(loom::hardware::rtl::fabricOperationGeneratorDescriptor);
 
-  FabricFuOccurrenceNodeRef foreign = occurrence;
-  foreign.ordinal += 1000000;
+  SystemFixture twoOccurrence =
+      makeSystemFixture(test, store, makeOperationFabric(test, store, true));
+  require(test, twoOccurrence.operations.size() == 2,
+          "two-operation System changed its operation count");
   std::vector<FabricOperationLeafAssociation> invalid = association;
-  invalid.front().occurrence = foreign;
+  invalid.front().occurrence =
+      twoOccurrence.operations.back().physicalOccurrence;
   expectError(test,
               loom::hardware::rtl::verifyCommonCirctSkeleton(
-                  *module, fabric.view(), abi.abi(), invalid),
+                  *module, fabric.abi.abi(), invalid),
               "does not resolve to a concrete Fabric operation capability");
 
-  FinalizedFabricRoot twoOccurrenceFabric =
-      makeOperationFabric(test, store, true);
-  FinalizedConfigurationABI twoOccurrenceAbi =
-      makeEmptyConfigurationAbi(test, store, twoOccurrenceFabric);
-  const FabricFuOccurrenceNodeRef firstOfTwo =
-      findOperationOccurrences(test, twoOccurrenceFabric.view()).front();
-  const auto *firstOfTwoCapability =
-      twoOccurrenceFabric.view().resolvedFabricOpCapability(firstOfTwo);
-  require(test, firstOfTwoCapability != nullptr,
-          "two-occurrence capability did not resolve");
+  const ResolvedFabricPhysicalOperation &firstOfTwo =
+      twoOccurrence.operations.front();
   mlir::OwningOpRef<mlir::ModuleOp> incompleteModule =
       mlir::ModuleOp::create(location);
   builder.setInsertionPointToStart(incompleteModule->getBody());
@@ -466,11 +612,12 @@ void commonSkeletonRejectsUnresolvedOrUnboundLeaves() {
           &context, loom::hardware::rtl::fabricOperationGeneratorSchemaSymbol),
       builder.getStringAttr("incomplete_fabric_operation"),
       take(test, loom::hardware::rtl::deriveFabricOperationLeafPorts(
-                     builder, *firstOfTwoCapability, twoOccurrenceAbi.abi())));
+                     builder, firstOfTwo.physicalOccurrence,
+                     *firstOfTwo.capability, twoOccurrence.abi.abi())));
   expectError(test,
               loom::hardware::rtl::verifyCommonCirctSkeleton(
-                  *incompleteModule, twoOccurrenceFabric.view(),
-                  twoOccurrenceAbi.abi(), {{incompleteLeaf, firstOfTwo}}),
+                  *incompleteModule, twoOccurrence.abi.abi(),
+                  {{incompleteLeaf, firstOfTwo.physicalOccurrence}}),
               "does not exactly cover Fabric operation occurrences");
 
   expectError(
@@ -493,26 +640,27 @@ std::string moduleBoundaryPassthroughBuildsDeterministicSkeleton() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   ArtifactStore store(directory.path());
-  FinalizedFabricRoot fabric = makeBoundaryOnlyFabric(test, store);
-  FinalizedConfigurationABI abi =
-      makeEmptyConfigurationAbi(test, store, fabric);
+  SystemFixture fabric =
+      makeSystemFixture(test, store, makeBoundaryOnlyFabric(test, store));
 
   mlir::MLIRContext firstContext;
   firstContext.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                            circt::seq::SeqDialect, circt::sv::SVDialect>();
-  auto first = take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                              firstContext, fabric.view(), abi.abi()));
+  auto first =
+      take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                     firstContext, fabric.spatialCore, fabric.abi.abi()));
   require(test, first.operationLeaves.empty(),
           "boundary-only skeleton invented an operation leaf");
   if (llvm::Error error = loom::hardware::rtl::verifyCommonCirctSkeleton(
-          *first.module, fabric.view(), abi.abi(), first.operationLeaves))
+          *first.module, fabric.abi.abi(), first.operationLeaves))
     fail(test, llvm::toString(std::move(error)));
 
   mlir::MLIRContext secondContext;
   secondContext.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                             circt::seq::SeqDialect, circt::sv::SVDialect>();
-  auto second = take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                               secondContext, fabric.view(), abi.abi()));
+  auto second =
+      take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                     secondContext, fabric.spatialCore, fabric.abi.abi()));
   std::string firstText;
   std::string secondText;
   llvm::raw_string_ostream(firstText) << *first.module;
@@ -530,22 +678,170 @@ std::string moduleBoundaryPassthroughBuildsDeterministicSkeleton() {
               rtl.contains("[15:0]") && rtl.contains("[2:0]"),
           "boundary skeleton omitted canonical transport signals");
 
-  FinalizedFabricRoot system = makeSystemFabric(test, store);
+  const loom::fabric::SpatialCoreOccurrenceRef invalidSpatialCore{
+      loom::fabric::AccCoreOccurrenceRef{fabric.spatialCore.core.id() +
+                                         1000000}};
   expectError(test,
               loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                  secondContext, system.view(), abi.abi()),
-              "requires a Module root");
-  FinalizedFabricRoot operationFabric = makeOperationFabric(test, store);
-  FinalizedConfigurationABI operationAbi =
-      makeEmptyConfigurationAbi(test, store, operationFabric);
-  expectStructuralUnsupported(
-      test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                secondContext, operationFabric.view(), operationAbi.abi()));
-  expectError(test,
-              loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                  secondContext, fabric.view(), operationAbi.abi()),
-              "ConfigurationABI does not implement the exact Fabric");
+                  secondContext, invalidSpatialCore, fabric.abi.abi()),
+              "SpatialCore");
   return systemVerilog;
+}
+
+struct InternalToolArtifact final {
+  std::string systemVerilog;
+  ConfigurationImages configuration;
+};
+
+InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  SystemFixture fabric =
+      makeSystemFixture(test, store, makeOperationFabric(test, store));
+  ConfigurationImages configuration = makeConfigurationImages(test, fabric);
+
+  mlir::MLIRContext context;
+  context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
+                      circt::seq::SeqDialect, circt::sv::SVDialect>();
+  auto skeleton =
+      take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                     context, fabric.spatialCore, fabric.abi.abi()));
+  require(test, skeleton.operationLeaves.size() == 1,
+          "internal operation skeleton did not expose one exact leaf");
+  require(test,
+          skeleton.operationLeaves.front().occurrence ==
+              fabric.operations.front().physicalOccurrence,
+          "internal operation skeleton associated a different occurrence");
+
+  FabricOperationProviderRegistry providers;
+  if (llvm::Error error =
+          loom::hardware::rtl::registerPortableScalarIntegerAddSubProvider(
+              providers))
+    fail(test, llvm::toString(std::move(error)));
+  ExternalImplementationContractCatalog externalContracts;
+  const std::vector<FabricOperationRecipeBinding> recipes{
+      {fabric.operations.front().physicalOccurrence,
+       BackendRecipeKey::PortableSystemVerilog,
+       {}}};
+  take(test, loom::hardware::rtl::specializeFabricOperationLeaves(
+                 *skeleton.module, fabric.abi, skeleton.operationLeaves,
+                 recipes, providers, externalContracts));
+  const std::string systemVerilog =
+      take(test, loom::hardware::rtl::lowerAndExportSpecializedSystemVerilog(
+                     *skeleton.module));
+  const llvm::StringRef rtl(systemVerilog);
+  require(test,
+          rtl.contains("input_0_data") && rtl.contains("input_1_data") &&
+              rtl.contains("output_0_data") && rtl.contains("clock") &&
+              rtl.contains("reset") && rtl.contains("result_data_reg") &&
+              rtl.contains("result_valid_reg") &&
+              rtl.contains(configuration.portName),
+          "internal operation RTL omitted its structural elastic slot");
+
+  const std::filesystem::path blobRoot =
+      std::filesystem::path(directory.path().str()) / "blobs";
+  std::error_code directoryError;
+  if (!std::filesystem::create_directory(blobRoot, directoryError) ||
+      directoryError)
+    fail(test, "unable to create the implementation BlobStore: " +
+                   directoryError.message());
+  loom::BlobStore blobs(blobRoot.string());
+  const std::vector<std::uint8_t> rtlBytes(systemVerilog.begin(),
+                                           systemVerilog.end());
+  const loom::BlobDigest rtlDigest = take(test, blobs.put(rtlBytes));
+
+  auto system =
+      take(test, loom::fabric::requireSystemRoot(fabric.system.view()));
+  const loom::fabric::FabricInventoryOwnerRef spatialCoreOwner =
+      loom::fabric::FabricInventoryOwnerRef::of(fabric.spatialCore);
+  std::optional<loom::fabric::HardwareDomainRef> clockDomain;
+  std::optional<loom::fabric::HardwareDomainRef> resetDomain;
+  for (const loom::fabric::HardwareDomainRef domain :
+       system.hardwareDomains()) {
+    const auto *contract = system.hardwareDomainContract(domain);
+    if (!contract || !llvm::is_contained(contract->members(), spatialCoreOwner))
+      continue;
+    if (contract->kind() == loom::fabric::FabricHardwareDomainKind::Clock)
+      clockDomain = domain;
+    else if (contract->kind() == loom::fabric::FabricHardwareDomainKind::Reset)
+      resetDomain = domain;
+  }
+  require(test, clockDomain.has_value() && resetDomain.has_value(),
+          "internal operation System has no exact Clock/Reset domains");
+
+  using loom::hardware::ImplementationClockInterfaceRef;
+  using loom::hardware::ImplementationConfigurationInterfaceRef;
+  using loom::hardware::ImplementationInterface;
+  using loom::hardware::ImplementationResetInterfaceRef;
+  using loom::hardware::RepresentationLocator;
+  using loom::hardware::RepresentationObjectKind;
+  std::vector<ImplementationInterface> interfaces{
+      {ImplementationClockInterfaceRef{*clockDomain},
+       {RepresentationObjectKind::Port, "loom_module.clock"},
+       std::nullopt},
+      {ImplementationResetInterfaceRef{*resetDomain},
+       {RepresentationObjectKind::Port, "loom_module.reset"},
+       std::nullopt},
+      {ImplementationConfigurationInterfaceRef{
+           {fabric.abi.reference(), configuration.unitId}},
+       {RepresentationObjectKind::Port,
+        "loom_module." + configuration.portName},
+       std::nullopt}};
+  auto format = take(
+      test, loom::hardware::RepresentationFormatDescriptorRef::get(
+                loom::hardware::RepresentationFormatKind::SystemVerilogRtl));
+  auto representation = take(
+      test, loom::hardware::createImplementationRepresentationRoot(
+                loom::hardware::RepresentationRootVariant::Rtl, std::nullopt,
+                format, {RepresentationObjectKind::Module, "loom_module"},
+                {{loom::hardware::PayloadRole::RtlSource,
+                  "rtl/internal_module.sv", rtlDigest}}));
+  loom::hardware::HardwareImplementationDraft implementationDraft{
+      fabric.system.reference(),
+      fabric.abi.reference(),
+      {},
+      std::move(representation),
+      std::nullopt,
+      std::move(interfaces),
+      {{{RepresentationObjectKind::Instance, "loom_module.operation"},
+        fabric.operations.front().physicalOccurrence}},
+      {},
+      {}};
+  const auto implementation =
+      take(test, loom::hardware::finalizeHardwareImplementation(
+                     std::move(implementationDraft), store, blobs));
+  require(test,
+          implementation.implementation().interfaces().size() == 3 &&
+              implementation.implementation().activityPoints().size() == 1 &&
+              implementation.implementation()
+                      .activityPoints()
+                      .front()
+                      .semanticFabricRef ==
+                  fabric.operations.front().physicalOccurrence,
+          "internal RTL publication lost its exact System bindings");
+  const auto imported =
+      take(test, loom::hardware::importHardwareImplementation(
+                     implementation.reference(), store, blobs));
+  require(test,
+          imported.canonicalBytes().bytes() ==
+              implementation.canonicalBytes().bytes(),
+          "internal RTL HardwareImplementation did not round-trip");
+  return InternalToolArtifact{systemVerilog, std::move(configuration)};
+}
+
+std::string bitLiteral(llvm::ArrayRef<std::uint8_t> bytes,
+                       std::uint64_t bitCount) {
+  std::string result;
+  result.reserve(static_cast<std::size_t>(bitCount));
+  for (std::uint64_t bit = bitCount; bit > 0; --bit) {
+    const std::uint64_t index = bit - 1;
+    result.push_back(
+        ((bytes[static_cast<std::size_t>(index / 8)] >> (index % 8)) & 1U) != 0
+            ? '1'
+            : '0');
+  }
+  return result;
 }
 
 void writeBoundaryToolArtifacts(const std::filesystem::path &root,
@@ -604,15 +900,131 @@ select -assert-none loom_module/t:$*ff* loom_module/t:$*latch* loom_module/t:$_*
 )ys";
 }
 
+void writeInternalToolArtifacts(const std::filesystem::path &root,
+                                const InternalToolArtifact &artifact) {
+  const ConfigurationImages &configuration = artifact.configuration;
+  std::ofstream(root / "internal_module.sv") << artifact.systemVerilog;
+  std::ofstream testbench(root / "internal_testbench.sv");
+  testbench << R"sv(
+module internal_testbench;
+  logic       clock;
+  logic       reset;
+  logic [7:0] input_0_data;
+  logic       input_0_valid;
+  logic       input_0_ready;
+  logic [7:0] input_1_data;
+  logic       input_1_valid;
+  logic       input_1_ready;
+  logic [7:0] output_0_data;
+  logic       output_0_valid;
+  logic       output_0_ready;
+)sv";
+  testbench << "  logic [" << configuration.bitCount - 1 << ":0] "
+            << configuration.portName << ";\n\n";
+  testbench << "  loom_module dut(.*);\n\n";
+  testbench << R"sv(  always #5 clock = ~clock;
+
+  task check(bit condition, string message);
+    if (!condition)
+      $fatal(1, "%s", message);
+  endtask
+
+  initial begin
+    clock = 0;
+    reset = 1;
+    input_0_data = 8'h05;
+    input_1_data = 8'h07;
+    input_0_valid = 1;
+    input_1_valid = 1;
+    output_0_ready = 1;
+)sv";
+  testbench << "    " << configuration.portName << " = "
+            << configuration.bitCount << "'b"
+            << bitLiteral(configuration.inactive, configuration.bitCount)
+            << ";\n";
+  testbench << R"sv(    repeat (2) @(posedge clock);
+    #1;
+    reset = 0;
+    #1;
+    check(!input_0_ready && !input_1_ready && !output_0_valid,
+          "Disabled PE consumed or published a token");
+
+)sv";
+  testbench << "    " << configuration.portName << " = "
+            << configuration.bitCount << "'b"
+            << bitLiteral(configuration.discard, configuration.bitCount)
+            << ";\n";
+  testbench << R"sv(    #1;
+    check(input_0_ready && !input_1_ready && !output_0_valid,
+          "Input Discard did not drain only its selected PE input");
+
+)sv";
+  testbench << "    " << configuration.portName << " = "
+            << configuration.bitCount << "'b"
+            << bitLiteral(configuration.route, configuration.bitCount) << ";\n";
+  testbench << R"sv(    #1;
+    check(input_0_ready && input_1_ready && !output_0_valid,
+          "Routed operands were not accepted into an empty slot");
+    @(posedge clock);
+    #1;
+    check(output_0_valid && output_0_data == 8'h0c,
+          "Accepted add did not publish exactly one cycle later");
+
+    output_0_ready = 0;
+    input_0_data = 8'h09;
+    input_1_data = 8'h0a;
+    repeat (3) begin
+      @(posedge clock);
+      #1;
+      check(output_0_valid && output_0_data == 8'h0c &&
+                !input_0_ready && !input_1_ready,
+            "Stalled result or backpressure was not stable");
+    end
+
+    output_0_ready = 1;
+    #1;
+    check(input_0_ready && input_1_ready,
+          "Final handoff did not admit a same-cycle replacement");
+    @(posedge clock);
+    #1;
+    check(output_0_valid && output_0_data == 8'h13,
+          "Same-cycle replacement did not preserve one-cycle publication");
+
+    input_0_valid = 0;
+    input_1_valid = 0;
+    @(posedge clock);
+    #1;
+    check(!output_0_valid, "Released result slot remained valid");
+    $finish;
+  end
+endmodule
+)sv";
+  std::ofstream(root / "internal_skeleton.ys") << R"ys(
+read_verilog -sv internal_module.sv
+hierarchy -check -top loom_module
+check -assert
+proc
+select -assert-count 2 loom_module/t:$adff
+synth -top loom_module
+check -assert
+select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
+)ys";
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
   require("main", argc == 1 || argc == 2,
           "expected at most one output directory");
+  repeatedSpatialCoreBuildsOccurrenceLocalSkeleton();
   commonSkeletonRejectsUnresolvedOrUnboundLeaves();
   const std::string systemVerilog =
       moduleBoundaryPassthroughBuildsDeterministicSkeleton();
-  if (argc == 2)
+  const InternalToolArtifact internal =
+      internalOperationBuildsStructuralSkeleton();
+  if (argc == 2) {
     writeBoundaryToolArtifacts(argv[1], systemVerilog);
+    writeInternalToolArtifacts(argv[1], internal);
+  }
   return 0;
 }

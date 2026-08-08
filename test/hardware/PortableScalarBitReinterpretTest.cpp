@@ -1,4 +1,6 @@
+#include "ConfigurationABI2TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
+#include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarBitReinterpret.h"
 
 #include "Common/ArtifactStore.h"
@@ -212,6 +214,8 @@ enum class ContractKind { OneCycleElastic, Wrong };
 struct FabricFixture final {
   FinalizedFabricRoot fabric;
   FabricFuOccurrenceNodeRef occurrence;
+  FinalizedFabricRoot system;
+  loom::fabric::FabricPhysicalOccurrenceOwnerRef physicalOccurrence;
   unsigned inputWidth = 0;
   unsigned outputWidth = 0;
 };
@@ -258,7 +262,21 @@ FabricFixture finalizeFixture(llvm::StringRef test, const ArtifactStore &store,
       FabricFuOccurrenceNodeRef occurrence =
           take(test, loom::fabric::deriveFabricFuOccurrenceNode(
                          fabric.view(), capability.occurrence, fuOccurrence));
-      return {std::move(fabric), occurrence, inputWidth, outputWidth};
+      FinalizedFabricRoot system =
+          take(test, loom::hardware::test::makeSingleSpatialCoreSystem(fabric,
+                                                                       store));
+      auto systemView =
+          take(test, loom::fabric::requireSystemRoot(system.view()));
+      auto operations =
+          take(test, enumerateFabricPhysicalOperations(systemView));
+      const auto physical = llvm::find_if(operations, [&](const auto &entry) {
+        return entry.localOccurrence == occurrence;
+      });
+      require(test, physical != operations.end(),
+              "System has no physical bit reinterpret occurrence");
+      return {std::move(fabric), occurrence,
+              std::move(system), physical->physicalOccurrence,
+              inputWidth,        outputWidth};
     }
   }
   fail(test, "Fabric fixture has no expected operation occurrence");
@@ -351,10 +369,15 @@ FinalizedConfigurationABI makeConfigurationAbi(llvm::StringRef test,
   require(test, capability->configurationFieldSchema.empty(),
           "bit reinterpret capability created a configuration field");
   FinalizedConfigurationABI abi = take(
-      test, finalizeConfigurationABI(
-                ConfigurationABIDraft{fixture.fabric.reference(), {}}, store));
-  require(test, abi.abi().programmingUnits().empty(),
-          "configuration-free capability created a programming unit");
+      test,
+      finalizeConfigurationABI(
+          take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                         fixture.system)),
+          store));
+  require(test,
+          abi.abi().findOperationField(fixture.physicalOccurrence, 0) ==
+              nullptr,
+          "configuration-free capability created an operation field");
   return abi;
 }
 
@@ -391,7 +414,8 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
       builder, location, fabricOperationGeneratorSchemaSymbol,
       fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
   std::vector<circt::hw::PortInfo> ports =
-      take(test, deriveFabricOperationLeafPorts(builder, *capability, abi));
+      take(test, deriveFabricOperationLeafPorts(
+                     builder, fabric.physicalOccurrence, *capability, abi));
   if (mutation == LeafMutation::WrongInputWidth) {
     require(test, !ports.empty(), "operation leaf has no input port");
     ports.front().type = builder.getIntegerType(fabric.inputWidth + 1);
@@ -426,13 +450,13 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
+      {skeleton.leaf, fabric.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(
-                     *skeleton.module, fabric.fabric, abi, associations,
-                     recipes, registry, externalContracts));
+      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
+                                                 associations, recipes,
+                                                 registry, externalContracts));
   require(test,
           output.payloads.empty() && output.activityPoints.empty() &&
               output.externalImplementationBindings.empty(),
@@ -757,7 +781,7 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
   FabricFixture valid = makeBitReinterpretFabric(test, store, 80, 72);
   FinalizedConfigurationABI validAbi = makeConfigurationAbi(test, store, valid);
   const std::vector<FabricOperationRecipeBinding> validRecipes = {
-      {valid.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {valid.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   for (LeafMutation mutation :
        {LeafMutation::WrongInputWidth, LeafMutation::ExtraConfigurationPort}) {
     std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
@@ -766,11 +790,11 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
                      "malformed_bit_reinterpret", mutation);
     const std::string before = moduleText(*skeleton.module);
     const std::vector<FabricOperationLeafAssociation> associations = {
-        {skeleton.leaf, valid.occurrence}};
+        {skeleton.leaf, valid.physicalOccurrence}};
     expectError(test,
-                specializeFabricOperationLeaves(
-                    *skeleton.module, valid.fabric, validAbi, associations,
-                    validRecipes, registry, externalContracts),
+                specializeFabricOperationLeaves(*skeleton.module, validAbi,
+                                                associations, validRecipes,
+                                                registry, externalContracts),
                 "leaf port");
     require(test, moduleText(*skeleton.module) == before,
             "malformed leaf partially mutated the caller module");
@@ -786,14 +810,15 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
                    "wrong_contract_bit_reinterpret");
   const std::string wrongBefore = moduleText(*wrongSkeleton.module);
   const std::vector<FabricOperationLeafAssociation> wrongAssociations = {
-      {wrongSkeleton.leaf, wrongContract.occurrence}};
+      {wrongSkeleton.leaf, wrongContract.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> wrongRecipes = {
-      {wrongContract.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {wrongContract.physicalOccurrence,
+       BackendRecipeKey::PortableSystemVerilog,
+       {}}};
   expectTypedUnsupported(test,
                          specializeFabricOperationLeaves(
-                             *wrongSkeleton.module, wrongContract.fabric,
-                             wrongAbi, wrongAssociations, wrongRecipes,
-                             registry, externalContracts),
+                             *wrongSkeleton.module, wrongAbi, wrongAssociations,
+                             wrongRecipes, registry, externalContracts),
                          ::fabric::ImplementationFamilyId::ScalarBitReinterpret,
                          "unsupported resource contract");
   require(test, moduleText(*wrongSkeleton.module) == wrongBefore,
@@ -806,14 +831,14 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
       makeSkeleton(test, *otherContext, other, otherAbi.abi(), "other_family");
   const std::string otherBefore = moduleText(*otherSkeleton.module);
   const std::vector<FabricOperationLeafAssociation> otherAssociations = {
-      {otherSkeleton.leaf, other.occurrence}};
+      {otherSkeleton.leaf, other.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> otherRecipes = {
-      {other.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {other.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   expectTypedUnsupported(
       test,
-      specializeFabricOperationLeaves(*otherSkeleton.module, other.fabric,
-                                      otherAbi, otherAssociations, otherRecipes,
-                                      registry, externalContracts),
+      specializeFabricOperationLeaves(*otherSkeleton.module, otherAbi,
+                                      otherAssociations, otherRecipes, registry,
+                                      externalContracts),
       ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
       "other-family input");
   require(test, moduleText(*otherSkeleton.module) == otherBefore,

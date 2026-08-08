@@ -1,4 +1,6 @@
+#include "ConfigurationABI2TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
+#include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerMultiply.h"
 
 #include "Common/ArtifactStore.h"
@@ -120,6 +122,8 @@ enum class FabricFixtureKind {
 struct FabricFixture final {
   FinalizedFabricRoot fabric;
   FabricFuOccurrenceNodeRef occurrence;
+  FinalizedFabricRoot system;
+  loom::fabric::FabricPhysicalOccurrenceOwnerRef physicalOccurrence;
 };
 
 std::string fabricSource(FabricFixtureKind kind) {
@@ -202,7 +206,20 @@ makeFabric(llvm::StringRef test, const ArtifactStore &store,
       FabricFuOccurrenceNodeRef occurrence =
           take(test, loom::fabric::deriveFabricFuOccurrenceNode(
                          fabric.view(), candidate.occurrence, fuOccurrence));
-      return FabricFixture{std::move(fabric), occurrence};
+      FinalizedFabricRoot system =
+          take(test, loom::hardware::test::makeSingleSpatialCoreSystem(fabric,
+                                                                       store));
+      auto systemView =
+          take(test, loom::fabric::requireSystemRoot(system.view()));
+      auto operations =
+          take(test, enumerateFabricPhysicalOperations(systemView));
+      const auto physical = llvm::find_if(operations, [&](const auto &entry) {
+        return entry.localOccurrence == occurrence;
+      });
+      require(test, physical != operations.end(),
+              "System has no physical vector multiply occurrence");
+      return FabricFixture{std::move(fabric), occurrence, std::move(system),
+                           physical->physicalOccurrence};
     }
   }
   fail(test, "Fabric fixture has no expected operation occurrence");
@@ -254,9 +271,12 @@ configurationValue(llvm::StringRef test,
                    const dataflow::CanonicalActorSchemaProjection &actor) {
   constexpr std::array<std::uint64_t, 2> operandPorts = {0, 1};
   constexpr std::array<std::uint64_t, 1> resultPorts = {0};
-  const loom::CanonicalSemanticBytes encoded =
-      take(test, resolved.encodeSemanticConfiguration(
-                     field, actor, 64, operandPorts, resultPorts));
+  (void)field;
+  auto relation =
+      take(test, resolved.resolveSemanticFieldRelation(fabricContext()));
+  const loom::CanonicalSemanticBytes encoded = take(
+      test, relation.projectSemanticValue(actor, operandPorts, resultPorts,
+                                          ::fabric::ResolvedIndexWidth::I64));
   return std::vector<std::uint8_t>(encoded.bytes().begin(),
                                    encoded.bytes().end());
 }
@@ -280,8 +300,13 @@ unsigned behaviorLaneCount(
 std::vector<FiniteCodebookEntry>
 completeEntries(llvm::StringRef test,
                 const loom::fabric::ResolvedFabricOpCapabilityView &resolved) {
-  const auto domain =
-      take(test, resolved.resolveFiniteBehaviorDomain(fabricContext()));
+  auto relation =
+      take(test, resolved.resolveSemanticFieldRelation(fabricContext()));
+  require(test,
+          relation.kind() ==
+              ::fabric::FabricOpSemanticFieldRelationKind::Finite,
+          "vector multiply field relation is not finite");
+  const auto domain = relation.finiteBehaviorDomain();
   require(test, domain.size() == 2,
           "Fabric did not project the exact vector multiply behavior domain");
 
@@ -310,15 +335,14 @@ enum class ConfigurationAbiKind {
   ExtraSemanticValue,
 };
 
-FinalizedConfigurationABI makeConfigurationAbi(
+ConfigurationABIDraft makeConfigurationAbiDraft(
     llvm::StringRef test, const ArtifactStore &store,
     const FabricFixture &fixture,
     ConfigurationAbiKind kind = ConfigurationAbiKind::Complete) {
   const auto &resolved = capability(test, fixture);
   if (resolved.configurationFieldSchema.empty())
-    return take(test, finalizeConfigurationABI(
-                          ConfigurationABIDraft{fixture.fabric.reference(), {}},
-                          store));
+    return take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                          fixture.system));
   require(test, resolved.configurationFieldSchema.size() == 1,
           "vector multiply fixture has an unexpected field count");
   std::vector<FiniteCodebookEntry> entries = completeEntries(test, resolved);
@@ -338,16 +362,24 @@ FinalizedConfigurationABI makeConfigurationAbi(
   require(test, inactive != entries.end(),
           "i16 multiply behavior is absent from the Fabric domain");
   const std::vector<std::uint8_t> inactiveValue = inactive->semanticValue;
-  ConfigurationFieldEncoding field{
-      resolved.configurationFieldSchema.front(),
-      FiniteCodebookEncoding{2, std::move(entries)},
-      {{0, 0, 2}},
+  auto physicalField =
+      take(test, loom::hardware::test::qualifyPhysicalConfigurationField(
+                     fixture.physicalOccurrence,
+                     resolved.configurationFieldSchema.front().ordinal));
+  loom::hardware::test::ConfigurationFieldEncodingOverride field{
+      physicalField, FiniteCodebookEncoding{2, std::move(entries)},
       inactiveValue};
-  ProgrammingUnitDraft unit{{field.field.owner.catalog()}, 2, {field}};
-  return take(test, finalizeConfigurationABI(
-                        ConfigurationABIDraft{fixture.fabric.reference(),
-                                              {std::move(unit)}},
-                        store));
+  return take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                        fixture.system, {std::move(field)}));
+}
+
+FinalizedConfigurationABI makeConfigurationAbi(
+    llvm::StringRef test, const ArtifactStore &store,
+    const FabricFixture &fixture,
+    ConfigurationAbiKind kind = ConfigurationAbiKind::Complete) {
+  return take(
+      test, finalizeConfigurationABI(
+                makeConfigurationAbiDraft(test, store, fixture, kind), store));
 }
 
 std::unique_ptr<mlir::MLIRContext> makeCirctContext() {
@@ -379,7 +411,8 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
       builder, location, fabricOperationGeneratorSchemaSymbol,
       fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
   std::vector<circt::hw::PortInfo> ports =
-      take(test, deriveFabricOperationLeafPorts(builder, resolved, abi));
+      take(test, deriveFabricOperationLeafPorts(
+                     builder, fabric.physicalOccurrence, resolved, abi));
   if (wrongConfigurationWidth) {
     require(test, ports.size() == 4,
             "configured vector multiply leaf did not have four ports");
@@ -414,13 +447,13 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
   FabricOperationProviderRegistry registry = makeProviderRegistry(test);
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
+      {skeleton.leaf, fabric.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(
-                     *skeleton.module, fabric.fabric, abi, associations,
-                     recipes, registry, externalContracts));
+      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
+                                                 associations, recipes,
+                                                 registry, externalContracts));
   require(test,
           output.payloads.empty() && output.activityPoints.empty() &&
               output.externalImplementationBindings.empty(),
@@ -506,8 +539,13 @@ void configuredLaneBehaviorAndDeterminism(const std::filesystem::path &root) {
               outputs[0]->payloadWidthBits == 40,
           "configured vector multiply changed its physical port shape");
 
-  const auto domain =
-      take(test, resolved.resolveFiniteBehaviorDomain(fabricContext()));
+  auto relation =
+      take(test, resolved.resolveSemanticFieldRelation(fabricContext()));
+  require(test,
+          relation.kind() ==
+              ::fabric::FabricOpSemanticFieldRelationKind::Finite,
+          "vector multiply relation is not finite");
+  const auto domain = relation.finiteBehaviorDomain();
   require(test,
           domain.size() == 2 && behaviorElementWidth(domain[0]) !=
                                     behaviorElementWidth(domain[1]),
@@ -647,7 +685,7 @@ void malformedAndUnsupportedInputsAreTransactional(
   FabricFixture valid = makeFabric(test, store);
   FinalizedConfigurationABI validAbi = makeConfigurationAbi(test, store, valid);
   const std::vector<FabricOperationRecipeBinding> validRecipes = {
-      {valid.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {valid.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
 
   std::unique_ptr<mlir::MLIRContext> malformedContext = makeCirctContext();
   SkeletonFixture malformed =
@@ -655,35 +693,21 @@ void malformedAndUnsupportedInputsAreTransactional(
                    "malformed_vector_multiply", true);
   const std::string malformedBefore = moduleText(*malformed.module);
   const std::vector<FabricOperationLeafAssociation> malformedAssociations = {
-      {malformed.leaf, valid.occurrence}};
+      {malformed.leaf, valid.physicalOccurrence}};
   expectError(test,
-              specializeFabricOperationLeaves(*malformed.module, valid.fabric,
-                                              validAbi, malformedAssociations,
-                                              validRecipes, registry,
-                                              externalContracts),
+              specializeFabricOperationLeaves(
+                  *malformed.module, validAbi, malformedAssociations,
+                  validRecipes, registry, externalContracts),
               "leaf port");
   require(test, moduleText(*malformed.module) == malformedBefore,
           "malformed vector leaf partially mutated the caller module");
 
   for (ConfigurationAbiKind kind : {ConfigurationAbiKind::MissingI8,
                                     ConfigurationAbiKind::ExtraSemanticValue}) {
-    FinalizedConfigurationABI malformedAbi =
-        makeConfigurationAbi(test, store, valid, kind);
-    std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
-    SkeletonFixture skeleton = makeSkeleton(
-        test, *context, valid, malformedAbi.abi(), "malformed_vector_codebook");
-    const std::string before = moduleText(*skeleton.module);
-    const std::vector<FabricOperationLeafAssociation> associations = {
-        {skeleton.leaf, valid.occurrence}};
     expectError(test,
-                specializeFabricOperationLeaves(
-                    *skeleton.module, valid.fabric, malformedAbi, associations,
-                    validRecipes, registry, externalContracts),
-                kind == ConfigurationAbiKind::MissingI8
-                    ? "admitted semantic value"
-                    : "configuration domain");
-    require(test, moduleText(*skeleton.module) == before,
-            "malformed vector codebook partially mutated the caller module");
+                finalizeConfigurationABI(
+                    makeConfigurationAbiDraft(test, store, valid, kind), store),
+                "semantic");
   }
 
   FabricFixture unsupported =
@@ -696,15 +720,16 @@ void malformedAndUnsupportedInputsAreTransactional(
                    "unsupported_vector_contract");
   const std::string unsupportedBefore = moduleText(*unsupportedSkeleton.module);
   const std::vector<FabricOperationLeafAssociation> unsupportedAssociations = {
-      {unsupportedSkeleton.leaf, unsupported.occurrence}};
+      {unsupportedSkeleton.leaf, unsupported.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> unsupportedRecipes = {
-      {unsupported.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {unsupported.physicalOccurrence,
+       BackendRecipeKey::PortableSystemVerilog,
+       {}}};
   expectTypedUnsupported(
       test,
       specializeFabricOperationLeaves(
-          *unsupportedSkeleton.module, unsupported.fabric, unsupportedAbi,
-          unsupportedAssociations, unsupportedRecipes, registry,
-          externalContracts),
+          *unsupportedSkeleton.module, unsupportedAbi, unsupportedAssociations,
+          unsupportedRecipes, registry, externalContracts),
       ::fabric::ImplementationFamilyId::FixedVectorIntegerMultiply,
       BackendRecipeKey::PortableSystemVerilog,
       "unsupported vector multiply resource contract");
@@ -723,14 +748,14 @@ void malformedAndUnsupportedInputsAreTransactional(
         test, *context, valid, validAbi.abi(), "unsupported_native_recipe");
     const std::string before = moduleText(*skeleton.module);
     const std::vector<FabricOperationLeafAssociation> associations = {
-        {skeleton.leaf, valid.occurrence}};
+        {skeleton.leaf, valid.physicalOccurrence}};
     const std::vector<FabricOperationRecipeBinding> recipes = {
-        {valid.occurrence, recipe, {}}};
+        {valid.physicalOccurrence, recipe, {}}};
     expectTypedUnsupported(
         test,
-        specializeFabricOperationLeaves(*skeleton.module, valid.fabric,
-                                        validAbi, associations, recipes,
-                                        registry, externalContracts),
+        specializeFabricOperationLeaves(*skeleton.module, validAbi,
+                                        associations, recipes, registry,
+                                        externalContracts),
         ::fabric::ImplementationFamilyId::FixedVectorIntegerMultiply, recipe,
         "backend-native vector multiply recipe");
     require(test, moduleText(*skeleton.module) == before,
@@ -744,14 +769,14 @@ void malformedAndUnsupportedInputsAreTransactional(
       test, *otherContext, other, otherAbi.abi(), "unsupported_vector_add");
   const std::string otherBefore = moduleText(*otherSkeleton.module);
   const std::vector<FabricOperationLeafAssociation> otherAssociations = {
-      {otherSkeleton.leaf, other.occurrence}};
+      {otherSkeleton.leaf, other.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> otherRecipes = {
-      {other.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+      {other.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   expectTypedUnsupported(
       test,
-      specializeFabricOperationLeaves(*otherSkeleton.module, other.fabric,
-                                      otherAbi, otherAssociations, otherRecipes,
-                                      registry, externalContracts),
+      specializeFabricOperationLeaves(*otherSkeleton.module, otherAbi,
+                                      otherAssociations, otherRecipes, registry,
+                                      externalContracts),
       ::fabric::ImplementationFamilyId::FixedVectorIntegerAddSub,
       BackendRecipeKey::PortableSystemVerilog, "wrong-family capability");
   require(test, moduleText(*otherSkeleton.module) == otherBefore,

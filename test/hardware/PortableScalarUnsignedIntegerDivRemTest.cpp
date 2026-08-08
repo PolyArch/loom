@@ -1,4 +1,6 @@
+#include "ConfigurationABI2TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
+#include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarUnsignedIntegerDivRem.h"
 
 #include "Common/ArtifactStore.h"
@@ -296,6 +298,8 @@ void attachResourceContract(llvm::StringRef test, mlir::ModuleOp source,
 struct FabricFixture final {
   FinalizedFabricRoot fabric;
   FabricFuOccurrenceNodeRef occurrence;
+  FinalizedFabricRoot system;
+  loom::fabric::FabricPhysicalOccurrenceOwnerRef physicalOccurrence;
   FabricSpec spec;
 };
 
@@ -324,7 +328,20 @@ FabricFixture makeFabric(llvm::StringRef test, const ArtifactStore &store,
       FabricFuOccurrenceNodeRef occurrence =
           take(test, loom::fabric::deriveFabricFuOccurrenceNode(
                          fabric.view(), candidate.occurrence, fuOccurrence));
-      return {std::move(fabric), occurrence, std::move(spec)};
+      FinalizedFabricRoot system =
+          take(test, loom::hardware::test::makeSingleSpatialCoreSystem(fabric,
+                                                                       store));
+      auto systemView =
+          take(test, loom::fabric::requireSystemRoot(system.view()));
+      auto operations =
+          take(test, enumerateFabricPhysicalOperations(systemView));
+      const auto physical = llvm::find_if(operations, [&](const auto &entry) {
+        return entry.localOccurrence == occurrence;
+      });
+      require(test, physical != operations.end(),
+              "System has no physical div/rem occurrence");
+      return {std::move(fabric), occurrence, std::move(system),
+              physical->physicalOccurrence, std::move(spec)};
     }
   }
   fail(test, "Fabric fixture has no expected operation occurrence");
@@ -375,16 +392,14 @@ enum class ConfigurationAbiKind {
   MissingField,
 };
 
-FinalizedConfigurationABI makeConfigurationAbi(
+ConfigurationABIDraft makeConfigurationAbiDraft(
     llvm::StringRef test, const ArtifactStore &store,
     const FabricFixture &fixture,
     ConfigurationAbiKind kind = ConfigurationAbiKind::Complete) {
   const auto &resolved = capability(test, fixture);
-  if (resolved.configurationFieldSchema.empty() ||
-      kind == ConfigurationAbiKind::MissingField)
-    return take(test, finalizeConfigurationABI(
-                          ConfigurationABIDraft{fixture.fabric.reference(), {}},
-                          store));
+  if (resolved.configurationFieldSchema.empty())
+    return take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                          fixture.system));
 
   require(test, resolved.configurationFieldSchema.size() == 1,
           "configured div/rem fixture has an unexpected field count");
@@ -393,8 +408,13 @@ FinalizedConfigurationABI makeConfigurationAbi(
   require(test, descriptor.admittedSchemas.size() == 2,
           "generated div/rem family descriptor changed cardinality");
   const auto fieldReference = resolved.configurationFieldSchema.front();
-  const auto domain =
-      take(test, resolved.resolveFiniteBehaviorDomain(fabricContext()));
+  auto relation =
+      take(test, resolved.resolveSemanticFieldRelation(fabricContext()));
+  require(test,
+          relation.kind() ==
+              ::fabric::FabricOpSemanticFieldRelationKind::Finite,
+          "configured div/rem relation is not finite");
+  const auto domain = relation.finiteBehaviorDomain();
   require(test, !domain.empty(), "configured div/rem domain is empty");
 
   std::vector<FiniteCodebookEntry> entries;
@@ -450,13 +470,38 @@ FinalizedConfigurationABI makeConfigurationAbi(
           : std::get<FiniteCodebookEncoding>(encoding)
                 .entries[inactiveIndex]
                 .semanticValue;
-  ConfigurationFieldEncoding field{
-      fieldReference, std::move(encoding), {{0, 0, 2}}, inactiveValue};
-  ProgrammingUnitDraft unit{{field.field.owner.catalog()}, 2, {field}};
-  return take(test, finalizeConfigurationABI(
-                        ConfigurationABIDraft{fixture.fabric.reference(),
-                                              {std::move(unit)}},
-                        store));
+  auto physicalField =
+      take(test, loom::hardware::test::qualifyPhysicalConfigurationField(
+                     fixture.physicalOccurrence, fieldReference.ordinal));
+  loom::hardware::test::ConfigurationFieldEncodingOverride field{
+      physicalField, std::move(encoding), inactiveValue};
+  ConfigurationABIDraft draft =
+      take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                     fixture.system, {std::move(field)}));
+  if (kind == ConfigurationAbiKind::MissingField) {
+    bool removed = false;
+    for (ProgrammingUnitDraft &unit : draft.programmingUnits) {
+      const auto field = llvm::find_if(unit.fields, [&](const auto &candidate) {
+        return candidate.field == physicalField;
+      });
+      if (field == unit.fields.end())
+        continue;
+      unit.fields.erase(field);
+      removed = true;
+      break;
+    }
+    require(test, removed, "could not remove div/rem field from ABI draft");
+  }
+  return draft;
+}
+
+FinalizedConfigurationABI makeConfigurationAbi(
+    llvm::StringRef test, const ArtifactStore &store,
+    const FabricFixture &fixture,
+    ConfigurationAbiKind kind = ConfigurationAbiKind::Complete) {
+  return take(
+      test, finalizeConfigurationABI(
+                makeConfigurationAbiDraft(test, store, fixture, kind), store));
 }
 
 std::unique_ptr<mlir::MLIRContext> makeCirctContext() {
@@ -489,7 +534,8 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
       builder, location, fabricOperationGeneratorSchemaSymbol,
       fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
   std::vector<circt::hw::PortInfo> ports =
-      take(test, deriveFabricOperationLeafPorts(builder, resolved, abi));
+      take(test, deriveFabricOperationLeafPorts(
+                     builder, fixture.physicalOccurrence, resolved, abi));
   if (mutation == LeafMutation::WrongFirstInputWidth) {
     require(test, !ports.empty(), "div/rem leaf has no data input");
     const unsigned width =
@@ -526,12 +572,11 @@ llvm::Expected<FabricOperationProviderOutput> specializeFor(
     BackendRecipeKey recipe = BackendRecipeKey::PortableSystemVerilog) {
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fixture.occurrence}};
+      {skeleton.leaf, fixture.physicalOccurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fixture.occurrence, recipe, {}}};
-  return specializeFabricOperationLeaves(*skeleton.module, fixture.fabric, abi,
-                                         associations, recipes, registry,
-                                         externalContracts);
+      {fixture.physicalOccurrence, recipe, {}}};
+  return specializeFabricOperationLeaves(*skeleton.module, abi, associations,
+                                         recipes, registry, externalContracts);
 }
 
 std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
@@ -1038,9 +1083,7 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
       ::fabric::FloatFormatSet::get({::fabric::FloatFormat::F32}),
       ::fabric::FloatBehaviorProfile::strictIEEE()};
   expectError(test,
-              malformedParameters.encodeOperationSelection(
-                  malformedParameters.configurationFieldSchema.front(),
-                  Schema::ArithDivUI, fabricContext()),
+              malformedParameters.resolveSemanticFieldRelation(fabricContext()),
               "parameter schema");
 
   std::unique_ptr<mlir::MLIRContext> portContext = makeCirctContext();
@@ -1058,42 +1101,21 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
            ConfigurationAbiKind::ExtraSemanticValue,
            ConfigurationAbiKind::DirectBits,
        }) {
-    FinalizedConfigurationABI malformedAbi =
-        makeConfigurationAbi(test, store, valid, kind);
-    std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
-    SkeletonFixture skeleton =
-        makeSkeleton(test, *context, valid, malformedAbi.abi());
-    const std::string before = moduleText(*skeleton.module);
-    llvm::StringRef expected;
-    switch (kind) {
-    case ConfigurationAbiKind::MissingRemainder:
-      expected = "remainder semantic value";
-      break;
-    case ConfigurationAbiKind::ExtraSemanticValue:
-      expected = "operation-selection domain";
-      break;
-    case ConfigurationAbiKind::DirectBits:
-      expected = "finite codebook";
-      break;
-    default:
-      fail(test, "unexpected malformed ABI kind");
-    }
-    expectError(test, specializeFor(skeleton, valid, malformedAbi, registry),
+    const llvm::StringRef expected = kind == ConfigurationAbiKind::DirectBits
+                                         ? "finite codebook"
+                                         : "semantic";
+    expectError(test,
+                finalizeConfigurationABI(
+                    makeConfigurationAbiDraft(test, store, valid, kind), store),
                 expected);
-    require(test, moduleText(*skeleton.module) == before,
-            "malformed div/rem codebook partially mutated the caller module");
   }
 
-  FinalizedConfigurationABI missing = makeConfigurationAbi(
-      test, store, valid, ConfigurationAbiKind::MissingField);
-  std::unique_ptr<mlir::MLIRContext> missingContext = makeCirctContext();
-  SkeletonFixture missingSkeleton =
-      makeSkeleton(test, *missingContext, valid, validAbi.abi());
-  const std::string missingBefore = moduleText(*missingSkeleton.module);
-  expectError(test, specializeFor(missingSkeleton, valid, missing, registry),
-              "absent");
-  require(test, moduleText(*missingSkeleton.module) == missingBefore,
-          "missing div/rem ABI field partially mutated the caller module");
+  expectError(test,
+              finalizeConfigurationABI(
+                  makeConfigurationAbiDraft(test, store, valid,
+                                            ConfigurationAbiKind::MissingField),
+                  store),
+              "cover");
 
   FabricFixture unsupportedContract =
       makeFabric(test, store, unsupportedContractSpec());
@@ -1129,17 +1151,25 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
           "unsupported div/rem shape partially mutated the caller module");
 
   FabricFixture multiWidth = makeFabric(test, store, multiWidthSpec());
-  expectError(
-      test,
-      capability(test, multiWidth).resolveFiniteBehaviorDomain(fabricContext()),
-      "ConfigurationABI 1.0 cannot encode");
+  auto multiWidthRelation =
+      take(test, capability(test, multiWidth)
+                     .resolveSemanticFieldRelation(fabricContext()));
+  require(test,
+          multiWidthRelation.kind() ==
+                  ::fabric::FabricOpSemanticFieldRelationKind::Finite &&
+              multiWidthRelation.finiteBehaviorDomain().size() == 2,
+          "ABI 2.0 relation lost the div width dimension");
 
   FabricFixture multiOperationWidth =
       makeFabric(test, store, multiOperationWidthSpec());
-  expectError(test,
-              capability(test, multiOperationWidth)
-                  .resolveFiniteBehaviorDomain(fabricContext()),
-              "ConfigurationABI 1.0 cannot encode");
+  auto multiOperationWidthRelation =
+      take(test, capability(test, multiOperationWidth)
+                     .resolveSemanticFieldRelation(fabricContext()));
+  require(test,
+          multiOperationWidthRelation.kind() ==
+                  ::fabric::FabricOpSemanticFieldRelationKind::Finite &&
+              multiOperationWidthRelation.finiteBehaviorDomain().size() == 4,
+          "ABI 2.0 relation lost the div/rem operation-width product");
 
   constexpr std::array nativeRecipes = {
       BackendRecipeKey::SynopsysDesignWare,

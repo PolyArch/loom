@@ -134,38 +134,49 @@ materializePortableScalarUnsignedIntegerDivRem(
   if (hasQuotient && hasRemainder) {
     if (request.capability.configurationFieldSchema.size() != 1)
       return invalid("configured div/rem capability requires one field");
-    field = request.configurationAbi.findField(
-        request.capability.configurationFieldSchema.front());
+    field = request.configurationAbi.findOperationField(
+        request.occurrence,
+        request.capability.configurationFieldSchema.front().ordinal);
     if (!field)
       return invalid("configured div/rem field is absent from the ABI");
     codebook = std::get_if<FiniteCodebookEncoding>(&field->semanticEncoding);
     if (!codebook)
       return invalid("configured div/rem field is not a finite codebook");
-    if (codebook->entries.size() != enabled.size())
+    auto relation = request.capability.resolveSemanticFieldRelation(
+        *request.leaf.getContext());
+    if (!relation)
+      return relation.takeError();
+    if (relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::Finite)
+      return invalid("configured div/rem relation is not finite");
+    const auto domain = relation->finiteBehaviorDomain();
+    if (codebook->entries.size() != domain.size())
       return invalid(
-          "codebook does not exactly cover the operation-selection domain");
+          "codebook does not exactly cover the div/rem behavior domain");
 
-    auto quotientValue = request.capability.encodeOperationSelection(
-        field->field, quotientSchema, *request.leaf.getContext());
-    if (!quotientValue)
-      return quotientValue.takeError();
-    auto remainderValue = request.capability.encodeOperationSelection(
-        field->field, remainderSchema, *request.leaf.getContext());
-    if (!remainderValue)
-      return remainderValue.takeError();
-    quotientEntry =
-        detail::findFiniteCodebookEntry(*codebook, quotientValue->bytes());
+    const auto quotientPoint = llvm::find_if(domain, [&](const auto &point) {
+      return point.representativeActor.schema == quotientSchema;
+    });
+    const auto remainderPoint = llvm::find_if(domain, [&](const auto &point) {
+      return point.representativeActor.schema == remainderSchema;
+    });
+    if (quotientPoint == domain.end() || !quotientPoint->semanticConfiguration)
+      return invalid("div/rem relation has no quotient semantic value");
+    if (remainderPoint == domain.end() ||
+        !remainderPoint->semanticConfiguration)
+      return invalid("div/rem relation has no remainder semantic value");
+    quotientEntry = detail::findFiniteCodebookEntry(
+        *codebook, quotientPoint->semanticConfiguration->bytes());
     if (!quotientEntry)
       return invalid("codebook has no quotient semantic value");
-    remainderEntry =
-        detail::findFiniteCodebookEntry(*codebook, remainderValue->bytes());
+    remainderEntry = detail::findFiniteCodebookEntry(
+        *codebook, remainderPoint->semanticConfiguration->bytes());
     if (!remainderEntry)
       return invalid("codebook has no remainder semantic value");
     if (llvm::ArrayRef<std::uint8_t>(field->inactiveValue)
-            .equals(quotientValue->bytes())) {
+            .equals(quotientPoint->semanticConfiguration->bytes())) {
       inactiveQuotient = true;
     } else if (llvm::ArrayRef<std::uint8_t>(field->inactiveValue)
-                   .equals(remainderValue->bytes())) {
+                   .equals(remainderPoint->semanticConfiguration->bytes())) {
       inactiveQuotient = false;
     } else {
       return invalid("ABI inactive value is outside the div/rem domain");
@@ -175,7 +186,8 @@ materializePortableScalarUnsignedIntegerDivRem(
   }
 
   if (llvm::Error error = verifyFabricOperationLeafPorts(
-          request.leaf, request.capability, request.configurationAbi))
+          request.leaf, request.occurrence, request.capability,
+          request.configurationAbi))
     return std::move(error);
 
   mlir::OpBuilder builder(request.leaf.getContext());
@@ -224,8 +236,11 @@ materializePortableScalarUnsignedIntegerDivRem(
                                          codebook->encodedBitCount));
           mlir::Value selected = circt::comb::ICmpOp::create(
               bodyBuilder, location, circt::comb::ICmpPredicate::eq,
-              accessor.getInput("config_" +
-                                std::to_string(field->field.ordinal)),
+              accessor.getInput(
+                  "config_" +
+                  std::to_string(
+                      request.capability.configurationFieldSchema.front()
+                          .ordinal)),
               code, true);
           mlir::Value inactiveResult = inactiveQuotient ? quotient : remainder;
           result = circt::comb::MuxOp::create(bodyBuilder, location, selected,

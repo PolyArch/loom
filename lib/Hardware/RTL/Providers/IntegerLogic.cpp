@@ -125,42 +125,48 @@ llvm::Expected<FabricOperationProviderOutput> materializePortableIntegerLogic(
     return unsupported(request);
 
   if (llvm::Error error = verifyFabricOperationLeafPorts(
-          request.leaf, request.capability, request.configurationAbi))
+          request.leaf, request.occurrence, request.capability,
+          request.configurationAbi))
     return std::move(error);
 
-  auto domain = request.capability.resolveFiniteBehaviorDomain(
+  auto relation = request.capability.resolveSemanticFieldRelation(
       *request.leaf.getContext());
-  if (!domain)
-    return domain.takeError();
-  if (domain->empty())
+  if (!relation)
+    return relation.takeError();
+  const auto domain = relation->finiteBehaviorDomain();
+  if (domain.empty())
     return invalid("Fabric returned an empty behavior domain");
 
   const ConfigurationFieldEncoding *field = nullptr;
   const FiniteCodebookEncoding *codebook = nullptr;
   std::vector<Mode> modes;
-  modes.reserve(domain->size());
+  modes.reserve(domain.size());
   if (request.capability.configurationFieldSchema.empty()) {
-    if (domain->size() != 1 || domain->front().semanticConfiguration)
+    if (relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::None ||
+        domain.size() != 1 || domain.front().semanticConfiguration)
       return invalid(
           "configuration-free capability has a non-singleton behavior domain");
-    auto operation = lowerOperation(domain->front().representativeActor.schema);
+    auto operation = lowerOperation(domain.front().representativeActor.schema);
     if (!operation)
       return operation.takeError();
     modes.push_back({*operation, nullptr});
   } else {
+    if (relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::Finite)
+      return invalid("configured logic relation is not finite");
     if (request.capability.configurationFieldSchema.size() != 1)
       return invalid("configured logic capability requires one field");
-    field = request.configurationAbi.findField(
-        request.capability.configurationFieldSchema.front());
+    field = request.configurationAbi.findOperationField(
+        request.occurrence,
+        request.capability.configurationFieldSchema.front().ordinal);
     if (!field)
       return invalid("configured field is absent from the ABI");
     codebook = std::get_if<FiniteCodebookEncoding>(&field->semanticEncoding);
     if (!codebook)
       return invalid("configured field is not a finite codebook");
-    if (codebook->entries.size() != domain->size())
+    if (codebook->entries.size() != domain.size())
       return invalid(
           "codebook does not exactly cover the configuration domain");
-    for (const auto &point : *domain) {
+    for (const auto &point : domain) {
       if (!point.semanticConfiguration)
         return invalid("configured behavior has no semantic value");
       const FiniteCodebookEntry *entry = detail::findFiniteCodebookEntry(
@@ -215,7 +221,9 @@ llvm::Expected<FabricOperationProviderOutput> materializePortableIntegerLogic(
         mlir::Value selectedResult = results[inactiveMode];
         if (field) {
           mlir::Value configuration = accessor.getInput(
-              "config_" + std::to_string(field->field.ordinal));
+              "config_" +
+              std::to_string(
+                  request.capability.configurationFieldSchema.front().ordinal));
           for (std::size_t index = 0; index < modes.size(); ++index) {
             if (index == inactiveMode)
               continue;

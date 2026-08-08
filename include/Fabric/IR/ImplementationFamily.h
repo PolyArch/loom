@@ -809,15 +809,6 @@ private:
       llvm::ArrayRef<::dataflow::OperationSchemaId>,
       llvm::ArrayRef<std::uint32_t>, llvm::ArrayRef<std::uint32_t>,
       ::mlir::MLIRContext &);
-  friend llvm::Expected<::loom::CanonicalSemanticBytes>
-  encodeConfigurationABI1SemanticValue(
-      const FabricOpSemanticFieldRelation &,
-      const ::dataflow::CanonicalActorSchemaProjection &,
-      llvm::ArrayRef<std::uint64_t>, llvm::ArrayRef<std::uint64_t>,
-      std::optional<ResolvedIndexWidth>);
-  friend llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
-  projectConfigurationABI1FiniteBehaviorDomain(
-      const FabricOpSemanticFieldRelation &);
 };
 
 /// Derives the one sealed semantic-field carrier from a concrete operation
@@ -830,24 +821,6 @@ resolveFabricOpSemanticFieldRelation(
     llvm::ArrayRef<std::uint32_t> physicalInputWidths,
     llvm::ArrayRef<std::uint32_t> physicalResultWidths,
     ::mlir::MLIRContext &context);
-
-/// Preserves the ConfigurationABI 1.0 semantic-value wire representation for
-/// one actor already admitted by the sealed Fabric relation. New semantic
-/// ownership must not use this compatibility encoder.
-llvm::Expected<::loom::CanonicalSemanticBytes>
-encodeConfigurationABI1SemanticValue(
-    const FabricOpSemanticFieldRelation &relation,
-    const ::dataflow::CanonicalActorSchemaProjection &actor,
-    llvm::ArrayRef<std::uint64_t> operandPorts,
-    llvm::ArrayRef<std::uint64_t> resultPorts,
-    std::optional<ResolvedIndexWidth> resolvedIndexWidth = std::nullopt);
-
-/// Projects every point of one sealed finite relation through the
-/// ConfigurationABI 1.0 wire adapter. Relations that cannot be represented
-/// injectively fail closed.
-llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
-projectConfigurationABI1FiniteBehaviorDomain(
-    const FabricOpSemanticFieldRelation &relation);
 
 /// Exact flattened payload width used by concrete operation-resource
 /// admission. Equal widths do not imply equal actor semantics.

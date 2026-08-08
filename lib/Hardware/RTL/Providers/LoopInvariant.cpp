@@ -126,7 +126,8 @@ materializePortableLoopInvariant(FabricOperationProviderRequest request) {
   if (!*layout)
     return invalid("capability has no transparent loop state layout");
   if (llvm::Error error = verifyFabricOperationLeafPorts(
-          request.leaf, request.capability, request.configurationAbi))
+          request.leaf, request.occurrence, request.capability,
+          request.configurationAbi))
     return std::move(error);
 
   mlir::OpBuilder builder(request.leaf.getContext());

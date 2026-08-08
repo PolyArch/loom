@@ -71,7 +71,8 @@ materializePortableScalarIntegerMultiply(
     return invalid("capability does not have the binary integer port shape");
 
   if (llvm::Error error = verifyFabricOperationLeafPorts(
-          request.leaf, request.capability, request.configurationAbi))
+          request.leaf, request.occurrence, request.capability,
+          request.configurationAbi))
     return std::move(error);
 
   mlir::OpBuilder builder(request.leaf.getContext());

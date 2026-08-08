@@ -1,3 +1,20 @@
+add_library(LoomHardwareConfigurationTestSupport
+  ConfigurationABI2TestSupport.cpp
+)
+
+target_include_directories(LoomHardwareConfigurationTestSupport PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(LoomHardwareConfigurationTestSupport PUBLIC
+  LoomADGBuilder
+  LoomHardwareConfiguration
+  MLIRDataflow
+  MLIRFabric
+  MLIRIR
+  LLVMSupport
+)
+
 add_executable(loom-hardware-configuration-abi-test
   ConfigurationABITest.cpp
 )
@@ -16,6 +33,7 @@ add_executable(loom-hardware-implementation-test
 )
 
 target_link_libraries(loom-hardware-implementation-test PRIVATE
+  LoomHardwareConfigurationTestSupport
   LoomADGBuilder
   LoomHardwareImplementation
   LoomHardwareConfiguration
@@ -87,6 +105,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-common-skeleton-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomADGBuilder
     LoomHardwareRTL
     MLIRFabric
@@ -99,6 +118,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-specialization-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareConfiguration
     LoomHardwareRTL
     LoomImplementationPlatform
@@ -119,6 +139,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-scalar-integer-add-sub-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -132,6 +153,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-scalar-integer-cast-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -145,6 +167,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-scalar-integer-compare-min-max-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -158,6 +181,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-scalar-integer-multiply-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -171,6 +195,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-scalar-unsigned-integer-div-rem-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -184,6 +209,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-fixed-vector-integer-add-sub-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -197,6 +223,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-fixed-vector-integer-multiply-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -210,6 +237,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-fixed-vector-value-select-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomADGBuilder
     LoomHardwareRTL
     MLIRDataflow
@@ -224,6 +252,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-integer-logic-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -237,6 +266,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-fixed-vector-pack-unpack-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -250,6 +280,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-fixed-vector-shuffle-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomADGBuilder
     LoomHardwareRTL
     MLIRDataflow
@@ -264,6 +295,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-fixed-vector-slice-align-merge-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomADGBuilder
     LoomHardwareRTL
     MLIRDataflow
@@ -278,6 +310,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-loop-carry-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -291,6 +324,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-loop-gate-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -304,6 +338,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-loop-invariant-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -328,6 +363,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-scalar-bit-reinterpret-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -341,6 +377,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-scalar-float-fma-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
@@ -354,6 +391,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-scalar-value-select-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomADGBuilder
     LoomHardwareRTL
     MLIRDataflow

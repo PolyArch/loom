@@ -34,7 +34,7 @@ llvm::StringRef backendRecipeKeyword(BackendRecipeKey recipe);
 /// The occurrence remains owned by Fabric and the recipe remains owned by the
 /// resolved candidate-generator configuration.
 struct FabricOperationRecipeBinding final {
-  fabric::FabricFuOccurrenceNodeRef occurrence;
+  fabric::FabricPhysicalOccurrenceOwnerRef occurrence;
   BackendRecipeKey recipe;
   std::vector<ExternalInputBinding> externalInputs;
 };
@@ -43,17 +43,17 @@ struct FabricOperationRecipeBinding final {
 /// publisher. The descriptor digest is derived only from these exact bytes.
 struct FabricOperationProviderPayload final {
   PayloadRole role;
-  std::string logicalName;
-  std::string mediaType;
+  std::string canonicalLogicalName;
   std::vector<std::uint8_t> bytes;
 
-  HardwarePayload descriptor() const;
+  ImplementationPayload descriptor() const;
 };
 
 struct FabricOperationProviderOutput final {
   std::vector<FabricOperationProviderPayload> payloads;
   std::vector<ActivityPoint> activityPoints;
-  std::vector<ExternalImplementationBinding> externalImplementationBindings;
+  std::vector<ExternalImplementationBindingDraft>
+      externalImplementationBindings;
 };
 
 /// Every reference, view, StringRef, ArrayRef, operation, and platform pointer
@@ -64,7 +64,7 @@ struct FabricOperationProviderRequest final {
   /// the caller's common skeleton.
   mlir::ModuleOp fragment;
   circt::hw::HWModuleGeneratedOp leaf;
-  fabric::FabricFuOccurrenceNodeRef occurrence;
+  fabric::FabricPhysicalOccurrenceOwnerRef occurrence;
   const fabric::ResolvedFabricOpCapabilityView &capability;
   const ConfigurationABI &configurationAbi;
   BackendRecipeKey recipe;
@@ -108,8 +108,7 @@ private:
 
   friend llvm::Expected<FabricOperationProviderOutput>
   specializeFabricOperationLeaves(
-      mlir::ModuleOp, const fabric::FinalizedFabricRoot &,
-      const FinalizedConfigurationABI &,
+      mlir::ModuleOp, const FinalizedConfigurationABI &,
       llvm::ArrayRef<FabricOperationLeafAssociation>,
       llvm::ArrayRef<FabricOperationRecipeBinding>,
       const FabricOperationProviderRegistry &,
@@ -144,8 +143,7 @@ private:
 /// every provider in an isolated fragment, and commits only after every
 /// fragment verifies. On error the caller's module is unchanged.
 llvm::Expected<FabricOperationProviderOutput> specializeFabricOperationLeaves(
-    mlir::ModuleOp module, const fabric::FinalizedFabricRoot &fabric,
-    const FinalizedConfigurationABI &configurationAbi,
+    mlir::ModuleOp module, const FinalizedConfigurationABI &configurationAbi,
     llvm::ArrayRef<FabricOperationLeafAssociation> operationLeaves,
     llvm::ArrayRef<FabricOperationRecipeBinding> operationRecipes,
     const FabricOperationProviderRegistry &providers,

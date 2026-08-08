@@ -2,6 +2,7 @@
 #define LOOM_HARDWARE_CONFIGURATION_CONFIGURATIONABI_H
 
 #include "Common/Artifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricRefs.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -19,9 +20,38 @@ class ArtifactStore;
 namespace loom::hardware {
 
 inline constexpr ArtifactSchemaDescriptor configurationAbiSchema{
-    "loom.configuration_abi", SchemaVersion{1, 0}};
+    "loom.configuration_abi", SchemaVersion{2, 0}};
 
 using ProgrammingUnitId = std::uint64_t;
+
+/// Exact persistent reference to one programming unit in one finalized
+/// ConfigurationABI. Its binary codec is owned by this schema.
+struct ProgrammingUnitRef final {
+  ArtifactRootReference configurationAbi;
+  ProgrammingUnitId unitId = 0;
+
+  friend bool operator==(const ProgrammingUnitRef &lhs,
+                         const ProgrammingUnitRef &rhs) {
+    return lhs.configurationAbi == rhs.configurationAbi &&
+           lhs.unitId == rhs.unitId;
+  }
+  friend bool operator!=(const ProgrammingUnitRef &lhs,
+                         const ProgrammingUnitRef &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+std::vector<std::uint8_t>
+encodeProgrammingUnitRef(const ProgrammingUnitRef &reference);
+
+llvm::Expected<ProgrammingUnitRef>
+decodeProgrammingUnitRef(llvm::ArrayRef<std::uint8_t> bytes,
+                         const ArtifactStore &store);
+
+namespace detail {
+llvm::Expected<ProgrammingUnitRef>
+decodeProgrammingUnitRefFraming(llvm::ArrayRef<std::uint8_t> bytes);
+}
 
 struct DestinationSlice final {
   std::uint64_t sourceBitOffset = 0;
@@ -60,7 +90,7 @@ using SemanticFieldEncoding =
     std::variant<DirectBitsEncoding, FiniteCodebookEncoding>;
 
 struct ConfigurationFieldEncoding final {
-  fabric::FabricSemanticConfigFieldRef field;
+  fabric::FabricPhysicalConfigurationFieldRef field;
   SemanticFieldEncoding semanticEncoding;
   std::vector<DestinationSlice> destinationSlices;
   std::vector<std::uint8_t> inactiveValue;
@@ -73,7 +103,8 @@ struct ConfigurationFieldEncoding final {
 };
 
 struct ProgrammingUnitDraft final {
-  std::vector<fabric::FabricInventoryOwnerRef> exactFabricResourceClosure;
+  std::vector<fabric::FabricPhysicalOccurrenceOwnerRef>
+      exactFabricResourceClosure;
   std::uint64_t payloadBitCount = 0;
   std::vector<ConfigurationFieldEncoding> fields;
 };
@@ -85,25 +116,30 @@ struct ConfigurationABIDraft final {
 
 struct ProgrammingUnit final {
   ProgrammingUnitId id = 0;
-  std::vector<fabric::FabricInventoryOwnerRef> exactFabricResourceClosure;
+  std::vector<fabric::FabricPhysicalOccurrenceOwnerRef>
+      exactFabricResourceClosure;
   std::uint64_t payloadBitCount = 0;
   std::vector<ConfigurationFieldEncoding> fields;
 };
 
 struct SemanticConfigurationValue final {
-  fabric::FabricSemanticConfigFieldRef field;
+  fabric::FabricPhysicalConfigurationFieldRef field;
   std::vector<std::uint8_t> value;
 };
 
 class ConfigurationABI final {
 public:
   const ArtifactRootReference &fabric() const { return fabric_; }
+  const fabric::FabricSystemRootView &fabricSystem() const { return system_; }
   llvm::ArrayRef<ProgrammingUnit> programmingUnits() const {
     return programmingUnits_;
   }
   const ProgrammingUnit *findProgrammingUnit(ProgrammingUnitId id) const;
   const ConfigurationFieldEncoding *
-  findField(const fabric::FabricSemanticConfigFieldRef &field) const;
+  findField(const fabric::FabricPhysicalConfigurationFieldRef &field) const;
+  const ConfigurationFieldEncoding *
+  findOperationField(const fabric::FabricPhysicalOccurrenceOwnerRef &operation,
+                     fabric::FabricOrdinal fieldOrdinal) const;
 
   llvm::Expected<std::vector<std::uint8_t>>
   encode(ProgrammingUnitId id,
@@ -114,12 +150,15 @@ public:
 
 private:
   ConfigurationABI(ArtifactRootReference fabric,
-                   std::vector<ProgrammingUnit> programmingUnits)
+                   std::vector<ProgrammingUnit> programmingUnits,
+                   fabric::FabricSystemRootView system)
       : fabric_(std::move(fabric)),
-        programmingUnits_(std::move(programmingUnits)) {}
+        programmingUnits_(std::move(programmingUnits)),
+        system_(std::move(system)) {}
 
   ArtifactRootReference fabric_;
   std::vector<ProgrammingUnit> programmingUnits_;
+  fabric::FabricSystemRootView system_;
 
   friend llvm::Expected<class FinalizedConfigurationABI>
   finalizeConfigurationABI(ConfigurationABIDraft, const ArtifactStore &);

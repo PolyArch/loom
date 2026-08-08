@@ -130,45 +130,52 @@ materializePortableFixedVectorIntegerMultiply(
       inputs[1]->payloadWidthBits == 0 || outputs[0]->payloadWidthBits == 0)
     return unsupported(request);
   if (llvm::Error error = verifyFabricOperationLeafPorts(
-          request.leaf, request.capability, request.configurationAbi))
+          request.leaf, request.occurrence, request.capability,
+          request.configurationAbi))
     return std::move(error);
 
-  auto domain = request.capability.resolveFiniteBehaviorDomain(
+  auto relation = request.capability.resolveSemanticFieldRelation(
       *request.leaf.getContext());
-  if (!domain)
-    return domain.takeError();
+  if (!relation)
+    return relation.takeError();
+  const auto &domain = relation->finiteBehaviorDomain();
 
   const ConfigurationFieldEncoding *field = nullptr;
   const FiniteCodebookEncoding *codebook = nullptr;
   std::vector<Mode> modes;
   if (request.capability.configurationFieldSchema.empty()) {
-    if (domain->size() != 1 || domain->front().semanticConfiguration)
+    if (relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::None)
+      return invalid("configuration-free vector multiply has a field relation");
+    if (domain.size() != 1 || domain.front().semanticConfiguration)
       return invalid(
           "configuration-free capability has a non-singleton behavior domain");
-    modes.push_back({std::move(domain->front().representativeActor), nullptr});
+    modes.push_back({domain.front().representativeActor, nullptr});
   } else {
+    if (relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::Finite)
+      return invalid("vector multiply field relation is not finite");
     if (request.capability.configurationFieldSchema.size() != 1)
       return invalid(
           "configured vector multiply capability requires one field");
-    field = request.configurationAbi.findField(
-        request.capability.configurationFieldSchema.front());
+    field = request.configurationAbi.findOperationField(
+        request.occurrence,
+        request.capability.configurationFieldSchema.front().ordinal);
     if (!field)
       return invalid("configured field is absent from the ABI");
     codebook = std::get_if<FiniteCodebookEncoding>(&field->semanticEncoding);
     if (!codebook)
       return invalid("configured field is not a finite codebook");
-    if (codebook->entries.size() != domain->size())
+    if (codebook->entries.size() != domain.size())
       return invalid(
           "codebook does not exactly cover the configuration domain");
-    modes.reserve(domain->size());
-    for (auto &point : *domain) {
+    modes.reserve(domain.size());
+    for (const auto &point : domain) {
       if (!point.semanticConfiguration)
         return invalid("configured behavior has no semantic value");
       const FiniteCodebookEntry *entry = detail::findFiniteCodebookEntry(
           *codebook, point.semanticConfiguration->bytes());
       if (!entry)
         return invalid("codebook has no entry for an admitted semantic value");
-      modes.push_back({std::move(point.representativeActor), entry});
+      modes.push_back({point.representativeActor, entry});
     }
   }
 
@@ -216,7 +223,9 @@ materializePortableFixedVectorIntegerMultiply(
         mlir::Value result = results[inactiveMode];
         if (field) {
           mlir::Value configuration = accessor.getInput(
-              "config_" + std::to_string(field->field.ordinal));
+              "config_" +
+              std::to_string(
+                  request.capability.configurationFieldSchema.front().ordinal));
           for (std::size_t index = 0; index < modes.size(); ++index) {
             if (index == inactiveMode)
               continue;
