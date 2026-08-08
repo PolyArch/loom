@@ -440,11 +440,13 @@ Boundary lowering implements the normative atomic ready/valid equations in
 `docs/spec-fabric-boundary.md`. Two-input `s2t` cannot consume either input
 alone, and split `t2s` cannot publish either output alone. The base boundary
 has no register or holding state; adding one is a behavior-changing Fabric
-refinement, not an RTL convenience. RTL lowering consumes only a Mapping that
-has passed the selected combinational handshake closure in
-`docs/spec-mapping-verification.md` and invokes that same derived gate when it
-revalidates its inputs. It cannot union hardware alternatives, omit selected
-arcs, or apply a backend-local loop-breaking rule.
+refinement, not an RTL convenience. Reusable RTL lowering emits the complete
+Fabric-owned configuration domain and does not consume or specialize to a
+Mapping. Before mapped execution, the exact Mapping must pass the selected
+combinational handshake closure in `docs/spec-mapping-verification.md`; that
+Deployment or execution gate cannot be bypassed by the RTL harness. The
+lowerer cannot omit Fabric alternatives, add a backend-local loop-breaking
+rule, or treat one mapped selection as the reusable hardware topology.
 
 Temporal-PE operand storage is emitted from the exact required
 `operand_buffer_size` and mode-derived allocation units. The base contract has

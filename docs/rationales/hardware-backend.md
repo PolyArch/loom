@@ -77,6 +77,14 @@ equal. This preserves occurrence identity at the instances, avoids recompiling
 genuinely equal implementations, and prevents a shared HDL definition from
 hiding per-occurrence choices.
 
+The reusable skeleton contains the complete Fabric configuration domain rather
+than one workload's Mapping selection. Mapping verification separately proves
+the selected combinational handshake closure before Deployment or mapped
+execution, and the execution harness must retain that gate. Feeding Mapping
+into RTL lowering would either make the implementation workload-specific or
+create a second owner for route and selector choices; both would defeat the
+Fabric and ConfigurationABI boundary.
+
 Lowering the complete design through Handshake or DC-SC would add another
 authority for scheduling, buffering, progress, and resource sharing that Fabric
 already owns. Those dialects remain available when a future source contract
