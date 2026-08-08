@@ -157,6 +157,12 @@ Dynamic occupancy is execution state and is not persisted. A stateful resource
 must return to its canonical reusable state under its declared close/reset
 contract before a conflicting invocation can reuse it.
 
+A claim may own concrete active-use-local holding state, such as one complete
+registered result tuple, only for the lifetime of that same claim envelope. An
+owner transition may materialize that state after acquisition; release
+atomically destroys it together with the claim. It is not durable state carried
+between uses, and no later use may release, inherit, or reconstruct it.
+
 ## Resource Commit Transition
 
 ```text
@@ -175,6 +181,13 @@ The relation may atomically update several states and capacity dimensions. It
 is not a capacity claim: state produced by one committed use may remain until a
 later use commits its own transition. No later use releases or inherits an
 earlier use's claim.
+
+A transition may instead materialize owner-typed state whose lifetime is
+bounded by the committing use's existing claim. The one-cycle elastic
+operation `Publish` transition is this case: it makes the active result tuple
+observable without transferring slot ownership. Releasing that same envelope
+destroys the claim-local tuple; it does not mutate durable state owned by a
+later use.
 
 `transition_key` is scoped to the concrete resource owner's closed transition
 inventory and is embedded by its UsePattern. It is not an independently
@@ -200,9 +213,18 @@ UsePattern {
 
 A pattern is one atomic resource use. Its claims cannot be split by Mapping or
 runtime. All claims are acquired together at `acquire_event` and the complete
-claim envelope returns together at `release_event`. Claims therefore represent
-temporary reservations only; durable occupancy, queue contents, cursors, and
-logical resource state are changed only by the optional commit transition.
+claim envelope returns together at one effective release. The intrinsic
+effective release is `release_event`. A Mapping ResourceUse may extend it with
+a canonical nonempty conjunction of existing Dataflow event points; release
+then occurs only after both the Fabric-local release event and every conjunct
+have occurred. It can never move release earlier. The causal relation remains
+Mapping-owned and is not copied into `ResourceContractRecord`.
+
+Claims therefore represent temporary reservations only; durable occupancy,
+queue contents, cursors, and logical resource state are changed only by the
+optional commit transition. Active-use-local state remains owned by the same
+claim envelope through a causal stall and is destroyed only when that envelope
+returns.
 
 When a commit is present, its one owner-defined transition is applied atomically
 at its exact event. The commit event may equal the acquire event. The current
@@ -216,6 +238,13 @@ The timing contract must order `acquire_event <= commit.event <=
 release_event`, where equality denotes one atomic event. A pattern without a
 commit must still order acquisition no later than release. An owner declaration
 that cannot establish this order is invalid.
+
+At one concrete coordinate, effective releases are applied before new
+acquisitions test capacity. This ordering permits same-coordinate replacement
+without bypassing a newly accepted value into an old use. A conjunction is
+satisfied atomically only when all of its event occurrences for that dynamic
+use have occurred; record order, observation of one member, or fairness cannot
+release a partial claim envelope.
 
 The concrete resource validator must also prove that every eligible transition
 and every explicitly admitted concurrent commit set preserves the owner's state

@@ -374,14 +374,30 @@ of mathematical or logical actor transitions.
 For the initial `CoreAluFu` and arithmetic portions of `MacFu`, each
 semantically stateless scalar operation is implemented by a compute resource
 with one registered elastic `ResourceState`, which is also its sole result
-holding slot. The resource is therefore physically stateful and consumes its
-assigned Clock and Reset even though the software operation has no logical
-state. Acceptance consumes all required operands atomically only when that
-state has capacity. A firing accepted in local cycle `t` publishes its result
-in cycle `t + 1`. The latency is one cycle and the initiation interval is one
-under downstream progress. A stalled result remains stable. Consumption of one
-held result and acceptance of its replacement may occur in the same cycle.
-There is no hidden input queue or drain.
+holding slot for the complete active result tuple. The resource is therefore
+physically stateful and consumes its assigned Clock and Reset even though the
+software operation has no logical state. Acceptance consumes all required
+operands atomically only when that state has capacity.
+
+Its one active UsePattern has owner events `Accept`, `Publish`, and `Release`
+with timing ranks `{0, 1, 1}`. `Accept` acquires the capacity-one result-slot
+claim. At `Publish`, one owner-defined transition materializes the complete
+active result tuple into claim-local holding state. `Release` is the earliest
+Fabric-local release point; the selected Spatial ResourceUse extends it until
+the canonical nonempty conjunction of `Produced` handoffs for every result in
+the exact OperationSchema-owned `ActorHandshakeCase::activeResults` has
+occurred. The ResourceContract record therefore remains workload-independent;
+Mapping supplies only the existing Dataflow event references for the selected
+transition.
+
+A firing accepted in local cycle `t` publishes its complete active tuple in
+cycle `t + 1`. The latency is one cycle and the initiation interval is one
+under downstream progress. A stalled tuple, including validity and every
+payload, remains stable, and a second firing cannot consume operands while the
+slot remains claimed. The final required handoff releases the old claim before
+capacity is tested for acquisitions at the same coordinate, so consumption of
+one held tuple and acceptance of its replacement may occur together. There is
+no hidden input queue, per-result slot, or drain.
 
 This baseline does not apply to operation schemas with logical state, such as
 `dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, or
@@ -771,8 +787,11 @@ Anchor tests should pin only the stable semantic boundaries:
   derive the exact typed physical fields without a mask table, shape table, or
   redundant field for a hardwired fact;
 * one semantically stateless scalar firing uses its registered elastic
-  `ResourceState` and exact one-cycle contract, while one logically stateful
-  transition is governed by its operation-specific state and use patterns; and
+  `ResourceState` and exact one-cycle contract: publication occurs at `t + 1`,
+  multi-cycle downstream stall retains the complete active tuple and blocks a
+  second firing, and final handoff permits same-coordinate replacement; one
+  logically stateful transition remains governed by its operation-specific
+  state and use patterns; and
 * equal repeated semantic assignments to one physical configuration slot
   collapse to one value, conflicting assignments are rejected, and a declared
   semantic-preserving physical refinement leaves the software function

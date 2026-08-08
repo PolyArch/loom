@@ -85,7 +85,7 @@ identity are explicit Fabric entities rather than numbered generic edges.
 ## Mapping Boundary
 
 The single `loom.mapping` family has three closed immutable roots in its
-current complete schema version, `3.0`: `mapping.tech`, `mapping.spatial`, and
+current complete schema version, `4.0`: `mapping.tech`, `mapping.spatial`, and
 `mapping.system`.
 `docs/spec-mapping-artifact.md` is the sole record and assembly authority;
 `docs/spec-mapping-identity.md` owns Mapping-local identity, scoped imports,

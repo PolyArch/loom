@@ -1152,7 +1152,7 @@ native flat handles, decision-atom ordinals, and H lookup state. Hierarchical
 and flat search therefore share one endpoint-compatibility rule without
 sharing mutable identity.
 
-Mapping 3.0 derives each Fabric-owned `InstructionCoreContextRef` from the
+Mapping 4.0 derives each Fabric-owned `InstructionCoreContextRef` from the
 selected AccCore and its one-per-AccCore cardinality. A selected service
 plan element is addressed by
 `ServicePlanElementRef = (ServiceRealizationKey, canonical plan ordinal,
@@ -1799,8 +1799,11 @@ PnR emits a persistent use only for a non-derived activation, reservation,
 release, or sharing assignment required by that schema. Static claims implied
 by a selected traversal are not duplicated, and multiplicity derives from
 software obligations and pattern parameters rather than duplicate records. A
-causal release holds occupancy until its schema-selected event occurs; runtime
-cannot infer an earlier release from observation, fairness, or record order.
+causal `AllOf` release holds occupancy until the Fabric-local release point and
+every schema-selected event occurrence are complete; runtime cannot infer an
+earlier release from observation of a subset, fairness, or record order. PnR
+derives one wait dependency per conjunct and never creates an aggregate event
+node or splits the claim envelope.
 
 For a concrete event occurrence, all immediate `ResourceUse` records with the
 same owner, trigger, and concrete logical parameters form one derived atomic

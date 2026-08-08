@@ -20,9 +20,9 @@ All persistent Mapping objects belong to the single schema family
 
 | Semantic root | Schema version | Required root bindings | Top-level record families |
 |---------------|----------------|------------------------|---------------------------|
-| `mapping.tech` | `3.0` | Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeRealization`, `MemoryRealization` |
-| `mapping.spatial` | `3.0` | TechMapping `T`, Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeBinding`, `MemoryEngineBinding`, `MemoryBinding`, `RouteTree`, `ResourceUse` |
-| `mapping.system` | `3.0` | Canonical Dataflow Program `D`, architecture-only Fabric Hardware Description `F`, canonical SpatialMapping import table | `ExecutionBinding`, `ServiceRealization`, `ResourceUse` |
+| `mapping.tech` | `4.0` | Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeRealization`, `MemoryRealization` |
+| `mapping.spatial` | `4.0` | TechMapping `T`, Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeBinding`, `MemoryEngineBinding`, `MemoryBinding`, `RouteTree`, `ResourceUse` |
+| `mapping.system` | `4.0` | Canonical Dataflow Program `D`, architecture-only Fabric Hardware Description `F`, canonical SpatialMapping import table | `ExecutionBinding`, `ServiceRealization`, `ResourceUse` |
 
 The root operation is the profile discriminator. A Mapping object does not
 also carry a profile enum, a generic artifact root, or inactive optional
@@ -37,15 +37,20 @@ version framing and Common `ArtifactSchemaDescriptor` are mechanically
 derived from that declaration. Callers must not construct schema strings or
 maintain parallel version facts.
 
-The current schema is the complete `loom.mapping 3.0` contract with all three
-roots. Version 3.0 replaces the incompatible System message-route rule in 2.0:
+The current schema is the complete `loom.mapping 4.0` contract with all three
+roots. Version 4.0 replaces the optional single causal release point in 3.0
+with one explicit closed release condition: intrinsic release or a canonical
+nonempty conjunction of existing event points. This changes accepted canonical
+content, so a 4.0 parser rejects every 3.0 root rather than treating one absent
+or present point as an implicit condition. Version 3.0 replaced the
+incompatible System message-route rule in 2.0:
 one plan covers the exact applicable `(sink terminal, execution owner)` set,
 rather than requiring one attachment for every static sink terminal, and a
 message plan may be empty only when that applicable set is proven empty. These
-changes alter the accepted canonical content, so a 3.0 parser rejects every
-2.0 root rather than reinterpreting it. TechMapping and SpatialMapping retain
-their 2.0 payload shapes but use 3.0 because `loom.mapping` has one family
-version, not independent profile versions. `loom.mapping 1.0`'s
+changes altered the accepted canonical content, so a 3.0 parser rejected every
+2.0 root rather than reinterpreting it. TechMapping retains its 3.0 payload
+shape but uses 4.0 because `loom.mapping` has one family version, not
+independent profile versions. `loom.mapping 1.0`'s
 load/store-only `AccessEntry` and logical-memory-only operation-service owner
 are superseded by the closed `MemoryOperationEntry` and fence-aware
 ServiceRealization contract. An earlier draft assigned `1.0`, `1.1`, and `1.2`
@@ -510,8 +515,9 @@ SpatialActivityEventRef =
 
 relative_activation:
   trigger = SpatialActivityEventRef + optional guaranteed offset
-  release = intrinsic
-          | causal_event(SpatialActivityEventRef + optional guaranteed offset)
+  release = Intrinsic
+          | AllOf(nonempty canonical set of
+                  SpatialActivityEventRef + optional guaranteed offset)
 ```
 
 `transition_case_ordinal` resolves in the exact actor's canonical
@@ -529,6 +535,20 @@ exact selected Fabric use-pattern timing provider. It is legal only when that
 provider proves the offset for every admitted execution. A provider without
 such a codec admits only the absent form; Mapping cannot interpret an integer
 as cycles, infer a clock domain, or persist an absolute time.
+
+`AllOf` members are sorted by their complete canonical event-point bytes and
+must be unique. They refer to occurrences causally applicable to the same
+dynamic use selected by `trigger`; an empty conjunction, duplicate member,
+foreign graph event, or unrelated occurrence rejects. The effective release is
+the later of the Fabric use pattern's intrinsic release eligibility and
+completion of every member. A one-member conjunction is the ordinary
+single-event case and receives no shorthand encoding or aggregate event ID.
+
+For the registered one-cycle elastic operation pattern, a compute ResourceUse
+triggers on the selected actor transition and derives one `Produced` member for
+every logical result in that exact `ActorHandshakeCase::activeResults`. The
+set describes the complete held tuple. Mapping cannot select one result,
+invent an all-results event, or release the use from authoring order.
 
 Pattern parameters and sharing assignments are canonical positional arrays in
 the exact use site's closed owner schemas. Each value is encoded by that
@@ -734,7 +754,7 @@ target SpatialCore parent must belong to the AccCore selected by `B_thread`.
 ExecutionBinding owns only where computation executes; it owns no service
 route, capacity, or relative-time facts.
 
-Mapping 3.0 consumes the Fabric-owned rule that each AccCore has exactly one
+Mapping 4.0 consumes the Fabric-owned rule that each AccCore has exactly one
 InstructionCore context. Its `InstructionCoreContextRef` is mechanically
 derived through the framing owned by `docs/spec-fabric-identity.md`.
 
@@ -1055,8 +1075,9 @@ Its relative activation has one trigger and one typed release policy:
 ```text
 relative_activation:
   trigger = EventFamilyKey + optional guaranteed offset
-  release = intrinsic
-          | causal_event(EventFamilyKey + optional guaranteed offset)
+  release = Intrinsic
+          | AllOf(nonempty canonical set of
+                  EventFamilyKey + optional guaranteed offset)
 ```
 
 `EventFamilyKey` is exactly the Dataflow-owned closed union of transfer events
@@ -1071,6 +1092,10 @@ concrete values for that schema when the corresponding occurrence is observed.
 Two records referring to the same static event therefore use one key, while
 context and parameter relations own any legal variation across its logical
 domain.
+
+System `AllOf` uses the same canonical nonempty, sorted, unique conjunction and
+effective-release rule as the Spatial form. Its members are System event
+points and receive no Mapping-local aggregate identity.
 
 InstructionCore occupancy for one root/context pair triggers on the consumed
 root-start transfer event and uses the produced root-completion transfer event
@@ -1100,10 +1125,11 @@ holding a provider for the whole graph launch. Static claims implied by a
 selected transport traversal likewise remain derived and are not duplicated.
 
 Offsets are legal only when guaranteed by the Fabric service contract.
-`intrinsic` uses the Fabric pattern's finite or periodic completion contract.
-A causal release holds the resource until the referenced existing Dataflow
-event occurs. Dynamic event occurrences, absolute start times, queue state,
-and runtime arbitration state are not persisted.
+`Intrinsic` uses the Fabric pattern's finite or periodic completion contract.
+A causal release holds the resource until every referenced existing Dataflow
+event occurs and the intrinsic release point is eligible. Dynamic event
+occurrences, absolute start times, queue state, and runtime arbitration state
+are not persisted.
 
 System ResourceUse owns event-relative activation, reservation and release,
 typed workload parameters, demand selections, and Physical Tag or other typed

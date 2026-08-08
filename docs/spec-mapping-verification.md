@@ -59,7 +59,7 @@ error.
 
 ## TechMapping Verifier
 
-The TechMapping verifier consumes one `mapping.tech` `3.0` root and its exact
+The TechMapping verifier consumes one `mapping.tech` `4.0` root and its exact
 Canonical Dataflow Program `D` and Fabric Hardware Description `F`. It checks
 at least:
 
@@ -136,7 +136,7 @@ or FrozenModel caches, search history, Evaluation Evidence, or runtime state.
 
 The verifier checks in dependency order:
 
-* the `mapping.spatial` `3.0` root shape and exact `T`, `D`, and `F` bindings;
+* the `mapping.spatial` `4.0` root shape and exact `T`, `D`, and `F` bindings;
 * `T.D == D`, `T.F == F`, and complete inherited TechMapping coverage;
 * exactly one ComputeBinding per Compute Realization and one
   MemoryEngineBinding per Memory Realization;
@@ -347,7 +347,7 @@ The intrinsic verifier is:
 SystemMappingBaseVerifier(D, F, M, ExactSpatialMappingSet(M))
 ```
 
-`M` is a `mapping.system` `3.0` root. `F` supplies the architecture-only
+`M` is a `mapping.system` `4.0` root. `F` supplies the architecture-only
 Fabric system and exact Transport Architecture; protocol-specific
 Interconnect Implementation is not a Mapping input.
 
@@ -403,7 +403,8 @@ Using that projection, the base verifier checks:
   selected AccCore, with no competing target in InstructionCore ResourceUse;
 * exact resolution of every InstructionCore use site to a Fabric-owned atomic
   `UsePattern`, including its initial state, capacity, requester order, grant
-  contract, typed demand, activation, optional commit transition, and release;
+  contract, typed demand, activation, optional commit transition, and
+  intrinsic or canonical conjunctive effective release;
 * exactly one ServiceRealization per derived transfer or operation-service
   obligation;
 * exact derivation of each obligation's complete canonical member, sink, and
@@ -540,7 +541,7 @@ Those fields do not exist in the Mapping schema.
 
 Tests should protect stable semantic anchors:
 
-* exact 3.0 schema profile, rejection of every 2.0 profile root,
+* exact 4.0 schema profile, rejection of every 3.0 profile root,
   UpstreamArtifactBinding, predecessor, and import coupling;
 * authoring-order invariance of canonical bytes and ArtifactIdentity;
 * foreign, wrong-kind, wrong-owner, unknown-field, duplicate-key, and
@@ -552,7 +553,9 @@ Tests should protect stable semantic anchors:
   route-wide widening acceptance, narrowing and tag-borrow rejection,
   complete vector-memory token routing, declared multi-transaction memory use
   patterns, MemoryBinding and exposure closure, ResourceUse, Tags, and
-  progress;
+  progress, including canonical nonempty `AllOf` release ordering, duplicate
+  rejection, complete active-result tuple release, and same-coordinate
+  replacement;
 * one potential hardware cycle with two mutually exclusive switch traversals,
   where the Fabric remains valid, one selected Mapping is acyclic, and another
   selected Mapping is rejected; one equivalent bypass/refinement case; and one

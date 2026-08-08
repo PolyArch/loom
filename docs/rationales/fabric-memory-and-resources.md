@@ -176,6 +176,19 @@ owner-defined atomic commit transition. A temporal PE enqueue temporarily
 claims its enqueue service and commits an append; dequeue claims its service
 and commits a removal. Durable queue state remains in the Fabric resource.
 
+The same distinction handles an elastic result slot without a second retire
+use. Acceptance owns one capacity claim for the complete active result tuple;
+a publish transition materializes claim-local holding state, and the same use
+retains it until all active result handoffs occur. Releasing the claim destroys
+that local tuple. No later use drains inherited state, and no per-result claim
+can release the tuple early.
+
+Mapping represents that release as a conjunction of existing Dataflow event
+points. A new aggregate event identity would duplicate the canonical terminal
+events, while a single selected result would be wrong for multi-result actors.
+The nonempty sorted `AllOf` set is therefore the smallest relation that keeps
+Dataflow as event SSOT and preserves one atomic claim envelope.
+
 This also gives a precise same-cycle rule. Dequeue observes cycle-start state;
 capacity is checked after that removal; enqueue cannot bypass a new token
 directly to dequeue. Combined actor inputs must acquire all required services

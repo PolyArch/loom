@@ -677,6 +677,12 @@ implementation family proves otherwise.
 Memory actors, including load, store, atomic, compare-exchange, and fence, are
 implemented by `fabric.mem` and never enter this FU library.
 
+When a helper installs the one-cycle elastic operation contract, its result
+slot covers the complete active result tuple. The exact registered
+`ActorHandshakeCase::activeResults` inventory derives the nonempty canonical
+`Produced`-event conjunction used for release; the helper does not keep a
+scalar-only result table, select one result, or create an aggregate event.
+
 #### Typed Width Recipe Parameters
 
 Catalog helper parameters are transient typed construction inputs. They emit

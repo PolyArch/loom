@@ -178,10 +178,20 @@ provider event, but it cannot change the logical memory-order contract.
 For every non-memory resource use, CGRA-sim acquires the complete Fabric claim
 envelope at the declared acquire event, applies the optional owner-defined
 resource transition atomically at its commit event, and returns the complete
-claim envelope at its release event. It never treats durable queue occupancy as
-an outstanding claim or lets one use release another use's claim. Concrete
-resource state and event ordering come from the selected Fabric use pattern and
-its timing contract, not a simulator-private scheduler.
+claim envelope at its effective release. Intrinsic release uses the Fabric
+event directly; `AllOf` release waits for intrinsic eligibility and every
+Mapping-selected causal event. It never treats durable queue occupancy as an
+outstanding claim or lets one use release another use's claim. Active-use-local
+holding state remains attached to that use through stall. Concrete resource
+state and event ordering come from the selected Fabric use pattern, its timing
+contract, and the exact Mapping release condition, not a simulator-private
+scheduler.
+
+At one coordinate CGRA-sim commits due publication, retires effective releases,
+and frees their complete claim envelopes before testing replacement
+acquisitions. For the one-cycle elastic operation this yields acceptance at
+`t`, complete-tuple publication at `t + 1`, indefinite stable holding until all
+active result handoffs occur, and bubble-free replacement on the final handoff.
 
 The provider must implement the exact domain release-visibility point and
 `BoundedCompletion` or `FairEventual` progress guarantee. It cannot replace
