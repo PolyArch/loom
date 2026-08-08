@@ -6,6 +6,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <limits>
@@ -21,6 +22,18 @@ using namespace loom::fabric;
 using namespace loom::mapping;
 using namespace loom::pnr;
 using namespace loom::pnr::detail;
+
+char SpatialMemoryConstraintSolveFailure::ID;
+
+void SpatialMemoryConstraintSolveFailure::log(llvm::raw_ostream &stream) const {
+  stream << "Spatial memory relation closure exhausted its assignment work "
+            "limit";
+}
+
+std::error_code
+SpatialMemoryConstraintSolveFailure::convertToErrorCode() const {
+  return std::make_error_code(std::errc::resource_unavailable_try_again);
+}
 
 namespace {
 
@@ -143,7 +156,52 @@ llvm::Expected<PnrIndex> checkedIndex(std::size_t value, llvm::StringRef table,
       {"SpatialMemoryConstraintModel", table, table, measure}, value);
 }
 
+template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
+  return values.capacity() * sizeof(T);
+}
+
 } // namespace
+
+struct SpatialMemoryConstraintScratch::Storage final {
+  std::vector<SpatialLogicalMemoryBindingSelection> workingSelections;
+  std::vector<SpatialLogicalMemoryBindingSelection> fixedSelections;
+  std::vector<SpatialLogicalMemoryBindingSelection> choices;
+  std::vector<std::uint8_t> fixedMarks;
+  std::vector<std::uint8_t> closureRootMarks;
+  std::vector<PnrIndex> closureRoots;
+  std::vector<PnrIndex> closureBindings;
+  std::vector<PnrIndex> servicesA;
+  std::vector<PnrIndex> servicesB;
+  std::vector<SpatialMemoryAddressInterval> addressesA;
+  std::vector<SpatialMemoryAddressInterval> addressesB;
+  std::uint64_t assignmentLimit = 0;
+  std::uint64_t assignmentAttempts = 0;
+  const SpatialMemoryConstraintModel *preparedModel = nullptr;
+};
+
+SpatialMemoryConstraintScratch::SpatialMemoryConstraintScratch()
+    : storage_(std::make_unique<Storage>()) {}
+
+SpatialMemoryConstraintScratch::~SpatialMemoryConstraintScratch() = default;
+
+llvm::ArrayRef<SpatialLogicalMemoryBindingSelection>
+SpatialMemoryConstraintScratch::solution() const {
+  return storage_->workingSelections;
+}
+
+std::size_t SpatialMemoryConstraintScratch::retainedStorageBytes() const {
+  return retainedBytes(storage_->workingSelections) +
+         retainedBytes(storage_->fixedSelections) +
+         retainedBytes(storage_->choices) +
+         retainedBytes(storage_->fixedMarks) +
+         retainedBytes(storage_->closureRootMarks) +
+         retainedBytes(storage_->closureRoots) +
+         retainedBytes(storage_->closureBindings) +
+         retainedBytes(storage_->servicesA) +
+         retainedBytes(storage_->servicesB) +
+         retainedBytes(storage_->addressesA) +
+         retainedBytes(storage_->addressesB);
+}
 
 llvm::Expected<std::shared_ptr<const SpatialMemoryConstraintModel>>
 SpatialMemoryConstraintModel::create(const FrozenSpatialMemoryIndex &memory,
@@ -360,6 +418,14 @@ SpatialMemoryConstraintModel::create(const FrozenSpatialMemoryIndex &memory,
           llvm::ArrayRef<FrozenConstraintRelation> relations,
           SpatialMemoryConstraintRelationKind kind) -> llvm::Error {
     for (const FrozenConstraintRelation &relation : relations) {
+      if (result->relationMembers_.size() > getPnrIndexMax() ||
+          relation.memberCount >
+              getPnrIndexMax() - result->relationMembers_.size())
+        return freezeInvalid(shard.projection(),
+                             "relation members overflow PnrIndex");
+      if (result->relations_.size() == getPnrIndexMax())
+        return freezeInvalid(shard.projection(),
+                             "relation count overflows PnrIndex");
       auto offset =
           checkedIndex(result->relationMembers_.size(), "relation_members",
                        PnrCapacityMeasure::Offset);
@@ -399,6 +465,32 @@ SpatialMemoryConstraintModel::create(const FrozenSpatialMemoryIndex &memory,
             appendRelations(*shard, projection, shard->disjointGroups(),
                             SpatialMemoryConstraintRelationKind::Disjoint))
       return std::move(error);
+  }
+
+  std::vector<std::vector<PnrIndex>> rootRelations(rootEntities.size());
+  for (PnrIndex relation = 0; relation < result->relations_.size();
+       ++relation) {
+    const SpatialMemoryConstraintRelation &record =
+        result->relations_[relation];
+    for (PnrIndex root : llvm::ArrayRef(result->relationMembers_)
+                             .slice(record.memberOffset, record.memberCount))
+      rootRelations[root].push_back(relation);
+  }
+  result->rootRelations_.reserve(result->relationMembers_.size());
+  result->rootRelationOffsets_.reserve(rootEntities.size() + 1);
+  result->rootRelationOffsets_.push_back(0);
+  for (std::vector<PnrIndex> &incidence : rootRelations) {
+    llvm::sort(incidence);
+    incidence.erase(std::unique(incidence.begin(), incidence.end()),
+                    incidence.end());
+    if (result->rootRelations_.size() > getPnrIndexMax() ||
+        incidence.size() > getPnrIndexMax() - result->rootRelations_.size())
+      return freezeInvalid(Projection::MemoryBoundServices,
+                           "root relation incidence overflows PnrIndex");
+    result->rootRelations_.insert(result->rootRelations_.end(),
+                                  incidence.begin(), incidence.end());
+    result->rootRelationOffsets_.push_back(
+        static_cast<PnrIndex>(result->rootRelations_.size()));
   }
 
   result->hasConstraints_ = llvm::any_of(result->rootDomains_,
@@ -509,21 +601,6 @@ SpatialMemoryConstraintModel::collectLogicalBindingChoices(
     if (!targetEnd)
       return runtimeInvalid("memory target address interval overflows u64");
 
-    std::vector<std::pair<std::uint64_t, std::uint64_t>> segments;
-    if (root.addressesRestricted) {
-      for (const auto &allowed : addressDomain) {
-        if (allowed.service != target.service)
-          continue;
-        const std::uint64_t lower =
-            std::max(allowed.lower, target.addressBaseBytes);
-        const std::uint64_t upper = std::min(allowed.upper, *targetEnd);
-        if (lower < upper && *extent <= upper - lower)
-          segments.emplace_back(lower, upper);
-      }
-    } else if (*extent <= *targetEnd - target.addressBaseBytes) {
-      segments.emplace_back(target.addressBaseBytes, *targetEnd);
-    }
-
     const auto overlaps = [&](std::uint64_t offset) {
       const std::uint64_t end = offset + *extent;
       for (PnrIndex other = 0; other < current.size(); ++other) {
@@ -551,11 +628,12 @@ SpatialMemoryConstraintModel::collectLogicalBindingChoices(
         return runtimeInvalid("logical binding choice storage is too small");
       return llvm::Error::success();
     };
-    for (const auto &[lower, upper] : segments) {
+    const auto visitSegment = [&](std::uint64_t lower,
+                                  std::uint64_t upper) -> llvm::Error {
       if (llvm::Error error = appendPhysical(lower, lower, upper))
-        return std::move(error);
+        return error;
       if (llvm::Error error = appendPhysical(upper - *extent, lower, upper))
-        return std::move(error);
+        return error;
       for (PnrIndex other = 0; other < current.size(); ++other) {
         if (other == binding || current[other].target == getInvalidPnrIndex() ||
             current[other].target != targetOrdinal)
@@ -569,12 +647,28 @@ SpatialMemoryConstraintModel::collectLogicalBindingChoices(
             std::numeric_limits<std::uint64_t>::max() - target.addressBaseBytes)
           if (llvm::Error error = appendPhysical(
                   target.addressBaseBytes + otherEnd, lower, upper))
-            return std::move(error);
+            return error;
         if (otherBegin >= *extent)
           if (llvm::Error error = appendPhysical(
                   target.addressBaseBytes + otherBegin - *extent, lower, upper))
-            return std::move(error);
+            return error;
       }
+      return llvm::Error::success();
+    };
+    if (root.addressesRestricted) {
+      for (const auto &allowed : addressDomain) {
+        if (allowed.service != target.service)
+          continue;
+        const std::uint64_t lower =
+            std::max(allowed.lower, target.addressBaseBytes);
+        const std::uint64_t upper = std::min(allowed.upper, *targetEnd);
+        if (lower < upper && *extent <= upper - lower)
+          if (llvm::Error error = visitSegment(lower, upper))
+            return error;
+      }
+    } else if (*extent <= *targetEnd - target.addressBaseBytes) {
+      if (llvm::Error error = visitSegment(target.addressBaseBytes, *targetEnd))
+        return error;
     }
   }
   auto selected = output.take_front(count);
@@ -590,7 +684,217 @@ SpatialMemoryConstraintModel::collectLogicalBindingChoices(
   return static_cast<PnrIndex>(end - selected.begin());
 }
 
+llvm::Error SpatialMemoryConstraintModel::prepareScratch(
+    SpatialMemoryConstraintScratch &scratch) const {
+  auto &storage = *scratch.storage_;
+  PnrIndex choiceCapacity = 0;
+  for (PnrIndex binding = 0; binding < bindingRoots_.size(); ++binding) {
+    auto capacity = logicalBindingChoiceCapacity(binding);
+    if (!capacity)
+      return capacity.takeError();
+    choiceCapacity = std::max(choiceCapacity, *capacity);
+  }
+  storage.workingSelections.resize(bindingRoots_.size());
+  storage.fixedSelections.resize(bindingRoots_.size());
+  storage.choices.resize(choiceCapacity);
+  storage.fixedMarks.resize(bindingRoots_.size());
+  storage.closureRootMarks.resize(rootDomains_.size());
+  storage.closureRoots.clear();
+  storage.closureRoots.reserve(rootDomains_.size());
+  storage.closureBindings.clear();
+  storage.closureBindings.reserve(bindingRoots_.size());
+  storage.servicesA.clear();
+  storage.servicesA.reserve(bindingRoots_.size());
+  storage.servicesB.clear();
+  storage.servicesB.reserve(bindingRoots_.size());
+  storage.addressesA.clear();
+  storage.addressesA.reserve(bindingRoots_.size());
+  storage.addressesB.clear();
+  storage.addressesB.reserve(bindingRoots_.size());
+  storage.preparedModel = this;
+  return llvm::Error::success();
+}
+
+llvm::Expected<bool> SpatialMemoryConstraintModel::solveCanonicalClosure(
+    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> current,
+    llvm::ArrayRef<PnrIndex> fixedBindings,
+    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> fixedSelections,
+    std::uint64_t assignmentLimit,
+    llvm::function_ref<llvm::Expected<bool>(PnrIndex, PnrIndex)>
+        targetSupported,
+    SpatialMemoryConstraintScratch &scratch) const {
+  auto &storage = *scratch.storage_;
+  if (storage.preparedModel != this ||
+      storage.workingSelections.size() != bindingRoots_.size())
+    return runtimeInvalid("memory constraint scratch is not prepared");
+  if (current.size() != bindingRoots_.size() ||
+      fixedBindings.size() != fixedSelections.size() || fixedBindings.empty() ||
+      assignmentLimit == 0)
+    return runtimeInvalid("memory closure input is malformed");
+
+  storage.assignmentLimit = assignmentLimit;
+  storage.assignmentAttempts = 0;
+  std::copy(current.begin(), current.end(), storage.workingSelections.begin());
+  std::fill(storage.fixedMarks.begin(), storage.fixedMarks.end(), 0);
+  std::fill(storage.closureRootMarks.begin(), storage.closureRootMarks.end(),
+            0);
+  storage.closureRoots.clear();
+  storage.closureBindings.clear();
+  for (auto [ordinal, binding] : llvm::enumerate(fixedBindings)) {
+    if (binding >= bindingRoots_.size() ||
+        fixedSelections[ordinal].target >= targets_.size())
+      return runtimeInvalid("memory closure fixed binding is out of range");
+    if (storage.fixedMarks[binding] &&
+        (storage.fixedSelections[binding].target !=
+             fixedSelections[ordinal].target ||
+         storage.fixedSelections[binding].physicalOffsetBytes !=
+             fixedSelections[ordinal].physicalOffsetBytes))
+      return runtimeInvalid("memory closure fixes one binding twice");
+    storage.fixedMarks[binding] = 1;
+    storage.fixedSelections[binding] = fixedSelections[ordinal];
+    const PnrIndex root = bindingRoots_[binding];
+    if (!storage.closureRootMarks[root]) {
+      storage.closureRootMarks[root] = 1;
+      storage.closureRoots.push_back(root);
+    }
+  }
+  for (std::size_t cursor = 0; cursor < storage.closureRoots.size(); ++cursor) {
+    const PnrIndex root = storage.closureRoots[cursor];
+    for (PnrIndex relation : llvm::ArrayRef(rootRelations_)
+                                 .slice(rootRelationOffsets_[root],
+                                        rootRelationOffsets_[root + 1] -
+                                            rootRelationOffsets_[root])) {
+      const SpatialMemoryConstraintRelation &record = relations_[relation];
+      for (PnrIndex member :
+           llvm::ArrayRef(relationMembers_)
+               .slice(record.memberOffset, record.memberCount))
+        if (!storage.closureRootMarks[member]) {
+          storage.closureRootMarks[member] = 1;
+          storage.closureRoots.push_back(member);
+        }
+    }
+  }
+  for (PnrIndex binding = 0; binding < bindingRoots_.size(); ++binding)
+    if (storage.closureRootMarks[bindingRoots_[binding]])
+      storage.workingSelections[binding] = {getInvalidPnrIndex(), 0};
+  for (PnrIndex binding = 0; binding < bindingRoots_.size(); ++binding)
+    if (storage.closureRootMarks[bindingRoots_[binding]] &&
+        storage.fixedMarks[binding])
+      storage.closureBindings.push_back(binding);
+  for (PnrIndex binding = 0; binding < bindingRoots_.size(); ++binding)
+    if (storage.closureRootMarks[bindingRoots_[binding]] &&
+        !storage.fixedMarks[binding]) {
+      storage.closureBindings.push_back(binding);
+    }
+  return solveClosureAt(0, current, targetSupported, scratch);
+}
+
+llvm::Expected<bool> SpatialMemoryConstraintModel::solveClosureAt(
+    std::size_t cursor,
+    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> current,
+    llvm::function_ref<llvm::Expected<bool>(PnrIndex, PnrIndex)>
+        targetSupported,
+    SpatialMemoryConstraintScratch &scratch) const {
+  auto &storage = *scratch.storage_;
+  if (cursor == storage.closureBindings.size()) {
+    return constraintsSatisfied(storage.workingSelections, scratch);
+  }
+  const PnrIndex binding = storage.closureBindings[cursor];
+  const auto collect = [&]() -> llvm::Expected<PnrIndex> {
+    return collectLogicalBindingChoices(binding, storage.workingSelections,
+                                        storage.choices);
+  };
+  const auto attempt = [&](SpatialLogicalMemoryBindingSelection selection)
+      -> llvm::Expected<bool> {
+    if (storage.assignmentAttempts == storage.assignmentLimit)
+      return llvm::make_error<SpatialMemoryConstraintSolveFailure>();
+    ++storage.assignmentAttempts;
+    auto supported = targetSupported(binding, selection.target);
+    if (!supported)
+      return supported.takeError();
+    if (!*supported)
+      return false;
+    storage.workingSelections[binding] = selection;
+    auto consistent = partialConstraintsSatisfied(
+        binding, storage.workingSelections, scratch);
+    if (!consistent) {
+      storage.workingSelections[binding] = {getInvalidPnrIndex(), 0};
+      return consistent.takeError();
+    }
+    if (!*consistent) {
+      storage.workingSelections[binding] = {getInvalidPnrIndex(), 0};
+      return false;
+    }
+    auto solved = solveClosureAt(cursor + 1, current, targetSupported, scratch);
+    if (!solved || !*solved)
+      storage.workingSelections[binding] = {getInvalidPnrIndex(), 0};
+    return solved;
+  };
+
+  if (storage.fixedMarks[binding]) {
+    auto count = collect();
+    if (!count)
+      return count.takeError();
+    const SpatialLogicalMemoryBindingSelection fixed =
+        storage.fixedSelections[binding];
+    const bool present = llvm::any_of(
+        llvm::ArrayRef(storage.choices).take_front(*count),
+        [&](const SpatialLogicalMemoryBindingSelection &choice) {
+          return choice.target == fixed.target &&
+                 choice.physicalOffsetBytes == fixed.physicalOffsetBytes;
+        });
+    if (!present)
+      return false;
+    return attempt(fixed);
+  }
+
+  auto count = collect();
+  if (!count)
+    return count.takeError();
+  const SpatialLogicalMemoryBindingSelection preferred = current[binding];
+  const bool hasPreferred = llvm::any_of(
+      llvm::ArrayRef(storage.choices).take_front(*count),
+      [&](const SpatialLogicalMemoryBindingSelection &choice) {
+        return choice.target == preferred.target &&
+               choice.physicalOffsetBytes == preferred.physicalOffsetBytes;
+      });
+  if (hasPreferred) {
+    auto solved = attempt(preferred);
+    if (!solved || *solved)
+      return solved;
+  }
+  for (PnrIndex ordinal = 0;; ++ordinal) {
+    count = collect();
+    if (!count)
+      return count.takeError();
+    if (ordinal >= *count)
+      break;
+    const SpatialLogicalMemoryBindingSelection choice =
+        storage.choices[ordinal];
+    if (hasPreferred && choice.target == preferred.target &&
+        choice.physicalOffsetBytes == preferred.physicalOffsetBytes)
+      continue;
+    auto solved = attempt(choice);
+    if (!solved || *solved)
+      return solved;
+  }
+  return false;
+}
+
 llvm::Error SpatialMemoryConstraintModel::projectRoot(
+    PnrIndex root,
+    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+    std::vector<PnrIndex> &services,
+    std::vector<SpatialMemoryAddressInterval> &addresses) const {
+  auto complete = projectAssignedRoot(root, selections, services, addresses);
+  if (!complete)
+    return complete.takeError();
+  if (!*complete)
+    return runtimeInvalid("memory projection binding is absent");
+  return llvm::Error::success();
+}
+
+llvm::Expected<bool> SpatialMemoryConstraintModel::projectAssignedRoot(
     PnrIndex root,
     llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
     std::vector<PnrIndex> &services,
@@ -599,6 +903,7 @@ llvm::Error SpatialMemoryConstraintModel::projectRoot(
   addresses.clear();
   if (root + 1 >= rootBindingOffsets_.size())
     return runtimeInvalid("memory projection root is out of range");
+  bool complete = true;
   for (PnrIndex binding :
        llvm::ArrayRef(rootBindings_)
            .slice(rootBindingOffsets_[root],
@@ -606,6 +911,10 @@ llvm::Error SpatialMemoryConstraintModel::projectRoot(
     if (binding >= selections.size())
       return runtimeInvalid("memory projection binding is absent");
     const auto &selection = selections[binding];
+    if (selection.target == getInvalidPnrIndex()) {
+      complete = false;
+      continue;
+    }
     if (selection.target >= targets_.size())
       return runtimeInvalid("memory projection target is out of range");
     const TargetProjection &target = targets_[selection.target];
@@ -629,93 +938,249 @@ llvm::Error SpatialMemoryConstraintModel::projectRoot(
   llvm::sort(services);
   services.erase(std::unique(services.begin(), services.end()), services.end());
   normalizeAddresses(addresses);
-  return llvm::Error::success();
+  return complete;
 }
 
-llvm::Error SpatialMemoryConstraintModel::verifyRootDomain(
+llvm::Expected<bool> SpatialMemoryConstraintModel::rootDomainSatisfied(
     PnrIndex root,
-    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections) const {
-  std::vector<PnrIndex> services;
-  std::vector<SpatialMemoryAddressInterval> addresses;
-  if (llvm::Error error = projectRoot(root, selections, services, addresses))
-    return error;
+    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+    SpatialMemoryConstraintScratch &scratch) const {
+  auto &storage = *scratch.storage_;
+  if (llvm::Error error =
+          projectRoot(root, selections, storage.servicesA, storage.addressesA))
+    return std::move(error);
   const RootDomain &domain = rootDomains_[root];
   if (domain.servicesRestricted) {
     const auto allowed = llvm::ArrayRef(serviceDomainValues_)
                              .slice(domain.serviceOffset, domain.serviceCount);
-    if (!std::includes(allowed.begin(), allowed.end(), services.begin(),
-                       services.end()))
-      return runtimeInvalid(
-          "memory-bound service projection leaves its admissible domain");
+    if (!std::includes(allowed.begin(), allowed.end(),
+                       storage.servicesA.begin(), storage.servicesA.end()))
+      return false;
   }
   if (domain.addressesRestricted) {
     const auto allowed = llvm::ArrayRef(addressDomainValues_)
                              .slice(domain.addressOffset, domain.addressCount);
-    if (!addressSubset(addresses, allowed))
-      return runtimeInvalid(
-          "memory address projection leaves its admissible domain");
+    if (!addressSubset(storage.addressesA, allowed))
+      return false;
   }
-  return llvm::Error::success();
+  return true;
 }
 
-llvm::Error SpatialMemoryConstraintModel::verifyRelation(
+llvm::Expected<bool> SpatialMemoryConstraintModel::rootDomainPartiallySatisfied(
+    PnrIndex root,
+    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+    SpatialMemoryConstraintScratch &scratch) const {
+  auto &storage = *scratch.storage_;
+  auto complete = projectAssignedRoot(root, selections, storage.servicesA,
+                                      storage.addressesA);
+  if (!complete)
+    return complete.takeError();
+  const RootDomain &domain = rootDomains_[root];
+  if (domain.servicesRestricted) {
+    const auto allowed = llvm::ArrayRef(serviceDomainValues_)
+                             .slice(domain.serviceOffset, domain.serviceCount);
+    if (!std::includes(allowed.begin(), allowed.end(),
+                       storage.servicesA.begin(), storage.servicesA.end()))
+      return false;
+  }
+  if (domain.addressesRestricted) {
+    const auto allowed = llvm::ArrayRef(addressDomainValues_)
+                             .slice(domain.addressOffset, domain.addressCount);
+    if (!addressSubset(storage.addressesA, allowed))
+      return false;
+  }
+  return true;
+}
+
+llvm::Expected<bool> SpatialMemoryConstraintModel::relationSatisfied(
     const SpatialMemoryConstraintRelation &relation,
-    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections) const {
+    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+    SpatialMemoryConstraintScratch &scratch) const {
+  auto &storage = *scratch.storage_;
   const auto members = llvm::ArrayRef(relationMembers_)
                            .slice(relation.memberOffset, relation.memberCount);
-  std::vector<PnrIndex> referenceServices;
-  std::vector<PnrIndex> currentServices;
-  std::vector<SpatialMemoryAddressInterval> referenceAddresses;
-  std::vector<SpatialMemoryAddressInterval> currentAddresses;
   if (members.empty())
     return runtimeInvalid("memory relation has no members");
   if (llvm::Error error = projectRoot(members.front(), selections,
-                                      referenceServices, referenceAddresses))
+                                      storage.servicesA, storage.addressesA))
     return error;
   for (PnrIndex root : members.drop_front()) {
-    if (llvm::Error error =
-            projectRoot(root, selections, currentServices, currentAddresses))
+    if (llvm::Error error = projectRoot(root, selections, storage.servicesB,
+                                        storage.addressesB))
       return error;
     const bool equal =
         relation.projection == SpatialMemoryConstraintProjection::BoundServices
-            ? referenceServices == currentServices
-            : referenceAddresses == currentAddresses;
+            ? storage.servicesA == storage.servicesB
+            : storage.addressesA == storage.addressesB;
     const bool disjoint =
         relation.projection == SpatialMemoryConstraintProjection::BoundServices
-            ? !servicesIntersect(referenceServices, currentServices)
-            : !addressesIntersect(referenceAddresses, currentAddresses);
+            ? !servicesIntersect(storage.servicesA, storage.servicesB)
+            : !addressesIntersect(storage.addressesA, storage.addressesB);
     if (relation.kind == SpatialMemoryConstraintRelationKind::Equal && !equal)
-      return runtimeInvalid("memory projection equality is violated");
+      return false;
     if (relation.kind == SpatialMemoryConstraintRelationKind::Disjoint &&
         !disjoint)
-      return runtimeInvalid("memory projection disjointness is violated");
+      return false;
     if (relation.kind == SpatialMemoryConstraintRelationKind::Disjoint) {
-      referenceServices.insert(referenceServices.end(), currentServices.begin(),
-                               currentServices.end());
-      llvm::sort(referenceServices);
-      referenceServices.erase(
-          std::unique(referenceServices.begin(), referenceServices.end()),
-          referenceServices.end());
-      referenceAddresses.insert(referenceAddresses.end(),
-                                currentAddresses.begin(),
-                                currentAddresses.end());
-      normalizeAddresses(referenceAddresses);
+      storage.servicesA.insert(storage.servicesA.end(),
+                               storage.servicesB.begin(),
+                               storage.servicesB.end());
+      llvm::sort(storage.servicesA);
+      storage.servicesA.erase(
+          std::unique(storage.servicesA.begin(), storage.servicesA.end()),
+          storage.servicesA.end());
+      storage.addressesA.insert(storage.addressesA.end(),
+                                storage.addressesB.begin(),
+                                storage.addressesB.end());
+      normalizeAddresses(storage.addressesA);
     }
   }
-  return llvm::Error::success();
+  return true;
+}
+
+llvm::Expected<bool> SpatialMemoryConstraintModel::relationPartiallySatisfied(
+    const SpatialMemoryConstraintRelation &relation,
+    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+    SpatialMemoryConstraintScratch &scratch) const {
+  auto &storage = *scratch.storage_;
+  const auto members = llvm::ArrayRef(relationMembers_)
+                           .slice(relation.memberOffset, relation.memberCount);
+  if (members.empty())
+    return runtimeInvalid("memory relation has no members");
+
+  if (relation.kind == SpatialMemoryConstraintRelationKind::Disjoint) {
+    storage.servicesA.clear();
+    storage.addressesA.clear();
+    for (PnrIndex root : members) {
+      auto complete = projectAssignedRoot(root, selections, storage.servicesB,
+                                          storage.addressesB);
+      if (!complete)
+        return complete.takeError();
+      const bool intersects =
+          relation.projection ==
+                  SpatialMemoryConstraintProjection::BoundServices
+              ? servicesIntersect(storage.servicesA, storage.servicesB)
+              : addressesIntersect(storage.addressesA, storage.addressesB);
+      if (intersects)
+        return false;
+      storage.servicesA.insert(storage.servicesA.end(),
+                               storage.servicesB.begin(),
+                               storage.servicesB.end());
+      llvm::sort(storage.servicesA);
+      storage.servicesA.erase(
+          std::unique(storage.servicesA.begin(), storage.servicesA.end()),
+          storage.servicesA.end());
+      storage.addressesA.insert(storage.addressesA.end(),
+                                storage.addressesB.begin(),
+                                storage.addressesB.end());
+      normalizeAddresses(storage.addressesA);
+    }
+    return true;
+  }
+
+  std::optional<PnrIndex> completeReference;
+  for (PnrIndex root : members) {
+    auto complete = projectAssignedRoot(root, selections, storage.servicesB,
+                                        storage.addressesB);
+    if (!complete)
+      return complete.takeError();
+    if (*complete) {
+      completeReference = root;
+      storage.servicesA = storage.servicesB;
+      storage.addressesA = storage.addressesB;
+      break;
+    }
+  }
+  if (!completeReference)
+    return true;
+  for (PnrIndex root : members) {
+    auto complete = projectAssignedRoot(root, selections, storage.servicesB,
+                                        storage.addressesB);
+    if (!complete)
+      return complete.takeError();
+    const bool supported =
+        relation.projection == SpatialMemoryConstraintProjection::BoundServices
+            ? (*complete ? storage.servicesA == storage.servicesB
+                         : std::includes(storage.servicesA.begin(),
+                                         storage.servicesA.end(),
+                                         storage.servicesB.begin(),
+                                         storage.servicesB.end()))
+            : (*complete
+                   ? storage.addressesA == storage.addressesB
+                   : addressSubset(storage.addressesB, storage.addressesA));
+    if (!supported)
+      return false;
+  }
+  return true;
+}
+
+llvm::Expected<bool> SpatialMemoryConstraintModel::partialConstraintsSatisfied(
+    PnrIndex binding,
+    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+    SpatialMemoryConstraintScratch &scratch) const {
+  if (binding >= bindingRoots_.size())
+    return runtimeInvalid("memory constraint binding is out of range");
+  const PnrIndex root = bindingRoots_[binding];
+  auto domain = rootDomainPartiallySatisfied(root, selections, scratch);
+  if (!domain)
+    return domain.takeError();
+  if (!*domain)
+    return false;
+  for (PnrIndex relation :
+       llvm::ArrayRef(rootRelations_)
+           .slice(rootRelationOffsets_[root], rootRelationOffsets_[root + 1] -
+                                                  rootRelationOffsets_[root])) {
+    auto satisfied =
+        relationPartiallySatisfied(relations_[relation], selections, scratch);
+    if (!satisfied)
+      return satisfied.takeError();
+    if (!*satisfied)
+      return false;
+  }
+  return true;
+}
+
+llvm::Expected<bool> SpatialMemoryConstraintModel::constraintsSatisfied(
+    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+    SpatialMemoryConstraintScratch &scratch) const {
+  for (PnrIndex root = 0; root < rootDomains_.size(); ++root) {
+    auto satisfied = rootDomainSatisfied(root, selections, scratch);
+    if (!satisfied)
+      return satisfied.takeError();
+    if (!*satisfied)
+      return false;
+  }
+  for (const SpatialMemoryConstraintRelation &relation : relations_) {
+    auto satisfied = relationSatisfied(relation, selections, scratch);
+    if (!satisfied)
+      return satisfied.takeError();
+    if (!*satisfied)
+      return false;
+  }
+  return true;
 }
 
 llvm::Error SpatialMemoryConstraintModel::verify(
     llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections) const {
+  SpatialMemoryConstraintScratch scratch;
+  if (llvm::Error error = prepareScratch(scratch))
+    return error;
+  return verify(selections, scratch);
+}
+
+llvm::Error SpatialMemoryConstraintModel::verify(
+    llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+    SpatialMemoryConstraintScratch &scratch) const {
   if (selections.size() != bindingRoots_.size())
     return runtimeInvalid("memory constraint selection shape is incomplete");
+  if (scratch.storage_->preparedModel != this)
+    return runtimeInvalid("memory constraint scratch is not prepared");
   if (!hasConstraints_)
     return llvm::Error::success();
-  for (PnrIndex root = 0; root < rootDomains_.size(); ++root)
-    if (llvm::Error error = verifyRootDomain(root, selections))
-      return error;
-  for (const auto &relation : relations_)
-    if (llvm::Error error = verifyRelation(relation, selections))
-      return error;
+  auto satisfied = constraintsSatisfied(selections, scratch);
+  if (!satisfied)
+    return satisfied.takeError();
+  if (!*satisfied)
+    return runtimeInvalid("memory projection constraints are violated");
   return llvm::Error::success();
 }

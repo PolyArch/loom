@@ -50,6 +50,14 @@ void exerciseTemporalComputeUseProjection(
 void exerciseCanonicalCandidateInitialization(
     const pnr::FrozenSpatialPnrProblemHandle &problem);
 
+void exerciseSpatialActionSequence(
+    const pnr::FrozenSpatialPnrProblemHandle &problem,
+    pnr::SpatialCandidateState &candidate, std::uint64_t proposalCount);
+
+void exerciseSpatialMemoryActionDomain(
+    const pnr::FrozenSpatialPnrProblemHandle &problem,
+    pnr::SpatialCandidateState &candidate);
+
 void exerciseSpatialAttachmentConstraintRelations(
     mlir::MLIRContext &context,
     const dataflow::CanonicalDataflowProgramView &dataflow,

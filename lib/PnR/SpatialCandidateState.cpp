@@ -121,6 +121,12 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
         std::make_unique<detail::SpatialRouteConstraintScratch>();
   if (llvm::Error error = routeConstraintScratch_->prepare(problem))
     return error;
+  if (!memoryConstraintScratch_)
+    memoryConstraintScratch_ =
+        std::make_unique<detail::SpatialMemoryConstraintScratch>();
+  if (llvm::Error error =
+          problem.memoryConstraints().prepareScratch(*memoryConstraintScratch_))
+    return error;
 
   const auto &realizations = problem.realizations();
   const auto &ports = problem.ports();
@@ -195,7 +201,10 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       tagScratch_.retainedStorageBytes() +
       handshakeScratch_.retainedStorageBytes() +
       (routeConstraintScratch_ ? routeConstraintScratch_->retainedStorageBytes()
-                               : 0);
+                               : 0) +
+      (memoryConstraintScratch_
+           ? memoryConstraintScratch_->retainedStorageBytes()
+           : 0);
   for (const auto &scratch : routeScratch_)
     bytes += scratch->retainedLookupRollbackStorageBytes();
   bytes +=

@@ -1,5 +1,7 @@
 #include "PnR/SpatialCandidateState.h"
 
+#include "SpatialMemoryCompatibility.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
@@ -25,20 +27,6 @@ llvm::Error candidateError(const llvm::Twine &message) {
 
 bool rangeContains(PnrIndex offset, PnrIndex count, PnrIndex value) {
   return value >= offset && value - offset < count;
-}
-
-bool exposureTargetAgrees(
-    const FrozenSpatialMemoryBindingTargetOption &bindingTarget,
-    const FrozenSpatialMemoryExposureOption &option) {
-  if (const auto *region =
-          std::get_if<::loom::fabric::FabricMemoryServiceRegionRef>(
-              &bindingTarget.target)) {
-    const auto *local =
-        std::get_if<::loom::fabric::LocalMemoryServiceRef>(&option.target);
-    return local && local->underlying() == region->service;
-  }
-  return std::holds_alternative<::loom::fabric::ManagerEndpointRef>(
-      option.target);
 }
 
 } // namespace
@@ -75,18 +63,6 @@ SpatialCandidateState::memoryDispatchDomain(PnrIndex useOrdinal) const {
     return candidateError("rooted memory dispatch domain is inconsistent");
   return &domain;
 }
-
-namespace {
-
-bool admitsRegion(const FrozenSpatialMemoryIndex &memory,
-                  const FrozenSpatialMemoryDispatchOption &option,
-                  std::uint64_t region) {
-  const auto regions = memory.dispatchServiceRegionOrdinals().slice(
-      option.serviceRegionOffset, option.serviceRegionCount);
-  return std::binary_search(regions.begin(), regions.end(), region);
-}
-
-} // namespace
 
 llvm::Error
 SpatialCandidateState::validateLogicalMemoryBinding(PnrIndex binding) const {
@@ -149,6 +125,99 @@ llvm::Error SpatialCandidateState::validateLogicalMemoryBindingOverlap(
   return llvm::Error::success();
 }
 
+llvm::Expected<bool> SpatialCandidateState::logicalMemoryBindingTargetSupported(
+    PnrIndex binding, PnrIndex targetOrdinal) const {
+  const FrozenSpatialMemoryIndex &memory = problem_->memory();
+  if (binding >= memory.logicalBindings().size() ||
+      targetOrdinal >= memory.bindingTargets().size())
+    return candidateError(
+        "logical memory target support query is out of range");
+  const FrozenSpatialMemoryBindingTargetOption &target =
+      memory.bindingTargets()[targetOrdinal];
+  const auto patterns = problem_->capacity().memoryDispatchOptionPatterns();
+  const auto matchingOption =
+      [&](PnrIndex use,
+          std::optional<PnrIndex> requiredPattern) -> llvm::Expected<bool> {
+    auto domain = memoryDispatchDomain(use);
+    if (!domain)
+      return domain.takeError();
+    for (PnrIndex option = (*domain)->optionOffset;
+         option < (*domain)->optionOffset + (*domain)->optionCount; ++option)
+      if (detail::memoryDispatchMatchesTarget(
+              memory, memory.dispatchOptions()[option], target) &&
+          (!requiredPattern || patterns[option] == *requiredPattern))
+        return true;
+    return false;
+  };
+
+  const auto uses =
+      memory.bindingUses().slice(memory.bindingUseOffsets()[binding],
+                                 memory.bindingUseOffsets()[binding + 1] -
+                                     memory.bindingUseOffsets()[binding]);
+  for (PnrIndex use : uses) {
+    const PnrIndex group = memory.rootedUseServiceGroups()[use];
+    if (group == getInvalidPnrIndex()) {
+      auto supported = matchingOption(use, std::nullopt);
+      if (!supported)
+        return supported.takeError();
+      if (!*supported)
+        return false;
+      continue;
+    }
+    if (group >= memory.serviceUseGroups().size())
+      return candidateError("memory use selects a foreign service-use group");
+    const FrozenSpatialMemoryServiceUseGroup &record =
+        memory.serviceUseGroups()[group];
+    const auto groupUses =
+        memory.serviceGroupUses().slice(record.useOffset, record.useCount);
+    if (groupUses.empty())
+      return candidateError("memory service-use group is empty");
+    if (groupUses.front() != use)
+      continue;
+    auto firstDomain = memoryDispatchDomain(groupUses.front());
+    if (!firstDomain)
+      return firstDomain.takeError();
+    bool commonPattern = false;
+    for (PnrIndex option = (*firstDomain)->optionOffset;
+         option < (*firstDomain)->optionOffset + (*firstDomain)->optionCount;
+         ++option) {
+      if (!detail::memoryDispatchMatchesTarget(
+              memory, memory.dispatchOptions()[option], target))
+        continue;
+      const PnrIndex pattern = patterns[option];
+      bool common = true;
+      for (PnrIndex member : groupUses) {
+        auto supported = matchingOption(member, pattern);
+        if (!supported)
+          return supported.takeError();
+        if (!*supported) {
+          common = false;
+          break;
+        }
+      }
+      if (common) {
+        commonPattern = true;
+        break;
+      }
+    }
+    if (!commonPattern)
+      return false;
+  }
+
+  const auto exposures = memory.bindingExposures().slice(
+      memory.bindingExposureOffsets()[binding],
+      memory.bindingExposureOffsets()[binding + 1] -
+          memory.bindingExposureOffsets()[binding]);
+  for (PnrIndex exposure : exposures) {
+    (void)exposure;
+    if (!llvm::any_of(memory.exposureOptions(), [&](const auto &option) {
+          return detail::memoryExposureMatchesTarget(target, option);
+        }))
+      return false;
+  }
+  return true;
+}
+
 llvm::Error
 SpatialCandidateState::validateMemoryUseDispatch(PnrIndex useOrdinal) const {
   const auto &memory = problem_->memory();
@@ -172,22 +241,63 @@ SpatialCandidateState::validateMemoryUseDispatch(PnrIndex useOrdinal) const {
     return candidateError("addressed use has a foreign logical binding");
   const auto &binding = logicalMemoryBindings_[*use.logicalBinding];
   const auto &target = memory.bindingTargets()[binding.target];
-  if (const auto *region =
-          std::get_if<::loom::fabric::FabricMemoryServiceRegionRef>(
-              &target.target)) {
-    const auto *dispatch =
-        std::get_if<::loom::fabric::LocalMemoryServiceRef>(&option.target);
-    if (!dispatch || dispatch->underlying() != region->service ||
-        !admitsRegion(memory, option, region->ordinal))
-      return candidateError(
-          "local addressed dispatch disagrees with its MemoryBinding");
-    return llvm::Error::success();
-  }
-  if (!std::holds_alternative<::loom::fabric::ManagerEndpointRef>(
-          option.target))
+  if (!detail::memoryDispatchMatchesTarget(memory, option, target))
     return candidateError(
-        "BoundaryProxy addressed use does not select a manager endpoint");
+        "addressed dispatch disagrees with its MemoryBinding");
   return llvm::Error::success();
+}
+
+llvm::Expected<bool> SpatialCandidateState::memoryUseDispatchSelectionSupported(
+    PnrIndex useOrdinal, PnrIndex selected) const {
+  const FrozenSpatialMemoryIndex &memory = problem_->memory();
+  auto domain = memoryDispatchDomain(useOrdinal);
+  if (!domain)
+    return domain.takeError();
+  if (!rangeContains((*domain)->optionOffset, (*domain)->optionCount, selected))
+    return candidateError(
+        "memory dispatch support query is outside its domain");
+  const FrozenSpatialMemoryRootedUse &use = memory.rootedUses()[useOrdinal];
+  const FrozenSpatialMemoryDispatchOption &option =
+      memory.dispatchOptions()[selected];
+  if (!use.logicalBinding)
+    return !std::holds_alternative<::loom::fabric::LocalMemoryServiceRef>(
+        option.target);
+  if (*use.logicalBinding >= logicalMemoryBindings_.size())
+    return candidateError("addressed use has a foreign logical binding");
+  const PnrIndex targetOrdinal =
+      logicalMemoryBindings_[*use.logicalBinding].target;
+  if (targetOrdinal >= memory.bindingTargets().size())
+    return candidateError("addressed use has a foreign binding target");
+  const FrozenSpatialMemoryBindingTargetOption &target =
+      memory.bindingTargets()[targetOrdinal];
+  if (!detail::memoryDispatchMatchesTarget(memory, option, target))
+    return false;
+
+  const PnrIndex group = memory.rootedUseServiceGroups()[useOrdinal];
+  if (group >= memory.serviceUseGroups().size())
+    return candidateError("addressed use has a foreign service-use group");
+  const FrozenSpatialMemoryServiceUseGroup &record =
+      memory.serviceUseGroups()[group];
+  const auto members =
+      memory.serviceGroupUses().slice(record.useOffset, record.useCount);
+  const auto patterns = problem_->capacity().memoryDispatchOptionPatterns();
+  const PnrIndex pattern = patterns[selected];
+  for (PnrIndex member : members) {
+    auto memberDomain = memoryDispatchDomain(member);
+    if (!memberDomain)
+      return memberDomain.takeError();
+    bool supported = false;
+    for (PnrIndex candidate = (*memberDomain)->optionOffset;
+         candidate <
+         (*memberDomain)->optionOffset + (*memberDomain)->optionCount;
+         ++candidate)
+      supported |= patterns[candidate] == pattern &&
+                   detail::memoryDispatchMatchesTarget(
+                       memory, memory.dispatchOptions()[candidate], target);
+    if (!supported)
+      return false;
+  }
+  return true;
 }
 
 llvm::Error SpatialCandidateState::validateMemoryExposureSelection(
@@ -207,7 +317,8 @@ llvm::Error SpatialCandidateState::validateMemoryExposureSelection(
   const auto &binding = logicalMemoryBindings_[exposure.logicalBinding];
   if (binding.target >= memory.bindingTargets().size())
     return candidateError("memory exposure binding target is out of range");
-  if (!exposureTargetAgrees(memory.bindingTargets()[binding.target], option))
+  if (!detail::memoryExposureMatchesTarget(
+          memory.bindingTargets()[binding.target], option))
     return candidateError(
         "memory exposure dispatch disagrees with its MemoryBinding");
   return llvm::Error::success();
@@ -391,24 +502,28 @@ void SpatialCandidateState::changeMemoryExposureUsage(PnrIndex exposure,
   const auto updateProvider = [&](PnrIndex provider, bool add) {
     assert(provider < memory.exposureProviders().size());
     const auto key = std::make_pair(binding, provider);
-    auto [entry, inserted] =
-        memoryExposureProviderRefcounts_.try_emplace(key, 0);
-    (void)inserted;
-    PnrIndex &refcount = entry->second;
     PnrIndex &bindingCount = memoryExposureProviderBindingCounts_[provider];
     const std::uint64_t capacity =
         memory.exposureProviders()[provider].maxExposedBindings;
     const std::uint64_t oldOveruse =
         bindingCount > capacity ? bindingCount - capacity : 0;
     if (add) {
+      auto [entry, inserted] =
+          memoryExposureProviderRefcounts_.try_emplace(key, 0);
+      (void)inserted;
+      PnrIndex &refcount = entry->second;
       assert(refcount != std::numeric_limits<PnrIndex>::max());
       if (refcount++ == 0)
         ++bindingCount;
     } else {
+      auto entry = memoryExposureProviderRefcounts_.find(key);
+      assert(entry != memoryExposureProviderRefcounts_.end());
+      PnrIndex &refcount = entry->second;
       assert(refcount != 0);
       if (--refcount == 0) {
         assert(bindingCount != 0);
         --bindingCount;
+        memoryExposureProviderRefcounts_.erase(entry);
       }
     }
     const std::uint64_t newOveruse =

@@ -3,6 +3,7 @@
 #include "InitializerChoiceOrder.h"
 #include "InitializerRelationSolver.h"
 #include "SpatialBindingRelationModel.h"
+#include "SpatialMemoryCompatibility.h"
 #include "SpatialMemoryConstraintModel.h"
 
 #include "llvm/Support/Error.h"
@@ -56,14 +57,6 @@ dispatchDomain(const FrozenSpatialPnrProblem &problem,
   return &problem.memory().dispatchDomains()[domain];
 }
 
-bool admitsRegion(const FrozenSpatialMemoryIndex &memory,
-                  const FrozenSpatialMemoryDispatchOption &option,
-                  std::uint64_t ordinal) {
-  const auto regions = memory.dispatchServiceRegionOrdinals().slice(
-      option.serviceRegionOffset, option.serviceRegionCount);
-  return std::binary_search(regions.begin(), regions.end(), ordinal);
-}
-
 void appendMatchingDispatches(
     const FrozenSpatialPnrProblem &problem,
     llvm::ArrayRef<SpatialMemoryBindingSelection> memoryBindings,
@@ -84,34 +77,9 @@ void appendMatchingDispatches(
         choices.push_back(optionOrdinal);
       continue;
     }
-    if (const auto *region =
-            std::get_if<::loom::fabric::FabricMemoryServiceRegionRef>(
-                &bindingTarget->target)) {
-      const auto *local =
-          std::get_if<::loom::fabric::LocalMemoryServiceRef>(&option.target);
-      if (local && local->underlying() == region->service &&
-          admitsRegion(memory, option, region->ordinal))
-        choices.push_back(optionOrdinal);
-      continue;
-    }
-    if (std::holds_alternative<::loom::fabric::ManagerEndpointRef>(
-            option.target))
+    if (detail::memoryDispatchMatchesTarget(memory, option, *bindingTarget))
       choices.push_back(optionOrdinal);
   }
-}
-
-bool exposureOptionMatches(
-    const FrozenSpatialMemoryBindingTargetOption &bindingTarget,
-    const FrozenSpatialMemoryExposureOption &option) {
-  if (const auto *region =
-          std::get_if<::loom::fabric::FabricMemoryServiceRegionRef>(
-              &bindingTarget.target)) {
-    const auto *local =
-        std::get_if<::loom::fabric::LocalMemoryServiceRef>(&option.target);
-    return local && local->underlying() == region->service;
-  }
-  return std::holds_alternative<::loom::fabric::ManagerEndpointRef>(
-      option.target);
 }
 
 llvm::Error initializerFailure(InitializerRelationSolveFailureKind kind,
@@ -268,6 +236,7 @@ private:
     logicalMemoryChoices_.resize(choiceStorageSize_);
     assignmentJournal_.reserve(decisions_.size());
     compatibilityChoices_.reserve(memory.dispatchOptions().size());
+    groupCompatibilityChoices_.reserve(memory.dispatchOptions().size());
     return llvm::Error::success();
   }
 
@@ -283,11 +252,52 @@ private:
   targetSupportsBinding(PnrIndex binding,
                         const FrozenSpatialMemoryBindingTargetOption &target) {
     const auto &memory = problem_.memory();
+    const auto patterns = problem_.capacity().memoryDispatchOptionPatterns();
     const auto uses =
         memory.bindingUses().slice(memory.bindingUseOffsets()[binding],
                                    memory.bindingUseOffsets()[binding + 1] -
                                        memory.bindingUseOffsets()[binding]);
     for (PnrIndex use : uses) {
+      const PnrIndex group = memory.rootedUseServiceGroups()[use];
+      if (group != getInvalidPnrIndex()) {
+        if (group >= memory.serviceUseGroups().size())
+          return false;
+        const FrozenSpatialMemoryServiceUseGroup &record =
+            memory.serviceUseGroups()[group];
+        const auto members =
+            memory.serviceGroupUses().slice(record.useOffset, record.useCount);
+        if (members.empty() || members.front() != use)
+          continue;
+        compatibilityChoices_.clear();
+        appendMatchingDispatches(problem_, memoryBindings_,
+                                 memory.rootedUses()[members.front()], &target,
+                                 compatibilityChoices_);
+        bool commonPattern = false;
+        for (PnrIndex option : compatibilityChoices_) {
+          const PnrIndex pattern = patterns[option];
+          bool common = true;
+          for (PnrIndex member : members) {
+            groupCompatibilityChoices_.clear();
+            appendMatchingDispatches(problem_, memoryBindings_,
+                                     memory.rootedUses()[member], &target,
+                                     groupCompatibilityChoices_);
+            if (!llvm::any_of(groupCompatibilityChoices_,
+                              [&](PnrIndex memberOption) {
+                                return patterns[memberOption] == pattern;
+                              })) {
+              common = false;
+              break;
+            }
+          }
+          if (common) {
+            commonPattern = true;
+            break;
+          }
+        }
+        if (!commonPattern)
+          return false;
+        continue;
+      }
       compatibilityChoices_.clear();
       appendMatchingDispatches(problem_, memoryBindings_,
                                memory.rootedUses()[use], &target,
@@ -303,7 +313,7 @@ private:
       (void)exposure;
       bool supported = false;
       for (const auto &option : memory.exposureOptions())
-        supported |= exposureOptionMatches(target, option);
+        supported |= detail::memoryExposureMatchesTarget(target, option);
       if (!supported)
         return false;
     }
@@ -396,8 +406,27 @@ private:
       compatibilityChoices_.clear();
       appendMatchingDispatches(problem_, memoryBindings_, use, target,
                                compatibilityChoices_);
+      std::optional<PnrIndex> requiredPattern;
+      const PnrIndex group = memory.rootedUseServiceGroups()[decision.index];
+      const auto patterns = problem_.capacity().memoryDispatchOptionPatterns();
+      if (group != getInvalidPnrIndex()) {
+        if (group >= memory.serviceUseGroups().size())
+          return initializerError("memory dispatch has a foreign use group");
+        const auto &record = memory.serviceUseGroups()[group];
+        for (PnrIndex member : memory.serviceGroupUses().slice(
+                 record.useOffset, record.useCount)) {
+          const PnrIndex selected = memoryUseDispatches_[member];
+          if (selected == getInvalidPnrIndex())
+            continue;
+          const PnrIndex pattern = patterns[selected];
+          if (requiredPattern && *requiredPattern != pattern)
+            return PnrIndex{0};
+          requiredPattern = pattern;
+        }
+      }
       for (PnrIndex option : compatibilityChoices_)
-        choices[count++] = option;
+        if (!requiredPattern || patterns[option] == *requiredPattern)
+          choices[count++] = option;
       break;
     }
     case DecisionKind::MemoryExposure: {
@@ -408,7 +437,8 @@ private:
               [logicalMemoryBindings_[exposure.logicalBinding].target];
       for (PnrIndex option = 0; option < memory.exposureOptions().size();
            ++option)
-        if (exposureOptionMatches(target, memory.exposureOptions()[option]))
+        if (detail::memoryExposureMatchesTarget(
+                target, memory.exposureOptions()[option]))
           choices[count++] = option;
       break;
     }
@@ -463,6 +493,31 @@ private:
     }
   }
 
+  bool completeAssignmentValid() {
+    if (llvm::Error error =
+            problem_.memoryConstraints().verify(logicalMemoryBindings_)) {
+      llvm::consumeError(std::move(error));
+      return false;
+    }
+    const auto &memory = problem_.memory();
+    const auto patterns = problem_.capacity().memoryDispatchOptionPatterns();
+    for (const FrozenSpatialMemoryServiceUseGroup &record :
+         memory.serviceUseGroups()) {
+      std::optional<PnrIndex> selectedPattern;
+      for (PnrIndex use :
+           memory.serviceGroupUses().slice(record.useOffset, record.useCount)) {
+        const PnrIndex option = memoryUseDispatches_[use];
+        if (option >= patterns.size())
+          return false;
+        const PnrIndex pattern = patterns[option];
+        if (selectedPattern && *selectedPattern != pattern)
+          return false;
+        selectedPattern = pattern;
+      }
+    }
+    return true;
+  }
+
   llvm::Expected<bool> search() {
     while (true) {
       bool allAssigned = true;
@@ -486,12 +541,7 @@ private:
         }
       }
       if (allAssigned) {
-        if (llvm::Error error =
-                problem_.memoryConstraints().verify(logicalMemoryBindings_)) {
-          llvm::consumeError(std::move(error));
-          return false;
-        }
-        return true;
+        return completeAssignmentValid();
       }
       if (!propagated)
         break;
@@ -562,6 +612,7 @@ private:
   std::vector<PnrIndex> choiceOrder_;
   std::vector<PnrIndex> choiceFenwick_;
   std::vector<PnrIndex> compatibilityChoices_;
+  std::vector<PnrIndex> groupCompatibilityChoices_;
   std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryChoices_;
   std::vector<std::size_t> assignmentJournal_;
   std::size_t choiceStorageSize_ = 0;

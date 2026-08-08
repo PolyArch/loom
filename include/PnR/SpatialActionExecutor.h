@@ -24,7 +24,8 @@ namespace loom::pnr {
 
 namespace detail {
 class InitializerRelationSolver;
-}
+class SpatialMemoryConstraintScratch;
+} // namespace detail
 
 class SpatialActionExecutorScratch;
 
@@ -136,6 +137,30 @@ private:
   llvm::Error applyMemoryBinding(SpatialMoveTransaction &move,
                                  SpatialCandidateState &candidate,
                                  SpatialMemoryBindingAction action);
+  llvm::Error reconcileLogicalMemoryBinding(SpatialMoveTransaction &move,
+                                            SpatialCandidateState &candidate,
+                                            PnrIndex binding);
+  llvm::Error
+  recordExplicitLogicalMemoryBinding(const SpatialCandidateState &candidate,
+                                     SpatialLogicalMemoryBindingAction action);
+  llvm::Expected<bool>
+  explicitLogicalMemoryTargetSupported(const SpatialCandidateState &candidate,
+                                       PnrIndex binding, PnrIndex target) const;
+  llvm::Error
+  reconcileExplicitLogicalMemoryBindings(SpatialMoveTransaction &move,
+                                         SpatialCandidateState &candidate);
+  llvm::Error
+  recordExplicitMemoryDispatch(const SpatialCandidateState &candidate,
+                               PnrIndex use, PnrIndex option);
+  llvm::Error
+  reconcileExplicitMemoryDispatches(SpatialMoveTransaction &move,
+                                    SpatialCandidateState &candidate);
+  llvm::Error
+  recordExplicitMemoryExposure(const SpatialCandidateState &candidate,
+                               PnrIndex exposure, PnrIndex option);
+  llvm::Error
+  reconcileExplicitMemoryExposures(SpatialMoveTransaction &move,
+                                   SpatialCandidateState &candidate);
   llvm::Error routeAffectedNets(SpatialMoveTransaction &move,
                                 SpatialCandidateState &candidate);
   llvm::Error reconcileBindingRelations(SpatialMoveTransaction &move,
@@ -160,11 +185,27 @@ private:
   std::vector<PnrIndex> affectedNets_;
   std::vector<PnrIndex> routeCostTraversals_;
   std::unique_ptr<detail::InitializerRelationSolver> relationSolver_;
+  std::unique_ptr<detail::SpatialMemoryConstraintScratch>
+      memoryConstraintScratch_;
   std::vector<PnrIndex> fixedRelationChoices_;
   std::vector<std::uint8_t> relationDecisionMarks_;
   std::vector<std::uint8_t> explicitAttachmentMarks_;
   std::vector<PnrIndex> relationDecisionQueue_;
   std::vector<PnrIndex> changedBindingRoots_;
+  std::vector<SpatialLogicalMemoryBindingSelection>
+      explicitLogicalMemorySelections_;
+  std::vector<std::uint8_t> explicitLogicalMemoryMarks_;
+  std::vector<PnrIndex> explicitLogicalMemoryBindings_;
+  std::vector<SpatialLogicalMemoryBindingSelection>
+      explicitLogicalMemoryChoices_;
+  std::vector<PnrIndex> changedLogicalMemoryBindings_;
+  std::vector<PnrIndex> explicitMemoryDispatchPatterns_;
+  std::vector<std::uint8_t> explicitMemoryDispatchGroupMarks_;
+  std::vector<PnrIndex> explicitMemoryDispatchGroups_;
+  std::vector<PnrIndex> explicitMemoryDispatchSelections_;
+  std::vector<std::uint8_t> explicitMemoryDispatchUseMarks_;
+  std::vector<PnrIndex> explicitMemoryExposureSelections_;
+  std::vector<std::uint8_t> explicitMemoryExposureMarks_;
   std::uint64_t netEpoch_ = 0;
   SpatialCandidateState *candidate_ = nullptr;
   bool activeProbe_ = false;

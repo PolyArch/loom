@@ -719,7 +719,8 @@ llvm::Error SpatialMoveTransaction::validateAffectedState() const {
       return error;
   if (!scratch_->affectedLogicalMemories_.empty())
     if (llvm::Error error = state_->problem_->memoryConstraints().verify(
-            state_->logicalMemoryBindings_))
+            state_->logicalMemoryBindings_,
+            *scratch_->memoryConstraintScratch_))
       return error;
 
   for (PnrIndex logicalNet : scratch_->affectedNets_) {

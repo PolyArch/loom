@@ -1406,6 +1406,7 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   auto problem = take(loom::pnr::freezeSpatialPnrProblem(
       dataflow, tech.view(), fabric.view(), pnrConfig, constraints.view()));
   auto candidate = take(loom::pnr::createCanonicalSpatialCandidate(problem));
+  loom::test::exerciseSpatialMemoryActionDomain(problem, *candidate);
   loom::pnr::SpatialCandidateScratch candidateScratch;
   requireSuccess(candidateScratch.prepare(*problem));
 
@@ -1783,7 +1784,6 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
       fail("SpatialMapping accepted overlapping local physical intervals");
   }
 }
-
 } // namespace
 
 int main() {

@@ -19,6 +19,18 @@ if(NOT LOOM_TEST_JOBS MATCHES "^[1-9][0-9]*$" OR
     "LOOM_TEST_JOBS must be a positive integer no greater than ${LOOM_MAX_TEST_JOBS}")
 endif()
 
+function(loom_enable_allocation_probe target)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(${target} PRIVATE
+      -Wl,--wrap=malloc
+      -Wl,--wrap=calloc
+      -Wl,--wrap=realloc
+      -Wl,--wrap=aligned_alloc
+      -Wl,--wrap=posix_memalign
+    )
+  endif()
+endfunction()
+
 add_subdirectory(common)
 add_subdirectory(adg)
 add_subdirectory(dataflow)

@@ -2,14 +2,20 @@
 #define LOOM_PNR_SPATIALACTIONDOMAIN_H
 
 #include "PnR/SpatialAction.h"
+#include "PnR/SpatialCandidateState.h"
 
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace loom::pnr {
+
+namespace detail {
+class SpatialMemoryConstraintScratch;
+}
 
 class FrozenSpatialPnrProblem;
 class SpatialCandidateState;
@@ -19,6 +25,9 @@ class SpatialCandidateState;
 /// capacity across proposals and performs no allocation after prepare().
 class SpatialActionDomainScratch final {
 public:
+  SpatialActionDomainScratch();
+  ~SpatialActionDomainScratch();
+
   llvm::Error prepare(const FrozenSpatialPnrProblem &problem);
   llvm::Error rebuild(const SpatialCandidateState &candidate);
 
@@ -35,6 +44,9 @@ private:
   std::vector<SpatialActionChoiceRange> resourceAnchors_;
   std::vector<SpatialResourceAllocationAction> resourceChoices_;
   std::vector<PnrIndex> relationChoices_;
+  std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryChoices_;
+  std::unique_ptr<detail::SpatialMemoryConstraintScratch>
+      memoryConstraintScratch_;
   std::uint64_t movableDecisionCount_ = 0;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
 };

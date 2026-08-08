@@ -1,4 +1,5 @@
 #include "TechMappingCandidateTestSupport.h"
+#include "../TestAllocationProbe.h"
 
 #include "ADG/FuLibrary.h"
 #include "Config/ResolvedConfig.h"
@@ -1044,6 +1045,31 @@ void loom::test::exerciseCanonicalCandidateInitialization(
             canonicalAttempt.candidate->memoryOperationPlan(actor))
       fail("canonical initializer changed memory plan order");
   }
+  for (pnr::PnrIndex binding = 0;
+       binding < problem->memory().logicalBindings().size(); ++binding) {
+    const auto &selected = first->logicalMemoryBinding(binding);
+    const auto &repeated = second->logicalMemoryBinding(binding);
+    const auto &attempt =
+        canonicalAttempt.candidate->logicalMemoryBinding(binding);
+    if (selected.target != repeated.target ||
+        selected.physicalOffsetBytes != repeated.physicalOffsetBytes ||
+        selected.target != attempt.target ||
+        selected.physicalOffsetBytes != attempt.physicalOffsetBytes)
+      fail("canonical initializer changed a logical-memory binding");
+  }
+  for (pnr::PnrIndex use = 0; use < problem->memory().rootedUses().size();
+       ++use)
+    if (first->memoryUseDispatch(use) != second->memoryUseDispatch(use) ||
+        first->memoryUseDispatch(use) !=
+            canonicalAttempt.candidate->memoryUseDispatch(use))
+      fail("canonical initializer changed a memory dispatch");
+  for (pnr::PnrIndex exposure = 0;
+       exposure < problem->memory().exposures().size(); ++exposure)
+    if (first->memoryExposureSelection(exposure) !=
+            second->memoryExposureSelection(exposure) ||
+        first->memoryExposureSelection(exposure) !=
+            canonicalAttempt.candidate->memoryExposureSelection(exposure))
+      fail("canonical initializer changed a memory exposure");
   for (pnr::PnrIndex net = 0; net < problem->transfers().logicalNets().size();
        ++net)
     if (!first->routeTree(net).isUnrouted() ||
@@ -1231,8 +1257,20 @@ void loom::test::exerciseCanonicalCandidateInitialization(
                                    T, pnr::SpatialMemoryOperationPlanAction>) {
             if (first->memoryOperationPlan(choice.actor) == choice.plan)
               fail("memory-plan Action retained the current plan");
+          } else if constexpr (std::is_same_v<
+                                   T, pnr::SpatialLogicalMemoryBindingAction>) {
+            const auto &current = first->logicalMemoryBinding(choice.binding);
+            if (current.target == choice.target &&
+                current.physicalOffsetBytes == choice.physicalOffsetBytes)
+              fail("logical-memory Action retained the current binding");
+          } else if constexpr (std::is_same_v<
+                                   T, pnr::SpatialMemoryUseDispatchAction>) {
+            if (first->memoryUseDispatch(choice.use) == choice.dispatchOption)
+              fail("memory-dispatch Action retained the current option");
           } else {
-            fail("dynamic domain exposed an unimplemented resource Action");
+            if (first->memoryExposureSelection(choice.exposure) ==
+                choice.exposureOption)
+              fail("memory-exposure Action retained the current option");
           }
         },
         action);
@@ -1295,6 +1333,23 @@ void loom::test::exerciseCanonicalCandidateInitialization(
          ++actor)
       if (lhs.memoryOperationPlan(actor) != rhs.memoryOperationPlan(actor))
         fail("Spatial annealing replay changed a memory operation plan");
+    for (pnr::PnrIndex binding = 0;
+         binding < problem->memory().logicalBindings().size(); ++binding) {
+      const auto &left = lhs.logicalMemoryBinding(binding);
+      const auto &right = rhs.logicalMemoryBinding(binding);
+      if (left.target != right.target ||
+          left.physicalOffsetBytes != right.physicalOffsetBytes)
+        fail("Spatial annealing replay changed a logical-memory binding");
+    }
+    for (pnr::PnrIndex use = 0; use < problem->memory().rootedUses().size();
+         ++use)
+      if (lhs.memoryUseDispatch(use) != rhs.memoryUseDispatch(use))
+        fail("Spatial annealing replay changed a memory dispatch");
+    for (pnr::PnrIndex exposure = 0;
+         exposure < problem->memory().exposures().size(); ++exposure)
+      if (lhs.memoryExposureSelection(exposure) !=
+          rhs.memoryExposureSelection(exposure))
+        fail("Spatial annealing replay changed a memory exposure");
     for (pnr::PnrIndex net = 0; net < problem->transfers().logicalNets().size();
          ++net) {
       const auto &left = lhs.routeTree(net);
@@ -1330,6 +1385,9 @@ void loom::test::exerciseCanonicalCandidateInitialization(
   if (foreignSeed)
     fail("Spatial annealing accepted an out-of-range seed ordinal");
   llvm::consumeError(foreignSeed.takeError());
+
+  auto sequenceCandidate = take(pnr::createCanonicalSpatialCandidate(problem));
+  loom::test::exerciseSpatialActionSequence(problem, *sequenceCandidate, 512);
 }
 
 void loom::test::exerciseSpatialAttachmentConstraintRelations(

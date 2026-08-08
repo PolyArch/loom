@@ -22,8 +22,9 @@
 namespace loom::pnr {
 
 namespace detail {
+class SpatialMemoryConstraintScratch;
 class SpatialRouteConstraintScratch;
-}
+} // namespace detail
 
 struct SpatialComputeBindingSelection final {
   PnrIndex placement = getInvalidPnrIndex();
@@ -147,6 +148,8 @@ private:
 
   std::unique_ptr<detail::SpatialRouteConstraintScratch>
       routeConstraintScratch_;
+  std::unique_ptr<detail::SpatialMemoryConstraintScratch>
+      memoryConstraintScratch_;
 
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
   SpatialMoveTransaction *activeTransaction_ = nullptr;
@@ -300,8 +303,12 @@ private:
   llvm::Error validateMemoryOperationPlan(PnrIndex actor) const;
   llvm::Error validateLogicalMemoryBinding(PnrIndex binding) const;
   llvm::Error validateLogicalMemoryBindingOverlap(PnrIndex binding) const;
+  llvm::Expected<bool>
+  logicalMemoryBindingTargetSupported(PnrIndex binding, PnrIndex target) const;
   llvm::Expected<const FrozenSpatialMemoryDispatchDomain *>
   memoryDispatchDomain(PnrIndex use) const;
+  llvm::Expected<bool>
+  memoryUseDispatchSelectionSupported(PnrIndex use, PnrIndex selection) const;
   llvm::Error validateMemoryUseDispatch(PnrIndex use) const;
   llvm::Error validateMemoryExposureSelection(PnrIndex exposure) const;
   llvm::Error verifyMemorySelections() const;

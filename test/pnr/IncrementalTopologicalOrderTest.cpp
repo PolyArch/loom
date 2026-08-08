@@ -1,4 +1,5 @@
 #include "IncrementalTopologicalOrder.h"
+#include "../TestAllocationProbe.h"
 
 #include "llvm/Support/Error.h"
 
@@ -15,105 +16,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-namespace allocation_probe {
-
-thread_local bool enabled = false;
-thread_local std::size_t count = 0;
-
-void record() noexcept {
-  if (enabled)
-    ++count;
-}
-
-} // namespace allocation_probe
-
-void *operator new(std::size_t size) {
-  allocation_probe::record();
-  if (void *storage = std::malloc(size == 0 ? 1 : size))
-    return storage;
-  throw std::bad_alloc();
-}
-
-void *operator new[](std::size_t size) { return ::operator new(size); }
-
-void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
-  try {
-    return ::operator new(size);
-  } catch (...) {
-    return nullptr;
-  }
-}
-
-void *operator new[](std::size_t size, const std::nothrow_t &tag) noexcept {
-  return ::operator new(size, tag);
-}
-
-void operator delete(void *storage) noexcept { std::free(storage); }
-void operator delete[](void *storage) noexcept { ::operator delete(storage); }
-void operator delete(void *storage, std::size_t) noexcept {
-  ::operator delete(storage);
-}
-void operator delete[](void *storage, std::size_t) noexcept {
-  ::operator delete(storage);
-}
-void operator delete(void *storage, const std::nothrow_t &) noexcept {
-  ::operator delete(storage);
-}
-void operator delete[](void *storage, const std::nothrow_t &) noexcept {
-  ::operator delete(storage);
-}
-
-void *operator new(std::size_t size, std::align_val_t alignment) {
-  allocation_probe::record();
-  void *storage = nullptr;
-  const std::size_t nonzeroSize = size == 0 ? 1 : size;
-  if (posix_memalign(&storage, static_cast<std::size_t>(alignment),
-                     nonzeroSize) == 0)
-    return storage;
-  throw std::bad_alloc();
-}
-
-void *operator new[](std::size_t size, std::align_val_t alignment) {
-  return ::operator new(size, alignment);
-}
-
-void *operator new(std::size_t size, std::align_val_t alignment,
-                   const std::nothrow_t &) noexcept {
-  try {
-    return ::operator new(size, alignment);
-  } catch (...) {
-    return nullptr;
-  }
-}
-
-void *operator new[](std::size_t size, std::align_val_t alignment,
-                     const std::nothrow_t &tag) noexcept {
-  return ::operator new(size, alignment, tag);
-}
-
-void operator delete(void *storage, std::align_val_t) noexcept {
-  std::free(storage);
-}
-void operator delete[](void *storage, std::align_val_t alignment) noexcept {
-  ::operator delete(storage, alignment);
-}
-void operator delete(void *storage, std::size_t,
-                     std::align_val_t alignment) noexcept {
-  ::operator delete(storage, alignment);
-}
-void operator delete[](void *storage, std::size_t,
-                       std::align_val_t alignment) noexcept {
-  ::operator delete(storage, alignment);
-}
-void operator delete(void *storage, std::align_val_t alignment,
-                     const std::nothrow_t &) noexcept {
-  ::operator delete(storage, alignment);
-}
-void operator delete[](void *storage, std::align_val_t alignment,
-                       const std::nothrow_t &) noexcept {
-  ::operator delete(storage, alignment);
-}
 
 namespace {
 
@@ -507,6 +409,8 @@ void requireReorderedBatch(const IncrementalTopologicalOrder &order,
 }
 
 void pinnedScaleBenchmarkMeetsNativeContract() {
+  if (!loom::test::allocationProbeIsCalibrated())
+    fail("heap allocation probe did not observe its calibration calls");
   constexpr PnrIndex nodeCount = 10000;
   constexpr std::size_t potentialArcCount = 50000;
   PotentialGraph graph;
@@ -556,13 +460,11 @@ void pinnedScaleBenchmarkMeetsNativeContract() {
   }
 
   const std::vector<PnrIndex> allocationProbeArcs = benchmarkBatch(graph, 5);
-  allocation_probe::count = 0;
-  allocation_probe::enabled = true;
+  loom::test::startAllocationProbe();
   applyInsertionBatch(*order, scratch, allocationProbeArcs);
   requireReorderedBatch(*order, graph, allocationProbeArcs);
   applyRemovalBatch(*order, scratch, allocationProbeArcs);
-  allocation_probe::enabled = false;
-  if (allocation_probe::count != 0)
+  if (loom::test::stopAllocationProbe() != 0)
     fail("warm local update performed a heap allocation");
   if (scratch.retainedStorageBytes() != retainedBytes)
     fail("warm local update expanded retained scratch storage");

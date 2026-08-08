@@ -15,6 +15,8 @@ add_executable(loom-system-service-route-wire-test
 )
 
 add_executable(loom-tech-mapping-artifact-test
+  ../TestAllocationProbe.cpp
+  SpatialMemoryActionTestSupport.cpp
   TechMappingArtifactTest.cpp
   TechMappingComputeBoundaryTest.cpp
   TechMappingCandidateTestSupport.cpp
@@ -30,6 +32,7 @@ add_executable(loom-tech-mapping-config-test
 )
 
 add_executable(loom-tech-mapping-generator-test
+  ../TestAllocationProbe.cpp
   TechMappingGeneratorTest.cpp
   SpatialMemoryConstraintTestSupport.cpp
 )
@@ -47,7 +50,9 @@ add_executable(loom-spatial-mapping-wire-test
 )
 
 add_executable(loom-spatial-mapping-artifact-test
+  ../TestAllocationProbe.cpp
   CgraAdmissionTestSupport.cpp
+  SpatialMemoryActionTestSupport.cpp
   SpatialMappingArtifactTest.cpp
   TechMappingCandidateTestSupport.cpp
 )
@@ -55,6 +60,10 @@ add_executable(loom-spatial-mapping-artifact-test
 add_executable(loom-spatial-tag-continuity-index-test
   SpatialTagContinuityIndexTest.cpp
 )
+
+loom_enable_allocation_probe(loom-tech-mapping-artifact-test)
+loom_enable_allocation_probe(loom-tech-mapping-generator-test)
+loom_enable_allocation_probe(loom-spatial-mapping-artifact-test)
 
 add_executable(loom-configured-hardware-projection-test
   ConfiguredHardwareProjectionTest.cpp

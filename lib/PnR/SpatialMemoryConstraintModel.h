@@ -5,12 +5,14 @@
 #include "PnR/PnrIndex.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <system_error>
 #include <vector>
 
 namespace loom::pnr {
@@ -51,6 +53,39 @@ struct SpatialMemoryConstraintRelation final {
   PnrIndex memberCount = 0;
 };
 
+class SpatialMemoryConstraintModel;
+
+class SpatialMemoryConstraintSolveFailure final
+    : public llvm::ErrorInfo<SpatialMemoryConstraintSolveFailure> {
+public:
+  static char ID;
+
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+};
+
+class SpatialMemoryConstraintScratch final {
+public:
+  SpatialMemoryConstraintScratch();
+  SpatialMemoryConstraintScratch(const SpatialMemoryConstraintScratch &) =
+      delete;
+  SpatialMemoryConstraintScratch &
+  operator=(const SpatialMemoryConstraintScratch &) = delete;
+  SpatialMemoryConstraintScratch(SpatialMemoryConstraintScratch &&) = delete;
+  SpatialMemoryConstraintScratch &
+  operator=(SpatialMemoryConstraintScratch &&) = delete;
+  ~SpatialMemoryConstraintScratch();
+
+  llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> solution() const;
+  std::size_t retainedStorageBytes() const;
+
+private:
+  struct Storage;
+  std::unique_ptr<Storage> storage_;
+
+  friend class SpatialMemoryConstraintModel;
+};
+
 /// Dense removable projection of logical-memory service and address clauses.
 /// MemoryBinding remains the sole selected-state authority.
 class SpatialMemoryConstraintModel final {
@@ -66,8 +101,22 @@ public:
       llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> current,
       llvm::MutableArrayRef<SpatialLogicalMemoryBindingSelection> output) const;
 
+  llvm::Error prepareScratch(SpatialMemoryConstraintScratch &scratch) const;
+
+  llvm::Expected<bool> solveCanonicalClosure(
+      llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> current,
+      llvm::ArrayRef<PnrIndex> fixedBindings,
+      llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> fixedSelections,
+      std::uint64_t assignmentLimit,
+      llvm::function_ref<llvm::Expected<bool>(PnrIndex, PnrIndex)>
+          targetSupported,
+      SpatialMemoryConstraintScratch &scratch) const;
+
   llvm::Error
   verify(llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections) const;
+  llvm::Error
+  verify(llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+         SpatialMemoryConstraintScratch &scratch) const;
 
   bool hasConstraints() const { return hasConstraints_; }
 
@@ -91,12 +140,40 @@ private:
               llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
               std::vector<PnrIndex> &services,
               std::vector<SpatialMemoryAddressInterval> &addresses) const;
-  llvm::Error verifyRootDomain(
+  llvm::Expected<bool> projectAssignedRoot(
       PnrIndex root,
-      llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections) const;
-  llvm::Error verifyRelation(
+      llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+      std::vector<PnrIndex> &services,
+      std::vector<SpatialMemoryAddressInterval> &addresses) const;
+  llvm::Expected<bool> rootDomainSatisfied(
+      PnrIndex root,
+      llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+      SpatialMemoryConstraintScratch &scratch) const;
+  llvm::Expected<bool> rootDomainPartiallySatisfied(
+      PnrIndex root,
+      llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+      SpatialMemoryConstraintScratch &scratch) const;
+  llvm::Expected<bool> relationSatisfied(
       const SpatialMemoryConstraintRelation &relation,
-      llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections) const;
+      llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+      SpatialMemoryConstraintScratch &scratch) const;
+  llvm::Expected<bool> relationPartiallySatisfied(
+      const SpatialMemoryConstraintRelation &relation,
+      llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+      SpatialMemoryConstraintScratch &scratch) const;
+  llvm::Expected<bool> partialConstraintsSatisfied(
+      PnrIndex binding,
+      llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+      SpatialMemoryConstraintScratch &scratch) const;
+  llvm::Expected<bool> constraintsSatisfied(
+      llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> selections,
+      SpatialMemoryConstraintScratch &scratch) const;
+  llvm::Expected<bool>
+  solveClosureAt(std::size_t cursor,
+                 llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> current,
+                 llvm::function_ref<llvm::Expected<bool>(PnrIndex, PnrIndex)>
+                     targetSupported,
+                 SpatialMemoryConstraintScratch &scratch) const;
 
   std::vector<std::optional<std::uint64_t>> bindingExtents_;
   std::vector<std::uint64_t> targetSizes_;
@@ -109,6 +186,8 @@ private:
   std::vector<SpatialMemoryAddressInterval> addressDomainValues_;
   std::vector<SpatialMemoryConstraintRelation> relations_;
   std::vector<PnrIndex> relationMembers_;
+  std::vector<PnrIndex> rootRelationOffsets_;
+  std::vector<PnrIndex> rootRelations_;
   bool hasAddressDomainRestrictions_ = false;
   bool hasConstraints_ = false;
 };

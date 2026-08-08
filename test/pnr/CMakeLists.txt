@@ -103,8 +103,11 @@ target_link_libraries(loom-pnr-config-test PRIVATE
 )
 
 add_executable(loom-pnr-incremental-topology-test
+  ../TestAllocationProbe.cpp
   IncrementalTopologicalOrderTest.cpp
 )
+
+loom_enable_allocation_probe(loom-pnr-incremental-topology-test)
 
 target_include_directories(loom-pnr-incremental-topology-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/PnR

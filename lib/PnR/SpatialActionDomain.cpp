@@ -1,6 +1,8 @@
 #include "PnR/SpatialActionDomain.h"
 
 #include "SpatialBindingRelationModel.h"
+#include "SpatialMemoryCompatibility.h"
+#include "SpatialMemoryConstraintModel.h"
 
 #include "PnR/PnrIndex.h"
 #include "PnR/SpatialCandidateState.h"
@@ -9,6 +11,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <system_error>
 
@@ -34,6 +37,9 @@ template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
 }
 
 } // namespace
+
+SpatialActionDomainScratch::SpatialActionDomainScratch() = default;
+SpatialActionDomainScratch::~SpatialActionDomainScratch() = default;
 
 llvm::Error
 SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
@@ -113,26 +119,96 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
                          logicalNetCount == 0 ? 0 : 1);
   if (!transportAnchorCapacity)
     return transportAnchorCapacity.takeError();
-  auto resourceChoiceCapacity =
+  auto initialResourceChoiceCapacity =
       checkedPnrIndexAdd({"SpatialActionDomain", "resourceChoices", "Action",
                           PnrCapacityMeasure::Count},
                          problem.ports().attachmentOptions().size(),
                          problem.handshake().memoryOperationPlans().size());
-  if (!resourceChoiceCapacity)
-    return resourceChoiceCapacity.takeError();
-  auto resourceAnchorCapacity =
+  if (!initialResourceChoiceCapacity)
+    return initialResourceChoiceCapacity.takeError();
+  PnrIndex resourceChoiceCapacity = *initialResourceChoiceCapacity;
+  const PnrCapacityContext resourceChoiceContext{"SpatialActionDomain",
+                                                 "resourceChoices", "Action",
+                                                 PnrCapacityMeasure::Count};
+  const auto growResourceChoices = [&](std::size_t count) -> llvm::Error {
+    auto grown = checkedPnrIndexAdd(resourceChoiceContext,
+                                    resourceChoiceCapacity, count);
+    if (!grown)
+      return grown.takeError();
+    resourceChoiceCapacity = *grown;
+    return llvm::Error::success();
+  };
+
+  PnrIndex maximumLogicalMemoryChoiceCapacity = 0;
+  for (PnrIndex binding = 0;
+       binding < problem.memory().logicalBindings().size(); ++binding) {
+    auto capacity =
+        problem.memoryConstraints().logicalBindingChoiceCapacity(binding);
+    if (!capacity)
+      return capacity.takeError();
+    maximumLogicalMemoryChoiceCapacity =
+        std::max(maximumLogicalMemoryChoiceCapacity, *capacity);
+    if (llvm::Error error = growResourceChoices(*capacity))
+      return error;
+  }
+
+  const auto &realizations = problem.realizations();
+  const auto &memory = problem.memory();
+  for (const FrozenSpatialMemoryRootedUse &use : memory.rootedUses()) {
+    if (use.actor >= realizations.memoryActorRealizations().size())
+      return invalid("rooted memory use has a foreign actor");
+    const PnrIndex realization =
+        realizations.memoryActorRealizations()[use.actor];
+    if (realization >= realizations.memoryRealizations().size())
+      return invalid("rooted memory use has a foreign realization");
+    const FrozenSpatialMemoryRealization &owner =
+        realizations.memoryRealizations()[realization];
+    if (use.actor < owner.actorOffset ||
+        use.actor - owner.actorOffset >= owner.actorCount)
+      return invalid("rooted memory use is outside its actor slice");
+    const PnrIndex localActor = use.actor - owner.actorOffset;
+    PnrIndex maximumOptions = 0;
+    for (PnrIndex placement = owner.placementOffset;
+         placement < owner.placementOffset + owner.placementCount;
+         ++placement) {
+      const PnrIndex domainOffset =
+          memory.memoryPlacementDomainOffsets()[placement];
+      const FrozenSpatialMemoryDispatchDomain &domain =
+          memory.dispatchDomains()[domainOffset + localActor];
+      maximumOptions = std::max(maximumOptions, domain.optionCount);
+    }
+    if (llvm::Error error = growResourceChoices(maximumOptions))
+      return error;
+  }
+  auto exposureChoiceCapacity =
+      checkedPnrIndexMultiply(resourceChoiceContext, memory.exposures().size(),
+                              memory.exposureOptions().size());
+  if (!exposureChoiceCapacity)
+    return exposureChoiceCapacity.takeError();
+  if (llvm::Error error = growResourceChoices(*exposureChoiceCapacity))
+    return error;
+
+  auto initialResourceAnchorCapacity =
       checkedPnrIndexAdd({"SpatialActionDomain", "resourceAnchors", "Action",
                           PnrCapacityMeasure::Count},
                          problem.ports().portDemands().size(),
                          problem.ports().graphBoundaries().size());
-  if (!resourceAnchorCapacity)
-    return resourceAnchorCapacity.takeError();
-  resourceAnchorCapacity = checkedPnrIndexAdd(
-      {"SpatialActionDomain", "resourceAnchors", "Action",
-       PnrCapacityMeasure::Count},
-      *resourceAnchorCapacity, problem.realizations().memoryActors().size());
-  if (!resourceAnchorCapacity)
-    return resourceAnchorCapacity.takeError();
+  if (!initialResourceAnchorCapacity)
+    return initialResourceAnchorCapacity.takeError();
+  PnrIndex resourceAnchorCapacity = *initialResourceAnchorCapacity;
+  const PnrCapacityContext resourceAnchorContext{"SpatialActionDomain",
+                                                 "resourceAnchors", "Action",
+                                                 PnrCapacityMeasure::Count};
+  for (std::size_t count :
+       {problem.realizations().memoryActors().size(),
+        memory.logicalBindings().size(), memory.rootedUses().size(),
+        memory.exposures().size()}) {
+    auto grown = checkedPnrIndexAdd(resourceAnchorContext,
+                                    resourceAnchorCapacity, count);
+    if (!grown)
+      return grown.takeError();
+    resourceAnchorCapacity = *grown;
+  }
 
   realizationAnchors_.clear();
   realizationChoices_.clear();
@@ -147,9 +223,16 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   transportAnchors_.reserve(*transportAnchorCapacity);
   transportChoices_.reserve(*transportChoiceCapacity);
   routeRootEndpoints_.reserve(endpointCount);
-  resourceAnchors_.reserve(*resourceAnchorCapacity);
-  resourceChoices_.reserve(*resourceChoiceCapacity);
+  resourceAnchors_.reserve(resourceAnchorCapacity);
+  resourceChoices_.reserve(resourceChoiceCapacity);
   relationChoices_.resize(relations.decisionCount());
+  logicalMemoryChoices_.resize(maximumLogicalMemoryChoiceCapacity);
+  if (!memoryConstraintScratch_)
+    memoryConstraintScratch_ =
+        std::make_unique<detail::SpatialMemoryConstraintScratch>();
+  if (llvm::Error error =
+          problem.memoryConstraints().prepareScratch(*memoryConstraintScratch_))
+    return error;
   preparedProblem_ = &problem;
   return llvm::Error::success();
 }
@@ -443,6 +526,106 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
       return error;
   }
 
+  const auto &memory = preparedProblem_->memory();
+  for (PnrIndex binding = 0; binding < memory.logicalBindings().size();
+       ++binding) {
+    const std::size_t offset = resourceChoices_.size();
+    auto generated =
+        preparedProblem_->memoryConstraints().collectLogicalBindingChoices(
+            binding, candidate.logicalMemoryBindings_, logicalMemoryChoices_);
+    if (!generated)
+      return generated.takeError();
+    const SpatialLogicalMemoryBindingSelection &current =
+        candidate.logicalMemoryBinding(binding);
+    for (const SpatialLogicalMemoryBindingSelection &choice :
+         llvm::ArrayRef(logicalMemoryChoices_).take_front(*generated)) {
+      if (choice.target == current.target &&
+          choice.physicalOffsetBytes == current.physicalOffsetBytes)
+        continue;
+      auto supported =
+          candidate.logicalMemoryBindingTargetSupported(binding, choice.target);
+      if (!supported)
+        return supported.takeError();
+      if (!*supported)
+        continue;
+      const std::array<PnrIndex, 1> fixedBindings{binding};
+      const std::array<SpatialLogicalMemoryBindingSelection, 1> fixedSelections{
+          choice};
+      auto closed = preparedProblem_->memoryConstraints().solveCanonicalClosure(
+          candidate.logicalMemoryBindings_, fixedBindings, fixedSelections,
+          preparedProblem_->config()
+              .policy()
+              .search.initializer.assignmentAttemptLimitPerSeed,
+          [&](PnrIndex dependentBinding,
+              PnrIndex target) -> llvm::Expected<bool> {
+            return candidate.logicalMemoryBindingTargetSupported(
+                dependentBinding, target);
+          },
+          *memoryConstraintScratch_);
+      bool publish = false;
+      if (!closed) {
+        bool workLimit = false;
+        llvm::Error unhandled = llvm::handleErrors(
+            closed.takeError(),
+            [&](const detail::SpatialMemoryConstraintSolveFailure &)
+                -> llvm::Error {
+              workLimit = true;
+              return llvm::Error::success();
+            });
+        if (unhandled)
+          return unhandled;
+        publish = workLimit;
+      } else {
+        publish = *closed;
+      }
+      if (publish)
+        resourceChoices_.emplace_back(SpatialLogicalMemoryBindingAction{
+            binding, choice.target, choice.physicalOffsetBytes});
+    }
+    if (llvm::Error error = appendResourceRange(offset))
+      return error;
+  }
+  for (PnrIndex use = 0; use < memory.rootedUses().size(); ++use) {
+    const std::size_t offset = resourceChoices_.size();
+    auto domain = candidate.memoryDispatchDomain(use);
+    if (!domain)
+      return domain.takeError();
+    for (PnrIndex option = (*domain)->optionOffset;
+         option < (*domain)->optionOffset + (*domain)->optionCount; ++option) {
+      if (candidate.memoryUseDispatch(use) == option)
+        continue;
+      auto supported =
+          candidate.memoryUseDispatchSelectionSupported(use, option);
+      if (!supported)
+        return supported.takeError();
+      if (!*supported)
+        continue;
+      resourceChoices_.emplace_back(
+          SpatialMemoryUseDispatchAction{use, option});
+    }
+    if (llvm::Error error = appendResourceRange(offset))
+      return error;
+  }
+  for (PnrIndex exposure = 0; exposure < memory.exposures().size();
+       ++exposure) {
+    const std::size_t offset = resourceChoices_.size();
+    for (PnrIndex option = 0; option < memory.exposureOptions().size();
+         ++option) {
+      if (candidate.memoryExposureSelection(exposure) == option)
+        continue;
+      const PnrIndex binding = memory.exposures()[exposure].logicalBinding;
+      if (!detail::memoryExposureMatchesTarget(
+              memory.bindingTargets()[candidate.logicalMemoryBinding(binding)
+                                          .target],
+              memory.exposureOptions()[option]))
+        continue;
+      resourceChoices_.emplace_back(
+          SpatialMemoryExposureAction{exposure, option});
+    }
+    if (llvm::Error error = appendResourceRange(offset))
+      return error;
+  }
+
   return llvm::Error::success();
 }
 
@@ -456,5 +639,9 @@ std::size_t SpatialActionDomainScratch::retainedStorageBytes() const {
          retainedBytes(realizationChoices_) + retainedBytes(transportAnchors_) +
          retainedBytes(transportChoices_) + retainedBytes(resourceAnchors_) +
          retainedBytes(resourceChoices_) + retainedBytes(relationChoices_) +
-         retainedBytes(routeRootEndpoints_);
+         retainedBytes(logicalMemoryChoices_) +
+         retainedBytes(routeRootEndpoints_) +
+         (memoryConstraintScratch_
+              ? memoryConstraintScratch_->retainedStorageBytes()
+              : 0);
 }
