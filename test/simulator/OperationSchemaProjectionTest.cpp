@@ -571,6 +571,51 @@ void checkDeterministicElementaryMathProvider() {
                   "unknown fast-math flags");
 }
 
+void checkSpecialMathResultAssumptions() {
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  mlir::Type f32 = mlir::Float32Type::get(&context);
+  mlir::FunctionType unaryF32 = mlir::FunctionType::get(&context, {f32}, {f32});
+  mlir::FunctionType binaryF32 =
+      mlir::FunctionType::get(&context, {f32, f32}, {f32});
+
+  PrimitiveOperationDescriptor numericPowerResult =
+      descriptor(OperationSchemaId::MathPowF, binaryF32,
+                 dataflow::SpecialMathPayload{
+                     mlir::arith::FastMathFlags::nnan,
+                     loom::SpecialMathAccuracyTier::CorrectlyRounded},
+                 32, 32);
+  PrimitiveValue powerNan =
+      takeValue(__func__, loom::sim::evaluatePrimitiveOperation(
+                              numericPowerResult, {floating32(0xbf800000U),
+                                                   floating32(0x3f000000U)}));
+  require(__func__, powerNan.state == PrimitiveValueState::Poison,
+          "nnan power produced a NaN result");
+
+  PrimitiveOperationDescriptor numericResult =
+      descriptor(OperationSchemaId::MathSqrt, unaryF32,
+                 dataflow::SpecialMathPayload{
+                     mlir::arith::FastMathFlags::nnan,
+                     loom::SpecialMathAccuracyTier::CorrectlyRounded},
+                 32, 32);
+  PrimitiveValue nan =
+      takeValue(__func__, loom::sim::evaluatePrimitiveOperation(
+                              numericResult, {floating32(0xbf800000U)}));
+  require(__func__, nan.state == PrimitiveValueState::Poison,
+          "nnan special math produced a NaN result");
+
+  PrimitiveOperationDescriptor finiteResult =
+      descriptor(OperationSchemaId::MathExp, unaryF32,
+                 dataflow::SpecialMathPayload{
+                     mlir::arith::FastMathFlags::ninf,
+                     loom::SpecialMathAccuracyTier::CorrectlyRounded},
+                 32, 32);
+  PrimitiveValue infinite =
+      takeValue(__func__, loom::sim::evaluatePrimitiveOperation(
+                              finiteResult, {floating32(0x7f7fffffU)}));
+  require(__func__, infinite.state == PrimitiveValueState::Poison,
+          "ninf special math produced an infinite result");
+}
+
 } // namespace
 
 int main() {
@@ -583,5 +628,6 @@ int main() {
   checkTypedProviderAvailability();
   checkDeterministicCosineProvider();
   checkDeterministicElementaryMathProvider();
+  checkSpecialMathResultAssumptions();
   return EXIT_SUCCESS;
 }

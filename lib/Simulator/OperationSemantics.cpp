@@ -835,6 +835,9 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
         loom::sim::detail::evaluateDeterministicBinaryMath(schema, *lhs, *rhs);
     if (!result)
       return result.takeError();
+    llvm::APFloat resultValues[] = {*result};
+    if (violatesFloatingAssumptions(assumptions, resultValues))
+      return PrimitiveValue::poison();
     return PrimitiveValue::floating(*result);
   }
 
@@ -916,6 +919,9 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
           loom::sim::detail::evaluateDeterministicUnaryMath(schema, *value);
       if (!result)
         return result.takeError();
+      llvm::APFloat resultValues[] = {*result};
+      if (violatesFloatingAssumptions(assumptions, resultValues))
+        return PrimitiveValue::poison();
       return PrimitiveValue::floating(*result);
     }
     case Schema::MathFloor:
