@@ -10,6 +10,10 @@
 #include <cstdint>
 #include <optional>
 
+namespace llvm {
+class APFloat;
+} // namespace llvm
+
 namespace loom {
 
 inline constexpr llvm::StringLiteral kSpecialMathAccuracyAttrName =
@@ -34,6 +38,18 @@ llvm::Error validateSpecialMathAccuracyContract(SpecialMathAccuracyTier tier,
 llvm::Expected<bool>
 specialMathAccuracyRefines(SpecialMathAccuracyTier guarantee,
                            SpecialMathAccuracyTier acceptedMaximum);
+
+/// Destination-format ULP distance. NaNs, unequal infinities, mismatched
+/// semantics, and formats wider than 64 bits have no distance.
+llvm::Expected<std::uint64_t>
+specialMathUlpDistance(const llvm::APFloat &reference,
+                       const llvm::APFloat &candidate);
+
+/// Whether `candidate` satisfies `tier` relative to `reference`.
+llvm::Expected<bool>
+specialMathAccuracyConforms(SpecialMathAccuracyTier tier,
+                            const llvm::APFloat &reference,
+                            const llvm::APFloat &candidate);
 
 llvm::Expected<std::uint32_t>
 specialMathAccuracyWireTag(SpecialMathAccuracyTier tier);

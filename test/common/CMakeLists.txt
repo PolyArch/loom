@@ -54,3 +54,13 @@ target_link_libraries(loom-common-pointer-layout-test PRIVATE
   MLIRIR
   LLVMSupport
 )
+
+add_executable(loom-common-special-math-accuracy-test
+  SpecialMathAccuracyTest.cpp
+)
+
+target_link_libraries(loom-common-special-math-accuracy-test PRIVATE
+  LoomCommon
+  LLVMCore
+  LLVMSupport
+)

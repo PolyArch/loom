@@ -1,5 +1,7 @@
 #include "Common/SpecialMathAccuracy.h"
 
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringSwitch.h"
 
@@ -50,6 +52,20 @@ llvm::Expected<unsigned> strengthRank(SpecialMathAccuracyTier tier) {
   if (found == kTiers.end())
     return invalid("unknown special-math accuracy tier");
   return static_cast<unsigned>(std::distance(kTiers.begin(), found));
+}
+
+llvm::Expected<std::uint64_t> ulpLimit(SpecialMathAccuracyTier tier) {
+  switch (tier) {
+  case SpecialMathAccuracyTier::CorrectlyRounded:
+    return 0;
+  case SpecialMathAccuracyTier::Max1Ulp:
+    return 1;
+  case SpecialMathAccuracyTier::Max2Ulp:
+    return 2;
+  case SpecialMathAccuracyTier::Max4Ulp:
+    return 4;
+  }
+  return invalid("unknown special-math accuracy tier");
 }
 
 } // namespace
@@ -103,6 +119,57 @@ specialMathAccuracyRefines(SpecialMathAccuracyTier guarantee,
   if (!acceptedRank)
     return acceptedRank.takeError();
   return *guaranteeRank <= *acceptedRank;
+}
+
+llvm::Expected<std::uint64_t>
+specialMathUlpDistance(const llvm::APFloat &reference,
+                       const llvm::APFloat &candidate) {
+  const llvm::fltSemantics &semantics = reference.getSemantics();
+  if (&candidate.getSemantics() != &semantics)
+    return invalid("ULP comparison requires identical floating semantics");
+
+  const unsigned width = llvm::APFloat::semanticsSizeInBits(semantics);
+  if (width == 0 || width > 64)
+    return invalid("ULP comparison supports formats up to 64 bits");
+  if (!llvm::APFloat::isIEEELikeFP(semantics) ||
+      !llvm::APFloat::hasSignBitInMSB(semantics))
+    return invalid("ULP comparison requires an IEEE-like sign representation");
+
+  if (reference.isNaN() || candidate.isNaN())
+    return invalid("ULP distance is undefined for NaN");
+  if (reference.isInfinity() || candidate.isInfinity()) {
+    if (reference.bitwiseIsEqual(candidate))
+      return 0;
+    return invalid("ULP distance is undefined for unequal infinite values");
+  }
+  if (reference.isZero() && candidate.isZero())
+    return 0;
+
+  const std::uint64_t sign = std::uint64_t{1} << (width - 1);
+  const std::uint64_t magnitudeMask = sign - 1;
+  auto orderedKey = [sign, magnitudeMask](const llvm::APFloat &value) {
+    const std::uint64_t bits = value.bitcastToAPInt().getZExtValue();
+    const std::uint64_t magnitude = bits & magnitudeMask;
+    return (bits & sign) != 0 ? sign - magnitude : sign + magnitude;
+  };
+
+  const std::uint64_t referenceKey = orderedKey(reference);
+  const std::uint64_t candidateKey = orderedKey(candidate);
+  return referenceKey >= candidateKey ? referenceKey - candidateKey
+                                      : candidateKey - referenceKey;
+}
+
+llvm::Expected<bool>
+specialMathAccuracyConforms(SpecialMathAccuracyTier tier,
+                            const llvm::APFloat &reference,
+                            const llvm::APFloat &candidate) {
+  auto limit = ulpLimit(tier);
+  if (!limit)
+    return limit.takeError();
+  auto distance = specialMathUlpDistance(reference, candidate);
+  if (!distance)
+    return distance.takeError();
+  return *distance <= *limit;
 }
 
 llvm::Expected<std::uint32_t>

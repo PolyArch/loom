@@ -60,6 +60,7 @@ set(LOOM_TEST_DEPENDS
   loom-common-artifact-test
   loom-common-blob-test
   loom-common-canonical-relation-test
+  loom-common-special-math-accuracy-test
   loom-dataflow-canonical-artifact-test
   loom-dataflow-canonical-reference-test
   loom-dataflow-memory-effect-test
