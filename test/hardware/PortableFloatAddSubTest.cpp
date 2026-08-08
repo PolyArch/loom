@@ -399,11 +399,24 @@ ConfigurationABIDraft makeConfigurationAbiDraft(
     if (kind == ConfigurationAbiKind::MissingBehavior && mode.subtract &&
         mode.format == ::fabric::FloatFormat::BF16 &&
         mode.rounding == mlir::arith::RoundingMode::upward)
-      semantic = {0xfd};
+      continue;
     entries.push_back({std::move(semantic), {physicalCode(mode)}});
   }
+  require(test,
+          llvm::none_of(entries,
+                        [](const FiniteCodebookEntry &entry) {
+                          return entry.physicalCode.size() == 1 &&
+                                 entry.physicalCode.front() == 0x3f;
+                        }),
+          "configured float add/sub codebook occupies its inactive fallback");
   if (kind == ConfigurationAbiKind::ExtraBehavior)
     entries.push_back({{0xfe}, {0x3f}});
+  if (kind == ConfigurationAbiKind::MissingBehavior)
+    require(test, entries.size() + 1 == domain.size(),
+            "missing-behavior ABI did not omit exactly one domain point");
+  if (kind == ConfigurationAbiKind::ExtraBehavior)
+    require(test, entries.size() == domain.size() + 1,
+            "extra-behavior ABI did not add exactly one foreign point");
   require(test, !inactive.empty(), "float add/sub domain has no inactive mode");
   auto physicalField =
       take(test, loom::hardware::test::qualifyPhysicalConfigurationField(
@@ -732,43 +745,6 @@ std::string buildTestbench(llvm::ArrayRef<Mode> scalarModes,
   std::string text;
   llvm::raw_string_ostream output(text);
   output << R"sv(
-module scalar_float_add_sub_elastic(
-    input  logic        clock,
-    input  logic        reset,
-    input  logic        input_valid,
-    output logic        input_ready,
-    input  logic [63:0] input_lhs,
-    input  logic [63:0] input_rhs,
-    input  logic [5:0]  input_config,
-    output logic        output_valid,
-    input  logic        output_ready,
-    output logic [63:0] output_data);
-  logic [63:0] combinational_data;
-  logic [63:0] held_data;
-  logic full;
-
-  scalar_float_add_sub leaf(
-      .data_input_0(input_lhs),
-      .data_input_1(input_rhs),
-      .config_0(input_config),
-      .data_output_0(combinational_data));
-
-  assign input_ready = !full || output_ready;
-  assign output_valid = full;
-  assign output_data = held_data;
-
-  always_ff @(posedge clock) begin
-    if (reset) begin
-      full <= 1'b0;
-      held_data <= 64'd0;
-    end else if (input_ready) begin
-      full <= input_valid;
-      if (input_valid)
-        held_data <= combinational_data;
-    end
-  end
-endmodule
-
 module testbench;
   logic [63:0] scalar_lhs;
   logic [63:0] scalar_rhs;
@@ -781,17 +757,6 @@ module testbench;
   logic [31:0] singleton_lhs;
   logic [31:0] singleton_rhs;
   logic [31:0] singleton_result;
-
-  logic clock;
-  logic reset;
-  logic input_valid;
-  logic input_ready;
-  logic [63:0] input_lhs;
-  logic [63:0] input_rhs;
-  logic [5:0] input_config;
-  logic output_valid;
-  logic output_ready;
-  logic [63:0] output_data;
 
   scalar_float_add_sub scalar_dut(
       .data_input_0(scalar_lhs),
@@ -807,7 +772,6 @@ module testbench;
       .data_input_0(singleton_lhs),
       .data_input_1(singleton_rhs),
       .data_output_0(singleton_result));
-  scalar_float_add_sub_elastic elastic_dut(.*);
 
   task automatic check_scalar(
       input logic [5:0] mode,
@@ -842,17 +806,6 @@ module testbench;
   endtask
 
   initial begin
-    clock = 1'b0;
-    forever #5 clock = !clock;
-  end
-
-  initial begin
-    reset = 1'b1;
-    input_valid = 1'b0;
-    output_ready = 1'b0;
-    input_lhs = 64'd0;
-    input_rhs = 64'd0;
-    input_config = 6'd0;
 )sv";
 
   for (const Mode &mode : scalarModes) {
@@ -895,78 +848,33 @@ module testbench;
 
   const Mode inactive{::fabric::FloatFormat::F32,
                       mlir::arith::RoundingMode::to_nearest_even, false, 1};
-  output << "    check_scalar(6'd63, 64'h000000003f800000, "
-            "64'h0000000040000000, "
-         << hexLiteral(64, expected(inactive, 0x3f800000, 0x40000000))
-         << ");\n";
-  output << "    check_vector(6'd63, "
-            "96'h3f8000003f8000003f800000, "
-            "96'h3f8000003f8000003f800000, "
-            "96'h400000004000000040000000);\n";
+  const std::vector<TestVector> inactiveVectors = {
+      {0x3f800000, 0x33800000},
+      {0xbf800000, 0xb3800000},
+      {0x3f800000, 0x33800001},
+  };
+  llvm::APInt inactiveLhs(96, 0);
+  llvm::APInt inactiveRhs(96, 0);
+  llvm::APInt inactiveResult(96, 0);
+  for (unsigned lane = 0; lane < inactiveVectors.size(); ++lane) {
+    const TestVector vector = inactiveVectors[lane];
+    const std::uint64_t result = expected(inactive, vector.lhs, vector.rhs);
+    output << "    check_scalar(6'd63, " << hexLiteral(64, vector.lhs) << ", "
+           << hexLiteral(64, vector.rhs) << ", " << hexLiteral(64, result)
+           << ");\n";
+    inactiveLhs.insertBits(llvm::APInt(32, vector.lhs), lane * 32);
+    inactiveRhs.insertBits(llvm::APInt(32, vector.rhs), lane * 32);
+    inactiveResult.insertBits(llvm::APInt(32, result), lane * 32);
+  }
+  output << "    check_vector(6'd63, " << hexLiteral(96, inactiveLhs) << ", "
+         << hexLiteral(96, inactiveRhs) << ", "
+         << hexLiteral(96, inactiveResult) << ");\n";
   output << R"sv(
     singleton_lhs = 32'h3f800000;
     singleton_rhs = 32'h40000000;
     #1;
     if (singleton_result !== 32'h40400000)
       $fatal(1, "configuration-free f32 add produced the wrong result");
-
-    repeat (2) @(posedge clock);
-    #1;
-    if (output_valid !== 1'b0)
-      $fatal(1, "reset did not empty the elastic slot");
-    reset = 1'b0;
-
-    @(negedge clock);
-    input_valid = 1'b1;
-    input_lhs = 64'h000000003f800000;
-    input_rhs = 64'h000000003f800000;
-    input_config = 6'd)sv"
-         << unsigned(physicalCode(inactive)) << R"sv(;
-    @(posedge clock);
-    #1;
-    input_valid = 1'b0;
-    if (output_valid !== 1'b1 || output_data !== 64'h0000000040000000)
-      $fatal(1, "accepted value did not appear after one cycle");
-    if (input_ready !== 1'b0)
-      $fatal(1, "full elastic slot ignored backpressure");
-
-    repeat (2) begin
-      @(posedge clock);
-      #1;
-      if (output_valid !== 1'b1 || output_data !== 64'h0000000040000000)
-        $fatal(1, "stalled elastic result was not stable");
-    end
-
-    @(negedge clock);
-    output_ready = 1'b1;
-    input_valid = 1'b1;
-    input_lhs = 64'h000000003f800000;
-    input_rhs = 64'h0000000040000000;
-    @(posedge clock);
-    #1;
-    if (output_valid !== 1'b1 || output_data !== 64'h0000000040400000)
-      $fatal(1, "same-cycle replacement lost the new result");
-
-    @(negedge clock);
-    input_valid = 1'b0;
-    @(posedge clock);
-    #1;
-    if (output_valid !== 1'b0)
-      $fatal(1, "consumed elastic result did not clear");
-
-    @(negedge clock);
-    output_ready = 1'b0;
-    input_valid = 1'b1;
-    input_lhs = 64'h0000000040000000;
-    input_rhs = 64'h0000000040000000;
-    @(posedge clock);
-    #1;
-    input_valid = 1'b0;
-    reset = 1'b1;
-    @(posedge clock);
-    #1;
-    if (output_valid !== 1'b0)
-      $fatal(1, "reset did not flush a stalled result");
     $finish;
   end
 endmodule
@@ -1112,13 +1020,13 @@ void malformedInputsFailClosed(const std::filesystem::path &root) {
                     makeConfigurationAbiDraft(
                         test, fixture, ConfigurationAbiKind::MissingBehavior),
                     store),
-                "semantic");
+                "finite codebook does not equal its Fabric relation");
     expectError(test,
                 finalizeConfigurationABI(
                     makeConfigurationAbiDraft(
                         test, fixture, ConfigurationAbiKind::ExtraBehavior),
                     store),
-                "semantic");
+                "semantic value is outside the finite behavior domain");
   }
 
   mlir::Type f32 = mlir::Float32Type::get(&fabricContext());

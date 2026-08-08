@@ -25,8 +25,6 @@
 # SINGLETON: loom_float_add_sub_e8_f23(
 # SINGLETON-NOT: config_0
 
-# TB: module scalar_float_add_sub_elastic
-# TB: always_ff @(posedge clock)
 # TB: module testbench
 # TB: check_scalar
 # TB: check_vector
