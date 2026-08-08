@@ -9,12 +9,6 @@ fabric.module @callee_top(%a : !fabric.bits<32>) -> (!fabric.bits<32>) {
   fabric.yield %a : !fabric.bits<32>
 }
 
-// Top-level instantiation of a top-level fabric.module symbol. The
-// fabric.instantiate appears directly in the builtin top-level module.
-// CHECK: fabric.instantiate @callee_top
-%t = builtin.unrealized_conversion_cast to !fabric.bits<32>
-%u = fabric.instantiate @callee_top(%t : !fabric.bits<32>) -> (!fabric.bits<32>)
-
 // Sibling fabric.module that another module's body will instantiate.
 fabric.module @leaf(%x : !fabric.bits<32>) -> (!fabric.bits<32>) {
   fabric.yield %x : !fabric.bits<32>
@@ -25,6 +19,7 @@ fabric.module @leaf(%x : !fabric.bits<32>) -> (!fabric.bits<32>) {
 // CHECK: fabric.instantiate @leaf
 fabric.module @host_calls_leaf(%a : !fabric.bits<32>) {
   %r = fabric.instantiate @leaf(%a : !fabric.bits<32>) -> (!fabric.bits<32>)
+      {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   fabric.yield
 }
 
@@ -124,5 +119,6 @@ fabric.module @host_relax(%a : !fabric.bits<32>) {
   %r = fabric.instantiate @leaf_narrow(%a : !fabric.bits<32>
                                           to !fabric.bits<16>)
        -> (!fabric.bits<16>)
+       {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   fabric.yield
 }

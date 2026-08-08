@@ -117,6 +117,7 @@ fabric.module @m_instantiate_memref_sub_export(
       %mgr : memref<?x!fabric.bits<32>>,
       %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>)
       -> (memref<?x!fabric.bits<16>>)
+      {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   fabric.yield %sub : memref<?x!fabric.bits<16>>
 }
 
@@ -165,6 +166,7 @@ fabric.module @m_instantiate_memref_sub_to_mgr(
       %mgr : memref<?x!fabric.bits<32>>,
       %addr0 : !fabric.bits<32>, %ctrl0 : !fabric.bits<0>)
       -> (memref<?x!fabric.bits<16>>)
+      {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   %data, %done = fabric.mem [spatial] mgr(%sub) load(%addr1, %ctrl1)
       [{load_group_size = 1 : i32, store_group_size = 0 : i32,
         data_width = 16 : i32,

@@ -1,8 +1,12 @@
 #include "FabricCanonicalLabeling.h"
+#include "FabricModuleDomainMaterialization.h"
+#include "FabricModuleDomainNormalization.h"
 
 #include "Fabric/IR/FabricCanonicalEntity.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
+#include "Fabric/IR/ModuleDomain.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -16,6 +20,7 @@
 
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -233,6 +238,318 @@ module {
           "Fabric textual round-trip dropped materialized entity IDs");
 }
 
+std::string symmetricDomainModule(bool reverse) {
+  const llvm::StringLiteral first = R"mlir(
+    fabric.pe [spatial] (%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
+      %r = fabric.fu(%x = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
+        %v = fabric.op [@arith.addi] (%x, %x)
+             {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [32 : i32]}}
+             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %v : !fabric.bits<32>
+      }
+    }
+  )mlir";
+  const llvm::StringLiteral second = R"mlir(
+    fabric.pe [spatial] (%pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+      %s = fabric.fu(%y = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+        %w = fabric.op [@arith.addi] (%y, %y)
+             {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [32 : i32]}}
+             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %w : !fabric.bits<32>
+      }
+    }
+  )mlir";
+
+  std::string source;
+  llvm::raw_string_ostream stream(source);
+  stream << "module { fabric.module @root(%a: !fabric.bits<32>, "
+            "%b: !fabric.bits<32>) {\n";
+  stream << (reverse ? second : first) << (reverse ? first : second);
+  stream << "fabric.yield\n} }\n";
+  return stream.str();
+}
+
+std::vector<std::vector<std::uint8_t>> domainAssignmentBytes(bool reverse) {
+  const llvm::StringRef test = "domainAssignmentBytes";
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parse(test, symmetricDomainModule(reverse));
+  ::fabric::ModuleOp root;
+  llvm::SmallVector<::fabric::PeOp, 2> pes;
+  module->walk([&](::fabric::ModuleOp candidate) { root = candidate; });
+  root.walk([&](::fabric::PeOp pe) { pes.push_back(pe); });
+  require(test, pes.size() == 2, "fixture has the wrong PE inventory");
+  for (::fabric::PeOp pe : pes)
+    pe->setOperand(0, root.getBody().front().getArgument(0));
+
+  ::fabric::ModuleDomainAuthoringRelation relation;
+  auto firstClock =
+      relation.declareSlot(loom::fabric::FabricClockResetKind::Clock);
+  auto secondClock =
+      relation.declareSlot(loom::fabric::FabricClockResetKind::Clock);
+  auto reset = relation.declareSlot(loom::fabric::FabricClockResetKind::Reset);
+  if (!firstClock || !secondClock || !reset)
+    fail(test, "unable to declare fixture domain slots");
+  using Role = ::fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
+  mlir::Operation *logicalFirst = pes[reverse ? 1 : 0].getOperation();
+  mlir::Operation *logicalSecond = pes[reverse ? 0 : 1].getOperation();
+  for (mlir::Operation *pe : {logicalFirst, logicalSecond})
+    if (llvm::Error error =
+            relation.noteInternalMember(pe, Role::Occurrence, 0))
+      fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = relation.assignBoundary(
+          loom::fabric::FabricPortDirection::Input, 0,
+          loom::fabric::FabricClockResetKind::Clock, *firstClock))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = relation.assignBoundary(
+          loom::fabric::FabricPortDirection::Input, 0,
+          loom::fabric::FabricClockResetKind::Reset, *reset))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = relation.assignBoundary(
+          loom::fabric::FabricPortDirection::Input, 1,
+          loom::fabric::FabricClockResetKind::Clock, *firstClock))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = relation.assignBoundary(
+          loom::fabric::FabricPortDirection::Input, 1,
+          loom::fabric::FabricClockResetKind::Reset, *reset))
+    fail(test, llvm::toString(std::move(error)));
+  for (auto [pe, clock] : {std::pair(logicalFirst, *firstClock),
+                           std::pair(logicalSecond, *secondClock)}) {
+    if (llvm::Error error = relation.assignInternal(
+            pe, Role::Occurrence, 0, loom::fabric::FabricClockResetKind::Clock,
+            clock))
+      fail(test, llvm::toString(std::move(error)));
+    if (llvm::Error error = relation.assignInternal(
+            pe, Role::Occurrence, 0, loom::fabric::FabricClockResetKind::Reset,
+            *reset))
+      fail(test, llvm::toString(std::move(error)));
+  }
+
+  auto preliminary =
+      loom::fabric::detail::computeFabricModuleCanonicalLabeling(root);
+  if (!preliminary)
+    fail(test, llvm::toString(preliminary.takeError()));
+  auto normalized =
+      loom::fabric::detail::normalizeFabricModuleDomain(root, relation);
+  if (!normalized)
+    fail(test, llvm::toString(normalized.takeError()));
+
+  auto canonical = loom::fabric::detail::computeFabricModuleCanonicalLabeling(
+      root, *normalized);
+  if (!canonical)
+    fail(test, llvm::toString(canonical.takeError()));
+  require(test,
+          !canonical->relationBytes.bytes().equals(
+              preliminary->relationBytes.bytes()),
+          "Module domain relation is absent from canonical labeling");
+  if (llvm::Error error =
+          loom::fabric::detail::materializeFabricCanonicalIds(*canonical))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          loom::fabric::detail::materializeFabricModuleDomainRelation(
+              root, *normalized, *canonical))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto assignments =
+      ::fabric::decodeModuleDomainAssignments(root.getDomainAssignmentsAttr());
+  if (!assignments)
+    fail(test, llvm::toString(assignments.takeError()));
+  std::vector<std::vector<std::uint8_t>> bytes;
+  bytes.reserve(assignments->size());
+  for (const auto &assignment : *assignments)
+    bytes.push_back(loom::fabric::canonicalFabricBytes(assignment));
+  return bytes;
+}
+
+void moduleDomainsParticipateInCanonicalLabeling() {
+  const auto forward = domainAssignmentBytes(false);
+  const auto reverse = domainAssignmentBytes(true);
+  require(__func__, forward == reverse,
+          "domain-distinguished symmetric owners depend on authoring order");
+}
+
+std::vector<std::vector<std::uint8_t>>
+fuNodeDomainAssignmentBytes(bool reverseAssignments) {
+  const llvm::StringRef test = "fuNodeDomainAssignmentBytes";
+  auto module = parse(test, R"mlir(
+    module {
+      fabric.module @root(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+        %pe = fabric.pe [spatial] (%p = %a : !fabric.bits<32>)
+            -> !fabric.bits<32> {
+          %fu = fabric.fu(%x = %p : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+            %left = fabric.mux %x, %x : !fabric.bits<32>
+            %right = fabric.mux %x, %x : !fabric.bits<32>
+            %out = fabric.op [@arith.muli] (%x, %x)
+                {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [32 : i32]}}
+                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %out : !fabric.bits<32>
+          }
+        }
+        fabric.yield
+      }
+    }
+  )mlir");
+  ::fabric::ModuleOp root;
+  llvm::SmallVector<::fabric::MuxOp, 2> nodes;
+  module->walk([&](::fabric::ModuleOp candidate) { root = candidate; });
+  root.walk([&](::fabric::MuxOp node) { nodes.push_back(node); });
+  require(test, nodes.size() == 2, "fixture has the wrong FU-node inventory");
+
+  using Kind = loom::fabric::FabricClockResetKind;
+  using Role = ::fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
+  ::fabric::ModuleDomainAuthoringRelation relation;
+  auto firstClock = relation.declareSlot(Kind::Clock);
+  auto secondClock = relation.declareSlot(Kind::Clock);
+  auto reset = relation.declareSlot(Kind::Reset);
+  if (!firstClock || !secondClock || !reset)
+    fail(test, "unable to declare fixture domain slots");
+  for (auto [ordinal, clock] :
+       {std::pair(0U, *firstClock), std::pair(1U, *secondClock)}) {
+    for (Kind kind : {Kind::Clock, Kind::Reset})
+      if (llvm::Error error = relation.assignBoundary(
+              loom::fabric::FabricPortDirection::Input, ordinal, kind,
+              kind == Kind::Clock ? clock : *reset))
+        fail(test, llvm::toString(std::move(error)));
+  }
+  llvm::SmallVector<unsigned, 2> authoringOrder = {0, 1};
+  if (reverseAssignments)
+    std::reverse(authoringOrder.begin(), authoringOrder.end());
+  for (unsigned ordinal : authoringOrder) {
+    mlir::Operation *node = nodes[ordinal].getOperation();
+    if (llvm::Error error = relation.noteInternalMember(node, Role::FuNode, 0))
+      fail(test, llvm::toString(std::move(error)));
+    for (Kind kind : {Kind::Clock, Kind::Reset})
+      if (llvm::Error error = relation.assignInternal(
+              node, Role::FuNode, 0, kind,
+              kind == Kind::Clock ? (ordinal == 0 ? *firstClock : *secondClock)
+                                  : *reset))
+        fail(test, llvm::toString(std::move(error)));
+  }
+
+  auto normalized =
+      loom::fabric::detail::normalizeFabricModuleDomain(root, relation);
+  if (!normalized)
+    fail(test, llvm::toString(normalized.takeError()));
+  auto canonical = loom::fabric::detail::computeFabricModuleCanonicalLabeling(
+      root, *normalized);
+  if (!canonical)
+    fail(test, llvm::toString(canonical.takeError()));
+  if (llvm::Error error =
+          loom::fabric::detail::materializeFabricCanonicalIds(*canonical))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          loom::fabric::detail::materializeFabricModuleDomainRelation(
+              root, *normalized, *canonical))
+    fail(test, llvm::toString(std::move(error)));
+  auto assignments =
+      ::fabric::decodeModuleDomainAssignments(root.getDomainAssignmentsAttr());
+  if (!assignments)
+    fail(test, llvm::toString(assignments.takeError()));
+  std::vector<std::vector<std::uint8_t>> bytes;
+  for (const auto &assignment : *assignments)
+    bytes.push_back(loom::fabric::canonicalFabricBytes(assignment));
+  return bytes;
+}
+
+void fuNodeDomainsUseModuleCanonicalContext() {
+  require(__func__,
+          fuNodeDomainAssignmentBytes(false) ==
+              fuNodeDomainAssignmentBytes(true),
+          "domain-distinguished FU nodes depend on assignment order");
+}
+
+void fuTemplateIdentityExcludesOccurrenceDomains() {
+  const llvm::StringRef test = __func__;
+  auto module = parse(test, R"mlir(
+    module {
+      fabric.module @root(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+        %first_pe = fabric.pe [spatial] (%p = %a : !fabric.bits<32>)
+            -> !fabric.bits<32> {
+          %first_fu = fabric.fu(%x = %p : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+            %left = fabric.mux %x, %x : !fabric.bits<32>
+            %right = fabric.mux %x, %x : !fabric.bits<32>
+            %out = fabric.op [@arith.muli] (%x, %x)
+                {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [32 : i32]}}
+                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %out : !fabric.bits<32>
+          }
+        }
+        %second_pe = fabric.pe [spatial] (%p = %b : !fabric.bits<32>)
+            -> !fabric.bits<32> {
+          %second_fu = fabric.fu(%x = %p : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+            %left = fabric.mux %x, %x : !fabric.bits<32>
+            %right = fabric.mux %x, %x : !fabric.bits<32>
+            %out = fabric.op [@arith.muli] (%x, %x)
+                {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [32 : i32]}}
+                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %out : !fabric.bits<32>
+          }
+        }
+        fabric.yield
+      }
+    }
+  )mlir");
+  ::fabric::ModuleOp root;
+  llvm::SmallVector<::fabric::FuOp, 2> fus;
+  module->walk([&](::fabric::ModuleOp candidate) { root = candidate; });
+  root.walk([&](::fabric::FuOp fu) { fus.push_back(fu); });
+  require(test, fus.size() == 2, "fixture has the wrong FU inventory");
+
+  using Kind = loom::fabric::FabricClockResetKind;
+  using Role = ::fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
+  ::fabric::ModuleDomainAuthoringRelation relation;
+  auto firstClock = relation.declareSlot(Kind::Clock);
+  auto secondClock = relation.declareSlot(Kind::Clock);
+  auto reset = relation.declareSlot(Kind::Reset);
+  if (!firstClock || !secondClock || !reset)
+    fail(test, "unable to declare fixture domain slots");
+  for (loom::fabric::FabricOrdinal ordinal = 0; ordinal != 2; ++ordinal)
+    for (Kind kind : {Kind::Clock, Kind::Reset})
+      if (llvm::Error error = relation.assignBoundary(
+              loom::fabric::FabricPortDirection::Input, ordinal, kind,
+              kind == Kind::Clock ? *firstClock : *reset))
+        fail(test, llvm::toString(std::move(error)));
+
+  for (auto [fuOrdinal, fu] : llvm::enumerate(fus)) {
+    llvm::SmallVector<mlir::Operation *, 4> nodes;
+    fu->walk([&](mlir::Operation *operation) {
+      if (mlir::isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(
+              operation))
+        nodes.push_back(operation);
+    });
+    require(test, nodes.size() == 3,
+            "fixture FU has the wrong physical-node inventory");
+    for (auto [nodeOrdinal, node] : llvm::enumerate(nodes)) {
+      if (llvm::Error error =
+              relation.noteInternalMember(node, Role::FuNode, 0))
+        fail(test, llvm::toString(std::move(error)));
+      for (Kind kind : {Kind::Clock, Kind::Reset}) {
+        const loom::fabric::FabricOrdinal slot =
+            kind == Kind::Clock && fuOrdinal == 1 && nodeOrdinal == 0
+                ? *secondClock
+            : kind == Kind::Clock ? *firstClock
+                                  : *reset;
+        if (llvm::Error error =
+                relation.assignInternal(node, Role::FuNode, 0, kind, slot))
+          fail(test, llvm::toString(std::move(error)));
+      }
+    }
+  }
+
+  auto normalized =
+      loom::fabric::detail::normalizeFabricModuleDomain(root, relation);
+  if (!normalized)
+    fail(test, llvm::toString(normalized.takeError()));
+  auto canonical = loom::fabric::detail::computeFabricModuleCanonicalLabeling(
+      root, *normalized);
+  if (!canonical)
+    fail(test, llvm::toString(canonical.takeError()));
+  require(test, canonical->fuTemplates.size() == 1,
+          "occurrence-local Module domains changed FU template identity");
+}
+
 } // namespace
 
 int main() {
@@ -240,6 +557,9 @@ int main() {
   semanticDifferenceChangesCanonicalRelation();
   identicalFuDefinitionsShareOneTemplate();
   materializedIdsSurviveTextRoundTrip();
+  moduleDomainsParticipateInCanonicalLabeling();
+  fuNodeDomainsUseModuleCanonicalContext();
+  fuTemplateIdentityExcludesOccurrenceDomains();
   llvm::outs() << "fabric canonical labeling ok\n";
   return 0;
 }

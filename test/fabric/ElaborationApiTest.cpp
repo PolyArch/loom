@@ -4,6 +4,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/ModuleDomain.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
@@ -121,7 +122,7 @@ static bool verifyDomainBindingRelation() {
          !acceptsDomainBindings(child, parent, childOutOfRange) &&
          !acceptsDomainBindings(child, parent, parentOutOfRange) &&
          !acceptsDomainBindings({1, 0}, {1, 0}, unknownKind) &&
-         acceptsDomainBindings({0, 0}, {0, 0}, {});
+         !acceptsDomainBindings({0, 0}, {0, 0}, {});
 }
 
 static bool acceptsModuleDomainRelation(
@@ -269,6 +270,7 @@ static bool verifyModuleDomainRelation() {
          rejectsModuleDomainRelation(module, slots, members, unknownMember) &&
          rejectsModuleDomainRelation(module, slots, members,
                                      unsortedAssignments) &&
+         rejectsModuleDomainRelation(module, {}, {}, {}) &&
          acceptsModuleDomainRelation(module, slots, {}, {}, {2, 1});
 }
 
@@ -296,14 +298,17 @@ module {
   fabric.module @callee(%arg : !fabric.bits<8>) -> (!fabric.bits<16>) {
     %consumed = fabric.instantiate @consumer(
         %produced : !fabric.bits<8>) -> (!fabric.bits<16>)
+        {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
     %produced = fabric.instantiate @producer(
         %arg : !fabric.bits<8>) -> (!fabric.bits<8>)
+        {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
     fabric.yield %consumed : !fabric.bits<16>
   }
 
   fabric.module @selected(%arg : !fabric.bits<8>) -> (!fabric.bits<16>) {
     %result = fabric.instantiate @callee(
         %arg : !fabric.bits<8>) -> (!fabric.bits<16>)
+        {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
     fabric.yield %result : !fabric.bits<16>
   }
 }
@@ -372,17 +377,128 @@ static bool verifyFailureAtomicity(MLIRContext &context) {
   Operation *moduleIdentity = module->getOperation();
   Operation *selectedIdentity = selected.getOperation();
   Operation *siblingIdentity = sibling.getOperation();
+  fabric::PeOp pe;
+  selected->walk([&](fabric::PeOp candidate) { pe = candidate; });
+  if (!pe)
+    return false;
+
+  fabric::ModuleDomainAuthoringRelation domainRelation;
+  if (llvm::Error error = domainRelation.noteInternalMember(
+          pe.getOperation(),
+          fabric::ModuleDomainAuthoringRelation::InternalMemberRole::Occurrence,
+          0)) {
+    llvm::consumeError(std::move(error));
+    return false;
+  }
+  if (llvm::Error error = domainRelation.ensureDefaultAssignments(1, 1)) {
+    llvm::consumeError(std::move(error));
+    return false;
+  }
+
+  IRMapping identityMapping;
+  selected->walk(
+      [&](Operation *operation) { identityMapping.map(operation, operation); });
   std::string moduleBefore = print(module->getOperation());
   std::string selectedBefore = print(selected);
   std::string siblingBefore = print(sibling);
 
-  if (succeeded(fabric::elaborateInstances(selected)))
+  if (succeeded(fabric::elaborateInstances(selected, domainRelation)))
     return false;
+  auto preservedDomain = domainRelation.remap(identityMapping);
+  if (!preservedDomain) {
+    llvm::consumeError(preservedDomain.takeError());
+    return false;
+  }
   return module->getOperation() == moduleIdentity &&
          selected.getOperation() == selectedIdentity &&
          sibling.getOperation() == siblingIdentity &&
          print(module->getOperation()) == moduleBefore &&
          print(selected) == selectedBefore && print(sibling) == siblingBefore;
+}
+
+static bool verifyPhysicalInstanceDomainRemapping(MLIRContext &context) {
+  OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(R"mlir(
+module {
+  fabric.module @selected(%arg : !fabric.bits<8>) -> (!fabric.bits<8>) {
+    fabric.switch @identity [spatial]
+        (!fabric.bits<8>) -> (!fabric.bits<8>)
+        [{connectivity_table = ["1"]}]
+    %result = fabric.instantiate @identity(
+        %arg : !fabric.bits<8>) -> (!fabric.bits<8>)
+    fabric.yield %result : !fabric.bits<8>
+  }
+}
+)mlir",
+                                                             &context);
+  if (!module || failed(verify(*module)))
+    return false;
+  fabric::ModuleOp selected =
+      module->lookupSymbol<fabric::ModuleOp>("selected");
+  fabric::InstantiateOp instance;
+  selected->walk(
+      [&](fabric::InstantiateOp candidate) { instance = candidate; });
+  if (!instance)
+    return false;
+
+  using Kind = loom::fabric::FabricClockResetKind;
+  using Role = fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
+  fabric::ModuleDomainAuthoringRelation relation;
+  auto clock = relation.declareSlot(Kind::Clock);
+  auto reset = relation.declareSlot(Kind::Reset);
+  if (!clock || !reset)
+    return false;
+  if (llvm::Error error = relation.noteInternalMember(instance.getOperation(),
+                                                      Role::Occurrence, 0)) {
+    llvm::consumeError(std::move(error));
+    return false;
+  }
+  for (auto direction : {loom::fabric::FabricPortDirection::Input,
+                         loom::fabric::FabricPortDirection::Output}) {
+    if (llvm::Error error =
+            relation.assignBoundary(direction, 0, Kind::Clock, *clock)) {
+      llvm::consumeError(std::move(error));
+      return false;
+    }
+    if (llvm::Error error =
+            relation.assignBoundary(direction, 0, Kind::Reset, *reset)) {
+      llvm::consumeError(std::move(error));
+      return false;
+    }
+  }
+  if (llvm::Error error = relation.assignInternal(
+          instance.getOperation(), Role::Occurrence, 0, Kind::Clock, *clock)) {
+    llvm::consumeError(std::move(error));
+    return false;
+  }
+  if (llvm::Error error = relation.assignInternal(
+          instance.getOperation(), Role::Occurrence, 0, Kind::Reset, *reset)) {
+    llvm::consumeError(std::move(error));
+    return false;
+  }
+
+  if (failed(fabric::elaborateInstances(selected, relation)))
+    return false;
+  fabric::SwitchOp occurrence;
+  selected->walk([&](fabric::SwitchOp candidate) {
+    if (!candidate.getSymNameAttr())
+      occurrence = candidate;
+  });
+  if (!occurrence)
+    return false;
+  Operation *internalOwner = nullptr;
+  if (llvm::Error error = relation.visitAssignments(
+          [](loom::fabric::FabricPortDirection, loom::fabric::FabricOrdinal,
+             Kind,
+             loom::fabric::FabricOrdinal) { return llvm::Error::success(); },
+          [&](Operation *owner, Role, loom::fabric::FabricOrdinal, Kind,
+              loom::fabric::FabricOrdinal) {
+            internalOwner = owner;
+            return llvm::Error::success();
+          })) {
+    llvm::consumeError(std::move(error));
+    return false;
+  }
+  return internalOwner == occurrence.getOperation();
 }
 
 int main() {
@@ -428,6 +544,8 @@ int main() {
   if (apiText != passText)
     return 1;
   if (!verifyFailureAtomicity(context))
+    return 1;
+  if (!verifyPhysicalInstanceDomainRemapping(context))
     return 1;
 
   llvm::outs() << "fabric elaboration API ok\n";

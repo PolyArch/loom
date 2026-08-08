@@ -1,7 +1,9 @@
 #include "Fabric/IR/ModuleDomain.h"
 
+#include "Fabric/IR/FabricOps.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
+#include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/ADT/bit.h"
@@ -18,6 +20,23 @@ llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "fabric_module_domain_invalid: " +
                                      message.str());
+}
+
+llvm::Expected<std::vector<ModuleInstanceDomainSlotBinding>>
+decodeInstanceBindings(mlir::Operation *operation) {
+  auto instance = mlir::dyn_cast_or_null<fabric::InstantiateOp>(operation);
+  if (!instance)
+    return invalid("instance domain slot binding is not owned by a "
+                   "fabric.instantiate operation");
+  mlir::DenseI64ArrayAttr encoded = instance.getDomainSlotBindingsAttr();
+  if (!encoded)
+    return invalid("Module instance domain slot binding property is absent");
+  auto rows = decodeModuleInstanceDomainSlotBindings(encoded);
+  if (!rows)
+    return rows.takeError();
+  if (rows->empty())
+    return invalid("Module instance domain slot binding is empty");
+  return rows;
 }
 
 loom::fabric::FabricOrdinal slotCount(ModuleDomainSlotCounts counts,
@@ -47,7 +66,73 @@ bool isCanonicalStrictlyIncreasing(llvm::ArrayRef<Ref> values) {
   return true;
 }
 
+template <typename Ref>
+mlir::ArrayAttr encodeRefRange(mlir::MLIRContext *context,
+                               llvm::ArrayRef<Ref> values) {
+  llvm::SmallVector<mlir::Attribute, 8> encoded;
+  encoded.reserve(values.size());
+  for (const Ref &value : values) {
+    std::vector<std::uint8_t> bytes = loom::fabric::canonicalFabricBytes(value);
+    llvm::SmallVector<std::int8_t, 32> signedBytes;
+    signedBytes.reserve(bytes.size());
+    for (std::uint8_t byte : bytes)
+      signedBytes.push_back(static_cast<std::int8_t>(byte));
+    encoded.push_back(mlir::DenseI8ArrayAttr::get(context, signedBytes));
+  }
+  return mlir::ArrayAttr::get(context, encoded);
+}
+
+template <typename Ref>
+llvm::Expected<std::vector<Ref>> decodeRefRange(mlir::ArrayAttr encoded,
+                                                const llvm::Twine &name) {
+  if (!encoded)
+    return invalid(name + " carrier is absent");
+  std::vector<Ref> values;
+  values.reserve(encoded.size());
+  for (auto [ordinal, attribute] : llvm::enumerate(encoded)) {
+    auto bytes = mlir::dyn_cast<mlir::DenseI8ArrayAttr>(attribute);
+    if (!bytes)
+      return invalid(name + " row #" + llvm::Twine(ordinal) +
+                     " is not a canonical byte-array record");
+    std::vector<std::uint8_t> unsignedBytes;
+    unsignedBytes.reserve(bytes.size());
+    for (std::int8_t byte : bytes.asArrayRef())
+      unsignedBytes.push_back(static_cast<std::uint8_t>(byte));
+    auto value = loom::fabric::decodeFabricRef<Ref>(unsignedBytes);
+    if (!value)
+      return value.takeError();
+    if (loom::fabric::canonicalFabricBytes(*value) != unsignedBytes)
+      return invalid(name + " row is not canonically encoded");
+    values.push_back(std::move(*value));
+  }
+  return values;
+}
+
 } // namespace
+
+mlir::ArrayAttr encodeModuleDomainSlots(
+    mlir::MLIRContext *context,
+    llvm::ArrayRef<loom::fabric::FabricModuleDomainSlotRef> slots) {
+  return encodeRefRange(context, slots);
+}
+
+llvm::Expected<std::vector<loom::fabric::FabricModuleDomainSlotRef>>
+decodeModuleDomainSlots(mlir::ArrayAttr encoded) {
+  return decodeRefRange<loom::fabric::FabricModuleDomainSlotRef>(
+      encoded, "Module domain slot inventory");
+}
+
+mlir::ArrayAttr encodeModuleDomainAssignments(
+    mlir::MLIRContext *context,
+    llvm::ArrayRef<loom::fabric::ModuleDomainAssignment> assignments) {
+  return encodeRefRange(context, assignments);
+}
+
+llvm::Expected<std::vector<loom::fabric::ModuleDomainAssignment>>
+decodeModuleDomainAssignments(mlir::ArrayAttr encoded) {
+  return decodeRefRange<loom::fabric::ModuleDomainAssignment>(
+      encoded, "Module domain assignment relation");
+}
 
 llvm::Expected<ModuleDomainSlotCounts> validateModuleDomainRelation(
     loom::fabric::FabricModuleTemplateRef module,
@@ -84,6 +169,8 @@ llvm::Expected<ModuleDomainSlotCounts> validateModuleDomainRelation(
     else
       counts.resets = ordinal;
   }
+  if (counts.clocks == 0 || counts.resets == 0)
+    return invalid("Module domain relation requires Clock and Reset slots");
 
   for (const loom::fabric::FabricModuleDomainMemberRef &member : members) {
     if (member.kind() != loom::fabric::FabricModuleDomainMemberKind::Boundary)
@@ -119,6 +206,9 @@ llvm::Expected<ModuleDomainSlotCounts> validateModuleDomainRelation(
 llvm::Error validateModuleInstanceDomainSlotBindings(
     ModuleDomainSlotCounts child, ModuleDomainSlotCounts parent,
     llvm::ArrayRef<ModuleInstanceDomainSlotBinding> bindings) {
+  if (child.clocks == 0 || child.resets == 0 || parent.clocks == 0 ||
+      parent.resets == 0)
+    return invalid("Module instance requires Clock and Reset slot inventories");
   if (child.clocks >
       std::numeric_limits<loom::fabric::FabricOrdinal>::max() - child.resets)
     return invalid("child slot count overflows the ordinal domain");
@@ -188,6 +278,8 @@ decodeModuleInstanceDomainSlotBindings(mlir::DenseI64ArrayAttr encoded) {
 llvm::Expected<loom::fabric::FabricOrdinal>
 ModuleDomainAuthoringRelation::declareSlot(
     loom::fabric::FabricClockResetKind kind) {
+  if (defaultAssignments_)
+    return invalid("default Module domain assignments are already active");
   switch (kind) {
   case loom::fabric::FabricClockResetKind::Clock:
     if (clockSlots_ ==
@@ -215,18 +307,70 @@ loom::fabric::FabricOrdinal ModuleDomainAuthoringRelation::declaredSlotCount(
 }
 
 llvm::Error ModuleDomainAuthoringRelation::noteInstanceBindings(
-    mlir::Operation *instance,
-    std::vector<ModuleInstanceDomainSlotBinding> rows) {
+    mlir::Operation *instance, const ModuleDomainAuthoringRelation &child) {
   if (!instance)
     return invalid("instance domain slot binding has no draft operation");
-  // An explicit empty binding range is the slotless-Module form and records
-  // no transient state.
-  if (rows.empty())
-    return llvm::Error::success();
+  auto rows = decodeInstanceBindings(instance);
+  if (!rows)
+    return rows.takeError();
+  const ModuleDomainSlotCounts childCounts{
+      child.declaredSlotCount(loom::fabric::FabricClockResetKind::Clock),
+      child.declaredSlotCount(loom::fabric::FabricClockResetKind::Reset)};
+  const ModuleDomainSlotCounts parentCounts{
+      declaredSlotCount(loom::fabric::FabricClockResetKind::Clock),
+      declaredSlotCount(loom::fabric::FabricClockResetKind::Reset)};
+  if (llvm::Error error = validateModuleInstanceDomainSlotBindings(
+          childCounts, parentCounts, *rows))
+    return error;
   for (const InstanceBindingRecord &record : instanceBindings_)
     if (record.instance == instance)
       return invalid("instance domain slot binding is already recorded");
-  instanceBindings_.push_back({instance, std::move(rows)});
+  instanceBindings_.push_back(
+      {instance, std::make_shared<ModuleDomainAuthoringRelation>(child)});
+  return llvm::Error::success();
+}
+
+llvm::Error ModuleDomainAuthoringRelation::ensureDefaultAssignments(
+    loom::fabric::FabricOrdinal inputCount,
+    loom::fabric::FabricOrdinal outputCount) {
+  if (defaultAssignments_)
+    return llvm::Error::success();
+  if (clockSlots_ != 0 || resetSlots_ != 0 || !assignments_.empty())
+    return llvm::Error::success();
+
+  defaultAssignments_ = true;
+  clockSlots_ = 1;
+  resetSlots_ = 1;
+  for (loom::fabric::FabricOrdinal ordinal = 0; ordinal < inputCount;
+       ++ordinal) {
+    if (llvm::Error error =
+            assignBoundary(loom::fabric::FabricPortDirection::Input, ordinal,
+                           loom::fabric::FabricClockResetKind::Clock, 0))
+      return error;
+    if (llvm::Error error =
+            assignBoundary(loom::fabric::FabricPortDirection::Input, ordinal,
+                           loom::fabric::FabricClockResetKind::Reset, 0))
+      return error;
+  }
+  for (loom::fabric::FabricOrdinal ordinal = 0; ordinal < outputCount;
+       ++ordinal) {
+    if (llvm::Error error =
+            assignBoundary(loom::fabric::FabricPortDirection::Output, ordinal,
+                           loom::fabric::FabricClockResetKind::Clock, 0))
+      return error;
+    if (llvm::Error error =
+            assignBoundary(loom::fabric::FabricPortDirection::Output, ordinal,
+                           loom::fabric::FabricClockResetKind::Reset, 0))
+      return error;
+  }
+  for (const MemberKey &member : internalMembers_) {
+    if (llvm::Error error =
+            assignOne(member, loom::fabric::FabricClockResetKind::Clock, 0))
+      return error;
+    if (llvm::Error error =
+            assignOne(member, loom::fabric::FabricClockResetKind::Reset, 0))
+      return error;
+  }
   return llvm::Error::success();
 }
 
@@ -242,6 +386,10 @@ llvm::Error ModuleDomainAuthoringRelation::noteInternalMember(
       role != InternalMemberRole::MemoryOperationPort &&
       role != InternalMemberRole::LocalMemoryService)
     return invalid("internal domain member role is outside the catalog");
+  if (subOrdinal != 0 && (role == InternalMemberRole::Occurrence ||
+                          role == InternalMemberRole::FuNode ||
+                          role == InternalMemberRole::LocalMemoryService))
+    return invalid("internal domain member role does not take a sub-ordinal");
   MemberKey key;
   key.internal = true;
   key.owner = owner;
@@ -251,6 +399,14 @@ llvm::Error ModuleDomainAuthoringRelation::noteInternalMember(
     if (existing == key)
       return invalid("internal domain member is already registered");
   internalMembers_.push_back(key);
+  if (defaultAssignments_) {
+    if (llvm::Error error =
+            assignOne(key, loom::fabric::FabricClockResetKind::Clock, 0))
+      return error;
+    if (llvm::Error error =
+            assignOne(key, loom::fabric::FabricClockResetKind::Reset, 0))
+      return error;
+  }
   return llvm::Error::success();
 }
 
@@ -305,7 +461,8 @@ llvm::Error ModuleDomainAuthoringRelation::assignInternal(
 
 bool ModuleDomainAuthoringRelation::empty() const {
   return clockSlots_ == 0 && resetSlots_ == 0 && internalMembers_.empty() &&
-         assignments_.empty() && instanceBindings_.empty();
+         assignments_.empty() && instanceBindings_.empty() &&
+         !defaultAssignments_;
 }
 
 llvm::Error ModuleDomainAuthoringRelation::validateTotality(
@@ -362,6 +519,189 @@ llvm::Error ModuleDomainAuthoringRelation::validateTotality(
     if (!registered)
       return invalid("assignment names an unregistered internal domain "
                      "member");
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<ModuleDomainAuthoringRelation>
+ModuleDomainAuthoringRelation::remap(const mlir::IRMapping &mapping) const {
+  ModuleDomainAuthoringRelation result;
+  result.clockSlots_ = clockSlots_;
+  result.resetSlots_ = resetSlots_;
+  result.defaultAssignments_ = defaultAssignments_;
+  result.internalMembers_.reserve(internalMembers_.size());
+  result.assignments_.reserve(assignments_.size());
+  result.instanceBindings_.reserve(instanceBindings_.size());
+
+  const auto remapMember = [&](MemberKey member) -> llvm::Expected<MemberKey> {
+    if (!member.internal)
+      return member;
+    member.owner = mapping.lookupOrNull(member.owner);
+    if (!member.owner)
+      return invalid("domain member is missing from the canonical clone map");
+    return member;
+  };
+  for (const MemberKey &member : internalMembers_) {
+    auto mapped = remapMember(member);
+    if (!mapped)
+      return mapped.takeError();
+    result.internalMembers_.push_back(*mapped);
+  }
+  for (const AssignmentRow &assignment : assignments_) {
+    auto mapped = remapMember(assignment.member);
+    if (!mapped)
+      return mapped.takeError();
+    result.assignments_.push_back(
+        {*mapped, assignment.slotKind, assignment.slotOrdinal});
+  }
+  for (const InstanceBindingRecord &binding : instanceBindings_) {
+    mlir::Operation *instance = mapping.lookupOrNull(binding.instance);
+    if (!instance)
+      return invalid("Module instance is missing from the canonical clone map");
+    if (!binding.child)
+      return invalid("Module instance has no child domain relation");
+    auto child = binding.child->remap(mapping);
+    if (!child)
+      return child.takeError();
+    result.instanceBindings_.push_back(
+        {instance,
+         std::make_shared<ModuleDomainAuthoringRelation>(std::move(*child))});
+  }
+  return result;
+}
+
+void ModuleDomainAuthoringRelation::remapMappedOperations(
+    const mlir::IRMapping &mapping) {
+  const auto remap = [&](MemberKey &member) {
+    if (!member.internal)
+      return;
+    if (mlir::Operation *mapped = mapping.lookupOrNull(member.owner))
+      member.owner = mapped;
+  };
+  for (MemberKey &member : internalMembers_)
+    remap(member);
+  for (AssignmentRow &assignment : assignments_)
+    remap(assignment.member);
+  for (InstanceBindingRecord &binding : instanceBindings_)
+    if (mlir::Operation *mapped = mapping.lookupOrNull(binding.instance))
+      binding.instance = mapped;
+}
+
+llvm::Error ModuleDomainAuthoringRelation::composeInstance(
+    mlir::Operation *instance, const mlir::IRMapping &childCloneMapping) {
+  auto record = llvm::find_if(instanceBindings_, [&](const auto &candidate) {
+    return candidate.instance == instance;
+  });
+  if (record == instanceBindings_.end())
+    return invalid("elaborated Module instance has no domain binding record");
+  const std::size_t recordIndex =
+      static_cast<std::size_t>(record - instanceBindings_.begin());
+  const InstanceBindingRecord active = *record;
+  if (!active.child)
+    return invalid("elaborated Module instance has no child domain relation");
+  auto activeRows = decodeInstanceBindings(instance);
+  if (!activeRows)
+    return activeRows.takeError();
+  const ModuleDomainSlotCounts activeChildCounts{
+      active.child->declaredSlotCount(
+          loom::fabric::FabricClockResetKind::Clock),
+      active.child->declaredSlotCount(
+          loom::fabric::FabricClockResetKind::Reset)};
+  const ModuleDomainSlotCounts activeParentCounts{
+      declaredSlotCount(loom::fabric::FabricClockResetKind::Clock),
+      declaredSlotCount(loom::fabric::FabricClockResetKind::Reset)};
+  if (llvm::Error error = validateModuleInstanceDomainSlotBindings(
+          activeChildCounts, activeParentCounts, *activeRows))
+    return error;
+
+  const auto mapSlot = [&](loom::fabric::FabricClockResetKind kind,
+                           loom::fabric::FabricOrdinal childOrdinal)
+      -> llvm::Expected<loom::fabric::FabricOrdinal> {
+    for (const ModuleInstanceDomainSlotBinding &binding : *activeRows)
+      if (binding.kind == kind && binding.childSlotOrdinal == childOrdinal)
+        return binding.parentSlotOrdinal;
+    return invalid("child Module assignment names an unbound domain slot");
+  };
+  const auto mapMember = [&](MemberKey member) -> llvm::Expected<MemberKey> {
+    if (!member.internal)
+      return member;
+    member.owner = childCloneMapping.lookupOrNull(member.owner);
+    if (!member.owner)
+      return invalid("child domain member is absent from instance clone map");
+    return member;
+  };
+
+  const ModuleDomainAuthoringRelation &child = *active.child;
+  for (const MemberKey &member : child.internalMembers_) {
+    auto mapped = mapMember(member);
+    if (!mapped)
+      return mapped.takeError();
+    internalMembers_.push_back(*mapped);
+  }
+  for (const AssignmentRow &assignment : child.assignments_) {
+    if (!assignment.member.internal)
+      continue;
+    auto member = mapMember(assignment.member);
+    if (!member)
+      return member.takeError();
+    auto slot = mapSlot(assignment.slotKind, assignment.slotOrdinal);
+    if (!slot)
+      return slot.takeError();
+    assignments_.push_back({*member, assignment.slotKind, *slot});
+  }
+  for (const InstanceBindingRecord &nested : child.instanceBindings_) {
+    mlir::Operation *mappedInstance =
+        childCloneMapping.lookupOrNull(nested.instance);
+    if (!mappedInstance)
+      return invalid("nested Module instance is absent from clone map");
+    if (!nested.child)
+      return invalid("nested Module instance has no child domain relation");
+    auto nestedRows = decodeInstanceBindings(mappedInstance);
+    if (!nestedRows)
+      return nestedRows.takeError();
+    const ModuleDomainSlotCounts nestedChildCounts{
+        nested.child->declaredSlotCount(
+            loom::fabric::FabricClockResetKind::Clock),
+        nested.child->declaredSlotCount(
+            loom::fabric::FabricClockResetKind::Reset)};
+    const ModuleDomainSlotCounts nestedParentCounts{
+        child.declaredSlotCount(loom::fabric::FabricClockResetKind::Clock),
+        child.declaredSlotCount(loom::fabric::FabricClockResetKind::Reset)};
+    if (llvm::Error error = validateModuleInstanceDomainSlotBindings(
+            nestedChildCounts, nestedParentCounts, *nestedRows))
+      return error;
+    std::vector<ModuleInstanceDomainSlotBinding> remappedRows;
+    remappedRows.reserve(nestedRows->size());
+    for (const ModuleInstanceDomainSlotBinding &row : *nestedRows) {
+      auto parent = mapSlot(row.kind, row.parentSlotOrdinal);
+      if (!parent)
+        return parent.takeError();
+      remappedRows.push_back({row.kind, row.childSlotOrdinal, *parent});
+    }
+    auto mappedOp = mlir::cast<fabric::InstantiateOp>(mappedInstance);
+    mappedOp.setDomainSlotBindingsAttr(encodeModuleInstanceDomainSlotBindings(
+        mappedOp.getContext(), remappedRows));
+    instanceBindings_.push_back({mappedInstance, nested.child});
+  }
+  instanceBindings_.erase(instanceBindings_.begin() + recordIndex);
+  return llvm::Error::success();
+}
+
+llvm::Error ModuleDomainAuthoringRelation::visitAssignments(
+    BoundaryAssignmentVisitor boundary,
+    InternalAssignmentVisitor internal) const {
+  if (!instanceBindings_.empty())
+    return invalid("Module instance domain rows were not composed before "
+                   "assignment visitation");
+  for (const AssignmentRow &row : assignments_) {
+    llvm::Error error =
+        row.member.internal
+            ? internal(row.member.owner, row.member.role, row.member.ordinal,
+                       row.slotKind, row.slotOrdinal)
+            : boundary(row.member.direction, row.member.ordinal, row.slotKind,
+                       row.slotOrdinal);
+    if (error)
+      return error;
   }
   return llvm::Error::success();
 }

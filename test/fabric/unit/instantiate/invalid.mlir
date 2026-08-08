@@ -1,6 +1,14 @@
 // RUN: loom %s -split-input-file -verify-diagnostics
 
 // -----
+// A top-level instance has no parent Module domain and is invalid.
+fabric.module @top_level_domain_target() {
+}
+// expected-error @+1 {{directly under builtin.module is not allowed}}
+fabric.instantiate @top_level_domain_target() -> ()
+    {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
+
+// -----
 // Undefined symbol: instantiate references a name that is not defined in
 // any reachable SymbolTable.
 %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
@@ -34,6 +42,7 @@ fabric.module @recursive_self(%a : !fabric.bits<32>) {
   // expected-error @+1 {{cannot instantiate the symbol that encloses it (self-reference of '@recursive_self')}}
   %r = fabric.instantiate @recursive_self(%a : !fabric.bits<32>)
        -> (!fabric.bits<32>)
+       {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   fabric.yield
 }
 
@@ -84,6 +93,7 @@ fabric.module @host_count_mismatch(%a : !fabric.bits<32>) {
   // expected-error @+1 {{operand count (1) does not match callee '@leaf_two_in' input port count (2)}}
   %r = fabric.instantiate @leaf_two_in(%a : !fabric.bits<32>)
        -> (!fabric.bits<32>)
+       {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   fabric.yield
 }
 
@@ -99,6 +109,7 @@ fabric.module @host_out_mismatch(%a : !fabric.bits<32>) {
   // expected-error @+1 {{result #0 type '!fabric.bits<32>' must equal callee '@leaf_out16' output port type '!fabric.bits<16>'}}
   %r = fabric.instantiate @leaf_out16(%a : !fabric.bits<32>)
        -> (!fabric.bits<32>)
+       {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   fabric.yield
 }
 
@@ -252,6 +263,15 @@ fabric.module @inner_types_collision_host(%a : !fabric.bits<32>) {
 }
 
 // -----
+// A Module target requires an explicit non-empty domain relation.
+fabric.module @missing_domain_binding_target() {
+}
+fabric.module @missing_domain_binding_host() {
+  // expected-error @+1 {{requires non-empty domain-slot bindings}}
+  fabric.instantiate @missing_domain_binding_target() -> ()
+}
+
+// -----
 // The flat binding property must contain complete typed triples.
 fabric.module @malformed_domain_binding_target() {
 }
@@ -262,11 +282,11 @@ fabric.module @malformed_domain_binding_host() {
 }
 
 // -----
-// A zero-slot Module target requires the exact empty relation.
+// A Module relation must contain both Clock and Reset rows.
 fabric.module @zero_slot_domain_target() {
 }
 fabric.module @zero_slot_domain_host() {
-  // expected-error @+1 {{binding count does not equal the child slot count}}
+  // expected-error @+1 {{every Module relation requires Clock and Reset rows}}
   fabric.instantiate @zero_slot_domain_target() -> ()
       {domain_slot_bindings = array<i64: 0, 0, 0>}
 }

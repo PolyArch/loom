@@ -78,13 +78,12 @@ static LogicalResult getTargetPortTypes(Operation *target,
 
 // Returns true if `target`'s op kind is a legal instantiate target given
 // the parent op of the `fabric.instantiate` site. The parent is one of:
-//   * `mlir::ModuleOp` (top-level builtin module): only `fabric.module`.
 //   * `fabric::ModuleOp` body: module, PE, switch, or memory.
 //   * `fabric::PeOp` body: `fabric.fu` only.
 // Returns false otherwise; the caller emits a precise diagnostic.
 static bool isLegalKindForParent(Operation *parent, Operation *target) {
   if (isa<mlir::ModuleOp>(parent))
-    return isa<fabric::ModuleOp>(target);
+    return false;
   if (isa<fabric::ModuleOp>(parent))
     return isa<fabric::ModuleOp, fabric::PeOp, fabric::SwitchOp, fabric::MemOp>(
         target);
@@ -102,6 +101,86 @@ static LogicalResult decodeDomainBindings(
     return instantiate.emitOpError("has malformed domain-slot bindings: ")
            << llvm::toString(decoded.takeError());
   bindings.append(decoded->begin(), decoded->end());
+  return success();
+}
+
+static llvm::Expected<std::optional<ModuleDomainSlotCounts>>
+decodeModuleSlotCounts(fabric::ModuleOp module) {
+  if (!module.getDomainSlotsAttr())
+    return std::nullopt;
+  auto slots = decodeModuleDomainSlots(module.getDomainSlotsAttr());
+  if (!slots)
+    return slots.takeError();
+
+  ModuleDomainSlotCounts counts;
+  for (const loom::fabric::FabricModuleDomainSlotRef &slot : *slots) {
+    loom::fabric::FabricOrdinal *count = nullptr;
+    switch (slot.kind) {
+    case loom::fabric::FabricClockResetKind::Clock:
+      count = &counts.clocks;
+      break;
+    case loom::fabric::FabricClockResetKind::Reset:
+      count = &counts.resets;
+      break;
+    }
+    if (!count || slot.ordinal != *count)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "Module domain slot inventory is not canonical and dense");
+    ++*count;
+  }
+  return counts;
+}
+
+static LogicalResult validateModuleDomainBindings(
+    InstantiateOp instantiate, fabric::ModuleOp child, fabric::ModuleOp parent,
+    ArrayRef<ModuleInstanceDomainSlotBinding> bindings) {
+  if (bindings.empty())
+    return instantiate.emitOpError(
+        "targeting a Module requires non-empty domain-slot bindings");
+
+  ModuleDomainSlotCounts inferredChild;
+  ModuleDomainSlotCounts requiredParent;
+  for (const ModuleInstanceDomainSlotBinding &binding : bindings) {
+    loom::fabric::FabricOrdinal *childCount = nullptr;
+    loom::fabric::FabricOrdinal *parentCount = nullptr;
+    switch (binding.kind) {
+    case loom::fabric::FabricClockResetKind::Clock:
+      childCount = &inferredChild.clocks;
+      parentCount = &requiredParent.clocks;
+      break;
+    case loom::fabric::FabricClockResetKind::Reset:
+      childCount = &inferredChild.resets;
+      parentCount = &requiredParent.resets;
+      break;
+    }
+    if (!childCount || !parentCount || binding.childSlotOrdinal != *childCount)
+      return instantiate.emitOpError(
+          "has invalid domain-slot bindings: bindings are not the canonical "
+          "total child-slot relation");
+    ++*childCount;
+    if (binding.parentSlotOrdinal >= *parentCount)
+      *parentCount = binding.parentSlotOrdinal + 1;
+  }
+  if (inferredChild.clocks == 0 || inferredChild.resets == 0)
+    return instantiate.emitOpError(
+        "has invalid domain-slot bindings: every Module relation requires "
+        "Clock and Reset rows");
+
+  auto childCounts = decodeModuleSlotCounts(child);
+  if (!childCounts)
+    return instantiate.emitOpError("cannot decode callee domain slots: ")
+           << llvm::toString(childCounts.takeError());
+  auto parentCounts = decodeModuleSlotCounts(parent);
+  if (!parentCounts)
+    return instantiate.emitOpError("cannot decode parent domain slots: ")
+           << llvm::toString(parentCounts.takeError());
+
+  if (llvm::Error error = validateModuleInstanceDomainSlotBindings(
+          childCounts->value_or(inferredChild),
+          parentCounts->value_or(requiredParent), bindings))
+    return instantiate.emitOpError("has invalid domain-slot bindings: ")
+           << llvm::toString(std::move(error));
   return success();
 }
 
@@ -310,9 +389,7 @@ InstantiateOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
     StringRef parentName = parent->getName().getStringRef();
     StringRef targetName = target->getName().getStringRef();
     if (isa<mlir::ModuleOp>(parent))
-      return emitOpError("at top-level builtin.module may only target "
-                         "'fabric.module'; got target kind '")
-             << targetName << "' for symbol '@" << getCallee() << "'";
+      return emitOpError("directly under builtin.module is not allowed");
     if (isa<fabric::ModuleOp>(parent))
       return emitOpError("inside a fabric.module body may only target "
                          "'fabric.module', 'fabric.pe', 'fabric.switch', or "
@@ -333,11 +410,11 @@ InstantiateOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
     if (!domainBindings.empty())
       return emitOpError(
           "a non-Module target cannot have domain-slot bindings");
-  } else if (isa<fabric::ModuleOp>(parent)) {
-    if (llvm::Error error = validateModuleInstanceDomainSlotBindings(
-            /*child=*/{}, /*parent=*/{}, domainBindings))
-      return emitOpError("has invalid domain-slot bindings: ")
-             << llvm::toString(std::move(error));
+  } else if (auto parentModule = dyn_cast<fabric::ModuleOp>(parent)) {
+    if (failed(validateModuleDomainBindings(*this,
+                                            cast<fabric::ModuleOp>(target),
+                                            parentModule, domainBindings)))
+      return failure();
   } else if (!domainBindings.empty()) {
     return emitOpError(
         "a Module target outside a fabric.module cannot bind domain slots");

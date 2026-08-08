@@ -292,6 +292,7 @@ struct FabricFuPortAttachmentView final {
 };
 
 class FabricArtifactView;
+class FabricModuleRootView;
 class FabricSystemRootView;
 
 namespace detail {
@@ -568,7 +569,7 @@ public:
   bool hasPointConnection(const FabricTransportEndpointRef &source,
                           const FabricTransportEndpointRef &destination) const;
 
-  /// Complete explicit memory-service identity connections. They are not
+  /// Complete explicit memory-capability identity connections. They are not
   /// transport traversals and carry no independently selectable resource.
   llvm::ArrayRef<FabricMemoryServiceConnectionPayload>
   memoryServiceConnections() const;
@@ -591,6 +592,7 @@ private:
 
   friend llvm::Expected<FabricArtifactView>
   detail::buildFabricArtifactView(detail::FabricArtifactViewData data);
+  friend class FabricModuleRootView;
   friend class FabricSystemRootView;
 };
 

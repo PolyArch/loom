@@ -28,6 +28,7 @@ fabric.module @host(%arg : !fabric.bits<32>) -> (!fabric.bits<32>) {
       [{connectivity_table = ["1"]}]
   %middle = fabric.instantiate @inner(
       %arg : !fabric.bits<32> to !fabric.bits<16>) -> (!fabric.bits<16>)
+      {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   %wide = fabric.instantiate @WIDE(
       %middle : !fabric.bits<16> to !fabric.bits<32>) -> (!fabric.bits<32>)
   fabric.yield %wide : !fabric.bits<32>

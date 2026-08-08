@@ -29,7 +29,8 @@ static std::string buildInput(bool reverseOrder) {
       os << "%arg";
     else
       os << "%v" << index - 1;
-    os << " : !fabric.bits<8>) -> (!fabric.bits<8>)\n";
+    os << " : !fabric.bits<8>) -> (!fabric.bits<8>) "
+          "{domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}\n";
   };
 
   if (reverseOrder) {

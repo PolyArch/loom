@@ -64,6 +64,30 @@ llvm::Expected<ModuleDomainSlotHandle> SpatialCoreBuilder::declareDomainSlot(
   return ModuleDomainSlotHandle(state_, rootOrdinal_, kind, *ordinal);
 }
 
+llvm::Expected<std::vector<ModuleDomainSlotHandle>>
+SpatialCoreBuilder::domainSlots(loom::fabric::FabricClockResetKind kind) const {
+  auto state = activeState(state_);
+  if (!state)
+    return state.takeError();
+  if (rootOrdinal_ >= (*state)->spatialRoots.size())
+    return invalid("SpatialCore handle has an invalid owner ordinal");
+  const detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
+  if (!root.closed)
+    return invalid("SpatialCore must be closed before querying domain slots");
+  if (kind != loom::fabric::FabricClockResetKind::Clock &&
+      kind != loom::fabric::FabricClockResetKind::Reset)
+    return invalid("domain slot kind is outside the catalog");
+
+  const loom::fabric::FabricOrdinal count =
+      root.domainRelation.declaredSlotCount(kind);
+  std::vector<ModuleDomainSlotHandle> slots;
+  slots.reserve(count);
+  for (loom::fabric::FabricOrdinal ordinal = 0; ordinal < count; ++ordinal)
+    slots.push_back(
+        ModuleDomainSlotHandle(state_, rootOrdinal_, kind, ordinal));
+  return slots;
+}
+
 llvm::Expected<ModuleDomainMemberHandle>
 SpatialCoreBuilder::inputDomainMember(std::size_t ordinal) const {
   auto state = activeState(state_);

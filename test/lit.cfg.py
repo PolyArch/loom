@@ -76,6 +76,7 @@ tools = [
     "loom-fabric-artifact-codec-test",
     "loom-fabric-artifact-finalizer-test",
     "loom-fabric-pe-configuration-test",
+    "loom-fabric-module-domain-import-test",
     "loom-fabric-system-attachment-finalizer-test",
     "loom-fabric-module-boundary-transport-passthrough-test",
     "loom-fabric-handshake-model-test",

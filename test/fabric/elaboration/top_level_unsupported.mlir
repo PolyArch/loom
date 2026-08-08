@@ -4,7 +4,5 @@ fabric.module @callee() -> () {
   fabric.yield
 }
 
-// CHECK: error: root-local Fabric instance elaboration does not support
-// CHECK-SAME: fabric.instantiate @callee directly under builtin.module
-// CHECK-SAME: no fabric.module occurrence owner exists
+// CHECK: error: 'fabric.instantiate' op directly under builtin.module is not allowed
 fabric.instantiate @callee() -> ()

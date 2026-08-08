@@ -1,5 +1,6 @@
 #include "Fabric/Artifact/FabricClockResetValidation.h"
 
+#include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -8,6 +9,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -16,6 +18,8 @@ namespace {
 
 using OwnerKey = std::vector<std::uint8_t>;
 using ClockMembership = std::map<OwnerKey, ClockDomainRef>;
+using ModuleSlotPair =
+    std::pair<FabricModuleDomainSlotRef, FabricModuleDomainSlotRef>;
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -68,7 +72,207 @@ effectiveClock(const FabricSystemRootView &system,
   return ordinaryClock(membership, projectFabricInventoryOwner(endpoint.owner));
 }
 
+template <typename Owner>
+llvm::Expected<FabricModuleDomainMemberRef>
+modulePhysicalMember(const Owner &owner) {
+  auto physical = FabricModulePhysicalOwnerRef::create(owner);
+  if (!physical)
+    return physical.takeError();
+  return FabricModuleDomainMemberRef::of(*physical);
+}
+
+llvm::Expected<FabricModuleDomainMemberRef>
+moduleMember(const FabricTransportEndpointOwnerRef &owner) {
+  return std::visit(
+      [](const auto &value) -> llvm::Expected<FabricModuleDomainMemberRef> {
+        using Owner = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<Owner, FabricPeOccurrenceRef> ||
+                      std::is_same_v<Owner, FabricFuOccurrenceRef> ||
+                      std::is_same_v<Owner, FabricMemoryOccurrenceRef> ||
+                      std::is_same_v<Owner, FabricSwitchOccurrenceRef> ||
+                      std::is_same_v<Owner, FabricFifoOccurrenceRef> ||
+                      std::is_same_v<Owner, FabricBoundaryOccurrenceRef>) {
+          return modulePhysicalMember(value);
+        }
+        return invalid("Module connection names a non-Module owner");
+      },
+      owner.payload);
+}
+
+llvm::Expected<FabricModuleDomainMemberRef>
+moduleMember(const FabricMemoryEndpointOwnerRef &owner) {
+  return std::visit(
+      [](const auto &value) -> llvm::Expected<FabricModuleDomainMemberRef> {
+        using Owner = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<Owner, FabricMemoryOccurrenceRef>)
+          return modulePhysicalMember(value);
+        return invalid("Module memory attachment names a non-Module owner");
+      },
+      owner.payload);
+}
+
+llvm::Expected<FabricModuleDomainMemberRef>
+moduleMember(const FabricArtifactView &artifact,
+             FabricFuOccurrenceRef occurrence,
+             const FabricFuCapabilityTemplateEndpointRef &endpoint) {
+  const std::optional<FabricFuTemplateRef> definition =
+      artifact.fuTemplateOf(occurrence);
+  if (!definition)
+    return invalid("Module FU occurrence has no canonical template");
+  return std::visit(
+      [&](const auto &value) -> llvm::Expected<FabricModuleDomainMemberRef> {
+        using Endpoint = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<Endpoint, FabricFuTemplatePortRef>) {
+          if (value.fu != *definition)
+            return invalid("Module FU edge names a foreign template port");
+          return modulePhysicalMember(occurrence);
+        } else {
+          if (value.node.fu != *definition)
+            return invalid("Module FU edge names a foreign template node");
+          auto node =
+              deriveFabricFuOccurrenceNode(artifact, value.node, occurrence);
+          if (!node)
+            return node.takeError();
+          return modulePhysicalMember(*node);
+        }
+      },
+      endpoint.payload);
+}
+
+llvm::Expected<ModuleSlotPair>
+moduleSlots(const FabricModuleRootView &module,
+            const FabricModuleDomainMemberRef &member) {
+  std::optional<FabricModuleDomainSlotRef> clock;
+  std::optional<FabricModuleDomainSlotRef> reset;
+  for (const ModuleDomainAssignment &assignment : module.domainAssignments()) {
+    if (assignment.member != member)
+      continue;
+    std::optional<FabricModuleDomainSlotRef> *selected = nullptr;
+    switch (assignment.slot.kind) {
+    case FabricClockResetKind::Clock:
+      selected = &clock;
+      break;
+    case FabricClockResetKind::Reset:
+      selected = &reset;
+      break;
+    }
+    if (!selected || *selected)
+      return invalid("Module member has duplicate or unknown domain rows");
+    *selected = assignment.slot;
+  }
+  if (!clock || !reset)
+    return invalid("Module member has no complete Clock and Reset assignment");
+  return ModuleSlotPair{*clock, *reset};
+}
+
+llvm::Error
+requireSameModuleSlots(const FabricModuleRootView &module,
+                       const FabricModuleDomainMemberRef &source,
+                       const FabricModuleDomainMemberRef &destination) {
+  auto sourceSlots = moduleSlots(module, source);
+  if (!sourceSlots)
+    return sourceSlots.takeError();
+  auto destinationSlots = moduleSlots(module, destination);
+  if (!destinationSlots)
+    return destinationSlots.takeError();
+  if (*sourceSlots != *destinationSlots)
+    return invalid(
+        "ordinary Module connection crosses symbolic Clock or Reset slots");
+  return llvm::Error::success();
+}
+
 } // namespace
+
+llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
+  const FabricArtifactView &artifact = module.artifact();
+  for (const FabricPointConnectionPayload &connection :
+       artifact.pointConnections()) {
+    auto source = moduleMember(connection.source.owner);
+    if (!source)
+      return source.takeError();
+    auto destination = moduleMember(connection.destination.owner);
+    if (!destination)
+      return destination.takeError();
+    if (llvm::Error error =
+            requireSameModuleSlots(module, *source, *destination))
+      return error;
+  }
+  for (const FabricModuleBoundaryTransportAttachmentView &attachment :
+       artifact.moduleBoundaryTransportAttachments()) {
+    auto internal = moduleMember(attachment.endpoint.owner);
+    if (!internal)
+      return internal.takeError();
+    if (llvm::Error error = requireSameModuleSlots(
+            module, FabricModuleDomainMemberRef::of(attachment.boundary),
+            *internal))
+      return error;
+  }
+  for (const FabricModuleBoundaryMemoryAttachmentView &attachment :
+       artifact.moduleBoundaryMemoryAttachments()) {
+    auto internal = moduleMember(attachment.endpoint.owner);
+    if (!internal)
+      return internal.takeError();
+    if (llvm::Error error = requireSameModuleSlots(
+            module, FabricModuleDomainMemberRef::of(attachment.boundary),
+            *internal))
+      return error;
+  }
+  for (const FabricMemoryServiceConnectionPayload &connection :
+       artifact.memoryServiceConnections()) {
+    auto requester = moduleMember(connection.source.owner);
+    if (!requester)
+      return requester.takeError();
+    auto provider = moduleMember(connection.destination.owner);
+    if (!provider)
+      return provider.takeError();
+    if (llvm::Error error =
+            requireSameModuleSlots(module, *requester, *provider))
+      return error;
+  }
+  for (const FabricPhysicalTraversalView &traversal :
+       artifact.physicalTraversals()) {
+    const auto *selector =
+        std::get_if<FabricPeSelectorPayload>(&traversal.reference.payload);
+    if (!selector)
+      continue;
+    auto source = moduleMember(selector->source.owner);
+    if (!source)
+      return source.takeError();
+    auto destination = moduleMember(selector->destination.owner);
+    if (!destination)
+      return destination.takeError();
+    if (llvm::Error error =
+            requireSameModuleSlots(module, *source, *destination))
+      return error;
+  }
+  for (FabricFuOccurrenceRef occurrence : artifact.fuOccurrences()) {
+    const std::optional<FabricFuTemplateRef> definition =
+        artifact.fuTemplateOf(occurrence);
+    if (!definition)
+      return invalid("Module FU occurrence has no canonical template");
+    for (const FabricFuCapabilityTemplateRecord &capability :
+         artifact.fuCapabilityTemplates(*definition))
+      for (const FabricFuCapabilityTemplateEdge &edge :
+           capability.activeEdges) {
+        auto source = moduleMember(artifact, occurrence, edge.source);
+        if (!source)
+          return source.takeError();
+        auto destination = moduleMember(artifact, occurrence, edge.destination);
+        if (!destination)
+          return destination.takeError();
+        if (llvm::Error error =
+                requireSameModuleSlots(module, *source, *destination))
+          return error;
+      }
+  }
+  for (const FabricModuleBoundaryTransportPassthroughView &passthrough :
+       artifact.moduleBoundaryTransportPassthroughs())
+    if (llvm::Error error = requireSameModuleSlots(
+            module, FabricModuleDomainMemberRef::of(passthrough.input),
+            FabricModuleDomainMemberRef::of(passthrough.output)))
+      return error;
+  return llvm::Error::success();
+}
 
 llvm::Expected<ValidatedClockResetView>
 validateClockReset(FabricSystemRootView system) {

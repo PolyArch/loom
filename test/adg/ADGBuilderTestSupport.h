@@ -73,6 +73,8 @@ systemMemoryContract(llvm::StringRef test, mlir::MLIRContext &context);
 loom::fabric::CanonicalServiceCapabilitySet
 systemMemoryCapabilities(llvm::StringRef test,
                          loom::fabric::ServiceRateContractRecord serviceRate);
+::fabric::MemoryOperationPortDeclaration loadPortDeclaration();
+::fabric::MemoryDispatchTarget managerMemoryTarget(std::uint64_t ordinal);
 
 void runBuilderTests();
 void runBuiltinTests();

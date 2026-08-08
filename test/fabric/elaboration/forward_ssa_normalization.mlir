@@ -16,10 +16,12 @@ fabric.module @consumer(%arg : !fabric.bits<8>) -> (!fabric.bits<16>) {
 fabric.module @producer_first(%arg : !fabric.bits<16>) -> (!fabric.bits<16>) {
   %produced = fabric.instantiate @producer(
       %arg : !fabric.bits<16> to !fabric.bits<8>) -> (!fabric.bits<8>)
+      {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   // CHECK: error: cannot inline fabric.module @consumer at fabric.instantiate input #0
   // CHECK-SAME: intermediate payload width 8 is narrower than source width 16 and destination width 16
   %consumed = fabric.instantiate @consumer(
       %produced : !fabric.bits<8>) -> (!fabric.bits<16>)
+      {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   fabric.yield %consumed : !fabric.bits<16>
 }
 
@@ -43,7 +45,9 @@ fabric.module @consumer_first(%arg : !fabric.bits<16>) -> (!fabric.bits<16>) {
   // CHECK-SAME: intermediate payload width 8 is narrower than source width 16 and destination width 16
   %consumed = fabric.instantiate @consumer(
       %produced : !fabric.bits<8>) -> (!fabric.bits<16>)
+      {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   %produced = fabric.instantiate @producer(
       %arg : !fabric.bits<16> to !fabric.bits<8>) -> (!fabric.bits<8>)
+      {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   fabric.yield %consumed : !fabric.bits<16>
 }

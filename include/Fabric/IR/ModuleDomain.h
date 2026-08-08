@@ -5,14 +5,17 @@
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace mlir {
 class Operation;
-}
+class IRMapping;
+} // namespace mlir
 
 namespace fabric {
 
@@ -71,14 +74,31 @@ mlir::DenseI64ArrayAttr encodeModuleInstanceDomainSlotBindings(
 llvm::Expected<std::vector<ModuleInstanceDomainSlotBinding>>
 decodeModuleInstanceDomainSlotBindings(mlir::DenseI64ArrayAttr encoded);
 
+/// The one canonical persistent relation materialized after Fabric entity
+/// labeling. MLIR attributes only frame the canonical typed reference bytes.
+struct CanonicalModuleDomainRelation final {
+  std::vector<loom::fabric::FabricModuleDomainSlotRef> slots;
+  std::vector<loom::fabric::ModuleDomainAssignment> assignments;
+};
+
+mlir::ArrayAttr encodeModuleDomainSlots(
+    mlir::MLIRContext *context,
+    llvm::ArrayRef<loom::fabric::FabricModuleDomainSlotRef> slots);
+llvm::Expected<std::vector<loom::fabric::FabricModuleDomainSlotRef>>
+decodeModuleDomainSlots(mlir::ArrayAttr encoded);
+mlir::ArrayAttr encodeModuleDomainAssignments(
+    mlir::MLIRContext *context,
+    llvm::ArrayRef<loom::fabric::ModuleDomainAssignment> assignments);
+llvm::Expected<std::vector<loom::fabric::ModuleDomainAssignment>>
+decodeModuleDomainAssignments(mlir::ArrayAttr encoded);
+
 /// One phase-local typed authoring relation for a Module's symbolic Clock and
 /// Reset slots and their member assignments. It is the sole authoring
-/// representation before canonical labeling: the persistent
-/// `domain_slots`/`domain_assignments` wire does not exist yet, and the
-/// relation is consumed exactly once inside the canonical-candidate pipeline
-/// and destroyed. Boundary members are identified by direction and endpoint
-/// ordinal; internal owners by their exact live draft operation and typed
-/// subrole. Operation pointers are Builder-lifetime-only: they exist only
+/// representation before canonical labeling. The relation is consumed exactly
+/// once to materialize the persistent `domain_slots`/`domain_assignments`
+/// carrier, then destroyed. Boundary members are identified by direction and
+/// endpoint ordinal; internal owners by their exact live draft operation and
+/// typed subrole. Operation pointers are Builder-lifetime-only: they exist only
 /// inside this in-process relation and never enter bytes, attributes, or
 /// persistent references. The canonical consumer must remap owner operations
 /// across clone and instance remapping before consumption, and draft
@@ -101,18 +121,16 @@ public:
   loom::fabric::FabricOrdinal
   declaredSlotCount(loom::fabric::FabricClockResetKind kind) const;
 
-  /// Records one validated total slot correspondence for one Module instance
-  /// edge, keyed by the live draft `fabric.instantiate` operation. The rows
-  /// are the canonical relation validated against both slot inventories; the
-  /// keyed operation is remapped across clone and instance remapping before
-  /// the single canonical consumption materializes it.
-  llvm::Error
-  noteInstanceBindings(mlir::Operation *instance,
-                       std::vector<ModuleInstanceDomainSlotBinding> rows);
+  /// Records one Module instance edge after validating the canonical rows
+  /// owned by its `fabric.instantiate` operation against both slot
+  /// inventories. The keyed operation is remapped across clone and instance
+  /// remapping before the single canonical consumption materializes it.
+  llvm::Error noteInstanceBindings(mlir::Operation *instance,
+                                   const ModuleDomainAuthoringRelation &child);
 
   struct InstanceBindingRecord final {
     mlir::Operation *instance = nullptr;
-    std::vector<ModuleInstanceDomainSlotBinding> rows;
+    std::shared_ptr<const ModuleDomainAuthoringRelation> child;
   };
   llvm::ArrayRef<InstanceBindingRecord> instanceBindings() const {
     return instanceBindings_;
@@ -125,6 +143,8 @@ public:
     return clockSlots_ != 0 || resetSlots_ != 0 || !assignments_.empty() ||
            !instanceBindings_.empty();
   }
+  llvm::Error ensureDefaultAssignments(loom::fabric::FabricOrdinal inputCount,
+                                       loom::fabric::FabricOrdinal outputCount);
 
   /// Registers one internal owner member created by a construction call.
   llvm::Error
@@ -151,6 +171,29 @@ public:
   llvm::Error
   validateTotality(loom::fabric::FabricOrdinal inputCount,
                    loom::fabric::FabricOrdinal outputCount) const;
+
+  /// Remaps every Builder-lifetime operation identity through one exact IR
+  /// clone. Missing mappings fail closed.
+  llvm::Expected<ModuleDomainAuthoringRelation>
+  remap(const mlir::IRMapping &mapping) const;
+
+  /// Replaces every operation identity present in a partial physical-instance
+  /// clone map while leaving unrelated Module members unchanged.
+  void remapMappedOperations(const mlir::IRMapping &mapping);
+
+  llvm::Error composeInstance(mlir::Operation *instance,
+                              const mlir::IRMapping &childCloneMapping);
+
+  using BoundaryAssignmentVisitor = llvm::function_ref<llvm::Error(
+      loom::fabric::FabricPortDirection, loom::fabric::FabricOrdinal,
+      loom::fabric::FabricClockResetKind, loom::fabric::FabricOrdinal)>;
+  using InternalAssignmentVisitor = llvm::function_ref<llvm::Error(
+      mlir::Operation *, InternalMemberRole, loom::fabric::FabricOrdinal,
+      loom::fabric::FabricClockResetKind, loom::fabric::FabricOrdinal)>;
+
+  /// Visits the validated authoring rows without exposing their storage.
+  llvm::Error visitAssignments(BoundaryAssignmentVisitor boundary,
+                               InternalAssignmentVisitor internal) const;
 
 private:
   struct MemberKey final {
@@ -180,6 +223,7 @@ private:
 
   loom::fabric::FabricOrdinal clockSlots_ = 0;
   loom::fabric::FabricOrdinal resetSlots_ = 0;
+  bool defaultAssignments_ = false;
   std::vector<MemberKey> internalMembers_;
   std::vector<AssignmentRow> assignments_;
   std::vector<InstanceBindingRecord> instanceBindings_;

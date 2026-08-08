@@ -194,7 +194,11 @@ def Fabric_ModuleOp
       // Optional exact module-scoped semantic values. Absence remains
       // absence during elaboration; no Fabric-local default is applied.
       OptionalAttr<I32Attr>:$loom_addr_bits,
-      OptionalAttr<I32Attr>:$loom_mem_bus_width);
+      OptionalAttr<I32Attr>:$loom_mem_bus_width,
+      // Finalization-owned canonical Module domain relation. Authoring roots
+      // omit these carriers; every canonical root materializes both arrays.
+      OptionalAttr<ArrayAttr>:$domain_slots,
+      OptionalAttr<ArrayAttr>:$domain_assignments);
   let regions = (region SizedRegion<1>:$body);
 
   let hasCustomAssemblyFormat = 1;
@@ -373,7 +377,7 @@ def Fabric_InstantiateOp
     SSA inputs and consumer-side result SSA values.
 
     Allowed target kinds depend on the parent of the `fabric.instantiate`:
-      * builtin top-level module: only `fabric.module` symbols.
+      * builtin top-level module: none.
       * `fabric.module` body: `fabric.module` (sibling top-level), or a
         named `fabric.pe`, `fabric.switch`, or `fabric.mem` defined inside
         the same module body.
@@ -385,9 +389,10 @@ def Fabric_InstantiateOp
     declared input port type, expressed via the `to <inner-type>` clause.
     Differing destination types are retained in the ODS-owned typed
     `inner_input_types` property.
-    The `domain_slot_bindings` property carries the authoring-only canonical
-    child-to-parent Clock/Reset slot relation for a Module target. Non-Module
-    targets and zero-slot Modules use the empty relation.
+    The `domain_slot_bindings` property is the authoring-only canonical
+    child-to-parent Clock/Reset slot relation for a Module target. It is
+    required and non-empty for Module targets; non-Module targets use the
+    empty relation.
     `memref` operands must match exactly. Output direction is strict:
     each result type must equal the target's declared output port type.
 

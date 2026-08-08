@@ -3,6 +3,7 @@ add_mlir_library(LoomFabricIdentity
   FabricRefText.cpp
   FabricRefBytes.cpp
   FabricRefImport.cpp
+  FabricModuleView.cpp
   FabricSystemServiceView.cpp
   FabricModuleBoundaryTransportValidation.cpp
   FabricTraversalProjection.cpp

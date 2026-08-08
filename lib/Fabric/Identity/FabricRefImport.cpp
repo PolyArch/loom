@@ -508,59 +508,6 @@ const ::fabric::ResourceContract *FabricArtifactView::resourceContract(
                                                 : nullptr;
 }
 
-llvm::ArrayRef<FabricInventoryOwnerRef>
-FabricArtifactView::moduleResourceOwners() const {
-  return storage_->moduleResourceOwners;
-}
-
-llvm::ArrayRef<FabricModuleDomainMemberRef>
-FabricArtifactView::moduleDomainMembers() const {
-  return storage_->moduleDomainMembers;
-}
-
-std::optional<FabricFuNodeKind>
-FabricArtifactView::fuNodeKind(const FabricInventoryOwnerRef &owner,
-                               FabricOrdinal ordinal) const {
-  const std::vector<detail::FabricFuNodeViewData> *nodes = nullptr;
-  if (owner.kind() == FabricInventoryOwnerKind::FuTemplate)
-    nodes = storage_->fuNodes(std::get<FabricFuTemplateRef>(owner.payload));
-  else if (owner.kind() == FabricInventoryOwnerKind::FuOccurrence)
-    nodes = storage_->fuNodes(std::get<FabricFuOccurrenceRef>(owner.payload));
-  if (!nodes || ordinal >= nodes->size())
-    return std::nullopt;
-  return (*nodes)[ordinal].kind;
-}
-
-bool FabricArtifactView::declaresLocalMemoryService(
-    FabricMemoryOccurrenceRef memory) const {
-  const detail::FabricEntityViewData *record = storage_->entity(memory);
-  return record && record->localMemoryService.has_value();
-}
-
-const ::fabric::MemoryServiceContractRecord *
-FabricArtifactView::localMemoryService(FabricMemoryOccurrenceRef memory) const {
-  const detail::FabricEntityViewData *record = storage_->entity(memory);
-  return record && record->localMemoryService
-             ? &record->localMemoryService->record
-             : nullptr;
-}
-
-std::optional<FabricMemoryEndpointRole> FabricArtifactView::memoryEndpointRole(
-    const FabricMemoryEndpointRef &endpoint) const {
-  const detail::FabricMemoryEndpointViewData *record =
-      storage_->memoryEndpoint(endpoint);
-  return record ? std::optional<FabricMemoryEndpointRole>(record->role)
-                : std::nullopt;
-}
-
-llvm::ArrayRef<std::uint8_t> FabricArtifactView::memoryEndpointType(
-    const FabricMemoryEndpointRef &endpoint) const {
-  const detail::FabricMemoryEndpointViewData *record =
-      storage_->memoryEndpoint(endpoint);
-  return record ? llvm::ArrayRef<std::uint8_t>(record->canonicalType)
-                : llvm::ArrayRef<std::uint8_t>();
-}
-
 std::uint64_t FabricArtifactView::moduleBoundaryEndpointCount(
     FabricModuleTemplateRef module, FabricPortDirection direction) const {
   const detail::FabricEntityViewData *record = storage_->entity(module);
@@ -622,45 +569,6 @@ FabricArtifactView::moduleBoundaryTransportPassthroughs() const {
 llvm::ArrayRef<FabricModuleBoundaryMemoryAttachmentView>
 FabricArtifactView::moduleBoundaryMemoryAttachments() const {
   return storage_->data.moduleBoundaryMemoryAttachments;
-}
-
-std::optional<FabricHardwareDomainKind>
-FabricArtifactView::hardwareDomainKind(HardwareDomainRef domain) const {
-  const detail::FabricEntityViewData *record = storage_->entity(domain);
-  return record ? record->hardwareDomainKind : std::nullopt;
-}
-
-std::optional<FabricPeOccurrenceRef>
-FabricArtifactView::parentPeOf(FabricFuOccurrenceRef occurrence) const {
-  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
-  return record ? record->parentPe : std::nullopt;
-}
-
-std::optional<::fabric::Schedule>
-FabricArtifactView::peSchedule(FabricPeOccurrenceRef occurrence) const {
-  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
-  return record ? record->peSchedule : std::nullopt;
-}
-
-std::uint64_t FabricArtifactView::peResidentContextCount(
-    FabricPeOccurrenceRef occurrence) const {
-  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
-  return record ? record->instructionContexts.size() : 0;
-}
-
-std::optional<FabricFuTemplateRef>
-FabricArtifactView::fuTemplateOf(FabricFuOccurrenceRef occurrence) const {
-  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
-  return record ? record->fuTemplate : std::nullopt;
-}
-
-llvm::ArrayRef<FabricFuTemplateRef> FabricArtifactView::fuTemplates() const {
-  return storage_->fuTemplates;
-}
-
-llvm::ArrayRef<FabricMemoryEngineTemplateRef>
-FabricArtifactView::memoryEngineTemplates() const {
-  return storage_->memoryEngineTemplates;
 }
 
 llvm::ArrayRef<FabricFuCapabilityTemplateRecord>
@@ -1436,7 +1344,8 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
              .second)
       return invalidView(
           "memory-service manager endpoint is connected more than once");
-    if (!connectedMemorySubordinates
+    if (data.rootKind != FabricRootKind::Module &&
+        !connectedMemorySubordinates
              .insert(canonicalFabricBytes(row.second.destination))
              .second)
       return invalidView(
@@ -1680,6 +1589,9 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
     if (!moduleDomainMembers)
       return moduleDomainMembers.takeError();
     storage->moduleDomainMembers = std::move(*moduleDomainMembers);
+  } else if (!storage->data.moduleDomainSlots.empty() ||
+             !storage->data.moduleDomainAssignments.empty()) {
+    return invalidView("non-Module root carries a Module domain relation");
   }
   for (const FabricPointConnectionPayload &connection :
        view.pointConnections()) {
@@ -1705,12 +1617,20 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
       return std::move(error);
     if (llvm::Error error = validateFabricRef(view, connection.destination))
       return std::move(error);
-    if (!std::holds_alternative<SystemServiceEndpointRef>(
-            connection.source.owner.payload) ||
-        !std::holds_alternative<SystemServiceEndpointRef>(
-            connection.destination.owner.payload))
-      return invalidView(
-          "memory-service connection does not join System service endpoints");
+    const bool moduleConnection =
+        std::holds_alternative<FabricMemoryOccurrenceRef>(
+            connection.source.owner.payload) &&
+        std::holds_alternative<FabricMemoryOccurrenceRef>(
+            connection.destination.owner.payload);
+    const bool systemConnection =
+        std::holds_alternative<SystemServiceEndpointRef>(
+            connection.source.owner.payload) &&
+        std::holds_alternative<SystemServiceEndpointRef>(
+            connection.destination.owner.payload);
+    if ((view.rootKind() == FabricRootKind::Module && !moduleConnection) ||
+        (view.rootKind() == FabricRootKind::System && !systemConnection))
+      return invalidView("memory-service connection owner kind does not match "
+                         "the Fabric root kind");
     if (view.memoryEndpointRole(connection.source) !=
         FabricMemoryEndpointRole::Manager)
       return invalidView(

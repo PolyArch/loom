@@ -246,11 +246,20 @@ add_executable(loom-fabric-pe-configuration-test
   FabricPeConfigurationTest.cpp
 )
 
+add_executable(loom-fabric-module-domain-import-test
+  FabricModuleDomainImportTest.cpp
+)
+
 add_executable(loom-fabric-system-attachment-finalizer-test
   FabricSystemAttachmentFinalizerTest.cpp
 )
 
 target_include_directories(loom-fabric-artifact-finalizer-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Fabric/Identity
+)
+
+target_include_directories(loom-fabric-module-domain-import-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Fabric/Artifact
   ${LOOM_SOURCE_DIR}/lib/Fabric/Identity
 )
 
@@ -363,6 +372,15 @@ target_link_libraries(loom-fabric-pe-configuration-test PRIVATE
   LoomCommon
   LoomFabricArtifact
   MLIRDataflow
+  MLIRFabric
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-module-domain-import-test PRIVATE
+  LoomCommon
+  LoomFabricArtifact
   MLIRFabric
   MLIRIR
   MLIRParser

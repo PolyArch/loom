@@ -1,9 +1,14 @@
 #include "ADGBuilderTestSupport.h"
 
 #include "ADG/Builder.h"
+#include "Fabric/Artifact/FabricModuleRootView.h"
+#include "Fabric/IR/FabricDialect.h"
+#include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/ModuleDomain.h"
 
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -26,7 +31,10 @@ using loom::adg::FifoResult;
 using loom::adg::FifoSpec;
 using loom::adg::FuNode;
 using loom::adg::FuSpec;
+using loom::adg::MemoryConnectivitySpec;
+using loom::adg::MemoryEngineSpec;
 using loom::adg::MemoryResult;
+using loom::adg::MemorySpec;
 using loom::adg::ModuleDomainMemberHandle;
 using loom::adg::ModuleDomainSlotHandle;
 using loom::adg::ModuleInstanceDomainSlotBinding;
@@ -40,8 +48,8 @@ using loom::fabric::FabricClockResetKind;
 using loom::fabric::FabricOrdinal;
 using loom::fabric::FabricPortDirection;
 
-// The two-argument Module instantiate overload is not retained: a slotless
-// target is expressed by an explicit empty binding range.
+// The two-argument Module instantiate overload is not retained: every call
+// supplies the domain-binding authoring input explicitly.
 template <typename Builder, typename = void>
 struct HasTwoArgumentInstantiate : std::false_type {};
 template <typename Builder>
@@ -124,6 +132,11 @@ static_assert(
     "declareDomainSlot authors one opaque slot handle");
 static_assert(
     std::is_same<decltype(std::declval<const loom::adg::SpatialCoreBuilder &>()
+                              .domainSlots(FabricClockResetKind::Clock)),
+                 llvm::Expected<std::vector<ModuleDomainSlotHandle>>>::value,
+    "domainSlots exposes the closed Module's effective slot handles");
+static_assert(
+    std::is_same<decltype(std::declval<const loom::adg::SpatialCoreBuilder &>()
                               .inputDomainMember(std::size_t{0})),
                  llvm::Expected<ModuleDomainMemberHandle>>::value,
     "inputDomainMember selects a boundary face directly");
@@ -174,6 +187,13 @@ void domainAuthoringRelationRejectsOutOfCatalogValues() {
                       99),
                   0),
               "outside the catalog");
+  for (ModuleDomainAuthoringRelation::InternalMemberRole role :
+       {ModuleDomainAuthoringRelation::InternalMemberRole::Occurrence,
+        ModuleDomainAuthoringRelation::InternalMemberRole::FuNode,
+        ModuleDomainAuthoringRelation::InternalMemberRole::LocalMemoryService})
+    expectError(test,
+                relation.noteInternalMember(owner->getOperation(), role, 1),
+                "does not take a sub-ordinal");
   expectError(test,
               relation.assignInternal(owner->getOperation(), occurrence, 0,
                                       FabricClockResetKind::Clock, 0),
@@ -285,6 +305,46 @@ void domainAuthoringRelationEnforcesTotality() {
               "outside the signature");
 }
 
+void instanceBindingRelationMustBeCanonicalAndTotal() {
+  const llvm::StringRef test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  context.getOrLoadDialect<::fabric::FabricDialect>();
+  mlir::OwningOpRef<mlir::ModuleOp> container =
+      mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+  mlir::OpBuilder builder(&context);
+  builder.setInsertionPointToStart(container->getBody());
+  auto instance = ::fabric::InstantiateOp::create(
+      builder, mlir::UnknownLoc::get(&context), mlir::TypeRange{},
+      mlir::FlatSymbolRefAttr::get(&context, "child"), mlir::ValueRange{},
+      llvm::ArrayRef<mlir::Type>{},
+      ::fabric::encodeModuleInstanceDomainSlotBindings(
+          &context, {{FabricClockResetKind::Clock, 0, 0}}));
+
+  ModuleDomainAuthoringRelation child;
+  take(test, child.declareSlot(FabricClockResetKind::Clock));
+  take(test, child.declareSlot(FabricClockResetKind::Reset));
+  ModuleDomainAuthoringRelation parent;
+  take(test, parent.declareSlot(FabricClockResetKind::Clock));
+  take(test, parent.declareSlot(FabricClockResetKind::Reset));
+
+  expectError(test, parent.noteInstanceBindings(instance.getOperation(), child),
+              "binding count");
+  const ::fabric::ModuleInstanceDomainSlotBinding canonical[] = {
+      {FabricClockResetKind::Clock, 0, 0}, {FabricClockResetKind::Reset, 0, 0}};
+  instance.setDomainSlotBindingsAttr(
+      ::fabric::encodeModuleInstanceDomainSlotBindings(&context, canonical));
+  if (llvm::Error error =
+          parent.noteInstanceBindings(instance.getOperation(), child))
+    fail(test, llvm::toString(std::move(error)));
+  expectError(test, parent.noteInstanceBindings(instance.getOperation(), child),
+              "already recorded");
+  instance.setDomainSlotBindingsAttr(
+      ::fabric::encodeModuleInstanceDomainSlotBindings(&context, {}));
+  mlir::IRMapping mapping;
+  expectError(test, parent.composeInstance(instance.getOperation(), mapping),
+              "empty");
+}
+
 void builderDomainAuthoringRejectsForeignAndStaleHandles() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -355,7 +415,9 @@ void builderDomainAuthoringRequiresTotalAssignment() {
     fail(test, llvm::toString(std::move(error)));
   expectError(test, core.assignDomainSlot(inputFace, reset),
               "already closed");
-  expectError(test, std::move(design).finalize(), "domain slot");
+  FinalizedFabricDesign finalized = take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 1,
+          "complete Module domain relation did not finalize");
 }
 
 void moduleInstanceDomainSlotBindingsAreExplicit() {
@@ -431,7 +493,17 @@ void moduleInstanceDomainSlotBindingsAreExplicit() {
   }
   if (llvm::Error error = top.close(outputs))
     fail(test, llvm::toString(std::move(error)));
-  expectError(test, std::move(design).finalize(), "domain slot");
+  FinalizedFabricDesign finalized = take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 2,
+          "instantiated design did not publish both Module roots");
+  auto topView =
+      take(test, loom::fabric::requireModuleRoot(finalized.roots()[1].view()));
+  require(test, topView.domainSlots().size() == 2,
+          "instantiated Module changed the parent slot inventory");
+  require(test, topView.domainAssignments().size() == 6,
+          "instantiated Module did not compose child assignments");
+  require(test, topView.artifact().moduleDomainMembers().size() == 3,
+          "instantiated Module did not flatten the child physical member");
 }
 
 void constructionResultsExposeRoleTypedMembers() {
@@ -439,21 +511,22 @@ void constructionResultsExposeRoleTypedMembers() {
   TemporaryDirectory directory(test);
   loom::ArtifactStore store(directory.path());
   DesignBuilder design(store);
-  const PortType bits32 = take(test, PortType::bits(32));
+  const PortType bits8 = take(test, PortType::bits(8));
 
-  auto core =
-      take(test, design.createSpatialCore("pe-members", {bits32}, {bits32}));
-  auto pe = take(test, core.addPe({take(test, core.input(0))},
-                                  PeSpec::spatial({bits32}, {bits32})));
-  auto fu = take(test, pe.addFu({take(test, pe.input(0))},
-                                FuSpec{{bits32}, {bits32}}));
-  auto sum = take(test,
-                  fu.addOperation({take(test, fu.input(0))},
-                                  integerCapability(
-                                      ::fabric::ImplementationFamilyId::
-                                          ScalarIntegerAddSub,
-                                      ::dataflow::OperationSchemaId::ArithAddI,
-                                      bits32)));
+  auto core = take(
+      test, design.createSpatialCore("pe-members", {bits8, bits8}, {bits8}));
+  auto pe = take(
+      test, core.addPe({take(test, core.input(0)), take(test, core.input(1))},
+                       PeSpec::spatial({bits8, bits8}, {bits8})));
+  auto fu =
+      take(test, pe.addFu({take(test, pe.input(0)), take(test, pe.input(1))},
+                          FuSpec{{bits8, bits8}, {bits8}}));
+  auto sum = take(
+      test,
+      fu.addOperation({take(test, fu.input(0)), take(test, fu.input(1))},
+                      integerCapability(
+                          ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                          ::dataflow::OperationSchemaId::ArithAddI, bits8)));
   if (llvm::Error error = fu.addCapabilityTemplate({{sum}, {}}))
     fail(test, llvm::toString(std::move(error)));
 
@@ -470,6 +543,7 @@ void constructionResultsExposeRoleTypedMembers() {
       take(test, core.declareDomainSlot(FabricClockResetKind::Reset));
   const std::vector<ModuleDomainMemberHandle> members = {
       take(test, core.inputDomainMember(0)),
+      take(test, core.inputDomainMember(1)),
       take(test, core.outputDomainMember(0)),
       peOccurrence,
       context,
@@ -489,10 +563,90 @@ void constructionResultsExposeRoleTypedMembers() {
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = core.close({take(test, pe.output(0))}))
     fail(test, llvm::toString(std::move(error)));
-  expectError(test, std::move(design).finalize(), "domain slot");
+
+  FinalizedFabricDesign finalized = take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 1,
+          "domain-authored design did not publish one Module root");
+  loom::fabric::FinalizedFabricRoot imported =
+      take(test, loom::fabric::importEntireFabricRoot(
+                     finalized.roots()[0].reference(), store));
+  auto view = take(test, loom::fabric::requireModuleRoot(imported.view()));
+  require(test,
+          view.artifact().rootKind() == loom::fabric::FabricRootKind::Module,
+          "domain-authored root changed its kind");
+  require(test, view.domainSlots().size() == 2,
+          "finalized Module did not preserve its exact domain-slot inventory");
+  require(test, view.domainAssignments().size() == 14,
+          "finalized Module did not preserve its complete assignment relation");
+  require(test, view.artifact().moduleDomainMembers().size() == 7,
+          "finalized Module changed its domain-member inventory");
+
+  bool sawFuNode = false;
+  for (const loom::fabric::FabricModuleDomainMemberRef &member :
+       view.artifact().moduleDomainMembers()) {
+    unsigned clocks = 0;
+    unsigned resets = 0;
+    for (const loom::fabric::ModuleDomainAssignment &assignment :
+         view.domainAssignments()) {
+      if (assignment.member != member)
+        continue;
+      clocks += assignment.slot.kind == FabricClockResetKind::Clock;
+      resets += assignment.slot.kind == FabricClockResetKind::Reset;
+    }
+    require(test, clocks == 1 && resets == 1,
+            "finalized Module assignment relation is not total by kind");
+    if (member.kind() == loom::fabric::FabricModuleDomainMemberKind::Internal) {
+      const auto &owner =
+          std::get<loom::fabric::FabricModulePhysicalOwnerRef>(member.payload);
+      sawFuNode |=
+          owner.kind() ==
+          loom::fabric::FabricModulePhysicalOwnerKind::FuOccurrenceNode;
+    }
+  }
+  require(test, sawFuNode,
+          "finalized Module lost the FU occurrence-node domain member");
 }
 
-void slotlessModuleInstanceStaysOnLegacyPath() {
+void omittedModuleDomainMatchesExplicitSingleDomain() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const PortType bits16 = take(test, PortType::bits(16));
+
+  auto omitted =
+      take(test, design.createSpatialCore("omitted", {bits16}, {bits16}));
+  if (llvm::Error error = omitted.close({take(test, omitted.input(0))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto explicitDomain =
+      take(test, design.createSpatialCore("explicit", {bits16}, {bits16}));
+  const ModuleDomainSlotHandle clock =
+      take(test, explicitDomain.declareDomainSlot(FabricClockResetKind::Clock));
+  const ModuleDomainSlotHandle reset =
+      take(test, explicitDomain.declareDomainSlot(FabricClockResetKind::Reset));
+  for (const ModuleDomainMemberHandle &member :
+       {take(test, explicitDomain.inputDomainMember(0)),
+        take(test, explicitDomain.outputDomainMember(0))}) {
+    if (llvm::Error error = explicitDomain.assignDomainSlot(member, clock))
+      fail(test, llvm::toString(std::move(error)));
+    if (llvm::Error error = explicitDomain.assignDomainSlot(member, reset))
+      fail(test, llvm::toString(std::move(error)));
+  }
+  if (llvm::Error error =
+          explicitDomain.close({take(test, explicitDomain.input(0))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  loom::adg::FinalizedFabricDesign finalized =
+      take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 2,
+          "single-domain design did not publish both Module roots");
+  require(test,
+          finalized.roots()[0].reference() == finalized.roots()[1].reference(),
+          "omitted and explicit single-domain Modules changed identity");
+}
+
+void defaultChildRequiresExplicitInstanceBindings() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   loom::ArtifactStore store(directory.path());
@@ -501,22 +655,313 @@ void slotlessModuleInstanceStaysOnLegacyPath() {
 
   auto pipeline =
       take(test, design.createSpatialCore("pipeline", {bits16}, {bits16}));
+  expectError(test, pipeline.domainSlots(FabricClockResetKind::Clock),
+              "must be closed");
   const FifoResult stage =
       take(test, pipeline.addFifo(take(test, pipeline.input(0)),
                                   FifoSpec{bits16, 2, true}));
   if (llvm::Error error = pipeline.close({stage.value()}))
     fail(test, llvm::toString(std::move(error)));
+  const std::vector<ModuleDomainSlotHandle> childClocks =
+      take(test, pipeline.domainSlots(FabricClockResetKind::Clock));
+  const std::vector<ModuleDomainSlotHandle> childResets =
+      take(test, pipeline.domainSlots(FabricClockResetKind::Reset));
+  require(test, childClocks.size() == 1 && childResets.size() == 1,
+          "default child did not expose one effective slot of each kind");
+  expectError(test, pipeline.domainSlots(static_cast<FabricClockResetKind>(7)),
+              "outside the catalog");
 
   auto top = take(test, design.createSpatialCore("top", {bits16}, {bits16}));
-  auto outputs = take(
-      test, top.instantiate(pipeline, {take(test, top.input(0))}, {}));
+  const SpatialValue input = take(test, top.input(0));
+  const ModuleDomainSlotHandle parentClock =
+      take(test, top.declareDomainSlot(FabricClockResetKind::Clock));
+  const ModuleDomainSlotHandle parentReset =
+      take(test, top.declareDomainSlot(FabricClockResetKind::Reset));
+  expectError(test, top.instantiate(pipeline, {input}, {}),
+              "domain slot binding");
+  expectError(
+      test,
+      top.instantiate(pipeline, {input}, {{childClocks.front(), parentClock}}),
+      "domain slot binding");
+  auto outputs =
+      take(test, top.instantiate(pipeline, {input},
+                                 {{childClocks.front(), parentClock},
+                                  {childResets.front(), parentReset}}));
+  for (const ModuleDomainMemberHandle &member :
+       {take(test, top.inputDomainMember(0)),
+        take(test, top.outputDomainMember(0))}) {
+    if (llvm::Error error = top.assignDomainSlot(member, parentClock))
+      fail(test, llvm::toString(std::move(error)));
+    if (llvm::Error error = top.assignDomainSlot(member, parentReset))
+      fail(test, llvm::toString(std::move(error)));
+  }
   if (llvm::Error error = top.close(outputs))
     fail(test, llvm::toString(std::move(error)));
 
   loom::adg::FinalizedFabricDesign finalized =
       take(test, std::move(design).finalize());
   require(test, finalized.roots().size() == 2,
-          "slotless module instance left the legacy 1.1 path");
+          "explicitly bound design did not publish both Module roots");
+  auto pipelineView =
+      take(test, loom::fabric::requireModuleRoot(finalized.roots()[0].view()));
+  auto topView =
+      take(test, loom::fabric::requireModuleRoot(finalized.roots()[1].view()));
+  require(test,
+          pipelineView.domainSlots().size() == 2 &&
+              pipelineView.domainAssignments().size() == 6,
+          "default child Module domain relation is absent or incomplete");
+  require(test,
+          topView.domainSlots().size() == 2 &&
+              topView.domainAssignments().size() == 6,
+          "explicit parent Module domain relation is absent or incomplete");
+}
+
+void failedInstantiationPreservesParentDomainAuthoring() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const PortType bits8 = take(test, PortType::bits(8));
+
+  auto child = take(test, design.createSpatialCore("child", {bits8}, {bits8}));
+  if (llvm::Error error = child.close({take(test, child.input(0))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto parent =
+      take(test, design.createSpatialCore("parent", {bits8}, {bits8}));
+  expectError(test, parent.instantiate(child, {}, {}), "input count");
+
+  const ModuleDomainSlotHandle clock =
+      take(test, parent.declareDomainSlot(FabricClockResetKind::Clock));
+  const ModuleDomainSlotHandle reset =
+      take(test, parent.declareDomainSlot(FabricClockResetKind::Reset));
+  const ModuleDomainMemberHandle members[] = {
+      take(test, parent.inputDomainMember(0)),
+      take(test, parent.outputDomainMember(0))};
+  for (const ModuleDomainMemberHandle &member : members) {
+    if (llvm::Error error = parent.assignDomainSlot(member, clock))
+      fail(test, llvm::toString(std::move(error)));
+    if (llvm::Error error = parent.assignDomainSlot(member, reset))
+      fail(test, llvm::toString(std::move(error)));
+  }
+  if (llvm::Error error = parent.close({take(test, parent.input(0))}))
+    fail(test, llvm::toString(std::move(error)));
+  take(test, std::move(design).finalize());
+}
+
+void moduleConnectionsRemainWithinOneSymbolicDomain() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const PortType bits8 = take(test, PortType::bits(8));
+
+  auto core =
+      take(test, design.createSpatialCore("crossing", {bits8}, {bits8}));
+  const ModuleDomainSlotHandle firstClock =
+      take(test, core.declareDomainSlot(FabricClockResetKind::Clock));
+  const ModuleDomainSlotHandle secondClock =
+      take(test, core.declareDomainSlot(FabricClockResetKind::Clock));
+  const ModuleDomainSlotHandle reset =
+      take(test, core.declareDomainSlot(FabricClockResetKind::Reset));
+  const ModuleDomainMemberHandle input = take(test, core.inputDomainMember(0));
+  const ModuleDomainMemberHandle output =
+      take(test, core.outputDomainMember(0));
+  if (llvm::Error error = core.assignDomainSlot(input, firstClock))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = core.assignDomainSlot(output, secondClock))
+    fail(test, llvm::toString(std::move(error)));
+  for (const ModuleDomainMemberHandle *member : {&input, &output})
+    if (llvm::Error error = core.assignDomainSlot(*member, reset))
+      fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = core.close({take(test, core.input(0))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  expectError(test, std::move(design).finalize(),
+              "crosses symbolic Clock or Reset slots");
+}
+
+void nestedConnectionsRemainWithinOneSymbolicDomain() {
+  const llvm::StringRef test = __func__;
+  enum class Crossing { None, PeToFu, FuToNode };
+  const auto build = [&](Crossing crossing) {
+    TemporaryDirectory directory(test);
+    loom::ArtifactStore store(directory.path());
+    DesignBuilder design(store);
+    const PortType bits8 = take(test, PortType::bits(8));
+
+    auto core =
+        take(test, design.createSpatialCore("nested-domain", {bits8}, {bits8}));
+    auto pe = take(test, core.addPe({take(test, core.input(0))},
+                                    PeSpec::spatial({bits8}, {bits8})));
+    auto fu = take(
+        test, pe.addFu({take(test, pe.input(0))}, FuSpec{{bits8}, {bits8}}));
+    auto operation = take(
+        test, fu.addOperation(
+                  {take(test, fu.input(0))},
+                  integerCapability(
+                      ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                      ::dataflow::OperationSchemaId::ArithAddI, bits8)));
+    if (llvm::Error error = fu.addCapabilityTemplate({{operation}, {}}))
+      fail(test, llvm::toString(std::move(error)));
+
+    const ModuleDomainSlotHandle firstClock =
+        take(test, core.declareDomainSlot(FabricClockResetKind::Clock));
+    const ModuleDomainSlotHandle secondClock =
+        crossing == Crossing::None
+            ? firstClock
+            : take(test, core.declareDomainSlot(FabricClockResetKind::Clock));
+    const ModuleDomainSlotHandle reset =
+        take(test, core.declareDomainSlot(FabricClockResetKind::Reset));
+    const std::vector<ModuleDomainMemberHandle> outerMembers = {
+        take(test, core.inputDomainMember(0)),
+        take(test, core.outputDomainMember(0)), pe.domainMember(),
+        take(test, pe.instructionContextMember(0))};
+    for (const ModuleDomainMemberHandle &member : outerMembers) {
+      if (llvm::Error error = core.assignDomainSlot(member, firstClock))
+        fail(test, llvm::toString(std::move(error)));
+      if (llvm::Error error = core.assignDomainSlot(member, reset))
+        fail(test, llvm::toString(std::move(error)));
+    }
+    const ModuleDomainSlotHandle &fuClock =
+        crossing == Crossing::PeToFu ? secondClock : firstClock;
+    const ModuleDomainSlotHandle &nodeClock =
+        crossing == Crossing::FuToNode ? secondClock : fuClock;
+    for (const auto &[member, clock] : std::initializer_list<
+             std::pair<ModuleDomainMemberHandle, ModuleDomainSlotHandle>>{
+             {fu.domainMember(), fuClock},
+             {operation.domainMember(), nodeClock}}) {
+      if (llvm::Error error = core.assignDomainSlot(member, clock))
+        fail(test, llvm::toString(std::move(error)));
+      if (llvm::Error error = core.assignDomainSlot(member, reset))
+        fail(test, llvm::toString(std::move(error)));
+    }
+
+    if (llvm::Error error = fu.close({take(test, operation.output(0))}))
+      fail(test, llvm::toString(std::move(error)));
+    if (llvm::Error error = pe.close())
+      fail(test, llvm::toString(std::move(error)));
+    if (llvm::Error error = core.close({take(test, pe.output(0))}))
+      fail(test, llvm::toString(std::move(error)));
+    return std::move(design).finalize();
+  };
+
+  auto sameDomain = build(Crossing::None);
+  if (!sameDomain)
+    fail(test, llvm::toString(sameDomain.takeError()));
+  expectError(test, build(Crossing::PeToFu),
+              "crosses symbolic Clock or Reset slots");
+  expectError(test, build(Crossing::FuToNode),
+              "crosses symbolic Clock or Reset slots");
+}
+
+MemoryConnectivitySpec memoryConnectivity(llvm::StringRef test,
+                                          bool exposesSubordinate) {
+  ::fabric::MemoryConnectivityDeclaration declaration;
+  ::fabric::MemoryOperationPortDispatchDeclaration operationPort;
+  operationPort.capabilityTargetDomains = {{managerMemoryTarget(0)}};
+  declaration.operationPorts.push_back(std::move(operationPort));
+  if (exposesSubordinate) {
+    ::fabric::MemorySubordinateDispatchDeclaration subordinate;
+    subordinate.maxExposedBindings = 1;
+    subordinate.targetDomain = {managerMemoryTarget(0)};
+    declaration.subordinateEndpoints.push_back(std::move(subordinate));
+  }
+  return take(test, MemoryConnectivitySpec::create(std::move(declaration)));
+}
+
+void memoryConnectionsRemainWithinOneSymbolicDomain() {
+  const llvm::StringRef test = __func__;
+  const auto build = [&](bool crossing) {
+    TemporaryDirectory directory(test);
+    loom::ArtifactStore store(directory.path());
+    DesignBuilder design(store);
+    const PortType bits0 = take(test, PortType::bits(0));
+    const PortType bits32 = take(test, PortType::bits(32));
+    const PortType memory32 =
+        take(test, PortType::memory({PortType::kDynamicExtent}, bits32));
+    auto core = take(
+        test, design.createSpatialCore(
+                  "memory-connection",
+                  {memory32, bits32, bits0, bits32, bits0, bits32, bits0}, {}));
+    auto provider = take(
+        test,
+        core.addMemory(
+            {take(test, core.input(0)), take(test, core.input(1)),
+             take(test, core.input(2))},
+            take(test,
+                 MemorySpec::create(
+                     {memory32, bits32, bits0}, {memory32, bits32, bits0}, {0},
+                     {0}, MemoryEngineSpec::spatial({loadPortDeclaration()}),
+                     std::nullopt, memoryConnectivity(test, true)))));
+    auto requester = take(
+        test,
+        core.addMemory(
+            {provider.values()[0], take(test, core.input(3)),
+             take(test, core.input(4))},
+            take(test, MemorySpec::create(
+                           {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
+                           MemoryEngineSpec::spatial({loadPortDeclaration()}),
+                           std::nullopt, memoryConnectivity(test, false)))));
+    auto secondRequester = take(
+        test,
+        core.addMemory(
+            {provider.values()[0], take(test, core.input(5)),
+             take(test, core.input(6))},
+            take(test, MemorySpec::create(
+                           {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
+                           MemoryEngineSpec::spatial({loadPortDeclaration()}),
+                           std::nullopt, memoryConnectivity(test, false)))));
+
+    const ModuleDomainSlotHandle firstClock =
+        take(test, core.declareDomainSlot(FabricClockResetKind::Clock));
+    const ModuleDomainSlotHandle secondClock =
+        crossing
+            ? take(test, core.declareDomainSlot(FabricClockResetKind::Clock))
+            : firstClock;
+    const ModuleDomainSlotHandle reset =
+        take(test, core.declareDomainSlot(FabricClockResetKind::Reset));
+    for (std::size_t ordinal = 0; ordinal != 7; ++ordinal) {
+      const ModuleDomainMemberHandle member =
+          take(test, core.inputDomainMember(ordinal));
+      if (llvm::Error error = core.assignDomainSlot(
+              member, ordinal >= 3 && ordinal < 5 ? secondClock : firstClock))
+        fail(test, llvm::toString(std::move(error)));
+      if (llvm::Error error = core.assignDomainSlot(member, reset))
+        fail(test, llvm::toString(std::move(error)));
+    }
+    for (const ModuleDomainMemberHandle &member :
+         {provider.domainMember(),
+          take(test, provider.operationPortMember(0))}) {
+      for (const ModuleDomainSlotHandle *slot : {&firstClock, &reset})
+        if (llvm::Error error = core.assignDomainSlot(member, *slot))
+          fail(test, llvm::toString(std::move(error)));
+    }
+    for (const ModuleDomainMemberHandle &member :
+         {requester.domainMember(),
+          take(test, requester.operationPortMember(0))}) {
+      for (const ModuleDomainSlotHandle *slot : {&secondClock, &reset})
+        if (llvm::Error error = core.assignDomainSlot(member, *slot))
+          fail(test, llvm::toString(std::move(error)));
+    }
+    for (const ModuleDomainMemberHandle &member :
+         {secondRequester.domainMember(),
+          take(test, secondRequester.operationPortMember(0))}) {
+      for (const ModuleDomainSlotHandle *slot : {&firstClock, &reset})
+        if (llvm::Error error = core.assignDomainSlot(member, *slot))
+          fail(test, llvm::toString(std::move(error)));
+    }
+    if (llvm::Error error = core.close({}))
+      fail(test, llvm::toString(std::move(error)));
+    return std::move(design).finalize();
+  };
+
+  auto sameDomain = build(false);
+  if (!sameDomain)
+    fail(test, llvm::toString(sameDomain.takeError()));
+  if (sameDomain->roots().front().view().memoryServiceConnections().size() != 2)
+    fail(test, "Module artifact omitted an internal memory connection");
+  expectError(test, build(true), "crosses symbolic Clock or Reset slots");
 }
 
 } // namespace
@@ -524,11 +969,17 @@ void slotlessModuleInstanceStaysOnLegacyPath() {
 void runDomainAuthoringTests() {
   domainAuthoringRelationRejectsOutOfCatalogValues();
   domainAuthoringRelationEnforcesTotality();
+  instanceBindingRelationMustBeCanonicalAndTotal();
   builderDomainAuthoringRejectsForeignAndStaleHandles();
   builderDomainAuthoringRequiresTotalAssignment();
   moduleInstanceDomainSlotBindingsAreExplicit();
   constructionResultsExposeRoleTypedMembers();
-  slotlessModuleInstanceStaysOnLegacyPath();
+  omittedModuleDomainMatchesExplicitSingleDomain();
+  defaultChildRequiresExplicitInstanceBindings();
+  failedInstantiationPreservesParentDomainAuthoring();
+  moduleConnectionsRemainWithinOneSymbolicDomain();
+  nestedConnectionsRemainWithinOneSymbolicDomain();
+  memoryConnectionsRemainWithinOneSymbolicDomain();
 }
 
 } // namespace loom::adg::test

@@ -25,6 +25,7 @@ fabric.module @leaf(%arg : !fabric.bits<8>) -> (!fabric.bits<8>) {
 fabric.module @middle(%arg : !fabric.bits<16>) -> (!fabric.bits<8>) {
   %result = fabric.instantiate @leaf(
       %arg : !fabric.bits<16> to !fabric.bits<8>) -> (!fabric.bits<8>)
+      {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   fabric.yield %result : !fabric.bits<8>
 }
 
@@ -41,6 +42,7 @@ fabric.module @middle(%arg : !fabric.bits<16>) -> (!fabric.bits<8>) {
 fabric.module @top(%arg : !fabric.bits<32>) -> (!fabric.bits<8>) {
   %result = fabric.instantiate @middle(
       %arg : !fabric.bits<32> to !fabric.bits<16>) -> (!fabric.bits<8>)
+      {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   fabric.yield %result : !fabric.bits<8>
 }
 

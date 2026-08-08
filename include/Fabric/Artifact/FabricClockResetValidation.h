@@ -1,6 +1,7 @@
 #ifndef LOOM_FABRIC_ARTIFACT_FABRICCLOCKRESETVALIDATION_H
 #define LOOM_FABRIC_ARTIFACT_FABRICCLOCKRESETVALIDATION_H
 
+#include "Fabric/Artifact/FabricModuleRootView.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 
 #include "llvm/Support/Error.h"
@@ -27,6 +28,10 @@ private:
 
 llvm::Expected<ValidatedClockResetView>
 validateClockReset(FabricSystemRootView system);
+
+/// Validates that every projected ordinary Module-local physical connection
+/// remains within one symbolic Clock and Reset slot pair.
+llvm::Error validateModuleClockReset(const FabricModuleRootView &module);
 
 } // namespace loom::fabric
 

@@ -696,6 +696,12 @@ public:
   llvm::Expected<ModuleDomainSlotHandle>
   declareDomainSlot(loom::fabric::FabricClockResetKind kind);
 
+  /// Returns the closed Module's effective slot inventory for one kind.
+  /// Omitted single-domain authoring is materialized by close(), so its
+  /// Clock and Reset slots are addressable for explicit instance bindings.
+  llvm::Expected<std::vector<ModuleDomainSlotHandle>>
+  domainSlots(loom::fabric::FabricClockResetKind kind) const;
+
   /// Selects one Module boundary face directly as a domain member handle.
   llvm::Expected<ModuleDomainMemberHandle>
   inputDomainMember(std::size_t ordinal) const;
@@ -710,7 +716,7 @@ public:
   /// Instantiates one closed SpatialCore from this design as a module
   /// template. Fabric finalization expands the instance into fresh physical
   /// occurrences. domainBindings is the exact total child-to-parent slot
-  /// correspondence; a slotless target takes an explicit empty range.
+  /// correspondence and must contain every effective child slot.
   llvm::Expected<std::vector<SpatialValue>>
   instantiate(const SpatialCoreBuilder &target,
               llvm::ArrayRef<SpatialValue> inputs,

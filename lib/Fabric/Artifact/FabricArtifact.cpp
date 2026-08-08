@@ -4,6 +4,7 @@
 #include "Common/ArtifactFinalizer.h"
 #include "Fabric/Artifact/FabricClockResetValidation.h"
 #include "Fabric/Artifact/FabricHardwareDomainContracts.h"
+#include "Fabric/Artifact/FabricModuleRootView.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/Elaboration.h"
 #include "Fabric/IR/FabricCanonicalEntity.h"
@@ -12,6 +13,7 @@
 #include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/MemoryServiceContract.h"
+#include "Fabric/IR/ModuleDomain.h"
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/IR/SystemServiceContract.h"
 #include "Fabric/Identity/FabricHandshake.h"
@@ -23,6 +25,10 @@
 #include "FabricFuCapabilityDerivation.h"
 #include "FabricMemoryEngineTemplate.h"
 #include "FabricModuleBoundaryTransport.h"
+#include "FabricModuleCanonicalPayload.h"
+#include "FabricModuleDomainMaterialization.h"
+#include "FabricModuleDomainNormalization.h"
+#include "FabricModuleViewBuilding.h"
 #include "FabricOperationTransport.h"
 #include "FabricResourceContractFinalization.h"
 #include "FabricSystemCanonicalLabeling.h"
@@ -31,6 +37,7 @@
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -39,7 +46,6 @@
 #include "mlir/IR/Visitors.h"
 #include "mlir/Parser/Parser.h"
 
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
@@ -141,58 +147,6 @@ std::vector<std::uint8_t> unsignedBytes(llvm::ArrayRef<std::int8_t> bytes) {
   return result;
 }
 
-llvm::Error stripAuthoringState(::fabric::ModuleOp root) {
-  static constexpr llvm::StringLiteral softwareConfigurationAttrs[] = {
-      "sel",        "discard",   "disconnect",      "bypassed",
-      "sw_configs", "pe_enable", "instruction_mem", "per_fu_sw_configs"};
-
-  llvm::Error result = llvm::Error::success();
-  root->walk([&](Operation *operation) {
-    if (result)
-      return WalkResult::interrupt();
-    operation->removeAttr(::fabric::kEntityIdAttrName);
-    operation->removeAttr(::fabric::kFuTemplateIdAttrName);
-    operation->removeAttr(::fabric::kMemoryEngineTemplateIdAttrName);
-    if (!isa<::fabric::OpOp>(operation))
-      operation->removeAttr(::fabric::kResourceContractRecordAttrName);
-    for (llvm::StringLiteral name : softwareConfigurationAttrs)
-      operation->removeAttr(name);
-
-    if (auto semantic =
-            operation->getAttrOfType<BoolAttr>("coordinates_semantic");
-        semantic && semantic.getValue()) {
-      result = invalid("authoring coordinates claim semantic authority");
-      return WalkResult::interrupt();
-    }
-    operation->removeAttr("coordinates_semantic");
-    operation->removeAttr("visual_layout");
-    return WalkResult::advance();
-  });
-  return result;
-}
-
-llvm::Error eraseElaboratedDeclarations(::fabric::ModuleOp root) {
-  llvm::SmallVector<Operation *> declarations;
-  root->walk<WalkOrder::PostOrder>([&](Operation *operation) {
-    if (operation == root.getOperation())
-      return;
-    auto symbol = dyn_cast<SymbolOpInterface>(operation);
-    if (symbol && symbol.getNameAttr())
-      declarations.push_back(operation);
-  });
-  for (Operation *declaration : declarations) {
-    for (Value result : declaration->getResults())
-      if (!result.use_empty())
-        return invalid("an elaborated declaration still has an SSA use");
-    declaration->erase();
-  }
-  bool residualInstance = false;
-  root->walk([&](::fabric::InstantiateOp) { residualInstance = true; });
-  if (residualInstance)
-    return invalid("a fully elaborated Fabric contains fabric.instantiate");
-  return llvm::Error::success();
-}
-
 llvm::Error reorderCanonicalGraphRegions(
     ::fabric::ModuleOp root,
     llvm::ArrayRef<Operation *> canonicalOperationOrder) {
@@ -234,192 +188,6 @@ llvm::Error reorderCanonicalGraphRegions(
   return llvm::Error::success();
 }
 
-std::vector<std::uint64_t> emptyInventories() {
-  return std::vector<std::uint64_t>(fabricClosedBound(FabricInventoryKind{}),
-                                    0);
-}
-
-FabricFuNodeKind fuNodeKind(Operation *operation) {
-  if (isa<::fabric::MuxOp>(operation))
-    return FabricFuNodeKind::Mux;
-  if (isa<::fabric::DemuxOp>(operation))
-    return FabricFuNodeKind::Demux;
-  return FabricFuNodeKind::Op;
-}
-
-void setPortInventories(detail::FabricNestedOwnerViewData &owner,
-                        std::uint64_t inputs, std::uint64_t outputs) {
-  owner.inventoryCounts = emptyInventories();
-  owner.inventoryCounts[static_cast<std::size_t>(
-      FabricInventoryKind::InputPort)] = inputs;
-  owner.inventoryCounts[static_cast<std::size_t>(
-      FabricInventoryKind::OutputPort)] = outputs;
-}
-
-llvm::Error setTransportEndpoints(detail::FabricNestedOwnerViewData &owner,
-                                  ArrayRef<Type> inputs,
-                                  ArrayRef<Type> outputs) {
-  setPortInventories(owner, inputs.size(), outputs.size());
-  owner.transportEndpoints.clear();
-  owner.transportEndpoints.reserve(inputs.size() + outputs.size());
-  auto append = [&](Type type, FabricPortDirection direction) -> llvm::Error {
-    auto encoded = ::fabric::encodeFabricTransportType(type);
-    if (!encoded)
-      return encoded.takeError();
-    owner.transportEndpoints.push_back({direction, std::move(*encoded)});
-    return llvm::Error::success();
-  };
-  for (Type type : inputs)
-    if (llvm::Error error = append(type, FabricPortDirection::Input))
-      return error;
-  for (Type type : outputs)
-    if (llvm::Error error = append(type, FabricPortDirection::Output))
-      return error;
-  return llvm::Error::success();
-}
-
-llvm::Error
-setOperationTransportEndpoints(Operation *operation,
-                               detail::FabricNestedOwnerViewData &owner) {
-  auto types = detail::resolveFabricOperationTransportTypes(operation);
-  if (!types)
-    return types.takeError();
-  return setTransportEndpoints(owner, types->inputs, types->outputs);
-}
-
-llvm::Error populateMemoryView(::fabric::MemOp memory,
-                               detail::FabricEntityViewData &entity) {
-  auto type = detail::resolveFabricMemoryFunctionType(memory);
-  if (!type)
-    return type.takeError();
-
-  llvm::SmallVector<Type> tokenInputTypes;
-  llvm::SmallVector<Type> tokenOutputTypes;
-  for (Type input : type->getInputs())
-    if (!isa<MemRefType>(input))
-      tokenInputTypes.push_back(input);
-  for (Type output : type->getResults())
-    if (!isa<MemRefType>(output))
-      tokenOutputTypes.push_back(output);
-  if (llvm::Error error = setTransportEndpoints(entity.owner, tokenInputTypes,
-                                                tokenOutputTypes))
-    return error;
-
-  ::fabric::MemoryContractAttr contract = memory.getMemoryContract();
-  entity.owner.memoryEndpoints.clear();
-  for (Type input : type->getInputs()) {
-    if (!isa<MemRefType>(input))
-      continue;
-    auto encoded = detail::projectMemoryEndpointType(input);
-    if (!encoded)
-      return encoded.takeError();
-    entity.owner.memoryEndpoints.push_back(
-        {FabricMemoryEndpointRole::Manager, std::move(*encoded)});
-  }
-  for (Type output : type->getResults()) {
-    if (!isa<MemRefType>(output))
-      continue;
-    auto encoded = detail::projectMemoryEndpointType(output);
-    if (!encoded)
-      return encoded.takeError();
-    entity.owner.memoryEndpoints.push_back(
-        {FabricMemoryEndpointRole::Subordinate, std::move(*encoded)});
-  }
-
-  auto connectivity = ::fabric::decodeMemoryConnectivityContractRecord(
-      unsignedBytes(contract.getConnectivity().getRecord().asArrayRef()));
-  if (!connectivity)
-    return connectivity.takeError();
-  entity.memoryConnectivity = std::move(*connectivity);
-
-  if (::fabric::LocalMemoryServiceAttr local = contract.getLocalService()) {
-    auto service = ::fabric::decodeMemoryServiceContractRecord(
-        unsignedBytes(local.getServiceContract().getRecord().asArrayRef()),
-        memory.getContext(), ::fabric::MemoryServiceOwnerKind::Local);
-    if (!service)
-      return service.takeError();
-    detail::FabricNestedOwnerViewData owner;
-    owner.inventoryCounts = emptyInventories();
-    owner.inventoryCounts[static_cast<std::size_t>(
-        FabricInventoryKind::MemoryServiceRegion)] = service->regions().size();
-    owner.resourceContract = service->resourceContract();
-    entity.localMemoryService = detail::FabricLocalMemoryServiceViewData{
-        std::move(owner), std::move(*service)};
-  }
-
-  auto derived = detail::deriveFabricMemoryEngineTemplate(memory);
-  if (!derived)
-    return derived.takeError();
-  if (!*derived)
-    return llvm::Error::success();
-  entity.memoryEngineTemplateProjection = (**derived).canonicalBytes;
-  FabricMemoryEngineTemplateRecord &engine = (**derived).record;
-  entity.memorySchedule = engine.schedule;
-  entity.memoryResidentContextCount = engine.residentContextCount;
-  entity.owner.inventoryCounts[static_cast<std::size_t>(
-      FabricInventoryKind::MemoryOperationPort)] = engine.operationPorts.size();
-  entity.memoryOperationPorts.reserve(engine.operationPorts.size());
-  for (::fabric::MemoryOperationPortRecord &record : engine.operationPorts) {
-    detail::FabricNestedOwnerViewData owner;
-    owner.inventoryCounts = emptyInventories();
-    owner.inventoryCounts[static_cast<std::size_t>(
-        FabricInventoryKind::MemoryCapabilityAlternative)] =
-        record.capabilityAlternatives().size();
-    if (entity.memoryResidentContextCount)
-      owner.inventoryCounts[static_cast<std::size_t>(
-          FabricInventoryKind::MemoryOperationContext)] =
-          *entity.memoryResidentContextCount;
-    owner.resourceContract = record.resourceContract();
-    entity.memoryOperationPorts.push_back(
-        {std::move(owner), std::move(record)});
-  }
-  return llvm::Error::success();
-}
-
-llvm::Error appendPeSelectorTraversals(detail::FabricArtifactViewData &data) {
-  for (FabricEntityId id = 0; id < data.entities.size(); ++id) {
-    detail::FabricEntityViewData &fu = data.entities[id];
-    if (fu.kind != FabricEntityKind::FabricFuOccurrence)
-      continue;
-    if (!fu.parentPe || fu.parentPe->id() >= data.entities.size())
-      return invalid("an FU occurrence has no valid parent PE");
-    const detail::FabricEntityViewData &pe = data.entities[fu.parentPe->id()];
-    if (pe.kind != FabricEntityKind::FabricPeOccurrence)
-      return invalid("an FU occurrence parent is not a PE");
-
-    const auto peOwner = FabricTransportEndpointOwnerRef::of(*fu.parentPe);
-    const auto fuOwner =
-        FabricTransportEndpointOwnerRef::of(FabricFuOccurrenceRef(id));
-    for (auto [peOrdinal, peEndpoint] :
-         llvm::enumerate(pe.owner.transportEndpoints)) {
-      if (peEndpoint.direction != FabricPortDirection::Input)
-        continue;
-      for (auto [fuOrdinal, fuEndpoint] :
-           llvm::enumerate(fu.owner.transportEndpoints)) {
-        if (fuEndpoint.direction != FabricPortDirection::Input)
-          continue;
-        data.admittedTraversals.push_back(
-            FabricPhysicalTraversalRef::peSelector(
-                *fu.parentPe, {peOwner, peOrdinal}, {fuOwner, fuOrdinal}));
-      }
-    }
-    for (auto [fuOrdinal, fuEndpoint] :
-         llvm::enumerate(fu.owner.transportEndpoints)) {
-      if (fuEndpoint.direction != FabricPortDirection::Output)
-        continue;
-      for (auto [peOrdinal, peEndpoint] :
-           llvm::enumerate(pe.owner.transportEndpoints)) {
-        if (peEndpoint.direction != FabricPortDirection::Output)
-          continue;
-        data.admittedTraversals.push_back(
-            FabricPhysicalTraversalRef::peSelector(
-                *fu.parentPe, {fuOwner, fuOrdinal}, {peOwner, peOrdinal}));
-      }
-    }
-  }
-  return llvm::Error::success();
-}
-
 llvm::Expected<FabricArtifactView>
 buildModuleView(::fabric::ModuleOp root,
                 const detail::FabricCanonicalLabeling &labeling,
@@ -439,18 +207,18 @@ buildModuleView(::fabric::ModuleOp root,
       return invalid("canonical Fabric entity IDs are not dense");
     detail::FabricEntityViewData &entity = data.entities[carrier.id];
     entity.kind = carrier.kind;
-    entity.owner.inventoryCounts = emptyInventories();
+    entity.owner.inventoryCounts = detail::emptyFabricInventories();
     if (!carrier.op)
       continue;
     const std::uint64_t inputs = carrier.op->getNumOperands();
     const std::uint64_t outputs = carrier.op->getNumResults();
-    setPortInventories(entity.owner, inputs, outputs);
+    detail::setFabricPortInventories(entity.owner, inputs, outputs);
     if (detail::projectFabricTransportOwner(carrier.kind, carrier.id))
-      if (llvm::Error error =
-              setOperationTransportEndpoints(carrier.op, entity.owner))
+      if (llvm::Error error = detail::setFabricOperationTransportEndpoints(
+              carrier.op, entity.owner))
         return std::move(error);
     if (auto memory = dyn_cast<::fabric::MemOp>(carrier.op))
-      if (llvm::Error error = populateMemoryView(memory, entity))
+      if (llvm::Error error = detail::populateFabricMemoryView(memory, entity))
         return std::move(error);
     if (carrier.kind == FabricEntityKind::FabricModuleTemplate) {
       if (llvm::Error error = detail::setModuleBoundaryInventory(root, entity))
@@ -487,7 +255,7 @@ buildModuleView(::fabric::ModuleOp root,
       entity.instructionContexts.resize(contextCount);
       for (detail::FabricNestedOwnerViewData &context :
            entity.instructionContexts)
-        context.inventoryCounts = emptyInventories();
+        context.inventoryCounts = detail::emptyFabricInventories();
     }
     if (carrier.kind == FabricEntityKind::FabricMemoryOccurrence) {
       auto found = labeling.memoryEngineTemplateIdByOccurrence.find(carrier.op);
@@ -520,17 +288,17 @@ buildModuleView(::fabric::ModuleOp root,
     auto fu = dyn_cast_or_null<::fabric::FuOp>(carrier.representative);
     if (!fu)
       return invalid("an FU template has no representative definition");
-    setPortInventories(entity.owner, fu.getInputs().size(),
-                       fu.getOutputs().size());
+    detail::setFabricPortInventories(entity.owner, fu.getInputs().size(),
+                                     fu.getOutputs().size());
     entity.owner.inventoryCounts[static_cast<std::size_t>(
         FabricInventoryKind::FuNode)] = carrier.canonicalNodeOrder.size();
     for (auto [ordinal, operation] :
          llvm::enumerate(carrier.canonicalNodeOrder)) {
       detail::FabricFuNodeViewData node;
-      node.kind = fuNodeKind(operation);
-      node.owner.inventoryCounts = emptyInventories();
-      if (llvm::Error error =
-              setOperationTransportEndpoints(operation, node.owner))
+      node.kind = detail::classifyFabricFuNode(operation);
+      node.owner.inventoryCounts = detail::emptyFabricInventories();
+      if (llvm::Error error = detail::setFabricOperationTransportEndpoints(
+              operation, node.owner))
         return std::move(error);
       auto contract =
           detail::validateFabricResourceContract(operation, labeling);
@@ -610,6 +378,10 @@ buildModuleView(::fabric::ModuleOp root,
     }
   }
 
+  if (llvm::Error error =
+          detail::appendFabricModuleMemoryConnections(labeling, data))
+    return std::move(error);
+
   for (const FabricPointConnectionPayload &connection : data.pointConnections)
     data.admittedTraversals.push_back(
         FabricPhysicalTraversalRef::pointConnection(connection.source,
@@ -619,6 +391,18 @@ buildModuleView(::fabric::ModuleOp root,
       moduleCarrier->second->kind != FabricEntityKind::FabricModuleTemplate)
     return invalid("a finalized Module has no canonical template owner");
   const FabricModuleTemplateRef moduleTemplate(moduleCarrier->second->id);
+  ArrayAttr domainSlots = root.getDomainSlotsAttr();
+  ArrayAttr domainAssignments = root.getDomainAssignmentsAttr();
+  if (!domainSlots || !domainAssignments)
+    return invalid("canonical Module has no complete domain carrier");
+  auto slots = ::fabric::decodeModuleDomainSlots(domainSlots);
+  if (!slots)
+    return slots.takeError();
+  auto assignments = ::fabric::decodeModuleDomainAssignments(domainAssignments);
+  if (!assignments)
+    return assignments.takeError();
+  data.moduleDomainSlots = std::move(*slots);
+  data.moduleDomainAssignments = std::move(*assignments);
   if (llvm::Error error = detail::appendFabricModuleBoundaryTransportRelations(
           root, moduleTemplate, carrierByOp, data))
     return std::move(error);
@@ -678,7 +462,7 @@ buildModuleView(::fabric::ModuleOp root,
                return canonicalFabricBytes(lhs.endpoint) <
                       canonicalFabricBytes(rhs.endpoint);
              });
-  if (llvm::Error error = appendPeSelectorTraversals(data))
+  if (llvm::Error error = detail::appendFabricPeSelectorTraversals(data))
     return std::move(error);
   for (const detail::FabricEntityCarrier &carrier : labeling.carriers) {
     if (carrier.kind == FabricEntityKind::FabricPeOccurrence) {
@@ -740,7 +524,20 @@ buildModuleView(::fabric::ModuleOp root,
       }
     }
   }
-  return detail::buildFabricArtifactView(std::move(data));
+  auto view = detail::buildFabricArtifactView(std::move(data));
+  if (!view)
+    return view.takeError();
+  auto moduleView = requireModuleRoot(*view);
+  if (!moduleView)
+    return moduleView.takeError();
+  auto counts = ::fabric::validateModuleDomainRelation(
+      moduleTemplate, moduleView->domainSlots(), view->moduleDomainMembers(),
+      moduleView->domainAssignments());
+  if (!counts)
+    return counts.takeError();
+  if (llvm::Error error = validateModuleClockReset(*moduleView))
+    return std::move(error);
+  return std::move(*view);
 }
 
 struct StrictImportResult {
@@ -772,13 +569,18 @@ strictImportModule(const ArtifactRootReference &reference,
   auto root = dyn_cast<::fabric::ModuleOp>(&module.getBody()->front());
   if (!root || root.getSymName() != canonicalRootName)
     return invalid("canonical payload has no canonical Module root");
+  if (llvm::Error error = detail::validateCanonicalFabricModulePayload(root))
+    return std::move(error);
   bool residualInstance = false;
   root->walk([&](::fabric::InstantiateOp) { residualInstance = true; });
   if (residualInstance)
     return invalid("canonical payload contains fabric.instantiate");
-  auto labeling = detail::computeFabricModuleCanonicalLabeling(root);
+  auto labeling = detail::validateStoredFabricModuleDomain(root);
   if (!labeling)
     return labeling.takeError();
+  if (llvm::Error error =
+          detail::validateFabricCanonicalFuCapabilityDomains(*labeling))
+    return std::move(error);
   if (llvm::Error error =
           detail::validateFabricResourceContracts(root, *labeling))
     return std::move(error);
@@ -819,7 +621,7 @@ strictImportModule(const ArtifactRootReference &reference,
   if (*rewritten != decoded.canonicalMlirBytecode)
     return invalid("canonical MLIR bytecode is not byte stable");
   detail::FabricEntityViewData boundaryProjection;
-  boundaryProjection.owner.inventoryCounts = emptyInventories();
+  boundaryProjection.owner.inventoryCounts = detail::emptyFabricInventories();
   if (llvm::Error error =
           detail::setModuleBoundaryInventory(root, boundaryProjection))
     return std::move(error);
@@ -876,7 +678,7 @@ resolveImportedModuleBoundary(
 detail::FabricNestedOwnerViewData instructionCoreView(
     const InstructionCoreMicroarchitecturalRealization &realization) {
   detail::FabricNestedOwnerViewData owner;
-  owner.inventoryCounts = emptyInventories();
+  owner.inventoryCounts = detail::emptyFabricInventories();
   owner.resourceContract = realization.resourceContract();
   return owner;
 }
@@ -884,7 +686,7 @@ detail::FabricNestedOwnerViewData instructionCoreView(
 llvm::Expected<detail::FabricNestedOwnerViewData>
 spatialCoreView(const StrictImportResult &module) {
   detail::FabricNestedOwnerViewData owner;
-  owner.inventoryCounts = emptyInventories();
+  owner.inventoryCounts = detail::emptyFabricInventories();
   for (const detail::FabricModuleBoundaryEndpointViewData &endpoint :
        module.moduleBoundaryInputs) {
     if (endpoint.plane == FabricSpatialAttachmentEndpointRef::Plane::Transport)
@@ -910,7 +712,7 @@ spatialCoreView(const StrictImportResult &module) {
     inputs += endpoint.direction == FabricPortDirection::Input;
     outputs += endpoint.direction == FabricPortDirection::Output;
   }
-  setPortInventories(owner, inputs, outputs);
+  detail::setFabricPortInventories(owner, inputs, outputs);
   return owner;
 }
 
@@ -1240,8 +1042,7 @@ validateSystemRelations(::fabric::SystemOp root,
                          "roles");
       }
       if (spatialEndpoint->transport() && serviceEndpoint)
-        return invalid(
-            "transport spatial attachment has a service endpoint");
+        return invalid("transport spatial attachment has a service endpoint");
       std::optional<FabricImportedModuleTargetRef> target =
           systemView.spatialCoreTarget(core);
       if (!target)
@@ -1311,7 +1112,7 @@ buildSystemView(::fabric::SystemOp root,
       return invalid("canonical System entity inventory is malformed");
     detail::FabricEntityViewData &entity = data.entities[carrier.id];
     entity.kind = carrier.kind;
-    entity.owner.inventoryCounts = emptyInventories();
+    entity.owner.inventoryCounts = detail::emptyFabricInventories();
 
     if (auto host = dyn_cast<::fabric::SystemHostCoreOp>(carrier.op)) {
       auto architecture = decodeInstructionCoreArchitecturalContract(
@@ -1397,9 +1198,9 @@ buildSystemView(::fabric::SystemOp root,
                 : FabricPortDirection::Input;
         entity.owner.transportEndpoints.push_back(
             {direction, std::move(*encoded)});
-        setPortInventories(entity.owner,
-                           direction == FabricPortDirection::Input,
-                           direction == FabricPortDirection::Output);
+        detail::setFabricPortInventories(
+            entity.owner, direction == FabricPortDirection::Input,
+            direction == FabricPortDirection::Output);
       } else {
         entity.owner.memoryEndpoints.push_back(
             {capabilities->role() == CanonicalServiceEndpointRole::Initiate
@@ -1439,9 +1240,9 @@ buildSystemView(::fabric::SystemOp root,
           dyn_cast<FunctionType>(resource.getFunctionTypeAttr().getValue());
       if (!functionType)
         return invalid("System transport resource has no function type");
-      if (llvm::Error error =
-              setTransportEndpoints(entity.owner, functionType.getInputs(),
-                                    functionType.getResults()))
+      if (llvm::Error error = detail::setFabricTransportEndpoints(
+              entity.owner, functionType.getInputs(),
+              functionType.getResults()))
         return std::move(error);
       auto contract = ::fabric::decodeResourceContractRecord(
           unsignedBytes(resource.getResourceContractAttr()));
@@ -1491,7 +1292,7 @@ buildSystemView(::fabric::SystemOp root,
           record->pattern().ordinal != ordinal->second)
         return invalid("transfer-pattern ordinal is not canonical");
       detail::FabricNestedOwnerViewData owner;
-      owner.inventoryCounts = emptyInventories();
+      owner.inventoryCounts = detail::emptyFabricInventories();
       owner.inventoryCounts[static_cast<std::size_t>(
           FabricInventoryKind::TransferPatternEgress)] =
           record->egresses().size();
@@ -1761,26 +1562,46 @@ llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
                                   std::move(canonicalDependencies)};
 }
 
-llvm::Expected<OwningOpRef<ModuleOp>>
-buildCanonicalCandidate(::fabric::ModuleOp source) {
+llvm::Expected<OwningOpRef<ModuleOp>> buildCanonicalCandidate(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation *domainRelation) {
   auto sourceModule = source->getParentOfType<ModuleOp>();
   if (!sourceModule || source->getParentOp() != sourceModule.getOperation())
     return invalid("the selected Fabric Module must be top-level");
   if (failed(verify(sourceModule)))
     return invalid("the authoring module does not verify");
 
-  OwningOpRef<ModuleOp> scratch(cast<ModuleOp>(sourceModule->clone()));
+  IRMapping cloneMapping;
+  OwningOpRef<ModuleOp> scratch(
+      cast<ModuleOp>(sourceModule->clone(cloneMapping)));
   Operation *clonedOperation =
       SymbolTable::lookupSymbolIn(*scratch, source.getSymNameAttr());
   auto clonedRoot = dyn_cast_or_null<::fabric::ModuleOp>(clonedOperation);
   if (!clonedRoot)
     return invalid("the selected Fabric root was not cloned");
 
-  if (llvm::Error error = stripAuthoringState(clonedRoot))
+  std::optional<::fabric::ModuleDomainAuthoringRelation> remappedDomain;
+  if (domainRelation && domainRelation->hasDomainAuthoring()) {
+    auto remapped = domainRelation->remap(cloneMapping);
+    if (!remapped)
+      return remapped.takeError();
+    remappedDomain = std::move(*remapped);
+  }
+
+  if (llvm::Error error = detail::stripFabricModuleAuthoringState(clonedRoot))
     return std::move(error);
-  if (failed(::fabric::elaborateInstances(clonedRoot)))
-    return invalid("fabric.instantiate elaboration failed");
-  if (llvm::Error error = eraseElaboratedDeclarations(clonedRoot))
+  bool hasInstances = false;
+  clonedRoot->walk([&](::fabric::InstantiateOp) { hasInstances = true; });
+  if (hasInstances) {
+    mlir::LogicalResult elaborated =
+        remappedDomain
+            ? ::fabric::elaborateInstances(clonedRoot, *remappedDomain)
+            : ::fabric::elaborateInstances(clonedRoot);
+    if (failed(elaborated))
+      return invalid("fabric.instantiate elaboration failed");
+  }
+  if (llvm::Error error =
+          detail::eraseElaboratedFabricModuleDeclarations(clonedRoot))
     return std::move(error);
 
   for (Operation &operation :
@@ -1791,7 +1612,15 @@ buildCanonicalCandidate(::fabric::ModuleOp source) {
   if (failed(verify(*scratch)))
     return invalid("the root-complete Fabric candidate does not verify");
 
-  auto preliminary = detail::computeFabricModuleCanonicalLabeling(clonedRoot);
+  auto normalizedDomain =
+      remappedDomain
+          ? detail::normalizeFabricModuleDomain(clonedRoot, *remappedDomain)
+          : detail::buildDefaultFabricModuleDomain(clonedRoot);
+  if (!normalizedDomain)
+    return normalizedDomain.takeError();
+
+  auto preliminary = detail::computeFabricModuleCanonicalLabeling(
+      clonedRoot, *normalizedDomain);
   if (!preliminary)
     return preliminary.takeError();
   if (llvm::Error error =
@@ -1800,7 +1629,8 @@ buildCanonicalCandidate(::fabric::ModuleOp source) {
   if (failed(verify(*scratch)))
     return invalid("the complete Fabric resource contracts do not verify");
 
-  auto labeling = detail::computeFabricModuleCanonicalLabeling(clonedRoot);
+  auto labeling = detail::computeFabricModuleCanonicalLabeling(
+      clonedRoot, *normalizedDomain);
   if (!labeling)
     return labeling.takeError();
   if (llvm::Error error = reorderCanonicalGraphRegions(
@@ -1809,10 +1639,14 @@ buildCanonicalCandidate(::fabric::ModuleOp source) {
   if (llvm::Error error =
           detail::materializeFabricCanonicalFuCapabilityDomains(*labeling))
     return std::move(error);
-  auto reordered = detail::computeFabricModuleCanonicalLabeling(clonedRoot);
+  auto reordered = detail::computeFabricModuleCanonicalLabeling(
+      clonedRoot, *normalizedDomain);
   if (!reordered)
     return reordered.takeError();
   if (llvm::Error error = detail::materializeFabricCanonicalIds(*reordered))
+    return std::move(error);
+  if (llvm::Error error = detail::materializeFabricModuleDomainRelation(
+          clonedRoot, *normalizedDomain, *reordered))
     return std::move(error);
   if (failed(verify(*scratch)))
     return invalid("canonical Fabric IDs produced invalid IR");
@@ -1823,7 +1657,15 @@ buildCanonicalCandidate(::fabric::ModuleOp source) {
 
 llvm::Expected<FinalizedFabricRoot>
 finalizeFabricRoot(::fabric::ModuleOp source, const ArtifactStore &store) {
-  auto candidate = buildCanonicalCandidate(source);
+  ::fabric::ModuleDomainAuthoringRelation empty;
+  return finalizeFabricRoot(source, empty, store);
+}
+
+llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+    const ArtifactStore &store) {
+  auto candidate = buildCanonicalCandidate(source, &domainRelation);
   if (!candidate)
     return candidate.takeError();
   auto bytecode = detail::writeCanonicalFabricBytecode(candidate->get());

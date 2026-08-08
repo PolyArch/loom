@@ -23,6 +23,7 @@ fabric.module @later() -> ()
   // CHECK-SAME: loom_addr_bits callee=32 caller=48
   // CHECK-SAME: loom_mem_bus_width callee=256 caller=512
   fabric.instantiate @callee() -> ()
+      {domain_slot_bindings = array<i64: 0, 0, 0, 1, 0, 0>}
   fabric.yield
 }
 

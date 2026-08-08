@@ -536,12 +536,30 @@ void spatialCoreTemplatesInstantiateAndElaborate() {
           .value();
   if (llvm::Error error = pipeline.close({pipelineOutput}))
     fail(test, llvm::toString(std::move(error)));
+  const auto childClocks = take(
+      test, pipeline.domainSlots(loom::fabric::FabricClockResetKind::Clock));
+  const auto childResets = take(
+      test, pipeline.domainSlots(loom::fabric::FabricClockResetKind::Reset));
 
   auto top = take(test, design.createSpatialCore("top", {bits32}, {bits16}));
   SpatialValue topInput = take(test, top.input(0));
-  auto instance = take(test, top.instantiate(pipeline, {topInput}, {}));
+  const auto parentClock = take(
+      test, top.declareDomainSlot(loom::fabric::FabricClockResetKind::Clock));
+  const auto parentReset = take(
+      test, top.declareDomainSlot(loom::fabric::FabricClockResetKind::Reset));
+  auto instance =
+      take(test, top.instantiate(pipeline, {topInput},
+                                 {{childClocks.front(), parentClock},
+                                  {childResets.front(), parentReset}}));
   require(test, instance.size() == 1,
           "typed SpatialCore instance returned the wrong result count");
+  for (const auto &member : {take(test, top.inputDomainMember(0)),
+                             take(test, top.outputDomainMember(0))}) {
+    if (llvm::Error error = top.assignDomainSlot(member, parentClock))
+      fail(test, llvm::toString(std::move(error)));
+    if (llvm::Error error = top.assignDomainSlot(member, parentReset))
+      fail(test, llvm::toString(std::move(error)));
+  }
   if (llvm::Error error = top.close(instance))
     fail(test, llvm::toString(std::move(error)));
 

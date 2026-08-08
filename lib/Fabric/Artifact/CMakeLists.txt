@@ -18,6 +18,10 @@ add_mlir_library(LoomFabricArtifact
   FabricFuCapabilityDerivation.cpp
   FabricMemoryEngineTemplate.cpp
   FabricMemoryServiceClosure.cpp
+  FabricModuleCanonicalPayload.cpp
+  FabricModuleDomainMaterialization.cpp
+  FabricModuleDomainNormalization.cpp
+  FabricModuleViewBuilding.cpp
   FabricModuleBoundaryTransport.cpp
   FabricOperationTransport.cpp
   FabricResourceContractFinalization.cpp

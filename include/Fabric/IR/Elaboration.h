@@ -8,6 +8,7 @@
 
 namespace fabric {
 class ModuleOp;
+class ModuleDomainAuthoringRelation;
 
 // Canonicalize every fabric.instantiate nested under `root`. Named
 // declarations remain declarations; every concrete use becomes fresh physical
@@ -15,6 +16,9 @@ class ModuleOp;
 // The operation preserves the root operation identity and publishes a verified
 // scratch body only after successful semantic preflight and elaboration.
 ::mlir::LogicalResult elaborateInstances(ModuleOp root);
+::mlir::LogicalResult
+elaborateInstances(ModuleOp root,
+                   ModuleDomainAuthoringRelation &domainRelation);
 
 std::unique_ptr<::mlir::Pass> createElaborateInstancesPass();
 void registerFabricIRPasses();

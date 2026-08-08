@@ -21,6 +21,8 @@ class ModuleOp;
 
 namespace loom::fabric::detail {
 
+struct NormalizedModuleDomainRelation;
+
 struct FabricEntityCarrier {
   FabricEntityKind kind;
   std::uint64_t id = 0;
@@ -38,6 +40,12 @@ struct FabricMemoryEngineTemplateCarrier {
   mlir::Operation *representative = nullptr;
 };
 
+struct FabricModuleDomainSlotCarrier final {
+  FabricClockResetKind kind = FabricClockResetKind::Clock;
+  FabricOrdinal provisionalOrdinal = 0;
+  FabricOrdinal canonicalOrdinal = 0;
+};
+
 struct FabricCanonicalLabeling {
   CanonicalSemanticBytes relationBytes;
   std::vector<FabricEntityCarrier> carriers;
@@ -47,8 +55,11 @@ struct FabricCanonicalLabeling {
   llvm::DenseMap<mlir::Operation *, std::uint64_t> fuTemplateIdByOccurrence;
   llvm::DenseMap<mlir::Operation *, std::uint64_t>
       memoryEngineTemplateIdByOccurrence;
+  llvm::DenseMap<mlir::Operation *, FabricOrdinal>
+      canonicalFuNodeOrdinalByOperation;
   llvm::DenseMap<mlir::Operation *, std::vector<std::uint8_t>>
       canonicalFuCapabilityDomainByOccurrence;
+  std::vector<FabricModuleDomainSlotCarrier> moduleDomainSlots;
 };
 
 /// Computes the exact semantic labeling of one already elaborated, declaration-
@@ -56,6 +67,10 @@ struct FabricCanonicalLabeling {
 /// reject residual fabric.instantiate operations before calling this function.
 llvm::Expected<FabricCanonicalLabeling>
 computeFabricModuleCanonicalLabeling(::fabric::ModuleOp root);
+
+llvm::Expected<FabricCanonicalLabeling> computeFabricModuleCanonicalLabeling(
+    ::fabric::ModuleOp root,
+    const NormalizedModuleDomainRelation &domainRelation);
 
 /// Replaces every derived ID carrier with the exact assignment in `labeling`.
 /// Fabric finalization is the only caller permitted to persist these values;
@@ -66,6 +81,11 @@ materializeFabricCanonicalIds(const FabricCanonicalLabeling &labeling);
 /// Rewrites every FU occurrence's owner-local capability domain into the
 /// exact canonical FU-node order captured by `labeling`.
 llvm::Error materializeFabricCanonicalFuCapabilityDomains(
+    const FabricCanonicalLabeling &labeling);
+
+/// Requires every FU occurrence to carry the exact canonical capability
+/// domain derived by `labeling`.
+llvm::Error validateFabricCanonicalFuCapabilityDomains(
     const FabricCanonicalLabeling &labeling);
 
 } // namespace loom::fabric::detail

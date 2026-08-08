@@ -6,6 +6,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "FabricFuCapabilityDerivation.h"
 #include "FabricMemoryEngineTemplate.h"
+#include "FabricModuleDomainNormalization.h"
 
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -45,6 +46,9 @@ enum class EdgeKind : std::uint8_t {
   SymbolUse,
   FuDefinition,
   MemoryEngineDefinition,
+  ModuleDomainSlot,
+  ModuleDomainMember,
+  ModuleDomainAssignment,
 };
 
 struct Edge {
@@ -184,6 +188,7 @@ operationIntrinsic(Operation *op,
       if (name == ::fabric::kEntityIdAttrName ||
           name == ::fabric::kFuTemplateIdAttrName ||
           name == ::fabric::kMemoryEngineTemplateIdAttrName ||
+          name == "domain_slots" || name == "domain_assignments" ||
           name == "sym_name" || name == "capability_templates" ||
           (registeredOnly && !registered.contains(name)))
         continue;
@@ -242,10 +247,13 @@ std::optional<FabricEntityKind> occurrenceKind(Operation *op, Operation *root) {
 
 class SemanticGraph {
 public:
-  static llvm::Expected<SemanticGraph> build(Operation *root,
-                                             bool fuDefinition = false) {
-    SemanticGraph graph(root, fuDefinition);
+  static llvm::Expected<SemanticGraph>
+  build(Operation *root, bool fuDefinition = false,
+        const NormalizedModuleDomainRelation *domainRelation = nullptr) {
+    SemanticGraph graph(root, fuDefinition, domainRelation);
     if (llvm::Error error = graph.collect(root))
+      return std::move(error);
+    if (llvm::Error error = graph.buildDomainRelations())
       return std::move(error);
     if (llvm::Error error = graph.buildRelations(root))
       return std::move(error);
@@ -268,9 +276,12 @@ public:
       std::uint32_t vertex = 0;
       Operation *representative = nullptr;
       std::vector<Operation *> canonicalNodeOrder;
+      std::uint32_t representativePosition =
+          std::numeric_limits<std::uint32_t>::max();
     };
     std::map<std::vector<std::uint8_t>, FuTemplateDraft> templates;
     llvm::DenseMap<Operation *, std::uint32_t> templateVertexByOccurrence;
+    llvm::DenseMap<Operation *, FabricOrdinal> fuNodeOrdinalByOperation;
     llvm::DenseMap<Operation *, std::vector<std::uint8_t>>
         capabilityDomainByOccurrence;
     for (const auto &entry : operationVertices_) {
@@ -297,7 +308,6 @@ public:
                 node))
           canonicalNodeOrder.push_back(node);
       }
-
       auto domain =
           canonicalizeFabricFuCapabilityDomain(fu, canonicalNodeOrder);
       if (!domain)
@@ -319,8 +329,6 @@ public:
         intrinsic.append(reinterpret_cast<const char *>(key.data()),
                          key.size());
         position->second.vertex = addVertex(std::move(intrinsic));
-        position->second.representative = fu.getOperation();
-        position->second.canonicalNodeOrder = canonicalNodeOrder;
         carriers_[position->second.vertex] = {
             FabricEntityKind::FabricFuTemplate, 0, nullptr};
       }
@@ -387,9 +395,64 @@ public:
       operationByVertex[entry.second] = entry.first;
     std::vector<Operation *> operationOrder;
     operationOrder.reserve(operationVertices_.size());
-    for (std::uint32_t vertex : canonical->canonicalOrder)
-      if (Operation *op = operationByVertex.lookup(vertex))
+    llvm::DenseMap<Operation *, std::uint32_t> operationPosition;
+    for (auto [position, vertex] : llvm::enumerate(canonical->canonicalOrder))
+      if (Operation *op = operationByVertex.lookup(vertex)) {
         operationOrder.push_back(op);
+        operationPosition[op] = position;
+      }
+
+    fuNodeOrdinalByOperation.clear();
+    capabilityDomainByOccurrence.clear();
+    for (const auto &entry : templateVertexByOccurrence) {
+      auto fu = dyn_cast<::fabric::FuOp>(entry.first);
+      if (!fu)
+        return invalid("an FU template relation has no occurrence owner");
+      std::vector<Operation *> nodeOrder;
+      fu->walk([&](Operation *operation) {
+        if (isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(operation))
+          nodeOrder.push_back(operation);
+      });
+      for (Operation *node : nodeOrder)
+        if (!operationPosition.count(node))
+          return invalid("an FU node has no Module-canonical position");
+      llvm::sort(nodeOrder, [&](Operation *left, Operation *right) {
+        return operationPosition.lookup(left) < operationPosition.lookup(right);
+      });
+      for (auto [ordinal, node] : llvm::enumerate(nodeOrder))
+        fuNodeOrdinalByOperation[node] = ordinal;
+
+      auto draft = llvm::find_if(templates, [&](const auto &candidate) {
+        return candidate.second.vertex == entry.second;
+      });
+      if (draft == templates.end())
+        return invalid("an FU occurrence names an unknown template draft");
+      auto occurrencePosition = operationPosition.find(fu.getOperation());
+      if (occurrencePosition == operationPosition.end())
+        return invalid("an FU occurrence has no Module-canonical position");
+      if (occurrencePosition->second < draft->second.representativePosition) {
+        draft->second.representativePosition = occurrencePosition->second;
+        draft->second.representative = fu.getOperation();
+        draft->second.canonicalNodeOrder = std::move(nodeOrder);
+      }
+    }
+    for (const auto &entry : templates) {
+      const FuTemplateDraft &draft = entry.second;
+      auto representative =
+          dyn_cast_or_null<::fabric::FuOp>(draft.representative);
+      if (!representative)
+        return invalid("an FU template has no canonical representative");
+      auto domain = canonicalizeFabricFuCapabilityDomain(
+          representative, draft.canonicalNodeOrder);
+      if (!domain)
+        return domain.takeError();
+      auto bytes = ::fabric::encodeFuCapabilityDomainRecord(*domain);
+      if (!bytes)
+        return bytes.takeError();
+      for (const auto &occurrence : templateVertexByOccurrence)
+        if (occurrence.second == draft.vertex)
+          capabilityDomainByOccurrence[occurrence.first] = *bytes;
+    }
 
     llvm::DenseMap<Operation *, std::uint64_t> fuTemplateIds;
     for (const auto &entry : templateVertexByOccurrence)
@@ -422,16 +485,37 @@ public:
                  return lhs.id < rhs.id;
                });
 
-    return FabricCanonicalLabeling{
-        std::move(canonical->bytes),  std::move(carriers),
-        std::move(fuTemplates),       std::move(memoryEngineTemplates),
-        std::move(operationOrder),    std::move(fuTemplateIds),
-        std::move(memoryTemplateIds), std::move(capabilityDomainByOccurrence)};
+    std::vector<FabricModuleDomainSlotCarrier> moduleDomainSlots;
+    FabricOrdinal nextClock = 0;
+    FabricOrdinal nextReset = 0;
+    for (std::uint32_t vertex : canonical->canonicalOrder) {
+      auto found = domainSlotByVertex_.find(vertex);
+      if (found == domainSlotByVertex_.end())
+        continue;
+      const NormalizedModuleDomainSlot &slot =
+          domainRelation_->slots[found->second];
+      FabricOrdinal &next =
+          slot.kind == FabricClockResetKind::Clock ? nextClock : nextReset;
+      moduleDomainSlots.push_back({slot.kind, slot.provisionalOrdinal, next++});
+    }
+
+    return FabricCanonicalLabeling{std::move(canonical->bytes),
+                                   std::move(carriers),
+                                   std::move(fuTemplates),
+                                   std::move(memoryEngineTemplates),
+                                   std::move(operationOrder),
+                                   std::move(fuTemplateIds),
+                                   std::move(memoryTemplateIds),
+                                   std::move(fuNodeOrdinalByOperation),
+                                   std::move(capabilityDomainByOccurrence),
+                                   std::move(moduleDomainSlots)};
   }
 
 private:
-  SemanticGraph(Operation *root, bool fuDefinition)
-      : root_(root), fuDefinition_(fuDefinition) {}
+  SemanticGraph(Operation *root, bool fuDefinition,
+                const NormalizedModuleDomainRelation *domainRelation)
+      : root_(root), fuDefinition_(fuDefinition),
+        domainRelation_(domainRelation) {}
 
   std::uint32_t addVertex(std::string intrinsic) {
     std::uint32_t vertex = intrinsics_.size();
@@ -443,6 +527,80 @@ private:
                std::uint32_t firstOrdinal,
                std::uint32_t secondOrdinal = kNoOrdinal) {
     edges_.push_back({source, target, kind, firstOrdinal, secondOrdinal});
+  }
+
+  bool includesDomainMember(const NormalizedModuleDomainMember &member) const {
+    if (!fuDefinition_)
+      return true;
+    if (member.boundary ||
+        member.role != ::fabric::ModuleDomainAuthoringRelation::
+                           InternalMemberRole::FuNode ||
+        !member.owner)
+      return false;
+    auto fu = member.owner->getParentOfType<::fabric::FuOp>();
+    return fu && fu.getOperation() == root_;
+  }
+
+  llvm::Error buildDomainRelations() {
+    if (!domainRelation_)
+      return llvm::Error::success();
+    std::vector<bool> selectedSlots(domainRelation_->slots.size(),
+                                    !fuDefinition_);
+    if (fuDefinition_)
+      for (const NormalizedModuleDomainAssignment &assignment :
+           domainRelation_->assignments)
+        if (assignment.member < domainRelation_->members.size() &&
+            assignment.slot < selectedSlots.size() &&
+            includesDomainMember(domainRelation_->members[assignment.member]))
+          selectedSlots[assignment.slot] = true;
+
+    llvm::DenseMap<std::size_t, std::uint32_t> slotVertices;
+    for (auto [index, slot] : llvm::enumerate(domainRelation_->slots)) {
+      if (!selectedSlots[index])
+        continue;
+      std::string intrinsic = "MODULE_DOMAIN_SLOT";
+      appendU32(intrinsic, static_cast<std::uint32_t>(slot.kind));
+      const std::uint32_t vertex = addVertex(std::move(intrinsic));
+      slotVertices[index] = vertex;
+      domainSlotByVertex_[vertex] = index;
+      addEdge(operationVertices_.lookup(root_), vertex,
+              EdgeKind::ModuleDomainSlot, 0);
+    }
+
+    std::vector<std::optional<std::uint32_t>> memberVertices(
+        domainRelation_->members.size());
+    for (auto [index, member] : llvm::enumerate(domainRelation_->members)) {
+      if (!includesDomainMember(member))
+        continue;
+      Operation *owner = member.boundary ? root_ : member.owner;
+      auto ownerVertex = operationVertices_.find(owner);
+      if (!owner || ownerVertex == operationVertices_.end())
+        return invalid("Module domain member has no semantic graph owner");
+      std::string intrinsic = "MODULE_DOMAIN_MEMBER";
+      appendU8(intrinsic, member.boundary ? 1 : 0);
+      if (member.boundary)
+        appendU32(intrinsic, static_cast<std::uint32_t>(member.direction));
+      else
+        appendU32(intrinsic, static_cast<std::uint32_t>(member.role));
+      appendU64(intrinsic, member.ordinal);
+      const std::uint32_t vertex = addVertex(std::move(intrinsic));
+      memberVertices[index] = vertex;
+      addEdge(ownerVertex->second, vertex, EdgeKind::ModuleDomainMember, 0);
+    }
+    for (const NormalizedModuleDomainAssignment &assignment :
+         domainRelation_->assignments) {
+      if (assignment.member >= memberVertices.size() ||
+          assignment.slot >= domainRelation_->slots.size())
+        return invalid("Module domain relation index is out of range");
+      if (!memberVertices[assignment.member])
+        continue;
+      auto slot = slotVertices.find(assignment.slot);
+      if (slot == slotVertices.end())
+        return invalid("Module domain assignment has no slot vertex");
+      addEdge(*memberVertices[assignment.member], slot->second,
+              EdgeKind::ModuleDomainAssignment, 0);
+    }
+    return llvm::Error::success();
   }
 
   llvm::Error collect(Operation *op) {
@@ -545,6 +703,7 @@ private:
 
   Operation *root_;
   bool fuDefinition_;
+  const NormalizedModuleDomainRelation *domainRelation_;
   std::vector<std::string> intrinsics_;
   std::vector<Edge> edges_;
   llvm::DenseMap<Operation *, std::uint32_t> operationVertices_;
@@ -553,6 +712,7 @@ private:
   llvm::DenseMap<Operation *, llvm::SmallVector<SymbolRefAttr>>
       operationSymbols_;
   llvm::DenseMap<std::uint32_t, FabricEntityCarrier> carriers_;
+  llvm::DenseMap<std::uint32_t, std::size_t> domainSlotByVertex_;
 };
 
 } // namespace
@@ -561,6 +721,16 @@ llvm::Expected<FabricCanonicalLabeling>
 computeFabricModuleCanonicalLabeling(::fabric::ModuleOp root) {
   llvm::Expected<SemanticGraph> graph =
       SemanticGraph::build(root.getOperation());
+  if (!graph)
+    return graph.takeError();
+  return graph->canonicalizeModule();
+}
+
+llvm::Expected<FabricCanonicalLabeling> computeFabricModuleCanonicalLabeling(
+    ::fabric::ModuleOp root,
+    const NormalizedModuleDomainRelation &domainRelation) {
+  auto graph =
+      SemanticGraph::build(root.getOperation(), false, &domainRelation);
   if (!graph)
     return graph.takeError();
   return graph->canonicalizeModule();
@@ -610,6 +780,36 @@ llvm::Error materializeFabricCanonicalFuCapabilityDomains(
     fu.setCapabilityTemplatesAttr(::fabric::FuCapabilityDomainAttr::get(
         fu.getContext(), DenseI8ArrayAttr::get(fu.getContext(), signedBytes)));
   }
+  return llvm::Error::success();
+}
+
+llvm::Error validateFabricCanonicalFuCapabilityDomains(
+    const FabricCanonicalLabeling &labeling) {
+  std::size_t occurrenceCount = 0;
+  for (const FabricEntityCarrier &carrier : labeling.carriers) {
+    if (carrier.kind != FabricEntityKind::FabricFuOccurrence)
+      continue;
+    ++occurrenceCount;
+    auto fu = dyn_cast_or_null<::fabric::FuOp>(carrier.op);
+    auto expected =
+        labeling.canonicalFuCapabilityDomainByOccurrence.find(carrier.op);
+    if (!fu ||
+        expected == labeling.canonicalFuCapabilityDomainByOccurrence.end())
+      return invalid("a canonical FU capability domain has no FU carrier");
+    ::fabric::FuCapabilityDomainAttr stored = fu.getCapabilityTemplatesAttr();
+    if (!stored)
+      return invalid("canonical FU capability domain carrier is stale");
+    llvm::ArrayRef<std::int8_t> storedBytes = stored.getRecord().asArrayRef();
+    if (storedBytes.size() != expected->second.size())
+      return invalid("canonical FU capability domain carrier is stale");
+    for (auto [storedByte, expectedByte] :
+         llvm::zip_equal(storedBytes, expected->second))
+      if (static_cast<std::uint8_t>(storedByte) != expectedByte)
+        return invalid("canonical FU capability domain carrier is stale");
+  }
+  if (occurrenceCount !=
+      labeling.canonicalFuCapabilityDomainByOccurrence.size())
+    return invalid("a canonical FU capability domain has no FU carrier");
   return llvm::Error::success();
 }
 

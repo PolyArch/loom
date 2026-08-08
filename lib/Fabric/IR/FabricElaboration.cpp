@@ -1,6 +1,7 @@
 #include "Fabric/IR/Elaboration.h"
 
 #include "Fabric/IR/FabricOps.h"
+#include "Fabric/IR/ModuleDomain.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -260,6 +261,10 @@ static Operation *getDirectChild(Operation *op, Operation *ancestor) {
 
 class InstanceElaborator {
 public:
+  explicit InstanceElaborator(
+      fabric::ModuleDomainAuthoringRelation *domainRelation = nullptr)
+      : domainRelation(domainRelation) {}
+
   LogicalResult rewrite(fabric::ModuleOp root) {
     if (failed(elaborateModule(root)) || failed(verify(root)))
       return failure();
@@ -440,6 +445,12 @@ private:
     target.getBody().cloneInto(&clonedRegion, mapping);
     if (!llvm::hasSingleElement(clonedRegion))
       return target.emitOpError("must contain exactly one body block");
+    if (domainRelation)
+      if (llvm::Error error = domainRelation->composeInstance(
+              instantiate.getOperation(), mapping)) {
+        instantiate.emitError(llvm::toString(std::move(error)));
+        return failure();
+      }
 
     auto sourceYield = dyn_cast<fabric::YieldOp>(sourceBody.getTerminator());
     if (!sourceYield)
@@ -503,6 +514,9 @@ private:
     }
 
     Operation *occurrence = builder.create(state);
+    bodyMapping.map(instantiate.getOperation(), occurrence);
+    if (domainRelation)
+      domainRelation->remapMappedOperations(bodyMapping);
     if (isa<fabric::SwitchOp, fabric::MemOp>(occurrence))
       setEndpointTypes(occurrence, getEffectiveInnerTypes(instantiate));
     if (auto pe = dyn_cast<fabric::PeOp>(occurrence)) {
@@ -660,10 +674,16 @@ private:
   DenseMap<Value, Operation *> replacementOwners;
   SmallVector<ModuleBoundary, 0> boundaries;
   DenseMap<Value, Value> finalReplacements;
+  fabric::ModuleDomainAuthoringRelation *domainRelation = nullptr;
 };
 
 static OwningOpRef<ModuleOp> cloneBuiltinModule(ModuleOp module) {
   return OwningOpRef<ModuleOp>(cast<ModuleOp>(module->clone()));
+}
+
+static OwningOpRef<ModuleOp> cloneBuiltinModule(ModuleOp module,
+                                                IRMapping &mapping) {
+  return OwningOpRef<ModuleOp>(cast<ModuleOp>(module->clone(mapping)));
 }
 
 struct ElaborateInstancesPass
@@ -721,7 +741,9 @@ struct ElaborateInstancesPass
 
 namespace fabric {
 
-LogicalResult elaborateInstances(ModuleOp root) {
+static LogicalResult
+elaborateInstancesImpl(ModuleOp root,
+                       ModuleDomainAuthoringRelation *domainRelation) {
   auto builtinModule = dyn_cast_or_null<::mlir::ModuleOp>(root->getParentOp());
   if (!builtinModule)
     return root.emitError(
@@ -730,7 +752,18 @@ LogicalResult elaborateInstances(ModuleOp root) {
   if (failed(verify(builtinModule)))
     return failure();
 
-  OwningOpRef<::mlir::ModuleOp> scratch = cloneBuiltinModule(builtinModule);
+  IRMapping mapping;
+  OwningOpRef<::mlir::ModuleOp> scratch =
+      cloneBuiltinModule(builtinModule, mapping);
+  std::optional<ModuleDomainAuthoringRelation> remappedDomain;
+  if (domainRelation) {
+    auto remapped = domainRelation->remap(mapping);
+    if (!remapped) {
+      root.emitError(llvm::toString(remapped.takeError()));
+      return failure();
+    }
+    remappedDomain = std::move(*remapped);
+  }
   Operation *clonedSymbol =
       SymbolTable::lookupSymbolIn(*scratch, root.getSymNameAttr());
   auto clonedRoot = dyn_cast_or_null<fabric::ModuleOp>(clonedSymbol);
@@ -739,12 +772,25 @@ LogicalResult elaborateInstances(ModuleOp root) {
         "failed to locate the selected top-level fabric.module root in the "
         "transactional scratch module");
 
-  if (failed(InstanceElaborator().rewrite(clonedRoot)) ||
+  if (failed(InstanceElaborator(remappedDomain ? &*remappedDomain : nullptr)
+                 .rewrite(clonedRoot)) ||
       failed(verify(*scratch)))
     return failure();
 
   root.getBody().takeBody(clonedRoot.getBody());
+  if (domainRelation)
+    *domainRelation = std::move(*remappedDomain);
   return success();
+}
+
+LogicalResult elaborateInstances(ModuleOp root) {
+  return elaborateInstancesImpl(root, nullptr);
+}
+
+LogicalResult
+elaborateInstances(ModuleOp root,
+                   ModuleDomainAuthoringRelation &domainRelation) {
+  return elaborateInstancesImpl(root, &domainRelation);
 }
 
 std::unique_ptr<Pass> createElaborateInstancesPass() {

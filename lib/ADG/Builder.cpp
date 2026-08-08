@@ -970,8 +970,34 @@ SpatialCoreBuilder::instantiate(
   if (!targetRoot.closed)
     return invalid("SpatialCore template must be closed before instantiation");
 
-  // Validate the exact total slot correspondence before any input value is
-  // consumed, so a rejected call leaves the caller's values untouched.
+  mlir::FunctionType signature = targetRoot.operation.getFunctionType();
+  if (inputs.size() != signature.getNumInputs())
+    return invalid("SpatialCore template input count does not match its "
+                   "declared signature");
+
+  llvm::SmallVector<mlir::Value, 8> resolvedInputs;
+  llvm::SmallVector<mlir::Type, 8> innerInputTypes;
+  bool hasNormalizedInput = false;
+  for (auto [input, innerType] : llvm::zip(inputs, signature.getInputs())) {
+    auto resolved = resolveValue(*state, input);
+    if (!resolved)
+      return resolved.takeError();
+    if (!resolved->use_empty())
+      return invalid("SpatialCore transport source already has a consumer");
+    if (!sameFabricKind(resolved->getType(), innerType))
+      return invalid("SpatialCore template source and input port have "
+                     "different kinds");
+    if (mlir::isa<mlir::MemRefType>(innerType) &&
+        resolved->getType() != innerType)
+      return invalid("SpatialCore template memory ports require exact types");
+    hasNormalizedInput |= resolved->getType() != innerType;
+    resolvedInputs.push_back(*resolved);
+    innerInputTypes.push_back(innerType);
+  }
+
+  // Build the complete relation on a copy so every rejected call preserves
+  // both the input values and the parent's domain-authoring state.
+  ::fabric::ModuleDomainAuthoringRelation pendingDomain = root.domainRelation;
   std::vector<::fabric::ModuleInstanceDomainSlotBinding> domainRows;
   domainRows.reserve(domainBindings.size());
   for (const ModuleInstanceDomainSlotBinding &binding : domainBindings) {
@@ -1005,39 +1031,14 @@ SpatialCoreBuilder::instantiate(
       targetRoot.domainRelation.declaredSlotCount(
           loom::fabric::FabricClockResetKind::Reset)};
   const ::fabric::ModuleDomainSlotCounts parentCounts{
-      root.domainRelation.declaredSlotCount(
+      pendingDomain.declaredSlotCount(
           loom::fabric::FabricClockResetKind::Clock),
-      root.domainRelation.declaredSlotCount(
+      pendingDomain.declaredSlotCount(
           loom::fabric::FabricClockResetKind::Reset)};
   if (llvm::Error error = ::fabric::validateModuleInstanceDomainSlotBindings(
           childCounts, parentCounts, domainRows))
     return invalid("module instance domain slot binding rejected: " +
                    llvm::toString(std::move(error)));
-
-  mlir::FunctionType signature = targetRoot.operation.getFunctionType();
-  if (inputs.size() != signature.getNumInputs())
-    return invalid("SpatialCore template input count does not match its "
-                   "declared signature");
-
-  llvm::SmallVector<mlir::Value, 8> resolvedInputs;
-  llvm::SmallVector<mlir::Type, 8> innerInputTypes;
-  bool hasNormalizedInput = false;
-  for (auto [input, innerType] : llvm::zip(inputs, signature.getInputs())) {
-    auto resolved = resolveValue(*state, input);
-    if (!resolved)
-      return resolved.takeError();
-    if (!resolved->use_empty())
-      return invalid("SpatialCore transport source already has a consumer");
-    if (!sameFabricKind(resolved->getType(), innerType))
-      return invalid("SpatialCore template source and input port have "
-                     "different kinds");
-    if (mlir::isa<mlir::MemRefType>(innerType) &&
-        resolved->getType() != innerType)
-      return invalid("SpatialCore template memory ports require exact types");
-    hasNormalizedInput |= resolved->getType() != innerType;
-    resolvedInputs.push_back(*resolved);
-    innerInputTypes.push_back(innerType);
-  }
 
   mlir::OpBuilder builder(&(*state)->context);
   builder.setInsertionPointToEnd(&root.operation.getBody().front());
@@ -1045,14 +1046,18 @@ SpatialCoreBuilder::instantiate(
       builder, root.operation.getLoc(), signature.getResults(),
       targetRoot.operation.getSymName(), resolvedInputs,
       hasNormalizedInput ? llvm::ArrayRef<mlir::Type>(innerInputTypes)
-                         : llvm::ArrayRef<mlir::Type>{});
-  if (llvm::Error error = verifyNewOperation(instance, "module instance"))
+                         : llvm::ArrayRef<mlir::Type>{},
+      ::fabric::encodeModuleInstanceDomainSlotBindings(&(*state)->context,
+                                                       domainRows));
+  if (llvm::Error error = verifyNewOperation(instance, "module instance")) {
     return std::move(error);
-  // The relation canonicalizes an explicit empty range to no transient
-  // state, so a slotless target leaves the 1.1 path untouched.
-  if (llvm::Error error = root.domainRelation.noteInstanceBindings(
-          instance.getOperation(), std::move(domainRows)))
+  }
+  if (llvm::Error error = pendingDomain.noteInstanceBindings(
+          instance.getOperation(), targetRoot.domainRelation)) {
+    instance.erase();
     return std::move(error);
+  }
+  root.domainRelation = std::move(pendingDomain);
 
   std::vector<SpatialValue> outputs;
   outputs.reserve(instance.getNumResults());
@@ -1664,16 +1669,15 @@ llvm::Error SpatialCoreBuilder::close(llvm::ArrayRef<SpatialValue> outputs) {
     values.push_back(*resolved);
   }
 
-  // Domain totality is validated before any output mutation is published:
-  // once the 2.0 carrier is active, every boundary face and every internal
-  // owner must carry exactly one Clock and one Reset assignment.
-  if (root.domainRelation.hasDomainAuthoring()) {
-    llvm::Error totality = root.domainRelation.validateTotality(
-        root.operation.getFunctionType().getNumInputs(),
-        root.operation.getFunctionType().getNumResults());
-    if (totality)
-      return totality;
-  }
+  if (llvm::Error error = root.domainRelation.ensureDefaultAssignments(
+          root.operation.getFunctionType().getNumInputs(),
+          root.operation.getFunctionType().getNumResults()))
+    return error;
+  llvm::Error totality = root.domainRelation.validateTotality(
+      root.operation.getFunctionType().getNumInputs(),
+      root.operation.getFunctionType().getNumResults());
+  if (totality)
+    return totality;
 
   mlir::OpBuilder builder(&(*state)->context);
   builder.setInsertionPointToEnd(&root.operation.getBody().front());
@@ -1719,7 +1723,7 @@ DesignBuilder::createSpatialCore(llvm::StringRef label,
   builder.setInsertionPointToEnd(state_->draft->getBody());
   ::fabric::ModuleOp root = ::fabric::ModuleOp::create(
       builder, state_->draft->getLoc(), label, signature, mlir::IntegerAttr(),
-      mlir::IntegerAttr());
+      mlir::IntegerAttr(), mlir::ArrayAttr(), mlir::ArrayAttr());
   mlir::Block *body = new mlir::Block();
   root.getBody().push_back(body);
   for (mlir::Type type : inputTypes)
@@ -1742,10 +1746,6 @@ llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
   for (const detail::SpatialRootState &root : state_->spatialRoots) {
     if (!root.closed)
       return invalid("SpatialCore '" + root.label + "' is not closed");
-    if (root.domainRelation.hasDomainAuthoring())
-      return invalid("SpatialCore '" + root.label +
-                     "' authors Module domain slots or slot bindings, which "
-                     "the active loom.fabric 1.1 schema cannot publish");
   }
   for (const detail::SystemRootState &root : state_->systemRoots)
     if (!root.closed)
@@ -1755,8 +1755,8 @@ llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
   std::vector<loom::fabric::FinalizedFabricRoot> finalized;
   finalized.reserve(state_->spatialRoots.size() + state_->systemRoots.size());
   for (const detail::SpatialRootState &root : state_->spatialRoots) {
-    auto result =
-        loom::fabric::finalizeFabricRoot(root.operation, state_->store);
+    auto result = loom::fabric::finalizeFabricRoot(
+        root.operation, root.domainRelation, state_->store);
     if (!result)
       return result.takeError();
     finalized.push_back(std::move(*result));

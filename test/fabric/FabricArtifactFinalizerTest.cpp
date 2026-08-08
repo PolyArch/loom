@@ -1,6 +1,7 @@
 #include "ADG/Builtin.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricHardwareDomainContracts.h"
+#include "Fabric/Artifact/FabricModuleRootView.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/OperationResourceContract.h"
@@ -584,6 +585,24 @@ void canonicalPublicationAndStrictImport() {
           "canonical transport endpoint inventory was not imported");
   require(test, firstResult.view().moduleResourceOwners().size() == 4,
           "canonical physical resource-owner inventory is incomplete");
+  auto moduleView =
+      take(test, loom::fabric::requireModuleRoot(firstResult.view()));
+  require(test, moduleView.domainSlots().size() == 2,
+          "omitted Module domain relation did not materialize two slots");
+  const auto members = firstResult.view().moduleDomainMembers();
+  const auto assignments = moduleView.domainAssignments();
+  require(test, assignments.size() == members.size() * 2,
+          "single-domain shorthand is not total over canonical members");
+  for (auto [ordinal, member] : llvm::enumerate(members)) {
+    const auto &clock = assignments[ordinal * 2];
+    const auto &reset = assignments[ordinal * 2 + 1];
+    require(test,
+            clock.member == member && reset.member == member &&
+                clock.slot.kind == loom::fabric::FabricClockResetKind::Clock &&
+                reset.slot.kind == loom::fabric::FabricClockResetKind::Reset &&
+                clock.slot.ordinal == 0 && reset.slot.ordinal == 0,
+            "single-domain shorthand changed member or slot ownership");
+  }
 
   const auto traversalViews = firstResult.view().physicalTraversals();
   require(test,
@@ -727,6 +746,12 @@ void canonicalPublicationAndStrictImport() {
           imported.canonicalBytes().bytes().equals(
               firstResult.canonicalBytes().bytes()),
           "strict import changed canonical bytes");
+  auto importedView =
+      take(test, loom::fabric::requireModuleRoot(imported.view()));
+  require(test,
+          importedView.domainSlots() == moduleView.domainSlots() &&
+              importedView.domainAssignments() == assignments,
+          "strict import changed the materialized Module domain relation");
 }
 
 void boundaryTagContinuityProjection() {
