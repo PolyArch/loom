@@ -1,0 +1,12 @@
+# REQUIRES: circt, verilator, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-multiply-test %t
+# RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
+# RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
+# RUN: cd %t/generated && verilator --binary --timing --Wall --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench scalar_float_multiply.sv fixed_vector_float_multiply.sv testbench.sv --Mdir obj_dir
+# RUN: %t/generated/obj_dir/Vtestbench
+# RUN: cd %t/generated && yosys -q -s portable_scalar_float_multiply.ys
+# RUN: cd %t/generated && yosys -q -s portable_fixed_vector_float_multiply.ys
+
+# VERILATOR: Verilator 5.050
+# YOSYS: Yosys 0.67

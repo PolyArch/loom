@@ -1,0 +1,20 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-multiply-test %t
+# RUN: FileCheck %s --check-prefix=SCALAR < %t/generated/scalar_float_multiply.sv
+# RUN: FileCheck %s --check-prefix=VECTOR < %t/generated/fixed_vector_float_multiply.sv
+
+# SCALAR: module scalar_float_multiply
+# SCALAR: input [4:0] config_0
+# SCALAR: function automatic
+# SCALAR: loom_float_multiply_e11_f52_rna
+# SCALAR-NOT: shortreal
+# SCALAR-NOT: DPI
+
+# VECTOR: module fixed_vector_float_multiply
+# VECTOR: input [79:0] data_input_0
+# VECTOR: input [4:0] config_0
+# VECTOR: output [79:0] data_output_0
+# VECTOR: loom_float_multiply_e8_f23_rup
+# VECTOR-NOT: shortreal
+# VECTOR-NOT: DPI
