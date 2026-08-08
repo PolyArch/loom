@@ -2282,24 +2282,36 @@ this closed protocol:
 2. memory roots and graph-boundary roots retain their baseline choices;
 3. process every remaining compute root in canonical owner order and select a
    legal choice whose exact `InstructionContextRef` currently has the least
-   selected-root count; ties use circular canonical choice order beginning at
-   that root's baseline choice;
-4. leave occurrence-relative `PortAttachment` decisions unfixed and invoke the
+   selected-root count;
+4. among equal-count choices, minimize the sum of directed frozen-topology hop
+   distances to already processed compute roots joined to this root by a
+   logical net. For each such producer-consumer incidence, the distance is the
+   minimum number of payload-compatible `FrozenSpatialRoutingGraph` arcs over
+   the attachment endpoints admitted by the two candidate placements. An
+   unreachable incidence ranks after every finite distance but does not remove
+   the choice. If there is no already processed compute neighbor, or scores
+   remain equal, use circular canonical choice order beginning at that root's
+   baseline choice;
+5. leave occurrence-relative `PortAttachment` decisions unfixed and invoke the
    same root relation solver once with the preferred roots fixed, so placement
    compatibility and every hard attachment relation are re-established by
    their existing owner; and
-5. if the preferred fixed roots have no complete assignment within the
+6. if the preferred fixed roots have no complete assignment within the
    remaining initializer work, retain the complete baseline assignment.
 
-The selected-root count is only a deterministic search preference. It is not
-capacity, does not remove a legal choice, and cannot prove infeasibility.
-Fabric `ResourceContract`, raw candidate capacity projection, and final
-verification remain the only capacity authorities. The refinement consumes no
-PRNG words beyond the baseline solve. Every relation assignment attempted by
-either solve consumes one initializer work unit under the single shared limit.
-A work-limit stop without an already complete baseline is incomplete
-initialization, not infeasibility. The configured seed-attempt slots are fixed
-before execution; a failed slot is never replaced by an extra attempt.
+The selected-root count and frozen-topology distance are only deterministic
+search preferences. Neither is capacity, neither removes a legal choice, and
+neither can prove infeasibility. The distance uses the same immutable endpoint,
+arc, payload-width, and attachment domains already owned by the FrozenModel;
+it ignores mutable route costs and resource occupancy and therefore is not a
+second router. Fabric `ResourceContract`, raw candidate capacity projection,
+and final verification remain the only capacity authorities. The refinement
+consumes no PRNG words beyond the baseline solve. Every relation assignment
+attempted by either solve consumes one initializer work unit under the single
+shared limit. A work-limit stop without an already complete baseline is
+incomplete initialization, not infeasibility. The configured seed-attempt
+slots are fixed before execution; a failed slot is never replaced by an extra
+attempt.
 
 The current legal domain is defined only for an active decision. Realization
 binding decisions and graph-boundary attachment decisions are roots. They

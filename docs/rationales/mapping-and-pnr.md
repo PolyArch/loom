@@ -702,9 +702,21 @@ again. Hard-constrained compute roots stay at their baseline choices, while
 port attachments remain derived rather than copied. A failed preference falls
 back to the already legal baseline. This keeps the complete legal domain and
 all capacity semantics unchanged, but prevents a repeated owner-local ordinal
-zero from dominating every independent root. Counting exact
-`InstructionContextRef` selections is sufficient for this tie-break; it is not
-a shadow capacity model or an infeasibility certificate.
+zero from dominating every independent root.
+
+Load balance alone is not sufficient. A chain placed once on every PE of a
+bounded one-dimensional mesh can still follow a topology-independent
+occurrence permutation. About half of its logical nets then cross the same
+middle cut even though a neighboring placement exists. The equal-count
+tie-break therefore uses minimum directed hop distance to already processed
+dataflow neighbors. The score is derived from the existing frozen attachment
+domains and payload-compatible routing arcs, with no coordinate metadata and
+no mutable congestion term. It is a cheap placement preference, not a shadow
+capacity model, a second routing search, or an infeasibility certificate.
+Hard all-different contexts would still delete legal sharing, while an
+independent placer would duplicate relation and routing ownership. The
+load-then-locality refinement instead composes the two existing facts needed
+for a useful seed: exact context identity and exact frozen connectivity.
 
 Local-memory byte offsets need a finite search representation. Enumerating
 every fitting byte would make a 4 GiB region contribute billions of choices
