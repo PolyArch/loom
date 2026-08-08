@@ -8,6 +8,7 @@ add_mlir_library(LoomFabricIdentity
   FabricTraversalProjection.cpp
   FabricRefValidation.cpp
   FabricOpCapabilityView.cpp
+  FabricPeConfiguration.cpp
   FabricPhysicalTagProjection.cpp
   FabricFuCapabilityTemplate.cpp
   FabricHandshake.cpp

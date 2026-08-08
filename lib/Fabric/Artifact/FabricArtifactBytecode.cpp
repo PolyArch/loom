@@ -4,6 +4,7 @@
 
 #include "mlir/Bytecode/BytecodeReader.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
+#include "mlir/IR/AsmState.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
@@ -14,6 +15,8 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <memory>
+#include <string>
 #include <system_error>
 
 using namespace mlir;
@@ -37,15 +40,38 @@ writeBytecodeOnce(Operation *operation) {
   return std::vector<std::uint8_t>(storage.begin(), storage.end());
 }
 
-} // namespace
-
-llvm::Expected<ParsedFabricBytecodeModule>
-parseFabricBytecodeModule(llvm::ArrayRef<std::uint8_t> bytes) {
+std::shared_ptr<MLIRContext> createFabricContext() {
   DialectRegistry registry;
   registry.insert<::fabric::FabricDialect>();
   auto context =
       std::make_shared<MLIRContext>(registry, MLIRContext::Threading::DISABLED);
   context->loadAllAvailableDialects();
+  return context;
+}
+
+llvm::Expected<ParsedFabricBytecodeModule>
+normalizeFabricAssembly(Operation *operation) {
+  // Rebuild intern tables from canonical traversal order so source-context
+  // uniquing history cannot affect bytecode numbering. This transient generic
+  // form retains inherent properties and never enters artifact identity.
+  std::string assembly;
+  llvm::raw_string_ostream stream(assembly);
+  OpPrintingFlags flags;
+  flags.printGenericOpForm().enableDebugInfo(false);
+  operation->print(stream, flags);
+
+  auto context = createFabricContext();
+  auto module = parseSourceString<ModuleOp>(assembly, context.get());
+  if (!module || failed(verify(module.get())))
+    return invalid("canonical Fabric assembly cannot be reparsed");
+  return ParsedFabricBytecodeModule{std::move(context), std::move(module)};
+}
+
+} // namespace
+
+llvm::Expected<ParsedFabricBytecodeModule>
+parseFabricBytecodeModule(llvm::ArrayRef<std::uint8_t> bytes) {
+  auto context = createFabricContext();
 
   llvm::StringRef byteString(reinterpret_cast<const char *>(bytes.data()),
                              bytes.size());
@@ -66,7 +92,10 @@ parseFabricBytecodeModule(llvm::ArrayRef<std::uint8_t> bytes) {
 
 llvm::Expected<std::vector<std::uint8_t>>
 writeCanonicalFabricBytecode(Operation *operation) {
-  auto initial = writeBytecodeOnce(operation);
+  auto normalizedAssembly = normalizeFabricAssembly(operation);
+  if (!normalizedAssembly)
+    return normalizedAssembly.takeError();
+  auto initial = writeBytecodeOnce(normalizedAssembly->module.get());
   if (!initial)
     return initial.takeError();
   auto normalizedModule = parseFabricBytecodeModule(*initial);

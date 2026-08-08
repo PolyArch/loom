@@ -9,6 +9,7 @@
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/ResourceContract.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
+#include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefs.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -484,6 +485,12 @@ public:
   std::uint64_t peResidentContextCount(FabricPeOccurrenceRef occurrence) const;
   std::optional<FabricPeOccurrenceRef>
   parentPeOf(FabricFuOccurrenceRef occurrence) const;
+
+  /// The complete static factorized configuration schema of one Spatial PE.
+  /// The view is rebuilt from canonical occurrence, port, and endpoint
+  /// inventories and carries no persistent payload of its own.
+  llvm::Expected<FabricSpatialPeConfigurationSchemaView>
+  spatialPeConfigurationSchema(FabricPeOccurrenceRef occurrence) const;
 
   /// Project one direction-local FU occurrence port to the owner's canonical
   /// transport inventory, whose ordinals place all inputs before all outputs.

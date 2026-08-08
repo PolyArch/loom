@@ -469,6 +469,17 @@ std::uint64_t FabricArtifactView::memoryEndpointCount(
 std::uint64_t
 FabricArtifactView::inventorySize(const FabricInventoryOwnerRef &owner,
                                   FabricInventoryKind inventory) const {
+  if (inventory == FabricInventoryKind::SemanticConfigField &&
+      owner.kind() == FabricInventoryOwnerKind::PeOccurrence) {
+    const FabricPeOccurrenceRef pe =
+        std::get<FabricPeOccurrenceRef>(owner.payload);
+    auto schema = spatialPeConfigurationSchema(pe);
+    if (!schema) {
+      llvm::consumeError(schema.takeError());
+      return 0;
+    }
+    return schema->fields().size();
+  }
   if (inventory == FabricInventoryKind::FuNode &&
       owner.kind() == FabricInventoryOwnerKind::FuOccurrence) {
     const auto *nodes =

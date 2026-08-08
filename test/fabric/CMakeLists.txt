@@ -242,6 +242,10 @@ add_executable(loom-fabric-artifact-finalizer-test
   FabricArtifactFinalizerTest.cpp
 )
 
+add_executable(loom-fabric-pe-configuration-test
+  FabricPeConfigurationTest.cpp
+)
+
 add_executable(loom-fabric-system-attachment-finalizer-test
   FabricSystemAttachmentFinalizerTest.cpp
 )
@@ -346,6 +350,16 @@ target_link_libraries(loom-fabric-system-canonical-labeling-test PRIVATE
 
 target_link_libraries(loom-fabric-artifact-finalizer-test PRIVATE
   LoomADGBuilder
+  LoomCommon
+  LoomFabricArtifact
+  MLIRDataflow
+  MLIRFabric
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-pe-configuration-test PRIVATE
   LoomCommon
   LoomFabricArtifact
   MLIRDataflow
