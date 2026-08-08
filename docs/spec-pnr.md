@@ -3,6 +3,8 @@
 This document is the normative owner of Loom Spatial and System PnR
 algorithms, native state, deterministic search protocols, final closure, and
 the common Spatial and System MappingConstraintSet semantic and wire algebra.
+It also owns the one invocation-only diagnostic channel shared by production
+TechMapping, Spatial PnR, and System PnR.
 `docs/spec-tech-mapping.md` separately owns production TechMapping generation.
 The Mapping profile documents own persistent Mapping Artifact spelling and
 canonical serialization; this document separately owns the constraint-family
@@ -18,6 +20,58 @@ semantic realizations, SpatialMapping adds physical realization inside a
 SpatialCore, and SystemMapping binds complete execution and service behavior
 across an architecture-only Fabric system. There is no `PhysicalMapping`
 profile and no fourth profile for flat System search.
+
+## Mapping Invocation Diagnostics
+
+Mapping diagnostics use one process-wide logger and one environment binding:
+
+```text
+LOOM_DEBUG_VERBOSE = nonnegative decimal integer
+```
+
+The binding is invocation-local debug input. It is not ResolvedConfig,
+Mapping state, an Artifact field, an Evaluation observation, semantic work, or
+a persistent trace. The logger parses it once per process. An unset, empty,
+non-decimal, or zero value selects level zero; values above three select level
+three. Level `N` includes every lower nonzero level:
+
+* level one emits invocation lifecycle, termination or failure, and cumulative
+  statistics;
+* level two additionally emits candidate, seed, negotiation-iteration,
+  decoded-capacity-conflict, Action proposal/outcome, and System context-choice
+  events; and
+* level three additionally emits per-net route detail, exact owner/state/claim
+  and endpoint/traversal detail, exact cut or reachability evidence, and Action
+  deltas.
+
+Every event is one line-atomic JSON object on stderr. It contains
+`schema = "loom.mapping.debug.1"`, numeric `level`, closed ASCII `event` and
+`stage` spellings, and an invocation-local `sequence`. Events add the stable
+candidate, worker, iteration, Action, owner, state, logical-net, endpoint,
+traversal, or claim ordinals applicable to that event. Concurrent emission
+order is diagnostic timing, not replay identity; stable event keys permit
+post-processing without treating line order as a semantic authority.
+
+Level-one statistics include the applicable candidate rows and publications,
+Actions proposed, accepted, rejected, and rolled back, A* expansions,
+negotiated iterations, capacity conflicts, arithmetic failures, and final
+closure status. Higher levels refine those counts with the exact events that
+produced them. A decoded capacity conflict reports the physical owner and
+state, exact `usage/capacity`, contributing logical nets and claims, and their
+endpoints and traversals. When level three requests cut or reachability
+analysis, that analysis reads the same frozen topology and conflict set used by
+Mapping and reports either an exact separating cut or the exact reachable
+endpoint set; it cannot change a candidate or prove infeasibility by timeout.
+
+The level-zero hot path performs no JSON construction, stderr locking, cut
+analysis, or diagnostic allocation. At every level, diagnostic collection,
+formatting, lock acquisition, output failure, and extra analysis cannot affect
+candidate order, random draws, search decisions, deterministic work
+accounting, termination, Mapping bytes, or Artifact identity. Events never
+include raw Dataflow values, source or host paths, environment contents,
+credentials, external-tool restricted data, raw pointers, or implementation
+container order. No subsystem may parse `LOOM_DEBUG_VERBOSE` independently or
+create a second Mapping statistics/logging channel.
 
 ## MappingConstraintSet Artifact Family
 

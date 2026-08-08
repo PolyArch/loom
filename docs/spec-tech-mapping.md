@@ -26,6 +26,11 @@ TechMappingGenerationInputs {
 }
 ```
 
+Production generation uses the common invocation-only diagnostic channel owned
+by [Mapping Invocation Diagnostics](spec-pnr.md#mapping-invocation-diagnostics).
+It defines no TechMapping-specific environment parser, logger, statistics wire,
+or persistent trace.
+
 `covers` is a canonical non-empty set of `GraphRef` values owned by exact
 `D`. It is an invocation scope, not another artifact, identity catalog, or
 configuration authority. Every reference must resolve to a reachable graph in

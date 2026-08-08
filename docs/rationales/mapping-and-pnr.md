@@ -29,6 +29,29 @@ partial/complete object or a separate witness schema would force consumers to
 interpret lifecycle state. Each profile is complete under its own verifier and
 references its exact predecessor.
 
+## Why Mapping Uses One Graded Diagnostic Channel
+
+TechMapping and PnR failures often become visible far from their cause. A final
+overflow alone cannot show which iteration accumulated the cost, which exact
+capacity state was oversubscribed, which nets contributed claims, or whether a
+reachable alternate path existed. Temporary print statements answer one case
+but require rebuilding and tend to leave several incompatible debug paths.
+
+One invocation-only JSONL logger therefore spans all three Mapping profiles.
+A single numeric level is sufficient: summaries answer routine performance
+questions, decision events reconstruct search progress, and detailed exact
+owner/net/cut events diagnose topology or algorithm failures. Independent
+category flags, a persistent statistics artifact, and profile-specific loggers
+were rejected because they duplicate configuration and event ownership without
+adding semantic capability.
+
+The channel is deliberately outside ResolvedConfig and Mapping identity.
+Turning it on may spend diagnostic time, but cannot change search work,
+ordering, random draws, or outcomes. Stable typed ordinals are more useful and
+safer than raw SSA values, pointers, source paths, or container dumps. Exact cut
+and reachability analysis belongs only at the most detailed level because it is
+diagnostic evidence, not a hidden routing or infeasibility oracle.
+
 ## Why Compute Realization Replaces `dataflow.subgraph`
 
 An FU can implement a small configured software graph. The selected actor
