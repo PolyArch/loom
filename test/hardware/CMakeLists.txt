@@ -546,6 +546,22 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-float-compare-min-max-test
+    PortableFloatCompareMinMaxTest.cpp
+  )
+
+  target_link_libraries(loom-portable-float-compare-min-max-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    LoomSimulator
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-float-multiply-test
     PortableFloatMultiplyTest.cpp
   )

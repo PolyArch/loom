@@ -9,6 +9,7 @@
 #include "Hardware/RTL/Providers/FixedVectorSliceAlignMerge.h"
 #include "Hardware/RTL/Providers/FixedVectorValueSelect.h"
 #include "Hardware/RTL/Providers/FloatAddSub.h"
+#include "Hardware/RTL/Providers/FloatCompareMinMax.h"
 #include "Hardware/RTL/Providers/FloatMultiply.h"
 #include "Hardware/RTL/Providers/FloatSign.h"
 #include "Hardware/RTL/Providers/IntegerCountZeros.h"
@@ -55,6 +56,9 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
   if (llvm::Error error = registerPortableFloatSignProviders(candidate))
     return error;
   if (llvm::Error error = registerPortableFloatAddSubProviders(candidate))
+    return error;
+  if (llvm::Error error =
+          registerPortableFloatCompareMinMaxProviders(candidate))
     return error;
   if (llvm::Error error = registerPortableFloatMultiplyProviders(candidate))
     return error;

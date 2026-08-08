@@ -13,6 +13,7 @@ add_library(LoomHardwareRTL
   Providers/FixedVectorSliceAlignMerge.cpp
   Providers/FixedVectorValueSelect.cpp
   Providers/FloatAddSub.cpp
+  Providers/FloatCompareMinMax.cpp
   Providers/FloatMultiply.cpp
   Providers/FloatSign.cpp
   Providers/IntegerCountZeros.cpp
