@@ -359,8 +359,6 @@ std::string buildRemainderCoreFunction(const Format &format) {
   const unsigned exponentBits = format.exponentBits;
   const unsigned fractionBits = format.fractionBits;
   const unsigned precision = format.precision();
-  const unsigned maximumExponentDelta = static_cast<unsigned>(
-      format.maximumExponent() - format.minimumExponent());
   const std::uint64_t exponentMask = (std::uint64_t{1} << exponentBits) - 1;
   const std::uint64_t infinity = exponentMask << fractionBits;
   const std::uint64_t quietBit = std::uint64_t{1} << (fractionBits - 1);
@@ -383,7 +381,13 @@ std::string buildRemainderCoreFunction(const Format &format) {
       << "  reg [" << precision - 1 << ":0] significand_lhs;\n"
       << "  reg [" << precision - 1 << ":0] significand_rhs;\n"
       << "  reg [" << precision - 1 << ":0] remainder_value;\n"
+      << "  reg [" << precision - 1 << ":0] power_value;\n"
+      << "  reg [" << precision - 1 << ":0] remainder_accumulator;\n"
+      << "  reg [" << precision - 1 << ":0] power_accumulator;\n"
       << "  reg [" << precision << ":0] shifted_remainder;\n"
+      << "  reg [" << precision + 1 << ":0] modular_candidate;\n"
+      << "  reg [" << precision << ":0] doubled_multiplicand;\n"
+      << "  reg [" << exponentBits - 1 << ":0] exponent_delta_bits;\n"
       << "  reg found;\n"
       << "  reg magnitude_is_smaller;\n"
       << "  integer exponent_lhs_value;\n"
@@ -393,6 +397,7 @@ std::string buildRemainderCoreFunction(const Format &format) {
       << "  integer encoded_exponent;\n"
       << "  integer leading_index;\n"
       << "  integer index;\n"
+      << "  integer multiply_index;\n"
       << "  begin\n"
       << "    " << name << " = " << hexLiteral(width, quietNaN) << ";\n"
       << "    sign_result = lhs[" << width - 1 << "];\n"
@@ -434,35 +439,64 @@ std::string buildRemainderCoreFunction(const Format &format) {
       << "      if (magnitude_is_smaller) begin\n"
       << "        " << name << " = lhs;\n"
       << "      end else begin\n"
-      << "        remainder_value = " << precision << "'d0;\n"
-      << "        for (index = " << precision - 1
-      << "; index >= 0; index = index - 1) begin\n"
-      << "          shifted_remainder = {remainder_value, "
-         "significand_lhs[index]};\n"
-      << "          if (shifted_remainder >= {1'b0, significand_rhs}) begin\n"
-      << "            shifted_remainder = shifted_remainder - "
-         "{1'b0, significand_rhs};\n"
-      << "            remainder_value = shifted_remainder[" << precision - 1
-      << ":0];\n"
-      << "          end else\n"
-      << "            remainder_value = shifted_remainder[" << precision - 1
-      << ":0];\n"
-      << "        end\n"
       << "        exponent_delta = exponent_lhs_value - exponent_rhs_value;\n"
-      << "        for (index = 0; index < " << maximumExponentDelta
-      << "; index = index + 1) begin\n"
-      << "          if (index < exponent_delta) begin\n"
-      << "            shifted_remainder = {remainder_value, 1'b0};\n"
-      << "            if (shifted_remainder >= {1'b0, significand_rhs}) begin\n"
-      << "              shifted_remainder = shifted_remainder - "
-         "{1'b0, significand_rhs};\n"
-      << "              remainder_value = shifted_remainder[" << precision - 1
+      << "        exponent_delta_bits = exponent_delta[" << exponentBits - 1
       << ":0];\n"
-      << "            end else\n"
-      << "              remainder_value = shifted_remainder[" << precision - 1
+      << "        power_value = significand_rhs == " << precision << "'d1 ? "
+      << precision << "'d0 : " << precision << "'d1;\n"
+      << "        for (index = 0; index < " << exponentBits
+      << "; index = index + 1) begin\n"
+      << "          power_accumulator = " << precision << "'d0;\n"
+      << "          for (multiply_index = " << precision - 1
+      << "; multiply_index >= 0; multiply_index = multiply_index - 1) begin\n"
+      << "            modular_candidate = "
+         "{1'b0, power_accumulator, 1'b0};\n"
+      << "            if (power_value[multiply_index])\n"
+      << "              modular_candidate = modular_candidate + {{2{1'b0}}, "
+         "power_value};\n"
+      << "            if (modular_candidate >= "
+         "{1'b0, significand_rhs, 1'b0})\n"
+      << "              modular_candidate = modular_candidate - "
+         "{1'b0, significand_rhs, 1'b0};\n"
+      << "            else if (modular_candidate >= "
+         "{{2{1'b0}}, significand_rhs})\n"
+      << "              modular_candidate = modular_candidate - "
+         "{{2{1'b0}}, significand_rhs};\n"
+      << "            power_accumulator = modular_candidate[" << precision - 1
+      << ":0];\n"
+      << "          end\n"
+      << "          power_value = power_accumulator;\n"
+      << "          if (exponent_delta_bits[" << exponentBits - 1
+      << " - index]) begin\n"
+      << "            doubled_multiplicand = {power_value, 1'b0};\n"
+      << "            if (doubled_multiplicand >= "
+         "{1'b0, significand_rhs})\n"
+      << "              doubled_multiplicand = doubled_multiplicand - "
+         "{1'b0, significand_rhs};\n"
+      << "            power_value = doubled_multiplicand[" << precision - 1
       << ":0];\n"
       << "          end\n"
       << "        end\n"
+      << "        remainder_accumulator = " << precision << "'d0;\n"
+      << "        for (multiply_index = " << precision - 1
+      << "; multiply_index >= 0; multiply_index = multiply_index - 1) begin\n"
+      << "          modular_candidate = "
+         "{1'b0, remainder_accumulator, 1'b0};\n"
+      << "          if (significand_lhs[multiply_index])\n"
+      << "            modular_candidate = modular_candidate + "
+         "{{2{1'b0}}, power_value};\n"
+      << "          if (modular_candidate >= "
+         "{1'b0, significand_rhs, 1'b0})\n"
+      << "            modular_candidate = modular_candidate - "
+         "{1'b0, significand_rhs, 1'b0};\n"
+      << "          else if (modular_candidate >= "
+         "{{2{1'b0}}, significand_rhs})\n"
+      << "            modular_candidate = modular_candidate - "
+         "{{2{1'b0}}, significand_rhs};\n"
+      << "          remainder_accumulator = modular_candidate[" << precision - 1
+      << ":0];\n"
+      << "        end\n"
+      << "        remainder_value = remainder_accumulator;\n"
       << "        if (remainder_value == 0) begin\n"
       << "          " << name << " = {sign_result, " << exponentBits << "'d0, "
       << fractionBits << "'d0};\n"

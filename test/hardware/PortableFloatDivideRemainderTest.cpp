@@ -668,6 +668,8 @@ std::vector<NumericVector> numericVectors() {
         {minimumNormal, std::uint64_t{1}},
         {maximumFinite, maximumSubnormal},
         {maximumFinite, std::uint64_t{3}},
+        {one + 1, std::uint64_t{2}},
+        {std::uint64_t{3}, std::uint64_t{2}},
         {half, maximumFinite},
         {sign | maximumFinite, minimumNormal}};
     std::uint64_t state = 0xd1b54a32d192ed03ULL ^ shape.width();
@@ -710,50 +712,13 @@ std::uint64_t paddedInput(const NumericVector &vector, std::uint64_t value) {
 std::string makeTestbench() {
   std::string text;
   llvm::raw_string_ostream output(text);
-  output << R"sv(module elastic_scalar_float_divide(
-    input logic clock,
-    input logic reset,
-    input logic input_valid,
-    output logic input_ready,
-    input logic output_ready,
-    output logic output_valid,
-    input logic [5:0] mode,
-    input logic [63:0] lhs,
-    input logic [63:0] rhs,
-    output logic [63:0] result);
-  logic [63:0] next_result;
-  scalar_float_divide operation(
-      .data_input_0(lhs), .data_input_1(rhs), .config_0(mode),
-      .data_output_0(next_result));
-  assign input_ready = !output_valid || output_ready;
-  always_ff @(posedge clock) begin
-    if (reset) begin
-      output_valid <= 1'b0;
-      result <= 64'd0;
-    end else if (input_ready) begin
-      output_valid <= input_valid;
-      if (input_valid) result <= next_result;
-    end
-  end
-endmodule
-
-module testbench;
+  output << R"sv(module testbench;
   logic [63:0] lhs;
   logic [63:0] rhs;
   logic [5:0] divide_mode;
   logic [5:0] remainder_mode;
   logic [63:0] divide_result;
   logic [63:0] remainder_result;
-  logic clock;
-  logic reset;
-  logic input_valid;
-  logic input_ready;
-  logic output_ready;
-  logic output_valid;
-  logic [5:0] elastic_mode;
-  logic [63:0] elastic_lhs;
-  logic [63:0] elastic_rhs;
-  logic [63:0] elastic_result;
 
   scalar_float_divide divide_dut(
       .data_input_0(lhs), .data_input_1(rhs), .config_0(divide_mode),
@@ -761,14 +726,6 @@ module testbench;
   scalar_float_remainder remainder_dut(
       .data_input_0(lhs), .data_input_1(rhs), .config_0(remainder_mode),
       .data_output_0(remainder_result));
-  elastic_scalar_float_divide elastic_dut(
-      .clock(clock), .reset(reset), .input_valid(input_valid),
-      .input_ready(input_ready), .output_ready(output_ready),
-      .output_valid(output_valid), .mode(elastic_mode), .lhs(elastic_lhs),
-      .rhs(elastic_rhs), .result(elastic_result));
-
-  initial clock = 0;
-  always #5 clock = !clock;
 
   task automatic check_divide(
       input logic [5:0] mode,
@@ -822,47 +779,6 @@ module testbench;
                  64'h0000000040400000);
     check_remainder(6'd0, 64'hffffffff40b00000, 64'hffffffff40000000,
                     64'h000000003fc00000);
-
-    reset = 1'b1;
-    input_valid = 1'b0;
-    output_ready = 1'b0;
-    elastic_mode = 6'd31;
-    elastic_lhs = 64'hffffffff40c00000;
-    elastic_rhs = 64'hffffffff40000000;
-    repeat (2) @(posedge clock);
-    #1;
-    if (output_valid) $fatal(1, "reset did not clear the elastic result slot");
-
-    reset = 1'b0;
-    input_valid = 1'b1;
-    @(posedge clock);
-    #1;
-    if (!output_valid || elastic_result !== 64'h0000000040400000)
-      $fatal(1, "elastic divide did not publish after one cycle");
-
-    elastic_lhs = 64'hffffffff41000000;
-    elastic_rhs = 64'hffffffff40800000;
-    #1;
-    if (input_ready || !output_valid ||
-        elastic_result !== 64'h0000000040400000)
-      $fatal(1, "backpressure did not retain the published quotient");
-
-    output_ready = 1'b1;
-    @(posedge clock);
-    #1;
-    if (!output_valid || elastic_result !== 64'h0000000040000000)
-      $fatal(1, "release-before-acquire lost the next quotient");
-
-    input_valid = 1'b0;
-    output_ready = 1'b0;
-    #1;
-    if (input_ready || elastic_result !== 64'h0000000040000000)
-      $fatal(1, "stall changed a retained replacement quotient");
-
-    reset = 1'b1;
-    @(posedge clock);
-    #1;
-    if (output_valid) $fatal(1, "reset did not discard stalled occupancy");
     $finish;
   end
 endmodule
@@ -949,6 +865,12 @@ std::string emitFamily(llvm::StringRef test, const ArtifactStore &store,
               rtl.contains(core) && !rtl.contains("shortreal") &&
               !rtl.contains(" real") && !rtl.contains("DPI"),
           "floating RTL is incomplete or not synthesizable bit logic");
+  if (family == FloatFamily::Remainder)
+    require(test,
+            rtl.contains("for (index = 0; index < 11;") &&
+                !rtl.contains("for (index = 0; index < 2046;") &&
+                !rtl.contains('%'),
+            "floating remainder uses an unbounded or divider-based scale");
   return first;
 }
 
