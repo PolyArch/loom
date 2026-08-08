@@ -7,6 +7,7 @@
 
 #include "Fabric/IR/ImplementationFamily.h"
 #include "ImplementationFamilyBehaviorInternal.h"
+#include "ImplementationFamilyFixedBehavior.h"
 #include "ImplementationFamilyScalarIntegerBehavior.h"
 #include "ImplementationFamilyVectorIntegerBehavior.h"
 
@@ -36,6 +37,7 @@ llvm::Error reject(const llvm::Twine &message) {
 
 enum class FiniteBehaviorRelationOwner : std::uint8_t {
   Generic,
+  Fixed,
   ScalarInteger,
   FixedVectorInteger,
   Control,
@@ -43,6 +45,8 @@ enum class FiniteBehaviorRelationOwner : std::uint8_t {
 
 FiniteBehaviorRelationOwner
 finiteBehaviorRelationOwner(ImplementationFamilyId family) {
+  if (detail::ownsFixedBehaviorRelation(family))
+    return FiniteBehaviorRelationOwner::Fixed;
   if (detail::ownsScalarIntegerBehaviorRelation(family))
     return FiniteBehaviorRelationOwner::ScalarInteger;
   if (detail::ownsFixedVectorIntegerBehaviorRelation(family))
@@ -423,6 +427,8 @@ fabric::FabricOpSemanticFieldRelation::projectSemanticValue(
     if (family_ == ImplementationFamilyId::TokenConstant)
       return projectConstant(actor, directEncodedBitCount_);
     switch (finiteBehaviorRelationOwner(family_)) {
+    case FiniteBehaviorRelationOwner::Fixed:
+      return reject("fixed behavior relation has no semantic field");
     case FiniteBehaviorRelationOwner::ScalarInteger:
       return detail::projectScalarIntegerBehavior(
           family_, actor, resolvedIndexWidth, finiteBehaviorDomain_);
@@ -526,6 +532,10 @@ fabric::resolveFabricOpSemanticFieldRelation(
   auto domain = [&]()
       -> llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>> {
     switch (owner) {
+    case FiniteBehaviorRelationOwner::Fixed:
+      return detail::resolveFixedBehaviorDomain(family, params, enabledSchemas,
+                                                physicalInputWidths,
+                                                physicalResultWidths, context);
     case FiniteBehaviorRelationOwner::ScalarInteger:
       return detail::resolveScalarIntegerBehaviorDomain(
           family, params, enabledSchemas, physicalInputWidths,

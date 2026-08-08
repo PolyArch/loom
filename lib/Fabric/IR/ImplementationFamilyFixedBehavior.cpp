@@ -73,8 +73,8 @@ llvm::Error validateFixedParameters(ImplementationFamilyId family,
         typed.integerWidths.empty())
       return reject("fixed multiply requires a non-empty ordinary integer "
                     "width domain");
-    if (!typed.pointerFormats.valid())
-      return reject("fixed multiply pointer format relation is invalid");
+    if (!typed.pointerFormats.valid() || !typed.pointerFormats.empty())
+      return reject("fixed multiply requires an empty pointer format relation");
     return llvm::Error::success();
   }
   case ImplementationFamilyId::LoopCarry:

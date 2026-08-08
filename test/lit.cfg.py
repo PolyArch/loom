@@ -86,6 +86,7 @@ tools = [
     "loom-fabric-elaboration-alias-chain-test",
     "loom-fabric-fixed-vector-integer-behavior-test",
     "loom-fabric-implementation-family-behavior-inventory-test",
+    "loom-fabric-implementation-family-fixed-behavior-test",
     "loom-fabric-implementation-family-test",
     "loom-fabric-scalar-integer-behavior-test",
     "loom-fabric-special-math-implementation-family-test",

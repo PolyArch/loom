@@ -177,6 +177,17 @@ void typedParametersAndSchemasFailClosed() {
                   multiplySchema, binaryInputs, scalarResult, context),
               "non-empty");
 
+  const FamilyCapabilityParams pointerMultiply = ScalarIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I32}),
+      PointerFormatRelation::get(
+          {{0, 64, 64, ::loom::PointerLayoutKind::StableIntegral}})};
+  expectError(test,
+              detail::resolveFixedBehaviorDomain(
+                  ImplementationFamilyId::ScalarIntegerMultiply,
+                  pointerMultiply, multiplySchema, binaryInputs, scalarResult,
+                  context),
+              "empty pointer format");
+
   FloatFormatSet invalidFormats;
   invalidFormats.insert(static_cast<FloatFormat>(99));
   const FamilyCapabilityParams invalidAdapter = FixedVectorAdapterParams{
