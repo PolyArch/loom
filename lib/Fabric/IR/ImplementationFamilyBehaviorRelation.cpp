@@ -26,6 +26,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -353,6 +354,17 @@ projectConstant(const ::dataflow::CanonicalActorSchemaProjection &actor,
 }
 
 } // namespace
+
+mlir::arith::FastMathFlags fabric::detail::minimalFloatingActorPermissions(
+    const FloatBehaviorProfile &behavior) {
+  using Bits = std::underlying_type_t<mlir::arith::FastMathFlags>;
+  Bits flags = static_cast<Bits>(behavior.requiredFastMath);
+  if (!behavior.nanBehaviors.contains(FloatNaNBehavior::IEEE))
+    flags |= static_cast<Bits>(mlir::arith::FastMathFlags::nnan);
+  if (!behavior.signedZeroBehaviors.contains(FloatSignedZeroBehavior::Preserve))
+    flags |= static_cast<Bits>(mlir::arith::FastMathFlags::nsz);
+  return static_cast<mlir::arith::FastMathFlags>(flags);
+}
 
 llvm::Error fabric::detail::validateImplementationFamilyBehaviorPoint(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,

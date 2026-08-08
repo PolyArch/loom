@@ -629,6 +629,36 @@ void singletonQuotientHasNoSemanticField() {
           "hardwired scalar FMA retained a semantic field");
 }
 
+void relaxedOnlyProfileHasAnAdmittedWitness() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  FloatBehaviorProfile behavior = FloatBehaviorProfile::strictIEEE();
+  behavior.nanBehaviors =
+      FloatNaNBehaviorSet::get({FloatNaNBehavior::NumberPreferred});
+  behavior.signedZeroBehaviors =
+      FloatSignedZeroBehaviorSet::get({FloatSignedZeroBehavior::IgnoreSign});
+  const FamilyCapabilityParams params =
+      ScalarFloatParams{FloatFormatSet::get({FloatFormat::F32}), behavior};
+  constexpr std::array schemas = {OperationSchemaId::ArithAddF};
+  constexpr std::array inputs = {32U, 32U};
+  constexpr std::array results = {32U};
+  auto domain = resolve(test, ImplementationFamilyId::ScalarFloatAddSub, params,
+                        schemas, inputs, results, context);
+  require(test, domain.size() == 1 && !domain.front().semanticConfiguration,
+          "relaxed-only scalar floating capability did not collapse");
+  const auto *payload = std::get_if<dataflow::FloatingPointPayload>(
+      &domain.front().representativeActor.payload);
+  using FastMathBits = std::underlying_type_t<mlir::arith::FastMathFlags>;
+  const FastMathBits flags =
+      payload ? static_cast<FastMathBits>(payload->flags) : 0;
+  require(test,
+          (flags &
+           static_cast<FastMathBits>(mlir::arith::FastMathFlags::nnan)) != 0 &&
+              (flags &
+               static_cast<FastMathBits>(mlir::arith::FastMathFlags::nsz)) != 0,
+          "relaxed-only witness lacks its minimal actor permissions");
+}
+
 void publicRelationUsesTheSealedScalarFloatOwner() {
   const char *test = __func__;
   mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
@@ -688,6 +718,7 @@ int main() {
   singleRoleArithmeticUsesAnEmptyRoleAndExactComponents();
   invalidDomainsFailClosed();
   singletonQuotientHasNoSemanticField();
+  relaxedOnlyProfileHasAnAdmittedWitness();
   publicRelationUsesTheSealedScalarFloatOwner();
   return EXIT_SUCCESS;
 }

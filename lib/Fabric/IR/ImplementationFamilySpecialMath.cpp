@@ -74,17 +74,6 @@ mlir::arith::FastMathFlags addFastMathFlag(mlir::arith::FastMathFlags flags,
                                                  static_cast<Bits>(flag));
 }
 
-mlir::arith::FastMathFlags
-minimalActorFlags(const fabric::FloatBehaviorProfile &behavior) {
-  mlir::arith::FastMathFlags flags = behavior.requiredFastMath;
-  if (!behavior.nanBehaviors.contains(fabric::FloatNaNBehavior::IEEE))
-    flags = addFastMathFlag(flags, mlir::arith::FastMathFlags::nnan);
-  if (!behavior.signedZeroBehaviors.contains(
-          fabric::FloatSignedZeroBehavior::Preserve))
-    flags = addFastMathFlag(flags, mlir::arith::FastMathFlags::nsz);
-  return flags;
-}
-
 bool lessPoint(const fabric::FiniteImplementationFamilyBehaviorPoint &lhs,
                const fabric::FiniteImplementationFamilyBehaviorPoint &rhs) {
   return std::lexicographical_compare(
@@ -164,7 +153,7 @@ fabric::detail::resolveScalarSpecialMathBehaviorDomain(
     return reject("special-math physical role inventory is incomplete");
 
   mlir::arith::FastMathFlags actorFlags =
-      minimalActorFlags(parameters->behavior);
+      minimalFloatingActorPermissions(parameters->behavior);
   if (parameters->accuracyGuarantee !=
       ::loom::SpecialMathAccuracyTier::CorrectlyRounded)
     actorFlags = addFastMathFlag(actorFlags, mlir::arith::FastMathFlags::afn);
@@ -278,7 +267,7 @@ fabric::detail::enumerateScalarSpecialMathBehaviorActors(
     return std::move(error);
   std::vector<::dataflow::CanonicalActorSchemaProjection> actors;
   const mlir::arith::FastMathFlags baseActorFlags =
-      minimalActorFlags(parameters->behavior);
+      minimalFloatingActorPermissions(parameters->behavior);
   for (::dataflow::OperationSchemaId schema : enabledSchemas) {
     for (FloatFormat format : floatFormatDomain) {
       if (!parameters->formats.contains(format))

@@ -5,6 +5,9 @@
 
 namespace fabric::detail {
 
+::mlir::arith::FastMathFlags
+minimalFloatingActorPermissions(const FloatBehaviorProfile &behavior);
+
 struct ImplementationFamilyBehaviorLaneImage final {
   std::vector<std::uint64_t> ordinals;
   std::uint64_t bound = 0;

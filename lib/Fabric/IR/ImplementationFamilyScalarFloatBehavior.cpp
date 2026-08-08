@@ -260,6 +260,8 @@ llvm::Error appendUniformCandidates(
   if (llvm::Error error =
           validateFloatParameterDomain(params.formats, params.behavior))
     return error;
+  const mlir::arith::FastMathFlags actorFlags =
+      detail::minimalFloatingActorPermissions(params.behavior);
 
   bool selectsRounding = false;
   for (::dataflow::OperationSchemaId schema : orderedSchemas) {
@@ -297,8 +299,7 @@ llvm::Error appendUniformCandidates(
         return appendCandidate(
             candidates,
             {schema, mlir::FunctionType::get(&context, inputs, {type}),
-             ::dataflow::FloatingPointPayload{params.behavior.requiredFastMath,
-                                              actorRounding}},
+             ::dataflow::FloatingPointPayload{actorFlags, actorRounding}},
             shape->role, std::move(components), selectedRounding, 1);
       };
 
@@ -344,6 +345,8 @@ llvm::Error appendWidthCastCandidates(
   if (llvm::Error error =
           validateFloatParameterDomain(formats, params.behavior))
     return error;
+  const mlir::arith::FastMathFlags actorFlags =
+      detail::minimalFloatingActorPermissions(params.behavior);
 
   std::vector<std::pair<FloatFormat, FloatFormat>> usedPairs;
   bool selectsRounding = false;
@@ -394,8 +397,7 @@ llvm::Error appendWidthCastCandidates(
               {schema,
                mlir::FunctionType::get(&context, {floatType(context, source)},
                                        {floatType(context, destination)}),
-               ::dataflow::FloatingPointPayload{
-                   params.behavior.requiredFastMath, actorRounding}},
+               ::dataflow::FloatingPointPayload{actorFlags, actorRounding}},
               "", std::move(components), selectedRounding, 1);
         };
 
