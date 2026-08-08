@@ -1,0 +1,37 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-integer-saturating-add-sub-test %t
+# RUN: FileCheck %s --check-prefix=SCALAR < %t/scalar/artifacts/scalar_integer_saturating_add_sub.sv
+# RUN: FileCheck %s --check-prefix=VECTOR < %t/vector/artifacts/fixed_vector_integer_saturating_add_sub.sv
+# RUN: FileCheck %s --check-prefix=SCALAR-TB < %t/scalar/artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=VECTOR-TB < %t/vector/artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=SCALAR-YS < %t/scalar/artifacts/portable_scalar_integer_saturating_add_sub.ys
+# RUN: FileCheck %s --check-prefix=VECTOR-YS < %t/vector/artifacts/portable_fixed_vector_integer_saturating_add_sub.ys
+
+# SCALAR: module scalar_integer_saturating_add_sub
+# SCALAR: input [31:0] data_input_0
+# SCALAR: input [3:0] config_0
+# SCALAR: output [31:0] data_output_0
+
+# VECTOR: module fixed_vector_integer_saturating_add_sub
+# VECTOR: input [47:0] data_input_0
+# VECTOR: input [3:0] config_0
+# VECTOR: output [47:0] data_output_0
+
+# SCALAR-TB: signed i8 add positive saturation
+# SCALAR-TB: unsigned i16 sub saturation
+# SCALAR-TB: signed i32 sub positive saturation
+# SCALAR-TB: unassigned code preserves inactive behavior
+
+# VECTOR-TB: signed i8 add lanes
+# VECTOR-TB: unsigned i8 sub lanes
+# VECTOR-TB: signed i16 add lanes
+# VECTOR-TB: unsigned i16 sub lanes
+
+# SCALAR-YS: hierarchy -check -top scalar_integer_saturating_add_sub
+# SCALAR-YS: select -assert-none
+# SCALAR-YS: synth -top scalar_integer_saturating_add_sub
+
+# VECTOR-YS: hierarchy -check -top fixed_vector_integer_saturating_add_sub
+# VECTOR-YS: select -assert-none
+# VECTOR-YS: synth -top fixed_vector_integer_saturating_add_sub
