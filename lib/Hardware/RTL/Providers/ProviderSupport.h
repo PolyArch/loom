@@ -8,6 +8,7 @@
 #include "llvm/ADT/ArrayRef.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace mlir {
 class Location;
@@ -15,6 +16,25 @@ class OpBuilder;
 } // namespace mlir
 
 namespace loom::hardware::rtl::detail {
+
+struct PortableFloatFormat final {
+  unsigned exponentBits;
+  unsigned fractionBits;
+
+  unsigned width() const { return 1 + exponentBits + fractionBits; }
+  unsigned precision() const { return fractionBits + 1; }
+  int bias() const { return (1 << (exponentBits - 1)) - 1; }
+  int minimumExponent() const { return 1 - bias(); }
+  int maximumExponent() const { return bias(); }
+
+  friend bool operator==(const PortableFloatFormat &lhs,
+                         const PortableFloatFormat &rhs) {
+    return lhs.exponentBits == rhs.exponentBits &&
+           lhs.fractionBits == rhs.fractionBits;
+  }
+};
+
+std::optional<PortableFloatFormat> resolvePortableFloatFormat(mlir::Type type);
 
 llvm::APInt decodePhysicalCode(llvm::ArrayRef<std::uint8_t> bytes,
                                std::uint64_t bitCount);

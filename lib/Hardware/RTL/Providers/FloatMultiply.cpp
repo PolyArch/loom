@@ -31,26 +31,11 @@ namespace loom::hardware::rtl {
 namespace {
 
 enum class MultiplyFamily { Scalar, FixedVector };
+using Format = detail::PortableFloatFormat;
 
 struct Mode final {
   ::dataflow::CanonicalActorSchemaProjection actor;
   const FiniteCodebookEntry *codebookEntry = nullptr;
-};
-
-struct Format final {
-  unsigned exponentBits;
-  unsigned fractionBits;
-
-  unsigned width() const { return 1 + exponentBits + fractionBits; }
-  unsigned precision() const { return fractionBits + 1; }
-  int bias() const { return (1 << (exponentBits - 1)) - 1; }
-  int minimumExponent() const { return 1 - bias(); }
-  int maximumExponent() const { return bias(); }
-
-  friend bool operator==(const Format &lhs, const Format &rhs) {
-    return lhs.exponentBits == rhs.exponentBits &&
-           lhs.fractionBits == rhs.fractionBits;
-  }
 };
 
 struct LoweredMode final {
@@ -68,18 +53,6 @@ llvm::Error invalid(const llvm::Twine &message) {
 llvm::Error unsupported(const FabricOperationProviderRequest &request) {
   return llvm::make_error<FabricOperationProviderUnsupportedError>(
       request.capability.implementationFamily, request.recipe);
-}
-
-llvm::Expected<Format> lowerFormat(mlir::Type type) {
-  if (mlir::isa<mlir::Float16Type>(type))
-    return Format{5, 10};
-  if (mlir::isa<mlir::BFloat16Type>(type))
-    return Format{8, 7};
-  if (mlir::isa<mlir::Float32Type>(type))
-    return Format{8, 23};
-  if (mlir::isa<mlir::Float64Type>(type))
-    return Format{11, 52};
-  return invalid("behavior uses an unsupported floating format");
 }
 
 llvm::StringRef roundingSuffix(mlir::arith::RoundingMode rounding) {
@@ -141,9 +114,9 @@ lowerMode(MultiplyFamily family,
     return invalid("scalar behavior uses a vector type");
   }
 
-  auto format = lowerFormat(elementType);
+  auto format = detail::resolvePortableFloatFormat(elementType);
   if (!format)
-    return format.takeError();
+    return invalid("behavior uses an unsupported floating format");
   const mlir::arith::RoundingMode rounding = payload->roundingMode.value_or(
       mlir::arith::RoundingMode::to_nearest_even);
   return LoweredMode{*format, rounding, laneCount, modeName(*format, rounding)};

@@ -31,22 +31,11 @@
 namespace loom::hardware::rtl {
 namespace {
 
+using Format = detail::PortableFloatFormat;
+
 struct Mode final {
   ::dataflow::CanonicalActorSchemaProjection actor;
   const FiniteCodebookEntry *codebookEntry = nullptr;
-};
-
-struct Format final {
-  unsigned exponentBits;
-  unsigned fractionBits;
-
-  unsigned width() const { return 1 + exponentBits + fractionBits; }
-  unsigned precision() const { return fractionBits + 1; }
-  unsigned accumulatorWidth() const { return 2 * precision() + 4; }
-  unsigned alignmentTop() const { return 2 * precision() + 2; }
-  int bias() const { return (1 << (exponentBits - 1)) - 1; }
-  int minimumExponent() const { return 1 - bias(); }
-  int maximumExponent() const { return bias(); }
 };
 
 struct LoweredMode final {
@@ -58,18 +47,6 @@ llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "portable_scalar_float_fma_invalid: " +
                                      message);
-}
-
-llvm::Expected<Format> lowerFormat(mlir::Type type) {
-  if (mlir::isa<mlir::Float16Type>(type))
-    return Format{5, 10};
-  if (mlir::isa<mlir::BFloat16Type>(type))
-    return Format{8, 7};
-  if (mlir::isa<mlir::Float32Type>(type))
-    return Format{8, 23};
-  if (mlir::isa<mlir::Float64Type>(type))
-    return Format{11, 52};
-  return invalid("behavior uses an unsupported floating format");
 }
 
 llvm::Expected<LoweredMode> lowerMode(const Mode &mode) {
@@ -88,9 +65,9 @@ llvm::Expected<LoweredMode> lowerMode(const Mode &mode) {
       (payload->roundingMode &&
        *payload->roundingMode != mlir::arith::RoundingMode::to_nearest_even))
     return invalid("behavior is outside the strict RNE floating profile");
-  auto format = lowerFormat(type);
+  auto format = detail::resolvePortableFloatFormat(type);
   if (!format)
-    return format.takeError();
+    return invalid("behavior uses an unsupported floating format");
   return LoweredMode{*format, "loom_fma_e" +
                                   std::to_string(format->exponentBits) + "_f" +
                                   std::to_string(format->fractionBits)};
@@ -109,8 +86,8 @@ std::string buildFunction(const LoweredMode &mode) {
   const unsigned fractionBits = format.fractionBits;
   const unsigned precision = format.precision();
   const unsigned productWidth = 2 * precision;
-  const unsigned accumulatorWidth = format.accumulatorWidth();
-  const unsigned alignmentTop = format.alignmentTop();
+  const unsigned accumulatorWidth = 2 * precision + 4;
+  const unsigned alignmentTop = 2 * precision + 2;
   const std::uint64_t exponentMask = (std::uint64_t{1} << exponentBits) - 1;
   const std::uint64_t infinity = exponentMask << fractionBits;
   const std::uint64_t quietNaN =

@@ -10,6 +10,18 @@
 
 namespace loom::hardware::rtl::detail {
 
+std::optional<PortableFloatFormat> resolvePortableFloatFormat(mlir::Type type) {
+  if (mlir::isa<mlir::Float16Type>(type))
+    return PortableFloatFormat{5, 10};
+  if (mlir::isa<mlir::BFloat16Type>(type))
+    return PortableFloatFormat{8, 7};
+  if (mlir::isa<mlir::Float32Type>(type))
+    return PortableFloatFormat{8, 23};
+  if (mlir::isa<mlir::Float64Type>(type))
+    return PortableFloatFormat{11, 52};
+  return std::nullopt;
+}
+
 llvm::APInt decodePhysicalCode(llvm::ArrayRef<std::uint8_t> bytes,
                                std::uint64_t bitCount) {
   llvm::APInt result(static_cast<unsigned>(bitCount), 0);
