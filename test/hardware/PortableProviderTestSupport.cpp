@@ -69,9 +69,6 @@ llvm::Expected<PortableProviderConformance> specializeAndExportPortableProvider(
     return invalid("module is absent");
   if (skeleton.operationLeaves.empty())
     return invalid("operation occurrence set is empty");
-  if (llvm::Error error = rtl::verifyCommonCirctSkeleton(
-          *skeleton.module, configurationAbi.abi(), skeleton.operationLeaves))
-    return std::move(error);
 
   std::vector<rtl::FabricOperationRecipeBinding> recipes;
   recipes.reserve(skeleton.operationLeaves.size());

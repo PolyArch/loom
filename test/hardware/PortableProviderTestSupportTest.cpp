@@ -42,10 +42,12 @@ std::string readFile(const std::filesystem::path &path) {
                      std::istreambuf_iterator<char>());
 }
 
-void artifactWriterIsExactAndConfined(const std::filesystem::path &root) {
+void artifactWriterIsExactAndConfined(const std::filesystem::path &workspace) {
   using loom::hardware::test::PortableProviderArtifact;
   using loom::hardware::test::writePortableProviderArtifacts;
 
+  std::filesystem::create_directories(workspace);
+  const std::filesystem::path root = workspace / "published";
   const std::vector<PortableProviderArtifact> artifacts{
       {"rtl/design.sv", "module design; endmodule\n"},
       {"testbench.sv", "module testbench; endmodule\n"},
@@ -70,7 +72,7 @@ void artifactWriterIsExactAndConfined(const std::filesystem::path &root) {
                   root, {{"same.sv", "first"}, {"same.sv", "second"}}),
               "duplicate");
 
-  const std::filesystem::path atomic = root / "atomic";
+  const std::filesystem::path atomic = workspace / "atomic";
   expectError(
       __func__,
       writePortableProviderArtifacts(
@@ -79,9 +81,8 @@ void artifactWriterIsExactAndConfined(const std::filesystem::path &root) {
   require(__func__, !std::filesystem::exists(atomic),
           "invalid artifact list left a partial root");
 
-  const std::filesystem::path hardlinkRoot = root.string() + "-hardlink";
-  const std::filesystem::path hardlinkOutside =
-      root.string() + "-hardlink-outside.sv";
+  const std::filesystem::path hardlinkRoot = workspace / "hardlink";
+  const std::filesystem::path hardlinkOutside = workspace / "outside.sv";
   std::filesystem::remove_all(hardlinkRoot);
   std::filesystem::remove(hardlinkOutside);
   std::filesystem::create_directories(hardlinkRoot);
@@ -98,7 +99,7 @@ void artifactWriterIsExactAndConfined(const std::filesystem::path &root) {
   require(__func__, readFile(hardlinkOutside) == "outside sentinel\n",
           "artifact publication changed an inode outside its root");
 
-  const std::filesystem::path transactional = root.string() + "-transactional";
+  const std::filesystem::path transactional = workspace / "transactional";
   std::filesystem::remove_all(transactional);
   expectError(
       __func__,
