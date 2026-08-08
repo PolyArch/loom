@@ -260,3 +260,17 @@ multiple module-level SSA uses or from a route tree alone.
 The mapper selects traversals and configuration from the switch's exact
 connectivity and resource contracts. Protocol packetization and implementation
 microstate remain outside the architecture-level switch owner.
+
+One `fabric.switch` is one physical crossbar, so its implementation cost is not
+independent of its shape. Area, wiring, selector depth, timing closure, and
+configuration grow with both port dimensions. Treating a schedule-wide
+crossbar as an abstract free routing node would make physically implausible
+hardware valid and would hide the real distributed routing problem from PnR.
+
+The 16-input and 16-output limits bound the primitive's representable physical
+scope. The advisory threshold at either dimension greater than eight preserves
+an escape hatch for unusual but still bounded hardware while making an
+inefficient choice visible. A warning cannot affect Fabric identity or Mapping
+semantics; otherwise diagnostic policy would become another architecture
+owner. Larger networks compose ordinary switch occurrences and connections,
+which exposes their real links, capacities, and contention to every consumer.

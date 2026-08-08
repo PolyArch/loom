@@ -33,12 +33,38 @@ topology helper would add a shadow connection model; resolving one typed
 backedge into the ordinary Fabric SSA edge keeps cyclic and acyclic hardware
 under the same semantic owner.
 
+A rectangular mesh is nevertheless common enough to justify one typed
+authoring helper. Requiring every user to manually allocate directional
+backedges, bounded crossbars, attachment banks, and link FIFOs would repeat a
+large error-prone recipe without expressing a new architecture. The helper
+therefore elaborates immediately into the same ordinary Builder operations and
+returns only owner-checked attachment handles. It introduces no persistent
+mesh object and no second topology graph.
+
+Two physical lanes in each cardinal direction make an interior transit switch
+exactly `8 x 8`. Local traffic cannot add a ninth port to that crossbar, so
+injection, ejection, fanout, and merge are separate bounded switches. This
+decomposition preserves realistic local contention while allowing one
+resource's ports to use several attachment banks. It also prevents a memory
+with many roles from making one neighboring router an unavoidable bottleneck.
+The `(x, y)` pair is only an ergonomic lookup key while building; explicit
+Fabric connections remain the sole topology truth.
+
 Builtin Small, Default, and Large targets are complete hardware examples, not
 size knobs or capability summaries. Their FU distribution, memory, transport,
 InstructionCore, clocks, resets, and semantic capabilities must be
 deterministic so the same public API can reproduce and teach the exact
 hardware. Expanding their Reset contract into ordinary Fabric facts prevents
 the backend from becoming a second, target-dependent reset-policy owner.
+
+A schedule-wide crossbar was rejected for the builtin interconnect. Its port
+count scales with the complete preset, it creates unrealistic wiring and
+timing, and every route competes at one physical occurrence. It also turns PnR
+failures into an ambiguous mixture of a fabricated central bottleneck and
+search quality. The bounded two-lane mesh recipe instead supplies several real
+paths, finite local bottlenecks, and enough pressure to exercise placement and
+routing. It remains an example recipe rather than a Fabric assumption: custom
+hardware can use any explicit directed topology, including a non-grid graph.
 
 The general builtin memory is broader than the initial Hybrid32 convenience
 recipe because a preset-wide scalar type floor is meaningful only when both

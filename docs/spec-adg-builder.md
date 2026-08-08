@@ -108,6 +108,64 @@ Inside `fabric.module`, SSA connections own topology. Inside `fabric.system`,
 typed transport resources, endpoints, patterns, and directed connections own
 topology.
 
+## Regular Switch-Network Authoring
+
+The first regular-topology convenience helper constructs a bounded rectangular
+mesh through ordinary `fabric.switch`, FIFO, and SSA connections:
+
+```text
+MeshSwitchNetworkSpec::spatial(
+    width, height, lanes_per_direction, link_type, attachments)
+MeshSwitchNetworkSpec::temporal(
+    width, height, lanes_per_direction, link_type,
+    route_table_size, grant_policy_kind, attachments)
+
+SpatialCoreBuilder::addMeshSwitchNetwork(MeshSwitchNetworkSpec)
+  -> MeshSwitchNetwork
+MeshSwitchNetwork::attachment(ordinal)
+  -> MeshCellAttachment
+MeshCellAttachment::inputs()
+  -> ArrayRef<SpatialValue>
+MeshCellAttachment::connectOutputs(ArrayRef<SpatialValue>)
+  -> Error
+```
+
+`width` and `height` are positive authoring dimensions whose product is at
+least two, and `lanes_per_direction` is one or two. `attachments` is an ordered
+list of typed local ingress and egress banks, each assigned to one `(x, y)`
+authoring cell. A bank has at least one port in total and at most eight inputs
+and eight outputs; one cell has at most seven banks. Several banks may name one
+cell, and one PE, memory, or boundary may compose values from banks at several
+cells. This is how a multi-port memory distributes its transport roles without
+forcing them through one local switch. Manager capabilities and other
+non-transport values remain direct ordinary Builder inputs and do not enter
+the mesh.
+
+The spatial factory requires an untagged `bits` link type. The temporal factory
+requires a `bits_tag` link type, positive route-table size, and one closed
+`FixedPriority | RoundRobin` policy kind. The helper derives the complete
+ascending requester ordinal sequence separately for every generated temporal
+switch with physical fan-in; round-robin resets to requester zero. A caller
+that needs another exact requester order uses the lower-level `addSwitch`
+surface.
+
+For every present cardinal direction, a cell owns
+`lanes_per_direction` incoming and outgoing directed links. An interior cell
+with two lanes therefore has one `8 x 8` transit crossbar. Boundary transit
+crossbars omit absent directions. Local ejection, injection, fanout, and merge
+are composed from additional switches whose two dimensions are each at most
+eight; no helper-created switch triggers the large-crossbar warning. Explicit
+FIFOs terminate every inter-cell directed link. The helper accepts no implicit
+wraparound; a torus or another topology is authored with the exact lower-level
+Builder surface.
+
+The returned coordinates and attachment ordinals exist only while authoring.
+Expansion emits no coordinate, distance, mesh, tile, or direction fact into
+Fabric. The resulting explicit resources and SSA connections are sufficient to
+reconstruct all routing capability, so finalization and every downstream
+consumer treat the result exactly like an equivalent hand-authored arbitrary
+topology.
+
 ## Exact And Convenient Authoring
 
 One public library may expose both exact typed construction and convenience
@@ -483,8 +541,9 @@ BuiltinTargetPreset = Small | Default | Large
 ```
 
 The `Small`, `Default`, and `Large` builtin descriptors use schema version
-`2.0`. Their prior schema did not materialize complete symbolic slot and Reset
-facts and is not retained as a compatibility expansion.
+`2.0`. Their prior `1.x` recipe neither materialized complete symbolic slot and
+Reset facts nor provided a bounded distributed interconnect, and is not
+retained as a compatibility expansion.
 
 The public builtin boundary is:
 
@@ -562,6 +621,22 @@ The common construction pattern contains both an untagged Spatial network and
 a tagged Temporal network connected only through explicit Fabric boundaries.
 This is an authoring recipe, not a second topology schema: expansion produces
 ordinary explicit Fabric resources and connections.
+
+Each preset constructs distinct overlaid untagged Spatial and tagged Temporal
+two-lane-per-direction mesh networks through `addMeshSwitchNetwork`. Their
+authoring dimensions are `4 x 4` for `Small`, `6 x 6` for `Default`, and
+`8 x 8` for `Large`. These dimensions generate graph topology only; they do
+not become semantic coordinates. Interior transit switches are `8 x 8`, edge
+and corner transit switches are smaller, and every local attachment switch is
+at most `8 x 8`.
+
+PEs, memory operation ports, cross-schedule boundaries, and Module transport
+boundaries attach through distributed local banks. Every memory occurrence
+uses transport banks at more than one mesh cell; its manager capability remains
+direct. No switch is incident to all PEs, memories, or gateways, and no
+schedule-wide crossbar exists. The recipe retains finite shared links and
+local injection/ejection contention, so a known legal Mapping witness does not
+turn the hardware into a fully connected or workload-specific fixture.
 
 The initial scale anchors are:
 
@@ -1423,18 +1498,27 @@ The stable Builder anchors are deliberately small:
     `ResourceState` and exhibits the declared one-cycle timing, while an
     imported `LoopCarry` preserves that one-cycle recurrence path through
     elastic-transparent forwarding.
-12. A fused carry-or-invariant plus gate template exposes the raw
+12. The regular mesh helper emits only ordinary explicit Fabric topology,
+    keeps every generated switch at or below `8 x 8`, rejects an invalid
+    dimension, lane count, attachment bank, or unresolved local output, and
+    preserves identical identity for an equivalent exact hand-authored graph.
+13. Every builtin expands its versioned `4 x 4`, `6 x 6`, or `8 x 8` two-lane
+    network without semantic coordinates, a schedule-wide crossbar, or a
+    switch larger than `8 x 8`; each memory's transport roles reach more than
+    one mesh cell and the conformance Mapping witness encounters finite shared
+    capacity.
+14. A fused carry-or-invariant plus gate template exposes the raw
     parent-domain value, projected child-domain value, and child phase without
     admitting incoherent selector products.
-13. Every preset SpatialCore derives the same eight-step stream capability
+15. Every preset SpatialCore derives the same eight-step stream capability
     from the canonical `LoopControlFu` occurrence order.
-14. Every preset contains real slice/merge and shuffle occurrences, and one
+16. Every preset contains real slice/merge and shuffle occurrences, and one
     custom recipe proves that neither family nor the Builder assumes a
     128-bit or power-of-two payload.
-15. General64 admits one exact contiguous `vector<2xf64>` point, admits one
+17. General64 admits one exact contiguous `vector<2xf64>` point, admits one
     indexed point whose complete address vector fits, and rejects an
     equal-data-width indexed point whose address vector does not fit.
-16. One Module containing token and memory boundary faces, PE/FU/FU-node,
+18. One Module containing token and memory boundary faces, PE/FU/FU-node,
     memory/operation-port/local-service, switch, FIFO, boundary-resource, and
     spatial and temporal instruction-context members exposes every member
     through the public typed surface. Distinct-slot and many-to-one assignments
