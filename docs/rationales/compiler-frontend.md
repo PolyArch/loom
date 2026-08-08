@@ -499,6 +499,11 @@ Combining them would couple unrelated candidate domains and make every future
 shape decision carry numerical-policy fields. Delaying accuracy to D0-to-D*
 was also rejected because that lineage is semantics-preserving: weakening a
 correctly-rounded actor after publication would silently change its contract.
+Making SpecialMathAccuracy the first selected-Spatial D0 and exact-Fabric
+admission gate keeps those decisions separate while giving unresolved semantic
+state one closure owner. ExecutionShape publishes only its complete Structured
+children; it does not create a partial Dataflow projection or duplicate target
+admission before the accuracy contract exists.
 
 One four-element ordered domain is sufficient. It permits exact conformance and
 the practical one-, two-, and four-ULP research points without a floating

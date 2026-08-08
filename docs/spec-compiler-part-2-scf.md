@@ -690,12 +690,10 @@ remain the only semantic owners.
 ### Structured ExecutionShape Generator
 
 The current Structured ExecutionShape generator consumes a finite set of exact
-Structured Program references and one exact finalized Fabric. An empty input
-set produces an empty output set. A parent with no unresolved selected-Spatial
-execution-shape choice passes through only after mechanical D0 lowering and
-exact actor admission. A parent containing an unresolved, exactly
-representable `llvm.intr.fmuladd` emits the canonical pair of complete
-Structured children:
+Structured Program references. An empty input set produces an empty output
+set. A parent with no unresolved selected-Spatial execution-shape choice passes
+through unchanged. A parent containing an unresolved, exactly representable
+`llvm.intr.fmuladd` emits the canonical pair of complete Structured children:
 
 ```text
 Fused -> math.fma
@@ -710,30 +708,37 @@ operation. Distinct per-operation combinations are not part of the current
 contract.
 
 Each child preserves the exact floating type, fast-math contract, source
-location, Ownership lineage, and source-provenance projection. It is verified,
-finalized through the sole Structured Program finalizer, mechanically lowered
-to D0, and admitted against the exact concrete Fabric before publication to the
-output set. A shape whose resulting canonical actors have no concrete admitted
-capability is excluded. No unresolved parent, mixed Fused/Split child, hidden
-backend default, or target-code-generation choice may cross this boundary.
+location, Ownership lineage, and source-provenance projection. It is verified
+and finalized through the sole Structured Program finalizer before publication
+to the output set. The following SpecialMathAccuracy generator is the one
+selected-Spatial semantic-closure gate that first lowers the complete candidate
+to D0 and checks exact concrete Fabric admission. No unresolved parent,
+mixed Fused/Split child, hidden backend default, or target-code-generation
+choice may cross the ExecutionShape boundary.
 
-The resolved current component view is empty. Worker count, lowering
-verification controls, cached typed candidates, and cached D0 projections are
-invocation-local execution policy and do not change the finite semantic
-domain. A cache entry is keyed by the exact Structured Artifact reference and
-must match its already validated canonical bytes; it is removable and cannot
-serve as a second candidate authority.
+The resolved current component view is empty. Worker count and cached typed
+candidates are invocation-local execution policy and do not change the finite
+semantic domain. A cache entry is keyed by the exact Structured Artifact
+reference and must match its already validated canonical bytes; it is removable
+and cannot serve as a second candidate authority.
 
 ### Structured SpecialMathAccuracy Generator
 
-The SpecialMathAccuracy generator closes every selected-Spatial scalar
-`ScalarMath*` operation before mechanical D0 publication. It does not inspect
-or rewrite residual HostCore or InstructionCore computation. A special-math
-operation without the native approximate-functions permission `afn` has one
-legal selected tier, `CorrectlyRounded`; the generator materializes that tier
-mechanically and creates no accuracy choice. `afn` authorizes candidate
-generation over the finite domain above but does not itself select a tier or
-imply `Max4Ulp`.
+The SpecialMathAccuracy generator consumes a finite set of exact Structured
+Program references and one exact finalized Fabric. It closes every
+selected-Spatial scalar `ScalarMath*` operation before mechanical D0
+publication. It does not inspect or rewrite residual HostCore or
+InstructionCore computation. A special-math operation without the native
+approximate-functions permission `afn` has one legal selected tier,
+`CorrectlyRounded`; the generator materializes that tier mechanically and
+creates no accuracy choice. `afn` authorizes candidate generation over the
+finite domain above but does not itself select a tier or imply `Max4Ulp`.
+
+A candidate with no selected-Spatial special-math operation passes through this
+generator without a semantic decision, but still crosses the same mechanical
+D0 and exact-Fabric admission gate. ExecutionShape and SpecialMathAccuracy
+therefore have one first-D0 owner rather than duplicating partial lowering or
+inventing an unresolved actor projection.
 
 For an `afn` operation, the finite domain is `CorrectlyRounded`, `Max1Ulp`,
 `Max2Ulp`, and `Max4Ulp`. A resolved Loom policy or a source-derived typed hint
