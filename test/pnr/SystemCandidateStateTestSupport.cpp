@@ -271,13 +271,13 @@ loom::pnr::test::withFirstCoordinateLowerBound(
       mlir::ArrayAttr::get(cell.getContext(), inequalities));
 }
 
-loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
+static loom::adg::FinalizedFabricDesign buildHeterogeneousSystemImpl(
     loom::ArtifactStore &store,
     const loom::fabric::FinalizedFabricRoot &baselineSystem,
     const loom::fabric::FinalizedFabricRoot &primaryModule,
     const loom::fabric::FinalizedFabricRoot &alternateModule,
     mlir::MLIRContext &context, bool extraSupportsRead,
-    bool routeExtraMemoryThroughTransform) {
+    bool routeExtraMemoryThroughTransform, bool negotiatedRoutingMesh) {
   auto baseline = take(loom::fabric::requireSystemRoot(baselineSystem.view()));
   require(!baseline.artifact().systemMemoryServices().empty() &&
               !baseline.artifact().systemServiceEndpoints().empty(),
@@ -531,12 +531,66 @@ loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
                            take(messageSinks[ordinal].transport())))
       fail(llvm::toString(std::move(error)));
   }
-  for (std::size_t ordinal = 0; ordinal != messageRouters.size(); ++ordinal)
-    if (llvm::Error error = system.connect(
-            take(messageRouters[ordinal].output(1)),
-            take(messageRouters[(ordinal + 1) % messageRouters.size()].input(
-                1))))
-      fail(llvm::toString(std::move(error)));
+  for (std::size_t ordinal = 0; ordinal != messageRouters.size(); ++ordinal) {
+    auto source = take(messageRouters[ordinal].output(1));
+    auto sink =
+        take(messageRouters[(ordinal + 1) % messageRouters.size()].input(1));
+    if (!negotiatedRoutingMesh) {
+      if (llvm::Error error = system.connect(source, sink))
+        fail(llvm::toString(std::move(error)));
+      continue;
+    }
+
+    auto split = take(system.addTransportResource(
+        {{bits128}, {bits128, bits128}, messageTransportContract}));
+    auto directBranch = take(system.addTransferPattern(split, 0, {0}, 0));
+    auto bypassBranch = take(system.addTransferPattern(split, 0, {1}, 0));
+    auto merge = take(system.addTransportResource(
+        {{bits128, bits128}, {bits128}, messageTransportContract}));
+    auto directMerge = take(system.addTransferPattern(merge, 0, {0}, 0));
+    auto bypassMerge = take(system.addTransferPattern(merge, 1, {0}, 0));
+    domainMembers.push_back(split.domainMember());
+    domainMembers.push_back(directBranch.domainMember());
+    domainMembers.push_back(bypassBranch.domainMember());
+    domainMembers.push_back(merge.domainMember());
+    domainMembers.push_back(directMerge.domainMember());
+    domainMembers.push_back(bypassMerge.domainMember());
+
+    auto trunk = take(
+        system.addTransportResource({{bits128}, {bits128}, transportContract}));
+    auto trunkPattern = take(system.addTransferPattern(trunk, 0, {0}, 0));
+    domainMembers.push_back(trunk.domainMember());
+    domainMembers.push_back(trunkPattern.domainMember());
+
+    std::array<loom::adg::SystemTransportResource, 3> bypass = {
+        take(system.addTransportResource(
+            {{bits128}, {bits128}, transportContract})),
+        take(system.addTransportResource(
+            {{bits128}, {bits128}, transportContract})),
+        take(system.addTransportResource(
+            {{bits128}, {bits128}, transportContract}))};
+    for (auto &hop : bypass) {
+      auto pattern = take(system.addTransferPattern(hop, 0, {0}, 0));
+      domainMembers.push_back(hop.domainMember());
+      domainMembers.push_back(pattern.domainMember());
+    }
+
+    const std::array<std::pair<loom::adg::SystemTransportEndpoint,
+                               loom::adg::SystemTransportEndpoint>,
+                     8>
+        connections = {
+            std::pair{source, take(split.input(0))},
+            std::pair{take(split.output(0)), take(trunk.input(0))},
+            std::pair{take(trunk.output(0)), take(merge.input(0))},
+            std::pair{take(split.output(1)), take(bypass[0].input(0))},
+            std::pair{take(bypass[0].output(0)), take(bypass[1].input(0))},
+            std::pair{take(bypass[1].output(0)), take(bypass[2].input(0))},
+            std::pair{take(bypass[2].output(0)), take(merge.input(1))},
+            std::pair{take(merge.output(0)), sink}};
+    for (const auto &[connectionSource, connectionSink] : connections)
+      if (llvm::Error error = system.connect(connectionSource, connectionSink))
+        fail(llvm::toString(std::move(error)));
+  }
   domainMembers.push_back(hostMessageSource.domainMember());
   domainMembers.push_back(hostMessageSink.domainMember());
   domainMembers.push_back(coreMessageSource.domainMember());
@@ -550,6 +604,31 @@ loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
   require(finalized.roots().size() == 1,
           "heterogeneous fixture did not publish one System root");
   return finalized;
+}
+
+loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
+    loom::ArtifactStore &store,
+    const loom::fabric::FinalizedFabricRoot &baselineSystem,
+    const loom::fabric::FinalizedFabricRoot &primaryModule,
+    const loom::fabric::FinalizedFabricRoot &alternateModule,
+    mlir::MLIRContext &context, bool extraSupportsRead,
+    bool routeExtraMemoryThroughTransform) {
+  return buildHeterogeneousSystemImpl(
+      store, baselineSystem, primaryModule, alternateModule, context,
+      extraSupportsRead, routeExtraMemoryThroughTransform,
+      /*negotiatedRoutingMesh=*/false);
+}
+
+loom::adg::FinalizedFabricDesign loom::pnr::test::buildNegotiatedRoutingSystem(
+    loom::ArtifactStore &store,
+    const loom::fabric::FinalizedFabricRoot &baselineSystem,
+    const loom::fabric::FinalizedFabricRoot &primaryModule,
+    mlir::MLIRContext &context) {
+  return buildHeterogeneousSystemImpl(store, baselineSystem, primaryModule,
+                                      primaryModule, context,
+                                      /*extraSupportsRead=*/true,
+                                      /*routeExtraMemoryThroughTransform=*/true,
+                                      /*negotiatedRoutingMesh=*/true);
 }
 
 void loom::pnr::test::verifyFinalizedSystemMappingWorkflow(
@@ -1013,6 +1092,9 @@ void loom::pnr::test::verifySystemResourceActionWorkflow(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ArtifactRootReference &spatialMapping, const ResolvedConfig &resolved,
     const ResolvedPnrConfigView &config, mlir::MLIRContext &context) {
+  verifySystemNegotiatedRoutingWorkflow(store, baselineSystem, primaryModule,
+                                        dataflow, spatialMapping, resolved,
+                                        context);
   auto design = buildHeterogeneousSystem(
       store, baselineSystem, primaryModule, primaryModule, context,
       /*extraSupportsRead=*/true,

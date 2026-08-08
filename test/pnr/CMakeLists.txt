@@ -13,6 +13,7 @@ add_executable(loom-system-pnr-service-domain-test
 add_executable(loom-system-candidate-state-test
   SystemCandidateStateTest.cpp
   SystemCandidateStateTestSupport.cpp
+  SystemNegotiatedRoutingWorkflowTestSupport.cpp
 )
 
 add_executable(loom-system-channel-applicability-test

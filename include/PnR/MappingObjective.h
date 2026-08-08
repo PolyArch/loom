@@ -20,6 +20,7 @@ class SpatialMappingView;
 namespace loom::pnr {
 
 class FrozenSpatialPnrProblem;
+class FrozenSystemPnrProblem;
 class SpatialCandidateState;
 class SystemCandidateState;
 
@@ -107,6 +108,10 @@ public:
   evaluate(const SpatialCandidateState &candidate) const;
   llvm::Expected<dse::ObjectiveVector>
   evaluate(const SystemCandidateState &candidate) const;
+  llvm::Expected<dse::ObjectiveVector>
+  evaluateSystemProjection(const FrozenSystemPnrProblem &problem,
+                           std::uint64_t capacityOveruse,
+                           std::uint64_t totalSelectedTraversalClaim) const;
   llvm::Expected<dse::ObjectiveWideValue>
   selectedEnergy(const dse::ObjectiveVector &vector) const;
   llvm::Expected<dse::ObjectiveSignedDifference>

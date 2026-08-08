@@ -26,24 +26,12 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "system_mapping_capacity_invalid: " + message);
 }
 
-void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
-  for (int shift = 24; shift >= 0; shift -= 8)
-    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
-}
-
 void appendU64(std::string &bytes, std::uint64_t value) {
   for (unsigned shift = 56;; shift -= 8) {
     bytes.push_back(static_cast<char>(value >> shift));
     if (shift == 0)
       break;
   }
-}
-
-void appendSized(std::vector<std::uint8_t> &bytes,
-                 llvm::ArrayRef<std::uint8_t> value) {
-  for (int shift = 56; shift >= 0; shift -= 8)
-    bytes.push_back(static_cast<std::uint8_t>(value.size() >> shift));
-  bytes.insert(bytes.end(), value.begin(), value.end());
 }
 
 void appendSized(std::string &bytes, llvm::ArrayRef<std::uint8_t> value) {
@@ -54,24 +42,6 @@ void appendSized(std::string &bytes, llvm::ArrayRef<std::uint8_t> value) {
 std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
   return std::string(reinterpret_cast<const char *>(bytes.data()),
                      bytes.size());
-}
-
-std::vector<std::uint8_t>
-rootQualifier(const ::loom::fabric::FabricArtifactView &fabric) {
-  std::vector<std::uint8_t> result;
-  appendU32(result, 0);
-  appendSized(result, fabric.identity().bytes());
-  return result;
-}
-
-std::vector<std::uint8_t>
-occurrenceQualifier(const ::loom::fabric::FabricArtifactView &system,
-                    ::loom::fabric::SpatialCoreOccurrenceRef spatialCore) {
-  std::vector<std::uint8_t> result;
-  appendU32(result, 1);
-  appendSized(result, system.identity().bytes());
-  appendSized(result, ::loom::fabric::canonicalFabricBytes(spatialCore));
-  return result;
 }
 
 llvm::Error
@@ -248,8 +218,9 @@ llvm::Error verifySystemMappingCapacity(
     return invalid("System ResourceUse activation projection is incomplete");
 
   std::vector<ResourceCapacityNamespaceView> namespaces{
-      ResourceCapacityNamespaceView{&fabric.artifact(),
-                                    rootQualifier(fabric.artifact())}};
+      ResourceCapacityNamespaceView{
+          &fabric.artifact(),
+          rootResourceCapacityQualifier(fabric.artifact())}};
   std::vector<NamespaceMetadata> metadata(1);
   std::vector<ResourceCapacityUseProjection> uses;
   uses.reserve(resourceUses.size());
@@ -306,7 +277,8 @@ llvm::Error verifySystemMappingCapacity(
         namespaceByOccurrence.try_emplace(occurrenceKey, namespaces.size());
     if (inserted) {
       namespaces.push_back(ResourceCapacityNamespaceView{
-          module, occurrenceQualifier(fabric.artifact(), spatialCore)});
+          module,
+          occurrenceResourceCapacityQualifier(fabric.artifact(), spatialCore)});
       metadata.push_back(NamespaceMetadata{spatialCore});
     } else if (namespaces[namespacePosition->second].fabric->identity() !=
                module->identity()) {

@@ -120,6 +120,16 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
                         movableDecisionCount_, "routingChoices"))
       return error;
   }
+  for (const SystemRouteCapacityOveruseWitness &witness :
+       candidate.routeCapacityOveruseWitnesses()) {
+    const std::size_t offset = routingChoices_.size();
+    routingChoices_.emplace_back(SystemWitnessRegionRoutingAction{
+        ResolvedPnrViolationKind::CapacityOveruse, witness.capacityCell});
+    if (llvm::Error error =
+            appendRange(offset, routingChoices_, routingAnchors_,
+                        movableDecisionCount_, "routingChoices", false))
+      return error;
+  }
   if (!candidate.serviceRoutes().empty()) {
     const std::size_t offset = routingChoices_.size();
     routingChoices_.emplace_back(SystemGlobalRoutingAction{});

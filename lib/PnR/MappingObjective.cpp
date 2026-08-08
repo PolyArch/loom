@@ -6,6 +6,7 @@
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/System/SystemCandidateState.h"
+#include "PnR/System/SystemServiceRouter.h"
 
 #include "llvm/Support/ErrorHandling.h"
 
@@ -158,10 +159,11 @@ loom::pnr::systemMappingViolationValue(const SystemCandidateState &candidate,
                                        ResolvedPnrViolationKind kind) {
   switch (kind) {
   case ResolvedPnrViolationKind::UnroutedObligation:
-  case ResolvedPnrViolationKind::CapacityOveruse:
   case ResolvedPnrViolationKind::TagUnassigned:
   case ResolvedPnrViolationKind::TagConflict:
     return 0;
+  case ResolvedPnrViolationKind::CapacityOveruse:
+    return candidate.capacityOveruse();
   case ResolvedPnrViolationKind::HardProgressViolation:
     switch (candidate.problem().progressClosure().kind) {
     case ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet:
@@ -183,36 +185,10 @@ loom::pnr::systemMappingMeasureValue(const SystemCandidateState &candidate,
                                      MappingMeasureKind kind) {
   if (kind != MappingMeasureKind::TotalSelectedTraversalClaim)
     llvm_unreachable("unknown Mapping measure kind");
-  const FrozenEndpointRoutingTopology &topology =
-      candidate.problem().routingTopology();
-  std::uint64_t total = 0;
-  for (const SystemServiceRouteSelection &route : candidate.serviceRoutes()) {
-    std::set<std::pair<PnrIndex, PnrIndex>> selectedClaims;
-    for (const SystemServiceRouteNodeSelection &node :
-         candidate.serviceRouteNodes().slice(route.nodeOffset,
-                                             route.nodeCount)) {
-      if (node.incomingTraversal == getInvalidPnrIndex())
-        continue;
-      if (node.incomingTraversal >= topology.traversals().size())
-        return objectiveError("System candidate has a foreign traversal");
-      const EndpointRoutingTraversal &traversal =
-          topology.traversals()[node.incomingTraversal];
-      if (traversal.capacityClaimOffset > topology.capacityClaims().size() ||
-          traversal.capacityClaimCount >
-              topology.capacityClaims().size() - traversal.capacityClaimOffset)
-        return objectiveError("System traversal has an invalid claim range");
-      for (const EndpointRoutingCapacityClaim &claim :
-           topology.capacityClaims().slice(traversal.capacityClaimOffset,
-                                           traversal.capacityClaimCount)) {
-        if (!selectedClaims.emplace(claim.activation, claim.cell).second)
-          continue;
-        if (llvm::Error error = checkedAdd(
-                total, claim.qCost, "System total selected traversal claim"))
-          return std::move(error);
-      }
-    }
-  }
-  return total;
+  return detail::measureSystemServiceRouteTraversalClaim(
+      candidate.problem().routingTopology(),
+      {candidate.serviceRoutes(), candidate.serviceRouteNodes(),
+       candidate.serviceRouteSinks()});
 }
 
 llvm::Expected<MappingObjectiveProgram>
@@ -283,25 +259,59 @@ llvm::Expected<dse::ObjectiveVector> MappingObjectiveProgram::evaluate(
 
 llvm::Expected<dse::ObjectiveVector>
 MappingObjectiveProgram::evaluate(const SystemCandidateState &candidate) const {
+  auto traversalClaim = systemMappingMeasureValue(
+      candidate, MappingMeasureKind::TotalSelectedTraversalClaim);
+  if (!traversalClaim)
+    return traversalClaim.takeError();
+  return evaluateSystemProjection(candidate.problem(),
+                                  candidate.capacityOveruse(), *traversalClaim);
+}
+
+llvm::Expected<dse::ObjectiveVector>
+MappingObjectiveProgram::evaluateSystemProjection(
+    const FrozenSystemPnrProblem &problem, std::uint64_t capacityOveruse,
+    std::uint64_t totalSelectedTraversalClaim) const {
   std::array<std::uint64_t, resolvedPnrViolationKindCount> violations{};
   for (std::uint32_t ordinal = 0; ordinal != violations.size(); ++ordinal) {
     if ((selectedViolations_ & (UINT64_C(1) << ordinal)) == 0)
       continue;
-    auto value = systemMappingViolationValue(
-        candidate, static_cast<ResolvedPnrViolationKind>(ordinal));
-    if (!value)
-      return value.takeError();
-    violations[ordinal] = *value;
+    const auto kind = static_cast<ResolvedPnrViolationKind>(ordinal);
+    if (kind == ResolvedPnrViolationKind::CapacityOveruse) {
+      violations[ordinal] = capacityOveruse;
+      continue;
+    }
+    switch (kind) {
+    case ResolvedPnrViolationKind::UnroutedObligation:
+    case ResolvedPnrViolationKind::TagUnassigned:
+    case ResolvedPnrViolationKind::TagConflict:
+      violations[ordinal] = 0;
+      break;
+    case ResolvedPnrViolationKind::CapacityOveruse:
+      llvm_unreachable("CapacityOveruse was projected above");
+    case ResolvedPnrViolationKind::HardProgressViolation:
+      switch (problem.progressClosure().kind) {
+      case ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet:
+        violations[ordinal] = 0;
+        break;
+      case ::loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet:
+        violations[ordinal] = 1;
+        break;
+      case ::loom::mapping::MappingProgressClosureKind::ProofNotEstablished:
+        return llvm::createStringError(
+            std::make_error_code(std::errc::operation_not_supported),
+            "proof_not_established: System progress closure is unavailable");
+      }
+      break;
+    }
   }
   std::array<std::uint64_t, mappingMeasureKindCount> measures{};
   for (std::uint32_t ordinal = 0; ordinal != measures.size(); ++ordinal) {
     if ((selectedMeasures_ & (UINT64_C(1) << ordinal)) == 0)
       continue;
-    auto value = systemMappingMeasureValue(
-        candidate, static_cast<MappingMeasureKind>(ordinal));
-    if (!value)
-      return value.takeError();
-    measures[ordinal] = *value;
+    if (static_cast<MappingMeasureKind>(ordinal) !=
+        MappingMeasureKind::TotalSelectedTraversalClaim)
+      llvm_unreachable("unknown Mapping measure kind");
+    measures[ordinal] = totalSelectedTraversalClaim;
   }
   dse::ObjectiveVector result = program_.makeVector();
   if (llvm::Error error = program_.evaluate({violations, measures, {}}, result))

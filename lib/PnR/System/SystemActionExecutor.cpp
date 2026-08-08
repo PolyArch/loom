@@ -162,9 +162,11 @@ llvm::Expected<SystemCandidateStateHandle>
 executeTransport(const SystemCandidateStateHandle &current,
                  const SystemTransportRoutingAction &action,
                  std::uint64_t &endpointExpansions,
-                 std::uint64_t &negotiationIterations) {
+                 std::uint64_t &negotiationIterations,
+                 SystemActionExecutionContext context) {
   auto candidate = detail::rebuildSystemCandidateRoutes(
-      *current, action, endpointExpansions, negotiationIterations);
+      *current, action, endpointExpansions, negotiationIterations,
+      context == SystemActionExecutionContext::FinalClosure);
   if (!candidate)
     return translateMutationFailure(candidate.takeError());
   return candidate;
@@ -195,9 +197,16 @@ llvm::Expected<SystemActionProbeResult>
 loom::pnr::probeSystemAction(const SystemCandidateStateHandle &current,
                              const dse::ObjectiveVector &currentObjective,
                              const SystemMappingAction &action,
-                             SystemActionProbeAccounting &accounting) {
+                             SystemActionProbeAccounting &accounting,
+                             SystemActionExecutionContext context) {
   if (!current)
     return invalid("current candidate owner is null");
+  if (context == SystemActionExecutionContext::FinalClosure) {
+    const auto *transport = std::get_if<SystemTransportRoutingAction>(&action);
+    if (!transport ||
+        !std::holds_alternative<SystemGlobalRoutingAction>(*transport))
+      return invalid("final closure requires one Global routing Action");
+  }
   accounting = {};
   auto candidate = std::visit(
       [&](const auto &value) -> llvm::Expected<SystemCandidateStateHandle> {
@@ -208,7 +217,7 @@ loom::pnr::probeSystemAction(const SystemCandidateStateHandle &current,
                                 accounting.negotiationIterations);
         else if constexpr (std::is_same_v<T, SystemTransportRoutingAction>)
           return executeTransport(current, value, accounting.endpointExpansions,
-                                  accounting.negotiationIterations);
+                                  accounting.negotiationIterations, context);
         else
           return executeResource(current, value);
       },

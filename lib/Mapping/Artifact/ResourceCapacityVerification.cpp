@@ -42,10 +42,32 @@ void appendU64(std::string &bytes, std::uint64_t value) {
   }
 }
 
+void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
+  for (int shift = 24; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+}
+
+void appendSized(std::vector<std::uint8_t> &bytes,
+                 llvm::ArrayRef<std::uint8_t> value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value.size() >> shift));
+  bytes.insert(bytes.end(), value.begin(), value.end());
+}
+
 template <typename Ref> std::string refKey(const Ref &reference) {
   const auto bytes = ::loom::fabric::canonicalFabricBytes(reference);
   return std::string(reinterpret_cast<const char *>(bytes.data()),
                      bytes.size());
+}
+
+template <typename Ref>
+std::string indexedRefKey(std::size_t namespaceOrdinal, const Ref &reference) {
+  std::string result;
+  appendU64(result, namespaceOrdinal);
+  const std::string local = refKey(reference);
+  appendU64(result, local.size());
+  result.append(local);
+  return result;
 }
 
 llvm::Expected<const ResourceCapacityNamespaceView &>
@@ -142,7 +164,6 @@ struct CapacityCell final {
   ::fabric::CapacityDimensionKey dimension;
   std::uint64_t capacity = 0;
   std::uint64_t initial = 0;
-  std::uint64_t usage = 0;
 };
 
 class CapacityCatalog final {
@@ -176,25 +197,16 @@ public:
     ordinals_.try_emplace(key, ordinal);
     cells_.push_back({namespaceOrdinal, owner, claim.state, claim.dimension,
                       dimension.capacity.value(),
-                      dimension.initialOccupancy.value(),
                       dimension.initialOccupancy.value()});
     return ordinal;
   }
 
-  CapacityCell &operator[](std::uint32_t ordinal) { return cells_[ordinal]; }
   llvm::ArrayRef<CapacityCell> cells() const { return cells_; }
 
 private:
   llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces_;
   llvm::StringMap<std::uint32_t> ordinals_;
   std::vector<CapacityCell> cells_;
-};
-
-struct BoundaryChange final {
-  std::uint32_t dimension = 0;
-  std::uint64_t rank = 0;
-  std::uint64_t added = 0;
-  std::uint64_t removed = 0;
 };
 
 std::vector<std::uint8_t> unsignedBytes(llvm::StringRef bytes) {
@@ -205,49 +217,10 @@ std::vector<std::uint8_t> unsignedBytes(llvm::StringRef bytes) {
   return result;
 }
 
-void selectFirstWitness(ResourceCapacityOveruseProjection &projection,
-                        const CapacityCell &cell, std::uint64_t usage,
-                        llvm::StringRef occupancyKey) {
-  if (usage <= cell.capacity)
-    return;
-  ResourceCapacityOveruseWitness witness{cell.namespaceOrdinal,
-                                         cell.owner,
-                                         cell.state,
-                                         cell.dimension,
-                                         usage,
-                                         cell.capacity,
-                                         unsignedBytes(occupancyKey)};
-  if (!projection.firstWitness ||
-      witness.canonicalOccupancyKey <
-          projection.firstWitness->canonicalOccupancyKey)
-    projection.firstWitness = std::move(witness);
-}
-
 struct PeakUsage final {
   std::uint64_t usage = 0;
   std::string occupancyKey;
 };
-
-llvm::Error
-initializePeaks(llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces,
-                const CapacityCatalog &dimensions,
-                std::vector<PeakUsage> &peaks) {
-  for (std::size_t ordinal = peaks.size(); ordinal < dimensions.cells().size();
-       ++ordinal) {
-    const CapacityCell &cell = dimensions.cells()[ordinal];
-    auto space = resolveNamespace(namespaces, cell.namespaceOrdinal);
-    if (!space)
-      return space.takeError();
-    std::string witnessKey;
-    appendU32(witnessKey, 1);
-    const std::string cellKey =
-        dimensionKey(*space, cell.owner, cell.state, cell.dimension);
-    appendU64(witnessKey, cellKey.size());
-    witnessKey.append(cellKey);
-    peaks.push_back({cell.usage, std::move(witnessKey)});
-  }
-  return llvm::Error::success();
-}
 
 void updatePeak(PeakUsage &peak, std::uint64_t usage,
                 llvm::StringRef occupancyKey) {
@@ -258,14 +231,84 @@ void updatePeak(PeakUsage &peak, std::uint64_t usage,
   }
 }
 
-llvm::Error
-accumulateTimedPeaks(llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces,
-                     llvm::ArrayRef<ResourceCapacityUseProjection> uses,
-                     llvm::StringRef activation, CapacityCatalog &dimensions,
-                     std::vector<PeakUsage> &peaks) {
-  std::vector<BoundaryChange> changes;
-  for (const auto &use : uses) {
-    auto resolved = resolvePattern(namespaces, use);
+} // namespace
+
+std::vector<std::uint8_t> rootResourceCapacityQualifier(
+    const ::loom::fabric::FabricArtifactView &fabric) {
+  std::vector<std::uint8_t> result;
+  appendU32(result, 0);
+  appendSized(result, fabric.identity().bytes());
+  return result;
+}
+
+std::vector<std::uint8_t> occurrenceResourceCapacityQualifier(
+    const ::loom::fabric::FabricArtifactView &system,
+    ::loom::fabric::SpatialCoreOccurrenceRef spatialCore) {
+  std::vector<std::uint8_t> result;
+  appendU32(result, 1);
+  appendSized(result, system.identity().bytes());
+  appendSized(result, ::loom::fabric::canonicalFabricBytes(spatialCore));
+  return result;
+}
+
+llvm::Expected<std::size_t> FrozenResourceCapacityIndex::patternOrdinal(
+    std::size_t namespaceOrdinal,
+    const ::loom::fabric::FabricUsePatternRef &pattern) const {
+  const auto found =
+      patternOrdinals_.find(indexedRefKey(namespaceOrdinal, pattern));
+  if (found == patternOrdinals_.end())
+    return invalid("ResourceUse pattern is absent from the frozen index");
+  return found->second;
+}
+
+llvm::Expected<std::size_t> FrozenResourceCapacityIndex::traversalOrdinal(
+    std::size_t namespaceOrdinal,
+    const ::loom::fabric::FabricPhysicalTraversalRef &traversal) const {
+  const auto found =
+      traversalOrdinals_.find(indexedRefKey(namespaceOrdinal, traversal));
+  if (found == traversalOrdinals_.end())
+    return invalid("route traversal is absent from the frozen index");
+  return found->second;
+}
+
+llvm::Expected<FrozenResourceCapacityIndex> freezeResourceCapacityIndex(
+    llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces,
+    llvm::ArrayRef<ResourceCapacityPatternSource> patternSources,
+    llvm::ArrayRef<ResourceCapacityTraversalSource> traversalSources) {
+  std::vector<ResourceCapacityPatternSource> patterns(patternSources.begin(),
+                                                      patternSources.end());
+  llvm::sort(patterns, [](const auto &lhs, const auto &rhs) {
+    return indexedRefKey(lhs.namespaceOrdinal, lhs.pattern) <
+           indexedRefKey(rhs.namespaceOrdinal, rhs.pattern);
+  });
+  patterns.erase(std::unique(patterns.begin(), patterns.end(),
+                             [](const auto &lhs, const auto &rhs) {
+                               return lhs.namespaceOrdinal ==
+                                          rhs.namespaceOrdinal &&
+                                      lhs.pattern == rhs.pattern;
+                             }),
+                 patterns.end());
+
+  std::vector<ResourceCapacityTraversalSource> traversals(
+      traversalSources.begin(), traversalSources.end());
+  llvm::sort(traversals, [](const auto &lhs, const auto &rhs) {
+    return indexedRefKey(lhs.namespaceOrdinal, lhs.traversal) <
+           indexedRefKey(rhs.namespaceOrdinal, rhs.traversal);
+  });
+  traversals.erase(std::unique(traversals.begin(), traversals.end(),
+                               [](const auto &lhs, const auto &rhs) {
+                                 return lhs.namespaceOrdinal ==
+                                            rhs.namespaceOrdinal &&
+                                        lhs.traversal == rhs.traversal;
+                               }),
+                   traversals.end());
+
+  FrozenResourceCapacityIndex result;
+  CapacityCatalog dimensions(namespaces);
+  for (const ResourceCapacityPatternSource &source : patterns) {
+    const ResourceCapacityUseProjection selected{
+        source.namespaceOrdinal, source.pattern, {}};
+    auto resolved = resolvePattern(namespaces, selected);
     if (!resolved)
       return resolved.takeError();
     const auto ranks =
@@ -275,176 +318,254 @@ accumulateTimedPeaks(llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces,
       return invalid("Fabric pattern has an incomplete timing relation");
     const std::uint64_t begin = ranks[resolved->pattern.acquire.ordinal()];
     const std::uint64_t release = ranks[resolved->pattern.release.ordinal()];
-    const std::uint64_t end = release > begin ? release : begin + 1;
+    if (begin == std::numeric_limits<std::uint64_t>::max())
+      return invalid("Fabric pattern timing rank exceeds u64");
+    FrozenResourceCapacityPattern frozen{source.namespaceOrdinal,
+                                         source.pattern,
+                                         begin,
+                                         release > begin ? release : begin + 1,
+                                         {}};
     for (const ::fabric::Claim &claim : resolved->pattern.claims) {
-      auto dimension = dimensions.get(use.namespaceOrdinal, resolved->owner,
-                                      *resolved->contract, claim);
-      if (!dimension)
-        return dimension.takeError();
-      changes.push_back({*dimension, begin, claim.amount.value(), 0});
-      changes.push_back({*dimension, end, 0, claim.amount.value()});
+      auto cell = dimensions.get(source.namespaceOrdinal, resolved->owner,
+                                 *resolved->contract, claim);
+      if (!cell)
+        return cell.takeError();
+      frozen.claims.push_back({*cell, claim.amount.value()});
     }
-  }
-  if (llvm::Error error = initializePeaks(namespaces, dimensions, peaks))
-    return error;
-
-  llvm::sort(changes, [](const BoundaryChange &lhs, const BoundaryChange &rhs) {
-    return std::tie(lhs.dimension, lhs.rank) <
-           std::tie(rhs.dimension, rhs.rank);
-  });
-  for (std::size_t begin = 0; begin < changes.size();) {
-    const std::uint32_t dimension = changes[begin].dimension;
-    CapacityCell &cell = dimensions[dimension];
-    const std::uint64_t residentUsage = cell.usage;
-    std::size_t cursor = begin;
-    while (cursor < changes.size() && changes[cursor].dimension == dimension) {
-      const std::uint64_t rank = changes[cursor].rank;
-      std::uint64_t added = 0;
-      std::uint64_t removed = 0;
-      while (cursor < changes.size() &&
-             changes[cursor].dimension == dimension &&
-             changes[cursor].rank == rank) {
-        if (llvm::Error error =
-                checkedAdd(changes[cursor].added, added, "capacity addition"))
-          return error;
-        if (llvm::Error error = checkedAdd(changes[cursor].removed, removed,
-                                           "capacity removal"))
-          return error;
-        ++cursor;
-      }
-      if (removed > cell.usage)
-        return invalid("capacity removal exceeds active usage");
-      cell.usage -= removed;
-      if (llvm::Error error = checkedAdd(added, cell.usage, "capacity usage"))
-        return error;
-      std::string witnessKey;
-      appendU32(witnessKey, 0);
-      appendU64(witnessKey, activation.size());
-      witnessKey.append(activation.data(), activation.size());
-      auto space = resolveNamespace(namespaces, cell.namespaceOrdinal);
-      if (!space)
-        return space.takeError();
-      const std::string cellKey =
-          dimensionKey(*space, cell.owner, cell.state, cell.dimension);
-      appendU64(witnessKey, cellKey.size());
-      witnessKey.append(cellKey);
-      appendU64(witnessKey, rank);
-      updatePeak(peaks[dimension], cell.usage, witnessKey);
-    }
-    if (cell.usage != residentUsage)
-      return invalid("timed envelope does not release every claim");
-    begin = cursor;
-  }
-  return llvm::Error::success();
-}
-
-llvm::Error accumulateRouteUsage(
-    llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces,
-    llvm::ArrayRef<ResourceCapacityRouteProjection> routeTraversals,
-    CapacityCatalog &dimensions) {
-  std::map<std::string, const ::loom::fabric::FabricPhysicalTraversalView *>
-      traversalByRef;
-  for (const auto &[namespaceOrdinal, space] : llvm::enumerate(namespaces)) {
-    if (!space.fabric)
-      return invalid("capacity input has an absent physical namespace");
-    for (const auto &traversal : space.fabric->physicalTraversals()) {
-      std::string key;
-      appendU64(key, namespaceOrdinal);
-      const std::string local = refKey(traversal.reference);
-      appendU64(key, local.size());
-      key.append(local);
-      if (!traversalByRef.emplace(std::move(key), &traversal).second)
-        return invalid("Fabric traversal projection contains a duplicate");
-    }
+    const std::size_t ordinal = result.patterns_.size();
+    if (!result.patternOrdinals_
+             .emplace(indexedRefKey(source.namespaceOrdinal, source.pattern),
+                      ordinal)
+             .second)
+      return invalid("frozen ResourceUse pattern inventory is not unique");
+    result.patterns_.push_back(std::move(frozen));
   }
 
-  for (const auto &route : routeTraversals) {
-    auto space = resolveNamespace(namespaces, route.namespaceOrdinal);
+  for (const ResourceCapacityTraversalSource &source : traversals) {
+    auto space = resolveNamespace(namespaces, source.namespaceOrdinal);
     if (!space)
       return space.takeError();
-    struct SelectedClaim final {
-      std::uint32_t dimension = 0;
-      std::uint64_t amount = 0;
-    };
+    const auto found = llvm::find_if(
+        space->fabric->physicalTraversals(), [&](const auto &candidate) {
+          return candidate.reference == source.traversal;
+        });
+    if (found == space->fabric->physicalTraversals().end())
+      return invalid("route traversal is absent from its Fabric namespace");
+    FrozenResourceCapacityTraversal frozen{
+        source.namespaceOrdinal, source.traversal, {}};
+    for (const auto &use : found->impliedUses) {
+      const ResourceCapacityUseProjection selected{
+          source.namespaceOrdinal, use.pattern, {}};
+      auto resolved = resolvePattern(namespaces, selected);
+      if (!resolved)
+        return resolved.takeError();
+      for (const ::fabric::Claim &claim : resolved->pattern.claims) {
+        auto cell = dimensions.get(source.namespaceOrdinal, resolved->owner,
+                                   *resolved->contract, claim);
+        if (!cell)
+          return cell.takeError();
+        frozen.claims.push_back(
+            {routeClaimKey(*space, use.activationGroup, resolved->owner,
+                           claim.state, claim.dimension),
+             *cell, claim.amount.value()});
+      }
+    }
+    const std::size_t ordinal = result.traversals_.size();
+    if (!result.traversalOrdinals_
+             .emplace(indexedRefKey(source.namespaceOrdinal, source.traversal),
+                      ordinal)
+             .second)
+      return invalid("frozen route traversal inventory is not unique");
+    result.traversals_.push_back(std::move(frozen));
+  }
+
+  result.cells_.reserve(dimensions.cells().size());
+  for (const CapacityCell &cell : dimensions.cells()) {
+    auto space = resolveNamespace(namespaces, cell.namespaceOrdinal);
+    if (!space)
+      return space.takeError();
+    result.cells_.push_back(
+        {cell.namespaceOrdinal, cell.owner, cell.state, cell.dimension,
+         cell.capacity, cell.initial,
+         dimensionKey(*space, cell.owner, cell.state, cell.dimension)});
+  }
+  return result;
+}
+
+llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
+    const FrozenResourceCapacityIndex &index,
+    llvm::ArrayRef<FrozenResourceCapacityUseSelection> resourceUses,
+    llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routeTraversals) {
+  struct SelectedClaim final {
+    std::size_t cell = 0;
+    std::uint64_t amount = 0;
+  };
+  std::vector<std::uint64_t> usage;
+  usage.reserve(index.cells().size());
+  for (const FrozenResourceCapacityCell &cell : index.cells())
+    usage.push_back(cell.initialOccupancy);
+  for (const FrozenResourceCapacityRouteSelection &route : routeTraversals) {
     std::map<std::string, SelectedClaim> selectedClaims;
-    for (const auto &reference : route.traversals) {
-      std::string traversalKey;
-      appendU64(traversalKey, route.namespaceOrdinal);
-      const std::string local = refKey(reference);
-      appendU64(traversalKey, local.size());
-      traversalKey.append(local);
-      auto found = traversalByRef.find(traversalKey);
-      if (found == traversalByRef.end())
-        return invalid("RouteTree names an absent Fabric traversal");
-      for (const auto &use : found->second->impliedUses) {
-        const ResourceCapacityUseProjection selected{
-            route.namespaceOrdinal, use.pattern, {}};
-        auto resolved = resolvePattern(namespaces, selected);
-        if (!resolved)
-          return resolved.takeError();
-        for (const ::fabric::Claim &claim : resolved->pattern.claims) {
-          auto dimension =
-              dimensions.get(route.namespaceOrdinal, resolved->owner,
-                             *resolved->contract, claim);
-          if (!dimension)
-            return dimension.takeError();
-          const std::string key =
-              routeClaimKey(*space, use.activationGroup, resolved->owner,
-                            claim.state, claim.dimension);
-          auto [position, inserted] = selectedClaims.try_emplace(
-              key, SelectedClaim{*dimension, claim.amount.value()});
-          if (!inserted && (position->second.dimension != *dimension ||
-                            position->second.amount != claim.amount.value()))
-            return invalid(
-                "one route claim key has inconsistent capacity demand");
-        }
+    for (std::size_t traversalOrdinal : route.traversalOrdinals) {
+      if (traversalOrdinal >= index.traversals().size())
+        return invalid("route selection names a foreign traversal");
+      for (const FrozenResourceCapacityRouteClaim &claim :
+           index.traversals()[traversalOrdinal].claims) {
+        auto [position, inserted] = selectedClaims.try_emplace(
+            claim.canonicalKey, SelectedClaim{claim.cell, claim.amount});
+        if (!inserted && (position->second.cell != claim.cell ||
+                          position->second.amount != claim.amount))
+          return invalid(
+              "one route claim key has inconsistent capacity demand");
       }
     }
     for (const auto &[key, claim] : selectedClaims) {
       (void)key;
-      if (llvm::Error error =
-              checkedAdd(claim.amount, dimensions[claim.dimension].usage,
-                         "route capacity usage"))
-        return error;
+      if (claim.cell >= usage.size())
+        return invalid("route claim names a foreign capacity cell");
+      if (llvm::Error error = checkedAdd(claim.amount, usage[claim.cell],
+                                         "route capacity usage"))
+        return std::move(error);
     }
   }
-  return llvm::Error::success();
-}
 
-} // namespace
+  std::vector<PeakUsage> peaks;
+  peaks.reserve(index.cells().size());
+  for (const auto &[ordinal, cell] : llvm::enumerate(index.cells())) {
+    std::string witnessKey;
+    appendU32(witnessKey, 1);
+    appendU64(witnessKey, cell.canonicalKey.size());
+    witnessKey.append(cell.canonicalKey);
+    peaks.push_back({usage[ordinal], std::move(witnessKey)});
+  }
+
+  std::map<std::string, std::vector<std::size_t>> usesByActivation;
+  for (const FrozenResourceCapacityUseSelection &use : resourceUses) {
+    if (use.patternOrdinal >= index.patterns().size())
+      return invalid("ResourceUse selection names a foreign pattern");
+    usesByActivation[use.activationKey].push_back(use.patternOrdinal);
+  }
+  struct FrozenBoundaryChange final {
+    std::size_t cell = 0;
+    std::uint64_t rank = 0;
+    std::uint64_t added = 0;
+    std::uint64_t removed = 0;
+  };
+  for (const auto &[activation, selectedPatterns] : usesByActivation) {
+    std::vector<FrozenBoundaryChange> changes;
+    for (std::size_t patternOrdinal : selectedPatterns) {
+      const FrozenResourceCapacityPattern &pattern =
+          index.patterns()[patternOrdinal];
+      for (const FrozenResourceCapacityClaim &claim : pattern.claims) {
+        if (claim.cell >= usage.size())
+          return invalid("ResourceUse claim names a foreign capacity cell");
+        changes.push_back({claim.cell, pattern.beginRank, claim.amount, 0});
+        changes.push_back({claim.cell, pattern.endRank, 0, claim.amount});
+      }
+    }
+    llvm::sort(changes, [](const auto &lhs, const auto &rhs) {
+      return std::tie(lhs.cell, lhs.rank) < std::tie(rhs.cell, rhs.rank);
+    });
+    for (std::size_t begin = 0; begin < changes.size();) {
+      const std::size_t cell = changes[begin].cell;
+      const std::uint64_t residentUsage = usage[cell];
+      std::size_t cursor = begin;
+      while (cursor < changes.size() && changes[cursor].cell == cell) {
+        const std::uint64_t rank = changes[cursor].rank;
+        std::uint64_t added = 0;
+        std::uint64_t removed = 0;
+        while (cursor < changes.size() && changes[cursor].cell == cell &&
+               changes[cursor].rank == rank) {
+          if (llvm::Error error =
+                  checkedAdd(changes[cursor].added, added, "capacity addition"))
+            return std::move(error);
+          if (llvm::Error error = checkedAdd(changes[cursor].removed, removed,
+                                             "capacity removal"))
+            return std::move(error);
+          ++cursor;
+        }
+        if (removed > usage[cell])
+          return invalid("capacity removal exceeds active usage");
+        usage[cell] -= removed;
+        if (llvm::Error error =
+                checkedAdd(added, usage[cell], "capacity usage"))
+          return std::move(error);
+        std::string witnessKey;
+        appendU32(witnessKey, 0);
+        appendU64(witnessKey, activation.size());
+        witnessKey.append(activation);
+        appendU64(witnessKey, index.cells()[cell].canonicalKey.size());
+        witnessKey.append(index.cells()[cell].canonicalKey);
+        appendU64(witnessKey, rank);
+        updatePeak(peaks[cell], usage[cell], witnessKey);
+      }
+      if (usage[cell] != residentUsage)
+        return invalid("timed envelope does not release every claim");
+      begin = cursor;
+    }
+  }
+
+  ResourceCapacityOveruseProjection result;
+  for (const auto &[ordinal, cell] : llvm::enumerate(index.cells())) {
+    const std::uint64_t overuse = peaks[ordinal].usage > cell.capacity
+                                      ? peaks[ordinal].usage - cell.capacity
+                                      : 0;
+    if (llvm::Error error = checkedAdd(overuse, result.total, "total overuse"))
+      return std::move(error);
+    if (overuse == 0)
+      continue;
+    ResourceCapacityOveruseWitness witness{
+        cell.namespaceOrdinal,
+        cell.owner,
+        cell.state,
+        cell.dimension,
+        peaks[ordinal].usage,
+        cell.capacity,
+        unsignedBytes(peaks[ordinal].occupancyKey)};
+    if (!result.firstWitness || witness.canonicalOccupancyKey <
+                                    result.firstWitness->canonicalOccupancyKey)
+      result.firstWitness = std::move(witness);
+  }
+  return result;
+}
 
 llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
     llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces,
     llvm::ArrayRef<ResourceCapacityUseProjection> resourceUses,
     llvm::ArrayRef<ResourceCapacityRouteProjection> routeTraversals) {
-  std::map<std::string, std::vector<ResourceCapacityUseProjection>>
-      usesByActivation;
-  for (const auto &use : resourceUses)
-    usesByActivation[use.activationKey].push_back(use);
-
-  CapacityCatalog dimensions(namespaces);
-  if (llvm::Error error =
-          accumulateRouteUsage(namespaces, routeTraversals, dimensions))
-    return std::move(error);
-  std::vector<PeakUsage> peaks;
-  if (llvm::Error error = initializePeaks(namespaces, dimensions, peaks))
-    return std::move(error);
-  for (const auto &[activation, uses] : usesByActivation) {
-    if (llvm::Error error = accumulateTimedPeaks(namespaces, uses, activation,
-                                                 dimensions, peaks))
-      return std::move(error);
+  std::vector<ResourceCapacityPatternSource> patterns;
+  patterns.reserve(resourceUses.size());
+  for (const ResourceCapacityUseProjection &use : resourceUses)
+    patterns.push_back({use.namespaceOrdinal, use.pattern});
+  std::vector<ResourceCapacityTraversalSource> traversals;
+  for (const ResourceCapacityRouteProjection &route : routeTraversals)
+    for (const auto &traversal : route.traversals)
+      traversals.push_back({route.namespaceOrdinal, traversal});
+  auto index = freezeResourceCapacityIndex(namespaces, patterns, traversals);
+  if (!index)
+    return index.takeError();
+  std::vector<FrozenResourceCapacityUseSelection> selectedUses;
+  selectedUses.reserve(resourceUses.size());
+  for (const ResourceCapacityUseProjection &use : resourceUses) {
+    auto pattern = index->patternOrdinal(use.namespaceOrdinal, use.pattern);
+    if (!pattern)
+      return pattern.takeError();
+    selectedUses.push_back({*pattern, use.activationKey});
   }
-
-  ResourceCapacityOveruseProjection result;
-  for (const auto &[ordinal, cell] : llvm::enumerate(dimensions.cells())) {
-    const std::uint64_t usage = peaks[ordinal].usage;
-    const std::uint64_t overuse =
-        usage > cell.capacity ? usage - cell.capacity : 0;
-    if (llvm::Error error = checkedAdd(overuse, result.total, "total overuse"))
-      return std::move(error);
-    selectFirstWitness(result, cell, usage, peaks[ordinal].occupancyKey);
+  std::vector<FrozenResourceCapacityRouteSelection> selectedRoutes;
+  selectedRoutes.reserve(routeTraversals.size());
+  for (const ResourceCapacityRouteProjection &route : routeTraversals) {
+    FrozenResourceCapacityRouteSelection selected;
+    selected.traversalOrdinals.reserve(route.traversals.size());
+    for (const auto &traversal : route.traversals) {
+      auto ordinal = index->traversalOrdinal(route.namespaceOrdinal, traversal);
+      if (!ordinal)
+        return ordinal.takeError();
+      selected.traversalOrdinals.push_back(*ordinal);
+    }
+    selectedRoutes.push_back(std::move(selected));
   }
-  return result;
+  return deriveResourceCapacityOveruse(*index, selectedUses, selectedRoutes);
 }
 
 } // namespace loom::mapping::detail

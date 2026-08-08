@@ -1,6 +1,7 @@
 #include "PnR/System/SystemPnrProblem.h"
 
 #include "PnR/InitializerRelationSolver.h"
+#include "SystemCapacityProjection.h"
 #include "SystemPnrSearchDomainInternal.h"
 
 #include "Common/ArtifactLocalReference.h"
@@ -1386,6 +1387,7 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
         consistencyUsePatternDomains,
     std::vector<FrozenSystemServiceLeg> serviceLegs,
     std::vector<PnrIndex> serviceLegSinkTerminals,
+    std::unique_ptr<detail::SystemCapacityModel> capacityModel,
     std::unique_ptr<detail::InitializerRelationModel> initializerRelations)
     : dataflowIdentity_(std::move(dataflowIdentity)),
       fabricIdentity_(std::move(fabricIdentity)),
@@ -1417,6 +1419,7 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
       consistencyUsePatternDomains_(std::move(consistencyUsePatternDomains)),
       serviceLegs_(std::move(serviceLegs)),
       serviceLegSinkTerminals_(std::move(serviceLegSinkTerminals)),
+      capacityModel_(std::move(capacityModel)),
       initializerRelations_(std::move(initializerRelations)) {}
 
 FrozenSystemPnrProblem::~FrozenSystemPnrProblem() = default;
@@ -1435,6 +1438,21 @@ FrozenSystemPnrProblem::graphChoiceCatalogOrdinals(PnrIndex decision) const {
   const auto &record = graphDecisions_[decision];
   return choiceSlice(graphChoiceCatalogOrdinals_, record.choiceOffset,
                      record.choiceCount);
+}
+
+llvm::ArrayRef<PnrIndex>
+FrozenSystemPnrProblem::graphThreadOverlaps(PnrIndex decision) const {
+  assert(decision < graphDecisions_.size());
+  assert(decision + 1 < graphThreadOverlapOffsets_.size());
+  const PnrIndex begin = graphThreadOverlapOffsets_[decision];
+  const PnrIndex end = graphThreadOverlapOffsets_[decision + 1];
+  assert(begin <= end && end <= graphThreadOverlaps_.size());
+  return llvm::ArrayRef(graphThreadOverlaps_).slice(begin, end - begin);
+}
+
+const detail::SystemCapacityModel &
+FrozenSystemPnrProblem::capacityModel() const {
+  return *capacityModel_;
 }
 
 llvm::ArrayRef<FrozenSystemTransferTerminalOwnerDomain>
@@ -1533,6 +1551,13 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
   if (!instructionUsePatterns)
     return instructionUsePatterns.takeError();
   auto consistencyUsePatterns = freezeConsistencyUsePatterns(fabric);
+  auto capacityModel = detail::buildSystemCapacityModel(
+      dataflow, fabric, catalogs->cores, catalogs->coreTargetClasses,
+      catalogs->mappingTargetClasses, catalogs->spatialCatalog,
+      decisions->graphs, *instructionUsePatterns, *memoryBindings,
+      consistencyUsePatterns, routing->topology);
+  if (!capacityModel)
+    return capacityModel.takeError();
 
   std::vector<SystemSearchServiceDomain> serviceDomains(
       searchDomain.serviceObligations().begin(),
@@ -1557,5 +1582,5 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       std::move(*serviceContexts), std::move(*memoryBindings),
       std::move(*instructionUsePatterns), std::move(consistencyUsePatterns),
       std::move(routing->legs), std::move(routing->legSinks),
-      std::move(*relations)));
+      std::move(*capacityModel), std::move(*relations)));
 }

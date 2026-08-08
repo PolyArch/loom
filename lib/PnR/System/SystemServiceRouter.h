@@ -74,6 +74,10 @@ measureSystemServiceRouteCapacityUsage(
     const FrozenEndpointRoutingTopology &topology,
     SystemServiceRoutesView routes, bool enforceCapacity);
 
+llvm::Expected<std::uint64_t> measureSystemServiceRouteTraversalClaim(
+    const FrozenEndpointRoutingTopology &topology,
+    SystemServiceRoutesView routes);
+
 llvm::Expected<BuiltSystemServiceRoutes>
 buildSystemServiceRoutes(const FrozenSystemPnrProblem &problem,
                          llvm::ArrayRef<PnrIndex> threadChoices,

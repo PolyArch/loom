@@ -289,11 +289,11 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
       return internal(InternalSystemPnrGenerationReason::FinalClosure,
                       accounting, currentObjective.takeError());
     SystemActionProbeAccounting closureWork;
-    auto closed =
-        probeSystemAction(candidate, *currentObjective,
-                          SystemMappingAction{SystemTransportRoutingAction{
-                              SystemGlobalRoutingAction{}}},
-                          closureWork);
+    auto closed = probeSystemAction(
+        candidate, *currentObjective,
+        SystemMappingAction{
+            SystemTransportRoutingAction{SystemGlobalRoutingAction{}}},
+        closureWork, SystemActionExecutionContext::FinalClosure);
     if (llvm::Error error = accumulateActionProbe(closureWork, accounting))
       return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
                       accounting, std::move(error));
@@ -320,6 +320,10 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
                              : diagnostic);
     }
     candidate = std::move(closed->candidate);
+    if (candidate->capacityOveruse() != 0)
+      return internal(InternalSystemPnrGenerationReason::FinalClosure,
+                      accounting,
+                      "strict final global Action retained CapacityOveruse");
 
     if (llvm::Error error = candidate->verify())
       return internal(InternalSystemPnrGenerationReason::CandidateVerification,

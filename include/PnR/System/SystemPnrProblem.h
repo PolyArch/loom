@@ -25,7 +25,8 @@ namespace loom::pnr {
 
 namespace detail {
 class InitializerRelationModel;
-}
+class SystemCapacityModel;
+} // namespace detail
 
 class FrozenSystemPnrProblem;
 class SystemCandidateState;
@@ -228,12 +229,14 @@ public:
   }
   llvm::ArrayRef<PnrIndex> threadChoiceCatalogOrdinals(PnrIndex decision) const;
   llvm::ArrayRef<PnrIndex> graphChoiceCatalogOrdinals(PnrIndex decision) const;
+  llvm::ArrayRef<PnrIndex> graphThreadOverlaps(PnrIndex decision) const;
   llvm::ArrayRef<PnrIndex> serviceLegSinkTerminals(PnrIndex leg) const;
   PnrIndex accCoreTargetClass(PnrIndex core) const;
   PnrIndex spatialMappingTargetClass(PnrIndex mapping) const;
   const detail::InitializerRelationModel &initializerRelations() const {
     return *initializerRelations_;
   }
+  const detail::SystemCapacityModel &capacityModel() const;
 
 private:
   FrozenSystemPnrProblem(
@@ -269,6 +272,7 @@ private:
           consistencyUsePatternDomains,
       std::vector<FrozenSystemServiceLeg> serviceLegs,
       std::vector<PnrIndex> serviceLegSinkTerminals,
+      std::unique_ptr<detail::SystemCapacityModel> capacityModel,
       std::unique_ptr<detail::InitializerRelationModel> initializerRelations);
 
   ArtifactIdentity dataflowIdentity_;
@@ -305,6 +309,7 @@ private:
       consistencyUsePatternDomains_;
   std::vector<FrozenSystemServiceLeg> serviceLegs_;
   std::vector<PnrIndex> serviceLegSinkTerminals_;
+  std::unique_ptr<detail::SystemCapacityModel> capacityModel_;
   std::unique_ptr<detail::InitializerRelationModel> initializerRelations_;
 
   friend class SystemCandidateState;

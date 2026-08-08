@@ -39,7 +39,8 @@ llvm::Expected<SystemCandidateStateHandle>
 rebuildSystemCandidateRoutes(const SystemCandidateState &candidate,
                              const SystemTransportRoutingAction &action,
                              std::uint64_t &endpointExpansions,
-                             std::uint64_t &negotiationIterations);
+                             std::uint64_t &negotiationIterations,
+                             bool requireCapacityClosure);
 
 } // namespace loom::pnr::detail
 

@@ -47,6 +47,19 @@ struct SystemServiceRouteSelection final {
   PnrIndex sinkCount = 0;
 };
 
+struct SystemRouteCapacityOveruseWitness final {
+  PnrIndex capacityCell = getInvalidPnrIndex();
+  std::uint64_t usage = 0;
+  std::uint64_t capacity = 0;
+  std::uint64_t overuse = 0;
+
+  friend bool operator==(const SystemRouteCapacityOveruseWitness &lhs,
+                         const SystemRouteCapacityOveruseWitness &rhs) {
+    return lhs.capacityCell == rhs.capacityCell && lhs.usage == rhs.usage &&
+           lhs.capacity == rhs.capacity && lhs.overuse == rhs.overuse;
+  }
+};
+
 struct SystemInstructionResourceUseSelection final {
   ::dataflow::RootThreadLaunchRef root;
   ::loom::fabric::InstructionCoreContextRef context;
@@ -109,6 +122,12 @@ public:
   serviceResourceUses() const {
     return serviceResourceUses_;
   }
+  std::uint64_t routeCapacityOveruse() const { return routeCapacityOveruse_; }
+  std::uint64_t capacityOveruse() const { return capacityOveruse_; }
+  llvm::ArrayRef<SystemRouteCapacityOveruseWitness>
+  routeCapacityOveruseWitnesses() const {
+    return routeCapacityOveruseWitnesses_;
+  }
   const SystemServiceTargetSelection &serviceTarget(PnrIndex context) const;
   PnrIndex threadChoice(PnrIndex decision) const;
   PnrIndex graphChoice(PnrIndex decision) const;
@@ -129,7 +148,10 @@ private:
       std::vector<SystemServiceTargetSelection> serviceTargets,
       std::vector<SystemInstructionResourceUseSelection>
           instructionResourceUses,
-      std::vector<SystemServiceResourceUseSelection> serviceResourceUses)
+      std::vector<SystemServiceResourceUseSelection> serviceResourceUses,
+      std::uint64_t capacityOveruse, std::uint64_t routeCapacityOveruse,
+      std::vector<SystemRouteCapacityOveruseWitness>
+          routeCapacityOveruseWitnesses)
       : problem_(std::move(problem)), threadChoices_(std::move(threadChoices)),
         graphChoices_(std::move(graphChoices)),
         serviceRoutes_(std::move(serviceRoutes)),
@@ -137,7 +159,11 @@ private:
         serviceRouteSinks_(std::move(serviceRouteSinks)),
         serviceTargets_(std::move(serviceTargets)),
         instructionResourceUses_(std::move(instructionResourceUses)),
-        serviceResourceUses_(std::move(serviceResourceUses)) {}
+        serviceResourceUses_(std::move(serviceResourceUses)),
+        capacityOveruse_(capacityOveruse),
+        routeCapacityOveruse_(routeCapacityOveruse),
+        routeCapacityOveruseWitnesses_(
+            std::move(routeCapacityOveruseWitnesses)) {}
 
   FrozenSystemPnrProblemHandle problem_;
   std::vector<PnrIndex> threadChoices_;
@@ -148,6 +174,9 @@ private:
   std::vector<SystemServiceTargetSelection> serviceTargets_;
   std::vector<SystemInstructionResourceUseSelection> instructionResourceUses_;
   std::vector<SystemServiceResourceUseSelection> serviceResourceUses_;
+  std::uint64_t capacityOveruse_ = 0;
+  std::uint64_t routeCapacityOveruse_ = 0;
+  std::vector<SystemRouteCapacityOveruseWitness> routeCapacityOveruseWitnesses_;
 };
 
 struct InitializedSystemCandidate final {

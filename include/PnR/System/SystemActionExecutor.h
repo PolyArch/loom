@@ -24,11 +24,18 @@ struct SystemActionProbeAccounting final {
   std::uint64_t negotiationIterations = 0;
 };
 
+enum class SystemActionExecutionContext : std::uint8_t {
+  NonFinal,
+  FinalClosure,
+};
+
 llvm::Expected<SystemActionProbeResult>
 probeSystemAction(const SystemCandidateStateHandle &current,
                   const dse::ObjectiveVector &currentObjective,
                   const SystemMappingAction &action,
-                  SystemActionProbeAccounting &accounting);
+                  SystemActionProbeAccounting &accounting,
+                  SystemActionExecutionContext context =
+                      SystemActionExecutionContext::NonFinal);
 
 } // namespace loom::pnr
 

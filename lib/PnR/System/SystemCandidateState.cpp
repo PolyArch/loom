@@ -4,6 +4,7 @@
 #include "PnR/InitializerRelationSolver.h"
 #include "SystemCandidateMutation.h"
 #include "SystemCandidateServiceResolver.h"
+#include "SystemCapacityProjection.h"
 #include "SystemNegotiatedRouter.h"
 #include "SystemPnrSearchDomainInternal.h"
 #include "SystemServiceRouter.h"
@@ -372,6 +373,43 @@ llvm::Error verifyResourceUses(
   return llvm::Error::success();
 }
 
+struct RouteCapacityOveruseProjection final {
+  std::uint64_t total = 0;
+  std::vector<SystemRouteCapacityOveruseWitness> witnesses;
+};
+
+llvm::Expected<RouteCapacityOveruseProjection> projectRouteCapacityOveruse(
+    const FrozenSystemPnrProblem &problem,
+    llvm::ArrayRef<SystemServiceRouteSelection> routes,
+    llvm::ArrayRef<SystemServiceRouteNodeSelection> nodes,
+    llvm::ArrayRef<SystemServiceRouteSinkSelection> sinks) {
+  const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
+  auto usage = detail::measureSystemServiceRouteCapacityUsage(
+      topology, {routes, nodes, sinks}, /*enforceCapacity=*/false);
+  if (!usage)
+    return usage.takeError();
+  if (usage->size() != topology.capacityCells().size())
+    return invalid("route capacity projection has the wrong width");
+  RouteCapacityOveruseProjection result;
+  for (PnrIndex cell = 0; cell < usage->size(); ++cell) {
+    const std::uint64_t capacity = topology.capacityCells()[cell].capacity;
+    if ((*usage)[cell] <= capacity)
+      continue;
+    const std::uint64_t overuse = (*usage)[cell] - capacity;
+    if (overuse > std::numeric_limits<std::uint64_t>::max() - result.total)
+      return invalid("route CapacityOveruse exceeds u64");
+    result.total += overuse;
+    result.witnesses.push_back({cell, (*usage)[cell], capacity, overuse});
+  }
+  return result;
+}
+
+bool admitsCapacityOveruse(const FrozenSystemPnrProblem &problem) {
+  return llvm::is_contained(
+      problem.config().policy().temporaryViolations.admitted,
+      ResolvedPnrViolationKind::CapacityOveruse);
+}
+
 } // namespace
 
 llvm::Expected<SystemCandidateStateHandle>
@@ -410,6 +448,19 @@ SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
           initialization.serviceRoutes, initialization.serviceRouteNodes,
           initialization.serviceRouteSinks))
     return std::move(error);
+  auto routeCapacity = projectRouteCapacityOveruse(
+      *problem, initialization.serviceRoutes, initialization.serviceRouteNodes,
+      initialization.serviceRouteSinks);
+  if (!routeCapacity)
+    return routeCapacity.takeError();
+  auto capacity = problem->capacityModel().project(
+      *problem, {initialization.threadChoices, initialization.graphChoices,
+                 initialization.serviceRoutes, initialization.serviceRouteNodes,
+                 instructionUses, serviceUses});
+  if (!capacity)
+    return capacity.takeError();
+  if (capacity->total != 0 && !admitsCapacityOveruse(*problem))
+    return invalid("CapacityOveruse is not policy-admitted");
   auto state = SystemCandidateStateHandle(new SystemCandidateState(
       std::move(problem),
       std::vector<PnrIndex>(initialization.threadChoices.begin(),
@@ -428,7 +479,8 @@ SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
       std::vector<SystemServiceTargetSelection>(
           initialization.serviceTargets.begin(),
           initialization.serviceTargets.end()),
-      std::move(instructionUses), std::move(serviceUses)));
+      std::move(instructionUses), std::move(serviceUses), capacity->total,
+      routeCapacity->total, std::move(routeCapacity->witnesses)));
   if (llvm::Error error = state->verify())
     return std::move(error);
   return state;
@@ -486,6 +538,23 @@ llvm::Error SystemCandidateState::verify() const {
           *problem_, threadChoices_, graphChoices_, serviceRoutes_,
           serviceRouteNodes_, serviceRouteSinks_))
     return error;
+  auto routeCapacity = projectRouteCapacityOveruse(
+      *problem_, serviceRoutes_, serviceRouteNodes_, serviceRouteSinks_);
+  if (!routeCapacity)
+    return routeCapacity.takeError();
+  if (routeCapacity->total != routeCapacityOveruse_ ||
+      routeCapacity->witnesses != routeCapacityOveruseWitnesses_)
+    return invalid("cached route CapacityOveruse projection diverged");
+  auto capacity = problem_->capacityModel().project(
+      *problem_,
+      {threadChoices_, graphChoices_, serviceRoutes_, serviceRouteNodes_,
+       instructionResourceUses_, serviceResourceUses_});
+  if (!capacity)
+    return capacity.takeError();
+  if (capacity->total != capacityOveruse_)
+    return invalid("cached CapacityOveruse projection diverged");
+  if (capacityOveruse_ != 0 && !admitsCapacityOveruse(*problem_))
+    return invalid("CapacityOveruse is not policy-admitted");
 
   std::map<std::uint64_t, std::vector<PnrIndex>> threadsByRoot;
   for (const auto &[threadOrdinal, thread] :
@@ -662,17 +731,6 @@ loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
   if (llvm::Error error = detail::verifySystemServiceTargetDomains(
           *problem, threadChoices, graphChoices))
     return std::move(error);
-  std::uint64_t routeEndpointExpansions = 0;
-  std::uint64_t routeNegotiationIterations = 0;
-  auto routes = detail::negotiateSystemServiceRoutes(
-      *problem, threadChoices, graphChoices, routeEndpointExpansions,
-      routeNegotiationIterations);
-  if (endpointExpansions)
-    *endpointExpansions = routeEndpointExpansions;
-  if (negotiationIterations)
-    *negotiationIterations = routeNegotiationIterations;
-  if (!routes)
-    return routes.takeError();
   auto targets =
       selectCanonicalServiceTargets(*problem, threadChoices, graphChoices);
   if (!targets)
@@ -685,6 +743,17 @@ loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
                                                 graphChoices, *targets);
   if (!serviceUses)
     return serviceUses.takeError();
+  std::uint64_t routeEndpointExpansions = 0;
+  std::uint64_t routeNegotiationIterations = 0;
+  auto routes = detail::negotiateSystemServiceRoutes(
+      *problem, threadChoices, graphChoices, *instructionUses, *serviceUses,
+      routeEndpointExpansions, routeNegotiationIterations);
+  if (endpointExpansions)
+    *endpointExpansions = routeEndpointExpansions;
+  if (negotiationIterations)
+    *negotiationIterations = routeNegotiationIterations;
+  if (!routes)
+    return routes.takeError();
   return SystemCandidateState::create(
       std::move(problem),
       {threadChoices, graphChoices, routes->routes, routes->nodes,
@@ -809,7 +878,8 @@ llvm::Expected<SystemCandidateStateHandle>
 loom::pnr::detail::rebuildSystemCandidateRoutes(
     const SystemCandidateState &candidate,
     const SystemTransportRoutingAction &action,
-    std::uint64_t &endpointExpansions, std::uint64_t &negotiationIterations) {
+    std::uint64_t &endpointExpansions, std::uint64_t &negotiationIterations,
+    bool requireCapacityClosure) {
   std::optional<SystemServiceRouteTraversalExclusion> exclusion;
   std::vector<PnrIndex> reroutedLegs;
   std::optional<SystemServiceRouteRepairRegion> repairRegion;
@@ -820,7 +890,54 @@ loom::pnr::detail::rebuildSystemCandidateRoutes(
               return llvm::Error::success();
             } else if constexpr (std::is_same_v<
                                      T, SystemWitnessRegionRoutingAction>) {
-              return invalid("WitnessRegion Action has no live System witness");
+              if (value.witnessKind !=
+                  ResolvedPnrViolationKind::CapacityOveruse)
+                return invalid(
+                    "WitnessRegion Action has no live System witness");
+              const auto witness = llvm::find_if(
+                  candidate.routeCapacityOveruseWitnesses(),
+                  [&](const SystemRouteCapacityOveruseWitness &record) {
+                    return record.capacityCell == value.witnessOrdinal;
+                  });
+              if (witness == candidate.routeCapacityOveruseWitnesses().end())
+                return invalid(
+                    "WitnessRegion Action has no live System witness");
+              const FrozenEndpointRoutingTopology &topology =
+                  candidate.problem().routingTopology();
+              for (const SystemServiceRouteSelection &route :
+                   candidate.serviceRoutes()) {
+                const auto nodes = candidate.serviceRouteNodes().slice(
+                    route.nodeOffset, route.nodeCount);
+                const bool participates = llvm::any_of(
+                    nodes, [&](const SystemServiceRouteNodeSelection &node) {
+                      if (node.incomingTraversal == getInvalidPnrIndex())
+                        return false;
+                      if (node.incomingTraversal >=
+                          topology.traversals().size())
+                        return false;
+                      const EndpointRoutingTraversal &traversal =
+                          topology.traversals()[node.incomingTraversal];
+                      if (traversal.capacityClaimOffset >
+                              topology.capacityClaims().size() ||
+                          traversal.capacityClaimCount >
+                              topology.capacityClaims().size() -
+                                  traversal.capacityClaimOffset)
+                        return false;
+                      return llvm::any_of(
+                          topology.capacityClaims().slice(
+                              traversal.capacityClaimOffset,
+                              traversal.capacityClaimCount),
+                          [&](const EndpointRoutingCapacityClaim &claim) {
+                            return claim.cell == witness->capacityCell;
+                          });
+                    });
+                if (participates)
+                  reroutedLegs.push_back(route.leg);
+              }
+              if (reroutedLegs.empty())
+                return invalid(
+                    "WitnessRegion Action has no selected service leg");
+              return llvm::Error::success();
             } else {
               const auto route = llvm::find_if(
                   candidate.serviceRoutes(), [&](const auto &candidateRoute) {
@@ -874,11 +991,15 @@ loom::pnr::detail::rebuildSystemCandidateRoutes(
     return std::move(error);
   auto routes = negotiateSystemServiceRoutes(
       candidate.problem(), candidate.threadChoices(), candidate.graphChoices(),
+      candidate.instructionResourceUses(), candidate.serviceResourceUses(),
       endpointExpansions, negotiationIterations, reroutedLegs,
       SystemServiceRoutesView{candidate.serviceRoutes(),
                               candidate.serviceRouteNodes(),
                               candidate.serviceRouteSinks()},
-      exclusion, repairRegion);
+      exclusion, repairRegion,
+      requireCapacityClosure
+          ? SystemRoutingClosureRequirement::Strict
+          : SystemRoutingClosureRequirement::PolicyAdmittedTemporary);
   if (!routes)
     return routes.takeError();
   return SystemCandidateState::create(

@@ -1024,6 +1024,43 @@ loom::pnr::detail::measureSystemServiceRouteCapacityUsage(
   return usage;
 }
 
+llvm::Expected<std::uint64_t>
+loom::pnr::detail::measureSystemServiceRouteTraversalClaim(
+    const FrozenEndpointRoutingTopology &topology,
+    SystemServiceRoutesView routes) {
+  std::uint64_t total = 0;
+  for (const SystemServiceRouteSelection &route : routes.routes) {
+    if (route.nodeOffset > routes.nodes.size() ||
+        route.nodeCount > routes.nodes.size() - route.nodeOffset)
+      return invalid("route traversal-claim node range is out of bounds");
+    std::set<std::pair<PnrIndex, PnrIndex>> selectedClaims;
+    for (const SystemServiceRouteNodeSelection &node :
+         routes.nodes.slice(route.nodeOffset, route.nodeCount)) {
+      if (node.incomingTraversal == getInvalidPnrIndex())
+        continue;
+      if (node.incomingTraversal >= topology.traversals().size())
+        return invalid(
+            "route traversal-claim projection has a foreign traversal");
+      const EndpointRoutingTraversal &traversal =
+          topology.traversals()[node.incomingTraversal];
+      if (traversal.capacityClaimOffset > topology.capacityClaims().size() ||
+          traversal.capacityClaimCount >
+              topology.capacityClaims().size() - traversal.capacityClaimOffset)
+        return invalid("route traversal-claim capacity range is out of bounds");
+      for (const EndpointRoutingCapacityClaim &claim :
+           topology.capacityClaims().slice(traversal.capacityClaimOffset,
+                                           traversal.capacityClaimCount)) {
+        if (!selectedClaims.emplace(claim.activation, claim.cell).second)
+          continue;
+        if (claim.qCost > std::numeric_limits<std::uint64_t>::max() - total)
+          return invalid("route traversal-claim total exceeds u64");
+        total += claim.qCost;
+      }
+    }
+  }
+  return total;
+}
+
 llvm::Expected<std::vector<PnrIndex>>
 loom::pnr::detail::buildSystemServiceRouteLegOrder(
     const FrozenEndpointRoutingTopology &topology,
@@ -1242,7 +1279,8 @@ llvm::Error loom::pnr::detail::verifySystemServiceRoutes(
     for (const auto &node : routeNodes)
       selectedTraversals.push_back(node.incomingTraversal);
     if (llvm::Error error = commitRouteCapacityTraversals(
-            topology, selectedTraversals, capacityUsage))
+            topology, selectedTraversals, capacityUsage,
+            /*enforceCapacity=*/false))
       return error;
     expectedNodeOffset += route.nodeCount;
     expectedSinkOffset += route.sinkCount;

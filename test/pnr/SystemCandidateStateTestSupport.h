@@ -54,6 +54,12 @@ adg::FinalizedFabricDesign buildHeterogeneousSystem(
     mlir::MLIRContext &context, bool extraSupportsRead = true,
     bool routeExtraMemoryThroughTransform = false);
 
+adg::FinalizedFabricDesign
+buildNegotiatedRoutingSystem(ArtifactStore &store,
+                             const fabric::FinalizedFabricRoot &baselineSystem,
+                             const fabric::FinalizedFabricRoot &primaryModule,
+                             mlir::MLIRContext &context);
+
 void verifyFinalizedSystemMappingWorkflow(
     const SystemCandidateState &candidate,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -78,6 +84,13 @@ void verifySystemResourceActionWorkflow(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ArtifactRootReference &spatialMapping, const ResolvedConfig &resolved,
     const ResolvedPnrConfigView &config, mlir::MLIRContext &context);
+
+void verifySystemNegotiatedRoutingWorkflow(
+    ArtifactStore &store, const fabric::FinalizedFabricRoot &baselineSystem,
+    const fabric::FinalizedFabricRoot &primaryModule,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ArtifactRootReference &spatialMapping, const ResolvedConfig &resolved,
+    mlir::MLIRContext &context);
 
 } // namespace pnr::test
 } // namespace loom
