@@ -1,10 +1,10 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-scalar-value-select-test %t
-# RUN: FileCheck %s --check-prefix=DENSE < %t/scalar_value_select.sv
-# RUN: FileCheck %s --check-prefix=WIDE < %t/scalar_value_select_wide_condition.sv
-# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_scalar_value_select.ys
+# RUN: FileCheck %s --check-prefix=DENSE < %t/provider_artifacts/scalar_value_select.sv
+# RUN: FileCheck %s --check-prefix=WIDE < %t/provider_artifacts/scalar_value_select_wide_condition.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/provider_artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/provider_artifacts/portable_scalar_value_select.ys
 
 # DENSE: module scalar_value_select
 # DENSE: input data_input_0

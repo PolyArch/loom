@@ -2,6 +2,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarUnsignedIntegerDivRem.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -36,7 +37,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <memory>
 #include <optional>
@@ -83,8 +83,8 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value,
   require(test, llvm::StringRef(message).contains(expected), message);
 }
 
-void expectTypedUnsupported(llvm::StringRef test,
-                            llvm::Expected<FabricOperationProviderOutput> value,
+template <typename T>
+void expectTypedUnsupported(llvm::StringRef test, llvm::Expected<T> value,
                             Family family, BackendRecipeKey recipe,
                             llvm::StringRef description) {
   require(test, !value, std::string("provider accepted ") + description.str());
@@ -565,11 +565,11 @@ FabricOperationProviderRegistry makeProviderRegistry(llvm::StringRef test) {
   return registry;
 }
 
-llvm::Expected<FabricOperationProviderOutput> specializeFor(
-    SkeletonFixture &skeleton, const FabricFixture &fixture,
-    const FinalizedConfigurationABI &abi,
-    const FabricOperationProviderRegistry &registry,
-    BackendRecipeKey recipe = BackendRecipeKey::PortableSystemVerilog) {
+llvm::Expected<FabricOperationProviderOutput>
+specializeNativeFor(SkeletonFixture &skeleton, const FabricFixture &fixture,
+                    const FinalizedConfigurationABI &abi,
+                    const FabricOperationProviderRegistry &registry,
+                    BackendRecipeKey recipe) {
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
       {skeleton.leaf, fixture.physicalOccurrence}};
@@ -579,23 +579,29 @@ llvm::Expected<FabricOperationProviderOutput> specializeFor(
                                          recipes, registry, externalContracts);
 }
 
+llvm::Expected<loom::hardware::test::PortableProviderConformance>
+specializePortableFor(SkeletonFixture &skeleton, const FabricFixture &fixture,
+                      const FinalizedConfigurationABI &abi,
+                      const FabricOperationProviderRegistry &registry) {
+  ExternalImplementationContractCatalog externalContracts;
+  ModuleRootCirctSkeleton module{std::move(skeleton.module),
+                                 {{skeleton.leaf, fixture.physicalOccurrence}}};
+  return loom::hardware::test::specializeAndExportPortableProvider(
+      std::move(module), abi, registry, externalContracts);
+}
+
 std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
                        const FabricFixture &fixture,
                        const FinalizedConfigurationABI &abi) {
   FabricOperationProviderRegistry registry = makeProviderRegistry(test);
-  FabricOperationProviderOutput output =
-      take(test, specializeFor(skeleton, fixture, abi, registry));
+  auto conformance =
+      take(test, specializePortableFor(skeleton, fixture, abi, registry));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable div/rem emitted external implementation state");
-  bool unresolved = false;
-  skeleton.module->walk(
-      [&](circt::hw::HWModuleGeneratedOp) { unresolved = true; });
-  require(test, !unresolved, "portable div/rem left an unresolved leaf");
-  if (llvm::Error error = verifySpecializedCirctModule(*skeleton.module))
-    fail(test, llvm::toString(std::move(error)));
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
 void generatedOwnerAndProviderCoverage() {
@@ -745,14 +751,6 @@ std::string emitDeterministically(llvm::StringRef test,
     require(test, !rtl.contains("config_"),
             "singleton div/rem emitted a selector");
   return firstRtl;
-}
-
-void writeFile(llvm::StringRef test, const std::filesystem::path &path,
-               llvm::StringRef contents) {
-  std::ofstream output(path);
-  require(test, static_cast<bool>(output), "could not create tool input");
-  output << contents.str();
-  require(test, static_cast<bool>(output), "could not write tool input");
 }
 
 std::string hexLiteral(unsigned width, std::uint64_t value) {
@@ -1032,17 +1030,7 @@ void validBehaviorAndToolInputs(const std::filesystem::path &root) {
     emitted.push_back(emitDeterministically(test, fixture, abi));
   }
 
-  writeFile(test, root / "scalar_unsigned_div_8_padded.sv", emitted[0]);
-  writeFile(test, root / "scalar_unsigned_rem_8_padded.sv", emitted[1]);
-  writeFile(test, root / "scalar_unsigned_div_rem_8_padded.sv", emitted[2]);
-  writeFile(test,
-            root / "scalar_unsigned_div_rem_8_padded_inactive_quotient.sv",
-            emitted[3]);
-  writeFile(test, root / "scalar_unsigned_div_rem_64.sv", emitted[4]);
-  writeFile(test, root / "testbench.sv", testbenchSource());
-  writeFile(test, root / "synthesis_top.sv", synthesisTopSource());
-  writeFile(
-      test, root / "portable_scalar_unsigned_integer_div_rem.ys",
+  const std::string yosysScript =
       R"ys(read_verilog -sv scalar_unsigned_div_8_padded.sv scalar_unsigned_rem_8_padded.sv scalar_unsigned_div_rem_8_padded.sv scalar_unsigned_div_rem_8_padded_inactive_quotient.sv scalar_unsigned_div_rem_64.sv synthesis_top.sv
 hierarchy -check -top scalar_unsigned_div_rem_synthesis_top
 proc
@@ -1053,7 +1041,19 @@ select -assert-none t:$mod
 synth -top scalar_unsigned_div_rem_synthesis_top -noabc
 check -assert
 stat
-)ys");
+)ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "provider_artifacts",
+          {{"scalar_unsigned_div_8_padded.sv", emitted[0]},
+           {"scalar_unsigned_rem_8_padded.sv", emitted[1]},
+           {"scalar_unsigned_div_rem_8_padded.sv", emitted[2]},
+           {"scalar_unsigned_div_rem_8_padded_inactive_quotient.sv",
+            emitted[3]},
+           {"scalar_unsigned_div_rem_64.sv", emitted[4]},
+           {"testbench.sv", testbenchSource()},
+           {"synthesis_top.sv", synthesisTopSource()},
+           {"portable_scalar_unsigned_integer_div_rem.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void malformedInputsAreTransactional(const std::filesystem::path &root) {
@@ -1090,11 +1090,9 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
   SkeletonFixture wrongPorts =
       makeSkeleton(test, *portContext, valid, validAbi.abi(),
                    LeafMutation::WrongFirstInputWidth);
-  const std::string portBefore = moduleText(*wrongPorts.module);
-  expectError(test, specializeFor(wrongPorts, valid, validAbi, registry),
+  expectError(test,
+              specializePortableFor(wrongPorts, valid, validAbi, registry),
               "leaf port");
-  require(test, moduleText(*wrongPorts.module) == portBefore,
-          "malformed div/rem leaf partially mutated the caller module");
 
   for (ConfigurationAbiKind kind : {
            ConfigurationAbiKind::MissingRemainder,
@@ -1124,15 +1122,13 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
   std::unique_ptr<mlir::MLIRContext> contractContext = makeCirctContext();
   SkeletonFixture contractSkeleton = makeSkeleton(
       test, *contractContext, unsupportedContract, contractAbi.abi());
-  const std::string contractBefore = moduleText(*contractSkeleton.module);
   expectTypedUnsupported(test,
-                         specializeFor(contractSkeleton, unsupportedContract,
-                                       contractAbi, registry),
+                         specializePortableFor(contractSkeleton,
+                                               unsupportedContract, contractAbi,
+                                               registry),
                          Family::ScalarUnsignedIntegerDivRem,
                          BackendRecipeKey::PortableSystemVerilog,
                          "unsupported div/rem resource contract");
-  require(test, moduleText(*contractSkeleton.module) == contractBefore,
-          "unsupported div/rem contract partially mutated the caller module");
 
   FabricFixture unsupportedShape =
       makeFabric(test, store, unsupportedShapeSpec());
@@ -1141,14 +1137,12 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
   std::unique_ptr<mlir::MLIRContext> shapeContext = makeCirctContext();
   SkeletonFixture shapeSkeleton =
       makeSkeleton(test, *shapeContext, unsupportedShape, shapeAbi.abi());
-  const std::string shapeBefore = moduleText(*shapeSkeleton.module);
-  expectTypedUnsupported(
-      test, specializeFor(shapeSkeleton, unsupportedShape, shapeAbi, registry),
-      Family::ScalarUnsignedIntegerDivRem,
-      BackendRecipeKey::PortableSystemVerilog,
-      "unsupported div/rem physical shape");
-  require(test, moduleText(*shapeSkeleton.module) == shapeBefore,
-          "unsupported div/rem shape partially mutated the caller module");
+  expectTypedUnsupported(test,
+                         specializePortableFor(shapeSkeleton, unsupportedShape,
+                                               shapeAbi, registry),
+                         Family::ScalarUnsignedIntegerDivRem,
+                         BackendRecipeKey::PortableSystemVerilog,
+                         "unsupported div/rem physical shape");
 
   FabricFixture multiWidth = makeFabric(test, store, multiWidthSpec());
   auto multiWidthRelation =
@@ -1183,7 +1177,7 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
         makeSkeleton(test, *context, valid, validAbi.abi());
     const std::string before = moduleText(*skeleton.module);
     expectTypedUnsupported(
-        test, specializeFor(skeleton, valid, validAbi, registry, recipe),
+        test, specializeNativeFor(skeleton, valid, validAbi, registry, recipe),
         Family::ScalarUnsignedIntegerDivRem, recipe,
         "backend-native div/rem recipe");
     require(test, moduleText(*skeleton.module) == before,
@@ -1195,13 +1189,10 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
   std::unique_ptr<mlir::MLIRContext> otherContext = makeCirctContext();
   SkeletonFixture otherSkeleton =
       makeSkeleton(test, *otherContext, other, otherAbi.abi());
-  const std::string otherBefore = moduleText(*otherSkeleton.module);
   expectTypedUnsupported(
-      test, specializeFor(otherSkeleton, other, otherAbi, registry),
+      test, specializePortableFor(otherSkeleton, other, otherAbi, registry),
       Family::ScalarIntegerMultiply, BackendRecipeKey::PortableSystemVerilog,
       "wrong-family capability");
-  require(test, moduleText(*otherSkeleton.module) == otherBefore,
-          "wrong-family capability partially mutated the caller module");
 }
 
 } // namespace

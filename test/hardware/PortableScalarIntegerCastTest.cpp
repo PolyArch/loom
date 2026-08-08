@@ -2,6 +2,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarIntegerCast.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -37,7 +38,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -531,20 +531,18 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
   FabricOperationProviderRegistry registry;
   if (llvm::Error error = registerPortableScalarIntegerCastProvider(registry))
     fail(test, llvm::toString(std::move(error)));
-  FabricOperationProviderOutput output = take(
-      test, trySpecialize(skeleton, fabric, abi,
-                          BackendRecipeKey::PortableSystemVerilog, registry));
+  ExternalImplementationContractCatalog externalContracts;
+  ModuleRootCirctSkeleton module{std::move(skeleton.module),
+                                 {{skeleton.leaf, fabric.physicalOccurrence}}};
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     std::move(module), abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable cast provider emitted external implementation state");
-  bool unresolved = false;
-  skeleton.module->walk(
-      [&](circt::hw::HWModuleGeneratedOp) { unresolved = true; });
-  require(test, !unresolved, "cast provider left an unresolved operation leaf");
-  if (llvm::Error error = verifySpecializedCirctModule(*skeleton.module))
-    fail(test, llvm::toString(std::move(error)));
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
 void registrationIsPortableOnly() {
@@ -687,12 +685,10 @@ std::string emitDeterministically(llvm::StringRef test,
   return firstRtl;
 }
 
-void writeToolInputs(const std::filesystem::path &root,
+void writeToolInputs(llvm::StringRef test, const std::filesystem::path &root,
                      const std::string &configured,
                      const std::string &identity) {
-  std::ofstream(root / "scalar_integer_cast.sv") << configured;
-  std::ofstream(root / "scalar_integer_cast_identity.sv") << identity;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const std::string testbench = R"sv(
 module testbench;
   logic [36:0] cast_input;
   logic [2:0] cast_config;
@@ -743,7 +739,7 @@ module testbench;
   end
 endmodule
 )sv";
-  std::ofstream(root / "synthesis_top.sv") << R"sv(
+  const std::string synthesisTop = R"sv(
 module scalar_integer_cast_synthesis_top(
   input logic [36:0] cast_input,
   input logic [2:0] cast_config,
@@ -757,7 +753,7 @@ module scalar_integer_cast_synthesis_top(
     .data_input_0(identity_input), .data_output_0(identity_output));
 endmodule
 )sv";
-  std::ofstream(root / "portable_scalar_integer_cast.ys") << R"ys(
+  const std::string yosysScript = R"ys(
 read_verilog -sv scalar_integer_cast.sv scalar_integer_cast_identity.sv synthesis_top.sv
 hierarchy -check -top scalar_integer_cast_synthesis_top
 proc
@@ -767,6 +763,14 @@ synth -top scalar_integer_cast_synthesis_top
 check -assert
 stat
 )ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "artifacts",
+          {{"scalar_integer_cast.sv", configured},
+           {"scalar_integer_cast_identity.sv", identity},
+           {"testbench.sv", testbench},
+           {"synthesis_top.sv", synthesisTop},
+           {"portable_scalar_integer_cast.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void configuredAndSingletonRtl(const std::filesystem::path &root) {
@@ -793,7 +797,7 @@ void configuredAndSingletonRtl(const std::filesystem::path &root) {
           !llvm::StringRef(identityRtl).contains("config_") &&
               llvm::StringRef(identityRtl).contains("data_input_0[31:0]"),
           "configuration-free identity did not lower directly");
-  writeToolInputs(root, configuredRtl, identityRtl);
+  writeToolInputs(test, root, configuredRtl, identityRtl);
 }
 
 void failuresAreTransactional(const std::filesystem::path &root) {

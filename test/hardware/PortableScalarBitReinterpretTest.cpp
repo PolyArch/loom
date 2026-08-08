@@ -2,6 +2,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarBitReinterpret.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -36,8 +37,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <variant>
@@ -76,8 +77,8 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value,
   require(test, llvm::StringRef(message).contains(expected), message);
 }
 
-void expectTypedUnsupported(llvm::StringRef test,
-                            llvm::Expected<FabricOperationProviderOutput> value,
+template <typename T>
+void expectTypedUnsupported(llvm::StringRef test, llvm::Expected<T> value,
                             ::fabric::ImplementationFamilyId family,
                             llvm::StringRef description) {
   require(test, !value, std::string("provider accepted ") + description.str());
@@ -434,13 +435,6 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
   return {std::move(module), leaf};
 }
 
-std::string moduleText(mlir::ModuleOp module) {
-  std::string result;
-  llvm::raw_string_ostream stream(result);
-  module.print(stream);
-  return result;
-}
-
 std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
                        const FabricFixture &fabric,
                        const FinalizedConfigurationABI &abi) {
@@ -449,26 +443,17 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
           registerPortableScalarBitReinterpretProvider(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
-                                                 associations, recipes,
-                                                 registry, externalContracts));
+  ModuleRootCirctSkeleton module{std::move(skeleton.module),
+                                 {{skeleton.leaf, fabric.physicalOccurrence}}};
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     std::move(module), abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "bit reinterpret provider emitted external implementation state");
-  bool unresolved = false;
-  skeleton.module->walk(
-      [&](circt::hw::HWModuleGeneratedOp) { unresolved = true; });
-  require(test, !unresolved,
-          "bit reinterpret provider left an unresolved operation leaf");
-  if (llvm::Error error = verifySpecializedCirctModule(*skeleton.module))
-    fail(test, llvm::toString(std::move(error)));
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
 void generatedRegistryAndProviderCoverage() {
@@ -704,11 +689,7 @@ std::string svLiteral(const llvm::APInt &value) {
 
 void writeToolInputs(const std::filesystem::path &root,
                      const EmittedRtl &emitted) {
-  std::ofstream(root / "scalar_bit_reinterpret_truncate.sv")
-      << emitted.truncate;
-  std::ofstream(root / "scalar_bit_reinterpret_extend.sv") << emitted.extend;
-
-  std::ofstream testbench(root / "testbench.sv");
+  std::ostringstream testbench;
   testbench << R"sv(module testbench;
   logic [79:0] truncate_input;
   logic [71:0] truncate_output;
@@ -744,7 +725,7 @@ void writeToolInputs(const std::filesystem::path &root,
 endmodule
 )sv";
 
-  std::ofstream(root / "synthesis_top.sv") << R"sv(
+  const std::string synthesisTop = R"sv(
 module scalar_bit_reinterpret_synthesis_top(
   input logic [79:0] truncate_input,
   input logic [71:0] extend_input,
@@ -756,7 +737,7 @@ module scalar_bit_reinterpret_synthesis_top(
     .data_input_0(extend_input), .data_output_0(extend_output));
 endmodule
 )sv";
-  std::ofstream(root / "portable_scalar_bit_reinterpret.ys") << R"ys(
+  const std::string yosysScript = R"ys(
 read_verilog -sv scalar_bit_reinterpret_truncate.sv scalar_bit_reinterpret_extend.sv synthesis_top.sv
 hierarchy -check -top scalar_bit_reinterpret_synthesis_top
 proc
@@ -766,6 +747,14 @@ synth -top scalar_bit_reinterpret_synthesis_top
 check -assert
 stat
 )ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "provider_artifacts",
+          {{"scalar_bit_reinterpret_truncate.sv", emitted.truncate},
+           {"scalar_bit_reinterpret_extend.sv", emitted.extend},
+           {"testbench.sv", testbench.str()},
+           {"synthesis_top.sv", synthesisTop},
+           {"portable_scalar_bit_reinterpret.ys", yosysScript}}))
+    fail("writeToolInputs", llvm::toString(std::move(error)));
 }
 
 void invalidInputsAreTransactional(const std::filesystem::path &root) {
@@ -780,24 +769,18 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
 
   FabricFixture valid = makeBitReinterpretFabric(test, store, 80, 72);
   FinalizedConfigurationABI validAbi = makeConfigurationAbi(test, store, valid);
-  const std::vector<FabricOperationRecipeBinding> validRecipes = {
-      {valid.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   for (LeafMutation mutation :
        {LeafMutation::WrongInputWidth, LeafMutation::ExtraConfigurationPort}) {
     std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
     SkeletonFixture skeleton =
         makeSkeleton(test, *context, valid, validAbi.abi(),
                      "malformed_bit_reinterpret", mutation);
-    const std::string before = moduleText(*skeleton.module);
-    const std::vector<FabricOperationLeafAssociation> associations = {
-        {skeleton.leaf, valid.physicalOccurrence}};
+    ModuleRootCirctSkeleton module{std::move(skeleton.module),
+                                   {{skeleton.leaf, valid.physicalOccurrence}}};
     expectError(test,
-                specializeFabricOperationLeaves(*skeleton.module, validAbi,
-                                                associations, validRecipes,
-                                                registry, externalContracts),
+                loom::hardware::test::specializeAndExportPortableProvider(
+                    std::move(module), validAbi, registry, externalContracts),
                 "leaf port");
-    require(test, moduleText(*skeleton.module) == before,
-            "malformed leaf partially mutated the caller module");
   }
 
   FabricFixture wrongContract =
@@ -808,41 +791,30 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
   SkeletonFixture wrongSkeleton =
       makeSkeleton(test, *wrongContext, wrongContract, wrongAbi.abi(),
                    "wrong_contract_bit_reinterpret");
-  const std::string wrongBefore = moduleText(*wrongSkeleton.module);
-  const std::vector<FabricOperationLeafAssociation> wrongAssociations = {
-      {wrongSkeleton.leaf, wrongContract.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> wrongRecipes = {
-      {wrongContract.physicalOccurrence,
-       BackendRecipeKey::PortableSystemVerilog,
-       {}}};
-  expectTypedUnsupported(test,
-                         specializeFabricOperationLeaves(
-                             *wrongSkeleton.module, wrongAbi, wrongAssociations,
-                             wrongRecipes, registry, externalContracts),
-                         ::fabric::ImplementationFamilyId::ScalarBitReinterpret,
-                         "unsupported resource contract");
-  require(test, moduleText(*wrongSkeleton.module) == wrongBefore,
-          "wrong resource contract partially mutated the caller module");
+  ModuleRootCirctSkeleton wrongModule{
+      std::move(wrongSkeleton.module),
+      {{wrongSkeleton.leaf, wrongContract.physicalOccurrence}}};
+  expectTypedUnsupported(
+      test,
+      loom::hardware::test::specializeAndExportPortableProvider(
+          std::move(wrongModule), wrongAbi, registry, externalContracts),
+      ::fabric::ImplementationFamilyId::ScalarBitReinterpret,
+      "unsupported resource contract");
 
   FabricFixture other = makeOtherFamilyFabric(test, store);
   FinalizedConfigurationABI otherAbi = makeConfigurationAbi(test, store, other);
   std::unique_ptr<mlir::MLIRContext> otherContext = makeCirctContext();
   SkeletonFixture otherSkeleton =
       makeSkeleton(test, *otherContext, other, otherAbi.abi(), "other_family");
-  const std::string otherBefore = moduleText(*otherSkeleton.module);
-  const std::vector<FabricOperationLeafAssociation> otherAssociations = {
-      {otherSkeleton.leaf, other.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> otherRecipes = {
-      {other.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+  ModuleRootCirctSkeleton otherModule{
+      std::move(otherSkeleton.module),
+      {{otherSkeleton.leaf, other.physicalOccurrence}}};
   expectTypedUnsupported(
       test,
-      specializeFabricOperationLeaves(*otherSkeleton.module, otherAbi,
-                                      otherAssociations, otherRecipes, registry,
-                                      externalContracts),
+      loom::hardware::test::specializeAndExportPortableProvider(
+          std::move(otherModule), otherAbi, registry, externalContracts),
       ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
       "other-family input");
-  require(test, moduleText(*otherSkeleton.module) == otherBefore,
-          "other-family input partially mutated the caller module");
 }
 
 } // namespace

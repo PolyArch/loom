@@ -1,9 +1,9 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-scalar-integer-compare-min-max-test %t
-# RUN: FileCheck %s --check-prefix=RTL < %t/scalar_integer_compare_min_max.sv
-# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_scalar_integer_compare_min_max.ys
+# RUN: FileCheck %s --check-prefix=RTL < %t/artifacts/scalar_integer_compare_min_max.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/artifacts/portable_scalar_integer_compare_min_max.ys
 
 # RTL: module scalar_integer_compare_min_max
 # RTL: input [31:0] data_input_0

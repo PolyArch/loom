@@ -1,13 +1,13 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-scalar-unsigned-integer-div-rem-test %t
-# RUN: FileCheck %s --check-prefix=DIV8 < %t/scalar_unsigned_div_8_padded.sv
-# RUN: FileCheck %s --check-prefix=REM8 < %t/scalar_unsigned_rem_8_padded.sv
-# RUN: FileCheck %s --check-prefix=DUAL8 < %t/scalar_unsigned_div_rem_8_padded.sv
-# RUN: FileCheck %s --check-prefix=DUAL8Q < %t/scalar_unsigned_div_rem_8_padded_inactive_quotient.sv
-# RUN: FileCheck %s --check-prefix=DUAL64 < %t/scalar_unsigned_div_rem_64.sv
-# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_scalar_unsigned_integer_div_rem.ys
+# RUN: FileCheck %s --check-prefix=DIV8 < %t/provider_artifacts/scalar_unsigned_div_8_padded.sv
+# RUN: FileCheck %s --check-prefix=REM8 < %t/provider_artifacts/scalar_unsigned_rem_8_padded.sv
+# RUN: FileCheck %s --check-prefix=DUAL8 < %t/provider_artifacts/scalar_unsigned_div_rem_8_padded.sv
+# RUN: FileCheck %s --check-prefix=DUAL8Q < %t/provider_artifacts/scalar_unsigned_div_rem_8_padded_inactive_quotient.sv
+# RUN: FileCheck %s --check-prefix=DUAL64 < %t/provider_artifacts/scalar_unsigned_div_rem_64.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/provider_artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/provider_artifacts/portable_scalar_unsigned_integer_div_rem.ys
 
 # DIV8-LABEL: module scalar_unsigned_div_8_padded(
 # DIV8: input [12:0] data_input_0

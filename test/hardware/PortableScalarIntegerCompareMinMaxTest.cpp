@@ -2,6 +2,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarIntegerCompareMinMax.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -33,7 +34,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -522,19 +522,17 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
           registerPortableScalarIntegerCompareMinMaxProvider(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
-                                                 associations, recipes,
-                                                 registry, externalContracts));
+  ModuleRootCirctSkeleton module{std::move(skeleton.module),
+                                 {{skeleton.leaf, fabric.physicalOccurrence}}};
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     std::move(module), abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable compare/min/max emitted external implementation state");
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
 void compactSemanticFieldAndDeterminism(const std::filesystem::path &root) {
@@ -596,8 +594,7 @@ void compactSemanticFieldAndDeterminism(const std::filesystem::path &root) {
               llvm::StringRef(firstRtl).contains("$signed"),
           "portable provider omitted configured signed comparison logic");
 
-  std::ofstream(root / "scalar_integer_compare_min_max.sv") << firstRtl;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const std::string testbench = R"sv(
 module testbench;
   logic [31:0] data_input_0;
   logic [31:0] data_input_1;
@@ -646,7 +643,7 @@ module testbench;
   end
 endmodule
 )sv";
-  std::ofstream(root / "portable_scalar_integer_compare_min_max.ys") << R"ys(
+  const std::string yosysScript = R"ys(
 read_verilog scalar_integer_compare_min_max.sv
 hierarchy -check -top scalar_integer_compare_min_max
 proc
@@ -656,6 +653,12 @@ synth -top scalar_integer_compare_min_max
 check
 stat
 )ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "artifacts",
+          {{"scalar_integer_compare_min_max.sv", firstRtl},
+           {"testbench.sv", testbench},
+           {"portable_scalar_integer_compare_min_max.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void singletonEqualityNeedsNoSelector(const std::filesystem::path &root) {

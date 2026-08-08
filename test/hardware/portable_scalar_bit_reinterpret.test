@@ -1,10 +1,10 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-scalar-bit-reinterpret-test %t
-# RUN: FileCheck %s --check-prefix=TRUNCATE < %t/scalar_bit_reinterpret_truncate.sv
-# RUN: FileCheck %s --check-prefix=EXTEND < %t/scalar_bit_reinterpret_extend.sv
-# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_scalar_bit_reinterpret.ys
+# RUN: FileCheck %s --check-prefix=TRUNCATE < %t/provider_artifacts/scalar_bit_reinterpret_truncate.sv
+# RUN: FileCheck %s --check-prefix=EXTEND < %t/provider_artifacts/scalar_bit_reinterpret_extend.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/provider_artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/provider_artifacts/portable_scalar_bit_reinterpret.ys
 
 # TRUNCATE: module scalar_bit_reinterpret_truncate
 # TRUNCATE: input [79:0] data_input_0

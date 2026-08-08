@@ -1,10 +1,10 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-scalar-integer-multiply-test %t
-# RUN: FileCheck %s --check-prefix=RTL8 < %t/scalar_integer_multiply_8.sv
-# RUN: FileCheck %s --check-prefix=RTL64 < %t/scalar_integer_multiply_64.sv
-# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_scalar_integer_multiply.ys
+# RUN: FileCheck %s --check-prefix=RTL8 < %t/provider_artifacts/scalar_integer_multiply_8.sv
+# RUN: FileCheck %s --check-prefix=RTL64 < %t/provider_artifacts/scalar_integer_multiply_64.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/provider_artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/provider_artifacts/portable_scalar_integer_multiply.ys
 
 # RTL8: module scalar_integer_multiply_8
 # RTL8: input [7:0] data_input_0

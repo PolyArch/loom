@@ -1,10 +1,10 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-scalar-integer-cast-test %t
-# RUN: FileCheck %s --check-prefix=CONFIGURED < %t/scalar_integer_cast.sv
-# RUN: FileCheck %s --check-prefix=IDENTITY < %t/scalar_integer_cast_identity.sv
-# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_scalar_integer_cast.ys
+# RUN: FileCheck %s --check-prefix=CONFIGURED < %t/artifacts/scalar_integer_cast.sv
+# RUN: FileCheck %s --check-prefix=IDENTITY < %t/artifacts/scalar_integer_cast_identity.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/artifacts/portable_scalar_integer_cast.ys
 
 # CONFIGURED: module scalar_integer_cast
 # CONFIGURED: input [36:0] data_input_0
