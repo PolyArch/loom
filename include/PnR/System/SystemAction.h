@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <variant>
 
 namespace loom::pnr {
 
@@ -18,11 +19,71 @@ struct SystemExecutionBindingAction final {
   PnrIndex choice = 0;
 };
 
-struct SystemActionProposalDomain final {
-  llvm::ArrayRef<SystemExecutionBindingAction> bindingChoices;
+struct SystemWholeLegRoutingAction final {
+  PnrIndex leg = 0;
 };
 
-llvm::Expected<std::optional<SystemExecutionBindingAction>>
+struct SystemSingleSinkRoutingAction final {
+  PnrIndex leg = 0;
+  PnrIndex sinkObligation = 0;
+};
+
+struct SystemRootedSubtreeRoutingAction final {
+  PnrIndex leg = 0;
+  PnrIndex rootEndpoint = 0;
+};
+
+struct SystemWitnessRegionRoutingAction final {
+  ResolvedPnrViolationKind witnessKind =
+      ResolvedPnrViolationKind::UnroutedObligation;
+  PnrIndex witnessOrdinal = 0;
+};
+
+struct SystemGlobalRoutingAction final {};
+
+using SystemTransportRoutingAction =
+    std::variant<SystemWholeLegRoutingAction, SystemSingleSinkRoutingAction,
+                 SystemRootedSubtreeRoutingAction,
+                 SystemWitnessRegionRoutingAction, SystemGlobalRoutingAction>;
+
+struct SystemServiceTargetAction final {
+  PnrIndex context = 0;
+  PnrIndex choice = 0;
+};
+
+struct SystemInstructionUsePatternAction final {
+  PnrIndex use = 0;
+  PnrIndex choice = 0;
+};
+
+struct SystemServiceUsePatternAction final {
+  PnrIndex use = 0;
+  PnrIndex choice = 0;
+};
+
+using SystemResourceAllocationAction =
+    std::variant<SystemServiceTargetAction, SystemInstructionUsePatternAction,
+                 SystemServiceUsePatternAction>;
+
+using SystemMappingAction =
+    std::variant<SystemExecutionBindingAction, SystemTransportRoutingAction,
+                 SystemResourceAllocationAction>;
+
+struct SystemActionChoiceRange final {
+  PnrIndex choiceOffset = 0;
+  PnrIndex choiceCount = 0;
+};
+
+struct SystemActionProposalDomain final {
+  llvm::ArrayRef<SystemActionChoiceRange> bindingAnchors;
+  llvm::ArrayRef<SystemExecutionBindingAction> bindingChoices;
+  llvm::ArrayRef<SystemActionChoiceRange> routingAnchors;
+  llvm::ArrayRef<SystemTransportRoutingAction> routingChoices;
+  llvm::ArrayRef<SystemActionChoiceRange> resourceAnchors;
+  llvm::ArrayRef<SystemResourceAllocationAction> resourceChoices;
+};
+
+llvm::Expected<std::optional<SystemMappingAction>>
 proposeSystemAction(const ResolvedPnrActionProposalPolicy &policy,
                     SystemActionProposalDomain domain,
                     DeterministicPnrRandomStream &stream);

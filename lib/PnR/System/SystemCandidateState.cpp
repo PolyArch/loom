@@ -2,6 +2,7 @@
 
 #include "PnR/EndpointRouter.h"
 #include "PnR/InitializerRelationSolver.h"
+#include "SystemCandidateMutation.h"
 #include "SystemCandidateServiceResolver.h"
 #include "SystemPnrSearchDomainInternal.h"
 #include "SystemServiceRouter.h"
@@ -662,4 +663,142 @@ loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
       std::move(problem),
       {threadChoices, graphChoices, routes->routes, routes->nodes,
        routes->sinks, *targets, *instructionUses, *serviceUses});
+}
+
+llvm::Expected<std::vector<SystemServiceTargetSelection>>
+loom::pnr::detail::systemServiceTargetChoices(
+    const SystemCandidateState &candidate, PnrIndex context) {
+  if (context >= candidate.problem().serviceContexts().size())
+    return invalid("service target Action context is out of range");
+  const FrozenSystemServiceContext &record =
+      candidate.problem().serviceContexts()[context];
+  if (record.service >= candidate.problem().serviceDomains().size())
+    return invalid("service target Action context has no H service domain");
+  if (std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
+          candidate.problem().serviceDomains()[record.service].key))
+    return std::vector<SystemServiceTargetSelection>{std::monostate{}};
+  auto domain = candidate.serviceTargetDomain(context);
+  if (!domain)
+    return domain.takeError();
+  return std::visit(
+      [](const auto &values) {
+        return std::vector<SystemServiceTargetSelection>(values.begin(),
+                                                         values.end());
+      },
+      *domain);
+}
+
+llvm::Expected<std::vector<::loom::fabric::FabricUsePatternRef>>
+loom::pnr::detail::systemInstructionUsePatternChoices(
+    const SystemCandidateState &candidate, PnrIndex use) {
+  auto required =
+      requiredInstructionUses(candidate.problem(), candidate.threadChoices());
+  if (!required)
+    return required.takeError();
+  if (use >= required->size())
+    return invalid("InstructionCore ResourceUse Action is out of range");
+  return std::vector<::loom::fabric::FabricUsePatternRef>(
+      (*required)[use].patterns.begin(), (*required)[use].patterns.end());
+}
+
+llvm::Expected<std::vector<::loom::fabric::FabricUsePatternRef>>
+loom::pnr::detail::systemServiceUsePatternChoices(
+    const SystemCandidateState &candidate, PnrIndex use) {
+  auto required =
+      requiredServiceUses(candidate.problem(), candidate.threadChoices(),
+                          candidate.graphChoices(), candidate.serviceTargets());
+  if (!required)
+    return required.takeError();
+  if (use >= required->size())
+    return invalid("service ResourceUse Action is out of range");
+  return std::vector<::loom::fabric::FabricUsePatternRef>(
+      (*required)[use].patterns.begin(), (*required)[use].patterns.end());
+}
+
+llvm::Expected<SystemCandidateStateHandle>
+loom::pnr::detail::rebuildSystemCandidateWithServiceTarget(
+    const SystemCandidateState &candidate, PnrIndex context, PnrIndex choice) {
+  auto choices = systemServiceTargetChoices(candidate, context);
+  if (!choices)
+    return choices.takeError();
+  if (choice >= choices->size())
+    return invalid("service target Action choice is out of range");
+  std::vector<SystemServiceTargetSelection> targets(
+      candidate.serviceTargets().begin(), candidate.serviceTargets().end());
+  targets[context] = (*choices)[choice];
+  auto serviceUses =
+      selectCanonicalServiceUses(candidate.problem(), candidate.threadChoices(),
+                                 candidate.graphChoices(), targets);
+  if (!serviceUses)
+    return serviceUses.takeError();
+  return SystemCandidateState::create(
+      candidate.problemHandle(),
+      {candidate.threadChoices(), candidate.graphChoices(),
+       candidate.serviceRoutes(), candidate.serviceRouteNodes(),
+       candidate.serviceRouteSinks(), targets,
+       candidate.instructionResourceUses(), *serviceUses});
+}
+
+llvm::Expected<SystemCandidateStateHandle>
+loom::pnr::detail::rebuildSystemCandidateWithInstructionUsePattern(
+    const SystemCandidateState &candidate, PnrIndex use, PnrIndex choice) {
+  auto choices = systemInstructionUsePatternChoices(candidate, use);
+  if (!choices)
+    return choices.takeError();
+  if (choice >= choices->size())
+    return invalid("InstructionCore ResourceUse Action choice is out of range");
+  std::vector<SystemInstructionResourceUseSelection> instructionUses(
+      candidate.instructionResourceUses().begin(),
+      candidate.instructionResourceUses().end());
+  instructionUses[use].pattern = (*choices)[choice];
+  return SystemCandidateState::create(
+      candidate.problemHandle(),
+      {candidate.threadChoices(), candidate.graphChoices(),
+       candidate.serviceRoutes(), candidate.serviceRouteNodes(),
+       candidate.serviceRouteSinks(), candidate.serviceTargets(),
+       instructionUses, candidate.serviceResourceUses()});
+}
+
+llvm::Expected<SystemCandidateStateHandle>
+loom::pnr::detail::rebuildSystemCandidateWithServiceUsePattern(
+    const SystemCandidateState &candidate, PnrIndex use, PnrIndex choice) {
+  auto choices = systemServiceUsePatternChoices(candidate, use);
+  if (!choices)
+    return choices.takeError();
+  if (choice >= choices->size())
+    return invalid("service ResourceUse Action choice is out of range");
+  std::vector<SystemServiceResourceUseSelection> serviceUses(
+      candidate.serviceResourceUses().begin(),
+      candidate.serviceResourceUses().end());
+  serviceUses[use].pattern = (*choices)[choice];
+  return SystemCandidateState::create(
+      candidate.problemHandle(),
+      {candidate.threadChoices(), candidate.graphChoices(),
+       candidate.serviceRoutes(), candidate.serviceRouteNodes(),
+       candidate.serviceRouteSinks(), candidate.serviceTargets(),
+       candidate.instructionResourceUses(), serviceUses});
+}
+
+llvm::Expected<SystemCandidateStateHandle>
+loom::pnr::detail::rebuildSystemCandidateRoutes(
+    const SystemCandidateState &candidate, PnrIndex excludedLeg,
+    PnrIndex excludedTraversal, std::uint64_t &endpointExpansions) {
+  const bool hasLeg = excludedLeg != getInvalidPnrIndex();
+  const bool hasTraversal = excludedTraversal != getInvalidPnrIndex();
+  if (hasLeg != hasTraversal)
+    return invalid("route Action exclusion is incomplete");
+  std::optional<SystemServiceRouteTraversalExclusion> exclusion;
+  if (hasLeg)
+    exclusion =
+        SystemServiceRouteTraversalExclusion{excludedLeg, excludedTraversal};
+  auto routes = buildSystemServiceRoutes(
+      candidate.problem(), candidate.threadChoices(), candidate.graphChoices(),
+      exclusion, endpointExpansions);
+  if (!routes)
+    return routes.takeError();
+  return SystemCandidateState::create(
+      candidate.problemHandle(),
+      {candidate.threadChoices(), candidate.graphChoices(), routes->routes,
+       routes->nodes, routes->sinks, candidate.serviceTargets(),
+       candidate.instructionResourceUses(), candidate.serviceResourceUses()});
 }

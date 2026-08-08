@@ -173,6 +173,26 @@ HardwareDomainMember HostCore::domainMember() const {
                               loom::fabric::HostCoreOccurrenceRef(entity_)));
 }
 
+llvm::Expected<HostCore> SystemBuilder::hostCore(std::size_t ordinal) const {
+  auto state = detail::activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto root = activeSystem(*state, rootOrdinal_);
+  if (!root)
+    return root.takeError();
+  for (auto indexedEntity : llvm::enumerate((*root)->entities)) {
+    const detail::SystemEntityState &entity = indexedEntity.value();
+    if (entity.kind != loom::fabric::FabricEntityKind::HostCoreOccurrence)
+      continue;
+    if (ordinal == 0)
+      return HostCore(
+          *state, rootOrdinal_,
+          static_cast<loom::fabric::FabricEntityId>(indexedEntity.index()));
+    --ordinal;
+  }
+  return detail::invalid("HostCore ordinal is out of range");
+}
+
 HardwareDomainMember AccCore::domainMember() const {
   return makeDomainMember(state_, rootOrdinal_,
                           loom::fabric::FabricInventoryOwnerRef::of(

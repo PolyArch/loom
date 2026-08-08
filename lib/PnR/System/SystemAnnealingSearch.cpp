@@ -1,13 +1,12 @@
 #include "PnR/System/SystemAnnealingSearch.h"
 
-#include "PnR/InitializerRelationSolver.h"
 #include "PnR/System/SystemPnrProblem.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <limits>
-#include <optional>
+#include <system_error>
 #include <utility>
 
 using namespace loom;
@@ -35,7 +34,7 @@ llvm::Error invalid(const llvm::Twine &message) {
 }
 
 llvm::Error checkedAdd(std::uint64_t amount, std::uint64_t &target,
-                       llvm::StringRef subject) {
+                       const llvm::Twine &subject) {
   if (amount > std::numeric_limits<std::uint64_t>::max() - target)
     return invalid(subject + " count overflows u64");
   target += amount;
@@ -49,148 +48,6 @@ checkedMultiply(std::uint64_t lhs, std::uint64_t rhs, llvm::StringRef subject) {
   return lhs * rhs;
 }
 
-std::string errorMessage(const llvm::ErrorInfoBase &error) {
-  std::string message;
-  llvm::raw_string_ostream stream(message);
-  error.log(stream);
-  return stream.str();
-}
-
-struct ProbeResult final {
-  SystemCandidateStateHandle candidate;
-  dse::ObjectiveVector objective;
-  dse::ObjectiveSignedDifference energyDifference;
-};
-
-struct ProbeAccounting final {
-  std::uint64_t assignmentAttempts = 0;
-  std::uint64_t endpointExpansions = 0;
-};
-
-std::vector<PnrIndex>
-dependencyClosureFixedChoices(const SystemCandidateState &current,
-                              SystemExecutionBindingAction action) {
-  const FrozenSystemPnrProblem &problem = current.problem();
-  const detail::InitializerRelationModel &relations =
-      problem.initializerRelations();
-  std::vector<PnrIndex> fixed;
-  fixed.reserve(relations.decisionCount());
-  fixed.insert(fixed.end(), current.threadChoices().begin(),
-               current.threadChoices().end());
-  fixed.insert(fixed.end(), current.graphChoices().begin(),
-               current.graphChoices().end());
-
-  std::vector<std::uint8_t> released(relations.decisionCount(), 0);
-  std::vector<PnrIndex> pending{action.decision};
-  released[action.decision] = 1;
-  const auto offsets = relations.decisionRelationOffsets();
-  const auto incidence = relations.decisionRelations();
-  for (std::size_t cursor = 0; cursor != pending.size(); ++cursor) {
-    const PnrIndex decision = pending[cursor];
-    for (PnrIndex offset = offsets[decision]; offset < offsets[decision + 1];
-         ++offset) {
-      const auto &relation = relations.relations()[incidence[offset]];
-      for (const detail::InitializerRelationMember &member :
-           relations.members(relation)) {
-        if (released[member.decision])
-          continue;
-        released[member.decision] = 1;
-        fixed[member.decision] = getInvalidPnrIndex();
-        pending.push_back(member.decision);
-      }
-    }
-  }
-  fixed[action.decision] = action.choice;
-  return fixed;
-}
-
-llvm::Expected<ProbeResult>
-probeAction(const SystemCandidateStateHandle &current,
-            const dse::ObjectiveVector &currentObjective,
-            SystemExecutionBindingAction action, ProbeAccounting &accounting) {
-  const FrozenSystemPnrProblem &problem = current->problem();
-  const std::size_t decisionCount =
-      problem.threadDecisions().size() + problem.graphDecisions().size();
-  if (action.decision >= decisionCount)
-    return invalid("Action names a foreign execution decision");
-  const std::size_t choiceCount =
-      action.decision < problem.threadDecisions().size()
-          ? problem.threadChoiceCatalogOrdinals(action.decision).size()
-          : problem
-                .graphChoiceCatalogOrdinals(action.decision -
-                                            problem.threadDecisions().size())
-                .size();
-  if (action.choice >= choiceCount)
-    return invalid("Action names a foreign execution choice");
-
-  std::vector<PnrIndex> fixed = dependencyClosureFixedChoices(*current, action);
-  auto initialized = initializeSystemCandidateWithFixedChoices(
-      current->problemHandle(), fixed);
-  if (!initialized) {
-    llvm::Error translated = llvm::handleErrors(
-        initialized.takeError(),
-        [&](const SystemCandidateInitializationFailure &failure)
-            -> llvm::Error {
-          accounting.assignmentAttempts = failure.assignmentAttempts();
-          accounting.endpointExpansions = failure.endpointExpansions();
-          switch (failure.kind()) {
-          case SystemCandidateInitializationFailureKind::ProvenInfeasible:
-            return llvm::make_error<SystemActionTransitionFailure>(
-                SystemActionTransitionFailureKind::IntrinsicInvalid,
-                errorMessage(failure));
-          case SystemCandidateInitializationFailureKind::SemanticLimitReached:
-            return llvm::make_error<SystemActionTransitionFailure>(
-                SystemActionTransitionFailureKind::WorkLimit,
-                errorMessage(failure));
-          case SystemCandidateInitializationFailureKind::Internal:
-            return invalid("Action dependency closure failed internally: " +
-                           llvm::Twine(errorMessage(failure)));
-          }
-          llvm_unreachable("unknown System initialization failure kind");
-        });
-    return std::move(translated);
-  }
-  accounting.assignmentAttempts = initialized->assignmentAttempts;
-  accounting.endpointExpansions = initialized->endpointExpansions;
-  auto objective = problem.objectiveProgram().evaluate(*initialized->state);
-  if (!objective)
-    return objective.takeError();
-  auto difference = problem.objectiveProgram().selectedEnergyDifference(
-      *objective, currentObjective);
-  if (!difference)
-    return difference.takeError();
-  return ProbeResult{std::move(initialized->state), std::move(*objective),
-                     *difference};
-}
-
-void rebuildActions(const SystemCandidateState &candidate,
-                    std::vector<SystemExecutionBindingAction> &actions,
-                    std::uint64_t &movableDecisionCount) {
-  actions.clear();
-  movableDecisionCount = 0;
-  const FrozenSystemPnrProblem &problem = candidate.problem();
-  for (PnrIndex decision = 0; decision < problem.threadDecisions().size();
-       ++decision) {
-    const std::size_t offset = actions.size();
-    for (PnrIndex choice = 0;
-         choice < problem.threadChoiceCatalogOrdinals(decision).size();
-         ++choice)
-      if (choice != candidate.threadChoice(decision))
-        actions.push_back({decision, choice});
-    movableDecisionCount += actions.size() != offset;
-  }
-  const PnrIndex threadCount = problem.threadDecisions().size();
-  for (PnrIndex decision = 0; decision < problem.graphDecisions().size();
-       ++decision) {
-    const std::size_t offset = actions.size();
-    for (PnrIndex choice = 0;
-         choice < problem.graphChoiceCatalogOrdinals(decision).size(); ++choice)
-      if (choice != candidate.graphChoice(decision))
-        actions.push_back({threadCount + decision, choice});
-    movableDecisionCount += actions.size() != offset;
-  }
-}
-
 llvm::Expected<bool> consumeTransitionFailure(llvm::Error error) {
   bool consumed = false;
   llvm::Error remaining = llvm::handleErrors(
@@ -202,6 +59,17 @@ llvm::Expected<bool> consumeTransitionFailure(llvm::Error error) {
   if (remaining)
     return std::move(remaining);
   return consumed;
+}
+
+llvm::Error accountProbe(const SystemActionProbeAccounting &work,
+                         SystemAnnealingStatistics &statistics,
+                         llvm::StringRef scope) {
+  if (llvm::Error error =
+          checkedAdd(work.assignmentAttempts, statistics.assignmentAttempts,
+                     scope + " assignment attempt"))
+    return error;
+  return checkedAdd(work.endpointExpansions, statistics.endpointExpansions,
+                    scope + " endpoint expansion");
 }
 
 } // namespace
@@ -233,23 +101,17 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
                                            PnrRandomStreamPurpose::Calibration);
   for (std::uint64_t slot = 0; slot < annealing.calibrationProposalCount;
        ++slot) {
-    std::uint64_t movable = 0;
-    rebuildActions(*candidate, actions_, movable);
-    auto action = proposeSystemAction(policy.search.actionProposal, {actions_},
-                                      calibrationStream);
+    if (llvm::Error error = actionDomain_.rebuild(*candidate))
+      return std::move(error);
+    auto action = proposeSystemAction(policy.search.actionProposal,
+                                      actionDomain_.view(), calibrationStream);
     if (!action)
       return action.takeError();
     if (!*action)
       continue;
-    ProbeAccounting work;
-    auto probe = probeAction(candidate, currentObjective, **action, work);
-    if (llvm::Error error =
-            checkedAdd(work.assignmentAttempts, statistics.assignmentAttempts,
-                       "calibration assignment attempt"))
-      return std::move(error);
-    if (llvm::Error error =
-            checkedAdd(work.endpointExpansions, statistics.endpointExpansions,
-                       "calibration endpoint expansion"))
+    SystemActionProbeAccounting work;
+    auto probe = probeSystemAction(candidate, currentObjective, **action, work);
+    if (llvm::Error error = accountProbe(work, statistics, "calibration"))
       return std::move(error);
     if (!probe) {
       auto consumed = consumeTransitionFailure(probe.takeError());
@@ -280,8 +142,9 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
                                            seedAttemptOrdinal,
                                            PnrRandomStreamPurpose::Acceptance);
   do {
-    std::uint64_t movable = 0;
-    rebuildActions(*candidate, actions_, movable);
+    if (llvm::Error error = actionDomain_.rebuild(*candidate))
+      return std::move(error);
+    const std::uint64_t movable = actionDomain_.movableDecisionCount();
     auto proposalCount = annealingProposalsPerLevel(annealing, movable);
     if (!proposalCount)
       return proposalCount.takeError();
@@ -299,22 +162,18 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
                        "movable-decision proposal slot"))
       return std::move(error);
     for (std::uint64_t slot = 0; slot < *proposalCount; ++slot) {
-      rebuildActions(*candidate, actions_, movable);
+      if (llvm::Error error = actionDomain_.rebuild(*candidate))
+        return std::move(error);
       auto action = proposeSystemAction(policy.search.actionProposal,
-                                        {actions_}, proposalStream);
+                                        actionDomain_.view(), proposalStream);
       if (!action)
         return action.takeError();
       if (!*action)
         continue;
-      ProbeAccounting work;
-      auto probe = probeAction(candidate, currentObjective, **action, work);
-      if (llvm::Error error =
-              checkedAdd(work.assignmentAttempts, statistics.assignmentAttempts,
-                         "annealing assignment attempt"))
-        return std::move(error);
-      if (llvm::Error error =
-              checkedAdd(work.endpointExpansions, statistics.endpointExpansions,
-                         "annealing endpoint expansion"))
+      SystemActionProbeAccounting work;
+      auto probe =
+          probeSystemAction(candidate, currentObjective, **action, work);
+      if (llvm::Error error = accountProbe(work, statistics, "annealing"))
         return std::move(error);
       if (!probe) {
         auto consumed = consumeTransitionFailure(probe.takeError());

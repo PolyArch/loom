@@ -9,6 +9,8 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/IR/MappingDialect.h"
+#include "PnR/System/SystemActionDomain.h"
+#include "PnR/System/SystemActionExecutor.h"
 #include "PnR/System/SystemMappingMaterializer.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
@@ -19,6 +21,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <map>
@@ -124,11 +127,12 @@ Attr fabricRefAttr(mlir::MLIRContext *context, const Ref &reference) {
                        context, loom::fabric::canonicalFabricBytes(reference)));
 }
 
-::fabric::ResourceContract exclusiveResourceContract() {
+::fabric::ResourceContract
+singleRequesterResourceContract(std::uint32_t capacity = 1) {
   ::fabric::ResourceContractDeclaration declaration;
   declaration.states = {
       {::fabric::StateKey(0),
-       {{::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(1),
+       {{::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(capacity),
          ::fabric::CapacityUnits(0)}}}};
   declaration.requesters = {::fabric::RequesterKey(0)};
   declaration.eligibilityCount = 1;
@@ -148,13 +152,42 @@ Attr fabricRefAttr(mlir::MLIRContext *context, const Ref &reference) {
   return take(::fabric::ResourceContract::create(std::move(declaration)));
 }
 
+::fabric::ResourceContract selectableResourceContract() {
+  ::fabric::ResourceContractDeclaration declaration;
+  declaration.states = {
+      {::fabric::StateKey(0),
+       {{::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(1),
+         ::fabric::CapacityUnits(0)}}}};
+  declaration.requesters = {::fabric::RequesterKey(0),
+                            ::fabric::RequesterKey(1)};
+  declaration.eligibilityCount = 2;
+  declaration.eventCount = 2;
+  declaration.timingContracts = {{::fabric::TimingContractKey(0), {0, 1}}};
+  for (std::uint32_t ordinal = 0; ordinal != 2; ++ordinal)
+    declaration.usePatterns.push_back(
+        {::fabric::UsePatternKey(ordinal),
+         ::fabric::RequesterKey(ordinal),
+         ::fabric::EligibilityKey(ordinal),
+         ::fabric::EventKey(0),
+         ::fabric::EventKey(1),
+         std::nullopt,
+         ::fabric::TimingContractKey(0),
+         {{::fabric::ClaimKey(0), ::fabric::StateKey(0),
+           ::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(1)}},
+         {{{::fabric::ClaimKey(0)}}}});
+  declaration.grantPolicy = ::fabric::RoundRobinDeclaration{
+      {::fabric::RequesterKey(0), ::fabric::RequesterKey(1)},
+      ::fabric::RequesterKey(0)};
+  return take(::fabric::ResourceContract::create(std::move(declaration)));
+}
+
 loom::fabric::InstructionCoreMicroarchitecturalRealization
 inOrderMicroarchitecture() {
   loom::fabric::InstructionCoreCommonDeclaration common{
       1,
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1},
        {loom::fabric::InstructionOperationClass::LoadStore, 1, 2, 1}},
-      exclusiveResourceContract()};
+      singleRequesterResourceContract()};
   loom::fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1,
                                                              1, 1, 4, 2};
   return take(
@@ -257,6 +290,10 @@ loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
   loom::adg::DesignBuilder design(store);
   auto system = take(loom::adg::expandBuiltinSystem(
       design, loom::adg::BuiltinTargetPreset::Small, primaryModule));
+  auto host = take(system.hostCore(0));
+  auto missingHost = system.hostCore(1);
+  require(!missingHost, "System Builder admitted a foreign HostCore ordinal");
+  llvm::consumeError(missingHost.takeError());
   auto imported = take(system.importSpatialCore(alternateModule));
   const auto architecture =
       take(loom::adg::getBuiltinInstructionCoreArchitecture());
@@ -264,7 +301,7 @@ loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
       system.addAccCore(architecture, inOrderMicroarchitecture(), imported));
 
   const auto bits128 = take(loom::adg::PortType::bits(128));
-  const auto transportContract = exclusiveResourceContract();
+  const auto transportContract = singleRequesterResourceContract();
   std::vector<loom::adg::HardwareDomainMember> domainMembers = {
       extraCore.instructionCoreDomainMember(),
       extraCore.spatialCoreDomainMember()};
@@ -310,7 +347,19 @@ loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
   auto memoryCapabilitySet =
       take(loom::fabric::CanonicalServiceCapabilitySet::create(
           std::move(localMemoryCapabilities)));
-  auto memoryService = take(system.addMemoryService(*memoryContract));
+  std::vector<::fabric::MemoryServiceCapabilityDeclaration>
+      selectableCapabilities(memoryContract->capabilities().begin(),
+                             memoryContract->capabilities().end());
+  for (auto &capability : selectableCapabilities)
+    capability.admissibleUsePatterns = {::fabric::UsePatternKey(0),
+                                        ::fabric::UsePatternKey(1)};
+  auto selectableMemoryContract =
+      take(::fabric::MemoryServiceContractRecord::create(
+          &context, ::fabric::MemoryServiceOwnerKind::System,
+          {{memoryContract->regions().begin(), memoryContract->regions().end()},
+           selectableResourceContract(),
+           std::move(selectableCapabilities)}));
+  auto memoryService = take(system.addMemoryService(selectableMemoryContract));
   auto memoryEndpoint =
       take(system.addServiceEndpoint(memoryService, memoryCapabilitySet));
   std::optional<loom::adg::ServiceTransformBuilder> memoryTransform;
@@ -441,24 +490,55 @@ loom::adg::FinalizedFabricDesign loom::pnr::test::buildHeterogeneousSystem(
       {std::move(initiateCapability)}));
   auto serveSet = take(loom::fabric::CanonicalServiceCapabilitySet::create(
       {std::move(serveCapability)}));
-  auto messageSource =
+  auto hostMessageSource =
+      take(system.addServiceEndpoint(host, initiateSet, bits128));
+  auto hostMessageSink =
+      take(system.addServiceEndpoint(host, serveSet, bits128));
+  auto coreMessageSource =
       take(system.addServiceEndpoint(extraCore, initiateSet, bits128));
-  auto messageSink =
+  auto coreMessageSink =
       take(system.addServiceEndpoint(extraCore, serveSet, bits128));
-  auto messageTransport = take(
-      system.addTransportResource({{bits128}, {bits128}, transportContract}));
-  auto messagePattern =
-      take(system.addTransferPattern(messageTransport, 0, {0}, 0));
-  if (llvm::Error error = system.connect(take(messageSource.transport()),
-                                         take(messageTransport.input(0))))
-    fail(llvm::toString(std::move(error)));
-  if (llvm::Error error = system.connect(take(messageTransport.output(0)),
-                                         take(messageSink.transport())))
-    fail(llvm::toString(std::move(error)));
-  domainMembers.push_back(messageSource.domainMember());
-  domainMembers.push_back(messageSink.domainMember());
-  domainMembers.push_back(messageTransport.domainMember());
-  domainMembers.push_back(messagePattern.domainMember());
+  const std::array messageSources{hostMessageSource, coreMessageSource};
+  const std::array messageSinks{hostMessageSink, coreMessageSink};
+  std::vector<loom::adg::SystemTransportResource> messageRouters;
+  messageRouters.reserve(2);
+  const auto &builtinScale = loom::adg::getBuiltinTargetDescriptor(
+                                 loom::adg::BuiltinTargetPreset::Small)
+                                 .scale;
+  const auto messageTransportContract = singleRequesterResourceContract(
+      builtinScale.accCoreCount * builtinScale.temporalResidentContexts);
+  const std::array<std::vector<std::uint32_t>, 3> messagePatterns = {
+      std::vector<std::uint32_t>{0}, std::vector<std::uint32_t>{1},
+      std::vector<std::uint32_t>{0, 1}};
+  for (std::size_t ordinal = 0; ordinal != messageSources.size(); ++ordinal) {
+    messageRouters.push_back(take(system.addTransportResource(
+        {{bits128, bits128}, {bits128, bits128}, messageTransportContract})));
+    domainMembers.push_back(messageRouters.back().domainMember());
+    for (std::size_t input = 0; input != 2; ++input)
+      for (const auto &outputs : messagePatterns) {
+        auto pattern = take(system.addTransferPattern(messageRouters[ordinal],
+                                                      input, outputs, 0));
+        domainMembers.push_back(pattern.domainMember());
+      }
+    if (llvm::Error error =
+            system.connect(take(messageSources[ordinal].transport()),
+                           take(messageRouters[ordinal].input(0))))
+      fail(llvm::toString(std::move(error)));
+    if (llvm::Error error =
+            system.connect(take(messageRouters[ordinal].output(0)),
+                           take(messageSinks[ordinal].transport())))
+      fail(llvm::toString(std::move(error)));
+  }
+  for (std::size_t ordinal = 0; ordinal != messageRouters.size(); ++ordinal)
+    if (llvm::Error error = system.connect(
+            take(messageRouters[ordinal].output(1)),
+            take(messageRouters[(ordinal + 1) % messageRouters.size()].input(
+                1))))
+      fail(llvm::toString(std::move(error)));
+  domainMembers.push_back(hostMessageSource.domainMember());
+  domainMembers.push_back(hostMessageSink.domainMember());
+  domainMembers.push_back(coreMessageSource.domainMember());
+  domainMembers.push_back(coreMessageSink.domainMember());
   auto clock = take(loom::fabric::ClockDomainContractRecord::create(1'000, 0));
   if (llvm::Error error = domain.close(domainMembers, std::move(clock)))
     fail(llvm::toString(std::move(error)));
@@ -736,4 +816,116 @@ void loom::pnr::test::verifySystemServiceTargetRejections(
       loom::mapping::verifySystemMappingBase(foreignRegionRoot, dataflow,
                                              fabric, store),
       "selected service target is outside its attachment-bound closure");
+}
+
+void loom::pnr::test::verifySystemResourceAction(
+    const SystemCandidateStateHandle &candidate) {
+  SystemActionDomainScratch domain;
+  if (llvm::Error error = domain.rebuild(*candidate))
+    fail(llvm::toString(std::move(error)));
+  require(!domain.view().resourceAnchors.empty(),
+          "memory/service fixture exposes no resource Action choice");
+  const SystemResourceAllocationAction action =
+      domain.view().resourceChoices.front();
+  require(std::holds_alternative<SystemServiceUsePatternAction>(action),
+          "memory fixture selected the wrong resource Action kind");
+  auto objective =
+      take(candidate->problem().objectiveProgram().evaluate(*candidate));
+  SystemActionProbeAccounting accounting;
+  auto probe = take(probeSystemAction(candidate, objective,
+                                      SystemMappingAction{action}, accounting));
+  require(accounting.assignmentAttempts == 0 &&
+              accounting.endpointExpansions == 0,
+          "resource Action consumed unrelated binding or routing work");
+  if (llvm::Error error = probe.candidate->verify())
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = candidate->verify())
+    fail(llvm::toString(std::move(error)));
+}
+
+void loom::pnr::test::verifySystemResourceActionWorkflow(
+    ArtifactStore &store, const fabric::FinalizedFabricRoot &baselineSystem,
+    const fabric::FinalizedFabricRoot &primaryModule,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ArtifactRootReference &spatialMapping,
+    const ResolvedPnrConfigView &config, mlir::MLIRContext &context) {
+  auto design = buildHeterogeneousSystem(
+      store, baselineSystem, primaryModule, primaryModule, context,
+      /*extraSupportsRead=*/true,
+      /*routeExtraMemoryThroughTransform=*/true);
+  auto system = take(fabric::requireSystemRoot(design.roots().front().view()));
+  std::vector<dataflow::RootThreadLaunchRef> roots{
+      dataflow.rootThreadLaunches().front().ref};
+  auto constraints = take(mapping::finalizeEmptySystemMappingConstraintSet(
+      dataflow, system, roots, store));
+  auto partition = take(projectWholeDomainPresburgerPartitionPlan(
+      dataflow, constraints.view().rootThreadLaunches()));
+  auto searchDomain = take(projectSystemPnrSearchDomain(
+      dataflow, system, config, constraints, partition,
+      SystemHierarchicalGraphSearchInput{{spatialMapping}}, store));
+  auto problem = take(freezeSystemPnrProblem(dataflow, system, searchDomain,
+                                             config, constraints, store));
+  const auto selectable =
+      llvm::find_if(problem->memoryServiceBindings(), [](const auto &binding) {
+        return llvm::any_of(binding.usePatternDomains, [](const auto &domain) {
+          return domain.patterns.size() > 1;
+        });
+      });
+  require(selectable != problem->memoryServiceBindings().end(),
+          "custom memory service exposes no resource Action choice");
+  const auto corePosition =
+      llvm::find(problem->accCores(), selectable->accCore);
+  require(corePosition != problem->accCores().end(),
+          "resource Action AccCore is absent from the frozen catalog");
+  const PnrIndex targetCore =
+      static_cast<PnrIndex>(corePosition - problem->accCores().begin());
+  const PnrIndex targetClass = problem->accCoreTargetClass(targetCore);
+
+  std::vector<PnrIndex> threadChoices(problem->threadDecisions().size(), 0);
+  for (PnrIndex decision = 0; decision < problem->threadDecisions().size();
+       ++decision) {
+    const auto choices = problem->threadChoiceCatalogOrdinals(decision);
+    const auto selected = llvm::find_if(choices, [&](PnrIndex core) {
+      return problem->accCoreTargetClass(core) == targetClass;
+    });
+    require(selected != choices.end(),
+            "resource Action target class is absent from a thread domain");
+    threadChoices[decision] = static_cast<PnrIndex>(selected - choices.begin());
+  }
+
+  std::vector<PnrIndex> graphChoices(problem->graphDecisions().size(), 0);
+  for (PnrIndex decision = 0; decision < problem->graphDecisions().size();
+       ++decision) {
+    const auto choices = problem->graphChoiceCatalogOrdinals(decision);
+    const auto selected = llvm::find_if(choices, [&](PnrIndex mapping) {
+      return problem->spatialMappingTargetClass(mapping) == targetClass;
+    });
+    require(selected != choices.end(),
+            "resource Action target class is absent from a graph domain");
+    graphChoices[decision] = static_cast<PnrIndex>(selected - choices.begin());
+  }
+  std::string lastDiagnostic;
+  for (PnrIndex decision = 0; decision < problem->threadDecisions().size();
+       ++decision) {
+    const auto choices = problem->threadChoiceCatalogOrdinals(decision);
+    const auto selected = llvm::find(choices, targetCore);
+    if (selected == choices.end())
+      continue;
+    auto trial = threadChoices;
+    trial[decision] = static_cast<PnrIndex>(selected - choices.begin());
+    auto candidate = initializeSystemCandidate(problem, trial, graphChoices);
+    if (!candidate) {
+      lastDiagnostic = llvm::toString(candidate.takeError());
+      continue;
+    }
+    SystemActionDomainScratch domain;
+    if (llvm::Error error = domain.rebuild(**candidate))
+      fail(llvm::toString(std::move(error)));
+    if (domain.view().resourceAnchors.empty())
+      continue;
+    verifySystemResourceAction(*candidate);
+    return;
+  }
+  fail("no finite-degree resource Action candidate is routable: " +
+       lastDiagnostic);
 }

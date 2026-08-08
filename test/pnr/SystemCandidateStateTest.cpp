@@ -510,14 +510,13 @@ generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
 }
 
 } // namespace
-
 int main() {
   using loom::pnr::test::countOccurrences;
   using loom::pnr::test::rawSystemBytes;
   using loom::pnr::test::verifyFinalizedSystemMappingWorkflow;
+  using loom::pnr::test::verifySystemResourceActionWorkflow;
   using loom::pnr::test::verifySystemServiceTargetRejections;
   using loom::pnr::test::withFirstCoordinateLowerBound;
-
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
@@ -559,6 +558,9 @@ int main() {
       loom::defaultResolvedConfig().dse.spatialPnr.search;
   const auto memoryMapping = generateSpatialMapping(
       memoryDataflow, primaryModule, memoryResolved, store, &context);
+  verifySystemResourceActionWorkflow(store, baselineDesign.roots().front(),
+                                     primaryModule, memoryDataflow,
+                                     memoryMapping, config, context);
   std::vector<dataflow::RootThreadLaunchRef> memoryRoots{
       memoryDataflow.rootThreadLaunches().front().ref};
   auto memoryConstraints =

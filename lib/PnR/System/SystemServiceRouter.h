@@ -6,6 +6,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <optional>
 #include <vector>
 
 namespace loom::pnr::detail {
@@ -16,11 +17,23 @@ struct CanonicalSystemServiceRoutes final {
   std::vector<SystemServiceRouteSinkSelection> sinks;
 };
 
+struct SystemServiceRouteTraversalExclusion final {
+  PnrIndex leg = getInvalidPnrIndex();
+  PnrIndex traversal = getInvalidPnrIndex();
+};
+
 llvm::Expected<CanonicalSystemServiceRoutes>
 buildCanonicalSystemServiceRoutes(const FrozenSystemPnrProblem &problem,
                                   llvm::ArrayRef<PnrIndex> threadChoices,
                                   llvm::ArrayRef<PnrIndex> graphChoices,
                                   std::uint64_t &endpointExpansions);
+
+llvm::Expected<CanonicalSystemServiceRoutes> buildSystemServiceRoutes(
+    const FrozenSystemPnrProblem &problem,
+    llvm::ArrayRef<PnrIndex> threadChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices,
+    std::optional<SystemServiceRouteTraversalExclusion> exclusion,
+    std::uint64_t &endpointExpansions);
 
 llvm::Error verifySystemServiceRoutes(
     const FrozenSystemPnrProblem &problem,

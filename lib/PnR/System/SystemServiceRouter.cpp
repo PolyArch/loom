@@ -504,13 +504,18 @@ activeServiceSinks(const FrozenSystemPnrProblem &problem, PnrIndex legOrdinal,
 } // namespace
 
 llvm::Expected<detail::CanonicalSystemServiceRoutes>
-loom::pnr::detail::buildCanonicalSystemServiceRoutes(
+loom::pnr::detail::buildSystemServiceRoutes(
     const FrozenSystemPnrProblem &problem,
     llvm::ArrayRef<PnrIndex> threadChoices,
-    llvm::ArrayRef<PnrIndex> graphChoices, std::uint64_t &endpointExpansions) {
+    llvm::ArrayRef<PnrIndex> graphChoices,
+    std::optional<SystemServiceRouteTraversalExclusion> exclusion,
+    std::uint64_t &endpointExpansions) {
   endpointExpansions = 0;
   CanonicalSystemServiceRoutes result;
   const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
+  if (exclusion && (exclusion->leg >= problem.serviceLegs().size() ||
+                    exclusion->traversal >= topology.traversals().size()))
+    return invalid("a route traversal exclusion is out of range");
   auto atomicPatterns = buildAtomicPatternCatalog(topology);
   if (!atomicPatterns)
     return atomicPatterns.takeError();
@@ -568,6 +573,8 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
       for (PnrIndex rank = 0; rank < targetRanks.size(); ++rank)
         targetRanks[rank] = rank;
       auto eligibility = routeEligibility(topology, *atomicPatterns, nodes);
+      if (exclusion && exclusion->leg == legOrdinal)
+        rejectTraversal(eligibility, exclusion->traversal);
       if (llvm::Error error =
               applyCapacityEligibility(topology, capacityUsage, eligibility))
         return std::move(error);
@@ -623,6 +630,8 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
         for (const AtomicPatternUpgrade &upgrade : *upgrades) {
           auto upgradedEligibility = eligibility;
           admitTraversal(upgradedEligibility, upgrade.extraTraversal);
+          if (exclusion && exclusion->leg == legOrdinal)
+            rejectTraversal(upgradedEligibility, exclusion->traversal);
           const std::array<PnrIndex, 1> source = {nodes[upgrade.node].endpoint};
           const std::array<PnrIndex, 1> group = {upgrade.group};
           if (llvm::Error error =
@@ -694,6 +703,15 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
                                     result.routes, result.nodes, result.sinks))
     return std::move(error);
   return result;
+}
+
+llvm::Expected<detail::CanonicalSystemServiceRoutes>
+loom::pnr::detail::buildCanonicalSystemServiceRoutes(
+    const FrozenSystemPnrProblem &problem,
+    llvm::ArrayRef<PnrIndex> threadChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices, std::uint64_t &endpointExpansions) {
+  return buildSystemServiceRoutes(problem, threadChoices, graphChoices,
+                                  std::nullopt, endpointExpansions);
 }
 
 llvm::Error loom::pnr::detail::verifySystemServiceRoutes(

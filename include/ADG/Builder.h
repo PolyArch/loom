@@ -1047,6 +1047,8 @@ private:
 /// Typed authoring view over one fabric.system root.
 class SystemBuilder final {
 public:
+  llvm::Expected<HostCore> hostCore(std::size_t ordinal) const;
+
   llvm::Expected<ImportedSpatialCore>
   importSpatialCore(const loom::fabric::FinalizedFabricRoot &module);
 

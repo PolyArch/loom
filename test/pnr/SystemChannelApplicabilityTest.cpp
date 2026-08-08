@@ -21,6 +21,7 @@
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialPnrGenerator.h"
+#include "PnR/System/SystemActionDomain.h"
 #include "PnR/System/SystemAnnealingSearch.h"
 #include "PnR/System/SystemCandidateState.h"
 #include "PnR/System/SystemMappingMaterializer.h"
@@ -755,6 +756,13 @@ int main() {
       problem, sameOwner->threadChoices(), sameOwner->graphChoices()));
   auto secondAnnealed = take(loom::pnr::initializeSystemCandidate(
       problem, sameOwner->threadChoices(), sameOwner->graphChoices()));
+  loom::pnr::SystemActionDomainScratch actionDomain;
+  if (llvm::Error error = actionDomain.rebuild(*firstAnnealed))
+    fail(llvm::toString(std::move(error)));
+  require(!actionDomain.view().bindingAnchors.empty() &&
+              !actionDomain.view().routingAnchors.empty(),
+          "System search did not expose independent binding and routing "
+          "Action domains");
   loom::pnr::SystemAnnealingSearchScratch firstSearch;
   loom::pnr::SystemAnnealingSearchScratch secondSearch;
   const auto firstStatistics = take(firstSearch.run(firstAnnealed, 0));

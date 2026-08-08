@@ -1,8 +1,8 @@
 #ifndef LOOM_PNR_SYSTEM_SYSTEMANNEALINGSEARCH_H
 #define LOOM_PNR_SYSTEM_SYSTEMANNEALINGSEARCH_H
 
-#include "PnR/System/SystemAction.h"
-#include "PnR/System/SystemCandidateState.h"
+#include "PnR/System/SystemActionDomain.h"
+#include "PnR/System/SystemActionExecutor.h"
 
 #include "DSE/Objective.h"
 
@@ -65,7 +65,7 @@ public:
   run(SystemCandidateStateHandle &candidate, std::uint64_t seedAttemptOrdinal);
 
 private:
-  std::vector<SystemExecutionBindingAction> actions_;
+  SystemActionDomainScratch actionDomain_;
   std::vector<dse::ObjectiveWideValue> positiveCalibrationDeltas_;
 };
 

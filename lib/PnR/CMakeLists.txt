@@ -51,6 +51,8 @@ add_mlir_library(LoomPnR
   System/SystemPresburgerPartition.cpp
   System/SystemPnrProblem.cpp
   System/SystemAction.cpp
+  System/SystemActionDomain.cpp
+  System/SystemActionExecutor.cpp
   System/SystemAnnealingSearch.cpp
   System/SystemCandidateState.cpp
   System/SystemCandidateServiceResolver.cpp

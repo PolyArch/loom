@@ -69,5 +69,14 @@ void verifySystemServiceTargetRejections(
     llvm::ArrayRef<fabric::SystemServiceTransformRef> foreignTransformPath,
     fabric::FabricMemoryServiceRegionRef foreignRegion);
 
+void verifySystemResourceAction(const SystemCandidateStateHandle &candidate);
+
+void verifySystemResourceActionWorkflow(
+    ArtifactStore &store, const fabric::FinalizedFabricRoot &baselineSystem,
+    const fabric::FinalizedFabricRoot &primaryModule,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ArtifactRootReference &spatialMapping,
+    const ResolvedPnrConfigView &config, mlir::MLIRContext &context);
+
 } // namespace pnr::test
 } // namespace loom
