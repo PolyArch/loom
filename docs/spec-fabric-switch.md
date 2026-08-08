@@ -38,18 +38,20 @@ output of the op. The two cases are mutually exclusive.
 
 Spatial ports may not use `bits_tag`; temporal ports may not use `bits`.
 
-In both forms, `1 <= K = numInputs() <= 16` and
-`1 <= L = numOutputs() <= 16`. For the named form `K`/`L` are taken from
-the `function_type` signature; for the anonymous form they are the SSA
-operand and result counts.
+In both forms, `K = numInputs() >= 1`, `L = numOutputs() >= 1`, and
+`K * L <= 256`. For the named form `K`/`L` are taken from the
+`function_type` signature; for the anonymous form they are the SSA operand and
+result counts. The product check uses overflow-safe arithmetic.
 
-Each `fabric.switch` denotes one physical crossbar. A switch with `K > 8` or
-`L > 8` remains valid through the hard 16-port limit, but verification emits a
-non-fatal implementation-efficiency warning. The warning is advisory output,
-does not enter Fabric identity, and does not change Mapping legality or
-resource capacity. Larger networks are expressed by composing switch
-occurrences with explicit Fabric connections, not by bypassing the limit with
-another routing primitive.
+Each `fabric.switch` denotes one physical crossbar. A switch with
+`K * L > 64` remains valid through the hard 256-crosspoint limit, but
+verification emits a non-fatal implementation-efficiency warning. The warning
+is advisory output, does not enter Fabric identity, and does not change Mapping
+legality or resource capacity. Larger networks are expressed by composing
+switch occurrences with explicit Fabric connections, not by bypassing the
+limit with another routing primitive. Thus `9 x 1` is below the warning
+threshold, `8 x 9` warns, `16 x 16` warns but remains valid, and `17 x 16` is
+invalid.
 
 This uniformity rule describes the switch's own declared physical
 ports. It does not require a neighboring producer or consumer to use
@@ -398,10 +400,10 @@ stored on the template as shared workload state. Its
 
 ## Verifier rules
 
-* `1 <= K <= 16`, `1 <= L <= 16`.
-* `K > 8` or `L > 8` emits the non-fatal large-crossbar warning exactly once
-  for that switch verification; it does not make an otherwise valid switch
-  invalid.
+* `K >= 1`, `L >= 1`, and the overflow-safe product `K * L <= 256`.
+* `K * L > 64` emits the non-fatal large-crossbar warning exactly once for
+  that switch verification; it does not make an otherwise valid switch
+  invalid through 256 crosspoints.
 * Schedule + port type-kind correspondence (spatial -> `bits`,
   temporal -> `bits_tag`); uniform `W` (and `T` for temporal).
 * `hw_params` shape: length-1 ArrayAttr wrapping a DictionaryAttr.

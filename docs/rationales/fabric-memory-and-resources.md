@@ -267,10 +267,12 @@ configuration grow with both port dimensions. Treating a schedule-wide
 crossbar as an abstract free routing node would make physically implausible
 hardware valid and would hide the real distributed routing problem from PnR.
 
-The 16-input and 16-output limits bound the primitive's representable physical
-scope. The advisory threshold at either dimension greater than eight preserves
-an escape hatch for unusual but still bounded hardware while making an
-inefficient choice visible. A warning cannot affect Fabric identity or Mapping
-semantics; otherwise diagnostic policy would become another architecture
-owner. Larger networks compose ordinary switch occurrences and connections,
-which exposes their real links, capacities, and contention to every consumer.
+The crosspoint product, rather than either dimension alone, bounds the
+primitive's representable physical scope. The advisory threshold above 64
+crosspoints preserves an escape hatch for unusual but still bounded hardware,
+including asymmetric selectors or fanout, while making an expensive choice
+visible. More than 256 crosspoints is invalid. A warning cannot affect Fabric
+identity or Mapping semantics; otherwise diagnostic policy would become
+another architecture owner. Larger networks compose ordinary switch
+occurrences and connections, which exposes their real links, capacities, and
+contention to every consumer.
