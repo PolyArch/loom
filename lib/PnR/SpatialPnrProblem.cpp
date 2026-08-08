@@ -363,8 +363,8 @@ public:
         *routing, *handshake);
     if (!capacity)
       return capacity.takeError();
-    auto progressClosure =
-        ::loom::mapping::deriveSpatialProgressClosure(dataflow);
+    auto progressClosure = ::loom::mapping::deriveMappingProgressClosure(
+        dataflow, techMapping.covers());
     if (!progressClosure)
       return progressClosure.takeError();
     if (llvm::Error error =

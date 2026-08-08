@@ -221,9 +221,16 @@ module {
     fail("cannot parse cyclic progress fixture");
   auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
   const auto view = take(artifact.view());
-  const auto closure = take(loom::mapping::deriveSpatialProgressClosure(view));
+  const auto uncovered = take(
+      loom::mapping::deriveMappingProgressClosure(view, /*coveredGraphs=*/{}));
+  if (uncovered.kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("progress analysis inspected a graph outside its covered set");
+  const std::array<dataflow::GraphRef, 1> covered = {view.graphs().front().ref};
+  const auto closure =
+      take(loom::mapping::deriveMappingProgressClosure(view, covered));
   if (closure.kind !=
-      loom::mapping::SpatialProgressClosureKind::ProofNotEstablished)
+      loom::mapping::MappingProgressClosureKind::ProofNotEstablished)
     fail(
         "cyclic actor dependencies were guessed to prove progress or deadlock");
 }

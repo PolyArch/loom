@@ -3,6 +3,7 @@
 #include "MappingAssemblyInternal.h"
 #include "SystemMappingCapacityVerification.h"
 #include "SystemMappingClosure.h"
+#include "SystemMappingHandshakeVerification.h"
 
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactLocalReference.h"
@@ -10,6 +11,7 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
 
@@ -39,6 +41,58 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "system_mapping_execution_invalid: " +
                                      message);
 }
+
+class SystemMappingIncompleteError final
+    : public llvm::ErrorInfo<SystemMappingIncompleteError> {
+public:
+  static char ID;
+
+  SystemMappingIncompleteError(SystemMappingIncompleteReason reason,
+                               std::string diagnostic)
+      : reason_(reason), diagnostic_(std::move(diagnostic)) {}
+
+  SystemMappingIncompleteReason reason() const { return reason_; }
+  llvm::StringRef diagnostic() const { return diagnostic_; }
+
+  void log(llvm::raw_ostream &stream) const override {
+    stream << "system_mapping_incomplete: " << diagnostic_;
+  }
+  std::error_code convertToErrorCode() const override {
+    return llvm::inconvertibleErrorCode();
+  }
+
+private:
+  SystemMappingIncompleteReason reason_;
+  std::string diagnostic_;
+};
+
+char SystemMappingIncompleteError::ID;
+
+class SystemMappingRejectedError final
+    : public llvm::ErrorInfo<SystemMappingRejectedError> {
+public:
+  static char ID;
+
+  SystemMappingRejectedError(SystemMappingClosureFindingKind finding,
+                             std::string diagnostic)
+      : finding_(finding), diagnostic_(std::move(diagnostic)) {}
+
+  SystemMappingClosureFindingKind finding() const { return finding_; }
+  llvm::StringRef diagnostic() const { return diagnostic_; }
+
+  void log(llvm::raw_ostream &stream) const override {
+    stream << "system_mapping_rejected: " << diagnostic_;
+  }
+  std::error_code convertToErrorCode() const override {
+    return llvm::inconvertibleErrorCode();
+  }
+
+private:
+  SystemMappingClosureFindingKind finding_;
+  std::string diagnostic_;
+};
+
+char SystemMappingRejectedError::ID;
 
 std::vector<std::uint8_t> unsignedBytes(mlir::DenseI8ArrayAttr record) {
   std::vector<std::uint8_t> result;
@@ -629,28 +683,80 @@ llvm::Expected<SystemMappingView> importSystemMappingView(
           dataflow, fabric, *execution, closure->services,
           closure->resourceUses, closure->resourceUseActivationKeys, store))
     return std::move(error);
+  if (llvm::Error error = detail::verifySystemMappingHandshakeClosure(
+          dataflow, fabric, *execution, closure->services, store))
+    return std::move(error);
+  std::vector<::dataflow::GraphRef> coveredGraphs;
+  std::set<std::uint64_t> coveredGraphEntities;
+  for (const auto &binding : execution->graphBindings()) {
+    auto graph = dataflow.resolve(binding.key);
+    if (!graph)
+      return graph.takeError();
+    if (coveredGraphEntities.insert(graph->entity.value()).second)
+      coveredGraphs.push_back(*graph);
+  }
+  auto progress = deriveMappingProgressClosure(dataflow, coveredGraphs);
+  if (!progress)
+    return progress.takeError();
+  switch (progress->kind) {
+  case MappingProgressClosureKind::ProvenNoClosedWaitSet:
+    break;
+  case MappingProgressClosureKind::ProvenClosedWaitSet:
+    return llvm::make_error<SystemMappingRejectedError>(
+        SystemMappingClosureFindingKind::HardProgressViolation,
+        "HardProgressViolation");
+  case MappingProgressClosureKind::ProofNotEstablished:
+    return llvm::make_error<SystemMappingIncompleteError>(
+        SystemMappingIncompleteReason::ProofNotEstablished,
+        "proof_not_established");
+  }
   return SystemMappingView(mappingIdentity, dataflow.identity(),
                            fabric.artifact().identity(), std::move(*execution),
                            std::move(closure->services),
                            std::move(closure->resourceUses));
 }
 
-llvm::Error verifySystemMappingBase(
+SystemMappingBaseVerification verifySystemMappingBase(
     ::mapping::SystemOp source,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const ArtifactStore &store) {
   auto assembly = detail::prepareCanonicalSystemMappingAssembly(source);
-  if (!assembly)
-    return assembly.takeError();
+  if (!assembly) {
+    std::string diagnostic = llvm::toString(assembly.takeError());
+    return RejectedSystemMappingBase{
+        SystemMappingClosureFindingKind::InvalidClosure, std::move(diagnostic)};
+  }
   const ArtifactIdentity identity =
       finalizeArtifactIdentity(mappingArtifactSchema, assembly->bytes);
   auto view = importSystemMappingView(
       identity, mlir::cast<::mapping::SystemOp>(assembly->root.get()), dataflow,
       fabric, store);
-  if (!view)
-    return view.takeError();
-  return llvm::Error::success();
+  if (!view) {
+    std::optional<SystemMappingBaseVerification> typed;
+    llvm::Error remaining = llvm::handleErrors(
+        view.takeError(),
+        [&](const SystemMappingIncompleteError &error) {
+          typed = IncompleteSystemMappingBase{error.reason(),
+                                              error.diagnostic().str()};
+        },
+        [&](const SystemMappingRejectedError &error) {
+          typed = RejectedSystemMappingBase{error.finding(),
+                                            error.diagnostic().str()};
+        });
+    if (typed) {
+      if (remaining)
+        return InternalSystemMappingBaseError{
+            "typed System Mapping result was mixed with an unclassified "
+            "error: " +
+            llvm::toString(std::move(remaining))};
+      return std::move(*typed);
+    }
+    return RejectedSystemMappingBase{
+        SystemMappingClosureFindingKind::InvalidClosure,
+        llvm::toString(std::move(remaining))};
+  }
+  return VerifiedSystemMappingBase{};
 }
 
 llvm::Expected<FinalizedSystemMapping>

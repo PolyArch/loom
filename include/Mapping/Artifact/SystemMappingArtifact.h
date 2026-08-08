@@ -15,7 +15,9 @@
 #include "llvm/Support/Error.h"
 
 #include <optional>
+#include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom::mapping {
@@ -250,6 +252,36 @@ private:
 llvm::Expected<CanonicalSemanticBytes>
 writeCanonicalSystemMappingAssembly(::mapping::SystemOp root);
 
+struct VerifiedSystemMappingBase final {};
+
+enum class SystemMappingClosureFindingKind : std::uint8_t {
+  InvalidClosure,
+  HardProgressViolation,
+};
+
+struct RejectedSystemMappingBase final {
+  SystemMappingClosureFindingKind finding;
+  std::string diagnostic;
+};
+
+enum class SystemMappingIncompleteReason : std::uint8_t {
+  Unsupported,
+  ProofNotEstablished,
+};
+
+struct IncompleteSystemMappingBase final {
+  SystemMappingIncompleteReason reason;
+  std::string diagnostic;
+};
+
+struct InternalSystemMappingBaseError final {
+  std::string diagnostic;
+};
+
+using SystemMappingBaseVerification =
+    std::variant<VerifiedSystemMappingBase, RejectedSystemMappingBase,
+                 IncompleteSystemMappingBase, InternalSystemMappingBaseError>;
+
 /// Strictly parses, semantically validates, canonically re-emits, and adopts
 /// the execution records. It never publishes an incomplete SystemMapping.
 llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
@@ -258,7 +290,7 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
     const ::loom::fabric::FabricSystemRootView &fabric,
     const ArtifactStore &store);
 
-llvm::Error verifySystemMappingBase(
+SystemMappingBaseVerification verifySystemMappingBase(
     ::mapping::SystemOp source,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,

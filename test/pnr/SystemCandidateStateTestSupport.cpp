@@ -97,11 +97,23 @@ void verifySelectedRouteCapacity(
           "System workflow did not exercise shared route capacity");
 }
 
-void requireFailureContains(llvm::Error error, llvm::StringRef diagnostic) {
-  if (!error)
+void requireFailureContains(
+    const loom::mapping::SystemMappingBaseVerification &verification,
+    llvm::StringRef expected) {
+  if (std::holds_alternative<loom::mapping::VerifiedSystemMappingBase>(
+          verification))
     fail("adverse System Mapping input unexpectedly succeeded");
-  const std::string actual = llvm::toString(std::move(error));
-  require(llvm::StringRef(actual).contains(diagnostic),
+  const std::string &actual = std::visit(
+      [](const auto &result) -> const std::string & {
+        using Result = std::decay_t<decltype(result)>;
+        if constexpr (std::is_same_v<Result,
+                                     loom::mapping::VerifiedSystemMappingBase>)
+          llvm_unreachable("verified result has no diagnostic");
+        else
+          return result.diagnostic;
+      },
+      verification);
+  require(llvm::StringRef(actual).contains(expected),
           "adverse System Mapping diagnostic changed: " + actual);
 }
 
@@ -484,6 +496,11 @@ void loom::pnr::test::verifyFinalizedSystemMappingWorkflow(
           "full SystemMapping finalization or replay lost closure");
 
   auto draft = take(materializeSystemCandidateDraft(candidate, context));
+  require(std::holds_alternative<loom::mapping::VerifiedSystemMappingBase>(
+              loom::mapping::verifySystemMappingBase(
+                  mlir::cast<::mapping::SystemOp>(draft.get()), dataflow,
+                  fabric, store)),
+          "complete SystemMapping draft did not produce Verified");
   mlir::OwningOpRef<mlir::Operation *> missingUse(draft->clone());
   auto missingUseRoot = mlir::cast<::mapping::SystemOp>(missingUse.get());
   auto omittedUse = *missingUseRoot.getBody()
@@ -491,14 +508,9 @@ void loom::pnr::test::verifyFinalizedSystemMappingWorkflow(
                          .getOps<::mapping::ResourceUseOp>()
                          .begin();
   omittedUse.erase();
-  llvm::Error missingError = loom::mapping::verifySystemMappingBase(
-      missingUseRoot, dataflow, fabric, store);
-  require(static_cast<bool>(missingError),
-          "missing System ResourceUse unexpectedly verified");
-  const std::string missingDiagnostic = llvm::toString(std::move(missingError));
-  require(llvm::StringRef(missingDiagnostic)
-              .contains("ResourceUse closure is incomplete"),
-          "missing ResourceUse diagnostic changed: " + missingDiagnostic);
+  requireFailureContains(loom::mapping::verifySystemMappingBase(
+                             missingUseRoot, dataflow, fabric, store),
+                         "ResourceUse closure is incomplete");
 
   mlir::OwningOpRef<mlir::Operation *> missingSelection(draft->clone());
   auto missingSelectionRoot =
@@ -530,16 +542,9 @@ void loom::pnr::test::verifyFinalizedSystemMappingWorkflow(
   unreachableSelection->setAttr(
       "key", ::mapping::ServicePlanSelectionKeyAttr::get(
                  &context, bytesAttr(&context, unreachableKeyBytes)));
-  llvm::Error missingSelectionError = loom::mapping::verifySystemMappingBase(
-      missingSelectionRoot, dataflow, fabric, store);
-  require(static_cast<bool>(missingSelectionError),
-          "missing System plan selection unexpectedly verified");
-  const std::string missingSelectionDiagnostic =
-      llvm::toString(std::move(missingSelectionError));
-  require(llvm::StringRef(missingSelectionDiagnostic)
-              .contains("ServicePlanSelection closure is incomplete"),
-          "missing selection diagnostic changed: " +
-              missingSelectionDiagnostic);
+  requireFailureContains(loom::mapping::verifySystemMappingBase(
+                             missingSelectionRoot, dataflow, fabric, store),
+                         "ServicePlanSelection closure is incomplete");
 
   mlir::OwningOpRef<mlir::Operation *> disconnectedRoute(draft->clone());
   auto disconnectedRoot =
@@ -580,15 +585,9 @@ void loom::pnr::test::verifyFinalizedSystemMappingWorkflow(
       ::mapping::FabricTransportEndpointRefAttr::get(
           &context, bytesAttr(&context, loom::fabric::canonicalFabricBytes(
                                             *disconnectedEndpoint))));
-  llvm::Error disconnectedError = loom::mapping::verifySystemMappingBase(
-      disconnectedRoot, dataflow, fabric, store);
-  require(static_cast<bool>(disconnectedError),
-          "disconnected System route unexpectedly verified");
-  const std::string disconnectedDiagnostic =
-      llvm::toString(std::move(disconnectedError));
-  require(llvm::StringRef(disconnectedDiagnostic)
-              .contains("service route traversal is discontinuous"),
-          "disconnected route diagnostic changed: " + disconnectedDiagnostic);
+  requireFailureContains(loom::mapping::verifySystemMappingBase(
+                             disconnectedRoot, dataflow, fabric, store),
+                         "service route traversal is discontinuous");
 
   const auto &problem = candidate.problem();
   mlir::OpBuilder builder(&context);

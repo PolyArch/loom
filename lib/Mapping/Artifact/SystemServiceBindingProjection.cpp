@@ -1,6 +1,8 @@
 #include "Mapping/Artifact/SystemServiceBindingProjection.h"
 
+#include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Dataflow/IR/OperationSchema.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
@@ -20,7 +22,9 @@ using ::dataflow::semantics::ServiceKind;
 using ::loom::fabric::AddressedMemoryCapabilityDomain;
 using ::loom::fabric::CanonicalServiceCapabilityRecord;
 using ::loom::fabric::CanonicalServiceEndpointPlane;
+using ::loom::fabric::CanonicalServiceEndpointRole;
 using ::loom::fabric::FenceCapabilityDomain;
+using ::loom::fabric::MessageTransferCapabilityDomain;
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -34,6 +38,61 @@ template <typename Ref> void canonicalizeFabricRefs(std::vector<Ref> &values) {
            ::loom::fabric::canonicalFabricBytes(right);
   });
   values.erase(std::unique(values.begin(), values.end()), values.end());
+}
+
+bool ownsMessageEndpoint(
+    const ::loom::fabric::SystemServiceEndpointOwnerRef &candidate,
+    const SystemMessageExecutionOwner &owner) {
+  return std::visit(
+      [&](const auto expected) {
+        const auto *actual = std::get_if<std::decay_t<decltype(expected)>>(
+            &candidate.owner().payload);
+        return actual && *actual == expected;
+      },
+      owner);
+}
+
+llvm::Expected<const CanonicalServiceCapabilityRecord *> messageCapability(
+    const ::loom::fabric::CanonicalServiceCapabilitySet &capabilities) {
+  const CanonicalServiceCapabilityRecord *result = nullptr;
+  for (const auto &capability : capabilities.capabilities()) {
+    if (capability.kind() != ServiceKind::MessageTransfer)
+      continue;
+    if (result)
+      return invalid("one service endpoint repeats MessageTransfer");
+    result = &capability;
+  }
+  return result;
+}
+
+bool roleOwnsMessageTerminal(
+    CanonicalServiceEndpointRole role,
+    ::dataflow::semantics::ServiceLegDirection direction, bool source) {
+  const bool terminalIsInitiator =
+      source == (direction ==
+                 ::dataflow::semantics::ServiceLegDirection::InitiatorToServer);
+  return terminalIsInitiator ==
+         (role == CanonicalServiceEndpointRole::Initiate);
+}
+
+llvm::Expected<bool>
+messagePayloadCompatible(const CanonicalServiceCapabilityRecord &capability,
+                         mlir::Type payload) {
+  const auto *domain =
+      std::get_if<MessageTransferCapabilityDomain>(&capability.domain());
+  if (!domain)
+    return false;
+  auto wanted = ::dataflow::encodeCanonicalType(payload);
+  if (!wanted)
+    return wanted.takeError();
+  for (mlir::Type candidate : domain->payloadTypes()) {
+    auto encoded = ::dataflow::encodeCanonicalType(candidate);
+    if (!encoded)
+      return encoded.takeError();
+    if (encoded->bytes() == wanted->bytes())
+      return true;
+  }
+  return false;
 }
 
 struct ResolvedOperationMember final {
@@ -483,6 +542,87 @@ projectSystemMemoryUsePatternDomains(
     return ::loom::fabric::canonicalFabricBytes(left.region) <
            ::loom::fabric::canonicalFabricBytes(right.region);
   });
+  return result;
+}
+
+llvm::Expected<std::vector<SystemMessageTerminalEndpointDomainView>>
+projectSystemMessageTerminalEndpointDomains(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const SystemTransferTerminalKey &terminal, mlir::Type payload,
+    const SystemMessageExecutionOwner &owner) {
+  const bool source =
+      std::holds_alternative<SystemTransferSourceTerminalKey>(terminal);
+  const CanonicalServiceLegKey &leg =
+      source ? std::get<SystemTransferSourceTerminalKey>(terminal).leg
+             : std::get<SystemTransferSinkTerminalKey>(terminal).leg;
+  const auto *producer =
+      std::get_if<TransferObligationFamilyKey>(&leg.obligation);
+  if (!producer)
+    return invalid("message terminal belongs to a non-transfer obligation");
+  auto resolved = dataflow.resolve(*producer);
+  if (!resolved)
+    return resolved.takeError();
+  auto expectedPayload = ::dataflow::encodeCanonicalType(resolved->payloadType);
+  auto actualPayload = ::dataflow::encodeCanonicalType(payload);
+  if (!expectedPayload)
+    return expectedPayload.takeError();
+  if (!actualPayload)
+    return actualPayload.takeError();
+  if (expectedPayload->bytes() != actualPayload->bytes())
+    return invalid("message payload disagrees with its producer terminal");
+  if (!source) {
+    const auto sinkOrdinal =
+        std::get<SystemTransferSinkTerminalKey>(terminal).sinkOrdinal;
+    std::size_t sinkCount = 0;
+    if (llvm::Error error =
+            dataflow.pairedSinks(*producer, [&](const auto &) { ++sinkCount; }))
+      return std::move(error);
+    if (sinkOrdinal >= sinkCount)
+      return invalid("message sink ordinal is out of range");
+  }
+
+  auto direction = ::dataflow::semantics::getCanonicalServiceLegDirection(
+      ServiceKind::MessageTransfer, leg.ordinal);
+  if (!direction)
+    return direction.takeError();
+  std::vector<SystemMessageTerminalEndpointDomainView> result;
+  for (const auto endpoint : fabric.artifact().systemServiceEndpoints()) {
+    const auto *endpointOwner = fabric.serviceEndpointOwner(endpoint);
+    if (!endpointOwner || !ownsMessageEndpoint(*endpointOwner, owner))
+      continue;
+    const auto *capabilities = fabric.serviceEndpointCapabilities(endpoint);
+    if (!capabilities ||
+        capabilities->plane() != CanonicalServiceEndpointPlane::Transport)
+      continue;
+    auto capability = messageCapability(*capabilities);
+    if (!capability)
+      return capability.takeError();
+    if (!*capability ||
+        !roleOwnsMessageTerminal((*capability)->role(), *direction, source))
+      continue;
+    const ::loom::fabric::FabricTransportEndpointRef bound{
+        ::loom::fabric::FabricTransportEndpointOwnerRef::of(endpoint), 0};
+    const auto expectedDirection =
+        source ? ::loom::fabric::FabricPortDirection::Output
+               : ::loom::fabric::FabricPortDirection::Input;
+    if (fabric.artifact().transportEndpointDirection(bound) !=
+        expectedDirection)
+      return invalid("message service endpoint has the wrong direction");
+    auto compatible = messagePayloadCompatible(**capability, payload);
+    if (!compatible)
+      return compatible.takeError();
+    result.push_back({bound, *compatible});
+  }
+  llvm::sort(result, [](const auto &left, const auto &right) {
+    return ::loom::fabric::canonicalFabricBytes(left.endpoint) <
+           ::loom::fabric::canonicalFabricBytes(right.endpoint);
+  });
+  if (std::adjacent_find(result.begin(), result.end(),
+                         [](const auto &left, const auto &right) {
+                           return left.endpoint == right.endpoint;
+                         }) != result.end())
+    return invalid("message terminal projection contains a duplicate endpoint");
   return result;
 }
 

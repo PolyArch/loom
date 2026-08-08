@@ -1158,4 +1158,65 @@ llvm::Expected<ImportedSpatialMemoryView> importSpatialMemoryView(
   return result;
 }
 
+llvm::Expected<std::vector<::loom::fabric::FabricMemoryHandshakeSelection>>
+deriveSpatialMemoryHandshakeSelections(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialMemoryEngineBindingView> engines,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses) {
+  std::vector<::loom::fabric::FabricMemoryHandshakeSelection> result;
+  for (const SpatialMemoryEngineBindingView &engine : engines) {
+    const TechMemoryRealizationView *realization =
+        findRealization(techMapping, engine.realization);
+    if (!realization || realization->actors.size() != engine.operations.size())
+      return invalid("memory handshake selection has incomplete realization");
+    for (const SpatialMemoryOperationView &operation : engine.operations) {
+      const auto actor = std::visit(
+          [](const auto &selected) { return selected.actor; }, operation);
+      const auto &placement = std::visit(
+          [](const auto &selected)
+              -> const SpatialMemoryOperationPlacementView & {
+            return selected.placement;
+          },
+          operation);
+      const TechMemoryActorView *techActor = findActor(*realization, actor);
+      if (!techActor)
+        return invalid("memory handshake actor has no Tech realization");
+      auto projection = projectMemoryActor(dataflow, actor);
+      if (!projection)
+        return projection.takeError();
+
+      const SpatialResourceUseView *selectedUse = nullptr;
+      for (const SpatialResourceUseView &use : resourceUses) {
+        const auto *owner =
+            std::get_if<SpatialMemoryEngineResourceOwnerRef>(&use.owner);
+        const auto *trigger = std::get_if<SpatialActorTransitionEventRef>(
+            &use.activation.trigger.event);
+        if (!owner || owner->realization != engine.realization || !trigger ||
+            !(*trigger == projection->trigger))
+          continue;
+        if (selectedUse)
+          return invalid("memory handshake operation has duplicate plans");
+        selectedUse = &use;
+      }
+      if (!selectedUse)
+        return invalid("memory handshake operation has no selected plan");
+
+      const auto port = operationPortOf(placement);
+      const ::loom::fabric::FabricMemoryCapabilityAlternativeRef capability{
+          port, techActor->capability.ordinal};
+      const auto maskForm = projection->access
+                                ? projection->access->maskForm()
+                                : ::dataflow::semantics::MemoryMaskForm::Absent;
+      auto selected = ::loom::fabric::makeMemoryHandshakeSelection(
+          fabric, placement, capability, selectedUse->useSite, maskForm);
+      if (!selected)
+        return selected.takeError();
+      result.push_back(std::move(*selected));
+    }
+  }
+  return result;
+}
+
 } // namespace loom::mapping::detail

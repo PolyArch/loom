@@ -206,6 +206,12 @@ public:
       llvm::function_ref<llvm::Error(const CanonicalProducerTerminalView &)>)
       const;
 
+  /// Resolves one exact producer terminal and its Dataflow-owned payload type.
+  /// This is the point-query projection of the same canonical inventory used
+  /// by forEachProducerTerminal; consumers do not reconstruct payload lookup.
+  llvm::Expected<CanonicalProducerTerminalView>
+  resolve(const CanonicalProducerTerminalRef &terminal) const;
+
   /// Visit every addressed-memory or fence actor in each graph launch rooted
   /// at `root`. The contextual reference is Dataflow-owned; callers do not
   /// reconstruct actor membership by walking MLIR.

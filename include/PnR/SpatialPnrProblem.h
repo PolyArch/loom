@@ -6,7 +6,7 @@
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
-#include "Mapping/Artifact/SpatialProgressAnalysis.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "PnR/EndpointRoutingTopology.h"
 #include "PnR/FrozenConstraintIndex.h"
 #include "PnR/PnrConfig.h"
@@ -963,7 +963,7 @@ public:
   const FrozenSpatialCapacityIndex &capacity() const { return capacity_; }
   const FrozenSpatialRoutingGraph &routing() const { return routing_; }
   const FrozenSpatialHandshakeIndex &handshake() const { return handshake_; }
-  const ::loom::mapping::SpatialProgressClosure &progressClosure() const {
+  const ::loom::mapping::MappingProgressClosure &progressClosure() const {
     return progressClosure_;
   }
   const detail::SpatialBindingRelationModel &bindingRelations() const {
@@ -992,7 +992,7 @@ private:
       FrozenSpatialPortIndex ports, FrozenSpatialResourceIndex resources,
       FrozenSpatialCapacityIndex capacity, FrozenSpatialRoutingGraph routing,
       FrozenSpatialHandshakeIndex handshake,
-      ::loom::mapping::SpatialProgressClosure progressClosure,
+      ::loom::mapping::MappingProgressClosure progressClosure,
       std::shared_ptr<const detail::SpatialBindingRelationModel>
           bindingRelations,
       std::shared_ptr<const detail::SpatialMemoryConstraintModel>
@@ -1035,7 +1035,7 @@ private:
   FrozenSpatialCapacityIndex capacity_;
   FrozenSpatialRoutingGraph routing_;
   FrozenSpatialHandshakeIndex handshake_;
-  ::loom::mapping::SpatialProgressClosure progressClosure_;
+  ::loom::mapping::MappingProgressClosure progressClosure_;
   std::shared_ptr<const detail::SpatialBindingRelationModel> bindingRelations_;
   std::shared_ptr<const detail::SpatialMemoryConstraintModel>
       memoryConstraints_;

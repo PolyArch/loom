@@ -834,6 +834,56 @@ llvm::Error CanonicalDataflowProgramView::forEachProducerTerminal(
   return llvm::Error::success();
 }
 
+llvm::Expected<CanonicalProducerTerminalView>
+CanonicalDataflowProgramView::resolve(
+    const CanonicalProducerTerminalRef &terminal) const {
+  const RootThreadLaunchRef root = std::visit(
+      [](const auto &typed) -> RootThreadLaunchRef {
+        using Terminal = std::decay_t<decltype(typed)>;
+        if constexpr (std::is_same_v<Terminal, RootThreadBoundarySourceRef>) {
+          return std::visit(
+              [](const auto &transfer) { return transfer.launch; },
+              typed.transfer);
+        } else if constexpr (std::is_same_v<Terminal,
+                                            GraphLaunchBoundarySourceRef>) {
+          return std::visit(
+              [](const auto &transfer) {
+                return transfer.launch.rootThreadLaunch;
+              },
+              typed.transfer);
+        } else {
+          return std::visit(
+              [](const auto &producer) {
+                using Producer = std::decay_t<decltype(producer)>;
+                if constexpr (std::is_same_v<Producer,
+                                             GraphStreamOutputProducerRef>)
+                  return producer.launch.rootThreadLaunch;
+                else
+                  return producer.launch;
+              },
+              typed.producer);
+        }
+      },
+      terminal);
+
+  std::optional<CanonicalProducerTerminalView> result;
+  if (llvm::Error error = forEachProducerTerminal(
+          root,
+          [&](const CanonicalProducerTerminalView &candidate) -> llvm::Error {
+            if (candidate.terminal != terminal)
+              return llvm::Error::success();
+            if (result)
+              return invalid(
+                  "canonical dataflow: duplicate producer terminal lookup");
+            result = candidate;
+            return llvm::Error::success();
+          }))
+    return std::move(error);
+  if (!result)
+    return invalid("canonical dataflow: producer terminal is not reachable");
+  return std::move(*result);
+}
+
 llvm::Error CanonicalDataflowProgramView::forEachContextualServiceActor(
     RootThreadLaunchRef root,
     llvm::function_ref<llvm::Error(ContextualActorRef)> callback) const {

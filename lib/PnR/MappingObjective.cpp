@@ -111,11 +111,11 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
     return candidate.tagConflictCount();
   case ResolvedPnrViolationKind::HardProgressViolation:
     switch (candidate.problem().progressClosure().kind) {
-    case ::loom::mapping::SpatialProgressClosureKind::ProvenNoClosedWaitSet:
+    case ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet:
       return 0;
-    case ::loom::mapping::SpatialProgressClosureKind::ProvenClosedWaitSet:
+    case ::loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet:
       return 1;
-    case ::loom::mapping::SpatialProgressClosureKind::ProofNotEstablished:
+    case ::loom::mapping::MappingProgressClosureKind::ProofNotEstablished:
       return llvm::createStringError(
           std::make_error_code(std::errc::operation_not_supported),
           "proof_not_established: Spatial progress closure is unavailable");

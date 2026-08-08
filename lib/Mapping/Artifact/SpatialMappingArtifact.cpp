@@ -18,7 +18,7 @@
 #include "Fabric/Identity/FabricHandshake.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefText.h"
-#include "Mapping/Artifact/SpatialProgressAnalysis.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "Mapping/IR/MappingActivationKey.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "MappingAssemblyInternal.h"
@@ -957,7 +957,8 @@ struct SelectedHandshakeProjection final {
 
 llvm::Expected<SelectedHandshakeProjection>
 deriveSelectedHandshakeSelection(const TerminalProjectionContext &context,
-                                 llvm::ArrayRef<SpatialRouteTreeView> routes) {
+                                 llvm::ArrayRef<SpatialRouteTreeView> routes,
+                                 llvm::ArrayRef<SpatialResourceUseView> uses) {
   SelectedHandshakeProjection result;
   auto &selection = result.selection;
   for (const auto &realization : context.techMapping.computeRealizations()) {
@@ -994,6 +995,13 @@ deriveSelectedHandshakeSelection(const TerminalProjectionContext &context,
       return fuSelection.takeError();
     selection.fuCapabilities.push_back(std::move(*fuSelection));
   }
+
+  auto memorySelections = detail::deriveSpatialMemoryHandshakeSelections(
+      context.dataflow, context.techMapping, context.fabric,
+      context.memoryBindings, uses);
+  if (!memorySelections)
+    return memorySelections.takeError();
+  selection.memoryOperations = std::move(*memorySelections);
 
   for (const SpatialRouteTreeView &route : routes) {
     result.routeTraversals.emplace_back();
@@ -1045,6 +1053,7 @@ struct ImportedSpatialView final {
   std::vector<SpatialResourceUseView> resourceUses;
   std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments;
   ConfiguredHardwareProjectionView configuredHardware;
+  ::loom::fabric::FabricHandshakeSelection handshakeSelection;
 };
 
 llvm::Expected<ImportedSpatialView>
@@ -1181,7 +1190,8 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
     }
   }
 
-  auto handshake = deriveSelectedHandshakeSelection(terminalContext, routes);
+  auto handshake =
+      deriveSelectedHandshakeSelection(terminalContext, routes, uses);
   if (!handshake)
     return handshake.takeError();
   if (llvm::Error error =
@@ -1210,15 +1220,15 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
   if (!configuredHardware)
     return configuredHardware.takeError();
 
-  auto progress = deriveSpatialProgressClosure(dataflow);
+  auto progress = deriveMappingProgressClosure(dataflow, techMapping.covers());
   if (!progress)
     return progress.takeError();
   switch (progress->kind) {
-  case SpatialProgressClosureKind::ProvenNoClosedWaitSet:
+  case MappingProgressClosureKind::ProvenNoClosedWaitSet:
     break;
-  case SpatialProgressClosureKind::ProvenClosedWaitSet:
+  case MappingProgressClosureKind::ProvenClosedWaitSet:
     return invalid("HardProgressViolation");
-  case SpatialProgressClosureKind::ProofNotEstablished:
+  case MappingProgressClosureKind::ProofNotEstablished:
     return incomplete("proof_not_established");
   }
 
@@ -1231,7 +1241,8 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
                              std::move(routes),
                              std::move(uses),
                              std::move(physicalTagSegments),
-                             std::move(*configuredHardware)};
+                             std::move(*configuredHardware),
+                             std::move(handshake->selection)};
 }
 
 struct PreparedSpatialMapping final {
@@ -1557,7 +1568,8 @@ llvm::Expected<SpatialMappingView> SpatialMappingView::import(
       std::move(imported->memoryBindings), std::move(imported->routeTrees),
       std::move(imported->resourceUses),
       std::move(imported->physicalTagSegments),
-      std::move(imported->configuredHardware));
+      std::move(imported->configuredHardware),
+      std::move(imported->handshakeSelection));
 }
 
 llvm::Error verifySpatialMappingBase(

@@ -23,10 +23,7 @@ namespace loom::pnr::detail {
 namespace {
 
 using ::dataflow::semantics::ServiceKind;
-using ::loom::fabric::CanonicalServiceCapabilityRecord;
 using ::loom::fabric::CanonicalServiceEndpointPlane;
-using ::loom::fabric::CanonicalServiceEndpointRole;
-using ::loom::fabric::MessageTransferCapabilityDomain;
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -59,60 +56,20 @@ struct BoundMemoryEndpointPair final {
   ::loom::fabric::FabricMemoryEndpointRef occurrenceEndpoint;
 };
 
-llvm::Expected<std::map<std::string, mlir::Type>>
-collectMessagePayloads(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                       llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots) {
-  std::map<std::string, mlir::Type> result;
-  for (const ::dataflow::RootThreadLaunchRef root : roots) {
-    if (llvm::Error error = dataflow.forEachProducerTerminal(
-            root,
-            [&](const ::dataflow::CanonicalProducerTerminalView &view)
-                -> llvm::Error {
-              auto bytes = ::dataflow::encodeDataflowReference(
-                  dataflow.identity(), view.terminal);
-              if (!bytes)
-                return bytes.takeError();
-              auto [position, inserted] =
-                  result.emplace(keyString(*bytes), view.payloadType);
-              if (!inserted) {
-                auto existing =
-                    ::dataflow::encodeCanonicalType(position->second);
-                if (!existing)
-                  return existing.takeError();
-                auto incoming =
-                    ::dataflow::encodeCanonicalType(view.payloadType);
-                if (!incoming)
-                  return incoming.takeError();
-                if (existing->bytes() != incoming->bytes())
-                  return invalid(
-                      "one producer terminal has conflicting payload types");
-              }
-              return llvm::Error::success();
-            }))
-      return std::move(error);
-  }
-  return result;
-}
-
 llvm::Expected<ResolvedServiceMember> resolveMember(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::SystemServiceObligationProjection &obligation,
-    const ::dataflow::ServiceMemberRef &member,
-    const std::map<std::string, mlir::Type> &messagePayloads) {
+    const ::dataflow::ServiceMemberRef &member) {
   if (std::holds_alternative<::dataflow::MessageTransferMemberRef>(member)) {
     const auto *producer =
         std::get_if<::dataflow::CanonicalProducerTerminalRef>(&obligation.key);
     if (!producer)
       return invalid("message member belongs to an operation obligation");
-    auto bytes =
-        ::dataflow::encodeDataflowReference(dataflow.identity(), *producer);
-    if (!bytes)
-      return bytes.takeError();
-    const auto found = messagePayloads.find(keyString(*bytes));
-    if (found == messagePayloads.end())
-      return invalid("message obligation has no Dataflow-owned payload type");
-    return ResolvedServiceMember{ServiceKind::MessageTransfer, found->second,
-                                 std::nullopt, false};
+    auto resolved = dataflow.resolve(*producer);
+    if (!resolved)
+      return resolved.takeError();
+    return ResolvedServiceMember{ServiceKind::MessageTransfer,
+                                 resolved->payloadType, std::nullopt, false};
   }
 
   std::optional<::dataflow::ContextualActorRef> contextual;
@@ -132,55 +89,6 @@ llvm::Expected<ResolvedServiceMember> resolveMember(
       *kind, std::nullopt, *contextual,
       std::holds_alternative<::dataflow::AddressedMemoryActorMemberRef>(
           member)};
-}
-
-llvm::Expected<bool>
-capabilityMatches(const CanonicalServiceCapabilityRecord &capability,
-                  const ResolvedServiceMember &member) {
-  if (capability.kind() != member.kind)
-    return false;
-  if (const auto *message =
-          std::get_if<MessageTransferCapabilityDomain>(&capability.domain())) {
-    if (!member.messagePayload || !*member.messagePayload)
-      return false;
-    auto wanted = ::dataflow::encodeCanonicalType(*member.messagePayload);
-    if (!wanted)
-      return wanted.takeError();
-    for (mlir::Type candidate : message->payloadTypes()) {
-      auto encoded = ::dataflow::encodeCanonicalType(candidate);
-      if (!encoded)
-        return encoded.takeError();
-      if (encoded->bytes() == wanted->bytes())
-        return true;
-    }
-    return false;
-  }
-  return false;
-}
-
-llvm::Expected<const CanonicalServiceCapabilityRecord *> capabilityForKind(
-    const ::loom::fabric::CanonicalServiceCapabilitySet &capabilities,
-    ServiceKind kind) {
-  const CanonicalServiceCapabilityRecord *result = nullptr;
-  for (const CanonicalServiceCapabilityRecord &capability :
-       capabilities.capabilities()) {
-    if (capability.kind() != kind)
-      continue;
-    if (result)
-      return invalid("one service endpoint repeats a service kind");
-    result = &capability;
-  }
-  return result;
-}
-
-bool roleOwnsTerminal(CanonicalServiceEndpointRole role,
-                      ::dataflow::semantics::ServiceLegDirection direction,
-                      bool source) {
-  const bool terminalIsInitiator =
-      source == (direction ==
-                 ::dataflow::semantics::ServiceLegDirection::InitiatorToServer);
-  return terminalIsInitiator ==
-         (role == CanonicalServiceEndpointRole::Initiate);
 }
 
 llvm::Expected<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>
@@ -518,6 +426,7 @@ appendExposureRows(const ::loom::fabric::FabricSystemRootView &fabric,
 }
 
 llvm::Error appendMessageRows(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const ::loom::mapping::SystemServiceObligationProjection &obligation,
     const ResolvedServiceMember &member,
@@ -546,29 +455,33 @@ llvm::Error appendMessageRows(
     return result;
   };
 
-  struct AllowedOwnerDomain final {
-    bool host = false;
-    std::vector<::loom::fabric::AccCoreOccurrenceRef> accCores;
-  };
+  using Owner = ::loom::mapping::SystemMessageExecutionOwner;
+  using Owners = std::vector<Owner>;
   const auto rootBoundaryOwner =
       [&](const ::dataflow::RootThreadBoundaryTransferRef &transfer,
-          bool source) -> llvm::Expected<AllowedOwnerDomain> {
+          bool source) -> llvm::Expected<Owners> {
     const bool completion =
         std::holds_alternative<::dataflow::RootThreadCompletionTransferRef>(
             transfer);
     const bool host = completion != source;
-    if (host)
-      return AllowedOwnerDomain{true, {}};
+    if (host) {
+      if (fabric.artifact().hostCoreOccurrences().size() != 1)
+        return invalid("message runtime terminal has no unique HostCore owner");
+      return Owners{Owner{fabric.artifact().hostCoreOccurrences().front()}};
+    }
     const ::dataflow::RootThreadLaunchRef root =
         std::visit([](const auto &value) { return value.launch; }, transfer);
     auto cores = compatibleCores(root);
     if (!cores)
       return cores.takeError();
-    return AllowedOwnerDomain{false, std::move(*cores)};
+    Owners result;
+    for (const auto core : *cores)
+      result.emplace_back(core);
+    return result;
   };
   const auto producerOwner =
       [&](const ::dataflow::CanonicalProducerTerminalRef &producer)
-      -> llvm::Expected<AllowedOwnerDomain> {
+      -> llvm::Expected<Owners> {
     if (const auto *root =
             std::get_if<::dataflow::RootThreadBoundarySourceRef>(&producer))
       return rootBoundaryOwner(root->transfer, true);
@@ -580,7 +493,10 @@ llvm::Error appendMessageRows(
       auto cores = compatibleCores(root);
       if (!cores)
         return cores.takeError();
-      return AllowedOwnerDomain{false, std::move(*cores)};
+      Owners result;
+      for (const auto core : *cores)
+        result.emplace_back(core);
+      return result;
     }
     const auto &channel =
         std::get<::dataflow::ChannelProducerTerminalRef>(producer).producer;
@@ -597,10 +513,13 @@ llvm::Error appendMessageRows(
     auto cores = compatibleCores(root);
     if (!cores)
       return cores.takeError();
-    return AllowedOwnerDomain{false, std::move(*cores)};
+    Owners result;
+    for (const auto core : *cores)
+      result.emplace_back(core);
+    return result;
   };
   const auto sinkOwner = [&](const ::dataflow::CanonicalSinkTerminalRef &sink)
-      -> llvm::Expected<AllowedOwnerDomain> {
+      -> llvm::Expected<Owners> {
     if (const auto *root =
             std::get_if<::dataflow::RootThreadBoundarySinkRef>(&sink))
       return rootBoundaryOwner(root->transfer, false);
@@ -612,7 +531,10 @@ llvm::Error appendMessageRows(
       auto cores = compatibleCores(root);
       if (!cores)
         return cores.takeError();
-      return AllowedOwnerDomain{false, std::move(*cores)};
+      Owners result;
+      for (const auto core : *cores)
+        result.emplace_back(core);
+      return result;
     }
     const auto &channel =
         std::get<::dataflow::ChannelConsumerTerminalRef>(sink).consumer;
@@ -628,22 +550,10 @@ llvm::Error appendMessageRows(
     auto cores = compatibleCores(root);
     if (!cores)
       return cores.takeError();
-    return AllowedOwnerDomain{false, std::move(*cores)};
-  };
-  const auto endpointAllowed =
-      [&](::loom::fabric::SystemServiceEndpointRef endpoint,
-          const AllowedOwnerDomain &allowed) -> llvm::Expected<bool> {
-    const auto *owner = fabric.serviceEndpointOwner(endpoint);
-    if (!owner)
-      return invalid("message service endpoint has no owner");
-    if (const auto *host = std::get_if<::loom::fabric::HostCoreOccurrenceRef>(
-            &owner->owner().payload))
-      return allowed.host &&
-             llvm::is_contained(fabric.artifact().hostCoreOccurrences(), *host);
-    if (const auto *core = std::get_if<::loom::fabric::AccCoreOccurrenceRef>(
-            &owner->owner().payload))
-      return !allowed.host && llvm::is_contained(allowed.accCores, *core);
-    return false;
+    Owners result;
+    for (const auto core : *cores)
+      result.emplace_back(core);
+    return result;
   };
 
   const auto *producer =
@@ -651,11 +561,9 @@ llvm::Error appendMessageRows(
           &obligation.key);
   if (!producer)
     return invalid("message obligation has a non-transfer key");
+  if (!member.messagePayload || !*member.messagePayload)
+    return invalid("message obligation has no Dataflow payload type");
   for (const auto &leg : obligation.legs) {
-    auto direction = ::dataflow::semantics::getCanonicalServiceLegDirection(
-        member.kind, leg.ordinal);
-    if (!direction)
-      return direction.takeError();
     for (const bool source : {true, false}) {
       const std::size_t sinkCount = source ? 1 : obligation.sinks.size();
       for (std::size_t sink = 0; sink < sinkCount; ++sink) {
@@ -663,51 +571,30 @@ llvm::Error appendMessageRows(
                               : sinkOwner(obligation.sinks[sink]);
         if (!allowed)
           return allowed.takeError();
-        for (const auto endpoint : fabric.artifact().systemServiceEndpoints()) {
-          auto admitted = endpointAllowed(endpoint, *allowed);
-          if (!admitted)
-            return admitted.takeError();
-          if (!*admitted)
-            continue;
-          const auto *capabilities =
-              fabric.serviceEndpointCapabilities(endpoint);
-          if (!capabilities ||
-              capabilities->plane() != CanonicalServiceEndpointPlane::Transport)
-            continue;
-          auto capability = capabilityForKind(*capabilities, member.kind);
-          if (!capability)
-            return capability.takeError();
-          if (!*capability ||
-              !roleOwnsTerminal((*capability)->role(), *direction, source))
-            continue;
-          const ::loom::fabric::FabricTransportEndpointRef bound{
-              ::loom::fabric::FabricTransportEndpointOwnerRef::of(endpoint), 0};
-          const auto expectedDirection =
-              source ? ::loom::fabric::FabricPortDirection::Output
-                     : ::loom::fabric::FabricPortDirection::Input;
-          if (fabric.artifact().transportEndpointDirection(bound) !=
-              expectedDirection)
-            return invalid("message service endpoint has the wrong direction");
-          auto compatible = capabilityMatches(**capability, member);
-          if (!compatible)
-            return compatible.takeError();
-          std::vector<::loom::fabric::FabricTransportEndpointRef> targets;
-          if (*compatible)
-            targets.push_back(bound);
-          ::loom::mapping::SystemTransferTerminalKey terminal =
-              source
-                  ? ::loom::mapping::SystemTransferTerminalKey(
-                        ::loom::mapping::SystemTransferSourceTerminalKey{leg})
-                  : ::loom::mapping::SystemTransferTerminalKey(
-                        ::loom::mapping::SystemTransferSinkTerminalKey{
-                            leg,
-                            static_cast<::dataflow::StructuralOrdinal>(sink)});
-          if (llvm::Error error = appendTerminalCompatibility(
-                  domain, std::move(terminal),
-                  SystemBoundTerminalEndpoint{
-                      SystemMessageTerminalEndpoint{bound}},
-                  std::move(targets)))
-            return error;
+        const ::loom::mapping::SystemTransferTerminalKey terminal =
+            source ? ::loom::mapping::SystemTransferTerminalKey(
+                         ::loom::mapping::SystemTransferSourceTerminalKey{leg})
+                   : ::loom::mapping::SystemTransferTerminalKey(
+                         ::loom::mapping::SystemTransferSinkTerminalKey{
+                             leg,
+                             static_cast<::dataflow::StructuralOrdinal>(sink)});
+        for (const Owner &owner : *allowed) {
+          auto rows =
+              ::loom::mapping::projectSystemMessageTerminalEndpointDomains(
+                  dataflow, fabric, terminal, *member.messagePayload, owner);
+          if (!rows)
+            return rows.takeError();
+          for (const auto &row : *rows) {
+            std::vector<::loom::fabric::FabricTransportEndpointRef> targets;
+            if (row.payloadCompatible)
+              targets.push_back(row.endpoint);
+            if (llvm::Error error = appendTerminalCompatibility(
+                    domain, terminal,
+                    SystemBoundTerminalEndpoint{
+                        SystemMessageTerminalEndpoint{row.endpoint}},
+                    std::move(targets)))
+              return error;
+          }
         }
       }
     }
@@ -767,10 +654,6 @@ projectSystemServiceDomains(
             FlatOperationServiceDomainProjectionUnavailable,
         "flat operation-service compatibility projection is not implemented "
         "by the System PnR search-domain projector");
-  auto messagePayloads = collectMessagePayloads(dataflow, roots);
-  if (!messagePayloads)
-    return messagePayloads.takeError();
-
   std::vector<SystemSearchServiceDomain> result;
   result.reserve(obligations->size());
   for (const auto &obligation : *obligations) {
@@ -778,8 +661,7 @@ projectSystemServiceDomains(
     std::vector<ResolvedServiceMember> members;
     members.reserve(obligation.members.size());
     for (const auto &memberRef : obligation.members) {
-      auto member =
-          resolveMember(dataflow, obligation, memberRef, *messagePayloads);
+      auto member = resolveMember(dataflow, obligation, memberRef);
       if (!member)
         return member.takeError();
       members.push_back(std::move(*member));
@@ -791,7 +673,7 @@ projectSystemServiceDomains(
           members.front().kind != ServiceKind::MessageTransfer)
         return invalid("message obligation does not have one message member");
       if (llvm::Error error = appendMessageRows(
-              fabric, obligation, members.front(), bindings, domain))
+              dataflow, fabric, obligation, members.front(), bindings, domain))
         return std::move(error);
     } else {
       for (auto [memberRef, member] :
@@ -832,10 +714,6 @@ projectSystemMemoryServiceBindings(
       ::loom::mapping::projectSystemServiceObligations(dataflow, roots);
   if (!obligations)
     return obligations.takeError();
-  auto messagePayloads = collectMessagePayloads(dataflow, roots);
-  if (!messagePayloads)
-    return messagePayloads.takeError();
-
   struct BindingMetadata final {
     std::optional<::loom::mapping::SpatialMemoryIntervalView> interval;
     std::optional<::loom::fabric::SubordinateEndpointRef> exposureTerminal;
@@ -904,8 +782,7 @@ projectSystemMemoryServiceBindings(
             obligation.key))
       continue;
     for (const auto &memberRef : obligation.members) {
-      auto member =
-          resolveMember(dataflow, obligation, memberRef, *messagePayloads);
+      auto member = resolveMember(dataflow, obligation, memberRef);
       if (!member)
         return member.takeError();
       const SystemServiceTargetSubject subject{

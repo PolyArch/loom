@@ -27,6 +27,14 @@ llvm::Expected<ImportedSpatialMemoryView> importSpatialMemoryView(
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric);
 
+llvm::Expected<std::vector<::loom::fabric::FabricMemoryHandshakeSelection>>
+deriveSpatialMemoryHandshakeSelections(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialMemoryEngineBindingView> engines,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses);
+
 } // namespace loom::mapping::detail
 
 #endif // LOOM_MAPPING_ARTIFACT_SPATIALMAPPINGMEMORYIMPORT_H

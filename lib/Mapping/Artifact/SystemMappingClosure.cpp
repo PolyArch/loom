@@ -306,6 +306,8 @@ llvm::Error verifyRouteContinuity(
            std::vector<::loom::fabric::FabricTransportEndpointRef>>
       endpoints;
   endpoints.emplace(0, std::vector{route.rootEndpoint});
+  std::set<std::uint64_t> parents;
+  std::set<std::uint64_t> sinkNodes;
   std::set<std::uint64_t> visiting;
   std::function<llvm::Error(std::uint64_t)> resolve =
       [&](std::uint64_t ordinal) -> llvm::Error {
@@ -331,12 +333,19 @@ llvm::Error verifyRouteContinuity(
     visiting.erase(ordinal);
     return llvm::Error::success();
   };
-  for (const auto &node : route.nodes)
+  for (const auto &node : route.nodes) {
+    parents.insert(node.parentOrdinal);
     if (llvm::Error error = resolve(node.ordinal))
       return error;
-  for (const auto &sink : route.sinks)
+  }
+  for (const auto &sink : route.sinks) {
     if (endpoints.count(sink.nodeOrdinal) == 0)
       return invalid("service route sink references an absent node");
+    sinkNodes.insert(sink.nodeOrdinal);
+  }
+  for (const auto &node : route.nodes)
+    if (parents.count(node.ordinal) == 0 && sinkNodes.count(node.ordinal) == 0)
+      return invalid("service route contains a non-sink leaf");
   return llvm::Error::success();
 }
 

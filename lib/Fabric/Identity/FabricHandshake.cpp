@@ -1352,8 +1352,19 @@ deriveUnconditionalHandshakeDependencyArcs(const FabricArtifactView &view) {
   return result;
 }
 
-llvm::Error verifySelectedCombinationalHandshakeAcyclic(
-    const FabricArtifactView &view, const FabricHandshakeSelection &selection) {
+namespace {
+
+struct ResolvedSelectedHandshakeGraph final {
+  using Arc = std::pair<std::size_t, std::size_t>;
+
+  std::map<std::vector<std::uint8_t>, std::size_t> boundaryNodes;
+  std::size_t nodeCount = 0;
+  std::vector<Arc> arcs;
+};
+
+llvm::Expected<ResolvedSelectedHandshakeGraph>
+resolveSelectedHandshakeGraph(const FabricArtifactView &view,
+                              const FabricHandshakeSelection &selection) {
   auto models = compileHandshakeOwnerModels(view);
   if (!models)
     return models.takeError();
@@ -1390,15 +1401,14 @@ llvm::Error verifySelectedCombinationalHandshakeAcyclic(
         .memoryOperations.push_back(selected);
   }
 
-  std::map<std::vector<std::uint8_t>, std::size_t> boundaryNodes;
+  ResolvedSelectedHandshakeGraph graph;
   for (const HandshakeOwnerModel &model : *models)
     for (const HandshakeOwnerNode &node : model.nodes())
       if (node.boundarySignal)
-        boundaryNodes.try_emplace(signalKey(*node.boundarySignal), 0);
-  std::size_t nodeCount = 0;
-  for (auto &[key, ordinal] : boundaryNodes) {
+        graph.boundaryNodes.try_emplace(signalKey(*node.boundarySignal), 0);
+  for (auto &[key, ordinal] : graph.boundaryNodes) {
     (void)key;
-    ordinal = nodeCount++;
+    ordinal = graph.nodeCount++;
   }
 
   std::vector<std::vector<std::size_t>> modelNodes(models->size());
@@ -1407,18 +1417,16 @@ llvm::Error verifySelectedCombinationalHandshakeAcyclic(
     nodes.reserve(model.nodes().size());
     for (const HandshakeOwnerNode &node : model.nodes()) {
       if (node.boundarySignal) {
-        auto found = boundaryNodes.find(signalKey(*node.boundarySignal));
-        if (found == boundaryNodes.end())
+        auto found = graph.boundaryNodes.find(signalKey(*node.boundarySignal));
+        if (found == graph.boundaryNodes.end())
           return invalid("selected handshake boundary node is absent");
         nodes.push_back(found->second);
       } else {
-        nodes.push_back(nodeCount++);
+        nodes.push_back(graph.nodeCount++);
       }
     }
   }
 
-  using Arc = std::pair<std::size_t, std::size_t>;
-  std::vector<Arc> arcs;
   std::set<OwnerKey> consumedOwners;
   for (auto [modelOrdinal, model] : llvm::enumerate(*models)) {
     const OwnerKey key = ownerKey(model.owner());
@@ -1455,31 +1463,29 @@ llvm::Error verifySelectedCombinationalHandshakeAcyclic(
       if (arc.source >= modelNodes[modelOrdinal].size() ||
           arc.destination >= modelNodes[modelOrdinal].size())
         return invalid("selected handshake arc endpoint is out of range");
-      arcs.emplace_back(modelNodes[modelOrdinal][arc.source],
-                        modelNodes[modelOrdinal][arc.destination]);
+      graph.arcs.emplace_back(modelNodes[modelOrdinal][arc.source],
+                              modelNodes[modelOrdinal][arc.destination]);
     }
   }
   if (consumedOwners.size() != ownerSelections.size())
     return invalid("selected handshake relation names a stale owner");
-  llvm::sort(arcs);
-  arcs.erase(std::unique(arcs.begin(), arcs.end()), arcs.end());
+  llvm::sort(graph.arcs);
+  graph.arcs.erase(std::unique(graph.arcs.begin(), graph.arcs.end()),
+                   graph.arcs.end());
+  return graph;
+}
 
-  std::vector<std::size_t> offsets(nodeCount + 1, 0);
-  std::vector<std::size_t> indegree(nodeCount, 0);
-  for (const Arc &arc : arcs) {
-    ++offsets[arc.first + 1];
-    ++indegree[arc.second];
+llvm::Expected<std::vector<std::vector<std::size_t>>>
+acyclicAdjacency(const ResolvedSelectedHandshakeGraph &graph) {
+  std::vector<std::vector<std::size_t>> adjacency(graph.nodeCount);
+  std::vector<std::size_t> indegree(graph.nodeCount, 0);
+  for (const auto &[source, destination] : graph.arcs) {
+    adjacency[source].push_back(destination);
+    ++indegree[destination];
   }
-  for (std::size_t node = 1; node < offsets.size(); ++node)
-    offsets[node] += offsets[node - 1];
-  std::vector<std::size_t> destinations(arcs.size());
-  std::vector<std::size_t> cursor(offsets.begin(), offsets.end() - 1);
-  for (const Arc &arc : arcs)
-    destinations[cursor[arc.first]++] = arc.second;
-
   std::vector<std::size_t> worklist;
-  worklist.reserve(nodeCount);
-  for (std::size_t node = 0; node < nodeCount; ++node)
+  worklist.reserve(graph.nodeCount);
+  for (std::size_t node = 0; node < graph.nodeCount; ++node)
     if (indegree[node] == 0)
       worklist.push_back(node);
   std::size_t visited = 0;
@@ -1487,16 +1493,90 @@ llvm::Error verifySelectedCombinationalHandshakeAcyclic(
     const std::size_t node = worklist.back();
     worklist.pop_back();
     ++visited;
-    for (std::size_t cursor = offsets[node]; cursor < offsets[node + 1];
-         ++cursor) {
-      const std::size_t destination = destinations[cursor];
+    for (std::size_t destination : adjacency[node])
       if (--indegree[destination] == 0)
         worklist.push_back(destination);
-    }
   }
-  if (visited != nodeCount)
+  if (visited != graph.nodeCount)
     return invalid("SelectedCombinationalHandshakeCycle");
+  return adjacency;
+}
+
+} // namespace
+
+llvm::Error verifySelectedCombinationalHandshakeAcyclic(
+    const FabricArtifactView &view, const FabricHandshakeSelection &selection) {
+  auto graph = resolveSelectedHandshakeGraph(view, selection);
+  if (!graph)
+    return graph.takeError();
+  auto adjacency = acyclicAdjacency(*graph);
+  if (!adjacency)
+    return adjacency.takeError();
   return llvm::Error::success();
+}
+
+llvm::Expected<std::vector<HandshakeDependencyArc>>
+deriveSelectedHandshakeReachability(
+    const FabricArtifactView &view, const FabricHandshakeSelection &selection,
+    llvm::ArrayRef<HandshakeSignalRef> terminals) {
+  auto graph = resolveSelectedHandshakeGraph(view, selection);
+  if (!graph)
+    return graph.takeError();
+  auto adjacency = acyclicAdjacency(*graph);
+  if (!adjacency)
+    return adjacency.takeError();
+
+  std::set<std::vector<std::uint8_t>> terminalKeys;
+  std::vector<std::optional<std::size_t>> terminalNodes;
+  terminalNodes.reserve(terminals.size());
+  for (const HandshakeSignalRef &terminal : terminals) {
+    if (llvm::Error error = validateFabricRef(view, terminal.endpoint))
+      return std::move(error);
+    const auto key = signalKey(terminal);
+    if (!terminalKeys.insert(key).second)
+      return invalid("selected handshake terminal inventory has a duplicate");
+    const auto found = graph->boundaryNodes.find(key);
+    terminalNodes.push_back(found == graph->boundaryNodes.end()
+                                ? std::nullopt
+                                : std::optional<std::size_t>(found->second));
+  }
+
+  std::vector<HandshakeDependencyArc> result;
+  std::vector<bool> visited(graph->nodeCount, false);
+  std::vector<std::size_t> worklist;
+  worklist.reserve(graph->nodeCount);
+  for (std::size_t source = 0; source < terminals.size(); ++source) {
+    if (!terminalNodes[source])
+      continue;
+    std::fill(visited.begin(), visited.end(), false);
+    worklist.clear();
+    worklist.push_back(*terminalNodes[source]);
+    visited[*terminalNodes[source]] = true;
+    while (!worklist.empty()) {
+      const std::size_t node = worklist.back();
+      worklist.pop_back();
+      for (std::size_t destination : (*adjacency)[node]) {
+        if (visited[destination])
+          continue;
+        visited[destination] = true;
+        worklist.push_back(destination);
+      }
+    }
+    for (std::size_t destination = 0; destination < terminals.size();
+         ++destination)
+      if (source != destination && terminalNodes[destination] &&
+          visited[*terminalNodes[destination]])
+        result.push_back({terminals[source], terminals[destination]});
+  }
+
+  llvm::sort(result, [&](const auto &lhs, const auto &rhs) {
+    const auto lhsSource = signalKey(lhs.source);
+    const auto rhsSource = signalKey(rhs.source);
+    if (lhsSource != rhsSource)
+      return lhsSource < rhsSource;
+    return signalKey(lhs.destination) < signalKey(rhs.destination);
+  });
+  return result;
 }
 
 } // namespace loom::fabric

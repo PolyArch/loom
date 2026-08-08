@@ -1,4 +1,4 @@
-#include "Mapping/Artifact/SpatialProgressAnalysis.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 
 #include "llvm/ADT/DenseMap.h"
 
@@ -21,9 +21,22 @@ llvm::Error invalid(const llvm::Twine &message) {
 
 } // namespace
 
-llvm::Expected<SpatialProgressClosure> deriveSpatialProgressClosure(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow) {
-  const auto actors = dataflow.actors();
+llvm::Expected<MappingProgressClosure> deriveMappingProgressClosure(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::GraphRef> coveredGraphs) {
+  llvm::DenseMap<std::uint64_t, bool> covered;
+  covered.reserve(coveredGraphs.size());
+  for (const auto graph : coveredGraphs) {
+    if (!covered.try_emplace(graph.entity.value(), true).second)
+      return invalid("covered graph inventory contains a duplicate");
+    auto resolved = dataflow.resolve(graph);
+    if (!resolved)
+      return resolved.takeError();
+  }
+  std::vector<::dataflow::CanonicalActorView> actors;
+  for (const auto &actor : dataflow.actors())
+    if (covered.count(actor.graph.entity.value()) != 0)
+      actors.push_back(actor);
   if (actors.size() > std::numeric_limits<std::uint32_t>::max())
     return invalid("actor inventory exceeds the native analysis domain");
 
@@ -51,9 +64,12 @@ llvm::Expected<SpatialProgressClosure> deriveSpatialProgressClosure(
             auto sourceOrdinal =
                 actorOrdinals.find(source->actor.entity.value());
             auto sinkOrdinal = actorOrdinals.find(sink->actor.entity.value());
+            if (sourceOrdinal == actorOrdinals.end() &&
+                sinkOrdinal == actorOrdinals.end())
+              return llvm::Error::success();
             if (sourceOrdinal == actorOrdinals.end() ||
                 sinkOrdinal == actorOrdinals.end())
-              return invalid("graph edge names an actor outside the catalog");
+              return invalid("covered graph edge crosses the actor catalog");
             edges.emplace_back(sourceOrdinal->second, sinkOrdinal->second);
             return llvm::Error::success();
           }))
@@ -97,10 +113,10 @@ llvm::Expected<SpatialProgressClosure> deriveSpatialProgressClosure(
     }
   }
 
-  return SpatialProgressClosure{
+  return MappingProgressClosure{
       visited == actors.size()
-          ? SpatialProgressClosureKind::ProvenNoClosedWaitSet
-          : SpatialProgressClosureKind::ProofNotEstablished};
+          ? MappingProgressClosureKind::ProvenNoClosedWaitSet
+          : MappingProgressClosureKind::ProofNotEstablished};
 }
 
 } // namespace loom::mapping

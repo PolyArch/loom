@@ -361,6 +361,15 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
 llvm::Error verifySelectedCombinationalHandshakeAcyclic(
     const FabricArtifactView &view, const FabricHandshakeSelection &selection);
 
+/// Derives exact reachability between the requested boundary signals under one
+/// selected configuration. Owner-local junctions remain private, and an
+/// endpoint with no active dependency simply contributes no relation. The
+/// same selected graph is first required to be combinationally acyclic.
+llvm::Expected<std::vector<HandshakeDependencyArc>>
+deriveSelectedHandshakeReachability(
+    const FabricArtifactView &view, const FabricHandshakeSelection &selection,
+    llvm::ArrayRef<HandshakeSignalRef> terminals);
+
 /// Derives the root-complete boundary relation that is present in every legal
 /// configured view. Internal junctions never escape this projection.
 llvm::Expected<std::vector<HandshakeDependencyArc>>

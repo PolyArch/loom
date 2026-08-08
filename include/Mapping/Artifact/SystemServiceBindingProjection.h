@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <variant>
 #include <vector>
 
 namespace loom::mapping {
@@ -31,6 +32,26 @@ struct SystemMemoryUsePatternDomainView final {
   ::loom::fabric::FabricMemoryServiceRegionRef region;
   std::vector<::loom::fabric::FabricUsePatternRef> patterns;
 };
+
+using SystemMessageExecutionOwner =
+    std::variant<::loom::fabric::HostCoreOccurrenceRef,
+                 ::loom::fabric::AccCoreOccurrenceRef>;
+
+struct SystemMessageTerminalEndpointDomainView final {
+  ::loom::fabric::FabricTransportEndpointRef endpoint;
+  bool payloadCompatible = false;
+};
+
+/// Derives every mechanically bindable transport endpoint for one exact
+/// message terminal and execution owner. A role-compatible endpoint whose
+/// payload domain excludes the message remains present with an empty domain;
+/// callers may apply constraints but cannot rebuild Fabric capability rules.
+llvm::Expected<std::vector<SystemMessageTerminalEndpointDomainView>>
+projectSystemMessageTerminalEndpointDomains(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const SystemTransferTerminalKey &terminal, mlir::Type payload,
+    const SystemMessageExecutionOwner &owner);
 
 /// Rebuilds the exact Module-manager to occurrence-qualified System attachment
 /// relation selected by one immutable SpatialMapping. An exact AccCore narrows

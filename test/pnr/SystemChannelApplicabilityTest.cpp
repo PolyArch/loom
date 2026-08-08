@@ -5,6 +5,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
@@ -34,8 +35,11 @@
 
 #include <array>
 #include <cstdlib>
+#include <functional>
 #include <limits>
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
 #include <type_traits>
@@ -65,6 +69,26 @@ void requireFailureContains(llvm::Expected<T> value, llvm::StringRef expected) {
           "adverse diagnostic changed: " + diagnostic);
 }
 
+void requireFailureContains(
+    const loom::mapping::SystemMappingBaseVerification &verification,
+    llvm::StringRef expected) {
+  if (std::holds_alternative<loom::mapping::VerifiedSystemMappingBase>(
+          verification))
+    fail("adverse channel applicability input unexpectedly succeeded");
+  const std::string &diagnostic = std::visit(
+      [](const auto &result) -> const std::string & {
+        using Result = std::decay_t<decltype(result)>;
+        if constexpr (std::is_same_v<Result,
+                                     loom::mapping::VerifiedSystemMappingBase>)
+          llvm_unreachable("verified result has no diagnostic");
+        else
+          return result.diagnostic;
+      },
+      verification);
+  require(llvm::StringRef(diagnostic).contains(expected),
+          "adverse diagnostic changed: " + diagnostic);
+}
+
 template <typename T> T take(llvm::Expected<T> value) {
   if (!value)
     fail(llvm::toString(value.takeError()));
@@ -77,6 +101,59 @@ std::vector<std::uint8_t> unsignedBytes(mlir::DenseI8ArrayAttr attribute) {
   for (std::int8_t byte : attribute.asArrayRef())
     result.push_back(static_cast<std::uint8_t>(byte));
   return result;
+}
+
+mlir::DenseI8ArrayAttr bytesAttr(mlir::MLIRContext *context,
+                                 llvm::ArrayRef<std::uint8_t> bytes) {
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  return mlir::DenseI8ArrayAttr::get(context, signedBytes);
+}
+
+std::string
+endpointKey(const loom::fabric::FabricTransportEndpointRef &endpoint) {
+  const auto bytes = loom::fabric::canonicalFabricBytes(endpoint);
+  return std::string(reinterpret_cast<const char *>(bytes.data()),
+                     bytes.size());
+}
+
+std::optional<std::vector<loom::fabric::FabricPhysicalTraversalRef>>
+findPhysicalTraversalCycle(const loom::fabric::FabricSystemRootView &system,
+                           loom::fabric::FabricTransportEndpointRef start) {
+  using Traversal = loom::fabric::FabricPhysicalTraversalView;
+  std::map<std::string, std::vector<const Traversal *>> outgoing;
+  for (const Traversal &traversal : system.artifact().physicalTraversals())
+    for (const auto source : traversal.sources)
+      outgoing[endpointKey(source)].push_back(&traversal);
+
+  std::vector<loom::fabric::FabricPhysicalTraversalRef> path;
+  std::set<std::string> visiting{endpointKey(start)};
+  std::function<bool(loom::fabric::FabricTransportEndpointRef)> search =
+      [&](loom::fabric::FabricTransportEndpointRef current) {
+        const auto found = outgoing.find(endpointKey(current));
+        if (found == outgoing.end())
+          return false;
+        for (const Traversal *traversal : found->second) {
+          path.push_back(traversal->reference);
+          for (const auto destination : traversal->destinations) {
+            if (destination == start)
+              return true;
+            const std::string key = endpointKey(destination);
+            if (visiting.insert(key).second) {
+              if (search(destination))
+                return true;
+              visiting.erase(key);
+            }
+          }
+          path.pop_back();
+        }
+        return false;
+      };
+  if (!search(start))
+    return std::nullopt;
+  return path;
 }
 
 class TemporaryDirectory final {
@@ -509,6 +586,219 @@ int main() {
           "non-surjective source_map did not materialize exact plans");
   const auto canonical =
       take(loom::mapping::writeCanonicalSystemMappingAssembly(mappingRoot));
+
+  const auto findChannelPlans = [&](::mapping::SystemOp root) {
+    ::mapping::ServicePlanOp emptyPlan;
+    ::mapping::TransferLegRealizationOp routedLeg;
+    for (auto service :
+         root.getBody().front().getOps<::mapping::ServiceRealizationOp>()) {
+      auto key = take(loom::mapping::decodeSystemServiceObligationKey(
+          unsignedBytes(service.getKey().getRecord()),
+          problem->dataflowIdentity()));
+      if (key != channelService->key)
+        continue;
+      for (auto plan :
+           service.getBody().front().getOps<::mapping::ServicePlanOp>()) {
+        auto routes = plan.getBody()
+                          .front()
+                          .getOps<::mapping::TransferLegRealizationOp>();
+        if (routes.empty()) {
+          emptyPlan = plan;
+          continue;
+        }
+        require(llvm::hasSingleElement(routes),
+                "channel adverse fixture has multiple routes");
+        routedLeg = *routes.begin();
+      }
+    }
+    require(emptyPlan && routedLeg,
+            "channel adverse fixture lost its empty or routed plan");
+    return std::make_pair(emptyPlan, routedLeg);
+  };
+
+  mlir::OwningOpRef<mlir::Operation *> missingPairDraft(mappingRoot->clone());
+  auto missingPairRoot =
+      mlir::cast<::mapping::SystemOp>(missingPairDraft.get());
+  auto [missingEmptyPlan, missingRoutedLeg] = findChannelPlans(missingPairRoot);
+  (void)missingEmptyPlan;
+  auto missingSinks =
+      missingRoutedLeg.getBody().front().getOps<::mapping::SystemRouteSinkOp>();
+  require(std::distance(missingSinks.begin(), missingSinks.end()) == 2,
+          "missing-pair fixture did not start with two pairs");
+  std::uint64_t removedNode = (*missingSinks.begin()).getNodeOrdinal();
+  (*missingSinks.begin()).erase();
+  while (removedNode != 0) {
+    auto nodes = missingRoutedLeg.getBody()
+                     .front()
+                     .getOps<::mapping::SystemRouteNodeOp>();
+    auto node = llvm::find_if(nodes, [&](::mapping::SystemRouteNodeOp value) {
+      return value.getNodeOrdinal() == removedNode;
+    });
+    require(node != nodes.end(),
+            "missing-pair fixture cannot resolve its removed branch");
+    const bool hasChild = llvm::any_of(nodes, [&](auto value) {
+      return value.getParentNodeOrdinal() == removedNode;
+    });
+    const bool hasSink = llvm::any_of(
+        missingRoutedLeg.getBody()
+            .front()
+            .getOps<::mapping::SystemRouteSinkOp>(),
+        [&](auto value) { return value.getNodeOrdinal() == removedNode; });
+    if (hasChild || hasSink)
+      break;
+    const std::uint64_t parent = (*node).getParentNodeOrdinal();
+    (*node).erase();
+    removedNode = parent;
+  }
+  requireFailureContains(loom::mapping::verifySystemMappingBase(
+                             missingPairRoot, dataflow, system, store),
+                         "applicable sink-owner set");
+
+  mlir::OwningOpRef<mlir::Operation *> nonSinkLeafDraft(mappingRoot->clone());
+  auto nonSinkLeafRoot =
+      mlir::cast<::mapping::SystemOp>(nonSinkLeafDraft.get());
+  auto [nonSinkLeafEmptyPlan, nonSinkLeafLeg] =
+      findChannelPlans(nonSinkLeafRoot);
+  (void)nonSinkLeafEmptyPlan;
+  auto nonSinkLeafSinks =
+      nonSinkLeafLeg.getBody().front().getOps<::mapping::SystemRouteSinkOp>();
+  (*nonSinkLeafSinks.begin()).erase();
+  requireFailureContains(loom::mapping::verifySystemMappingBase(
+                             nonSinkLeafRoot, dataflow, system, store),
+                         "non-sink leaf");
+
+  mlir::OwningOpRef<mlir::Operation *> handshakeCycleDraft(
+      mappingRoot->clone());
+  auto handshakeCycleRoot =
+      mlir::cast<::mapping::SystemOp>(handshakeCycleDraft.get());
+  ::mapping::TransferLegRealizationOp cycleLeg;
+  ::mapping::SystemRouteNodeOp cycleChild;
+  ::mapping::SystemRouteSinkOp cycleSink;
+  std::uint64_t cycleParent = 0;
+  std::vector<loom::fabric::FabricPhysicalTraversalRef> cycle;
+  for (auto service : handshakeCycleRoot.getBody()
+                          .front()
+                          .getOps<::mapping::ServiceRealizationOp>()) {
+    if (cycleLeg)
+      break;
+    for (auto plan :
+         service.getBody().front().getOps<::mapping::ServicePlanOp>()) {
+      if (cycleLeg)
+        break;
+      for (auto leg : plan.getBody()
+                          .front()
+                          .getOps<::mapping::TransferLegRealizationOp>()) {
+        if (cycleLeg)
+          break;
+        auto nodes =
+            leg.getBody().front().getOps<::mapping::SystemRouteNodeOp>();
+        auto sinks =
+            leg.getBody().front().getOps<::mapping::SystemRouteSinkOp>();
+        std::vector<
+            std::pair<std::uint64_t,
+                      std::vector<loom::fabric::FabricTransportEndpointRef>>>
+            positions;
+        positions.push_back(
+            {0,
+             {take(loom::fabric::decodeFabricRef<
+                   loom::fabric::FabricTransportEndpointRef>(
+                 unsignedBytes(leg.getRootEndpoint().getRecord())))}});
+        for (auto node : nodes) {
+          const auto reference = take(loom::fabric::decodeFabricRef<
+                                      loom::fabric::FabricPhysicalTraversalRef>(
+              unsignedBytes(node.getIncomingTraversal().getRecord())));
+          const auto traversal = llvm::find_if(
+              system.artifact().physicalTraversals(),
+              [&](const auto &value) { return value.reference == reference; });
+          require(traversal != system.artifact().physicalTraversals().end(),
+                  "handshake-cycle fixture names an absent traversal");
+          positions.emplace_back(node.getNodeOrdinal(),
+                                 traversal->destinations);
+        }
+        for (const auto &position : positions) {
+          const std::uint64_t ordinal = position.first;
+          const auto &endpoints = position.second;
+          auto child = llvm::find_if(nodes, [&](auto value) {
+            return value.getParentNodeOrdinal() == ordinal;
+          });
+          auto sink = llvm::find_if(sinks, [&](auto value) {
+            return value.getNodeOrdinal() == ordinal;
+          });
+          if (child == nodes.end() && sink == sinks.end())
+            continue;
+          if (child == nodes.end() && endpoints.size() != 1)
+            continue;
+          for (const auto endpoint : endpoints) {
+            auto found = findPhysicalTraversalCycle(system, endpoint);
+            if (!found)
+              continue;
+            cycleLeg = leg;
+            cycleParent = ordinal;
+            if (child != nodes.end())
+              cycleChild = *child;
+            else
+              cycleSink = *sink;
+            cycle = std::move(*found);
+            break;
+          }
+          if (cycleLeg)
+            break;
+        }
+      }
+    }
+  }
+  require(cycleLeg && !cycle.empty(),
+          "finite-degree System fixture exposes no routed physical cycle");
+  std::uint64_t nextNode = 1;
+  for (auto node :
+       cycleLeg.getBody().front().getOps<::mapping::SystemRouteNodeOp>())
+    nextNode = std::max(nextNode, node.getNodeOrdinal() + 1);
+  std::uint64_t parent = cycleParent;
+  mlir::OpBuilder cycleBuilder(&context);
+  cycleBuilder.setInsertionPoint(cycleChild ? cycleChild.getOperation()
+                                            : cycleSink.getOperation());
+  for (const auto traversal : cycle) {
+    ::mapping::SystemRouteNodeOp::create(
+        cycleBuilder, cycleBuilder.getUnknownLoc(), nextNode, parent,
+        ::mapping::FabricPhysicalTraversalRefAttr::get(
+            &context, bytesAttr(&context, loom::fabric::canonicalFabricBytes(
+                                              traversal))));
+    parent = nextNode++;
+  }
+  if (cycleChild)
+    cycleChild.setParentNodeOrdinal(parent);
+  else
+    cycleSink.setNodeOrdinal(parent);
+  requireFailureContains(loom::mapping::verifySystemMappingBase(
+                             handshakeCycleRoot, dataflow, system, store),
+                         "SelectedCombinationalHandshakeCycle");
+
+  mlir::OwningOpRef<mlir::Operation *> duplicatePairDraft(mappingRoot->clone());
+  auto duplicatePairRoot =
+      mlir::cast<::mapping::SystemOp>(duplicatePairDraft.get());
+  auto [duplicateEmptyPlan, duplicateRoutedLeg] =
+      findChannelPlans(duplicatePairRoot);
+  (void)duplicateEmptyPlan;
+  auto duplicateSinks = duplicateRoutedLeg.getBody()
+                            .front()
+                            .getOps<::mapping::SystemRouteSinkOp>();
+  duplicateRoutedLeg.getBody().front().getOperations().push_back(
+      (*duplicateSinks.begin()).getOperation()->clone());
+  requireFailureContains(loom::mapping::verifySystemMappingBase(
+                             duplicatePairRoot, dataflow, system, store),
+                         "structurally invalid");
+
+  mlir::OwningOpRef<mlir::Operation *> inactivePairDraft(mappingRoot->clone());
+  auto inactivePairRoot =
+      mlir::cast<::mapping::SystemOp>(inactivePairDraft.get());
+  auto [inactiveEmptyPlan, inactiveRoutedLeg] =
+      findChannelPlans(inactivePairRoot);
+  inactiveEmptyPlan.getBody().front().getOperations().push_back(
+      inactiveRoutedLeg->clone());
+  requireFailureContains(loom::mapping::verifySystemMappingBase(
+                             inactivePairRoot, dataflow, system, store),
+                         "applicable sink-owner set");
+
   for (std::size_t replay = 1; replay != 3; ++replay) {
     auto replayed = take(
         loom::pnr::materializeSystemCandidateDraft(*distinctOwners, context));

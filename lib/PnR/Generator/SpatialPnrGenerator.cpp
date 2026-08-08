@@ -234,12 +234,12 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
         "the selected routing negotiation kernel is not implemented"};
 
   switch ((*problem)->progressClosure().kind) {
-  case ::loom::mapping::SpatialProgressClosureKind::ProvenNoClosedWaitSet:
+  case ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet:
     break;
-  case ::loom::mapping::SpatialProgressClosureKind::ProvenClosedWaitSet:
+  case ::loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet:
     return ProvenInfeasibleSpatialMapping{
         accounting, "Dataflow progress proof found a closed wait set"};
-  case ::loom::mapping::SpatialProgressClosureKind::ProofNotEstablished:
+  case ::loom::mapping::MappingProgressClosureKind::ProofNotEstablished:
     return IncompleteSpatialPnrGeneration{
         IncompleteSpatialPnrGenerationReason::ProofNotEstablished, accounting,
         "proof_not_established: Spatial progress closure is unavailable"};

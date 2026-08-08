@@ -21,6 +21,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdlib>
 #include <string>
 #include <utility>
@@ -495,8 +496,7 @@ void selectedGlobalCycleUsesExactTraversalSelection() {
                                                        {bits32, bits32},
                                                        {{0, 1}, {0, 1}})));
   SpatialValue feedback =
-      take(test, spatial.addFifo(routed[0], FifoSpec{bits32, 2, true}))
-          .value();
+      take(test, spatial.addFifo(routed[0], FifoSpec{bits32, 2, true})).value();
   if (llvm::Error error =
           spatial.resolveBackedge(std::move(backedge), feedback))
     fail(test, llvm::toString(std::move(error)));
@@ -540,6 +540,37 @@ void selectedGlobalCycleUsesExactTraversalSelection() {
           loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
               finalized.view(), legal))
     fail(test, llvm::toString(std::move(error)));
+
+  const auto attachments =
+      finalized.view().moduleBoundaryTransportAttachments();
+  require(test, attachments.size() == 2,
+          "selected-cycle fixture lost its Module boundary attachments");
+  std::optional<loom::fabric::FabricTransportEndpointRef> input;
+  std::optional<loom::fabric::FabricTransportEndpointRef> output;
+  for (const auto &attachment : attachments) {
+    if (attachment.boundary.direction == FabricPortDirection::Input)
+      input = attachment.endpoint;
+    else
+      output = attachment.endpoint;
+  }
+  require(test, input && output,
+          "selected-cycle fixture has incomplete boundary directions");
+  const std::array<HandshakeSignalRef, 4> terminals = {
+      HandshakeSignalRef{*input, HandshakeSignalKind::Valid},
+      HandshakeSignalRef{*input, HandshakeSignalKind::Ready},
+      HandshakeSignalRef{*output, HandshakeSignalKind::Valid},
+      HandshakeSignalRef{*output, HandshakeSignalKind::Ready}};
+  const auto reachability =
+      take(test, loom::fabric::deriveSelectedHandshakeReachability(
+                     finalized.view(), legal, terminals));
+  require(test,
+          llvm::is_contained(reachability,
+                             loom::fabric::HandshakeDependencyArc{
+                                 terminals[0], terminals[2]}) &&
+              llvm::is_contained(reachability,
+                                 loom::fabric::HandshakeDependencyArc{
+                                     terminals[3], terminals[1]}),
+          "selected reachability lost forward valid or backward ready");
 
   FabricHandshakeSelection illegal;
   illegal.traversals = cyclic;

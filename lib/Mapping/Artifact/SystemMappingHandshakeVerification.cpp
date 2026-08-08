@@ -1,0 +1,312 @@
+#include "SystemMappingHandshakeVerification.h"
+
+#include "SystemMappingExecutionProjection.h"
+
+#include "Common/ArtifactLocalReference.h"
+#include "Fabric/Identity/FabricHandshake.h"
+#include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/Artifact/MappingArtifact.h"
+
+#include "llvm/ADT/STLExtras.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <iterator>
+#include <map>
+#include <set>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+namespace loom::mapping::detail {
+namespace {
+
+llvm::Error invalid(const llvm::Twine &message) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "system_mapping_handshake_invalid: " +
+                                     message);
+}
+
+std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
+  return std::string(reinterpret_cast<const char *>(bytes.data()),
+                     bytes.size());
+}
+
+std::string signalKey(const ::loom::fabric::HandshakeSignalRef &signal) {
+  std::string result(1, static_cast<char>(signal.signal));
+  const auto endpoint = ::loom::fabric::canonicalFabricBytes(signal.endpoint);
+  result.append(reinterpret_cast<const char *>(endpoint.data()),
+                endpoint.size());
+  return result;
+}
+
+std::string boundarySignalKey(
+    const ::loom::fabric::FabricModuleBoundaryEndpointRef &boundary,
+    ::loom::fabric::HandshakeSignalKind signal) {
+  std::string result(1, static_cast<char>(signal));
+  const auto bytes = ::loom::fabric::canonicalFabricBytes(boundary);
+  result.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+  return result;
+}
+
+void appendU64(std::string &bytes, std::uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<char>(value >> shift));
+}
+
+void appendSized(std::string &bytes, llvm::ArrayRef<std::uint8_t> value) {
+  appendU64(bytes, value.size());
+  bytes.append(reinterpret_cast<const char *>(value.data()), value.size());
+}
+
+std::string occurrenceMappingKey(::loom::fabric::AccCoreOccurrenceRef core,
+                                 const ArtifactRootReference &mapping) {
+  std::string result;
+  appendSized(result, ::loom::fabric::canonicalFabricBytes(core));
+  const auto mappingBytes = encodeArtifactRootReference(mapping);
+  appendSized(result, mappingBytes);
+  return result;
+}
+
+const ::loom::fabric::FabricArtifactView *
+resolveOccurrenceModule(const ::loom::fabric::FabricSystemRootView &fabric,
+                        ::loom::fabric::AccCoreOccurrenceRef core,
+                        const SpatialMappingView &mapping) {
+  const auto target = fabric.spatialCoreTarget(core);
+  if (!target ||
+      target->dependencyOrdinal >= fabric.artifact().importedModules().size())
+    return nullptr;
+  const auto &module =
+      fabric.artifact().importedModules()[target->dependencyOrdinal];
+  const auto root = module.moduleRootTemplate();
+  if (!root || *root != target->target ||
+      module.identity() != mapping.fabricIdentity())
+    return nullptr;
+  return &module;
+}
+
+llvm::Expected<std::map<std::string, ::loom::fabric::HandshakeSignalRef>>
+systemBoundarySignals(const ::loom::fabric::FabricSystemRootView &fabric,
+                      ::loom::fabric::AccCoreOccurrenceRef core,
+                      const ::loom::fabric::FabricArtifactView &module) {
+  const auto target = fabric.spatialCoreTarget(core);
+  if (!target)
+    return invalid("SpatialCore occurrence has no imported Module target");
+  const auto moduleRoot = module.moduleRootTemplate();
+  if (!moduleRoot || *moduleRoot != target->target)
+    return invalid("SpatialCore occurrence and Module root disagree");
+
+  std::map<std::string, ::loom::fabric::HandshakeSignalRef> result;
+  const auto spatialCore = ::loom::fabric::SpatialCoreOccurrenceRef{core};
+  for (const auto &attachment : fabric.spatialAttachments()) {
+    const auto *transport = attachment.spatialEndpoint.transport();
+    if (!transport ||
+        transport->owner.kind() !=
+            ::loom::fabric::FabricTransportEndpointOwnerKind::
+                SpatialCoreOccurrence ||
+        std::get<::loom::fabric::SpatialCoreOccurrenceRef>(
+            transport->owner.payload) != spatialCore ||
+        attachment.moduleEndpoint.dependencyOrdinal !=
+            target->dependencyOrdinal ||
+        attachment.moduleEndpoint.target.module != *moduleRoot)
+      continue;
+    for (const auto signal : {::loom::fabric::HandshakeSignalKind::Valid,
+                              ::loom::fabric::HandshakeSignalKind::Ready}) {
+      const auto key =
+          boundarySignalKey(attachment.moduleEndpoint.target, signal);
+      if (!result
+               .emplace(key,
+                        ::loom::fabric::HandshakeSignalRef{*transport, signal})
+               .second)
+        return invalid("Module boundary has duplicate System attachments");
+    }
+  }
+  return result;
+}
+
+llvm::Expected<std::vector<::loom::fabric::HandshakeDependencyArc>>
+projectOccurrenceBoundaryArcs(
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    ::loom::fabric::AccCoreOccurrenceRef core,
+    const ::loom::fabric::FabricArtifactView &module,
+    const SpatialMappingView &mapping) {
+  auto systemSignals = systemBoundarySignals(fabric, core, module);
+  if (!systemSignals)
+    return systemSignals.takeError();
+
+  std::vector<::loom::fabric::HandshakeSignalRef> localTerminals;
+  std::map<std::string, std::string> boundaryByLocalSignal;
+  for (const auto &attachment : module.moduleBoundaryTransportAttachments()) {
+    for (const auto signal : {::loom::fabric::HandshakeSignalKind::Valid,
+                              ::loom::fabric::HandshakeSignalKind::Ready}) {
+      ::loom::fabric::HandshakeSignalRef local{attachment.endpoint, signal};
+      const std::string localKey = signalKey(local);
+      if (!boundaryByLocalSignal
+               .emplace(localKey,
+                        boundarySignalKey(attachment.boundary, signal))
+               .second)
+        return invalid("Module endpoint has duplicate boundary attachments");
+      localTerminals.push_back(std::move(local));
+    }
+  }
+  auto localReachability = ::loom::fabric::deriveSelectedHandshakeReachability(
+      module, mapping.handshakeSelection(), localTerminals);
+  if (!localReachability)
+    return localReachability.takeError();
+
+  std::vector<std::pair<std::string, std::string>> boundaryArcs;
+  boundaryArcs.reserve(localReachability->size() +
+                       module.moduleBoundaryTransportPassthroughs().size() * 2);
+  for (const auto &arc : *localReachability) {
+    const auto source = boundaryByLocalSignal.find(signalKey(arc.source));
+    const auto destination =
+        boundaryByLocalSignal.find(signalKey(arc.destination));
+    if (source == boundaryByLocalSignal.end() ||
+        destination == boundaryByLocalSignal.end())
+      return invalid("selected Module reachability escaped its boundary map");
+    boundaryArcs.emplace_back(source->second, destination->second);
+  }
+  for (const auto &passthrough : module.moduleBoundaryTransportPassthroughs()) {
+    boundaryArcs.emplace_back(
+        boundarySignalKey(passthrough.input,
+                          ::loom::fabric::HandshakeSignalKind::Valid),
+        boundarySignalKey(passthrough.output,
+                          ::loom::fabric::HandshakeSignalKind::Valid));
+    boundaryArcs.emplace_back(
+        boundarySignalKey(passthrough.output,
+                          ::loom::fabric::HandshakeSignalKind::Ready),
+        boundarySignalKey(passthrough.input,
+                          ::loom::fabric::HandshakeSignalKind::Ready));
+  }
+
+  std::vector<::loom::fabric::HandshakeDependencyArc> result;
+  result.reserve(boundaryArcs.size());
+  for (const auto &[sourceKey, destinationKey] : boundaryArcs) {
+    const auto source = systemSignals->find(sourceKey);
+    const auto destination = systemSignals->find(destinationKey);
+    if (source == systemSignals->end() || destination == systemSignals->end())
+      return invalid("selected Module boundary has no exact System attachment");
+    result.push_back({source->second, destination->second});
+  }
+  return result;
+}
+
+llvm::Error
+verifyAcyclic(llvm::ArrayRef<::loom::fabric::HandshakeDependencyArc> arcs) {
+  std::map<std::string, std::size_t> nodes;
+  for (const auto &arc : arcs) {
+    nodes.try_emplace(signalKey(arc.source), 0);
+    nodes.try_emplace(signalKey(arc.destination), 0);
+  }
+  std::size_t nextOrdinal = 0;
+  for (auto &[key, ordinal] : nodes) {
+    (void)key;
+    ordinal = nextOrdinal++;
+  }
+
+  std::vector<std::vector<std::size_t>> adjacency(nodes.size());
+  std::vector<std::size_t> indegree(nodes.size(), 0);
+  std::set<std::pair<std::size_t, std::size_t>> unique;
+  for (const auto &arc : arcs) {
+    const std::size_t source = nodes.at(signalKey(arc.source));
+    const std::size_t destination = nodes.at(signalKey(arc.destination));
+    if (!unique.emplace(source, destination).second)
+      continue;
+    adjacency[source].push_back(destination);
+    ++indegree[destination];
+  }
+  std::vector<std::size_t> ready;
+  ready.reserve(nodes.size());
+  for (std::size_t node = 0; node < nodes.size(); ++node)
+    if (indegree[node] == 0)
+      ready.push_back(node);
+  std::size_t visited = 0;
+  while (!ready.empty()) {
+    const std::size_t node = ready.back();
+    ready.pop_back();
+    ++visited;
+    for (std::size_t destination : adjacency[node])
+      if (--indegree[destination] == 0)
+        ready.push_back(destination);
+  }
+  if (visited != nodes.size())
+    return invalid("SelectedCombinationalHandshakeCycle");
+  return llvm::Error::success();
+}
+
+} // namespace
+
+llvm::Error verifySystemMappingHandshakeClosure(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const SystemExecutionBindingView &execution,
+    llvm::ArrayRef<SystemServiceRealizationView> services,
+    const ArtifactStore &store) {
+  ::loom::fabric::FabricHandshakeSelection systemSelection;
+  for (const auto &service : services)
+    for (const auto &plan : service.plans)
+      for (const auto &leg : plan.transferLegs)
+        for (const auto &node : leg.nodes)
+          systemSelection.traversals.push_back(node.incomingTraversal);
+  llvm::sort(systemSelection.traversals, [](const auto &lhs, const auto &rhs) {
+    return ::loom::fabric::canonicalFabricBytes(lhs) <
+           ::loom::fabric::canonicalFabricBytes(rhs);
+  });
+  systemSelection.traversals.erase(
+      std::unique(systemSelection.traversals.begin(),
+                  systemSelection.traversals.end()),
+      systemSelection.traversals.end());
+
+  std::vector<::loom::fabric::HandshakeSignalRef> systemTerminals;
+  std::set<std::string> terminalKeys;
+  for (const auto &attachment : fabric.spatialAttachments()) {
+    const auto *transport = attachment.spatialEndpoint.transport();
+    if (!transport)
+      continue;
+    for (const auto signal : {::loom::fabric::HandshakeSignalKind::Valid,
+                              ::loom::fabric::HandshakeSignalKind::Ready}) {
+      ::loom::fabric::HandshakeSignalRef terminal{*transport, signal};
+      if (terminalKeys.insert(signalKey(terminal)).second)
+        systemTerminals.push_back(std::move(terminal));
+    }
+  }
+  auto combined = ::loom::fabric::deriveSelectedHandshakeReachability(
+      fabric.artifact(), systemSelection, systemTerminals);
+  if (!combined)
+    return combined.takeError();
+
+  auto contexts = projectSystemExecutionContexts(dataflow, execution);
+  if (!contexts)
+    return contexts.takeError();
+  std::map<std::string, SpatialMappingView> mappings;
+  std::set<std::string> projected;
+  for (const auto &context : contexts->spatialDomains) {
+    const std::string mappingKey =
+        byteKey(encodeArtifactRootReference(context.spatialMapping));
+    auto found = mappings.find(mappingKey);
+    if (found == mappings.end()) {
+      auto imported = importSpatialMapping(context.spatialMapping, store);
+      if (!imported)
+        return imported.takeError();
+      found = mappings.emplace(mappingKey, imported->view()).first;
+    }
+    const auto core = context.context.accCore;
+    if (!projected.insert(occurrenceMappingKey(core, context.spatialMapping))
+             .second)
+      continue;
+    const auto *module = resolveOccurrenceModule(fabric, core, found->second);
+    if (!module)
+      return invalid("imported SpatialMapping does not match its AccCore");
+    auto occurrence =
+        projectOccurrenceBoundaryArcs(fabric, core, *module, found->second);
+    if (!occurrence)
+      return occurrence.takeError();
+    combined->insert(combined->end(),
+                     std::make_move_iterator(occurrence->begin()),
+                     std::make_move_iterator(occurrence->end()));
+  }
+  return verifyAcyclic(*combined);
+}
+
+} // namespace loom::mapping::detail
