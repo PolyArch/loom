@@ -1,0 +1,11 @@
+# REQUIRES: circt, verilator, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-sign-test %t
+# RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
+# RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
+# RUN: cd %t/configured/artifacts && verilator --binary --timing --Wall --Wno-fatal -CFLAGS '-std=c++20' --top-module testbench scalar_float_sign.sv fixed_vector_float_sign.sv testbench.sv --Mdir obj_dir
+# RUN: %t/configured/artifacts/obj_dir/Vtestbench
+# RUN: cd %t/configured/artifacts && yosys -q -s portable_float_sign.ys
+
+# VERILATOR: Verilator 5.050
+# YOSYS: Yosys 0.67

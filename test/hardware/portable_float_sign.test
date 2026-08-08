@@ -1,0 +1,38 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-sign-test %t
+# RUN: FileCheck %s --check-prefix=SCALAR < %t/configured/artifacts/scalar_float_sign.sv
+# RUN: FileCheck %s --check-prefix=VECTOR < %t/configured/artifacts/fixed_vector_float_sign.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/configured/artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/configured/artifacts/portable_float_sign.ys
+
+# SCALAR: module scalar_float_sign
+# SCALAR: input [63:0] data_input_0
+# SCALAR: input [2:0] config_0
+# SCALAR: output [63:0] data_output_0
+# SCALAR-NOT: shortreal
+# SCALAR-NOT: DPI
+# SCALAR-NOT: valid_
+# SCALAR-NOT: ready_
+
+# VECTOR: module fixed_vector_float_sign
+# VECTOR: input [127:0] data_input_0
+# VECTOR: input [2:0] config_0
+# VECTOR: output [127:0] data_output_0
+# VECTOR-NOT: shortreal
+# VECTOR-NOT: DPI
+# VECTOR-NOT: valid_
+# VECTOR-NOT: ready_
+
+# TB: scalar sign oracle mismatch
+# TB: vector f16 sign oracle mismatch
+# TB: vector f32 sign oracle mismatch
+# TB: vector f64 sign oracle mismatch
+
+# YOSYS: hierarchy -check -top float_sign_synthesis_top
+# YOSYS: select -assert-count 6 t:$not
+# YOSYS: select -assert-count 10 t:$eq
+# YOSYS: select -assert-count 10 t:$mux
+# YOSYS: select -assert-none t:$dff t:$dlatch t:$memrd t:$memwr t:$meminit t:$mem_v2
+# YOSYS: synth -top float_sign_synthesis_top
+# YOSYS: select -assert-none t:$_DFF_* t:$_SDFF_* t:$_DLATCH_*
