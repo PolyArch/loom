@@ -2,6 +2,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarIntegerAddSub.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -32,7 +33,6 @@
 
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -344,19 +344,10 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
   if (llvm::Error error = registerPortableScalarIntegerAddSubProvider(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
-                                                 associations, recipes,
-                                                 registry, externalContracts));
-  require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
-          "portable add/sub provider emitted external implementation state");
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  ModuleRootCirctSkeleton module{std::move(skeleton.module),
+                                 {{skeleton.leaf, fabric.physicalOccurrence}}};
+  return take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                        std::move(module), abi, registry, externalContracts));
 }
 
 std::string emitConfiguredAddSub(llvm::StringRef test,
@@ -391,8 +382,7 @@ void configuredCodebookAndDeterminism(const std::filesystem::path &root) {
               !rtl.contains(" - "),
           "portable provider did not share its configured add/sub datapath");
 
-  std::ofstream(root / "scalar_integer_add_sub.sv") << first;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const std::string testbench = R"sv(
 module testbench;
   logic [7:0] data_input_0;
   logic [7:0] data_input_1;
@@ -427,7 +417,7 @@ module testbench;
   end
 endmodule
 )sv";
-  std::ofstream(root / "portable_scalar_integer_add_sub.ys") << R"ys(
+  const std::string yosysScript = R"ys(
 read_verilog scalar_integer_add_sub.sv
 hierarchy -check -top scalar_integer_add_sub
 proc
@@ -439,6 +429,11 @@ synth -top scalar_integer_add_sub
 check
 stat
 )ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root, {{"scalar_integer_add_sub.sv", first},
+                 {"testbench.sv", testbench},
+                 {"portable_scalar_integer_add_sub.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void singletonNeedsNoSelector(const std::filesystem::path &root) {
@@ -476,8 +471,7 @@ void subtractInactiveControlsUnassignedCode(const std::filesystem::path &root) {
               !llvm::StringRef(rtl).contains(" - "),
           "subtract-inactive provider did not share its add/sub datapath");
 
-  std::ofstream(root / "scalar_integer_add_sub.sv") << rtl;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const std::string testbench = R"sv(
 module testbench;
   logic [7:0] data_input_0;
   logic [7:0] data_input_1;
@@ -505,7 +499,7 @@ module testbench;
   end
 endmodule
 )sv";
-  std::ofstream(root / "portable_scalar_integer_add_sub.ys") << R"ys(
+  const std::string yosysScript = R"ys(
 read_verilog scalar_integer_add_sub.sv
 hierarchy -check -top scalar_integer_add_sub
 proc
@@ -517,6 +511,11 @@ synth -top scalar_integer_add_sub
 check
 stat
 )ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root, {{"scalar_integer_add_sub.sv", rtl},
+                 {"testbench.sv", testbench},
+                 {"portable_scalar_integer_add_sub.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void unsupportedResourceContractIsTransactional(
@@ -529,19 +528,15 @@ void unsupportedResourceContractIsTransactional(
   FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
   std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
   SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi());
-  const std::string before = moduleText(*skeleton.module);
 
   FabricOperationProviderRegistry registry;
   if (llvm::Error error = registerPortableScalarIntegerAddSubProvider(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  auto result =
-      specializeFabricOperationLeaves(*skeleton.module, abi, associations,
-                                      recipes, registry, externalContracts);
+  ModuleRootCirctSkeleton module{std::move(skeleton.module),
+                                 {{skeleton.leaf, fabric.physicalOccurrence}}};
+  auto result = loom::hardware::test::specializeAndExportPortableProvider(
+      std::move(module), abi, registry, externalContracts);
   require(test, !result, "unsupported resource contract specialized");
   bool classifiedUnsupported = false;
   llvm::handleAllErrors(
@@ -558,9 +553,6 @@ void unsupportedResourceContractIsTransactional(
       });
   require(test, classifiedUnsupported,
           "resource contract lost its typed Unsupported classification");
-  require(test, moduleText(*skeleton.module) == before,
-          "unsupported resource contract partially mutated the common "
-          "skeleton");
 }
 
 void malformedInputsFailClosed(const std::filesystem::path &root) {

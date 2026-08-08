@@ -5,6 +5,7 @@
 #include "Hardware/RTL/Specialization.h"
 
 #include "ConfigurationABI2TestSupport.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
@@ -50,10 +51,8 @@ using loom::ArtifactStore;
 using loom::fabric::FinalizedFabricRoot;
 using loom::hardware::ExternalImplementationContractCatalog;
 using loom::hardware::FinalizedConfigurationABI;
-using loom::hardware::rtl::BackendRecipeKey;
 using loom::hardware::rtl::FabricOperationLeafAssociation;
 using loom::hardware::rtl::FabricOperationProviderRegistry;
-using loom::hardware::rtl::FabricOperationRecipeBinding;
 using loom::hardware::rtl::ResolvedFabricPhysicalOperation;
 
 [[noreturn]] void fail(llvm::StringRef test, const std::string &message) {
@@ -720,16 +719,9 @@ InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
               providers))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationRecipeBinding> recipes{
-      {fabric.operations.front().physicalOccurrence,
-       BackendRecipeKey::PortableSystemVerilog,
-       {}}};
-  take(test, loom::hardware::rtl::specializeFabricOperationLeaves(
-                 *skeleton.module, fabric.abi, skeleton.operationLeaves,
-                 recipes, providers, externalContracts));
-  const std::string systemVerilog =
-      take(test, loom::hardware::rtl::lowerAndExportSpecializedSystemVerilog(
-                     *skeleton.module));
+  const std::string systemVerilog = take(
+      test, loom::hardware::test::specializeAndExportPortableProvider(
+                std::move(skeleton), fabric.abi, providers, externalContracts));
   const llvm::StringRef rtl(systemVerilog);
   require(test,
           rtl.contains("input_0_data") && rtl.contains("input_1_data") &&

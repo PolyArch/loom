@@ -1,0 +1,3 @@
+# REQUIRES: circt
+# RUN: rm -rf %t
+# RUN: %loom-portable-provider-test-support-test %t

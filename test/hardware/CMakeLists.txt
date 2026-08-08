@@ -82,6 +82,28 @@ target_link_libraries(loom-implementation-representation-root-test PRIVATE
 )
 
 if(LOOM_HAVE_CIRCT)
+  add_library(LoomPortableProviderTestSupport
+    PortableProviderTestSupport.cpp
+  )
+
+  target_include_directories(LoomPortableProviderTestSupport PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+
+  target_link_libraries(LoomPortableProviderTestSupport PUBLIC
+    LoomHardwareRTL
+    LLVMSupport
+  )
+
+  add_executable(loom-portable-provider-test-support-test
+    PortableProviderTestSupportTest.cpp
+  )
+
+  target_link_libraries(loom-portable-provider-test-support-test PRIVATE
+    LoomPortableProviderTestSupport
+    LLVMSupport
+  )
+
   add_executable(loom-representation-index-test
     RepresentationIndexTest.cpp
   )
@@ -106,6 +128,7 @@ if(LOOM_HAVE_CIRCT)
 
   target_link_libraries(loom-common-skeleton-test PRIVATE
     LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
     LoomADGBuilder
     LoomHardwareRTL
     MLIRFabric
@@ -140,6 +163,7 @@ if(LOOM_HAVE_CIRCT)
 
   target_link_libraries(loom-portable-scalar-integer-add-sub-test PRIVATE
     LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
     LoomHardwareRTL
     MLIRDataflow
     MLIRFabric
