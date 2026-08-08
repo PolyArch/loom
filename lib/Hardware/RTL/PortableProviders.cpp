@@ -7,6 +7,7 @@
 #include "Hardware/RTL/Providers/FixedVectorShuffle.h"
 #include "Hardware/RTL/Providers/FixedVectorSliceAlignMerge.h"
 #include "Hardware/RTL/Providers/FixedVectorValueSelect.h"
+#include "Hardware/RTL/Providers/FloatMultiply.h"
 #include "Hardware/RTL/Providers/FloatSign.h"
 #include "Hardware/RTL/Providers/IntegerCountZeros.h"
 #include "Hardware/RTL/Providers/IntegerLogic.h"
@@ -50,6 +51,8 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
           registerPortableScalarBitReinterpretProvider(candidate))
     return error;
   if (llvm::Error error = registerPortableFloatSignProviders(candidate))
+    return error;
+  if (llvm::Error error = registerPortableFloatMultiplyProviders(candidate))
     return error;
   if (llvm::Error error =
           registerPortableScalarIntegerMultiplyProvider(candidate))

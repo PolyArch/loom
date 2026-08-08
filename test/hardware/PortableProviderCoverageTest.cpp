@@ -6,6 +6,7 @@
 #include "Hardware/RTL/Providers/FixedVectorShuffle.h"
 #include "Hardware/RTL/Providers/FixedVectorSliceAlignMerge.h"
 #include "Hardware/RTL/Providers/FixedVectorValueSelect.h"
+#include "Hardware/RTL/Providers/FloatMultiply.h"
 #include "Hardware/RTL/Providers/FloatSign.h"
 #include "Hardware/RTL/Providers/IntegerCountZeros.h"
 #include "Hardware/RTL/Providers/IntegerLogic.h"
@@ -84,6 +85,8 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
           registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableFloatSignProviders(registry));
+  requireRegistration(
+      loom::hardware::rtl::registerPortableFloatMultiplyProviders(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableScalarIntegerMultiplyProvider(
           registry));
@@ -168,6 +171,7 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::ScalarBitReinterpret,
       ::fabric::ImplementationFamilyId::ScalarFloatSign,
       ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
+      ::fabric::ImplementationFamilyId::ScalarFloatMultiply,
       ::fabric::ImplementationFamilyId::ScalarFloatFma,
       ::fabric::ImplementationFamilyId::LoopCarry,
       ::fabric::ImplementationFamilyId::LoopInvariant,
@@ -179,6 +183,7 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::FixedVectorValueSelect,
       ::fabric::ImplementationFamilyId::FixedVectorIntegerMultiply,
       ::fabric::ImplementationFamilyId::FixedVectorFloatSign,
+      ::fabric::ImplementationFamilyId::FixedVectorFloatMultiply,
       ::fabric::ImplementationFamilyId::FixedVectorPack,
       ::fabric::ImplementationFamilyId::FixedVectorUnpack,
       ::fabric::ImplementationFamilyId::ScalarSignedIntegerDivRem,
