@@ -718,17 +718,22 @@ independent placer would duplicate relation and routing ownership. The
 load-then-locality refinement instead composes the two existing facts needed
 for a useful seed: exact context identity and exact frozen connectivity.
 
-Dynamic symmetric ports expose the same issue one level below placement. If
-two inputs or outputs of `dataflow.sync`, `dataflow.mux`, `dataflow.demux`, or
+Attachment roots expose the same issue one level below placement. If two
+inputs or outputs of `dataflow.sync`, `dataflow.mux`, `dataflow.demux`, or
 another variadic operation both take the first occurrence-relative attachment,
 the initial route duplicates a physical endpoint even when the selected FU and
-PE expose enough distinct ports. Enumerating port permutations is functionally
-redundant, but collapsing simultaneous logical terminals onto one endpoint is
-not. Opcode-specific permutation tables would duplicate operation semantics,
-and hard endpoint disjointness would incorrectly reject legal temporal sharing.
-The initializer instead prefers the least-selected exact endpoint admitted by
-the already selected placement, retains constrained baselines, and asks the
-same relation solver to validate the complete preferred root assignment. This
+PE expose enough distinct ports. The same ordinal collapse can make independent
+graph ingress or egress nets share one boundary endpoint while other legal
+boundary endpoints remain unused. Enumerating port permutations is
+functionally redundant, but collapsing simultaneous logical terminals onto one
+endpoint is not. Opcode-specific permutation tables would duplicate operation
+semantics, treating graph boundaries as a separate initializer mechanism would
+duplicate attachment policy, and hard endpoint disjointness would incorrectly
+reject legal temporal sharing. The initializer instead prefers the
+least-selected exact endpoint in every unconstrained attachment root's legal
+domain; occurrence-relative roots additionally restrict that domain to the
+already selected placement. It retains constrained baselines and asks the same
+relation solver to validate the complete preferred root assignment. This
 generic preference canonicalizes the useful distinct subset without making
 endpoint counts a capacity authority or changing the legal domain.
 
