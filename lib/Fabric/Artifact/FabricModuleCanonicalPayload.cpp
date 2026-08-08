@@ -84,9 +84,25 @@ llvm::Error eraseElaboratedFabricModuleDeclarations(::fabric::ModuleOp root) {
 }
 
 llvm::Error validateCanonicalFabricModulePayload(::fabric::ModuleOp root) {
-  enum class Violation { None, AuthoringState, NamedDeclaration };
+  enum class Violation {
+    None,
+    AuthoringState,
+    NamedDeclaration,
+    CanonicalRelationCarrier,
+  };
   Violation violation = Violation::None;
   root->walk([&](Operation *operation) {
+    const bool misplacedModuleRelation =
+        operation != root.getOperation() &&
+        (operation->hasAttr("domain_slots") ||
+         operation->hasAttr("domain_assignments"));
+    const bool misplacedFuRelation =
+        !isa<::fabric::FuOp>(operation) &&
+        operation->hasAttr("capability_templates");
+    if (misplacedModuleRelation || misplacedFuRelation) {
+      violation = Violation::CanonicalRelationCarrier;
+      return WalkResult::interrupt();
+    }
     for (llvm::StringLiteral name : moduleAuthoringOnlyAttrs)
       if (operation->hasAttr(name)) {
         violation = Violation::AuthoringState;
@@ -104,6 +120,8 @@ llvm::Error validateCanonicalFabricModulePayload(::fabric::ModuleOp root) {
     return invalid("canonical Module payload retains authoring-only state");
   if (violation == Violation::NamedDeclaration)
     return invalid("canonical Module payload retains a named declaration");
+  if (violation == Violation::CanonicalRelationCarrier)
+    return invalid("canonical relation is attached to a non-carrier");
   return llvm::Error::success();
 }
 

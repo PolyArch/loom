@@ -531,6 +531,67 @@ void derivedIdentifiersOnNonCarriersAreRejected() {
   }
 }
 
+void canonicalRelationsOnNonCarriersAreRejected() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module {
+      fabric.module @relations(%value: !fabric.bits<8>) -> !fabric.bits<8> {
+        fabric.yield %value : !fabric.bits<8>
+      }
+    }
+  )mlir",
+                                                        &context());
+  if (!source)
+    fail(test, "unable to parse the canonical-relation fixture");
+  loom::fabric::FinalizedFabricRoot finalized =
+      take(test, loom::fabric::finalizeFabricRoot(root(test, *source), store));
+  loom::fabric::DecodedFabricArtifact decoded =
+      take(test, loom::fabric::decodeFabricArtifactEnvelope(
+                     finalized.canonicalBytes().bytes()));
+  auto parsed = take(test, loom::fabric::detail::parseFabricBytecodeModule(
+                               decoded.canonicalMlirBytecode));
+  ::fabric::ModuleOp canonicalRoot = root(test, parsed.module.get());
+  mlir::Operation *nonCarrier =
+      canonicalRoot.getBody().front().getTerminator();
+
+  auto capability = take(
+      test, ::fabric::FuCapabilityDomainRecord::create({{{0}, {}}}));
+  const std::vector<std::uint8_t> capabilityBytes =
+      take(test, ::fabric::encodeFuCapabilityDomainRecord(capability));
+  const std::vector<std::int8_t> signedCapabilityBytes(capabilityBytes.begin(),
+                                                       capabilityBytes.end());
+  const std::pair<llvm::StringRef, mlir::Attribute> relations[] = {
+      {"domain_slots", canonicalRoot.getDomainSlotsAttr()},
+      {"domain_assignments", canonicalRoot.getDomainAssignmentsAttr()},
+      {"capability_templates",
+       ::fabric::FuCapabilityDomainAttr::get(
+           canonicalRoot.getContext(),
+           mlir::DenseI8ArrayAttr::get(canonicalRoot.getContext(),
+                                       signedCapabilityBytes))}};
+
+  for (const auto &[name, relation] : relations) {
+    nonCarrier->setAttr(name, relation);
+    decoded.canonicalMlirBytecode = take(
+        test, loom::fabric::detail::writeCanonicalFabricBytecode(
+                  parsed.module.get()));
+    loom::CanonicalSemanticBytes malformed =
+        take(test, loom::fabric::encodeFabricArtifactEnvelope(
+                       loom::fabric::FabricRootKind::Module, {},
+                       decoded.canonicalMlirBytecode));
+    const loom::ArtifactIdentity identity =
+        take(test, store.put(loom::fabric::fabricArtifactSchema, malformed));
+    expectRejected(test,
+                   loom::fabric::importEntireFabricRoot(
+                       {loom::fabric::fabricArtifactSchema.identity.str(),
+                        loom::fabric::fabricArtifactSchema.version, identity},
+                       store),
+                   "canonical relation is attached to a non-carrier");
+    nonCarrier->removeAttr(name);
+  }
+}
+
 void authoringStateAndDeclarationsAreRejected() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -666,6 +727,7 @@ int main() {
   nonCanonicalModuleGraphOrderIsRejected();
   coordinatedStoredEntityIdPermutationIsRejected();
   derivedIdentifiersOnNonCarriersAreRejected();
+  canonicalRelationsOnNonCarriersAreRejected();
   authoringStateAndDeclarationsAreRejected();
   memoryBoundaryConnectionCannotCrossModuleSlots();
   return EXIT_SUCCESS;
