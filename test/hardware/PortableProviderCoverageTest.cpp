@@ -9,6 +9,7 @@
 #include "Hardware/RTL/Providers/FixedVectorValueSelect.h"
 #include "Hardware/RTL/Providers/FloatAddSub.h"
 #include "Hardware/RTL/Providers/FloatCompareMinMax.h"
+#include "Hardware/RTL/Providers/FloatConversions.h"
 #include "Hardware/RTL/Providers/FloatDivideRemainder.h"
 #include "Hardware/RTL/Providers/FloatMultiply.h"
 #include "Hardware/RTL/Providers/FloatSign.h"
@@ -94,6 +95,8 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
   requireRegistration(
       loom::hardware::rtl::registerPortableFloatCompareMinMaxProviders(
           registry));
+  requireRegistration(
+      loom::hardware::rtl::registerPortableFloatConversionProviders(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableFloatMultiplyProviders(registry));
   requireRegistration(
@@ -187,6 +190,9 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::ScalarFloatSign,
       ::fabric::ImplementationFamilyId::ScalarFloatAddSub,
       ::fabric::ImplementationFamilyId::ScalarFloatCompareMinMax,
+      ::fabric::ImplementationFamilyId::ScalarFloatWidthCast,
+      ::fabric::ImplementationFamilyId::ScalarIntegerToFloat,
+      ::fabric::ImplementationFamilyId::ScalarFloatToInteger,
       ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
       ::fabric::ImplementationFamilyId::ScalarFloatMultiply,
       ::fabric::ImplementationFamilyId::ScalarFloatFma,
