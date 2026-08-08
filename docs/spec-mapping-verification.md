@@ -281,6 +281,14 @@ values. A missing value, an unencodable value, or two different values for one
 slot is `Invalid` Mapping input. Distinct independently configurable contexts
 remain distinct slots.
 
+For a configured Spatial PE, the same layer projects the PE-owned activation
+field, every input/output selector field of the selected FU, and that FU's
+existing operation fields. It emits no selector or FU field for an unselected
+FU and no field for an unmapped PE; ConfigurationABI supplies the validated
+inactive values, including mandatory `Disabled` for the omitted PE activation
+field. The projection never constructs a PE-wide Cartesian-product codebook or
+changes the Fabric field inventory for one Mapping.
+
 The resulting `ConfiguredHardwareProjection` is a sealed, removable in-memory
 view indexed only by existing Dataflow, Fabric, and Mapping references. It is
 not serialized in Mapping, assigned a new identity, or reconstructed by a

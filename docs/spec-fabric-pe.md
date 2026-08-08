@@ -308,10 +308,64 @@ Fabric owns each field's semantic meaning and legal value domain.
 `ConfigurationABI` alone owns bit positions, field widths, packing, padding,
 reset encoding, and the programming representation.
 
+### Configuration field identity and codec
+
+One Spatial PE owns one static, factorized field schema. It contains:
+
+* one activation field for the PE;
+* one input-selector field for every outer input of every concrete FU
+  occurrence owned by the PE; and
+* one output-selector field for every outer output of every concrete FU
+  occurrence owned by the PE.
+
+The activation field is ordinal zero. Input-selector fields follow in canonical
+`(FU occurrence, outer input ordinal)` order, then output-selector fields in
+canonical `(FU occurrence, outer output ordinal)` order. Every field is a
+`FabricSemanticConfigFieldRef` owned by the PE occurrence. The sealed PE
+configuration-schema view relates each field reference to its exact role and FU
+port; a caller never recovers that role by interpreting the ordinal.
+
+The activation field has this finite semantic domain:
+
+```text
+PeActivation = Disabled | Active(FabricFuOccurrenceRef)
+```
+
+Its active references are exactly the concrete FU occurrences owned by the PE.
+The canonical value codec uses `u32be(0)` for `Disabled` and `u32be(1)`
+followed by the canonical FU occurrence reference bytes for `Active`. A
+ConfigurationABI must use canonical `Disabled` as this field's
+`inactive_value`; another value could activate an unmapped PE and is invalid.
+
+Each input-selector field has the finite domain `Disconnected`, `Route(p)`, and
+`Discard(p)` for every PE input endpoint `p`. Each output-selector field has
+the finite domain `Disconnected`, `Route(p)`, and `Discard` for every PE output
+endpoint `p`. The input codec uses `u32be(0)`, `u32be(1)`, and `u32be(2)` in
+that displayed order, followed by canonical endpoint reference bytes for the
+two variants that carry `p`. The output codec uses the same three `u32be`
+tags; only `Route` carries canonical endpoint reference bytes. Values naming a
+foreign endpoint, the wrong direction, or an endpoint outside this PE are not
+in the domain.
+
+These PE fields do not absorb FU operation fields. Every operation field keeps
+the exact FU-node owner, behavior domain, and codec defined by its resolved
+capability. `fu_sw_configs` is the configured composition of those existing
+fields for the selected FU, not a copy inside a PE codebook. When a PE is
+disabled, its activation field projects `Disabled` and all selector and FU
+fields are omitted. When it is active, the projection contains `Active(f)`,
+every selector field for `f`, and the required FU fields; fields belonging to
+other FUs remain omitted and their ABI-declared inactive values are
+unobservable.
+
+The schema is finite without enumerating the Cartesian product of FU choice,
+port routes, and FU operation behavior. Physical code assignment and packing
+remain solely ConfigurationABI facts.
+
 ### `selected_fu`
 
 `selected_fu` identifies one member of the PE's concrete FU set. Its legal
-domain is exactly the FU occurrences owned by this PE.
+domain is exactly the FU occurrences owned by this PE. It is the `Active`
+payload of the PE activation field rather than a second field.
 
 In the `Active` variant, exactly one FU is active: the FU selected by
 `selected_fu`.
@@ -319,7 +373,9 @@ In the `Active` variant, exactly one FU is active: the FU selected by
 ### Input-mux fields
 
 One typed record per active-FU input describes how a PE input is routed onto
-that FU input. It is one member of a closed typed sum:
+that FU input. The static field inventory contains the corresponding record for
+every concrete FU input, while the configured view projects only the selected
+FU's records. A value is one member of a closed typed sum:
 
 ```text
 InputSelection = Route(InputPortRef)
@@ -350,7 +406,9 @@ discharge a logical edge that the exact Mapping realization requires.
 ### Output-demux fields
 
 One typed record per active-FU output describes how that output is routed onto
-a PE output:
+a PE output. The static field inventory contains the corresponding record for
+every concrete FU output, while the configured view projects only the selected
+FU's records:
 
 ```text
 OutputSelection = Route(OutputPortRef)
@@ -496,6 +554,8 @@ The verifier emits free-form diagnostics for the following conditions:
   width are accepted; widening (`outer < inner`) is rejected by the
   FU's own verifier.
 * A selector variant with a foreign or out-of-range PE port reference.
+* A PE configuration field with a foreign owner, mismatched role or FU port,
+  noncanonical value, or value outside its exact finite domain.
 * Nesting violations: `fabric.pe [spatial]` placed outside a
   `fabric.module` body, nested inside another `fabric.pe [spatial]` /
   `fabric.pe [temporal]` / `fabric.fu`.
@@ -507,6 +567,8 @@ diagnostic wording part of the contract.
 
 * `spec-fabric-reconfigurable-op.md` for the parameterized operation
   capability and finalization rules that derive `fu_sw_configs`;
+* `spec-configuration-deployment.md` for the physical codebook, inactive
+  encoding, and payload-placement rules for these semantic fields;
 * the share-group catalogue in `spec-fabric-hw-share-group.md` for
   legal multi-member `op_list`s inside inner FUs;
 * `spec-fabric-instantiate.md` for the rules governing

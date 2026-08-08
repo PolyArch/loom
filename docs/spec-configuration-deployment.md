@@ -238,6 +238,14 @@ Each operation field validates against the exact sealed
   direct-domain validator; and
 * no other pairing is legal.
 
+Each Spatial PE activation or selector field validates against the exact sealed
+PE configuration-schema view owned by its Fabric resource. These fields require
+`FiniteCodebook`, and the semantic-value set must equal the corresponding
+finite domain exactly. The activation field additionally requires canonical
+`Disabled` as `inactive_value`. The ABI cannot merge PE fields, copy FU
+operation fields into a PE codebook, or assign a field to a Mapping-selected
+dynamic schema.
+
 The ABI owns physical codes, destination slices, padding, and inactive bits.
 Fabric owns semantic field need, the one joint behavior domain, its projector,
 and semantic codec. Mapping owns the authoritative actor and refinement
@@ -678,6 +686,9 @@ Tests protect only stable boundaries:
 * `None` rejects an ABI field, a finite codebook has exact set equality with
   its Fabric behavior-key domain, and `DirectBits` matches the Fabric carrier
   width exactly;
+* one Spatial PE activation field and representative input/output selector
+  fields have exact finite codebook coverage, canonical disabled inactivity,
+  and foreign endpoint rejection;
 * one known vector is shared by the encoder and RTL/runtime decoder;
 * image ABI, programming-unit, Mapping, padding, and payload mismatches fail;
 * Deployment requires `ThreadDispatchImage` and `AdmissionImage`, and requires

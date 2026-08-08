@@ -210,6 +210,16 @@ is possible only through explicit tagged match domains, context bindings,
 capacity, and non-conflicting Physical Tags. Untagged endpoints never gain
 multi-edge capacity by convention.
 
+PE configuration fields follow the same factorization. One activation field
+chooses the active FU, and one selector field names each concrete FU boundary
+port. Existing FU operation fields remain owned by their capability relation.
+A single PE-wide codebook would enumerate the Cartesian product of activation,
+routing, and operation behavior and would duplicate the FU codecs. A field set
+that changed with the selected Mapping would instead make ConfigurationABI a
+workload-specific schema. The factorized static inventory retains every real
+choice once while letting Mapping project only the fields observable in the
+selected configuration.
+
 ## Why Instruction Context Owns Runtime State
 
 Static instruction memory holds configured operation and routing choices;
