@@ -128,6 +128,28 @@ collectStoredEntities(::fabric::ModuleOp root) {
   return entities;
 }
 
+using CanonicalFuNodesByOccurrence =
+    llvm::DenseMap<Operation *, std::vector<Operation *>>;
+
+llvm::Expected<CanonicalFuNodesByOccurrence> collectCanonicalFuNodes(
+    const std::map<FabricEntityId, StoredEntity> &entities) {
+  CanonicalFuNodesByOccurrence nodesByOccurrence;
+  for (const auto &entry : entities) {
+    const StoredEntity &entity = entry.second;
+    if (entity.kind != FabricEntityKind::FabricFuOccurrence)
+      continue;
+    auto fu = dyn_cast_or_null<::fabric::FuOp>(entity.operation);
+    if (!fu)
+      return invalid("stored FU occurrence has no operation carrier");
+    auto definition = computeCanonicalFabricFuDefinition(fu);
+    if (!definition)
+      return definition.takeError();
+    nodesByOccurrence[entity.operation] =
+        std::move(definition->canonicalNodeOrder);
+  }
+  return nodesByOccurrence;
+}
+
 llvm::Expected<Operation *>
 resolveStoredEntity(const std::map<FabricEntityId, StoredEntity> &entities,
                     FabricEntityId id, FabricEntityKind kind) {
@@ -150,26 +172,19 @@ internalMember(Operation *owner,
   return member;
 }
 
-llvm::SmallVector<Operation *> physicalFuNodes(::fabric::FuOp fu) {
-  llvm::SmallVector<Operation *> nodes;
-  for (Region &region : fu->getRegions())
-    for (Block &block : region)
-      for (Operation &operation : block)
-        if (isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(operation))
-          nodes.push_back(&operation);
-  return nodes;
-}
-
-llvm::Expected<Operation *> resolveStoredFuNode(Operation *owner,
-                                                FabricFuNodeKind kind,
-                                                FabricOrdinal ordinal) {
+llvm::Expected<Operation *>
+resolveStoredFuNode(Operation *owner, FabricFuNodeKind kind,
+                    FabricOrdinal ordinal,
+                    const CanonicalFuNodesByOccurrence &nodesByOccurrence) {
   auto fu = dyn_cast_or_null<::fabric::FuOp>(owner);
   if (!fu)
     return invalid("Module domain FU node has no FU occurrence owner");
-  llvm::SmallVector<Operation *> nodes = physicalFuNodes(fu);
-  if (ordinal >= nodes.size())
+  auto nodes = nodesByOccurrence.find(owner);
+  if (nodes == nodesByOccurrence.end())
+    return invalid("Module domain FU node has no canonical definition");
+  if (ordinal >= nodes->second.size())
     return invalid("Module domain FU node ordinal is out of range");
-  Operation *node = nodes[ordinal];
+  Operation *node = nodes->second[ordinal];
   if (classifyFabricFuNode(node) != kind)
     return invalid("Module domain FU node kind does not match its lookup key");
   return node;
@@ -177,7 +192,8 @@ llvm::Expected<Operation *> resolveStoredFuNode(Operation *owner,
 
 llvm::Expected<NormalizedModuleDomainMember> normalizeStoredInternalMember(
     const FabricModulePhysicalOwnerRef &physical,
-    const std::map<FabricEntityId, StoredEntity> &entities) {
+    const std::map<FabricEntityId, StoredEntity> &entities,
+    const CanonicalFuNodesByOccurrence &nodesByOccurrence) {
   using Role = ::fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
   return std::visit(
       [&](const auto &reference)
@@ -205,8 +221,8 @@ llvm::Expected<NormalizedModuleDomainMember> normalizeStoredInternalMember(
                                   FabricEntityKind::FabricFuOccurrence);
           if (!resolved)
             return resolved.takeError();
-          auto node =
-              resolveStoredFuNode(*resolved, reference.node, reference.ordinal);
+          auto node = resolveStoredFuNode(*resolved, reference.node,
+                                          reference.ordinal, nodesByOccurrence);
           if (!node)
             return node.takeError();
           return internalMember(*node, Role::FuNode);
@@ -285,7 +301,8 @@ llvm::Expected<NormalizedModuleDomainMember> normalizeStoredInternalMember(
 llvm::Expected<NormalizedModuleDomainMember>
 normalizeStoredMember(::fabric::ModuleOp root, FabricModuleTemplateRef module,
                       const FabricModuleDomainMemberRef &stored,
-                      const std::map<FabricEntityId, StoredEntity> &entities) {
+                      const std::map<FabricEntityId, StoredEntity> &entities,
+                      const CanonicalFuNodesByOccurrence &nodesByOccurrence) {
   if (stored.kind() == FabricModuleDomainMemberKind::Boundary) {
     const auto &boundary =
         std::get<FabricModuleBoundaryEndpointRef>(stored.payload);
@@ -306,7 +323,8 @@ normalizeStoredMember(::fabric::ModuleOp root, FabricModuleTemplateRef module,
     return member;
   }
   return normalizeStoredInternalMember(
-      std::get<FabricModulePhysicalOwnerRef>(stored.payload), entities);
+      std::get<FabricModulePhysicalOwnerRef>(stored.payload), entities,
+      nodesByOccurrence);
 }
 
 llvm::Expected<NormalizedModuleDomainRelation>
@@ -326,6 +344,9 @@ reconstructStoredFabricModuleDomain(::fabric::ModuleOp root) {
   auto entities = collectStoredEntities(root);
   if (!entities)
     return entities.takeError();
+  auto canonicalFuNodes = collectCanonicalFuNodes(*entities);
+  if (!canonicalFuNodes)
+    return canonicalFuNodes.takeError();
   auto moduleId =
       root->getAttrOfType<::fabric::EntityIdAttr>(::fabric::kEntityIdAttrName);
   if (!moduleId)
@@ -356,33 +377,14 @@ reconstructStoredFabricModuleDomain(::fabric::ModuleOp root) {
         findSlot(relation, assignment.slot.kind, assignment.slot.ordinal);
     if (!slot)
       return slot.takeError();
-    auto member =
-        normalizeStoredMember(root, module, assignment.member, *entities);
+    auto member = normalizeStoredMember(root, module, assignment.member,
+                                        *entities, *canonicalFuNodes);
     if (!member)
       return member.takeError();
     relation.assignments.push_back(
         {findOrAddMember(relation, std::move(*member)), *slot});
   }
   return relation;
-}
-
-llvm::Error validateStoredFuNodeOrder(::fabric::ModuleOp root,
-                                      const FabricCanonicalLabeling &labeling) {
-  bool stale = false;
-  root->walk([&](::fabric::FuOp fu) {
-    for (auto [ordinal, node] : llvm::enumerate(physicalFuNodes(fu))) {
-      auto canonical = labeling.canonicalFuNodeOrdinalByOperation.find(node);
-      if (canonical == labeling.canonicalFuNodeOrdinalByOperation.end() ||
-          canonical->second != ordinal) {
-        stale = true;
-        return WalkResult::interrupt();
-      }
-    }
-    return WalkResult::advance();
-  });
-  if (stale)
-    return invalid("canonical FU node order is stale");
-  return llvm::Error::success();
 }
 
 llvm::Error validateStoredGraphOrder(::fabric::ModuleOp root,
@@ -398,19 +400,30 @@ llvm::Error validateStoredGraphOrder(::fabric::ModuleOp root,
       return WalkResult::interrupt();
     if (!isa<::fabric::ModuleOp, ::fabric::PeOp, ::fabric::FuOp>(container))
       return WalkResult::advance();
+    const bool fuDefinition = isa<::fabric::FuOp>(container);
     for (Region &region : container->getRegions())
       for (Block &block : region) {
         std::optional<std::uint64_t> previous;
         for (Operation &operation : block) {
           if (operation.hasTrait<OpTrait::IsTerminator>())
             continue;
-          auto found = rank.find(&operation);
-          if (found == rank.end() || (previous && *previous >= found->second)) {
+          std::optional<std::uint64_t> current;
+          if (fuDefinition) {
+            auto found =
+                labeling.definitionFuNodeOrdinalByOperation.find(&operation);
+            if (found != labeling.definitionFuNodeOrdinalByOperation.end())
+              current = found->second;
+          } else {
+            auto found = rank.find(&operation);
+            if (found != rank.end())
+              current = found->second;
+          }
+          if (!current || (previous && *previous >= *current)) {
             error = invalid(
                 "canonical Module graph operation order is not canonical");
             return WalkResult::interrupt();
           }
-          previous = found->second;
+          previous = *current;
         }
       }
     return WalkResult::advance();
@@ -554,11 +567,9 @@ validateStoredFabricModuleDomain(::fabric::ModuleOp root) {
   auto relation = reconstructStoredFabricModuleDomain(root);
   if (!relation)
     return relation.takeError();
-  auto labeling = computeFabricModuleCanonicalLabeling(root, *relation);
+  auto labeling = computeCanonicalFabricModulePayloadLabeling(root, *relation);
   if (!labeling)
     return labeling.takeError();
-  if (llvm::Error error = validateStoredFuNodeOrder(root, *labeling))
-    return std::move(error);
   if (llvm::Error error = validateStoredGraphOrder(root, *labeling))
     return std::move(error);
   if (llvm::Error error =

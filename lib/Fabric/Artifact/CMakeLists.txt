@@ -29,6 +29,9 @@ add_mlir_library(LoomFabricArtifact
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Artifact
 
+  DEPENDS
+  LoomOperationSchemasIncGen
+
 )
 
 target_link_libraries(LoomFabricArtifact PUBLIC

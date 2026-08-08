@@ -206,8 +206,11 @@ class SemanticGraph {
 public:
   static llvm::Expected<SemanticGraph>
   build(Operation *root, bool fuDefinition = false,
-        const NormalizedModuleDomainRelation *domainRelation = nullptr) {
-    SemanticGraph graph(root, fuDefinition, domainRelation);
+        const NormalizedModuleDomainRelation *domainRelation = nullptr,
+        FabricFuCapabilityOrdinalSpace capabilityOrdinalSpace =
+            FabricFuCapabilityOrdinalSpace::AuthoringPhysical) {
+    SemanticGraph graph(root, fuDefinition, domainRelation,
+                        capabilityOrdinalSpace);
     if (llvm::Error error = graph.collect(root))
       return std::move(error);
     if (llvm::Error error = graph.buildDomainRelations())
@@ -225,6 +228,26 @@ public:
     return ::loom::canonicalizeRelationGraph(intrinsics_, relations);
   }
 
+  llvm::Expected<FabricCanonicalFuDefinition> canonicalizeFuDefinition() const {
+    if (!fuDefinition_)
+      return invalid("a Module graph is not an FU definition");
+    auto canonical = canonicalize();
+    if (!canonical)
+      return canonical.takeError();
+    llvm::DenseMap<std::uint32_t, Operation *> operationByVertex;
+    for (const auto &entry : operationVertices_)
+      operationByVertex[entry.second] = entry.first;
+    std::vector<Operation *> canonicalNodeOrder;
+    for (std::uint32_t vertex : canonical->canonicalOrder) {
+      Operation *node = operationByVertex.lookup(vertex);
+      if (isa_and_nonnull<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(
+              node))
+        canonicalNodeOrder.push_back(node);
+    }
+    return FabricCanonicalFuDefinition{std::move(canonical->bytes),
+                                       std::move(canonicalNodeOrder)};
+  }
+
   llvm::Expected<FabricCanonicalLabeling> canonicalizeModule() {
     if (fuDefinition_)
       return invalid("an FU definition graph is not a Fabric Module root");
@@ -238,41 +261,34 @@ public:
     };
     std::map<std::vector<std::uint8_t>, FuTemplateDraft> templates;
     llvm::DenseMap<Operation *, std::uint32_t> templateVertexByOccurrence;
-    llvm::DenseMap<Operation *, FabricOrdinal> fuNodeOrdinalByOperation;
+    llvm::DenseMap<Operation *, FabricOrdinal>
+        definitionFuNodeOrdinalByOperation;
+    llvm::DenseMap<Operation *, std::vector<Operation *>>
+        definitionNodeOrderByOccurrence;
     llvm::DenseMap<Operation *, std::vector<std::uint8_t>>
         capabilityDomainByOccurrence;
     for (const auto &entry : operationVertices_) {
       auto fu = dyn_cast<::fabric::FuOp>(entry.first);
       if (!fu || fu.getSymNameAttr())
         continue;
-      llvm::Expected<SemanticGraph> definition =
-          SemanticGraph::build(fu.getOperation(), true);
+      auto definition = computeCanonicalFabricFuDefinition(fu);
       if (!definition)
         return definition.takeError();
-      llvm::Expected<::loom::CanonicalRelationResult> canonical =
-          definition->canonicalize();
-      if (!canonical)
-        return canonical.takeError();
-      llvm::ArrayRef<std::uint8_t> definitionBytes = canonical->bytes.bytes();
-      llvm::DenseMap<std::uint32_t, Operation *> definitionOperationByVertex;
-      for (const auto &definitionEntry : definition->operationVertices_)
-        definitionOperationByVertex[definitionEntry.second] =
-            definitionEntry.first;
-      std::vector<Operation *> canonicalNodeOrder;
-      for (std::uint32_t vertex : canonical->canonicalOrder) {
-        Operation *node = definitionOperationByVertex.lookup(vertex);
-        if (isa_and_nonnull<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(
-                node))
-          canonicalNodeOrder.push_back(node);
-      }
-      auto domain =
-          canonicalizeFabricFuCapabilityDomain(fu, canonicalNodeOrder);
+      const llvm::ArrayRef<std::uint8_t> definitionBytes =
+          definition->relationBytes.bytes();
+      auto domain = canonicalizeFabricFuCapabilityDomain(
+          fu, definition->canonicalNodeOrder, capabilityOrdinalSpace_);
       if (!domain)
         return domain.takeError();
       auto domainBytes = ::fabric::encodeFuCapabilityDomainRecord(*domain);
       if (!domainBytes)
         return domainBytes.takeError();
       capabilityDomainByOccurrence[fu.getOperation()] = *domainBytes;
+      for (auto [ordinal, node] :
+           llvm::enumerate(definition->canonicalNodeOrder))
+        definitionFuNodeOrdinalByOperation[node] = ordinal;
+      definitionNodeOrderByOccurrence[fu.getOperation()] =
+          definition->canonicalNodeOrder;
 
       std::vector<std::uint8_t> key;
       key.reserve(16 + definitionBytes.size() + domainBytes->size());
@@ -359,25 +375,13 @@ public:
         operationPosition[op] = position;
       }
 
-    fuNodeOrdinalByOperation.clear();
-    capabilityDomainByOccurrence.clear();
     for (const auto &entry : templateVertexByOccurrence) {
       auto fu = dyn_cast<::fabric::FuOp>(entry.first);
       if (!fu)
         return invalid("an FU template relation has no occurrence owner");
-      std::vector<Operation *> nodeOrder;
-      fu->walk([&](Operation *operation) {
-        if (isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(operation))
-          nodeOrder.push_back(operation);
-      });
-      for (Operation *node : nodeOrder)
-        if (!operationPosition.count(node))
-          return invalid("an FU node has no Module-canonical position");
-      llvm::sort(nodeOrder, [&](Operation *left, Operation *right) {
-        return operationPosition.lookup(left) < operationPosition.lookup(right);
-      });
-      for (auto [ordinal, node] : llvm::enumerate(nodeOrder))
-        fuNodeOrdinalByOperation[node] = ordinal;
+      auto definitionOrder = definitionNodeOrderByOccurrence.find(entry.first);
+      if (definitionOrder == definitionNodeOrderByOccurrence.end())
+        return invalid("an FU occurrence has no canonical definition order");
 
       auto draft = llvm::find_if(templates, [&](const auto &candidate) {
         return candidate.second.vertex == entry.second;
@@ -390,25 +394,13 @@ public:
       if (occurrencePosition->second < draft->second.representativePosition) {
         draft->second.representativePosition = occurrencePosition->second;
         draft->second.representative = fu.getOperation();
-        draft->second.canonicalNodeOrder = std::move(nodeOrder);
+        draft->second.canonicalNodeOrder = definitionOrder->second;
       }
     }
     for (const auto &entry : templates) {
       const FuTemplateDraft &draft = entry.second;
-      auto representative =
-          dyn_cast_or_null<::fabric::FuOp>(draft.representative);
-      if (!representative)
+      if (!isa_and_nonnull<::fabric::FuOp>(draft.representative))
         return invalid("an FU template has no canonical representative");
-      auto domain = canonicalizeFabricFuCapabilityDomain(
-          representative, draft.canonicalNodeOrder);
-      if (!domain)
-        return domain.takeError();
-      auto bytes = ::fabric::encodeFuCapabilityDomainRecord(*domain);
-      if (!bytes)
-        return bytes.takeError();
-      for (const auto &occurrence : templateVertexByOccurrence)
-        if (occurrence.second == draft.vertex)
-          capabilityDomainByOccurrence[occurrence.first] = *bytes;
     }
 
     llvm::DenseMap<Operation *, std::uint64_t> fuTemplateIds;
@@ -456,23 +448,26 @@ public:
       moduleDomainSlots.push_back({slot.kind, slot.provisionalOrdinal, next++});
     }
 
-    return FabricCanonicalLabeling{std::move(canonical->bytes),
-                                   std::move(carriers),
-                                   std::move(fuTemplates),
-                                   std::move(memoryEngineTemplates),
-                                   std::move(operationOrder),
-                                   std::move(fuTemplateIds),
-                                   std::move(memoryTemplateIds),
-                                   std::move(fuNodeOrdinalByOperation),
-                                   std::move(capabilityDomainByOccurrence),
-                                   std::move(moduleDomainSlots)};
+    return FabricCanonicalLabeling{
+        std::move(canonical->bytes),
+        std::move(carriers),
+        std::move(fuTemplates),
+        std::move(memoryEngineTemplates),
+        std::move(operationOrder),
+        std::move(fuTemplateIds),
+        std::move(memoryTemplateIds),
+        std::move(definitionFuNodeOrdinalByOperation),
+        std::move(capabilityDomainByOccurrence),
+        std::move(moduleDomainSlots)};
   }
 
 private:
   SemanticGraph(Operation *root, bool fuDefinition,
-                const NormalizedModuleDomainRelation *domainRelation)
+                const NormalizedModuleDomainRelation *domainRelation,
+                FabricFuCapabilityOrdinalSpace capabilityOrdinalSpace)
       : root_(root), fuDefinition_(fuDefinition),
-        domainRelation_(domainRelation) {}
+        domainRelation_(domainRelation),
+        capabilityOrdinalSpace_(capabilityOrdinalSpace) {}
 
   std::uint32_t addVertex(std::string intrinsic) {
     std::uint32_t vertex = intrinsics_.size();
@@ -661,6 +656,7 @@ private:
   Operation *root_;
   bool fuDefinition_;
   const NormalizedModuleDomainRelation *domainRelation_;
+  FabricFuCapabilityOrdinalSpace capabilityOrdinalSpace_;
   std::vector<std::string> intrinsics_;
   std::vector<Edge> edges_;
   llvm::DenseMap<Operation *, std::uint32_t> operationVertices_;
@@ -673,6 +669,14 @@ private:
 };
 
 } // namespace
+
+llvm::Expected<FabricCanonicalFuDefinition>
+computeCanonicalFabricFuDefinition(::fabric::FuOp fu) {
+  auto graph = SemanticGraph::build(fu.getOperation(), true);
+  if (!graph)
+    return graph.takeError();
+  return graph->canonicalizeFuDefinition();
+}
 
 llvm::Expected<std::string>
 encodeFabricOpCanonicalIntrinsic(::fabric::OpOp op) {
@@ -736,6 +740,18 @@ llvm::Expected<FabricCanonicalLabeling> computeFabricModuleCanonicalLabeling(
     const NormalizedModuleDomainRelation &domainRelation) {
   auto graph =
       SemanticGraph::build(root.getOperation(), false, &domainRelation);
+  if (!graph)
+    return graph.takeError();
+  return graph->canonicalizeModule();
+}
+
+llvm::Expected<FabricCanonicalLabeling>
+computeCanonicalFabricModulePayloadLabeling(
+    ::fabric::ModuleOp root,
+    const NormalizedModuleDomainRelation &domainRelation) {
+  auto graph =
+      SemanticGraph::build(root.getOperation(), false, &domainRelation,
+                           FabricFuCapabilityOrdinalSpace::CanonicalDefinition);
   if (!graph)
     return graph.takeError();
   return graph->canonicalizeModule();

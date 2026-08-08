@@ -7,6 +7,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <vector>
 
 namespace mlir {
@@ -19,12 +20,20 @@ class FuOp;
 
 namespace loom::fabric::detail {
 
+enum class FabricFuCapabilityOrdinalSpace : std::uint8_t {
+  AuthoringPhysical,
+  CanonicalDefinition,
+};
+
 /// Returns the owning FU's finite correlated capability domain expressed in
-/// `canonicalNodeOrder`. A missing authoring attribute is accepted only when
+/// `canonicalNodeOrder`. `sourceOrdinalSpace` identifies whether an existing
+/// carrier still uses authoring physical ordinals or already uses canonical
+/// definition ordinals. A missing authoring attribute is accepted only when
 /// the physical graph has one unambiguous template.
 llvm::Expected<::fabric::FuCapabilityDomainRecord>
 canonicalizeFabricFuCapabilityDomain(
-    ::fabric::FuOp fu, llvm::ArrayRef<mlir::Operation *> canonicalNodeOrder);
+    ::fabric::FuOp fu, llvm::ArrayRef<mlir::Operation *> canonicalNodeOrder,
+    FabricFuCapabilityOrdinalSpace sourceOrdinalSpace);
 
 llvm::Expected<std::vector<FabricFuCapabilityTemplateRecord>>
 deriveFabricFuCapabilityTemplates(

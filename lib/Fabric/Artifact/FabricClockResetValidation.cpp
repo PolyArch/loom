@@ -84,24 +84,6 @@ modulePhysicalMember(const Owner &owner) {
 }
 
 llvm::Expected<FabricModuleDomainMemberRef>
-moduleMember(const FabricTransportEndpointOwnerRef &owner) {
-  return std::visit(
-      [](const auto &value) -> llvm::Expected<FabricModuleDomainMemberRef> {
-        using Owner = std::decay_t<decltype(value)>;
-        if constexpr (std::is_same_v<Owner, FabricPeOccurrenceRef> ||
-                      std::is_same_v<Owner, FabricFuOccurrenceRef> ||
-                      std::is_same_v<Owner, FabricMemoryOccurrenceRef> ||
-                      std::is_same_v<Owner, FabricSwitchOccurrenceRef> ||
-                      std::is_same_v<Owner, FabricFifoOccurrenceRef> ||
-                      std::is_same_v<Owner, FabricBoundaryOccurrenceRef>) {
-          return modulePhysicalMember(value);
-        }
-        return invalid("Module connection names a non-Module owner");
-      },
-      owner.payload);
-}
-
-llvm::Expected<FabricModuleDomainMemberRef>
 moduleMember(const FabricMemoryEndpointOwnerRef &owner) {
   return std::visit(
       [](const auto &value) -> llvm::Expected<FabricModuleDomainMemberRef> {
@@ -111,6 +93,51 @@ moduleMember(const FabricMemoryEndpointOwnerRef &owner) {
         return invalid("Module memory attachment names a non-Module owner");
       },
       owner.payload);
+}
+
+using ModuleMembers = llvm::SmallVector<FabricModuleDomainMemberRef, 2>;
+
+llvm::Expected<ModuleMembers>
+moduleMembers(const FabricArtifactView &artifact,
+              const FabricTransportEndpointRef &endpoint) {
+  return std::visit(
+      [&](const auto &value) -> llvm::Expected<ModuleMembers> {
+        using Owner = std::decay_t<decltype(value)>;
+        ModuleMembers members;
+        if constexpr (std::is_same_v<Owner, FabricMemoryOccurrenceRef>) {
+          for (FabricMemoryOperationPortRef port :
+               artifact.memoryOperationPorts(value)) {
+            const MemoryOperationPortView *record =
+                artifact.memoryOperationPort(port);
+            if (!record)
+              return invalid("Module memory operation port cannot be resolved");
+            if (!llvm::is_contained(record->endpointInventory(),
+                                    endpoint.ordinal))
+              continue;
+            auto member = modulePhysicalMember(port);
+            if (!member)
+              return member.takeError();
+            members.push_back(std::move(*member));
+          }
+          if (members.empty())
+            return invalid(
+                "Module memory token endpoint has no operation port");
+          return members;
+        } else if constexpr (std::is_same_v<Owner, FabricPeOccurrenceRef> ||
+                             std::is_same_v<Owner, FabricFuOccurrenceRef> ||
+                             std::is_same_v<Owner, FabricSwitchOccurrenceRef> ||
+                             std::is_same_v<Owner, FabricFifoOccurrenceRef> ||
+                             std::is_same_v<Owner,
+                                            FabricBoundaryOccurrenceRef>) {
+          auto member = modulePhysicalMember(value);
+          if (!member)
+            return member.takeError();
+          members.push_back(std::move(*member));
+          return members;
+        }
+        return invalid("Module connection names a non-Module owner");
+      },
+      endpoint.owner.payload);
 }
 
 llvm::Expected<FabricModuleDomainMemberRef>
@@ -192,16 +219,28 @@ requireSameModuleSlots(const FabricModuleRootView &module,
   return llvm::Error::success();
 }
 
+llvm::Error requireSameModuleSlots(
+    const FabricModuleRootView &module,
+    llvm::ArrayRef<FabricModuleDomainMemberRef> sources,
+    llvm::ArrayRef<FabricModuleDomainMemberRef> destinations) {
+  for (const FabricModuleDomainMemberRef &source : sources)
+    for (const FabricModuleDomainMemberRef &destination : destinations)
+      if (llvm::Error error =
+              requireSameModuleSlots(module, source, destination))
+        return error;
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
   const FabricArtifactView &artifact = module.artifact();
   for (const FabricPointConnectionPayload &connection :
        artifact.pointConnections()) {
-    auto source = moduleMember(connection.source.owner);
+    auto source = moduleMembers(artifact, connection.source);
     if (!source)
       return source.takeError();
-    auto destination = moduleMember(connection.destination.owner);
+    auto destination = moduleMembers(artifact, connection.destination);
     if (!destination)
       return destination.takeError();
     if (llvm::Error error =
@@ -210,13 +249,14 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
   }
   for (const FabricModuleBoundaryTransportAttachmentView &attachment :
        artifact.moduleBoundaryTransportAttachments()) {
-    auto internal = moduleMember(attachment.endpoint.owner);
+    auto internal = moduleMembers(artifact, attachment.endpoint);
     if (!internal)
       return internal.takeError();
-    if (llvm::Error error = requireSameModuleSlots(
-            module, FabricModuleDomainMemberRef::of(attachment.boundary),
-            *internal))
-      return error;
+    for (const FabricModuleDomainMemberRef &member : *internal)
+      if (llvm::Error error = requireSameModuleSlots(
+              module, FabricModuleDomainMemberRef::of(attachment.boundary),
+              member))
+        return error;
   }
   for (const FabricModuleBoundaryMemoryAttachmentView &attachment :
        artifact.moduleBoundaryMemoryAttachments()) {
@@ -279,38 +319,21 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
                 module, *subordinateSource, *destination))
           return error;
       }
-    const auto endpointOwners = [&](FabricOrdinal endpoint)
-        -> llvm::Expected<llvm::SmallVector<FabricModuleDomainMemberRef, 2>> {
-      llvm::SmallVector<FabricModuleDomainMemberRef, 2> owners;
-      for (FabricMemoryOperationPortRef port : operationPorts) {
-        const MemoryOperationPortView *record =
-            artifact.memoryOperationPort(port);
-        if (!record)
-          return invalid("Module memory operation port cannot be resolved");
-        if (!llvm::is_contained(record->endpointInventory(), endpoint))
-          continue;
-        auto owner = modulePhysicalMember(port);
-        if (!owner)
-          return owner.takeError();
-        owners.push_back(std::move(*owner));
-      }
-      if (owners.empty())
-        return invalid("Module memory token endpoint has no operation port");
-      return owners;
-    };
     for (const ::fabric::MemoryInternalConnectionDeclaration &connection :
          connectivity->internalConnections()) {
-      auto sources = endpointOwners(connection.sourceEndpointOrdinal);
+      auto sources =
+          moduleMembers(artifact, {FabricTransportEndpointOwnerRef::of(memory),
+                                   connection.sourceEndpointOrdinal});
       if (!sources)
         return sources.takeError();
-      auto destinations = endpointOwners(connection.sinkEndpointOrdinal);
+      auto destinations =
+          moduleMembers(artifact, {FabricTransportEndpointOwnerRef::of(memory),
+                                   connection.sinkEndpointOrdinal});
       if (!destinations)
         return destinations.takeError();
-      for (const FabricModuleDomainMemberRef &source : *sources)
-        for (const FabricModuleDomainMemberRef &destination : *destinations)
-          if (llvm::Error error =
-                  requireSameModuleSlots(module, source, destination))
-            return error;
+      if (llvm::Error error =
+              requireSameModuleSlots(module, *sources, *destinations))
+        return error;
     }
   }
   for (const FabricPhysicalTraversalView &traversal :
@@ -319,10 +342,10 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
         std::get_if<FabricPeSelectorPayload>(&traversal.reference.payload);
     if (!selector)
       continue;
-    auto source = moduleMember(selector->source.owner);
+    auto source = moduleMembers(artifact, selector->source);
     if (!source)
       return source.takeError();
-    auto destination = moduleMember(selector->destination.owner);
+    auto destination = moduleMembers(artifact, selector->destination);
     if (!destination)
       return destination.takeError();
     if (llvm::Error error =

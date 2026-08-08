@@ -185,7 +185,7 @@ void nonCanonicalSlotPermutationIsRejected() {
                  "canonical Module domain carrier is stale");
 }
 
-void nonCanonicalFuNodeOrderIsRejected() {
+void nonCanonicalFuGraphOrderIsRejected() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   loom::ArtifactStore store(directory.path());
@@ -267,7 +267,225 @@ void nonCanonicalFuNodeOrderIsRejected() {
                      {loom::fabric::fabricArtifactSchema.identity.str(),
                       loom::fabric::fabricArtifactSchema.version, identity},
                      store),
-                 "canonical FU node order is stale");
+                 "canonical Module graph operation order is not canonical");
+}
+
+void canonicalFuDefinitionOrdinalsSurviveStrictImport() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module {
+      fabric.module @fu_definition_ordinal(
+          %first_data: !fabric.bits<32>, %second_data: !fabric.bits<32>) {
+        %first_pe = fabric.pe [spatial]
+            (%pe_data = %first_data : !fabric.bits<32>) -> !fabric.bits<32> {
+          %first_fu = fabric.fu(%fu_data = %pe_data : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+            %left = fabric.mux %fu_data, %fu_data : !fabric.bits<32>
+            %right = fabric.mux %fu_data, %fu_data : !fabric.bits<32>
+            %product = fabric.op [@arith.muli] (%fu_data, %fu_data)
+              {implementation_family =
+                 #fabric.implementation_family<ScalarIntegerMultiply>,
+               hw_params = {integer_widths = [32 : i32]}}
+              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %product : !fabric.bits<32>
+          }
+        }
+        %second_pe = fabric.pe [spatial]
+            (%pe_data = %second_data : !fabric.bits<32>) -> !fabric.bits<32> {
+          %second_fu = fabric.fu(%fu_data = %pe_data : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+            %left = fabric.mux %fu_data, %fu_data : !fabric.bits<32>
+            %right = fabric.mux %fu_data, %fu_data : !fabric.bits<32>
+            %product = fabric.op [@arith.muli] (%fu_data, %fu_data)
+              {implementation_family =
+                 #fabric.implementation_family<ScalarIntegerMultiply>,
+               hw_params = {integer_widths = [32 : i32]}}
+              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %product : !fabric.bits<32>
+          }
+        }
+        fabric.yield
+      }
+    }
+  )mlir",
+                                                        &context());
+  if (!source)
+    fail(test, "unable to parse the FU definition-ordinal fixture");
+
+  llvm::SmallVector<::fabric::PeOp, 2> pes;
+  llvm::SmallVector<::fabric::FuOp, 2> fus;
+  source->walk([&](::fabric::PeOp pe) { pes.push_back(pe); });
+  source->walk([&](::fabric::FuOp fu) { fus.push_back(fu); });
+  if (pes.size() != 2 || fus.size() != 2)
+    fail(test, "FU definition-ordinal fixture has the wrong inventory");
+  llvm::SmallVector<llvm::SmallVector<mlir::Operation *, 3>, 2>
+      nodesByOccurrence;
+  for (::fabric::FuOp fu : fus) {
+    llvm::SmallVector<mlir::Operation *, 3> nodes;
+    fu->walk([&](mlir::Operation *operation) {
+      if (mlir::isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(
+              operation))
+        nodes.push_back(operation);
+    });
+    if (nodes.size() != 3)
+      fail(test, "FU definition-ordinal fixture has the wrong node inventory");
+    nodesByOccurrence.push_back(std::move(nodes));
+  }
+
+  const auto resourceBytes =
+      take(test, ::fabric::encodeResourceContractRecord(
+                     ::fabric::oneCycleElasticOperationResourceContract()));
+  std::vector<std::int8_t> signedResourceBytes;
+  signedResourceBytes.reserve(resourceBytes.size());
+  for (std::uint8_t byte : resourceBytes)
+    signedResourceBytes.push_back(static_cast<std::int8_t>(byte));
+  source->walk([&](::fabric::OpOp operation) {
+    operation->setAttr(
+        ::fabric::kResourceContractRecordAttrName,
+        mlir::DenseI8ArrayAttr::get(source->getContext(), signedResourceBytes));
+  });
+
+  auto capability =
+      take(test, ::fabric::FuCapabilityDomainRecord::create({{{2}, {}}}));
+  const auto capabilityBytes =
+      take(test, ::fabric::encodeFuCapabilityDomainRecord(capability));
+  std::vector<std::int8_t> signedCapabilityBytes;
+  signedCapabilityBytes.reserve(capabilityBytes.size());
+  for (std::uint8_t byte : capabilityBytes)
+    signedCapabilityBytes.push_back(static_cast<std::int8_t>(byte));
+  for (::fabric::FuOp fu : fus)
+    fu.setCapabilityTemplatesAttr(::fabric::FuCapabilityDomainAttr::get(
+        source->getContext(),
+        mlir::DenseI8ArrayAttr::get(source->getContext(),
+                                    signedCapabilityBytes)));
+
+  using Kind = loom::fabric::FabricClockResetKind;
+  using Role = ::fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
+  ::fabric::ModuleDomainAuthoringRelation relation;
+  const auto firstClock = take(test, relation.declareSlot(Kind::Clock));
+  const auto secondClock = take(test, relation.declareSlot(Kind::Clock));
+  const auto firstReset = take(test, relation.declareSlot(Kind::Reset));
+  const auto secondReset = take(test, relation.declareSlot(Kind::Reset));
+  const auto assign = [&](mlir::Operation *owner, Role role,
+                          loom::fabric::FabricOrdinal memberOrdinal,
+                          bool secondDomain) {
+    if (llvm::Error error =
+            relation.noteInternalMember(owner, role, memberOrdinal))
+      fail(test, llvm::toString(std::move(error)));
+    for (Kind kind : {Kind::Clock, Kind::Reset}) {
+      const loom::fabric::FabricOrdinal slot =
+          kind == Kind::Clock ? (secondDomain ? secondClock : firstClock)
+                              : (secondDomain ? secondReset : firstReset);
+      if (llvm::Error error =
+              relation.assignInternal(owner, role, memberOrdinal, kind, slot))
+        fail(test, llvm::toString(std::move(error)));
+    }
+  };
+  for (loom::fabric::FabricOrdinal ordinal = 0; ordinal != 2; ++ordinal)
+    for (Kind kind : {Kind::Clock, Kind::Reset})
+      if (llvm::Error error = relation.assignBoundary(
+              loom::fabric::FabricPortDirection::Input, ordinal, kind,
+              kind == Kind::Clock ? (ordinal == 0 ? firstClock : secondClock)
+                                  : (ordinal == 0 ? firstReset : secondReset)))
+        fail(test, llvm::toString(std::move(error)));
+  for (auto [occurrence, fu] : llvm::enumerate(fus)) {
+    const bool occurrenceSecond = occurrence != 0;
+    assign(pes[occurrence], Role::Occurrence, 0, occurrenceSecond);
+    assign(pes[occurrence], Role::InstructionContext, 0, occurrenceSecond);
+    assign(fu, Role::Occurrence, 0, occurrenceSecond);
+    for (auto [nodeOrdinal, node] :
+         llvm::enumerate(nodesByOccurrence[occurrence]))
+      assign(node, Role::FuNode, 0, (occurrence + nodeOrdinal) % 2 != 0);
+  }
+
+  loom::fabric::FinalizedFabricRoot finalized =
+      take(test, loom::fabric::finalizeFabricRoot(root(test, *source), relation,
+                                                  store));
+  if (finalized.view().fuTemplates().size() != 1 ||
+      finalized.view().fuOccurrences().size() != 2)
+    fail(test, "finalized FU definition-ordinal inventory is incomplete");
+  const auto finalizedModule =
+      take(test, loom::fabric::requireModuleRoot(finalized.view()));
+  const loom::fabric::FabricFuTemplateRef definition =
+      finalized.view().fuTemplates().front();
+  const auto definitionOwner =
+      loom::fabric::FabricInventoryOwnerRef::of(definition);
+  const std::uint64_t nodeCount = finalized.view().inventorySize(
+      definitionOwner, loom::fabric::FabricInventoryKind::FuNode);
+  if (nodeCount != 3)
+    fail(test, "finalized FU definition has the wrong node inventory");
+  std::vector<std::vector<
+      std::pair<loom::fabric::FabricOrdinal, loom::fabric::FabricOrdinal>>>
+      occurrenceDomains;
+  for (loom::fabric::FabricFuOccurrenceRef occurrence :
+       finalized.view().fuOccurrences()) {
+    std::vector<
+        std::pair<loom::fabric::FabricOrdinal, loom::fabric::FabricOrdinal>>
+        domains;
+    for (loom::fabric::FabricOrdinal ordinal = 0; ordinal != nodeCount;
+         ++ordinal) {
+      const auto kind = finalized.view().fuNodeKind(definitionOwner, ordinal);
+      if (!kind)
+        fail(test, "finalized FU definition has an untyped node");
+      const auto occurrenceNode =
+          take(test,
+               loom::fabric::deriveFabricFuOccurrenceNode(
+                   finalized.view(), {*kind, definition, ordinal}, occurrence));
+      const auto physical = take(
+          test,
+          loom::fabric::FabricModulePhysicalOwnerRef::create(occurrenceNode));
+      const auto member =
+          loom::fabric::FabricModuleDomainMemberRef::of(physical);
+      std::optional<loom::fabric::FabricOrdinal> clock;
+      std::optional<loom::fabric::FabricOrdinal> reset;
+      for (const loom::fabric::ModuleDomainAssignment &assignment :
+           finalizedModule.domainAssignments()) {
+        if (assignment.member != member)
+          continue;
+        if (assignment.slot.kind == Kind::Clock)
+          clock = assignment.slot.ordinal;
+        else if (assignment.slot.kind == Kind::Reset)
+          reset = assignment.slot.ordinal;
+      }
+      if (!clock || !reset)
+        fail(test, "finalized FU occurrence node has no complete domain");
+      domains.emplace_back(*clock, *reset);
+    }
+    occurrenceDomains.push_back(std::move(domains));
+  }
+  for (loom::fabric::FabricOrdinal ordinal = 0; ordinal != nodeCount; ++ordinal)
+    if (occurrenceDomains[0][ordinal].first ==
+            occurrenceDomains[1][ordinal].first ||
+        occurrenceDomains[0][ordinal].second ==
+            occurrenceDomains[1][ordinal].second)
+      fail(test, "definition node changed occurrence-domain correspondence");
+  const auto templates = finalized.view().fuCapabilityTemplates(definition);
+  if (templates.size() != 1 || templates.front().activeNodes.size() != 1)
+    fail(test, "finalized FU capability changed its active-node domain");
+  const loom::fabric::FabricFuTemplateNodeRef templateNode =
+      templates.front().activeNodes.front();
+  if (templateNode.node != loom::fabric::FabricFuNodeKind::Op)
+    fail(test, "finalized FU capability selected a non-operation node");
+  for (loom::fabric::FabricFuOccurrenceRef occurrence :
+       finalized.view().fuOccurrences()) {
+    const auto occurrenceNode =
+        take(test, loom::fabric::deriveFabricFuOccurrenceNode(
+                       finalized.view(), templateNode, occurrence));
+    if (!finalized.view().resolvedFabricOpCapability(occurrenceNode) ||
+        !finalized.view().resourceContract(
+            loom::fabric::FabricInventoryOwnerRef::of(occurrenceNode)))
+      fail(test, "occurrence node lost its definition-owned contracts");
+  }
+
+  loom::fabric::FinalizedFabricRoot imported = take(
+      test, loom::fabric::importEntireFabricRoot(finalized.reference(), store));
+  const auto importedModule =
+      take(test, loom::fabric::requireModuleRoot(imported.view()));
+  if (imported.view().fuCapabilityTemplates(definition) != templates ||
+      importedModule.domainAssignments() != finalizedModule.domainAssignments())
+    fail(test, "strict import changed FU definition-local projections");
 }
 
 void fabricOpSchemaInventoryIsCanonicalAndStrict() {
@@ -487,7 +705,7 @@ void nonCanonicalModuleGraphOrderIsRejected() {
                  "canonical Module graph operation order is not canonical");
 }
 
-void coordinatedStoredEntityIdPermutationIsRejected() {
+void uncoordinatedStoredEntityIdPermutationIsRejected() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   loom::ArtifactStore store(directory.path());
@@ -967,13 +1185,14 @@ void memoryBoundaryConnectionCannotCrossModuleSlots() {
 
 int main() {
   nonCanonicalSlotPermutationIsRejected();
-  nonCanonicalFuNodeOrderIsRejected();
+  nonCanonicalFuGraphOrderIsRejected();
+  canonicalFuDefinitionOrdinalsSurviveStrictImport();
   unregisteredDiscardableAttributesAreRejected();
   redundantYieldDeclarationsAreCanonicalizedAndRejected();
   fabricOpSchemaInventoryIsCanonicalAndStrict();
   missingCanonicalFuCapabilityCarrierIsRejected();
   nonCanonicalModuleGraphOrderIsRejected();
-  coordinatedStoredEntityIdPermutationIsRejected();
+  uncoordinatedStoredEntityIdPermutationIsRejected();
   derivedIdentifiersOnNonCarriersAreRejected();
   canonicalRelationsOnNonCarriersAreRejected();
   authoringStateAndDeclarationsAreRejected();

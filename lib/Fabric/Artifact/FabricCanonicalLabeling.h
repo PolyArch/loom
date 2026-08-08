@@ -17,9 +17,10 @@ class Operation;
 } // namespace mlir
 
 namespace fabric {
+class FuOp;
 class ModuleOp;
 class OpOp;
-}
+} // namespace fabric
 
 namespace loom::fabric::detail {
 
@@ -42,6 +43,11 @@ struct FabricMemoryEngineTemplateCarrier {
   mlir::Operation *representative = nullptr;
 };
 
+struct FabricCanonicalFuDefinition {
+  CanonicalSemanticBytes relationBytes;
+  std::vector<mlir::Operation *> canonicalNodeOrder;
+};
+
 struct FabricModuleDomainSlotCarrier final {
   FabricClockResetKind kind = FabricClockResetKind::Clock;
   FabricOrdinal provisionalOrdinal = 0;
@@ -58,7 +64,7 @@ struct FabricCanonicalLabeling {
   llvm::DenseMap<mlir::Operation *, std::uint64_t>
       memoryEngineTemplateIdByOccurrence;
   llvm::DenseMap<mlir::Operation *, FabricOrdinal>
-      canonicalFuNodeOrdinalByOperation;
+      definitionFuNodeOrdinalByOperation;
   llvm::DenseMap<mlir::Operation *, std::vector<std::uint8_t>>
       canonicalFuCapabilityDomainByOccurrence;
   std::vector<FabricModuleDomainSlotCarrier> moduleDomainSlots;
@@ -69,6 +75,11 @@ struct FabricCanonicalLabeling {
 llvm::Expected<std::string>
 encodeFabricOpCanonicalIntrinsic(::fabric::OpOp operation);
 
+/// Computes one FU definition's canonical semantic relation and the unique
+/// definition-local node order used by every occurrence reference.
+llvm::Expected<FabricCanonicalFuDefinition>
+computeCanonicalFabricFuDefinition(::fabric::FuOp fu);
+
 /// Computes the exact semantic labeling of one already elaborated, declaration-
 /// free Fabric Module root. The caller owns structural verification and must
 /// reject residual fabric.instantiate operations before calling this function.
@@ -76,6 +87,13 @@ llvm::Expected<FabricCanonicalLabeling>
 computeFabricModuleCanonicalLabeling(::fabric::ModuleOp root);
 
 llvm::Expected<FabricCanonicalLabeling> computeFabricModuleCanonicalLabeling(
+    ::fabric::ModuleOp root,
+    const NormalizedModuleDomainRelation &domainRelation);
+
+/// Labels an already canonical Module payload whose capability carrier is
+/// already expressed in definition-local ordinals.
+llvm::Expected<FabricCanonicalLabeling>
+computeCanonicalFabricModulePayloadLabeling(
     ::fabric::ModuleOp root,
     const NormalizedModuleDomainRelation &domainRelation);
 

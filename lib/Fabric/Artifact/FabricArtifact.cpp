@@ -147,11 +147,12 @@ std::vector<std::uint8_t> unsignedBytes(llvm::ArrayRef<std::int8_t> bytes) {
   return result;
 }
 
-llvm::Error reorderCanonicalGraphRegions(
-    ::fabric::ModuleOp root,
-    llvm::ArrayRef<Operation *> canonicalOperationOrder) {
+llvm::Error
+reorderCanonicalGraphRegions(::fabric::ModuleOp root,
+                             const detail::FabricCanonicalLabeling &labeling) {
   llvm::DenseMap<Operation *, std::uint64_t> rank;
-  for (auto [index, operation] : llvm::enumerate(canonicalOperationOrder))
+  for (auto [index, operation] :
+       llvm::enumerate(labeling.canonicalOperationOrder))
     rank[operation] = index;
 
   llvm::SmallVector<Block *> blocks;
@@ -166,16 +167,24 @@ llvm::Error reorderCanonicalGraphRegions(
   for (Block *block : blocks) {
     llvm::SmallVector<Operation *> ordered;
     Operation *terminator = nullptr;
+    const bool fuDefinition = isa<::fabric::FuOp>(block->getParentOp());
     for (Operation &operation : *block) {
       if (operation.hasTrait<OpTrait::IsTerminator>()) {
         terminator = &operation;
         continue;
       }
-      if (!rank.count(&operation))
+      const bool known =
+          fuDefinition
+              ? labeling.definitionFuNodeOrdinalByOperation.count(&operation)
+              : rank.count(&operation);
+      if (!known)
         return invalid("canonical operation order omits a graph operation");
       ordered.push_back(&operation);
     }
     llvm::sort(ordered, [&](Operation *left, Operation *right) {
+      if (fuDefinition)
+        return labeling.definitionFuNodeOrdinalByOperation.lookup(left) <
+               labeling.definitionFuNodeOrdinalByOperation.lookup(right);
       return rank.lookup(left) < rank.lookup(right);
     });
     for (Operation *operation : ordered) {
@@ -1633,13 +1642,12 @@ llvm::Expected<OwningOpRef<ModuleOp>> buildCanonicalCandidate(
       clonedRoot, *normalizedDomain);
   if (!labeling)
     return labeling.takeError();
-  if (llvm::Error error = reorderCanonicalGraphRegions(
-          clonedRoot, labeling->canonicalOperationOrder))
+  if (llvm::Error error = reorderCanonicalGraphRegions(clonedRoot, *labeling))
     return std::move(error);
   if (llvm::Error error =
           detail::materializeFabricCanonicalFuCapabilityDomains(*labeling))
     return std::move(error);
-  auto reordered = detail::computeFabricModuleCanonicalLabeling(
+  auto reordered = detail::computeCanonicalFabricModulePayloadLabeling(
       clonedRoot, *normalizedDomain);
   if (!reordered)
     return reordered.takeError();

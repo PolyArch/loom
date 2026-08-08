@@ -6,6 +6,7 @@
 #include "Fabric/IR/FabricCanonicalEntity.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
+#include "Fabric/IR/FuCapabilityDomain.h"
 #include "Fabric/IR/ModuleDomain.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
@@ -597,21 +598,40 @@ void fuTemplateIdentityExcludesOccurrenceDomains() {
   root.walk([&](::fabric::FuOp fu) { fus.push_back(fu); });
   require(test, fus.size() == 2, "fixture has the wrong FU inventory");
 
+  auto capability =
+      ::fabric::FuCapabilityDomainRecord::create({{{2}, {{0, 0}, {1, 1}}}});
+  if (!capability)
+    fail(test, llvm::toString(capability.takeError()));
+  auto capabilityBytes = ::fabric::encodeFuCapabilityDomainRecord(*capability);
+  if (!capabilityBytes)
+    fail(test, llvm::toString(capabilityBytes.takeError()));
+  std::vector<std::int8_t> signedCapabilityBytes;
+  signedCapabilityBytes.reserve(capabilityBytes->size());
+  for (std::uint8_t byte : *capabilityBytes)
+    signedCapabilityBytes.push_back(static_cast<std::int8_t>(byte));
+  for (::fabric::FuOp fu : fus)
+    fu.setCapabilityTemplatesAttr(::fabric::FuCapabilityDomainAttr::get(
+        fu.getContext(),
+        mlir::DenseI8ArrayAttr::get(fu.getContext(), signedCapabilityBytes)));
+
   using Kind = loom::fabric::FabricClockResetKind;
   using Role = ::fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
   ::fabric::ModuleDomainAuthoringRelation relation;
   auto firstClock = relation.declareSlot(Kind::Clock);
   auto secondClock = relation.declareSlot(Kind::Clock);
-  auto reset = relation.declareSlot(Kind::Reset);
-  if (!firstClock || !secondClock || !reset)
+  auto firstReset = relation.declareSlot(Kind::Reset);
+  auto secondReset = relation.declareSlot(Kind::Reset);
+  if (!firstClock || !secondClock || !firstReset || !secondReset)
     fail(test, "unable to declare fixture domain slots");
   for (loom::fabric::FabricOrdinal ordinal = 0; ordinal != 2; ++ordinal)
     for (Kind kind : {Kind::Clock, Kind::Reset})
       if (llvm::Error error = relation.assignBoundary(
               loom::fabric::FabricPortDirection::Input, ordinal, kind,
-              kind == Kind::Clock ? *firstClock : *reset))
+              kind == Kind::Clock ? *firstClock : *firstReset))
         fail(test, llvm::toString(std::move(error)));
 
+  llvm::SmallVector<llvm::SmallVector<mlir::Operation *, 4>, 2>
+      nodesByOccurrence;
   for (auto [fuOrdinal, fu] : llvm::enumerate(fus)) {
     llvm::SmallVector<mlir::Operation *, 4> nodes;
     fu->walk([&](mlir::Operation *operation) {
@@ -621,16 +641,16 @@ void fuTemplateIdentityExcludesOccurrenceDomains() {
     });
     require(test, nodes.size() == 3,
             "fixture FU has the wrong physical-node inventory");
+    nodesByOccurrence.push_back(nodes);
     for (auto [nodeOrdinal, node] : llvm::enumerate(nodes)) {
       if (llvm::Error error =
               relation.noteInternalMember(node, Role::FuNode, 0))
         fail(test, llvm::toString(std::move(error)));
       for (Kind kind : {Kind::Clock, Kind::Reset}) {
+        const bool secondDomain = (fuOrdinal + nodeOrdinal) % 2 != 0;
         const loom::fabric::FabricOrdinal slot =
-            kind == Kind::Clock && fuOrdinal == 1 && nodeOrdinal == 0
-                ? *secondClock
-            : kind == Kind::Clock ? *firstClock
-                                  : *reset;
+            kind == Kind::Clock ? (secondDomain ? *secondClock : *firstClock)
+                                : (secondDomain ? *secondReset : *firstReset);
         if (llvm::Error error =
                 relation.assignInternal(node, Role::FuNode, 0, kind, slot))
           fail(test, llvm::toString(std::move(error)));
@@ -648,6 +668,61 @@ void fuTemplateIdentityExcludesOccurrenceDomains() {
     fail(test, llvm::toString(canonical.takeError()));
   require(test, canonical->fuTemplates.size() == 1,
           "occurrence-local Module domains changed FU template identity");
+
+  std::optional<std::vector<std::uint8_t>> sharedDomain;
+  for (auto [fuOrdinal, fu] : llvm::enumerate(fus)) {
+    const auto &nodes = nodesByOccurrence[fuOrdinal];
+    std::vector<loom::fabric::FabricOrdinal> ordinals;
+    ordinals.reserve(nodes.size());
+    for (mlir::Operation *node : nodes) {
+      auto found = canonical->definitionFuNodeOrdinalByOperation.find(node);
+      require(test,
+              found != canonical->definitionFuNodeOrdinalByOperation.end(),
+              "FU node has no canonical definition ordinal");
+      ordinals.push_back(found->second);
+    }
+    if (fuOrdinal != 0)
+      for (std::size_t node = 0; node != ordinals.size(); ++node)
+        require(test,
+                ordinals[node] ==
+                    canonical->definitionFuNodeOrdinalByOperation.lookup(
+                        nodesByOccurrence.front()[node]),
+                "occurrence domains changed definition-node correspondence");
+
+    auto domain = canonical->canonicalFuCapabilityDomainByOccurrence.find(fu);
+    require(test,
+            domain != canonical->canonicalFuCapabilityDomainByOccurrence.end(),
+            "FU occurrence has no canonical capability domain");
+    if (!sharedDomain)
+      sharedDomain = domain->second;
+    else
+      require(test, *sharedDomain == domain->second,
+              "shared FU template has occurrence-local capability bytes");
+    auto decoded = ::fabric::decodeFuCapabilityDomainRecord(domain->second);
+    if (!decoded)
+      fail(test, llvm::toString(decoded.takeError()));
+    require(test, decoded->templates().size() == 1,
+            "fixture capability domain changed cardinality");
+    const auto &selection = decoded->templates().front();
+    require(test,
+            selection.activeOperationNodeOrdinals.size() == 1 &&
+                selection.activeOperationNodeOrdinals.front() == ordinals[2],
+            "operation capability changed definition-node correspondence");
+    std::vector<::fabric::FuCapabilityRouteSelection> expectedRoutes = {
+        {ordinals[0], 0}, {ordinals[1], 1}};
+    llvm::sort(expectedRoutes, [](const auto &left, const auto &right) {
+      return left.selectorNodeOrdinal < right.selectorNodeOrdinal;
+    });
+    require(test, selection.routes == expectedRoutes,
+            "selector capability changed definition-node correspondence");
+  }
+
+  const auto &definition = canonical->fuTemplates.front();
+  for (auto [ordinal, node] : llvm::enumerate(definition.canonicalNodeOrder))
+    require(test,
+            canonical->definitionFuNodeOrdinalByOperation.lookup(node) ==
+                ordinal,
+            "template representative uses a non-definition node order");
 }
 
 } // namespace

@@ -877,6 +877,7 @@ enum class MemoryInternalRelation {
   OperationDispatch,
   SubordinateDispatch,
   EngineTokenConnection,
+  LocalOperationEndpoints,
 };
 
 llvm::Expected<FinalizedFabricDesign>
@@ -900,6 +901,9 @@ buildMemoryInternalRelation(llvm::StringRef test,
     break;
   case MemoryInternalRelation::EngineTokenConnection:
     inputTypes = {memory32, bits32, bits0, bits32, bits0};
+    break;
+  case MemoryInternalRelation::LocalOperationEndpoints:
+    inputTypes = {bits32, bits0};
     break;
   }
   SpatialCoreBuilder core = take(
@@ -935,6 +939,17 @@ buildMemoryInternalRelation(llvm::StringRef test,
       connectivity.subordinateEndpoints.push_back(std::move(subordinate));
       return MemorySpec::create(
           {}, {memory32}, {}, {0}, std::nullopt, std::move(localService),
+          take(test, MemoryConnectivitySpec::create(std::move(connectivity))));
+    }
+    if (relation == MemoryInternalRelation::LocalOperationEndpoints) {
+      ::fabric::MemoryConnectivityDeclaration connectivity;
+      ::fabric::MemoryOperationPortDispatchDeclaration port;
+      port.capabilityTargetDomains = {{localMemoryTarget()}};
+      connectivity.operationPorts.push_back(std::move(port));
+      return MemorySpec::create(
+          {bits32, bits0}, {bits32, bits0}, {}, {},
+          MemoryEngineSpec::spatial({loadPortDeclaration()}),
+          std::move(localService),
           take(test, MemoryConnectivitySpec::create(std::move(connectivity))));
     }
 
@@ -1006,6 +1021,10 @@ buildMemoryInternalRelation(llvm::StringRef test,
     assign(take(test, memory.operationPortMember(1)), secondClock, secondReset);
     assign(*memory.localServiceMember(), secondClock, secondReset);
     break;
+  case MemoryInternalRelation::LocalOperationEndpoints:
+    assign(take(test, memory.operationPortMember(0)), secondClock, secondReset);
+    assign(*memory.localServiceMember(), secondClock, secondReset);
+    break;
   }
 
   if (llvm::Error error = core.close({}))
@@ -1053,6 +1072,21 @@ void memoryEngineConnectionsRemainWithinOneSymbolicDomain() {
                 buildMemoryInternalRelation(
                     test, MemoryInternalRelation::EngineTokenConnection, kind),
                 "crosses symbolic Clock or Reset slots");
+}
+
+void memoryOperationEndpointsRemainWithinOneSymbolicDomain() {
+  const llvm::StringRef test = __func__;
+  auto sameDomain = buildMemoryInternalRelation(
+      test, MemoryInternalRelation::LocalOperationEndpoints, std::nullopt);
+  if (!sameDomain)
+    fail(test, llvm::toString(sameDomain.takeError()));
+  for (FabricClockResetKind kind :
+       {FabricClockResetKind::Clock, FabricClockResetKind::Reset})
+    expectError(
+        test,
+        buildMemoryInternalRelation(
+            test, MemoryInternalRelation::LocalOperationEndpoints, kind),
+        "crosses symbolic Clock or Reset slots");
 }
 
 void memoryConnectionsRemainWithinOneSymbolicDomain() {
@@ -1167,6 +1201,7 @@ void runDomainAuthoringTests() {
   operationDispatchRemainsWithinOneSymbolicDomain();
   subordinateDispatchRemainsWithinOneSymbolicDomain();
   memoryEngineConnectionsRemainWithinOneSymbolicDomain();
+  memoryOperationEndpointsRemainWithinOneSymbolicDomain();
   memoryConnectionsRemainWithinOneSymbolicDomain();
 }
 

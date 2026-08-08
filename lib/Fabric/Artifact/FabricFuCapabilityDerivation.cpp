@@ -491,21 +491,26 @@ projectSingletonDomain(const FabricFuCapabilityTemplateRecord &record) {
 
 llvm::Expected<::fabric::FuCapabilityDomainRecord>
 canonicalizeFabricFuCapabilityDomain(
-    ::fabric::FuOp fu, llvm::ArrayRef<Operation *> canonicalNodeOrder) {
-  llvm::SmallVector<Operation *, 16> authoringNodeOrder;
+    ::fabric::FuOp fu, llvm::ArrayRef<Operation *> canonicalNodeOrder,
+    FabricFuCapabilityOrdinalSpace sourceOrdinalSpace) {
+  llvm::SmallVector<Operation *, 16> physicalNodeOrder;
   for (Operation &operation : fu.getBody().front().without_terminator())
     if (isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(operation))
-      authoringNodeOrder.push_back(&operation);
+      physicalNodeOrder.push_back(&operation);
 
-  if (authoringNodeOrder.size() != canonicalNodeOrder.size())
+  if (physicalNodeOrder.size() != canonicalNodeOrder.size())
     return invalid("canonical FU node domain has the wrong size");
   llvm::DenseMap<Operation *, std::uint64_t> canonicalOrdinal;
   for (auto [ordinal, operation] : llvm::enumerate(canonicalNodeOrder)) {
-    if (!operation || !llvm::is_contained(authoringNodeOrder, operation))
+    if (!operation || !llvm::is_contained(physicalNodeOrder, operation))
       return invalid("canonical FU node domain contains a foreign node");
     if (!canonicalOrdinal.try_emplace(operation, ordinal).second)
       return invalid("canonical FU node domain repeats a node");
   }
+  const llvm::ArrayRef<Operation *> sourceNodeOrder =
+      sourceOrdinalSpace == FabricFuCapabilityOrdinalSpace::AuthoringPhysical
+          ? llvm::ArrayRef<Operation *>(physicalNodeOrder)
+          : canonicalNodeOrder;
 
   ::fabric::FuCapabilityDomainAttr attribute = fu.getCapabilityTemplatesAttr();
   if (!attribute) {
@@ -535,9 +540,9 @@ canonicalizeFabricFuCapabilityDomain(
     destination.activeOperationNodeOrdinals.reserve(
         source.activeOperationNodeOrdinals.size());
     for (std::uint64_t ordinal : source.activeOperationNodeOrdinals) {
-      if (ordinal >= authoringNodeOrder.size())
+      if (ordinal >= sourceNodeOrder.size())
         return invalid("capability domain names an unknown operation node");
-      Operation *operation = authoringNodeOrder[ordinal];
+      Operation *operation = sourceNodeOrder[ordinal];
       if (!isa<::fabric::OpOp>(operation))
         return invalid("capability domain activates a non-operation node");
       destination.activeOperationNodeOrdinals.push_back(
@@ -545,9 +550,9 @@ canonicalizeFabricFuCapabilityDomain(
     }
     destination.routes.reserve(source.routes.size());
     for (const ::fabric::FuCapabilityRouteSelection &route : source.routes) {
-      if (route.selectorNodeOrdinal >= authoringNodeOrder.size())
+      if (route.selectorNodeOrdinal >= sourceNodeOrder.size())
         return invalid("capability domain names an unknown selector node");
-      Operation *selector = authoringNodeOrder[route.selectorNodeOrdinal];
+      Operation *selector = sourceNodeOrder[route.selectorNodeOrdinal];
       if (auto mux = dyn_cast<::fabric::MuxOp>(selector)) {
         if (route.selectedPort >= mux.getInputs().size())
           return invalid("capability domain selects an unknown mux input");
@@ -569,7 +574,9 @@ llvm::Expected<std::vector<FabricFuCapabilityTemplateRecord>>
 deriveFabricFuCapabilityTemplates(
     ::fabric::FuOp fu, FabricFuTemplateRef owner,
     llvm::ArrayRef<Operation *> canonicalNodeOrder) {
-  auto domain = canonicalizeFabricFuCapabilityDomain(fu, canonicalNodeOrder);
+  auto domain = canonicalizeFabricFuCapabilityDomain(
+      fu, canonicalNodeOrder,
+      FabricFuCapabilityOrdinalSpace::CanonicalDefinition);
   if (!domain)
     return domain.takeError();
 

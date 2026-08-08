@@ -76,8 +76,8 @@ llvm::Error materializeFabricModuleDomainRelation(
           found->second->kind != FabricEntityKind::FabricFuOccurrence)
         return invalid("domain FU node has no canonical occurrence owner");
       auto ordinal =
-          labeling.canonicalFuNodeOrdinalByOperation.find(member.owner);
-      if (ordinal == labeling.canonicalFuNodeOrdinalByOperation.end())
+          labeling.definitionFuNodeOrdinalByOperation.find(member.owner);
+      if (ordinal == labeling.definitionFuNodeOrdinalByOperation.end())
         return invalid("domain FU node has no canonical node ordinal");
       return domainMember(FabricFuOccurrenceNodeRef{
           fuNodeKind(member.owner), FabricFuOccurrenceRef(found->second->id),
