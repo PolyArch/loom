@@ -1,0 +1,50 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-conversions-test %t
+# RUN: FileCheck %s --check-prefix=WIDTH < %t/generated/scalar_float_width_cast.sv
+# RUN: FileCheck %s --check-prefix=ITOF < %t/generated/scalar_integer_to_float.sv
+# RUN: FileCheck %s --check-prefix=FTOI < %t/generated/scalar_float_to_integer.sv
+# RUN: FileCheck %s --check-prefix=ORDINARY-SIGNED < %t/generated/scalar_float_to_signed_integer_singleton.sv
+# RUN: FileCheck %s --check-prefix=ORDINARY-UNSIGNED < %t/generated/scalar_float_to_unsigned_integer_singleton.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/generated/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/generated/portable_float_width_cast.ys
+
+# WIDTH: module scalar_float_width_cast
+# WIDTH: input [5:0] config_0
+# WIDTH: function automatic
+# WIDTH: loom_float_width_cast_e8_f23_to_e5_f10_rne
+# WIDTH-NOT: shortreal
+# WIDTH-NOT: DPI
+
+# ITOF: module scalar_integer_to_float
+# ITOF: input [5:0] config_0
+# ITOF: loom_signed_i32_to_float_e5_f10
+# ITOF: loom_unsigned_i64_to_float_e11_f52
+# ITOF-NOT: shortreal
+# ITOF-NOT: DPI
+
+# FTOI: module scalar_float_to_integer
+# FTOI: input [5:0] config_0
+# FTOI: loom_float_e11_f52_to_signed_i64
+# FTOI: loom_float_e11_f52_to_unsigned_i8
+# FTOI-NOT: shortreal
+# FTOI-NOT: DPI
+
+# ORDINARY-SIGNED: module scalar_float_to_signed_integer_singleton
+# ORDINARY-SIGNED-NOT: config_
+# ORDINARY-SIGNED: loom_float_e8_f23_to_signed_i16
+
+# ORDINARY-UNSIGNED: module scalar_float_to_unsigned_integer_singleton
+# ORDINARY-UNSIGNED-NOT: config_
+# ORDINARY-UNSIGNED: loom_float_e8_f23_to_unsigned_i16
+
+# TB: elastic_scalar_float_width_cast
+# TB: module testbench
+# TB: check_width
+# TB: check_integer_to_float
+# TB: check_float_to_integer
+# TB: check_ordinary_signed
+# TB: check_ordinary_unsigned
+# TB: backpressure changed a published width cast
+
+# YOSYS: hierarchy -check -top scalar_float_width_cast
