@@ -58,16 +58,21 @@ negotiated iterations, capacity conflicts, arithmetic failures, and final
 closure status. Higher levels refine those counts with the exact events that
 produced them. A decoded capacity conflict reports the physical owner and
 state, exact `usage/capacity`, contributing logical nets and claims, and their
-endpoints and traversals. When level three requests cut or reachability
-analysis, that analysis reads the same frozen topology and conflict set used by
-Mapping and reports either an exact separating cut or the exact reachable
-endpoint set; it cannot change a candidate or prove infeasibility by timeout.
+endpoints and traversals. When level three requests cut or reachability detail,
+the logger reports the result of the same frozen-topology analysis owned by
+Negotiated Routing. It does not recompute a diagnostic-only approximation. The
+event distinguishes an exact fixed-terminal capacity-cut certificate from
+reachability evidence that does not establish one. Neither result can prove
+infeasibility by timeout.
 
-The level-zero hot path performs no JSON construction, stderr locking, cut
-analysis, or diagnostic allocation. At every level, diagnostic collection,
-formatting, lock acquisition, output failure, and extra analysis cannot affect
-candidate order, random draws, search decisions, deterministic work
-accounting, termination, Mapping bytes, or Artifact identity. Events never
+The level-zero hot path performs no JSON construction, stderr locking,
+diagnostic-only analysis, or diagnostic allocation. An exact capacity-cut
+analysis required by Negotiated Routing is algorithm work at every diagnostic
+level; enabling the logger only observes its already computed result. At every
+level, diagnostic collection, formatting, lock acquisition, output failure,
+and extra presentation detail cannot affect candidate order, random draws,
+search decisions, deterministic work accounting, termination, Mapping bytes,
+or Artifact identity. Events never
 include raw Dataflow values, source or host paths, environment contents,
 credentials, external-tool restricted data, raw pointers, or implementation
 container order. No subsystem may parse `LOOM_DEBUG_VERBOSE` independently or
@@ -1795,6 +1800,41 @@ detector, or hidden no-progress threshold. Exhausting the routing policy's
 owner-local work limit returns the best admissible temporary iterate only for
 a non-final Action; otherwise it returns typed non-closure and rolls back.
 Final global closure never returns a temporary iterate.
+
+After a complete non-closed iteration, Negotiated Routing may also derive an
+exact fixed-terminal capacity-cut certificate. For one overused physical
+capacity dimension `r`, choose any canonical subset `N` of participating nets.
+For each `n` in `N`, remove from `n`'s frozen payload-compatible routing graph
+every traversal carrying a positive claim on `r`. If at least one selected sink
+of `n` is then unreachable from its selected source, every legal route for that
+fixed terminal assignment must consume `r`. Define:
+
+```text
+minimum_claim(n, r) =
+  min positive raw amount among payload-compatible traversals of n claiming r
+
+mandatory_usage(r) =
+  initial_occupancy(r)
+  + sum_n minimum_claim(n, r)
+```
+
+The sum ranges only over nets for which the removal test establishes the
+separating cut. All arithmetic is checked. If `mandatory_usage(r) >
+capacity(r)`, the current frozen source, sinks, placement, and attachment
+assignment cannot reach capacity closure. This is an exact conditional proof,
+not a stagnation heuristic and not proof that another terminal assignment,
+placement, SpatialCore, or Fabric is infeasible. Implementations may use the
+nets contributing to the current overuse as the conservative canonical subset;
+failure to establish the inequality simply continues normal negotiation.
+
+The cut test is part of the completed negotiated-iteration work unit and runs
+before pressure, history, price, or direction advances. A non-final invocation
+whose policy admits the remaining violation immediately restores and returns
+its best admissible temporary iterate so that outer realization, placement, or
+resource Actions can change the frozen assignment. Otherwise the invocation
+returns typed non-closure and rolls back. Checked routing-cost overflow remains
+an Action failure when no earlier exact certificate applies; saturation, wrap,
+dynamic rescaling, and treating overflow as infeasibility remain forbidden.
 
 Only the selected overlay is applied once through `MoveTransaction`.
 PathFinder pressure/history, Dual prices/directions, best-iterate metadata,

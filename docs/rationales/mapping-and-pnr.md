@@ -46,11 +46,12 @@ were rejected because they duplicate configuration and event ownership without
 adding semantic capability.
 
 The channel is deliberately outside ResolvedConfig and Mapping identity.
-Turning it on may spend diagnostic time, but cannot change search work,
-ordering, random draws, or outcomes. Stable typed ordinals are more useful and
-safer than raw SSA values, pointers, source paths, or container dumps. Exact cut
-and reachability analysis belongs only at the most detailed level because it is
-diagnostic evidence, not a hidden routing or infeasibility oracle.
+Turning it on may spend diagnostic presentation time, but cannot change search
+work, ordering, random draws, or outcomes. Stable typed ordinals are more
+useful and safer than raw SSA values, pointers, source paths, or container
+dumps. Negotiated Routing owns the one exact fixed-terminal cut analysis used
+for conditional non-closure; level-three logging exposes that result and its
+reachable sets rather than creating a second diagnostic oracle.
 
 ## Why Compute Realization Replaces `dataflow.subgraph`
 
@@ -628,6 +629,23 @@ exponent and another ordering rule. A 128-bit cost would double the principal
 A* cost arrays while only postponing, rather than eliminating, unbounded price
 growth. Checked overflow is consequently an explicit failed Action, not
 saturation, infeasibility, or permission to change representation.
+
+An exact capacity cut is the necessary boundary between inner routing and
+outer Mapping search. Continuing PathFinder price growth after two fixed nets
+are each proven to require the same unit-capacity switch input cannot discover
+a route; it only delays the resource or attachment Action that can change one
+of their terminals. Treating that condition as global Fabric infeasibility is
+equally wrong because another endpoint assignment may remove the cut.
+
+The certificate therefore removes every traversal claiming one capacity from
+the frozen payload-compatible graph and proves a selected sink unreachable.
+Summing the minimum positive raw claim for each proven net gives a conservative
+lower bound: ignored constraints can only add restrictions, and alternate
+claiming traversals cannot consume less than that minimum. Exceeding physical
+capacity proves only the current fixed-terminal routing subproblem cannot
+close. Returning the best policy-admitted temporary iterate lets the existing
+outer Action algebra repair the assignment without a new restart mechanism,
+new violation kind, heuristic stagnation rule, or numeric exception.
 
 The complete dynamic-cost baseline is derived once from the complete route
 overlay at an iteration boundary. Candidate-local changes reuse Fabric's raw
