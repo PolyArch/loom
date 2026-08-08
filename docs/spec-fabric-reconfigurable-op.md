@@ -330,11 +330,26 @@ that the encoded value is unobservable.
 
 The finalizer first intersects the enabled schemas, typed parameters, exact
 physical port capacities, the complete domain of admitted ordered
-actor-to-port correspondences, and typed constraints. It then projects every
-admitted actor-and-correspondence point to the physical behavior required to
-implement that point. Equality of those projected behaviors is the quotient
-relation. The finite key domain is exactly the sorted, duplicate-free image of
-that projection; it is not the Cartesian product of parameter fields.
+actor-to-port correspondences, and typed constraints. For total actor
+semantics, it projects each admitted point to the equal physical behavior it
+requires. For partial semantics such as Poison-producing inputs or fast-math
+permissions, compatibility is a refinement relation rather than an
+equivalence relation, so actor-local rewriting is insufficient. The finalizer
+constructs one deterministic refinement cover of the complete reachable image:
+
+1. process behaviors with the largest defined input/result domain before
+   compatible weaker behaviors, with canonical actor and correspondence bytes
+   breaking unrelated ties;
+2. assign a weaker behavior to an existing total representative when that
+   representative refines it, preferring the same unrefined role and exact
+   endpoint formats, then the lexicographically smallest canonical key; and
+3. only when no existing representative is compatible, add the canonical
+   normalized representative defined for that refinement below.
+
+The finite key domain is exactly the sorted, duplicate-free cover produced by
+this procedure; it is not the Cartesian product of parameter fields. A weaker
+actor never creates an additional key when an already required stronger mode
+implements it.
 
 Each finite key codec starts with the exact ASCII domain
 `loom.fabric.operation-behavior-key`, one zero byte, and `u32be(1), u32be(0)`.
@@ -410,7 +425,7 @@ The finite floating-point quotients are:
 | --------------------- | --------------------------------- |
 | `ScalarFloatSign` | `Negate(active_representation_width)` or `Absolute(active_representation_width)` |
 | `ScalarFloatAddSub` | `Add(format, rounding_mode)` or `Sub(format, rounding_mode)` |
-| `ScalarFloatCompareMinMax` | `Compare(predicate[, format])`, `Minimum(format)`, `Maximum(format)`, `MinNumber(format)`, or `MaxNumber(format)` |
+| `ScalarFloatCompareMinMax` | `Compare(predicate[, numeric_format])`, `Minimum(numeric_format)`, `Maximum(numeric_format)`, `MinNumber(numeric_format)`, or `MaxNumber(numeric_format)` |
 | `ScalarFloatWidthCast` | `(source_format, destination_format[, rounding_mode for truncation])` |
 | `ScalarIntegerToFloat` | `Signed(source_width, destination_format)` or `Unsigned(source_width, destination_format)` |
 | `ScalarFloatToInteger` | `Signed(source_format, destination_width)` or `Unsigned(source_format, destination_width)` |
@@ -418,7 +433,7 @@ The finite floating-point quotients are:
 | `ScalarFloatFma` | `(format, rounding_mode)` |
 | `FixedVectorFloatSign` | `Negate(active_representation_width)` or `Absolute(active_representation_width)` |
 | `FixedVectorFloatAddSub` | `Add(element_format, rounding_mode)` or `Sub(element_format, rounding_mode)` |
-| `FixedVectorFloatCompareMinMax` | `Compare(predicate[, element_format])`, `Minimum(element_format)`, `Maximum(element_format)`, `MinNumber(element_format)`, or `MaxNumber(element_format)` |
+| `FixedVectorFloatCompareMinMax` | `Compare(predicate[, numeric_format])`, `Minimum(numeric_format)`, `Maximum(numeric_format)`, `MinNumber(numeric_format)`, or `MaxNumber(numeric_format)` |
 | `FixedVectorFloatMultiply` | `(element_format, rounding_mode)` |
 | `FixedVectorFloatFma` | `(element_format, rounding_mode)` |
 | `ScalarFloatDivide` | `(format, rounding_mode)` |
@@ -440,12 +455,18 @@ therefore project to one physical behavior.
 
 `format`, `source_format`, and `destination_format` are exact scalar floating
 types. `element_format` is the exact vector element type. Equal representation
-width does not make arithmetic formats equivalent. The only width-based
-floating rows are scalar and fixed-vector sign manipulation: `f16` and `bf16`
-collapse there because negate and absolute value are bit-identical sign-bit
-transforms. Fixed-vector shape and lane count remain admission facts and do not
-enter a floating arithmetic key. Physical filtering must establish at least
-one positive-lane actor witness before quotienting.
+width does not make arithmetic formats equivalent. Scalar and fixed-vector sign
+manipulation use width because `f16` and `bf16` negate and absolute value are
+bit-identical sign-bit transforms. Compare/minmax `numeric_format` is the
+closed tagged sum `ExactFormat(canonical_type)` or
+`RepresentationWidth(u32)`. It uses `ExactFormat` whenever a reachable
+NaN-defined representative requires that exact format; it uses
+`RepresentationWidth` only for an uncovered `nnan`-normalized behavior. A
+mixed strict/`nnan` image therefore reuses its exact-format modes, while an
+all-`nnan` 16-bit image can collapse `f16` and `bf16` to one width mode.
+Fixed-vector shape and lane count remain admission facts and do not enter a
+floating arithmetic key. Physical filtering must establish at least one
+positive-lane actor witness before quotienting.
 
 `active_representation_width` is the scalar format representation width for
 `ScalarFloatSign` and the element format representation width for
@@ -456,15 +477,18 @@ An absent actor rounding attribute canonicalizes to
 `to_nearest_even` wherever the row contains `rounding_mode`. Explicit
 `to_nearest_even` is the same behavior. A rounding component that is constant
 across the complete reachable image is omitted by the common quotient rule.
-Floating compare predicates use these registered semantic refinements when the
-actor grants `nnan`: unordered equality, ordering, and inequality predicates
-collapse to their ordered counterparts; `ord` collapses to `AlwaysTrue`; and
-`uno` collapses to `AlwaysFalse`. `AlwaysTrue` and `AlwaysFalse` compare keys
-omit the format because their result is independent of the operand value.
-Under the same `nnan` permission, `minnum` and `maxnum` collapse to `Minimum`
-and `Maximum`. `arith.uitofp` with its `nneg` promise collapses to the `Signed`
-conversion for equal endpoints. These promises restrict or relax defined
-software inputs; they do not create physical modes.
+The refinement cover first lets a relaxed actor reuse any compatible strict
+representative already required by the complete reachable image. Only an
+uncovered `nnan` floating compare normalizes unordered equality, ordering, and
+inequality predicates to their ordered counterparts; `ord` normalizes to
+`AlwaysTrue`, and `uno` to `AlwaysFalse`. `AlwaysTrue` and `AlwaysFalse` keys
+omit `numeric_format` because their result is independent of operand value.
+Under the same rule, uncovered `nnan` `minnum` and `maxnum` normalize to
+`Minimum` and `Maximum`. An uncovered `arith.uitofp` actor with its `nneg`
+promise normalizes to `Signed` for equal endpoints. If the corresponding strict
+role is already reachable, the relaxed actor reuses that role instead of
+creating the normalized key. These promises restrict or relax defined software
+inputs; they never add a physical mode.
 
 Ordinary and saturating floating-to-integer schemas with equal signedness and
 endpoints also project to one key. The saturating schema requires the concrete

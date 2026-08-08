@@ -52,22 +52,27 @@ sealed result.
 
 Floating arithmetic uses exact formats rather than representation widths in
 its quotient because equal-width formats can have different exponent and
-significand behavior. Sign manipulation is the deliberate exception: negate
-and absolute value only transform the sign bit, so equal-width `f16` and
-`bf16` actors require the same configured circuit. Fixed-vector shape remains
-an admission fact because one configured vector datapath can serve every
-reachable positive lane shape with the same element behavior. This preserves
-the smallest observable physical quotient without treating type identity or
-shape spelling as a mode.
+significand behavior. Sign manipulation is an unconditional exception: negate
+and absolute value only transform the sign bit. Compare/minmax has a
+conditional exception when the complete reachable image abandons every
+format-specific NaN observation. A mixed strict/`nnan` image already requires
+its exact-format modes, so relaxed actors reuse those modes; adding a third
+width mode would represent no circuit requirement. An all-`nnan` equal-width
+image instead needs only one sign-magnitude mode. Fixed-vector shape remains an
+admission fact because one configured vector datapath can serve every reachable
+positive lane shape with the same element behavior.
 
 Fast-math flags and accepted special-math accuracy are permissions on an actor,
 while required fast-math and accuracy guarantee are fixed resource facts.
 Encoding either side into a configuration key would create modes that no
-resource selector chooses. The same reasoning permits registered refinements
-such as unordered-to-ordered comparison under `nnan` to collapse before key
-construction. A profile member with no actor-selected image is rejected rather
-than retained as a phantom field, so parameter cardinality cannot compete with
-the reachable behavior quotient.
+resource selector chooses. Registered refinements therefore form a
+deterministic cover: a relaxed behavior first reuses a compatible stronger mode
+already required by the complete image, and only an uncovered relaxed behavior
+is normalized. Actor-local normalization was rejected because compatibility of
+partial semantics is not transitive; it can add a relaxed key beside two
+already sufficient strict keys. A profile member with no actor-selected image
+is rejected rather than retained as a phantom field, so parameter cardinality
+cannot compete with the reachable behavior relation.
 
 Encoding the complete actor projection as a floating key was rejected because
 it would duplicate OperationSchema identity and preserve permissions that do
