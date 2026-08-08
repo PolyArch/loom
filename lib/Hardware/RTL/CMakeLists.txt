@@ -11,6 +11,7 @@ add_library(LoomHardwareRTL
   Providers/FixedVectorShuffle.cpp
   Providers/FixedVectorSliceAlignMerge.cpp
   Providers/FixedVectorValueSelect.cpp
+  Providers/FloatAddSub.cpp
   Providers/FloatMultiply.cpp
   Providers/FloatSign.cpp
   Providers/IntegerCountZeros.cpp
