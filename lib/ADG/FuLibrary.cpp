@@ -440,16 +440,14 @@ llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
        ::fabric::ScalarFloatWidthCastParams{
            floatCastRelation(), ::fabric::FloatBehaviorProfile::strictIEEE()},
        {0}});
-  resources.push_back({ImplementationFamilyId::ScalarIntegerToFloat,
-                       ::fabric::ScalarIntegerFloatConversionParams{
-                           integerFloatRelation(),
-                           ::fabric::FloatBehaviorProfile::strictIEEE()},
-                       {0}});
-  resources.push_back({ImplementationFamilyId::ScalarFloatToInteger,
-                       ::fabric::ScalarIntegerFloatConversionParams{
-                           integerFloatRelation(),
-                           ::fabric::FloatBehaviorProfile::strictIEEE()},
-                       {0}});
+  resources.push_back(
+      {ImplementationFamilyId::ScalarIntegerToFloat,
+       ::fabric::ScalarIntegerFloatConversionParams{integerFloatRelation()},
+       {0}});
+  resources.push_back(
+      {ImplementationFamilyId::ScalarFloatToInteger,
+       ::fabric::ScalarIntegerFloatConversionParams{integerFloatRelation()},
+       {0}});
   return addSelectableFu(pe, inputs, {*bits64, *bits64, *bits1}, *bits64,
                          *bits128, resources);
 }

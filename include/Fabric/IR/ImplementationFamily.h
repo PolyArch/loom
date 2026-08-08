@@ -465,7 +465,6 @@ struct ScalarIntegerFloatConversionParams {
   static constexpr CapabilityParamsSchemaId schemaId =
       CapabilityParamsSchemaId::ScalarIntegerFloatConversionParams;
   IntegerFloatFormatRelation formatPairs;
-  FloatBehaviorProfile behavior;
 };
 
 struct LoopStreamParams {

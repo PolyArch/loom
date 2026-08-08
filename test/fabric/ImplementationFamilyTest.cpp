@@ -317,6 +317,47 @@ bool checkCapabilityCodec(MLIRContext &context) {
     return false;
   }
 
+  const FamilyCapabilityParams conversionCapability =
+      ScalarIntegerFloatConversionParams{IntegerFloatFormatRelation::get(
+          {{IntegerWidth::I32, FloatFormat::F32}})};
+  DictionaryAttr encodedConversion =
+      getFamilyCapabilityParamsAttr(&context, conversionCapability);
+  bool conversionCodecValid = true;
+  if (encodedConversion.size() != 1 || !encodedConversion.get("format_pairs") ||
+      encodedConversion.get("behavior")) {
+    llvm::errs() << "conversion hw_params retained an orphan behavior field\n";
+    conversionCodecValid = false;
+  }
+  auto decodedConversion = parseFamilyCapabilityParams(
+      ImplementationFamilyId::ScalarIntegerToFloat, encodedConversion);
+  if (!decodedConversion ||
+      getFamilyCapabilityParamsAttr(&context, *decodedConversion) !=
+          encodedConversion) {
+    if (!decodedConversion)
+      llvm::errs() << llvm::toString(decodedConversion.takeError()) << '\n';
+    llvm::errs() << "canonical conversion hw_params did not round-trip\n";
+    conversionCodecValid = false;
+  }
+
+  OpBuilder conversionBuilder(&context);
+  DictionaryAttr legacyConversion = conversionBuilder.getDictionaryAttr({
+      conversionBuilder.getNamedAttr("format_pairs",
+                                     encodedConversion.get("format_pairs")),
+      conversionBuilder.getNamedAttr("behavior", encoded.get("behavior")),
+  });
+  auto rejectedLegacy = parseFamilyCapabilityParams(
+      ImplementationFamilyId::ScalarIntegerToFloat, legacyConversion);
+  if (rejectedLegacy) {
+    llvm::errs() << "legacy conversion behavior field was accepted\n";
+    conversionCodecValid = false;
+  } else if (!llvm::StringRef(llvm::toString(rejectedLegacy.takeError()))
+                  .contains("unknown field 'behavior'")) {
+    llvm::errs() << "legacy conversion behavior field was misclassified\n";
+    conversionCodecValid = false;
+  }
+  if (!conversionCodecValid)
+    return false;
+
   FamilyCapabilityParams pointerCapability = ScalarIntegerParams{
       IntegerWidthSet::get({IntegerWidth::I32, IntegerWidth::I64}),
       PointerFormatRelation::get(
@@ -683,8 +724,8 @@ bool checkCastRelations(MLIRContext &context) {
       IntegerFloatFormatRelation::get({{IntegerWidth::I16, FloatFormat::F32},
                                        {IntegerWidth::I32, FloatFormat::F32},
                                        {IntegerWidth::I64, FloatFormat::F64}});
-  FamilyCapabilityParams conversions = ScalarIntegerFloatConversionParams{
-      conversionPairs, FloatBehaviorProfile::strictIEEE()};
+  FamilyCapabilityParams conversions =
+      ScalarIntegerFloatConversionParams{conversionPairs};
   FamilyCapabilityParams reinterpretation = ScalarBitReinterpretParams{
       IntegerWidthSet::get({IntegerWidth::I32}),
       FloatFormatSet::get({FloatFormat::F32, FloatFormat::F64})};

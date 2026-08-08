@@ -899,7 +899,7 @@ llvm::Expected<bool> semanticConfigurationRequiresField(
   }
   case TypedAdmissionProviderId::ScalarIntegerFloatConversionAdmission: {
     const auto &typed = std::get<ScalarIntegerFloatConversionParams>(params);
-    return typed.formatPairs.size() > 1 || floatBehaviorVaries(typed.behavior);
+    return typed.formatPairs.size() > 1;
   }
   case TypedAdmissionProviderId::StreamAdmission: {
     const auto &typed = std::get<LoopStreamParams>(params);

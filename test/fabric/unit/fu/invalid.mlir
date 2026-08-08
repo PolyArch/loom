@@ -88,7 +88,7 @@ fabric.module @fu_yield_type_mismatch(%a : !fabric.bits<16>) {
   fabric.pe [spatial] (%pa = %a : !fabric.bits<16>) -> !fabric.bits<16> {
     %r = fabric.fu(%x = %pa : !fabric.bits<16>) -> !fabric.bits<16> {
       %k = fabric.op [@arith.sitofp] (%x)
-           {implementation_family = #fabric.implementation_family<ScalarIntegerToFloat>, hw_params = {format_pairs = [[1 : i32, "f16"]], behavior = {rounding_modes = ["to_nearest_even"], nan_behaviors = ["ieee"], subnormal_behaviors = ["preserve"], signed_zero_behaviors = ["preserve"], fastmath = "none"}}} : (!fabric.bits<16>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerToFloat>, hw_params = {format_pairs = [[1 : i32, "f16"]]}} : (!fabric.bits<16>) -> !fabric.bits<32>
       // expected-error @+1 {{yield value #0 type '!fabric.bits<32>' must match parent fabric.fu result type '!fabric.bits<16>'}}
       fabric.yield %k : !fabric.bits<32>
     }
@@ -129,7 +129,7 @@ fabric.module @fu_yield_inner_gt_outer(%a : !fabric.bits<16>) {
   fabric.pe [spatial] (%pa = %a : !fabric.bits<16>) -> !fabric.bits<16> {
     %r = fabric.fu(%x = %pa : !fabric.bits<16>) -> !fabric.bits<16> {
       %k = fabric.op [@arith.sitofp] (%x)
-           {implementation_family = #fabric.implementation_family<ScalarIntegerToFloat>, hw_params = {format_pairs = [[1 : i32, "f16"]], behavior = {rounding_modes = ["to_nearest_even"], nan_behaviors = ["ieee"], subnormal_behaviors = ["preserve"], signed_zero_behaviors = ["preserve"], fastmath = "none"}}} : (!fabric.bits<16>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerToFloat>, hw_params = {format_pairs = [[1 : i32, "f16"]]}} : (!fabric.bits<16>) -> !fabric.bits<32>
       // expected-error @+1 {{yield value #0 inner bits-width 32 is greater than outer bits-width 16; the FU output boundary only supports low-bit-aligned widening (inner <= outer, high bits zero-filled)}}
       fabric.yield %k : !fabric.bits<32> to !fabric.bits<16>
     }

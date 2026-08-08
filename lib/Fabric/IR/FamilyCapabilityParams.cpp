@@ -573,16 +573,12 @@ parseParams(CapabilityParamsSchemaId schema, DictionaryAttr params) {
         ScalarFloatWidthCastParams{*pairs, *behavior});
   }
   case Schema::ScalarIntegerFloatConversionParams: {
-    if (llvm::Error error = checkFields(params, {"format_pairs", "behavior"}))
+    if (llvm::Error error = checkFields(params, {"format_pairs"}))
       return std::move(error);
     auto pairs = parseIntegerFloatRelation(params, "format_pairs");
     if (!pairs)
       return pairs.takeError();
-    auto behavior = parseFloatBehavior(params);
-    if (!behavior)
-      return behavior.takeError();
-    return FamilyCapabilityParams(
-        ScalarIntegerFloatConversionParams{*pairs, *behavior});
+    return FamilyCapabilityParams(ScalarIntegerFloatConversionParams{*pairs});
   }
   case Schema::LoopStreamParams: {
     if (llvm::Error error =
@@ -1136,8 +1132,6 @@ fabric::getFamilyCapabilityParamsAttr(MLIRContext *context,
               builder.getNamedAttr(
                   "format_pairs",
                   integerFloatPairsAttr(builder, typed.formatPairs)),
-              builder.getNamedAttr("behavior",
-                                   floatBehaviorAttr(builder, typed.behavior)),
           });
         } else if constexpr (std::is_same_v<T, LoopStreamParams>) {
           constexpr std::array<arith::CmpIPredicate, 10> predicates = {

@@ -1313,12 +1313,7 @@ llvm::Error admitScalarIntegerFloatConversionAdmission(
   if (!params.formatPairs.contains(*integer, *format))
     return reject("integer and floating relation does not admit the endpoint "
                   "pair");
-
-  // Conversion schemas have no arithmetic rounding attribute in their
-  // registered projection. Their exact conversion semantics are therefore
-  // checked without inventing an arithmetic rounding configuration field.
-  return admitFloatBehavior(params.behavior, ::mlir::arith::FastMathFlags::none,
-                            std::nullopt, FloatNaNBehavior::IEEE);
+  return llvm::Error::success();
 }
 
 } // namespace
