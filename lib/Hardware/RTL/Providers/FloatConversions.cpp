@@ -704,7 +704,7 @@ materializePortableFloatConversion(FabricOperationProviderRequest request) {
   if (llvm::Error error = verifyFabricOperationLeafPorts(
           request.leaf, request.occurrence, request.capability,
           request.configurationAbi))
-    return std::move(error);
+    return error;
 
   auto relation = request.capability.resolveSemanticFieldRelation(
       *request.leaf.getContext());
