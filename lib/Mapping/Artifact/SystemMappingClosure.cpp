@@ -2,6 +2,7 @@
 
 #include "MappingResourceUseImport.h"
 #include "SystemMappingExecutionProjection.h"
+#include "SystemMappingServiceTargetVerification.h"
 
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -715,7 +716,7 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
     ::mapping::SystemOp root,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
-    const SystemExecutionBindingView &execution) {
+    const SystemExecutionBindingView &execution, const ArtifactStore &store) {
   auto projected =
       projectSystemServiceObligations(dataflow, execution.rootThreadLaunches());
   if (!projected)
@@ -874,6 +875,15 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
       return std::move(error);
     std::vector<SystemServicePlanView> planViews;
     planViews.reserve(plans->size());
+    for (const auto &[ordinal, plan] : *plans) {
+      (void)ordinal;
+      planViews.push_back(plan.view);
+    }
+    if (llvm::Error error = verifySystemServiceTargetClosure(
+            dataflow, fabric, store, *projection->second, *contexts, planViews,
+            selectionViews))
+      return std::move(error);
+    planViews.clear();
     for (auto &[ordinal, plan] : *plans) {
       (void)ordinal;
       planViews.push_back(std::move(plan.view));

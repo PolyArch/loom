@@ -1,11 +1,11 @@
 #include "SystemPnrSearchDomainInternal.h"
 
 #include "Dataflow/IR/DataflowReferenceCodec.h"
-#include "Dataflow/IR/OperationSchema.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/Artifact/FabricMemoryServiceClosure.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/Artifact/SystemServiceBindingProjection.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -22,13 +22,10 @@
 namespace loom::pnr::detail {
 namespace {
 
-using ::dataflow::semantics::CanonicalMemoryAccessView;
 using ::dataflow::semantics::ServiceKind;
-using ::loom::fabric::AddressedMemoryCapabilityDomain;
 using ::loom::fabric::CanonicalServiceCapabilityRecord;
 using ::loom::fabric::CanonicalServiceEndpointPlane;
 using ::loom::fabric::CanonicalServiceEndpointRole;
-using ::loom::fabric::FenceCapabilityDomain;
 using ::loom::fabric::MessageTransferCapabilityDomain;
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -54,8 +51,7 @@ struct ResolvedServiceMember final {
   ServiceKind kind;
   std::optional<mlir::Type> messagePayload;
   std::optional<::dataflow::ContextualActorRef> contextualActor;
-  std::optional<::dataflow::CanonicalActorSchemaProjection> actor;
-  std::optional<CanonicalMemoryAccessView> access;
+  bool addressed = false;
 };
 
 struct BoundMemoryEndpointPair final {
@@ -116,7 +112,7 @@ llvm::Expected<ResolvedServiceMember> resolveMember(
     if (found == messagePayloads.end())
       return invalid("message obligation has no Dataflow-owned payload type");
     return ResolvedServiceMember{ServiceKind::MessageTransfer, found->second,
-                                 std::nullopt, std::nullopt, std::nullopt};
+                                 std::nullopt, false};
   }
 
   std::optional<::dataflow::ContextualActorRef> contextual;
@@ -128,33 +124,14 @@ llvm::Expected<ResolvedServiceMember> resolveMember(
     contextual = fence->actor;
   else
     return invalid("unknown canonical service-member variant");
-  auto actorView = dataflow.resolve(contextual->actor);
-  if (!actorView)
-    return actorView.takeError();
-  if (llvm::Error error = dataflow.validate(*contextual))
-    return std::move(error);
-  auto issue = ::loom::mapping::deriveSpatialMemoryIssueEvent(
-      dataflow, contextual->actor);
-  if (!issue)
-    return issue.takeError();
-  auto actor =
-      ::dataflow::projectRegisteredActorSchemaProjection(actorView->op);
-  if (!actor)
-    return actor.takeError();
-  auto kind = ::dataflow::semantics::getMemoryServiceKind(actor->schema);
+  auto kind =
+      ::loom::mapping::resolveSystemOperationServiceKind(dataflow, member);
   if (!kind)
     return kind.takeError();
-  std::optional<CanonicalMemoryAccessView> access;
-  if (std::holds_alternative<::dataflow::AddressedMemoryActorMemberRef>(
-          member)) {
-    auto resolved =
-        ::dataflow::semantics::getCanonicalMemoryAccessView(actorView->op);
-    if (!resolved)
-      return resolved.takeError();
-    access.emplace(std::move(*resolved));
-  }
-  return ResolvedServiceMember{*kind, std::nullopt, *contextual,
-                               std::move(*actor), std::move(access)};
+  return ResolvedServiceMember{
+      *kind, std::nullopt, *contextual,
+      std::holds_alternative<::dataflow::AddressedMemoryActorMemberRef>(
+          member)};
 }
 
 llvm::Expected<bool>
@@ -178,16 +155,7 @@ capabilityMatches(const CanonicalServiceCapabilityRecord &capability,
     }
     return false;
   }
-  if (!member.actor)
-    return false;
-  if (const auto *addressed =
-          std::get_if<AddressedMemoryCapabilityDomain>(&capability.domain()))
-    return member.access &&
-           addressed->actorContracts().contains(*member.actor) &&
-           addressed->accesses().contains(*member.access);
-  const auto *fence = std::get_if<FenceCapabilityDomain>(&capability.domain());
-  return fence && !member.access &&
-         fence->actorContracts().contains(*member.actor);
+  return false;
 }
 
 llvm::Expected<const CanonicalServiceCapabilityRecord *> capabilityForKind(
@@ -205,20 +173,6 @@ llvm::Expected<const CanonicalServiceCapabilityRecord *> capabilityForKind(
   return result;
 }
 
-llvm::Expected<const CanonicalServiceCapabilityRecord *> matchingCapability(
-    const ::loom::fabric::CanonicalServiceCapabilitySet &capabilities,
-    const ResolvedServiceMember &member) {
-  auto capability = capabilityForKind(capabilities, member.kind);
-  if (!capability)
-    return capability.takeError();
-  if (!*capability)
-    return nullptr;
-  auto matches = capabilityMatches(**capability, member);
-  if (!matches)
-    return matches.takeError();
-  return *matches ? *capability : nullptr;
-}
-
 bool roleOwnsTerminal(CanonicalServiceEndpointRole role,
                       ::dataflow::semantics::ServiceLegDirection direction,
                       bool source) {
@@ -229,30 +183,9 @@ bool roleOwnsTerminal(CanonicalServiceEndpointRole role,
          (role == CanonicalServiceEndpointRole::Initiate);
 }
 
-llvm::Expected<bool>
-memoryCapabilitySupports(const ::fabric::MemoryServiceContractRecord &service,
-                         const ResolvedServiceMember &member,
-                         ::loom::fabric::FabricOrdinal regionOrdinal) {
-  if (!member.actor || !member.access)
-    return false;
-  auto matches = service.matchingCapabilities(*member.actor, member.access);
-  if (!matches)
-    return matches.takeError();
-  for (std::uint64_t ordinal : *matches) {
-    if (ordinal >= service.capabilities().size())
-      return invalid("memory service returned an invalid capability ordinal");
-    if (llvm::is_contained(
-            service.capabilities()[ordinal].serviceRegionOrdinals,
-            regionOrdinal))
-      return true;
-  }
-  return false;
-}
-
 llvm::Expected<std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>
 compatibleServiceRegions(const ::loom::fabric::FabricSystemRootView &fabric,
-                         ::loom::fabric::SystemServiceEndpointRef endpoint,
-                         const std::optional<ResolvedServiceMember> &member) {
+                         ::loom::fabric::SystemServiceEndpointRef endpoint) {
   std::vector<::loom::fabric::FabricMemoryServiceRegionRef> result;
   auto plans =
       ::loom::fabric::projectFabricMemoryServiceTargetPlans(fabric, endpoint);
@@ -269,14 +202,6 @@ compatibleServiceRegions(const ::loom::fabric::FabricSystemRootView &fabric,
       const auto *service = fabric.memoryService(*systemRef);
       if (!service || branch.region.ordinal >= service->regions().size())
         return invalid("System target closure names an invalid service region");
-      if (member) {
-        auto supports =
-            memoryCapabilitySupports(*service, *member, branch.region.ordinal);
-        if (!supports)
-          return supports.takeError();
-        if (!*supports)
-          continue;
-      }
       result.push_back(branch.region);
     }
   }
@@ -304,56 +229,36 @@ void canonicalizePairs(std::vector<BoundMemoryEndpointPair> &pairs) {
       pairs.end());
 }
 
-llvm::Error
-appendManagerPairs(const ::loom::fabric::FabricSystemRootView &fabric,
-                   const SpatialCatalogEntry &entry,
-                   ::dataflow::RootedGraphLaunchRef launch,
-                   ::loom::fabric::FabricMemoryEndpointRef moduleEndpoint,
-                   const SystemFrozenConstraintIndex &constraints,
-                   std::vector<BoundMemoryEndpointPair> &pairs) {
-  if (entry.moduleDependencyOrdinal >=
-      fabric.artifact().importedModules().size())
-    return invalid("SpatialMapping Module dependency ordinal is invalid");
-  const auto &module =
-      fabric.artifact().importedModules()[entry.moduleDependencyOrdinal];
-  for (const auto &moduleAttachment :
-       module.moduleBoundaryMemoryAttachments()) {
-    if (moduleAttachment.endpoint != moduleEndpoint)
+llvm::Expected<std::vector<BoundMemoryEndpointPair>> admittedBindingPairs(
+    const SpatialCatalogEntry &entry, ::dataflow::RootedGraphLaunchRef launch,
+    const ::loom::mapping::SystemSpatialMemoryBindingProjection &projection,
+    const SystemFrozenConstraintIndex &constraints) {
+  std::vector<BoundMemoryEndpointPair> result;
+  for (const auto &pair : projection.endpointPairs) {
+    const auto *spatialCore =
+        std::get_if<::loom::fabric::SpatialCoreOccurrenceRef>(
+            &pair.occurrenceEndpoint.owner.payload);
+    if (!spatialCore)
+      return invalid("memory spatial attachment is not occurrence-owned");
+    if (!systemConstraintAllows(
+            constraints,
+            ::mapping::SystemConstraintProjection::GraphSelectedSpatialMapping,
+            ::loom::mapping::SystemConstraintSubject{launch},
+            entry.reference) ||
+        !systemConstraintAllows(
+            constraints,
+            ::mapping::SystemConstraintProjection::GraphTargetSpatialCore,
+            ::loom::mapping::SystemConstraintSubject{launch}, *spatialCore) ||
+        !systemConstraintAllows(
+            constraints,
+            ::mapping::SystemConstraintProjection::ThreadTargetAccCore,
+            ::loom::mapping::SystemConstraintSubject{launch.rootThreadLaunch},
+            spatialCore->core))
       continue;
-    for (const auto &attachment : fabric.spatialAttachments()) {
-      if (attachment.moduleEndpoint.dependencyOrdinal !=
-              entry.moduleDependencyOrdinal ||
-          attachment.moduleEndpoint.target != moduleAttachment.boundary)
-        continue;
-      const auto *occurrence = attachment.spatialEndpoint.memory();
-      if (!occurrence || !attachment.serviceEndpoint)
-        return invalid("memory Module boundary has an incomplete System "
-                       "spatial attachment");
-      const auto *spatialCore =
-          std::get_if<::loom::fabric::SpatialCoreOccurrenceRef>(
-              &occurrence->owner.payload);
-      if (!spatialCore)
-        return invalid("memory spatial attachment is not occurrence-owned");
-      if (!systemConstraintAllows(
-              constraints,
-              ::mapping::SystemConstraintProjection::
-                  GraphSelectedSpatialMapping,
-              ::loom::mapping::SystemConstraintSubject{launch},
-              entry.reference) ||
-          !systemConstraintAllows(
-              constraints,
-              ::mapping::SystemConstraintProjection::GraphTargetSpatialCore,
-              ::loom::mapping::SystemConstraintSubject{launch}, *spatialCore) ||
-          !systemConstraintAllows(
-              constraints,
-              ::mapping::SystemConstraintProjection::ThreadTargetAccCore,
-              ::loom::mapping::SystemConstraintSubject{launch.rootThreadLaunch},
-              spatialCore->core))
-        continue;
-      pairs.push_back({*attachment.serviceEndpoint, *occurrence});
-    }
+    result.push_back({pair.systemEndpoint, pair.occurrenceEndpoint});
   }
-  return llvm::Error::success();
+  canonicalizePairs(result);
+  return result;
 }
 
 llvm::Expected<std::vector<BoundMemoryEndpointPair>>
@@ -364,47 +269,25 @@ boundPairsForMember(const ::loom::fabric::FabricSystemRootView &fabric,
   std::vector<BoundMemoryEndpointPair> pairs;
   if (!member.contextualActor)
     return pairs;
+  ::dataflow::ServiceMemberRef memberRef =
+      member.addressed
+          ? ::dataflow::ServiceMemberRef(
+                ::dataflow::AddressedMemoryActorMemberRef{
+                    *member.contextualActor})
+          : ::dataflow::ServiceMemberRef(
+                ::dataflow::FenceActorMemberRef{*member.contextualActor});
+  const ::loom::mapping::ServicePlanSelectionAnchor anchor =
+      ::loom::mapping::ServiceMemberPlanSelectionAnchor{memberRef};
   for (const SpatialCatalogEntry &entry : spatialCatalog) {
-    for (const auto &engine : entry.mapping.view().memoryEngineBindings()) {
-      for (const auto &operation : engine.operations) {
-        if (const auto *addressed = std::get_if<
-                ::loom::mapping::SpatialAddressedMemoryOperationView>(
-                &operation)) {
-          if (!member.access ||
-              addressed->actor != member.contextualActor->actor)
-            continue;
-          for (const auto &use : addressed->uses) {
-            if (use.launch != member.contextualActor->launch)
-              continue;
-            const auto *manager =
-                std::get_if<::loom::fabric::ManagerEndpointRef>(&use.dispatch);
-            if (manager)
-              if (llvm::Error error = appendManagerPairs(
-                      fabric, entry, member.contextualActor->launch,
-                      manager->underlying(), constraints, pairs))
-                return std::move(error);
-          }
-        } else {
-          const auto &fence =
-              std::get<::loom::mapping::SpatialFenceMemoryOperationView>(
-                  operation);
-          if (member.access || fence.actor != member.contextualActor->actor)
-            continue;
-          for (const auto &use : fence.uses) {
-            if (use.launch != member.contextualActor->launch)
-              continue;
-            const auto *manager =
-                std::get_if<::loom::fabric::ManagerEndpointRef>(
-                    &use.consistency);
-            if (manager)
-              if (llvm::Error error = appendManagerPairs(
-                      fabric, entry, member.contextualActor->launch,
-                      manager->underlying(), constraints, pairs))
-                return std::move(error);
-          }
-        }
-      }
-    }
+    auto projection = ::loom::mapping::projectSystemSpatialMemoryBinding(
+        fabric, entry.mapping.view(), entry.moduleDependencyOrdinal, anchor);
+    if (!projection)
+      return projection.takeError();
+    auto admitted = admittedBindingPairs(entry, member.contextualActor->launch,
+                                         *projection, constraints);
+    if (!admitted)
+      return admitted.takeError();
+    pairs.insert(pairs.end(), admitted->begin(), admitted->end());
   }
   canonicalizePairs(pairs);
   return pairs;
@@ -416,19 +299,19 @@ boundPairsForExposure(const ::loom::fabric::FabricSystemRootView &fabric,
                       llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog,
                       const SystemFrozenConstraintIndex &constraints) {
   std::vector<BoundMemoryEndpointPair> pairs;
-  for (const SpatialCatalogEntry &entry : spatialCatalog)
-    for (const auto &binding : entry.mapping.view().memoryBindings())
-      for (const auto &entryExposure : binding.exposures) {
-        if (entryExposure.exposure != exposure)
-          continue;
-        const auto *manager = std::get_if<::loom::fabric::ManagerEndpointRef>(
-            &entryExposure.dispatch);
-        if (manager)
-          if (llvm::Error error =
-                  appendManagerPairs(fabric, entry, exposure.launch,
-                                     manager->underlying(), constraints, pairs))
-            return std::move(error);
-      }
+  const ::loom::mapping::ServicePlanSelectionAnchor anchor =
+      ::loom::mapping::MemoryExposurePlanSelectionAnchor{exposure};
+  for (const SpatialCatalogEntry &entry : spatialCatalog) {
+    auto projection = ::loom::mapping::projectSystemSpatialMemoryBinding(
+        fabric, entry.mapping.view(), entry.moduleDependencyOrdinal, anchor);
+    if (!projection)
+      return projection.takeError();
+    auto admitted =
+        admittedBindingPairs(entry, exposure.launch, *projection, constraints);
+    if (!admitted)
+      return admitted.takeError();
+    pairs.insert(pairs.end(), admitted->begin(), admitted->end());
+  }
   canonicalizePairs(pairs);
   return pairs;
 }
@@ -538,6 +421,7 @@ llvm::Error appendTerminalCompatibility(
 }
 
 llvm::Error appendMemoryRows(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const ::loom::mapping::SystemServiceObligationProjection &obligation,
     const ::dataflow::ServiceMemberRef &memberRef,
@@ -546,36 +430,28 @@ llvm::Error appendMemoryRows(
     SystemSearchServiceDomain &domain) {
   const SystemServiceTargetSubject subject{
       SystemServiceMemberTargetSubject{memberRef}};
+  std::map<std::string, bool> admittedEndpoints;
   for (const auto endpoint : systemEndpoints(pairs)) {
-    const auto *capabilities = fabric.serviceEndpointCapabilities(endpoint);
-    if (!capabilities ||
-        capabilities->plane() != CanonicalServiceEndpointPlane::Memory)
-      return invalid("bound System memory endpoint has no memory capability "
-                     "set");
-    auto capability = matchingCapability(*capabilities, member);
-    if (!capability)
-      return capability.takeError();
-    if (member.access) {
-      std::vector<::loom::fabric::FabricMemoryServiceRegionRef> regions;
-      if (*capability) {
-        auto compatible = compatibleServiceRegions(fabric, endpoint, member);
-        if (!compatible)
-          return compatible.takeError();
-        regions = std::move(*compatible);
-      }
+    if (member.addressed) {
+      auto regions = ::loom::mapping::projectSystemOperationTargetRegions(
+          dataflow, fabric, endpoint, memberRef);
+      if (!regions)
+        return regions.takeError();
+      admittedEndpoints.emplace(
+          keyString(::loom::fabric::canonicalFabricBytes(endpoint)),
+          !regions->empty());
       domain.targetCompatibility.push_back(
-          {subject, endpoint, std::move(regions)});
+          {subject, endpoint, std::move(*regions)});
     } else {
-      std::vector<::loom::fabric::MemoryConsistencyDomainRef> consistency;
-      if (*capability) {
-        const auto *fence =
-            std::get_if<FenceCapabilityDomain>(&(*capability)->domain());
-        if (!fence)
-          return invalid("matching fence capability has a non-fence domain");
-        consistency.push_back(fence->consistencyDomain());
-      }
+      auto consistency = ::loom::mapping::projectSystemFenceTargetDomains(
+          dataflow, fabric, endpoint, memberRef);
+      if (!consistency)
+        return consistency.takeError();
+      admittedEndpoints.emplace(
+          keyString(::loom::fabric::canonicalFabricBytes(endpoint)),
+          !consistency->empty());
       domain.targetCompatibility.push_back(
-          {subject, endpoint, std::move(consistency)});
+          {subject, endpoint, std::move(*consistency)});
     }
   }
 
@@ -587,13 +463,10 @@ llvm::Error appendMemoryRows(
     if (!direction)
       return direction.takeError();
     for (const BoundMemoryEndpointPair &pair : pairs) {
-      const auto *capabilities =
-          fabric.serviceEndpointCapabilities(pair.systemEndpoint);
-      if (!capabilities)
-        return invalid("bound System endpoint has no capability set");
-      auto capability = matchingCapability(*capabilities, member);
-      if (!capability)
-        return capability.takeError();
+      const auto admitted = admittedEndpoints.find(
+          keyString(::loom::fabric::canonicalFabricBytes(pair.systemEndpoint)));
+      if (admitted == admittedEndpoints.end())
+        return invalid("bound System endpoint lost its target domain");
       for (const bool source : {true, false}) {
         auto bound =
             selectMemoryTerminalEndpoint(fabric, pair, *direction, source);
@@ -601,9 +474,9 @@ llvm::Error appendMemoryRows(
           return bound.takeError();
         const auto selected =
             std::get<SystemMemoryOrFenceTerminalEndpoint>(*bound).endpoint;
-        auto carriers = carriersForMemoryTerminal(fabric, selected, member.kind,
-                                                  leg.ordinal, source,
-                                                  *capability != nullptr);
+        auto carriers =
+            carriersForMemoryTerminal(fabric, selected, member.kind,
+                                      leg.ordinal, source, admitted->second);
         if (!carriers)
           return carriers.takeError();
         ::loom::mapping::SystemTransferTerminalKey terminal =
@@ -635,8 +508,7 @@ appendExposureRows(const ::loom::fabric::FabricSystemRootView &fabric,
         capabilities->plane() != CanonicalServiceEndpointPlane::Memory)
       return invalid("bound System memory endpoint has no memory capability "
                      "set");
-    auto regions = compatibleServiceRegions(
-        fabric, endpoint, std::optional<ResolvedServiceMember>());
+    auto regions = compatibleServiceRegions(fabric, endpoint);
     if (!regions)
       return regions.takeError();
     domain.targetCompatibility.push_back(
@@ -928,8 +800,9 @@ projectSystemServiceDomains(
             boundPairsForMember(fabric, member, spatialCatalog, constraints);
         if (!pairs)
           return pairs.takeError();
-        if (llvm::Error error = appendMemoryRows(fabric, obligation, memberRef,
-                                                 member, *pairs, domain))
+        if (llvm::Error error =
+                appendMemoryRows(dataflow, fabric, obligation, memberRef,
+                                 member, *pairs, domain))
           return std::move(error);
       }
       for (const auto &exposure : obligation.exposures) {
@@ -967,129 +840,8 @@ projectSystemMemoryServiceBindings(
     std::optional<::loom::mapping::SpatialMemoryIntervalView> interval;
     std::optional<::loom::fabric::SubordinateEndpointRef> exposureTerminal;
   };
-  const auto memberMetadata = [&](const SpatialCatalogEntry &entry,
-                                  const ResolvedServiceMember &member)
-      -> llvm::Expected<BindingMetadata> {
-    if (!member.access)
-      return BindingMetadata{};
-    if (!member.contextualActor)
-      return invalid("addressed service member has no contextual actor");
-    const ::loom::mapping::SpatialMemoryBindingView *selected = nullptr;
-    for (const auto &engine : entry.mapping.view().memoryEngineBindings())
-      for (const auto &operation : engine.operations) {
-        const auto *addressed =
-            std::get_if<::loom::mapping::SpatialAddressedMemoryOperationView>(
-                &operation);
-        if (!addressed || addressed->actor != member.contextualActor->actor)
-          continue;
-        for (const auto &use : addressed->uses) {
-          if (use.launch != member.contextualActor->launch)
-            continue;
-          const auto binding =
-              llvm::find_if(entry.mapping.view().memoryBindings(),
-                            [&](const auto &candidate) {
-                              return candidate.entityId == use.binding;
-                            });
-          if (binding == entry.mapping.view().memoryBindings().end())
-            return invalid("addressed service member names an absent binding");
-          if (!std::holds_alternative<
-                  ::loom::mapping::SpatialMemoryBoundaryProxyView>(
-                  binding->target))
-            return invalid(
-                "System service member does not use a boundary proxy");
-          if (selected && selected->entityId != binding->entityId)
-            return invalid("one addressed service member selects multiple "
-                           "logical intervals");
-          selected = &*binding;
-        }
-      }
-    if (!selected)
-      return invalid("addressed service member has no boundary binding");
-    return BindingMetadata{selected->interval, std::nullopt};
-  };
-  const auto exposureMetadata = [&](const SpatialCatalogEntry &entry,
-                                    ::dataflow::MemoryExposureRef exposure)
-      -> llvm::Expected<BindingMetadata> {
-    const ::loom::mapping::SpatialMemoryBindingView *selected = nullptr;
-    std::optional<::loom::fabric::SubordinateEndpointRef> terminal;
-    for (const auto &binding : entry.mapping.view().memoryBindings())
-      for (const auto &candidate : binding.exposures) {
-        if (candidate.exposure != exposure)
-          continue;
-        if (!std::holds_alternative<
-                ::loom::mapping::SpatialMemoryBoundaryProxyView>(
-                binding.target))
-          return invalid(
-              "System memory exposure does not use a boundary proxy");
-        if (selected && (selected->entityId != binding.entityId ||
-                         *terminal != candidate.terminal))
-          return invalid("one memory exposure selects multiple boundary "
-                         "providers");
-        selected = &binding;
-        terminal = candidate.terminal;
-      }
-    if (!selected || !terminal)
-      return invalid("memory exposure has no boundary provider");
-    return BindingMetadata{selected->interval, *terminal};
-  };
 
   std::vector<FrozenSystemMemoryServiceBinding> result;
-  const auto usePatternDomains =
-      [&](const ResolvedServiceMember *member,
-          llvm::ArrayRef<::loom::fabric::FabricMemoryServiceTargetPlan> plans)
-      -> llvm::Expected<
-          std::vector<FrozenSystemMemoryServiceBinding::UsePatternDomain>> {
-    std::vector<FrozenSystemMemoryServiceBinding::UsePatternDomain> domains;
-    if (!member || !member->access || !member->actor)
-      return domains;
-    for (const auto &plan : plans) {
-      for (const auto &branch : plan.branches) {
-        if (llvm::any_of(domains, [&](const auto &domain) {
-              return domain.region == branch.region;
-            }))
-          continue;
-        const auto *systemService =
-            std::get_if<::loom::fabric::SystemMemoryServiceRef>(
-                &branch.region.service.payload);
-        if (!systemService)
-          return invalid("System target plan names a non-System service");
-        const auto *service = fabric.memoryService(*systemService);
-        if (!service || branch.region.ordinal >= service->regions().size())
-          return invalid("System target plan names an invalid service region");
-        auto matching =
-            service->matchingCapabilities(*member->actor, member->access);
-        if (!matching)
-          return matching.takeError();
-        std::vector<::loom::fabric::FabricUsePatternRef> patterns;
-        for (std::uint64_t capabilityOrdinal : *matching) {
-          if (capabilityOrdinal >= service->capabilities().size())
-            return invalid("memory service returned an invalid capability");
-          const auto &capability = service->capabilities()[capabilityOrdinal];
-          if (!llvm::is_contained(capability.serviceRegionOrdinals,
-                                  branch.region.ordinal))
-            continue;
-          const auto owner = ::loom::fabric::FabricUsePatternOwnerRef(
-              ::loom::fabric::FabricInventoryOwnerRef::of(
-                  branch.region.service));
-          for (const ::fabric::UsePatternKey pattern :
-               capability.admissibleUsePatterns)
-            patterns.push_back(
-                {owner, static_cast<::loom::fabric::FabricOrdinal>(
-                            pattern.ordinal())});
-        }
-        canonicalizeFabricRefs(patterns);
-        if (patterns.empty())
-          return invalid(
-              "selected memory service region has no admissible use pattern");
-        domains.push_back({branch.region, std::move(patterns)});
-      }
-    }
-    llvm::sort(domains, [](const auto &left, const auto &right) {
-      return ::loom::fabric::canonicalFabricBytes(left.region) <
-             ::loom::fabric::canonicalFabricBytes(right.region);
-    });
-    return domains;
-  };
   const auto append =
       [&](const auto &obligation, const SystemServiceTargetSubject &subject,
           const ResolvedServiceMember *member, const SpatialCatalogEntry &entry,
@@ -1102,25 +854,6 @@ projectSystemMemoryServiceBindings(
         operation
             ? std::get_if<::dataflow::LogicalMemoryRootOrViewRef>(operation)
             : nullptr;
-    std::optional<::loom::fabric::FabricMemoryServiceSourceInterval>
-        sourceInterval;
-    if (logicalMemory) {
-      if (!metadata.interval)
-        return invalid("addressed service binding has no logical interval");
-      if (const auto *range =
-              std::get_if<::loom::mapping::SpatialMemoryByteRangeView>(
-                  &*metadata.interval)) {
-        sourceInterval = ::loom::fabric::FabricMemoryServiceSourceInterval{
-            range->offsetBytes, range->sizeBytes};
-      } else {
-        auto extent = dataflow.staticMemoryByteExtent(*logicalMemory);
-        if (!extent)
-          return extent.takeError();
-        if (*extent)
-          sourceInterval =
-              ::loom::fabric::FabricMemoryServiceSourceInterval{0, **extent};
-      }
-    }
     for (const BoundMemoryEndpointPair &pair : pairs) {
       const auto *spatialCore =
           std::get_if<::loom::fabric::SpatialCoreOccurrenceRef>(
@@ -1130,24 +863,36 @@ projectSystemMemoryServiceBindings(
       llvm::Expected<std::vector<::loom::fabric::FabricMemoryServiceTargetPlan>>
           targetPlans =
               logicalMemory
-                  ? sourceInterval
-                        ? ::loom::fabric::projectFabricMemoryServiceTargetPlans(
-                              fabric, pair.systemEndpoint, *sourceInterval)
+                  ? metadata.interval
+                        ? ::loom::mapping::projectSystemMemoryTargetPlans(
+                              dataflow, fabric, pair.systemEndpoint,
+                              *logicalMemory, *metadata.interval)
                         : llvm::Expected<std::vector<
                               ::loom::fabric::FabricMemoryServiceTargetPlan>>(
-                              std::vector<::loom::fabric::
-                                              FabricMemoryServiceTargetPlan>{})
+                              invalid("addressed service binding has "
+                                      "no logical interval"))
                   : ::loom::fabric::projectFabricMemoryServiceTargetPlans(
                         fabric, pair.systemEndpoint);
       if (!targetPlans)
         return targetPlans.takeError();
-      auto patterns = usePatternDomains(member, *targetPlans);
-      if (!patterns)
-        return patterns.takeError();
+      std::vector<FrozenSystemMemoryServiceBinding::UsePatternDomain> patterns;
+      if (member && member->addressed) {
+        const auto *memberSubject =
+            std::get_if<SystemServiceMemberTargetSubject>(&subject);
+        if (!memberSubject)
+          return invalid("addressed service binding has no member subject");
+        auto projected = ::loom::mapping::projectSystemMemoryUsePatternDomains(
+            dataflow, fabric, memberSubject->member, *targetPlans);
+        if (!projected)
+          return projected.takeError();
+        patterns.reserve(projected->size());
+        for (auto &domain : *projected)
+          patterns.push_back({domain.region, std::move(domain.patterns)});
+      }
       result.push_back({obligation.key, subject, entry.reference,
                         spatialCore->core, pair.systemEndpoint,
                         pair.occurrenceEndpoint, std::move(*targetPlans),
-                        std::move(*patterns), metadata.interval,
+                        std::move(patterns), metadata.interval,
                         metadata.exposureTerminal});
     }
     return llvm::Error::success();
@@ -1166,18 +911,25 @@ projectSystemMemoryServiceBindings(
       const SystemServiceTargetSubject subject{
           SystemServiceMemberTargetSubject{memberRef}};
       for (const SpatialCatalogEntry &entry : spatialCatalog) {
-        auto pairs = boundPairsForMember(
-            fabric, *member, llvm::ArrayRef<SpatialCatalogEntry>(&entry, 1),
-            constraints);
+        const ::loom::mapping::ServicePlanSelectionAnchor anchor =
+            ::loom::mapping::ServiceMemberPlanSelectionAnchor{memberRef};
+        auto projection = ::loom::mapping::projectSystemSpatialMemoryBinding(
+            fabric, entry.mapping.view(), entry.moduleDependencyOrdinal,
+            anchor);
+        if (!projection)
+          return projection.takeError();
+        if (!member->contextualActor)
+          return invalid("operation service member has no contextual actor");
+        auto pairs = admittedBindingPairs(
+            entry, member->contextualActor->launch, *projection, constraints);
         if (!pairs)
           return pairs.takeError();
         if (pairs->empty())
           continue;
-        auto metadata = memberMetadata(entry, *member);
-        if (!metadata)
-          return metadata.takeError();
+        const BindingMetadata metadata{projection->interval,
+                                       projection->exposureTerminal};
         if (llvm::Error error =
-                append(obligation, subject, &*member, entry, *metadata, *pairs))
+                append(obligation, subject, &*member, entry, metadata, *pairs))
           return std::move(error);
       }
     }
@@ -1185,18 +937,23 @@ projectSystemMemoryServiceBindings(
       const SystemServiceTargetSubject subject{
           SystemMemoryExposureTargetSubject{exposure}};
       for (const SpatialCatalogEntry &entry : spatialCatalog) {
-        auto pairs = boundPairsForExposure(
-            fabric, exposure, llvm::ArrayRef<SpatialCatalogEntry>(&entry, 1),
-            constraints);
+        const ::loom::mapping::ServicePlanSelectionAnchor anchor =
+            ::loom::mapping::MemoryExposurePlanSelectionAnchor{exposure};
+        auto projection = ::loom::mapping::projectSystemSpatialMemoryBinding(
+            fabric, entry.mapping.view(), entry.moduleDependencyOrdinal,
+            anchor);
+        if (!projection)
+          return projection.takeError();
+        auto pairs = admittedBindingPairs(entry, exposure.launch, *projection,
+                                          constraints);
         if (!pairs)
           return pairs.takeError();
         if (pairs->empty())
           continue;
-        auto metadata = exposureMetadata(entry, exposure);
-        if (!metadata)
-          return metadata.takeError();
+        const BindingMetadata metadata{projection->interval,
+                                       projection->exposureTerminal};
         if (llvm::Error error =
-                append(obligation, subject, nullptr, entry, *metadata, *pairs))
+                append(obligation, subject, nullptr, entry, metadata, *pairs))
           return std::move(error);
       }
     }

@@ -43,6 +43,21 @@ void require(bool condition, const llvm::Twine &message) {
     fail(message);
 }
 
+void requireFailureContains(llvm::Error error, llvm::StringRef diagnostic) {
+  if (!error)
+    fail("adverse System Mapping input unexpectedly succeeded");
+  const std::string actual = llvm::toString(std::move(error));
+  require(llvm::StringRef(actual).contains(diagnostic),
+          "adverse System Mapping diagnostic changed: " + actual);
+}
+
+template <typename Attr, typename Ref>
+Attr fabricRefAttr(mlir::MLIRContext *context, const Ref &reference) {
+  return Attr::get(context,
+                   loom::pnr::test::bytesAttr(
+                       context, loom::fabric::canonicalFabricBytes(reference)));
+}
+
 ::fabric::ResourceContract exclusiveResourceContract() {
   ::fabric::ResourceContractDeclaration declaration;
   declaration.states = {
@@ -588,4 +603,83 @@ void loom::pnr::test::verifyFinalizedSystemMappingWorkflow(
   require(llvm::StringRef(llvm::toString(rejected.takeError()))
               .contains("system_mapping_rejected_by_constraint_set"),
           "System constraint rejection lost its typed diagnostic");
+}
+
+void loom::pnr::test::verifySystemServiceTargetRejections(
+    ::mapping::SystemOp source,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const fabric::FabricSystemRootView &fabric, ArtifactStore &store,
+    mlir::MLIRContext &context,
+    llvm::ArrayRef<fabric::SystemServiceTransformRef> foreignTransformPath,
+    fabric::FabricMemoryServiceRegionRef foreignRegion) {
+  const auto findMemoryTarget = [&](::mapping::SystemOp root) {
+    ::mapping::MemoryRegionTargetOp result;
+    for (auto service :
+         root.getBody().front().getOps<::mapping::ServiceRealizationOp>())
+      for (auto plan :
+           service.getBody().front().getOps<::mapping::ServicePlanOp>()) {
+        auto targets =
+            plan.getBody().front().getOps<::mapping::MemoryRegionTargetOp>();
+        if (!targets.empty() && !result)
+          result = *targets.begin();
+      }
+    return result;
+  };
+  const auto updateResourceOwners = [&](::mapping::SystemOp root,
+                                        ::mapping::MemoryRegionTargetOp target,
+                                        bool matchRegion) {
+    for (auto use : root.getBody().front().getOps<::mapping::ResourceUseOp>()) {
+      auto owner =
+          mlir::dyn_cast<::mapping::ServicePlanElementRefAttr>(use.getOwner());
+      if (!owner)
+        continue;
+      auto element = mlir::dyn_cast<::mapping::MemoryRegionElementKeyAttr>(
+          owner.getElement());
+      if (!element || element.getLogicalMemory() != target.getLogicalMemory() ||
+          element.getInterval() != target.getInterval() ||
+          (matchRegion &&
+           element.getServiceRegion() != target.getServiceRegion()))
+        continue;
+      auto replacedElement = ::mapping::MemoryRegionElementKeyAttr::get(
+          &context, element.getLogicalMemory(), element.getInterval(),
+          target.getServiceRegion(), target.getTransformPath());
+      use->setAttr("owner", ::mapping::ServicePlanElementRefAttr::get(
+                                &context, owner.getService(),
+                                owner.getPlanOrdinal(), replacedElement));
+    }
+  };
+
+  mlir::OwningOpRef<mlir::Operation *> foreignPathDraft(source->clone());
+  auto foreignPathRoot =
+      mlir::cast<::mapping::SystemOp>(foreignPathDraft.get());
+  auto foreignPathTarget = findMemoryTarget(foreignPathRoot);
+  require(static_cast<bool>(foreignPathTarget),
+          "foreign-path fixture has no memory target");
+  llvm::SmallVector<mlir::Attribute> foreignPathAttributes;
+  for (const auto transform : foreignTransformPath)
+    foreignPathAttributes.push_back(
+        fabricRefAttr<::mapping::SystemServiceTransformRefAttr>(&context,
+                                                                transform));
+  foreignPathTarget.setTransformPathAttr(
+      mlir::ArrayAttr::get(&context, foreignPathAttributes));
+  updateResourceOwners(foreignPathRoot, foreignPathTarget, true);
+  requireFailureContains(
+      loom::mapping::verifySystemMappingBase(foreignPathRoot, dataflow, fabric,
+                                             store),
+      "uniquely derived service transform path must be omitted");
+
+  mlir::OwningOpRef<mlir::Operation *> foreignRegionDraft(source->clone());
+  auto foreignRegionRoot =
+      mlir::cast<::mapping::SystemOp>(foreignRegionDraft.get());
+  auto foreignRegionTarget = findMemoryTarget(foreignRegionRoot);
+  require(static_cast<bool>(foreignRegionTarget),
+          "foreign-region fixture has no memory target");
+  foreignRegionTarget.setServiceRegionAttr(
+      fabricRefAttr<::mapping::FabricMemoryServiceRegionRefAttr>(
+          &context, foreignRegion));
+  updateResourceOwners(foreignRegionRoot, foreignRegionTarget, false);
+  requireFailureContains(
+      loom::mapping::verifySystemMappingBase(foreignRegionRoot, dataflow,
+                                             fabric, store),
+      "selected service target is outside its attachment-bound closure");
 }

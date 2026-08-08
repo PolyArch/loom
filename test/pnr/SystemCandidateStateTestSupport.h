@@ -61,5 +61,13 @@ void verifyFinalizedSystemMappingWorkflow(
     ArtifactStore &store, mlir::MLIRContext &context,
     std::size_t expectedServiceCount);
 
+void verifySystemServiceTargetRejections(
+    ::mapping::SystemOp source,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const fabric::FabricSystemRootView &fabric, ArtifactStore &store,
+    mlir::MLIRContext &context,
+    llvm::ArrayRef<fabric::SystemServiceTransformRef> foreignTransformPath,
+    fabric::FabricMemoryServiceRegionRef foreignRegion);
+
 } // namespace pnr::test
 } // namespace loom

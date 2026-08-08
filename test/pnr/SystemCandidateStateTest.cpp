@@ -515,6 +515,7 @@ int main() {
   using loom::pnr::test::countOccurrences;
   using loom::pnr::test::rawSystemBytes;
   using loom::pnr::test::verifyFinalizedSystemMappingWorkflow;
+  using loom::pnr::test::verifySystemServiceTargetRejections;
   using loom::pnr::test::withFirstCoordinateLowerBound;
 
   TemporaryDirectory directory;
@@ -665,6 +666,20 @@ int main() {
           "endpoint rows unioned or intersected distinct read capabilities");
   require(transformedEndpoint == unsupportedEndpoint,
           "adverse endpoint did not exercise the explicit transform closure");
+  const auto transformedTargetPlans =
+      take(loom::fabric::projectFabricMemoryServiceTargetPlans(
+          endpointSystem, *transformedEndpoint));
+  std::vector<loom::fabric::SystemServiceTransformRef> foreignTransformPath;
+  std::optional<loom::fabric::FabricMemoryServiceRegionRef> otherEndpointRegion;
+  for (const auto &plan : transformedTargetPlans)
+    for (const auto &branch : plan.branches)
+      if (!branch.transformPath.empty()) {
+        foreignTransformPath = branch.transformPath;
+        otherEndpointRegion = branch.region;
+        break;
+      }
+  require(!foreignTransformPath.empty() && otherEndpointRegion,
+          "adverse endpoint has no concrete transform path");
 
   const loom::fabric::FabricMemoryEndpointRef *unsupportedOccurrence = nullptr;
   for (const auto &attachment : endpointSystem.spatialAttachments()) {
@@ -823,6 +838,10 @@ int main() {
       }
   require(memoryTargetCount == 1,
           "one memory service context did not materialize one target");
+
+  verifySystemServiceTargetRejections(
+      memoryRoot, memoryDataflow, endpointSystem, store, context,
+      foreignTransformPath, *otherEndpointRegion);
 
   require(!supportedCandidate->instructionResourceUses().empty(),
           "candidate omitted InstructionCore occupancy choices");

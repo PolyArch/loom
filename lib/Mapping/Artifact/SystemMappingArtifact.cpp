@@ -621,7 +621,8 @@ llvm::Expected<SystemMappingView> importSystemMappingView(
   if (!execution)
     return execution.takeError();
   auto closure =
-      detail::importSystemMappingClosure(root, dataflow, fabric, *execution);
+      detail::importSystemMappingClosure(root, dataflow, fabric, *execution,
+                                         store);
   if (!closure)
     return closure.takeError();
   return SystemMappingView(mappingIdentity, dataflow.identity(),

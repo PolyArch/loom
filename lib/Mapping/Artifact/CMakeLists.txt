@@ -17,6 +17,8 @@ add_library(LoomMappingArtifact
   SystemMappingClosure.cpp
   SystemMappingConstraintAdmission.cpp
   SystemMappingExecutionProjection.cpp
+  SystemMappingServiceTargetVerification.cpp
+  SystemServiceBindingProjection.cpp
   SystemPresburger.cpp
   TechMappingCanonicalKey.cpp
   TechMappingComputeVerification.cpp
