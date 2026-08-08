@@ -15,11 +15,13 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OperationSupport.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
 #include <cstdlib>
+#include <map>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -41,6 +43,58 @@ template <typename T> T take(llvm::Expected<T> value) {
 void require(bool condition, const llvm::Twine &message) {
   if (!condition)
     fail(message);
+}
+
+void verifySelectedRouteCapacity(
+    const loom::pnr::SystemCandidateState &candidate) {
+  const auto &topology = candidate.problem().routingTopology();
+  std::vector<std::uint64_t> usage;
+  usage.reserve(topology.capacityCells().size());
+  for (const auto &cell : topology.capacityCells())
+    usage.push_back(cell.initialOccupancy);
+
+  for (const auto &route : candidate.serviceRoutes()) {
+    require(route.nodeOffset <= candidate.serviceRouteNodes().size() &&
+                route.nodeCount <=
+                    candidate.serviceRouteNodes().size() - route.nodeOffset,
+            "selected route node range is invalid");
+    std::map<std::pair<loom::pnr::PnrIndex, loom::pnr::PnrIndex>, std::uint64_t>
+        selected;
+    for (const auto &node : candidate.serviceRouteNodes().slice(
+             route.nodeOffset, route.nodeCount)) {
+      if (node.incomingTraversal == loom::pnr::getInvalidPnrIndex())
+        continue;
+      require(node.incomingTraversal < topology.traversals().size(),
+              "selected route has an invalid capacity traversal");
+      const auto &traversal = topology.traversals()[node.incomingTraversal];
+      require(
+          traversal.capacityClaimOffset <= topology.capacityClaims().size() &&
+              traversal.capacityClaimCount <= topology.capacityClaims().size() -
+                                                  traversal.capacityClaimOffset,
+          "selected route has an invalid capacity claim range");
+      for (const auto &claim : topology.capacityClaims().slice(
+               traversal.capacityClaimOffset, traversal.capacityClaimCount)) {
+        auto [position, inserted] = selected.try_emplace(
+            std::make_pair(claim.activation, claim.cell), claim.amount);
+        require(inserted || position->second == claim.amount,
+                "selected route has inconsistent atomic claims");
+      }
+    }
+    std::map<loom::pnr::PnrIndex, std::uint64_t> additions;
+    for (const auto &[key, amount] : selected)
+      additions[key.second] += amount;
+    for (const auto &[cell, amount] : additions) {
+      require(cell < usage.size(),
+              "selected route claim has an invalid capacity cell");
+      require(usage[cell] <= topology.capacityCells()[cell].capacity &&
+                  amount <=
+                      topology.capacityCells()[cell].capacity - usage[cell],
+              "selected route set exceeds frozen Fabric capacity");
+      usage[cell] += amount;
+    }
+  }
+  require(llvm::any_of(usage, [](std::uint64_t value) { return value > 1; }),
+          "System workflow did not exercise shared route capacity");
 }
 
 void requireFailureContains(llvm::Error error, llvm::StringRef diagnostic) {
@@ -411,6 +465,7 @@ void loom::pnr::test::verifyFinalizedSystemMappingWorkflow(
     const loom::mapping::SystemMappingConstraintSetView &emptyConstraints,
     ArtifactStore &store, mlir::MLIRContext &context,
     std::size_t expectedServiceCount) {
+  verifySelectedRouteCapacity(candidate);
   auto finalized = take(finalizeSystemMappingCandidate(
       candidate, dataflow, fabric, emptyConstraints, store, context));
   auto imported =

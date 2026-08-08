@@ -5,6 +5,7 @@ add_library(LoomMappingArtifact
   MappingConstraintSet.cpp
   MappingConstraintSetBuilder.cpp
   MappingResourceUseImport.cpp
+  ResourceCapacityVerification.cpp
   SpatialMappingConstraintAdmission.cpp
   SpatialMappingCapacityVerification.cpp
   SpatialMappingArtifact.cpp
@@ -14,6 +15,7 @@ add_library(LoomMappingArtifact
   SystemMappingConstraintSet.cpp
   SystemMappingConstraintSetBuilder.cpp
   SystemMappingArtifact.cpp
+  SystemMappingCapacityVerification.cpp
   SystemMappingClosure.cpp
   SystemMappingConstraintAdmission.cpp
   SystemMappingExecutionProjection.cpp

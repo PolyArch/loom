@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -33,6 +34,12 @@ constexpr PnrCapacityContext replicationGroupContext{
     frozenArtifact, "replication_groups", "group", PnrCapacityMeasure::Index};
 constexpr PnrCapacityContext arcContext{frozenArtifact, "routing_arcs", "arc",
                                         PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext capacityCellContext{
+    frozenArtifact, "capacity", "cell", PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext capacityActivationContext{
+    frozenArtifact, "capacity", "activation", PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext capacityClaimContext{
+    frozenArtifact, "capacity", "claim", PnrCapacityMeasure::Offset};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -53,6 +60,29 @@ void appendU64Be(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
   for (unsigned shift = 56; shift != 0; shift -= 8)
     bytes.push_back(static_cast<std::uint8_t>(value >> shift));
   bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+void appendU32Be(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
+  for (unsigned shift = 24; shift != 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+  bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+std::string capacityCellKey(const FabricInventoryOwnerRef &owner,
+                            ::fabric::StateKey state,
+                            ::fabric::CapacityDimensionKey dimension) {
+  std::vector<std::uint8_t> bytes = canonicalFabricBytes(owner);
+  appendU32Be(bytes, state.ordinal());
+  appendU32Be(bytes, dimension.ordinal());
+  return byteKey(bytes);
+}
+
+std::string
+activationKey(const FabricTraversalActivationGroupView &activation) {
+  std::vector<std::uint8_t> bytes = canonicalFabricBytes(activation.owner);
+  appendU32Be(bytes, static_cast<std::uint32_t>(activation.kind));
+  appendU64Be(bytes, activation.ordinal);
+  return byteKey(bytes);
 }
 
 std::string switchReplicationKey(const FabricSwitchTraversalPayload &payload) {
@@ -126,6 +156,8 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
   };
   std::vector<ArcDraft> arcDrafts;
   llvm::StringMap<PnrIndex> replicationGroups;
+  llvm::StringMap<PnrIndex> capacityCells;
+  llvm::StringMap<PnrIndex> capacityActivations;
   result.traversals_.reserve(traversalViews.size());
   result.traversalReplicationGroups_.reserve(traversalViews.size());
   for (auto [ordinal, traversal] : llvm::enumerate(traversalViews)) {
@@ -197,10 +229,69 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
             !matchesSwitchRequester(use.activationGroup, *switchPayload))
           return invalid(
               "a switch requester activation disagrees with its traversal");
+    auto capacityClaimOffset =
+        checked(capacityClaimContext, result.capacityClaims_.size());
+    if (!capacityClaimOffset)
+      return capacityClaimOffset.takeError();
+    std::map<std::pair<PnrIndex, PnrIndex>, std::uint64_t> traversalClaims;
+    for (const FabricTraversalUseView &use : traversal.impliedUses) {
+      const FabricInventoryOwnerRef owner = use.pattern.owner.catalog();
+      const ::fabric::ResourceContract *contract =
+          fabric.resourceContract(owner);
+      if (!contract || use.pattern.ordinal >= contract->usePatternCount())
+        return invalid("a traversal use does not resolve its Fabric pattern");
+      const ::fabric::UsePattern pattern =
+          contract->usePattern(::fabric::UsePatternKey(use.pattern.ordinal));
+      const std::string activation = activationKey(use.activationGroup);
+      auto activationPosition = capacityActivations.find(activation);
+      if (activationPosition == capacityActivations.end()) {
+        auto index =
+            checked(capacityActivationContext, capacityActivations.size());
+        if (!index)
+          return index.takeError();
+        activationPosition =
+            capacityActivations.try_emplace(activation, *index).first;
+      }
+      for (const ::fabric::Claim &claim : pattern.claims) {
+        if (claim.state.ordinal() >= contract->stateCount())
+          return invalid("a traversal claim has an invalid Fabric state");
+        const auto dimensions = contract->capacityDimensions(claim.state);
+        if (claim.dimension.ordinal() >= dimensions.size())
+          return invalid("a traversal claim has an invalid capacity dimension");
+        const auto &dimension = dimensions[claim.dimension.ordinal()];
+        const std::string cell =
+            capacityCellKey(owner, claim.state, claim.dimension);
+        auto cellPosition = capacityCells.find(cell);
+        if (cellPosition == capacityCells.end()) {
+          auto index = checked(capacityCellContext, capacityCells.size());
+          if (!index)
+            return index.takeError();
+          cellPosition = capacityCells.try_emplace(cell, *index).first;
+          result.capacityCells_.push_back(
+              {dimension.capacity.value(), dimension.initialOccupancy.value()});
+        } else {
+          const auto &existing = result.capacityCells_[cellPosition->second];
+          if (existing.capacity != dimension.capacity.value() ||
+              existing.initialOccupancy != dimension.initialOccupancy.value())
+            return invalid("one capacity cell has inconsistent Fabric values");
+        }
+        auto [position, inserted] = traversalClaims.try_emplace(
+            std::make_pair(activationPosition->second, cellPosition->second),
+            claim.amount.value());
+        if (!inserted && position->second != claim.amount.value())
+          return invalid("one traversal activation has inconsistent claims");
+      }
+    }
+    for (const auto &[key, amount] : traversalClaims)
+      result.capacityClaims_.push_back({key.second, key.first, amount});
+    auto capacityClaimCount =
+        checked(capacityClaimContext, traversalClaims.size());
+    if (!capacityClaimCount)
+      return capacityClaimCount.takeError();
     result.traversalReplicationGroups_.push_back(replicationGroup);
-    result.traversals_.push_back({traversal.reference, *sourceOffset,
-                                  *sourceCount, *destinationOffset,
-                                  *destinationCount});
+    result.traversals_.push_back(
+        {traversal.reference, *sourceOffset, *sourceCount, *destinationOffset,
+         *destinationCount, *capacityClaimOffset, *capacityClaimCount});
 
     auto arcProduct = checkedPnrIndexMultiply(arcContext, sources.size(),
                                               destinations.size());

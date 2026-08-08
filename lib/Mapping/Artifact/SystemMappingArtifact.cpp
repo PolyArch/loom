@@ -1,6 +1,7 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 
 #include "MappingAssemblyInternal.h"
+#include "SystemMappingCapacityVerification.h"
 #include "SystemMappingClosure.h"
 
 #include "Common/ArtifactFinalizer.h"
@@ -620,11 +621,14 @@ llvm::Expected<SystemMappingView> importSystemMappingView(
       strictImportSystemExecutionBindings(*canonical, dataflow, fabric, store);
   if (!execution)
     return execution.takeError();
-  auto closure =
-      detail::importSystemMappingClosure(root, dataflow, fabric, *execution,
-                                         store);
+  auto closure = detail::importSystemMappingClosure(root, dataflow, fabric,
+                                                    *execution, store);
   if (!closure)
     return closure.takeError();
+  if (llvm::Error error = detail::verifySystemMappingCapacity(
+          dataflow, fabric, *execution, closure->services,
+          closure->resourceUses, closure->resourceUseActivationKeys, store))
+    return std::move(error);
   return SystemMappingView(mappingIdentity, dataflow.identity(),
                            fabric.artifact().identity(), std::move(*execution),
                            std::move(closure->services),

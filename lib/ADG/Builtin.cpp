@@ -36,11 +36,12 @@ llvm::Expected<T> indexed(llvm::ArrayRef<T> values, std::size_t &cursor,
   return values[cursor++];
 }
 
-llvm::Expected<::fabric::ResourceContract> exclusiveResourceContract() {
+llvm::Expected<::fabric::ResourceContract>
+singleRequesterResourceContract(std::uint32_t capacity = 1) {
   ::fabric::ResourceContractDeclaration declaration;
   declaration.states = {
       {::fabric::StateKey(0),
-       {{::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(1),
+       {{::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(capacity),
          ::fabric::CapacityUnits(0)}}}};
   declaration.requesters = {::fabric::RequesterKey(0)};
   declaration.eligibilityCount = 1;
@@ -89,7 +90,7 @@ makeBuiltinInstructionCoreArchitecture() {
 
 llvm::Expected<loom::fabric::InstructionCoreMicroarchitecturalRealization>
 inOrderMicroarchitecture() {
-  auto resources = exclusiveResourceContract();
+  auto resources = singleRequesterResourceContract();
   if (!resources)
     return resources.takeError();
   loom::fabric::InstructionCoreCommonDeclaration common{
@@ -111,7 +112,7 @@ inOrderMicroarchitecture() {
 
 llvm::Expected<loom::fabric::InstructionCoreMicroarchitecturalRealization>
 outOfOrderMicroarchitecture() {
-  auto resources = exclusiveResourceContract();
+  auto resources = singleRequesterResourceContract();
   if (!resources)
     return resources.takeError();
   loom::fabric::InstructionCoreCommonDeclaration common{
@@ -682,7 +683,9 @@ expandBuiltinSystemImpl(DesignBuilder &design,
     cores.push_back(*core);
   }
 
-  auto transportContract = exclusiveResourceContract();
+  auto transportContract = singleRequesterResourceContract(
+      2 * (descriptor.scale.accCoreCount + descriptor.scale.gatewayCount) *
+      descriptor.scale.temporalResidentContexts);
   if (!transportContract)
     return transportContract.takeError();
   auto bits128 = PortType::bits(128);

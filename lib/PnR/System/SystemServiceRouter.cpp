@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -63,6 +64,93 @@ struct AtomicPatternCatalog final {
 void admitTraversal(std::vector<std::uint64_t> &eligibility,
                     PnrIndex traversal) {
   eligibility[traversal / 64] |= std::uint64_t{1} << (traversal % 64);
+}
+
+void rejectTraversal(std::vector<std::uint64_t> &eligibility,
+                     PnrIndex traversal) {
+  eligibility[traversal / 64] &= ~(std::uint64_t{1} << (traversal % 64));
+}
+
+llvm::Error
+applyCapacityEligibility(const FrozenEndpointRoutingTopology &topology,
+                         llvm::ArrayRef<std::uint64_t> usage,
+                         std::vector<std::uint64_t> &eligibility) {
+  if (usage.size() != topology.capacityCells().size())
+    return invalid("route capacity usage has the wrong shape");
+  for (const auto &[traversalOrdinal, traversal] :
+       llvm::enumerate(topology.traversals())) {
+    if (traversal.capacityClaimOffset > topology.capacityClaims().size() ||
+        traversal.capacityClaimCount >
+            topology.capacityClaims().size() - traversal.capacityClaimOffset)
+      return invalid("a traversal capacity range is out of bounds");
+    for (const auto &claim : topology.capacityClaims().slice(
+             traversal.capacityClaimOffset, traversal.capacityClaimCount)) {
+      if (claim.cell >= usage.size())
+        return invalid("a traversal capacity claim names an invalid cell");
+      const auto &cell = topology.capacityCells()[claim.cell];
+      if (usage[claim.cell] > cell.capacity ||
+          claim.amount > cell.capacity - usage[claim.cell]) {
+        rejectTraversal(eligibility, static_cast<PnrIndex>(traversalOrdinal));
+        break;
+      }
+    }
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error
+commitRouteCapacityTraversals(const FrozenEndpointRoutingTopology &topology,
+                              llvm::ArrayRef<PnrIndex> selectedTraversals,
+                              std::vector<std::uint64_t> &usage) {
+  std::map<std::pair<PnrIndex, PnrIndex>, std::uint64_t> selectedClaims;
+  for (PnrIndex selectedTraversal : selectedTraversals) {
+    if (selectedTraversal == getInvalidPnrIndex())
+      continue;
+    if (selectedTraversal >= topology.traversals().size())
+      return invalid("a route node has an invalid capacity traversal");
+    const auto &traversal = topology.traversals()[selectedTraversal];
+    if (traversal.capacityClaimOffset > topology.capacityClaims().size() ||
+        traversal.capacityClaimCount >
+            topology.capacityClaims().size() - traversal.capacityClaimOffset)
+      return invalid("a route capacity range is out of bounds");
+    for (const auto &claim : topology.capacityClaims().slice(
+             traversal.capacityClaimOffset, traversal.capacityClaimCount)) {
+      auto [position, inserted] = selectedClaims.try_emplace(
+          std::make_pair(claim.activation, claim.cell), claim.amount);
+      if (!inserted && position->second != claim.amount)
+        return invalid("one route activation has inconsistent capacity claims");
+    }
+  }
+
+  std::map<PnrIndex, std::uint64_t> additions;
+  for (const auto &[key, amount] : selectedClaims) {
+    std::uint64_t &addition = additions[key.second];
+    if (amount > std::numeric_limits<std::uint64_t>::max() - addition)
+      return invalid("route capacity addition overflows u64");
+    addition += amount;
+  }
+  for (const auto &[cellOrdinal, amount] : additions) {
+    if (cellOrdinal >= usage.size())
+      return invalid("a selected route claim names an invalid capacity cell");
+    const auto &cell = topology.capacityCells()[cellOrdinal];
+    if (usage[cellOrdinal] > cell.capacity ||
+        amount > cell.capacity - usage[cellOrdinal])
+      return llvm::make_error<detail::SystemCandidateInfeasible>(
+          "selected service routes exceed Fabric capacity");
+  }
+  for (const auto &[cellOrdinal, amount] : additions)
+    usage[cellOrdinal] += amount;
+  return llvm::Error::success();
+}
+
+llvm::Error commitRouteCapacity(const FrozenEndpointRoutingTopology &topology,
+                                llvm::ArrayRef<MutableNode> nodes,
+                                std::vector<std::uint64_t> &usage) {
+  std::vector<PnrIndex> traversals;
+  traversals.reserve(nodes.size());
+  for (const MutableNode &node : nodes)
+    traversals.push_back(node.incomingTraversal);
+  return commitRouteCapacityTraversals(topology, traversals, usage);
 }
 
 llvm::Expected<AtomicPatternCatalog>
@@ -399,6 +487,10 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
   if (llvm::Error error = search.prepare(endpointRoutingGraphView(topology)))
     return std::move(error);
   std::vector<RouteCost> arcCosts(topology.arcs().size(), 1);
+  std::vector<std::uint64_t> capacityUsage;
+  capacityUsage.reserve(topology.capacityCells().size());
+  for (const auto &cell : topology.capacityCells())
+    capacityUsage.push_back(cell.initialOccupancy);
 
   for (PnrIndex legOrdinal = 0; legOrdinal < problem.serviceLegs().size();
        ++legOrdinal) {
@@ -443,6 +535,9 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
       for (PnrIndex rank = 0; rank < targetRanks.size(); ++rank)
         targetRanks[rank] = rank;
       auto eligibility = routeEligibility(topology, *atomicPatterns, nodes);
+      if (llvm::Error error =
+              applyCapacityEligibility(topology, capacityUsage, eligibility))
+        return std::move(error);
       std::optional<RouteProbe> bestProbe;
       std::string lastRouteDiagnostic;
       const auto tryProbe =
@@ -533,6 +628,8 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
     }
     if (llvm::Error error = canonicalizeTree(nodes, sinks))
       return std::move(error);
+    if (llvm::Error error = commitRouteCapacity(topology, nodes, capacityUsage))
+      return std::move(error);
 
     auto nodeOffset = checked(nodeOffsetContext, result.nodes.size());
     auto nodeCount = checked(nodeOffsetContext, nodes.size());
@@ -574,6 +671,10 @@ llvm::Error loom::pnr::detail::verifySystemServiceRoutes(
   auto atomicPatterns = buildAtomicPatternCatalog(topology);
   if (!atomicPatterns)
     return atomicPatterns.takeError();
+  std::vector<std::uint64_t> capacityUsage;
+  capacityUsage.reserve(topology.capacityCells().size());
+  for (const auto &cell : topology.capacityCells())
+    capacityUsage.push_back(cell.initialOccupancy);
   PnrIndex expectedNodeOffset = 0;
   PnrIndex expectedSinkOffset = 0;
   for (PnrIndex routeOrdinal = 0; routeOrdinal < routes.size();
@@ -692,6 +793,13 @@ llvm::Error loom::pnr::detail::verifySystemServiceRoutes(
     for (PnrIndex node = 0; node < routeNodes.size(); ++node)
       if (!hasOutgoing[node] && !nodeHasSink[node])
         return invalid("service route contains a non-sink leaf");
+    std::vector<PnrIndex> selectedTraversals;
+    selectedTraversals.reserve(routeNodes.size());
+    for (const auto &node : routeNodes)
+      selectedTraversals.push_back(node.incomingTraversal);
+    if (llvm::Error error = commitRouteCapacityTraversals(
+            topology, selectedTraversals, capacityUsage))
+      return error;
     expectedNodeOffset += route.nodeCount;
     expectedSinkOffset += route.sinkCount;
   }

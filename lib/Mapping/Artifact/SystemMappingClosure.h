@@ -3,11 +3,14 @@
 
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 
+#include <string>
+
 namespace loom::mapping::detail {
 
 struct ImportedSystemClosure final {
   std::vector<SystemServiceRealizationView> services;
   std::vector<SystemResourceUseView> resourceUses;
+  std::vector<std::string> resourceUseActivationKeys;
 };
 
 llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(

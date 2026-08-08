@@ -1754,6 +1754,9 @@ int main() {
     fail(llvm::toString(std::move(error)));
   require(alternate->selectedAccCore(0) != sameClassBase->selectedAccCore(0),
           "explicit thread choice did not change the selected AccCore");
+  verifyFinalizedSystemMappingWorkflow(*alternate, dataflow, system,
+                                       constraints.view(), store, context,
+                                       problem->serviceDomains().size());
 
   const auto firstThreadDomain = problem->threadChoiceCatalogOrdinals(0);
   const auto firstGraphDomain = problem->graphChoiceCatalogOrdinals(0);

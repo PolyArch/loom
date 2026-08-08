@@ -42,6 +42,19 @@ std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
                      bytes.size());
 }
 
+void appendU64(std::string &bytes, std::uint64_t value) {
+  for (unsigned shift = 56;; shift -= 8) {
+    bytes.push_back(static_cast<char>(value >> shift));
+    if (shift == 0)
+      break;
+  }
+}
+
+void appendSized(std::string &bytes, llvm::StringRef value) {
+  appendU64(bytes, value.size());
+  bytes.append(value.data(), value.size());
+}
+
 template <typename Ref> std::string fabricKey(const Ref &reference) {
   return byteKey(::loom::fabric::canonicalFabricBytes(reference));
 }
@@ -206,6 +219,35 @@ resourceKey(mlir::Attribute owner,
   if (!event)
     return event.takeError();
   return attributeKey(owner) + *event;
+}
+
+llvm::Expected<std::string>
+capacityActivationKey(llvm::StringRef ownerEvent,
+                      const ::loom::fabric::FabricArtifactView &fabric,
+                      const ::loom::fabric::FabricUsePatternRef &patternRef,
+                      llvm::ArrayRef<::fabric::UsePatternValue> parameters) {
+  const ::fabric::ResourceContract *contract =
+      fabric.resourceContract(patternRef.owner.catalog());
+  if (!contract || patternRef.ordinal >= contract->usePatternCount())
+    return invalid("ResourceUse does not resolve a Fabric pattern");
+  const ::fabric::UsePattern pattern =
+      contract->usePattern(::fabric::UsePatternKey(patternRef.ordinal));
+  if (pattern.parameters.size() != parameters.size())
+    return invalid("ResourceUse parameter count disagrees with its pattern");
+
+  std::string result;
+  appendSized(result, ownerEvent);
+  appendU64(result, parameters.size());
+  for (const auto &[schema, parameter] :
+       llvm::zip_equal(pattern.parameters, parameters)) {
+    auto encoded = ::fabric::encodeUsePatternValue(schema, parameter);
+    if (!encoded)
+      return encoded.takeError();
+    appendU64(result, encoded->size());
+    result.append(reinterpret_cast<const char *>(encoded->data()),
+                  encoded->size());
+  }
+  return result;
 }
 
 ::dataflow::EventFamilyKey
@@ -896,6 +938,7 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
     return invalid("ServiceRealization closure is incomplete");
 
   std::vector<SystemResourceUseView> resourceUses;
+  std::vector<std::string> resourceUseActivationKeys;
   std::set<std::string> seenResourceUses;
   for (auto record :
        root.getBody().front().getOps<::mapping::ResourceUseOp>()) {
@@ -924,6 +967,10 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
       return key.takeError();
     if (!seenResourceUses.insert(*key).second)
       return invalid("ResourceUse closure contains a duplicate owner event");
+    auto activationKey = capacityActivationKey(*key, fabric.artifact(),
+                                               *pattern, values->parameters);
+    if (!activationKey)
+      return activationKey.takeError();
 
     if (const auto *instruction =
             std::get_if<SystemInstructionResourceOwnerView>(&*owner)) {
@@ -938,11 +985,13 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
     resourceUses.push_back(SystemResourceUseView{
         std::move(*owner), *pattern, std::move(*activation),
         std::move(values->parameters), std::move(values->sharingAssignments)});
+    resourceUseActivationKeys.push_back(std::move(*activationKey));
   }
   if (seenResourceUses != expectedResourceUses)
     return invalid(
         "ResourceUse closure is incomplete or contains foreign uses");
-  return ImportedSystemClosure{std::move(services), std::move(resourceUses)};
+  return ImportedSystemClosure{std::move(services), std::move(resourceUses),
+                               std::move(resourceUseActivationKeys)};
 }
 
 } // namespace loom::mapping::detail

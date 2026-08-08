@@ -24,6 +24,19 @@ struct EndpointRoutingTraversal final {
   PnrIndex sourceCount = 0;
   PnrIndex destinationOffset = 0;
   PnrIndex destinationCount = 0;
+  PnrIndex capacityClaimOffset = 0;
+  PnrIndex capacityClaimCount = 0;
+};
+
+struct EndpointRoutingCapacityCell final {
+  std::uint64_t capacity = 0;
+  std::uint64_t initialOccupancy = 0;
+};
+
+struct EndpointRoutingCapacityClaim final {
+  PnrIndex cell = 0;
+  PnrIndex activation = 0;
+  std::uint64_t amount = 0;
 };
 
 struct EndpointRoutingArc final {
@@ -60,6 +73,12 @@ public:
   llvm::ArrayRef<PnrIndex> reverseArcOrdinals() const {
     return reverseArcOrdinals_;
   }
+  llvm::ArrayRef<EndpointRoutingCapacityCell> capacityCells() const {
+    return capacityCells_;
+  }
+  llvm::ArrayRef<EndpointRoutingCapacityClaim> capacityClaims() const {
+    return capacityClaims_;
+  }
 
 private:
   std::vector<EndpointRoutingEndpoint> endpoints_;
@@ -71,6 +90,8 @@ private:
   std::vector<PnrIndex> adjacencyOffsets_;
   std::vector<PnrIndex> reverseAdjacencyOffsets_;
   std::vector<PnrIndex> reverseArcOrdinals_;
+  std::vector<EndpointRoutingCapacityCell> capacityCells_;
+  std::vector<EndpointRoutingCapacityClaim> capacityClaims_;
 
   friend llvm::Expected<FrozenEndpointRoutingTopology>
   freezeEndpointRoutingTopology(

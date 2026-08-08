@@ -1160,6 +1160,7 @@ void artifactRoundTripAndReferenceValidation() {
           persistedRouteTraversals));
   if (coldRouteCapacity.total != expectedRouteCapacityOveruse)
     fail("strict route-capacity reconstruction disagrees with Candidate state");
+  loom::test::exerciseCombinedCapacityProjection(fabricRoot.view());
   const std::uint64_t committedTraversalClaim =
       spatialCandidate->totalSelectedTraversalClaim();
   requireSuccess(spatialCandidate->verify());

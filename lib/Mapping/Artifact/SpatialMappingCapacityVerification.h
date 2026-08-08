@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace loom::mapping::detail {
@@ -25,6 +26,11 @@ struct SpatialCapacityOveruseProjection final {
   std::uint64_t total = 0;
   std::optional<SpatialCapacityOveruseWitness> firstWitness;
 };
+
+llvm::Expected<std::string> deriveSpatialCapacityActivationKey(
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ArtifactIdentity &dataflowIdentity,
+    const SpatialResourceUseView &resourceUse);
 
 llvm::Expected<SpatialCapacityOveruseProjection> deriveSpatialCapacityOveruse(
     const ::loom::fabric::FabricArtifactView &fabric,

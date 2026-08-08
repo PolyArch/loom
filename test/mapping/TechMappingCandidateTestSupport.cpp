@@ -21,6 +21,7 @@
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialGlobalRoutingClosure.h"
 #include "PnR/SpatialObjective.h"
+#include "ResourceCapacityVerification.h"
 #include "SpatialMappingCapacityVerification.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -58,6 +59,93 @@ template <typename T> T take(llvm::Expected<T> value) {
 void requireSuccess(llvm::Error error) {
   if (error)
     fail(llvm::toString(std::move(error)));
+}
+
+void verifyResidentAndEventCapacityComposition(
+    const loom::fabric::FabricArtifactView &fabric) {
+  const loom::fabric::FabricPhysicalTraversalView *selectedTraversal = nullptr;
+  std::optional<loom::fabric::FabricUsePatternRef> selectedPattern;
+  std::uint64_t eventMultiplicity = 0;
+  for (const auto &traversal : fabric.physicalTraversals()) {
+    for (const auto &use : traversal.impliedUses) {
+      const auto *contract =
+          fabric.resourceContract(use.pattern.owner.catalog());
+      if (!contract || use.pattern.ordinal >= contract->usePatternCount())
+        continue;
+      const auto pattern =
+          contract->usePattern(::fabric::UsePatternKey(use.pattern.ordinal));
+      std::uint64_t maximumMultiplicity =
+          std::numeric_limits<std::uint64_t>::max();
+      for (const auto &claim : pattern.claims) {
+        if (claim.state.ordinal() >= contract->stateCount()) {
+          maximumMultiplicity = 0;
+          break;
+        }
+        const auto dimensions = contract->capacityDimensions(claim.state);
+        if (claim.dimension.ordinal() >= dimensions.size()) {
+          maximumMultiplicity = 0;
+          break;
+        }
+        const auto &dimension = dimensions[claim.dimension.ordinal()];
+        const std::uint64_t available =
+            dimension.capacity.value() - dimension.initialOccupancy.value();
+        const std::uint64_t amount = claim.amount.value();
+        if (amount != 0)
+          maximumMultiplicity =
+              std::min(maximumMultiplicity, available / amount);
+      }
+      if (maximumMultiplicity != 0 &&
+          maximumMultiplicity != std::numeric_limits<std::uint64_t>::max() &&
+          maximumMultiplicity <= 4096) {
+        selectedTraversal = &traversal;
+        selectedPattern = use.pattern;
+        eventMultiplicity = maximumMultiplicity;
+        break;
+      }
+    }
+    if (selectedPattern)
+      break;
+  }
+  if (!selectedTraversal || !selectedPattern)
+    fail("capacity fixture lacks a composable resident traversal claim");
+
+  using loom::mapping::detail::ResourceCapacityNamespaceView;
+  using loom::mapping::detail::ResourceCapacityRouteProjection;
+  using loom::mapping::detail::ResourceCapacityUseProjection;
+  const ResourceCapacityNamespaceView shared{&fabric, {0}};
+  const std::vector<ResourceCapacityUseProjection> eventUses(
+      eventMultiplicity,
+      ResourceCapacityUseProjection{0, *selectedPattern, "shared-event"});
+  const ResourceCapacityRouteProjection residentRoute{
+      0, {selectedTraversal->reference}};
+  const auto eventOnly =
+      take(loom::mapping::detail::deriveResourceCapacityOveruse(
+          llvm::ArrayRef<ResourceCapacityNamespaceView>(shared), eventUses,
+          {}));
+  const auto residentOnly =
+      take(loom::mapping::detail::deriveResourceCapacityOveruse(
+          llvm::ArrayRef<ResourceCapacityNamespaceView>(shared), {},
+          llvm::ArrayRef<ResourceCapacityRouteProjection>(residentRoute)));
+  const auto combined =
+      take(loom::mapping::detail::deriveResourceCapacityOveruse(
+          llvm::ArrayRef<ResourceCapacityNamespaceView>(shared), eventUses,
+          llvm::ArrayRef<ResourceCapacityRouteProjection>(residentRoute)));
+  if (eventOnly.total != 0 || residentOnly.total != 0 || combined.total == 0 ||
+      !combined.firstWitness)
+    fail("capacity closure did not combine resident and event occupancy");
+
+  const std::array<ResourceCapacityNamespaceView, 2> isolated = {
+      ResourceCapacityNamespaceView{&fabric, {0}},
+      ResourceCapacityNamespaceView{&fabric, {1}}};
+  std::vector<ResourceCapacityUseProjection> isolatedUses(
+      eventMultiplicity,
+      ResourceCapacityUseProjection{1, *selectedPattern, "shared-event"});
+  const auto separated =
+      take(loom::mapping::detail::deriveResourceCapacityOveruse(
+          isolated, isolatedUses,
+          llvm::ArrayRef<ResourceCapacityRouteProjection>(residentRoute)));
+  if (separated.total != 0)
+    fail("capacity closure merged distinct physical occurrence namespaces");
 }
 
 std::string byteList(llvm::ArrayRef<std::uint8_t> bytes) {
@@ -681,6 +769,11 @@ void loom::test::exerciseCapacityOveruseCandidate(
   requireContextEnvelopeState(*overused, false);
   requireContextEnvelopeState(legal, true);
   requireSuccess(candidate->verify());
+}
+
+void loom::test::exerciseCombinedCapacityProjection(
+    const fabric::FabricArtifactView &fabric) {
+  verifyResidentAndEventCapacityComposition(fabric);
 }
 
 void loom::test::exerciseCapacityExactRepairNoMutation(

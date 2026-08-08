@@ -34,6 +34,9 @@ void exerciseCapacityOveruseCandidate(
     const fabric::FabricArtifactView &fabric,
     const pnr::FrozenSpatialPnrProblemHandle &problem);
 
+void exerciseCombinedCapacityProjection(
+    const fabric::FabricArtifactView &fabric);
+
 void exerciseCapacityExactRepairNoMutation(
     const pnr::FrozenSpatialPnrProblemHandle &problem,
     pnr::SpatialExactRepairResultKind expected);
