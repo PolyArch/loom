@@ -22,6 +22,10 @@ add_executable(loom-fabric-resource-contract-test
   ResourceContractTest.cpp
 )
 
+add_executable(loom-fabric-operation-resource-contract-test
+  OperationResourceContractTest.cpp
+)
+
 add_executable(loom-fabric-resource-contract-record-test
   ResourceContractRecordTest.cpp
 )
@@ -95,6 +99,12 @@ target_link_libraries(loom-fabric-physical-tag-test PRIVATE
 
 target_link_libraries(loom-fabric-resource-contract-test PRIVATE
   LoomFabricResourceContract
+)
+
+target_link_libraries(loom-fabric-operation-resource-contract-test PRIVATE
+  LoomFabricResourceContract
+  MLIRDataflow
+  MLIRIR
 )
 
 target_link_libraries(loom-fabric-resource-contract-record-test PRIVATE

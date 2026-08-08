@@ -127,10 +127,11 @@ struct Claim {
   CapacityUnits amount;
 };
 
-/// The one owner-defined durable state transition an accepted use applies, and
-/// the exact event at which it applies atomically. A transition is not a
-/// capacity claim: the state it produces stays until a later use commits its
-/// own transition, and no later use releases or inherits an earlier claim.
+/// The one owner-defined state transition an accepted use applies, and the
+/// exact event at which it applies atomically. The owner determines whether
+/// its effect is durable across uses or local to the current claim. A
+/// transition is not itself a capacity claim; claim acquisition and release
+/// remain separately defined by the use pattern.
 struct Commit {
   EventKey event;
   ResourceTransitionKey transition;

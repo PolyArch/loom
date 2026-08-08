@@ -76,6 +76,7 @@ target_include_directories(loom-simulator-cgra-graph-activation-test PRIVATE
 )
 
 target_link_libraries(loom-simulator-cgra-compute-runtime-test PRIVATE
+  LoomFabricResourceContract
   LoomSimulator
   MLIRArithDialect
   MLIRDataflow

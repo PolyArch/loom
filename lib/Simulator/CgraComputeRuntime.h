@@ -83,6 +83,11 @@ public:
                           std::uint64_t occurrenceOrdinal,
                           SpatialEventCoordinate coordinate);
 
+  llvm::Error satisfyCausalRelease(std::uint64_t semanticActorOrdinal,
+                                   std::uint64_t occurrenceOrdinal,
+                                   std::uint32_t transitionCaseOrdinal,
+                                   SpatialEventCoordinate coordinate);
+
   llvm::Expected<std::optional<CgraComputeLifecycleFrame>> advance();
 
   std::optional<SpatialEventCoordinate> nextCoordinate() const;

@@ -70,6 +70,23 @@ bool sameTraceProjection(llvm::ArrayRef<TraceEventPoint> lhs,
   return true;
 }
 
+bool sameTransition(const loom::sim::ActorTransitionOccurrenceRef &lhs,
+                    const loom::sim::ActorTransitionOccurrenceRef &rhs) {
+  return lhs.invocation.invocationOrdinal == rhs.invocation.invocationOrdinal &&
+         lhs.actor == rhs.actor &&
+         lhs.transitionOrdinal == rhs.transitionOrdinal;
+}
+
+bool sameAction(const loom::sim::PhysicalActionOccurrenceRef &lhs,
+                const loom::sim::PhysicalActionOccurrenceRef &rhs) {
+  const auto *left =
+      std::get_if<loom::sim::TransitionPhysicalActionParent>(&lhs.parent);
+  const auto *right =
+      std::get_if<loom::sim::TransitionPhysicalActionParent>(&rhs.parent);
+  return left && right && sameTransition(left->transition, right->transition) &&
+         lhs.localActionOrdinal == rhs.localActionOrdinal;
+}
+
 } // namespace
 
 void loom::test::exerciseCgraAdmission(
@@ -77,8 +94,8 @@ void loom::test::exerciseCgraAdmission(
     const ArtifactRootReference &fabricReference,
     const ArtifactRootReference &spatialMappingReference,
     const ArtifactRootReference &foreignFabricReference,
-    const ArtifactStore &store, const BlobStore &blobs,
-    bool expectPhysicalTags) {
+    const ArtifactStore &store, const BlobStore &blobs, bool expectPhysicalTags,
+    bool expectCausalComputeRelease) {
   auto dataflow =
       take(::dataflow::importCanonicalDataflow(dataflowReference, store));
   auto view = take(dataflow.view());
@@ -204,6 +221,50 @@ void loom::test::exerciseCgraAdmission(
       retiredPhysical !=
           microarchitectureRetired.counters.physicalRetirementCount)
     fail("CGRA microarchitecture trace is not physical-lifecycle complete");
+  if (expectCausalComputeRelease) {
+    std::vector<sim::PhysicalActionOccurrenceRef> causalActions;
+    std::vector<sim::ActorTransitionOccurrenceRef> publishedTransitions;
+    bool observedRetirement = false;
+    for (const sim::SpatialTraceFrame &frame : microarchitectureTrace->frames) {
+      for (const sim::SpatialTraceEvent &event : frame.events) {
+        const auto *published =
+            std::get_if<sim::TokenPublishedTraceEvent>(&event);
+        if (!published)
+          continue;
+        const auto *result =
+            std::get_if<sim::ActorResultTokenOccurrenceRef>(&published->token);
+        if (result)
+          publishedTransitions.push_back(result->transition);
+      }
+      for (const sim::SpatialTraceEvent &event : frame.events) {
+        if (const auto *physical =
+                std::get_if<sim::PhysicalRequestedTraceEvent>(&event)) {
+          const auto *use =
+              std::get_if<sim::PhysicalUseTarget>(&physical->target);
+          if (use && use->usePattern.owner.catalog().kind() ==
+                         fabric::FabricInventoryOwnerKind::FuOccurrenceNode)
+            causalActions.push_back(physical->action);
+          continue;
+        }
+        const auto *retired =
+            std::get_if<sim::PhysicalRetiredTraceEvent>(&event);
+        if (!retired || llvm::none_of(causalActions, [&](const auto &action) {
+              return sameAction(action, retired->action);
+            }))
+          continue;
+        const auto *parent = std::get_if<sim::TransitionPhysicalActionParent>(
+            &retired->action.parent);
+        if (!parent ||
+            llvm::none_of(publishedTransitions, [&](const auto &published) {
+              return sameTransition(published, parent->transition);
+            }))
+          fail("one-cycle physical use retired before token publication");
+        observedRetirement = true;
+      }
+    }
+    if (causalActions.empty() || !observedRetirement)
+      fail("CGRA trace lost its causally released one-cycle physical use");
+  }
   if (!sameTraceProjection(
           projectTrace(*trace, sim::TraceCaptureLevel::Semantic),
           projectTrace(*microarchitectureTrace,

@@ -381,8 +381,8 @@ llvm::Error validate(NormalizedDeclaration &normalized) {
 
   // The owning timing contract must place acquisition no later than the
   // optional commit and the commit no later than release, so an accepted use
-  // always reaches its durable transition and then returns its whole claim
-  // envelope.
+  // reaches its owner-defined transition, when present, before returning its
+  // whole claim envelope. The generic contract infers no transition lifetime.
   for (std::size_t pattern = 0; pattern < normalized.usePatternCount();
        ++pattern) {
     const UsePatternDeclaration &declared = normalized.usePattern(pattern);

@@ -193,12 +193,13 @@ bool sameTiming(const CgraPhysicalUseTiming &lhs,
          lhs.releaseRank == rhs.releaseRank &&
          lhs.acquireEventOrdinal == rhs.acquireEventOrdinal &&
          lhs.releaseEventOrdinal == rhs.releaseEventOrdinal &&
-         lhs.commitEventOrdinal == rhs.commitEventOrdinal;
+         lhs.commitEventOrdinal == rhs.commitEventOrdinal &&
+         lhs.requiresCausalRelease == rhs.requiresCausalRelease;
 }
 
 llvm::Expected<std::uint64_t> appendPhysicalActivation(
     llvm::ArrayRef<::loom::fabric::FabricUsePatternRef> inputPatterns,
-    CgraPhysicalUseClientKind client,
+    CgraPhysicalUseClientKind client, bool requiresCausalRelease,
     const ::loom::fabric::FabricArtifactView &fabric,
     const std::map<std::vector<std::uint8_t>, std::uint64_t> &ownerOrdinals,
     CgraFrozenExecutionPlan &result,
@@ -251,7 +252,8 @@ llvm::Expected<std::uint64_t> appendPhysicalActivation(
         pattern.release.ordinal(),
         pattern.commit
             ? std::optional<std::uint32_t>(pattern.commit->event.ordinal())
-            : std::nullopt};
+            : std::nullopt,
+        requiresCausalRelease};
     if (timing && !sameTiming(*timing, current))
       return invalid("CGRA atomic activation has inconsistent owner timing");
     timing = current;
@@ -498,8 +500,8 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
   for (auto [ordinal, use] : llvm::enumerate(spatial.resourceUses())) {
     auto action = appendPhysicalActivation(
         llvm::ArrayRef<::loom::fabric::FabricUsePatternRef>(&use.useSite, 1),
-        (*physicalUseClients)[ordinal], fabric, ownerOrdinals, result,
-        selectedPatterns, activations, selectedOwners);
+        (*physicalUseClients)[ordinal], !use.activation.release.empty(), fabric,
+        ownerOrdinals, result, selectedPatterns, activations, selectedOwners);
     if (!action)
       return action.takeError();
     if (*action != ordinal)
@@ -523,7 +525,7 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
     for (std::uint64_t ordinal : useOrdinals)
       patterns.push_back(result.transport.traversalUses[ordinal].pattern);
     auto action = appendPhysicalActivation(
-        patterns, CgraPhysicalUseClientKind::TraversalTransport, fabric,
+        patterns, CgraPhysicalUseClientKind::TraversalTransport, false, fabric,
         ownerOrdinals, result, selectedPatterns, activations, selectedOwners);
     if (!action)
       return action.takeError();
@@ -552,8 +554,8 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
       return found->second;
     auto action = appendPhysicalActivation(
         llvm::ArrayRef<::loom::fabric::FabricUsePatternRef>(&pattern, 1),
-        CgraPhysicalUseClientKind::TraversalTransport, fabric, ownerOrdinals,
-        result, selectedPatterns, activations, selectedOwners);
+        CgraPhysicalUseClientKind::TraversalTransport, false, fabric,
+        ownerOrdinals, result, selectedPatterns, activations, selectedOwners);
     if (!action)
       return action.takeError();
     traversalPatternActions.emplace(

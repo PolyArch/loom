@@ -55,6 +55,7 @@ private:
     std::uint32_t expectedTransfers = 0;
     std::uint32_t completedTransfers = 0;
     bool physicalComplete = false;
+    bool causalReleaseSatisfied = false;
   };
 
   CgraGraphActivationRuntime(

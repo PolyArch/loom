@@ -406,6 +406,58 @@ llvm::Error CgraComputeRuntime::retireActor(std::uint64_t semanticActorOrdinal,
   return scheduleReady(std::move(*next));
 }
 
+llvm::Error CgraComputeRuntime::satisfyCausalRelease(
+    std::uint64_t semanticActorOrdinal, std::uint64_t occurrenceOrdinal,
+    std::uint32_t transitionCaseOrdinal, SpatialEventCoordinate coordinate) {
+  if (!started_)
+    return invalid("CGRA compute runtime has not started");
+  if (semanticActorOrdinal >= bindingBySemanticActor_.size())
+    return invalid("CGRA causal release names an unknown semantic actor");
+  const std::uint64_t bindingOrdinal =
+      bindingBySemanticActor_[semanticActorOrdinal];
+  if (bindingOrdinal == std::numeric_limits<std::uint64_t>::max())
+    return invalid("CGRA causal release names another graph");
+  const ActorBinding &binding = bindings_[bindingOrdinal];
+  if (transitionCaseOrdinal >= binding.transitionCount)
+    return invalid("CGRA causal release names an unknown transition case");
+  const std::uint64_t transitionOrdinal =
+      transitionByCase_[binding.transitionIndexOffset + transitionCaseOrdinal];
+  const CgraComputeTransitionPlan &transition =
+      plan_->computeTransitions[transitionOrdinal];
+  const auto actions =
+      llvm::ArrayRef(plan_->actorTransitionPhysicalUses)
+          .slice(transition.physicalUseOffset, transition.physicalUseCount);
+  if (llvm::none_of(actions, [&](std::uint64_t actionOrdinal) {
+        return plan_->physicalUseTimings[actionOrdinal].requiresCausalRelease;
+      }))
+    return llvm::Error::success();
+  if (!binding.retirementPending || binding.commitPending ||
+      binding.activeOccurrenceOrdinal != occurrenceOrdinal)
+    return invalid("CGRA causal release disagrees with its active firing");
+
+  std::optional<std::uint64_t> firingSlot;
+  for (auto [slot, firing] : llvm::enumerate(firings_))
+    if (firing.active && firing.bindingOrdinal == bindingOrdinal &&
+        firing.actorOccurrenceOrdinal == occurrenceOrdinal) {
+      firingSlot = slot;
+      break;
+    }
+  if (!firingSlot)
+    return invalid("CGRA causal release has no active firing");
+
+  for (const auto &entry : actionToFiring_) {
+    if (entry.second.firingSlot != *firingSlot)
+      continue;
+    const std::uint64_t actionOrdinal = entry.first.first;
+    if (!plan_->physicalUseTimings[actionOrdinal].requiresCausalRelease)
+      continue;
+    if (llvm::Error error = physical_->satisfyCausalRelease(
+            actionOrdinal, entry.first.second, coordinate))
+      return error;
+  }
+  return llvm::Error::success();
+}
+
 void CgraComputeRuntime::maybeComplete(std::uint64_t firingSlot,
                                        CgraComputeLifecycleFrame &frame) {
   Firing &firing = firings_[firingSlot];

@@ -22,8 +22,9 @@ template <typename T> T take(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
-loom::sim::SpatialEventCoordinate coordinate(std::uint64_t cycle) {
-  return {take(loom::evaluation::ExactRatio::get(cycle, 1)), 0};
+loom::sim::SpatialEventCoordinate coordinate(std::uint64_t cycle,
+                                             std::uint32_t delta = 0) {
+  return {take(loom::evaluation::ExactRatio::get(cycle, 1)), delta};
 }
 
 fabric::ResourceContract createContract() {
@@ -194,10 +195,51 @@ void equalOwnerEventCommitsAndReleasesAtomically() {
     fail("equal owner event split commit from whole-envelope release");
 }
 
+void causalReleaseConjoinsWithIntrinsicRelease() {
+  const fabric::ResourceContract contract = createContract();
+  const fabric::ResourceContract *contracts[] = {&contract};
+  const loom::sim::detail::CgraResourcePatternSelection selections[] = {
+      {0, fabric::UsePatternKey(0)}};
+  const auto resources = take(
+      loom::sim::detail::freezeCgraResourceRuntimePlan(contracts, selections));
+  const loom::sim::detail::CgraPhysicalUseTiming uses[] = {
+      {0, 0, 1, 2, 0, 2, 1, true}};
+  auto runtime = take(
+      loom::sim::detail::CgraPhysicalActionRuntime::create(resources, uses));
+  (void)take(runtime.request(0, 4, coordinate(5)));
+
+  auto frame = take(runtime.advance());
+  if (!frame || frame->events.size() != 1 ||
+      frame->events.front().kind !=
+          loom::sim::detail::CgraPhysicalLifecycleKind::Granted)
+    fail("causally released action did not acquire");
+  frame = take(runtime.advance());
+  if (!frame || frame->events.size() != 1 ||
+      frame->events.front().kind !=
+          loom::sim::detail::CgraPhysicalLifecycleKind::Committed)
+    fail("causally released action did not commit");
+  frame = take(runtime.advance());
+  if (!frame || !frame->events.empty() || !runtime.hasPendingActions())
+    fail("intrinsic release bypassed the causal release condition");
+
+  if (llvm::Error error = runtime.satisfyCausalRelease(0, 4, coordinate(9)))
+    fail(llvm::toString(std::move(error)));
+  frame = take(runtime.advance());
+  if (!frame ||
+      frame->coordinate.referenceCycle !=
+          take(loom::evaluation::ExactRatio::get(9, 1)) ||
+      frame->coordinate.delta != 1 || frame->events.size() != 1 ||
+      frame->events.front().kind !=
+          loom::sim::detail::CgraPhysicalLifecycleKind::Retired ||
+      runtime.hasPendingActions())
+    fail("causal release did not retire the complete claim envelope");
+}
+
 } // namespace
 
 int main() {
   contentionProducesExactLifecycleAndStall();
   equalOwnerEventCommitsAndReleasesAtomically();
+  causalReleaseConjoinsWithIntrinsicRelease();
   return EXIT_SUCCESS;
 }

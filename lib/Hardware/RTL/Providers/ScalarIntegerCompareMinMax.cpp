@@ -3,6 +3,8 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "ProviderSupport.h"
 
+#include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/IR/ResourceContractRecord.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -133,6 +135,18 @@ materializePortableScalarIntegerCompareMinMax(
   if (request.capability.implementationFamily !=
       ::fabric::ImplementationFamilyId::ScalarIntegerCompareMinMax)
     return invalid("provider received a different implementation family");
+
+  auto actualContract = ::fabric::encodeResourceContractRecord(
+      request.capability.resourceStateAndTimingContract);
+  if (!actualContract)
+    return actualContract.takeError();
+  auto supportedContract = ::fabric::encodeResourceContractRecord(
+      ::fabric::oneCycleElasticOperationResourceContract());
+  if (!supportedContract)
+    return supportedContract.takeError();
+  if (*actualContract != *supportedContract)
+    return llvm::make_error<FabricOperationProviderUnsupportedError>(
+        request.capability.implementationFamily, request.recipe);
 
   std::vector<const fabric::ResolvedFabricOpPhysicalPortView *> inputs;
   std::vector<const fabric::ResolvedFabricOpPhysicalPortView *> outputs;

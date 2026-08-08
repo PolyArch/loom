@@ -3,6 +3,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Evaluation/NumericValue.h"
+#include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/ResourceContract.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -167,6 +168,17 @@ bool hasPhysical(const CgraComputeLifecycleFrame &frame,
                       });
 }
 
+bool hasPhysical(const CgraComputeLifecycleFrame &frame,
+                 CgraPhysicalLifecycleKind kind,
+                 std::uint32_t ownerEventOrdinal) {
+  return llvm::any_of(
+      frame.physicalEvents,
+      [kind, ownerEventOrdinal](const CgraPhysicalLifecycleEvent &event) {
+        return event.kind == kind &&
+               event.ownerEventOrdinal == ownerEventOrdinal;
+      });
+}
+
 Token vectorToken(mlir::VectorType type,
                   std::initializer_list<std::uint8_t> lanes) {
   require(static_cast<std::size_t>(type.getNumElements()) == lanes.size(),
@@ -198,13 +210,26 @@ CgraFrozenExecutionPlan selectedPlan(const dataflow::CanonicalActorView &actor,
        0,
        static_cast<std::uint32_t>(semantic.handshakeCases.size())});
   std::vector<CgraResourcePatternSelection> selections;
+  const fabric::UsePattern use =
+      contract.usePattern(fabric::UsePatternKey(0));
+  const auto ranks = contract.eventOrder(use.timingAndProgress);
   for (const auto &transition : semantic.handshakeCases) {
     const std::uint64_t action = plan.physicalUseTimings.size();
     plan.computeTransitions.push_back({transition.ordinal, action, 1});
     plan.actorTransitionPhysicalUses.push_back(action);
     plan.physicalUseClients.push_back(
         CgraPhysicalUseClientKind::ComputeTransition);
-    plan.physicalUseTimings.push_back({action, 0, 1, 2, 0, 2, 1});
+    plan.physicalUseTimings.push_back(
+        {action,
+         ranks[use.acquire.ordinal()],
+         use.commit ? std::optional<std::uint32_t>(
+                          ranks[use.commit->event.ordinal()])
+                    : std::nullopt,
+         ranks[use.release.ordinal()],
+         use.acquire.ordinal(),
+         use.release.ordinal(),
+         use.commit ? std::optional<std::uint32_t>(use.commit->event.ordinal())
+                    : std::nullopt});
     selections.push_back({0, fabric::UsePatternKey(0)});
   }
   const fabric::ResourceContract *contracts[] = {&contract};
@@ -231,7 +256,10 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
   auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
   require(prepared != nullptr, "compute graph preparation failed");
 
-  const fabric::ResourceContract contract = resourceContract();
+  // This fixture selects Fabric-local intrinsic timing only. Mapping-owned
+  // causal release extension is deliberately absent from this selected use.
+  const fabric::ResourceContract contract =
+      fabric::oneCycleElasticOperationResourceContract();
   CgraFrozenExecutionPlan plan =
       selectedPlan(*add, semanticActor(*prepared, add->op), contract);
   const std::uint64_t transportAction = plan.physicalUseTimings.size();
@@ -269,7 +297,11 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
   require(physicalFrame && physicalFrame->events.size() == 2,
           "shared physical calendar did not retain both clients");
   auto computePhysical = take(runtime.acceptPhysicalEvents(*physicalFrame));
-  require(hasPhysical(computePhysical, CgraPhysicalLifecycleKind::Granted) &&
+  require(computePhysical.coordinate.referenceCycle ==
+                  take(loom::evaluation::ExactRatio::get(0, 1)) &&
+              computePhysical.coordinate.delta == 0 &&
+              hasPhysical(computePhysical, CgraPhysicalLifecycleKind::Granted,
+                          0) &&
               computePhysical.actorEvents.empty(),
           "compute client did not receive its exact grant");
 
@@ -282,16 +314,20 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
           "compute client consumed another client's retirement");
 
   physicalFrame = take(physical.advance());
-  require(physicalFrame.has_value(), "physical commit frame is missing");
+  require(physicalFrame.has_value(),
+          "physical publication and release frame is missing");
   computePhysical = take(runtime.acceptPhysicalEvents(*physicalFrame));
   require(
       computePhysical.coordinate.referenceCycle ==
               take(loom::evaluation::ExactRatio::get(1, 1)) &&
           computePhysical.coordinate.delta == 0 &&
-          hasPhysical(computePhysical, CgraPhysicalLifecycleKind::Committed) &&
+          hasPhysical(computePhysical, CgraPhysicalLifecycleKind::Committed,
+                      1) &&
+          hasPhysical(computePhysical, CgraPhysicalLifecycleKind::Retired, 2) &&
           computePhysical.actorEvents.empty() &&
+          computePhysical.physicalCompletions.empty() &&
           state.pendingChannelOrdinals.empty(),
-      "software actor committed before the owner resource transition");
+      "intrinsic result-slot lifecycle did not publish and release at t + 1");
 
   frame = take(runtime.advance());
   require(frame &&
@@ -305,21 +341,13 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
               take(tokenBitPattern(frame->actorEmissions.front().token,
                                    mlir::IntegerType::get(&context(), 32))) ==
                   llvm::APInt(32, 16) &&
-              state.pendingChannelOrdinals.empty(),
+              frame->physicalCompletions.size() == 1 &&
+              state.pendingChannelOrdinals.empty() &&
+              !physical.hasPendingActions(),
           "actor commit did not hand its shared-provider token to transport");
-
-  physicalFrame = take(physical.advance());
-  require(physicalFrame.has_value(), "physical retirement frame is missing");
-  computePhysical = take(runtime.acceptPhysicalEvents(*physicalFrame));
-  require(
-      computePhysical.coordinate.referenceCycle ==
-              take(loom::evaluation::ExactRatio::get(2, 1)) &&
-          hasPhysical(computePhysical, CgraPhysicalLifecycleKind::Retired) &&
-          computePhysical.actorEvents.empty() &&
-          computePhysical.physicalCompletions.size() == 1 &&
-          !runtime.hasPendingEvents(),
-      "physical retirement fabricated actor retirement or stayed active");
-  if (llvm::Error error = runtime.retireActor(0, 0, coordinate(2)))
+  require(!take(physical.advance()),
+          "intrinsic result-slot lifecycle retained a later physical event");
+  if (llvm::Error error = runtime.retireActor(0, 0, coordinate(1, 1)))
     fail(llvm::toString(std::move(error)));
   require(!runtime.hasActiveActors(),
           "coordinated actor retirement did not release the firing");

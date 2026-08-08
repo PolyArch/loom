@@ -781,9 +781,9 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
         inspection.computeOccupancy.empty() || inspection.routes.empty())
       fail("Spatial Mapping inspection projected an empty physical mapping");
     const auto foreignFabric = buildTemporalFabric(store);
-    loom::test::exerciseCgraAdmission(dataflowReference, fabric.reference(),
-                                      generated->candidates.front(),
-                                      foreignFabric.reference(), store, blobs);
+    loom::test::exerciseCgraAdmission(
+        dataflowReference, fabric.reference(), generated->candidates.front(),
+        foreignFabric.reference(), store, blobs, false, true);
     auto wrongInspection = loom::mapping::inspectSpatialMapping(
         dataflow, tech.view(), foreignFabric.view(), generatedView.view());
     if (wrongInspection)
@@ -1270,7 +1270,7 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
       expectedAssignments += candidate->tagSegments(net).size();
     loom::test::exerciseCgraAdmission(
         dataflowReference, fabric.reference(), finalized.reference(),
-        buildTemporalFabric(store).reference(), store, blobs, true);
+        buildTemporalFabric(store).reference(), store, blobs, true, false);
     std::size_t observedAssignments = 0;
     for (const auto &use : imported.view().resourceUses()) {
       if (!use.sharingAssignments.empty() && !use.activation.release.empty())

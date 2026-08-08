@@ -141,14 +141,18 @@ CgraPhysicalActionRuntime::requestBatch(
     std::uint64_t slot = 0;
     if (freeActionSlots_.empty()) {
       slot = actions_.size();
-      actions_.push_back(Action{request.actionOrdinal,
-                                request.occurrenceOrdinal,
-                                ActionState::Requested, std::nullopt});
+      actions_.push_back(
+          Action{request.actionOrdinal, request.occurrenceOrdinal,
+                 ActionState::Requested, std::nullopt, false, false});
     } else {
       slot = freeActionSlots_.back();
       freeActionSlots_.pop_back();
-      actions_[slot] = Action{request.actionOrdinal, request.occurrenceOrdinal,
-                              ActionState::Requested, std::nullopt};
+      actions_[slot] = Action{request.actionOrdinal,
+                              request.occurrenceOrdinal,
+                              ActionState::Requested,
+                              std::nullopt,
+                              false,
+                              false};
     }
     const auto key =
         std::make_pair(request.actionOrdinal, request.occurrenceOrdinal);
@@ -172,6 +176,37 @@ CgraPhysicalActionRuntime::requestBatch(
                                                       rhs.ownerEventOrdinal);
   });
   return result;
+}
+
+llvm::Error CgraPhysicalActionRuntime::satisfyCausalRelease(
+    std::uint64_t actionOrdinal, std::uint64_t occurrenceOrdinal,
+    SpatialEventCoordinate coordinate) {
+  if (actionOrdinal >= uses_.size())
+    return invalid("CGRA causal release names an unknown action");
+  if (!uses_[actionOrdinal].requiresCausalRelease)
+    return invalid("CGRA physical action has no causal release condition");
+  if (lastCoordinate_ &&
+      compareSpatialEventCoordinates(coordinate, *lastCoordinate_) < 0)
+    return invalid("CGRA causal release precedes the execution calendar");
+  auto found = activeActions_.find({actionOrdinal, occurrenceOrdinal});
+  if (found == activeActions_.end())
+    return invalid("CGRA causal release names an inactive action");
+  Action &action = actions_[found->second];
+  if (action.state != ActionState::Granted || !action.envelope)
+    return invalid("CGRA causal release precedes resource grant");
+  if (action.causalReleaseReached)
+    return invalid("CGRA physical action received causal release twice");
+  if (action.intrinsicReleaseReached) {
+    auto release = nextSpatialDelta(coordinate);
+    if (!release)
+      return release.takeError();
+    if (llvm::Error error =
+            schedule(found->second, InternalKind::Release, *release,
+                     uses_[actionOrdinal].releaseEventOrdinal))
+      return error;
+  }
+  action.causalReleaseReached = true;
+  return llvm::Error::success();
 }
 
 llvm::Expected<std::optional<CgraPhysicalLifecycleFrame>>
@@ -221,6 +256,9 @@ CgraPhysicalActionRuntime::advance() {
     case InternalKind::Release:
       if (action.state != ActionState::Granted || !action.envelope)
         return invalid("CGRA physical release has no active claim envelope");
+      action.intrinsicReleaseReached = true;
+      if (use.requiresCausalRelease && !action.causalReleaseReached)
+        break;
       if (llvm::Error error = resources_.release(*action.envelope))
         return std::move(error);
       action.state = ActionState::Retired;
@@ -295,7 +333,8 @@ CgraPhysicalActionRuntime::advance() {
                                use.acquireEventOrdinal, result.coordinate});
       const bool atomicCommitRelease =
           use.commitRank && *use.commitRank == use.releaseRank &&
-          *use.commitEventOrdinal == use.releaseEventOrdinal;
+          *use.commitEventOrdinal == use.releaseEventOrdinal &&
+          !use.requiresCausalRelease;
       if (atomicCommitRelease) {
         auto commitRelease =
             addCycles(result.coordinate, *use.commitRank - use.acquireRank);

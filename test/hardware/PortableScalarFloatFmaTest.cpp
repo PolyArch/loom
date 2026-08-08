@@ -738,12 +738,26 @@ void invalidInputsFailClosed(const std::filesystem::path &root) {
       {skeleton.leaf, wrongContract.occurrence}};
   const std::vector<FabricOperationRecipeBinding> wrongContractRecipes = {
       {wrongContract.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  expectError(test,
-              specializeFabricOperationLeaves(
-                  *skeleton.module, wrongContract.fabric, wrongContractAbi,
-                  associations, wrongContractRecipes, registry,
-                  externalContracts),
-              "resource contract");
+  auto unsupportedContract = specializeFabricOperationLeaves(
+      *skeleton.module, wrongContract.fabric, wrongContractAbi, associations,
+      wrongContractRecipes, registry, externalContracts);
+  require(test, !unsupportedContract,
+          "FMA provider accepted an unsupported resource contract");
+  bool classifiedUnsupported = false;
+  llvm::handleAllErrors(
+      unsupportedContract.takeError(),
+      [&](const FabricOperationProviderUnsupportedError &error) {
+        classifiedUnsupported =
+            error.implementationFamily() ==
+                ::fabric::ImplementationFamilyId::ScalarFloatFma &&
+            error.recipe() == BackendRecipeKey::PortableSystemVerilog;
+      },
+      [&](const llvm::ErrorInfoBase &error) {
+        fail(test, "resource contract returned the wrong error class: " +
+                       error.message());
+      });
+  require(test, classifiedUnsupported,
+          "resource contract lost its typed Unsupported classification");
   require(test, moduleText(*skeleton.module) == before,
           "invalid FMA capability partially mutated the skeleton");
 }

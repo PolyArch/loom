@@ -108,6 +108,7 @@ enum class FabricFixtureKind {
   ConfiguredAddSub,
   SingletonAdd,
   PointerAddSub,
+  UnsupportedContract,
 };
 
 FabricFixture
@@ -170,6 +171,7 @@ makeFabric(llvm::StringRef test, const ArtifactStore &store,
   )mlir";
     break;
   case FabricFixtureKind::ConfiguredAddSub:
+  case FabricFixtureKind::UnsupportedContract:
     sourceText = R"mlir(
     module {
       fabric.module @integer_add_sub(
@@ -198,9 +200,12 @@ makeFabric(llvm::StringRef test, const ArtifactStore &store,
       mlir::parseSourceString<mlir::ModuleOp>(sourceText, &fabricContext());
   require(test, static_cast<bool>(source), "could not parse Fabric fixture");
 
-  const std::vector<std::uint8_t> contract =
-      take(test, ::fabric::encodeResourceContractRecord(
-                     ::fabric::oneCycleElasticOperationResourceContract()));
+  const ::fabric::ResourceContract &resourceContract =
+      kind == FabricFixtureKind::UnsupportedContract
+          ? ::fabric::loopCarryOperationResourceContract()
+          : ::fabric::oneCycleElasticOperationResourceContract();
+  const std::vector<std::uint8_t> contract = take(
+      test, ::fabric::encodeResourceContractRecord(resourceContract));
   const std::vector<std::int8_t> signedContract(contract.begin(),
                                                 contract.end());
   source->walk([&](::fabric::OpOp operation) {
@@ -551,6 +556,50 @@ void pointerCapabilityIsTypedUnsupported(const std::filesystem::path &root) {
           "unsupported pointer capability mutated the common skeleton");
 }
 
+void unsupportedResourceContractIsTransactional(
+    const std::filesystem::path &root) {
+  const llvm::StringRef test = __func__;
+  std::filesystem::create_directories(root);
+  ArtifactStore store(root.string());
+  FabricFixture fabric =
+      makeFabric(test, store, FabricFixtureKind::UnsupportedContract);
+  FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
+  std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
+  SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi());
+  const std::string before = moduleText(*skeleton.module);
+
+  FabricOperationProviderRegistry registry;
+  if (llvm::Error error = registerPortableScalarIntegerAddSubProvider(registry))
+    fail(test, llvm::toString(std::move(error)));
+  ExternalImplementationContractCatalog externalContracts;
+  const std::vector<FabricOperationLeafAssociation> associations = {
+      {skeleton.leaf, fabric.occurrence}};
+  const std::vector<FabricOperationRecipeBinding> recipes = {
+      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+  auto result = specializeFabricOperationLeaves(
+      *skeleton.module, fabric.fabric, abi, associations, recipes, registry,
+      externalContracts);
+  require(test, !result, "unsupported resource contract specialized");
+  bool classifiedUnsupported = false;
+  llvm::handleAllErrors(
+      result.takeError(),
+      [&](const FabricOperationProviderUnsupportedError &error) {
+        classifiedUnsupported =
+            error.implementationFamily() ==
+                ::fabric::ImplementationFamilyId::ScalarIntegerAddSub &&
+            error.recipe() == BackendRecipeKey::PortableSystemVerilog;
+      },
+      [&](const llvm::ErrorInfoBase &error) {
+        fail(test, "resource contract returned the wrong error class: " +
+                       error.message());
+      });
+  require(test, classifiedUnsupported,
+          "resource contract lost its typed Unsupported classification");
+  require(test, moduleText(*skeleton.module) == before,
+          "unsupported resource contract partially mutated the common "
+          "skeleton");
+}
+
 void malformedInputsFailClosed(const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
   std::filesystem::create_directories(root);
@@ -621,6 +670,7 @@ int main(int argc, char **argv) {
   singletonNeedsNoSelector(root / "singleton");
   subtractInactiveControlsUnassignedCode(root / "subtract_inactive");
   pointerCapabilityIsTypedUnsupported(root / "pointer");
+  unsupportedResourceContractIsTransactional(root / "unsupported_contract");
   malformedInputsFailClosed(root / "malformed");
   return 0;
 }

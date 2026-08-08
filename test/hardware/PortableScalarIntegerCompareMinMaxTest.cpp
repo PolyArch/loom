@@ -97,6 +97,7 @@ enum class FabricFixtureKind {
   SingletonSignedGreaterThanWidths,
   SingletonUnsignedMinimum,
   UndersizedPhysicalPorts,
+  UnsupportedContract,
 };
 
 enum class ConfigurationAbiKind {
@@ -109,7 +110,8 @@ FabricFixture makeFabric(
     llvm::StringRef test, const ArtifactStore &store,
     FabricFixtureKind kind = FabricFixtureKind::ConfiguredCompareMinMax) {
   const llvm::StringRef sourceText =
-      kind == FabricFixtureKind::ConfiguredCompareMinMax            ? R"mlir(
+      (kind == FabricFixtureKind::ConfiguredCompareMinMax ||
+       kind == FabricFixtureKind::UnsupportedContract)              ? R"mlir(
     module {
       fabric.module @integer_compare_min_max(
           %a: !fabric.bits<32>, %b: !fabric.bits<32>)
@@ -265,9 +267,12 @@ FabricFixture makeFabric(
       mlir::parseSourceString<mlir::ModuleOp>(sourceText, &fabricContext());
   require(test, static_cast<bool>(source), "could not parse Fabric fixture");
 
-  const std::vector<std::uint8_t> contract =
-      take(test, ::fabric::encodeResourceContractRecord(
-                     ::fabric::oneCycleElasticOperationResourceContract()));
+  const ::fabric::ResourceContract &resourceContract =
+      kind == FabricFixtureKind::UnsupportedContract
+          ? ::fabric::loopCarryOperationResourceContract()
+          : ::fabric::oneCycleElasticOperationResourceContract();
+  const std::vector<std::uint8_t> contract = take(
+      test, ::fabric::encodeResourceContractRecord(resourceContract));
   const std::vector<std::int8_t> signedContract(contract.begin(),
                                                 contract.end());
   source->walk([&](::fabric::OpOp operation) {
@@ -806,6 +811,51 @@ void malformedInputsFailClosed(const std::filesystem::path &root) {
           "overcomplete codebook partially mutated the common skeleton");
 }
 
+void unsupportedResourceContractIsTransactional(
+    const std::filesystem::path &root) {
+  const llvm::StringRef test = __func__;
+  std::filesystem::create_directories(root);
+  ArtifactStore store(root.string());
+  FabricFixture fabric =
+      makeFabric(test, store, FabricFixtureKind::UnsupportedContract);
+  FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
+  std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
+  SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi());
+  const std::string before = moduleText(*skeleton.module);
+
+  FabricOperationProviderRegistry registry;
+  if (llvm::Error error =
+          registerPortableScalarIntegerCompareMinMaxProvider(registry))
+    fail(test, llvm::toString(std::move(error)));
+  ExternalImplementationContractCatalog externalContracts;
+  const std::vector<FabricOperationLeafAssociation> associations = {
+      {skeleton.leaf, fabric.occurrence}};
+  const std::vector<FabricOperationRecipeBinding> recipes = {
+      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+  auto result = specializeFabricOperationLeaves(
+      *skeleton.module, fabric.fabric, abi, associations, recipes, registry,
+      externalContracts);
+  require(test, !result, "unsupported resource contract specialized");
+  bool classifiedUnsupported = false;
+  llvm::handleAllErrors(
+      result.takeError(),
+      [&](const FabricOperationProviderUnsupportedError &error) {
+        classifiedUnsupported =
+            error.implementationFamily() ==
+                ::fabric::ImplementationFamilyId::
+                    ScalarIntegerCompareMinMax &&
+            error.recipe() == BackendRecipeKey::PortableSystemVerilog;
+      },
+      [&](const llvm::ErrorInfoBase &error) {
+        fail(test, "resource contract returned the wrong error class: " +
+                       error.message());
+      });
+  require(test, classifiedUnsupported,
+          "resource contract lost its typed Unsupported classification");
+  require(test, moduleText(*skeleton.module) == before,
+          "unsupported resource contract mutated the common skeleton");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -817,5 +867,6 @@ int main(int argc, char **argv) {
   fixedFactsStayOutsideSemanticValues(root / "fixed_facts");
   undersizedPhysicalPortsFailClosed(root / "undersized_ports");
   malformedInputsFailClosed(root / "malformed");
+  unsupportedResourceContractIsTransactional(root / "resource_contract");
   return 0;
 }

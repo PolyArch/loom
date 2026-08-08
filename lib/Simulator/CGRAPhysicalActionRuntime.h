@@ -26,6 +26,7 @@ struct CgraPhysicalUseTiming final {
   std::uint32_t acquireEventOrdinal = 0;
   std::uint32_t releaseEventOrdinal = 0;
   std::optional<std::uint32_t> commitEventOrdinal;
+  bool requiresCausalRelease = false;
 };
 
 enum class CgraPhysicalLifecycleKind : std::uint8_t {
@@ -78,6 +79,10 @@ public:
   requestBatch(llvm::ArrayRef<CgraPhysicalActionRequest> requests,
                SpatialEventCoordinate coordinate);
 
+  llvm::Error satisfyCausalRelease(std::uint64_t actionOrdinal,
+                                   std::uint64_t occurrenceOrdinal,
+                                   SpatialEventCoordinate coordinate);
+
   /// Advances through one exact coordinate. A frame can contain no visible
   /// event when every acquisition attempt at that coordinate remains blocked.
   llvm::Expected<std::optional<CgraPhysicalLifecycleFrame>> advance();
@@ -97,6 +102,8 @@ private:
     std::uint64_t occurrenceOrdinal = 0;
     ActionState state = ActionState::Requested;
     std::optional<CgraClaimEnvelope> envelope;
+    bool intrinsicReleaseReached = false;
+    bool causalReleaseReached = false;
   };
 
   CgraPhysicalActionRuntime(std::vector<CgraPhysicalUseTiming> uses,

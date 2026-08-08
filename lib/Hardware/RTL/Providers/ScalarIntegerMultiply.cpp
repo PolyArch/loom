@@ -49,8 +49,8 @@ materializePortableScalarIntegerMultiply(
   if (!supportedContract)
     return supportedContract.takeError();
   if (*actualContract != *supportedContract)
-    return invalid("resource contract is not the supported one-cycle elastic "
-                   "contract");
+    return llvm::make_error<FabricOperationProviderUnsupportedError>(
+        request.capability.implementationFamily, request.recipe);
 
   std::vector<const fabric::ResolvedFabricOpPhysicalPortView *> inputs;
   std::vector<const fabric::ResolvedFabricOpPhysicalPortView *> outputs;

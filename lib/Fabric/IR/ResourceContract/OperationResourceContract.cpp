@@ -60,22 +60,23 @@ fabric::ResourceContract createOneCycleElasticContract() {
       StateKey(0),
       {CapacityDimensionDeclaration{CapacityDimensionKey(0), CapacityUnits(1),
                                     CapacityUnits(0)}}}};
+  declaration.resourceTransitions = {ResourceTransitionKey(0)};
   declaration.timingContracts = {
-      TimingContractDeclaration{TimingContractKey(0), {0, 1}}};
+      TimingContractDeclaration{TimingContractKey(0), {0, 1, 1}}};
   declaration.usePatterns = {UsePatternDeclaration{
       UsePatternKey(0),
       RequesterKey(0),
       EligibilityKey(0),
       EventKey(0),
-      EventKey(1),
-      std::nullopt,
+      EventKey(2),
+      CommitDeclaration{EventKey(1), ResourceTransitionKey(0)},
       TimingContractKey(0),
       {ClaimDeclaration{ClaimKey(0), StateKey(0), CapacityDimensionKey(0),
                         CapacityUnits(1)}},
       {}}};
   declaration.requesters = {RequesterKey(0)};
   declaration.eligibilityCount = 1;
-  declaration.eventCount = 2;
+  declaration.eventCount = 3;
   return llvm::cantFail(ResourceContract::create(declaration));
 }
 

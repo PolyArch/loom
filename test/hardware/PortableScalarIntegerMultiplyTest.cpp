@@ -93,6 +93,7 @@ enum class FabricFixtureKind {
   PointerMultiply,
   MultiplyWithAddSchema,
   Add,
+  UnsupportedContract,
 };
 
 struct FabricFixture final {
@@ -158,9 +159,12 @@ FabricFixture makeFabric(llvm::StringRef test, const ArtifactStore &store,
       mlir::parseSourceString<mlir::ModuleOp>(sourceText, &fabricContext());
   require(test, static_cast<bool>(source), "could not parse Fabric fixture");
 
+  const ::fabric::ResourceContract &resourceContract =
+      kind == FabricFixtureKind::UnsupportedContract
+          ? ::fabric::loopCarryOperationResourceContract()
+          : ::fabric::oneCycleElasticOperationResourceContract();
   const std::vector<std::uint8_t> contract =
-      take(test, ::fabric::encodeResourceContractRecord(
-                     ::fabric::oneCycleElasticOperationResourceContract()));
+      take(test, ::fabric::encodeResourceContractRecord(resourceContract));
   const std::vector<std::int8_t> signedContract(contract.begin(),
                                                 contract.end());
   source->walk([&](::fabric::OpOp operation) {
@@ -685,6 +689,41 @@ void invalidInputsFailClosed(const std::filesystem::path &root) {
           "wrong-family input lost its typed Unsupported classification");
   require(test, moduleText(*addSkeleton.module) == addBefore,
           "wrong-family input partially mutated the caller module");
+
+  FabricFixture wrongContract =
+      makeFabric(test, store, 8, FabricFixtureKind::UnsupportedContract);
+  FinalizedConfigurationABI wrongContractAbi =
+      makeConfigurationAbi(test, store, wrongContract);
+  std::unique_ptr<mlir::MLIRContext> contractContext = makeCirctContext();
+  SkeletonFixture contractSkeleton = makeSkeleton(
+      test, *contractContext, wrongContract, wrongContractAbi.abi());
+  const std::string contractBefore = moduleText(*contractSkeleton.module);
+  const std::vector<FabricOperationLeafAssociation> contractAssociations = {
+      {contractSkeleton.leaf, wrongContract.occurrence}};
+  const std::vector<FabricOperationRecipeBinding> contractRecipes = {
+      {wrongContract.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
+  auto unsupportedContract = specializeFabricOperationLeaves(
+      *contractSkeleton.module, wrongContract.fabric, wrongContractAbi,
+      contractAssociations, contractRecipes, registry, externalContracts);
+  require(test, !unsupportedContract,
+          "multiply provider accepted an unsupported resource contract");
+  bool classifiedUnsupported = false;
+  llvm::handleAllErrors(
+      unsupportedContract.takeError(),
+      [&](const FabricOperationProviderUnsupportedError &error) {
+        classifiedUnsupported =
+            error.implementationFamily() ==
+                ::fabric::ImplementationFamilyId::ScalarIntegerMultiply &&
+            error.recipe() == BackendRecipeKey::PortableSystemVerilog;
+      },
+      [&](const llvm::ErrorInfoBase &error) {
+        fail(test, "resource contract returned the wrong error class: " +
+                       error.message());
+      });
+  require(test, classifiedUnsupported,
+          "resource contract lost its typed Unsupported classification");
+  require(test, moduleText(*contractSkeleton.module) == contractBefore,
+          "unsupported resource contract mutated the caller module");
 }
 
 } // namespace

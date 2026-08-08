@@ -119,6 +119,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-persistent-ref-test
   loom-fabric-resource-contract-record-test
   loom-fabric-resource-contract-test
+  loom-fabric-operation-resource-contract-test
   loom-fabric-system-contract-test
   loom-fabric-service-leg-carrier-attachment-test
   loom-fabric-system-service-contract-test

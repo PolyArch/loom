@@ -555,12 +555,26 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
       {malformedContract.occurrence,
        BackendRecipeKey::PortableSystemVerilog,
        {}}};
-  expectError(test,
-              specializeFabricOperationLeaves(
-                  *contractSkeleton.module, malformedContract.fabric,
-                  malformedAbi, contractAssociations, contractRecipes, registry,
-                  externalContracts),
-              "resource contract");
+  auto unsupportedContract = specializeFabricOperationLeaves(
+      *contractSkeleton.module, malformedContract.fabric, malformedAbi,
+      contractAssociations, contractRecipes, registry, externalContracts);
+  require(test, !unsupportedContract,
+          "loop-carry provider accepted an unsupported resource contract");
+  bool classifiedUnsupported = false;
+  llvm::handleAllErrors(
+      unsupportedContract.takeError(),
+      [&](const FabricOperationProviderUnsupportedError &error) {
+        classifiedUnsupported =
+            error.implementationFamily() ==
+                ::fabric::ImplementationFamilyId::LoopCarry &&
+            error.recipe() == BackendRecipeKey::PortableSystemVerilog;
+      },
+      [&](const llvm::ErrorInfoBase &error) {
+        fail(test, "resource contract returned the wrong error class: " +
+                       error.message());
+      });
+  require(test, classifiedUnsupported,
+          "resource contract lost its typed Unsupported classification");
   require(test, moduleText(*contractSkeleton.module) == beforeContract,
           "resource-contract failure modified the common skeleton");
 

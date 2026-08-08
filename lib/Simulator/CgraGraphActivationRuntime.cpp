@@ -128,6 +128,7 @@ llvm::Expected<std::uint64_t> CgraGraphActivationRuntime::addCommittedFiring(
                                event.transitionCaseOrdinal,
                                event.expectedTransferCount,
                                0,
+                               false,
                                false};
   firingByOccurrence_.try_emplace(key, slot);
   return slot;
@@ -147,16 +148,25 @@ llvm::Error CgraGraphActivationRuntime::maybeRetire(
   if (firingSlot >= firings_.size() || !firings_[firingSlot].active)
     return invalid("CGRA actor retirement names an inactive firing");
   ActorFiring &firing = firings_[firingSlot];
-  if (!firing.physicalComplete ||
-      firing.completedTransfers != firing.expectedTransfers)
+  if (firing.completedTransfers != firing.expectedTransfers)
     return llvm::Error::success();
-  result.actorEvents.push_back(
-      {CgraActorLifecycleKind::Retired, firing.semanticActorOrdinal,
-       firing.occurrenceOrdinal, firing.transitionCaseOrdinal, 0, coordinate});
   const bool computeOwner = compute_->ownsActor(firing.semanticActorOrdinal);
   const bool memoryOwner = memory_->ownsActor(firing.semanticActorOrdinal);
   if (computeOwner == memoryOwner)
     return invalid("CGRA actor retirement has no unique runtime owner");
+  if (!firing.causalReleaseSatisfied) {
+    if (computeOwner)
+      if (llvm::Error error = compute_->satisfyCausalRelease(
+              firing.semanticActorOrdinal, firing.occurrenceOrdinal,
+              firing.transitionCaseOrdinal, coordinate))
+        return error;
+    firing.causalReleaseSatisfied = true;
+  }
+  if (!firing.physicalComplete)
+    return llvm::Error::success();
+  result.actorEvents.push_back(
+      {CgraActorLifecycleKind::Retired, firing.semanticActorOrdinal,
+       firing.occurrenceOrdinal, firing.transitionCaseOrdinal, 0, coordinate});
   if (computeOwner) {
     if (llvm::Error error = compute_->retireActor(
             firing.semanticActorOrdinal, firing.occurrenceOrdinal, coordinate))

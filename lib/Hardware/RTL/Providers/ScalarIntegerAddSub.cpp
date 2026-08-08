@@ -3,6 +3,8 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "ProviderSupport.h"
 
+#include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/IR/ResourceContractRecord.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "mlir/IR/Builders.h"
@@ -38,6 +40,18 @@ materializePortableScalarIntegerAddSub(FabricOperationProviderRequest request) {
   if (!parameters)
     return invalid("capability has the wrong parameter schema");
   if (!parameters->pointerFormats.empty())
+    return llvm::make_error<FabricOperationProviderUnsupportedError>(
+        request.capability.implementationFamily, request.recipe);
+
+  auto actualContract = ::fabric::encodeResourceContractRecord(
+      request.capability.resourceStateAndTimingContract);
+  if (!actualContract)
+    return actualContract.takeError();
+  auto supportedContract = ::fabric::encodeResourceContractRecord(
+      ::fabric::oneCycleElasticOperationResourceContract());
+  if (!supportedContract)
+    return supportedContract.takeError();
+  if (*actualContract != *supportedContract)
     return llvm::make_error<FabricOperationProviderUnsupportedError>(
         request.capability.implementationFamily, request.recipe);
 
