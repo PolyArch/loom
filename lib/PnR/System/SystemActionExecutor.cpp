@@ -2,6 +2,7 @@
 
 #include "SystemCandidateMutation.h"
 #include "SystemCandidateServiceResolver.h"
+#include "SystemNegotiatedRouter.h"
 
 #include "PnR/EndpointRouter.h"
 #include "PnR/InitializerRelationSolver.h"
@@ -72,11 +73,10 @@ dependencyClosureFixedChoices(const SystemCandidateState &current,
   return fixed;
 }
 
-llvm::Expected<SystemCandidateStateHandle>
-executeBinding(const SystemCandidateStateHandle &current,
-               SystemExecutionBindingAction action,
-               std::uint64_t &assignmentAttempts,
-               std::uint64_t &endpointExpansions) {
+llvm::Expected<SystemCandidateStateHandle> executeBinding(
+    const SystemCandidateStateHandle &current,
+    SystemExecutionBindingAction action, std::uint64_t &assignmentAttempts,
+    std::uint64_t &endpointExpansions, std::uint64_t &negotiationIterations) {
   const FrozenSystemPnrProblem &problem = current->problem();
   const std::size_t decisionCount =
       problem.threadDecisions().size() + problem.graphDecisions().size();
@@ -102,6 +102,7 @@ executeBinding(const SystemCandidateStateHandle &current,
             -> llvm::Error {
           assignmentAttempts = failure.assignmentAttempts();
           endpointExpansions = failure.endpointExpansions();
+          negotiationIterations = failure.negotiationIterations();
           switch (failure.kind()) {
           case SystemCandidateInitializationFailureKind::ProvenInfeasible:
             return llvm::make_error<SystemActionTransitionFailure>(
@@ -121,6 +122,7 @@ executeBinding(const SystemCandidateStateHandle &current,
   }
   assignmentAttempts = initialized->assignmentAttempts;
   endpointExpansions = initialized->endpointExpansions;
+  negotiationIterations = initialized->negotiationIterations;
   return std::move(initialized->state);
 }
 
@@ -148,42 +150,21 @@ llvm::Error translateMutationFailure(llvm::Error error) {
                          llvm::Twine(errorMessage(failure)));
         }
         llvm_unreachable("unknown endpoint route failure kind");
+      },
+      [&](const detail::SystemRoutingClosureFailure &failure) -> llvm::Error {
+        return llvm::make_error<SystemActionTransitionFailure>(
+            SystemActionTransitionFailureKind::WorkLimit,
+            errorMessage(failure));
       });
 }
 
 llvm::Expected<SystemCandidateStateHandle>
 executeTransport(const SystemCandidateStateHandle &current,
                  const SystemTransportRoutingAction &action,
-                 std::uint64_t &endpointExpansions) {
-  auto candidate = std::visit(
-      [&](const auto &value) -> llvm::Expected<SystemCandidateStateHandle> {
-        using T = std::decay_t<decltype(value)>;
-        if constexpr (std::is_same_v<T, SystemWholeLegRoutingAction>) {
-          const auto route = llvm::find_if(
-              current->serviceRoutes(), [&](const auto &candidateRoute) {
-                return candidateRoute.leg == value.leg;
-              });
-          if (route == current->serviceRoutes().end())
-            return invalid("WholeLeg Action names a foreign service leg");
-          const auto nodes = current->serviceRouteNodes().slice(
-              route->nodeOffset, route->nodeCount);
-          const auto selected = llvm::find_if(nodes, [](const auto &node) {
-            return node.incomingTraversal != getInvalidPnrIndex();
-          });
-          if (selected == nodes.end())
-            return invalid("WholeLeg Action has no current traversal");
-          return detail::rebuildSystemCandidateRoutes(
-              *current, value.leg, selected->incomingTraversal,
-              endpointExpansions);
-        } else if constexpr (std::is_same_v<T, SystemGlobalRoutingAction>) {
-          return detail::rebuildSystemCandidateRoutes(
-              *current, getInvalidPnrIndex(), getInvalidPnrIndex(),
-              endpointExpansions);
-        } else {
-          return invalid("System routing scope is not active yet");
-        }
-      },
-      action);
+                 std::uint64_t &endpointExpansions,
+                 std::uint64_t &negotiationIterations) {
+  auto candidate = detail::rebuildSystemCandidateRoutes(
+      *current, action, endpointExpansions, negotiationIterations);
   if (!candidate)
     return translateMutationFailure(candidate.takeError());
   return candidate;
@@ -223,10 +204,11 @@ loom::pnr::probeSystemAction(const SystemCandidateStateHandle &current,
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, SystemExecutionBindingAction>)
           return executeBinding(current, value, accounting.assignmentAttempts,
-                                accounting.endpointExpansions);
+                                accounting.endpointExpansions,
+                                accounting.negotiationIterations);
         else if constexpr (std::is_same_v<T, SystemTransportRoutingAction>)
-          return executeTransport(current, value,
-                                  accounting.endpointExpansions);
+          return executeTransport(current, value, accounting.endpointExpansions,
+                                  accounting.negotiationIterations);
         else
           return executeResource(current, value);
       },

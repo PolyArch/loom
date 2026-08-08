@@ -101,7 +101,8 @@ applyCapacityEligibility(const FrozenEndpointRoutingTopology &topology,
 llvm::Error
 commitRouteCapacityTraversals(const FrozenEndpointRoutingTopology &topology,
                               llvm::ArrayRef<PnrIndex> selectedTraversals,
-                              std::vector<std::uint64_t> &usage) {
+                              std::vector<std::uint64_t> &usage,
+                              bool enforceCapacity = true) {
   std::map<std::pair<PnrIndex, PnrIndex>, std::uint64_t> selectedClaims;
   for (PnrIndex selectedTraversal : selectedTraversals) {
     if (selectedTraversal == getInvalidPnrIndex())
@@ -133,24 +134,46 @@ commitRouteCapacityTraversals(const FrozenEndpointRoutingTopology &topology,
     if (cellOrdinal >= usage.size())
       return invalid("a selected route claim names an invalid capacity cell");
     const auto &cell = topology.capacityCells()[cellOrdinal];
-    if (usage[cellOrdinal] > cell.capacity ||
-        amount > cell.capacity - usage[cellOrdinal])
+    if (enforceCapacity && (usage[cellOrdinal] > cell.capacity ||
+                            amount > cell.capacity - usage[cellOrdinal]))
       return llvm::make_error<detail::SystemCandidateInfeasible>(
           "selected service routes exceed Fabric capacity");
+    if (amount > std::numeric_limits<std::uint64_t>::max() - usage[cellOrdinal])
+      return invalid("route capacity usage overflows u64");
   }
   for (const auto &[cellOrdinal, amount] : additions)
     usage[cellOrdinal] += amount;
   return llvm::Error::success();
 }
 
+llvm::Error
+removeRouteCapacityTraversals(const FrozenEndpointRoutingTopology &topology,
+                              llvm::ArrayRef<PnrIndex> selectedTraversals,
+                              std::vector<std::uint64_t> &usage) {
+  std::vector<std::uint64_t> routeUsage(topology.capacityCells().size(), 0);
+  if (llvm::Error error = commitRouteCapacityTraversals(
+          topology, selectedTraversals, routeUsage, false))
+    return error;
+  for (PnrIndex cell = 0; cell < routeUsage.size(); ++cell) {
+    if (routeUsage[cell] > usage[cell] ||
+        usage[cell] - routeUsage[cell] <
+            topology.capacityCells()[cell].initialOccupancy)
+      return invalid("prior route capacity removal underflows occupancy");
+    usage[cell] -= routeUsage[cell];
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error commitRouteCapacity(const FrozenEndpointRoutingTopology &topology,
                                 llvm::ArrayRef<MutableNode> nodes,
-                                std::vector<std::uint64_t> &usage) {
+                                std::vector<std::uint64_t> &usage,
+                                bool enforceCapacity = true) {
   std::vector<PnrIndex> traversals;
   traversals.reserve(nodes.size());
   for (const MutableNode &node : nodes)
     traversals.push_back(node.incomingTraversal);
-  return commitRouteCapacityTraversals(topology, traversals, usage);
+  return commitRouteCapacityTraversals(topology, traversals, usage,
+                                       enforceCapacity);
 }
 
 llvm::Expected<AtomicPatternCatalog>
@@ -182,7 +205,7 @@ buildAtomicPatternCatalog(const FrozenEndpointRoutingTopology &topology) {
 }
 
 llvm::Expected<std::vector<RouteCost>>
-staticLowerBoundArcCosts(const FrozenEndpointRoutingTopology &topology) {
+computeLowerBoundArcCosts(const FrozenEndpointRoutingTopology &topology) {
   std::vector<RouteCost> traversalCosts(topology.traversals().size(), 0);
   for (const auto &[ordinal, traversal] :
        llvm::enumerate(topology.traversals())) {
@@ -473,6 +496,79 @@ struct ActiveServiceSink final {
   std::vector<PnrIndex> endpoints;
 };
 
+struct PreparedRepairRegion final {
+  std::vector<MutableNode> nodes;
+  std::vector<MutableSink> retainedSinks;
+  std::vector<ActiveServiceSink> reroutedSinks;
+  std::optional<PnrIndex> rootedSubtreeNode;
+  std::size_t retainedNodeCount = 0;
+};
+
+struct BuiltLegRoute final {
+  PnrIndex rootEndpoint = 0;
+  std::vector<MutableNode> nodes;
+  std::vector<MutableSink> sinks;
+};
+
+llvm::Expected<std::vector<PnrIndex>>
+selectedRouteTraversals(const detail::SystemServiceRoutesView &routes,
+                        const SystemServiceRouteSelection &route) {
+  if (route.nodeOffset > routes.nodes.size() ||
+      route.nodeCount > routes.nodes.size() - route.nodeOffset)
+    return invalid("prior route node range is out of bounds");
+  std::vector<PnrIndex> traversals;
+  traversals.reserve(route.nodeCount);
+  for (const auto &node : routes.nodes.slice(route.nodeOffset, route.nodeCount))
+    traversals.push_back(node.incomingTraversal);
+  return traversals;
+}
+
+llvm::Error verifyLegOrder(llvm::ArrayRef<PnrIndex> order, std::size_t legCount,
+                           bool requireComplete) {
+  if ((requireComplete && order.size() != legCount) || order.empty())
+    return invalid("service route leg order has the wrong width");
+  std::vector<std::uint8_t> seen(legCount, 0);
+  for (PnrIndex leg : order) {
+    if (leg >= legCount || seen[leg]++)
+      return invalid("service route leg order is not a permutation");
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<BuiltLegRoute>
+copyPriorLegRoute(const FrozenEndpointRoutingTopology &topology,
+                  const detail::SystemServiceRoutesView &routes,
+                  const SystemServiceRouteSelection &route) {
+  if (route.nodeOffset > routes.nodes.size() ||
+      route.nodeCount > routes.nodes.size() - route.nodeOffset ||
+      route.sinkOffset > routes.sinks.size() ||
+      route.sinkCount > routes.sinks.size() - route.sinkOffset ||
+      route.nodeCount == 0)
+    return invalid("prior route flat range is out of bounds");
+  BuiltLegRoute result;
+  result.rootEndpoint = route.rootEndpoint;
+  for (const auto &node : routes.nodes.slice(route.nodeOffset, route.nodeCount))
+    result.nodes.push_back({node.endpoint, node.parentNode,
+                            node.incomingTraversal, false,
+                            getInvalidPnrIndex()});
+  for (PnrIndex child = 1; child < result.nodes.size(); ++child) {
+    MutableNode &node = result.nodes[child];
+    if (node.parent >= result.nodes.size() ||
+        node.incomingTraversal >= topology.traversals().size())
+      return invalid("prior route node is out of range");
+    MutableNode &parent = result.nodes[node.parent];
+    const PnrIndex group =
+        topology.traversalReplicationGroups()[node.incomingTraversal];
+    if (parent.hasOutgoing && parent.outgoingReplicationGroup != group)
+      return invalid("prior route branch mixes replication groups");
+    parent.hasOutgoing = true;
+    parent.outgoingReplicationGroup = group;
+  }
+  for (const auto &sink : routes.sinks.slice(route.sinkOffset, route.sinkCount))
+    result.sinks.push_back({sink.terminal, sink.node});
+  return result;
+}
+
 llvm::Expected<std::vector<ActiveServiceSink>>
 activeServiceSinks(const FrozenSystemPnrProblem &problem, PnrIndex legOrdinal,
                    llvm::ArrayRef<PnrIndex> threadChoices,
@@ -501,37 +597,196 @@ activeServiceSinks(const FrozenSystemPnrProblem &problem, PnrIndex legOrdinal,
   return active;
 }
 
+llvm::Expected<PreparedRepairRegion>
+prepareRepairRegion(const FrozenEndpointRoutingTopology &topology,
+                    const BuiltLegRoute &prior,
+                    llvm::ArrayRef<ActiveServiceSink> activeSinks,
+                    detail::SystemServiceRouteRepairRegion region) {
+  if (prior.nodes.empty())
+    return invalid("repair region has no prior route tree");
+  std::vector<std::uint8_t> keep(prior.nodes.size(), 0);
+  std::vector<std::uint8_t> rerouteSink(prior.sinks.size(), 0);
+  std::optional<PnrIndex> oldRootedNode;
+  if (region.kind == detail::SystemServiceRouteRepairRegionKind::SingleSink) {
+    if (region.anchor >= prior.sinks.size())
+      return invalid("SingleSink repair anchor is out of range");
+    rerouteSink[region.anchor] = 1;
+    for (PnrIndex sink = 0; sink < prior.sinks.size(); ++sink) {
+      if (rerouteSink[sink])
+        continue;
+      PnrIndex node = prior.sinks[sink].node;
+      if (node >= prior.nodes.size())
+        return invalid("prior repair sink node is out of range");
+      while (node != getInvalidPnrIndex() && !keep[node]) {
+        keep[node] = 1;
+        node = prior.nodes[node].parent;
+      }
+    }
+    keep[0] = 1;
+  } else {
+    const auto root = llvm::find_if(prior.nodes, [&](const MutableNode &node) {
+      return node.endpoint == region.anchor;
+    });
+    if (root == prior.nodes.end())
+      return invalid("RootedSubtree repair anchor is outside the route tree");
+    oldRootedNode = static_cast<PnrIndex>(root - prior.nodes.begin());
+    for (PnrIndex node = 0; node < prior.nodes.size(); ++node) {
+      bool strictDescendant = false;
+      PnrIndex ancestor = node;
+      while (ancestor != getInvalidPnrIndex()) {
+        if (ancestor == *oldRootedNode) {
+          strictDescendant = node != *oldRootedNode;
+          break;
+        }
+        ancestor = prior.nodes[ancestor].parent;
+      }
+      keep[node] = !strictDescendant;
+    }
+    for (PnrIndex sink = 0; sink < prior.sinks.size(); ++sink) {
+      PnrIndex node = prior.sinks[sink].node;
+      if (node >= prior.nodes.size())
+        return invalid("prior repair sink node is out of range");
+      while (node != getInvalidPnrIndex() && node != *oldRootedNode)
+        node = prior.nodes[node].parent;
+      rerouteSink[sink] = node == *oldRootedNode;
+    }
+  }
+
+  PreparedRepairRegion result;
+  std::vector<PnrIndex> remap(prior.nodes.size(), getInvalidPnrIndex());
+  for (PnrIndex oldNode = 0; oldNode < prior.nodes.size(); ++oldNode) {
+    if (!keep[oldNode])
+      continue;
+    remap[oldNode] = static_cast<PnrIndex>(result.nodes.size());
+    const MutableNode &node = prior.nodes[oldNode];
+    const PnrIndex parent = node.parent == getInvalidPnrIndex()
+                                ? getInvalidPnrIndex()
+                                : remap[node.parent];
+    if (node.parent != getInvalidPnrIndex() && parent == getInvalidPnrIndex())
+      return invalid("repair region retained a node without its parent");
+    result.nodes.push_back({node.endpoint, parent, node.incomingTraversal,
+                            false, getInvalidPnrIndex()});
+  }
+  for (PnrIndex child = 1; child < result.nodes.size(); ++child) {
+    MutableNode &node = result.nodes[child];
+    if (node.incomingTraversal >= topology.traversals().size())
+      return invalid("repair region retained an invalid traversal");
+    MutableNode &parent = result.nodes[node.parent];
+    const PnrIndex group =
+        topology.traversalReplicationGroups()[node.incomingTraversal];
+    if (parent.hasOutgoing && parent.outgoingReplicationGroup != group)
+      return invalid("repair region retained mixed replication groups");
+    parent.hasOutgoing = true;
+    parent.outgoingReplicationGroup = group;
+  }
+  for (PnrIndex sink = 0; sink < prior.sinks.size(); ++sink) {
+    const MutableSink &record = prior.sinks[sink];
+    if (!rerouteSink[sink]) {
+      if (record.node >= remap.size() ||
+          remap[record.node] == getInvalidPnrIndex())
+        return invalid("repair region removed a retained sink node");
+      result.retainedSinks.push_back({record.terminal, remap[record.node]});
+      continue;
+    }
+    const auto active =
+        llvm::find_if(activeSinks, [&](const ActiveServiceSink &candidate) {
+          return candidate.terminal == record.terminal;
+        });
+    if (active == activeSinks.end())
+      return invalid("repair region sink is outside the active H domain");
+    result.reroutedSinks.push_back(*active);
+  }
+  if (result.reroutedSinks.empty())
+    return invalid("repair region contains no sink obligation");
+  llvm::sort(result.reroutedSinks, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.terminalKey, lhs.endpoints) <
+           std::tie(rhs.terminalKey, rhs.endpoints);
+  });
+  if (oldRootedNode)
+    result.rootedSubtreeNode = remap[*oldRootedNode];
+  result.retainedNodeCount = result.nodes.size();
+  return result;
+}
+
 } // namespace
 
-llvm::Expected<detail::CanonicalSystemServiceRoutes>
+llvm::Expected<detail::BuiltSystemServiceRoutes>
 loom::pnr::detail::buildSystemServiceRoutes(
     const FrozenSystemPnrProblem &problem,
     llvm::ArrayRef<PnrIndex> threadChoices,
     llvm::ArrayRef<PnrIndex> graphChoices,
-    std::optional<SystemServiceRouteTraversalExclusion> exclusion,
+    const SystemServiceRouteBuildRequest &request,
     std::uint64_t &endpointExpansions) {
   endpointExpansions = 0;
-  CanonicalSystemServiceRoutes result;
+  BuiltSystemServiceRoutes result;
   const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
-  if (exclusion && (exclusion->leg >= problem.serviceLegs().size() ||
-                    exclusion->traversal >= topology.traversals().size()))
+  if (llvm::Error error = verifyLegOrder(
+          request.legOrder, problem.serviceLegs().size(), !request.priorRoutes))
+    return std::move(error);
+  if (request.lowerBoundArcCosts.size() != topology.arcs().size())
+    return invalid("lower-bound arc-cost vector has the wrong width");
+  if (request.exclusion &&
+      (request.exclusion->leg >= problem.serviceLegs().size() ||
+       request.exclusion->traversal >= topology.traversals().size()))
     return invalid("a route traversal exclusion is out of range");
+  if (request.repairRegion &&
+      (!request.priorRoutes ||
+       request.repairRegion->leg >= problem.serviceLegs().size() ||
+       !llvm::is_contained(request.legOrder, request.repairRegion->leg)))
+    return invalid("a route repair region has no valid prior route");
   auto atomicPatterns = buildAtomicPatternCatalog(topology);
   if (!atomicPatterns)
     return atomicPatterns.takeError();
   EndpointRouteSearchScratch search;
   if (llvm::Error error = search.prepare(endpointRoutingGraphView(topology)))
     return std::move(error);
-  auto arcCosts = staticLowerBoundArcCosts(topology);
-  if (!arcCosts)
-    return arcCosts.takeError();
   std::vector<std::uint64_t> capacityUsage;
   capacityUsage.reserve(topology.capacityCells().size());
   for (const auto &cell : topology.capacityCells())
     capacityUsage.push_back(cell.initialOccupancy);
 
-  for (PnrIndex legOrdinal = 0; legOrdinal < problem.serviceLegs().size();
-       ++legOrdinal) {
+  if (request.priorRoutes) {
+    if (request.priorRoutes->routes.size() != problem.serviceLegs().size())
+      return invalid("prior service route count has the wrong width");
+    for (PnrIndex leg = 0; leg < request.priorRoutes->routes.size(); ++leg) {
+      const auto &prior = request.priorRoutes->routes[leg];
+      if (prior.leg != leg)
+        return invalid("prior service routes are not in canonical leg order");
+      auto traversals = selectedRouteTraversals(*request.priorRoutes, prior);
+      if (!traversals)
+        return traversals.takeError();
+      if (llvm::Error error = commitRouteCapacityTraversals(
+              topology, *traversals, capacityUsage, false))
+        return std::move(error);
+    }
+  }
+
+  std::vector<std::optional<BuiltLegRoute>> builtLegs(
+      problem.serviceLegs().size());
+  if (request.priorRoutes)
+    for (PnrIndex leg = 0; leg < request.priorRoutes->routes.size(); ++leg) {
+      auto copied = copyPriorLegRoute(topology, *request.priorRoutes,
+                                      request.priorRoutes->routes[leg]);
+      if (!copied)
+        return copied.takeError();
+      builtLegs[leg] = std::move(*copied);
+    }
+
+  for (PnrIndex legOrdinal : request.legOrder) {
+    if (request.priorRoutes) {
+      auto traversals = selectedRouteTraversals(
+          *request.priorRoutes, request.priorRoutes->routes[legOrdinal]);
+      if (!traversals)
+        return traversals.takeError();
+      if (llvm::Error error = removeRouteCapacityTraversals(
+              topology, *traversals, capacityUsage))
+        return std::move(error);
+    }
+    auto currentArcCosts = request.currentArcCosts(capacityUsage);
+    if (!currentArcCosts)
+      return currentArcCosts.takeError();
+    if (currentArcCosts->size() != topology.arcs().size())
+      return invalid("current arc-cost vector has the wrong width");
     const FrozenSystemServiceLeg &leg = problem.serviceLegs()[legOrdinal];
     auto activeSinks =
         activeServiceSinks(problem, legOrdinal, threadChoices, graphChoices);
@@ -546,8 +801,27 @@ loom::pnr::detail::buildSystemServiceRoutes(
 
     std::vector<MutableNode> nodes;
     std::vector<MutableSink> sinks;
+    std::vector<ActiveServiceSink> sinksToRoute = *activeSinks;
+    std::optional<PnrIndex> rootedSubtreeNode;
+    std::size_t retainedNodeCount = 0;
+    if (request.repairRegion && request.repairRegion->leg == legOrdinal) {
+      if (!builtLegs[legOrdinal])
+        return invalid("repair region has no prior route selection");
+      auto prepared = prepareRepairRegion(topology, *builtLegs[legOrdinal],
+                                          *activeSinks, *request.repairRegion);
+      if (!prepared)
+        return prepared.takeError();
+      nodes = std::move(prepared->nodes);
+      sinks = std::move(prepared->retainedSinks);
+      sinksToRoute = std::move(prepared->reroutedSinks);
+      rootedSubtreeNode = prepared->rootedSubtreeNode;
+      retainedNodeCount = prepared->retainedNodeCount;
+    }
     llvm::DenseMap<PnrIndex, PnrIndex> nodeByEndpoint;
-    for (const ActiveServiceSink &activeSink : *activeSinks) {
+    for (PnrIndex node = 0; node < nodes.size(); ++node)
+      if (!nodeByEndpoint.try_emplace(nodes[node].endpoint, node).second)
+        return invalid("repair region retained a duplicate endpoint");
+    for (const ActiveServiceSink &activeSink : sinksToRoute) {
       std::vector<PnrIndex> sourceEndpoints;
       std::vector<PnrIndex> sourceReplicationGroups;
       if (nodes.empty()) {
@@ -557,9 +831,11 @@ loom::pnr::detail::buildSystemServiceRoutes(
       } else {
         std::vector<std::pair<PnrIndex, PnrIndex>> frontier;
         frontier.reserve(nodes.size());
-        for (const MutableNode &node : nodes)
-          if (!node.hasOutgoing ||
-              node.outgoingReplicationGroup != getInvalidPnrIndex())
+        for (const auto &[nodeOrdinal, node] : llvm::enumerate(nodes))
+          if ((!rootedSubtreeNode || nodeOrdinal == *rootedSubtreeNode ||
+               nodeOrdinal >= retainedNodeCount) &&
+              (!node.hasOutgoing ||
+               node.outgoingReplicationGroup != getInvalidPnrIndex()))
             frontier.emplace_back(
                 node.endpoint, node.hasOutgoing ? node.outgoingReplicationGroup
                                                 : getInvalidPnrIndex());
@@ -573,11 +849,12 @@ loom::pnr::detail::buildSystemServiceRoutes(
       for (PnrIndex rank = 0; rank < targetRanks.size(); ++rank)
         targetRanks[rank] = rank;
       auto eligibility = routeEligibility(topology, *atomicPatterns, nodes);
-      if (exclusion && exclusion->leg == legOrdinal)
-        rejectTraversal(eligibility, exclusion->traversal);
-      if (llvm::Error error =
-              applyCapacityEligibility(topology, capacityUsage, eligibility))
-        return std::move(error);
+      if (request.exclusion && request.exclusion->leg == legOrdinal)
+        rejectTraversal(eligibility, request.exclusion->traversal);
+      if (request.enforceCapacity)
+        if (llvm::Error error =
+                applyCapacityEligibility(topology, capacityUsage, eligibility))
+          return std::move(error);
       std::optional<RouteProbe> bestProbe;
       std::string lastRouteDiagnostic;
       const auto tryProbe =
@@ -587,7 +864,8 @@ loom::pnr::detail::buildSystemServiceRoutes(
               std::optional<AtomicPatternUpgrade> upgrade) -> llvm::Error {
         auto routed = search.search(
             {sources, sourceGroups, activeSink.endpoints, targetRanks,
-             *arcCosts, *arcCosts, leg.requiredPayloadWidthBits, 0,
+             request.lowerBoundArcCosts, *currentArcCosts,
+             leg.requiredPayloadWidthBits, 0,
              problem.config().policy().search.routing.endpointExpansionLimit,
              eligibleTraversals});
         const std::uint64_t consumed = search.endpointExpansionCount();
@@ -628,10 +906,13 @@ loom::pnr::detail::buildSystemServiceRoutes(
         if (!upgrades)
           return upgrades.takeError();
         for (const AtomicPatternUpgrade &upgrade : *upgrades) {
+          if (rootedSubtreeNode && upgrade.node != *rootedSubtreeNode &&
+              upgrade.node < retainedNodeCount)
+            continue;
           auto upgradedEligibility = eligibility;
           admitTraversal(upgradedEligibility, upgrade.extraTraversal);
-          if (exclusion && exclusion->leg == legOrdinal)
-            rejectTraversal(upgradedEligibility, exclusion->traversal);
+          if (request.exclusion && request.exclusion->leg == legOrdinal)
+            rejectTraversal(upgradedEligibility, request.exclusion->traversal);
           const std::array<PnrIndex, 1> source = {nodes[upgrade.node].endpoint};
           const std::array<PnrIndex, 1> group = {upgrade.group};
           if (llvm::Error error =
@@ -675,13 +956,23 @@ loom::pnr::detail::buildSystemServiceRoutes(
     }
     if (llvm::Error error = canonicalizeTree(nodes, sinks))
       return std::move(error);
-    if (llvm::Error error = commitRouteCapacity(topology, nodes, capacityUsage))
+    if (llvm::Error error = commitRouteCapacity(topology, nodes, capacityUsage,
+                                                request.enforceCapacity))
       return std::move(error);
+    builtLegs[legOrdinal] = BuiltLegRoute{nodes.front().endpoint,
+                                          std::move(nodes), std::move(sinks)};
+  }
 
-    auto nodeOffset = checked(nodeOffsetContext, result.nodes.size());
-    auto nodeCount = checked(nodeOffsetContext, nodes.size());
-    auto sinkOffset = checked(sinkOffsetContext, result.sinks.size());
-    auto sinkCount = checked(sinkOffsetContext, sinks.size());
+  for (PnrIndex legOrdinal = 0; legOrdinal < builtLegs.size(); ++legOrdinal) {
+    if (!builtLegs[legOrdinal])
+      return invalid("service route leg order omitted a leg");
+    BuiltLegRoute &leg = *builtLegs[legOrdinal];
+    auto nodeOffset =
+        checked(nodeOffsetContext, result.selections.nodes.size());
+    auto nodeCount = checked(nodeOffsetContext, leg.nodes.size());
+    auto sinkOffset =
+        checked(sinkOffsetContext, result.selections.sinks.size());
+    auto sinkCount = checked(sinkOffsetContext, leg.sinks.size());
     if (!nodeOffset)
       return nodeOffset.takeError();
     if (!nodeCount)
@@ -690,28 +981,125 @@ loom::pnr::detail::buildSystemServiceRoutes(
       return sinkOffset.takeError();
     if (!sinkCount)
       return sinkCount.takeError();
-    for (const MutableNode &node : nodes)
-      result.nodes.push_back(
+    for (const MutableNode &node : leg.nodes)
+      result.selections.nodes.push_back(
           {node.endpoint, node.parent, node.incomingTraversal});
-    for (const MutableSink &sink : sinks)
-      result.sinks.push_back({sink.terminal, sink.node});
-    result.routes.push_back({legOrdinal, nodes.front().endpoint, *nodeOffset,
-                             *nodeCount, *sinkOffset, *sinkCount});
+    for (const MutableSink &sink : leg.sinks)
+      result.selections.sinks.push_back({sink.terminal, sink.node});
+    result.selections.routes.push_back({legOrdinal, leg.rootEndpoint,
+                                        *nodeOffset, *nodeCount, *sinkOffset,
+                                        *sinkCount});
   }
-  if (llvm::Error error =
-          verifySystemServiceRoutes(problem, threadChoices, graphChoices,
-                                    result.routes, result.nodes, result.sinks))
-    return std::move(error);
+  if (request.enforceCapacity)
+    if (llvm::Error error = verifySystemServiceRoutes(
+            problem, threadChoices, graphChoices, result.selections.routes,
+            result.selections.nodes, result.selections.sinks))
+      return std::move(error);
+  result.capacityUsage = std::move(capacityUsage);
   return result;
 }
 
-llvm::Expected<detail::CanonicalSystemServiceRoutes>
-loom::pnr::detail::buildCanonicalSystemServiceRoutes(
-    const FrozenSystemPnrProblem &problem,
-    llvm::ArrayRef<PnrIndex> threadChoices,
-    llvm::ArrayRef<PnrIndex> graphChoices, std::uint64_t &endpointExpansions) {
-  return buildSystemServiceRoutes(problem, threadChoices, graphChoices,
-                                  std::nullopt, endpointExpansions);
+llvm::Expected<std::vector<RouteCost>>
+loom::pnr::detail::buildSystemServiceRouteLowerBoundArcCosts(
+    const FrozenEndpointRoutingTopology &topology) {
+  return computeLowerBoundArcCosts(topology);
+}
+
+llvm::Expected<std::vector<std::uint64_t>>
+loom::pnr::detail::measureSystemServiceRouteCapacityUsage(
+    const FrozenEndpointRoutingTopology &topology,
+    SystemServiceRoutesView routes, bool enforceCapacity) {
+  std::vector<std::uint64_t> usage;
+  usage.reserve(topology.capacityCells().size());
+  for (const auto &cell : topology.capacityCells())
+    usage.push_back(cell.initialOccupancy);
+  for (const auto &route : routes.routes) {
+    auto traversals = selectedRouteTraversals(routes, route);
+    if (!traversals)
+      return traversals.takeError();
+    if (llvm::Error error = commitRouteCapacityTraversals(
+            topology, *traversals, usage, enforceCapacity))
+      return std::move(error);
+  }
+  return usage;
+}
+
+llvm::Expected<std::vector<PnrIndex>>
+loom::pnr::detail::buildSystemServiceRouteLegOrder(
+    const FrozenEndpointRoutingTopology &topology,
+    SystemServiceRoutesView routes,
+    llvm::ArrayRef<std::uint64_t> capacityUsage) {
+  if (capacityUsage.size() != topology.capacityCells().size())
+    return invalid("route-order capacity usage has the wrong width");
+  struct OrderKey final {
+    PnrIndex leg = 0;
+    std::uint8_t routeStateRank = 2;
+    RouteCost conflictPressure = 0;
+  };
+  std::vector<OrderKey> keys;
+  keys.reserve(routes.routes.size());
+  for (const auto &route : routes.routes) {
+    auto traversals = selectedRouteTraversals(routes, route);
+    if (!traversals)
+      return traversals.takeError();
+    std::map<std::pair<PnrIndex, PnrIndex>, std::pair<std::uint64_t, RouteCost>>
+        selectedClaims;
+    for (PnrIndex traversalOrdinal : *traversals) {
+      if (traversalOrdinal == getInvalidPnrIndex())
+        continue;
+      if (traversalOrdinal >= topology.traversals().size())
+        return invalid("route-order traversal is out of range");
+      const auto &traversal = topology.traversals()[traversalOrdinal];
+      if (traversal.capacityClaimOffset > topology.capacityClaims().size() ||
+          traversal.capacityClaimCount >
+              topology.capacityClaims().size() - traversal.capacityClaimOffset)
+        return invalid("route-order capacity range is out of bounds");
+      for (const auto &claim : topology.capacityClaims().slice(
+               traversal.capacityClaimOffset, traversal.capacityClaimCount)) {
+        const auto key = std::make_pair(claim.activation, claim.cell);
+        auto [position, inserted] = selectedClaims.try_emplace(
+            key,
+            std::make_pair(claim.amount, static_cast<RouteCost>(claim.qCost)));
+        if (!inserted &&
+            position->second !=
+                std::make_pair(claim.amount,
+                               static_cast<RouteCost>(claim.qCost)))
+          return invalid("one route activation has inconsistent priced claims");
+      }
+    }
+    RouteCost pressure = 0;
+    for (const auto &[key, claim] : selectedClaims) {
+      if (key.second >= capacityUsage.size())
+        return invalid("route-order claim names an invalid capacity cell");
+      auto overuse = normalizedRouteOveruseCost(
+          capacityUsage[key.second], 0,
+          topology.capacityCells()[key.second].capacity);
+      if (!overuse)
+        return overuse.takeError();
+      auto contribution = scaledRouteProduct(claim.second, *overuse);
+      if (!contribution)
+        return contribution.takeError();
+      auto accumulated = accumulateRouteCost(pressure, *contribution);
+      if (!accumulated)
+        return accumulated.takeError();
+      pressure = *accumulated;
+    }
+    keys.push_back({route.leg,
+                    pressure == 0 ? std::uint8_t{2} : std::uint8_t{1},
+                    pressure});
+  }
+  llvm::sort(keys, [](const OrderKey &lhs, const OrderKey &rhs) {
+    if (lhs.routeStateRank != rhs.routeStateRank)
+      return lhs.routeStateRank < rhs.routeStateRank;
+    if (lhs.conflictPressure != rhs.conflictPressure)
+      return lhs.conflictPressure > rhs.conflictPressure;
+    return lhs.leg < rhs.leg;
+  });
+  std::vector<PnrIndex> order;
+  order.reserve(keys.size());
+  for (const OrderKey &key : keys)
+    order.push_back(key.leg);
+  return order;
 }
 
 llvm::Error loom::pnr::detail::verifySystemServiceRoutes(

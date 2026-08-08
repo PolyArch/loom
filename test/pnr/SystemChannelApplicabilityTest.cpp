@@ -428,9 +428,10 @@ void verifyRootCompleteSystemAdapter(
   require(first.workSummary.size() ==
                   loom::dse::pnrCandidateGeneratorWorkUnits.size() &&
               first.workSummary[0].consumed == 1 &&
+              first.workSummary[3].consumed != 0 &&
               first.workSummary[4].consumed == 1 &&
               first.workSummary[5].consumed != 0,
-          "root-complete System adapter lost real bounded work");
+          "root-complete System adapter lost real bounded search work");
   for (const auto &unit : first.workSummary)
     require(unit.planned == unit.consumed,
             "completed System provider left planned work unconsumed");

@@ -21,6 +21,7 @@ struct SystemActionProbeResult final {
 struct SystemActionProbeAccounting final {
   std::uint64_t assignmentAttempts = 0;
   std::uint64_t endpointExpansions = 0;
+  std::uint64_t negotiationIterations = 0;
 };
 
 llvm::Expected<SystemActionProbeResult>

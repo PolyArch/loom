@@ -46,6 +46,7 @@ struct SystemAnnealingStatistics final {
   std::uint64_t acceptedActionCount = 0;
   std::uint64_t assignmentAttempts = 0;
   std::uint64_t endpointExpansions = 0;
+  std::uint64_t negotiationIterations = 0;
 
   friend bool operator==(const SystemAnnealingStatistics &lhs,
                          const SystemAnnealingStatistics &rhs) {
@@ -55,7 +56,8 @@ struct SystemAnnealingStatistics final {
                rhs.annealingMovableProposalSlots &&
            lhs.acceptedActionCount == rhs.acceptedActionCount &&
            lhs.assignmentAttempts == rhs.assignmentAttempts &&
-           lhs.endpointExpansions == rhs.endpointExpansions;
+           lhs.endpointExpansions == rhs.endpointExpansions &&
+           lhs.negotiationIterations == rhs.negotiationIterations;
   }
 };
 

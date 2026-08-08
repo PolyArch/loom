@@ -3,6 +3,7 @@
 #include "Common/ArtifactLocalReference.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/IR/MappingDialect.h"
+#include "PnR/System/SystemActionExecutor.h"
 #include "PnR/System/SystemAnnealingSearch.h"
 #include "PnR/System/SystemCandidateState.h"
 #include "PnR/System/SystemMappingMaterializer.h"
@@ -65,6 +66,7 @@ struct InitializationFailure final {
       SystemCandidateInitializationFailureKind::Internal;
   std::uint64_t assignmentAttempts = 0;
   std::uint64_t endpointExpansions = 0;
+  std::uint64_t negotiationIterations = 0;
   std::string diagnostic;
 };
 
@@ -76,6 +78,7 @@ InitializationFailure classifyInitializationFailure(llvm::Error error) {
         result.kind = failure.kind();
         result.assignmentAttempts = failure.assignmentAttempts();
         result.endpointExpansions = failure.endpointExpansions();
+        result.negotiationIterations = failure.negotiationIterations();
         result.diagnostic = errorMessage(failure);
       },
       [&](const llvm::ErrorInfoBase &failure) {
@@ -114,8 +117,13 @@ llvm::Error accumulateInitialization(const InitializationFailure &source,
                                      target.initializerAssignmentAttempts,
                                      "initializer assignment attempts"))
     return error;
-  return checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
-                    "initializer endpoint expansions");
+  if (llvm::Error error =
+          checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
+                     "initializer endpoint expansions"))
+    return error;
+  return checkedAdd(source.negotiationIterations,
+                    target.negotiationIterationSlots,
+                    "initializer negotiation iterations");
 }
 
 llvm::Error accumulateInitialization(const InitializedSystemCandidate &source,
@@ -124,8 +132,13 @@ llvm::Error accumulateInitialization(const InitializedSystemCandidate &source,
                                      target.initializerAssignmentAttempts,
                                      "initializer assignment attempts"))
     return error;
-  return checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
-                    "initializer endpoint expansions");
+  if (llvm::Error error =
+          checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
+                     "initializer endpoint expansions"))
+    return error;
+  return checkedAdd(source.negotiationIterations,
+                    target.negotiationIterationSlots,
+                    "initializer negotiation iterations");
 }
 
 llvm::Error accumulateAnnealing(const SystemAnnealingStatistics &source,
@@ -151,20 +164,27 @@ llvm::Error accumulateAnnealing(const SystemAnnealingStatistics &source,
           checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
                      "annealing endpoint expansions"))
     return error;
+  if (llvm::Error error = checkedAdd(source.negotiationIterations,
+                                     target.negotiationIterationSlots,
+                                     "annealing negotiation iterations"))
+    return error;
   return checkedAdd(source.acceptedActionCount, target.annealingAcceptedActions,
                     "annealing accepted Actions");
 }
 
-std::vector<PnrIndex>
-fixedExecutionChoices(const SystemCandidateState &candidate) {
-  std::vector<PnrIndex> result;
-  result.reserve(candidate.threadChoices().size() +
-                 candidate.graphChoices().size());
-  result.insert(result.end(), candidate.threadChoices().begin(),
-                candidate.threadChoices().end());
-  result.insert(result.end(), candidate.graphChoices().begin(),
-                candidate.graphChoices().end());
-  return result;
+llvm::Error accumulateActionProbe(const SystemActionProbeAccounting &source,
+                                  SystemPnrGenerationAccounting &target) {
+  if (llvm::Error error = checkedAdd(source.assignmentAttempts,
+                                     target.initializerAssignmentAttempts,
+                                     "Action assignment attempts"))
+    return error;
+  if (llvm::Error error =
+          checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
+                     "Action endpoint expansions"))
+    return error;
+  return checkedAdd(source.negotiationIterations,
+                    target.negotiationIterationSlots,
+                    "Action negotiation iterations");
 }
 
 } // namespace
@@ -263,32 +283,43 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
                       accounting, std::move(error));
 
     ++accounting.finalClosureAttempts;
-    const std::vector<PnrIndex> fixed = fixedExecutionChoices(*candidate);
-    auto closed = initializeSystemCandidateWithFixedChoices(*problem, fixed);
-    if (!closed) {
-      InitializationFailure failure =
-          classifyInitializationFailure(closed.takeError());
-      if (llvm::Error error = accumulateInitialization(failure, accounting))
-        return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
-                        accounting, std::move(error));
-      switch (failure.kind) {
-      case SystemCandidateInitializationFailureKind::ProvenInfeasible:
-        return internal(InternalSystemPnrGenerationReason::FinalClosure,
-                        accounting,
-                        "a verified candidate became infeasible during exact "
-                        "fixed-choice global closure");
-      case SystemCandidateInitializationFailureKind::SemanticLimitReached:
-        rememberIncomplete(failure.diagnostic, true);
-        continue;
-      case SystemCandidateInitializationFailureKind::Internal:
-        return internal(InternalSystemPnrGenerationReason::FinalClosure,
-                        accounting, failure.diagnostic);
-      }
-    }
-    if (llvm::Error error = accumulateInitialization(*closed, accounting))
+    auto currentObjective =
+        candidate->problem().objectiveProgram().evaluate(*candidate);
+    if (!currentObjective)
+      return internal(InternalSystemPnrGenerationReason::FinalClosure,
+                      accounting, currentObjective.takeError());
+    SystemActionProbeAccounting closureWork;
+    auto closed =
+        probeSystemAction(candidate, *currentObjective,
+                          SystemMappingAction{SystemTransportRoutingAction{
+                              SystemGlobalRoutingAction{}}},
+                          closureWork);
+    if (llvm::Error error = accumulateActionProbe(closureWork, accounting))
       return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
                       accounting, std::move(error));
-    candidate = std::move(closed->state);
+    if (!closed) {
+      bool workLimit = false;
+      std::string diagnostic;
+      llvm::handleAllErrors(
+          closed.takeError(),
+          [&](const SystemActionTransitionFailure &failure) {
+            workLimit =
+                failure.kind() == SystemActionTransitionFailureKind::WorkLimit;
+            diagnostic = errorMessage(failure);
+          },
+          [&](const llvm::ErrorInfoBase &failure) {
+            diagnostic = errorMessage(failure);
+          });
+      if (workLimit) {
+        rememberIncomplete(diagnostic, true);
+        continue;
+      }
+      return internal(
+          InternalSystemPnrGenerationReason::FinalClosure, accounting,
+          diagnostic.empty() ? "final global Action lost its failure cause"
+                             : diagnostic);
+    }
+    candidate = std::move(closed->candidate);
 
     if (llvm::Error error = candidate->verify())
       return internal(InternalSystemPnrGenerationReason::CandidateVerification,

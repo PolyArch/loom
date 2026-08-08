@@ -1,9 +1,11 @@
 #ifndef LOOM_PNR_SYSTEM_SYSTEMSERVICEROUTER_H
 #define LOOM_PNR_SYSTEM_SYSTEMSERVICEROUTER_H
 
+#include "PnR/RoutingNegotiation.h"
 #include "PnR/System/SystemCandidateState.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/FunctionExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <optional>
@@ -22,18 +24,62 @@ struct SystemServiceRouteTraversalExclusion final {
   PnrIndex traversal = getInvalidPnrIndex();
 };
 
-llvm::Expected<CanonicalSystemServiceRoutes>
-buildCanonicalSystemServiceRoutes(const FrozenSystemPnrProblem &problem,
-                                  llvm::ArrayRef<PnrIndex> threadChoices,
-                                  llvm::ArrayRef<PnrIndex> graphChoices,
-                                  std::uint64_t &endpointExpansions);
+enum class SystemServiceRouteRepairRegionKind : std::uint8_t {
+  SingleSink,
+  RootedSubtree,
+};
 
-llvm::Expected<CanonicalSystemServiceRoutes> buildSystemServiceRoutes(
-    const FrozenSystemPnrProblem &problem,
-    llvm::ArrayRef<PnrIndex> threadChoices,
-    llvm::ArrayRef<PnrIndex> graphChoices,
-    std::optional<SystemServiceRouteTraversalExclusion> exclusion,
-    std::uint64_t &endpointExpansions);
+struct SystemServiceRouteRepairRegion final {
+  SystemServiceRouteRepairRegionKind kind;
+  PnrIndex leg = getInvalidPnrIndex();
+  PnrIndex anchor = getInvalidPnrIndex();
+};
+
+struct SystemServiceRoutesView final {
+  llvm::ArrayRef<SystemServiceRouteSelection> routes;
+  llvm::ArrayRef<SystemServiceRouteNodeSelection> nodes;
+  llvm::ArrayRef<SystemServiceRouteSinkSelection> sinks;
+};
+
+using SystemRouteArcCostProjection =
+    llvm::function_ref<llvm::Expected<llvm::ArrayRef<RouteCost>>(
+        llvm::ArrayRef<std::uint64_t> workingCapacityUsage)>;
+
+struct SystemServiceRouteBuildRequest final {
+  llvm::ArrayRef<PnrIndex> legOrder;
+  llvm::ArrayRef<RouteCost> lowerBoundArcCosts;
+  SystemRouteArcCostProjection currentArcCosts;
+  std::optional<SystemServiceRoutesView> priorRoutes;
+  std::optional<SystemServiceRouteTraversalExclusion> exclusion;
+  std::optional<SystemServiceRouteRepairRegion> repairRegion;
+  bool enforceCapacity = true;
+};
+
+struct BuiltSystemServiceRoutes final {
+  CanonicalSystemServiceRoutes selections;
+  std::vector<std::uint64_t> capacityUsage;
+};
+
+llvm::Expected<std::vector<RouteCost>>
+buildSystemServiceRouteLowerBoundArcCosts(
+    const FrozenEndpointRoutingTopology &topology);
+
+llvm::Expected<std::vector<PnrIndex>>
+buildSystemServiceRouteLegOrder(const FrozenEndpointRoutingTopology &topology,
+                                SystemServiceRoutesView routes,
+                                llvm::ArrayRef<std::uint64_t> capacityUsage);
+
+llvm::Expected<std::vector<std::uint64_t>>
+measureSystemServiceRouteCapacityUsage(
+    const FrozenEndpointRoutingTopology &topology,
+    SystemServiceRoutesView routes, bool enforceCapacity);
+
+llvm::Expected<BuiltSystemServiceRoutes>
+buildSystemServiceRoutes(const FrozenSystemPnrProblem &problem,
+                         llvm::ArrayRef<PnrIndex> threadChoices,
+                         llvm::ArrayRef<PnrIndex> graphChoices,
+                         const SystemServiceRouteBuildRequest &request,
+                         std::uint64_t &endpointExpansions);
 
 llvm::Error verifySystemServiceRoutes(
     const FrozenSystemPnrProblem &problem,

@@ -68,8 +68,13 @@ llvm::Error accountProbe(const SystemActionProbeAccounting &work,
           checkedAdd(work.assignmentAttempts, statistics.assignmentAttempts,
                      scope + " assignment attempt"))
     return error;
-  return checkedAdd(work.endpointExpansions, statistics.endpointExpansions,
-                    scope + " endpoint expansion");
+  if (llvm::Error error =
+          checkedAdd(work.endpointExpansions, statistics.endpointExpansions,
+                     scope + " endpoint expansion"))
+    return error;
+  return checkedAdd(work.negotiationIterations,
+                    statistics.negotiationIterations,
+                    scope + " negotiation iteration");
 }
 
 } // namespace

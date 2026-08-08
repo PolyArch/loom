@@ -154,6 +154,7 @@ struct InitializedSystemCandidate final {
   SystemCandidateStateHandle state;
   std::uint64_t assignmentAttempts = 0;
   std::uint64_t endpointExpansions = 0;
+  std::uint64_t negotiationIterations = 0;
 };
 
 enum class SystemCandidateInitializationFailureKind : std::uint8_t {
@@ -170,13 +171,16 @@ public:
   SystemCandidateInitializationFailure(
       SystemCandidateInitializationFailureKind kind,
       std::uint64_t assignmentAttempts, std::uint64_t endpointExpansions,
-      std::string message)
+      std::uint64_t negotiationIterations, std::string message)
       : kind_(kind), assignmentAttempts_(assignmentAttempts),
-        endpointExpansions_(endpointExpansions), message_(std::move(message)) {}
+        endpointExpansions_(endpointExpansions),
+        negotiationIterations_(negotiationIterations),
+        message_(std::move(message)) {}
 
   SystemCandidateInitializationFailureKind kind() const { return kind_; }
   std::uint64_t assignmentAttempts() const { return assignmentAttempts_; }
   std::uint64_t endpointExpansions() const { return endpointExpansions_; }
+  std::uint64_t negotiationIterations() const { return negotiationIterations_; }
   void log(llvm::raw_ostream &stream) const override;
   std::error_code convertToErrorCode() const override;
 
@@ -184,6 +188,7 @@ private:
   SystemCandidateInitializationFailureKind kind_;
   std::uint64_t assignmentAttempts_ = 0;
   std::uint64_t endpointExpansions_ = 0;
+  std::uint64_t negotiationIterations_ = 0;
   std::string message_;
 };
 
@@ -203,7 +208,8 @@ llvm::Expected<SystemCandidateStateHandle>
 initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
                           llvm::ArrayRef<PnrIndex> threadChoices,
                           llvm::ArrayRef<PnrIndex> graphChoices,
-                          std::uint64_t *endpointExpansions = nullptr);
+                          std::uint64_t *endpointExpansions = nullptr,
+                          std::uint64_t *negotiationIterations = nullptr);
 
 } // namespace loom::pnr
 

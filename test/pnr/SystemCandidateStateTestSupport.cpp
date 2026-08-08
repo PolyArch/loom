@@ -2,6 +2,7 @@
 
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -11,6 +12,7 @@
 #include "Mapping/IR/MappingDialect.h"
 #include "PnR/System/SystemActionDomain.h"
 #include "PnR/System/SystemActionExecutor.h"
+#include "PnR/System/SystemAnnealingSearch.h"
 #include "PnR/System/SystemMappingMaterializer.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
@@ -825,17 +827,179 @@ void loom::pnr::test::verifySystemResourceAction(
     fail(llvm::toString(std::move(error)));
   require(!domain.view().resourceAnchors.empty(),
           "memory/service fixture exposes no resource Action choice");
+  const auto routingChoices = domain.view().routingChoices;
+  const auto single = llvm::find_if(routingChoices, [](const auto &action) {
+    return std::holds_alternative<SystemSingleSinkRoutingAction>(action);
+  });
+  const auto subtree = llvm::find_if(routingChoices, [](const auto &action) {
+    return std::holds_alternative<SystemRootedSubtreeRoutingAction>(action);
+  });
+  const auto global = llvm::find_if(routingChoices, [](const auto &action) {
+    return std::holds_alternative<SystemGlobalRoutingAction>(action);
+  });
+  require(single != routingChoices.end() && subtree != routingChoices.end() &&
+              global != routingChoices.end(),
+          "System routing domain omitted a closed negotiated scope");
+
+  const auto sameRoute = [](const SystemCandidateState &lhs,
+                            const SystemCandidateState &rhs, PnrIndex leg) {
+    const auto findRoute = [&](const SystemCandidateState &value) {
+      return llvm::find_if(value.serviceRoutes(),
+                           [&](const auto &route) { return route.leg == leg; });
+    };
+    const auto left = findRoute(lhs);
+    const auto right = findRoute(rhs);
+    if (left == lhs.serviceRoutes().end() ||
+        right == rhs.serviceRoutes().end() ||
+        left->rootEndpoint != right->rootEndpoint ||
+        left->nodeCount != right->nodeCount ||
+        left->sinkCount != right->sinkCount)
+      return false;
+    const auto leftNodes =
+        lhs.serviceRouteNodes().slice(left->nodeOffset, left->nodeCount);
+    const auto rightNodes =
+        rhs.serviceRouteNodes().slice(right->nodeOffset, right->nodeCount);
+    for (const auto &[index, node] : llvm::enumerate(leftNodes)) {
+      const auto &other = rightNodes[index];
+      if (node.endpoint != other.endpoint ||
+          node.parentNode != other.parentNode ||
+          node.incomingTraversal != other.incomingTraversal)
+        return false;
+    }
+    const auto leftSinks =
+        lhs.serviceRouteSinks().slice(left->sinkOffset, left->sinkCount);
+    const auto rightSinks =
+        rhs.serviceRouteSinks().slice(right->sinkOffset, right->sinkCount);
+    for (const auto &[index, sink] : llvm::enumerate(leftSinks))
+      if (sink.terminal != rightSinks[index].terminal ||
+          sink.node != rightSinks[index].node)
+        return false;
+    return true;
+  };
+  const auto exerciseLocal = [&](const SystemTransportRoutingAction &action,
+                                 PnrIndex leg) {
+    const auto sinkPaths = [&](const SystemCandidateState &state) {
+      std::map<PnrIndex, std::vector<PnrIndex>> result;
+      const auto route =
+          llvm::find_if(state.serviceRoutes(), [&](const auto &candidateRoute) {
+            return candidateRoute.leg == leg;
+          });
+      require(route != state.serviceRoutes().end(),
+              "local routing path fixture lost its service leg");
+      const auto nodes =
+          state.serviceRouteNodes().slice(route->nodeOffset, route->nodeCount);
+      for (const auto &sink : state.serviceRouteSinks().slice(
+               route->sinkOffset, route->sinkCount)) {
+        std::vector<PnrIndex> path;
+        PnrIndex node = sink.node;
+        while (node != 0) {
+          require(node < nodes.size(),
+                  "local routing path fixture has a foreign node");
+          path.push_back(nodes[node].incomingTraversal);
+          node = nodes[node].parentNode;
+        }
+        std::reverse(path.begin(), path.end());
+        result.try_emplace(sink.terminal, std::move(path));
+      }
+      return result;
+    };
+    auto outsidePaths = sinkPaths(*candidate);
+    const auto route = llvm::find_if(
+        candidate->serviceRoutes(),
+        [&](const auto &candidateRoute) { return candidateRoute.leg == leg; });
+    const auto nodes = candidate->serviceRouteNodes().slice(route->nodeOffset,
+                                                            route->nodeCount);
+    const auto sinks = candidate->serviceRouteSinks().slice(route->sinkOffset,
+                                                            route->sinkCount);
+    if (const auto *value =
+            std::get_if<SystemSingleSinkRoutingAction>(&action)) {
+      outsidePaths.erase(sinks[value->sinkObligation].terminal);
+    } else if (const auto *value =
+                   std::get_if<SystemRootedSubtreeRoutingAction>(&action)) {
+      const auto root = llvm::find_if(nodes, [&](const auto &node) {
+        return node.endpoint == value->rootEndpoint;
+      });
+      require(root != nodes.end(),
+              "RootedSubtree path fixture lost its anchor");
+      const PnrIndex rootNode = static_cast<PnrIndex>(root - nodes.begin());
+      for (const auto &sink : sinks) {
+        PnrIndex node = sink.node;
+        while (node != 0 && node != rootNode)
+          node = nodes[node].parentNode;
+        if (node == rootNode)
+          outsidePaths.erase(sink.terminal);
+      }
+    }
+    auto objective =
+        take(candidate->problem().objectiveProgram().evaluate(*candidate));
+    SystemActionProbeAccounting work;
+    auto probe = probeSystemAction(candidate, objective,
+                                   SystemMappingAction{action}, work);
+    require(work.assignmentAttempts == 0 && work.negotiationIterations != 0,
+            "local routing Action consumed the wrong work domain");
+    if (!probe) {
+      bool transition = false;
+      llvm::Error remaining = llvm::handleErrors(
+          probe.takeError(),
+          [&](const SystemActionTransitionFailure &) { transition = true; });
+      if (remaining)
+        fail(llvm::toString(std::move(remaining)));
+      require(transition,
+              "local routing Action lost its typed rollback outcome");
+      return false;
+    }
+    for (const auto &route : candidate->serviceRoutes())
+      if (route.leg != leg)
+        require(sameRoute(*candidate, *probe->candidate, route.leg),
+                "local routing Action changed an unrelated service leg");
+    const auto repairedPaths = sinkPaths(*probe->candidate);
+    for (const auto &[terminal, path] : outsidePaths) {
+      const auto found = repairedPaths.find(terminal);
+      require(found != repairedPaths.end() && found->second == path,
+              "local routing Action changed an outside-region sink path");
+    }
+    if (llvm::Error error = probe->candidate->verify())
+      fail(llvm::toString(std::move(error)));
+    return true;
+  };
+  bool singleClosed = false;
+  bool subtreeClosed = false;
+  for (const auto &routing : routingChoices) {
+    if (!singleClosed)
+      if (const auto *value =
+              std::get_if<SystemSingleSinkRoutingAction>(&routing))
+        singleClosed = exerciseLocal(routing, value->leg);
+    if (!subtreeClosed)
+      if (const auto *value =
+              std::get_if<SystemRootedSubtreeRoutingAction>(&routing))
+        subtreeClosed = exerciseLocal(routing, value->leg);
+  }
+  require(singleClosed && subtreeClosed,
+          "pressure Fabric did not close both local routing scopes");
+
+  auto objective =
+      take(candidate->problem().objectiveProgram().evaluate(*candidate));
+  SystemActionProbeAccounting globalWork;
+  auto globalProbe = take(probeSystemAction(
+      candidate, objective, SystemMappingAction{*global}, globalWork));
+  require(globalWork.assignmentAttempts == 0 &&
+              globalWork.negotiationIterations != 0,
+          "Global routing Action did not consume negotiated routing work");
+  if (llvm::Error error = globalProbe.candidate->verify())
+    fail(llvm::toString(std::move(error)));
+
   const SystemResourceAllocationAction action =
       domain.view().resourceChoices.front();
   require(std::holds_alternative<SystemServiceUsePatternAction>(action),
           "memory fixture selected the wrong resource Action kind");
-  auto objective =
+  auto resourceObjective =
       take(candidate->problem().objectiveProgram().evaluate(*candidate));
   SystemActionProbeAccounting accounting;
-  auto probe = take(probeSystemAction(candidate, objective,
+  auto probe = take(probeSystemAction(candidate, resourceObjective,
                                       SystemMappingAction{action}, accounting));
   require(accounting.assignmentAttempts == 0 &&
-              accounting.endpointExpansions == 0,
+              accounting.endpointExpansions == 0 &&
+              accounting.negotiationIterations == 0,
           "resource Action consumed unrelated binding or routing work");
   if (llvm::Error error = probe.candidate->verify())
     fail(llvm::toString(std::move(error)));
@@ -847,7 +1011,7 @@ void loom::pnr::test::verifySystemResourceActionWorkflow(
     ArtifactStore &store, const fabric::FinalizedFabricRoot &baselineSystem,
     const fabric::FinalizedFabricRoot &primaryModule,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    const ArtifactRootReference &spatialMapping,
+    const ArtifactRootReference &spatialMapping, const ResolvedConfig &resolved,
     const ResolvedPnrConfigView &config, mlir::MLIRContext &context) {
   auto design = buildHeterogeneousSystem(
       store, baselineSystem, primaryModule, primaryModule, context,
@@ -924,6 +1088,22 @@ void loom::pnr::test::verifySystemResourceActionWorkflow(
     if (domain.view().resourceAnchors.empty())
       continue;
     verifySystemResourceAction(*candidate);
+    ResolvedConfig dualResolved = resolved;
+    dualResolved.dse.systemPnr.search.routing.negotiation =
+        ResolvedDualSubgradientPolicy{
+            ResolvedDualDirectionKernel::ProjectedSigned,
+            std::nullopt,
+            {ResolvedDualStepScheduleKind::Constant, 1, 0, 0, 0}};
+    const auto dualConfig =
+        take(projectResolvedSystemPnrConfigView(dualResolved));
+    auto dualSearchDomain = take(projectSystemPnrSearchDomain(
+        dataflow, system, dualConfig, constraints, partition,
+        SystemHierarchicalGraphSearchInput{{spatialMapping}}, store));
+    auto dualProblem = take(freezeSystemPnrProblem(
+        dataflow, system, dualSearchDomain, dualConfig, constraints, store));
+    auto dualCandidate =
+        take(initializeSystemCandidate(dualProblem, trial, graphChoices));
+    verifySystemResourceAction(dualCandidate);
     return;
   }
   fail("no finite-degree resource Action candidate is routable: " +

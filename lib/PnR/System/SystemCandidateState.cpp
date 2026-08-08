@@ -4,6 +4,7 @@
 #include "PnR/InitializerRelationSolver.h"
 #include "SystemCandidateMutation.h"
 #include "SystemCandidateServiceResolver.h"
+#include "SystemNegotiatedRouter.h"
 #include "SystemPnrSearchDomainInternal.h"
 #include "SystemServiceRouter.h"
 
@@ -18,6 +19,7 @@
 #include <limits>
 #include <map>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -55,7 +57,8 @@ std::string errorMessage(const llvm::ErrorInfoBase &error) {
 
 llvm::Error initializationFailure(llvm::Error error,
                                   std::uint64_t assignmentAttempts,
-                                  std::uint64_t endpointExpansions) {
+                                  std::uint64_t endpointExpansions,
+                                  std::uint64_t negotiationIterations) {
   SystemCandidateInitializationFailureKind kind =
       SystemCandidateInitializationFailureKind::Internal;
   std::string diagnostic;
@@ -80,12 +83,17 @@ llvm::Error initializationFailure(llvm::Error error,
                 : SystemCandidateInitializationFailureKind::Internal;
         diagnostic = errorMessage(failure);
       },
+      [&](const detail::SystemRoutingClosureFailure &failure) {
+        kind = SystemCandidateInitializationFailureKind::SemanticLimitReached;
+        diagnostic = errorMessage(failure);
+      },
       [&](const llvm::ErrorInfoBase &failure) {
         kind = SystemCandidateInitializationFailureKind::Internal;
         diagnostic = errorMessage(failure);
       });
   return llvm::make_error<SystemCandidateInitializationFailure>(
-      kind, assignmentAttempts, endpointExpansions, std::move(diagnostic));
+      kind, assignmentAttempts, endpointExpansions, negotiationIterations,
+      std::move(diagnostic));
 }
 
 llvm::Expected<std::vector<PnrIndex>>
@@ -529,19 +537,28 @@ solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
   detail::InitializerRelationSolver solver(problem->initializerRelations());
   SystemCandidateStateHandle accepted;
   std::uint64_t endpointExpansions = 0;
+  std::uint64_t negotiationIterations = 0;
   const auto validate =
       [&](llvm::ArrayRef<PnrIndex> choices) -> llvm::Expected<bool> {
     const std::size_t threadCount = problem->threadDecisions().size();
     std::uint64_t candidateEndpointExpansions = 0;
+    std::uint64_t candidateNegotiationIterations = 0;
     auto candidate = initializeSystemCandidate(
         problem, choices.take_front(threadCount),
-        choices.drop_front(threadCount), &candidateEndpointExpansions);
+        choices.drop_front(threadCount), &candidateEndpointExpansions,
+        &candidateNegotiationIterations);
     if (candidateEndpointExpansions >
         std::numeric_limits<std::uint64_t>::max() - endpointExpansions)
       return llvm::createStringError(
           std::make_error_code(std::errc::value_too_large),
           "System initializer endpoint expansion accounting overflow");
     endpointExpansions += candidateEndpointExpansions;
+    if (candidateNegotiationIterations >
+        std::numeric_limits<std::uint64_t>::max() - negotiationIterations)
+      return llvm::createStringError(
+          std::make_error_code(std::errc::value_too_large),
+          "System initializer negotiation iteration accounting overflow");
+    negotiationIterations += candidateNegotiationIterations;
     if (candidate) {
       accepted = std::move(*candidate);
       return true;
@@ -560,15 +577,17 @@ solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
   };
   auto solved = solve(solver, validate);
   if (!solved)
-    return initializationFailure(
-        solved.takeError(), solver.assignmentAttempts(), endpointExpansions);
+    return initializationFailure(solved.takeError(),
+                                 solver.assignmentAttempts(),
+                                 endpointExpansions, negotiationIterations);
   if (!accepted)
     return llvm::make_error<SystemCandidateInitializationFailure>(
         SystemCandidateInitializationFailureKind::Internal,
-        solved->assignmentAttempts, endpointExpansions,
+        solved->assignmentAttempts, endpointExpansions, negotiationIterations,
         "initializer accepted no System candidate");
-  return InitializedSystemCandidate{
-      std::move(accepted), solved->assignmentAttempts, endpointExpansions};
+  return InitializedSystemCandidate{std::move(accepted),
+                                    solved->assignmentAttempts,
+                                    endpointExpansions, negotiationIterations};
 }
 
 } // namespace
@@ -624,9 +643,12 @@ llvm::Expected<SystemCandidateStateHandle>
 loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
                                      llvm::ArrayRef<PnrIndex> threadChoices,
                                      llvm::ArrayRef<PnrIndex> graphChoices,
-                                     std::uint64_t *endpointExpansions) {
+                                     std::uint64_t *endpointExpansions,
+                                     std::uint64_t *negotiationIterations) {
   if (endpointExpansions)
     *endpointExpansions = 0;
+  if (negotiationIterations)
+    *negotiationIterations = 0;
   if (!problem)
     return invalid("FrozenSystemPnrProblem owner is null");
   auto choices = relationChoices(*problem, threadChoices, graphChoices);
@@ -641,10 +663,14 @@ loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
           *problem, threadChoices, graphChoices))
     return std::move(error);
   std::uint64_t routeEndpointExpansions = 0;
-  auto routes = detail::buildCanonicalSystemServiceRoutes(
-      *problem, threadChoices, graphChoices, routeEndpointExpansions);
+  std::uint64_t routeNegotiationIterations = 0;
+  auto routes = detail::negotiateSystemServiceRoutes(
+      *problem, threadChoices, graphChoices, routeEndpointExpansions,
+      routeNegotiationIterations);
   if (endpointExpansions)
     *endpointExpansions = routeEndpointExpansions;
+  if (negotiationIterations)
+    *negotiationIterations = routeNegotiationIterations;
   if (!routes)
     return routes.takeError();
   auto targets =
@@ -781,19 +807,78 @@ loom::pnr::detail::rebuildSystemCandidateWithServiceUsePattern(
 
 llvm::Expected<SystemCandidateStateHandle>
 loom::pnr::detail::rebuildSystemCandidateRoutes(
-    const SystemCandidateState &candidate, PnrIndex excludedLeg,
-    PnrIndex excludedTraversal, std::uint64_t &endpointExpansions) {
-  const bool hasLeg = excludedLeg != getInvalidPnrIndex();
-  const bool hasTraversal = excludedTraversal != getInvalidPnrIndex();
-  if (hasLeg != hasTraversal)
-    return invalid("route Action exclusion is incomplete");
+    const SystemCandidateState &candidate,
+    const SystemTransportRoutingAction &action,
+    std::uint64_t &endpointExpansions, std::uint64_t &negotiationIterations) {
   std::optional<SystemServiceRouteTraversalExclusion> exclusion;
-  if (hasLeg)
-    exclusion =
-        SystemServiceRouteTraversalExclusion{excludedLeg, excludedTraversal};
-  auto routes = buildSystemServiceRoutes(
+  std::vector<PnrIndex> reroutedLegs;
+  std::optional<SystemServiceRouteRepairRegion> repairRegion;
+  if (llvm::Error error = std::visit(
+          [&](const auto &value) -> llvm::Error {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, SystemGlobalRoutingAction>) {
+              return llvm::Error::success();
+            } else if constexpr (std::is_same_v<
+                                     T, SystemWitnessRegionRoutingAction>) {
+              return invalid("WitnessRegion Action has no live System witness");
+            } else {
+              const auto route = llvm::find_if(
+                  candidate.serviceRoutes(), [&](const auto &candidateRoute) {
+                    return candidateRoute.leg == value.leg;
+                  });
+              if (route == candidate.serviceRoutes().end())
+                return invalid("routing Action names a foreign service leg");
+              const auto nodes = candidate.serviceRouteNodes().slice(
+                  route->nodeOffset, route->nodeCount);
+              if constexpr (std::is_same_v<T, SystemWholeLegRoutingAction>) {
+                const auto selected =
+                    llvm::find_if(nodes, [](const auto &node) {
+                      return node.incomingTraversal != getInvalidPnrIndex();
+                    });
+                if (selected == nodes.end())
+                  return invalid("WholeLeg Action has no current traversal");
+                exclusion = SystemServiceRouteTraversalExclusion{
+                    value.leg, selected->incomingTraversal};
+              } else if constexpr (std::is_same_v<
+                                       T, SystemSingleSinkRoutingAction>) {
+                const auto sinks = candidate.serviceRouteSinks().slice(
+                    route->sinkOffset, route->sinkCount);
+                if (value.sinkObligation >= sinks.size() ||
+                    sinks[value.sinkObligation].node >= nodes.size())
+                  return invalid("SingleSink Action names a foreign sink");
+                const PnrIndex traversal =
+                    nodes[sinks[value.sinkObligation].node].incomingTraversal;
+                if (traversal == getInvalidPnrIndex())
+                  return invalid("SingleSink Action names the route root");
+                repairRegion = SystemServiceRouteRepairRegion{
+                    SystemServiceRouteRepairRegionKind::SingleSink, value.leg,
+                    value.sinkObligation};
+              } else {
+                const auto node =
+                    llvm::find_if(nodes, [&](const auto &candidateNode) {
+                      return candidateNode.endpoint == value.rootEndpoint;
+                    });
+                if (node == nodes.end() ||
+                    node->incomingTraversal == getInvalidPnrIndex())
+                  return invalid(
+                      "RootedSubtree Action names a foreign route node");
+                repairRegion = SystemServiceRouteRepairRegion{
+                    SystemServiceRouteRepairRegionKind::RootedSubtree,
+                    value.leg, value.rootEndpoint};
+              }
+              reroutedLegs.push_back(value.leg);
+              return llvm::Error::success();
+            }
+          },
+          action))
+    return std::move(error);
+  auto routes = negotiateSystemServiceRoutes(
       candidate.problem(), candidate.threadChoices(), candidate.graphChoices(),
-      exclusion, endpointExpansions);
+      endpointExpansions, negotiationIterations, reroutedLegs,
+      SystemServiceRoutesView{candidate.serviceRoutes(),
+                              candidate.serviceRouteNodes(),
+                              candidate.serviceRouteSinks()},
+      exclusion, repairRegion);
   if (!routes)
     return routes.takeError();
   return SystemCandidateState::create(

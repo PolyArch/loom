@@ -318,7 +318,7 @@ private:
   friend llvm::Expected<SystemCandidateStateHandle>
   initializeSystemCandidate(FrozenSystemPnrProblemHandle,
                             llvm::ArrayRef<PnrIndex>, llvm::ArrayRef<PnrIndex>,
-                            std::uint64_t *);
+                            std::uint64_t *, std::uint64_t *);
   friend llvm::Expected<std::shared_ptr<const FrozenSystemPnrProblem>>
   freezeSystemPnrProblem(
       const ::dataflow::CanonicalDataflowProgramView &,

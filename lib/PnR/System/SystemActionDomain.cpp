@@ -32,7 +32,7 @@ template <typename Action>
 llvm::Error appendRange(std::size_t offset, const std::vector<Action> &choices,
                         std::vector<SystemActionChoiceRange> &anchors,
                         std::uint64_t &movableDecisionCount,
-                        llvm::StringRef table) {
+                        llvm::StringRef table, bool countMovable = true) {
   if (choices.size() == offset)
     return llvm::Error::success();
   auto checkedOffset = actionIndex(offset, table, PnrCapacityMeasure::Offset);
@@ -43,9 +43,11 @@ llvm::Error appendRange(std::size_t offset, const std::vector<Action> &choices,
   if (!checkedCount)
     return checkedCount.takeError();
   anchors.push_back({*checkedOffset, *checkedCount});
-  if (movableDecisionCount == std::numeric_limits<std::uint64_t>::max())
-    return invalid("movable decision count overflows u64");
-  ++movableDecisionCount;
+  if (countMovable) {
+    if (movableDecisionCount == std::numeric_limits<std::uint64_t>::max())
+      return invalid("movable decision count overflows u64");
+    ++movableDecisionCount;
+  }
   return llvm::Error::success();
 }
 
@@ -95,11 +97,35 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
         candidate.serviceRouteNodes().slice(route.nodeOffset, route.nodeCount);
     if (llvm::any_of(nodes, [](const SystemServiceRouteNodeSelection &node) {
           return node.incomingTraversal != getInvalidPnrIndex();
-        }))
+        })) {
       routingChoices_.emplace_back(SystemWholeLegRoutingAction{route.leg});
+      const auto sinks = candidate.serviceRouteSinks().slice(route.sinkOffset,
+                                                             route.sinkCount);
+      for (PnrIndex sink = 0; sink < sinks.size(); ++sink)
+        if (sinks[sink].node < nodes.size() &&
+            nodes[sinks[sink].node].incomingTraversal != getInvalidPnrIndex())
+          routingChoices_.emplace_back(
+              SystemSingleSinkRoutingAction{route.leg, sink});
+      std::vector<PnrIndex> subtreeRoots;
+      for (PnrIndex node = 1; node < nodes.size(); ++node)
+        if (nodes[node].incomingTraversal != getInvalidPnrIndex())
+          subtreeRoots.push_back(nodes[node].endpoint);
+      llvm::sort(subtreeRoots);
+      for (PnrIndex endpoint : subtreeRoots)
+        routingChoices_.emplace_back(
+            SystemRootedSubtreeRoutingAction{route.leg, endpoint});
+    }
     if (llvm::Error error =
             appendRange(offset, routingChoices_, routingAnchors_,
                         movableDecisionCount_, "routingChoices"))
+      return error;
+  }
+  if (!candidate.serviceRoutes().empty()) {
+    const std::size_t offset = routingChoices_.size();
+    routingChoices_.emplace_back(SystemGlobalRoutingAction{});
+    if (llvm::Error error =
+            appendRange(offset, routingChoices_, routingAnchors_,
+                        movableDecisionCount_, "routingChoices", false))
       return error;
   }
 

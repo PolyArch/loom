@@ -1,6 +1,7 @@
 #ifndef LOOM_LIB_PNR_SYSTEM_SYSTEMCANDIDATEMUTATION_H
 #define LOOM_LIB_PNR_SYSTEM_SYSTEMCANDIDATEMUTATION_H
 
+#include "PnR/System/SystemAction.h"
 #include "PnR/System/SystemCandidateState.h"
 
 #include "llvm/Support/Error.h"
@@ -36,8 +37,9 @@ rebuildSystemCandidateWithServiceUsePattern(
 
 llvm::Expected<SystemCandidateStateHandle>
 rebuildSystemCandidateRoutes(const SystemCandidateState &candidate,
-                             PnrIndex excludedLeg, PnrIndex excludedTraversal,
-                             std::uint64_t &endpointExpansions);
+                             const SystemTransportRoutingAction &action,
+                             std::uint64_t &endpointExpansions,
+                             std::uint64_t &negotiationIterations);
 
 } // namespace loom::pnr::detail
 

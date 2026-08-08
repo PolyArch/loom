@@ -560,7 +560,7 @@ int main() {
       memoryDataflow, primaryModule, memoryResolved, store, &context);
   verifySystemResourceActionWorkflow(store, baselineDesign.roots().front(),
                                      primaryModule, memoryDataflow,
-                                     memoryMapping, config, context);
+                                     memoryMapping, resolved, config, context);
   std::vector<dataflow::RootThreadLaunchRef> memoryRoots{
       memoryDataflow.rootThreadLaunches().front().ref};
   auto memoryConstraints =

@@ -20,6 +20,7 @@ class MLIRContext;
 
 namespace loom {
 class ArtifactStore;
+struct ResolvedConfig;
 
 namespace adg {
 class FinalizedFabricDesign;
@@ -75,7 +76,7 @@ void verifySystemResourceActionWorkflow(
     ArtifactStore &store, const fabric::FinalizedFabricRoot &baselineSystem,
     const fabric::FinalizedFabricRoot &primaryModule,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    const ArtifactRootReference &spatialMapping,
+    const ArtifactRootReference &spatialMapping, const ResolvedConfig &resolved,
     const ResolvedPnrConfigView &config, mlir::MLIRContext &context);
 
 } // namespace pnr::test
