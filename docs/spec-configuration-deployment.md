@@ -691,6 +691,9 @@ Tests protect only stable boundaries:
   each field has exact finite codebook coverage and foreign endpoint rejection,
   activation has canonical disabled inactivity, and one selected Mapping emits
   only the chosen FU's selector and operation fields;
+* fixed canonical byte vectors cover `Disabled`, one `Active` occurrence, one
+  `Disconnected` selector, one selector carrying a PE transport endpoint, and
+  output `Discard` with no payload; malformed or noncanonical bytes fail;
 * one known vector is shared by the encoder and RTL/runtime decoder;
 * image ABI, programming-unit, Mapping, padding, and payload mismatches fail;
 * Deployment requires `ThreadDispatchImage` and `AdmissionImage`, and requires

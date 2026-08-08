@@ -283,11 +283,14 @@ remain distinct slots.
 
 For a configured Spatial PE, the same layer projects the PE-owned activation
 field, every input/output selector field of the selected FU, and that FU's
-existing operation fields. It emits no selector or FU field for an unselected
-FU and no field for an unmapped PE; ConfigurationABI supplies the validated
-inactive values, including mandatory `Disabled` for the omitted PE activation
-field. The projection never constructs a PE-wide Cartesian-product codebook or
-changes the Fabric field inventory for one Mapping.
+existing operation fields. Each operation field replaces its template-node
+owner with the corresponding occurrence-node owner through the exact
+template-to-occurrence relation and preserves its ordinal, domain, and codec.
+It emits no selector or FU field for an unselected FU and no field for an
+unmapped PE; ConfigurationABI supplies the validated inactive values,
+including mandatory `Disabled` for the omitted PE activation field. The
+projection never constructs a PE-wide Cartesian-product codebook or changes
+the Fabric field inventory for one Mapping.
 
 The resulting `ConfiguredHardwareProjection` is a sealed, removable in-memory
 view indexed only by existing Dataflow, Fabric, and Mapping references. It is

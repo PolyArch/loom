@@ -347,17 +347,24 @@ and `Discard`, followed by canonical endpoint reference bytes for the two
 variants that carry an endpoint. The output codec uses the same three tags;
 only `Route` carries canonical endpoint reference bytes. A foreign owner,
 wrong endpoint direction, or endpoint outside the PE inventory is not in the
-domain.
+domain. Reference payloads use the exact Fabric local-reference bytes defined
+by `spec-fabric-identity.md`, without `ArtifactLocalReference` framing. Decode
+rejects an unknown tag, truncation, trailing bytes, or a value that does not
+re-encode byte-for-byte identically.
 
-These PE fields do not absorb FU operation fields. Every operation field keeps
-the exact FU-node owner, behavior domain, and codec defined by its resolved
-capability. `fu_sw_configs` is the configured composition of those existing
-fields for the selected FU, not a copy inside a PE codebook. A `Disabled`
-configured view emits no Mapping projection row for any PE or FU field; the ABI
-substitutes the activation field's mandatory `Disabled` inactive value and the
-other validated inactive values. An `Active` view projects `Active(f)`, every
-selector field for `f`, and the required FU fields; fields belonging to other
-FUs remain omitted and their ABI-declared inactive values are unobservable.
+These PE fields do not absorb FU operation fields. A resolved capability owns
+each operation field through its exact `FabricFuTemplateNodeRef`. The existing
+template-to-occurrence relation mechanically replaces that owner with the
+corresponding `FabricFuOccurrenceNodeRef` in a configured physical projection,
+while preserving the field ordinal, domain, and codec. It does not create a
+second field or another domain owner. `fu_sw_configs` is the configured
+composition of those projected fields for the selected FU, not a copy inside a
+PE codebook. A `Disabled` configured view emits no Mapping projection row for
+any PE or FU field; the ABI substitutes the activation field's mandatory
+`Disabled` inactive value and the other validated inactive values. An `Active`
+view projects `Active(f)`, every selector field for `f`, and the required FU
+fields; fields belonging to other FUs remain omitted and their ABI-declared
+inactive values are unobservable.
 
 The schema is finite without enumerating the Cartesian product of FU choice,
 port routes, and FU operation behavior. Physical code assignment and packing
