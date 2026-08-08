@@ -1,0 +1,45 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-integer-shift-test %t
+# RUN: FileCheck %s --check-prefix=SCALAR < %t/artifacts/scalar_integer_shift.sv
+# RUN: FileCheck %s --check-prefix=VECTOR < %t/artifacts/fixed_vector_integer_shift.sv
+# RUN: FileCheck %s --check-prefix=SINGLETON < %t/artifacts/fixed_vector_integer_shift_singleton.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/artifacts/portable_integer_shift.ys
+
+# SCALAR-LABEL: module scalar_integer_shift
+# SCALAR: input [31:0] data_input_0
+# SCALAR: data_input_1,
+# SCALAR: input [2:0] config_0
+# SCALAR: output [31:0] data_output_0
+# SCALAR-DAG: <<
+# SCALAR-DAG: >>
+# SCALAR-DAG: >>>
+
+# VECTOR-LABEL: module fixed_vector_integer_shift
+# VECTOR: input [31:0] data_input_0
+# VECTOR: data_input_1,
+# VECTOR: input [2:0] config_0
+# VECTOR: output [31:0] data_output_0
+# VECTOR-DAG: <<
+# VECTOR-DAG: >>
+# VECTOR-DAG: >>>
+
+# SINGLETON-LABEL: module fixed_vector_integer_shift_singleton
+# SINGLETON: input [23:0] data_input_0
+# SINGLETON: data_input_1,
+# SINGLETON-NOT: config_
+# SINGLETON: output [23:0] data_output_0
+# SINGLETON: >>>
+
+# TB: scalar i8 arithmetic right zero-amount padding failed
+# TB: scalar i32 arithmetic right overshift failed
+# TB: vector i8 left shifts crossed lanes
+# TB: vector i16 arithmetic shift boundaries failed
+# TB: three-lane singleton arithmetic shift failed
+
+# YOSYS: hierarchy -check -top integer_shift_synthesis_top
+# YOSYS: select -assert-count 7 t:$shl
+# YOSYS: select -assert-count 7 t:$shr
+# YOSYS: select -assert-count 12 t:$sshr
+# YOSYS: synth -top integer_shift_synthesis_top
