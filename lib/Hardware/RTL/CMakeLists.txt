@@ -14,6 +14,7 @@ add_library(LoomHardwareRTL
   Providers/FloatSign.cpp
   Providers/IntegerCountZeros.cpp
   Providers/IntegerLogic.cpp
+  Providers/IntegerSaturatingAddSub.cpp
   Providers/IntegerShift.cpp
   Providers/LoopCarry.cpp
   Providers/LoopGate.cpp

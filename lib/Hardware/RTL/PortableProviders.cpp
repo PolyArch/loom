@@ -10,6 +10,7 @@
 #include "Hardware/RTL/Providers/FloatSign.h"
 #include "Hardware/RTL/Providers/IntegerCountZeros.h"
 #include "Hardware/RTL/Providers/IntegerLogic.h"
+#include "Hardware/RTL/Providers/IntegerSaturatingAddSub.h"
 #include "Hardware/RTL/Providers/IntegerShift.h"
 #include "Hardware/RTL/Providers/LoopCarry.h"
 #include "Hardware/RTL/Providers/LoopGate.h"
@@ -82,6 +83,9 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
     return error;
   if (llvm::Error error =
           registerPortableScalarUnsignedIntegerDivRemProvider(candidate))
+    return error;
+  if (llvm::Error error =
+          registerPortableIntegerSaturatingAddSubProviders(candidate))
     return error;
   if (llvm::Error error = registerPortableIntegerCountZerosProviders(candidate))
     return error;

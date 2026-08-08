@@ -9,6 +9,7 @@
 #include "Hardware/RTL/Providers/FloatSign.h"
 #include "Hardware/RTL/Providers/IntegerCountZeros.h"
 #include "Hardware/RTL/Providers/IntegerLogic.h"
+#include "Hardware/RTL/Providers/IntegerSaturatingAddSub.h"
 #include "Hardware/RTL/Providers/IntegerShift.h"
 #include "Hardware/RTL/Providers/LoopCarry.h"
 #include "Hardware/RTL/Providers/LoopGate.h"
@@ -117,6 +118,9 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
       loom::hardware::rtl::registerPortableScalarUnsignedIntegerDivRemProvider(
           registry));
   requireRegistration(
+      loom::hardware::rtl::registerPortableIntegerSaturatingAddSubProviders(
+          registry));
+  requireRegistration(
       loom::hardware::rtl::registerPortableIntegerCountZerosProviders(
           registry));
   requireRegistration(
@@ -179,6 +183,8 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::FixedVectorUnpack,
       ::fabric::ImplementationFamilyId::ScalarSignedIntegerDivRem,
       ::fabric::ImplementationFamilyId::ScalarUnsignedIntegerDivRem,
+      ::fabric::ImplementationFamilyId::ScalarIntegerSaturatingAddSub,
+      ::fabric::ImplementationFamilyId::FixedVectorIntegerSaturatingAddSub,
       ::fabric::ImplementationFamilyId::ScalarIntegerCountZeros,
       ::fabric::ImplementationFamilyId::FixedVectorIntegerCountZeros,
       ::fabric::ImplementationFamilyId::FixedVectorSliceAlignMerge,
