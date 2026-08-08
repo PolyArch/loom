@@ -2292,19 +2292,27 @@ this closed protocol:
    the choice. If there is no already processed compute neighbor, or scores
    remain equal, use circular canonical choice order beginning at that root's
    baseline choice;
-5. leave occurrence-relative `PortAttachment` decisions unfixed and invoke the
-   same root relation solver once with the preferred roots fixed, so placement
-   compatibility and every hard attachment relation are re-established by
-   their existing owner; and
-6. if the preferred fixed roots have no complete assignment within the
+5. an occurrence-relative `PortAttachment` root participating in a
+   constraint-owned relation retains its baseline choice. Process every other
+   `PortAttachment` root in canonical demand order, restrict its preference
+   candidates to attachment options owned by the already selected realization
+   placement, and choose an exact physical endpoint with the least current
+   selected-demand count. Ties use circular canonical choice order beginning
+   at the demand's baseline choice. Graph-boundary attachments retain their
+   baseline choices;
+6. invoke the same root relation solver once with the preferred compute and
+   `PortAttachment` roots fixed, so placement compatibility and every hard
+   attachment relation are re-established by their existing owner; and
+7. if the preferred fixed roots have no complete assignment within the
    remaining initializer work, retain the complete baseline assignment.
 
-The selected-root count and frozen-topology distance are only deterministic
-search preferences. Neither is capacity, neither removes a legal choice, and
-neither can prove infeasibility. The distance uses the same immutable endpoint,
-arc, payload-width, and attachment domains already owned by the FrozenModel;
-it ignores mutable route costs and resource occupancy and therefore is not a
-second router. Fabric `ResourceContract`, raw candidate capacity projection,
+The selected-root count, frozen-topology distance, and selected-demand endpoint
+count are only deterministic search preferences. None is capacity, none
+removes a legal choice, and none can prove infeasibility. The distance and
+endpoint identity use the same immutable endpoint, arc, payload-width, and
+attachment domains already owned by the FrozenModel; they ignore mutable route
+costs and resource occupancy and therefore do not form a second router or
+crosspoint model. Fabric `ResourceContract`, raw candidate capacity projection,
 and final verification remain the only capacity authorities. The refinement
 consumes no PRNG words beyond the baseline solve. Every relation assignment
 attempted by either solve consumes one initializer work unit under the single

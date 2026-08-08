@@ -718,6 +718,20 @@ independent placer would duplicate relation and routing ownership. The
 load-then-locality refinement instead composes the two existing facts needed
 for a useful seed: exact context identity and exact frozen connectivity.
 
+Dynamic symmetric ports expose the same issue one level below placement. If
+two inputs or outputs of `dataflow.sync`, `dataflow.mux`, `dataflow.demux`, or
+another variadic operation both take the first occurrence-relative attachment,
+the initial route duplicates a physical endpoint even when the selected FU and
+PE expose enough distinct ports. Enumerating port permutations is functionally
+redundant, but collapsing simultaneous logical terminals onto one endpoint is
+not. Opcode-specific permutation tables would duplicate operation semantics,
+and hard endpoint disjointness would incorrectly reject legal temporal sharing.
+The initializer instead prefers the least-selected exact endpoint admitted by
+the already selected placement, retains constrained baselines, and asks the
+same relation solver to validate the complete preferred root assignment. This
+generic preference canonicalizes the useful distinct subset without making
+endpoint counts a capacity authority or changing the legal domain.
+
 Local-memory byte offsets need a finite search representation. Enumerating
 every fitting byte would make a 4 GiB region contribute billions of choices
 even though, under the current containment and non-overlap contract, empty
