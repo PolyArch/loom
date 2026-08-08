@@ -25,6 +25,7 @@ class OpOp;
 namespace loom::fabric::detail {
 
 struct NormalizedModuleDomainRelation;
+enum class FabricFuCapabilityOrdinalSpace : std::uint8_t;
 
 struct FabricEntityCarrier {
   FabricEntityKind kind;
@@ -46,6 +47,7 @@ struct FabricMemoryEngineTemplateCarrier {
 struct FabricCanonicalFuDefinition {
   CanonicalSemanticBytes relationBytes;
   std::vector<mlir::Operation *> canonicalNodeOrder;
+  std::vector<CanonicalSemanticBytes> canonicalNodeOrbitCertificates;
 };
 
 struct FabricModuleDomainSlotCarrier final {
@@ -75,10 +77,13 @@ struct FabricCanonicalLabeling {
 llvm::Expected<std::string>
 encodeFabricOpCanonicalIntrinsic(::fabric::OpOp operation);
 
-/// Computes one FU definition's canonical semantic relation and the unique
-/// definition-local node order used by every occurrence reference.
+/// Computes one FU definition's intrinsic canonical relation and node order.
+/// Module labeling refines automorphic occurrence-node correspondence with the
+/// complete capability and domain context.
 llvm::Expected<FabricCanonicalFuDefinition>
 computeCanonicalFabricFuDefinition(::fabric::FuOp fu);
+llvm::Expected<FabricCanonicalFuDefinition> computeCanonicalFabricFuDefinition(
+    ::fabric::FuOp fu, FabricFuCapabilityOrdinalSpace sourceOrdinalSpace);
 
 /// Computes the exact semantic labeling of one already elaborated, declaration-
 /// free Fabric Module root. The caller owns structural verification and must

@@ -455,18 +455,53 @@ void canonicalFuDefinitionOrdinalsSurviveStrictImport() {
     }
     occurrenceDomains.push_back(std::move(domains));
   }
-  for (loom::fabric::FabricOrdinal ordinal = 0; ordinal != nodeCount; ++ordinal)
-    if (occurrenceDomains[0][ordinal].first ==
-            occurrenceDomains[1][ordinal].first ||
-        occurrenceDomains[0][ordinal].second ==
-            occurrenceDomains[1][ordinal].second)
-      fail(test, "definition node changed occurrence-domain correspondence");
+  std::optional<loom::fabric::FabricOrdinal> operationOrdinal;
+  std::vector<loom::fabric::FabricOrdinal> muxOrdinals;
+  for (loom::fabric::FabricOrdinal ordinal = 0; ordinal != nodeCount;
+       ++ordinal) {
+    const auto kind = finalized.view().fuNodeKind(definitionOwner, ordinal);
+    if (*kind == loom::fabric::FabricFuNodeKind::Op) {
+      if (operationOrdinal)
+        fail(test, "finalized FU definition has multiple operation nodes");
+      operationOrdinal = ordinal;
+    } else if (*kind == loom::fabric::FabricFuNodeKind::Mux) {
+      muxOrdinals.push_back(ordinal);
+    } else {
+      fail(test, "finalized FU definition has an unexpected node kind");
+    }
+  }
+  if (!operationOrdinal || muxOrdinals.size() != 2)
+    fail(test, "finalized FU definition changed its node kinds");
+  if (occurrenceDomains[0][*operationOrdinal].first ==
+          occurrenceDomains[1][*operationOrdinal].first ||
+      occurrenceDomains[0][*operationOrdinal].second ==
+          occurrenceDomains[1][*operationOrdinal].second)
+    fail(test, "operation node lost its occurrence-domain correspondence");
+
+  std::vector<
+      std::pair<loom::fabric::FabricOrdinal, loom::fabric::FabricOrdinal>>
+      canonicalMuxDomains;
+  for (const auto &domains : occurrenceDomains) {
+    std::vector<
+        std::pair<loom::fabric::FabricOrdinal, loom::fabric::FabricOrdinal>>
+        muxDomains;
+    for (loom::fabric::FabricOrdinal ordinal : muxOrdinals)
+      muxDomains.push_back(domains[ordinal]);
+    llvm::sort(muxDomains);
+    if (muxDomains.size() != 2 || muxDomains.front() == muxDomains.back())
+      fail(test, "automorphic mux domains were collapsed");
+    if (canonicalMuxDomains.empty())
+      canonicalMuxDomains = muxDomains;
+    else if (muxDomains != canonicalMuxDomains)
+      fail(test, "automorphic mux domains changed between occurrences");
+  }
   const auto templates = finalized.view().fuCapabilityTemplates(definition);
   if (templates.size() != 1 || templates.front().activeNodes.size() != 1)
     fail(test, "finalized FU capability changed its active-node domain");
   const loom::fabric::FabricFuTemplateNodeRef templateNode =
       templates.front().activeNodes.front();
-  if (templateNode.node != loom::fabric::FabricFuNodeKind::Op)
+  if (templateNode.node != loom::fabric::FabricFuNodeKind::Op ||
+      templateNode.ordinal != *operationOrdinal)
     fail(test, "finalized FU capability selected a non-operation node");
   for (loom::fabric::FabricFuOccurrenceRef occurrence :
        finalized.view().fuOccurrences()) {

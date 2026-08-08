@@ -49,6 +49,10 @@ enum class EdgeKind : std::uint8_t {
   ModuleDomainSlot,
   ModuleDomainMember,
   ModuleDomainAssignment,
+  FuCapabilityTemplate,
+  FuCapabilityActiveNode,
+  FuCapabilityRoute,
+  FuOrbitRoot,
 };
 
 struct Edge {
@@ -71,11 +75,6 @@ void appendU32(std::string &bytes, std::uint32_t value) {
 void appendU64(std::string &bytes, std::uint64_t value) {
   for (int shift = 56; shift >= 0; shift -= 8)
     bytes.push_back(static_cast<char>(value >> shift));
-}
-
-void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
-  for (int shift = 56; shift >= 0; shift -= 8)
-    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
 }
 
 std::string relationLabel(const Edge &edge) {
@@ -215,6 +214,8 @@ public:
       return std::move(error);
     if (llvm::Error error = graph.buildDomainRelations())
       return std::move(error);
+    if (llvm::Error error = graph.buildFuCapabilityRelations())
+      return std::move(error);
     if (llvm::Error error = graph.buildRelations(root))
       return std::move(error);
     return graph;
@@ -238,19 +239,33 @@ public:
     for (const auto &entry : operationVertices_)
       operationByVertex[entry.second] = entry.first;
     std::vector<Operation *> canonicalNodeOrder;
+    std::vector<CanonicalSemanticBytes> canonicalNodeOrbitCertificates;
     for (std::uint32_t vertex : canonical->canonicalOrder) {
       Operation *node = operationByVertex.lookup(vertex);
       if (isa_and_nonnull<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(
-              node))
+              node)) {
         canonicalNodeOrder.push_back(node);
+        auto certificate = canonicalizeWithFuOrbitRoot(vertex);
+        if (!certificate)
+          return certificate.takeError();
+        canonicalNodeOrbitCertificates.push_back(std::move(certificate->bytes));
+      }
     }
-    return FabricCanonicalFuDefinition{std::move(canonical->bytes),
-                                       std::move(canonicalNodeOrder)};
+    return FabricCanonicalFuDefinition{
+        std::move(canonical->bytes), std::move(canonicalNodeOrder),
+        std::move(canonicalNodeOrbitCertificates)};
   }
 
   llvm::Expected<FabricCanonicalLabeling> canonicalizeModule() {
     if (fuDefinition_)
       return invalid("an FU definition graph is not a Fabric Module root");
+
+    auto contextual = canonicalize();
+    if (!contextual)
+      return contextual.takeError();
+    llvm::DenseMap<std::uint32_t, std::uint32_t> contextualPosition;
+    for (auto [position, vertex] : llvm::enumerate(contextual->canonicalOrder))
+      contextualPosition[vertex] = position;
 
     struct FuTemplateDraft {
       std::uint32_t vertex = 0;
@@ -271,31 +286,50 @@ public:
       auto fu = dyn_cast<::fabric::FuOp>(entry.first);
       if (!fu || fu.getSymNameAttr())
         continue;
-      auto definition = computeCanonicalFabricFuDefinition(fu);
+      auto definition =
+          computeCanonicalFabricFuDefinition(fu, capabilityOrdinalSpace_);
       if (!definition)
         return definition.takeError();
       const llvm::ArrayRef<std::uint8_t> definitionBytes =
           definition->relationBytes.bytes();
+
+      std::vector<Operation *> occurrenceNodeOrder =
+          definition->canonicalNodeOrder;
+      if (occurrenceNodeOrder.size() !=
+          definition->canonicalNodeOrbitCertificates.size())
+        return invalid("an FU definition has an incomplete orbit inventory");
+      std::map<std::vector<std::uint8_t>, std::vector<std::size_t>>
+          orbitPositions;
+      for (auto [position, certificate] :
+           llvm::enumerate(definition->canonicalNodeOrbitCertificates))
+        orbitPositions[certificate.bytes().vec()].push_back(position);
+      for (const auto &entry : orbitPositions) {
+        std::vector<Operation *> orbitNodes;
+        orbitNodes.reserve(entry.second.size());
+        for (std::size_t position : entry.second)
+          orbitNodes.push_back(occurrenceNodeOrder[position]);
+        llvm::sort(orbitNodes, [&](Operation *lhs, Operation *rhs) {
+          return contextualPosition.lookup(operationVertices_.lookup(lhs)) <
+                 contextualPosition.lookup(operationVertices_.lookup(rhs));
+        });
+        for (auto [position, node] : llvm::zip_equal(entry.second, orbitNodes))
+          occurrenceNodeOrder[position] = node;
+      }
       auto domain = canonicalizeFabricFuCapabilityDomain(
-          fu, definition->canonicalNodeOrder, capabilityOrdinalSpace_);
+          fu, occurrenceNodeOrder, capabilityOrdinalSpace_);
       if (!domain)
         return domain.takeError();
       auto domainBytes = ::fabric::encodeFuCapabilityDomainRecord(*domain);
       if (!domainBytes)
         return domainBytes.takeError();
       capabilityDomainByOccurrence[fu.getOperation()] = *domainBytes;
-      for (auto [ordinal, node] :
-           llvm::enumerate(definition->canonicalNodeOrder))
+      for (auto [ordinal, node] : llvm::enumerate(occurrenceNodeOrder))
         definitionFuNodeOrdinalByOperation[node] = ordinal;
       definitionNodeOrderByOccurrence[fu.getOperation()] =
-          definition->canonicalNodeOrder;
+          std::move(occurrenceNodeOrder);
 
-      std::vector<std::uint8_t> key;
-      key.reserve(16 + definitionBytes.size() + domainBytes->size());
-      appendU64(key, definitionBytes.size());
-      key.insert(key.end(), definitionBytes.begin(), definitionBytes.end());
-      appendU64(key, domainBytes->size());
-      key.insert(key.end(), domainBytes->begin(), domainBytes->end());
+      std::vector<std::uint8_t> key(definitionBytes.begin(),
+                                    definitionBytes.end());
       auto [position, inserted] = templates.emplace(key, FuTemplateDraft{});
       if (inserted) {
         std::string intrinsic = "FU_TEMPLATE\x1f";
@@ -468,6 +502,74 @@ private:
       : root_(root), fuDefinition_(fuDefinition),
         domainRelation_(domainRelation),
         capabilityOrdinalSpace_(capabilityOrdinalSpace) {}
+
+  llvm::Error buildFuCapabilityRelations() {
+    llvm::SmallVector<::fabric::FuOp, 8> functionalUnits;
+    if (fuDefinition_) {
+      auto fu = dyn_cast<::fabric::FuOp>(root_);
+      if (!fu)
+        return invalid("an FU definition graph has no FU root");
+      functionalUnits.push_back(fu);
+    } else {
+      for (const auto &entry : operationVertices_)
+        if (auto fu = dyn_cast<::fabric::FuOp>(entry.first);
+            fu && !fu.getSymNameAttr())
+          functionalUnits.push_back(fu);
+    }
+
+    for (::fabric::FuOp fu : functionalUnits) {
+      llvm::SmallVector<Operation *, 16> physicalNodes;
+      for (Operation &operation : fu.getBody().front().without_terminator())
+        if (isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(operation))
+          physicalNodes.push_back(&operation);
+      auto domain = canonicalizeFabricFuCapabilityDomain(
+          fu, physicalNodes, capabilityOrdinalSpace_);
+      if (!domain)
+        return domain.takeError();
+
+      const std::uint32_t fuVertex =
+          operationVertices_.lookup(fu.getOperation());
+      for (const ::fabric::FuCapabilityTemplateSelection &selection :
+           domain->templates()) {
+        const std::uint32_t templateVertex =
+            addVertex("FU_CAPABILITY_TEMPLATE\x1f");
+        addEdge(fuVertex, templateVertex, EdgeKind::FuCapabilityTemplate, 0);
+        for (std::uint64_t ordinal : selection.activeOperationNodeOrdinals) {
+          if (ordinal >= physicalNodes.size())
+            return invalid("FU capability names an unknown operation node");
+          addEdge(templateVertex,
+                  operationVertices_.lookup(physicalNodes[ordinal]),
+                  EdgeKind::FuCapabilityActiveNode, 0);
+        }
+        for (const ::fabric::FuCapabilityRouteSelection &route :
+             selection.routes) {
+          if (route.selectorNodeOrdinal >= physicalNodes.size())
+            return invalid("FU capability names an unknown selector node");
+          addEdge(templateVertex,
+                  operationVertices_.lookup(
+                      physicalNodes[route.selectorNodeOrdinal]),
+                  EdgeKind::FuCapabilityRoute, route.selectedPort);
+        }
+      }
+    }
+    return llvm::Error::success();
+  }
+
+  llvm::Expected<::loom::CanonicalRelationResult>
+  canonicalizeWithFuOrbitRoot(std::uint32_t vertex) const {
+    std::vector<std::string> intrinsics = intrinsics_;
+    const std::uint32_t root = intrinsics.size();
+    intrinsics.push_back("FU_NODE_ORBIT_ROOT\x1f");
+
+    std::vector<::loom::CanonicalRelationEdge> relations;
+    relations.reserve(edges_.size() + 1);
+    for (const Edge &edge : edges_)
+      relations.push_back({edge.source, edge.target, relationLabel(edge)});
+    relations.push_back(
+        {root, vertex,
+         relationLabel({root, vertex, EdgeKind::FuOrbitRoot, 0, kNoOrdinal})});
+    return ::loom::canonicalizeRelationGraph(intrinsics, relations);
+  }
 
   std::uint32_t addVertex(std::string intrinsic) {
     std::uint32_t vertex = intrinsics_.size();
@@ -672,7 +774,14 @@ private:
 
 llvm::Expected<FabricCanonicalFuDefinition>
 computeCanonicalFabricFuDefinition(::fabric::FuOp fu) {
-  auto graph = SemanticGraph::build(fu.getOperation(), true);
+  return computeCanonicalFabricFuDefinition(
+      fu, FabricFuCapabilityOrdinalSpace::AuthoringPhysical);
+}
+
+llvm::Expected<FabricCanonicalFuDefinition> computeCanonicalFabricFuDefinition(
+    ::fabric::FuOp fu, FabricFuCapabilityOrdinalSpace sourceOrdinalSpace) {
+  auto graph = SemanticGraph::build(fu.getOperation(), true, nullptr,
+                                    sourceOrdinalSpace);
   if (!graph)
     return graph.takeError();
   return graph->canonicalizeFuDefinition();

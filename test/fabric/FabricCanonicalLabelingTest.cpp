@@ -469,18 +469,29 @@ void moduleDomainsParticipateInCanonicalLabeling() {
 }
 
 std::vector<std::vector<std::uint8_t>>
-fuNodeDomainAssignmentBytes(bool reverseAssignments) {
+fuNodeDomainAssignmentBytes(bool reverseNodes, bool reverseAssignments) {
   const llvm::StringRef test = "fuNodeDomainAssignmentBytes";
-  auto module = parse(test, R"mlir(
+  std::string source;
+  llvm::raw_string_ostream stream(source);
+  stream << R"mlir(
     module {
       fabric.module @root(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
         %pe = fabric.pe [spatial] (%p = %a : !fabric.bits<32>)
             -> !fabric.bits<32> {
           %fu = fabric.fu(%x = %p : !fabric.bits<32>)
               -> !fabric.bits<32> {
-            %left = fabric.mux %x, %x : !fabric.bits<32>
-            %right = fabric.mux %x, %x : !fabric.bits<32>
-            %out = fabric.op [@arith.muli] (%x, %x)
+)mlir";
+  if (reverseNodes)
+    stream << "            %right = fabric.mux %x, %x : "
+              "!fabric.bits<32>\n"
+              "            %left = fabric.mux %x, %x : "
+              "!fabric.bits<32>\n";
+  else
+    stream << "            %left = fabric.mux %x, %x : "
+              "!fabric.bits<32>\n"
+              "            %right = fabric.mux %x, %x : "
+              "!fabric.bits<32>\n";
+  stream << R"mlir(            %out = fabric.op [@arith.muli] (%x, %x)
                 {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [32 : i32]}}
                 : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
             fabric.yield %out : !fabric.bits<32>
@@ -489,7 +500,8 @@ fuNodeDomainAssignmentBytes(bool reverseAssignments) {
         fabric.yield
       }
     }
-  )mlir");
+  )mlir";
+  auto module = parse(test, source);
   ::fabric::ModuleOp root;
   llvm::SmallVector<::fabric::MuxOp, 2> nodes;
   module->walk([&](::fabric::ModuleOp candidate) { root = candidate; });
@@ -517,13 +529,15 @@ fuNodeDomainAssignmentBytes(bool reverseAssignments) {
     std::reverse(authoringOrder.begin(), authoringOrder.end());
   for (unsigned ordinal : authoringOrder) {
     mlir::Operation *node = nodes[ordinal].getOperation();
+    const unsigned semanticOrdinal = reverseNodes ? 1 - ordinal : ordinal;
     if (llvm::Error error = relation.noteInternalMember(node, Role::FuNode, 0))
       fail(test, llvm::toString(std::move(error)));
     for (Kind kind : {Kind::Clock, Kind::Reset})
       if (llvm::Error error = relation.assignInternal(
               node, Role::FuNode, 0, kind,
-              kind == Kind::Clock ? (ordinal == 0 ? *firstClock : *secondClock)
-                                  : *reset))
+              kind == Kind::Clock
+                  ? (semanticOrdinal == 0 ? *firstClock : *secondClock)
+                  : *reset))
         fail(test, llvm::toString(std::move(error)));
   }
 
@@ -553,10 +567,159 @@ fuNodeDomainAssignmentBytes(bool reverseAssignments) {
 }
 
 void fuNodeDomainsUseModuleCanonicalContext() {
-  require(__func__,
-          fuNodeDomainAssignmentBytes(false) ==
-              fuNodeDomainAssignmentBytes(true),
+  const auto baseline = fuNodeDomainAssignmentBytes(false, false);
+  require(__func__, baseline == fuNodeDomainAssignmentBytes(false, true),
           "domain-distinguished FU nodes depend on assignment order");
+  require(__func__, baseline == fuNodeDomainAssignmentBytes(true, false),
+          "domain-distinguished FU nodes depend on physical order");
+  require(__func__, baseline == fuNodeDomainAssignmentBytes(true, true),
+          "domain-distinguished FU nodes depend on physical and assignment "
+          "order");
+}
+
+void moduleDomainsRefineOnlyFuAutomorphisms() {
+  const llvm::StringRef test = __func__;
+  auto module = parse(test, R"mlir(
+    module {
+      fabric.module @root(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+        %first_pe:2 = fabric.pe [spatial] (%p = %a : !fabric.bits<32>)
+            -> (!fabric.bits<32>, !fabric.bits<32>) {
+          %first_fu:2 = fabric.fu(%x = %p : !fabric.bits<32>)
+              -> (!fabric.bits<32>, !fabric.bits<32>) {
+            %first_mux = fabric.mux %x, %x : !fabric.bits<32>
+            %second_mux = fabric.mux %x, %x : !fabric.bits<32>
+            %first_out = fabric.op [@arith.muli] (%first_mux, %first_mux)
+                {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [32 : i32]}}
+                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            %second_out = fabric.op [@arith.muli] (%second_mux, %second_mux)
+                {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [32 : i32]}}
+                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %first_out, %second_out
+                : !fabric.bits<32>, !fabric.bits<32>
+          }
+        }
+        %second_pe:2 = fabric.pe [spatial] (%p = %b : !fabric.bits<32>)
+            -> (!fabric.bits<32>, !fabric.bits<32>) {
+          %second_fu:2 = fabric.fu(%x = %p : !fabric.bits<32>)
+              -> (!fabric.bits<32>, !fabric.bits<32>) {
+            %second_mux = fabric.mux %x, %x : !fabric.bits<32>
+            %first_mux = fabric.mux %x, %x : !fabric.bits<32>
+            %second_out = fabric.op [@arith.muli] (%second_mux, %second_mux)
+                {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [32 : i32]}}
+                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            %first_out = fabric.op [@arith.muli] (%first_mux, %first_mux)
+                {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [32 : i32]}}
+                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %first_out, %second_out
+                : !fabric.bits<32>, !fabric.bits<32>
+          }
+        }
+        fabric.yield
+      }
+    }
+  )mlir");
+  ::fabric::ModuleOp root;
+  llvm::SmallVector<::fabric::FuOp, 2> fus;
+  module->walk([&](::fabric::ModuleOp candidate) { root = candidate; });
+  root.walk([&](::fabric::FuOp fu) { fus.push_back(fu); });
+  require(test, fus.size() == 2, "fixture has the wrong FU inventory");
+
+  auto capability =
+      ::fabric::FuCapabilityDomainRecord::create({{{2, 3}, {{0, 0}, {1, 0}}}});
+  if (!capability)
+    fail(test, llvm::toString(capability.takeError()));
+  auto capabilityBytes = ::fabric::encodeFuCapabilityDomainRecord(*capability);
+  if (!capabilityBytes)
+    fail(test, llvm::toString(capabilityBytes.takeError()));
+  std::vector<std::int8_t> signedCapabilityBytes;
+  signedCapabilityBytes.reserve(capabilityBytes->size());
+  for (std::uint8_t byte : *capabilityBytes)
+    signedCapabilityBytes.push_back(static_cast<std::int8_t>(byte));
+  for (::fabric::FuOp fu : fus)
+    fu.setCapabilityTemplatesAttr(::fabric::FuCapabilityDomainAttr::get(
+        fu.getContext(),
+        mlir::DenseI8ArrayAttr::get(fu.getContext(), signedCapabilityBytes)));
+
+  using Kind = loom::fabric::FabricClockResetKind;
+  using Role = ::fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
+  ::fabric::ModuleDomainAuthoringRelation relation;
+  auto firstClock = relation.declareSlot(Kind::Clock);
+  auto secondClock = relation.declareSlot(Kind::Clock);
+  auto firstReset = relation.declareSlot(Kind::Reset);
+  auto secondReset = relation.declareSlot(Kind::Reset);
+  if (!firstClock || !secondClock || !firstReset || !secondReset)
+    fail(test, "unable to declare fixture domain slots");
+  for (loom::fabric::FabricOrdinal ordinal = 0; ordinal != 2; ++ordinal)
+    for (Kind kind : {Kind::Clock, Kind::Reset}) {
+      const bool secondDomain = ordinal != 0;
+      const loom::fabric::FabricOrdinal slot =
+          kind == Kind::Clock ? (secondDomain ? *secondClock : *firstClock)
+                              : (secondDomain ? *secondReset : *firstReset);
+      if (llvm::Error error = relation.assignBoundary(
+              loom::fabric::FabricPortDirection::Input, ordinal, kind, slot))
+        fail(test, llvm::toString(std::move(error)));
+    }
+
+  for (::fabric::FuOp fu : fus) {
+    llvm::SmallVector<mlir::Operation *, 4> nodes;
+    fu->walk([&](mlir::Operation *operation) {
+      if (mlir::isa<::fabric::OpOp, ::fabric::MuxOp>(operation))
+        nodes.push_back(operation);
+    });
+    require(test, nodes.size() == 4,
+            "fixture FU has the wrong physical-node inventory");
+    for (auto [nodeOrdinal, node] : llvm::enumerate(nodes)) {
+      if (llvm::Error error =
+              relation.noteInternalMember(node, Role::FuNode, 0))
+        fail(test, llvm::toString(std::move(error)));
+      for (Kind kind : {Kind::Clock, Kind::Reset}) {
+        const bool secondDomain = nodeOrdinal % 2 != 0;
+        const loom::fabric::FabricOrdinal slot =
+            kind == Kind::Clock ? (secondDomain ? *secondClock : *firstClock)
+                                : (secondDomain ? *secondReset : *firstReset);
+        if (llvm::Error error =
+                relation.assignInternal(node, Role::FuNode, 0, kind, slot))
+          fail(test, llvm::toString(std::move(error)));
+      }
+    }
+  }
+
+  auto normalized =
+      loom::fabric::detail::normalizeFabricModuleDomain(root, relation);
+  if (!normalized)
+    fail(test, llvm::toString(normalized.takeError()));
+  auto canonical = loom::fabric::detail::computeFabricModuleCanonicalLabeling(
+      root, *normalized);
+  if (!canonical)
+    fail(test, llvm::toString(canonical.takeError()));
+  require(test, canonical->fuTemplates.size() == 1,
+          "occurrence-local Module domains changed FU template identity");
+
+  for (unsigned output = 0; output != 2; ++output) {
+    std::optional<loom::fabric::FabricOrdinal> operationOrdinal;
+    std::optional<loom::fabric::FabricOrdinal> muxOrdinal;
+    for (::fabric::FuOp fu : fus) {
+      auto yield =
+          mlir::cast<::fabric::YieldOp>(fu.getBody().front().getTerminator());
+      mlir::Operation *operation =
+          yield.getOperand(output).getDefiningOp<::fabric::OpOp>();
+      mlir::Operation *mux =
+          operation->getOperand(0).getDefiningOp<::fabric::MuxOp>();
+      const auto currentOperation =
+          canonical->definitionFuNodeOrdinalByOperation.lookup(operation);
+      const auto currentMux =
+          canonical->definitionFuNodeOrdinalByOperation.lookup(mux);
+      if (!operationOrdinal) {
+        operationOrdinal = currentOperation;
+        muxOrdinal = currentMux;
+      } else {
+        require(test, *operationOrdinal == currentOperation,
+                "Module domains changed output operation correspondence");
+        require(test, *muxOrdinal == currentMux,
+                "Module domains changed output mux correspondence");
+      }
+    }
+  }
 }
 
 void fuTemplateIdentityExcludesOccurrenceDomains() {
@@ -580,8 +743,8 @@ void fuTemplateIdentityExcludesOccurrenceDomains() {
             -> !fabric.bits<32> {
           %second_fu = fabric.fu(%x = %p : !fabric.bits<32>)
               -> !fabric.bits<32> {
-            %left = fabric.mux %x, %x : !fabric.bits<32>
             %right = fabric.mux %x, %x : !fabric.bits<32>
+            %left = fabric.mux %x, %x : !fabric.bits<32>
             %out = fabric.op [@arith.muli] (%x, %x)
                 {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [32 : i32]}}
                 : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
@@ -598,21 +761,27 @@ void fuTemplateIdentityExcludesOccurrenceDomains() {
   root.walk([&](::fabric::FuOp fu) { fus.push_back(fu); });
   require(test, fus.size() == 2, "fixture has the wrong FU inventory");
 
-  auto capability =
-      ::fabric::FuCapabilityDomainRecord::create({{{2}, {{0, 0}, {1, 1}}}});
-  if (!capability)
-    fail(test, llvm::toString(capability.takeError()));
-  auto capabilityBytes = ::fabric::encodeFuCapabilityDomainRecord(*capability);
-  if (!capabilityBytes)
-    fail(test, llvm::toString(capabilityBytes.takeError()));
-  std::vector<std::int8_t> signedCapabilityBytes;
-  signedCapabilityBytes.reserve(capabilityBytes->size());
-  for (std::uint8_t byte : *capabilityBytes)
-    signedCapabilityBytes.push_back(static_cast<std::int8_t>(byte));
-  for (::fabric::FuOp fu : fus)
+  for (auto [ordinal, fu] : llvm::enumerate(fus)) {
+    const std::vector<::fabric::FuCapabilityRouteSelection> routes =
+        ordinal == 0
+            ? std::vector<::fabric::FuCapabilityRouteSelection>{{0, 0}, {1, 1}}
+            : std::vector<::fabric::FuCapabilityRouteSelection>{{0, 1}, {1, 0}};
+    auto capability =
+        ::fabric::FuCapabilityDomainRecord::create({{{2}, routes}});
+    if (!capability)
+      fail(test, llvm::toString(capability.takeError()));
+    auto capabilityBytes =
+        ::fabric::encodeFuCapabilityDomainRecord(*capability);
+    if (!capabilityBytes)
+      fail(test, llvm::toString(capabilityBytes.takeError()));
+    std::vector<std::int8_t> signedCapabilityBytes;
+    signedCapabilityBytes.reserve(capabilityBytes->size());
+    for (std::uint8_t byte : *capabilityBytes)
+      signedCapabilityBytes.push_back(static_cast<std::int8_t>(byte));
     fu.setCapabilityTemplatesAttr(::fabric::FuCapabilityDomainAttr::get(
         fu.getContext(),
         mlir::DenseI8ArrayAttr::get(fu.getContext(), signedCapabilityBytes)));
+  }
 
   using Kind = loom::fabric::FabricClockResetKind;
   using Role = ::fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
@@ -647,7 +816,7 @@ void fuTemplateIdentityExcludesOccurrenceDomains() {
               relation.noteInternalMember(node, Role::FuNode, 0))
         fail(test, llvm::toString(std::move(error)));
       for (Kind kind : {Kind::Clock, Kind::Reset}) {
-        const bool secondDomain = (fuOrdinal + nodeOrdinal) % 2 != 0;
+        const bool secondDomain = nodeOrdinal % 2 != 0;
         const loom::fabric::FabricOrdinal slot =
             kind == Kind::Clock ? (secondDomain ? *secondClock : *firstClock)
                                 : (secondDomain ? *secondReset : *firstReset);
@@ -681,13 +850,20 @@ void fuTemplateIdentityExcludesOccurrenceDomains() {
               "FU node has no canonical definition ordinal");
       ordinals.push_back(found->second);
     }
-    if (fuOrdinal != 0)
-      for (std::size_t node = 0; node != ordinals.size(); ++node)
-        require(test,
-                ordinals[node] ==
-                    canonical->definitionFuNodeOrdinalByOperation.lookup(
-                        nodesByOccurrence.front()[node]),
-                "occurrence domains changed definition-node correspondence");
+    if (fuOrdinal != 0) {
+      require(test,
+              ordinals[0] ==
+                      canonical->definitionFuNodeOrdinalByOperation.lookup(
+                          nodesByOccurrence.front()[1]) &&
+                  ordinals[1] ==
+                      canonical->definitionFuNodeOrdinalByOperation.lookup(
+                          nodesByOccurrence.front()[0]) &&
+                  ordinals[2] ==
+                      canonical->definitionFuNodeOrdinalByOperation.lookup(
+                          nodesByOccurrence.front()[2]),
+              "equivalent capability routes changed definition-node "
+              "correspondence");
+    }
 
     auto domain = canonical->canonicalFuCapabilityDomainByOccurrence.find(fu);
     require(test,
@@ -708,8 +884,10 @@ void fuTemplateIdentityExcludesOccurrenceDomains() {
             selection.activeOperationNodeOrdinals.size() == 1 &&
                 selection.activeOperationNodeOrdinals.front() == ordinals[2],
             "operation capability changed definition-node correspondence");
+    const std::size_t left = fuOrdinal == 0 ? 0 : 1;
+    const std::size_t right = fuOrdinal == 0 ? 1 : 0;
     std::vector<::fabric::FuCapabilityRouteSelection> expectedRoutes = {
-        {ordinals[0], 0}, {ordinals[1], 1}};
+        {ordinals[left], 0}, {ordinals[right], 1}};
     llvm::sort(expectedRoutes, [](const auto &left, const auto &right) {
       return left.selectorNodeOrdinal < right.selectorNodeOrdinal;
     });
@@ -736,6 +914,7 @@ int main() {
   materializedIdsSurviveTextRoundTrip();
   moduleDomainsParticipateInCanonicalLabeling();
   fuNodeDomainsUseModuleCanonicalContext();
+  moduleDomainsRefineOnlyFuAutomorphisms();
   fuTemplateIdentityExcludesOccurrenceDomains();
   llvm::outs() << "fabric canonical labeling ok\n";
   return 0;
