@@ -1,0 +1,44 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-integer-count-zeros-test %t
+# RUN: FileCheck %s --check-prefix=SCALAR < %t/artifacts/scalar_integer_count_zeros.sv
+# RUN: FileCheck %s --check-prefix=VECTOR < %t/artifacts/fixed_vector_integer_count_zeros.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/artifacts/portable_integer_count_zeros.ys
+
+# SCALAR: module scalar_integer_count_zeros
+# SCALAR: input [66:0] data_input_0
+# SCALAR: input [2:0] config_0
+# SCALAR: output [66:0] data_output_0
+# SCALAR-NOT: poison
+# SCALAR-NOT: trap
+# SCALAR-NOT: stall
+# SCALAR-NOT: valid_
+# SCALAR-NOT: ready_
+
+# VECTOR: module fixed_vector_integer_count_zeros
+# VECTOR: input [119:0] data_input_0
+# VECTOR: input [2:0] config_0
+# VECTOR: output [119:0] data_output_0
+# VECTOR-NOT: poison
+# VECTOR-NOT: trap
+# VECTOR-NOT: stall
+# VECTOR-NOT: valid_
+# VECTOR-NOT: ready_
+
+# TB: module testbench
+# TB: scalar clz zero mismatch
+# TB: scalar wide ctz zero mismatch
+# TB: scalar ctz multi-hot mismatch
+# TB: scalar ctz output encoding mismatch
+# TB: vector ctz zero mismatch
+# TB: vector ctz multi-hot mismatch
+# TB: vector sibling lane changed
+# TB: vector wide ctz zero mismatch
+# TB: inactive vector code mismatch
+
+# YOSYS: hierarchy -check -top integer_count_zeros_synthesis_top
+# YOSYS: select -assert-none t:$dff t:$adff t:$sdff t:$dlatch
+# YOSYS: synth -top integer_count_zeros_synthesis_top
+# YOSYS: check -assert
+# YOSYS: stat
