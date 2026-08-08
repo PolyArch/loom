@@ -173,25 +173,24 @@ invalid.
 An invocation bundle and everything written beneath it are machine-local
 attempt material, not tracked source. The EDA-specific disclosure class is
 owned by [EDA Tooling](spec-eda-tooling.md); this document owns only placement.
-An EDA bundle root must be outside the source worktree or beneath its ignored
-top-level `temp/` directory. An explicit `experiment_root` in the supplied
+An EDA bundle root must be outside the source worktree or in a Git-ignored
+repository-local directory. An explicit `experiment_root` in the supplied
 local configuration has highest priority. Without it, repository automation
 selects the first usable location in this order: an existing Git-ignored
-`temp/` in the current worktree; `/scratch/loom-<uid>` when `/scratch` has more
-than 100 GiB available; `~/.cache/loom`; and `/tmp/loom-<uid>`. The resolver
-creates the selected external or user-local directory. Every attempt receives
-an independent child beneath that root.
+top-level `build/` in the current worktree; `/scratch/loom-<uid>` when
+`/scratch` has more than 100 GiB available; `~/.cache/loom`; and
+`/tmp/loom-<uid>`. The resolver creates the selected external or user-local
+directory. Every attempt receives an independent child beneath that root.
 
 The same placement rule applies to a local Artifact Store or Blob Store that
 contains direct EDA-generated implementations, Evidence, invocation records,
 or their payloads. Selecting a local output path does not make the path, its
 contents, or Git ignore state semantic input. Loom's compiler libraries do not
 invoke Git, edit ignore rules, or reinterpret repository tracking as Artifact
-identity. Repository automation separately verifies that the repository-local
-root is ignored. A pre-commit staged-path check rejects top-level `build/`,
-top-level `temp/`, and `loom-local-config.json`; it is publication hygiene
-rather than a semantic validator and does not inspect commit history or
-tool-output content.
+identity. Repository automation separately verifies that a repository-local
+root is ignored. A pre-commit staged-path check rejects top-level `build/` and
+`loom-local-config.json`; it is publication hygiene rather than a semantic
+validator and does not inspect commit history or tool-output content.
 
 Synthetic inputs authored specifically to test a stable parser or driver
 contract are source fixtures rather than captured attempts. They remain

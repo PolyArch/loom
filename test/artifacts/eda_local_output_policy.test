@@ -1,4 +1,4 @@
-# RUN: cd %S/../.. && git check-ignore -q temp/.loom-policy-probe
+# RUN: cd %S/../.. && git check-ignore -q build/.loom-policy-probe
 # RUN: cd %S/../.. && git check-ignore -q loom-local-config.json
 
-# Repository-local EDA runs and machine-local configuration must stay ignored.
+# Repository-local generated output and machine-local configuration must stay ignored.

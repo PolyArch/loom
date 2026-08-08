@@ -329,6 +329,11 @@ vendor classification table, prevents a mixed flow from changing disclosure
 status halfway through, and keeps repository review mechanical. Parser tests
 use small authored semantic fixtures rather than captured report snapshots.
 
+Repository automation defaults local attempts to the ignored build tree
+because it already owns generated output. An explicitly configured ignored
+repository directory or external directory covers workstation and cluster
+placement without adding another project-specific scratch convention.
+
 Model parameters remain distinct semantic results, but semantic validity does
 not make their bytes suitable for source publication. A disclosure-review
 exception for `ModelParameterBundle` would add a second authority that must

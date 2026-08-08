@@ -49,21 +49,20 @@ def resolve_experiment_root(
     temporary_root: Path = Path("/tmp"),
 ) -> Path:
     repository = repository.resolve()
-    repository_temp = (repository / "temp").resolve()
-    temp_is_ignored = repository_temp.is_dir() and git_ignored(
-        repository, repository_temp
+    repository_build = (repository / "build").resolve()
+    build_is_ignored = repository_build.is_dir() and git_ignored(
+        repository, repository_build
     )
 
     if configured_root is not None:
         if not configured_root.is_absolute():
             raise ExperimentRootError("configured experiment root must be absolute")
         configured_root = configured_root.resolve()
-        if is_within(configured_root, repository) and not (
-            temp_is_ignored and is_within(configured_root, repository_temp)
+        if is_within(configured_root, repository) and not git_ignored(
+            repository, configured_root
         ):
             raise ExperimentRootError(
-                "a repository-local experiment root must be beneath the ignored "
-                "repository temp directory"
+                "a repository-local experiment root must be Git-ignored"
             )
         try:
             return create_directory(configured_root)
@@ -72,8 +71,8 @@ def resolve_experiment_root(
                 f"could not create configured experiment root: {error}"
             ) from error
 
-    if temp_is_ignored:
-        return repository_temp
+    if build_is_ignored:
+        return repository_build
 
     if scratch_root.is_dir():
         try:

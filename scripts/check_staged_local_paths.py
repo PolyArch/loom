@@ -27,8 +27,6 @@ def is_local_path(path: bytes) -> bool:
         path == b"loom-local-config.json"
         or path == b"build"
         or path.startswith(b"build/")
-        or path == b"temp"
-        or path.startswith(b"temp/")
     )
 
 

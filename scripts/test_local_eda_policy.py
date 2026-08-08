@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STAGED_CHECK = REPO_ROOT / "scripts" / "check_staged_local_paths.py"
 ROOT_RESOLVER = REPO_ROOT / "scripts" / "resolve_experiment_root.py"
 HOOK = REPO_ROOT / ".githooks" / "pre-commit"
-TEMP_ROOT = REPO_ROOT / "temp"
+TEST_ROOT = REPO_ROOT / "build" / "local-policy-tests"
 DiskUsage = namedtuple("DiskUsage", "total used free")
 
 
@@ -73,7 +73,10 @@ class RepositoryFixture:
         git(root, "config", "user.name", "Local Policy Test")
         git(root, "config", "user.email", "local-policy@example.com")
         git(root, "config", "core.excludesFile", "/dev/null")
-        write(root / ".gitignore", "/temp/\n/build/\n/loom-local-config.json\n")
+        write(
+            root / ".gitignore",
+            "/build/\n/local-experiments/\n/loom-local-config.json\n",
+        )
         write(root / "tracked.txt", "base\n")
         git(root, "add", ".gitignore", "tracked.txt")
         git(root, "commit", "-m", "Base")
@@ -91,9 +94,9 @@ class RepositoryFixture:
 
 class StagedPathPolicyTest(unittest.TestCase):
     def setUp(self) -> None:
-        TEMP_ROOT.mkdir(exist_ok=True)
+        TEST_ROOT.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(
-            prefix="local-policy-test-", dir=TEMP_ROOT
+            prefix="local-policy-test-", dir=TEST_ROOT
         )
         self.fixture = RepositoryFixture(Path(self.temporary.name))
 
@@ -103,7 +106,6 @@ class StagedPathPolicyTest(unittest.TestCase):
     def test_rejects_staged_local_output_roots_and_config(self) -> None:
         for relative in (
             "build/result.log",
-            "temp/run/output.db",
             "loom-local-config.json",
         ):
             with self.subTest(relative=relative):
@@ -119,7 +121,6 @@ class StagedPathPolicyTest(unittest.TestCase):
 
     def test_allows_nested_lookalikes_and_forbidden_path_deletions(self) -> None:
         write(self.fixture.root / "nested/build/result.txt", "authored\n")
-        write(self.fixture.root / "nested/temp/input.txt", "authored\n")
         git(self.fixture.root, "add", "nested")
         allowed = self.fixture.invoke_staged_check(self.fixture.root / "nested")
         self.assertEqual(allowed.returncode, 0, allowed.stderr)
@@ -140,9 +141,9 @@ class StagedPathPolicyTest(unittest.TestCase):
 
 class ExperimentRootPolicyTest(unittest.TestCase):
     def setUp(self) -> None:
-        TEMP_ROOT.mkdir(exist_ok=True)
+        TEST_ROOT.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(
-            prefix="experiment-root-test-", dir=TEMP_ROOT
+            prefix="experiment-root-test-", dir=TEST_ROOT
         )
         self.root = Path(self.temporary.name)
         self.repository = self.root / "repository"
@@ -172,17 +173,17 @@ class ExperimentRootPolicyTest(unittest.TestCase):
         self.assertEqual(selected, configured.resolve())
         self.assertTrue(selected.is_dir())
 
-    def test_repository_temp_must_exist_and_be_ignored(self) -> None:
-        repository_temp = self.repository / "temp"
-        repository_temp.mkdir()
+    def test_repository_build_must_exist_and_be_ignored(self) -> None:
+        repository_build = self.repository / "build"
+        repository_build.mkdir()
         with mock.patch.object(
             shutil, "disk_usage", return_value=DiskUsage(0, 0, 200 << 30)
         ):
-            self.assertEqual(self.resolve(), repository_temp.resolve())
+            self.assertEqual(self.resolve(), repository_build.resolve())
 
-        shutil.rmtree(repository_temp)
-        write(self.repository / ".gitignore", "/build/\n")
-        repository_temp.mkdir()
+        shutil.rmtree(repository_build)
+        write(self.repository / ".gitignore", "/local-experiments/\n")
+        repository_build.mkdir()
         with mock.patch.object(
             shutil, "disk_usage", return_value=DiskUsage(0, 0, 200 << 30)
         ):
@@ -208,10 +209,16 @@ class ExperimentRootPolicyTest(unittest.TestCase):
             selected, (self.temporary_root / f"loom-{os.getuid()}").resolve()
         )
 
-    def test_explicit_repository_path_outside_ignored_temp_is_rejected(self) -> None:
+    def test_explicit_ignored_repository_path_is_allowed(self) -> None:
+        configured = self.repository / "local-experiments" / "run"
+        selected = self.resolve(configured_root=configured)
+        self.assertEqual(selected, configured.resolve())
+        self.assertTrue(selected.is_dir())
+
+    def test_explicit_unignored_repository_path_is_rejected(self) -> None:
         module = load_resolver()
         with self.assertRaisesRegex(
-            module.ExperimentRootError, "ignored repository temp"
+            module.ExperimentRootError, "must be Git-ignored"
         ):
             module.resolve_experiment_root(
                 repository=self.repository,
