@@ -3,6 +3,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
+#include "Frontend/Lowering/CanonicalDataflowLowering.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SourceBackedDfgValidation.h"
 
@@ -140,6 +141,32 @@ findCallable(const loom::frontend::StructuredProgramCandidate &program,
   fail("Structured Program omitted " + name.str());
 }
 
+loom::frontend::MaterializedOwnershipCandidate lowerPointerAddressedCandidate(
+    const loom::frontend::StructuredProgramCandidate &program,
+    const loom::frontend::SpatialOwnershipScope &scope,
+    const loom::frontend::SpatialOwnershipDecisionPoint &decision,
+    const loom::fabric::FinalizedFabricRoot &fabric) {
+  auto unsupported = loom::frontend::materializeSpatialOwnershipDecision(
+      program, scope, decision, fabric);
+  if (unsupported)
+    fail("builtin Fabric admitted a direct pointer-addressed GEP");
+  const std::string message = llvm::toString(unsupported.takeError());
+  if (!llvm::StringRef(message).contains("llvm.getelementptr"))
+    fail("direct GEP rejection lost its exact actor: " + message);
+
+  auto structured =
+      take(loom::frontend::materializeStructuredSpatialOwnershipDecision(
+          program, scope, decision));
+  auto projected = take(
+      loom::lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
+          structured.structuredProgram));
+  return loom::frontend::MaterializedOwnershipCandidate{
+      std::move(structured.structuredProgram), std::move(projected.artifact),
+      std::move(projected.spatialGraphs),
+      std::move(structured.blockActivityLineage),
+      std::move(structured.sourceProvenance)};
+}
+
 void pointerServiceBoundary() {
   llvm::SmallString<128> directory;
   if (std::error_code error = llvm::sys::fs::createUniqueDirectory(
@@ -158,9 +185,9 @@ void pointerServiceBoundary() {
       compiled.structuredProgram, scope.selection));
   if (domain.size() != 1)
     fail("pointer cursor has an ambiguous ownership decision");
-  auto candidate = take(loom::frontend::materializeSpatialOwnershipDecision(
-      compiled.structuredProgram, scope, domain.front(),
-      design.roots().front()));
+  auto candidate =
+      lowerPointerAddressedCandidate(compiled.structuredProgram, scope,
+                                     domain.front(), design.roots().front());
 
   auto cursor =
       candidate.structuredProgram.module().lookupSymbol<mlir::LLVM::LLVMFuncOp>(
@@ -277,9 +304,9 @@ void exactPointerAddressingFallback() {
   if (message.find("pointer induction offset") == std::string::npos)
     fail("root-relative rejection lost its proof failure: " + message);
 
-  auto candidate = take(loom::frontend::materializeSpatialOwnershipDecision(
-      compiled.structuredProgram, scope, *pointerAddressed,
-      design.roots().front()));
+  auto candidate =
+      lowerPointerAddressedCandidate(compiled.structuredProgram, scope,
+                                     *pointerAddressed, design.roots().front());
   auto view = take(candidate.canonicalDataflow.view());
   if (view.graphs().size() != 1 || view.actors().empty())
     fail("pointer-addressed decision did not publish a nonempty graph");

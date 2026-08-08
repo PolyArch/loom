@@ -682,6 +682,39 @@ void projectionValidatesTheClosedImageAndIgnoresShape() {
       "floating payload");
 }
 
+void publicRelationUsesTheFixedVectorFloatOwner() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams params = FixedVectorFloatParams{
+      FloatFormatSet::get({FloatFormat::F16}),
+      profile({RoundingMode::to_nearest_even}, {FloatNaNBehavior::IEEE}), 128};
+  constexpr std::array schemas = {OperationSchemaId::ArithAddF,
+                                  OperationSchemaId::ArithSubF};
+  constexpr std::array inputs = {128U, 128U};
+  constexpr std::array results = {128U};
+  const auto relation =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::FixedVectorFloatAddSub, params,
+                     schemas, inputs, results, context));
+  require(test,
+          relation.kind() == FabricOpSemanticFieldRelationKind::Finite &&
+              relation.finiteBehaviorDomain().size() == 2,
+          "public relation bypassed the fixed-vector floating owner");
+
+  const auto actor = makeActor(
+      context, OperationSchemaId::ArithAddF, mlir::Float16Type::get(&context),
+      std::array<std::int64_t, 1>{4}, FastMathFlags::none,
+      RoundingMode::to_nearest_even);
+  const auto publicKey =
+      take(test, relation.projectSemanticValue(actor, {0, 1}, {0}));
+  const auto ownerKey =
+      take(test, detail::projectFixedVectorFloatBehavior(
+                     ImplementationFamilyId::FixedVectorFloatAddSub, actor,
+                     relation.finiteBehaviorDomain()));
+  require(test, publicKey.bytes().equals(ownerKey.bytes()),
+          "public relation used a competing fixed-vector floating codec");
+}
+
 } // namespace
 
 int main() {
@@ -692,5 +725,6 @@ int main() {
   contextualProfilesRejectOrphanMembers();
   allFamiliesOwnStableDomainsAndSingletonsCollapse();
   projectionValidatesTheClosedImageAndIgnoresShape();
+  publicRelationUsesTheFixedVectorFloatOwner();
   return EXIT_SUCCESS;
 }

@@ -994,52 +994,51 @@ bool checkFixedVectorStructuralAdmission(MLIRContext &context) {
 
   constexpr std::array structuralSchemas = {OperationSchemaId::VectorExtract,
                                             OperationSchemaId::VectorInsert};
-  auto sliceLayout = resolveFixedVectorSliceAlignMergeConfigurationLayout(
-      std::get<FixedVectorSliceAlignMergeParams>(sliceParams),
-      structuralSchemas);
-  auto shuffleLayout = resolveFixedVectorShuffleConfigurationLayout(
-      std::get<FixedVectorShuffleParams>(shuffleParams));
-  if (!sliceLayout || !shuffleLayout) {
-    if (!sliceLayout)
-      llvm::errs() << llvm::toString(sliceLayout.takeError()) << '\n';
-    if (!shuffleLayout)
-      llvm::errs() << llvm::toString(shuffleLayout.takeError()) << '\n';
+  constexpr std::array sliceInputWidths = {130U, 130U, 64U, 64U, 64U};
+  constexpr std::array sliceResultWidths = {130U};
+  constexpr std::array shuffleSchema = {OperationSchemaId::VectorShuffle};
+  constexpr std::array shuffleInputWidths = {130U, 130U};
+  constexpr std::array shuffleResultWidths = {130U};
+  auto sliceRelation = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
+      structuralSchemas, sliceInputWidths, sliceResultWidths, context);
+  auto shuffleRelation = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::FixedVectorShuffle, shuffleParams, shuffleSchema,
+      shuffleInputWidths, shuffleResultWidths, context);
+  if (!sliceRelation || !shuffleRelation) {
+    if (!sliceRelation)
+      llvm::errs() << llvm::toString(sliceRelation.takeError()) << '\n';
+    if (!shuffleRelation)
+      llvm::errs() << llvm::toString(shuffleRelation.takeError()) << '\n';
+    return false;
+  }
+  const auto *sliceLayout = sliceRelation->fixedVectorSliceAlignMergeLayout();
+  const auto *shuffleLayout = shuffleRelation->fixedVectorShuffleLayout();
+  if (sliceRelation->kind() != FabricOpSemanticFieldRelationKind::Direct ||
+      shuffleRelation->kind() != FabricOpSemanticFieldRelationKind::Direct ||
+      !sliceLayout || !shuffleLayout) {
+    llvm::errs() << "fixed-vector structural relation lost its direct layout\n";
     return false;
   }
 
-  auto staticConfiguration = encodeImplementationFamilySemanticConfiguration(
-      ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
-      structuralSchemas, 5, 1, staticExtract, std::array<std::uint64_t, 1>{0},
-      resultPort, ResolvedIndexWidth::I64);
-  auto dynamicConfiguration = encodeImplementationFamilySemanticConfiguration(
-      ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
-      structuralSchemas, 5, 1, dynamicExtract, extractPorts, resultPort,
+  auto staticConfiguration = sliceRelation->projectSemanticValue(
+      staticExtract, std::array<std::uint64_t, 1>{0}, resultPort,
       ResolvedIndexWidth::I64);
-  constexpr std::array shuffleSchema = {OperationSchemaId::VectorShuffle};
-  auto shuffleConfiguration = encodeImplementationFamilySemanticConfiguration(
-      ImplementationFamilyId::FixedVectorShuffle, shuffleParams, shuffleSchema,
-      2, 1, shuffle, std::array<std::uint64_t, 2>{0, 1}, resultPort);
-  auto indexStaticConfiguration =
-      encodeImplementationFamilySemanticConfiguration(
-          ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
-          structuralSchemas, 5, 1, indexStaticExtract,
-          std::array<std::uint64_t, 1>{0}, resultPort, ResolvedIndexWidth::I32);
-  auto indexDynamicConfiguration =
-      encodeImplementationFamilySemanticConfiguration(
-          ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
-          structuralSchemas, 5, 1, indexDynamicExtract, extractPorts,
-          resultPort, ResolvedIndexWidth::I32);
-  auto indexInsertConfiguration =
-      encodeImplementationFamilySemanticConfiguration(
-          ImplementationFamilyId::FixedVectorSliceAlignMerge, sliceParams,
-          structuralSchemas, 5, 1, indexStaticInsert,
-          std::array<std::uint64_t, 2>{0, 1}, resultPort,
-          ResolvedIndexWidth::I32);
-  auto indexShuffleConfiguration =
-      encodeImplementationFamilySemanticConfiguration(
-          ImplementationFamilyId::FixedVectorShuffle, shuffleParams,
-          shuffleSchema, 2, 1, indexShuffle, std::array<std::uint64_t, 2>{0, 1},
-          resultPort, ResolvedIndexWidth::I32);
+  auto dynamicConfiguration = sliceRelation->projectSemanticValue(
+      dynamicExtract, extractPorts, resultPort, ResolvedIndexWidth::I64);
+  auto shuffleConfiguration = shuffleRelation->projectSemanticValue(
+      shuffle, std::array<std::uint64_t, 2>{0, 1}, resultPort);
+  auto indexStaticConfiguration = sliceRelation->projectSemanticValue(
+      indexStaticExtract, std::array<std::uint64_t, 1>{0}, resultPort,
+      ResolvedIndexWidth::I32);
+  auto indexDynamicConfiguration = sliceRelation->projectSemanticValue(
+      indexDynamicExtract, extractPorts, resultPort, ResolvedIndexWidth::I32);
+  auto indexInsertConfiguration = sliceRelation->projectSemanticValue(
+      indexStaticInsert, std::array<std::uint64_t, 2>{0, 1}, resultPort,
+      ResolvedIndexWidth::I32);
+  auto indexShuffleConfiguration = shuffleRelation->projectSemanticValue(
+      indexShuffle, std::array<std::uint64_t, 2>{0, 1}, resultPort,
+      ResolvedIndexWidth::I32);
   if (!staticConfiguration || !dynamicConfiguration || !shuffleConfiguration) {
     if (!staticConfiguration)
       llvm::errs() << llvm::toString(staticConfiguration.takeError()) << '\n';
@@ -1086,15 +1085,28 @@ bool checkFixedVectorStructuralAdmission(MLIRContext &context) {
   ok &= readPackedBits(indexInsertBytes, sliceLayout->modeBitOffset, 1) == 1;
   ok &= readPackedBits(indexShuffleBytes, shuffleLayout->blockWidthBitOffset,
                        shuffleLayout->blockWidthBitCount) == 31;
-  auto powerOfTwoLayout = resolveFixedVectorSliceAlignMergeConfigurationLayout(
+  const FamilyCapabilityParams powerOfTwoParams =
       FixedVectorSliceAlignMergeParams{
-          IntegerWidthSet::get({IntegerWidth::I16}), FloatFormatSet{}, 128, 64,
-          1, ResolvedIndexWidthSet::get({ResolvedIndexWidth::I64})},
-      structuralSchemas);
-  if (!powerOfTwoLayout) {
-    llvm::errs() << llvm::toString(powerOfTwoLayout.takeError()) << '\n';
+          IntegerWidthSet::get({IntegerWidth::I16}),
+          FloatFormatSet{},
+          128,
+          64,
+          1,
+          ResolvedIndexWidthSet::get({ResolvedIndexWidth::I64})};
+  constexpr std::array powerOfTwoInputWidths = {128U, 128U, 64U};
+  constexpr std::array powerOfTwoResultWidths = {128U};
+  auto powerOfTwoRelation = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::FixedVectorSliceAlignMerge, powerOfTwoParams,
+      structuralSchemas, powerOfTwoInputWidths, powerOfTwoResultWidths,
+      context);
+  if (!powerOfTwoRelation ||
+      !powerOfTwoRelation->fixedVectorSliceAlignMergeLayout()) {
+    if (!powerOfTwoRelation)
+      llvm::errs() << llvm::toString(powerOfTwoRelation.takeError()) << '\n';
     return false;
   }
+  const auto *powerOfTwoLayout =
+      powerOfTwoRelation->fixedVectorSliceAlignMergeLayout();
   ok &= powerOfTwoLayout->offsetBitCount == 7 &&
         powerOfTwoLayout->dynamicStrideBitCount == 8;
   ok &= readPackedBits(shuffleBytes, shuffleLayout->blockWidthBitOffset,
@@ -1164,31 +1176,20 @@ bool checkScalarFloatFmaBehaviorDomain(MLIRContext &context) {
                            FloatFormat::F32, FloatFormat::F64}),
       FloatBehaviorProfile::strictIEEE()};
   constexpr std::array enabled = {OperationSchemaId::MathFma};
-  auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
-      ImplementationFamilyId::ScalarFloatFma, params, enabled, 3, 1, context,
-      [](const dataflow::CanonicalActorSchemaProjection &actor,
-         std::optional<ResolvedIndexWidth>) -> llvm::Error {
-        for (Type type : actor.type.getInputs()) {
-          auto floating = dyn_cast<FloatType>(type);
-          if (!floating || floating.getWidth() > 64)
-            return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                           "FMA input exceeds its port");
-        }
-        for (Type type : actor.type.getResults()) {
-          auto floating = dyn_cast<FloatType>(type);
-          if (!floating || floating.getWidth() > 64)
-            return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                           "FMA result exceeds its port");
-        }
-        return llvm::Error::success();
-      });
-  if (!domain) {
+  constexpr std::array inputWidths = {64U, 64U, 64U};
+  constexpr std::array resultWidths = {64U};
+  auto relation = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::ScalarFloatFma, params, enabled, inputWidths,
+      resultWidths, context);
+  if (!relation) {
     llvm::errs() << "scalar FMA behavior domain did not resolve: "
-                 << llvm::toString(domain.takeError()) << '\n';
+                 << llvm::toString(relation.takeError()) << '\n';
     return false;
   }
-  if (domain->size() != 4) {
-    llvm::errs() << "scalar FMA behavior domain has " << domain->size()
+  const auto domain = relation->finiteBehaviorDomain();
+  if (relation->kind() != FabricOpSemanticFieldRelationKind::Finite ||
+      domain.size() != 4) {
+    llvm::errs() << "scalar FMA behavior domain has " << domain.size()
                  << " points instead of four formats\n";
     return false;
   }
@@ -1198,7 +1199,7 @@ bool checkScalarFloatFmaBehaviorDomain(MLIRContext &context) {
   bool sawF32 = false;
   bool sawF64 = false;
   std::vector<std::vector<std::uint8_t>> semanticValues;
-  for (const auto &point : *domain) {
+  for (const auto &point : domain) {
     if (!point.semanticConfiguration) {
       llvm::errs() << "configured scalar FMA behavior has no semantic value\n";
       return false;
@@ -1233,42 +1234,27 @@ bool checkIntegerLogicBehaviorDomains(MLIRContext &context) {
       OperationSchemaId::ArithAndI, OperationSchemaId::ArithOrI,
       OperationSchemaId::ArithXOrI, OperationSchemaId::LLVMOrDisjoint};
   const auto check = [&](ImplementationFamilyId family,
-                         const FamilyCapabilityParams &params) {
-    unsigned verifiedActors = 0;
-    auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
-        family, params, enabled, 2, 1, context,
-        [&](const dataflow::CanonicalActorSchemaProjection &actor,
-            std::optional<ResolvedIndexWidth>) -> llvm::Error {
-          ++verifiedActors;
-          if (actor.schema == OperationSchemaId::LLVMOrDisjoint) {
-            const auto *payload =
-                std::get_if<dataflow::DisjointPayload>(&actor.payload);
-            if (!payload || !payload->isDisjoint)
-              return llvm::createStringError(
-                  llvm::inconvertibleErrorCode(),
-                  "LLVM disjoint OR lost its canonical payload");
-          } else if (!std::holds_alternative<dataflow::NoPayload>(
-                         actor.payload)) {
-            return llvm::createStringError(
-                llvm::inconvertibleErrorCode(),
-                "arith integer logic gained a semantic payload");
-          }
-          return llvm::Error::success();
-        });
-    if (!domain) {
+                         const FamilyCapabilityParams &params,
+                         llvm::ArrayRef<std::uint32_t> inputWidths,
+                         llvm::ArrayRef<std::uint32_t> resultWidths) {
+    auto relation = resolveFabricOpSemanticFieldRelation(
+        family, params, enabled, inputWidths, resultWidths, context);
+    if (!relation) {
       llvm::errs() << implementationFamilyKeyword(family)
                    << " behavior domain did not resolve: "
-                   << llvm::toString(domain.takeError()) << '\n';
+                   << llvm::toString(relation.takeError()) << '\n';
       return false;
     }
-    if (domain->size() != 3) {
+    const auto domain = relation->finiteBehaviorDomain();
+    if (relation->kind() != FabricOpSemanticFieldRelationKind::Finite ||
+        domain.size() != 3) {
       llvm::errs() << implementationFamilyKeyword(family)
                    << " did not collapse to AND/OR/XOR behaviors\n";
       return false;
     }
     llvm::SmallDenseSet<OperationSchemaId, 4> projectedSchemas;
     std::vector<std::vector<std::uint8_t>> semanticValues;
-    for (const auto &point : *domain) {
+    for (const auto &point : domain) {
       if (!point.semanticConfiguration) {
         llvm::errs() << implementationFamilyKeyword(family)
                      << " logic behavior has no schema selection value\n";
@@ -1282,8 +1268,7 @@ bool checkIntegerLogicBehaviorDomains(MLIRContext &context) {
     const bool hasOrRepresentative =
         projectedSchemas.contains(OperationSchemaId::ArithOrI) ||
         projectedSchemas.contains(OperationSchemaId::LLVMOrDisjoint);
-    return verifiedActors == integerWidthDomain.size() * enabled.size() &&
-           projectedSchemas.size() == 3 &&
+    return projectedSchemas.size() == 3 &&
            projectedSchemas.contains(OperationSchemaId::ArithAndI) &&
            projectedSchemas.contains(OperationSchemaId::ArithXOrI) &&
            hasOrRepresentative &&
@@ -1292,56 +1277,24 @@ bool checkIntegerLogicBehaviorDomains(MLIRContext &context) {
   };
 
   const auto checkEquivalentOrSchemas =
-      [&](ImplementationFamilyId family, const FamilyCapabilityParams &params) {
+      [&](ImplementationFamilyId family, const FamilyCapabilityParams &params,
+          llvm::ArrayRef<std::uint32_t> inputWidths,
+          llvm::ArrayRef<std::uint32_t> resultWidths) {
         constexpr std::array equivalentOrSchemas = {
             OperationSchemaId::ArithOrI, OperationSchemaId::LLVMOrDisjoint};
-        auto needsConfiguration = requiresSemanticConfigurationField(
-            family, params, equivalentOrSchemas, 2, 1);
-        if (!needsConfiguration || *needsConfiguration) {
-          if (!needsConfiguration)
-            llvm::consumeError(needsConfiguration.takeError());
-          llvm::errs() << implementationFamilyKeyword(family)
-                       << " gave equivalent OR schemas a configuration field\n";
-          return false;
-        }
-        unsigned verifiedActors = 0;
-        auto rejected = resolveFiniteImplementationFamilyBehaviorDomain(
-            family, params, equivalentOrSchemas, 2, 1, context,
-            [](const dataflow::CanonicalActorSchemaProjection &actor,
-               std::optional<ResolvedIndexWidth>) -> llvm::Error {
-              if (actor.schema == OperationSchemaId::LLVMOrDisjoint)
-                return llvm::createStringError(
-                    llvm::inconvertibleErrorCode(),
-                    "reject disjoint OR before behavior deduplication");
-              return llvm::Error::success();
-            });
-        if (rejected) {
-          llvm::errs() << implementationFamilyKeyword(family)
-                       << " skipped concrete verification after OR dedup\n";
-          return false;
-        }
-        const std::string rejection = llvm::toString(rejected.takeError());
-        if (!llvm::StringRef(rejection).contains(
-                "reject disjoint OR before behavior deduplication")) {
-          llvm::errs() << implementationFamilyKeyword(family)
-                       << " did not propagate concrete verification failure\n";
-          return false;
-        }
-        auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
-            family, params, equivalentOrSchemas, 2, 1, context,
-            [&](const dataflow::CanonicalActorSchemaProjection &,
-                std::optional<ResolvedIndexWidth>) -> llvm::Error {
-              ++verifiedActors;
-              return llvm::Error::success();
-            });
-        if (!domain) {
+        auto relation = resolveFabricOpSemanticFieldRelation(
+            family, params, equivalentOrSchemas, inputWidths, resultWidths,
+            context);
+        if (!relation) {
           llvm::errs() << implementationFamilyKeyword(family)
                        << " equivalent OR domain did not resolve: "
-                       << llvm::toString(domain.takeError()) << '\n';
+                       << llvm::toString(relation.takeError()) << '\n';
           return false;
         }
-        return verifiedActors == integerWidthDomain.size() * 2 &&
-               domain->size() == 1 && !domain->front().semanticConfiguration;
+        const auto domain = relation->finiteBehaviorDomain();
+        return relation->kind() == FabricOpSemanticFieldRelationKind::None &&
+               !relation->hasConfigurationField() && domain.size() == 1 &&
+               !domain.front().semanticConfiguration;
       };
 
   const FamilyCapabilityParams scalar =
@@ -1353,14 +1306,20 @@ bool checkIntegerLogicBehaviorDomains(MLIRContext &context) {
                             IntegerWidth::I16, IntegerWidth::I32,
                             IntegerWidth::I64}),
       128};
-  const bool scalarOk =
-      check(ImplementationFamilyId::ScalarIntegerLogic, scalar);
-  const bool vectorOk =
-      check(ImplementationFamilyId::FixedVectorIntegerLogic, vector);
-  const bool scalarEquivalentOrOk = checkEquivalentOrSchemas(
-      ImplementationFamilyId::ScalarIntegerLogic, scalar);
-  const bool vectorEquivalentOrOk = checkEquivalentOrSchemas(
-      ImplementationFamilyId::FixedVectorIntegerLogic, vector);
+  constexpr std::array scalarInputs = {64U, 64U};
+  constexpr std::array scalarResults = {64U};
+  constexpr std::array vectorInputs = {128U, 128U};
+  constexpr std::array vectorResults = {128U};
+  const bool scalarOk = check(ImplementationFamilyId::ScalarIntegerLogic,
+                              scalar, scalarInputs, scalarResults);
+  const bool vectorOk = check(ImplementationFamilyId::FixedVectorIntegerLogic,
+                              vector, vectorInputs, vectorResults);
+  const bool scalarEquivalentOrOk =
+      checkEquivalentOrSchemas(ImplementationFamilyId::ScalarIntegerLogic,
+                               scalar, scalarInputs, scalarResults);
+  const bool vectorEquivalentOrOk =
+      checkEquivalentOrSchemas(ImplementationFamilyId::FixedVectorIntegerLogic,
+                               vector, vectorInputs, vectorResults);
   return scalarOk && vectorOk && scalarEquivalentOrOk && vectorEquivalentOrOk;
 }
 
@@ -1368,23 +1327,22 @@ bool checkFixedVectorMultiplyBehaviorDomain(MLIRContext &context) {
   const FamilyCapabilityParams params = FixedVectorIntegerParams{
       IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16}), 128};
   constexpr std::array enabled = {OperationSchemaId::ArithMulI};
-  unsigned verifiedActors = 0;
-  auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
-      ImplementationFamilyId::FixedVectorIntegerMultiply, params, enabled, 2, 1,
-      context,
-      [&](const dataflow::CanonicalActorSchemaProjection &,
-          std::optional<ResolvedIndexWidth>) -> llvm::Error {
-        ++verifiedActors;
-        return llvm::Error::success();
-      });
-  if (!domain) {
+  constexpr std::array inputWidths = {128U, 128U};
+  constexpr std::array resultWidths = {128U};
+  auto relation = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::FixedVectorIntegerMultiply, params, enabled,
+      inputWidths, resultWidths, context);
+  if (!relation) {
     llvm::errs() << "fixed-vector multiply behavior domain did not resolve: "
-                 << llvm::toString(domain.takeError()) << '\n';
+                 << llvm::toString(relation.takeError()) << '\n';
     return false;
   }
+  const auto domain = relation->finiteBehaviorDomain();
+  if (relation->kind() != FabricOpSemanticFieldRelationKind::Finite)
+    return false;
   llvm::SmallDenseSet<unsigned, 2> widths;
   std::vector<std::vector<std::uint8_t>> semanticValues;
-  for (const auto &point : *domain) {
+  for (const auto &point : domain) {
     if (!point.semanticConfiguration ||
         point.representativeActor.schema != OperationSchemaId::ArithMulI)
       return false;
@@ -1399,19 +1357,17 @@ bool checkFixedVectorMultiplyBehaviorDomain(MLIRContext &context) {
                                 point.semanticConfiguration->bytes().end());
   }
   llvm::sort(semanticValues);
-  const auto encode = [&](VectorType vector) {
-    return encodeImplementationFamilySemanticConfiguration(
-        ImplementationFamilyId::FixedVectorIntegerMultiply, params, enabled, 2,
-        1,
+  const auto project = [&](VectorType vector) {
+    return relation->projectSemanticValue(
         dataflow::CanonicalActorSchemaProjection{
             OperationSchemaId::ArithMulI,
             FunctionType::get(&context, {vector, vector}, {vector}),
             dataflow::IntegerOverflowPayload{}},
         std::array<std::uint64_t, 2>{0, 1}, std::array<std::uint64_t, 1>{0});
   };
-  auto i16x4 = encode(VectorType::get({4}, IntegerType::get(&context, 16)));
-  auto i16x8 = encode(VectorType::get({8}, IntegerType::get(&context, 16)));
-  auto i8x8 = encode(VectorType::get({8}, IntegerType::get(&context, 8)));
+  auto i16x4 = project(VectorType::get({4}, IntegerType::get(&context, 16)));
+  auto i16x8 = project(VectorType::get({8}, IntegerType::get(&context, 16)));
+  auto i8x8 = project(VectorType::get({8}, IntegerType::get(&context, 8)));
   if (!i16x4 || !i16x8 || !i8x8) {
     if (!i16x4)
       llvm::consumeError(i16x4.takeError());
@@ -1422,8 +1378,8 @@ bool checkFixedVectorMultiplyBehaviorDomain(MLIRContext &context) {
     llvm::errs() << "fixed-vector multiply configuration did not encode\n";
     return false;
   }
-  return verifiedActors == 2 && domain->size() == 2 && widths.contains(8) &&
-         widths.contains(16) && i16x4->bytes().equals(i16x8->bytes()) &&
+  return domain.size() == 2 && widths.contains(8) && widths.contains(16) &&
+         i16x4->bytes().equals(i16x8->bytes()) &&
          !i16x4->bytes().equals(i8x8->bytes()) &&
          std::adjacent_find(semanticValues.begin(), semanticValues.end()) ==
              semanticValues.end();
@@ -1434,23 +1390,22 @@ bool checkFixedVectorValueSelectBehaviorDomain(MLIRContext &context) {
       IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16}),
       FloatFormatSet::get({FloatFormat::F16, FloatFormat::F32}), 128};
   constexpr std::array enabled = {OperationSchemaId::ArithSelect};
-  unsigned verifiedActors = 0;
-  auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
-      ImplementationFamilyId::FixedVectorValueSelect, params, enabled, 3, 1,
-      context,
-      [&](const dataflow::CanonicalActorSchemaProjection &,
-          std::optional<ResolvedIndexWidth>) -> llvm::Error {
-        ++verifiedActors;
-        return llvm::Error::success();
-      });
-  if (!domain) {
+  constexpr std::array inputWidths = {128U, 128U, 128U};
+  constexpr std::array resultWidths = {128U};
+  auto relation = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::FixedVectorValueSelect, params, enabled,
+      inputWidths, resultWidths, context);
+  if (!relation) {
     llvm::errs() << "fixed-vector select behavior domain did not resolve: "
-                 << llvm::toString(domain.takeError()) << '\n';
+                 << llvm::toString(relation.takeError()) << '\n';
     return false;
   }
+  const auto domain = relation->finiteBehaviorDomain();
+  if (relation->kind() != FabricOpSemanticFieldRelationKind::Finite)
+    return false;
   llvm::SmallDenseSet<unsigned, 4> widths;
   std::vector<std::vector<std::uint8_t>> semanticValues;
-  for (const auto &point : *domain) {
+  for (const auto &point : domain) {
     if (!point.semanticConfiguration ||
         point.representativeActor.schema != OperationSchemaId::ArithSelect)
       return false;
@@ -1466,22 +1421,21 @@ bool checkFixedVectorValueSelectBehaviorDomain(MLIRContext &context) {
                                 point.semanticConfiguration->bytes().end());
   }
   llvm::sort(semanticValues);
-  const auto encode = [&](Type element, std::int64_t lanes) {
+  const auto project = [&](Type element, std::int64_t lanes) {
     VectorType values = VectorType::get({lanes}, element);
     VectorType condition =
         VectorType::get({lanes}, IntegerType::get(&context, 1));
-    return encodeImplementationFamilySemanticConfiguration(
-        ImplementationFamilyId::FixedVectorValueSelect, params, enabled, 3, 1,
+    return relation->projectSemanticValue(
         dataflow::CanonicalActorSchemaProjection{
             OperationSchemaId::ArithSelect,
             FunctionType::get(&context, {condition, values, values}, {values}),
             dataflow::NoPayload{}},
         std::array<std::uint64_t, 3>{0, 1, 2}, std::array<std::uint64_t, 1>{0});
   };
-  auto i16x4 = encode(IntegerType::get(&context, 16), 4);
-  auto f16x4 = encode(Float16Type::get(&context), 4);
-  auto f16x8 = encode(Float16Type::get(&context), 8);
-  auto i8x8 = encode(IntegerType::get(&context, 8), 8);
+  auto i16x4 = project(IntegerType::get(&context, 16), 4);
+  auto f16x4 = project(Float16Type::get(&context), 4);
+  auto f16x8 = project(Float16Type::get(&context), 8);
+  auto i8x8 = project(IntegerType::get(&context, 8), 8);
   if (!i16x4 || !f16x4 || !f16x8 || !i8x8) {
     if (!i16x4)
       llvm::consumeError(i16x4.takeError());
@@ -1494,9 +1448,8 @@ bool checkFixedVectorValueSelectBehaviorDomain(MLIRContext &context) {
     llvm::errs() << "fixed-vector select configuration did not encode\n";
     return false;
   }
-  return verifiedActors == 4 && domain->size() == 3 && widths.contains(8) &&
-         widths.contains(16) && widths.contains(32) &&
-         i16x4->bytes().equals(f16x4->bytes()) &&
+  return domain.size() == 3 && widths.contains(8) && widths.contains(16) &&
+         widths.contains(32) && i16x4->bytes().equals(f16x4->bytes()) &&
          f16x4->bytes().equals(f16x8->bytes()) &&
          !i16x4->bytes().equals(i8x8->bytes()) &&
          std::adjacent_find(semanticValues.begin(), semanticValues.end()) ==
@@ -1525,17 +1478,15 @@ makeScalarIntegerCastActor(MLIRContext &context, OperationSchemaId schema,
 
 bool checkScalarIntegerCastRelationClosure(MLIRContext &context) {
   constexpr std::array indexEnabled = {OperationSchemaId::ArithIndexCast};
+  constexpr std::array inputWidths = {64U};
+  constexpr std::array resultWidths = {64U};
   const auto expectOrphanRejected =
       [&](const FamilyCapabilityParams &orphanParams,
           llvm::ArrayRef<OperationSchemaId> enabled,
           llvm::StringRef expectedReason) {
-        auto orphan = resolveFiniteImplementationFamilyBehaviorDomain(
-            ImplementationFamilyId::ScalarIntegerCast, orphanParams, enabled, 1,
-            1, context,
-            [](const dataflow::CanonicalActorSchemaProjection &,
-               std::optional<ResolvedIndexWidth>) {
-              return llvm::Error::success();
-            });
+        auto orphan = resolveFabricOpSemanticFieldRelation(
+            ImplementationFamilyId::ScalarIntegerCast, orphanParams, enabled,
+            inputWidths, resultWidths, context);
         if (orphan) {
           llvm::errs() << "orphan integer cast relation was accepted\n";
           return false;
@@ -1550,7 +1501,7 @@ bool checkScalarIntegerCastRelationClosure(MLIRContext &context) {
           ResolvedIndexWidthSet::get(
               {ResolvedIndexWidth::I32, ResolvedIndexWidth::I64})}};
   if (!expectOrphanRejected(orphanIndexWidthParams, indexEnabled,
-                            "orphan resolved index width"))
+                            "orphan index width"))
     return false;
 
   const FamilyCapabilityParams orphanWidthPairParams =
@@ -1559,7 +1510,7 @@ bool checkScalarIntegerCastRelationClosure(MLIRContext &context) {
                                      {IntegerWidth::I16, IntegerWidth::I64}}),
           ResolvedIndexWidthSet::get({ResolvedIndexWidth::I32})}};
   if (!expectOrphanRejected(orphanWidthPairParams, indexEnabled,
-                            "orphan integer cast width pair"))
+                            "orphan width pair"))
     return false;
 
   constexpr std::array extensionEnabled = {OperationSchemaId::ArithExtSI};
@@ -1568,7 +1519,7 @@ bool checkScalarIntegerCastRelationClosure(MLIRContext &context) {
           IntegerWidthRelation::get({{IntegerWidth::I8, IntegerWidth::I32}}),
           ResolvedIndexWidthSet::get({ResolvedIndexWidth::I32})}};
   return expectOrphanRejected(extensionWithIndexParams, extensionEnabled,
-                              "orphan resolved index width");
+                              "orphan index width");
 }
 
 bool checkScalarIntegerCastBehaviorDomain(MLIRContext &context) {
@@ -1584,35 +1535,21 @@ bool checkScalarIntegerCastBehaviorDomain(MLIRContext &context) {
       OperationSchemaId::ArithExtSI, OperationSchemaId::ArithExtUI,
       OperationSchemaId::ArithTruncI, OperationSchemaId::ArithIndexCast,
       OperationSchemaId::ArithIndexCastUI};
-
-  unsigned verifiedActors = 0;
-  unsigned verifiedIndexActors = 0;
-  auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
-      ImplementationFamilyId::ScalarIntegerCast, params, enabled, 1, 1, context,
-      [&](const dataflow::CanonicalActorSchemaProjection &actor,
-          std::optional<ResolvedIndexWidth> resolvedIndexWidth) -> llvm::Error {
-        ++verifiedActors;
-        const bool isIndexCast =
-            actor.schema == OperationSchemaId::ArithIndexCast ||
-            actor.schema == OperationSchemaId::ArithIndexCastUI;
-        if (isIndexCast != resolvedIndexWidth.has_value())
-          return llvm::createStringError(
-              llvm::inconvertibleErrorCode(),
-              "resolved index witness did not match the cast actor");
-        verifiedIndexActors += isIndexCast;
-        auto canonical = dataflow::encodeCanonicalActorSchemaProjection(actor);
-        if (!canonical)
-          return canonical.takeError();
-        return llvm::Error::success();
-      });
-  if (!domain) {
+  constexpr std::array inputWidths = {64U};
+  constexpr std::array resultWidths = {64U};
+  auto relation = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::ScalarIntegerCast, params, enabled, inputWidths,
+      resultWidths, context);
+  if (!relation) {
     llvm::errs() << "scalar integer cast behavior domain did not resolve: "
-                 << llvm::toString(domain.takeError()) << '\n';
+                 << llvm::toString(relation.takeError()) << '\n';
     return false;
   }
-  if (verifiedActors != 14 || verifiedIndexActors != 8 || domain->size() != 6)
+  const auto domain = relation->finiteBehaviorDomain();
+  if (relation->kind() != FabricOpSemanticFieldRelationKind::Finite ||
+      domain.size() != 6)
     return false;
-  for (const auto &point : *domain)
+  for (const auto &point : domain)
     if (!point.semanticConfiguration)
       return false;
 
@@ -1620,27 +1557,26 @@ bool checkScalarIntegerCastBehaviorDomain(MLIRContext &context) {
   Type i32 = IntegerType::get(&context, 32);
   Type i64 = IntegerType::get(&context, 64);
   Type index = IndexType::get(&context);
-  const auto encode =
+  const auto project =
       [&](OperationSchemaId schema, Type source, Type destination,
           std::optional<ResolvedIndexWidth> resolved = std::nullopt) {
-        return encodeImplementationFamilySemanticConfiguration(
-            ImplementationFamilyId::ScalarIntegerCast, params, enabled, 1, 1,
+        return relation->projectSemanticValue(
             makeScalarIntegerCastActor(context, schema, source, destination),
             std::array<std::uint64_t, 1>{0}, std::array<std::uint64_t, 1>{0},
             resolved);
       };
-  auto signExtend = encode(OperationSchemaId::ArithExtSI, i8, i32);
-  auto indexSignExtend = encode(OperationSchemaId::ArithIndexCast, i8, index,
-                                ResolvedIndexWidth::I32);
-  auto zeroExtend = encode(OperationSchemaId::ArithExtUI, i8, i32);
-  auto indexZeroExtend = encode(OperationSchemaId::ArithIndexCastUI, i8, index,
-                                ResolvedIndexWidth::I32);
-  auto truncate = encode(OperationSchemaId::ArithTruncI, i32, i8);
-  auto indexTruncate = encode(OperationSchemaId::ArithIndexCast, index, i8,
-                              ResolvedIndexWidth::I32);
-  auto indexUiTruncate = encode(OperationSchemaId::ArithIndexCastUI, index, i8,
-                                ResolvedIndexWidth::I32);
-  auto wideSignExtend = encode(OperationSchemaId::ArithExtSI, i8, i64);
+  auto signExtend = project(OperationSchemaId::ArithExtSI, i8, i32);
+  auto indexSignExtend = project(OperationSchemaId::ArithIndexCast, i8, index,
+                                 ResolvedIndexWidth::I32);
+  auto zeroExtend = project(OperationSchemaId::ArithExtUI, i8, i32);
+  auto indexZeroExtend = project(OperationSchemaId::ArithIndexCastUI, i8, index,
+                                 ResolvedIndexWidth::I32);
+  auto truncate = project(OperationSchemaId::ArithTruncI, i32, i8);
+  auto indexTruncate = project(OperationSchemaId::ArithIndexCast, index, i8,
+                               ResolvedIndexWidth::I32);
+  auto indexUiTruncate = project(OperationSchemaId::ArithIndexCastUI, index, i8,
+                                 ResolvedIndexWidth::I32);
+  auto wideSignExtend = project(OperationSchemaId::ArithExtSI, i8, i64);
   if (!signExtend || !indexSignExtend || !zeroExtend || !indexZeroExtend ||
       !truncate || !indexTruncate || !indexUiTruncate || !wideSignExtend) {
     if (!signExtend)
@@ -1669,8 +1605,7 @@ bool checkScalarIntegerCastBehaviorDomain(MLIRContext &context) {
       signExtend->bytes().equals(wideSignExtend->bytes()))
     return false;
 
-  auto missingIndexWitness = encodeImplementationFamilySemanticConfiguration(
-      ImplementationFamilyId::ScalarIntegerCast, params, enabled, 1, 1,
+  auto missingIndexWitness = relation->projectSemanticValue(
       makeScalarIntegerCastActor(context, OperationSchemaId::ArithIndexCast, i8,
                                  index),
       std::array<std::uint64_t, 1>{0}, std::array<std::uint64_t, 1>{0});
@@ -1687,74 +1622,31 @@ bool checkScalarIntegerCastBehaviorDomain(MLIRContext &context) {
           IntegerWidthRelation::get({{IntegerWidth::I8, IntegerWidth::I32}}),
           ResolvedIndexWidthSet::get({ResolvedIndexWidth::I32})}};
   constexpr std::array singletonEnabled = {OperationSchemaId::ArithIndexCast};
-  auto singleton = resolveFiniteImplementationFamilyBehaviorDomain(
+  auto singleton = resolveFabricOpSemanticFieldRelation(
       ImplementationFamilyId::ScalarIntegerCast, singletonParams,
-      singletonEnabled, 1, 1, context,
-      [](const dataflow::CanonicalActorSchemaProjection &,
-         std::optional<ResolvedIndexWidth>) { return llvm::Error::success(); });
-  if (!singleton || singleton->size() != 1 ||
-      singleton->front().semanticConfiguration ||
-      singleton->front().resolvedIndexWidth != ResolvedIndexWidth::I32)
-    return false;
-
-  const FamilyCapabilityParams identityParams =
-      ScalarIntegerCastParams{IntegerCastRelation{
-          IntegerWidthRelation::get({{IntegerWidth::I32, IntegerWidth::I32}}),
-          ResolvedIndexWidthSet::get({ResolvedIndexWidth::I32})}};
-  constexpr std::array identityEnabled = {OperationSchemaId::ArithIndexCast,
-                                          OperationSchemaId::ArithIndexCastUI};
-  unsigned identityActors = 0;
-  auto identity = resolveFiniteImplementationFamilyBehaviorDomain(
-      ImplementationFamilyId::ScalarIntegerCast, identityParams,
-      identityEnabled, 1, 1, context,
-      [&](const dataflow::CanonicalActorSchemaProjection &actor,
-          std::optional<ResolvedIndexWidth> resolvedIndexWidth) -> llvm::Error {
-        ++identityActors;
-        if (resolvedIndexWidth != ResolvedIndexWidth::I32)
-          return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                         "identity cast lost index witness");
-        auto canonical = dataflow::encodeCanonicalActorSchemaProjection(actor);
-        if (!canonical)
-          return canonical.takeError();
-        return llvm::Error::success();
-      });
-  if (!identity || identityActors != 4 || identity->size() != 1 ||
-      identity->front().semanticConfiguration ||
-      identity->front().resolvedIndexWidth != ResolvedIndexWidth::I32)
-    return false;
-
-  auto resourceRejected = resolveFiniteImplementationFamilyBehaviorDomain(
-      ImplementationFamilyId::ScalarIntegerCast, params, enabled, 1, 1, context,
-      [](const dataflow::CanonicalActorSchemaProjection &actor,
-         std::optional<ResolvedIndexWidth>) -> llvm::Error {
-        if (actor.schema == OperationSchemaId::ArithIndexCastUI)
-          return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                         "cast resource rejection");
-        return llvm::Error::success();
-      });
-  if (resourceRejected)
-    return false;
-  const std::string resourceRejectedError =
-      llvm::toString(resourceRejected.takeError());
-  if (!llvm::StringRef(resourceRejectedError)
-           .contains("cast resource rejection"))
+      singletonEnabled, inputWidths, resultWidths, context);
+  if (!singleton ||
+      singleton->kind() != FabricOpSemanticFieldRelationKind::None ||
+      singleton->hasConfigurationField() ||
+      singleton->finiteBehaviorDomain().size() != 1 ||
+      singleton->finiteBehaviorDomain().front().semanticConfiguration ||
+      singleton->finiteBehaviorDomain().front().resolvedIndexWidth !=
+          ResolvedIndexWidth::I32)
     return false;
 
   const FamilyCapabilityParams missingIndexParams =
       ScalarIntegerCastParams{IntegerCastRelation{
           IntegerWidthRelation::get({{IntegerWidth::I8, IntegerWidth::I32}}),
           ResolvedIndexWidthSet::get({})}};
-  auto missingIndexDomain = resolveFiniteImplementationFamilyBehaviorDomain(
+  auto missingIndexDomain = resolveFabricOpSemanticFieldRelation(
       ImplementationFamilyId::ScalarIntegerCast, missingIndexParams,
-      singletonEnabled, 1, 1, context,
-      [](const dataflow::CanonicalActorSchemaProjection &,
-         std::optional<ResolvedIndexWidth>) { return llvm::Error::success(); });
+      singletonEnabled, inputWidths, resultWidths, context);
   if (missingIndexDomain)
     return false;
   const std::string missingIndexDomainError =
       llvm::toString(missingIndexDomain.takeError());
   return llvm::StringRef(missingIndexDomainError)
-      .contains("schema has no admitted finite behavior");
+      .contains("schema has no admitted behavior");
 }
 
 } // namespace

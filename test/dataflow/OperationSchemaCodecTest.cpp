@@ -862,6 +862,30 @@ bool checkProjectionCodec(MLIRContext &context) {
     ok = false;
   }
 
+  CanonicalActorSchemaProjection scalarConstant{
+      OperationSchemaId::ArithConstant,
+      builder.getFunctionType({}, {builder.getI8Type()}),
+      SemanticPayload{ConstantValuePayload{builder.getI8IntegerAttr(5)}}};
+  auto scalarConstantBytes =
+      encodeCanonicalActorSchemaProjection(scalarConstant);
+  if (!scalarConstantBytes) {
+    llvm::errs() << llvm::toString(scalarConstantBytes.takeError()) << '\n';
+    ok = false;
+  } else {
+    std::vector<std::uint8_t> mismatchedBytes(
+        scalarConstantBytes->bytes().begin(),
+        scalarConstantBytes->bytes().end());
+    mismatchedBytes[mismatchedBytes.size() - 6] = 4;
+    mismatchedBytes[mismatchedBytes.size() - 2] = 4;
+    ok &= expectValidationFailure(mismatchedBytes,
+                                  "does not match actor result type");
+  }
+  CanonicalActorSchemaProjection mismatchedConstant = scalarConstant;
+  std::get<ConstantValuePayload>(mismatchedConstant.payload).value =
+      builder.getIntegerAttr(builder.getIntegerType(4), 5);
+  ok &= expectFailure(encodeCanonicalActorSchemaProjection(mismatchedConstant),
+                      "does not match actor result type");
+
   RankedTensorType emptyTensor =
       RankedTensorType::get({0}, builder.getI32Type());
   DenseIntElementsAttr emptyValue =

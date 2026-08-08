@@ -1,6 +1,19 @@
 #include "Fabric/IR/ImplementationFamily.h"
+#include "ImplementationFamilyBehaviorInternal.h"
+#include "ImplementationFamilyFixedBehavior.h"
+#include "ImplementationFamilyScalarFloatBehavior.h"
+#include "ImplementationFamilyScalarFloatCompareBehavior.h"
+#include "ImplementationFamilyScalarIntegerBehavior.h"
+#include "ImplementationFamilySpecialMath.h"
+#include "ImplementationFamilyVectorFloatBehavior.h"
+#include "ImplementationFamilyVectorIntegerBehavior.h"
 
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -42,12 +55,58 @@ void expectError(const char *test, llvm::Error error,
           "failure did not contain '" + expected.str() + "': " + message);
 }
 
+template <typename T>
+void expectError(const char *test, llvm::Expected<T> value,
+                 llvm::StringRef expected) {
+  require(test, !value, "expected failure");
+  expectError(test, value.takeError(), expected);
+}
+
+void expectRelationError(const char *test,
+                         llvm::Expected<FabricOpSemanticFieldRelation> relation,
+                         llvm::StringRef expected) {
+  require(test, !relation, "expected relation resolution failure");
+  const std::string message = llvm::toString(relation.takeError());
+  require(test, llvm::StringRef(message).contains(expected),
+          "failure did not contain '" + expected.str() + "': " + message);
+}
+
 void setPackedField(std::vector<std::uint8_t> &bytes, std::uint32_t offset,
                     std::uint32_t width, std::uint64_t value) {
   for (std::uint32_t bit = 0; bit != width; ++bit)
     if (((value >> bit) & 1U) != 0)
       bytes[(offset + bit) / 8] |=
           static_cast<std::uint8_t>(1U << ((offset + bit) % 8));
+}
+
+void everyFamilyHasOneBehaviorRelationOwner() {
+  const char *test = __func__;
+  for (std::uint32_t ordinal = 0; ordinal != implementationFamilyCount();
+       ++ordinal) {
+    const auto family = static_cast<ImplementationFamilyId>(ordinal);
+    const bool direct =
+        family == ImplementationFamilyId::TokenConstant ||
+        family == ImplementationFamilyId::FixedVectorSliceAlignMerge ||
+        family == ImplementationFamilyId::FixedVectorShuffle;
+    const unsigned ownerCount =
+        static_cast<unsigned>(direct) +
+        static_cast<unsigned>(detail::ownsFixedBehaviorRelation(family)) +
+        static_cast<unsigned>(
+            detail::ownsScalarFloatCompareBehaviorRelation(family)) +
+        static_cast<unsigned>(detail::ownsScalarFloatBehaviorRelation(family)) +
+        static_cast<unsigned>(
+            detail::ownsFixedVectorFloatBehaviorRelation(family)) +
+        static_cast<unsigned>(
+            detail::ownsScalarIntegerBehaviorRelation(family)) +
+        static_cast<unsigned>(
+            detail::ownsFixedVectorIntegerBehaviorRelation(family)) +
+        static_cast<unsigned>(detail::ownsControlBehaviorRelation(family)) +
+        static_cast<unsigned>(
+            detail::ownsScalarSpecialMathBehaviorRelation(family));
+    require(test, ownerCount == 1,
+            implementationFamilyKeyword(family).str() + " has " +
+                std::to_string(ownerCount) + " behavior relation owners");
+  }
 }
 
 void concreteCapabilitiesResolveOneSealedRelation() {
@@ -159,7 +218,7 @@ void concreteCapabilitiesResolveOneSealedRelation() {
 
   const FamilyCapabilityParams constantParams = PayloadCapacityParams{32};
   constexpr std::array constantSchemas = {OperationSchemaId::DataflowConstant};
-  constexpr std::array constantInputs = {1U};
+  constexpr std::array constantInputs = {0U};
   constexpr std::array constantResults = {32U};
   const FabricOpSemanticFieldRelation constant = take(
       test, resolveFabricOpSemanticFieldRelation(
@@ -180,7 +239,7 @@ void directDomainsRejectUnreachablePackedValues() {
 
   const FamilyCapabilityParams constantParams = PayloadCapacityParams{9};
   constexpr std::array constantSchemas = {OperationSchemaId::DataflowConstant};
-  constexpr std::array constantInputs = {1U};
+  constexpr std::array constantInputs = {0U};
   constexpr std::array constantResults = {9U};
   const FabricOpSemanticFieldRelation constant = take(
       test, resolveFabricOpSemanticFieldRelation(
@@ -207,6 +266,12 @@ void directDomainsRejectUnreachablePackedValues() {
                 sliceSchemas, sliceInputs, sliceResults, context));
   const auto *layout = slice.fixedVectorSliceAlignMergeLayout();
   require(test, layout != nullptr, "slice relation did not own its layout");
+  std::vector<std::uint8_t> staticSlice((layout->encodedBitCount + 7) / 8, 0);
+  setPackedField(staticSlice, layout->sliceWidthBitOffset,
+                 layout->sliceWidthBitCount, 7);
+  if (llvm::Error error = slice.validateSemanticValue(staticSlice))
+    fail(test, llvm::toString(std::move(error)));
+
   std::vector<std::uint8_t> value((layout->encodedBitCount + 7) / 8, 0);
   setPackedField(value, layout->staticOffsetBitOffset, layout->offsetBitCount,
                  16);
@@ -217,25 +282,306 @@ void directDomainsRejectUnreachablePackedValues() {
   expectError(test, slice.validateSemanticValue(value), "container");
 }
 
-void compatibilityQueryDerivesFromTheRelation() {
+void directRelationsRejectForeignAndDuplicateSchemas() {
   const char *test = __func__;
-  const FamilyCapabilityParams params =
-      ScalarIntegerParams{IntegerWidthSet::get({IntegerWidth::I32})};
-  constexpr std::array schemas = {OperationSchemaId::ArithAndI,
-                                  OperationSchemaId::ArithOrI};
-  constexpr std::array inputWidths = {32U, 32U};
-  constexpr std::array resultWidths = {32U};
   mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams shuffleParams =
+      FixedVectorShuffleParams{IntegerWidthSet::get({IntegerWidth::I16}),
+                               FloatFormatSet{},
+                               128,
+                               128,
+                               32,
+                               5,
+                               4};
+  constexpr std::array inputs = {128U, 128U};
+  constexpr std::array results = {128U};
+
+  auto foreign = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::FixedVectorShuffle, shuffleParams,
+      std::array{OperationSchemaId::VectorExtract}, inputs, results, context);
+  require(test, !foreign, "Direct relation accepted a foreign schema");
+  const std::string foreignMessage = llvm::toString(foreign.takeError());
+  require(test, llvm::StringRef(foreignMessage).contains("not admitted"),
+          "foreign schema reported an unrelated failure: " + foreignMessage);
+
+  auto duplicate = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::FixedVectorShuffle, shuffleParams,
+      std::array{OperationSchemaId::VectorShuffle,
+                 OperationSchemaId::VectorShuffle},
+      inputs, results, context);
+  require(test, !duplicate, "Direct relation accepted a duplicate schema");
+  const std::string duplicateMessage = llvm::toString(duplicate.takeError());
+  require(test, llvm::StringRef(duplicateMessage).contains("duplicate"),
+          "duplicate schema reported an unrelated failure: " +
+              duplicateMessage);
+
+  const FamilyCapabilityParams constantParams = PayloadCapacityParams{8};
+  const FamilyCapabilityParams sliceParams =
+      FixedVectorSliceAlignMergeParams{IntegerWidthSet::get({IntegerWidth::I8}),
+                                       FloatFormatSet{},
+                                       8,
+                                       8,
+                                       0,
+                                       ResolvedIndexWidthSet{}};
+  constexpr std::array sliceInputs = {8U, 8U};
+  constexpr std::array emptySchemas = std::array<OperationSchemaId, 0>{};
+  expectRelationError(test,
+                      resolveFabricOpSemanticFieldRelation(
+                          ImplementationFamilyId::TokenConstant, constantParams,
+                          emptySchemas, std::array{1U}, std::array{8U},
+                          context),
+                      "no enabled");
+  expectRelationError(test,
+                      resolveFabricOpSemanticFieldRelation(
+                          ImplementationFamilyId::FixedVectorSliceAlignMerge,
+                          sliceParams, emptySchemas, sliceInputs,
+                          std::array{8U}, context),
+                      "no enabled");
+  expectRelationError(test,
+                      resolveFabricOpSemanticFieldRelation(
+                          ImplementationFamilyId::FixedVectorShuffle,
+                          shuffleParams, emptySchemas, inputs, results,
+                          context),
+                      "no enabled");
+}
+
+void directRelationsRequireAReachableWitness() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  constexpr std::array constantSchemas = {OperationSchemaId::DataflowConstant};
+  expectRelationError(test,
+                      resolveFabricOpSemanticFieldRelation(
+                          ImplementationFamilyId::TokenConstant,
+                          FamilyCapabilityParams{PayloadCapacityParams{8}},
+                          constantSchemas, std::array<std::uint32_t, 0>{},
+                          std::array{8U}, context),
+                      "physical role");
+
+  const FamilyCapabilityParams shuffleParams =
+      FixedVectorShuffleParams{IntegerWidthSet::get({IntegerWidth::I8}),
+                               FloatFormatSet{},
+                               8,
+                               8,
+                               8,
+                               2,
+                               1};
+  constexpr std::array shuffleSchemas = {OperationSchemaId::VectorShuffle};
+  expectRelationError(test,
+                      resolveFabricOpSemanticFieldRelation(
+                          ImplementationFamilyId::FixedVectorShuffle,
+                          shuffleParams, shuffleSchemas, std::array{8U},
+                          std::array{8U}, context),
+                      "physically reachable");
+  expectRelationError(test,
+                      resolveFabricOpSemanticFieldRelation(
+                          ImplementationFamilyId::FixedVectorShuffle,
+                          shuffleParams, shuffleSchemas, std::array{1U, 1U},
+                          std::array{1U}, context),
+                      "physically reachable");
+
+  const FamilyCapabilityParams sliceParams =
+      FixedVectorSliceAlignMergeParams{IntegerWidthSet::get({IntegerWidth::I8}),
+                                       FloatFormatSet{},
+                                       8,
+                                       8,
+                                       0,
+                                       ResolvedIndexWidthSet{}};
+  expectRelationError(test,
+                      resolveFabricOpSemanticFieldRelation(
+                          ImplementationFamilyId::FixedVectorSliceAlignMerge,
+                          sliceParams,
+                          std::array{OperationSchemaId::VectorExtract,
+                                     OperationSchemaId::VectorInsert},
+                          std::array{8U, 1U}, std::array{8U}, context),
+                      "physically reachable");
+}
+
+void constantDirectProjectionPreservesRawBits() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  mlir::Builder builder(&context);
+  constexpr std::array schemas = {OperationSchemaId::DataflowConstant};
+  constexpr std::array inputs = {0U};
+
   const FabricOpSemanticFieldRelation relation =
       take(test, resolveFabricOpSemanticFieldRelation(
-                     ImplementationFamilyId::ScalarIntegerLogic, params,
-                     schemas, inputWidths, resultWidths, context));
-  const bool requiresField =
-      take(test, requiresSemanticConfigurationField(
-                     ImplementationFamilyId::ScalarIntegerLogic, params,
-                     schemas, 2, 1));
-  require(test, requiresField == relation.hasConfigurationField(),
-          "compatibility query disagrees with the sealed relation");
+                     ImplementationFamilyId::TokenConstant,
+                     FamilyCapabilityParams{PayloadCapacityParams{16}}, schemas,
+                     inputs, std::array{12U}, context));
+  require(test, relation.directEncodedBitCount() == 12,
+          "constant carrier ignored physical result narrowing");
+  const auto project = [&](mlir::Type type, mlir::TypedAttr value) {
+    const ::dataflow::CanonicalActorSchemaProjection actor{
+        OperationSchemaId::DataflowConstant,
+        builder.getFunctionType({builder.getNoneType()}, {type}),
+        ::dataflow::ConstantValuePayload{value}};
+    const loom::CanonicalSemanticBytes projected = take(
+        test,
+        relation.projectSemanticValue(actor, std::array<std::uint64_t, 1>{0},
+                                      std::array<std::uint64_t, 1>{0}));
+    const loom::CanonicalSemanticBytes abi1 =
+        take(test, encodeConfigurationABI1SemanticValue(
+                       relation, actor, std::array<std::uint64_t, 1>{0},
+                       std::array<std::uint64_t, 1>{0}));
+    require(test, projected.bytes().equals(abi1.bytes()),
+            "ConfigurationABI 1.0 changed a Direct constant value");
+    return std::vector<std::uint8_t>(projected.bytes().begin(),
+                                     projected.bytes().end());
+  };
+
+  require(test,
+          project(builder.getI8Type(), builder.getI8IntegerAttr(0xa5)) ==
+              std::vector<std::uint8_t>({0xa5, 0x00}),
+          "scalar integer constant changed low-bit-first packing");
+
+  const ::dataflow::CanonicalActorSchemaProjection mismatchedActor{
+      OperationSchemaId::DataflowConstant,
+      builder.getFunctionType({builder.getNoneType()}, {builder.getI8Type()}),
+      ::dataflow::ConstantValuePayload{builder.getIntegerAttr(
+          builder.getIntegerType(4), llvm::APInt(4, 0x5))}};
+  expectError(test,
+              relation.projectSemanticValue(mismatchedActor,
+                                            std::array<std::uint64_t, 1>{0},
+                                            std::array<std::uint64_t, 1>{0}),
+              "does not match actor result type");
+
+  const mlir::VectorType vector =
+      mlir::VectorType::get({2}, builder.getIntegerType(4));
+  const std::array denseValues = {llvm::APInt(4, 0x5), llvm::APInt(4, 0xa)};
+  require(
+      test,
+      project(vector, mlir::DenseIntElementsAttr::get(vector, denseValues)) ==
+          std::vector<std::uint8_t>({0xa5, 0x00}),
+      "dense constant changed lane-zero-least-significant packing");
+
+  const FabricOpSemanticFieldRelation floatRelation =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::TokenConstant,
+                     FamilyCapabilityParams{PayloadCapacityParams{32}}, schemas,
+                     inputs, std::array{32U}, context));
+  const llvm::APInt nanBits(32, 0x7fc01234);
+  const mlir::FloatAttr nan =
+      mlir::FloatAttr::get(builder.getF32Type(),
+                           llvm::APFloat(llvm::APFloat::IEEEsingle(), nanBits));
+  const ::dataflow::CanonicalActorSchemaProjection nanActor{
+      OperationSchemaId::DataflowConstant,
+      builder.getFunctionType({builder.getNoneType()}, {builder.getF32Type()}),
+      ::dataflow::ConstantValuePayload{nan}};
+  const loom::CanonicalSemanticBytes projectedNan =
+      take(test, floatRelation.projectSemanticValue(
+                     nanActor, std::array<std::uint64_t, 1>{0},
+                     std::array<std::uint64_t, 1>{0}));
+  require(test,
+          projectedNan.bytes().equals(
+              std::array<std::uint8_t, 4>{0x34, 0x12, 0xc0, 0x7f}),
+          "floating constant lost its NaN payload bits");
+
+  const mlir::VectorType floatVector =
+      mlir::VectorType::get({2}, builder.getF16Type());
+  const std::array denseFloatValues = {
+      llvm::APFloat(llvm::APFloat::IEEEhalf(), llvm::APInt(16, 0x8000)),
+      llvm::APFloat(llvm::APFloat::IEEEhalf(), llvm::APInt(16, 0x7e55))};
+  const mlir::DenseFPElementsAttr denseFloats =
+      mlir::DenseFPElementsAttr::get(floatVector, denseFloatValues);
+  const ::dataflow::CanonicalActorSchemaProjection denseFloatActor{
+      OperationSchemaId::DataflowConstant,
+      builder.getFunctionType({builder.getNoneType()}, {floatVector}),
+      ::dataflow::ConstantValuePayload{denseFloats}};
+  const loom::CanonicalSemanticBytes projectedDenseFloats =
+      take(test, floatRelation.projectSemanticValue(
+                     denseFloatActor, std::array<std::uint64_t, 1>{0},
+                     std::array<std::uint64_t, 1>{0}));
+  require(test,
+          projectedDenseFloats.bytes().equals(
+              std::array<std::uint8_t, 4>{0x00, 0x80, 0x55, 0x7e}),
+          "dense floating constant lost lane order or special-value bits");
+}
+
+void zeroBitDirectCarrierCollapsesToNone() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams params =
+      FixedVectorSliceAlignMergeParams{IntegerWidthSet::get({IntegerWidth::I1}),
+                                       FloatFormatSet{},
+                                       1,
+                                       1,
+                                       0,
+                                       ResolvedIndexWidthSet{}};
+  constexpr std::array schemas = {OperationSchemaId::VectorExtract};
+  constexpr std::array inputs = {1U, 1U};
+  constexpr std::array results = {1U};
+  const FabricOpSemanticFieldRelation relation =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::FixedVectorSliceAlignMerge, params,
+                     schemas, inputs, results, context));
+  require(test, relation.kind() == FabricOpSemanticFieldRelationKind::None,
+          "zero-bit singleton slice did not collapse to None");
+  require(test, !relation.hasConfigurationField(),
+          "zero-bit singleton slice exposed an ABI field");
+  require(
+      test,
+      relation.finiteBehaviorDomain().size() == 1 &&
+          !relation.finiteBehaviorDomain().front().semanticConfiguration &&
+          relation.finiteBehaviorDomain().front().representativeActor.schema ==
+              OperationSchemaId::VectorExtract,
+      "zero-bit singleton slice lost its unique behavior witness");
+}
+
+void configurationABI1RejectsNonInjectiveFiniteRelations() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const auto expectCollision = [&](ImplementationFamilyId family,
+                                   const FamilyCapabilityParams &params,
+                                   llvm::ArrayRef<OperationSchemaId> schemas,
+                                   llvm::ArrayRef<std::uint32_t> inputs,
+                                   llvm::ArrayRef<std::uint32_t> results) {
+    const FabricOpSemanticFieldRelation relation =
+        take(test, resolveFabricOpSemanticFieldRelation(
+                       family, params, schemas, inputs, results, context));
+    require(test, relation.kind() == FabricOpSemanticFieldRelationKind::Finite,
+            "collision fixture did not resolve a finite relation");
+    require(test, relation.finiteBehaviorDomain().size() == 4,
+            "collision fixture did not expose four sealed behaviors");
+    auto projected = projectConfigurationABI1FiniteBehaviorDomain(relation);
+    require(test, !projected,
+            "ConfigurationABI 1.0 accepted a non-injective relation");
+    const std::string message = llvm::toString(projected.takeError());
+    require(test, llvm::StringRef(message).contains("injectively"),
+            "non-injective relation reported an unrelated failure: " + message);
+
+    const auto &point = relation.finiteBehaviorDomain().front();
+    auto encoded = encodeConfigurationABI1SemanticValue(
+        relation, point.representativeActor, point.operandPorts,
+        point.resultPorts, point.resolvedIndexWidth);
+    require(test, !encoded,
+            "ConfigurationABI 1.0 encoded one point of a non-injective "
+            "relation");
+    const std::string pointMessage = llvm::toString(encoded.takeError());
+    require(test, llvm::StringRef(pointMessage).contains("injectively"),
+            "non-injective point reported an unrelated failure: " +
+                pointMessage);
+  };
+
+  const FamilyCapabilityParams saturatingParams = ScalarIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16})};
+  constexpr std::array saturatingSchemas = {OperationSchemaId::LLVMSAddSat,
+                                            OperationSchemaId::LLVMUAddSat};
+  constexpr std::array scalarInputs = {16U, 16U};
+  constexpr std::array scalarResults = {16U};
+  expectCollision(ImplementationFamilyId::ScalarIntegerSaturatingAddSub,
+                  saturatingParams, saturatingSchemas, scalarInputs,
+                  scalarResults);
+
+  const FamilyCapabilityParams countZerosParams = FixedVectorIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16}), 32};
+  constexpr std::array countZerosSchemas = {
+      OperationSchemaId::MathCountLeadingZeros,
+      OperationSchemaId::MathCountTrailingZeros};
+  constexpr std::array vectorInputs = {32U};
+  constexpr std::array vectorResults = {32U};
+  expectCollision(ImplementationFamilyId::FixedVectorIntegerCountZeros,
+                  countZerosParams, countZerosSchemas, vectorInputs,
+                  vectorResults);
 }
 
 void finiteRelationKeysRemainCanonical() {
@@ -489,9 +835,14 @@ void singletonControlRelationsStillValidateTheirCapability() {
 } // namespace
 
 int main() {
+  everyFamilyHasOneBehaviorRelationOwner();
   concreteCapabilitiesResolveOneSealedRelation();
   directDomainsRejectUnreachablePackedValues();
-  compatibilityQueryDerivesFromTheRelation();
+  directRelationsRejectForeignAndDuplicateSchemas();
+  directRelationsRequireAReachableWitness();
+  constantDirectProjectionPreservesRawBits();
+  zeroBitDirectCarrierCollapsesToNone();
+  configurationABI1RejectsNonInjectiveFiniteRelations();
   finiteRelationKeysRemainCanonical();
   physicalCapacityEliminatesRedundantBehavior();
   loopControlRelationOwnsTheReachableQuotient();

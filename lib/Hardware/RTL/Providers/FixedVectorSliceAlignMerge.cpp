@@ -166,8 +166,10 @@ materializePortableFixedVectorSliceAlignMerge(
       *parameters, request.capability.enabledOperationSchemas);
   if (!layout)
     return layout.takeError();
-  if (request.capability.configurationFieldSchema.size() != 1)
-    return invalid("capability does not have exactly one semantic field");
+  const bool hasConfigurationField = layout->encodedBitCount != 0;
+  if (request.capability.configurationFieldSchema.size() !=
+      static_cast<std::size_t>(hasConfigurationField))
+    return invalid("capability semantic field does not match its layout");
 
   auto actualContract = ::fabric::encodeResourceContractRecord(
       request.capability.resourceStateAndTimingContract);
@@ -231,16 +233,19 @@ materializePortableFixedVectorSliceAlignMerge(
         outputs[0]->payloadWidthBits < parameters->maxContainerPayloadBits)))
     return unsupported(request);
 
-  const ConfigurationFieldEncoding *field = request.configurationAbi.findField(
-      request.capability.configurationFieldSchema.front());
-  if (!field)
-    return invalid("configured field is absent from the ABI");
-  const auto *direct =
-      std::get_if<DirectBitsEncoding>(&field->semanticEncoding);
-  if (!direct)
-    return invalid("configured field is not DirectBits");
-  if (direct->encodedBitCount != layout->encodedBitCount)
-    return invalid("DirectBits width does not match the resolved layout");
+  const ConfigurationFieldEncoding *field = nullptr;
+  if (hasConfigurationField) {
+    field = request.configurationAbi.findField(
+        request.capability.configurationFieldSchema.front());
+    if (!field)
+      return invalid("configured field is absent from the ABI");
+    const auto *direct =
+        std::get_if<DirectBitsEncoding>(&field->semanticEncoding);
+    if (!direct)
+      return invalid("configured field is not DirectBits");
+    if (direct->encodedBitCount != layout->encodedBitCount)
+      return invalid("DirectBits width does not match the resolved layout");
+  }
 
   if (llvm::Error error = verifyFabricOperationLeafPorts(
           request.leaf, request.capability, request.configurationAbi))
@@ -254,16 +259,24 @@ materializePortableFixedVectorSliceAlignMerge(
       circt::hw::ModulePortInfo(request.leaf.getPortList()),
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
-        mlir::Value configuration =
-            accessor.getInput("config_" + std::to_string(field->field.ordinal));
         const unsigned arithmeticWidth =
             std::max({layout->offsetBitCount, layout->sliceWidthBitCount + 1,
                       layout->dynamicStrideBitCount});
-        mlir::Value offset =
-            materializeEffectiveOffset(bodyBuilder, location, accessor,
-                                       configuration, *layout, arithmeticWidth);
-        mlir::Value sliceWidth = materializeSliceWidth(
-            bodyBuilder, location, configuration, *layout, arithmeticWidth);
+        mlir::Value configuration;
+        mlir::Value offset;
+        mlir::Value sliceWidth;
+        if (field) {
+          configuration = accessor.getInput(
+              "config_" + std::to_string(field->field.ordinal));
+          offset = materializeEffectiveOffset(bodyBuilder, location, accessor,
+                                              configuration, *layout,
+                                              arithmeticWidth);
+          sliceWidth = materializeSliceWidth(
+              bodyBuilder, location, configuration, *layout, arithmeticWidth);
+        } else {
+          offset = constant(bodyBuilder, location, arithmeticWidth, 0);
+          sliceWidth = constant(bodyBuilder, location, arithmeticWidth, 1);
+        }
         const unsigned workWidth =
             std::max({inputs[0]->payloadWidthBits, inputs[1]->payloadWidthBits,
                       outputs[0]->payloadWidthBits});

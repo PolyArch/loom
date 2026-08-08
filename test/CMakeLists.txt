@@ -95,6 +95,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-artifact-gate-test
   loom-fabric-artifact-codec-test
   loom-fabric-artifact-finalizer-test
+  loom-fabric-behavior-relation-finalization-test
   loom-fabric-pe-configuration-test
   loom-fabric-module-domain-import-test
   loom-fabric-system-attachment-finalizer-test
@@ -104,12 +105,14 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-boundary-transfer-test
   loom-fabric-canonical-labeling-test
   loom-fabric-elaboration-alias-chain-test
+  loom-fabric-fixed-vector-float-behavior-test
   loom-fabric-fixed-vector-integer-behavior-test
   loom-fabric-float-behavior-profile-test
   loom-fabric-implementation-family-behavior-inventory-test
   loom-fabric-implementation-family-fixed-behavior-test
   loom-fabric-implementation-family-test
   loom-fabric-scalar-float-behavior-test
+  loom-fabric-scalar-float-compare-behavior-test
   loom-fabric-scalar-integer-behavior-test
   loom-fabric-special-math-implementation-family-test
   loom-fabric-elaboration-api-test

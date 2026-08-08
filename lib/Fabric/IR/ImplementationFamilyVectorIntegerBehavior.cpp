@@ -265,8 +265,8 @@ describeActor(ImplementationFamilyId family,
   mlir::Type valueType =
       isSelect(actor.schema) ? actor.type.getInput(1) : actor.type.getInput(0);
   auto vector = llvm::dyn_cast<mlir::VectorType>(valueType);
-  if (!vector || vector.isScalable() || vector.getRank() != 1 ||
-      vector.getDimSize(0) <= 0)
+  if (!vector || vector.isScalable() || vector.getRank() == 0 ||
+      vector.getNumElements() == 0)
     return reject("fixed-vector integer behavior actor has invalid shape");
   const std::uint64_t width = vector.getElementTypeBitWidth();
   if (width == 0 || width > std::numeric_limits<std::uint32_t>::max())
@@ -450,6 +450,9 @@ fabric::detail::resolveFixedVectorIntegerBehaviorDomain(
 
   const ImplementationFamilyDescriptor &descriptor =
       implementationFamily(family);
+  if (capabilityParamsSchema(params) != descriptor.capabilityParamsSchema)
+    return reject(
+        "fixed-vector integer capability has the wrong parameter schema");
   for (auto [ordinal, schema] : llvm::enumerate(enabledSchemas)) {
     if (!llvm::is_contained(descriptor.admittedSchemas, schema))
       return reject("fixed-vector integer capability enables a foreign schema");
@@ -518,6 +521,12 @@ fabric::detail::resolveFixedVectorIntegerBehaviorDomain(
       }
     }
   }
+  for (OperationSchemaId schema : enabledSchemas)
+    if (llvm::none_of(candidates, [&](const BehaviorFact &candidate) {
+          return candidate.actor.schema == schema;
+        }))
+      return reject("fixed-vector integer enabled schema has no reachable "
+                    "behavior witness");
   return encodeDomain(family, std::move(candidates));
 }
 

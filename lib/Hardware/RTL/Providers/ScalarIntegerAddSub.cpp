@@ -110,11 +110,13 @@ materializePortableScalarIntegerAddSub(FabricOperationProviderRequest request) {
       return invalid(
           "codebook does not exactly cover the operation-selection domain");
     auto addValue = request.capability.encodeOperationSelection(
-        field->field, ::dataflow::OperationSchemaId::ArithAddI);
+        field->field, ::dataflow::OperationSchemaId::ArithAddI,
+        *request.leaf.getContext());
     if (!addValue)
       return addValue.takeError();
     auto subtractValue = request.capability.encodeOperationSelection(
-        field->field, ::dataflow::OperationSchemaId::ArithSubI);
+        field->field, ::dataflow::OperationSchemaId::ArithSubI,
+        *request.leaf.getContext());
     if (!subtractValue)
       return subtractValue.takeError();
     const FiniteCodebookEntry *addEntry =

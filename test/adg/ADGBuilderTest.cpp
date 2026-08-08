@@ -139,10 +139,15 @@ OperationCapabilitySpec
 integerCapability(::fabric::ImplementationFamilyId family,
                   ::dataflow::OperationSchemaId operation,
                   const PortType &outputType) {
+  const auto width = llvm::find_if(
+      ::fabric::integerWidthDomain, [&](::fabric::IntegerWidth candidate) {
+        return ::fabric::getBitWidth(candidate) == outputType.width();
+      });
+  if (width == ::fabric::integerWidthDomain.end())
+    fail("integerCapability", "test port has no scalar integer width");
   return OperationCapabilitySpec{
       family,
-      ::fabric::ScalarIntegerParams{
-          ::fabric::IntegerWidthSet::get({::fabric::IntegerWidth::I32})},
+      ::fabric::ScalarIntegerParams{::fabric::IntegerWidthSet::get({*width})},
       {operation},
       {outputType},
       ::fabric::oneCycleElasticOperationResourceContract()};

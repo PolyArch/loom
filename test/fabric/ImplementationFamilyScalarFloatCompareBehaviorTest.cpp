@@ -916,6 +916,38 @@ void projectorRejectsRedundantWeakRepresentatives() {
                  "redundant");
 }
 
+void publicRelationUsesTheScalarFloatCompareOwner() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams params = ScalarFloatCompareMinMaxParams{
+      FloatFormatSet::get({FloatFormat::F16, FloatFormat::BF16}),
+      strictCompareBehavior(),
+      FloatPredicateSet::get({mlir::arith::CmpFPredicate::UGT})};
+  constexpr std::array schemas = {OperationSchemaId::ArithCmpF};
+  constexpr std::array inputs = {16U, 16U};
+  constexpr std::array results = {1U};
+  const auto relation =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::ScalarFloatCompareMinMax, params,
+                     schemas, inputs, results, context));
+  require(test,
+          relation.kind() == FabricOpSemanticFieldRelationKind::Finite &&
+              relation.finiteBehaviorDomain().size() == 2,
+          "public relation bypassed the scalar floating compare owner");
+
+  const auto actor =
+      compareActor(context, FloatFormat::F16, mlir::arith::CmpFPredicate::UGT,
+                   mlir::arith::FastMathFlags::none);
+  const auto publicKey =
+      take(test, relation.projectSemanticValue(actor, {0, 1}, {0}));
+  const auto ownerKey =
+      take(test, detail::projectScalarFloatCompareBehavior(
+                     ImplementationFamilyId::ScalarFloatCompareMinMax, params,
+                     schemas, actor, relation.finiteBehaviorDomain()));
+  require(test, publicKey.bytes().equals(ownerKey.bytes()),
+          "public relation used a competing scalar floating compare codec");
+}
+
 } // namespace
 
 int main() {
@@ -935,5 +967,6 @@ int main() {
   invalidCapabilityContextsAreRejected();
   projectorRejectsDisabledSchemasAndNoncanonicalDomains();
   projectorRejectsRedundantWeakRepresentatives();
+  publicRelationUsesTheScalarFloatCompareOwner();
   return EXIT_SUCCESS;
 }

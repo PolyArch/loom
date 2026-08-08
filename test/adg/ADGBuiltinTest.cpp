@@ -841,14 +841,14 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
   const loom::PointerLayout pointerLayout{
       0, 64, 64, loom::PointerLayoutKind::StableIntegral};
   require(test,
-          !index.admittingOperationResources(gep, 64, &pointerLayout).empty(),
-          "builtin Fabric lost its exact stable-integral GEP add-on");
+          index.admittingOperationResources(gep, 64, &pointerLayout).empty(),
+          "builtin Fabric admitted GEP before address normalization");
   const loom::PointerLayout narrowPointerLayout{
       0, 32, 32, loom::PointerLayoutKind::StableIntegral};
   require(
       test,
-      !index.admittingOperationResources(gep, 32, &narrowPointerLayout).empty(),
-      "builtin Fabric lost its explicit P32 GEP capability");
+      index.admittingOperationResources(gep, 32, &narrowPointerLayout).empty(),
+      "builtin Fabric admitted narrow GEP before address normalization");
 
   mlir::Type f32 = mlir::Float32Type::get(&context);
   const auto floatMultiply = ::dataflow::CanonicalActorSchemaProjection{

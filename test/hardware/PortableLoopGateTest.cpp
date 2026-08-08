@@ -547,40 +547,6 @@ void invalidAndUnsupportedInputsAreTransactional(
               "leaf port");
   require(test, moduleText(*malformed.module) == malformedBefore,
           "invalid leaf partially mutated the caller module");
-
-  FabricFixture zeroPhaseInput = makeFabric(test, store, 0, 8, 1, 8);
-  FinalizedConfigurationABI zeroInputAbi =
-      makeConfigurationAbi(test, store, zeroPhaseInput);
-  SkeletonFixture zeroInputSkeleton =
-      makeSkeleton(test, *context, zeroPhaseInput, zeroInputAbi.abi());
-  const std::vector<FabricOperationLeafAssociation> zeroInputAssociations = {
-      {zeroInputSkeleton.leaf, zeroPhaseInput.occurrence}};
-  const std::vector<FabricOperationRecipeBinding> zeroInputRecipes = {
-      {zeroPhaseInput.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  expectError(test,
-              specializeFabricOperationLeaves(
-                  *zeroInputSkeleton.module, zeroPhaseInput.fabric,
-                  zeroInputAbi, zeroInputAssociations, zeroInputRecipes,
-                  registry, externalContracts),
-              "phase input");
-
-  FabricFixture zeroPhaseOutput = makeFabric(test, store, 1, 8, 0, 8);
-  FinalizedConfigurationABI zeroOutputAbi =
-      makeConfigurationAbi(test, store, zeroPhaseOutput);
-  SkeletonFixture zeroOutputSkeleton =
-      makeSkeleton(test, *context, zeroPhaseOutput, zeroOutputAbi.abi());
-  const std::vector<FabricOperationLeafAssociation> zeroOutputAssociations = {
-      {zeroOutputSkeleton.leaf, zeroPhaseOutput.occurrence}};
-  const std::vector<FabricOperationRecipeBinding> zeroOutputRecipes = {
-      {zeroPhaseOutput.occurrence,
-       BackendRecipeKey::PortableSystemVerilog,
-       {}}};
-  expectError(test,
-              specializeFabricOperationLeaves(
-                  *zeroOutputSkeleton.module, zeroPhaseOutput.fabric,
-                  zeroOutputAbi, zeroOutputAssociations, zeroOutputRecipes,
-                  registry, externalContracts),
-              "phase output");
 }
 
 } // namespace

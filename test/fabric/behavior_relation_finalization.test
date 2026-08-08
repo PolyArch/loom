@@ -1,0 +1,2 @@
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: loom-fabric-behavior-relation-finalization-test %t

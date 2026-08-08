@@ -37,6 +37,7 @@
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
@@ -202,14 +203,14 @@ FabricSpec multiWidthSpec() {
           16};
 }
 
-FabricSpec semanticWidthExceedsPhysicalSpec() {
-  return {"scalar_unsigned_div_semantic_width_exceeds_physical",
+FabricSpec multiOperationWidthSpec() {
+  return {"scalar_unsigned_div_rem_multi_width",
           "ScalarUnsignedIntegerDivRem",
           Family::ScalarUnsignedIntegerDivRem,
-          {"arith.divui"},
-          "integer_widths = [16 : i32]",
-          {8, 8},
-          8,
+          {"arith.divui", "arith.remui"},
+          "integer_widths = [8 : i32, 16 : i32]",
+          {16, 16},
+          16,
           16};
 }
 
@@ -366,16 +367,6 @@ capability(llvm::StringRef test, const FabricFixture &fixture) {
   return *result;
 }
 
-std::vector<std::uint8_t>
-operationValue(llvm::StringRef test,
-               const loom::fabric::ResolvedFabricOpCapabilityView &resolved,
-               const loom::fabric::FabricSemanticConfigFieldRef &field,
-               Schema schema) {
-  const loom::CanonicalSemanticBytes encoded =
-      take(test, resolved.encodeOperationSelection(field, schema));
-  return {encoded.bytes().begin(), encoded.bytes().end()};
-}
-
 enum class ConfigurationAbiKind {
   Complete,
   MissingRemainder,
@@ -402,34 +393,65 @@ FinalizedConfigurationABI makeConfigurationAbi(
   require(test, descriptor.admittedSchemas.size() == 2,
           "generated div/rem family descriptor changed cardinality");
   const auto fieldReference = resolved.configurationFieldSchema.front();
-  const std::vector<std::uint8_t> quotientValue = operationValue(
-      test, resolved, fieldReference, descriptor.admittedSchemas[0]);
-  const std::vector<std::uint8_t> remainderValue = operationValue(
-      test, resolved, fieldReference, descriptor.admittedSchemas[1]);
+  const auto domain =
+      take(test, resolved.resolveFiniteBehaviorDomain(fabricContext()));
+  require(test, !domain.empty(), "configured div/rem domain is empty");
+
+  std::vector<FiniteCodebookEntry> entries;
+  std::optional<std::size_t> quotientIndex;
+  std::optional<std::size_t> remainderIndex;
+  entries.reserve(domain.size() + 1);
+  for (const auto [index, point] : llvm::enumerate(domain)) {
+    require(test, point.semanticConfiguration.has_value(),
+            "configured div/rem behavior has no semantic value");
+    const Schema schema = point.representativeActor.schema;
+    require(test,
+            schema == descriptor.admittedSchemas[0] ||
+                schema == descriptor.admittedSchemas[1],
+            "configured div/rem domain contains a foreign schema");
+    std::uint8_t code = static_cast<std::uint8_t>(index + 1);
+    if (domain.size() == 2 && resolved.enabledOperationSchemas.size() == 2)
+      code = schema == descriptor.admittedSchemas[0] ? 0x02 : 0x01;
+    entries.push_back({{point.semanticConfiguration->bytes().begin(),
+                        point.semanticConfiguration->bytes().end()},
+                       {code}});
+    if (schema == descriptor.admittedSchemas[0] && !quotientIndex)
+      quotientIndex = index;
+    if (schema == descriptor.admittedSchemas[1] && !remainderIndex)
+      remainderIndex = index;
+  }
+
+  if (kind == ConfigurationAbiKind::MissingRemainder) {
+    require(test, remainderIndex.has_value(),
+            "configured div/rem domain has no remainder behavior");
+    entries[*remainderIndex].semanticValue = {0xff};
+  }
+  if (kind == ConfigurationAbiKind::ExtraSemanticValue)
+    entries.push_back({{0xfe}, {0x03}});
 
   SemanticFieldEncoding encoding;
   if (kind == ConfigurationAbiKind::DirectBits) {
     encoding = DirectBitsEncoding{2};
   } else {
-    std::vector<FiniteCodebookEntry> entries{
-        {quotientValue, {0x02}},
-        {kind == ConfigurationAbiKind::MissingRemainder
-             ? std::vector<std::uint8_t>{0xff}
-             : remainderValue,
-         {0x01}}};
-    if (kind == ConfigurationAbiKind::ExtraSemanticValue)
-      entries.push_back({{0xfe}, {0x03}});
     encoding = FiniteCodebookEncoding{2, std::move(entries)};
   }
+  const std::size_t inactiveIndex = [&] {
+    if ((kind == ConfigurationAbiKind::MissingRemainder ||
+         fixture.spec.inactiveQuotient) &&
+        quotientIndex)
+      return *quotientIndex;
+    if (remainderIndex)
+      return *remainderIndex;
+    return std::size_t{0};
+  }();
+  const std::vector<std::uint8_t> inactiveValue =
+      kind == ConfigurationAbiKind::DirectBits
+          ? std::vector<std::uint8_t>{0}
+          : std::get<FiniteCodebookEncoding>(encoding)
+                .entries[inactiveIndex]
+                .semanticValue;
   ConfigurationFieldEncoding field{
-      fieldReference,
-      std::move(encoding),
-      {{0, 0, 2}},
-      kind == ConfigurationAbiKind::DirectBits ? std::vector<std::uint8_t>{0}
-      : kind == ConfigurationAbiKind::MissingRemainder ||
-              fixture.spec.inactiveQuotient
-          ? quotientValue
-          : remainderValue};
+      fieldReference, std::move(encoding), {{0, 0, 2}}, inactiveValue};
   ProgrammingUnitDraft unit{{field.field.owner.catalog()}, 2, {field}};
   return take(test, finalizeConfigurationABI(
                         ConfigurationABIDraft{fixture.fabric.reference(),
@@ -1018,7 +1040,7 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
   expectError(test,
               malformedParameters.encodeOperationSelection(
                   malformedParameters.configurationFieldSchema.front(),
-                  Schema::ArithDivUI),
+                  Schema::ArithDivUI, fabricContext()),
               "parameter schema");
 
   std::unique_ptr<mlir::MLIRContext> portContext = makeCirctContext();
@@ -1107,42 +1129,17 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
           "unsupported div/rem shape partially mutated the caller module");
 
   FabricFixture multiWidth = makeFabric(test, store, multiWidthSpec());
-  FinalizedConfigurationABI multiWidthAbi =
-      makeConfigurationAbi(test, store, multiWidth);
-  std::unique_ptr<mlir::MLIRContext> multiWidthContext = makeCirctContext();
-  SkeletonFixture multiWidthSkeleton =
-      makeSkeleton(test, *multiWidthContext, multiWidth, multiWidthAbi.abi());
-  const std::string multiWidthBefore = moduleText(*multiWidthSkeleton.module);
-  expectTypedUnsupported(
+  expectError(
       test,
-      specializeFor(multiWidthSkeleton, multiWidth, multiWidthAbi, registry),
-      Family::ScalarUnsignedIntegerDivRem,
-      BackendRecipeKey::PortableSystemVerilog,
-      "unsupported multi-width div/rem capability");
-  require(test, moduleText(*multiWidthSkeleton.module) == multiWidthBefore,
-          "unsupported multi-width div/rem partially mutated the caller "
-          "module");
+      capability(test, multiWidth).resolveFiniteBehaviorDomain(fabricContext()),
+      "ConfigurationABI 1.0 cannot encode");
 
-  FabricFixture narrowPhysical =
-      makeFabric(test, store, semanticWidthExceedsPhysicalSpec());
-  FinalizedConfigurationABI narrowPhysicalAbi =
-      makeConfigurationAbi(test, store, narrowPhysical);
-  std::unique_ptr<mlir::MLIRContext> narrowPhysicalContext = makeCirctContext();
-  SkeletonFixture narrowPhysicalSkeleton = makeSkeleton(
-      test, *narrowPhysicalContext, narrowPhysical, narrowPhysicalAbi.abi());
-  const std::string narrowPhysicalBefore =
-      moduleText(*narrowPhysicalSkeleton.module);
-  expectTypedUnsupported(
-      test,
-      specializeFor(narrowPhysicalSkeleton, narrowPhysical, narrowPhysicalAbi,
-                    registry),
-      Family::ScalarUnsignedIntegerDivRem,
-      BackendRecipeKey::PortableSystemVerilog,
-      "div/rem semantic width exceeding the physical data shape");
-  require(test,
-          moduleText(*narrowPhysicalSkeleton.module) == narrowPhysicalBefore,
-          "unsupported narrow div/rem physical shape partially mutated the "
-          "caller module");
+  FabricFixture multiOperationWidth =
+      makeFabric(test, store, multiOperationWidthSpec());
+  expectError(test,
+              capability(test, multiOperationWidth)
+                  .resolveFiniteBehaviorDomain(fabricContext()),
+              "ConfigurationABI 1.0 cannot encode");
 
   constexpr std::array nativeRecipes = {
       BackendRecipeKey::SynopsysDesignWare,

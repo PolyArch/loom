@@ -176,10 +176,11 @@ void addSubUsesRolesAndRejectsGep() {
   constexpr std::array gepSchemas = {OperationSchemaId::ArithAddI,
                                      OperationSchemaId::LLVMGetElementPtr};
   expectError(test,
-              fabric::detail::resolveScalarIntegerBehaviorDomain(
+              fabric::resolveFabricOpSemanticFieldRelation(
                   ImplementationFamilyId::ScalarIntegerAddSub, params,
                   gepSchemas, inputs, results, context),
-              "GEP");
+              "GEP behavior relation requires canonical integer address "
+              "normalization");
 }
 
 void publicRelationProjectsItsOwnedBehaviorKey() {
@@ -463,6 +464,14 @@ void divRemWidthsAreSignednessSpecific() {
               signedSchemas, narrowInputs, narrowResults, context);
   require(test, narrow.size() == 2,
           "physical filtering did not remove unreachable signed widths");
+
+  const FamilyCapabilityParams wideOnly =
+      ScalarIntegerParams{IntegerWidthSet::get({IntegerWidth::I32})};
+  expectError(test,
+              fabric::resolveFabricOpSemanticFieldRelation(
+                  ImplementationFamilyId::ScalarUnsignedIntegerDivRem, wideOnly,
+                  unsignedSchemas, narrowInputs, narrowResults, context),
+              "physically reachable behavior");
   constexpr std::array<std::uint8_t, 84> expectedNarrowQuotient = {
       'l', 'o', 'o', 'm', '.', 'f', 'a', 'b', 'r', 'i', 'c', '.', 'o', 'p',
       'e', 'r', 'a', 't', 'i', 'o', 'n', '-', 'b', 'e', 'h', 'a', 'v', 'i',
@@ -523,6 +532,23 @@ void saturatingAndCountZeroRolesRetainWidths() {
   expectKey(test, leading, expectedLeading32);
 }
 
+void everyEnabledSchemaRequiresAReachableWitness() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams params = ScalarIntegerCompareMinMaxParams{
+      IntegerWidthSet::get({IntegerWidth::I8}),
+      IntegerPredicateSet::get({mlir::arith::CmpIPredicate::slt})};
+  constexpr std::array schemas = {OperationSchemaId::ArithCmpI,
+                                  OperationSchemaId::ArithMinSI};
+  constexpr std::array inputs = {8U, 8U};
+  constexpr std::array results = {1U};
+  expectError(test,
+              fabric::resolveFabricOpSemanticFieldRelation(
+                  ImplementationFamilyId::ScalarIntegerCompareMinMax, params,
+                  schemas, inputs, results, context),
+              "enabled schema");
+}
+
 } // namespace
 
 int main() {
@@ -536,5 +562,6 @@ int main() {
   castsCollapseAliasesAndRetainIndexWitnesses();
   divRemWidthsAreSignednessSpecific();
   saturatingAndCountZeroRolesRetainWidths();
+  everyEnabledSchemaRequiresAReachableWitness();
   return EXIT_SUCCESS;
 }

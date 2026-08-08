@@ -801,7 +801,7 @@ void nestedConnectionsRemainWithinOneSymbolicDomain() {
         test, pe.addFu({take(test, pe.input(0))}, FuSpec{{bits8}, {bits8}}));
     auto operation = take(
         test, fu.addOperation(
-                  {take(test, fu.input(0))},
+                  {take(test, fu.input(0)), take(test, fu.input(0))},
                   integerCapability(
                       ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
                       ::dataflow::OperationSchemaId::ArithAddI, bits8)));

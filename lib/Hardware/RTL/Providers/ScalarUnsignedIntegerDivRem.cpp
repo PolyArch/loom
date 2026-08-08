@@ -146,11 +146,11 @@ materializePortableScalarUnsignedIntegerDivRem(
           "codebook does not exactly cover the operation-selection domain");
 
     auto quotientValue = request.capability.encodeOperationSelection(
-        field->field, quotientSchema);
+        field->field, quotientSchema, *request.leaf.getContext());
     if (!quotientValue)
       return quotientValue.takeError();
     auto remainderValue = request.capability.encodeOperationSelection(
-        field->field, remainderSchema);
+        field->field, remainderSchema, *request.leaf.getContext());
     if (!remainderValue)
       return remainderValue.takeError();
     quotientEntry =

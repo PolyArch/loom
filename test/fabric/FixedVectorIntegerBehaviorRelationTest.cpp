@@ -378,6 +378,36 @@ void projectionIgnoresIncidentalVectorShape() {
               witness->semanticConfiguration &&
               projected.bytes().equals(witness->semanticConfiguration->bytes()),
           "projector treated vector shape as configured behavior");
+
+  mlir::Type matrix =
+      mlir::VectorType::get({2, 2}, mlir::IntegerType::get(&context, 8));
+  const dataflow::CanonicalActorSchemaProjection rankTwo{
+      OperationSchemaId::ArithMulI,
+      mlir::FunctionType::get(&context, {matrix, matrix}, {matrix}),
+      dataflow::IntegerOverflowPayload{}};
+  const auto rankTwoProjected = take(
+      test,
+      relation.projectSemanticValue(rankTwo, std::array<std::uint64_t, 2>{0, 1},
+                                    std::array<std::uint64_t, 1>{0}));
+  require(test, rankTwoProjected.bytes().equals(projected.bytes()),
+          "rank changed fixed-vector integer behavior");
+}
+
+void everyEnabledSchemaRequiresAReachableWitness() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const FamilyCapabilityParams params = FixedVectorIntegerCompareMinMaxParams{
+      IntegerWidthSet::get({IntegerWidth::I8}),
+      IntegerPredicateSet::get({mlir::arith::CmpIPredicate::slt}), 8};
+  constexpr std::array schemas = {OperationSchemaId::ArithCmpI,
+                                  OperationSchemaId::ArithMinSI};
+  constexpr std::array inputs = {8U, 8U};
+  constexpr std::array results = {1U};
+  expectError(test,
+              resolveFabricOpSemanticFieldRelation(
+                  ImplementationFamilyId::FixedVectorIntegerCompareMinMax,
+                  params, schemas, inputs, results, context),
+              "enabled schema");
 }
 
 } // namespace
@@ -389,5 +419,6 @@ int main() {
   concreteRelationRejectsDisabledAliasesAndInvalidSingletons();
   everyVectorIntegerFamilyOwnsItsExactImage();
   projectionIgnoresIncidentalVectorShape();
+  everyEnabledSchemaRequiresAReachableWitness();
   return EXIT_SUCCESS;
 }

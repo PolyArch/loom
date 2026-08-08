@@ -9,10 +9,13 @@
 #include "ImplementationFamilyBehaviorInternal.h"
 #include "ImplementationFamilyFixedBehavior.h"
 #include "ImplementationFamilyScalarFloatBehavior.h"
+#include "ImplementationFamilyScalarFloatCompareBehavior.h"
 #include "ImplementationFamilyScalarIntegerBehavior.h"
 #include "ImplementationFamilySpecialMath.h"
+#include "ImplementationFamilyVectorFloatBehavior.h"
 #include "ImplementationFamilyVectorIntegerBehavior.h"
 
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
@@ -38,31 +41,41 @@ llvm::Error reject(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
 }
 
-enum class FiniteBehaviorRelationOwner : std::uint8_t {
-  Generic,
+enum class BehaviorRelationOwner : std::uint8_t {
+  Direct,
   Fixed,
   ScalarFloat,
+  ScalarFloatCompare,
+  FixedVectorFloat,
   ScalarInteger,
   FixedVectorInteger,
   Control,
   SpecialMath,
 };
 
-FiniteBehaviorRelationOwner
-finiteBehaviorRelationOwner(ImplementationFamilyId family) {
+std::optional<BehaviorRelationOwner>
+behaviorRelationOwner(ImplementationFamilyId family) {
+  if (family == ImplementationFamilyId::TokenConstant ||
+      family == ImplementationFamilyId::FixedVectorSliceAlignMerge ||
+      family == ImplementationFamilyId::FixedVectorShuffle)
+    return BehaviorRelationOwner::Direct;
   if (detail::ownsFixedBehaviorRelation(family))
-    return FiniteBehaviorRelationOwner::Fixed;
+    return BehaviorRelationOwner::Fixed;
+  if (detail::ownsScalarFloatCompareBehaviorRelation(family))
+    return BehaviorRelationOwner::ScalarFloatCompare;
   if (detail::ownsScalarFloatBehaviorRelation(family))
-    return FiniteBehaviorRelationOwner::ScalarFloat;
+    return BehaviorRelationOwner::ScalarFloat;
+  if (detail::ownsFixedVectorFloatBehaviorRelation(family))
+    return BehaviorRelationOwner::FixedVectorFloat;
   if (detail::ownsScalarIntegerBehaviorRelation(family))
-    return FiniteBehaviorRelationOwner::ScalarInteger;
+    return BehaviorRelationOwner::ScalarInteger;
   if (detail::ownsFixedVectorIntegerBehaviorRelation(family))
-    return FiniteBehaviorRelationOwner::FixedVectorInteger;
+    return BehaviorRelationOwner::FixedVectorInteger;
   if (detail::ownsControlBehaviorRelation(family))
-    return FiniteBehaviorRelationOwner::Control;
+    return BehaviorRelationOwner::Control;
   if (detail::ownsScalarSpecialMathBehaviorRelation(family))
-    return FiniteBehaviorRelationOwner::SpecialMath;
-  return FiniteBehaviorRelationOwner::Generic;
+    return BehaviorRelationOwner::SpecialMath;
+  return std::nullopt;
 }
 
 llvm::Error validatePackedShape(llvm::ArrayRef<std::uint8_t> value,
@@ -90,6 +103,148 @@ void writePackedBit(std::vector<std::uint8_t> &value, std::uint64_t offset,
                     bool bit) {
   if (bit)
     value[offset / 8] |= static_cast<std::uint8_t>(1U << (offset % 8));
+}
+
+void writePackedField(std::vector<std::uint8_t> &value, std::uint32_t offset,
+                      std::uint32_t width, std::uint64_t field) {
+  for (std::uint32_t bit = 0; bit != width; ++bit)
+    writePackedBit(value, offset + bit, ((field >> bit) & 1U) != 0);
+}
+
+std::vector<std::uint8_t> emptyPackedValue(std::uint32_t bitCount) {
+  return std::vector<std::uint8_t>((bitCount + 7) / 8, 0);
+}
+
+llvm::Expected<std::uint64_t> vectorStructuralWidth(::mlir::Type type) {
+  if (auto vector = llvm::dyn_cast<::mlir::VectorType>(type))
+    return ::dataflow::semantics::getFlattenedVectorBitWidth(vector);
+  if (auto integer = llvm::dyn_cast<::mlir::IntegerType>(type))
+    return integer.getWidth();
+  if (auto floating = llvm::dyn_cast<::mlir::FloatType>(type))
+    return floating.getWidth();
+  return reject("vector structural value has no fixed payload width");
+}
+
+struct FixedVectorSliceProjection final {
+  std::uint64_t staticOffsetBits = 0;
+  std::uint64_t sliceWidthBits = 0;
+  std::vector<std::uint64_t> dynamicStrideBits;
+};
+
+llvm::Expected<FixedVectorSliceProjection> projectFixedVectorSlice(
+    const ::dataflow::CanonicalActorSchemaProjection &actor) {
+  const auto *payload =
+      std::get_if<::dataflow::VectorStaticPositionPayload>(&actor.payload);
+  if (!payload)
+    return reject("vector slice actor has the wrong semantic payload");
+  ::mlir::VectorType container;
+  ::mlir::Type slice;
+  if (actor.schema == ::dataflow::OperationSchemaId::VectorExtract) {
+    if (actor.type.getNumInputs() == 0 || actor.type.getNumResults() != 1)
+      return reject("vector extract projector has incomplete actor ports");
+    container = llvm::dyn_cast<::mlir::VectorType>(actor.type.getInput(0));
+    slice = actor.type.getResult(0);
+  } else if (actor.schema == ::dataflow::OperationSchemaId::VectorInsert) {
+    if (actor.type.getNumInputs() < 2 || actor.type.getNumResults() != 1)
+      return reject("vector insert projector has incomplete actor ports");
+    slice = actor.type.getInput(0);
+    container = llvm::dyn_cast<::mlir::VectorType>(actor.type.getInput(1));
+  } else {
+    return reject("vector slice projector received a different schema");
+  }
+  if (!container)
+    return reject("vector slice projector has no container vector");
+  auto sliceWidth = vectorStructuralWidth(slice);
+  if (!sliceWidth)
+    return sliceWidth.takeError();
+
+  FixedVectorSliceProjection projection;
+  projection.sliceWidthBits = *sliceWidth;
+  for (auto [dimension, position] : llvm::enumerate(payload->position)) {
+    std::uint64_t stride = container.getElementTypeBitWidth();
+    for (std::int64_t extent : container.getShape().drop_front(dimension + 1)) {
+      auto next =
+          llvm::checkedMulUnsigned(stride, static_cast<std::uint64_t>(extent));
+      if (!next)
+        return reject("vector slice stride overflows uint64");
+      stride = *next;
+    }
+    if (position == ::mlir::ShapedType::kDynamic) {
+      projection.dynamicStrideBits.push_back(stride);
+      continue;
+    }
+    auto contribution =
+        llvm::checkedMulUnsigned(stride, static_cast<std::uint64_t>(position));
+    if (!contribution)
+      return reject("vector slice static offset overflows uint64");
+    auto next =
+        llvm::checkedAddUnsigned(projection.staticOffsetBits, *contribution);
+    if (!next)
+      return reject("vector slice static offset overflows uint64");
+    projection.staticOffsetBits = *next;
+  }
+  return projection;
+}
+
+llvm::Expected<::loom::CanonicalSemanticBytes> projectSliceConfiguration(
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    const FixedVectorSliceAlignMergeConfigurationLayout &layout) {
+  auto projection = projectFixedVectorSlice(actor);
+  if (!projection)
+    return projection.takeError();
+  std::vector<std::uint8_t> bytes = emptyPackedValue(layout.encodedBitCount);
+  if (layout.encodesMode)
+    writePackedField(
+        bytes, layout.modeBitOffset, 1,
+        actor.schema == ::dataflow::OperationSchemaId::VectorInsert ? 1 : 0);
+  writePackedField(bytes, layout.staticOffsetBitOffset, layout.offsetBitCount,
+                   projection->staticOffsetBits);
+  writePackedField(bytes, layout.sliceWidthBitOffset, layout.sliceWidthBitCount,
+                   projection->sliceWidthBits - 1);
+  for (auto [ordinal, stride] : llvm::enumerate(projection->dynamicStrideBits))
+    writePackedField(bytes,
+                     layout.dynamicStrideBitOffset +
+                         ordinal * layout.dynamicStrideBitCount,
+                     layout.dynamicStrideBitCount, stride);
+  return ::loom::CanonicalSemanticBytes(std::move(bytes));
+}
+
+llvm::Expected<::loom::CanonicalSemanticBytes> projectShuffleConfiguration(
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    const FixedVectorShuffleConfigurationLayout &layout) {
+  auto left = llvm::dyn_cast<::mlir::VectorType>(actor.type.getInput(0));
+  auto result = llvm::dyn_cast<::mlir::VectorType>(actor.type.getResult(0));
+  const auto *payload =
+      std::get_if<::dataflow::VectorShuffleMaskPayload>(&actor.payload);
+  if (!left || !result || !payload)
+    return reject("vector shuffle projector received a malformed actor");
+  auto resultWidth = ::dataflow::semantics::getFlattenedVectorBitWidth(result);
+  if (!resultWidth)
+    return resultWidth.takeError();
+  if (result.getDimSize(0) <= 0)
+    return reject("vector shuffle has no finite block width");
+  const std::uint64_t blockWidth =
+      *resultWidth / static_cast<std::uint64_t>(result.getDimSize(0));
+
+  std::vector<std::uint8_t> bytes = emptyPackedValue(layout.encodedBitCount);
+  writePackedField(bytes, layout.blockWidthBitOffset, layout.blockWidthBitCount,
+                   blockWidth - 1);
+  writePackedField(bytes, layout.leftBlockCountBitOffset,
+                   layout.blockCountBitCount,
+                   static_cast<std::uint64_t>(left.getDimSize(0) - 1));
+  writePackedField(bytes, layout.resultBlockCountBitOffset,
+                   layout.resultBlockCountBitCount,
+                   static_cast<std::uint64_t>(result.getDimSize(0) - 1));
+  for (std::uint32_t ordinal = 0; ordinal != layout.selectorCount; ++ordinal) {
+    const std::uint64_t selector =
+        ordinal < payload->mask.size() && payload->mask[ordinal] >= 0
+            ? static_cast<std::uint64_t>(payload->mask[ordinal])
+            : 0;
+    writePackedField(
+        bytes, layout.selectorBitOffset + ordinal * layout.selectorBitCount,
+        layout.selectorBitCount, selector);
+  }
+  return ::loom::CanonicalSemanticBytes(std::move(bytes));
 }
 
 bool admitsElementWidth(const IntegerWidthSet &integers,
@@ -200,7 +355,7 @@ validateSlice(llvm::ArrayRef<std::uint8_t> value,
       return reject("vector slice stride exceeds container capacity");
     strides.push_back(stride);
   }
-  for (std::size_t ordinal = 1; ordinal != strides.size(); ++ordinal)
+  for (std::size_t ordinal = 1; ordinal < strides.size(); ++ordinal)
     if (strides[ordinal - 1] % strides[ordinal] != 0)
       return reject("vector slice strides are not row-major divisible");
   if (!strides.empty() && strides.back() % sliceWidth != 0)
@@ -310,6 +465,104 @@ validateShuffle(llvm::ArrayRef<std::uint8_t> value,
       *resultWidth > physicalResultWidths[0])
     return reject("vector shuffle result geometry is not reachable");
   return llvm::Error::success();
+}
+
+bool hasReachableSliceValue(
+    const FixedVectorSliceAlignMergeParams &params,
+    ::dataflow::OperationSchemaId schema,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
+    llvm::ArrayRef<std::uint32_t> physicalInputWidths,
+    llvm::ArrayRef<std::uint32_t> physicalResultWidths,
+    const FixedVectorSliceAlignMergeConfigurationLayout &layout) {
+  const auto tryWidth = [&](std::uint32_t width) {
+    std::vector<std::uint8_t> value = emptyPackedValue(layout.encodedBitCount);
+    if (layout.encodesMode)
+      writePackedField(
+          value, layout.modeBitOffset, 1,
+          schema == ::dataflow::OperationSchemaId::VectorInsert ? 1 : 0);
+    writePackedField(value, layout.sliceWidthBitOffset,
+                     layout.sliceWidthBitCount, width - 1);
+    llvm::Error error =
+        validateSlice(value, params, enabledSchemas, physicalInputWidths,
+                      physicalResultWidths, layout);
+    if (!error)
+      return true;
+    llvm::consumeError(std::move(error));
+    return false;
+  };
+  for (IntegerWidth width : integerWidthDomain)
+    if (params.integerElementWidths.contains(width) &&
+        tryWidth(getBitWidth(width)))
+      return true;
+  for (FloatFormat format : floatFormatDomain)
+    if (params.floatElementFormats.contains(format) &&
+        tryWidth(getBitWidth(format)))
+      return true;
+  return false;
+}
+
+llvm::Expected<FiniteImplementationFamilyBehaviorPoint>
+makeZeroBitSliceWitness(const FixedVectorSliceAlignMergeParams &params,
+                        ::dataflow::OperationSchemaId schema,
+                        llvm::ArrayRef<std::uint32_t> physicalInputWidths,
+                        llvm::ArrayRef<std::uint32_t> physicalResultWidths,
+                        ::mlir::MLIRContext &context) {
+  if (!params.integerElementWidths.contains(IntegerWidth::I1))
+    return reject("zero-bit vector slice has no one-bit element witness");
+  ::mlir::Type element = ::mlir::IntegerType::get(&context, 1);
+  ::mlir::Type container = ::mlir::VectorType::get({1}, element);
+  std::vector<::mlir::Type> inputs;
+  std::vector<std::uint64_t> operandPorts;
+  ::mlir::Type result;
+  if (schema == ::dataflow::OperationSchemaId::VectorExtract) {
+    inputs = {container};
+    operandPorts = {0};
+    result = element;
+  } else if (schema == ::dataflow::OperationSchemaId::VectorInsert) {
+    inputs = {element, container};
+    operandPorts = {0, 1};
+    result = container;
+  } else {
+    return reject("zero-bit vector slice has an unknown schema");
+  }
+  ::dataflow::CanonicalActorSchemaProjection actor{
+      schema, ::mlir::FunctionType::get(&context, inputs, {result}),
+      ::dataflow::VectorStaticPositionPayload{{0}}};
+  std::vector<std::uint64_t> resultPorts = {0};
+  if (llvm::Error error = detail::validateImplementationFamilyBehaviorPoint(
+          ImplementationFamilyId::FixedVectorSliceAlignMerge, params, actor,
+          operandPorts, resultPorts, physicalInputWidths, physicalResultWidths))
+    return std::move(error);
+  return FiniteImplementationFamilyBehaviorPoint(
+      std::move(actor), std::nullopt, std::nullopt, std::move(operandPorts),
+      std::move(resultPorts));
+}
+
+bool hasReachableShuffleValue(
+    const FixedVectorShuffleParams &params,
+    llvm::ArrayRef<std::uint32_t> physicalInputWidths,
+    llvm::ArrayRef<std::uint32_t> physicalResultWidths,
+    const FixedVectorShuffleConfigurationLayout &layout) {
+  const auto tryWidth = [&](std::uint32_t width) {
+    std::vector<std::uint8_t> value = emptyPackedValue(layout.encodedBitCount);
+    writePackedField(value, layout.blockWidthBitOffset,
+                     layout.blockWidthBitCount, width - 1);
+    llvm::Error error = validateShuffle(value, params, physicalInputWidths,
+                                        physicalResultWidths, layout);
+    if (!error)
+      return true;
+    llvm::consumeError(std::move(error));
+    return false;
+  };
+  for (IntegerWidth width : integerWidthDomain)
+    if (params.integerElementWidths.contains(width) &&
+        tryWidth(getBitWidth(width)))
+      return true;
+  for (FloatFormat format : floatFormatDomain)
+    if (params.floatElementFormats.contains(format) &&
+        tryWidth(getBitWidth(format)))
+      return true;
+  return false;
 }
 
 llvm::Expected<::loom::CanonicalSemanticBytes>
@@ -443,34 +696,53 @@ fabric::FabricOpSemanticFieldRelation::projectSemanticValue(
           physicalInputWidths_, physicalResultWidths_, resolvedIndexWidth))
     return std::move(error);
 
+  ::dataflow::CanonicalActorSchemaProjection representedActor = actor;
+  if (resolvedIndexWidth) {
+    auto represented = projectResolvedIndexTypes(
+        actor, getResolvedIndexBitWidth(*resolvedIndexWidth));
+    if (!represented)
+      return represented.takeError();
+    representedActor = std::move(*represented);
+  }
+
   auto projected = [&]() -> llvm::Expected<::loom::CanonicalSemanticBytes> {
     if (family_ == ImplementationFamilyId::TokenConstant)
-      return projectConstant(actor, directEncodedBitCount_);
-    switch (finiteBehaviorRelationOwner(family_)) {
-    case FiniteBehaviorRelationOwner::Fixed:
+      return projectConstant(representedActor, directEncodedBitCount_);
+    const auto owner = behaviorRelationOwner(family_);
+    if (!owner)
+      return reject("implementation family has no behavior relation owner");
+    switch (*owner) {
+    case BehaviorRelationOwner::Direct:
+      if (family_ == ImplementationFamilyId::FixedVectorSliceAlignMerge)
+        return projectSliceConfiguration(representedActor, *sliceLayout_);
+      if (family_ == ImplementationFamilyId::FixedVectorShuffle)
+        return projectShuffleConfiguration(representedActor, *shuffleLayout_);
+      return reject("direct behavior relation has no projector");
+    case BehaviorRelationOwner::Fixed:
       return reject("fixed behavior relation has no semantic field");
-    case FiniteBehaviorRelationOwner::ScalarFloat:
+    case BehaviorRelationOwner::ScalarFloat:
       return detail::projectScalarFloatBehavior(family_, actor,
                                                 finiteBehaviorDomain_);
-    case FiniteBehaviorRelationOwner::ScalarInteger:
+    case BehaviorRelationOwner::ScalarFloatCompare:
+      return detail::projectScalarFloatCompareBehavior(
+          family_, params_, enabledSchemas_, actor, finiteBehaviorDomain_);
+    case BehaviorRelationOwner::FixedVectorFloat:
+      return detail::projectFixedVectorFloatBehavior(family_, actor,
+                                                     finiteBehaviorDomain_);
+    case BehaviorRelationOwner::ScalarInteger:
       return detail::projectScalarIntegerBehavior(
           family_, actor, resolvedIndexWidth, finiteBehaviorDomain_);
-    case FiniteBehaviorRelationOwner::FixedVectorInteger:
+    case BehaviorRelationOwner::FixedVectorInteger:
       return detail::projectFixedVectorIntegerBehavior(family_, actor,
                                                        finiteBehaviorDomain_);
-    case FiniteBehaviorRelationOwner::Control:
+    case BehaviorRelationOwner::Control:
       return detail::projectControlBehaviorKey(
           family_, finiteBehaviorDomain_, actor, operandPorts, resultPorts);
-    case FiniteBehaviorRelationOwner::SpecialMath:
+    case BehaviorRelationOwner::SpecialMath:
       return detail::projectScalarSpecialMathBehavior(family_, actor,
                                                       finiteBehaviorDomain_);
-    case FiniteBehaviorRelationOwner::Generic:
-      return encodeImplementationFamilySemanticConfiguration(
-          family_, params_, enabledSchemas_, physicalInputWidths_.size(),
-          physicalResultWidths_.size(), actor, operandPorts, resultPorts,
-          resolvedIndexWidth);
     }
-    llvm_unreachable("unhandled finite behavior relation owner");
+    llvm_unreachable("unhandled behavior relation owner");
   }();
   if (!projected)
     return projected.takeError();
@@ -491,46 +763,93 @@ fabric::resolveFabricOpSemanticFieldRelation(
     return reject("GEP behavior relation requires canonical integer address "
                   "normalization");
 
-  const FiniteBehaviorRelationOwner owner = finiteBehaviorRelationOwner(family);
-  bool genericNeedsField = true;
-  if (owner == FiniteBehaviorRelationOwner::Generic) {
-    auto needsField = requiresSemanticConfigurationField(
-        family, params, enabledSchemas, physicalInputWidths.size(),
-        physicalResultWidths.size());
-    if (!needsField)
-      return needsField.takeError();
-    genericNeedsField = *needsField;
+  const auto owner = behaviorRelationOwner(family);
+  if (!owner)
+    return reject("implementation family has no behavior relation owner");
+  if (enabledSchemas.empty())
+    return reject("concrete capability has no enabled operation schema");
+  for (auto [ordinal, schema] : llvm::enumerate(enabledSchemas)) {
+    if (!admitsOperationSchema(family, schema))
+      return reject("operation schema is not admitted by the implementation "
+                    "family");
+    if (llvm::is_contained(enabledSchemas.take_front(ordinal), schema))
+      return reject("concrete capability contains a duplicate operation "
+                    "schema");
   }
 
   std::optional<FixedVectorSliceAlignMergeConfigurationLayout> sliceLayout;
   std::optional<FixedVectorShuffleConfigurationLayout> shuffleLayout;
   std::uint32_t directBitCount = 0;
   bool direct = false;
-  if (family == ImplementationFamilyId::TokenConstant) {
+  if (*owner == BehaviorRelationOwner::Direct &&
+      family == ImplementationFamilyId::TokenConstant) {
     const auto *constant = std::get_if<PayloadCapacityParams>(&params);
-    if (!constant || physicalResultWidths.empty())
-      return reject("constant direct carrier has no physical result");
+    if (!constant)
+      return reject("implementation family has the wrong parameter schema");
+    if (physicalInputWidths.empty() || physicalResultWidths.empty())
+      return reject("constant direct carrier has incomplete physical roles");
     directBitCount =
         std::min(constant->maxPayloadBits, physicalResultWidths.front());
     if (directBitCount == 0)
       return reject("constant direct carrier has zero width");
     direct = true;
-  } else if (family == ImplementationFamilyId::FixedVectorSliceAlignMerge) {
+  } else if (*owner == BehaviorRelationOwner::Direct &&
+             family == ImplementationFamilyId::FixedVectorSliceAlignMerge) {
+    const auto *slice = std::get_if<FixedVectorSliceAlignMergeParams>(&params);
+    if (!slice)
+      return reject("implementation family has the wrong parameter schema");
     auto resolvedLayout = resolveFixedVectorSliceAlignMergeConfigurationLayout(
-        std::get<FixedVectorSliceAlignMergeParams>(params), enabledSchemas);
+        *slice, enabledSchemas);
     if (!resolvedLayout)
       return resolvedLayout.takeError();
     sliceLayout = std::move(*resolvedLayout);
     directBitCount = sliceLayout->encodedBitCount;
+    for (::dataflow::OperationSchemaId schema : enabledSchemas)
+      if (!hasReachableSliceValue(*slice, schema, enabledSchemas,
+                                  physicalInputWidths, physicalResultWidths,
+                                  *sliceLayout))
+        return reject("vector slice enabled schema has no physically "
+                      "reachable behavior");
     direct = true;
-  } else if (family == ImplementationFamilyId::FixedVectorShuffle) {
-    auto resolvedLayout = resolveFixedVectorShuffleConfigurationLayout(
-        std::get<FixedVectorShuffleParams>(params));
+  } else if (*owner == BehaviorRelationOwner::Direct &&
+             family == ImplementationFamilyId::FixedVectorShuffle) {
+    const auto *shuffle = std::get_if<FixedVectorShuffleParams>(&params);
+    if (!shuffle)
+      return reject("implementation family has the wrong parameter schema");
+    auto resolvedLayout =
+        resolveFixedVectorShuffleConfigurationLayout(*shuffle);
     if (!resolvedLayout)
       return resolvedLayout.takeError();
     shuffleLayout = std::move(*resolvedLayout);
     directBitCount = shuffleLayout->encodedBitCount;
+    if (!hasReachableShuffleValue(*shuffle, physicalInputWidths,
+                                  physicalResultWidths, *shuffleLayout))
+      return reject("vector shuffle capability has no physically reachable "
+                    "behavior");
     direct = true;
+  }
+
+  if (direct && directBitCount == 0) {
+    if (family != ImplementationFamilyId::FixedVectorSliceAlignMerge ||
+        enabledSchemas.size() != 1)
+      return reject("zero-bit direct carrier has no unique behavior witness");
+    auto witness = makeZeroBitSliceWitness(
+        std::get<FixedVectorSliceAlignMergeParams>(params),
+        enabledSchemas.front(), physicalInputWidths, physicalResultWidths,
+        context);
+    if (!witness)
+      return witness.takeError();
+    std::vector<FiniteImplementationFamilyBehaviorPoint> domain;
+    domain.push_back(std::move(*witness));
+    return FabricOpSemanticFieldRelation(
+        FabricOpSemanticFieldRelationKind::None, family, params,
+        std::vector<::dataflow::OperationSchemaId>(enabledSchemas.begin(),
+                                                   enabledSchemas.end()),
+        std::vector<std::uint32_t>(physicalInputWidths.begin(),
+                                   physicalInputWidths.end()),
+        std::vector<std::uint32_t>(physicalResultWidths.begin(),
+                                   physicalResultWidths.end()),
+        std::move(domain), 0, std::move(sliceLayout), std::move(shuffleLayout));
   }
 
   if (direct)
@@ -544,81 +863,53 @@ fabric::resolveFabricOpSemanticFieldRelation(
                                    physicalResultWidths.end()),
         {}, directBitCount, std::move(sliceLayout), std::move(shuffleLayout));
 
-  if (!genericNeedsField)
-    return FabricOpSemanticFieldRelation(
-        FabricOpSemanticFieldRelationKind::None, family, params,
-        std::vector<::dataflow::OperationSchemaId>(enabledSchemas.begin(),
-                                                   enabledSchemas.end()),
-        std::vector<std::uint32_t>(physicalInputWidths.begin(),
-                                   physicalInputWidths.end()),
-        std::vector<std::uint32_t>(physicalResultWidths.begin(),
-                                   physicalResultWidths.end()),
-        {}, 0, std::nullopt, std::nullopt);
-
   auto domain = [&]()
       -> llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>> {
-    switch (owner) {
-    case FiniteBehaviorRelationOwner::Fixed:
+    switch (*owner) {
+    case BehaviorRelationOwner::Direct:
+      return reject("direct behavior relation has no finite domain");
+    case BehaviorRelationOwner::Fixed:
       return detail::resolveFixedBehaviorDomain(family, params, enabledSchemas,
                                                 physicalInputWidths,
                                                 physicalResultWidths, context);
-    case FiniteBehaviorRelationOwner::ScalarFloat:
+    case BehaviorRelationOwner::ScalarFloat:
       return detail::resolveScalarFloatBehaviorDomain(
           family, params, enabledSchemas, physicalInputWidths,
           physicalResultWidths, context);
-    case FiniteBehaviorRelationOwner::ScalarInteger:
+    case BehaviorRelationOwner::ScalarFloatCompare:
+      return detail::resolveScalarFloatCompareBehaviorDomain(
+          family, params, enabledSchemas, physicalInputWidths,
+          physicalResultWidths, context);
+    case BehaviorRelationOwner::FixedVectorFloat:
+      return detail::resolveFixedVectorFloatBehaviorDomain(
+          family, params, enabledSchemas, physicalInputWidths,
+          physicalResultWidths, context);
+    case BehaviorRelationOwner::ScalarInteger:
       return detail::resolveScalarIntegerBehaviorDomain(
           family, params, enabledSchemas, physicalInputWidths,
           physicalResultWidths, context);
-    case FiniteBehaviorRelationOwner::FixedVectorInteger:
+    case BehaviorRelationOwner::FixedVectorInteger:
       return detail::resolveFixedVectorIntegerBehaviorDomain(
           family, params, enabledSchemas, physicalInputWidths,
           physicalResultWidths, context);
-    case FiniteBehaviorRelationOwner::Control:
+    case BehaviorRelationOwner::Control:
       return detail::resolveControlBehaviorDomain(
           family, params, enabledSchemas, physicalInputWidths,
           physicalResultWidths, context);
-    case FiniteBehaviorRelationOwner::SpecialMath:
+    case BehaviorRelationOwner::SpecialMath:
       return detail::resolveScalarSpecialMathBehaviorDomain(
           family, params, enabledSchemas, physicalInputWidths,
           physicalResultWidths, context);
-    case FiniteBehaviorRelationOwner::Generic:
-      return resolveFiniteImplementationFamilyBehaviorDomain(
-          family, params, enabledSchemas, physicalInputWidths.size(),
-          physicalResultWidths.size(), context,
-          [](const ::dataflow::CanonicalActorSchemaProjection &,
-             std::optional<ResolvedIndexWidth>) {
-            return llvm::Error::success();
-          });
     }
-    llvm_unreachable("unhandled finite behavior relation owner");
+    llvm_unreachable("unhandled behavior relation owner");
   }();
   if (!domain)
     return domain.takeError();
 
-  const bool domainIsPhysicallyFiltered =
-      owner != FiniteBehaviorRelationOwner::Generic;
-  std::vector<FiniteImplementationFamilyBehaviorPoint> reachable;
-  std::string firstPhysicalRejection;
-  for (auto &point : *domain) {
-    if (!domainIsPhysicallyFiltered) {
-      if (llvm::Error error = validatePhysicalCapacity(
-              point.representativeActor, point.operandPorts, point.resultPorts,
-              physicalInputWidths, physicalResultWidths,
-              point.resolvedIndexWidth)) {
-        if (firstPhysicalRejection.empty())
-          firstPhysicalRejection = llvm::toString(std::move(error));
-        else
-          llvm::consumeError(std::move(error));
-        continue;
-      }
-    }
-    reachable.push_back(std::move(point));
-  }
+  std::vector<FiniteImplementationFamilyBehaviorPoint> reachable =
+      std::move(*domain);
   if (reachable.empty())
-    return reject(firstPhysicalRejection.empty()
-                      ? "concrete capability has no reachable behavior"
-                      : firstPhysicalRejection);
+    return reject("concrete capability has no reachable behavior");
   llvm::sort(reachable, [](const auto &lhs, const auto &rhs) {
     if (!lhs.semanticConfiguration)
       return rhs.semanticConfiguration.has_value();

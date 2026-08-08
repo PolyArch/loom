@@ -648,22 +648,31 @@ void malformedAndUnsupportedCapabilitiesFailClosed(
           ::fabric::IntegerWidthSet::get({::fabric::IntegerWidth::I8}),
           ::fabric::FloatFormatSet{}, 128},
       {8, 64, 64}, 64);
+  const auto &narrowedCapability = capability(test, undersized);
+  const auto narrowedDomain = take(
+      test, narrowedCapability.resolveFiniteBehaviorDomain(fabricContext()));
+  require(test,
+          narrowedCapability.configurationFieldSchema.empty() &&
+              narrowedDomain.size() == 1 &&
+              !narrowedDomain.front().semanticConfiguration &&
+              behaviorElementWidth(narrowedDomain.front()) == 8,
+          "physical ports did not narrow select to vector<8xi8>");
   FinalizedConfigurationABI undersizedAbi =
       makeConfigurationAbi(test, store, undersized);
   std::unique_ptr<mlir::MLIRContext> undersizedContext = makeCirctContext();
   SkeletonFixture undersizedSkeleton =
       makeSkeleton(test, *undersizedContext, undersized, undersizedAbi.abi());
-  const std::string undersizedBefore = moduleText(*undersizedSkeleton.module);
   FabricOperationProviderRegistry registry;
   if (llvm::Error error =
           registerPortableFixedVectorValueSelectProvider(registry))
     fail(test, llvm::toString(std::move(error)));
-  expectError(test,
-              specializeForFailure(undersizedSkeleton, undersized,
-                                   undersizedAbi, registry),
-              "physical input");
-  require(test, moduleText(*undersizedSkeleton.module) == undersizedBefore,
-          "undersized select capability partially mutated the caller module");
+  const std::string narrowedRtl =
+      specialize(test, undersizedSkeleton, undersized, undersizedAbi);
+  require(test,
+          !llvm::StringRef(narrowedRtl).contains("config_0") &&
+              llvm::StringRef(narrowedRtl).contains("data_input_0[7]") &&
+              !llvm::StringRef(narrowedRtl).contains("data_input_0[8]"),
+          "narrow select did not use exactly eight condition lanes");
 
   FabricFixture unsupportedContract =
       makeFabric(test, store, "unsupported-contract-vector-select",

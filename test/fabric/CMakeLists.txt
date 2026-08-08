@@ -240,6 +240,10 @@ add_executable(loom-fabric-implementation-family-behavior-inventory-test
   ImplementationFamilyBehaviorInventoryTest.cpp
 )
 
+target_include_directories(loom-fabric-implementation-family-behavior-inventory-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Fabric/IR
+)
+
 target_link_libraries(loom-fabric-implementation-family-behavior-inventory-test PRIVATE
   LoomFabricImplementationFamily
   MLIRDataflow
@@ -292,11 +296,41 @@ target_link_libraries(loom-fabric-scalar-float-behavior-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-fabric-scalar-float-compare-behavior-test
+  ImplementationFamilyScalarFloatCompareBehaviorTest.cpp
+)
+
+target_include_directories(loom-fabric-scalar-float-compare-behavior-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Fabric/IR
+)
+
+target_link_libraries(loom-fabric-scalar-float-compare-behavior-test PRIVATE
+  LoomFabricImplementationFamily
+  MLIRDataflow
+  MLIRIR
+  LLVMSupport
+)
+
 add_executable(loom-fabric-fixed-vector-integer-behavior-test
   FixedVectorIntegerBehaviorRelationTest.cpp
 )
 
 target_link_libraries(loom-fabric-fixed-vector-integer-behavior-test PRIVATE
+  LoomFabricImplementationFamily
+  MLIRDataflow
+  MLIRIR
+  LLVMSupport
+)
+
+add_executable(loom-fabric-fixed-vector-float-behavior-test
+  FixedVectorFloatBehaviorRelationTest.cpp
+)
+
+target_include_directories(loom-fabric-fixed-vector-float-behavior-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Fabric/IR
+)
+
+target_link_libraries(loom-fabric-fixed-vector-float-behavior-test PRIVATE
   LoomFabricImplementationFamily
   MLIRDataflow
   MLIRIR
@@ -341,6 +375,10 @@ add_executable(loom-fabric-system-canonical-labeling-test
 
 add_executable(loom-fabric-artifact-finalizer-test
   FabricArtifactFinalizerTest.cpp
+)
+
+add_executable(loom-fabric-behavior-relation-finalization-test
+  FabricBehaviorRelationFinalizationTest.cpp
 )
 
 add_executable(loom-fabric-pe-configuration-test
@@ -460,6 +498,16 @@ target_link_libraries(loom-fabric-system-canonical-labeling-test PRIVATE
 
 target_link_libraries(loom-fabric-artifact-finalizer-test PRIVATE
   LoomADGBuilder
+  LoomCommon
+  LoomFabricArtifact
+  MLIRDataflow
+  MLIRFabric
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-behavior-relation-finalization-test PRIVATE
   LoomCommon
   LoomFabricArtifact
   MLIRDataflow

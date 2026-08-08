@@ -29,6 +29,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -200,8 +201,8 @@ makeFabric(llvm::StringRef test, const ArtifactStore &store,
       kind == FabricFixtureKind::UnsupportedContract
           ? ::fabric::loopCarryOperationResourceContract()
           : ::fabric::oneCycleElasticOperationResourceContract();
-  const std::vector<std::uint8_t> contract = take(
-      test, ::fabric::encodeResourceContractRecord(resourceContract));
+  const std::vector<std::uint8_t> contract =
+      take(test, ::fabric::encodeResourceContractRecord(resourceContract));
   const std::vector<std::int8_t> signedContract(contract.begin(),
                                                 contract.end());
   source->walk([&](::fabric::OpOp operation) {
@@ -554,29 +555,42 @@ void fixedSchemaStaysOutsideWidthValues() {
       dataflow::OperationSchemaId::ArithAddI;
   const dataflow::OperationSchemaId subtractSchema =
       dataflow::OperationSchemaId::ArithSubI;
+  constexpr std::array<std::uint32_t, 2> inputWidths = {128, 128};
+  constexpr std::array<std::uint32_t, 1> resultWidths = {128};
+  const auto addRelation =
+      take(test, ::fabric::resolveFabricOpSemanticFieldRelation(
+                     ::fabric::ImplementationFamilyId::FixedVectorIntegerAddSub,
+                     parameters, llvm::ArrayRef(addSchema), inputWidths,
+                     resultWidths, fabricContext()));
+  const auto subtractRelation =
+      take(test, ::fabric::resolveFabricOpSemanticFieldRelation(
+                     ::fabric::ImplementationFamilyId::FixedVectorIntegerAddSub,
+                     parameters, llvm::ArrayRef(subtractSchema), inputWidths,
+                     resultWidths, fabricContext()));
+  require(test,
+          addRelation.finiteBehaviorDomain().size() == 2 &&
+              subtractRelation.finiteBehaviorDomain().size() == 2,
+          "single-schema vector relations lost their width domain");
+  constexpr std::array<std::uint64_t, 2> operandPorts = {0, 1};
+  constexpr std::array<std::uint64_t, 1> resultPorts = {0};
   for (unsigned width : {8U, 16U}) {
     const loom::CanonicalSemanticBytes add = take(
         test,
-        ::fabric::encodeImplementationFamilySemanticConfiguration(
-            ::fabric::ImplementationFamilyId::FixedVectorIntegerAddSub,
-            parameters, llvm::ArrayRef(addSchema), 2, 1,
+        addRelation.projectSemanticValue(
             actor({static_cast<std::int64_t>(128 / width)}, width, addSchema),
-            std::array<std::uint64_t, 2>{0, 1},
-            std::array<std::uint64_t, 1>{0}));
-    const loom::CanonicalSemanticBytes subtract = take(
-        test, ::fabric::encodeImplementationFamilySemanticConfiguration(
-                  ::fabric::ImplementationFamilyId::FixedVectorIntegerAddSub,
-                  parameters, llvm::ArrayRef(subtractSchema), 2, 1,
-                  actor({static_cast<std::int64_t>(128 / width)}, width,
-                        subtractSchema),
-                  std::array<std::uint64_t, 2>{0, 1},
-                  std::array<std::uint64_t, 1>{0}));
+            operandPorts, resultPorts));
+    const loom::CanonicalSemanticBytes subtract =
+        take(test, subtractRelation.projectSemanticValue(
+                       actor({static_cast<std::int64_t>(128 / width)}, width,
+                             subtractSchema),
+                       operandPorts, resultPorts));
     require(test, add.bytes().equals(subtract.bytes()),
             "fixed operation schema entered width-selector bytes");
   }
 }
 
-void physicalCapacityFailsClosed(const std::filesystem::path &root) {
+void physicalCapacityNarrowsTheBehaviorDomain(
+    const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
   std::filesystem::create_directories(root);
   ArtifactStore store(root.string());
@@ -588,30 +602,29 @@ void physicalCapacityFailsClosed(const std::filesystem::path &root) {
   auto narrow = *capability;
   for (auto &port : narrow.physicalPorts)
     port.payloadWidthBits = 64;
-  expectError(test, narrow.resolveFiniteBehaviorDomain(fabricContext()),
-              "physical input");
+  const auto domain =
+      take(test, narrow.resolveFiniteBehaviorDomain(fabricContext()));
+  require(test, domain.size() == 4,
+          "64-bit physical ports lost a reachable add/sub behavior");
+  for (const auto &point : domain) {
+    const auto vector = mlir::cast<mlir::VectorType>(
+        point.representativeActor.type.getInput(0));
+    require(test,
+            vector.getNumElements() * vector.getElementTypeBitWidth() == 64,
+            "behavior witness exceeded the narrowed physical datapath");
+  }
 
   FabricFixture fabric = makeFabric(test, store, FabricFixtureKind::Undersized);
   FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
   std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
   SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi());
-  const std::string before = moduleText(*skeleton.module);
-  FabricOperationProviderRegistry registry;
-  if (llvm::Error error =
-          registerPortableFixedVectorIntegerAddSubProvider(registry))
-    fail(test, llvm::toString(std::move(error)));
-  ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  expectError(test,
-              specializeFabricOperationLeaves(*skeleton.module, fabric.fabric,
-                                              abi, associations, recipes,
-                                              registry, externalContracts),
-              "physical input");
-  require(test, moduleText(*skeleton.module) == before,
-          "undersized vector capability mutated the common skeleton");
+  require(test, skeleton.leaf.getPortList().size() == 3,
+          "narrow singleton add retained a redundant selector");
+  const std::string rtl = specialize(test, skeleton, fabric, abi);
+  require(test,
+          !llvm::StringRef(rtl).contains("config_0") &&
+              llvm::StringRef(rtl).contains(" + "),
+          "narrow singleton add did not lower its reachable datapath");
 }
 
 void unsupportedResourceContractIsTransactional(
@@ -635,9 +648,9 @@ void unsupportedResourceContractIsTransactional(
       {skeleton.leaf, fabric.occurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
       {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  auto result = specializeFabricOperationLeaves(
-      *skeleton.module, fabric.fabric, abi, associations, recipes, registry,
-      externalContracts);
+  auto result = specializeFabricOperationLeaves(*skeleton.module, fabric.fabric,
+                                                abi, associations, recipes,
+                                                registry, externalContracts);
   require(test, !result, "unsupported resource contract specialized");
   bool classifiedUnsupported = false;
   llvm::handleAllErrors(
@@ -728,7 +741,7 @@ int main(int argc, char **argv) {
   configuredLaneBehaviorAndDeterminism(root);
   singletonNeedsNoSelector(root / "singleton");
   fixedSchemaStaysOutsideWidthValues();
-  physicalCapacityFailsClosed(root / "physical_capacity");
+  physicalCapacityNarrowsTheBehaviorDomain(root / "physical_capacity");
   unsupportedResourceContractIsTransactional(root / "resource_contract");
   malformedInputsFailClosed(root / "malformed");
   return 0;

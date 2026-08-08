@@ -1,7 +1,7 @@
 //===- ImplementationFamilySemanticConfiguration.cpp ---------------------===//
 //
-// Owns direct semantic-field layouts and the public compatibility query for
-// Fabric's sealed operation semantic-field relation.
+// Owns direct semantic-field layouts for Fabric's sealed operation
+// semantic-field relation.
 //
 //===----------------------------------------------------------------------===//
 
@@ -144,12 +144,4 @@ fabric::resolveFixedVectorShuffleConfigurationLayout(
     return std::move(error);
   layout.encodedBitCount = cursor;
   return layout;
-}
-
-llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
-    ImplementationFamilyId family, const FamilyCapabilityParams &params,
-    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
-    std::uint32_t physicalInputCount, std::uint32_t physicalResultCount) {
-  return detail::semanticConfigurationRequiresField(
-      family, params, enabledSchemas, physicalInputCount, physicalResultCount);
 }

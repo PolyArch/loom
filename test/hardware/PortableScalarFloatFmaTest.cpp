@@ -4,6 +4,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
@@ -71,7 +72,9 @@ template <typename T>
 void expectError(llvm::StringRef test, llvm::Expected<T> value,
                  llvm::StringRef expected) {
   if (value)
-    fail(test, "accepted invalid portable scalar FMA input");
+    fail(test,
+         "accepted invalid portable scalar FMA input expected to report " +
+             expected.str());
   const std::string message = llvm::toString(value.takeError());
   require(test, llvm::StringRef(message).contains(expected), message);
 }
@@ -244,8 +247,7 @@ FinalizedConfigurationABI makeConfigurationAbi(
           "scalar FMA fixture has an unexpected field count");
   const auto domain =
       take(test, capability->resolveFiniteBehaviorDomain(fabricContext()));
-  require(test, domain.size() == 4,
-          "Fabric did not project four scalar FMA formats");
+  require(test, !domain.empty(), "Fabric projected no scalar FMA formats");
 
   std::vector<FiniteCodebookEntry> entries;
   std::vector<std::uint8_t> inactive;
@@ -716,16 +718,6 @@ void invalidInputsFailClosed(const std::filesystem::path &root) {
                                ConfigurationAbiKind::ExtraSemanticValue),
           false, "configuration domain");
 
-  FabricFixture narrow =
-      makeFabric(test, store, FabricFixtureKind::NarrowPorts);
-  const auto *narrowCapability =
-      narrow.fabric.view().resolvedFabricOpCapability(narrow.occurrence);
-  require(test, narrowCapability != nullptr,
-          "narrow FMA capability did not resolve");
-  expectError(test,
-              narrowCapability->resolveFiniteBehaviorDomain(fabricContext()),
-              "enough width");
-
   FabricFixture wrongContract =
       makeFabric(test, store, FabricFixtureKind::WrongContract);
   FinalizedConfigurationABI wrongContractAbi =
@@ -762,6 +754,60 @@ void invalidInputsFailClosed(const std::filesystem::path &root) {
           "invalid FMA capability partially mutated the skeleton");
 }
 
+void physicalCapacityNarrowsTheFormatDomain(const std::filesystem::path &root) {
+  const llvm::StringRef test = __func__;
+  std::filesystem::create_directories(root);
+  ArtifactStore store(root.string());
+  FabricFixture narrow =
+      makeFabric(test, store, FabricFixtureKind::NarrowPorts);
+  const auto *capability =
+      narrow.fabric.view().resolvedFabricOpCapability(narrow.occurrence);
+  require(test, capability != nullptr, "narrow FMA capability did not resolve");
+  const auto domain =
+      take(test, capability->resolveFiniteBehaviorDomain(fabricContext()));
+  require(test, domain.size() == 3,
+          "32-bit physical ports did not remove only the f64 behavior");
+  bool sawF16 = false;
+  bool sawBF16 = false;
+  bool sawF32 = false;
+  for (const auto &point : domain) {
+    require(test, point.semanticConfiguration.has_value(),
+            "reachable FMA behavior has no semantic value");
+    const loom::CanonicalSemanticBytes expected =
+        take(test, dataflow::encodeCanonicalType(
+                       point.representativeActor.type.getInput(0)));
+    require(test, point.semanticConfiguration->bytes().equals(expected.bytes()),
+            "FMA behavior changed the ConfigurationABI 1.0 semantic codec");
+    switch (behaviorFormat(test, point)) {
+    case ::fabric::FloatFormat::F16:
+      sawF16 = true;
+      break;
+    case ::fabric::FloatFormat::BF16:
+      sawBF16 = true;
+      break;
+    case ::fabric::FloatFormat::F32:
+      sawF32 = true;
+      break;
+    case ::fabric::FloatFormat::F64:
+      fail(test, "32-bit physical ports retained an f64 behavior");
+    }
+  }
+  require(test, sawF16 && sawBF16 && sawF32,
+          "32-bit physical ports removed a reachable format");
+
+  FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, narrow);
+  std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
+  SkeletonFixture skeleton = makeSkeleton(test, *context, narrow, abi.abi(),
+                                          false, "scalar_float_fma_narrow");
+  const std::string rtl = specialize(test, skeleton, narrow, abi);
+  const llvm::StringRef text(rtl);
+  require(test,
+          text.contains("loom_fma_e5_f10") && text.contains("loom_fma_e8_f7") &&
+              text.contains("loom_fma_e8_f23") &&
+              !text.contains("loom_fma_e11_f52"),
+          "narrow FMA RTL does not match the reachable format domain");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -770,6 +816,7 @@ int main(int argc, char **argv) {
   const std::filesystem::path root(argv[1]);
   configuredBehaviorAndDeterminism(root);
   singletonNeedsNoSelector(root / "singleton");
+  physicalCapacityNarrowsTheFormatDomain(root / "narrow");
   invalidInputsFailClosed(root / "invalid");
   return 0;
 }

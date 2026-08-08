@@ -3,6 +3,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
@@ -68,13 +69,16 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value,
   require(test, llvm::StringRef(message).contains(expected), message);
 }
 
+mlir::MLIRContext &fabricContext();
+
 std::vector<std::uint8_t>
 operationValue(llvm::StringRef test,
                const loom::fabric::ResolvedFabricOpCapabilityView &capability,
                const loom::fabric::FabricSemanticConfigFieldRef &field,
                dataflow::OperationSchemaId schema) {
   const loom::CanonicalSemanticBytes encoded =
-      take(test, capability.encodeOperationSelection(field, schema));
+      take(test,
+           capability.encodeOperationSelection(field, schema, fabricContext()));
   return std::vector<std::uint8_t>(encoded.bytes().begin(),
                                    encoded.bytes().end());
 }
@@ -107,7 +111,6 @@ enum class ConfigurationAbiKind {
 enum class FabricFixtureKind {
   ConfiguredAddSub,
   SingletonAdd,
-  PointerAddSub,
   UnsupportedContract,
 };
 
@@ -136,36 +139,6 @@ makeFabric(llvm::StringRef test, const ArtifactStore &store,
           }
         }
         fabric.yield %pe : !fabric.bits<8>
-      }
-    }
-  )mlir";
-    break;
-  case FabricFixtureKind::PointerAddSub:
-    sourceText = R"mlir(
-    module {
-      fabric.module @pointer_add_sub(
-          %a: !fabric.bits<64>, %b: !fabric.bits<64>) -> !fabric.bits<64> {
-        %pe = fabric.pe [spatial]
-            (%pa = %a : !fabric.bits<64>, %pb = %b : !fabric.bits<64>)
-            -> !fabric.bits<64> {
-          %fu = fabric.fu
-              (%fa = %pa : !fabric.bits<64>, %fb = %pb : !fabric.bits<64>)
-              -> !fabric.bits<64> {
-            %value = fabric.op
-              [@arith.addi, @arith.subi, @llvm.getelementptr] (%fa, %fb)
-              {implementation_family =
-                 #fabric.implementation_family<ScalarIntegerAddSub>,
-               hw_params = {
-                 integer_widths = [8 : i32, 32 : i32, 64 : i32],
-                 pointer_formats = [{address_space = 0 : i32,
-                   representation_bits = 64 : i32,
-                   address_bits = 64 : i32,
-                   kind = "stable_integral"}]}}
-              : (!fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
-            fabric.yield %value : !fabric.bits<64>
-          }
-        }
-        fabric.yield %pe : !fabric.bits<64>
       }
     }
   )mlir";
@@ -204,8 +177,8 @@ makeFabric(llvm::StringRef test, const ArtifactStore &store,
       kind == FabricFixtureKind::UnsupportedContract
           ? ::fabric::loopCarryOperationResourceContract()
           : ::fabric::oneCycleElasticOperationResourceContract();
-  const std::vector<std::uint8_t> contract = take(
-      test, ::fabric::encodeResourceContractRecord(resourceContract));
+  const std::vector<std::uint8_t> contract =
+      take(test, ::fabric::encodeResourceContractRecord(resourceContract));
   const std::vector<std::int8_t> signedContract(contract.begin(),
                                                 contract.end());
   source->walk([&](::fabric::OpOp operation) {
@@ -435,6 +408,57 @@ stat
 )ys";
 }
 
+void operationSelectionPreservesConfigurationABI1Codec(
+    const std::filesystem::path &root) {
+  const llvm::StringRef test = __func__;
+  std::filesystem::create_directories(root);
+  ArtifactStore store(root.string());
+  FabricFixture fixture = makeFabric(test, store);
+  const auto *capability =
+      fixture.fabric.view().resolvedFabricOpCapability(fixture.occurrence);
+  require(test, capability != nullptr, "Fabric capability did not resolve");
+  require(test, capability->configurationFieldSchema.size() == 1,
+          "configured add/sub capability has no semantic field");
+  const auto &field = capability->configurationFieldSchema.front();
+  const auto domain =
+      take(test, capability->resolveFiniteBehaviorDomain(fabricContext()));
+  require(test, domain.size() == 2,
+          "configured add/sub capability changed its ABI 1.0 domain");
+
+  for (dataflow::OperationSchemaId schema : {
+           dataflow::OperationSchemaId::ArithAddI,
+           dataflow::OperationSchemaId::ArithSubI,
+       }) {
+    const loom::CanonicalSemanticBytes expected =
+        take(test, dataflow::encodeOperationSchemaId(schema));
+    const std::vector<std::uint8_t> actual =
+        operationValue(test, *capability, field, schema);
+    require(test, llvm::ArrayRef(actual).equals(expected.bytes()),
+            "operation selection changed the ConfigurationABI 1.0 semantic "
+            "codec");
+
+    mlir::Type i8 = mlir::IntegerType::get(&fabricContext(), 8);
+    const dataflow::CanonicalActorSchemaProjection actor{
+        schema, mlir::FunctionType::get(&fabricContext(), {i8, i8}, {i8}),
+        dataflow::IntegerOverflowPayload{}};
+    const loom::CanonicalSemanticBytes projected =
+        take(test, capability->encodeSemanticConfiguration(
+                       field, actor, 64, std::array<std::uint64_t, 2>{0, 1},
+                       std::array<std::uint64_t, 1>{0}));
+    require(test, projected.bytes().equals(expected.bytes()),
+            "actor projection changed the ConfigurationABI 1.0 semantic "
+            "codec");
+
+    const auto point = llvm::find_if(domain, [&](const auto &candidate) {
+      return candidate.representativeActor.schema == schema;
+    });
+    require(test,
+            point != domain.end() && point->semanticConfiguration &&
+                point->semanticConfiguration->bytes().equals(expected.bytes()),
+            "finite domain changed the ConfigurationABI 1.0 semantic codec");
+  }
+}
+
 void singletonNeedsNoSelector(const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
   std::filesystem::create_directories(root);
@@ -513,49 +537,6 @@ stat
 )ys";
 }
 
-void pointerCapabilityIsTypedUnsupported(const std::filesystem::path &root) {
-  const llvm::StringRef test = __func__;
-  std::filesystem::create_directories(root);
-  ArtifactStore store(root.string());
-  FabricFixture fabric =
-      makeFabric(test, store, FabricFixtureKind::PointerAddSub);
-  FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
-  std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
-  SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi());
-  const std::string before = moduleText(*skeleton.module);
-
-  FabricOperationProviderRegistry registry;
-  if (llvm::Error error = registerPortableScalarIntegerAddSubProvider(registry))
-    fail(test, llvm::toString(std::move(error)));
-  ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  auto result = specializeFabricOperationLeaves(*skeleton.module, fabric.fabric,
-                                                abi, associations, recipes,
-                                                registry, externalContracts);
-  require(test, !result, "pointer capability unexpectedly specialized");
-
-  bool classifiedUnsupported = false;
-  llvm::handleAllErrors(
-      result.takeError(),
-      [&](const FabricOperationProviderUnsupportedError &error) {
-        classifiedUnsupported =
-            error.implementationFamily() ==
-                ::fabric::ImplementationFamilyId::ScalarIntegerAddSub &&
-            error.recipe() == BackendRecipeKey::PortableSystemVerilog;
-      },
-      [&](const llvm::ErrorInfoBase &error) {
-        fail(test, "pointer capability returned the wrong error class: " +
-                       error.message());
-      });
-  require(test, classifiedUnsupported,
-          "pointer capability lost its typed Unsupported classification");
-  require(test, moduleText(*skeleton.module) == before,
-          "unsupported pointer capability mutated the common skeleton");
-}
-
 void unsupportedResourceContractIsTransactional(
     const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
@@ -576,9 +557,9 @@ void unsupportedResourceContractIsTransactional(
       {skeleton.leaf, fabric.occurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
       {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  auto result = specializeFabricOperationLeaves(
-      *skeleton.module, fabric.fabric, abi, associations, recipes, registry,
-      externalContracts);
+  auto result = specializeFabricOperationLeaves(*skeleton.module, fabric.fabric,
+                                                abi, associations, recipes,
+                                                registry, externalContracts);
   require(test, !result, "unsupported resource contract specialized");
   bool classifiedUnsupported = false;
   llvm::handleAllErrors(
@@ -666,10 +647,10 @@ int main(int argc, char **argv) {
   if (argc != 2)
     fail("main", "expected one temporary directory argument");
   const std::filesystem::path root(argv[1]);
+  operationSelectionPreservesConfigurationABI1Codec(root / "abi1_codec");
   configuredCodebookAndDeterminism(root);
   singletonNeedsNoSelector(root / "singleton");
   subtractInactiveControlsUnassignedCode(root / "subtract_inactive");
-  pointerCapabilityIsTypedUnsupported(root / "pointer");
   unsupportedResourceContractIsTransactional(root / "unsupported_contract");
   malformedInputsFailClosed(root / "malformed");
   return 0;

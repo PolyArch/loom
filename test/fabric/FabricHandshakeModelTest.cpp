@@ -767,7 +767,7 @@ void registerFifoPathsAreRegisteredBreaks() {
             %sum = fabric.op [@arith.addi] (%fu_lhs, %fu_rhs) {
               implementation_family =
                 #fabric.implementation_family<ScalarIntegerAddSub>,
-              hw_params = {integer_widths = [1 : i32]}
+              hw_params = {integer_widths = [16 : i32]}
             } : (!fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
             fabric.yield %sum : !fabric.bits<16>
           }

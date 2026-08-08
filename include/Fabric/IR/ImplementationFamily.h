@@ -809,6 +809,15 @@ private:
       llvm::ArrayRef<::dataflow::OperationSchemaId>,
       llvm::ArrayRef<std::uint32_t>, llvm::ArrayRef<std::uint32_t>,
       ::mlir::MLIRContext &);
+  friend llvm::Expected<::loom::CanonicalSemanticBytes>
+  encodeConfigurationABI1SemanticValue(
+      const FabricOpSemanticFieldRelation &,
+      const ::dataflow::CanonicalActorSchemaProjection &,
+      llvm::ArrayRef<std::uint64_t>, llvm::ArrayRef<std::uint64_t>,
+      std::optional<ResolvedIndexWidth>);
+  friend llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
+  projectConfigurationABI1FiniteBehaviorDomain(
+      const FabricOpSemanticFieldRelation &);
 };
 
 /// Derives the one sealed semantic-field carrier from a concrete operation
@@ -822,50 +831,23 @@ resolveFabricOpSemanticFieldRelation(
     llvm::ArrayRef<std::uint32_t> physicalResultWidths,
     ::mlir::MLIRContext &context);
 
-/// Whether one concrete operation relation needs a semantic configuration
-/// field to distinguish admitted hardware behaviors. The field is one
-/// composite typed value; ConfigurationABI alone later flattens it into
-/// physical leaves. This query interprets the generated family's existing
-/// typed admission provider and does not define another family registry.
-llvm::Expected<bool> requiresSemanticConfigurationField(
-    ImplementationFamilyId family, const FamilyCapabilityParams &params,
-    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
-    std::uint32_t physicalInputCount, std::uint32_t physicalResultCount);
-
-/// Encodes one admitted actor and its ordered physical-port correspondence
-/// into the concrete family's minimal semantic configuration value. The
-/// projection retains only facts that select different configured hardware
-/// behavior; ConfigurationABI separately owns the physical code.
+/// Preserves the ConfigurationABI 1.0 semantic-value wire representation for
+/// one actor already admitted by the sealed Fabric relation. New semantic
+/// ownership must not use this compatibility encoder.
 llvm::Expected<::loom::CanonicalSemanticBytes>
-encodeImplementationFamilySemanticConfiguration(
-    ImplementationFamilyId family, const FamilyCapabilityParams &params,
-    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
-    std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
+encodeConfigurationABI1SemanticValue(
+    const FabricOpSemanticFieldRelation &relation,
     const ::dataflow::CanonicalActorSchemaProjection &actor,
     llvm::ArrayRef<std::uint64_t> operandPorts,
     llvm::ArrayRef<std::uint64_t> resultPorts,
     std::optional<ResolvedIndexWidth> resolvedIndexWidth = std::nullopt);
 
-/// Resolves a finite concrete capability into unique configured hardware
-/// behaviors. Providers consume this projection instead of reconstructing
-/// exact actor modes from family parameters. `resolvedIndexWidth` is present
-/// exactly when the actor has an index endpoint. `verifyConcreteActor` applies
-/// resource-local constraints to every admitted actor and its exact index
-/// witness before semantically equivalent actors collapse to one
-/// representative. Families with non-finite field domains report that no
-/// finite projection is available. A family with an unbounded shape syntax
-/// uses maximal witnesses that cover every behavior-equivalent actor under its
-/// monotone resource-local constraints.
+/// Projects every point of one sealed finite relation through the
+/// ConfigurationABI 1.0 wire adapter. Relations that cannot be represented
+/// injectively fail closed.
 llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
-resolveFiniteImplementationFamilyBehaviorDomain(
-    ImplementationFamilyId family, const FamilyCapabilityParams &params,
-    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
-    std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
-    ::mlir::MLIRContext &context,
-    llvm::function_ref<
-        llvm::Error(const ::dataflow::CanonicalActorSchemaProjection &,
-                    std::optional<ResolvedIndexWidth>)>
-        verifyConcreteActor);
+projectConfigurationABI1FiniteBehaviorDomain(
+    const FabricOpSemanticFieldRelation &relation);
 
 /// Exact flattened payload width used by concrete operation-resource
 /// admission. Equal widths do not imply equal actor semantics.

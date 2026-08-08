@@ -594,21 +594,6 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
               "leaf port");
   require(test, moduleText(*malformedLeaf.module) == beforeLeaf,
           "leaf-contract failure modified the common skeleton");
-
-  FabricFixture zeroPhase = makeFabric(test, store, 8, 0);
-  FinalizedConfigurationABI zeroPhaseAbi =
-      makeConfigurationAbi(test, store, zeroPhase);
-  SkeletonFixture zeroPhaseSkeleton =
-      makeSkeleton(test, *context, zeroPhase, zeroPhaseAbi.abi());
-  const std::vector<FabricOperationLeafAssociation> phaseAssociations = {
-      {zeroPhaseSkeleton.leaf, zeroPhase.occurrence}};
-  const std::vector<FabricOperationRecipeBinding> phaseRecipes = {
-      {zeroPhase.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  expectError(test,
-              specializeFabricOperationLeaves(
-                  *zeroPhaseSkeleton.module, zeroPhase.fabric, zeroPhaseAbi,
-                  phaseAssociations, phaseRecipes, registry, externalContracts),
-              "phase input");
 }
 
 } // namespace

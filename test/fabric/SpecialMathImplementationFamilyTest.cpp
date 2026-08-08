@@ -65,11 +65,6 @@ CanonicalActorSchemaProjection makePowActor(MLIRContext &context, Type type,
           std::move(payload)};
 }
 
-bool hasFastMathFlag(arith::FastMathFlags flags, arith::FastMathFlags flag) {
-  using Bits = std::underlying_type_t<arith::FastMathFlags>;
-  return (static_cast<Bits>(flags) & static_cast<Bits>(flag)) != 0;
-}
-
 FloatBehaviorProfile approximateBehavior() {
   FloatBehaviorProfile behavior = FloatBehaviorProfile::strictIEEE();
   behavior.requiredFastMath = arith::FastMathFlags::afn;
@@ -360,207 +355,49 @@ bool checkAdmission(MLIRContext &context) {
   return ok;
 }
 
-bool checkFiniteBehaviorDomain(MLIRContext &context) {
-  const auto invalidTier = static_cast<SpecialMathAccuracyTier>(0xff);
-  FamilyCapabilityParams invalidCapability =
-      makeCapability(FloatFormatSet::get({FloatFormat::F32}),
-                     approximateBehavior(), invalidTier);
-  auto invalidDomain = resolveFiniteImplementationFamilyBehaviorDomain(
-      ImplementationFamilyId::ScalarMathSin, invalidCapability,
-      {OperationSchemaId::MathSin}, 1, 1, context,
-      [](const CanonicalActorSchemaProjection &,
-         std::optional<ResolvedIndexWidth>) -> llvm::Error {
-        return llvm::Error::success();
-      });
-  if (!expectFailure(std::move(invalidDomain), "unknown special-math"))
-    return false;
-
-  FamilyCapabilityParams strict =
-      makeCapability(FloatFormatSet::get({FloatFormat::F32}),
-                     FloatBehaviorProfile::strictIEEE(),
-                     SpecialMathAccuracyTier::CorrectlyRounded);
-  std::vector<std::pair<SpecialMathAccuracyTier, arith::FastMathFlags>>
-      strictWitnesses;
-  auto strictDomain = resolveFiniteImplementationFamilyBehaviorDomain(
-      ImplementationFamilyId::ScalarMathSin, strict,
-      {OperationSchemaId::MathSin}, 1, 1, context,
-      [&](const CanonicalActorSchemaProjection &actor,
-          std::optional<ResolvedIndexWidth>) -> llvm::Error {
-        const auto *payload =
-            std::get_if<dataflow::SpecialMathPayload>(&actor.payload);
-        if (!payload)
-          return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                         "missing special-math payload");
-        strictWitnesses.emplace_back(payload->accuracy, payload->flags);
-        return llvm::Error::success();
-      });
-  if (!strictDomain || strictDomain->size() != 1 ||
-      strictDomain->front().semanticConfiguration ||
-      strictWitnesses !=
-          std::vector<std::pair<SpecialMathAccuracyTier, arith::FastMathFlags>>{
-              {SpecialMathAccuracyTier::CorrectlyRounded,
-               arith::FastMathFlags::none},
-              {SpecialMathAccuracyTier::Max1Ulp, arith::FastMathFlags::afn},
-              {SpecialMathAccuracyTier::Max2Ulp, arith::FastMathFlags::afn},
-              {SpecialMathAccuracyTier::Max4Ulp, arith::FastMathFlags::afn}}) {
-    if (!strictDomain)
-      llvm::errs() << llvm::toString(strictDomain.takeError()) << '\n';
-    llvm::errs() << "strict special-math finite domain is incomplete\n";
-    return false;
-  }
-
-  FamilyCapabilityParams singleton =
-      makeCapability(FloatFormatSet::get({FloatFormat::F32}),
-                     approximateBehavior(), SpecialMathAccuracyTier::Max2Ulp);
-  auto singletonNeedsConfiguration = requiresSemanticConfigurationField(
-      ImplementationFamilyId::ScalarMathSin, singleton,
-      {OperationSchemaId::MathSin}, 1, 1);
-  if (!singletonNeedsConfiguration || *singletonNeedsConfiguration) {
-    if (!singletonNeedsConfiguration)
-      llvm::errs() << llvm::toString(singletonNeedsConfiguration.takeError())
-                   << '\n';
-    llvm::errs() << "accuracy guarantee created a physical configuration\n";
-    return false;
-  }
-
-  std::vector<SpecialMathAccuracyTier> observedTiers;
-  auto singletonDomain = resolveFiniteImplementationFamilyBehaviorDomain(
-      ImplementationFamilyId::ScalarMathSin, singleton,
-      {OperationSchemaId::MathSin}, 1, 1, context,
-      [&](const CanonicalActorSchemaProjection &actor,
-          std::optional<ResolvedIndexWidth>) -> llvm::Error {
-        const auto *payload =
-            std::get_if<dataflow::SpecialMathPayload>(&actor.payload);
-        if (!payload)
-          return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                         "missing special-math payload");
-        observedTiers.push_back(payload->accuracy);
-        return llvm::Error::success();
-      });
-  if (!singletonDomain || singletonDomain->size() != 1 ||
-      singletonDomain->front().semanticConfiguration ||
-      observedTiers != std::vector<SpecialMathAccuracyTier>{
-                           SpecialMathAccuracyTier::Max2Ulp,
-                           SpecialMathAccuracyTier::Max4Ulp}) {
-    if (!singletonDomain)
-      llvm::errs() << llvm::toString(singletonDomain.takeError()) << '\n';
-    llvm::errs() << "singleton special-math finite domain is incomplete\n";
-    return false;
-  }
-
-  FamilyCapabilityParams multiFormat =
-      makeCapability(FloatFormatSet::get({FloatFormat::F32, FloatFormat::F64}),
-                     approximateBehavior(), SpecialMathAccuracyTier::Max2Ulp);
-  std::vector<std::pair<unsigned, SpecialMathAccuracyTier>> observed;
-  auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
-      ImplementationFamilyId::ScalarMathSin, multiFormat,
-      {OperationSchemaId::MathSin}, 1, 1, context,
-      [&](const CanonicalActorSchemaProjection &actor,
-          std::optional<ResolvedIndexWidth>) -> llvm::Error {
-        const auto *payload =
-            std::get_if<dataflow::SpecialMathPayload>(&actor.payload);
-        auto type = dyn_cast<FloatType>(actor.type.getInput(0));
-        if (!payload || !type)
-          return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                         "malformed special-math witness");
-        observed.emplace_back(type.getWidth(), payload->accuracy);
-        return llvm::Error::success();
-      });
-  if (!domain || domain->size() != 2 || observed.size() != 4 ||
-      !domain->front().semanticConfiguration ||
-      !domain->back().semanticConfiguration ||
-      domain->front().semanticConfiguration->bytes().equals(
-          domain->back().semanticConfiguration->bytes())) {
-    if (!domain)
-      llvm::errs() << llvm::toString(domain.takeError()) << '\n';
-    llvm::errs() << "multi-format special-math finite domain is incomplete\n";
-    return false;
-  }
-
-  Type f32 = Float32Type::get(&context);
-  auto max2 = makeSinActor(
-      context, f32,
-      dataflow::SpecialMathPayload{arith::FastMathFlags::afn,
-                                   SpecialMathAccuracyTier::Max2Ulp});
-  auto max4 = makeSinActor(
-      context, f32,
-      dataflow::SpecialMathPayload{arith::FastMathFlags::afn,
-                                   SpecialMathAccuracyTier::Max4Ulp});
-  auto invalid = makeSinActor(
-      context, f32,
-      dataflow::SpecialMathPayload{arith::FastMathFlags::afn, invalidTier});
-  auto max2Configuration = encodeImplementationFamilySemanticConfiguration(
-      ImplementationFamilyId::ScalarMathSin, multiFormat,
-      {OperationSchemaId::MathSin}, 1, 1, max2, {0}, {0});
-  auto max4Configuration = encodeImplementationFamilySemanticConfiguration(
-      ImplementationFamilyId::ScalarMathSin, multiFormat,
-      {OperationSchemaId::MathSin}, 1, 1, max4, {0}, {0});
-  auto invalidConfiguration = encodeImplementationFamilySemanticConfiguration(
-      ImplementationFamilyId::ScalarMathSin, multiFormat,
-      {OperationSchemaId::MathSin}, 1, 1, invalid, {0}, {0});
-  if (!expectFailure(std::move(invalidConfiguration), "unknown special-math"))
-    return false;
-  if (!max2Configuration || !max4Configuration ||
-      !max2Configuration->bytes().equals(max4Configuration->bytes())) {
-    if (!max2Configuration)
-      llvm::errs() << llvm::toString(max2Configuration.takeError()) << '\n';
-    if (!max4Configuration)
-      llvm::errs() << llvm::toString(max4Configuration.takeError()) << '\n';
-    llvm::errs() << "accepted accuracy leaked into physical configuration\n";
-    return false;
-  }
-  return true;
-}
-
-bool checkBehaviorWitnesses(MLIRContext &context) {
-  FamilyCapabilityParams multiValued = makeCapability(
-      FloatFormatSet::get({FloatFormat::F32}), multiValuedBehavior(),
-      SpecialMathAccuracyTier::CorrectlyRounded);
-  constexpr std::array inputWidths = {32U};
-  constexpr std::array resultWidths = {32U};
-  if (!expectFailure(fabric::detail::resolveScalarSpecialMathBehaviorDomain(
-                         ImplementationFamilyId::ScalarMathSin, multiValued,
-                         {OperationSchemaId::MathSin}, inputWidths,
-                         resultWidths, context),
-                     "rounding"))
-    return false;
-
+bool checkRelaxedBehaviorProjection(MLIRContext &context) {
   FamilyCapabilityParams relaxedOnly = makeCapability(
-      FloatFormatSet::get({FloatFormat::F32}), relaxedOnlyBehavior(),
-      SpecialMathAccuracyTier::CorrectlyRounded);
-  unsigned witnessCount = 0;
-  auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
-      ImplementationFamilyId::ScalarMathSin, relaxedOnly,
-      {OperationSchemaId::MathSin}, 1, 1, context,
-      [&](const CanonicalActorSchemaProjection &actor,
-          std::optional<ResolvedIndexWidth>) -> llvm::Error {
-        const auto *payload =
-            std::get_if<dataflow::SpecialMathPayload>(&actor.payload);
-        if (!payload ||
-            !hasFastMathFlag(payload->flags, arith::FastMathFlags::nnan) ||
-            !hasFastMathFlag(payload->flags, arith::FastMathFlags::nsz))
-          return llvm::createStringError(
-              llvm::inconvertibleErrorCode(),
-              "relaxed-only special-math witness lacks permissions");
-        if (payload->accuracy == SpecialMathAccuracyTier::CorrectlyRounded) {
-          if (hasFastMathFlag(payload->flags, arith::FastMathFlags::afn))
-            return llvm::createStringError(
-                llvm::inconvertibleErrorCode(),
-                "correctly-rounded witness gained afn");
-        } else if (!hasFastMathFlag(payload->flags,
-                                    arith::FastMathFlags::afn)) {
-          return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                         "relaxed witness lacks afn");
-        }
-        ++witnessCount;
-        return llvm::Error::success();
-      });
-  if (!domain || domain->size() != 1 || domain->front().semanticConfiguration ||
-      witnessCount != 4) {
-    if (!domain)
-      llvm::errs() << llvm::toString(domain.takeError()) << '\n';
-    llvm::errs() << "relaxed-only special-math domain is incomplete\n";
+      FloatFormatSet::get({FloatFormat::F32, FloatFormat::F64}),
+      relaxedOnlyBehavior(), SpecialMathAccuracyTier::CorrectlyRounded);
+  constexpr std::array schemas = {OperationSchemaId::MathSin};
+  constexpr std::array inputWidths = {64U};
+  constexpr std::array resultWidths = {64U};
+  auto relation = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::ScalarMathSin, relaxedOnly, schemas, inputWidths,
+      resultWidths, context);
+  if (!relation ||
+      relation->kind() != FabricOpSemanticFieldRelationKind::Finite ||
+      relation->finiteBehaviorDomain().size() != 2) {
+    if (!relation)
+      llvm::errs() << llvm::toString(relation.takeError()) << '\n';
+    llvm::errs() << "relaxed special-math relation is incomplete\n";
     return false;
+  }
+
+  using FastMathBits = std::underlying_type_t<arith::FastMathFlags>;
+  auto permissions = static_cast<arith::FastMathFlags>(
+      static_cast<FastMathBits>(arith::FastMathFlags::nnan) |
+      static_cast<FastMathBits>(arith::FastMathFlags::nsz));
+  Type f32 = Float32Type::get(&context);
+  std::optional<loom::CanonicalSemanticBytes> projected;
+  for (SpecialMathAccuracyTier tier : loom::specialMathAccuracyTiers()) {
+    arith::FastMathFlags flags = permissions;
+    if (tier != SpecialMathAccuracyTier::CorrectlyRounded)
+      flags = static_cast<arith::FastMathFlags>(
+          static_cast<FastMathBits>(flags) |
+          static_cast<FastMathBits>(arith::FastMathFlags::afn));
+    auto actor =
+        makeSinActor(context, f32, dataflow::SpecialMathPayload{flags, tier});
+    auto value =
+        relation->projectSemanticValue(actor, std::array<std::uint64_t, 1>{0},
+                                       std::array<std::uint64_t, 1>{0});
+    if (!value || (projected && !projected->bytes().equals(value->bytes()))) {
+      if (!value)
+        llvm::errs() << llvm::toString(value.takeError()) << '\n';
+      llvm::errs() << "accuracy changed the relaxed special-math key\n";
+      return false;
+    }
+    projected = std::move(*value);
   }
   return true;
 }
@@ -581,24 +418,28 @@ bool checkPowBehavior(MLIRContext &context) {
     return false;
   }
 
-  unsigned witnesses = 0;
-  auto domain = resolveFiniteImplementationFamilyBehaviorDomain(
-      ImplementationFamilyId::ScalarMathPow, capability,
-      {OperationSchemaId::MathPowF}, 2, 1, context,
-      [&](const CanonicalActorSchemaProjection &witness,
-          std::optional<ResolvedIndexWidth>) -> llvm::Error {
-        if (witness.type.getNumInputs() != 2 ||
-            witness.type.getNumResults() != 1)
-          return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                         "pow witness has wrong arity");
-        ++witnesses;
-        return llvm::Error::success();
-      });
-  if (!domain || domain->size() != 1 || domain->front().semanticConfiguration ||
-      witnesses != 4) {
-    if (!domain)
-      llvm::errs() << llvm::toString(domain.takeError()) << '\n';
-    llvm::errs() << "pow special-math domain is incomplete\n";
+  constexpr std::array schemas = {OperationSchemaId::MathPowF};
+  constexpr std::array inputWidths = {32U, 32U};
+  constexpr std::array resultWidths = {32U};
+  auto relation = resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::ScalarMathPow, capability, schemas, inputWidths,
+      resultWidths, context);
+  if (!relation ||
+      relation->kind() != FabricOpSemanticFieldRelationKind::None ||
+      relation->finiteBehaviorDomain().size() != 1) {
+    if (!relation)
+      llvm::errs() << llvm::toString(relation.takeError()) << '\n';
+    llvm::errs() << "pow special-math relation is incomplete\n";
+    return false;
+  }
+  const FiniteImplementationFamilyBehaviorPoint &point =
+      relation->finiteBehaviorDomain().front();
+  if (point.semanticConfiguration ||
+      point.representativeActor.type.getNumInputs() != 2 ||
+      point.representativeActor.type.getNumResults() != 1 ||
+      point.operandPorts != std::vector<std::uint64_t>({0, 1}) ||
+      point.resultPorts != std::vector<std::uint64_t>({0})) {
+    llvm::errs() << "pow special-math relation lost ordered correspondence\n";
     return false;
   }
   return true;
@@ -904,10 +745,20 @@ bool checkPublicBehaviorRelation(MLIRContext &context) {
       SpecialMathAccuracyTier::CorrectlyRounded);
   constexpr std::array narrowInputs = {32U};
   constexpr std::array narrowResults = {32U};
+  if (!expectFailure(resolveFabricOpSemanticFieldRelation(
+                         ImplementationFamilyId::ScalarMathSin, orphan, schemas,
+                         narrowInputs, narrowResults, context),
+                     "rounding"))
+    return false;
+
+  FamilyCapabilityParams invalidAccuracy = makeCapability(
+      FloatFormatSet::get({FloatFormat::F32}), approximateBehavior(),
+      static_cast<SpecialMathAccuracyTier>(0xff));
   return expectFailure(resolveFabricOpSemanticFieldRelation(
-                           ImplementationFamilyId::ScalarMathSin, orphan,
-                           schemas, narrowInputs, narrowResults, context),
-                       "rounding");
+                           ImplementationFamilyId::ScalarMathSin,
+                           invalidAccuracy, schemas, narrowInputs,
+                           narrowResults, context),
+                       "unknown special-math");
 }
 
 } // namespace
@@ -919,8 +770,7 @@ int main() {
   ok &= checkRegisteredFamilyRelation();
   ok &= checkCapabilityCodec(context);
   ok &= checkAdmission(context);
-  ok &= checkFiniteBehaviorDomain(context);
-  ok &= checkBehaviorWitnesses(context);
+  ok &= checkRelaxedBehaviorProjection(context);
   ok &= checkPowBehavior(context);
   ok &= checkSealedBehaviorRelation(context);
   ok &= checkPublicBehaviorRelation(context);

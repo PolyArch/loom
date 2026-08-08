@@ -85,6 +85,68 @@ llvm::Error verifyPhysicalPortCapacity(
   return llvm::Error::success();
 }
 
+struct OrderedPhysicalWidths final {
+  std::vector<std::uint32_t> inputs;
+  std::vector<std::uint32_t> results;
+};
+
+llvm::Expected<OrderedPhysicalWidths>
+resolveOrderedPhysicalWidths(const ResolvedFabricOpCapabilityView &capability) {
+  std::size_t inputCount = 0;
+  std::size_t resultCount = 0;
+  for (const ResolvedFabricOpPhysicalPortView &port :
+       capability.physicalPorts) {
+    if (port.reference.direction == FabricPortDirection::Input)
+      ++inputCount;
+    else if (port.reference.direction == FabricPortDirection::Output)
+      ++resultCount;
+    else
+      return capabilityRejected("physical port has an unknown direction");
+  }
+
+  OrderedPhysicalWidths widths{std::vector<std::uint32_t>(inputCount),
+                               std::vector<std::uint32_t>(resultCount)};
+  std::vector<bool> inputSeen(inputCount);
+  std::vector<bool> resultSeen(resultCount);
+  for (const ResolvedFabricOpPhysicalPortView &port :
+       capability.physicalPorts) {
+    std::vector<std::uint32_t> &ordered =
+        port.reference.direction == FabricPortDirection::Input ? widths.inputs
+                                                               : widths.results;
+    std::vector<bool> &seen =
+        port.reference.direction == FabricPortDirection::Input ? inputSeen
+                                                               : resultSeen;
+    if (port.reference.ordinal >= ordered.size() ||
+        seen[port.reference.ordinal])
+      return capabilityRejected(
+          "physical port ordinals are not dense and unique");
+    ordered[port.reference.ordinal] = port.payloadWidthBits;
+    seen[port.reference.ordinal] = true;
+  }
+  return widths;
+}
+
+llvm::Expected<::fabric::FabricOpSemanticFieldRelation>
+resolveSemanticFieldRelation(
+    const ResolvedFabricOpCapabilityView &capability,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
+    mlir::MLIRContext &context) {
+  auto widths = resolveOrderedPhysicalWidths(capability);
+  if (!widths)
+    return widths.takeError();
+  return ::fabric::resolveFabricOpSemanticFieldRelation(
+      capability.implementationFamily, capability.parameterizedCapability,
+      enabledSchemas, widths->inputs, widths->results, context);
+}
+
+llvm::Expected<::fabric::FabricOpSemanticFieldRelation>
+resolveCurrentSemanticFieldRelation(
+    const ResolvedFabricOpCapabilityView &capability,
+    mlir::MLIRContext &context) {
+  return resolveSemanticFieldRelation(
+      capability, capability.enabledOperationSchemas, context);
+}
+
 } // namespace
 
 llvm::Error ResolvedFabricOpCapabilityView::admit(
@@ -172,7 +234,7 @@ llvm::Error ResolvedFabricOpCapabilityView::admitCorrespondence(
 llvm::Expected<loom::CanonicalSemanticBytes>
 ResolvedFabricOpCapabilityView::encodeOperationSelection(
     const FabricSemanticConfigFieldRef &field,
-    ::dataflow::OperationSchemaId schema) const {
+    ::dataflow::OperationSchemaId schema, mlir::MLIRContext &context) const {
   const auto rejected = [](const llvm::Twine &message) {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
@@ -181,34 +243,46 @@ ResolvedFabricOpCapabilityView::encodeOperationSelection(
   if (configurationFieldSchema.size() != 1 ||
       configurationFieldSchema.front() != field)
     return rejected("field is not the exact operation configuration field");
+  auto relation = resolveCurrentSemanticFieldRelation(*this, context);
+  if (!relation)
+    return relation.takeError();
+  if (relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::Finite)
+    return rejected("operation selection requires a finite field relation");
   if (enabledOperationSchemas.size() < 2)
     return rejected("capability does not select among operation schemas");
   if (!llvm::is_contained(enabledOperationSchemas, schema))
     return rejected("operation schema is not enabled by the capability");
+  if (relation->finiteBehaviorDomain().size() != enabledOperationSchemas.size())
+    return rejected("field has semantic dimensions beyond operation selection");
 
-  std::uint32_t inputCount = 0;
-  std::uint32_t resultCount = 0;
-  for (const ResolvedFabricOpPhysicalPortView &port : physicalPorts) {
-    if (port.reference.direction == FabricPortDirection::Input)
-      ++inputCount;
-    else if (port.reference.direction == FabricPortDirection::Output)
-      ++resultCount;
-    else
-      return rejected("physical port has an unknown direction");
-  }
   for (::dataflow::OperationSchemaId enabled : enabledOperationSchemas) {
-    auto singletonNeedsConfiguration =
-        ::fabric::requiresSemanticConfigurationField(
-            implementationFamily, parameterizedCapability,
-            llvm::ArrayRef<::dataflow::OperationSchemaId>(&enabled, 1),
-            inputCount, resultCount);
-    if (!singletonNeedsConfiguration)
-      return singletonNeedsConfiguration.takeError();
-    if (*singletonNeedsConfiguration)
-      return rejected("field has semantic dimensions beyond operation "
-                      "selection");
+    auto singleton = resolveSemanticFieldRelation(
+        *this, llvm::ArrayRef<::dataflow::OperationSchemaId>(&enabled, 1),
+        context);
+    if (!singleton)
+      return singleton.takeError();
+    if (singleton->kind() !=
+            ::fabric::FabricOpSemanticFieldRelationKind::None ||
+        singleton->finiteBehaviorDomain().size() != 1)
+      return rejected(
+          "field has semantic dimensions beyond operation selection");
+    const auto &point = singleton->finiteBehaviorDomain().front();
+    auto schemaValue = relation->projectSemanticValue(
+        point.representativeActor, point.operandPorts, point.resultPorts,
+        point.resolvedIndexWidth);
+    if (!schemaValue)
+      return schemaValue.takeError();
   }
-  return ::dataflow::encodeOperationSchemaId(schema);
+  auto domain =
+      ::fabric::projectConfigurationABI1FiniteBehaviorDomain(*relation);
+  if (!domain)
+    return domain.takeError();
+  const auto selected = llvm::find_if(*domain, [&](const auto &point) {
+    return point.representativeActor.schema == schema;
+  });
+  if (selected == domain->end() || !selected->semanticConfiguration)
+    return rejected("operation schema has no finite behavior point");
+  return std::move(*selected->semanticConfiguration);
 }
 
 llvm::Expected<loom::CanonicalSemanticBytes>
@@ -229,51 +303,27 @@ ResolvedFabricOpCapabilityView::encodeSemanticConfiguration(
   if (llvm::Error error = admitCorrespondence(
           actor, indexBitWidth, operandPorts, resultPorts, pointerLayout))
     return std::move(error);
-
-  std::uint32_t inputCount = 0;
-  std::uint32_t resultCount = 0;
-  for (const ResolvedFabricOpPhysicalPortView &port : physicalPorts) {
-    if (port.reference.direction == FabricPortDirection::Input)
-      ++inputCount;
-    else if (port.reference.direction == FabricPortDirection::Output)
-      ++resultCount;
-    else
-      return rejected("physical port has an unknown direction");
-  }
-  return ::fabric::encodeImplementationFamilySemanticConfiguration(
-      implementationFamily, parameterizedCapability, enabledOperationSchemas,
-      inputCount, resultCount, actor, operandPorts, resultPorts,
+  auto relation =
+      resolveCurrentSemanticFieldRelation(*this, *actor.type.getContext());
+  if (!relation)
+    return relation.takeError();
+  if (!relation->hasConfigurationField())
+    return rejected("operation capability has no semantic field relation");
+  return ::fabric::encodeConfigurationABI1SemanticValue(
+      *relation, actor, operandPorts, resultPorts,
       ::fabric::symbolizeResolvedIndexWidth(indexBitWidth));
 }
 
 llvm::Expected<std::vector<::fabric::FiniteImplementationFamilyBehaviorPoint>>
 ResolvedFabricOpCapabilityView::resolveFiniteBehaviorDomain(
     mlir::MLIRContext &context) const {
-  std::uint32_t inputCount = 0;
-  std::uint32_t resultCount = 0;
-  for (const ResolvedFabricOpPhysicalPortView &port : physicalPorts) {
-    if (port.reference.direction == FabricPortDirection::Input)
-      ++inputCount;
-    else if (port.reference.direction == FabricPortDirection::Output)
-      ++resultCount;
-    else
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "fabric_operation_behavior_domain_rejected: physical port has an "
-          "unknown direction");
-  }
-  return ::fabric::resolveFiniteImplementationFamilyBehaviorDomain(
-      implementationFamily, parameterizedCapability, enabledOperationSchemas,
-      inputCount, resultCount, context,
-      [&](const ::dataflow::CanonicalActorSchemaProjection &actor,
-          std::optional<::fabric::ResolvedIndexWidth> resolvedIndexWidth) {
-        if (resolvedIndexWidth) {
-          auto represented = ::fabric::projectResolvedIndexTypes(
-              actor, ::fabric::getResolvedIndexBitWidth(*resolvedIndexWidth));
-          if (!represented)
-            return represented.takeError();
-          return verifyPhysicalPortCapacity(*this, *represented, nullptr);
-        }
-        return verifyPhysicalPortCapacity(*this, actor, nullptr);
-      });
+  auto relation = resolveCurrentSemanticFieldRelation(*this, context);
+  if (!relation)
+    return relation.takeError();
+  if (relation->kind() == ::fabric::FabricOpSemanticFieldRelationKind::Direct)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "fabric_operation_behavior_domain_rejected: direct field relation "
+        "has no finite enumeration");
+  return ::fabric::projectConfigurationABI1FiniteBehaviorDomain(*relation);
 }

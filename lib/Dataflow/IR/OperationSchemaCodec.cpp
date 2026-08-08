@@ -249,13 +249,17 @@ llvm::Error encodeConstant(Writer &writer,
   return invalid("constant value is outside the closed typed codec");
 }
 
-llvm::Error validateConstant(Reader &reader) {
+llvm::Error validateConstant(Reader &reader,
+                             llvm::ArrayRef<std::uint8_t> expectedResultType) {
   auto rawTag = reader.u32("constant value tag");
   if (!rawTag)
     return rawTag.takeError();
+  const std::size_t typeBegin = reader.position();
   auto type = validateType(reader, 0);
   if (!type)
     return type.takeError();
+  if (reader.bytesSince(typeBegin) != expectedResultType)
+    return invalid("constant value type does not match actor result type");
   switch (static_cast<ConstantWireTag>(*rawTag)) {
   case ConstantWireTag::Integer: {
     if (type->shaped || (type->scalar != ScalarSummary::Integer &&
@@ -804,8 +808,9 @@ llvm::Error encodePayload(Writer &writer,
   return invalid("semantic payload does not match operation schema");
 }
 
-llvm::Error validatePayload(Reader &reader,
-                            dataflow::OperationSemanticsCase semanticCase) {
+llvm::Error
+validatePayload(Reader &reader, dataflow::OperationSemanticsCase semanticCase,
+                llvm::ArrayRef<std::uint8_t> constantResultType = {}) {
   using Case = dataflow::OperationSemanticsCase;
   switch (semanticCase) {
   case Case::NoSemanticPayload:
@@ -887,7 +892,7 @@ llvm::Error validatePayload(Reader &reader,
     return llvm::Error::success();
   }
   case Case::TypedConstantValue:
-    return validateConstant(reader);
+    return validateConstant(reader, constantResultType);
   case Case::StreamRecurrence: {
     auto step = readClosedTag(reader, 8, "stream step kind tag");
     if (!step)
@@ -1003,6 +1008,14 @@ dataflow::encodeCanonicalActorSchemaProjection(
   auto semanticTag = semanticsWireTag(semanticCase);
   if (!semanticTag)
     return semanticTag.takeError();
+  if (semanticCase == OperationSemanticsCase::TypedConstantValue) {
+    const auto *constant =
+        std::get_if<ConstantValuePayload>(&projection.payload);
+    if (constant && constant->value &&
+        (projection.type.getNumResults() != 1 ||
+         projection.type.getResult(0) != constant->value.getType()))
+      return invalid("constant value type does not match actor result type");
+  }
 
   Writer writer;
   writeDomain(writer, kProjectionDomain,
@@ -1038,9 +1051,17 @@ llvm::Error dataflow::validateCanonicalActorSchemaProjectionBytes(
     return semanticCase.takeError();
   if (*semanticCase != semanticsCase(*schema))
     return invalid("semantic payload does not match operation schema");
-  if (llvm::Error error = validateFunctionType(reader))
-    return error;
-  if (llvm::Error error = validatePayload(reader, *semanticCase))
+  auto resultTypes = validateFunctionType(reader);
+  if (!resultTypes)
+    return resultTypes.takeError();
+  llvm::ArrayRef<std::uint8_t> constantResultType;
+  if (*semanticCase == OperationSemanticsCase::TypedConstantValue) {
+    if (resultTypes->size() != 1)
+      return invalid("constant actor does not have exactly one result type");
+    constantResultType = resultTypes->front();
+  }
+  if (llvm::Error error =
+          validatePayload(reader, *semanticCase, constantResultType))
     return error;
   if (!reader.empty())
     return invalid("trailing bytes");

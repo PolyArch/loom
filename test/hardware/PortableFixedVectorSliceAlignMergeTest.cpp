@@ -162,8 +162,10 @@ FabricFixture makeFabric(
     llvm::ArrayRef<unsigned> inputWidths = std::array<unsigned, 4>{130, 130, 64,
                                                                    64},
     unsigned outputWidth = 130, bool unsupportedContract = false,
-    llvm::ArrayRef<Schema> schemas = std::array<Schema, 2>{
-        Schema::VectorExtract, Schema::VectorInsert}) {
+    llvm::ArrayRef<Schema> schemas =
+        std::array<Schema, 2>{Schema::VectorExtract, Schema::VectorInsert},
+    const ::fabric::FixedVectorSliceAlignMergeParams &capabilityParameters =
+        parameters()) {
   DesignBuilder design(store);
   std::vector<PortType> operationInputs;
   operationInputs.reserve(inputWidths.size());
@@ -200,7 +202,7 @@ FabricFixture makeFabric(
   auto operation = take(
       test, fu.addOperation(fuInputs, OperationCapabilitySpec{
                                           family,
-                                          parameters(),
+                                          capabilityParameters,
                                           std::vector<Schema>(schemas.begin(),
                                                               schemas.end()),
                                           {operationOutput},
@@ -293,6 +295,13 @@ makeConfigurationAbi(llvm::StringRef test, const ArtifactStore &store,
     return take(test, finalizeConfigurationABI(
                           ConfigurationABIDraft{fixture.root().reference(), {}},
                           store));
+  if (resolved.configurationFieldSchema.empty()) {
+    require(test, kind == ConfigurationAbiKind::Valid,
+            "fieldless slice requested a malformed ABI variant");
+    return take(test, finalizeConfigurationABI(
+                          ConfigurationABIDraft{fixture.root().reference(), {}},
+                          store));
+  }
   auto layout =
       take(test, ::fabric::resolveFixedVectorSliceAlignMergeConfigurationLayout(
                      std::get<::fabric::FixedVectorSliceAlignMergeParams>(
@@ -610,6 +619,43 @@ stat
 )ys";
 }
 
+void writeZeroBitToolInputs(const std::filesystem::path &root,
+                            llvm::StringRef rtl, Schema schema) {
+  std::ofstream(root / "fixed_vector_slice_align_merge.sv") << rtl.str();
+  std::ofstream testbench(root / "testbench.sv");
+  testbench
+      << "module testbench;\n"
+         "  logic data_input_0;\n"
+         "  logic data_input_1;\n"
+         "  logic data_output_0;\n\n"
+         "  fixed_vector_slice_align_merge dut(.*);\n\n"
+         "  initial begin\n"
+         "    data_input_0 = 1'b0; data_input_1 = 1'b0; #1;\n"
+         "    if (data_output_0 !== 1'b0) $fatal(1, \"zero failed\");\n"
+         "    data_input_0 = 1'b0; data_input_1 = 1'b1; #1;\n"
+         "    if (data_output_0 !== 1'b0) $fatal(1, \"replace zero failed\");\n"
+         "    data_input_0 = 1'b1; data_input_1 = 1'b0; #1;\n"
+         "    if (data_output_0 !== 1'b1) $fatal(1, \"one failed\");\n"
+         "    data_input_0 = 1'b1; data_input_1 = 1'b1; #1;\n"
+         "    if (data_output_0 !== 1'b1) $fatal(1, \"replace one failed\");\n"
+         "    $finish;\n"
+         "  end\n"
+         "endmodule\n";
+  std::ofstream(root / "portable_fixed_vector_slice_align_merge.ys")
+      << R"ys(read_verilog -sv fixed_vector_slice_align_merge.sv
+hierarchy -check -top fixed_vector_slice_align_merge
+proc
+opt
+check -assert
+select -assert-none t:$dlatch t:$memrd t:$memwr t:$meminit t:$mem_v2
+synth -top fixed_vector_slice_align_merge
+check -assert
+)ys";
+  require("writeZeroBitToolInputs",
+          schema == Schema::VectorExtract || schema == Schema::VectorInsert,
+          "zero-bit tool fixture has an unknown schema");
+}
+
 void registrationIsPortableOnly() {
   const llvm::StringRef test = __func__;
   FabricOperationProviderRegistry registry = makeProviderRegistry(test);
@@ -686,7 +732,7 @@ void configuredBehaviorAndDeterminism(const std::filesystem::path &root) {
     }
   }
   expectError(test, resolved.resolveFiniteBehaviorDomain(fabricContext()),
-              "no finite behavior-domain enumeration");
+              "finite enumeration");
 
   FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
   std::unique_ptr<mlir::MLIRContext> firstContext = makeCirctContext();
@@ -721,6 +767,8 @@ void configuredBehaviorAndDeterminism(const std::filesystem::path &root) {
 
 void generatedOwnersRejectMalformedCapabilities() {
   const llvm::StringRef test = __func__;
+  constexpr std::array<std::uint32_t, 4> inputWidths = {130, 130, 64, 64};
+  constexpr std::array<std::uint32_t, 1> resultWidths = {130};
   auto wrongParameters = parameters();
   wrongParameters.maxSlicePayloadBits = 131;
   expectError(test,
@@ -733,19 +781,19 @@ void generatedOwnersRejectMalformedCapabilities() {
               "foreign schema");
   expectError(
       test,
-      ::fabric::encodeImplementationFamilySemanticConfiguration(
+      ::fabric::resolveFabricOpSemanticFieldRelation(
           ::fabric::ImplementationFamilyId::FixedVectorSliceAlignMerge,
           ::fabric::ScalarIntegerParams{
               ::fabric::IntegerWidthSet::get({::fabric::IntegerWidth::I16})},
-          {Schema::VectorExtract}, 4, 1,
-          makeActor(Schema::VectorExtract, 16, {2, 4}, {4}, {1}),
-          std::array<std::uint64_t, 1>{0}, std::array<std::uint64_t, 1>{0},
-          ::fabric::ResolvedIndexWidth::I64),
+          {Schema::VectorExtract}, inputWidths, resultWidths, fabricContext()),
       "parameter schema");
+  const auto insertRelation = take(
+      test, ::fabric::resolveFabricOpSemanticFieldRelation(
+                ::fabric::ImplementationFamilyId::FixedVectorSliceAlignMerge,
+                parameters(), {Schema::VectorInsert}, inputWidths, resultWidths,
+                fabricContext()));
   expectError(test,
-              ::fabric::encodeImplementationFamilySemanticConfiguration(
-                  ::fabric::ImplementationFamilyId::FixedVectorSliceAlignMerge,
-                  parameters(), {Schema::VectorInsert}, 4, 1,
+              insertRelation.projectSemanticValue(
                   makeActor(Schema::VectorExtract, 16, {2, 4}, {4}, {1}),
                   std::array<std::uint64_t, 1>{0},
                   std::array<std::uint64_t, 1>{0},
@@ -793,6 +841,52 @@ void singleSchemaResourcesDoNotManufacturePaths(
               !llvm::StringRef(insertRtl).contains("data_input_0 >>") &&
               !llvm::StringRef(insertRtl).contains("config_0[0] ?"),
           "insert-only capability manufactured an extract path or mode");
+}
+
+void zeroBitSliceLowersWithoutConfiguration(const std::filesystem::path &root) {
+  const llvm::StringRef test = __func__;
+  const ::fabric::FixedVectorSliceAlignMergeParams zeroBitParameters{
+      ::fabric::IntegerWidthSet::get({::fabric::IntegerWidth::I1}),
+      ::fabric::FloatFormatSet{},
+      1,
+      1,
+      0,
+      ::fabric::ResolvedIndexWidthSet{}};
+  for (auto [schema, label] :
+       std::array{std::pair{Schema::VectorExtract, "extract"},
+                  std::pair{Schema::VectorInsert, "insert"}}) {
+    const std::filesystem::path caseRoot = root / label;
+    std::filesystem::create_directories(caseRoot);
+    const std::filesystem::path artifactRoot = caseRoot / "artifacts";
+    std::filesystem::create_directories(artifactRoot);
+    ArtifactStore store(artifactRoot.string());
+    const std::array schemas = {schema};
+    FabricFixture fabric = makeFabric(test, store, label, {1, 1}, 1, false,
+                                      schemas, zeroBitParameters);
+    const auto &resolved = capability(test, fabric);
+    require(test, resolved.configurationFieldSchema.empty(),
+            "zero-bit slice manufactured a configuration field");
+    const auto finite =
+        take(test, resolved.resolveFiniteBehaviorDomain(fabricContext()));
+    require(test,
+            finite.size() == 1 && !finite.front().semanticConfiguration &&
+                finite.front().representativeActor.schema == schema,
+            "zero-bit slice lost its unique fieldless behavior");
+
+    FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
+    std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
+    SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi());
+    const circt::hw::ModulePortInfo ports(skeleton.leaf.getPortList());
+    require(test,
+            ports.size() == 3 && ports.atInput(0).getName() == "data_input_0" &&
+                ports.atInput(1).getName() == "data_input_1" &&
+                ports.atOutput(0).getName() == "data_output_0",
+            "zero-bit slice derived a noncanonical fieldless leaf");
+    const std::string rtl = specialize(test, skeleton, fabric, abi);
+    require(test, !llvm::StringRef(rtl).contains("config_"),
+            "zero-bit slice RTL depends on absent configuration");
+    writeZeroBitToolInputs(caseRoot, rtl, schema);
+  }
 }
 
 void malformedAndUnsupportedInputsAreTransactional(
@@ -909,6 +1003,7 @@ int main(int argc, char **argv) {
   configuredBehaviorAndDeterminism(root);
   generatedOwnersRejectMalformedCapabilities();
   singleSchemaResourcesDoNotManufacturePaths(root / "single-schema");
+  zeroBitSliceLowersWithoutConfiguration(root / "zero-bit");
   malformedAndUnsupportedInputsAreTransactional(root / "failures");
   return 0;
 }

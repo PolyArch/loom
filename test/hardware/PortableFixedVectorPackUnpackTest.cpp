@@ -315,12 +315,30 @@ void checkCanonicalAdmission(const FabricFixture &pack,
                 resolved.configurationFieldSchema.empty(),
             "finalized adapter capability changed identity or configuration");
 
-    const bool needsConfiguration =
-        take(test, ::fabric::requiresSemanticConfigurationField(
+    std::vector<std::uint32_t> physicalInputWidths;
+    std::vector<std::uint32_t> physicalResultWidths;
+    for (const auto &port : resolved.physicalPorts) {
+      auto &widths =
+          port.reference.direction == loom::fabric::FabricPortDirection::Input
+              ? physicalInputWidths
+              : physicalResultWidths;
+      widths.push_back(port.payloadWidthBits);
+    }
+    require(test,
+            physicalInputWidths.size() == 1 && physicalResultWidths.size() == 1,
+            "adapter capability changed its unary physical shape");
+    const auto relation =
+        take(test, ::fabric::resolveFabricOpSemanticFieldRelation(
                        resolved.implementationFamily,
                        resolved.parameterizedCapability,
-                       resolved.enabledOperationSchemas, 1, 1));
-    require(test, !needsConfiguration,
+                       resolved.enabledOperationSchemas, physicalInputWidths,
+                       physicalResultWidths, fabricContext()));
+    require(test,
+            relation.kind() ==
+                    ::fabric::FabricOpSemanticFieldRelationKind::None &&
+                !relation.hasConfigurationField() &&
+                relation.finiteBehaviorDomain().size() == 1 &&
+                !relation.finiteBehaviorDomain().front().semanticConfiguration,
             "multi-domain pack/unpack capability gained configuration");
 
     expectSuccess(test, resolved.admit(actor(fixture->kind, {8}, i8, 64), 64));

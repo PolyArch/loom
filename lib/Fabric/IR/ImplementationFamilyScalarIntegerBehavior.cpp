@@ -802,6 +802,12 @@ fabric::detail::resolveScalarIntegerBehaviorDomain(
   if (reachable.empty())
     return reject(
         "scalar integer capability has no physically reachable behavior");
+  for (::dataflow::OperationSchemaId schema : orderedSchemas)
+    if (llvm::none_of(reachable, [&](const auto &candidate) {
+          return candidate.actor.schema == schema;
+        }))
+      return reject(
+          "scalar integer enabled schema has no reachable behavior witness");
 
   std::vector<FiniteImplementationFamilyBehaviorPoint> points;
   for (ScalarIntegerBehaviorCandidate &candidate : reachable) {

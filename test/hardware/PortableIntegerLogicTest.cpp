@@ -441,6 +441,38 @@ void checkFullDomain(llvm::StringRef test, const FabricFixture &fixture) {
       take(test, resolved.resolveFiniteBehaviorDomain(fabricContext()));
   require(test, domain.size() == 3,
           "Fabric did not collapse logic witnesses to three behaviors");
+
+  auto aliasedSelection = resolved.encodeOperationSelection(
+      resolved.configurationFieldSchema.front(),
+      ::dataflow::OperationSchemaId::ArithOrI, fabricContext());
+  require(test, !aliasedSelection,
+          "operation selection accepted an aliased behavior domain");
+  const std::string message = llvm::toString(aliasedSelection.takeError());
+  require(test, llvm::StringRef(message).contains("beyond operation selection"),
+          message);
+
+  auto distinctSelection = resolved;
+  distinctSelection.enabledOperationSchemas = {
+      ::dataflow::OperationSchemaId::ArithAndI,
+      ::dataflow::OperationSchemaId::ArithOrI};
+  const auto distinctDomain = take(
+      test, distinctSelection.resolveFiniteBehaviorDomain(fabricContext()));
+  require(test, distinctDomain.size() == 2,
+          "distinct logic selection did not expose two behaviors");
+  const auto andPoint = llvm::find_if(distinctDomain, [](const auto &point) {
+    return point.representativeActor.schema ==
+           ::dataflow::OperationSchemaId::ArithAndI;
+  });
+  require(test,
+          andPoint != distinctDomain.end() && andPoint->semanticConfiguration,
+          "distinct logic domain has no AND semantic value");
+  const auto andSelection = take(
+      test, distinctSelection.encodeOperationSelection(
+                distinctSelection.configurationFieldSchema.front(),
+                ::dataflow::OperationSchemaId::ArithAndI, fabricContext()));
+  require(test,
+          andSelection.bytes().equals(andPoint->semanticConfiguration->bytes()),
+          "operation selection disagrees with the ABI 1.0 finite domain");
 }
 
 SpecializedRtl emitDeterministically(llvm::StringRef test,

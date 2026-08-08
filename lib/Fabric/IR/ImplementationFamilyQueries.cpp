@@ -354,44 +354,6 @@ uniqueScalarIntegerCastBehaviors(llvm::ArrayRef<ScalarIntegerCastCase> cases) {
   return behaviors;
 }
 
-llvm::Expected<::dataflow::SemanticPayload>
-makeScalarIntegerCastPayload(::dataflow::OperationSchemaId schema) {
-  using Case = ::dataflow::OperationSemanticsCase;
-  switch (::dataflow::semanticsCase(schema)) {
-  case Case::NoSemanticPayload:
-    return ::dataflow::NoPayload{};
-  case Case::ArithNonNegative:
-    return ::dataflow::NonNegativePayload{};
-  case Case::ArithIntegerOverflow:
-    return ::dataflow::IntegerOverflowPayload{};
-  default:
-    return reject("integer cast schema has an unexpected semantic payload");
-  }
-}
-
-llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
-makeScalarIntegerCastActor(mlir::MLIRContext &context,
-                           const ScalarIntegerCastCase &castCase) {
-  auto payload = makeScalarIntegerCastPayload(castCase.schema);
-  if (!payload)
-    return payload.takeError();
-  mlir::Type source =
-      castCase.sourceIsIndex
-          ? mlir::Type(mlir::IndexType::get(&context))
-          : mlir::Type(mlir::IntegerType::get(
-                &context, fabric::getBitWidth(castCase.behavior.sourceWidth)));
-  mlir::Type destination =
-      castCase.destinationIsIndex
-          ? mlir::Type(mlir::IndexType::get(&context))
-          : mlir::Type(mlir::IntegerType::get(
-                &context,
-                fabric::getBitWidth(castCase.behavior.destinationWidth)));
-  return ::dataflow::CanonicalActorSchemaProjection{
-      castCase.schema,
-      mlir::FunctionType::get(&context, {source}, {destination}),
-      std::move(*payload)};
-}
-
 llvm::Expected<IntegerWidth> scalarIntegerCastWidth(mlir::Type type) {
   auto integer = llvm::dyn_cast<mlir::IntegerType>(type);
   if (!integer || !integer.isSignless())
@@ -461,99 +423,6 @@ integerLogicOperation(::dataflow::OperationSchemaId schema) {
   }
 }
 
-::dataflow::CanonicalActorSchemaProjection makeScalarIntegerCompareActor(
-    mlir::MLIRContext &context, unsigned width,
-    ::dataflow::OperationSchemaId schema,
-    std::optional<mlir::arith::CmpIPredicate> predicate = std::nullopt) {
-  mlir::Type operand = mlir::IntegerType::get(&context, width);
-  const bool comparison = schema == ::dataflow::OperationSchemaId::ArithCmpI;
-  mlir::FunctionType type = mlir::FunctionType::get(
-      &context, {operand, operand},
-      {comparison ? mlir::IntegerType::get(&context, 1) : operand});
-  if (comparison)
-    return {schema, type,
-            ::dataflow::IntegerComparePayload{
-                predicate.value_or(mlir::arith::CmpIPredicate::eq)}};
-  return {schema, type, ::dataflow::NoPayload{}};
-}
-
-llvm::Expected<::dataflow::SemanticPayload>
-makeIntegerLogicPayload(::dataflow::OperationSchemaId schema) {
-  using Schema = ::dataflow::OperationSchemaId;
-  switch (schema) {
-  case Schema::ArithAndI:
-  case Schema::ArithOrI:
-  case Schema::ArithXOrI:
-    return ::dataflow::SemanticPayload(::dataflow::NoPayload{});
-  case Schema::LLVMOrDisjoint:
-    return ::dataflow::SemanticPayload(::dataflow::DisjointPayload{true});
-  default:
-    return reject("integer logic capability contains a non-logic schema");
-  }
-}
-
-llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
-makeScalarIntegerLogicActor(mlir::MLIRContext &context, unsigned width,
-                            ::dataflow::OperationSchemaId schema) {
-  auto payload = makeIntegerLogicPayload(schema);
-  if (!payload)
-    return payload.takeError();
-  mlir::Type operand = mlir::IntegerType::get(&context, width);
-  return ::dataflow::CanonicalActorSchemaProjection{
-      schema, mlir::FunctionType::get(&context, {operand, operand}, {operand}),
-      std::move(*payload)};
-}
-
-llvm::Expected<mlir::VectorType>
-makeMaximalVectorType(mlir::Type element, std::uint32_t maxPayloadBits) {
-  const unsigned elementWidth = element.getIntOrFloatBitWidth();
-  if (elementWidth == 0)
-    return reject("fixed-vector element has no finite bit width");
-  const std::uint32_t laneCount = maxPayloadBits / elementWidth;
-  if (laneCount == 0)
-    return reject("fixed-vector element width exceeds payload capacity");
-  return mlir::VectorType::get({static_cast<std::int64_t>(laneCount)}, element);
-}
-
-llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
-makeFixedVectorIntegerActor(mlir::MLIRContext &context, unsigned elementWidth,
-                            std::uint32_t maxPayloadBits,
-                            ::dataflow::OperationSchemaId schema,
-                            ::dataflow::SemanticPayload payload) {
-  auto vector = makeMaximalVectorType(
-      mlir::IntegerType::get(&context, elementWidth), maxPayloadBits);
-  if (!vector)
-    return vector.takeError();
-  return ::dataflow::CanonicalActorSchemaProjection{
-      schema, mlir::FunctionType::get(&context, {*vector, *vector}, {*vector}),
-      std::move(payload)};
-}
-
-llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
-makeFixedVectorIntegerAddSubActor(mlir::MLIRContext &context,
-                                  unsigned elementWidth,
-                                  std::uint32_t maxPayloadBits,
-                                  ::dataflow::OperationSchemaId schema) {
-  return makeFixedVectorIntegerActor(context, elementWidth, maxPayloadBits,
-                                     schema,
-                                     ::dataflow::IntegerOverflowPayload{});
-}
-
-llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
-makeFixedVectorValueSelectActor(mlir::MLIRContext &context, mlir::Type element,
-                                std::uint32_t maxPayloadBits) {
-  auto values = makeMaximalVectorType(element, maxPayloadBits);
-  if (!values)
-    return values.takeError();
-  mlir::Type condition = mlir::VectorType::get(
-      values->getShape(), mlir::IntegerType::get(&context, 1));
-  return ::dataflow::CanonicalActorSchemaProjection{
-      ::dataflow::OperationSchemaId::ArithSelect,
-      mlir::FunctionType::get(&context, {condition, *values, *values},
-                              {*values}),
-      ::dataflow::NoPayload{}};
-}
-
 loom::CanonicalSemanticBytes
 encodeElementWidthConfiguration(llvm::StringRef domain, unsigned elementWidth) {
   constexpr std::uint32_t kElementWidthComponent = 1U << 0;
@@ -579,30 +448,6 @@ encodeIntegerLogicConfiguration(::dataflow::OperationSchemaId schema) {
   appendU32(bytes, kConfigurationCodecMinor);
   appendU32(bytes, static_cast<std::uint32_t>(*operation));
   return loom::CanonicalSemanticBytes(std::move(bytes));
-}
-
-mlir::FloatType floatType(mlir::MLIRContext &context,
-                          fabric::FloatFormat format) {
-  switch (format) {
-  case fabric::FloatFormat::F16:
-    return mlir::Float16Type::get(&context);
-  case fabric::FloatFormat::BF16:
-    return mlir::BFloat16Type::get(&context);
-  case fabric::FloatFormat::F32:
-    return mlir::Float32Type::get(&context);
-  case fabric::FloatFormat::F64:
-    return mlir::Float64Type::get(&context);
-  }
-  llvm_unreachable("unknown floating format");
-}
-
-::dataflow::CanonicalActorSchemaProjection
-makeScalarFloatFmaActor(mlir::MLIRContext &context,
-                        fabric::FloatFormat format) {
-  mlir::Type type = floatType(context, format);
-  return {::dataflow::OperationSchemaId::MathFma,
-          mlir::FunctionType::get(&context, {type, type, type}, {type}),
-          ::dataflow::FloatingPointPayload{}};
 }
 
 bool isStrictIEEE(const fabric::FloatBehaviorProfile &behavior) {
@@ -985,8 +830,10 @@ llvm::Expected<bool> semanticConfigurationRequiresField(
 
 } // namespace fabric::detail
 
-llvm::Expected<loom::CanonicalSemanticBytes>
-fabric::encodeImplementationFamilySemanticConfiguration(
+namespace fabric::detail {
+
+static llvm::Expected<loom::CanonicalSemanticBytes>
+encodeConfigurationABI1SemanticValueUnchecked(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,
     llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
     std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
@@ -994,12 +841,15 @@ fabric::encodeImplementationFamilySemanticConfiguration(
     llvm::ArrayRef<std::uint64_t> operandPorts,
     llvm::ArrayRef<std::uint64_t> resultPorts,
     std::optional<ResolvedIndexWidth> resolvedIndexWidth) {
-  auto needsConfiguration = requiresSemanticConfigurationField(
-      family, params, enabledSchemas, physicalInputCount, physicalResultCount);
+  auto needsConfiguration =
+      ::fabric::detail::semanticConfigurationRequiresField(
+          family, params, enabledSchemas, physicalInputCount,
+          physicalResultCount);
   if (!needsConfiguration)
     return needsConfiguration.takeError();
   if (!*needsConfiguration)
-    return reject("capability has no semantic configuration field");
+    return reject(
+        "ConfigurationABI 1.0 cannot encode this semantic field relation");
   if (!llvm::is_contained(enabledSchemas, actor.schema))
     return reject("actor schema is not enabled by the concrete capability");
 
@@ -1213,10 +1063,11 @@ fabric::encodeImplementationFamilySemanticConfiguration(
 
   bool selectionOnly = enabledSchemas.size() > 1;
   for (::dataflow::OperationSchemaId enabled : enabledSchemas) {
-    auto singletonNeedsConfiguration = requiresSemanticConfigurationField(
-        family, params,
-        llvm::ArrayRef<::dataflow::OperationSchemaId>(&enabled, 1),
-        physicalInputCount, physicalResultCount);
+    auto singletonNeedsConfiguration =
+        ::fabric::detail::semanticConfigurationRequiresField(
+            family, params,
+            llvm::ArrayRef<::dataflow::OperationSchemaId>(&enabled, 1),
+            physicalInputCount, physicalResultCount);
     if (!singletonNeedsConfiguration)
       return singletonNeedsConfiguration.takeError();
     if (*singletonNeedsConfiguration) {
@@ -1237,8 +1088,8 @@ fabric::encodeImplementationFamilySemanticConfiguration(
 
   if (implementationFamily(family).typedAdmissionProvider ==
       TypedAdmissionProviderId::ScalarSpecialMathAdmission)
-    return detail::encodeScalarSpecialMathSemanticConfiguration(family, params,
-                                                                actor);
+    return ::fabric::detail::encodeScalarSpecialMathSemanticConfiguration(
+        family, params, actor);
 
   if (family == ImplementationFamilyId::ScalarFloatFma) {
     const auto *parameters = std::get_if<ScalarFloatParams>(&params);
@@ -1429,262 +1280,75 @@ fabric::encodeImplementationFamilySemanticConfiguration(
   return loom::CanonicalSemanticBytes(std::move(bytes));
 }
 
+} // namespace fabric::detail
+
 llvm::Expected<std::vector<fabric::FiniteImplementationFamilyBehaviorPoint>>
-fabric::resolveFiniteImplementationFamilyBehaviorDomain(
-    ImplementationFamilyId family, const FamilyCapabilityParams &params,
-    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
-    std::uint32_t physicalInputCount, std::uint32_t physicalResultCount,
-    mlir::MLIRContext &context,
-    llvm::function_ref<
-        llvm::Error(const ::dataflow::CanonicalActorSchemaProjection &,
-                    std::optional<ResolvedIndexWidth>)>
-        verifyConcreteActor) {
-  auto needsConfiguration = requiresSemanticConfigurationField(
-      family, params, enabledSchemas, physicalInputCount, physicalResultCount);
-  if (!needsConfiguration)
-    return needsConfiguration.takeError();
+fabric::projectConfigurationABI1FiniteBehaviorDomain(
+    const FabricOpSemanticFieldRelation &relation) {
+  if (relation.kind_ == FabricOpSemanticFieldRelationKind::Direct)
+    return reject("ConfigurationABI 1.0 cannot enumerate a direct relation");
 
-  struct ResolvedBehaviorActor final {
-    ::dataflow::CanonicalActorSchemaProjection actor;
-    std::optional<ResolvedIndexWidth> resolvedIndexWidth;
-  };
-  std::vector<ResolvedBehaviorActor> actors;
-  if (family == ImplementationFamilyId::ScalarIntegerLogic) {
-    const auto *parameters = std::get_if<ScalarIntegerParams>(&params);
-    if (!parameters)
-      return reject("capability has the wrong parameter schema");
-    for (::dataflow::OperationSchemaId schema : enabledSchemas) {
-      for (IntegerWidth width : integerWidthDomain) {
-        if (!parameters->integerWidths.contains(width))
-          continue;
-        auto actor =
-            makeScalarIntegerLogicActor(context, getBitWidth(width), schema);
-        if (!actor)
-          return actor.takeError();
-        actors.push_back({std::move(*actor), std::nullopt});
-      }
-    }
-  } else if (family == ImplementationFamilyId::FixedVectorIntegerLogic) {
-    const auto *parameters = std::get_if<FixedVectorIntegerParams>(&params);
-    if (!parameters)
-      return reject("capability has the wrong parameter schema");
-    for (::dataflow::OperationSchemaId schema : enabledSchemas) {
-      for (IntegerWidth width : integerWidthDomain) {
-        if (!parameters->elementWidths.contains(width))
-          continue;
-        auto payload = makeIntegerLogicPayload(schema);
-        if (!payload)
-          return payload.takeError();
-        auto actor = makeFixedVectorIntegerActor(context, getBitWidth(width),
-                                                 parameters->maxPayloadBits,
-                                                 schema, std::move(*payload));
-        if (!actor)
-          return actor.takeError();
-        actors.push_back({std::move(*actor), std::nullopt});
-      }
-    }
-  } else if (family == ImplementationFamilyId::FixedVectorIntegerMultiply) {
-    const auto *parameters = std::get_if<FixedVectorIntegerParams>(&params);
-    if (!parameters)
-      return reject("capability has the wrong parameter schema");
-    if (enabledSchemas.size() != 1 ||
-        enabledSchemas.front() != ::dataflow::OperationSchemaId::ArithMulI)
-      return reject("fixed-vector multiply capability contains a non-multiply "
-                    "schema");
-    for (IntegerWidth width : integerWidthDomain) {
-      if (!parameters->elementWidths.contains(width))
-        continue;
-      auto actor = makeFixedVectorIntegerActor(
-          context, getBitWidth(width), parameters->maxPayloadBits,
-          enabledSchemas.front(), ::dataflow::IntegerOverflowPayload{});
-      if (!actor)
-        return actor.takeError();
-      actors.push_back({std::move(*actor), std::nullopt});
-    }
-  } else if (family == ImplementationFamilyId::FixedVectorValueSelect) {
-    const auto *parameters = std::get_if<FixedVectorValueSelectParams>(&params);
-    if (!parameters)
-      return reject("capability has the wrong parameter schema");
-    if (enabledSchemas.size() != 1 ||
-        enabledSchemas.front() != ::dataflow::OperationSchemaId::ArithSelect)
-      return reject("fixed-vector select capability contains a non-select "
-                    "schema");
-    for (IntegerWidth width : integerWidthDomain) {
-      if (!parameters->integerElementWidths.contains(width))
-        continue;
-      auto actor = makeFixedVectorValueSelectActor(
-          context, mlir::IntegerType::get(&context, getBitWidth(width)),
-          parameters->maxPayloadBits);
-      if (!actor)
-        return actor.takeError();
-      actors.push_back({std::move(*actor), std::nullopt});
-    }
-    for (FloatFormat format : floatFormatDomain) {
-      if (!parameters->floatElementFormats.contains(format))
-        continue;
-      auto actor = makeFixedVectorValueSelectActor(
-          context, floatType(context, format), parameters->maxPayloadBits);
-      if (!actor)
-        return actor.takeError();
-      actors.push_back({std::move(*actor), std::nullopt});
-    }
-  } else if (family == ImplementationFamilyId::ScalarIntegerCast) {
-    const auto *parameters = std::get_if<ScalarIntegerCastParams>(&params);
-    if (!parameters)
-      return reject("capability has the wrong parameter schema");
-    auto cases = enumerateScalarIntegerCastCases(*parameters, enabledSchemas);
-    if (!cases)
-      return cases.takeError();
-    actors.reserve(cases->size());
-    for (const ScalarIntegerCastCase &castCase : *cases) {
-      auto actor = makeScalarIntegerCastActor(context, castCase);
-      if (!actor)
-        return actor.takeError();
-      actors.push_back({std::move(*actor), castCase.resolvedIndexWidth});
-    }
-  } else if (family == ImplementationFamilyId::ScalarIntegerCompareMinMax) {
-    const auto *parameters =
-        std::get_if<ScalarIntegerCompareMinMaxParams>(&params);
-    if (!parameters)
-      return reject("capability has the wrong parameter schema");
-    const auto appendWidthDomain =
-        [&](::dataflow::OperationSchemaId schema,
-            std::optional<mlir::arith::CmpIPredicate> predicate =
-                std::nullopt) {
-          for (IntegerWidth width : integerWidthDomain) {
-            if (!parameters->operandWidths.contains(width))
-              continue;
-            actors.push_back(
-                {makeScalarIntegerCompareActor(context, getBitWidth(width),
-                                               schema, predicate),
-                 std::nullopt});
-          }
-        };
-    for (::dataflow::OperationSchemaId schema : enabledSchemas) {
-      switch (schema) {
-      case ::dataflow::OperationSchemaId::ArithCmpI:
-        for (std::uint32_t ordinal = 0;
-             ordinal <= mlir::arith::getMaxEnumValForCmpIPredicate();
-             ++ordinal) {
-          const auto predicate =
-              static_cast<mlir::arith::CmpIPredicate>(ordinal);
-          if (parameters->predicates.contains(predicate))
-            appendWidthDomain(schema, predicate);
-        }
-        break;
-      case ::dataflow::OperationSchemaId::ArithMinSI:
-      case ::dataflow::OperationSchemaId::ArithMaxSI:
-      case ::dataflow::OperationSchemaId::ArithMinUI:
-      case ::dataflow::OperationSchemaId::ArithMaxUI:
-        appendWidthDomain(schema);
-        break;
-      default:
-        return reject("capability contains a non-compare/min-max schema");
-      }
-    }
-  } else if (family == ImplementationFamilyId::FixedVectorIntegerAddSub) {
-    const auto *parameters = std::get_if<FixedVectorIntegerParams>(&params);
-    if (!parameters)
-      return reject("capability has the wrong parameter schema");
-    for (::dataflow::OperationSchemaId schema : enabledSchemas) {
-      if (schema != ::dataflow::OperationSchemaId::ArithAddI &&
-          schema != ::dataflow::OperationSchemaId::ArithSubI)
-        return reject("capability contains a non-add/sub schema");
-      for (IntegerWidth width : integerWidthDomain) {
-        if (!parameters->elementWidths.contains(width))
-          continue;
-        auto actor = makeFixedVectorIntegerAddSubActor(
-            context, getBitWidth(width), parameters->maxPayloadBits, schema);
-        if (!actor)
-          return actor.takeError();
-        actors.push_back({std::move(*actor), std::nullopt});
-      }
-    }
-  } else if (family == ImplementationFamilyId::ScalarFloatFma) {
-    const auto *parameters = std::get_if<ScalarFloatParams>(&params);
-    if (!parameters)
-      return reject("capability has the wrong parameter schema");
-    if (enabledSchemas.size() != 1 ||
-        enabledSchemas.front() != ::dataflow::OperationSchemaId::MathFma)
-      return reject("scalar FMA capability contains a non-FMA schema");
-    if (!isStrictIEEE(parameters->behavior))
-      return reject("scalar FMA behavior-domain projection supports only the "
-                    "strict IEEE behavior profile");
-    for (FloatFormat format : floatFormatDomain)
-      if (parameters->formats.contains(format))
-        actors.push_back(
-            {makeScalarFloatFmaActor(context, format), std::nullopt});
-  } else if (implementationFamily(family).typedAdmissionProvider ==
-             TypedAdmissionProviderId::ScalarSpecialMathAdmission) {
-    auto specialActors = detail::enumerateScalarSpecialMathBehaviorActors(
-        family, params, enabledSchemas, context);
-    if (!specialActors)
-      return specialActors.takeError();
-    for (auto &actor : *specialActors)
-      actors.push_back({std::move(actor), std::nullopt});
-  } else if (family == ImplementationFamilyId::FixedVectorSliceAlignMerge ||
-             family == ImplementationFamilyId::FixedVectorShuffle) {
-    return reject("direct structural vector configuration has no finite "
-                  "behavior-domain enumeration");
-  } else {
-    return reject("finite behavior-domain projection is not implemented for "
-                  "the capability family");
-  }
-  if (actors.empty())
-    return reject("capability has no admitted finite behavior");
+  std::vector<FiniteImplementationFamilyBehaviorPoint> points(
+      relation.finiteBehaviorDomain_.begin(),
+      relation.finiteBehaviorDomain_.end());
+  if (relation.kind_ == FabricOpSemanticFieldRelationKind::None)
+    return points;
 
-  std::vector<FiniteImplementationFamilyBehaviorPoint> points;
-  for (ResolvedBehaviorActor &resolvedActor : actors) {
-    auto &actor = resolvedActor.actor;
-    if (resolvedActor.resolvedIndexWidth) {
-      if (llvm::Error error = verifyImplementationFamilyAdmission(
-              family, &params, actor,
-              getResolvedIndexBitWidth(*resolvedActor.resolvedIndexWidth)))
-        return std::move(error);
-    } else if (llvm::Error error = verifyImplementationFamilyAdmission(
-                   family, &params, actor)) {
-      return std::move(error);
+  for (auto [ordinal, point] : llvm::enumerate(points)) {
+    auto relationValue = relation.projectSemanticValue(
+        point.representativeActor, point.operandPorts, point.resultPorts,
+        point.resolvedIndexWidth);
+    if (!relationValue)
+      return relationValue.takeError();
+    auto semanticValue = detail::encodeConfigurationABI1SemanticValueUnchecked(
+        relation.family_, relation.params_, relation.enabledSchemas_,
+        relation.physicalInputWidths_.size(),
+        relation.physicalResultWidths_.size(), point.representativeActor,
+        point.operandPorts, point.resultPorts, point.resolvedIndexWidth);
+    if (!semanticValue)
+      return semanticValue.takeError();
+    for (const auto &prior : llvm::ArrayRef(points).take_front(ordinal)) {
+      if (prior.semanticConfiguration &&
+          prior.semanticConfiguration->bytes().equals(semanticValue->bytes()))
+        return reject(
+            "ConfigurationABI 1.0 cannot encode this semantic field relation "
+            "injectively");
     }
-    if (llvm::Error error =
-            verifyConcreteActor(actor, resolvedActor.resolvedIndexWidth))
-      return std::move(error);
-    std::vector<std::uint64_t> operandPorts(actor.type.getNumInputs());
-    std::vector<std::uint64_t> resultPorts(actor.type.getNumResults());
-    std::iota(operandPorts.begin(), operandPorts.end(), 0);
-    std::iota(resultPorts.begin(), resultPorts.end(), 0);
-    if (!*needsConfiguration) {
-      if (points.empty())
-        points.push_back({std::move(actor), std::nullopt,
-                          resolvedActor.resolvedIndexWidth,
-                          std::move(operandPorts), std::move(resultPorts)});
-      continue;
-    }
-    auto semantic = encodeImplementationFamilySemanticConfiguration(
-        family, params, enabledSchemas, physicalInputCount, physicalResultCount,
-        actor, operandPorts, resultPorts, resolvedActor.resolvedIndexWidth);
-    if (!semantic)
-      return semantic.takeError();
-    const auto duplicate = llvm::find_if(points, [&](const auto &point) {
-      return point.semanticConfiguration &&
-             point.semanticConfiguration->bytes().equals(semantic->bytes());
-    });
-    if (duplicate == points.end())
-      points.push_back({std::move(actor), std::move(*semantic),
-                        resolvedActor.resolvedIndexWidth,
-                        std::move(operandPorts), std::move(resultPorts)});
+    point.semanticConfiguration = std::move(*semanticValue);
   }
-  llvm::sort(points, [](const auto &lhs, const auto &rhs) {
-    if (!lhs.semanticConfiguration)
-      return rhs.semanticConfiguration.has_value();
-    if (!rhs.semanticConfiguration)
-      return false;
-    return std::lexicographical_compare(
-        lhs.semanticConfiguration->bytes().begin(),
-        lhs.semanticConfiguration->bytes().end(),
-        rhs.semanticConfiguration->bytes().begin(),
-        rhs.semanticConfiguration->bytes().end());
-  });
   return points;
+}
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+fabric::encodeConfigurationABI1SemanticValue(
+    const FabricOpSemanticFieldRelation &relation,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    llvm::ArrayRef<std::uint64_t> operandPorts,
+    llvm::ArrayRef<std::uint64_t> resultPorts,
+    std::optional<ResolvedIndexWidth> resolvedIndexWidth) {
+  auto relationValue = relation.projectSemanticValue(
+      actor, operandPorts, resultPorts, resolvedIndexWidth);
+  if (!relationValue)
+    return relationValue.takeError();
+  if (relation.kind_ == FabricOpSemanticFieldRelationKind::Direct)
+    return relationValue;
+  if (relation.kind_ != FabricOpSemanticFieldRelationKind::Finite)
+    return reject("ConfigurationABI 1.0 cannot encode a fieldless relation");
+
+  auto domain = projectConfigurationABI1FiniteBehaviorDomain(relation);
+  if (!domain)
+    return domain.takeError();
+  for (auto [ordinal, point] :
+       llvm::enumerate(relation.finiteBehaviorDomain_)) {
+    if (!point.semanticConfiguration ||
+        !point.semanticConfiguration->bytes().equals(relationValue->bytes()))
+      continue;
+    auto &encoded = (*domain)[ordinal].semanticConfiguration;
+    if (!encoded)
+      return reject("ConfigurationABI 1.0 finite point has no semantic value");
+    return std::move(*encoded);
+  }
+  return reject("sealed relation projection has no finite behavior point");
 }
 
 mlir::FailureOr<unsigned> fabric::getSemanticPayloadWidth(mlir::Type type,

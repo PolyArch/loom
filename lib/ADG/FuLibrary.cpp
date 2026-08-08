@@ -150,7 +150,7 @@ integerCastRelation(::fabric::ResolvedIndexWidthSet resolvedIndexWidths) {
       ::fabric::FloatFormat::F32, ::fabric::FloatFormat::F64};
   for (::fabric::FloatFormat source : formats)
     for (::fabric::FloatFormat destination : formats)
-      if (source != destination)
+      if (::fabric::getBitWidth(source) != ::fabric::getBitWidth(destination))
         relation.insert(source, destination);
   return relation;
 }
@@ -169,27 +169,16 @@ integerCastRelation(::fabric::ResolvedIndexWidthSet resolvedIndexWidths) {
   return relation;
 }
 
-std::vector<OperationSchemaId> familyMembers(ImplementationFamilyId family,
-                                             bool includePointer = false) {
+std::vector<OperationSchemaId> familyMembers(ImplementationFamilyId family) {
   llvm::ArrayRef<OperationSchemaId> members =
       ::fabric::implementationFamily(family).admittedSchemas;
   std::vector<OperationSchemaId> enabled;
   for (OperationSchemaId member : members) {
-    if (member == OperationSchemaId::LLVMGetElementPtr && !includePointer)
+    if (member == OperationSchemaId::LLVMGetElementPtr)
       continue;
     enabled.push_back(member);
   }
   return enabled;
-}
-
-SelectableResource
-pointerCapableIntegerAddSub(std::vector<std::uint32_t> inputs) {
-  return {ImplementationFamilyId::ScalarIntegerAddSub,
-          ::fabric::ScalarIntegerParams{
-              ordinaryIntegerWidths(),
-              ::loom::adg::detail::catalogPointerFormats()},
-          std::move(inputs),
-          familyMembers(ImplementationFamilyId::ScalarIntegerAddSub, true)};
 }
 
 llvm::Expected<std::vector<FuValue>> nodeOutputs(const FuNode &node,
@@ -404,7 +393,8 @@ llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
     return bits128.takeError();
 
   std::vector<SelectableResource> resources;
-  resources.push_back(pointerCapableIntegerAddSub({0, 1}));
+  resources.push_back(
+      scalarInteger(ImplementationFamilyId::ScalarIntegerAddSub, {0, 1}));
   resources.push_back(scalarInteger(
       ImplementationFamilyId::ScalarIntegerSaturatingAddSub, {0, 1}));
   resources.push_back(

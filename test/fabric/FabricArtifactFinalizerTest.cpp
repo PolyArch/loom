@@ -1215,7 +1215,7 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
               0,
           "concrete operation capability lost its resource contract");
   require(test, singleCapability->configurationFieldSchema.size() == 1,
-          "multi-member operation capability lost its semantic field");
+          "multi-member operation capability lost its finite semantic field");
 
   auto actorSource = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
     module {
@@ -1324,7 +1324,7 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
   for (const auto &capability :
        branch.view().resolvedFabricOpCapabilities(branchFu))
     require(test, capability.configurationFieldSchema.empty(),
-            "singleton modular operation gained a redundant semantic field");
+            "singleton modular operation gained a semantic field");
   for (const loom::fabric::FabricFuCapabilityTemplateRecord &record :
        branchTemplates) {
     unsigned opCount = 0;

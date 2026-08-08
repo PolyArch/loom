@@ -146,14 +146,25 @@ resolveFabricOpCapability(::fabric::OpOp operation,
         endpoint.canonicalType, *payloadWidth});
   }
 
+  std::vector<std::uint32_t> physicalInputWidths;
+  std::vector<std::uint32_t> physicalResultWidths;
+  physicalInputWidths.reserve(inputOrdinal);
+  physicalResultWidths.reserve(outputOrdinal);
+  for (const ResolvedFabricOpPhysicalPortView &port : ports) {
+    if (port.reference.direction == FabricPortDirection::Input)
+      physicalInputWidths.push_back(port.payloadWidthBits);
+    else
+      physicalResultWidths.push_back(port.payloadWidthBits);
+  }
+
+  auto semanticFieldRelation = ::fabric::resolveFabricOpSemanticFieldRelation(
+      *family, *parameters, enabledSchemas, physicalInputWidths,
+      physicalResultWidths, *operation.getContext());
+  if (!semanticFieldRelation)
+    return semanticFieldRelation.takeError();
+
   std::vector<FabricSemanticConfigFieldRef> configurationFields;
-  auto needsSemanticConfiguration =
-      ::fabric::requiresSemanticConfigurationField(
-          *family, *parameters, enabledSchemas, operation.getNumOperands(),
-          operation.getNumResults());
-  if (!needsSemanticConfiguration)
-    return needsSemanticConfiguration.takeError();
-  if (*needsSemanticConfiguration) {
+  if (semanticFieldRelation->hasConfigurationField()) {
     node.owner.inventoryCounts[static_cast<std::size_t>(
         FabricInventoryKind::SemanticConfigField)] = 1;
     configurationFields.push_back(FabricSemanticConfigFieldRef{

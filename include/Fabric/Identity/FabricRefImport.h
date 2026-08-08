@@ -88,11 +88,13 @@ struct ResolvedFabricOpCapabilityView {
       llvm::ArrayRef<std::uint64_t> resultPorts,
       const ::loom::PointerLayout *pointerLayout = nullptr) const;
 
-  /// Encodes one enabled operation-schema choice through a configuration
-  /// field proven to have no semantic dimension beyond member selection.
+  /// Encodes one enabled operation-schema choice using the ConfigurationABI
+  /// 1.0 schema-ID carrier after proving that the field has no semantic
+  /// dimension beyond member selection.
   llvm::Expected<CanonicalSemanticBytes>
   encodeOperationSelection(const FabricSemanticConfigFieldRef &field,
-                           ::dataflow::OperationSchemaId schema) const;
+                           ::dataflow::OperationSchemaId schema,
+                           ::mlir::MLIRContext &context) const;
 
   /// Encodes one admitted actor and its exact TechMapping-owned ordered port
   /// correspondence through this resource's semantic field domain. Facts that

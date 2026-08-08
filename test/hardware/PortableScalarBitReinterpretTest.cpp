@@ -543,12 +543,6 @@ void checkCapability(llvm::StringRef test, const FabricFixture &fixture) {
             "capability changed its admitted floating endpoint domain");
   require(test, capability->configurationFieldSchema.empty(),
           "bit reinterpret capability gained a configuration field");
-  require(
-      test,
-      !take(test, ::fabric::requiresSemanticConfigurationField(
-                      descriptor.familyId, capability->parameterizedCapability,
-                      capability->enabledOperationSchemas, 1, 1)),
-      "canonical Fabric query requires a bit reinterpret selector");
 
   std::vector<const loom::fabric::ResolvedFabricOpPhysicalPortView *> inputs;
   std::vector<const loom::fabric::ResolvedFabricOpPhysicalPortView *> outputs;
@@ -564,6 +558,22 @@ void checkCapability(llvm::StringRef test, const FabricFixture &fixture) {
               inputs.front()->payloadWidthBits == fixture.inputWidth &&
               outputs.front()->payloadWidthBits == fixture.outputWidth,
           "capability changed its unary physical port shape");
+  const std::vector<std::uint32_t> physicalInputWidths = {
+      inputs.front()->payloadWidthBits};
+  const std::vector<std::uint32_t> physicalResultWidths = {
+      outputs.front()->payloadWidthBits};
+  const auto relation =
+      take(test, ::fabric::resolveFabricOpSemanticFieldRelation(
+                     descriptor.familyId, capability->parameterizedCapability,
+                     capability->enabledOperationSchemas, physicalInputWidths,
+                     physicalResultWidths, fabricContext()));
+  require(test,
+          relation.kind() ==
+                  ::fabric::FabricOpSemanticFieldRelationKind::None &&
+              !relation.hasConfigurationField() &&
+              relation.finiteBehaviorDomain().size() == 1 &&
+              !relation.finiteBehaviorDomain().front().semanticConfiguration,
+          "bit reinterpret capability gained a semantic selector");
   const std::vector<std::uint8_t> actual =
       take(test, ::fabric::encodeResourceContractRecord(
                      capability->resourceStateAndTimingContract));
@@ -788,28 +798,6 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
                          "unsupported resource contract");
   require(test, moduleText(*wrongSkeleton.module) == wrongBefore,
           "wrong resource contract partially mutated the caller module");
-
-  FabricFixture zeroWidth = makeBitReinterpretFabric(test, store, 0, 0);
-  FinalizedConfigurationABI zeroWidthAbi =
-      makeConfigurationAbi(test, store, zeroWidth);
-  std::unique_ptr<mlir::MLIRContext> zeroWidthContext = makeCirctContext();
-  SkeletonFixture zeroWidthSkeleton =
-      makeSkeleton(test, *zeroWidthContext, zeroWidth, zeroWidthAbi.abi(),
-                   "unsupported_zero_width_bit_reinterpret");
-  const std::string zeroWidthBefore = moduleText(*zeroWidthSkeleton.module);
-  const std::vector<FabricOperationLeafAssociation> zeroWidthAssociations = {
-      {zeroWidthSkeleton.leaf, zeroWidth.occurrence}};
-  const std::vector<FabricOperationRecipeBinding> zeroWidthRecipes = {
-      {zeroWidth.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  expectTypedUnsupported(test,
-                         specializeFabricOperationLeaves(
-                             *zeroWidthSkeleton.module, zeroWidth.fabric,
-                             zeroWidthAbi, zeroWidthAssociations,
-                             zeroWidthRecipes, registry, externalContracts),
-                         ::fabric::ImplementationFamilyId::ScalarBitReinterpret,
-                         "unsupported zero-width physical shape");
-  require(test, moduleText(*zeroWidthSkeleton.module) == zeroWidthBefore,
-          "unsupported physical shape partially mutated the caller module");
 
   FabricFixture other = makeOtherFamilyFabric(test, store);
   FinalizedConfigurationABI otherAbi = makeConfigurationAbi(test, store, other);

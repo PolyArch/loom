@@ -671,7 +671,7 @@ void requireWidenedCoordinateRecovery(
     const loom::fabric::FinalizedFabricRoot &fabric) {
   auto source = makeCoordinateOverflowSource();
   auto selected = findForall(source);
-  auto decision = findThreadDecision(source, std::nullopt);
+  auto decision = findThreadDecision(source, 32);
   auto candidate = take(loom::frontend::materializeSpatialOwnershipDecision(
       source, {selected}, decision, fabric));
   auto sourceView = take(source.view());

@@ -342,14 +342,19 @@ llvm::Expected<std::uint64_t> validateShape(Reader &reader,
   return dynamic ? 0 : elements;
 }
 
-llvm::Error validateTypeList(Reader &reader, unsigned depth) {
+llvm::Error validateTypeList(
+    Reader &reader, unsigned depth,
+    std::vector<llvm::ArrayRef<std::uint8_t>> *encodedTypes = nullptr) {
   auto count = readCount(reader, "type count", 4);
   if (!count)
     return count.takeError();
   for (std::uint64_t index = 0; index < *count; ++index) {
+    const std::size_t begin = reader.position();
     auto type = dataflow::detail::validateType(reader, depth);
     if (!type)
       return type.takeError();
+    if (encodedTypes)
+      encodedTypes->push_back(reader.bytesSince(begin));
   }
   return llvm::Error::success();
 }
@@ -548,10 +553,14 @@ llvm::Error dataflow::detail::encodeFunctionType(Writer &writer,
   return encodeTypeList(writer, type.getResults(), 0);
 }
 
-llvm::Error dataflow::detail::validateFunctionType(Reader &reader) {
+llvm::Expected<std::vector<llvm::ArrayRef<std::uint8_t>>>
+dataflow::detail::validateFunctionType(Reader &reader) {
   if (llvm::Error error = validateTypeList(reader, 0))
-    return error;
-  return validateTypeList(reader, 0);
+    return std::move(error);
+  std::vector<llvm::ArrayRef<std::uint8_t>> results;
+  if (llvm::Error error = validateTypeList(reader, 0, &results))
+    return std::move(error);
+  return results;
 }
 
 llvm::Expected<loom::CanonicalSemanticBytes>

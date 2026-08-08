@@ -68,7 +68,8 @@ private:
 
 class Reader {
 public:
-  explicit Reader(llvm::ArrayRef<std::uint8_t> bytes) : remaining_(bytes) {}
+  explicit Reader(llvm::ArrayRef<std::uint8_t> bytes)
+      : bytes_(bytes), remaining_(bytes) {}
 
   llvm::Expected<llvm::ArrayRef<std::uint8_t>> take(std::uint64_t count,
                                                     const llvm::Twine &what) {
@@ -117,9 +118,14 @@ public:
   }
 
   std::size_t remainingSize() const { return remaining_.size(); }
+  std::size_t position() const { return bytes_.size() - remaining_.size(); }
+  llvm::ArrayRef<std::uint8_t> bytesSince(std::size_t position) const {
+    return bytes_.slice(position, this->position() - position);
+  }
   bool empty() const { return remaining_.empty(); }
 
 private:
+  llvm::ArrayRef<std::uint8_t> bytes_;
   llvm::ArrayRef<std::uint8_t> remaining_;
 };
 
@@ -193,7 +199,8 @@ struct TypeSummary {
 llvm::Error encodeType(Writer &writer, ::mlir::Type type, unsigned depth);
 llvm::Expected<TypeSummary> validateType(Reader &reader, unsigned depth);
 llvm::Error encodeFunctionType(Writer &writer, ::mlir::FunctionType type);
-llvm::Error validateFunctionType(Reader &reader);
+llvm::Expected<std::vector<llvm::ArrayRef<std::uint8_t>>>
+validateFunctionType(Reader &reader);
 
 llvm::Expected<std::uint32_t>
 integerPredicateWireTag(::mlir::arith::CmpIPredicate predicate);

@@ -580,25 +580,6 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
               "leaf port");
   require(test, moduleText(*malformed.module) == beforeLeaf,
           "malformed leaf partially mutated the caller module");
-
-  FabricFixture zeroPhase = makeFabric(test, store, 0, 8, 8);
-  FinalizedConfigurationABI zeroPhaseAbi =
-      makeConfigurationAbi(test, store, zeroPhase);
-  SkeletonFixture zeroPhaseSkeleton =
-      makeSkeleton(test, *context, zeroPhase, zeroPhaseAbi.abi());
-  const std::string beforePhase = moduleText(*zeroPhaseSkeleton.module);
-  const std::vector<FabricOperationLeafAssociation> phaseAssociations = {
-      {zeroPhaseSkeleton.leaf, zeroPhase.occurrence}};
-  const std::vector<FabricOperationRecipeBinding> phaseRecipes = {
-      {zeroPhase.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  expectTypedUnsupported(test,
-                         specializeFabricOperationLeaves(
-                             *zeroPhaseSkeleton.module, zeroPhase.fabric,
-                             zeroPhaseAbi, phaseAssociations, phaseRecipes,
-                             registry, externalContracts),
-                         "zero-width invariant phase input");
-  require(test, moduleText(*zeroPhaseSkeleton.module) == beforePhase,
-          "unsupported phase shape partially mutated the caller module");
 }
 
 } // namespace

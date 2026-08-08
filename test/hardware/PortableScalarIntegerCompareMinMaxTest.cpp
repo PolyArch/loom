@@ -67,7 +67,9 @@ template <typename T>
 void expectError(llvm::StringRef test, llvm::Expected<T> value,
                  llvm::StringRef expected) {
   if (value)
-    fail(test, "accepted invalid portable compare/min/max input");
+    fail(test,
+         "accepted invalid portable compare/min/max input expected to report " +
+             expected.str());
   const std::string message = llvm::toString(value.takeError());
   require(test, llvm::StringRef(message).contains(expected), message);
 }
@@ -96,7 +98,7 @@ enum class FabricFixtureKind {
   SingletonSignedLessThanWidths,
   SingletonSignedGreaterThanWidths,
   SingletonUnsignedMinimum,
-  UndersizedPhysicalPorts,
+  NarrowUnsignedMinimum,
   UnsupportedContract,
 };
 
@@ -111,7 +113,8 @@ FabricFixture makeFabric(
     FabricFixtureKind kind = FabricFixtureKind::ConfiguredCompareMinMax) {
   const llvm::StringRef sourceText =
       (kind == FabricFixtureKind::ConfiguredCompareMinMax ||
-       kind == FabricFixtureKind::UnsupportedContract)              ? R"mlir(
+       kind == FabricFixtureKind::UnsupportedContract)
+          ? R"mlir(
     module {
       fabric.module @integer_compare_min_max(
           %a: !fabric.bits<32>, %b: !fabric.bits<32>)
@@ -239,7 +242,7 @@ FabricFixture makeFabric(
   )mlir"
                                                                     : R"mlir(
     module {
-      fabric.module @undersized_unsigned_minimum(
+      fabric.module @narrow_unsigned_minimum(
           %a: !fabric.bits<8>, %b: !fabric.bits<8>)
           -> !fabric.bits<8> {
         %pe = fabric.pe [spatial]
@@ -252,7 +255,7 @@ FabricFixture makeFabric(
               {implementation_family =
                  #fabric.implementation_family<ScalarIntegerCompareMinMax>,
                hw_params = {
-                 integer_widths = [32 : i32],
+                 integer_widths = [8 : i32, 32 : i32],
                  predicates = ["ult"]}}
               : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
             fabric.yield %value : !fabric.bits<8>
@@ -271,8 +274,8 @@ FabricFixture makeFabric(
       kind == FabricFixtureKind::UnsupportedContract
           ? ::fabric::loopCarryOperationResourceContract()
           : ::fabric::oneCycleElasticOperationResourceContract();
-  const std::vector<std::uint8_t> contract = take(
-      test, ::fabric::encodeResourceContractRecord(resourceContract));
+  const std::vector<std::uint8_t> contract =
+      take(test, ::fabric::encodeResourceContractRecord(resourceContract));
   const std::vector<std::int8_t> signedContract(contract.begin(),
                                                 contract.end());
   source->walk([&](::fabric::OpOp operation) {
@@ -695,59 +698,39 @@ void fixedFactsStayOutsideSemanticValues(const std::filesystem::path &root) {
           "configuration-free unsigned minimum retained a semantic value");
 }
 
-void undersizedPhysicalPortsFailClosed(const std::filesystem::path &root) {
+void physicalPortsNarrowTheBehaviorDomain(const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
   std::filesystem::create_directories(root);
   ArtifactStore store(root.string());
+  FabricFixture narrow =
+      makeFabric(test, store, FabricFixtureKind::NarrowUnsignedMinimum);
+  const auto *capability =
+      narrow.fabric.view().resolvedFabricOpCapability(narrow.occurrence);
+  require(test, capability != nullptr,
+          "narrow unsigned-min capability did not resolve");
+  const auto domain =
+      take(test, capability->resolveFiniteBehaviorDomain(fabricContext()));
+  require(test,
+          domain.size() == 1 && !domain.front().semanticConfiguration &&
+              mlir::cast<mlir::IntegerType>(
+                  domain.front().representativeActor.type.getResult(0))
+                      .getWidth() == 8,
+          "8-bit physical ports did not retain only the reachable behavior");
 
-  FabricFixture equality =
-      makeFabric(test, store, FabricFixtureKind::SingletonEquality);
-  const auto *equalityCapability =
-      equality.fabric.view().resolvedFabricOpCapability(equality.occurrence);
-  require(test, equalityCapability != nullptr,
-          "singleton equality capability did not resolve");
-  auto narrowInputs = *equalityCapability;
-  for (auto &port : narrowInputs.physicalPorts)
-    if (port.reference.direction == loom::fabric::FabricPortDirection::Input)
-      port.payloadWidthBits = 8;
-  expectError(test, narrowInputs.resolveFiniteBehaviorDomain(fabricContext()),
-              "physical input");
-
-  FabricFixture configured = makeFabric(test, store);
-  const auto *configuredCapability =
-      configured.fabric.view().resolvedFabricOpCapability(
-          configured.occurrence);
-  require(test, configuredCapability != nullptr,
-          "configured compare/min/max capability did not resolve");
-  auto narrowOutput = *configuredCapability;
-  for (auto &port : narrowOutput.physicalPorts)
-    if (port.reference.direction == loom::fabric::FabricPortDirection::Output)
-      port.payloadWidthBits = 8;
-  expectError(test, narrowOutput.resolveFiniteBehaviorDomain(fabricContext()),
-              "physical result");
-
-  FabricFixture fabric =
-      makeFabric(test, store, FabricFixtureKind::UndersizedPhysicalPorts);
-  FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
-  FabricOperationProviderRegistry registry;
-  if (llvm::Error error =
-          registerPortableScalarIntegerCompareMinMaxProvider(registry))
-    fail(test, llvm::toString(std::move(error)));
-  ExternalImplementationContractCatalog externalContracts;
+  FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, narrow);
   std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
-  SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi());
-  const std::string before = moduleText(*skeleton.module);
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.occurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  expectError(test,
-              specializeFabricOperationLeaves(*skeleton.module, fabric.fabric,
-                                              abi, associations, recipes,
-                                              registry, externalContracts),
-              "physical input");
-  require(test, moduleText(*skeleton.module) == before,
-          "undersized physical port partially mutated the common skeleton");
+  SkeletonFixture skeleton = makeSkeleton(test, *context, narrow, abi.abi());
+  const circt::hw::ModulePortInfo ports(skeleton.leaf.getPortList());
+  require(
+      test,
+      ports.size() == 3 &&
+          ports.atInput(0).type == mlir::IntegerType::get(context.get(), 8) &&
+          ports.atInput(1).type == mlir::IntegerType::get(context.get(), 8) &&
+          ports.atOutput(0).type == mlir::IntegerType::get(context.get(), 8),
+      "narrow unsigned-min leaf retained a selector or wide port");
+  const std::string rtl = specialize(test, skeleton, narrow, abi);
+  require(test, !llvm::StringRef(rtl).contains("config_0"),
+          "narrow unsigned-min RTL retained a redundant selector");
 }
 
 void malformedInputsFailClosed(const std::filesystem::path &root) {
@@ -832,9 +815,9 @@ void unsupportedResourceContractIsTransactional(
       {skeleton.leaf, fabric.occurrence}};
   const std::vector<FabricOperationRecipeBinding> recipes = {
       {fabric.occurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  auto result = specializeFabricOperationLeaves(
-      *skeleton.module, fabric.fabric, abi, associations, recipes, registry,
-      externalContracts);
+  auto result = specializeFabricOperationLeaves(*skeleton.module, fabric.fabric,
+                                                abi, associations, recipes,
+                                                registry, externalContracts);
   require(test, !result, "unsupported resource contract specialized");
   bool classifiedUnsupported = false;
   llvm::handleAllErrors(
@@ -842,8 +825,7 @@ void unsupportedResourceContractIsTransactional(
       [&](const FabricOperationProviderUnsupportedError &error) {
         classifiedUnsupported =
             error.implementationFamily() ==
-                ::fabric::ImplementationFamilyId::
-                    ScalarIntegerCompareMinMax &&
+                ::fabric::ImplementationFamilyId::ScalarIntegerCompareMinMax &&
             error.recipe() == BackendRecipeKey::PortableSystemVerilog;
       },
       [&](const llvm::ErrorInfoBase &error) {
@@ -865,7 +847,7 @@ int main(int argc, char **argv) {
   compactSemanticFieldAndDeterminism(root);
   singletonEqualityNeedsNoSelector(root / "singleton");
   fixedFactsStayOutsideSemanticValues(root / "fixed_facts");
-  undersizedPhysicalPortsFailClosed(root / "undersized_ports");
+  physicalPortsNarrowTheBehaviorDomain(root / "narrowed_ports");
   malformedInputsFailClosed(root / "malformed");
   unsupportedResourceContractIsTransactional(root / "resource_contract");
   return 0;

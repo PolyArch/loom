@@ -46,9 +46,11 @@ add_mlir_library(LoomFabricImplementationFamily
   ImplementationFamilyPortCorrespondence.cpp
   ImplementationFamilyQueries.cpp
   ImplementationFamilyScalarFloatBehavior.cpp
+  ImplementationFamilyScalarFloatCompareBehavior.cpp
   ImplementationFamilyScalarIntegerBehavior.cpp
   ImplementationFamilySemanticConfiguration.cpp
   ImplementationFamilySpecialMath.cpp
+  ImplementationFamilyVectorFloatBehavior.cpp
   ImplementationFamilyVectorIntegerBehavior.cpp
   ImplementationFamilyVectorStructure.cpp
 
