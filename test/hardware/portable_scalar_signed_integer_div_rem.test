@@ -1,0 +1,78 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-scalar-signed-integer-div-rem-test %t
+# RUN: FileCheck %s --check-prefix=DIV8 < %t/artifacts/scalar_signed_div_8_padded.sv
+# RUN: FileCheck %s --check-prefix=REM8 < %t/artifacts/scalar_signed_rem_8_padded.sv
+# RUN: FileCheck %s --check-prefix=DUAL8 < %t/artifacts/scalar_signed_div_rem_8_padded.sv
+# RUN: FileCheck %s --check-prefix=DUAL8Q < %t/artifacts/scalar_signed_div_rem_8_padded_inactive_quotient.sv
+# RUN: FileCheck %s --check-prefix=ACTIVE < %t/artifacts/scalar_signed_div_rem_active_widths.sv
+# RUN: FileCheck %s --check-prefix=DUAL64 < %t/artifacts/scalar_signed_div_rem_64.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/artifacts/portable_scalar_signed_integer_div_rem.ys
+
+# DIV8-LABEL: module scalar_signed_div_8_padded(
+# DIV8: input  [12:0] data_input_0
+# DIV8: output [12:0] data_output_0
+# DIV8: data_input_0[7:0] == 8'h80
+# DIV8: $signed(data_input_0[7:0]) / $signed(
+# DIV8: assign data_output_0 = {5'h0,
+# DIV8-NOT: config_
+# DIV8-NOT: %
+
+# REM8-LABEL: module scalar_signed_rem_8_padded(
+# REM8: input  [12:0] data_input_0
+# REM8: output [12:0] data_output_0
+# REM8: $signed(data_input_0[7:0]) / $signed(
+# REM8: assign data_output_0 = {5'h0,
+# REM8-SAME: data_input_0[7:0] -
+# REM8-SAME: *
+# REM8-NOT: config_
+# REM8-NOT: %
+
+# DUAL8-LABEL: module scalar_signed_div_rem_8_padded(
+# DUAL8: input  [1:0]  config_0
+# DUAL8: $signed(data_input_0[7:0]) / $signed(
+# DUAL8: {5'h0,
+# DUAL8-NOT: %
+
+# DUAL8Q-LABEL: module scalar_signed_div_rem_8_padded_inactive_quotient(
+# DUAL8Q: input  [1:0]  config_0
+# DUAL8Q: $signed(data_input_0[7:0]) / $signed(
+# DUAL8Q: config_0 == 2'h
+# DUAL8Q: {5'h0,
+# DUAL8Q-NOT: %
+
+# ACTIVE-LABEL: module scalar_signed_div_rem_active_widths(
+# ACTIVE: input  [2:0]  config_0
+# ACTIVE: $signed(data_input_0[7:0]) / $signed(
+# ACTIVE: $signed(data_input_0[15:0]) / $signed(
+# ACTIVE: {5'h0,
+# ACTIVE: {13'h0,
+# ACTIVE-NOT: %
+
+# DUAL64-LABEL: module scalar_signed_div_rem_64(
+# DUAL64: input  [1:0]  config_0
+# DUAL64: data_input_0 == 64'h8000000000000000
+# DUAL64: $signed(data_input_0) / $signed(
+# DUAL64-NOT: %
+
+# TB: quotient-inactive signed div/rem oracle mismatch
+# TB: active-width signed div/rem oracle mismatch
+# TB: if ($isunknown(div8_result))
+# TB: if ($isunknown(rem8_result))
+# TB: check_div8(13'h0064, 13'h00f9, 8'hf2)
+# TB: check_div8(13'h009c, 13'h00f9, 8'h0e)
+# TB: check_div8(13'h00f9, 13'h0003, 8'hfe)
+# TB: check_rem8(13'h009c, 13'h0007, 8'hfe)
+# TB: check_rem8(13'h0064, 13'h00f9, 8'h02)
+# TB: check_rem8(13'h0080, 13'h00ff, 8'h00)
+# TB: check_dual8q(13'h009c, 13'h0007, 2'd0, 8'hf2)
+# TB: check_div8_non_defined(13'h0064, 13'h0000)
+# TB: check_div8_non_defined(13'h0080, 13'h00ff)
+# TB: check_rem8_non_defined(13'h0064, 13'h0000)
+
+# YOSYS: hierarchy -check -top scalar_signed_div_rem_synthesis_top
+# YOSYS: select -assert-count 7 t:$div
+# YOSYS: select -assert-none t:$mod
+# YOSYS: synth -top scalar_signed_div_rem_synthesis_top -noabc
+# YOSYS: check -assert
