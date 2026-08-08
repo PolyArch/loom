@@ -3,6 +3,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/FixedVectorShuffle.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/OperationSchema.h"
@@ -32,8 +33,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <variant>
@@ -87,8 +88,8 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value,
   expectError(test, value.takeError(), expected);
 }
 
-void expectTypedUnsupported(llvm::StringRef test,
-                            llvm::Expected<FabricOperationProviderOutput> value,
+template <typename T>
+void expectTypedUnsupported(llvm::StringRef test, llvm::Expected<T> value,
                             BackendRecipeKey recipe,
                             llvm::StringRef description) {
   require(test, !value, std::string("provider accepted ") + description.str());
@@ -412,11 +413,11 @@ FabricOperationProviderRegistry makeProviderRegistry(llvm::StringRef test) {
   return registry;
 }
 
-llvm::Expected<FabricOperationProviderOutput> specializeForFailure(
-    SkeletonFixture &skeleton, const FabricFixture &fabric,
-    const FinalizedConfigurationABI &abi,
-    const FabricOperationProviderRegistry &registry,
-    BackendRecipeKey recipe = BackendRecipeKey::PortableSystemVerilog) {
+llvm::Expected<FabricOperationProviderOutput>
+specializeWithRecipe(SkeletonFixture &skeleton, const FabricFixture &fabric,
+                     const FinalizedConfigurationABI &abi,
+                     const FabricOperationProviderRegistry &registry,
+                     BackendRecipeKey recipe) {
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
       {skeleton.leaf, fabric.physicalOccurrence}};
@@ -426,17 +427,34 @@ llvm::Expected<FabricOperationProviderOutput> specializeForFailure(
                                          recipes, registry, externalContracts);
 }
 
+llvm::Expected<loom::hardware::test::PortableProviderConformance>
+specializePortableForFailure(SkeletonFixture &skeleton,
+                             const FabricFixture &fabric,
+                             const FinalizedConfigurationABI &abi,
+                             const FabricOperationProviderRegistry &registry) {
+  ExternalImplementationContractCatalog externalContracts;
+  return loom::hardware::test::specializeAndExportPortableProvider(
+      {std::move(skeleton.module),
+       {{skeleton.leaf, fabric.physicalOccurrence}}},
+      abi, registry, externalContracts);
+}
+
 std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
                        const FabricFixture &fabric,
                        const FinalizedConfigurationABI &abi) {
   FabricOperationProviderRegistry registry = makeProviderRegistry(test);
-  FabricOperationProviderOutput output =
-      take(test, specializeForFailure(skeleton, fabric, abi, registry));
+  ExternalImplementationContractCatalog externalContracts;
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     {std::move(skeleton.module),
+                      {{skeleton.leaf, fabric.physicalOccurrence}}},
+                     abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable shuffle emitted external implementation state");
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
 std::uint64_t readPackedBits(llvm::ArrayRef<std::uint8_t> bytes,
@@ -555,8 +573,8 @@ struct ToolCase final {
 
 void writeToolInputs(const std::filesystem::path &root, llvm::StringRef rtl,
                      llvm::ArrayRef<ToolCase> cases) {
-  std::ofstream(root / "fixed_vector_shuffle.sv") << rtl.str();
-  std::ofstream testbench(root / "testbench.sv");
+  const llvm::StringRef test = __func__;
+  std::ostringstream testbench;
   testbench << R"sv(module testbench;
   logic [129:0] data_input_0;
   logic [129:0] data_input_1;
@@ -586,7 +604,7 @@ void writeToolInputs(const std::filesystem::path &root, llvm::StringRef rtl,
   end
 endmodule
 )sv";
-  std::ofstream(root / "portable_fixed_vector_shuffle.ys") << R"ys(
+  const std::string yosysScript = R"ys(
 read_verilog -sv fixed_vector_shuffle.sv
 hierarchy -check -top fixed_vector_shuffle
 proc
@@ -596,6 +614,12 @@ synth -top fixed_vector_shuffle
 check -assert
 stat
 )ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "tool-artifacts",
+          {{"fixed_vector_shuffle.sv", rtl.str()},
+           {"testbench.sv", testbench.str()},
+           {"portable_fixed_vector_shuffle.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void registrationIsPortableOnly() {
@@ -765,7 +789,9 @@ void singleBitBlockWidth(const std::filesystem::path &root) {
   std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
   SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi());
   const std::string rtl = specialize(test, skeleton, fabric, abi);
-  std::ofstream(root / "fixed_vector_shuffle.sv") << rtl;
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "tool-artifacts", {{"fixed_vector_shuffle.sv", rtl}}))
+    fail(test, llvm::toString(std::move(error)));
   const llvm::StringRef emitted(rtl);
   require(test,
           emitted.contains("module fixed_vector_shuffle") &&
@@ -790,11 +816,9 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
   std::unique_ptr<mlir::MLIRContext> portContext = makeCirctContext();
   SkeletonFixture wrongPorts =
       makeSkeleton(test, *portContext, fabric, abi.abi(), true);
-  const std::string portBefore = moduleText(*wrongPorts.module);
-  expectError(test, specializeForFailure(wrongPorts, fabric, abi, registry),
+  expectError(test,
+              specializePortableForFailure(wrongPorts, fabric, abi, registry),
               "port");
-  require(test, moduleText(*wrongPorts.module) == portBefore,
-          "invalid shuffle leaf partially mutated the caller module");
 
   expectError(test,
               finalizeConfigurationABI(
@@ -829,15 +853,12 @@ void unsupportedCapabilitiesAreTransactional(
   std::unique_ptr<mlir::MLIRContext> contractContext = makeCirctContext();
   SkeletonFixture contractSkeleton = makeSkeleton(
       test, *contractContext, unsupportedContract, contractAbi.abi());
-  const std::string contractBefore = moduleText(*contractSkeleton.module);
   expectTypedUnsupported(test,
-                         specializeForFailure(contractSkeleton,
-                                              unsupportedContract, contractAbi,
-                                              registry),
+                         specializePortableForFailure(contractSkeleton,
+                                                      unsupportedContract,
+                                                      contractAbi, registry),
                          BackendRecipeKey::PortableSystemVerilog,
                          "unsupported shuffle resource contract");
-  require(test, moduleText(*contractSkeleton.module) == contractBefore,
-          "unsupported shuffle contract partially mutated the caller module");
 
   FabricFixture unsupportedShape =
       makeFabric(test, store, "unsupported-shape-shuffle", shuffleParameters(),
@@ -847,14 +868,12 @@ void unsupportedCapabilitiesAreTransactional(
   std::unique_ptr<mlir::MLIRContext> shapeContext = makeCirctContext();
   SkeletonFixture shapeSkeleton =
       makeSkeleton(test, *shapeContext, unsupportedShape, shapeAbi.abi());
-  const std::string shapeBefore = moduleText(*shapeSkeleton.module);
-  expectTypedUnsupported(
-      test,
-      specializeForFailure(shapeSkeleton, unsupportedShape, shapeAbi, registry),
-      BackendRecipeKey::PortableSystemVerilog,
-      "unsupported shuffle physical shape");
-  require(test, moduleText(*shapeSkeleton.module) == shapeBefore,
-          "unsupported shuffle shape partially mutated the caller module");
+  expectTypedUnsupported(test,
+                         specializePortableForFailure(shapeSkeleton,
+                                                      unsupportedShape,
+                                                      shapeAbi, registry),
+                         BackendRecipeKey::PortableSystemVerilog,
+                         "unsupported shuffle physical shape");
 
   FabricFixture undersized = makeFabric(test, store, "undersized-shuffle",
                                         shuffleParameters(), {64, 64}, 64);
@@ -863,14 +882,12 @@ void unsupportedCapabilitiesAreTransactional(
   std::unique_ptr<mlir::MLIRContext> undersizedContext = makeCirctContext();
   SkeletonFixture undersizedSkeleton =
       makeSkeleton(test, *undersizedContext, undersized, undersizedAbi.abi());
-  const std::string undersizedBefore = moduleText(*undersizedSkeleton.module);
   expectTypedUnsupported(test,
-                         specializeForFailure(undersizedSkeleton, undersized,
-                                              undersizedAbi, registry),
+                         specializePortableForFailure(undersizedSkeleton,
+                                                      undersized, undersizedAbi,
+                                                      registry),
                          BackendRecipeKey::PortableSystemVerilog,
                          "undersized shuffle physical datapath");
-  require(test, moduleText(*undersizedSkeleton.module) == undersizedBefore,
-          "undersized shuffle partially mutated the caller module");
 
   FabricFixture native = makeFabric(test, store, "native-recipe-shuffle",
                                     shuffleParameters(), {130, 130}, 130);
@@ -882,7 +899,7 @@ void unsupportedCapabilitiesAreTransactional(
   const std::string nativeBefore = moduleText(*nativeSkeleton.module);
   expectTypedUnsupported(
       test,
-      specializeForFailure(nativeSkeleton, native, nativeAbi, registry,
+      specializeWithRecipe(nativeSkeleton, native, nativeAbi, registry,
                            BackendRecipeKey::SynopsysDesignWare),
       BackendRecipeKey::SynopsysDesignWare, "native shuffle recipe");
   require(test, moduleText(*nativeSkeleton.module) == nativeBefore,

@@ -1,9 +1,9 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-fixed-vector-integer-multiply-test %t
-# RUN: FileCheck %s --check-prefix=RTL < %t/fixed_vector_integer_multiply.sv
-# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_fixed_vector_integer_multiply.ys
+# RUN: FileCheck %s --check-prefix=RTL < %t/tool-artifacts/fixed_vector_integer_multiply.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/tool-artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/tool-artifacts/portable_fixed_vector_integer_multiply.ys
 
 # RTL: module fixed_vector_integer_multiply
 # RTL: input [39:0] data_input_0

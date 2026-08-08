@@ -1,10 +1,10 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-fixed-vector-pack-unpack-test %t
-# RUN: FileCheck %s --check-prefix=PACK < %t/fixed_vector_pack.sv
-# RUN: FileCheck %s --check-prefix=UNPACK < %t/fixed_vector_unpack.sv
-# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_fixed_vector_pack_unpack.ys
+# RUN: FileCheck %s --check-prefix=PACK < %t/tool-artifacts/fixed_vector_pack.sv
+# RUN: FileCheck %s --check-prefix=UNPACK < %t/tool-artifacts/fixed_vector_unpack.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/tool-artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/tool-artifacts/portable_fixed_vector_pack_unpack.ys
 
 # PACK: module fixed_vector_pack
 # PACK: input [127:0] data_input_0

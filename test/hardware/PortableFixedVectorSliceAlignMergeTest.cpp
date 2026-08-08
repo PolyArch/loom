@@ -3,6 +3,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/FixedVectorSliceAlignMerge.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/OperationSchema.h"
@@ -31,8 +32,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <variant>
@@ -86,8 +87,8 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value,
   expectError(test, value.takeError(), expected);
 }
 
-void expectTypedUnsupported(llvm::StringRef test,
-                            llvm::Expected<FabricOperationProviderOutput> value,
+template <typename T>
+void expectTypedUnsupported(llvm::StringRef test, llvm::Expected<T> value,
                             BackendRecipeKey recipe,
                             llvm::StringRef description) {
   require(test, !value, std::string("provider accepted ") + description.str());
@@ -434,10 +435,10 @@ FabricOperationProviderRegistry makeProviderRegistry(llvm::StringRef test) {
 }
 
 llvm::Expected<FabricOperationProviderOutput>
-specializeFor(SkeletonFixture &skeleton, const FabricFixture &fabric,
-              const FinalizedConfigurationABI &abi,
-              const FabricOperationProviderRegistry &registry,
-              BackendRecipeKey recipe) {
+specializeWithRecipe(SkeletonFixture &skeleton, const FabricFixture &fabric,
+                     const FinalizedConfigurationABI &abi,
+                     const FabricOperationProviderRegistry &registry,
+                     BackendRecipeKey recipe) {
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
       {skeleton.leaf, fabric.physicalOccurrence}};
@@ -447,18 +448,34 @@ specializeFor(SkeletonFixture &skeleton, const FabricFixture &fabric,
                                          recipes, registry, externalContracts);
 }
 
+llvm::Expected<loom::hardware::test::PortableProviderConformance>
+specializePortableForFailure(SkeletonFixture &skeleton,
+                             const FabricFixture &fabric,
+                             const FinalizedConfigurationABI &abi,
+                             const FabricOperationProviderRegistry &registry) {
+  ExternalImplementationContractCatalog externalContracts;
+  return loom::hardware::test::specializeAndExportPortableProvider(
+      {std::move(skeleton.module),
+       {{skeleton.leaf, fabric.physicalOccurrence}}},
+      abi, registry, externalContracts);
+}
+
 std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
                        const FabricFixture &fabric,
                        const FinalizedConfigurationABI &abi) {
   FabricOperationProviderRegistry registry = makeProviderRegistry(test);
-  FabricOperationProviderOutput output =
-      take(test, specializeFor(skeleton, fabric, abi, registry,
-                               BackendRecipeKey::PortableSystemVerilog));
+  ExternalImplementationContractCatalog externalContracts;
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     {std::move(skeleton.module),
+                      {{skeleton.leaf, fabric.physicalOccurrence}}},
+                     abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable slice provider emitted external implementation state");
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
 std::uint64_t readPackedBits(llvm::ArrayRef<std::uint8_t> bytes,
@@ -603,8 +620,8 @@ void writeToolInputs(
     const std::filesystem::path &root, llvm::StringRef rtl,
     const loom::fabric::ResolvedFabricOpCapabilityView &resolved,
     const ::fabric::FixedVectorSliceAlignMergeConfigurationLayout &layout) {
-  std::ofstream(root / "fixed_vector_slice_align_merge.sv") << rtl.str();
-  std::ofstream testbench(root / "testbench.sv");
+  const llvm::StringRef test = __func__;
+  std::ostringstream testbench;
   testbench << "module testbench;\n"
                "  logic [129:0] data_input_0;\n"
                "  logic [129:0] data_input_1;\n"
@@ -620,7 +637,7 @@ void writeToolInputs(
   const llvm::APInt destination = destinationBits();
   for (const BehaviorCase &behavior : behaviorCases()) {
     const std::vector<std::uint8_t> configuration =
-        configurationValue("writeToolInputs", resolved, behavior.actor);
+        configurationValue(test, resolved, behavior.actor);
     const bool insert = behavior.actor.schema == Schema::VectorInsert;
     testbench << "    data_input_0 = 130'h" << hex(insert ? inserted : source)
               << ";\n"
@@ -651,8 +668,8 @@ void writeToolInputs(
                "  end\n"
                "endmodule\n";
 
-  std::ofstream(root / "portable_fixed_vector_slice_align_merge.ys")
-      << R"ys(read_verilog -sv fixed_vector_slice_align_merge.sv
+  const std::string yosysScript =
+      R"ys(read_verilog -sv fixed_vector_slice_align_merge.sv
 hierarchy -check -top fixed_vector_slice_align_merge
 proc
 opt
@@ -664,32 +681,43 @@ check -assert
 select -assert-none t:$dlatch t:$memrd t:$memwr t:$meminit t:$mem_v2
 stat
 )ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "tool-artifacts",
+          {{"fixed_vector_slice_align_merge.sv", rtl.str()},
+           {"testbench.sv", testbench.str()},
+           {"portable_fixed_vector_slice_align_merge.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void writeZeroBitToolInputs(const std::filesystem::path &root,
                             llvm::StringRef rtl, Schema schema) {
-  std::ofstream(root / "fixed_vector_slice_align_merge.sv") << rtl.str();
-  std::ofstream testbench(root / "testbench.sv");
-  testbench
-      << "module testbench;\n"
-         "  logic data_input_0;\n"
-         "  logic data_input_1;\n"
-         "  logic data_output_0;\n\n"
-         "  fixed_vector_slice_align_merge dut(.*);\n\n"
-         "  initial begin\n"
-         "    data_input_0 = 1'b0; data_input_1 = 1'b0; #1;\n"
-         "    if (data_output_0 !== 1'b0) $fatal(1, \"zero failed\");\n"
-         "    data_input_0 = 1'b0; data_input_1 = 1'b1; #1;\n"
-         "    if (data_output_0 !== 1'b0) $fatal(1, \"replace zero failed\");\n"
-         "    data_input_0 = 1'b1; data_input_1 = 1'b0; #1;\n"
-         "    if (data_output_0 !== 1'b1) $fatal(1, \"one failed\");\n"
-         "    data_input_0 = 1'b1; data_input_1 = 1'b1; #1;\n"
-         "    if (data_output_0 !== 1'b1) $fatal(1, \"replace one failed\");\n"
-         "    $finish;\n"
-         "  end\n"
-         "endmodule\n";
-  std::ofstream(root / "portable_fixed_vector_slice_align_merge.ys")
-      << R"ys(read_verilog -sv fixed_vector_slice_align_merge.sv
+  const llvm::StringRef test = __func__;
+  require(test,
+          schema == Schema::VectorExtract || schema == Schema::VectorInsert,
+          "zero-bit tool fixture has an unknown schema");
+  const std::string testbench =
+      R"sv(module testbench;
+  logic data_input_0;
+  logic data_input_1;
+  logic data_output_0;
+
+  fixed_vector_slice_align_merge dut(.*);
+
+  initial begin
+    data_input_0 = 1'b0; data_input_1 = 1'b0; #1;
+    if (data_output_0 !== 1'b0) $fatal(1, "zero failed");
+    data_input_0 = 1'b0; data_input_1 = 1'b1; #1;
+    if (data_output_0 !== 1'b0) $fatal(1, "replace zero failed");
+    data_input_0 = 1'b1; data_input_1 = 1'b0; #1;
+    if (data_output_0 !== 1'b1) $fatal(1, "one failed");
+    data_input_0 = 1'b1; data_input_1 = 1'b1; #1;
+    if (data_output_0 !== 1'b1) $fatal(1, "replace one failed");
+    $finish;
+  end
+endmodule
+)sv";
+  const std::string yosysScript =
+      R"ys(read_verilog -sv fixed_vector_slice_align_merge.sv
 hierarchy -check -top fixed_vector_slice_align_merge
 proc
 opt
@@ -698,9 +726,12 @@ select -assert-none t:$dlatch t:$memrd t:$memwr t:$meminit t:$mem_v2
 synth -top fixed_vector_slice_align_merge
 check -assert
 )ys";
-  require("writeZeroBitToolInputs",
-          schema == Schema::VectorExtract || schema == Schema::VectorInsert,
-          "zero-bit tool fixture has an unknown schema");
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "tool-artifacts",
+          {{"fixed_vector_slice_align_merge.sv", rtl.str()},
+           {"testbench.sv", testbench},
+           {"portable_fixed_vector_slice_align_merge.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void registrationIsPortableOnly() {
@@ -960,13 +991,9 @@ void malformedAndUnsupportedInputsAreTransactional(
   std::unique_ptr<mlir::MLIRContext> malformedContext = makeCirctContext();
   SkeletonFixture malformed =
       makeSkeleton(test, *malformedContext, valid, validAbi.abi(), true);
-  const std::string malformedBefore = moduleText(*malformed.module);
-  expectError(test,
-              specializeFor(malformed, valid, validAbi, registry,
-                            BackendRecipeKey::PortableSystemVerilog),
-              "leaf port");
-  require(test, moduleText(*malformed.module) == malformedBefore,
-          "malformed slice leaf partially mutated the caller module");
+  expectError(
+      test, specializePortableForFailure(malformed, valid, validAbi, registry),
+      "leaf port");
 
   for (ConfigurationAbiKind kind : {ConfigurationAbiKind::WrongWidth,
                                     ConfigurationAbiKind::FiniteCodebook}) {
@@ -991,15 +1018,12 @@ void malformedAndUnsupportedInputsAreTransactional(
   std::unique_ptr<mlir::MLIRContext> contractContext = makeCirctContext();
   SkeletonFixture contractSkeleton = makeSkeleton(
       test, *contractContext, unsupportedContract, contractAbi.abi());
-  const std::string contractBefore = moduleText(*contractSkeleton.module);
   expectTypedUnsupported(test,
-                         specializeFor(contractSkeleton, unsupportedContract,
-                                       contractAbi, registry,
-                                       BackendRecipeKey::PortableSystemVerilog),
+                         specializePortableForFailure(contractSkeleton,
+                                                      unsupportedContract,
+                                                      contractAbi, registry),
                          BackendRecipeKey::PortableSystemVerilog,
                          "unsupported slice resource contract");
-  require(test, moduleText(*contractSkeleton.module) == contractBefore,
-          "unsupported slice contract partially mutated the caller module");
 
   FabricFixture unsupportedShape =
       makeFabric(test, store, "unsupported-shape", {130, 130, 64, 64, 64});
@@ -1008,15 +1032,12 @@ void malformedAndUnsupportedInputsAreTransactional(
   std::unique_ptr<mlir::MLIRContext> shapeContext = makeCirctContext();
   SkeletonFixture shapeSkeleton =
       makeSkeleton(test, *shapeContext, unsupportedShape, shapeAbi.abi());
-  const std::string shapeBefore = moduleText(*shapeSkeleton.module);
   expectTypedUnsupported(test,
-                         specializeFor(shapeSkeleton, unsupportedShape,
-                                       shapeAbi, registry,
-                                       BackendRecipeKey::PortableSystemVerilog),
+                         specializePortableForFailure(shapeSkeleton,
+                                                      unsupportedShape,
+                                                      shapeAbi, registry),
                          BackendRecipeKey::PortableSystemVerilog,
                          "unsupported slice physical shape");
-  require(test, moduleText(*shapeSkeleton.module) == shapeBefore,
-          "unsupported slice shape partially mutated the caller module");
 
   constexpr std::array nativeRecipes = {
       BackendRecipeKey::SynopsysDesignWare,
@@ -1030,7 +1051,7 @@ void malformedAndUnsupportedInputsAreTransactional(
         makeSkeleton(test, *context, valid, validAbi.abi());
     const std::string before = moduleText(*skeleton.module);
     expectTypedUnsupported(
-        test, specializeFor(skeleton, valid, validAbi, registry, recipe),
+        test, specializeWithRecipe(skeleton, valid, validAbi, registry, recipe),
         recipe, "native slice recipe");
     require(test, moduleText(*skeleton.module) == before,
             "unsupported native recipe partially mutated the caller module");

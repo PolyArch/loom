@@ -2,6 +2,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerMultiply.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -36,7 +37,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <initializer_list>
 #include <memory>
 #include <string>
@@ -77,8 +77,8 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value,
   require(test, llvm::StringRef(message).contains(expected), message);
 }
 
-void expectTypedUnsupported(llvm::StringRef test,
-                            llvm::Expected<FabricOperationProviderOutput> value,
+template <typename T>
+void expectTypedUnsupported(llvm::StringRef test, llvm::Expected<T> value,
                             ::fabric::ImplementationFamilyId family,
                             BackendRecipeKey recipe,
                             llvm::StringRef description) {
@@ -446,19 +446,17 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
                        const FinalizedConfigurationABI &abi) {
   FabricOperationProviderRegistry registry = makeProviderRegistry(test);
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
-                                                 associations, recipes,
-                                                 registry, externalContracts));
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     {std::move(skeleton.module),
+                      {{skeleton.leaf, fabric.physicalOccurrence}}},
+                     abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable vector multiply emitted external implementation state");
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
 void generatedRegistryAndProviderCoverage() {
@@ -602,8 +600,7 @@ void configuredLaneBehaviorAndDeterminism(const std::filesystem::path &root) {
           !llvm::StringRef(firstRtl).contains("data_input_0 * data_input_1"),
       "portable provider did not emit independent lane multipliers");
 
-  std::ofstream(root / "fixed_vector_integer_multiply.sv") << firstRtl;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const std::string testbench = R"sv(
 module testbench;
   logic [39:0] data_input_0;
   logic [39:0] data_input_1;
@@ -634,7 +631,7 @@ module testbench;
   end
 endmodule
 )sv";
-  std::ofstream(root / "portable_fixed_vector_integer_multiply.ys") << R"ys(
+  const std::string yosysScript = R"ys(
 read_verilog -sv fixed_vector_integer_multiply.sv
 hierarchy -check -top fixed_vector_integer_multiply
 proc
@@ -645,6 +642,12 @@ synth -top fixed_vector_integer_multiply
 check -assert
 stat
 )ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "tool-artifacts",
+          {{"fixed_vector_integer_multiply.sv", firstRtl},
+           {"testbench.sv", testbench},
+           {"portable_fixed_vector_integer_multiply.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void singletonNeedsNoSelector(const std::filesystem::path &root) {
@@ -684,23 +687,16 @@ void malformedAndUnsupportedInputsAreTransactional(
   ExternalImplementationContractCatalog externalContracts;
   FabricFixture valid = makeFabric(test, store);
   FinalizedConfigurationABI validAbi = makeConfigurationAbi(test, store, valid);
-  const std::vector<FabricOperationRecipeBinding> validRecipes = {
-      {valid.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-
   std::unique_ptr<mlir::MLIRContext> malformedContext = makeCirctContext();
   SkeletonFixture malformed =
       makeSkeleton(test, *malformedContext, valid, validAbi.abi(),
                    "malformed_vector_multiply", true);
-  const std::string malformedBefore = moduleText(*malformed.module);
-  const std::vector<FabricOperationLeafAssociation> malformedAssociations = {
-      {malformed.leaf, valid.physicalOccurrence}};
   expectError(test,
-              specializeFabricOperationLeaves(
-                  *malformed.module, validAbi, malformedAssociations,
-                  validRecipes, registry, externalContracts),
+              loom::hardware::test::specializeAndExportPortableProvider(
+                  {std::move(malformed.module),
+                   {{malformed.leaf, valid.physicalOccurrence}}},
+                  validAbi, registry, externalContracts),
               "leaf port");
-  require(test, moduleText(*malformed.module) == malformedBefore,
-          "malformed vector leaf partially mutated the caller module");
 
   for (ConfigurationAbiKind kind : {ConfigurationAbiKind::MissingI8,
                                     ConfigurationAbiKind::ExtraSemanticValue}) {
@@ -718,23 +714,15 @@ void malformedAndUnsupportedInputsAreTransactional(
   SkeletonFixture unsupportedSkeleton =
       makeSkeleton(test, *unsupportedContext, unsupported, unsupportedAbi.abi(),
                    "unsupported_vector_contract");
-  const std::string unsupportedBefore = moduleText(*unsupportedSkeleton.module);
-  const std::vector<FabricOperationLeafAssociation> unsupportedAssociations = {
-      {unsupportedSkeleton.leaf, unsupported.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> unsupportedRecipes = {
-      {unsupported.physicalOccurrence,
-       BackendRecipeKey::PortableSystemVerilog,
-       {}}};
   expectTypedUnsupported(
       test,
-      specializeFabricOperationLeaves(
-          *unsupportedSkeleton.module, unsupportedAbi, unsupportedAssociations,
-          unsupportedRecipes, registry, externalContracts),
+      loom::hardware::test::specializeAndExportPortableProvider(
+          {std::move(unsupportedSkeleton.module),
+           {{unsupportedSkeleton.leaf, unsupported.physicalOccurrence}}},
+          unsupportedAbi, registry, externalContracts),
       ::fabric::ImplementationFamilyId::FixedVectorIntegerMultiply,
       BackendRecipeKey::PortableSystemVerilog,
       "unsupported vector multiply resource contract");
-  require(test, moduleText(*unsupportedSkeleton.module) == unsupportedBefore,
-          "unsupported vector contract partially mutated the caller module");
 
   constexpr std::array nativeRecipes = {
       BackendRecipeKey::SynopsysDesignWare,
@@ -767,20 +755,14 @@ void malformedAndUnsupportedInputsAreTransactional(
   std::unique_ptr<mlir::MLIRContext> otherContext = makeCirctContext();
   SkeletonFixture otherSkeleton = makeSkeleton(
       test, *otherContext, other, otherAbi.abi(), "unsupported_vector_add");
-  const std::string otherBefore = moduleText(*otherSkeleton.module);
-  const std::vector<FabricOperationLeafAssociation> otherAssociations = {
-      {otherSkeleton.leaf, other.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> otherRecipes = {
-      {other.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   expectTypedUnsupported(
       test,
-      specializeFabricOperationLeaves(*otherSkeleton.module, otherAbi,
-                                      otherAssociations, otherRecipes, registry,
-                                      externalContracts),
+      loom::hardware::test::specializeAndExportPortableProvider(
+          {std::move(otherSkeleton.module),
+           {{otherSkeleton.leaf, other.physicalOccurrence}}},
+          otherAbi, registry, externalContracts),
       ::fabric::ImplementationFamilyId::FixedVectorIntegerAddSub,
       BackendRecipeKey::PortableSystemVerilog, "wrong-family capability");
-  require(test, moduleText(*otherSkeleton.module) == otherBefore,
-          "wrong-family capability partially mutated the caller module");
 }
 
 } // namespace

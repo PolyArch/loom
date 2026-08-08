@@ -2,6 +2,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/IntegerLogic.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -12,7 +13,6 @@
 #include "Fabric/IR/ResourceContractRecord.h"
 
 #include "circt/Dialect/Comb/CombDialect.h"
-#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/SV/SVDialect.h"
@@ -35,7 +35,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -436,33 +435,24 @@ SpecializedRtl specialize(llvm::StringRef test, SkeletonFixture &skeleton,
   if (llvm::Error error = registerPortableIntegerLogicProviders(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
-                                                 associations, recipes,
-                                                 registry, externalContracts));
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     {std::move(skeleton.module),
+                      {{skeleton.leaf, fabric.physicalOccurrence}}},
+                     abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable logic provider emitted external implementation state");
 
+  const llvm::StringRef text(conformance.systemVerilog);
   LogicCounts counts;
-  skeleton.module->walk([&](circt::comb::AndOp) { ++counts.andCount; });
-  skeleton.module->walk([&](circt::comb::OrOp) { ++counts.orCount; });
-  skeleton.module->walk([&](circt::comb::XorOp) { ++counts.xorCount; });
-  skeleton.module->walk([&](circt::comb::MuxOp) { ++counts.muxCount; });
-  bool unresolved = false;
-  skeleton.module->walk(
-      [&](circt::hw::HWModuleGeneratedOp) { unresolved = true; });
-  require(test, !unresolved,
-          "portable logic left an unresolved operation leaf");
-  if (llvm::Error error = verifySpecializedCirctModule(*skeleton.module))
-    fail(test, llvm::toString(std::move(error)));
-  return {take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module)),
-          counts};
+  counts.andCount = text.count(" & ");
+  counts.orCount = text.count(" | ");
+  counts.xorCount = text.count(" ^ ");
+  counts.muxCount = text.count(" ? ");
+  return {std::move(conformance.systemVerilog), counts};
 }
 
 void checkFullDomain(llvm::StringRef test, const FabricFixture &fixture) {
@@ -582,9 +572,8 @@ void equivalentOrUsesOneUnconfiguredDatapath(llvm::StringRef test,
 void writeToolInputs(const std::filesystem::path &root,
                      const SpecializedRtl &scalar,
                      const SpecializedRtl &vector) {
-  std::ofstream(root / "scalar_integer_logic.sv") << scalar.text;
-  std::ofstream(root / "fixed_vector_integer_logic.sv") << vector.text;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const llvm::StringRef test = __func__;
+  const std::string testbench = R"sv(
 module testbench;
   logic [63:0] scalar_input_0;
   logic [63:0] scalar_input_1;
@@ -650,7 +639,7 @@ module testbench;
   end
 endmodule
 )sv";
-  std::ofstream(root / "synthesis_top.sv") << R"sv(
+  const std::string synthesisTop = R"sv(
 module integer_logic_synthesis_top(
   input logic [63:0] scalar_input_0,
   input logic [63:0] scalar_input_1,
@@ -668,7 +657,7 @@ module integer_logic_synthesis_top(
     .config_0(vector_config), .data_output_0(vector_output));
 endmodule
 )sv";
-  std::ofstream(root / "portable_integer_logic.ys") << R"ys(
+  const std::string yosysScript = R"ys(
 read_verilog -sv scalar_integer_logic.sv fixed_vector_integer_logic.sv synthesis_top.sv
 hierarchy -check -top integer_logic_synthesis_top
 proc
@@ -681,6 +670,14 @@ synth -top integer_logic_synthesis_top
 check -assert
 stat
 )ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "tool-artifacts",
+          {{"scalar_integer_logic.sv", scalar.text},
+           {"fixed_vector_integer_logic.sv", vector.text},
+           {"testbench.sv", testbench},
+           {"synthesis_top.sv", synthesisTop},
+           {"portable_integer_logic.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void registrationIsPortableOnly() {
@@ -709,10 +706,11 @@ void registrationIsPortableOnly() {
               "integer logic registration covered an unrelated family");
 }
 
-void expectTypedUnsupported(
-    llvm::StringRef test, llvm::Expected<FabricOperationProviderOutput> result,
-    ::fabric::ImplementationFamilyId expectedFamily,
-    BackendRecipeKey expectedRecipe, llvm::StringRef description) {
+template <typename T>
+void expectTypedUnsupported(llvm::StringRef test, llvm::Expected<T> result,
+                            ::fabric::ImplementationFamilyId expectedFamily,
+                            BackendRecipeKey expectedRecipe,
+                            llvm::StringRef description) {
   require(test, !result, description);
   bool classified = false;
   llvm::handleAllErrors(
@@ -729,8 +727,8 @@ void expectTypedUnsupported(
           description.str() + " lost typed Unsupported classification");
 }
 
-void expectInvalid(llvm::StringRef test,
-                   llvm::Expected<FabricOperationProviderOutput> result,
+template <typename T>
+void expectInvalid(llvm::StringRef test, llvm::Expected<T> result,
                    llvm::StringRef expected) {
   require(test, !result, "provider accepted malformed integer logic input");
   bool invalid = false;
@@ -748,9 +746,10 @@ void expectInvalid(llvm::StringRef test,
 }
 
 llvm::Expected<FabricOperationProviderOutput>
-trySpecialize(SkeletonFixture &skeleton, const FabricFixture &fabric,
-              const FinalizedConfigurationABI &abi, BackendRecipeKey recipe,
-              const FabricOperationProviderRegistry &registry) {
+trySpecializeRecipe(SkeletonFixture &skeleton, const FabricFixture &fabric,
+                    const FinalizedConfigurationABI &abi,
+                    BackendRecipeKey recipe,
+                    const FabricOperationProviderRegistry &registry) {
   ExternalImplementationContractCatalog externalContracts;
   const std::vector<FabricOperationLeafAssociation> associations = {
       {skeleton.leaf, fabric.physicalOccurrence}};
@@ -758,6 +757,17 @@ trySpecialize(SkeletonFixture &skeleton, const FabricFixture &fabric,
       {fabric.physicalOccurrence, recipe, {}}};
   return specializeFabricOperationLeaves(*skeleton.module, abi, associations,
                                          recipes, registry, externalContracts);
+}
+
+llvm::Expected<loom::hardware::test::PortableProviderConformance>
+tryPortableSpecialize(SkeletonFixture &skeleton, const FabricFixture &fabric,
+                      const FinalizedConfigurationABI &abi,
+                      const FabricOperationProviderRegistry &registry) {
+  ExternalImplementationContractCatalog externalContracts;
+  return loom::hardware::test::specializeAndExportPortableProvider(
+      {std::move(skeleton.module),
+       {{skeleton.leaf, fabric.physicalOccurrence}}},
+      abi, registry, externalContracts);
 }
 
 void failuresAreTransactional(const std::filesystem::path &root) {
@@ -777,16 +787,12 @@ void failuresAreTransactional(const std::filesystem::path &root) {
     SkeletonFixture unsupportedSkeleton =
         makeSkeleton(test, *unsupportedContext, unsupported,
                      unsupportedAbi.abi(), "unsupported_integer_logic");
-    const std::string unsupportedBefore =
-        moduleText(*unsupportedSkeleton.module);
     expectTypedUnsupported(
         test,
-        trySpecialize(unsupportedSkeleton, unsupported, unsupportedAbi,
-                      BackendRecipeKey::PortableSystemVerilog, registry),
+        tryPortableSpecialize(unsupportedSkeleton, unsupported, unsupportedAbi,
+                              registry),
         familyId(family), BackendRecipeKey::PortableSystemVerilog,
         "unsupported resource contract");
-    require(test, moduleText(*unsupportedSkeleton.module) == unsupportedBefore,
-            "unsupported capability mutated the caller module");
 
     FabricFixture valid = makeFabric(test, store, family);
     FinalizedConfigurationABI validAbi =
@@ -795,14 +801,9 @@ void failuresAreTransactional(const std::filesystem::path &root) {
     SkeletonFixture malformedLeaf =
         makeSkeleton(test, *leafContext, valid, validAbi.abi(),
                      "malformed_integer_logic", true);
-    const std::string leafBefore = moduleText(*malformedLeaf.module);
-    expectInvalid(test,
-                  trySpecialize(malformedLeaf, valid, validAbi,
-                                BackendRecipeKey::PortableSystemVerilog,
-                                registry),
-                  "leaf port");
-    require(test, moduleText(*malformedLeaf.module) == leafBefore,
-            "malformed leaf mutated the caller module");
+    expectInvalid(
+        test, tryPortableSpecialize(malformedLeaf, valid, validAbi, registry),
+        "leaf port");
 
     for (AbiKind kind : {AbiKind::MissingXor, AbiKind::ExtraSemanticValue}) {
       expectRejected(
@@ -821,7 +822,7 @@ void failuresAreTransactional(const std::filesystem::path &root) {
                                             validAbi.abi(), "native_logic");
       const std::string before = moduleText(*native.module);
       expectTypedUnsupported(
-          test, trySpecialize(native, valid, validAbi, recipe, registry),
+          test, trySpecializeRecipe(native, valid, validAbi, recipe, registry),
           familyId(family), recipe, "native recipe");
       require(test, moduleText(*native.module) == before,
               "unsupported native recipe mutated the caller module");

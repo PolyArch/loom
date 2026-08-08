@@ -1,9 +1,9 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-fixed-vector-value-select-test %t
-# RUN: FileCheck %s --check-prefix=RTL < %t/fixed_vector_value_select.sv
-# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_fixed_vector_value_select.ys
+# RUN: FileCheck %s --check-prefix=RTL < %t/tool-artifacts/fixed_vector_value_select.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/tool-artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/tool-artifacts/portable_fixed_vector_value_select.ys
 
 # RTL: module fixed_vector_value_select
 # RTL: input [129:0] data_input_0

@@ -1,10 +1,10 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-integer-logic-test %t
-# RUN: FileCheck %s --check-prefix=SCALAR < %t/scalar_integer_logic.sv
-# RUN: FileCheck %s --check-prefix=VECTOR < %t/fixed_vector_integer_logic.sv
-# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_integer_logic.ys
+# RUN: FileCheck %s --check-prefix=SCALAR < %t/tool-artifacts/scalar_integer_logic.sv
+# RUN: FileCheck %s --check-prefix=VECTOR < %t/tool-artifacts/fixed_vector_integer_logic.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/tool-artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/tool-artifacts/portable_integer_logic.ys
 
 # SCALAR: module scalar_integer_logic
 # SCALAR: input [63:0] data_input_0

@@ -2,6 +2,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/FixedVectorPackUnpack.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -35,7 +36,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -87,8 +87,8 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value,
   require(test, llvm::StringRef(message).contains(expected), message);
 }
 
-void expectTypedUnsupported(llvm::StringRef test,
-                            llvm::Expected<FabricOperationProviderOutput> value,
+template <typename T>
+void expectTypedUnsupported(llvm::StringRef test, llvm::Expected<T> value,
                             ::fabric::ImplementationFamilyId family,
                             llvm::StringRef description) {
   require(test, !value, std::string("provider accepted ") + description.str());
@@ -437,13 +437,6 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
   return SkeletonFixture{std::move(module), leaf};
 }
 
-std::string moduleText(mlir::ModuleOp module) {
-  std::string result;
-  llvm::raw_string_ostream stream(result);
-  module.print(stream);
-  return result;
-}
-
 FabricOperationProviderRegistry makeProviderRegistry(llvm::StringRef test) {
   FabricOperationProviderRegistry registry;
   expectSuccess(test, registerPortableFixedVectorPackProvider(registry));
@@ -456,24 +449,17 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
                        const FinalizedConfigurationABI &abi) {
   FabricOperationProviderRegistry registry = makeProviderRegistry(test);
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
-                                                 associations, recipes,
-                                                 registry, externalContracts));
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     {std::move(skeleton.module),
+                      {{skeleton.leaf, fabric.physicalOccurrence}}},
+                     abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable adapter emitted external implementation state");
-  bool unresolved = false;
-  skeleton.module->walk(
-      [&](circt::hw::HWModuleGeneratedOp) { unresolved = true; });
-  require(test, !unresolved,
-          "portable adapter left an unresolved operation leaf");
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
 std::string deterministicRtl(llvm::StringRef test, const FabricFixture &fabric,
@@ -518,9 +504,8 @@ EmittedRtl validAdapters(const std::filesystem::path &root) {
 }
 
 void writeToolInputs(const std::filesystem::path &root, const EmittedRtl &rtl) {
-  std::ofstream(root / "fixed_vector_pack.sv") << rtl.pack;
-  std::ofstream(root / "fixed_vector_unpack.sv") << rtl.unpack;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const llvm::StringRef test = __func__;
+  const std::string testbench = R"sv(
 module testbench;
   logic [127:0] pack_input;
   logic [63:0] pack_output;
@@ -548,7 +533,7 @@ module testbench;
   end
 endmodule
 )sv";
-  std::ofstream(root / "synthesis_top.sv") << R"sv(
+  const std::string synthesisTop = R"sv(
 module fixed_vector_adapter_synthesis_top(
   input logic [127:0] pack_input,
   input logic [63:0] unpack_input,
@@ -565,7 +550,7 @@ module fixed_vector_adapter_synthesis_top(
   );
 endmodule
 )sv";
-  std::ofstream(root / "portable_fixed_vector_pack_unpack.ys") << R"ys(
+  const std::string yosysScript = R"ys(
 read_verilog -sv fixed_vector_pack.sv fixed_vector_unpack.sv synthesis_top.sv
 hierarchy -check -top fixed_vector_adapter_synthesis_top
 proc
@@ -575,6 +560,14 @@ synth -top fixed_vector_adapter_synthesis_top
 check -assert
 stat
 )ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "tool-artifacts",
+          {{"fixed_vector_pack.sv", rtl.pack},
+           {"fixed_vector_unpack.sv", rtl.unpack},
+           {"testbench.sv", testbench},
+           {"synthesis_top.sv", synthesisTop},
+           {"portable_fixed_vector_pack_unpack.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void invalidInputsAreTransactional(const std::filesystem::path &root) {
@@ -589,18 +582,12 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
   std::unique_ptr<mlir::MLIRContext> malformedContext = makeCirctContext();
   SkeletonFixture malformed =
       makeSkeleton(test, *malformedContext, pack, packAbi.abi(), true);
-  const std::string malformedBefore = moduleText(*malformed.module);
-  const std::vector<FabricOperationLeafAssociation> malformedAssociations = {
-      {malformed.leaf, pack.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> packRecipes = {
-      {pack.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   expectError(test,
-              specializeFabricOperationLeaves(
-                  *malformed.module, packAbi, malformedAssociations,
-                  packRecipes, registry, externalContracts),
+              loom::hardware::test::specializeAndExportPortableProvider(
+                  {std::move(malformed.module),
+                   {{malformed.leaf, pack.physicalOccurrence}}},
+                  packAbi, registry, externalContracts),
               "leaf port");
-  require(test, moduleText(*malformed.module) == malformedBefore,
-          "malformed adapter leaf partially mutated the caller module");
 
   FabricFixture unpack = makeFabric(test, store, AdapterKind::Unpack, true);
   FinalizedConfigurationABI unpackAbi =
@@ -608,20 +595,14 @@ void invalidInputsAreTransactional(const std::filesystem::path &root) {
   std::unique_ptr<mlir::MLIRContext> contractContext = makeCirctContext();
   SkeletonFixture wrongContract =
       makeSkeleton(test, *contractContext, unpack, unpackAbi.abi());
-  const std::string contractBefore = moduleText(*wrongContract.module);
-  const std::vector<FabricOperationLeafAssociation> contractAssociations = {
-      {wrongContract.leaf, unpack.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> unpackRecipes = {
-      {unpack.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
   expectTypedUnsupported(
       test,
-      specializeFabricOperationLeaves(*wrongContract.module, unpackAbi,
-                                      contractAssociations, unpackRecipes,
-                                      registry, externalContracts),
+      loom::hardware::test::specializeAndExportPortableProvider(
+          {std::move(wrongContract.module),
+           {{wrongContract.leaf, unpack.physicalOccurrence}}},
+          unpackAbi, registry, externalContracts),
       ::fabric::ImplementationFamilyId::FixedVectorUnpack,
       "unsupported adapter resource contract");
-  require(test, moduleText(*wrongContract.module) == contractBefore,
-          "wrong adapter contract partially mutated the caller module");
 }
 
 } // namespace

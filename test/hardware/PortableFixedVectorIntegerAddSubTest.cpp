@@ -2,6 +2,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerAddSub.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -35,7 +36,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <initializer_list>
 #include <memory>
 #include <string>
@@ -421,13 +421,6 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
   return SkeletonFixture{std::move(module), leaf};
 }
 
-std::string moduleText(mlir::ModuleOp module) {
-  std::string result;
-  llvm::raw_string_ostream stream(result);
-  module.print(stream);
-  return result;
-}
-
 std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
                        const FabricFixture &fabric,
                        const FinalizedConfigurationABI &abi) {
@@ -436,19 +429,17 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
           registerPortableFixedVectorIntegerAddSubProvider(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
-                                                 associations, recipes,
-                                                 registry, externalContracts));
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     {std::move(skeleton.module),
+                      {{skeleton.leaf, fabric.physicalOccurrence}}},
+                     abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable vector add/sub emitted external implementation state");
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
 void configuredLaneBehaviorAndDeterminism(const std::filesystem::path &root) {
@@ -502,8 +493,7 @@ void configuredLaneBehaviorAndDeterminism(const std::filesystem::path &root) {
               !llvm::StringRef(firstRtl).contains(" - "),
           "portable provider did not share configured lane datapaths");
 
-  std::ofstream(root / "fixed_vector_integer_add_sub.sv") << firstRtl;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const std::string testbench = R"sv(
 module testbench;
   logic [127:0] data_input_0;
   logic [127:0] data_input_1;
@@ -545,7 +535,7 @@ module testbench;
   end
 endmodule
 )sv";
-  std::ofstream(root / "portable_fixed_vector_integer_add_sub.ys") << R"ys(
+  const std::string yosysScript = R"ys(
 read_verilog fixed_vector_integer_add_sub.sv
 hierarchy -check -top fixed_vector_integer_add_sub
 proc
@@ -557,6 +547,12 @@ synth -top fixed_vector_integer_add_sub
 check
 stat
 )ys";
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "tool-artifacts",
+          {{"fixed_vector_integer_add_sub.sv", firstRtl},
+           {"testbench.sv", testbench},
+           {"portable_fixed_vector_integer_add_sub.ys", yosysScript}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void singletonNeedsNoSelector(const std::filesystem::path &root) {
@@ -675,20 +671,15 @@ void unsupportedResourceContractIsTransactional(
   FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
   std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
   SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi());
-  const std::string before = moduleText(*skeleton.module);
-
   FabricOperationProviderRegistry registry;
   if (llvm::Error error =
           registerPortableFixedVectorIntegerAddSubProvider(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  auto result =
-      specializeFabricOperationLeaves(*skeleton.module, abi, associations,
-                                      recipes, registry, externalContracts);
+  auto result = loom::hardware::test::specializeAndExportPortableProvider(
+      {std::move(skeleton.module),
+       {{skeleton.leaf, fabric.physicalOccurrence}}},
+      abi, registry, externalContracts);
   require(test, !result, "unsupported resource contract specialized");
   bool classifiedUnsupported = false;
   llvm::handleAllErrors(
@@ -705,8 +696,6 @@ void unsupportedResourceContractIsTransactional(
       });
   require(test, classifiedUnsupported,
           "resource contract lost its typed Unsupported classification");
-  require(test, moduleText(*skeleton.module) == before,
-          "unsupported resource contract mutated the common skeleton");
 }
 
 void malformedInputsFailClosed(const std::filesystem::path &root) {
@@ -720,22 +709,16 @@ void malformedInputsFailClosed(const std::filesystem::path &root) {
           registerPortableFixedVectorIntegerAddSubProvider(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
 
   std::unique_ptr<mlir::MLIRContext> portContext = makeCirctContext();
   SkeletonFixture wrongPorts =
       makeSkeleton(test, *portContext, fabric, abi.abi(), true);
-  const std::string portBefore = moduleText(*wrongPorts.module);
-  const std::vector<FabricOperationLeafAssociation> portAssociations = {
-      {wrongPorts.leaf, fabric.physicalOccurrence}};
   expectError(test,
-              specializeFabricOperationLeaves(*wrongPorts.module, abi,
-                                              portAssociations, recipes,
-                                              registry, externalContracts),
+              loom::hardware::test::specializeAndExportPortableProvider(
+                  {std::move(wrongPorts.module),
+                   {{wrongPorts.leaf, fabric.physicalOccurrence}}},
+                  abi, registry, externalContracts),
               "leaf port");
-  require(test, moduleText(*wrongPorts.module) == portBefore,
-          "invalid vector leaf ports partially mutated the common skeleton");
 
   expectError(
       test,

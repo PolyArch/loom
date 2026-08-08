@@ -3,9 +3,9 @@
 # RUN: %loom-portable-integer-logic-test %t
 # RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
 # RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
-# RUN: cd %t && verilator --binary --timing --Wall --Wno-fatal -CFLAGS '-std=c++20' --top-module testbench scalar_integer_logic.sv fixed_vector_integer_logic.sv testbench.sv --Mdir obj_dir
-# RUN: %t/obj_dir/Vtestbench
-# RUN: cd %t && yosys -q -s portable_integer_logic.ys
+# RUN: cd %t/tool-artifacts && verilator --binary --timing --Wall --Wno-fatal -CFLAGS '-std=c++20' --top-module testbench scalar_integer_logic.sv fixed_vector_integer_logic.sv testbench.sv --Mdir obj_dir
+# RUN: %t/tool-artifacts/obj_dir/Vtestbench
+# RUN: cd %t/tool-artifacts && yosys -q -s portable_integer_logic.ys
 
 # VERILATOR: Verilator 5.050
 # YOSYS: Yosys 0.67

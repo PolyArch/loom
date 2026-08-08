@@ -3,9 +3,9 @@
 # RUN: %loom-portable-fixed-vector-value-select-test %t
 # RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
 # RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
-# RUN: cd %t && verilator --binary --timing --Wall --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench fixed_vector_value_select.sv testbench.sv --Mdir obj_dir
-# RUN: %t/obj_dir/Vtestbench
-# RUN: cd %t && yosys -q -s portable_fixed_vector_value_select.ys
+# RUN: cd %t/tool-artifacts && verilator --binary --timing --Wall --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench fixed_vector_value_select.sv testbench.sv --Mdir obj_dir
+# RUN: %t/tool-artifacts/obj_dir/Vtestbench
+# RUN: cd %t/tool-artifacts && yosys -q -s portable_fixed_vector_value_select.ys
 
 # VERILATOR: Verilator 5.050
 # YOSYS: Yosys 0.67

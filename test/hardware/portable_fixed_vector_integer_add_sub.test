@@ -1,9 +1,9 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-fixed-vector-integer-add-sub-test %t
-# RUN: FileCheck %s --check-prefix=RTL < %t/fixed_vector_integer_add_sub.sv
-# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_fixed_vector_integer_add_sub.ys
+# RUN: FileCheck %s --check-prefix=RTL < %t/tool-artifacts/fixed_vector_integer_add_sub.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/tool-artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/tool-artifacts/portable_fixed_vector_integer_add_sub.ys
 
 # RTL: module fixed_vector_integer_add_sub
 # RTL: input [127:0] data_input_0
