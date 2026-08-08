@@ -183,6 +183,10 @@ ScalarIntegerCastParams {
   resolved_index_widths
 }
 
+ScalarIntegerFloatConversionParams {
+  format_pairs
+}
+
 ScalarSpecialMathParams {
   formats
   behavior
@@ -190,10 +194,14 @@ ScalarSpecialMathParams {
 }
 ```
 
-The cast relation is a typed rule over the two finite domains rather than a
-Cartesian enumeration. `op_list` remains the only concrete enabled-member
+The cast relations are typed rules over their finite domains rather than
+Cartesian enumerations. `op_list` remains the only concrete enabled-member
 projection: these parameter records do not repeat add/sub, compare/min/max, or
-cast operation membership.
+cast operation membership. Integer-to-floating and floating-to-integer
+conversion parameters contain only their supported endpoint relation. Their
+registered operation schemas fix rounding and exceptional-result semantics, so
+a floating behavior profile would be an orphan capability authority rather
+than a hardware choice.
 
 `resolved_index_widths` is the normalized finite subset of `{32, 64}` that the
 concrete cast resource admits when exactly one actor endpoint has MLIR `index`
@@ -464,17 +472,20 @@ resource to implement its defined clamp result. That same result is a valid
 refinement of the ordinary schema wherever the ordinary result is poison, so
 selecting the ordinary schema does not require a second physical mode.
 
-`FloatBehaviorProfile` is a typed admission profile, not an independent
-configuration product. Multiple rounding modes are valid only for a family
-whose registered actor projection selects rounding. Multiple NaN behaviors
-are valid only when enabled compare or min/max roles select their observable
-distinction. No registered actor currently selects subnormal handling, so the
-profile must contain only `Preserve`. Signed-zero relaxation is an actor
-permission; until a separate registered refinement owns a selector, one
-concrete profile must identify one signed-zero hardware behavior.
+`FloatBehaviorProfile` is a typed admission profile used only by family
+parameter schemas whose physical behavior can vary along one of its axes; it
+is not an independent configuration product. Multiple rounding modes are valid
+only for a family whose registered actor projection selects rounding. Multiple
+NaN behaviors are valid only when enabled compare or min/max roles select their
+observable distinction. No registered actor currently selects subnormal
+handling, so the profile must contain only `Preserve`. Signed-zero relaxation
+is an actor permission; until a separate registered refinement owns a selector,
+one concrete profile must identify one signed-zero hardware behavior.
 `requiredFastMath` is always one fixed admission requirement and never a key
-component. A profile value with no admitted actor projector image is invalid
-rather than an orphan configuration value or a reason to emit a field.
+component. Integer/floating conversion families do not contain this profile:
+their operation schemas already fix rounding and exceptional-result behavior.
+A profile value with no admitted actor projector image is invalid rather than
+an orphan configuration value or a reason to emit a field.
 
 `active_integer_width` and `active_element_width` are exact semantic bit
 widths, not physical port widths. Where a row has no element-kind component,

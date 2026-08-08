@@ -52,6 +52,13 @@ resource lists only the forms its circuitry implements. This keeps physical
 sharing in the HSG, exact semantics in OperationSchema, and the installed
 feature subset in one concrete capability.
 
+The integer/floating conversion parameter record consequently owns only its
+supported endpoint relation. Giving it a `FloatBehaviorProfile` would duplicate
+rounding and exceptional-result semantics already fixed by the enabled
+OperationSchemas, and would admit profile values that no actor can select.
+Removing that profile preserves one owner for each fact and prevents an orphan
+configuration dimension.
+
 ## Why Capability Is Parameterized
 
 The earlier model enumerated every exact semantic mode and took Cartesian

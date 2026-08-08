@@ -194,6 +194,12 @@ the ordinary schema produces poison, while both schemas agree on every defined
 ordinary result. The enabled schema set still determines whether clamp behavior
 is required; it does not duplicate that fact in a selector key.
 
+For the same reason, integer-to-floating and floating-to-integer resource
+parameters contain no generic floating behavior profile. Their registered
+schemas already fix rounding and exceptional-result semantics. Retaining a
+second capability-level statement would create unreachable parameter values
+and let two authorities disagree without representing another circuit choice.
+
 The relation observes rather than rewrites Canonical Dataflow semantics. Undef
 remains unconstrained until its owning observation or freeze, and a canonical
 Defined result from that operation must still be reproduced exactly. Fabric

@@ -169,9 +169,10 @@ an optional extension of the same converter datapath. Family membership does
 not claim that every concrete converter contains that extension. A concrete
 resource enables exactly its implemented subset through `op_list`; no
 `supports_saturation` parameter, second converter family, or backend-private
-mode repeats that fact. The typed integer/float relation and floating behavior
-profile still determine the supported format pairs and exceptional-value
-contract.
+mode repeats that fact. The typed integer/float relation determines supported
+format pairs, while each enabled operation schema is the sole owner of its
+rounding and exceptional-value contract. The family parameter record therefore
+contains no floating behavior profile.
 
 `ScalarValueSelect` is a runtime scalar value selector and is not the
 stream-token semantics of `dataflow.mux`. `ScalarBitReinterpret` requires equal

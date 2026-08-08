@@ -989,8 +989,8 @@ one independently editable backend mode table.
 | `ScalarFloatAddSub` | formats `{f16, bf16, f32, f64}` and the strict floating behavior profile |
 | `ScalarFloatCompareMinMax` | formats `{f16, bf16, f32, f64}`, all registered schema-valid floating comparison predicates, and the strict floating behavior profile |
 | `ScalarFloatWidthCast` | source and destination formats `{f16, bf16, f32, f64}` under the registered schema-valid widening or narrowing relation |
-| `ScalarIntegerToFloat` | integer widths `{8, 16, 32, 64}`, formats `{f16, bf16, f32, f64}`, and the strict floating behavior profile |
-| `ScalarFloatToInteger` | formats `{f16, bf16, f32, f64}`, integer widths `{8, 16, 32, 64}`, the strict floating behavior profile, and ordinary plus saturating conversion schemas |
+| `ScalarIntegerToFloat` | integer widths `{8, 16, 32, 64}` and formats `{f16, bf16, f32, f64}` under the registered schema-valid conversion relation |
+| `ScalarFloatToInteger` | formats `{f16, bf16, f32, f64}`, integer widths `{8, 16, 32, 64}`, and ordinary plus saturating conversion schemas |
 | `ScalarIntegerMultiply` | integer widths `{8, 16, 32, 64}` |
 | `ScalarFloatMultiply` | formats `{f16, bf16, f32, f64}` and the strict floating behavior profile |
 | `ScalarFloatFma` | formats `{f16, bf16, f32, f64}` and exact single-rounding strict fused semantics |
@@ -1004,10 +1004,11 @@ arbitrary `iN` capability.
 The strict floating behavior profile follows the registered operation
 semantics. Ordinary arithmetic uses round-to-nearest-ties-to-even, preserves
 subnormals and signed zero, and performs no implicit flush-to-zero or
-fast-math transformation. Conversions follow their exact registered rounding
-and exceptional-value semantics rather than inheriting an arithmetic rounding
-rule. A strict implementation may realize a relaxed actor only through a proof
-supplied by the registered operation schema. The profile's `fastmath` mask is
+fast-math transformation. Conversion resources do not instantiate this
+profile; their exact registered schemas own rounding and exceptional-value
+semantics. A strict implementation may realize a relaxed actor only through a
+proof supplied by the registered operation schema. For families that own a
+profile, its `fastmath` mask is
 the set of actor permissions required by the implementation, so the builtin
 strict profile uses the empty mask and refines every actor relaxation. Operation
 identity continues to distinguish the different floating min/max NaN
