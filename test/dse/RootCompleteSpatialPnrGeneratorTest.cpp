@@ -960,6 +960,55 @@ void finiteSetTraversesEveryCanonicalTechMapping() {
     fail("finite traversal skipped a canonical TechMapping input");
 }
 
+void candidateWorkerCountPreservesFormalResult() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
+  mlir::MLIRContext context = makeContext();
+  Fixture fixture = buildFixture(context, store, blobs);
+  auto dataflow = take(fixture.dataflow.view());
+  auto tech = take(loom::mapping::importTechMapping(
+      fixture.techMappingReference, store));
+  auto constraints =
+      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+          dataflow, tech.view(), fixture.fabric.view(), store));
+  auto config = buildSpatialConfig();
+
+  const auto run = [&](std::uint32_t workerCount) {
+    return loom::pnr::generateSpatialMappings(
+        {dataflow, tech.view(), fixture.fabric.view(), config,
+         constraints.view(), store, workerCount});
+  };
+  const auto single = run(1);
+  const auto parallel = run(2);
+  if (single.index() != parallel.index())
+    fail("candidate worker count changed the Spatial PnR outcome kind");
+  const auto *singleGenerated =
+      std::get_if<loom::pnr::GeneratedSpatialMappings>(&single);
+  const auto *parallelGenerated =
+      std::get_if<loom::pnr::GeneratedSpatialMappings>(&parallel);
+  if (!singleGenerated || !parallelGenerated)
+    fail("worker-invariance fixture did not produce Spatial Mappings");
+  if (singleGenerated->termination != parallelGenerated->termination ||
+      !(singleGenerated->accounting == parallelGenerated->accounting) ||
+      singleGenerated->candidates != parallelGenerated->candidates)
+    fail("candidate worker count changed formal Spatial PnR output or work");
+  for (std::size_t index = 0; index != singleGenerated->candidates.size();
+       ++index) {
+    auto singleMapping = take(loom::mapping::importSpatialMapping(
+        singleGenerated->candidates[index], store));
+    auto parallelMapping = take(loom::mapping::importSpatialMapping(
+        parallelGenerated->candidates[index], store));
+    if (singleMapping.canonicalBytes().bytes() !=
+        parallelMapping.canonicalBytes().bytes())
+      fail("candidate worker count changed canonical Spatial Mapping bytes");
+  }
+}
+
 void unavailableNegotiationIsTypedIncomplete() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
@@ -1706,6 +1755,8 @@ int main(int argc, char **argv) {
           .Case("descriptor-and-empty-set", descriptorAndEmptySetAreClosed)
           .Case("finite-set-traversal",
                 finiteSetTraversesEveryCanonicalTechMapping)
+          .Case("worker-invariance",
+                candidateWorkerCountPreservesFormalResult)
           .Case("unavailable-negotiation",
                 unavailableNegotiationIsTypedIncomplete)
           .Case("initializer-semantic-limit",

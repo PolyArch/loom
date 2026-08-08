@@ -134,6 +134,9 @@ struct SpatialPnrGenerationInputs final {
   const ResolvedPnrConfigView &config;
   const ::loom::mapping::SpatialMappingConstraintSetView &constraints;
   const ArtifactStore &store;
+  /// Invocation-local execution limit. It changes only physical scheduling;
+  /// every fixed restart slot and its canonical reduction remain unchanged.
+  std::uint32_t candidateWorkerCount = 1;
 };
 
 /// Runs the fixed canonical Spatial restart sequence for one exact D/T/F/C/K
