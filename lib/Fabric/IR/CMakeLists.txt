@@ -39,6 +39,7 @@ mlir_target_link_libraries(MLIRFabricEnums PUBLIC
 add_mlir_library(LoomFabricImplementationFamily
   FamilyCapabilityParams.cpp
   ImplementationFamily.cpp
+  ImplementationFamilyBehaviorKey.cpp
   ImplementationFamilyBehaviorRelation.cpp
   ImplementationFamilyPortCorrespondence.cpp
   ImplementationFamilyQueries.cpp

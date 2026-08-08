@@ -266,6 +266,20 @@ void finiteRelationKeysRemainCanonical() {
           "finite behavior keys are not canonically ordered");
   require(test, std::adjacent_find(keys.begin(), keys.end()) == keys.end(),
           "finite behavior keys are not unique");
+
+  constexpr std::array<std::uint8_t, 72> expectedAnd = {
+      'l', 'o', 'o', 'm', '.', 'f', 'a', 'b', 'r', 'i', 'c', '.', 'o', 'p', 'e',
+      'r', 'a', 't', 'i', 'o', 'n', '-', 'b', 'e', 'h', 'a', 'v', 'i', 'o', 'r',
+      '-', 'k', 'e', 'y', 0,   0,   0,   0,   1,   0,   0,   0,   0,   0,   0,
+      0,   18,  'S', 'c', 'a', 'l', 'a', 'r', 'I', 'n', 't', 'e', 'g', 'e', 'r',
+      'L', 'o', 'g', 'i', 'c', 0,   0,   0,   3,   'A', 'n', 'd'};
+  const auto andPoint = llvm::find_if(points, [](const auto &point) {
+    return point.representativeActor.schema == OperationSchemaId::ArithAndI;
+  });
+  require(test,
+          andPoint != points.end() && andPoint->semanticConfiguration &&
+              andPoint->semanticConfiguration->bytes().equals(expectedAnd),
+          "finite behavior key escaped the registered canonical codec");
 }
 
 void physicalCapacityEliminatesRedundantBehavior() {

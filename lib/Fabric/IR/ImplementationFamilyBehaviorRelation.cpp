@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Fabric/IR/ImplementationFamily.h"
+#include "ImplementationFamilyBehaviorInternal.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -466,6 +467,31 @@ fabric::resolveFabricOpSemanticFieldRelation(
   if (!domain)
     return domain.takeError();
 
+  if (family == ImplementationFamilyId::ScalarIntegerLogic) {
+    for (FiniteImplementationFamilyBehaviorPoint &point : *domain) {
+      llvm::StringRef role;
+      switch (point.representativeActor.schema) {
+      case ::dataflow::OperationSchemaId::ArithAndI:
+        role = "And";
+        break;
+      case ::dataflow::OperationSchemaId::ArithOrI:
+      case ::dataflow::OperationSchemaId::LLVMOrDisjoint:
+        role = "Or";
+        break;
+      case ::dataflow::OperationSchemaId::ArithXOrI:
+        role = "Xor";
+        break;
+      default:
+        return reject("scalar integer logic behavior has no canonical role");
+      }
+      auto key =
+          detail::encodeImplementationFamilyBehaviorKey(family, role, {});
+      if (!key)
+        return key.takeError();
+      point.semanticConfiguration = std::move(*key);
+    }
+  }
+
   std::vector<FiniteImplementationFamilyBehaviorPoint> reachable;
   std::string firstPhysicalRejection;
   for (auto &point : *domain) {
@@ -485,6 +511,26 @@ fabric::resolveFabricOpSemanticFieldRelation(
     return reject(firstPhysicalRejection.empty()
                       ? "concrete capability has no reachable behavior"
                       : firstPhysicalRejection);
+  llvm::sort(reachable, [](const auto &lhs, const auto &rhs) {
+    if (!lhs.semanticConfiguration)
+      return rhs.semanticConfiguration.has_value();
+    if (!rhs.semanticConfiguration)
+      return false;
+    return std::lexicographical_compare(
+        lhs.semanticConfiguration->bytes().begin(),
+        lhs.semanticConfiguration->bytes().end(),
+        rhs.semanticConfiguration->bytes().begin(),
+        rhs.semanticConfiguration->bytes().end());
+  });
+  reachable.erase(
+      std::unique(reachable.begin(), reachable.end(),
+                  [](const auto &lhs, const auto &rhs) {
+                    return lhs.semanticConfiguration &&
+                           rhs.semanticConfiguration &&
+                           lhs.semanticConfiguration->bytes().equals(
+                               rhs.semanticConfiguration->bytes());
+                  }),
+      reachable.end());
   FabricOpSemanticFieldRelationKind kind =
       FabricOpSemanticFieldRelationKind::Finite;
   if (reachable.size() == 1) {
