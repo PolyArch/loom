@@ -250,8 +250,11 @@ both valid and ready.
 ## Why Switch Behavior Must Be Explicit
 
 A switch can express broadcast and, when temporal, multiplex several inputs to
-one output under its declared policy. Those are real atomic transfer patterns,
-backpressure, arbitration, and resource use. They cannot be inferred from
+one output under its declared policy. Spatial fan-in alternatives are resolved
+by one statically capacity-closed configuration, so giving them a runtime grant
+policy would fabricate an arbiter. Temporal fan-in is real runtime contention
+and keeps its input-owned requesters and exact policy. These atomic transfer,
+backpressure, arbitration, and resource-use facts cannot be inferred from
 multiple module-level SSA uses or from a route tree alone.
 
 The mapper selects traversals and configuration from the switch's exact

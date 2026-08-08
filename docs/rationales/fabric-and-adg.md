@@ -62,12 +62,15 @@ durably published Module can then be imported by an open System recipe. A
 monolithic mutable target object would either hide this exact dependency or
 become a second hardware model beside Fabric.
 
-A temporal switch projects one resource pattern per physical traversal, not
-one pattern per configured broadcast subset. The latter is an exponential
-restatement of the route table. Patterns from one ingress share one requester,
-and the existing event-derived atomic activation set joins the selected
-egresses. This keeps physical capability linear in connectivity while retaining
-all-or-nothing broadcast and exact fan-in arbitration.
+A switch projects one resource pattern per physical traversal, not one pattern
+per configured broadcast subset. The latter is an exponential restatement of
+the route table. A spatial switch uses one configuration requester because
+Mapping has already selected and capacity-closed the whole static route image;
+inventing per-input runtime arbitration would add hardware behavior that does
+not exist. Temporal patterns instead use input-owned requesters, and the
+existing event-derived atomic activation set joins the selected egresses. This
+keeps physical capability linear in connectivity while retaining all-or-nothing
+broadcast and exact temporal fan-in arbitration.
 
 The initial fixed-vector families are separate from scalar families even when
 they use the same software operation schema. Shape is a physical organization

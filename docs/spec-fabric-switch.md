@@ -273,17 +273,26 @@ over time. Fabric owns request eligibility, output capacity, exact grant and
 state-update behavior, latency, and backpressure visibility. The shared
 `FixedPriority` and `RoundRobin` semantics are owned by
 `docs/spec-fabric-resource-contract.md`. This switch schema owns its exact
-input-port requester inventory, typed attribute syntax, ResourceState values,
-canonical initial state, capacity dimensions, stable typed requester order,
-and atomic transfer UsePatterns.
+schedule-specific requester inventory, typed attribute syntax, ResourceState
+values, canonical initial state, capacity dimensions, stable typed requester
+order, and atomic transfer UsePatterns.
 
-Its normalized resource projection is
-linear in physical connectivity:
+Its normalized resource projection is linear in physical connectivity:
 
 * every input and output port owns one unit-capacity service state;
 * every admitted `(input, output)` traversal owns one UsePattern that claims
-  those two service states at one atomic transfer event; and
-* all patterns sourced by one input share that input's requester.
+  those two service states at one atomic transfer event;
+* every spatial traversal belongs to the switch's one static-configuration
+  requester; and
+* temporal patterns sourced by one input share that input's requester.
+
+For a spatial switch, Mapping selects the exact active traversal set before
+execution. Its capacity closure forbids two selected inputs from consuming the
+same output state, so physical fan-in alternatives do not imply a runtime
+arbiter or GrantPolicy. Different logical transfers remain different Mapping
+uses even though their alternative patterns share the one configuration
+requester. A temporal switch can make several input requesters eligible at
+runtime and therefore owns the exact GrantPolicy required by such fan-in.
 
 For one selected broadcast, the traversal uses have the same owner, trigger,
 and concrete logical parameters and therefore form the derived atomic
@@ -292,12 +301,14 @@ ingress normalize to one physical claim. The source cannot retire until the
 whole set acquires and commits, so no egress can be granted independently.
 Fabric does not enumerate the power set of possible broadcast destinations.
 
-Fabric 1.0 requires an exact policy whenever the physical connectivity admits
-fan-in. A later exact Fabric-owned refinement domain may broaden that authoring
-surface, but Mapping, simulation, runtime, and RTL lowering may not fill in a
-missing policy or choose a default. Cursor and reservation state are
-nonpersistent execution state. The implementation owns the arbiter circuit
-and transient cursor, but not the cycle-visible policy semantics.
+Fabric 1.0 requires an exact policy whenever temporal physical connectivity
+admits fan-in between runtime requesters. A later exact Fabric-owned refinement
+domain may broaden that authoring surface, but Mapping, simulation, runtime,
+and RTL lowering may not fill in a missing policy or choose a default. Cursor
+and reservation state are nonpersistent execution state. The implementation
+owns the arbiter circuit and transient cursor, but not the cycle-visible policy
+semantics. Spatial fan-in alternatives remain statically capacity-closed and
+must not manufacture either an arbiter or a policy.
 
 ### Broadcast backpressure contract
 

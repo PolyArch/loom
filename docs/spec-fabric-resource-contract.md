@@ -309,11 +309,14 @@ GrantPolicy =
 `RoundRobin` scans the exact cycle from the current cursor and advances only
 after a successful grant. Reset establishes `reset_cursor`.
 
-The policy may be absent only when the verifier proves that no two requesters
-can be simultaneously eligible for the same capacity. A default priority,
-authoring order, map iteration order, or simulator arrival race is forbidden.
-Additional policies require a real hardware and execution contract; they are
-not admitted through a predicate DSL.
+The policy may be absent only when the verifier proves that no two distinct
+requesters can be simultaneously eligible for the same capacity. Multiple
+alternative patterns of one requester do not create an arbitration order: the
+concrete owner must prove that one accepted use selects one exact pattern or
+one owner-defined atomic activation set. A default priority, authoring order,
+map iteration order, or simulator arrival race is forbidden. Additional
+policies require a real hardware and execution contract; they are not admitted
+through a predicate DSL.
 
 ## Resource-Specific Composition
 
@@ -323,7 +326,9 @@ Concrete resources embed only the atoms they need:
   transition, or grant policy;
 * a spatial PE may have statically disjoint use patterns and no grant policy;
 * a temporal PE uses instruction-context requesters and declared state banks;
-* a switch uses transfer-pattern requesters and a declared arbitration policy;
+* a spatial switch has one statically configured requester and no grant policy,
+  while a temporal switch uses input-owned transfer requesters and a declared
+  arbitration policy exactly when physical fan-in creates runtime contention;
 * a memory operation port uses operation-context or row requesters, while a
   Local Memory Service uses its own operation-port, subordinate, and service
   requesters; and
