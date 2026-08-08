@@ -1,0 +1,42 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-compare-min-max-test %t
+# RUN: FileCheck %s --check-prefix=SCALAR < %t/artifacts/scalar_float_compare_min_max.sv
+# RUN: FileCheck %s --check-prefix=VECTOR < %t/artifacts/fixed_vector_float_compare_min_max.sv
+# RUN: FileCheck %s --check-prefix=SINGLETON < %t/artifacts/scalar_float_compare_singleton.sv
+# RUN: FileCheck %s --check-prefix=NNAN < %t/artifacts/scalar_float_compare_nnan_singleton.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/artifacts/portable_float_compare_min_max.ys
+
+# SCALAR: module scalar_float_compare_min_max
+# SCALAR: input [7:0] config_0
+# SCALAR: function automatic
+# SCALAR: loom_float_compare_min_max
+# SCALAR-NOT: shortreal
+# SCALAR-NOT: DPI
+
+# VECTOR: module fixed_vector_float_compare_min_max
+# VECTOR: input [79:0] data_input_0
+# VECTOR: input [7:0] config_0
+# VECTOR: output [79:0] data_output_0
+# VECTOR: loom_float_compare_min_max
+# VECTOR-NOT: shortreal
+# VECTOR-NOT: DPI
+
+# SINGLETON: module scalar_float_compare_singleton
+# SINGLETON: loom_float_compare_min_max_e8_f23
+# SINGLETON-NOT: config_0
+
+# NNAN: module scalar_float_compare_nnan_singleton
+# NNAN: loom_float_compare_min_max
+# NNAN-NOT: config_0
+
+# TB: module testbench
+# TB: task automatic check_scalar
+# TB: task automatic check_vector
+# TB: fieldless unordered compare failed
+# TB: fieldless vector minimum failed
+
+# YOSYS: hierarchy -check -top float_compare_min_max_synthesis_top
+# YOSYS: select -assert-none
+# YOSYS: synth -noabc -top float_compare_min_max_synthesis_top

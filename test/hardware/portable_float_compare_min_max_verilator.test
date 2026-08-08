@@ -1,0 +1,8 @@
+# REQUIRES: circt, verilator
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-compare-min-max-test %t
+# RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
+# RUN: cd %t/artifacts && verilator --binary --timing --Wall --Wno-fatal -CFLAGS '-std=c++20' --top-module testbench scalar_float_compare_min_max.sv fixed_vector_float_compare_min_max.sv scalar_float_compare_singleton.sv fixed_vector_float_minimum_singleton.sv scalar_float_compare_nnan_singleton.sv fixed_vector_float_compare_nnan_singleton.sv scalar_float_compare_nnan_ordering_singleton.sv fixed_vector_float_compare_nnan_ordering_singleton.sv testbench.sv --Mdir obj_dir
+# RUN: %t/artifacts/obj_dir/Vtestbench
+
+# VERILATOR: Verilator 5.050

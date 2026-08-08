@@ -1,0 +1,7 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-compare-min-max-test %t
+# RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
+# RUN: cd %t/artifacts && yosys -q -s portable_float_compare_min_max.ys
+
+# YOSYS: Yosys 0.67
