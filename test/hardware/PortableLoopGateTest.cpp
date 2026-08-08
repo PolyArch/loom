@@ -2,6 +2,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/LoopGate.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -33,7 +34,6 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -284,23 +284,21 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
   if (llvm::Error error = registerPortableLoopGateProvider(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
-                                                 associations, recipes,
-                                                 registry, externalContracts));
+  ModuleRootCirctSkeleton module{std::move(skeleton.module),
+                                 {{skeleton.leaf, fabric.physicalOccurrence}}};
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     std::move(module), abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable loop gate emitted external implementation state");
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
-void writeYosysScript(const std::filesystem::path &root) {
-  std::ofstream(root / "portable_loop_gate.ys") << R"ys(
+std::string yosysScript() {
+  return R"ys(
 read_verilog loop_gate.sv
 hierarchy -check -top loop_gate
 proc
@@ -314,8 +312,8 @@ stat
 )ys";
 }
 
-void writeDenseTestbench(const std::filesystem::path &root) {
-  std::ofstream(root / "testbench.sv") << R"sv(
+std::string denseTestbench() {
+  return R"sv(
 module testbench;
   logic [7:0]  data_input_0;
   logic [15:0] data_input_1;
@@ -391,8 +389,8 @@ endmodule
 )sv";
 }
 
-void writeZeroPayloadTestbench(const std::filesystem::path &root) {
-  std::ofstream(root / "testbench.sv") << R"sv(
+std::string zeroPayloadTestbench() {
+  return R"sv(
 module testbench;
   logic data_input_0;
   logic valid_input_0;
@@ -489,9 +487,11 @@ void canonicalTransitionsAndArtifacts(const std::filesystem::path &root) {
               text.contains("state_write") && !text.contains("always_ff") &&
               !text.contains("posedge"),
           "loop gate provider did not remain a combinational state transform");
-  std::ofstream(root / "loop_gate.sv") << rtl;
-  writeDenseTestbench(root);
-  writeYosysScript(root);
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "artifacts", {{"loop_gate.sv", rtl},
+                               {"testbench.sv", denseTestbench()},
+                               {"portable_loop_gate.ys", yosysScript()}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void zeroWidthValueKeepsTokenHandshake(const std::filesystem::path &root) {
@@ -515,9 +515,11 @@ void zeroWidthValueKeepsTokenHandshake(const std::filesystem::path &root) {
           llvm::StringRef(rtl).contains("valid_output_1") &&
               !llvm::StringRef(rtl).contains("data_output_1"),
           "zero-width gate did not preserve token-only handshaking");
-  std::ofstream(root / "loop_gate.sv") << rtl;
-  writeZeroPayloadTestbench(root);
-  writeYosysScript(root);
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "artifacts", {{"loop_gate.sv", rtl},
+                               {"testbench.sv", zeroPayloadTestbench()},
+                               {"portable_loop_gate.ys", yosysScript()}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void invalidAndUnsupportedInputsAreTransactional(

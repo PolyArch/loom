@@ -1,7 +1,7 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-loop-invariant-test %t
-# RUN: FileCheck %s --check-prefix=RTL < %t/loop_invariant.sv
+# RUN: FileCheck %s --check-prefix=RTL < %t/artifacts/loop_invariant.sv
 
 # RTL: module loop_invariant
 # RTL: input [8:0] state_current

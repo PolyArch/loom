@@ -2,6 +2,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/LoopCarry.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -32,7 +33,6 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -264,23 +264,21 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
   if (llvm::Error error = registerPortableLoopCarryProvider(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
-                                                 associations, recipes,
-                                                 registry, externalContracts));
+  ModuleRootCirctSkeleton module{std::move(skeleton.module),
+                                 {{skeleton.leaf, fabric.physicalOccurrence}}};
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     std::move(module), abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable loop carry emitted external implementation state");
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
-void writeYosysScript(const std::filesystem::path &root) {
-  std::ofstream(root / "portable_loop_carry.ys") << R"ys(
+std::string yosysScript() {
+  return R"ys(
 read_verilog loop_carry.sv
 hierarchy -check -top loop_carry
 proc
@@ -334,8 +332,7 @@ void canonicalBoundaryAndArtifacts(const std::filesystem::path &root) {
               text.contains("state_write") && !text.contains("always_ff") &&
               !text.contains("posedge"),
           "loop carry provider did not remain a combinational state transform");
-  std::ofstream(root / "loop_carry.sv") << rtl;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const std::string testbench = R"sv(
 module testbench;
   logic [7:0] data_input_0;
   logic [7:0] data_input_1;
@@ -460,7 +457,11 @@ module testbench;
   end
 endmodule
 )sv";
-  writeYosysScript(root);
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "artifacts", {{"loop_carry.sv", rtl},
+                               {"testbench.sv", testbench},
+                               {"portable_loop_carry.ys", yosysScript()}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void mixedPhysicalWidthsPreserveLowBits(const std::filesystem::path &root) {
@@ -472,8 +473,7 @@ void mixedPhysicalWidthsPreserveLowBits(const std::filesystem::path &root) {
   std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
   SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi());
   const std::string rtl = specialize(test, skeleton, fabric, abi);
-  std::ofstream(root / "loop_carry.sv") << rtl;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const std::string testbench = R"sv(
 module testbench;
   logic [7:0]  data_input_0;
   logic [15:0] data_input_1;
@@ -526,7 +526,11 @@ module testbench;
   end
 endmodule
 )sv";
-  writeYosysScript(root);
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "artifacts", {{"loop_carry.sv", rtl},
+                               {"testbench.sv", testbench},
+                               {"portable_loop_carry.ys", yosysScript()}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void zeroWidthPayloadNeedsOnlyHandshake(const std::filesystem::path &root) {

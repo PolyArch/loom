@@ -2,6 +2,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/LoopInvariant.h"
+#include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -33,7 +34,6 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -273,23 +273,21 @@ std::string specialize(llvm::StringRef test, SkeletonFixture &skeleton,
   if (llvm::Error error = registerPortableLoopInvariantProvider(registry))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog externalContracts;
-  const std::vector<FabricOperationLeafAssociation> associations = {
-      {skeleton.leaf, fabric.physicalOccurrence}};
-  const std::vector<FabricOperationRecipeBinding> recipes = {
-      {fabric.physicalOccurrence, BackendRecipeKey::PortableSystemVerilog, {}}};
-  FabricOperationProviderOutput output =
-      take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
-                                                 associations, recipes,
-                                                 registry, externalContracts));
+  ModuleRootCirctSkeleton module{std::move(skeleton.module),
+                                 {{skeleton.leaf, fabric.physicalOccurrence}}};
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     std::move(module), abi, registry, externalContracts));
   require(test,
-          output.payloads.empty() && output.activityPoints.empty() &&
-              output.externalImplementationBindings.empty(),
+          conformance.providerOutput.payloads.empty() &&
+              conformance.providerOutput.activityPoints.empty() &&
+              conformance.providerOutput.externalImplementationBindings.empty(),
           "portable loop invariant emitted external implementation state");
-  return take(test, lowerAndExportSpecializedSystemVerilog(*skeleton.module));
+  return std::move(conformance.systemVerilog);
 }
 
-void writeYosysScript(const std::filesystem::path &root) {
-  std::ofstream(root / "portable_loop_invariant.ys") << R"ys(
+std::string yosysScript() {
+  return R"ys(
 read_verilog loop_invariant.sv
 hierarchy -check -top loop_invariant
 proc
@@ -324,8 +322,7 @@ void schemaCasesRemainAuthoritative(llvm::StringRef test) {
 void canonicalBoundaryAndArtifacts(const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
   std::filesystem::create_directories(root);
-  std::filesystem::create_directories(root / "artifacts");
-  ArtifactStore store((root / "artifacts").string());
+  ArtifactStore store(root.string());
   FabricFixture fabric = makeFabric(test, store, 8, 8, 8);
   FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
   std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
@@ -353,8 +350,7 @@ void canonicalBoundaryAndArtifacts(const std::filesystem::path &root) {
               !llvm::StringRef(rtl).contains("always_ff") &&
               !llvm::StringRef(rtl).contains("posedge"),
           "loop invariant provider did not remain a combinational transform");
-  std::ofstream(root / "loop_invariant.sv") << rtl;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const std::string testbench = R"sv(
 module testbench;
   logic [7:0] data_input_0;
   logic [7:0] data_input_1;
@@ -427,21 +423,23 @@ module testbench;
   end
 endmodule
 )sv";
-  writeYosysScript(root);
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "artifacts", {{"loop_invariant.sv", rtl},
+                               {"testbench.sv", testbench},
+                               {"portable_loop_invariant.ys", yosysScript()}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void mixedPhysicalWidthsPreserveLowBits(const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
   std::filesystem::create_directories(root);
-  std::filesystem::create_directories(root / "artifacts");
-  ArtifactStore store((root / "artifacts").string());
+  ArtifactStore store(root.string());
   FabricFixture fabric = makeFabric(test, store, 8, 16, 8);
   FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
   std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
   SkeletonFixture skeleton = makeSkeleton(test, *context, fabric, abi.abi());
   const std::string rtl = specialize(test, skeleton, fabric, abi);
-  std::ofstream(root / "loop_invariant.sv") << rtl;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const std::string testbench = R"sv(
 module testbench;
   logic [7:0]  data_input_0;
   logic [15:0] data_input_1;
@@ -481,14 +479,17 @@ module testbench;
   end
 endmodule
 )sv";
-  writeYosysScript(root);
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "artifacts", {{"loop_invariant.sv", rtl},
+                               {"testbench.sv", testbench},
+                               {"portable_loop_invariant.ys", yosysScript()}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void zeroWidthPayloadNeedsOnlyHandshake(const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
   std::filesystem::create_directories(root);
-  std::filesystem::create_directories(root / "artifacts");
-  ArtifactStore store((root / "artifacts").string());
+  ArtifactStore store(root.string());
   FabricFixture fabric = makeFabric(test, store, 8, 0, 0);
   FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
   std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
@@ -506,8 +507,7 @@ void zeroWidthPayloadNeedsOnlyHandshake(const std::filesystem::path &root) {
           llvm::StringRef(rtl).contains("valid_output_0") &&
               !llvm::StringRef(rtl).contains("data_output_0"),
           "zero-width invariant did not preserve token-only handshaking");
-  std::ofstream(root / "loop_invariant.sv") << rtl;
-  std::ofstream(root / "testbench.sv") << R"sv(
+  const std::string testbench = R"sv(
 module testbench;
   logic [7:0] data_input_0;
   logic       valid_input_0;
@@ -551,7 +551,11 @@ module testbench;
   end
 endmodule
 )sv";
-  writeYosysScript(root);
+  if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
+          root / "artifacts", {{"loop_invariant.sv", rtl},
+                               {"testbench.sv", testbench},
+                               {"portable_loop_invariant.ys", yosysScript()}}))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 void invalidInputsAreTransactional(const std::filesystem::path &root) {

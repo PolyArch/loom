@@ -1,8 +1,8 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-loop-gate-test %t
-# RUN: FileCheck %s --check-prefix=RTL < %t/loop_gate.sv
-# RUN: FileCheck %s --check-prefix=ZERO < %t/zero_payload/loop_gate.sv
+# RUN: FileCheck %s --check-prefix=RTL < %t/artifacts/loop_gate.sv
+# RUN: FileCheck %s --check-prefix=ZERO < %t/zero_payload/artifacts/loop_gate.sv
 
 # RTL: module loop_gate
 # RTL: state_current,
