@@ -1,0 +1,14 @@
+# REQUIRES: verilator
+# RUN: rm -rf %t && mkdir -p %t/a %t/b %t/c %t/tmp-a %t/tmp-b %t/tmp-c
+# RUN: %loom-verilator-functional-test --emit %t/a good
+# RUN: %loom-verilator-functional-test --emit %t/b good
+# RUN: %loom-verilator-functional-test --emit %t/c bad
+# RUN: cd %t/a && env TMPDIR=%t/tmp-a verilator -f drivers/verilator.args
+# RUN: cd %t/b && env TMPDIR=%t/tmp-b verilator -f drivers/verilator.args
+# RUN: cd %t/c && env TMPDIR=%t/tmp-c verilator -f drivers/verilator.args
+# RUN: cd %t/a && ./outputs/verilator/simulation
+# RUN: cd %t/b && ./outputs/verilator/simulation
+# RUN: cd %t/c && ./outputs/verilator/simulation
+# RUN: %loom-verilator-functional-test --verify %t/a passed
+# RUN: %loom-verilator-functional-test --verify %t/c failed
+# RUN: %loom-verilator-functional-test --compare %t/a %t/b
