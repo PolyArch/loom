@@ -69,7 +69,7 @@ Compared to a bare `fabric.fu`:
 * The PE adds a top-level selected-FU field across multiple FUs.
 * The PE adds explicit input-mux and output-demux fields that route the
   PE's external ports to the active FU's ports.
-* The PE provides one Fabric-owned typed configuration domain. The finalizer
+* The PE provides one Fabric-owned typed configuration schema. The finalizer
   derives its configured field values from TechMapping and SpatialMapping;
   `ConfigurationABI` alone defines their physical encoding.
 
@@ -322,8 +322,10 @@ The activation field is ordinal zero. Input-selector fields follow in canonical
 `(FU occurrence, outer input ordinal)` order, then output-selector fields in
 canonical `(FU occurrence, outer output ordinal)` order. Every field is a
 `FabricSemanticConfigFieldRef` owned by the PE occurrence. The sealed PE
-configuration-schema view relates each field reference to its exact role and FU
-port; a caller never recovers that role by interpreting the ordinal.
+configuration-schema view relates each field reference to its exact role and
+`FabricFuOccurrencePortRef`; a caller never recovers that role by interpreting
+the ordinal. An input-selector field targets an Input port and an
+output-selector field targets an Output port.
 
 The activation field has this finite semantic domain:
 
@@ -337,25 +339,25 @@ followed by the canonical FU occurrence reference bytes for `Active`. A
 ConfigurationABI must use canonical `Disabled` as this field's
 `inactive_value`; another value could activate an unmapped PE and is invalid.
 
-Each input-selector field has the finite domain `Disconnected`, `Route(p)`, and
-`Discard(p)` for every PE input endpoint `p`. Each output-selector field has
-the finite domain `Disconnected`, `Route(p)`, and `Discard` for every PE output
-endpoint `p`. The input codec uses `u32be(0)`, `u32be(1)`, and `u32be(2)` in
-that displayed order, followed by canonical endpoint reference bytes for the
-two variants that carry `p`. The output codec uses the same three `u32be`
-tags; only `Route` carries canonical endpoint reference bytes. Values naming a
-foreign endpoint, the wrong direction, or an endpoint outside this PE are not
-in the domain.
+The exact `InputSelection` and `OutputSelection` domains are defined below.
+Every carried endpoint is a `FabricTransportEndpointRef` whose owner is this PE
+and whose Fabric-owned endpoint role has the required direction. The input
+codec uses `u32be(0)`, `u32be(1)`, and `u32be(2)` for `Disconnected`, `Route`,
+and `Discard`, followed by canonical endpoint reference bytes for the two
+variants that carry an endpoint. The output codec uses the same three tags;
+only `Route` carries canonical endpoint reference bytes. A foreign owner,
+wrong endpoint direction, or endpoint outside the PE inventory is not in the
+domain.
 
 These PE fields do not absorb FU operation fields. Every operation field keeps
 the exact FU-node owner, behavior domain, and codec defined by its resolved
 capability. `fu_sw_configs` is the configured composition of those existing
-fields for the selected FU, not a copy inside a PE codebook. When a PE is
-disabled, its activation field projects `Disabled` and all selector and FU
-fields are omitted. When it is active, the projection contains `Active(f)`,
-every selector field for `f`, and the required FU fields; fields belonging to
-other FUs remain omitted and their ABI-declared inactive values are
-unobservable.
+fields for the selected FU, not a copy inside a PE codebook. A `Disabled`
+configured view emits no Mapping projection row for any PE or FU field; the ABI
+substitutes the activation field's mandatory `Disabled` inactive value and the
+other validated inactive values. An `Active` view projects `Active(f)`, every
+selector field for `f`, and the required FU fields; fields belonging to other
+FUs remain omitted and their ABI-declared inactive values are unobservable.
 
 The schema is finite without enumerating the Cartesian product of FU choice,
 port routes, and FU operation behavior. Physical code assignment and packing
@@ -378,12 +380,13 @@ every concrete FU input, while the configured view projects only the selected
 FU's records. A value is one member of a closed typed sum:
 
 ```text
-InputSelection = Route(InputPortRef)
-               | Discard(InputPortRef)
-               | Disconnected
+InputSelection = Disconnected
+               | Route(FabricTransportEndpointRef)
+               | Discard(FabricTransportEndpointRef)
 ```
 
-* `Route` selects one PE input in `[0, K)` and connects it to the FU input.
+* `Route` selects one Input-role PE transport endpoint in `[0, K)` and connects
+  it to the FU input.
 * `Discard` drains the selected PE input locally:
   the FU input's `valid` is forced low and the selected PE input's
   `ready` is forced high so upstream tokens dissipate.
@@ -411,12 +414,12 @@ every concrete FU output, while the configured view projects only the selected
 FU's records:
 
 ```text
-OutputSelection = Route(OutputPortRef)
+OutputSelection = Disconnected
+                | Route(FabricTransportEndpointRef)
                 | Discard
-                | Disconnected
 ```
 
-* `Route` selects one PE output in `[0, L)`.
+* `Route` selects one Output-role PE transport endpoint in `[0, L)`.
 * `Discard` drains the FU output locally
   (FU output's `ready` is forced high; no PE output sees the value).
 * `Disconnected` severs the route and forces the FU output's `ready` low.

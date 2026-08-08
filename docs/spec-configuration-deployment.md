@@ -686,9 +686,11 @@ Tests protect only stable boundaries:
 * `None` rejects an ABI field, a finite codebook has exact set equality with
   its Fabric behavior-key domain, and `DirectBits` matches the Fabric carrier
   width exactly;
-* one Spatial PE activation field and representative input/output selector
-  fields have exact finite codebook coverage, canonical disabled inactivity,
-  and foreign endpoint rejection;
+* one Spatial PE with at least two FUs exposes its complete static activation
+  and selector field schema in canonical order independent of authoring order;
+  each field has exact finite codebook coverage and foreign endpoint rejection,
+  activation has canonical disabled inactivity, and one selected Mapping emits
+  only the chosen FU's selector and operation fields;
 * one known vector is shared by the encoder and RTL/runtime decoder;
 * image ABI, programming-unit, Mapping, padding, and payload mismatches fail;
 * Deployment requires `ThreadDispatchImage` and `AdmissionImage`, and requires
