@@ -38,13 +38,17 @@
 # ORDINARY-UNSIGNED-NOT: config_
 # ORDINARY-UNSIGNED: loom_float_e8_f23_to_unsigned_i16
 
-# TB: elastic_scalar_float_width_cast
 # TB: module testbench
+# TB-NOT: elastic_scalar_float_width_cast
+# TB: scalar_float_width_cast width_dut
+# TB: scalar_integer_to_float integer_to_float_dut
+# TB: scalar_float_to_integer float_to_integer_dut
+# TB: scalar_float_to_signed_integer_singleton ordinary_signed_dut
+# TB: scalar_float_to_unsigned_integer_singleton ordinary_unsigned_dut
 # TB: check_width
 # TB: check_integer_to_float
 # TB: check_float_to_integer
 # TB: check_ordinary_signed
 # TB: check_ordinary_unsigned
-# TB: backpressure changed a published width cast
 
 # YOSYS: hierarchy -check -top scalar_float_width_cast

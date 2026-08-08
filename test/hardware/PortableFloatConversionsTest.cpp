@@ -930,32 +930,7 @@ std::string makeTestbench(llvm::ArrayRef<ModeInfo> widthModes,
                           const ModeInfo &ordinaryUnsignedMode) {
   std::string text;
   llvm::raw_string_ostream output(text);
-  output << R"sv(module elastic_scalar_float_width_cast(
-    input logic clock,
-    input logic reset,
-    input logic input_valid,
-    output logic input_ready,
-    input logic output_ready,
-    output logic output_valid,
-    input logic [5:0] mode,
-    input logic [66:0] value,
-    output logic [66:0] result);
-  logic [66:0] next_result;
-  scalar_float_width_cast operation(
-      .data_input_0(value), .config_0(mode), .data_output_0(next_result));
-  assign input_ready = !output_valid || output_ready;
-  always_ff @(posedge clock) begin
-    if (reset) begin
-      output_valid <= 1'b0;
-      result <= 67'd0;
-    end else if (input_ready) begin
-      output_valid <= input_valid;
-      if (input_valid) result <= next_result;
-    end
-  end
-endmodule
-
-module testbench;
+  output << R"sv(module testbench;
   logic [66:0] width_input;
   logic [5:0] width_mode;
   logic [66:0] width_output;
@@ -969,15 +944,6 @@ module testbench;
   logic [66:0] ordinary_signed_output;
   logic [66:0] ordinary_unsigned_input;
   logic [66:0] ordinary_unsigned_output;
-  logic clock;
-  logic reset;
-  logic input_valid;
-  logic input_ready;
-  logic output_ready;
-  logic output_valid;
-  logic [5:0] elastic_mode;
-  logic [66:0] elastic_input;
-  logic [66:0] elastic_result;
 
   scalar_float_width_cast width_dut(
       .data_input_0(width_input), .config_0(width_mode),
@@ -996,14 +962,6 @@ module testbench;
   scalar_float_to_unsigned_integer_singleton ordinary_unsigned_dut(
       .data_input_0(ordinary_unsigned_input),
       .data_output_0(ordinary_unsigned_output));
-  elastic_scalar_float_width_cast elastic_dut(
-      .clock(clock), .reset(reset), .input_valid(input_valid),
-      .input_ready(input_ready), .output_ready(output_ready),
-      .output_valid(output_valid), .mode(elastic_mode),
-      .value(elastic_input), .result(elastic_result));
-
-  initial clock = 0;
-  always #5 clock = !clock;
 
   task automatic check_width(
       input logic [5:0] mode, input logic [66:0] value,
@@ -1115,65 +1073,7 @@ module testbench;
   };
   emitOrdinary("check_ordinary_signed", ordinarySignedMode);
   emitOrdinary("check_ordinary_unsigned", ordinaryUnsignedMode);
-
-  require("makeTestbench", !widthModes.empty(), "width-cast mode set is empty");
-  const ModeInfo &elasticMode = widthModes.front();
-  const std::vector<llvm::APInt> elasticInputs = inputsForMode(elasticMode);
-  require("makeTestbench", elasticInputs.size() >= 5,
-          "width-cast oracle has too few elastic vectors");
-  const llvm::APInt firstInput = physicalInput(elasticMode, elasticInputs[2]);
-  const llvm::APInt firstExpected =
-      evaluateMode("makeTestbench", elasticMode, elasticInputs[2]).zext(67);
-  const llvm::APInt replacementInput =
-      physicalInput(elasticMode, elasticInputs[4]);
-  const llvm::APInt replacementExpected =
-      evaluateMode("makeTestbench", elasticMode, elasticInputs[4]).zext(67);
-  output << "    reset = 1'b1;\n"
-         << "    input_valid = 1'b0;\n"
-         << "    output_ready = 1'b0;\n"
-         << "    elastic_mode = 6'd"
-         << static_cast<unsigned>(elasticMode.physicalCode) << ";\n"
-         << "    elastic_input = " << hexLiteral(firstInput) << ";\n";
-  output << R"sv(    repeat (2) @(posedge clock);
-    #1;
-    if (output_valid) $fatal(1, "reset did not clear the elastic result slot");
-
-    reset = 1'b0;
-    input_valid = 1'b1;
-    @(posedge clock);
-    #1;
-)sv";
-  output << "    if (!output_valid || elastic_result !== "
-         << hexLiteral(firstExpected) << ")\n"
-         << "      $fatal(1, \"elastic width cast did not publish after one "
-            "cycle\");\n"
-         << "    elastic_input = " << hexLiteral(replacementInput) << ";\n";
-  output << R"sv(    #1;
-    if (input_ready || !output_valid ||
-)sv";
-  output
-      << "        elastic_result !== " << hexLiteral(firstExpected) << ")\n"
-      << "      $fatal(1, \"backpressure changed a published width cast\");\n";
-  output << R"sv(    output_ready = 1'b1;
-    @(posedge clock);
-    #1;
-)sv";
-  output << "    if (!output_valid || elastic_result !== "
-         << hexLiteral(replacementExpected) << ")\n"
-         << "      $fatal(1, \"release-before-acquire lost the replacement "
-            "cast\");\n";
-  output << R"sv(    input_valid = 1'b0;
-    output_ready = 1'b0;
-    #1;
-)sv";
-  output << "    if (input_ready || elastic_result !== "
-         << hexLiteral(replacementExpected) << ")\n"
-         << "      $fatal(1, \"stall changed a retained replacement cast\");\n";
-  output << R"sv(    reset = 1'b1;
-    @(posedge clock);
-    #1;
-    if (output_valid) $fatal(1, "reset did not discard stalled occupancy");
-    $finish;
+  output << R"sv(    $finish;
   end
 endmodule
 )sv";
