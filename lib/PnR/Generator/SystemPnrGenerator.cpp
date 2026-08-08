@@ -320,10 +320,11 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
                              : diagnostic);
     }
     candidate = std::move(closed->candidate);
-    if (candidate->capacityOveruse() != 0)
-      return internal(InternalSystemPnrGenerationReason::FinalClosure,
-                      accounting,
-                      "strict final global Action retained CapacityOveruse");
+    if (candidate->capacityOveruse() != 0) {
+      rememberIncomplete(
+          "strict final global Action retained full CapacityOveruse", false);
+      continue;
+    }
 
     if (llvm::Error error = candidate->verify())
       return internal(InternalSystemPnrGenerationReason::CandidateVerification,

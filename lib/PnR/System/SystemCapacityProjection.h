@@ -10,7 +10,6 @@
 
 #include <cstddef>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -32,20 +31,23 @@ public:
           SystemCandidateCapacityProjectionView candidate) const;
 
 private:
+  struct ImportedUseProjection final {
+    ::loom::fabric::FabricUsePatternRef pattern;
+    std::string activationKey;
+  };
+
   struct ImportedProjection final {
     ArtifactIdentity mappingIdentity;
-    std::vector<::loom::mapping::detail::FrozenResourceCapacityUseSelection>
-        uses;
-    std::vector<::loom::mapping::detail::FrozenResourceCapacityRouteSelection>
-        routes;
+    std::vector<ImportedUseProjection> uses;
+    std::vector<std::vector<::loom::fabric::FabricPhysicalTraversalRef>> routes;
   };
 
   ::loom::mapping::detail::FrozenResourceCapacityIndex resources_;
   std::vector<std::size_t> rootTraversalOrdinals_;
-  std::vector<std::optional<ImportedProjection>> importedProjections_;
+  std::vector<ImportedProjection> importedProjections_;
+  std::vector<PnrIndex> coreTargetClasses_;
+  std::vector<PnrIndex> mappingTargetClasses_;
   std::vector<std::string> graphKeys_;
-  std::size_t coreCount_ = 0;
-  std::size_t mappingCount_ = 0;
 
   friend llvm::Expected<std::unique_ptr<SystemCapacityModel>>
   buildSystemCapacityModel(

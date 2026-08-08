@@ -175,7 +175,7 @@ executeTransport(const SystemCandidateStateHandle &current,
 llvm::Expected<SystemCandidateStateHandle>
 executeResource(const SystemCandidateStateHandle &current,
                 const SystemResourceAllocationAction &action) {
-  return std::visit(
+  auto candidate = std::visit(
       [&](const auto &value) -> llvm::Expected<SystemCandidateStateHandle> {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, SystemServiceTargetAction>)
@@ -189,6 +189,9 @@ executeResource(const SystemCandidateStateHandle &current,
               *current, value.use, value.choice);
       },
       action);
+  if (!candidate)
+    return translateMutationFailure(candidate.takeError());
+  return candidate;
 }
 
 } // namespace

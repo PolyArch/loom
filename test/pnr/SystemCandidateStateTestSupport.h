@@ -92,5 +92,8 @@ void verifySystemNegotiatedRoutingWorkflow(
     const ArtifactRootReference &spatialMapping, const ResolvedConfig &resolved,
     mlir::MLIRContext &context);
 
+void verifySystemImportedCapacityWorkflow(
+    const SystemCandidateState &candidate);
+
 } // namespace pnr::test
 } // namespace loom

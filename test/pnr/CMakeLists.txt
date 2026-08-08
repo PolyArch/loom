@@ -16,6 +16,10 @@ add_executable(loom-system-candidate-state-test
   SystemNegotiatedRoutingWorkflowTestSupport.cpp
 )
 
+target_include_directories(loom-system-candidate-state-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib
+)
+
 add_executable(loom-system-channel-applicability-test
   SystemChannelApplicabilityTest.cpp
 )

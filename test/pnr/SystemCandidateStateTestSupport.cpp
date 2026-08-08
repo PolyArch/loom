@@ -639,6 +639,7 @@ void loom::pnr::test::verifyFinalizedSystemMappingWorkflow(
     ArtifactStore &store, mlir::MLIRContext &context,
     std::size_t expectedServiceCount) {
   verifySelectedRouteCapacity(candidate);
+  verifySystemImportedCapacityWorkflow(candidate);
   auto finalized = take(finalizeSystemMappingCandidate(
       candidate, dataflow, fabric, emptyConstraints, store, context));
   auto imported =

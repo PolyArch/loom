@@ -1,10 +1,12 @@
 #include "SystemCapacityProjection.h"
 
 #include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SpatialMappingCapacityVerification.h"
 
 #include "llvm/ADT/STLExtras.h"
 
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -68,6 +70,35 @@ spatialRouteTraversals(const ::loom::mapping::SpatialMappingView &mapping) {
   return result;
 }
 
+template <typename Ref> std::string fabricRefKey(const Ref &reference) {
+  const auto bytes = ::loom::fabric::canonicalFabricBytes(reference);
+  return std::string(reinterpret_cast<const char *>(bytes.data()),
+                     bytes.size());
+}
+
+llvm::Expected<std::string>
+instructionActivationKey(const ArtifactIdentity &dataflowIdentity,
+                         const SystemInstructionResourceUseSelection &use) {
+  auto root = ::dataflow::encodeDataflowReference(dataflowIdentity, use.root);
+  if (!root)
+    return root.takeError();
+  const auto context = ::loom::fabric::canonicalFabricBytes(use.context);
+  std::string result;
+  appendU32(result, 0);
+  appendSized(result, *root);
+  appendSized(result, context);
+  return result;
+}
+
+std::string serviceActivationKey(const SystemServiceResourceUseSelection &use) {
+  std::string result;
+  appendU32(result, 1);
+  appendU32(result, use.context);
+  appendU32(result, use.subject);
+  appendU32(result, use.branch);
+  return result;
+}
+
 } // namespace
 
 llvm::Expected<std::unique_ptr<SystemCapacityModel>> buildSystemCapacityModel(
@@ -87,21 +118,33 @@ llvm::Expected<std::unique_ptr<SystemCapacityModel>> buildSystemCapacityModel(
   if (cores.size() != coreTargetClasses.size() ||
       spatialCatalog.size() != mappingTargetClasses.size())
     return invalid("System capacity catalogs have inconsistent widths");
+  if (cores.size() == std::numeric_limits<std::size_t>::max())
+    return invalid("System capacity namespace count exceeds size_t");
+  if (cores.size() >
+      static_cast<std::size_t>(std::numeric_limits<PnrIndex>::max()))
+    return invalid("System capacity core catalog exceeds PnrIndex");
+  if (spatialCatalog.size() >
+      static_cast<std::size_t>(std::numeric_limits<PnrIndex>::max()))
+    return invalid("System capacity mapping catalog exceeds PnrIndex");
 
   std::vector<ResourceCapacityNamespaceView> namespaces;
   namespaces.reserve(cores.size() + 1);
   namespaces.push_back(
       {&fabric.artifact(), rootResourceCapacityQualifier(fabric.artifact())});
-  std::vector<const ::loom::fabric::FabricArtifactView *> modules;
-  modules.reserve(cores.size());
-  for (const auto core : cores) {
+  std::map<PnrIndex, const ::loom::fabric::FabricArtifactView *>
+      modulesByTargetClass;
+  for (const auto &[coreOrdinal, core] : llvm::enumerate(cores)) {
     const auto target = fabric.spatialCoreTarget(core);
     if (!target ||
         target->dependencyOrdinal >= fabric.artifact().importedModules().size())
       return invalid("AccCore capacity namespace has no imported Module");
     const auto &module =
         fabric.artifact().importedModules()[target->dependencyOrdinal];
-    modules.push_back(&module);
+    const auto [position, inserted] = modulesByTargetClass.try_emplace(
+        coreTargetClasses[coreOrdinal], &module);
+    if (!inserted && position->second->identity() != module.identity())
+      return invalid(
+          "one System target class names different imported Modules");
     namespaces.push_back(
         {&module, occurrenceResourceCapacityQualifier(
                       fabric.artifact(),
@@ -125,23 +168,58 @@ llvm::Expected<std::unique_ptr<SystemCapacityModel>> buildSystemCapacityModel(
   for (const auto &traversal : routingTopology.traversals())
     traversalSources.push_back({0, traversal.reference});
 
-  for (const auto &[coreOrdinal, module] : llvm::enumerate(modules)) {
-    const std::size_t namespaceOrdinal = coreOrdinal + 1;
-    for (const auto &[mappingOrdinal, entry] :
-         llvm::enumerate(spatialCatalog)) {
-      if (coreTargetClasses[coreOrdinal] !=
-          mappingTargetClasses[mappingOrdinal])
-        continue;
-      const auto &mapping = entry.mapping.view();
-      if (mapping.fabricIdentity() != module->identity())
-        return invalid(
-            "SpatialMapping capacity namespace has the wrong Module");
-      for (const auto &use : mapping.resourceUses())
-        patternSources.push_back({namespaceOrdinal, use.useSite});
-      for (const auto &route : spatialRouteTraversals(mapping))
-        for (const auto &traversal : route)
-          traversalSources.push_back({namespaceOrdinal, traversal});
+  using PatternCatalog =
+      std::map<std::string, ::loom::fabric::FabricUsePatternRef>;
+  using TraversalCatalog =
+      std::map<std::string, ::loom::fabric::FabricPhysicalTraversalRef>;
+  std::map<PnrIndex, PatternCatalog> patternsByTargetClass;
+  std::map<PnrIndex, TraversalCatalog> traversalsByTargetClass;
+  std::vector<SystemCapacityModel::ImportedProjection> importedProjections;
+  importedProjections.reserve(spatialCatalog.size());
+  for (const auto &[mappingOrdinal, entry] : llvm::enumerate(spatialCatalog)) {
+    const PnrIndex targetClass = mappingTargetClasses[mappingOrdinal];
+    const auto module = modulesByTargetClass.find(targetClass);
+    if (module == modulesByTargetClass.end())
+      return invalid("SpatialMapping target class has no System occurrence");
+    const auto &mapping = entry.mapping.view();
+    if (mapping.fabricIdentity() != module->second->identity())
+      return invalid("SpatialMapping target class has the wrong Module");
+
+    SystemCapacityModel::ImportedProjection projection{
+        mapping.identity(), {}, {}};
+    projection.uses.reserve(mapping.resourceUses().size());
+    for (const auto &use : mapping.resourceUses()) {
+      auto activation = deriveSpatialCapacityActivationKey(
+          *module->second, dataflow.identity(), use);
+      if (!activation)
+        return activation.takeError();
+      projection.uses.push_back({use.useSite, std::move(*activation)});
+      patternsByTargetClass[targetClass].try_emplace(fabricRefKey(use.useSite),
+                                                     use.useSite);
     }
+    projection.routes = spatialRouteTraversals(mapping);
+    for (const auto &route : projection.routes)
+      for (const auto &traversal : route)
+        traversalsByTargetClass[targetClass].try_emplace(
+            fabricRefKey(traversal), traversal);
+    importedProjections.push_back(std::move(projection));
+  }
+
+  for (const auto &[coreOrdinal, targetClass] :
+       llvm::enumerate(coreTargetClasses)) {
+    const std::size_t namespaceOrdinal = coreOrdinal + 1;
+    const auto patterns = patternsByTargetClass.find(targetClass);
+    if (patterns != patternsByTargetClass.end())
+      for (const auto &[key, pattern] : patterns->second) {
+        (void)key;
+        patternSources.push_back({namespaceOrdinal, pattern});
+      }
+    const auto traversals = traversalsByTargetClass.find(targetClass);
+    if (traversals != traversalsByTargetClass.end())
+      for (const auto &[key, traversal] : traversals->second) {
+        (void)key;
+        traversalSources.push_back({namespaceOrdinal, traversal});
+      }
   }
 
   auto resources =
@@ -150,54 +228,17 @@ llvm::Expected<std::unique_ptr<SystemCapacityModel>> buildSystemCapacityModel(
     return resources.takeError();
   auto result = std::make_unique<SystemCapacityModel>();
   result->resources_ = std::move(*resources);
-  result->coreCount_ = cores.size();
-  result->mappingCount_ = spatialCatalog.size();
+  result->importedProjections_ = std::move(importedProjections);
+  result->coreTargetClasses_.assign(coreTargetClasses.begin(),
+                                    coreTargetClasses.end());
+  result->mappingTargetClasses_.assign(mappingTargetClasses.begin(),
+                                       mappingTargetClasses.end());
   result->rootTraversalOrdinals_.reserve(routingTopology.traversals().size());
   for (const auto &traversal : routingTopology.traversals()) {
     auto ordinal = result->resources_.traversalOrdinal(0, traversal.reference);
     if (!ordinal)
       return ordinal.takeError();
     result->rootTraversalOrdinals_.push_back(*ordinal);
-  }
-
-  result->importedProjections_.resize(cores.size() * spatialCatalog.size());
-  for (const auto &[coreOrdinal, module] : llvm::enumerate(modules)) {
-    const std::size_t namespaceOrdinal = coreOrdinal + 1;
-    for (const auto &[mappingOrdinal, entry] :
-         llvm::enumerate(spatialCatalog)) {
-      if (coreTargetClasses[coreOrdinal] !=
-          mappingTargetClasses[mappingOrdinal])
-        continue;
-      const auto &mapping = entry.mapping.view();
-      SystemCapacityModel::ImportedProjection projection{
-          mapping.identity(), {}, {}};
-      projection.uses.reserve(mapping.resourceUses().size());
-      for (const auto &use : mapping.resourceUses()) {
-        auto pattern =
-            result->resources_.patternOrdinal(namespaceOrdinal, use.useSite);
-        if (!pattern)
-          return pattern.takeError();
-        auto activation = deriveSpatialCapacityActivationKey(
-            *module, dataflow.identity(), use);
-        if (!activation)
-          return activation.takeError();
-        projection.uses.push_back({*pattern, std::move(*activation)});
-      }
-      for (const auto &route : spatialRouteTraversals(mapping)) {
-        FrozenResourceCapacityRouteSelection selected;
-        selected.traversalOrdinals.reserve(route.size());
-        for (const auto &traversal : route) {
-          auto ordinal =
-              result->resources_.traversalOrdinal(namespaceOrdinal, traversal);
-          if (!ordinal)
-            return ordinal.takeError();
-          selected.traversalOrdinals.push_back(*ordinal);
-        }
-        projection.routes.push_back(std::move(selected));
-      }
-      result->importedProjections_[coreOrdinal * spatialCatalog.size() +
-                                   mappingOrdinal] = std::move(projection);
-    }
   }
 
   result->graphKeys_.reserve(graphDecisions.size());
@@ -218,25 +259,20 @@ llvm::Expected<ResourceCapacityOveruseProjection> SystemCapacityModel::project(
   std::vector<FrozenResourceCapacityUseSelection> uses;
   uses.reserve(candidate.instructionResourceUses.size() +
                candidate.serviceResourceUses.size());
-  for (const auto &[ordinal, use] :
-       llvm::enumerate(candidate.instructionResourceUses)) {
+  for (const auto &use : candidate.instructionResourceUses) {
     auto pattern = resources_.patternOrdinal(0, use.pattern);
     if (!pattern)
       return pattern.takeError();
-    std::string activation;
-    appendU32(activation, 0);
-    appendU64(activation, ordinal);
-    uses.push_back({*pattern, std::move(activation)});
+    auto activation = instructionActivationKey(problem.dataflowIdentity(), use);
+    if (!activation)
+      return activation.takeError();
+    uses.push_back({*pattern, std::move(*activation)});
   }
-  for (const auto &[ordinal, use] :
-       llvm::enumerate(candidate.serviceResourceUses)) {
+  for (const auto &use : candidate.serviceResourceUses) {
     auto pattern = resources_.patternOrdinal(0, use.pattern);
     if (!pattern)
       return pattern.takeError();
-    std::string activation;
-    appendU32(activation, 1);
-    appendU64(activation, ordinal);
-    uses.push_back({*pattern, std::move(activation)});
+    uses.push_back({*pattern, serviceActivationKey(use)});
   }
 
   std::vector<FrozenResourceCapacityRouteSelection> routes;
@@ -283,32 +319,46 @@ llvm::Expected<ResourceCapacityOveruseProjection> SystemCapacityModel::project(
   const auto projection =
       [&](PnrIndex core,
           PnrIndex mapping) -> llvm::Expected<const ImportedProjection *> {
-    if (mapping >= mappingCount_ || core >= coreCount_)
+    if (mapping >= importedProjections_.size() ||
+        mapping >= mappingTargetClasses_.size() ||
+        core >= coreTargetClasses_.size())
       return invalid("imported capacity projection is out of range");
-    const std::size_t ordinal = core * mappingCount_ + mapping;
-    if (ordinal >= importedProjections_.size() ||
-        !importedProjections_[ordinal])
+    if (coreTargetClasses_[core] != mappingTargetClasses_[mapping])
       return invalid("selected System execution has no capacity projection");
-    return &*importedProjections_[ordinal];
+    return &importedProjections_[mapping];
   };
   for (const auto &[graphKey, core, mapping] : spatialContexts) {
     auto imported = projection(core, mapping);
     if (!imported)
       return imported.takeError();
     for (const auto &use : (*imported)->uses) {
+      const std::size_t namespaceOrdinal = static_cast<std::size_t>(core) + 1;
+      auto pattern = resources_.patternOrdinal(namespaceOrdinal, use.pattern);
+      if (!pattern)
+        return pattern.takeError();
       std::string activation;
       appendSized(activation, graphKey);
       appendSized(activation, (*imported)->mappingIdentity.bytes());
       appendSized(activation, use.activationKey);
-      uses.push_back({use.patternOrdinal, std::move(activation)});
+      uses.push_back({*pattern, std::move(activation)});
     }
   }
   for (const auto &[core, mapping] : routedMappings) {
     auto imported = projection(core, mapping);
     if (!imported)
       return imported.takeError();
-    routes.insert(routes.end(), (*imported)->routes.begin(),
-                  (*imported)->routes.end());
+    const std::size_t namespaceOrdinal = static_cast<std::size_t>(core) + 1;
+    for (const auto &route : (*imported)->routes) {
+      FrozenResourceCapacityRouteSelection selected;
+      selected.traversalOrdinals.reserve(route.size());
+      for (const auto &traversal : route) {
+        auto ordinal = resources_.traversalOrdinal(namespaceOrdinal, traversal);
+        if (!ordinal)
+          return ordinal.takeError();
+        selected.traversalOrdinals.push_back(*ordinal);
+      }
+      routes.push_back(std::move(selected));
+    }
   }
   return deriveResourceCapacityOveruse(resources_, uses, routes);
 }

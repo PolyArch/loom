@@ -460,7 +460,8 @@ SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
   if (!capacity)
     return capacity.takeError();
   if (capacity->total != 0 && !admitsCapacityOveruse(*problem))
-    return invalid("CapacityOveruse is not policy-admitted");
+    return llvm::make_error<detail::SystemCandidateInfeasible>(
+        "CapacityOveruse is not policy-admitted");
   auto state = SystemCandidateStateHandle(new SystemCandidateState(
       std::move(problem),
       std::vector<PnrIndex>(initialization.threadChoices.begin(),

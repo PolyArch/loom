@@ -10,6 +10,8 @@
 #include "PnR/System/SystemActionDomain.h"
 #include "PnR/System/SystemActionExecutor.h"
 #include "PnR/System/SystemAnnealingSearch.h"
+#include "PnR/System/SystemCandidateServiceResolver.h"
+#include "PnR/System/SystemCapacityProjection.h"
 #include "PnR/System/SystemMappingMaterializer.h"
 #include "PnR/System/SystemPnrProblem.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
@@ -48,6 +50,68 @@ template <typename T> T take(llvm::Expected<T> value) {
   if (!value)
     fail(llvm::toString(value.takeError()));
   return std::move(*value);
+}
+
+std::uint64_t maximumPatternMultiplicity(
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ::loom::fabric::FabricUsePatternRef &reference) {
+  const auto *contract = fabric.resourceContract(reference.owner.catalog());
+  require(contract && reference.ordinal < contract->usePatternCount(),
+          "capacity fixture selected a foreign ResourceUse pattern");
+  const auto pattern =
+      contract->usePattern(::fabric::UsePatternKey(reference.ordinal));
+  std::uint64_t result = std::numeric_limits<std::uint64_t>::max();
+  for (const auto &claim : pattern.claims) {
+    require(claim.state.ordinal() < contract->stateCount(),
+            "capacity fixture selected a foreign resource state");
+    const auto dimensions = contract->capacityDimensions(claim.state);
+    require(claim.dimension.ordinal() < dimensions.size(),
+            "capacity fixture selected a foreign capacity dimension");
+    const auto &dimension = dimensions[claim.dimension.ordinal()];
+    const std::uint64_t amount = claim.amount.value();
+    if (amount == 0)
+      continue;
+    require(dimension.initialOccupancy.value() <= dimension.capacity.value(),
+            "capacity fixture has invalid initial occupancy");
+    result = std::min(result, (dimension.capacity.value() -
+                               dimension.initialOccupancy.value()) /
+                                  amount);
+  }
+  return result;
+}
+
+template <typename Selection>
+std::vector<Selection>
+repeatedOveruseSelections(const ::loom::fabric::FabricArtifactView &fabric,
+                          llvm::ArrayRef<Selection> selections,
+                          llvm::StringRef label) {
+  for (const Selection &selection : selections) {
+    const std::uint64_t multiplicity =
+        maximumPatternMultiplicity(fabric, selection.pattern);
+    if (multiplicity != std::numeric_limits<std::uint64_t>::max() &&
+        multiplicity < 4096)
+      return std::vector<Selection>(multiplicity + 1, selection);
+  }
+  fail(label + " fixture has no bounded ResourceUse pattern");
+}
+
+::loom::mapping::detail::ResourceCapacityOveruseProjection projectCapacity(
+    const SystemCandidateState &candidate,
+    llvm::ArrayRef<SystemServiceRouteSelection> routes,
+    llvm::ArrayRef<SystemServiceRouteNodeSelection> routeNodes,
+    llvm::ArrayRef<SystemInstructionResourceUseSelection> instructionUses,
+    llvm::ArrayRef<SystemServiceResourceUseSelection> serviceUses) {
+  return take(candidate.problem().capacityModel().project(
+      candidate.problem(), {candidate.threadChoices(), candidate.graphChoices(),
+                            routes, routeNodes, instructionUses, serviceUses}));
+}
+
+::loom::mapping::detail::ResourceCapacityOveruseProjection
+projectImportedCapacity(const SystemCandidateState &candidate,
+                        llvm::ArrayRef<PnrIndex> threadChoices,
+                        llvm::ArrayRef<PnrIndex> graphChoices) {
+  return take(candidate.problem().capacityModel().project(
+      candidate.problem(), {threadChoices, graphChoices, {}, {}, {}, {}}));
 }
 
 bool traversalClaimsCell(const FrozenEndpointRoutingTopology &topology,
@@ -245,12 +309,15 @@ WorkflowProblem buildProblem(
     const ::loom::fabric::FabricSystemRootView &system,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
     const SystemBindingPartitionPlan &partition,
-    const ArtifactRootReference &spatialMapping, const ArtifactStore &store) {
+    const ArtifactRootReference &spatialMapping, const ArtifactStore &store,
+    bool admitTemporary = true) {
   ResolvedConfig resolved = base;
   resolved.dse.systemPnr.search.routing.negotiationIterationLimit =
       iterationLimit;
-  resolved.dse.systemPnr.temporaryViolations.admitted = {
-      ResolvedPnrViolationKind::CapacityOveruse};
+  resolved.dse.systemPnr.temporaryViolations.admitted.clear();
+  if (admitTemporary)
+    resolved.dse.systemPnr.temporaryViolations.admitted = {
+        ResolvedPnrViolationKind::CapacityOveruse};
   auto config = take(projectResolvedSystemPnrConfigView(resolved));
   auto searchDomain = take(projectSystemPnrSearchDomain(
       dataflow, system, config, constraints, partition,
@@ -343,6 +410,86 @@ initializeBottleneckCandidate(const FrozenSystemPnrProblemHandle &problem) {
 
 } // namespace
 
+void loom::pnr::test::verifySystemImportedCapacityWorkflow(
+    const SystemCandidateState &candidate) {
+  const FrozenSystemPnrProblem &problem = candidate.problem();
+  require(problem.threadDecisions().size() == 2 &&
+              problem.graphDecisions().size() == 4,
+          "imported capacity fixture lost its repeated execution contexts");
+
+  struct CorePair final {
+    PnrIndex firstChoice = getInvalidPnrIndex();
+    PnrIndex secondChoice = getInvalidPnrIndex();
+  };
+  std::optional<CorePair> sharedOccurrence;
+  std::optional<CorePair> distinctOccurrences;
+  const auto firstCores = problem.threadChoiceCatalogOrdinals(0);
+  const auto secondCores = problem.threadChoiceCatalogOrdinals(1);
+  for (const auto &[firstChoice, firstCore] : llvm::enumerate(firstCores)) {
+    for (const auto &[secondChoice, secondCore] :
+         llvm::enumerate(secondCores)) {
+      if (problem.accCoreTargetClass(firstCore) !=
+          problem.accCoreTargetClass(secondCore))
+        continue;
+      CorePair pair{static_cast<PnrIndex>(firstChoice),
+                    static_cast<PnrIndex>(secondChoice)};
+      if (firstCore == secondCore)
+        sharedOccurrence = pair;
+      else
+        distinctOccurrences = pair;
+    }
+  }
+  require(sharedOccurrence && distinctOccurrences,
+          "imported capacity fixture has no shared and distinct core choices");
+
+  const auto choicesFor = [&](CorePair pair) {
+    std::vector<PnrIndex> threads(candidate.threadChoices().begin(),
+                                  candidate.threadChoices().end());
+    threads[0] = pair.firstChoice;
+    threads[1] = pair.secondChoice;
+    std::vector<PnrIndex> graphs(problem.graphDecisions().size(), 0);
+    for (PnrIndex graph = 0; graph < problem.graphDecisions().size(); ++graph) {
+      const auto overlaps = problem.graphThreadOverlaps(graph);
+      require(!overlaps.empty(),
+              "imported capacity graph has no execution context");
+      const auto selectedCores =
+          problem.threadChoiceCatalogOrdinals(overlaps.front());
+      require(overlaps.front() < threads.size() &&
+                  threads[overlaps.front()] < selectedCores.size(),
+              "imported capacity thread choice is out of range");
+      const PnrIndex targetClass =
+          problem.accCoreTargetClass(selectedCores[threads[overlaps.front()]]);
+      for (PnrIndex thread : overlaps) {
+        const auto cores = problem.threadChoiceCatalogOrdinals(thread);
+        require(thread < threads.size() && threads[thread] < cores.size() &&
+                    problem.accCoreTargetClass(cores[threads[thread]]) ==
+                        targetClass,
+                "one graph context spans incompatible core classes");
+      }
+      const auto mappings = problem.graphChoiceCatalogOrdinals(graph);
+      const auto selected = llvm::find_if(mappings, [&](PnrIndex mapping) {
+        return problem.spatialMappingTargetClass(mapping) == targetClass;
+      });
+      require(selected != mappings.end(),
+              "imported capacity graph has no compatible SpatialMapping");
+      graphs[graph] = static_cast<PnrIndex>(selected - mappings.begin());
+    }
+    return std::pair{std::move(threads), std::move(graphs)};
+  };
+
+  const auto shared = choicesFor(*sharedOccurrence);
+  const auto sharedProjection =
+      projectImportedCapacity(candidate, shared.first, shared.second);
+  require(sharedProjection.total == 0,
+          "repeated graph contexts counted imported routes more than once");
+
+  const auto distinct = choicesFor(*distinctOccurrences);
+  const auto distinctProjection =
+      projectImportedCapacity(candidate, distinct.first, distinct.second);
+  require(distinctProjection.total == 0,
+          "distinct SpatialCore occurrences shared one capacity namespace");
+}
+
 void loom::pnr::test::verifySystemNegotiatedRoutingWorkflow(
     ArtifactStore &store, const fabric::FinalizedFabricRoot &baselineSystem,
     const fabric::FinalizedFabricRoot &primaryModule,
@@ -368,6 +515,54 @@ void loom::pnr::test::verifySystemNegotiatedRoutingWorkflow(
               first.state->capacityOveruse() ==
                   first.state->routeCapacityOveruse(),
           "first negotiated iterate did not expose one exact route bottleneck");
+
+  const auto instructionOveruse = repeatedOveruseSelections(
+      system.artifact(), first.state->instructionResourceUses(),
+      "InstructionCore ResourceUse");
+  const auto serviceOveruse = repeatedOveruseSelections(
+      system.artifact(), first.state->serviceResourceUses(),
+      "service ResourceUse");
+  const auto importedOnly = projectCapacity(*first.state, {}, {}, {}, {});
+  const auto instructionOnly =
+      projectCapacity(*first.state, {}, {}, instructionOveruse, {});
+  const auto serviceOnly =
+      projectCapacity(*first.state, {}, {}, {}, serviceOveruse);
+  const auto routeOnly =
+      projectCapacity(*first.state, first.state->serviceRoutes(),
+                      first.state->serviceRouteNodes(), {}, {});
+  const auto mixed = projectCapacity(*first.state, first.state->serviceRoutes(),
+                                     first.state->serviceRouteNodes(),
+                                     instructionOveruse, serviceOveruse);
+  require(importedOnly.total == 0 && instructionOnly.total != 0 &&
+              serviceOnly.total != 0,
+          "System projection lost root ResourceUse capacity overuse");
+  require(routeOnly.total == first.state->routeCapacityOveruse() &&
+              mixed.total > routeOnly.total &&
+              mixed.total >= instructionOnly.total &&
+              mixed.total >= serviceOnly.total,
+          "System projection did not compose route and ResourceUse totals");
+
+  auto rejecting = buildProblem(resolved, 1, dataflow, system, constraints,
+                                partition, spatialMapping, store,
+                                /*admitTemporary=*/false);
+  auto rejected = SystemCandidateState::create(
+      rejecting.problem,
+      {first.state->threadChoices(), first.state->graphChoices(),
+       first.state->serviceRoutes(), first.state->serviceRouteNodes(),
+       first.state->serviceRouteSinks(), first.state->serviceTargets(),
+       first.state->instructionResourceUses(),
+       first.state->serviceResourceUses()});
+  require(!rejected, "non-admitting CandidateState accepted capacity overuse");
+  bool typedInfeasible = false;
+  llvm::Error rejectionRemaining = llvm::handleErrors(
+      rejected.takeError(), [&](const detail::SystemCandidateInfeasible &) {
+        typedInfeasible = true;
+      });
+  if (rejectionRemaining)
+    fail(llvm::toString(std::move(rejectionRemaining)));
+  require(typedInfeasible,
+          "capacity rejection lost its typed infeasibility cause");
+
   const auto witnesses = first.state->routeCapacityOveruseWitnesses();
   require(witnesses.size() == 1 &&
               witnesses.front().overuse == first.state->capacityOveruse() &&
@@ -501,6 +696,12 @@ void loom::pnr::test::verifySystemNegotiatedRoutingWorkflow(
     return result.candidate;
   };
   auto firstClosed = close(conflicted);
+  const auto retainedNonRoute = projectCapacity(
+      *firstClosed, firstClosed->serviceRoutes(),
+      firstClosed->serviceRouteNodes(), instructionOveruse, serviceOveruse);
+  require(firstClosed->routeCapacityOveruse() == 0 &&
+              retainedNonRoute.total != 0,
+          "final capacity fixture did not isolate non-route overuse");
   auto closedDraft =
       take(materializeSystemCandidateDraft(*firstClosed, context));
   require(std::holds_alternative<mapping::VerifiedSystemMappingBase>(
