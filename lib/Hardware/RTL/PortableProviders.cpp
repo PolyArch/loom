@@ -1,6 +1,7 @@
 #include "Hardware/RTL/PortableProviders.h"
 
 #include "Hardware/RTL/Providers/FixedVectorIntegerAddSub.h"
+#include "Hardware/RTL/Providers/FixedVectorIntegerCompareMinMax.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerMultiply.h"
 #include "Hardware/RTL/Providers/FixedVectorPackUnpack.h"
 #include "Hardware/RTL/Providers/FixedVectorShuffle.h"
@@ -54,6 +55,9 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
     return error;
   if (llvm::Error error =
           registerPortableFixedVectorIntegerAddSubProvider(candidate))
+    return error;
+  if (llvm::Error error =
+          registerPortableFixedVectorIntegerCompareMinMaxProvider(candidate))
     return error;
   if (llvm::Error error =
           registerPortableFixedVectorValueSelectProvider(candidate))

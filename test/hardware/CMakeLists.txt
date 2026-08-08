@@ -247,6 +247,21 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-fixed-vector-integer-compare-min-max-test
+    PortableFixedVectorIntegerCompareMinMaxTest.cpp
+  )
+
+  target_link_libraries(loom-portable-fixed-vector-integer-compare-min-max-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-fixed-vector-integer-multiply-test
     PortableFixedVectorIntegerMultiplyTest.cpp
   )

@@ -1,5 +1,6 @@
 #include "Hardware/RTL/PortableProviders.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerAddSub.h"
+#include "Hardware/RTL/Providers/FixedVectorIntegerCompareMinMax.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerMultiply.h"
 #include "Hardware/RTL/Providers/FixedVectorPackUnpack.h"
 #include "Hardware/RTL/Providers/FixedVectorShuffle.h"
@@ -89,6 +90,9 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
       loom::hardware::rtl::registerPortableFixedVectorIntegerAddSubProvider(
           registry));
   requireRegistration(
+      loom::hardware::rtl::
+          registerPortableFixedVectorIntegerCompareMinMaxProvider(registry));
+  requireRegistration(
       loom::hardware::rtl::registerPortableFixedVectorValueSelectProvider(
           registry));
   requireRegistration(
@@ -150,6 +154,7 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::LoopGate,
       ::fabric::ImplementationFamilyId::FixedVectorIntegerAddSub,
       ::fabric::ImplementationFamilyId::FixedVectorIntegerLogic,
+      ::fabric::ImplementationFamilyId::FixedVectorIntegerCompareMinMax,
       ::fabric::ImplementationFamilyId::FixedVectorValueSelect,
       ::fabric::ImplementationFamilyId::FixedVectorIntegerMultiply,
       ::fabric::ImplementationFamilyId::FixedVectorPack,

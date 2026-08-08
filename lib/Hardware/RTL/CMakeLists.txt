@@ -5,6 +5,7 @@ add_library(LoomHardwareRTL
   PhysicalOperation.cpp
   PortableProviders.cpp
   Providers/FixedVectorIntegerAddSub.cpp
+  Providers/FixedVectorIntegerCompareMinMax.cpp
   Providers/FixedVectorIntegerMultiply.cpp
   Providers/FixedVectorPackUnpack.cpp
   Providers/FixedVectorShuffle.cpp
