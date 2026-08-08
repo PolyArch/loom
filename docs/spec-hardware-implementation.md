@@ -525,6 +525,10 @@ key can disagree with it. Each nested reference retains its owner-defined
 canonical bytes. `Configuration` contains the exact cross-Artifact
 `ProgrammingUnitRef` defined by `docs/spec-configuration-deployment.md`; its
 ConfigurationABI Artifact reference must equal `configuration_abi_ref`.
+Canonical JSON spells the union as an object with exactly `kind` and `target`:
+`kind` is the displayed alternative name and `target` is the lowercase
+hexadecimal spelling of that alternative's complete nested canonical bytes.
+No alternative has a second JSON shape or alias.
 
 The interface catalog binds declared Fabric-visible boundaries, clocks,
 resets, configuration transports, memories, and external protocols to exact
