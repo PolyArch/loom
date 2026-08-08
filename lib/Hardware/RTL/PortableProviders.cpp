@@ -7,7 +7,10 @@
 #include "Hardware/RTL/Providers/FixedVectorShuffle.h"
 #include "Hardware/RTL/Providers/FixedVectorSliceAlignMerge.h"
 #include "Hardware/RTL/Providers/FixedVectorValueSelect.h"
+#include "Hardware/RTL/Providers/FloatSign.h"
+#include "Hardware/RTL/Providers/IntegerCountZeros.h"
 #include "Hardware/RTL/Providers/IntegerLogic.h"
+#include "Hardware/RTL/Providers/IntegerShift.h"
 #include "Hardware/RTL/Providers/LoopCarry.h"
 #include "Hardware/RTL/Providers/LoopGate.h"
 #include "Hardware/RTL/Providers/LoopInvariant.h"
@@ -17,6 +20,7 @@
 #include "Hardware/RTL/Providers/ScalarIntegerCast.h"
 #include "Hardware/RTL/Providers/ScalarIntegerCompareMinMax.h"
 #include "Hardware/RTL/Providers/ScalarIntegerMultiply.h"
+#include "Hardware/RTL/Providers/ScalarSignedIntegerDivRem.h"
 #include "Hardware/RTL/Providers/ScalarUnsignedIntegerDivRem.h"
 #include "Hardware/RTL/Providers/ScalarValueSelect.h"
 
@@ -32,6 +36,8 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
     return error;
   if (llvm::Error error = registerPortableIntegerLogicProviders(candidate))
     return error;
+  if (llvm::Error error = registerPortableIntegerShiftProviders(candidate))
+    return error;
   if (llvm::Error error =
           registerPortableScalarIntegerCompareMinMaxProvider(candidate))
     return error;
@@ -41,6 +47,8 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
     return error;
   if (llvm::Error error =
           registerPortableScalarBitReinterpretProvider(candidate))
+    return error;
+  if (llvm::Error error = registerPortableFloatSignProviders(candidate))
     return error;
   if (llvm::Error error =
           registerPortableScalarIntegerMultiplyProvider(candidate))
@@ -70,7 +78,12 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
   if (llvm::Error error = registerPortableFixedVectorUnpackProvider(candidate))
     return error;
   if (llvm::Error error =
+          registerPortableScalarSignedIntegerDivRemProvider(candidate))
+    return error;
+  if (llvm::Error error =
           registerPortableScalarUnsignedIntegerDivRemProvider(candidate))
+    return error;
+  if (llvm::Error error = registerPortableIntegerCountZerosProviders(candidate))
     return error;
   if (llvm::Error error =
           registerPortableFixedVectorSliceAlignMergeProvider(candidate))

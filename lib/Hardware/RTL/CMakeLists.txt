@@ -11,7 +11,10 @@ add_library(LoomHardwareRTL
   Providers/FixedVectorShuffle.cpp
   Providers/FixedVectorSliceAlignMerge.cpp
   Providers/FixedVectorValueSelect.cpp
+  Providers/FloatSign.cpp
+  Providers/IntegerCountZeros.cpp
   Providers/IntegerLogic.cpp
+  Providers/IntegerShift.cpp
   Providers/LoopCarry.cpp
   Providers/LoopGate.cpp
   Providers/LoopInvariant.cpp
@@ -22,6 +25,7 @@ add_library(LoomHardwareRTL
   Providers/ScalarIntegerCast.cpp
   Providers/ScalarIntegerCompareMinMax.cpp
   Providers/ScalarIntegerMultiply.cpp
+  Providers/ScalarSignedIntegerDivRem.cpp
   Providers/ScalarUnsignedIntegerDivRem.cpp
   Providers/ScalarValueSelect.cpp
   Specialization.cpp

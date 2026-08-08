@@ -6,7 +6,10 @@
 #include "Hardware/RTL/Providers/FixedVectorShuffle.h"
 #include "Hardware/RTL/Providers/FixedVectorSliceAlignMerge.h"
 #include "Hardware/RTL/Providers/FixedVectorValueSelect.h"
+#include "Hardware/RTL/Providers/FloatSign.h"
+#include "Hardware/RTL/Providers/IntegerCountZeros.h"
 #include "Hardware/RTL/Providers/IntegerLogic.h"
+#include "Hardware/RTL/Providers/IntegerShift.h"
 #include "Hardware/RTL/Providers/LoopCarry.h"
 #include "Hardware/RTL/Providers/LoopGate.h"
 #include "Hardware/RTL/Providers/LoopInvariant.h"
@@ -16,6 +19,7 @@
 #include "Hardware/RTL/Providers/ScalarIntegerCast.h"
 #include "Hardware/RTL/Providers/ScalarIntegerCompareMinMax.h"
 #include "Hardware/RTL/Providers/ScalarIntegerMultiply.h"
+#include "Hardware/RTL/Providers/ScalarSignedIntegerDivRem.h"
 #include "Hardware/RTL/Providers/ScalarUnsignedIntegerDivRem.h"
 #include "Hardware/RTL/Providers/ScalarValueSelect.h"
 
@@ -66,6 +70,8 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
   requireRegistration(
       loom::hardware::rtl::registerPortableIntegerLogicProviders(registry));
   requireRegistration(
+      loom::hardware::rtl::registerPortableIntegerShiftProviders(registry));
+  requireRegistration(
       loom::hardware::rtl::registerPortableScalarIntegerCompareMinMaxProvider(
           registry));
   requireRegistration(
@@ -75,6 +81,8 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
   requireRegistration(
       loom::hardware::rtl::registerPortableScalarBitReinterpretProvider(
           registry));
+  requireRegistration(
+      loom::hardware::rtl::registerPortableFloatSignProviders(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableScalarIntegerMultiplyProvider(
           registry));
@@ -103,7 +111,13 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
   requireRegistration(
       loom::hardware::rtl::registerPortableFixedVectorUnpackProvider(registry));
   requireRegistration(
+      loom::hardware::rtl::registerPortableScalarSignedIntegerDivRemProvider(
+          registry));
+  requireRegistration(
       loom::hardware::rtl::registerPortableScalarUnsignedIntegerDivRemProvider(
+          registry));
+  requireRegistration(
+      loom::hardware::rtl::registerPortableIntegerCountZerosProviders(
           registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableFixedVectorSliceAlignMergeProvider(
@@ -143,10 +157,12 @@ void aggregateRegistrationIsTheCoverageAuthority() {
   const std::vector<::fabric::ImplementationFamilyId> expectedFamilies = {
       ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
       ::fabric::ImplementationFamilyId::ScalarIntegerLogic,
+      ::fabric::ImplementationFamilyId::ScalarIntegerShift,
       ::fabric::ImplementationFamilyId::ScalarIntegerCompareMinMax,
       ::fabric::ImplementationFamilyId::ScalarValueSelect,
       ::fabric::ImplementationFamilyId::ScalarIntegerCast,
       ::fabric::ImplementationFamilyId::ScalarBitReinterpret,
+      ::fabric::ImplementationFamilyId::ScalarFloatSign,
       ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
       ::fabric::ImplementationFamilyId::ScalarFloatFma,
       ::fabric::ImplementationFamilyId::LoopCarry,
@@ -154,12 +170,17 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::LoopGate,
       ::fabric::ImplementationFamilyId::FixedVectorIntegerAddSub,
       ::fabric::ImplementationFamilyId::FixedVectorIntegerLogic,
+      ::fabric::ImplementationFamilyId::FixedVectorIntegerShift,
       ::fabric::ImplementationFamilyId::FixedVectorIntegerCompareMinMax,
       ::fabric::ImplementationFamilyId::FixedVectorValueSelect,
       ::fabric::ImplementationFamilyId::FixedVectorIntegerMultiply,
+      ::fabric::ImplementationFamilyId::FixedVectorFloatSign,
       ::fabric::ImplementationFamilyId::FixedVectorPack,
       ::fabric::ImplementationFamilyId::FixedVectorUnpack,
+      ::fabric::ImplementationFamilyId::ScalarSignedIntegerDivRem,
       ::fabric::ImplementationFamilyId::ScalarUnsignedIntegerDivRem,
+      ::fabric::ImplementationFamilyId::ScalarIntegerCountZeros,
+      ::fabric::ImplementationFamilyId::FixedVectorIntegerCountZeros,
       ::fabric::ImplementationFamilyId::FixedVectorSliceAlignMerge,
       ::fabric::ImplementationFamilyId::FixedVectorShuffle,
   };

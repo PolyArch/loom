@@ -187,6 +187,36 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-integer-shift-test
+    PortableIntegerShiftTest.cpp
+  )
+
+  target_link_libraries(loom-portable-integer-shift-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
+  add_executable(loom-portable-integer-count-zeros-test
+    PortableIntegerCountZerosTest.cpp
+  )
+
+  target_link_libraries(loom-portable-integer-count-zeros-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-scalar-integer-compare-min-max-test
     PortableScalarIntegerCompareMinMaxTest.cpp
   )
@@ -222,6 +252,21 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-scalar-unsigned-integer-div-rem-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
+  add_executable(loom-portable-scalar-signed-integer-div-rem-test
+    PortableScalarSignedIntegerDivRemTest.cpp
+  )
+
+  target_link_libraries(loom-portable-scalar-signed-integer-div-rem-test PRIVATE
     LoomHardwareConfigurationTestSupport
     LoomPortableProviderTestSupport
     LoomHardwareRTL
@@ -431,6 +476,21 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-scalar-float-fma-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
+  add_executable(loom-portable-float-sign-test
+    PortableFloatSignTest.cpp
+  )
+
+  target_link_libraries(loom-portable-float-sign-test PRIVATE
     LoomHardwareConfigurationTestSupport
     LoomPortableProviderTestSupport
     LoomHardwareRTL
