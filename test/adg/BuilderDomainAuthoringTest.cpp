@@ -29,8 +29,10 @@ using loom::adg::BoundaryResult;
 using loom::adg::DesignBuilder;
 using loom::adg::FifoResult;
 using loom::adg::FifoSpec;
+using loom::adg::FinalizedFabricDesign;
 using loom::adg::FuNode;
 using loom::adg::FuSpec;
+using loom::adg::LocalMemoryServiceSpec;
 using loom::adg::MemoryConnectivitySpec;
 using loom::adg::MemoryEngineSpec;
 using loom::adg::MemoryResult;
@@ -40,6 +42,7 @@ using loom::adg::ModuleDomainSlotHandle;
 using loom::adg::ModuleInstanceDomainSlotBinding;
 using loom::adg::PeSpec;
 using loom::adg::PortType;
+using loom::adg::SpatialCoreBuilder;
 using loom::adg::SpatialValue;
 using loom::adg::SwitchResult;
 
@@ -870,6 +873,188 @@ MemoryConnectivitySpec memoryConnectivity(llvm::StringRef test,
   return take(test, MemoryConnectivitySpec::create(std::move(declaration)));
 }
 
+enum class MemoryInternalRelation {
+  OperationDispatch,
+  SubordinateDispatch,
+  EngineTokenConnection,
+};
+
+llvm::Expected<FinalizedFabricDesign>
+buildMemoryInternalRelation(llvm::StringRef test,
+                            MemoryInternalRelation relation,
+                            std::optional<FabricClockResetKind> crossingKind) {
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const PortType bits0 = take(test, PortType::bits(0));
+  const PortType bits32 = take(test, PortType::bits(32));
+  const PortType memory32 =
+      take(test, PortType::memory({PortType::kDynamicExtent}, bits32));
+
+  std::vector<PortType> inputTypes;
+  switch (relation) {
+  case MemoryInternalRelation::OperationDispatch:
+    inputTypes = {memory32, bits32, bits0};
+    break;
+  case MemoryInternalRelation::SubordinateDispatch:
+    break;
+  case MemoryInternalRelation::EngineTokenConnection:
+    inputTypes = {memory32, bits32, bits0, bits32, bits0};
+    break;
+  }
+  SpatialCoreBuilder core = take(
+      test, design.createSpatialCore("memory-internal-domain", inputTypes, {}));
+  std::vector<SpatialValue> inputs;
+  inputs.reserve(inputTypes.size());
+  for (std::size_t ordinal = 0; ordinal < inputTypes.size(); ++ordinal)
+    inputs.push_back(take(test, core.input(ordinal)));
+
+  mlir::MLIRContext contractContext(mlir::MLIRContext::Threading::DISABLED);
+  std::optional<LocalMemoryServiceSpec> localService;
+  if (relation != MemoryInternalRelation::OperationDispatch)
+    localService =
+        take(test, LocalMemoryServiceSpec::create(
+                       4096, localMemoryContract(test, contractContext)));
+
+  llvm::Expected<MemorySpec> memorySpec = [&]() -> llvm::Expected<MemorySpec> {
+    if (relation == MemoryInternalRelation::OperationDispatch) {
+      ::fabric::MemoryConnectivityDeclaration connectivity;
+      ::fabric::MemoryOperationPortDispatchDeclaration port;
+      port.capabilityTargetDomains = {{managerMemoryTarget(0)}};
+      connectivity.operationPorts.push_back(std::move(port));
+      return MemorySpec::create(
+          {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
+          MemoryEngineSpec::spatial({loadPortDeclaration()}), std::nullopt,
+          take(test, MemoryConnectivitySpec::create(std::move(connectivity))));
+    }
+    if (relation == MemoryInternalRelation::SubordinateDispatch) {
+      ::fabric::MemoryConnectivityDeclaration connectivity;
+      ::fabric::MemorySubordinateDispatchDeclaration subordinate;
+      subordinate.maxExposedBindings = 1;
+      subordinate.targetDomain = {localMemoryTarget()};
+      connectivity.subordinateEndpoints.push_back(std::move(subordinate));
+      return MemorySpec::create(
+          {}, {memory32}, {}, {0}, std::nullopt, std::move(localService),
+          take(test, MemoryConnectivitySpec::create(std::move(connectivity))));
+    }
+
+    ::fabric::MemoryOperationPortDeclaration first = loadPortDeclaration();
+    first.endpointInventory = {0, 1, 4, 5};
+    for (::fabric::MemoryRoleEndpointBindingRecord &binding :
+         first.capabilityAlternatives.front().roleToEndpoint)
+      if (binding.endpointOrdinal >= 2)
+        binding.endpointOrdinal += 2;
+    ::fabric::MemoryOperationPortDeclaration second = loadPortDeclaration();
+    second.endpointInventory = {2, 3, 6, 7};
+    for (::fabric::MemoryRoleEndpointBindingRecord &binding :
+         second.capabilityAlternatives.front().roleToEndpoint)
+      binding.endpointOrdinal += binding.endpointOrdinal < 2 ? 2 : 4;
+
+    ::fabric::MemoryConnectivityDeclaration connectivity;
+    ::fabric::MemoryOperationPortDispatchDeclaration firstDispatch;
+    firstDispatch.capabilityTargetDomains = {{managerMemoryTarget(0)}};
+    connectivity.operationPorts.push_back(std::move(firstDispatch));
+    ::fabric::MemoryOperationPortDispatchDeclaration secondDispatch;
+    secondDispatch.capabilityTargetDomains = {{localMemoryTarget()}};
+    connectivity.operationPorts.push_back(std::move(secondDispatch));
+    connectivity.internalConnections.push_back({4, 2});
+    return MemorySpec::create(
+        {memory32, bits32, bits0, bits32, bits0},
+        {bits32, bits0, bits32, bits0}, {0}, {},
+        MemoryEngineSpec::spatial({std::move(first), std::move(second)}),
+        std::move(localService),
+        take(test, MemoryConnectivitySpec::create(std::move(connectivity))));
+  }();
+  if (!memorySpec)
+    return memorySpec.takeError();
+  MemoryResult memory =
+      take(test, core.addMemory(inputs, std::move(*memorySpec)));
+
+  const ModuleDomainSlotHandle firstClock =
+      take(test, core.declareDomainSlot(FabricClockResetKind::Clock));
+  const ModuleDomainSlotHandle secondClock =
+      crossingKind == FabricClockResetKind::Clock
+          ? take(test, core.declareDomainSlot(FabricClockResetKind::Clock))
+          : firstClock;
+  const ModuleDomainSlotHandle firstReset =
+      take(test, core.declareDomainSlot(FabricClockResetKind::Reset));
+  const ModuleDomainSlotHandle secondReset =
+      crossingKind == FabricClockResetKind::Reset
+          ? take(test, core.declareDomainSlot(FabricClockResetKind::Reset))
+          : firstReset;
+  const auto assign = [&](ModuleDomainMemberHandle member,
+                          const ModuleDomainSlotHandle &clock,
+                          const ModuleDomainSlotHandle &reset) {
+    if (llvm::Error error = core.assignDomainSlot(member, clock))
+      fail(test, llvm::toString(std::move(error)));
+    if (llvm::Error error = core.assignDomainSlot(member, reset))
+      fail(test, llvm::toString(std::move(error)));
+  };
+  for (std::size_t ordinal = 0; ordinal < inputTypes.size(); ++ordinal)
+    assign(take(test, core.inputDomainMember(ordinal)), firstClock, firstReset);
+  assign(memory.domainMember(), firstClock, firstReset);
+
+  switch (relation) {
+  case MemoryInternalRelation::OperationDispatch:
+    assign(take(test, memory.operationPortMember(0)), secondClock, secondReset);
+    break;
+  case MemoryInternalRelation::SubordinateDispatch:
+    assign(*memory.localServiceMember(), secondClock, secondReset);
+    break;
+  case MemoryInternalRelation::EngineTokenConnection:
+    assign(take(test, memory.operationPortMember(0)), firstClock, firstReset);
+    assign(take(test, memory.operationPortMember(1)), secondClock, secondReset);
+    assign(*memory.localServiceMember(), secondClock, secondReset);
+    break;
+  }
+
+  if (llvm::Error error = core.close({}))
+    return std::move(error);
+  return std::move(design).finalize();
+}
+
+void operationDispatchRemainsWithinOneSymbolicDomain() {
+  const llvm::StringRef test = __func__;
+  auto sameDomain = buildMemoryInternalRelation(
+      test, MemoryInternalRelation::OperationDispatch, std::nullopt);
+  if (!sameDomain)
+    fail(test, llvm::toString(sameDomain.takeError()));
+  for (FabricClockResetKind kind :
+       {FabricClockResetKind::Clock, FabricClockResetKind::Reset})
+    expectError(test,
+                buildMemoryInternalRelation(
+                    test, MemoryInternalRelation::OperationDispatch, kind),
+                "crosses symbolic Clock or Reset slots");
+}
+
+void subordinateDispatchRemainsWithinOneSymbolicDomain() {
+  const llvm::StringRef test = __func__;
+  auto sameDomain = buildMemoryInternalRelation(
+      test, MemoryInternalRelation::SubordinateDispatch, std::nullopt);
+  if (!sameDomain)
+    fail(test, llvm::toString(sameDomain.takeError()));
+  for (FabricClockResetKind kind :
+       {FabricClockResetKind::Clock, FabricClockResetKind::Reset})
+    expectError(test,
+                buildMemoryInternalRelation(
+                    test, MemoryInternalRelation::SubordinateDispatch, kind),
+                "crosses symbolic Clock or Reset slots");
+}
+
+void memoryEngineConnectionsRemainWithinOneSymbolicDomain() {
+  const llvm::StringRef test = __func__;
+  auto sameDomain = buildMemoryInternalRelation(
+      test, MemoryInternalRelation::EngineTokenConnection, std::nullopt);
+  if (!sameDomain)
+    fail(test, llvm::toString(sameDomain.takeError()));
+  for (FabricClockResetKind kind :
+       {FabricClockResetKind::Clock, FabricClockResetKind::Reset})
+    expectError(test,
+                buildMemoryInternalRelation(
+                    test, MemoryInternalRelation::EngineTokenConnection, kind),
+                "crosses symbolic Clock or Reset slots");
+}
+
 void memoryConnectionsRemainWithinOneSymbolicDomain() {
   const llvm::StringRef test = __func__;
   const auto build = [&](bool crossing) {
@@ -979,6 +1164,9 @@ void runDomainAuthoringTests() {
   failedInstantiationPreservesParentDomainAuthoring();
   moduleConnectionsRemainWithinOneSymbolicDomain();
   nestedConnectionsRemainWithinOneSymbolicDomain();
+  operationDispatchRemainsWithinOneSymbolicDomain();
+  subordinateDispatchRemainsWithinOneSymbolicDomain();
+  memoryEngineConnectionsRemainWithinOneSymbolicDomain();
   memoryConnectionsRemainWithinOneSymbolicDomain();
 }
 

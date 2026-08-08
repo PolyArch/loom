@@ -1068,10 +1068,13 @@ ParseResult YieldOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  // Stash the declared destination types as an attribute so the printer can
-  // emit per-value `to` clauses on round-trip and the verifier can compare
-  // them against the parent's declared result types.
-  if (!operands.empty()) {
+  // Preserve the complete destination inventory only when at least one `to`
+  // clause changes a connection type. The absent property is the unique form
+  // for an unrelaxed yield.
+  bool hasRelaxation = false;
+  for (auto [source, destination] : llvm::zip(sourceTypes, declaredTypes))
+    hasRelaxation |= source != destination;
+  if (hasRelaxation) {
     SmallVector<Attribute, 4> typeAttrs;
     typeAttrs.reserve(declaredTypes.size());
     for (Type t : declaredTypes)
@@ -1143,10 +1146,17 @@ LogicalResult YieldOp::verify() {
   auto declaredArr = (*this)->getAttrOfType<ArrayAttr>("declared_types");
   SmallVector<Type, 4> declared;
   declared.reserve(getValues().size());
-  if (declaredArr && declaredArr.size() == getValues().size()) {
-    for (Attribute a : declaredArr) {
-      auto ta = dyn_cast<TypeAttr>(a);
-      declared.push_back(ta ? ta.getValue() : Type{});
+  if (declaredArr) {
+    if (declaredArr.size() != getValues().size())
+      return emitOpError("'declared_types' count (")
+             << declaredArr.size() << ") must match yield value count ("
+             << getValues().size() << ")";
+    for (auto [index, attribute] : llvm::enumerate(declaredArr)) {
+      auto type = dyn_cast<TypeAttr>(attribute);
+      if (!type)
+        return emitOpError("'declared_types' member #")
+               << index << " must be a type attribute";
+      declared.push_back(type.getValue());
     }
   } else {
     for (Value v : getValues())

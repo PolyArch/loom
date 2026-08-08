@@ -799,13 +799,14 @@ def Fabric_YieldOp : Fabric_Op<"yield", [Terminator, Pure]> {
   // the allowed module port types when this yield closes a fabric.module
   // body, and !fabric.bits<W> when it closes a fabric.fu body. The op
   // accepts the union here; `verify` enforces the per-parent rule.
-  let arguments = (ins Variadic<Fabric_ModulePortType>:$values);
+  let arguments = (ins Variadic<Fabric_ModulePortType>:$values,
+      OptionalAttr<ArrayAttr>:$declared_types);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 
-  let builders = [OpBuilder<(ins), [{
-      build($_builder, $_state, ::mlir::ValueRange{});
+  let builders = [OpBuilder<(ins CArg<"::mlir::ValueRange", "{}">:$values), [{
+      build($_builder, $_state, values, ::mlir::ArrayAttr());
     }]>];
 }
 

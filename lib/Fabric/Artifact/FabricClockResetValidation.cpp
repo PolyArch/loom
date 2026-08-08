@@ -4,6 +4,8 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -109,6 +111,15 @@ moduleMember(const FabricMemoryEndpointOwnerRef &owner) {
         return invalid("Module memory attachment names a non-Module owner");
       },
       owner.payload);
+}
+
+llvm::Expected<FabricModuleDomainMemberRef>
+moduleMember(FabricMemoryOccurrenceRef memory,
+             const ::fabric::MemoryDispatchTarget &target) {
+  if (std::holds_alternative<::fabric::LocalMemoryDispatchTarget>(target))
+    return modulePhysicalMember(
+        LocalMemoryServiceRef(FabricMemoryServiceRef::local(memory)));
+  return modulePhysicalMember(memory);
 }
 
 llvm::Expected<FabricModuleDomainMemberRef>
@@ -228,6 +239,79 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
     if (llvm::Error error =
             requireSameModuleSlots(module, *requester, *provider))
       return error;
+  }
+  for (FabricMemoryOccurrenceRef memory : artifact.memoryOccurrences()) {
+    const ::fabric::MemoryConnectivityContractRecord *connectivity =
+        artifact.memoryConnectivity(memory);
+    if (!connectivity)
+      return invalid("Module memory occurrence has no connectivity contract");
+    llvm::ArrayRef<FabricMemoryOperationPortRef> operationPorts =
+        artifact.memoryOperationPorts(memory);
+    if (connectivity->operationPorts().size() != operationPorts.size())
+      return invalid("Module memory dispatch inventory is inconsistent");
+    for (auto [ordinal, dispatch] :
+         llvm::enumerate(connectivity->operationPorts())) {
+      auto source = modulePhysicalMember(operationPorts[ordinal]);
+      if (!source)
+        return source.takeError();
+      for (llvm::ArrayRef<::fabric::MemoryDispatchTarget> targets :
+           dispatch.capabilityTargetDomains)
+        for (const ::fabric::MemoryDispatchTarget &target : targets) {
+          auto destination = moduleMember(memory, target);
+          if (!destination)
+            return destination.takeError();
+          if (llvm::Error error =
+                  requireSameModuleSlots(module, *source, *destination))
+            return error;
+        }
+    }
+    auto subordinateSource = modulePhysicalMember(memory);
+    if (!subordinateSource)
+      return subordinateSource.takeError();
+    for (const ::fabric::MemorySubordinateDispatchDeclaration &dispatch :
+         connectivity->subordinateEndpoints())
+      for (const ::fabric::MemoryDispatchTarget &target :
+           dispatch.targetDomain) {
+        auto destination = moduleMember(memory, target);
+        if (!destination)
+          return destination.takeError();
+        if (llvm::Error error = requireSameModuleSlots(
+                module, *subordinateSource, *destination))
+          return error;
+      }
+    const auto endpointOwners = [&](FabricOrdinal endpoint)
+        -> llvm::Expected<llvm::SmallVector<FabricModuleDomainMemberRef, 2>> {
+      llvm::SmallVector<FabricModuleDomainMemberRef, 2> owners;
+      for (FabricMemoryOperationPortRef port : operationPorts) {
+        const MemoryOperationPortView *record =
+            artifact.memoryOperationPort(port);
+        if (!record)
+          return invalid("Module memory operation port cannot be resolved");
+        if (!llvm::is_contained(record->endpointInventory(), endpoint))
+          continue;
+        auto owner = modulePhysicalMember(port);
+        if (!owner)
+          return owner.takeError();
+        owners.push_back(std::move(*owner));
+      }
+      if (owners.empty())
+        return invalid("Module memory token endpoint has no operation port");
+      return owners;
+    };
+    for (const ::fabric::MemoryInternalConnectionDeclaration &connection :
+         connectivity->internalConnections()) {
+      auto sources = endpointOwners(connection.sourceEndpointOrdinal);
+      if (!sources)
+        return sources.takeError();
+      auto destinations = endpointOwners(connection.sinkEndpointOrdinal);
+      if (!destinations)
+        return destinations.takeError();
+      for (const FabricModuleDomainMemberRef &source : *sources)
+        for (const FabricModuleDomainMemberRef &destination : *destinations)
+          if (llvm::Error error =
+                  requireSameModuleSlots(module, source, destination))
+            return error;
+    }
   }
   for (const FabricPhysicalTraversalView &traversal :
        artifact.physicalTraversals()) {

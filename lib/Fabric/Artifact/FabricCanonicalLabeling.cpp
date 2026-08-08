@@ -1,7 +1,7 @@
 #include "FabricCanonicalLabeling.h"
 
 #include "Common/CanonicalRelation.h"
-#include "Dataflow/IR/OperationSchema.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/IR/FabricCanonicalEntity.h"
 #include "Fabric/IR/FabricOps.h"
 #include "FabricFuCapabilityDerivation.h"
@@ -123,53 +123,10 @@ void serializeAttribute(llvm::raw_ostream &stream, Attribute attribute,
 }
 
 llvm::Expected<std::string>
-fabricOpIntrinsic(::fabric::OpOp op,
-                  llvm::SmallVectorImpl<SymbolRefAttr> &symbols) {
-  (void)symbols;
-  std::optional<::fabric::ImplementationFamilyId> family =
-      op.getImplementationFamily();
-  if (!family)
-    return invalid("fabric.op has no implementation family");
-
-  std::vector<std::uint32_t> schemas;
-  schemas.reserve(op.getOpList().size());
-  for (Attribute attribute : op.getOpList()) {
-    auto symbol = dyn_cast<FlatSymbolRefAttr>(attribute);
-    if (!symbol)
-      return invalid("fabric.op has a non-symbol operation member");
-    std::optional<::dataflow::OperationSchemaId> schema =
-        ::dataflow::findOperationSchema(symbol.getValue());
-    if (!schema)
-      return invalid("fabric.op names an unregistered operation schema");
-    schemas.push_back(static_cast<std::uint32_t>(*schema));
-  }
-  llvm::sort(schemas);
-  if (std::adjacent_find(schemas.begin(), schemas.end()) != schemas.end())
-    return invalid("fabric.op has duplicate operation schemas");
-
-  std::string intrinsic = "FABRIC_OP\x1f";
-  appendU32(intrinsic, static_cast<std::uint32_t>(*family));
-  appendU64(intrinsic, schemas.size());
-  for (std::uint32_t schema : schemas)
-    appendU32(intrinsic, schema);
-
-  std::string parameterBytes;
-  llvm::raw_string_ostream parameterStream(parameterBytes);
-  llvm::SmallVector<SymbolRefAttr> ignored;
-  serializeAttribute(parameterStream, op.getHwParams(), ignored);
-  parameterStream.flush();
-  if (!ignored.empty())
-    return invalid("fabric.op hw_params contains a symbol reference");
-  appendU64(intrinsic, parameterBytes.size());
-  intrinsic.append(parameterBytes);
-  return intrinsic;
-}
-
-llvm::Expected<std::string>
 operationIntrinsic(Operation *op,
                    llvm::SmallVectorImpl<SymbolRefAttr> &symbols) {
   if (auto fabricOp = dyn_cast<::fabric::OpOp>(op))
-    return fabricOpIntrinsic(fabricOp, symbols);
+    return encodeFabricOpCanonicalIntrinsic(fabricOp);
 
   std::string intrinsic;
   llvm::raw_string_ostream stream(intrinsic);
@@ -716,6 +673,54 @@ private:
 };
 
 } // namespace
+
+llvm::Expected<std::string>
+encodeFabricOpCanonicalIntrinsic(::fabric::OpOp op) {
+  std::optional<::fabric::ImplementationFamilyId> family =
+      op.getImplementationFamily();
+  if (!family)
+    return invalid("fabric.op has no implementation family");
+
+  std::vector<std::vector<std::uint8_t>> schemaIdentities;
+  schemaIdentities.reserve(op.getOpList().size());
+  for (Attribute attribute : op.getOpList()) {
+    auto symbol = dyn_cast<FlatSymbolRefAttr>(attribute);
+    if (!symbol)
+      return invalid("fabric.op has a non-symbol operation member");
+    std::optional<::dataflow::OperationSchemaId> schema =
+        ::dataflow::findOperationSchema(symbol.getValue());
+    if (!schema)
+      return invalid("fabric.op names an unregistered operation schema");
+    auto identity = ::dataflow::encodeOperationSchemaId(*schema);
+    if (!identity)
+      return identity.takeError();
+    schemaIdentities.push_back(identity->bytes().vec());
+  }
+  llvm::sort(schemaIdentities);
+  if (std::adjacent_find(schemaIdentities.begin(), schemaIdentities.end()) !=
+      schemaIdentities.end())
+    return invalid("fabric.op has duplicate operation schemas");
+
+  std::string intrinsic = "FABRIC_OP\x1f";
+  appendU32(intrinsic, static_cast<std::uint32_t>(*family));
+  appendU64(intrinsic, schemaIdentities.size());
+  for (const std::vector<std::uint8_t> &identity : schemaIdentities) {
+    appendU64(intrinsic, identity.size());
+    intrinsic.append(reinterpret_cast<const char *>(identity.data()),
+                     identity.size());
+  }
+
+  std::string parameterBytes;
+  llvm::raw_string_ostream parameterStream(parameterBytes);
+  llvm::SmallVector<SymbolRefAttr> ignored;
+  serializeAttribute(parameterStream, op.getHwParams(), ignored);
+  parameterStream.flush();
+  if (!ignored.empty())
+    return invalid("fabric.op hw_params contains a symbol reference");
+  appendU64(intrinsic, parameterBytes.size());
+  intrinsic.append(parameterBytes);
+  return intrinsic;
+}
 
 llvm::Expected<FabricCanonicalLabeling>
 computeFabricModuleCanonicalLabeling(::fabric::ModuleOp root) {

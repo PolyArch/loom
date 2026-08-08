@@ -2,6 +2,7 @@
 #include "FabricModuleDomainMaterialization.h"
 #include "FabricModuleDomainNormalization.h"
 
+#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/IR/FabricCanonicalEntity.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
@@ -82,6 +83,105 @@ mlir::OwningOpRef<mlir::ModuleOp> parse(llvm::StringRef test,
   if (!module)
     fail(test, "unable to parse Fabric fixture");
   return module;
+}
+
+std::uint64_t readU64(llvm::StringRef test, llvm::StringRef bytes,
+                      std::size_t &offset) {
+  if (bytes.size() - std::min(bytes.size(), offset) < 8)
+    fail(test, "truncated fabric.op intrinsic");
+  std::uint64_t value = 0;
+  for (unsigned ordinal = 0; ordinal != 8; ++ordinal)
+    value = (value << 8) | static_cast<std::uint8_t>(bytes[offset + ordinal]);
+  offset += 8;
+  return value;
+}
+
+void fabricOpIntrinsicUsesPersistentSchemaIdentity() {
+  const llvm::StringRef test = __func__;
+  auto module = parse(test, R"mlir(
+    module {
+      fabric.module @root(%left: !fabric.bits<32>,
+                          %right: !fabric.bits<32>) {
+        %pe = fabric.pe [spatial]
+            (%pe_left = %left : !fabric.bits<32>,
+             %pe_right = %right : !fabric.bits<32>) -> !fabric.bits<32> {
+          %fu = fabric.fu
+              (%fu_left = %pe_left : !fabric.bits<32>,
+               %fu_right = %pe_right : !fabric.bits<32>) -> !fabric.bits<32> {
+            %result = fabric.op [@arith.subi, @arith.addi]
+                (%fu_left, %fu_right)
+                {implementation_family =
+                   #fabric.implementation_family<ScalarIntegerAddSub>,
+                 hw_params = {integer_widths = [32 : i32]}}
+                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %result : !fabric.bits<32>
+          }
+        }
+        fabric.yield
+      }
+    }
+  )mlir");
+  ::fabric::OpOp operation;
+  module->walk([&](::fabric::OpOp found) { operation = found; });
+  require(test, static_cast<bool>(operation), "fixture has no fabric.op");
+  auto intrinsic =
+      loom::fabric::detail::encodeFabricOpCanonicalIntrinsic(operation);
+  if (!intrinsic)
+    fail(test, llvm::toString(intrinsic.takeError()));
+
+  constexpr llvm::StringLiteral prefix = "FABRIC_OP\x1f";
+  require(test, llvm::StringRef(*intrinsic).starts_with(prefix),
+          "fabric.op intrinsic has the wrong domain");
+  std::size_t offset = prefix.size() + sizeof(std::uint32_t);
+  require(test, readU64(test, *intrinsic, offset) == 2,
+          "fabric.op intrinsic has the wrong schema count");
+
+  std::vector<std::vector<std::uint8_t>> identities;
+  for (dataflow::OperationSchemaId schema :
+       {dataflow::OperationSchemaId::ArithAddI,
+        dataflow::OperationSchemaId::ArithSubI}) {
+    auto identity = dataflow::encodeOperationSchemaId(schema);
+    if (!identity)
+      fail(test, llvm::toString(identity.takeError()));
+    identities.push_back(identity->bytes().vec());
+  }
+  llvm::sort(identities);
+  for (const std::vector<std::uint8_t> &identity : identities) {
+    const std::uint64_t size = readU64(test, *intrinsic, offset);
+    require(test, size == identity.size(),
+            "fabric.op intrinsic used a noncanonical schema identity length");
+    require(test, offset + size <= intrinsic->size(),
+            "fabric.op intrinsic schema identity is truncated");
+    llvm::StringRef actual(intrinsic->data() + offset, size);
+    llvm::StringRef expected(reinterpret_cast<const char *>(identity.data()),
+                             identity.size());
+    require(test, actual == expected,
+            "fabric.op intrinsic did not use the stable schema identity");
+    offset += size;
+  }
+}
+
+void yieldDefaultPropertyDoesNotChangeCanonicalIdentity() {
+  static constexpr llvm::StringLiteral custom = R"mlir(
+    module {
+      fabric.module @root(%value: !fabric.bits<32>) -> !fabric.bits<32> {
+        fabric.yield %value : !fabric.bits<32>
+      }
+    }
+  )mlir";
+  static constexpr llvm::StringLiteral builderEquivalent = R"mlir(
+    module {
+      fabric.module @root(%value: !fabric.bits<32>) -> !fabric.bits<32> {
+        "fabric.yield"(%value) : (!fabric.bits<32>) -> ()
+      }
+    }
+  )mlir";
+  const LabeledModule parsed = label(__func__, custom);
+  const LabeledModule built = label(__func__, builderEquivalent);
+  require(__func__,
+          parsed.labeling.relationBytes.bytes() ==
+              built.labeling.relationBytes.bytes(),
+          "default declared_types presence changed canonical identity");
 }
 
 std::string twoPeModule(llvm::StringRef rootName, bool reverse,
@@ -553,6 +653,8 @@ void fuTemplateIdentityExcludesOccurrenceDomains() {
 } // namespace
 
 int main() {
+  fabricOpIntrinsicUsesPersistentSchemaIdentity();
+  yieldDefaultPropertyDoesNotChangeCanonicalIdentity();
   equivalentHardwareHasOneCanonicalRelation();
   semanticDifferenceChangesCanonicalRelation();
   identicalFuDefinitionsShareOneTemplate();

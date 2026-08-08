@@ -70,10 +70,13 @@ loom::fabric::InstructionCoreMicroarchitecturalRealization
 outOfOrderMicroarchitecture(llvm::StringRef test);
 ::fabric::MemoryServiceContractRecord
 systemMemoryContract(llvm::StringRef test, mlir::MLIRContext &context);
+::fabric::MemoryServiceContractRecord
+localMemoryContract(llvm::StringRef test, mlir::MLIRContext &context);
 loom::fabric::CanonicalServiceCapabilitySet
 systemMemoryCapabilities(llvm::StringRef test,
                          loom::fabric::ServiceRateContractRecord serviceRate);
 ::fabric::MemoryOperationPortDeclaration loadPortDeclaration();
+::fabric::MemoryDispatchTarget localMemoryTarget();
 ::fabric::MemoryDispatchTarget managerMemoryTarget(std::uint64_t ordinal);
 
 void runBuilderTests();

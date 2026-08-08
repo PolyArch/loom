@@ -1,5 +1,6 @@
 #include "FabricModuleCanonicalPayload.h"
 
+#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/IR/FabricCanonicalEntity.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/ResourceContractRecord.h"
@@ -10,6 +11,11 @@
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <string>
+#include <vector>
 
 using namespace mlir;
 
@@ -33,6 +39,69 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "fabric_artifact_invalid: " + message);
 }
 
+llvm::Expected<ArrayAttr> canonicalOperationList(::fabric::OpOp operation) {
+  struct SchemaEntry {
+    std::vector<std::uint8_t> identity;
+    ::dataflow::OperationSchemaId schema;
+  };
+  llvm::SmallVector<SchemaEntry> schemas;
+  schemas.reserve(operation.getOpList().size());
+  for (Attribute attribute : operation.getOpList()) {
+    auto symbol = dyn_cast<FlatSymbolRefAttr>(attribute);
+    if (!symbol)
+      return invalid("fabric.op op_list contains a non-symbol member");
+    std::optional<::dataflow::OperationSchemaId> schema =
+        ::dataflow::findOperationSchema(symbol.getValue());
+    if (!schema)
+      return invalid("fabric.op op_list contains an unregistered schema");
+    auto identity = ::dataflow::encodeOperationSchemaId(*schema);
+    if (!identity)
+      return identity.takeError();
+    schemas.push_back({identity->bytes().vec(), *schema});
+  }
+  llvm::sort(schemas, [](const SchemaEntry &left, const SchemaEntry &right) {
+    return left.identity < right.identity;
+  });
+  if (std::adjacent_find(schemas.begin(), schemas.end(),
+                         [](const SchemaEntry &left, const SchemaEntry &right) {
+                           return left.identity == right.identity;
+                         }) != schemas.end())
+    return invalid("fabric.op op_list contains a duplicate schema");
+  llvm::SmallVector<Attribute> canonical;
+  canonical.reserve(schemas.size());
+  for (const SchemaEntry &entry : schemas)
+    canonical.push_back(FlatSymbolRefAttr::get(
+        operation.getContext(),
+        ::dataflow::operationSchemaSpelling(entry.schema)));
+  return ArrayAttr::get(operation.getContext(), canonical);
+}
+
+bool isCanonicalSupplementalAttribute(NamedAttribute attribute) {
+  llvm::StringRef name = attribute.getName().getValue();
+  if (name == ::fabric::kEntityIdAttrName ||
+      name == ::fabric::kFuTemplateIdAttrName ||
+      name == ::fabric::kMemoryEngineTemplateIdAttrName)
+    return isa<::fabric::EntityIdAttr>(attribute.getValue());
+  return name == ::fabric::kResourceContractRecordAttrName &&
+         isa<DenseI8ArrayAttr>(attribute.getValue());
+}
+
+llvm::Expected<bool> hasDeclaredYieldRelaxation(::fabric::YieldOp yield) {
+  ArrayAttr declared = yield.getDeclaredTypesAttr();
+  if (!declared)
+    return false;
+  if (declared.size() != yield.getValues().size())
+    return invalid("fabric.yield declared_types count is inconsistent");
+  bool hasRelaxation = false;
+  for (auto [ordinal, attribute] : llvm::enumerate(declared)) {
+    auto type = dyn_cast<TypeAttr>(attribute);
+    if (!type)
+      return invalid("fabric.yield declared_types contains a non-type member");
+    hasRelaxation |= type.getValue() != yield.getValues()[ordinal].getType();
+  }
+  return hasRelaxation;
+}
+
 } // namespace
 
 llvm::Error stripFabricModuleAuthoringState(::fabric::ModuleOp root) {
@@ -47,6 +116,24 @@ llvm::Error stripFabricModuleAuthoringState(::fabric::ModuleOp root) {
     operation->removeAttr("domain_assignments");
     if (!isa<::fabric::OpOp>(operation))
       operation->removeAttr(::fabric::kResourceContractRecordAttrName);
+
+    if (auto fabricOperation = dyn_cast<::fabric::OpOp>(operation)) {
+      auto canonical = canonicalOperationList(fabricOperation);
+      if (!canonical) {
+        result = canonical.takeError();
+        return WalkResult::interrupt();
+      }
+      fabricOperation.setOpListAttr(*canonical);
+    }
+    if (auto yield = dyn_cast<::fabric::YieldOp>(operation)) {
+      auto hasRelaxation = hasDeclaredYieldRelaxation(yield);
+      if (!hasRelaxation) {
+        result = hasRelaxation.takeError();
+        return WalkResult::interrupt();
+      }
+      if (!*hasRelaxation)
+        yield->removeAttr("declared_types");
+    }
 
     if (auto semantic =
             operation->getAttrOfType<BoolAttr>("coordinates_semantic");
@@ -89,9 +176,35 @@ llvm::Error validateCanonicalFabricModulePayload(::fabric::ModuleOp root) {
     AuthoringState,
     NamedDeclaration,
     CanonicalRelationCarrier,
+    OperationListOrder,
+    RedundantYieldDeclaration,
   };
   Violation violation = Violation::None;
+  llvm::Error validationError = llvm::Error::success();
+  std::string unregisteredAttribute;
   root->walk([&](Operation *operation) {
+    if (auto fabricOperation = dyn_cast<::fabric::OpOp>(operation)) {
+      auto canonical = canonicalOperationList(fabricOperation);
+      if (!canonical) {
+        validationError = canonical.takeError();
+        return WalkResult::interrupt();
+      }
+      if (*canonical != fabricOperation.getOpListAttr()) {
+        violation = Violation::OperationListOrder;
+        return WalkResult::interrupt();
+      }
+    }
+    if (auto yield = dyn_cast<::fabric::YieldOp>(operation)) {
+      auto hasRelaxation = hasDeclaredYieldRelaxation(yield);
+      if (!hasRelaxation) {
+        validationError = hasRelaxation.takeError();
+        return WalkResult::interrupt();
+      }
+      if (yield.getDeclaredTypesAttr() && !*hasRelaxation) {
+        violation = Violation::RedundantYieldDeclaration;
+        return WalkResult::interrupt();
+      }
+    }
     const bool misplacedModuleRelation =
         operation != root.getOperation() &&
         (operation->hasAttr("domain_slots") ||
@@ -114,14 +227,31 @@ llvm::Error validateCanonicalFabricModulePayload(::fabric::ModuleOp root) {
           violation = Violation::NamedDeclaration;
           return WalkResult::interrupt();
         }
+    for (NamedAttribute attribute : operation->getDiscardableAttrDictionary()) {
+      llvm::StringRef name = attribute.getName().getValue();
+      if (isCanonicalSupplementalAttribute(attribute))
+        continue;
+      unregisteredAttribute = name.str();
+      return WalkResult::interrupt();
+    }
     return WalkResult::advance();
   });
+  if (validationError)
+    return validationError;
+  if (!unregisteredAttribute.empty())
+    return invalid("canonical Module payload has an unregistered "
+                   "discardable attribute '" +
+                   unregisteredAttribute + "'");
   if (violation == Violation::AuthoringState)
     return invalid("canonical Module payload retains authoring-only state");
   if (violation == Violation::NamedDeclaration)
     return invalid("canonical Module payload retains a named declaration");
   if (violation == Violation::CanonicalRelationCarrier)
     return invalid("canonical relation is attached to a non-carrier");
+  if (violation == Violation::OperationListOrder)
+    return invalid("fabric.op op_list is not in canonical schema-ID order");
+  if (violation == Violation::RedundantYieldDeclaration)
+    return invalid("fabric.yield has redundant declared_types");
   return llvm::Error::success();
 }
 

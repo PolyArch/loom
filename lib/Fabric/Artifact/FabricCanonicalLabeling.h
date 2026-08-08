@@ -9,6 +9,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace mlir {
@@ -17,6 +18,7 @@ class Operation;
 
 namespace fabric {
 class ModuleOp;
+class OpOp;
 }
 
 namespace loom::fabric::detail {
@@ -61,6 +63,11 @@ struct FabricCanonicalLabeling {
       canonicalFuCapabilityDomainByOccurrence;
   std::vector<FabricModuleDomainSlotCarrier> moduleDomainSlots;
 };
+
+/// Encodes the intrinsic semantic identity of one fabric.op. Operation schema
+/// members use their registry-owned persistent identities.
+llvm::Expected<std::string>
+encodeFabricOpCanonicalIntrinsic(::fabric::OpOp operation);
 
 /// Computes the exact semantic labeling of one already elaborated, declaration-
 /// free Fabric Module root. The caller owns structural verification and must

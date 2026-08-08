@@ -1,4 +1,5 @@
 #include "Common/ArtifactStore.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Artifact/FabricClockResetValidation.h"
@@ -15,6 +16,7 @@
 
 #include "FabricArtifactBytecodeInternal.h"
 #include "FabricArtifactViewInternal.h"
+#include "FabricModuleCanonicalPayload.h"
 #include "FabricModuleViewBuilding.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -30,6 +32,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <string>
 #include <system_error>
@@ -265,6 +268,100 @@ void nonCanonicalFuNodeOrderIsRejected() {
                       loom::fabric::fabricArtifactSchema.version, identity},
                      store),
                  "canonical FU node order is stale");
+}
+
+void fabricOpSchemaInventoryIsCanonicalAndStrict() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module {
+      fabric.module @op_list(%left: !fabric.bits<32>,
+                             %right: !fabric.bits<32>)
+          -> !fabric.bits<32> {
+        %pe = fabric.pe [spatial]
+            (%pe_left = %left : !fabric.bits<32>,
+             %pe_right = %right : !fabric.bits<32>) -> !fabric.bits<32> {
+          %fu = fabric.fu
+              (%fu_left = %pe_left : !fabric.bits<32>,
+               %fu_right = %pe_right : !fabric.bits<32>) -> !fabric.bits<32> {
+            %sum = fabric.op [@arith.subi, @arith.addi] (%fu_left, %fu_right)
+              {implementation_family =
+                 #fabric.implementation_family<ScalarIntegerAddSub>,
+               hw_params = {integer_widths = [32 : i32]}}
+              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %sum : !fabric.bits<32>
+          }
+        }
+        fabric.yield %pe : !fabric.bits<32>
+      }
+    }
+  )mlir",
+                                                        &context());
+  if (!source)
+    fail(test, "unable to parse the operation-schema fixture");
+
+  const auto resourceBytes =
+      take(test, ::fabric::encodeResourceContractRecord(
+                     ::fabric::oneCycleElasticOperationResourceContract()));
+  std::vector<std::int8_t> signedResourceBytes;
+  for (std::uint8_t byte : resourceBytes)
+    signedResourceBytes.push_back(static_cast<std::int8_t>(byte));
+  source->walk([&](::fabric::OpOp operation) {
+    operation->setAttr(
+        ::fabric::kResourceContractRecordAttrName,
+        mlir::DenseI8ArrayAttr::get(source->getContext(), signedResourceBytes));
+  });
+
+  loom::fabric::FinalizedFabricRoot finalized =
+      take(test, loom::fabric::finalizeFabricRoot(root(test, *source), store));
+  loom::fabric::DecodedFabricArtifact decoded =
+      take(test, loom::fabric::decodeFabricArtifactEnvelope(
+                     finalized.canonicalBytes().bytes()));
+  auto parsed = take(test, loom::fabric::detail::parseFabricBytecodeModule(
+                               decoded.canonicalMlirBytecode));
+  ::fabric::OpOp operation;
+  root(test, parsed.module.get())->walk([&](::fabric::OpOp found) {
+    operation = found;
+  });
+  if (!operation || operation.getOpList().size() != 2)
+    fail(test, "canonical operation-schema inventory is incomplete");
+
+  std::optional<std::vector<std::uint8_t>> previous;
+  for (mlir::Attribute attribute : operation.getOpList()) {
+    auto symbol = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(attribute);
+    if (!symbol)
+      fail(test, "canonical operation-schema inventory is not symbolic");
+    auto schema = dataflow::findOperationSchema(symbol.getValue());
+    if (!schema)
+      fail(test, "canonical operation-schema inventory is not registered");
+    std::vector<std::uint8_t> identity =
+        take(test, dataflow::encodeOperationSchemaId(*schema)).bytes().vec();
+    if (previous && !(*previous < identity))
+      fail(test, "finalizer did not canonicalize op_list by schema identity");
+    previous = std::move(identity);
+  }
+
+  llvm::SmallVector<mlir::Attribute, 2> reversed(operation.getOpList().begin(),
+                                                 operation.getOpList().end());
+  std::reverse(reversed.begin(), reversed.end());
+  operation->setAttr("op_list",
+                     mlir::ArrayAttr::get(operation.getContext(), reversed));
+  decoded.canonicalMlirBytecode = take(
+      test,
+      loom::fabric::detail::writeCanonicalFabricBytecode(parsed.module.get()));
+  loom::CanonicalSemanticBytes malformed =
+      take(test, loom::fabric::encodeFabricArtifactEnvelope(
+                     loom::fabric::FabricRootKind::Module, {},
+                     decoded.canonicalMlirBytecode));
+  const loom::ArtifactIdentity identity =
+      take(test, store.put(loom::fabric::fabricArtifactSchema, malformed));
+  expectRejected(test,
+                 loom::fabric::importEntireFabricRoot(
+                     {loom::fabric::fabricArtifactSchema.identity.str(),
+                      loom::fabric::fabricArtifactSchema.version, identity},
+                     store),
+                 "fabric.op op_list is not in canonical schema-ID order");
 }
 
 void missingCanonicalFuCapabilityCarrierIsRejected() {
@@ -668,6 +765,154 @@ void authoringStateAndDeclarationsAreRejected() {
                  });
 }
 
+void unregisteredDiscardableAttributesAreRejected() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module {
+      fabric.module @unknown_attribute(%value: !fabric.bits<8>)
+          -> !fabric.bits<8> {
+        %fifo = fabric.fifo %value [max_depth = 2, bypassable = true]
+            : !fabric.bits<8>
+        fabric.yield %fifo : !fabric.bits<8>
+      }
+    }
+  )mlir",
+                                                        &context());
+  if (!source)
+    fail(test, "unable to parse the discardable-attribute fixture");
+  loom::fabric::FinalizedFabricRoot finalized =
+      take(test, loom::fabric::finalizeFabricRoot(root(test, *source), store));
+  loom::fabric::DecodedFabricArtifact decoded =
+      take(test, loom::fabric::decodeFabricArtifactEnvelope(
+                     finalized.canonicalBytes().bytes()));
+  auto shadowParsed =
+      take(test, loom::fabric::detail::parseFabricBytecodeModule(
+                     decoded.canonicalMlirBytecode));
+  ::fabric::ModuleOp shadowRoot = root(test, shadowParsed.module.get());
+  mlir::Operation *shadowedYield = shadowRoot.getBody().front().getTerminator();
+  shadowedYield->setDiscardableAttr(
+      "declared_types",
+      mlir::StringAttr::get(shadowRoot.getContext(), "not-an-array"));
+  llvm::Error shadowError =
+      loom::fabric::detail::validateCanonicalFabricModulePayload(shadowRoot);
+  if (!shadowError)
+    fail(test, "accepted a discardable shadow of an inherent property");
+  const std::string shadowMessage = llvm::toString(std::move(shadowError));
+  if (!llvm::StringRef(shadowMessage).contains("discardable attribute"))
+    fail(test, shadowMessage);
+
+  auto parsed = take(test, loom::fabric::detail::parseFabricBytecodeModule(
+                               decoded.canonicalMlirBytecode));
+  ::fabric::ModuleOp canonicalRoot = root(test, parsed.module.get());
+  canonicalRoot.getBody().front().getTerminator()->setAttr(
+      "review_marker", mlir::BoolAttr::get(canonicalRoot.getContext(), true));
+
+  decoded.canonicalMlirBytecode = take(
+      test,
+      loom::fabric::detail::writeCanonicalFabricBytecode(parsed.module.get()));
+  loom::CanonicalSemanticBytes malformed =
+      take(test, loom::fabric::encodeFabricArtifactEnvelope(
+                     loom::fabric::FabricRootKind::Module, {},
+                     decoded.canonicalMlirBytecode));
+  const loom::ArtifactIdentity identity =
+      take(test, store.put(loom::fabric::fabricArtifactSchema, malformed));
+  expectRejected(test,
+                 loom::fabric::importEntireFabricRoot(
+                     {loom::fabric::fabricArtifactSchema.identity.str(),
+                      loom::fabric::fabricArtifactSchema.version, identity},
+                     store),
+                 "canonical Module payload has an unregistered discardable "
+                 "attribute");
+
+  loom::fabric::DecodedFabricArtifact supplementalDecoded =
+      take(test, loom::fabric::decodeFabricArtifactEnvelope(
+                     finalized.canonicalBytes().bytes()));
+  auto malformedSupplemental =
+      take(test, loom::fabric::detail::parseFabricBytecodeModule(
+                     supplementalDecoded.canonicalMlirBytecode));
+  ::fabric::ModuleOp supplementalRoot =
+      root(test, malformedSupplemental.module.get());
+  supplementalRoot.getBody().front().getTerminator()->setDiscardableAttr(
+      ::fabric::kResourceContractRecordAttrName,
+      mlir::BoolAttr::get(supplementalRoot.getContext(), true));
+  const std::vector<std::uint8_t> supplementalBytecode =
+      take(test, loom::fabric::detail::writeCanonicalFabricBytecode(
+                     malformedSupplemental.module.get()));
+  loom::CanonicalSemanticBytes supplementalEnvelope =
+      take(test,
+           loom::fabric::encodeFabricArtifactEnvelope(
+               loom::fabric::FabricRootKind::Module, {}, supplementalBytecode));
+  const loom::ArtifactIdentity supplementalIdentity =
+      take(test,
+           store.put(loom::fabric::fabricArtifactSchema, supplementalEnvelope));
+  expectRejected(
+      test,
+      loom::fabric::importEntireFabricRoot(
+          {loom::fabric::fabricArtifactSchema.identity.str(),
+           loom::fabric::fabricArtifactSchema.version, supplementalIdentity},
+          store),
+      "canonical Module payload has an unregistered discardable "
+      "attribute");
+}
+
+void redundantYieldDeclarationsAreCanonicalizedAndRejected() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module {
+      fabric.module @yield_default(%value: !fabric.bits<8>)
+          -> !fabric.bits<8> {
+        %fifo = fabric.fifo %value [max_depth = 2, bypassable = true]
+            : !fabric.bits<8>
+        fabric.yield %fifo : !fabric.bits<8>
+      }
+    }
+  )mlir",
+                                                        &context());
+  if (!source)
+    fail(test, "unable to parse the yield-default fixture");
+  ::fabric::YieldOp authoredYield = mlir::cast<::fabric::YieldOp>(
+      root(test, *source).getBody().front().getTerminator());
+  authoredYield.setDeclaredTypesAttr(mlir::ArrayAttr::get(
+      source->getContext(),
+      {mlir::TypeAttr::get(authoredYield.getValues().front().getType())}));
+
+  loom::fabric::FinalizedFabricRoot finalized =
+      take(test, loom::fabric::finalizeFabricRoot(root(test, *source), store));
+  loom::fabric::DecodedFabricArtifact decoded =
+      take(test, loom::fabric::decodeFabricArtifactEnvelope(
+                     finalized.canonicalBytes().bytes()));
+  auto parsed = take(test, loom::fabric::detail::parseFabricBytecodeModule(
+                               decoded.canonicalMlirBytecode));
+  ::fabric::ModuleOp canonicalRoot = root(test, parsed.module.get());
+  ::fabric::YieldOp canonicalYield = mlir::cast<::fabric::YieldOp>(
+      canonicalRoot.getBody().front().getTerminator());
+  if (canonicalYield.getDeclaredTypesAttr())
+    fail(test, "finalizer retained a redundant declared_types property");
+
+  canonicalYield.setDeclaredTypesAttr(mlir::ArrayAttr::get(
+      canonicalRoot.getContext(),
+      {mlir::TypeAttr::get(canonicalYield.getValues().front().getType())}));
+  decoded.canonicalMlirBytecode = take(
+      test,
+      loom::fabric::detail::writeCanonicalFabricBytecode(parsed.module.get()));
+  loom::CanonicalSemanticBytes malformed =
+      take(test, loom::fabric::encodeFabricArtifactEnvelope(
+                     loom::fabric::FabricRootKind::Module, {},
+                     decoded.canonicalMlirBytecode));
+  const loom::ArtifactIdentity identity =
+      take(test, store.put(loom::fabric::fabricArtifactSchema, malformed));
+  expectRejected(test,
+                 loom::fabric::importEntireFabricRoot(
+                     {loom::fabric::fabricArtifactSchema.identity.str(),
+                      loom::fabric::fabricArtifactSchema.version, identity},
+                     store),
+                 "fabric.yield has redundant declared_types");
+}
+
 void memoryBoundaryConnectionCannotCrossModuleSlots() {
   const llvm::StringRef test = __func__;
   using namespace loom::fabric;
@@ -723,6 +968,9 @@ void memoryBoundaryConnectionCannotCrossModuleSlots() {
 int main() {
   nonCanonicalSlotPermutationIsRejected();
   nonCanonicalFuNodeOrderIsRejected();
+  unregisteredDiscardableAttributesAreRejected();
+  redundantYieldDeclarationsAreCanonicalizedAndRejected();
+  fabricOpSchemaInventoryIsCanonicalAndStrict();
   missingCanonicalFuCapabilityCarrierIsRejected();
   nonCanonicalModuleGraphOrderIsRejected();
   coordinatedStoredEntityIdPermutationIsRejected();

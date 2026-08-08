@@ -1684,10 +1684,14 @@ llvm::Error SpatialCoreBuilder::close(llvm::ArrayRef<SpatialValue> outputs) {
   auto yield =
       ::fabric::YieldOp::create(builder, root.operation.getLoc(), values);
   llvm::SmallVector<mlir::Attribute, 4> declaredTypes;
-  for (mlir::Type type : root.resultTypes)
+  bool hasRelaxation = false;
+  for (auto [value, type] : llvm::zip(values, root.resultTypes)) {
+    hasRelaxation |= value.getType() != type;
     declaredTypes.push_back(mlir::TypeAttr::get(type));
-  yield->setAttr("declared_types",
-                 mlir::ArrayAttr::get(&(*state)->context, declaredTypes));
+  }
+  if (hasRelaxation)
+    yield->setAttr("declared_types",
+                   mlir::ArrayAttr::get(&(*state)->context, declaredTypes));
   root.closed = true;
   return llvm::Error::success();
 }

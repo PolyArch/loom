@@ -31,6 +31,24 @@ fabric.module @m_yield_count_mismatch_missing()
 }
 
 // -----
+// A registered declared_types property must describe every yielded value.
+fabric.module @m_yield_declared_types_count(%a : !fabric.bits<32>)
+    -> (!fabric.bits<32>) {
+  // expected-error @+1 {{'declared_types' count (0) must match yield value count (1)}}
+  "fabric.yield"(%a) <{declared_types = []}>
+      : (!fabric.bits<32>) -> ()
+}
+
+// -----
+// Every member of declared_types must be a TypeAttr.
+fabric.module @m_yield_declared_types_member(%a : !fabric.bits<32>)
+    -> (!fabric.bits<32>) {
+  // expected-error @+1 {{'declared_types' member #0 must be a type attribute}}
+  "fabric.yield"(%a) <{declared_types = [32 : i32]}>
+      : (!fabric.bits<32>) -> ()
+}
+
+// -----
 // Yield type-kind mismatch: yielding a `bits_tag` value for a `bits` result.
 fabric.module @m_yield_kind_mismatch(%a : !fabric.bits_tag<8, 2>)
     -> (!fabric.bits<32>) {
