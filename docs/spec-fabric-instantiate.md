@@ -73,12 +73,14 @@ The ADG Builder's same-named `loom::adg` handle record is only an authoring
 input and must resolve mechanically to this `::fabric` owner record before
 Fabric finalization.
 
-The property is empty for every non-Module target and for a Module target with
-no slots. There is no omitted-property default, name matching, ordinal
-matching, connectivity inference, containment inheritance, or parent-wide
-Clock/Reset shortcut. The correspondence belongs only to this instance edge;
-it is not a persistent Fabric local reference or a second slot-assignment
-catalog.
+The property is empty only for a non-Module target. Fabric finalization first
+materializes an omitted Module relation, so every Module target has at least one
+Clock slot and one Reset slot and requires a complete binding relation. An
+omitted property on a Module target fails closed. There is no omitted-property
+default, name matching, ordinal matching, connectivity inference, containment
+inheritance, or parent-wide Clock/Reset shortcut. The correspondence belongs
+only to this instance edge; it is not a persistent Fabric local reference or a
+second slot-assignment catalog.
 
 ## Allowed instantiation sites and targets
 
@@ -264,8 +266,9 @@ templates remain declarations and do not themselves count as physical
 resources. Nested references resolve in the source template's symbol context
 before fresh occurrences are placed in the destination root.
 
-Before a Module boundary is removed, elaboration composes the callee's exact
-slot assignments with this instance's domain-slot correspondence. Every fresh
+Before a Module boundary is removed, elaboration materializes an omitted
+callee domain relation and then composes the callee's exact slot assignments
+with this instance's domain-slot correspondence. Every fresh
 child internal owner is assigned directly to the selected parent slot. A child
 boundary face obtains its effective parent slot through the same composition;
 the adjacent parent-side connection must have that same effective Clock and
@@ -333,6 +336,7 @@ rejection of a top-level instantiate, rejection of recursive or out-of-scope
 references, exact total child-to-parent Clock/Reset slot binding, two instances
 of one child with different bindings, many-to-one slot binding, transitive
 nested binding composition, equivalence between inline and instantiated forms,
+rejection of an empty Module binding,
 rejection of a missing, duplicate, wrong-kind, foreign, or out-of-range
 binding, preservation of a legal physical feedback cycle, rejection of an
 alias-only cycle, equivalent width-composition acceptance, and failure

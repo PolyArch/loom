@@ -149,6 +149,14 @@ fixture to restate the total single-domain relation would add repetition without
 expressing another hardware distinction; making the choice configurable would
 create a competing policy owner.
 
+The shorthand also removes an otherwise unsupported slotless Module category:
+every finalized Module has at least one Clock and one Reset slot. It does not
+erase the separate fact owned by a Module instance edge. That edge still binds
+every effective child slot explicitly, and a closed Builder exposes those slot
+handles without copying their meaning. Keeping the edge explicit prevents
+containment from becoming domain inheritance and allows one child definition to
+be reused under different parent correspondences.
+
 An SSA `SpatialValue` belongs only to the connectivity plane; making it also
 identify a physical owner would conflate two facts and fail for boundary faces
 or resources with several owners, such as a memory occurrence with operation

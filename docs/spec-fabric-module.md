@@ -59,7 +59,9 @@ Finalization materializes that relation before canonical bytes are written.
 The shorthand applies only when no slot, assignment, or instance binding was
 authored. Once any row is authored, the complete explicit relation is required
 and missing rows fail closed. Canonical and imported Modules therefore never
-carry an implicit or partial relation.
+carry an implicit or partial relation. Every finalized Module has at least one
+Clock slot and one Reset slot; an explicitly empty inventory is not a second
+canonical case.
 
 Every Module boundary face is assigned to exactly one Clock slot and exactly
 one Reset slot. Every `FabricModulePhysicalOwnerRef` is also assigned to exactly
@@ -607,7 +609,9 @@ of an unlisted body op, point-to-point fanout rejection, same-kind LSB width
 normalization, a required explicit tagged-domain boundary, complete symbolic
 Clock/Reset assignment, rejection of a missing or duplicate assignment,
 rejection of a hidden cross-slot connection, exact nested-Module slot
-composition, rejection of an incomplete or wrong-kind instance binding, and
+composition, identity equivalence between an omitted Module relation and its
+explicit single-domain rows, rejection of an incomplete or wrong-kind instance
+binding, and
 rejection of a manager import exported as a subordinate capability. Downstream
 consumers resolve the exact finalized Fabric artifact and typed module
 reference.

@@ -190,6 +190,8 @@ Clock and Reset construction follows the same thin typed boundary:
 ```text
 SpatialCoreBuilder::declareDomainSlot(Clock | Reset)
   -> Expected<ModuleDomainSlotHandle>
+SpatialCoreBuilder::domainSlots(Clock | Reset)
+  -> Expected<canonical range<ModuleDomainSlotHandle>>
 SpatialCoreBuilder::inputDomainMember(input ordinal)
   -> Expected<ModuleDomainMemberHandle>
 SpatialCoreBuilder::outputDomainMember(output ordinal)
@@ -270,23 +272,35 @@ roles to an untyped ordinal array, does not satisfy this contract.
 
 These calls elaborate directly into the Module slot/assignment and System
 domain-membership relations owned by Fabric. The Builder stores no shadow
-domain graph, applies no AccCore-wide inheritance, and supplies no implicit
-Clock or Reset default.
+domain graph and applies no AccCore-wide inheritance. An untouched domain
+relation delegates to Fabric's canonical single-domain shorthand. Any slot,
+assignment, or instance binding authored through the Builder selects the
+explicit path and must be complete.
+
+After a `SpatialCoreBuilder` is closed, `domainSlots` exposes owner-checked
+handles for its effective slot inventory, including the slots materialized by
+the canonical shorthand. The query owns no slot facts and does not change the
+relation published by Fabric. It lets an enclosing Module author the separate
+instance-edge correspondence without inferring child slots from names,
+ordinals, connectivity, or containment.
 
 The member and slot supplied to `assignDomainSlot` must belong to the same open
 Module. Stale or foreign handles, an invalid slot kind, and more than one
-assignment of the same kind for one member are rejected. Before the Module can
-close, every member exposed by its signature and resource topology has exactly
-one Clock assignment and exactly one Reset assignment. Slot zero is not a
-default, and connectivity, containment, parent assignment, or an omitted call
-cannot provide an assignment implicitly.
+assignment of the same kind for one member are rejected. If the relation is
+authored, then before the Module can close every member exposed by its signature
+and resource topology has exactly one Clock assignment and exactly one Reset
+assignment. Slot zero is not a default in that explicit path, and connectivity,
+containment, or parent assignment cannot provide an assignment implicitly. If
+the complete relation is untouched, close delegates to the canonical shorthand
+owned by `docs/spec-fabric-module.md`.
 
 For `instantiate`, each child handle must belong to `target` and each parent
 handle must belong to the receiving builder. The bindings must form the exact
 total same-kind correspondence required by `docs/spec-fabric-instantiate.md`.
-The two-argument overload is not retained for `loom.fabric 3.0`; a target with
-no slots is expressed by an explicit empty range rather than an implicit
-default.
+The target's effective handles come from `domainSlots`; this does not make its
+shorthand an instance-binding default. The two-argument overload is not
+retained for `loom.fabric 3.0`, and an empty binding range is invalid for every
+Module target.
 
 `ModuleDomainSlotHandle` is local to the open SpatialCoreBuilder and cannot
 cross root publication. Its position as a child or parent handle in one
