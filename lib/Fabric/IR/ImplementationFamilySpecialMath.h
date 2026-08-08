@@ -10,6 +10,21 @@
 
 namespace fabric::detail {
 
+bool ownsScalarSpecialMathBehaviorRelation(ImplementationFamilyId family);
+
+llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
+resolveScalarSpecialMathBehaviorDomain(
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
+    llvm::ArrayRef<std::uint32_t> physicalInputWidths,
+    llvm::ArrayRef<std::uint32_t> physicalResultWidths,
+    ::mlir::MLIRContext &context);
+
+llvm::Expected<::loom::CanonicalSemanticBytes> projectScalarSpecialMathBehavior(
+    ImplementationFamilyId family,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    llvm::ArrayRef<FiniteImplementationFamilyBehaviorPoint> domain);
+
 llvm::Expected<::loom::CanonicalSemanticBytes>
 encodeScalarSpecialMathSemanticConfiguration(
     ImplementationFamilyId family, const FamilyCapabilityParams &params,

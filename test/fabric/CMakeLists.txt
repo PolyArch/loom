@@ -226,6 +226,10 @@ add_executable(loom-fabric-special-math-implementation-family-test
   SpecialMathImplementationFamilyTest.cpp
 )
 
+target_include_directories(loom-fabric-special-math-implementation-family-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Fabric/IR
+)
+
 target_link_libraries(loom-fabric-special-math-implementation-family-test PRIVATE
   LoomFabricImplementationFamily
   MLIRDataflow

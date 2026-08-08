@@ -3,6 +3,7 @@
 #include "Common/SpecialMathAccuracy.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/IR/ImplementationFamily.h"
+#include "ImplementationFamilySpecialMath.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -13,6 +14,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <optional>
 #include <string>
 #include <utility>
@@ -514,15 +516,14 @@ bool checkBehaviorWitnesses(MLIRContext &context) {
   FamilyCapabilityParams multiValued = makeCapability(
       FloatFormatSet::get({FloatFormat::F32}), multiValuedBehavior(),
       SpecialMathAccuracyTier::CorrectlyRounded);
-  auto needsConfiguration = requiresSemanticConfigurationField(
-      ImplementationFamilyId::ScalarMathSin, multiValued,
-      {OperationSchemaId::MathSin}, 1, 1);
-  if (!needsConfiguration || *needsConfiguration) {
-    if (!needsConfiguration)
-      llvm::errs() << llvm::toString(needsConfiguration.takeError()) << '\n';
-    llvm::errs() << "static special-math behavior created a false field\n";
+  constexpr std::array inputWidths = {32U};
+  constexpr std::array resultWidths = {32U};
+  if (!expectFailure(fabric::detail::resolveScalarSpecialMathBehaviorDomain(
+                         ImplementationFamilyId::ScalarMathSin, multiValued,
+                         {OperationSchemaId::MathSin}, inputWidths,
+                         resultWidths, context),
+                     "rounding"))
     return false;
-  }
 
   FamilyCapabilityParams relaxedOnly = makeCapability(
       FloatFormatSet::get({FloatFormat::F32}), relaxedOnlyBehavior(),
@@ -603,6 +604,197 @@ bool checkPowBehavior(MLIRContext &context) {
   return true;
 }
 
+bool checkSealedBehaviorRelation(MLIRContext &context) {
+  constexpr std::array inputWidths = {64U};
+  constexpr std::array resultWidths = {64U};
+  constexpr std::array schemas = {OperationSchemaId::MathSin};
+  FamilyCapabilityParams multiFormat =
+      makeCapability(FloatFormatSet::get({FloatFormat::F32, FloatFormat::F64}),
+                     approximateBehavior(), SpecialMathAccuracyTier::Max2Ulp);
+  auto domain = fabric::detail::resolveScalarSpecialMathBehaviorDomain(
+      ImplementationFamilyId::ScalarMathSin, multiFormat, schemas, inputWidths,
+      resultWidths, context);
+  if (!domain || domain->size() != 2 ||
+      !domain->front().semanticConfiguration ||
+      !domain->back().semanticConfiguration) {
+    if (!domain)
+      llvm::errs() << llvm::toString(domain.takeError()) << '\n';
+    llvm::errs() << "sealed special-math relation lost its format quotient\n";
+    return false;
+  }
+  for (const FiniteImplementationFamilyBehaviorPoint &point : *domain) {
+    if (point.operandPorts != std::vector<std::uint64_t>{0} ||
+        point.resultPorts != std::vector<std::uint64_t>{0}) {
+      llvm::errs() << "special-math relation lost physical correspondence\n";
+      return false;
+    }
+  }
+  constexpr std::array<std::uint8_t, 113> expectedF32Key = {
+      'l', 'o', 'o', 'm', '.', 'f', 'a', 'b', 'r', 'i', 'c', '.', 'o', 'p', 'e',
+      'r', 'a', 't', 'i', 'o', 'n', '-', 'b', 'e', 'h', 'a', 'v', 'i', 'o', 'r',
+      '-', 'k', 'e', 'y', 0,   0,   0,   0,   1,   0,   0,   0,   0,   0,   0,
+      0,   13,  'S', 'c', 'a', 'l', 'a', 'r', 'M', 'a', 't', 'h', 'S', 'i', 'n',
+      0,   0,   0,   0,   0,   0,   0,   45,  'l', 'o', 'o', 'm', '.', 'd', 'a',
+      't', 'a', 'f', 'l', 'o', 'w', '.', 'c', 'a', 'n', 'o', 'n', 'i', 'c', 'a',
+      'l', '-', 't', 'y', 'p', 'e', 0,   0,   0,   0,   1,   0,   0,   0,   0,
+      0,   0,   0,   4,   0,   0,   0,   15};
+  if (!domain->front().semanticConfiguration->bytes().equals(expectedF32Key)) {
+    llvm::errs() << "special-math relation changed its canonical f32 key\n";
+    return false;
+  }
+
+  Type f32 = Float32Type::get(&context);
+  auto max2 = makeSinActor(
+      context, f32,
+      dataflow::SpecialMathPayload{arith::FastMathFlags::afn,
+                                   SpecialMathAccuracyTier::Max2Ulp});
+  auto max4 = makeSinActor(
+      context, f32,
+      dataflow::SpecialMathPayload{arith::FastMathFlags::afn,
+                                   SpecialMathAccuracyTier::Max4Ulp});
+  auto projectedMax2 = fabric::detail::projectScalarSpecialMathBehavior(
+      ImplementationFamilyId::ScalarMathSin, max2, *domain);
+  auto projectedMax4 = fabric::detail::projectScalarSpecialMathBehavior(
+      ImplementationFamilyId::ScalarMathSin, max4, *domain);
+  if (!projectedMax2 || !projectedMax4 ||
+      !projectedMax2->bytes().equals(projectedMax4->bytes())) {
+    if (!projectedMax2)
+      llvm::errs() << llvm::toString(projectedMax2.takeError()) << '\n';
+    if (!projectedMax4)
+      llvm::errs() << llvm::toString(projectedMax4.takeError()) << '\n';
+    llvm::errs() << "accuracy permission leaked into the sealed relation\n";
+    return false;
+  }
+
+  FamilyCapabilityParams singleton =
+      makeCapability(FloatFormatSet::get({FloatFormat::F32}),
+                     approximateBehavior(), SpecialMathAccuracyTier::Max2Ulp);
+  auto singletonDomain = fabric::detail::resolveScalarSpecialMathBehaviorDomain(
+      ImplementationFamilyId::ScalarMathSin, singleton, schemas, inputWidths,
+      resultWidths, context);
+  if (!singletonDomain || singletonDomain->size() != 1 ||
+      singletonDomain->front().semanticConfiguration) {
+    if (!singletonDomain)
+      llvm::errs() << llvm::toString(singletonDomain.takeError()) << '\n';
+    llvm::errs() << "singleton special-math relation did not collapse\n";
+    return false;
+  }
+
+  constexpr std::array duplicateSchemas = {OperationSchemaId::MathSin,
+                                           OperationSchemaId::MathSin};
+  if (!expectFailure(fabric::detail::resolveScalarSpecialMathBehaviorDomain(
+                         ImplementationFamilyId::ScalarMathSin, singleton,
+                         duplicateSchemas, inputWidths, resultWidths, context),
+                     "twice"))
+    return false;
+  constexpr std::array foreignSchemas = {OperationSchemaId::MathCos};
+  if (!expectFailure(fabric::detail::resolveScalarSpecialMathBehaviorDomain(
+                         ImplementationFamilyId::ScalarMathSin, singleton,
+                         foreignSchemas, inputWidths, resultWidths, context),
+                     "foreign"))
+    return false;
+  constexpr std::array narrowWidths = {16U};
+  if (!expectFailure(fabric::detail::resolveScalarSpecialMathBehaviorDomain(
+                         ImplementationFamilyId::ScalarMathSin, singleton,
+                         schemas, narrowWidths, resultWidths, context),
+                     "physically reachable"))
+    return false;
+
+  FloatBehaviorProfile orphanRounding = FloatBehaviorProfile::strictIEEE();
+  orphanRounding.roundingModes = RoundingModeSet::get(
+      {arith::RoundingMode::to_nearest_even, arith::RoundingMode::downward});
+  FamilyCapabilityParams invalidRounding =
+      makeCapability(FloatFormatSet::get({FloatFormat::F32}), orphanRounding,
+                     SpecialMathAccuracyTier::CorrectlyRounded);
+  if (!expectFailure(fabric::detail::resolveScalarSpecialMathBehaviorDomain(
+                         ImplementationFamilyId::ScalarMathSin, invalidRounding,
+                         schemas, inputWidths, resultWidths, context),
+                     "rounding"))
+    return false;
+  FamilyCapabilityParams downward = makeCapability(
+      FloatFormatSet::get({FloatFormat::F32}), downwardOnlyBehavior(),
+      SpecialMathAccuracyTier::CorrectlyRounded);
+  if (!expectFailure(fabric::detail::resolveScalarSpecialMathBehaviorDomain(
+                         ImplementationFamilyId::ScalarMathSin, downward,
+                         schemas, inputWidths, resultWidths, context),
+                     "rounding"))
+    return false;
+
+  FloatBehaviorProfile orphanNaN = FloatBehaviorProfile::strictIEEE();
+  orphanNaN.nanBehaviors = FloatNaNBehaviorSet::get(
+      {FloatNaNBehavior::IEEE, FloatNaNBehavior::NumberPreferred});
+  FamilyCapabilityParams invalidNaN =
+      makeCapability(FloatFormatSet::get({FloatFormat::F32}), orphanNaN,
+                     SpecialMathAccuracyTier::CorrectlyRounded);
+  if (!expectFailure(fabric::detail::resolveScalarSpecialMathBehaviorDomain(
+                         ImplementationFamilyId::ScalarMathSin, invalidNaN,
+                         schemas, inputWidths, resultWidths, context),
+                     "NaN"))
+    return false;
+
+  constexpr std::array expectedFamilies = {
+      ImplementationFamilyId::ScalarMathSin,
+      ImplementationFamilyId::ScalarMathCos,
+      ImplementationFamilyId::ScalarMathTan,
+      ImplementationFamilyId::ScalarMathSinh,
+      ImplementationFamilyId::ScalarMathCosh,
+      ImplementationFamilyId::ScalarMathTanh,
+      ImplementationFamilyId::ScalarMathExp,
+      ImplementationFamilyId::ScalarMathExp2,
+      ImplementationFamilyId::ScalarMathExpM1,
+      ImplementationFamilyId::ScalarMathLog,
+      ImplementationFamilyId::ScalarMathLog2,
+      ImplementationFamilyId::ScalarMathLog10,
+      ImplementationFamilyId::ScalarMathLog1p,
+      ImplementationFamilyId::ScalarMathFloor,
+      ImplementationFamilyId::ScalarMathCeil,
+      ImplementationFamilyId::ScalarMathRound,
+      ImplementationFamilyId::ScalarMathTrunc,
+      ImplementationFamilyId::ScalarMathRoundEven,
+      ImplementationFamilyId::ScalarMathSqrt,
+      ImplementationFamilyId::ScalarMathRsqrt,
+      ImplementationFamilyId::ScalarMathErf,
+      ImplementationFamilyId::ScalarMathPow};
+  for (std::uint32_t ordinal = 0; ordinal != implementationFamilyCount();
+       ++ordinal) {
+    const auto family = static_cast<ImplementationFamilyId>(ordinal);
+    const bool expected = llvm::is_contained(expectedFamilies, family);
+    if (fabric::detail::ownsScalarSpecialMathBehaviorRelation(family) !=
+        expected) {
+      llvm::errs() << "special-math relation owns the wrong family set\n";
+      return false;
+    }
+    if (!expected)
+      continue;
+    const auto &descriptor = implementationFamily(family);
+    if (descriptor.admittedSchemas.size() != 1) {
+      llvm::errs() << "special-math relation ownership is incomplete\n";
+      return false;
+    }
+    const unsigned inputCount =
+        descriptor.admittedSchemas.front() == OperationSchemaId::MathPowF ? 2
+                                                                          : 1;
+    std::vector<std::uint32_t> familyInputs(inputCount, 32U);
+    constexpr std::array familyResults = {32U};
+    auto familyDomain = fabric::detail::resolveScalarSpecialMathBehaviorDomain(
+        family, singleton, descriptor.admittedSchemas, familyInputs,
+        familyResults, context);
+    if (!familyDomain || familyDomain->size() != 1) {
+      if (!familyDomain)
+        llvm::errs() << llvm::toString(familyDomain.takeError()) << '\n';
+      llvm::errs() << "registered special-math family has no relation\n";
+      return false;
+    }
+    if (descriptor.admittedSchemas.front() == OperationSchemaId::MathPowF &&
+        familyDomain->front().operandPorts !=
+            std::vector<std::uint64_t>({0, 1})) {
+      llvm::errs() << "pow relation lost its ordered input correspondence\n";
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace
 
 int main() {
@@ -615,5 +807,6 @@ int main() {
   ok &= checkFiniteBehaviorDomain(context);
   ok &= checkBehaviorWitnesses(context);
   ok &= checkPowBehavior(context);
+  ok &= checkSealedBehaviorRelation(context);
   return ok ? 0 : 1;
 }
