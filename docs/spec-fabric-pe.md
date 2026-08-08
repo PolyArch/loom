@@ -385,8 +385,8 @@ InputSelection = Disconnected
                | Discard(FabricTransportEndpointRef)
 ```
 
-* `Route` selects one Input-role PE transport endpoint in `[0, K)` and connects
-  it to the FU input.
+* `Route` selects one of this PE's `K` Input-role transport endpoints and
+  connects it to the FU input.
 * `Discard` drains the selected PE input locally:
   the FU input's `valid` is forced low and the selected PE input's
   `ready` is forced high so upstream tokens dissipate.
@@ -419,7 +419,7 @@ OutputSelection = Disconnected
                 | Discard
 ```
 
-* `Route` selects one Output-role PE transport endpoint in `[0, L)`.
+* `Route` selects one of this PE's `L` Output-role transport endpoints.
 * `Discard` drains the FU output locally
   (FU output's `ready` is forced high; no PE output sees the value).
 * `Disconnected` severs the route and forces the FU output's `ready` low.
