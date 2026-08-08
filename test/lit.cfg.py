@@ -84,6 +84,7 @@ tools = [
     "loom-fabric-boundary-transfer-test",
     "loom-fabric-canonical-labeling-test",
     "loom-fabric-elaboration-alias-chain-test",
+    "loom-fabric-implementation-family-behavior-inventory-test",
     "loom-fabric-implementation-family-test",
     "loom-fabric-special-math-implementation-family-test",
     "loom-fabric-elaboration-api-test",

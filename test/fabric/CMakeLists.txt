@@ -222,6 +222,17 @@ target_link_libraries(loom-fabric-special-math-implementation-family-test PRIVAT
   LLVMSupport
 )
 
+add_executable(loom-fabric-implementation-family-behavior-inventory-test
+  ImplementationFamilyBehaviorInventoryTest.cpp
+)
+
+target_link_libraries(loom-fabric-implementation-family-behavior-inventory-test PRIVATE
+  LoomFabricImplementationFamily
+  MLIRDataflow
+  MLIRIR
+  LLVMSupport
+)
+
 add_executable(loom-fabric-persistent-ref-test
   PersistentRefTest.cpp
 )

@@ -1060,6 +1060,8 @@ bool checkFixedVectorStructuralAdmission(MLIRContext &context) {
                        shuffleLayout->blockWidthBitCount) == 31;
   ok &= readPackedBits(shuffleBytes, shuffleLayout->leftBlockCountBitOffset,
                        shuffleLayout->blockCountBitCount) == 1;
+  ok &= readPackedBits(shuffleBytes, shuffleLayout->resultBlockCountBitOffset,
+                       shuffleLayout->resultBlockCountBitCount) == 2;
   ok &= readPackedBits(shuffleBytes, shuffleLayout->selectorBitOffset,
                        shuffleLayout->selectorBitCount) == 0;
   ok &= readPackedBits(shuffleBytes,
@@ -1069,8 +1071,7 @@ bool checkFixedVectorStructuralAdmission(MLIRContext &context) {
   ok &= readPackedBits(shuffleBytes,
                        shuffleLayout->selectorBitOffset +
                            2 * shuffleLayout->selectorBitCount,
-                       shuffleLayout->selectorBitCount) ==
-        shuffleLayout->poisonSelector;
+                       shuffleLayout->selectorBitCount) == 0;
   if (!ok)
     llvm::errs() << "fixed-vector structural projection is incorrect\n";
   return ok;

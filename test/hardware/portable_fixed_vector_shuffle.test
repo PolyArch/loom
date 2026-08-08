@@ -9,14 +9,14 @@
 # RTL: module fixed_vector_shuffle
 # RTL: input [129:0] data_input_0
 # RTL: data_input_1,
-# RTL: input [22:0] config_0
+# RTL: input [25:0] config_0
 # RTL: output [129:0] data_output_0
 # RTL: >>
 # RTL: <<
 
 # SINGLE: module fixed_vector_shuffle
 # SINGLE: input [6:0] data_input_0
-# SINGLE: input [11:0] config_0
+# SINGLE: input [13:0] config_0
 # SINGLE: output [6:0] data_output_0
 # SINGLE-NOT: [-1:0]
 # SINGLE-NOT: 'x

@@ -502,7 +502,7 @@ void writeToolInputs(const std::filesystem::path &root, llvm::StringRef rtl,
   testbench << R"sv(module testbench;
   logic [129:0] data_input_0;
   logic [129:0] data_input_1;
-  logic [22:0] config_0;
+  logic [25:0] config_0;
   logic [129:0] data_output_0;
 
   fixed_vector_shuffle dut(.*);
@@ -579,9 +579,7 @@ void configuredBehaviorAndDeterminism(const std::filesystem::path &root) {
       take(test, ::fabric::resolveFixedVectorShuffleConfigurationLayout(
                      std::get<::fabric::FixedVectorShuffleParams>(
                          resolved.parameterizedCapability)));
-  require(test,
-          layout.encodedBitCount == 23 && layout.selectorCount == 5 &&
-              layout.poisonSelector == 7,
+  require(test, layout.encodedBitCount == 26 && layout.selectorCount == 5,
           "shuffle configuration layout did not match the shared owner");
 
   const std::vector<std::int64_t> firstMask = {4, 2, 4, -1};
@@ -631,6 +629,8 @@ void configuredBehaviorAndDeterminism(const std::filesystem::path &root) {
                      layout.blockWidthBitCount) == 23 &&
           readPackedBits(firstConfiguration, layout.leftBlockCountBitOffset,
                          layout.blockCountBitCount) == 2 &&
+          readPackedBits(firstConfiguration, layout.resultBlockCountBitOffset,
+                         layout.resultBlockCountBitCount) == 3 &&
           readPackedBits(firstConfiguration, layout.selectorBitOffset,
                          layout.selectorBitCount) == 4 &&
           readPackedBits(firstConfiguration,
@@ -638,7 +638,7 @@ void configuredBehaviorAndDeterminism(const std::filesystem::path &root) {
                          layout.selectorBitCount) == 2 &&
           readPackedBits(firstConfiguration,
                          layout.selectorBitOffset + 3 * layout.selectorBitCount,
-                         layout.selectorBitCount) == layout.poisonSelector,
+                         layout.selectorBitCount) == 0,
       "Fabric did not encode the expected shuffle geometry and selectors");
 
   const llvm::APInt firstLeft = operandBits(24, {0x010203, 0x111213, 0x212223});

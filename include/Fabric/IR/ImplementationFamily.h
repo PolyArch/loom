@@ -596,16 +596,16 @@ struct FixedVectorSliceAlignMergeConfigurationLayout final {
 };
 
 /// Bit positions of the direct semantic field for one shuffle resource.
-/// Selector slots beyond the actor result are encoded as Poison.
 struct FixedVectorShuffleConfigurationLayout final {
   std::uint32_t blockWidthBitOffset = 0;
   std::uint32_t blockWidthBitCount = 0;
   std::uint32_t leftBlockCountBitOffset = 0;
   std::uint32_t blockCountBitCount = 0;
+  std::uint32_t resultBlockCountBitOffset = 0;
+  std::uint32_t resultBlockCountBitCount = 0;
   std::uint32_t selectorBitOffset = 0;
   std::uint32_t selectorBitCount = 0;
   std::uint32_t selectorCount = 0;
-  std::uint32_t poisonSelector = 0;
   std::uint32_t encodedBitCount = 0;
 };
 
@@ -707,6 +707,122 @@ projectResolvedIndexTypes(
     const ::dataflow::CanonicalActorSchemaProjection &actor,
     unsigned indexBitWidth);
 
+enum class FabricOpSemanticFieldRelationKind : std::uint8_t {
+  None,
+  Finite,
+  Direct,
+};
+
+/// One unique configured hardware behavior in a finite concrete capability
+/// domain. The representative actor and ordered physical-port correspondence
+/// are a typed projection witness owned by Fabric.
+struct FiniteImplementationFamilyBehaviorPoint final {
+  FiniteImplementationFamilyBehaviorPoint(
+      ::dataflow::CanonicalActorSchemaProjection representativeActor,
+      std::optional<::loom::CanonicalSemanticBytes> semanticConfiguration,
+      std::optional<ResolvedIndexWidth> resolvedIndexWidth,
+      std::vector<std::uint64_t> operandPorts = {},
+      std::vector<std::uint64_t> resultPorts = {})
+      : representativeActor(std::move(representativeActor)),
+        semanticConfiguration(std::move(semanticConfiguration)),
+        resolvedIndexWidth(resolvedIndexWidth),
+        operandPorts(std::move(operandPorts)),
+        resultPorts(std::move(resultPorts)) {}
+
+  ::dataflow::CanonicalActorSchemaProjection representativeActor;
+  std::optional<::loom::CanonicalSemanticBytes> semanticConfiguration;
+  std::optional<ResolvedIndexWidth> resolvedIndexWidth;
+  std::vector<std::uint64_t> operandPorts;
+  std::vector<std::uint64_t> resultPorts;
+};
+
+/// The closed semantic-field relation derived for one concrete operation
+/// capability. Finite owns its canonical behavior points and Direct owns its
+/// exact typed layout. All projected values must pass this relation's domain
+/// validator before a consumer may use them.
+class FabricOpSemanticFieldRelation final {
+public:
+  FabricOpSemanticFieldRelationKind kind() const { return kind_; }
+  bool hasConfigurationField() const {
+    return kind_ != FabricOpSemanticFieldRelationKind::None;
+  }
+  std::optional<std::uint32_t> directEncodedBitCount() const {
+    return kind_ == FabricOpSemanticFieldRelationKind::Direct
+               ? std::optional<std::uint32_t>(directEncodedBitCount_)
+               : std::nullopt;
+  }
+  llvm::ArrayRef<FiniteImplementationFamilyBehaviorPoint>
+  finiteBehaviorDomain() const {
+    return finiteBehaviorDomain_;
+  }
+  const FixedVectorSliceAlignMergeConfigurationLayout *
+  fixedVectorSliceAlignMergeLayout() const {
+    return sliceLayout_ ? &*sliceLayout_ : nullptr;
+  }
+  const FixedVectorShuffleConfigurationLayout *
+  fixedVectorShuffleLayout() const {
+    return shuffleLayout_ ? &*shuffleLayout_ : nullptr;
+  }
+
+  llvm::Error validateSemanticValue(llvm::ArrayRef<std::uint8_t> value) const;
+
+  llvm::Expected<::loom::CanonicalSemanticBytes>
+  projectSemanticValue(const ::dataflow::CanonicalActorSchemaProjection &actor,
+                       llvm::ArrayRef<std::uint64_t> operandPorts,
+                       llvm::ArrayRef<std::uint64_t> resultPorts,
+                       std::optional<ResolvedIndexWidth> resolvedIndexWidth =
+                           std::nullopt) const;
+
+private:
+  FabricOpSemanticFieldRelation(
+      FabricOpSemanticFieldRelationKind kind, ImplementationFamilyId family,
+      FamilyCapabilityParams params,
+      std::vector<::dataflow::OperationSchemaId> enabledSchemas,
+      std::vector<std::uint32_t> physicalInputWidths,
+      std::vector<std::uint32_t> physicalResultWidths,
+      std::vector<FiniteImplementationFamilyBehaviorPoint> finiteBehaviorDomain,
+      std::uint32_t directEncodedBitCount,
+      std::optional<FixedVectorSliceAlignMergeConfigurationLayout> sliceLayout,
+      std::optional<FixedVectorShuffleConfigurationLayout> shuffleLayout)
+      : kind_(kind), family_(family), params_(std::move(params)),
+        enabledSchemas_(std::move(enabledSchemas)),
+        physicalInputWidths_(std::move(physicalInputWidths)),
+        physicalResultWidths_(std::move(physicalResultWidths)),
+        finiteBehaviorDomain_(std::move(finiteBehaviorDomain)),
+        directEncodedBitCount_(directEncodedBitCount),
+        sliceLayout_(std::move(sliceLayout)),
+        shuffleLayout_(std::move(shuffleLayout)) {}
+
+  FabricOpSemanticFieldRelationKind kind_;
+  ImplementationFamilyId family_;
+  FamilyCapabilityParams params_;
+  std::vector<::dataflow::OperationSchemaId> enabledSchemas_;
+  std::vector<std::uint32_t> physicalInputWidths_;
+  std::vector<std::uint32_t> physicalResultWidths_;
+  std::vector<FiniteImplementationFamilyBehaviorPoint> finiteBehaviorDomain_;
+  std::uint32_t directEncodedBitCount_ = 0;
+  std::optional<FixedVectorSliceAlignMergeConfigurationLayout> sliceLayout_;
+  std::optional<FixedVectorShuffleConfigurationLayout> shuffleLayout_;
+
+  friend llvm::Expected<FabricOpSemanticFieldRelation>
+  resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId, const FamilyCapabilityParams &,
+      llvm::ArrayRef<::dataflow::OperationSchemaId>,
+      llvm::ArrayRef<std::uint32_t>, llvm::ArrayRef<std::uint32_t>,
+      ::mlir::MLIRContext &);
+};
+
+/// Derives the one sealed semantic-field carrier from a concrete operation
+/// capability. This is the semantic owner used to derive field inventory;
+/// providers and ConfigurationABI only consume the result.
+llvm::Expected<FabricOpSemanticFieldRelation>
+resolveFabricOpSemanticFieldRelation(
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
+    llvm::ArrayRef<std::uint32_t> physicalInputWidths,
+    llvm::ArrayRef<std::uint32_t> physicalResultWidths,
+    ::mlir::MLIRContext &context);
+
 /// Whether one concrete operation relation needs a semantic configuration
 /// field to distinguish admitted hardware behaviors. The field is one
 /// composite typed value; ConfigurationABI alone later flattens it into
@@ -730,16 +846,6 @@ encodeImplementationFamilySemanticConfiguration(
     llvm::ArrayRef<std::uint64_t> operandPorts,
     llvm::ArrayRef<std::uint64_t> resultPorts,
     std::optional<ResolvedIndexWidth> resolvedIndexWidth = std::nullopt);
-
-/// One unique configured hardware behavior in a finite concrete capability
-/// domain. The representative actor is a typed witness owned by Fabric; the
-/// semantic value is present exactly when the capability exposes a semantic
-/// configuration field.
-struct FiniteImplementationFamilyBehaviorPoint final {
-  ::dataflow::CanonicalActorSchemaProjection representativeActor;
-  std::optional<::loom::CanonicalSemanticBytes> semanticConfiguration;
-  std::optional<ResolvedIndexWidth> resolvedIndexWidth;
-};
 
 /// Resolves a finite concrete capability into unique configured hardware
 /// behaviors. Providers consume this projection instead of reconstructing

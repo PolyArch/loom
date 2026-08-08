@@ -72,8 +72,12 @@ void materializeShuffleNetwork(
                            layout.leftBlockCountBitOffset,
                            layout.blockCountBitCount, arithmeticWidth),
       one, true);
-  mlir::Value poison =
-      constant(builder, location, arithmeticWidth, layout.poisonSelector);
+  mlir::Value resultBlockCount = circt::comb::AddOp::create(
+      builder, location,
+      extractConfiguration(builder, location, configuration,
+                           layout.resultBlockCountBitOffset,
+                           layout.resultBlockCountBitCount, arithmeticWidth),
+      one, true);
   mlir::Value blockMask = circt::comb::SubOp::create(
       builder, location,
       circt::comb::ShlOp::create(builder, location, one, blockWidth), one);
@@ -91,8 +95,9 @@ void materializeShuffleNetwork(
     mlir::Value fromLeft = circt::comb::ICmpOp::create(
         builder, location, circt::comb::ICmpPredicate::ult, selector,
         leftBlockCount, true);
-    mlir::Value defined = circt::comb::ICmpOp::create(
-        builder, location, circt::comb::ICmpPredicate::ult, selector, poison,
+    mlir::Value active = circt::comb::ICmpOp::create(
+        builder, location, circt::comb::ICmpPredicate::ult,
+        constant(builder, location, arithmeticWidth, ordinal), resultBlockCount,
         true);
     mlir::Value leftOffset = circt::comb::MulOp::create(
         builder, location, selector, blockWidth, true);
@@ -108,7 +113,7 @@ void materializeShuffleNetwork(
         builder, location, fromLeft, leftBlock, rightBlock, true);
     selected = circt::comb::AndOp::create(builder, location, selected,
                                           blockMask, true);
-    selected = circt::comb::MuxOp::create(builder, location, defined, selected,
+    selected = circt::comb::MuxOp::create(builder, location, active, selected,
                                           zero, true);
     mlir::Value destinationOffset = circt::comb::MulOp::create(
         builder, location, blockWidth,
