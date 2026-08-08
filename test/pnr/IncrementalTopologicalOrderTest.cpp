@@ -18,8 +18,8 @@
 
 namespace allocation_probe {
 
-bool enabled = false;
-std::size_t count = 0;
+thread_local bool enabled = false;
+thread_local std::size_t count = 0;
 
 void record() noexcept {
   if (enabled)
@@ -37,12 +37,30 @@ void *operator new(std::size_t size) {
 
 void *operator new[](std::size_t size) { return ::operator new(size); }
 
+void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
+  try {
+    return ::operator new(size);
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void *operator new[](std::size_t size, const std::nothrow_t &tag) noexcept {
+  return ::operator new(size, tag);
+}
+
 void operator delete(void *storage) noexcept { std::free(storage); }
 void operator delete[](void *storage) noexcept { ::operator delete(storage); }
 void operator delete(void *storage, std::size_t) noexcept {
   ::operator delete(storage);
 }
 void operator delete[](void *storage, std::size_t) noexcept {
+  ::operator delete(storage);
+}
+void operator delete(void *storage, const std::nothrow_t &) noexcept {
+  ::operator delete(storage);
+}
+void operator delete[](void *storage, const std::nothrow_t &) noexcept {
   ::operator delete(storage);
 }
 
@@ -60,6 +78,20 @@ void *operator new[](std::size_t size, std::align_val_t alignment) {
   return ::operator new(size, alignment);
 }
 
+void *operator new(std::size_t size, std::align_val_t alignment,
+                   const std::nothrow_t &) noexcept {
+  try {
+    return ::operator new(size, alignment);
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void *operator new[](std::size_t size, std::align_val_t alignment,
+                     const std::nothrow_t &tag) noexcept {
+  return ::operator new(size, alignment, tag);
+}
+
 void operator delete(void *storage, std::align_val_t) noexcept {
   std::free(storage);
 }
@@ -72,6 +104,14 @@ void operator delete(void *storage, std::size_t,
 }
 void operator delete[](void *storage, std::size_t,
                        std::align_val_t alignment) noexcept {
+  ::operator delete(storage, alignment);
+}
+void operator delete(void *storage, std::align_val_t alignment,
+                     const std::nothrow_t &) noexcept {
+  ::operator delete(storage, alignment);
+}
+void operator delete[](void *storage, std::align_val_t alignment,
+                       const std::nothrow_t &) noexcept {
   ::operator delete(storage, alignment);
 }
 
@@ -219,6 +259,21 @@ void requireValidOrder(const IncrementalTopologicalOrder &order) {
   }
 }
 
+void requireExactState(const IncrementalTopologicalOrder &order,
+                       const std::vector<bool> &active,
+                       const std::vector<PnrIndex> &expectedOrder,
+                       const std::vector<PnrIndex> &expectedRanks) {
+  for (PnrIndex arc = 0; arc < active.size(); ++arc)
+    if (order.isArcActive(arc) != active[arc])
+      fail("active arc bits diverge from the full-oracle model");
+  if (!std::equal(order.order().begin(), order.order().end(),
+                  expectedOrder.begin(), expectedOrder.end()) ||
+      !std::equal(order.ranks().begin(), order.ranks().end(),
+                  expectedRanks.begin(), expectedRanks.end()))
+    fail("rollback did not restore the exact order and rank state");
+  requireValidOrder(order);
+}
+
 void rankViolatingInsertionReordersOnlyTheAffectedState() {
   GraphFixture fixture;
   IncrementalTopologicalOrderHandle order =
@@ -306,6 +361,33 @@ void deletionRollbackRestoresTheCommittedGraph() {
   requireValidOrder(*order);
 }
 
+void mixedUpdateRollbackRestoresEveryJournal() {
+  const PotentialGraph graph =
+      buildOffsetGraph(128, {1, 14, 27, 40, 53, 66, 79, 92});
+  const std::vector<PnrIndex> initialArcs{0, 8};
+  std::vector<bool> active(graph.arcs.size(), false);
+  for (PnrIndex arc : initialArcs)
+    active[arc] = true;
+  IncrementalTopologicalOrderHandle order =
+      take(IncrementalTopologicalOrder::create(graph.view(), initialArcs));
+  IncrementalTopologicalScratch scratch;
+  requireSuccess(scratch.prepare(graph.view()));
+  const std::vector<PnrIndex> originalOrder(order->order().begin(),
+                                            order->order().end());
+  const std::vector<PnrIndex> originalRanks(order->ranks().begin(),
+                                            order->ranks().end());
+
+  auto transaction = take(order->beginTransaction(scratch));
+  requireSuccess(transaction.removeArc(0));
+  if (!take(transaction.insertArc(1)) || !take(transaction.insertArc(16)))
+    fail("mixed journal fixture unexpectedly formed a cycle");
+  requireSuccess(transaction.removeArc(16));
+  if (!take(transaction.insertArc(0)))
+    fail("mixed journal fixture could not restore its removed arc");
+  transaction.rollback();
+  requireExactState(*order, active, originalOrder, originalRanks);
+}
+
 void randomizedUpdatesAgreeWithFullKahn() {
   const PotentialGraph graph =
       buildOffsetGraph(128, {1, 14, 27, 40, 53, 66, 79, 92});
@@ -319,6 +401,10 @@ void randomizedUpdatesAgreeWithFullKahn() {
   for (std::size_t operation = 0; operation < 4096; ++operation) {
     const PnrIndex arc =
         static_cast<PnrIndex>(words.next() % graph.arcs.size());
+    const std::vector<PnrIndex> originalOrder(order->order().begin(),
+                                              order->order().end());
+    const std::vector<PnrIndex> originalRanks(order->ranks().begin(),
+                                              order->ranks().end());
     auto transaction = take(order->beginTransaction(scratch));
     if (active[arc]) {
       requireSuccess(transaction.removeArc(arc));
@@ -328,6 +414,7 @@ void randomizedUpdatesAgreeWithFullKahn() {
         active[arc] = false;
       } else {
         transaction.rollback();
+        requireExactState(*order, active, originalOrder, originalRanks);
       }
     } else {
       active[arc] = true;
@@ -340,15 +427,20 @@ void randomizedUpdatesAgreeWithFullKahn() {
           fail("cycle rejection omitted its deterministic witness");
         transaction.rollback();
         active[arc] = false;
+        requireExactState(*order, active, originalOrder, originalRanks);
       } else if ((words.next() & 7U) == 0) {
         transaction.rollback();
         active[arc] = false;
+        requireExactState(*order, active, originalOrder, originalRanks);
       } else {
         requireSuccess(transaction.commit());
       }
     }
     if (!fullKahnIsAcyclic(graph, active))
       fail("committed randomized graph is cyclic under full Kahn");
+    for (PnrIndex selectedArc = 0; selectedArc < active.size(); ++selectedArc)
+      if (order->isArcActive(selectedArc) != active[selectedArc])
+        fail("randomized active arc bits diverge from the full-oracle model");
     requireValidOrder(*order);
   }
 }
@@ -360,13 +452,25 @@ std::int64_t median(std::vector<std::int64_t> samples) {
   return samples[samples.size() / 2];
 }
 
-std::vector<PnrIndex> benchmarkBatch(std::size_t sample) {
+std::vector<PnrIndex> benchmarkBatch(const PotentialGraph &graph,
+                                     std::size_t sample) {
   std::vector<PnrIndex> arcs;
   arcs.reserve(32);
-  const PnrIndex base = static_cast<PnrIndex>(100 + sample * 137);
+  PnrIndex source = static_cast<PnrIndex>(101 + sample * 137 * 2);
+  if ((source & 1U) == 0)
+    ++source;
   for (PnrIndex local = 0; local < 32; ++local) {
-    const PnrIndex source = base + local * 17;
-    arcs.push_back(source * 5 + 4);
+    const PnrIndex selectedSource = source + local * 2;
+    const PnrIndex begin = graph.adjacencyOffsets[selectedSource];
+    const PnrIndex end = graph.adjacencyOffsets[selectedSource + 1];
+    const auto found =
+        std::find_if(graph.arcs.begin() + begin, graph.arcs.begin() + end,
+                     [&](FrozenSpatialHandshakeArc arc) {
+                       return arc.destination + 1 == selectedSource;
+                     });
+    if (found == graph.arcs.begin() + end)
+      fail("pinned benchmark lost its rank-violating arc");
+    arcs.push_back(static_cast<PnrIndex>(found - graph.arcs.begin()));
   }
   return arcs;
 }
@@ -390,34 +494,72 @@ void applyRemovalBatch(IncrementalTopologicalOrder &order,
   requireSuccess(transaction.commit());
 }
 
+void requireReorderedBatch(const IncrementalTopologicalOrder &order,
+                           const PotentialGraph &graph,
+                           const std::vector<PnrIndex> &arcs) {
+  for (PnrIndex arc : arcs) {
+    const FrozenSpatialHandshakeArc endpoints = graph.arcs[arc];
+    if (endpoints.source <= endpoints.destination)
+      fail("pinned batch contains a rank-respecting potential arc");
+    if (order.rank(endpoints.source) >= order.rank(endpoints.destination))
+      fail("bounded repair did not reorder a rank-violating insertion");
+  }
+}
+
 void pinnedScaleBenchmarkMeetsNativeContract() {
   constexpr PnrIndex nodeCount = 10000;
   constexpr std::size_t potentialArcCount = 50000;
-  const PotentialGraph graph = buildOffsetGraph(nodeCount, {1, 2, 3, 4, 5});
+  PotentialGraph graph;
+  graph.nodeCount = nodeCount;
+  graph.adjacencyOffsets.reserve(nodeCount + 1);
+  graph.adjacencyOffsets.push_back(0);
+  for (PnrIndex source = 0; source < nodeCount; ++source) {
+    std::vector<PnrIndex> destinations;
+    destinations.reserve(5);
+    if ((source & 1U) != 0)
+      destinations.push_back(source - 1);
+    const PnrIndex forwardCount = (source & 1U) != 0 ? 4 : 5;
+    for (PnrIndex offset = 1; offset <= forwardCount; ++offset)
+      destinations.push_back((source + offset) % nodeCount);
+    std::sort(destinations.begin(), destinations.end());
+    for (PnrIndex destination : destinations)
+      graph.arcs.push_back({source, destination});
+    graph.adjacencyOffsets.push_back(static_cast<PnrIndex>(graph.arcs.size()));
+  }
+  std::vector<PnrIndex> reverseCounts(nodeCount, 0);
+  for (FrozenSpatialHandshakeArc arc : graph.arcs)
+    ++reverseCounts[arc.destination];
+  graph.reverseAdjacencyOffsets.reserve(nodeCount + 1);
+  graph.reverseAdjacencyOffsets.push_back(0);
+  for (PnrIndex count : reverseCounts)
+    graph.reverseAdjacencyOffsets.push_back(
+        graph.reverseAdjacencyOffsets.back() + count);
+  graph.reverseArcOrdinals.resize(graph.arcs.size());
+  std::vector<PnrIndex> reverseCursors(graph.reverseAdjacencyOffsets.begin(),
+                                       graph.reverseAdjacencyOffsets.end() - 1);
+  for (PnrIndex arc = 0; arc < graph.arcs.size(); ++arc)
+    graph.reverseArcOrdinals[reverseCursors[graph.arcs[arc].destination]++] =
+        arc;
   if (graph.arcs.size() != potentialArcCount)
     fail("pinned benchmark does not contain exactly 50,000 potential arcs");
 
-  std::vector<PnrIndex> initiallyActive;
-  initiallyActive.reserve(nodeCount - 5);
-  for (PnrIndex source = 0; source < nodeCount - 5; ++source)
-    initiallyActive.push_back(source * 5);
-
   IncrementalTopologicalOrderHandle order =
-      take(IncrementalTopologicalOrder::create(graph.view(), initiallyActive));
+      take(IncrementalTopologicalOrder::create(graph.view(), {}));
   IncrementalTopologicalScratch scratch;
   requireSuccess(scratch.prepare(graph.view()));
   const std::size_t retainedBytes = scratch.retainedStorageBytes();
 
   for (std::size_t sample = 0; sample < 5; ++sample) {
-    const std::vector<PnrIndex> arcs = benchmarkBatch(sample);
+    const std::vector<PnrIndex> arcs = benchmarkBatch(graph, sample);
     applyInsertionBatch(*order, scratch, arcs);
     applyRemovalBatch(*order, scratch, arcs);
   }
 
-  const std::vector<PnrIndex> allocationProbeArcs = benchmarkBatch(5);
+  const std::vector<PnrIndex> allocationProbeArcs = benchmarkBatch(graph, 5);
   allocation_probe::count = 0;
   allocation_probe::enabled = true;
   applyInsertionBatch(*order, scratch, allocationProbeArcs);
+  requireReorderedBatch(*order, graph, allocationProbeArcs);
   applyRemovalBatch(*order, scratch, allocationProbeArcs);
   allocation_probe::enabled = false;
   if (allocation_probe::count != 0)
@@ -430,7 +572,7 @@ void pinnedScaleBenchmarkMeetsNativeContract() {
   incrementalSamples.reserve(25);
   fullSamples.reserve(25);
   for (std::size_t sample = 0; sample < 25; ++sample) {
-    const std::vector<PnrIndex> arcs = benchmarkBatch(sample + 6);
+    const std::vector<PnrIndex> arcs = benchmarkBatch(graph, sample + 6);
     const auto incrementalBegin = std::chrono::steady_clock::now();
     applyInsertionBatch(*order, scratch, arcs);
     const auto incrementalEnd = std::chrono::steady_clock::now();
@@ -466,6 +608,7 @@ int main() {
   rankViolatingInsertionReordersOnlyTheAffectedState();
   cycleWitnessAndRollbackAreDeterministic();
   deletionRollbackRestoresTheCommittedGraph();
+  mixedUpdateRollbackRestoresEveryJournal();
   randomizedUpdatesAgreeWithFullKahn();
   pinnedScaleBenchmarkMeetsNativeContract();
   return 0;
