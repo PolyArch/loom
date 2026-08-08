@@ -520,48 +520,44 @@ llvm::Error SystemCandidateState::verify() const {
   return llvm::Error::success();
 }
 
+namespace {
+
+template <typename Solve>
 llvm::Expected<InitializedSystemCandidate>
-loom::pnr::initializeCanonicalSystemCandidate(
-    FrozenSystemPnrProblemHandle problem) {
-  if (!problem)
-    return invalid("FrozenSystemPnrProblem owner is null");
-  detail::InitializerRelationSolver solver(*problem->initializerRelations_);
+solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
+  detail::InitializerRelationSolver solver(problem->initializerRelations());
   SystemCandidateStateHandle accepted;
   std::uint64_t endpointExpansions = 0;
-  auto solved = solver.solveCanonical(
-      problem->config()
-          .policy()
-          .search.initializer.assignmentAttemptLimitPerSeed,
+  const auto validate =
       [&](llvm::ArrayRef<PnrIndex> choices) -> llvm::Expected<bool> {
-        const std::size_t threadCount = problem->threadDecisions().size();
-        std::uint64_t candidateEndpointExpansions = 0;
-        auto candidate = initializeSystemCandidate(
-            problem, choices.take_front(threadCount),
-            choices.drop_front(threadCount), &candidateEndpointExpansions);
-        if (candidateEndpointExpansions >
-            std::numeric_limits<std::uint64_t>::max() - endpointExpansions)
-          return llvm::createStringError(
-              std::make_error_code(std::errc::value_too_large),
-              "System initializer endpoint expansion accounting overflow");
-        endpointExpansions += candidateEndpointExpansions;
-        if (candidate) {
-          accepted = std::move(*candidate);
-          return true;
-        }
-        bool infeasible = false;
-        llvm::Error remaining =
-            llvm::handleErrors(candidate.takeError(),
-                               [&](const detail::SystemCandidateInfeasible &) {
-                                 infeasible = true;
-                               });
-        if (remaining)
-          return std::move(remaining);
-        if (!infeasible)
-          return llvm::createStringError(
-              llvm::inconvertibleErrorCode(),
-              "System candidate rejection lost its cause");
-        return false;
-      });
+    const std::size_t threadCount = problem->threadDecisions().size();
+    std::uint64_t candidateEndpointExpansions = 0;
+    auto candidate = initializeSystemCandidate(
+        problem, choices.take_front(threadCount),
+        choices.drop_front(threadCount), &candidateEndpointExpansions);
+    if (candidateEndpointExpansions >
+        std::numeric_limits<std::uint64_t>::max() - endpointExpansions)
+      return llvm::createStringError(
+          std::make_error_code(std::errc::value_too_large),
+          "System initializer endpoint expansion accounting overflow");
+    endpointExpansions += candidateEndpointExpansions;
+    if (candidate) {
+      accepted = std::move(*candidate);
+      return true;
+    }
+    bool infeasible = false;
+    llvm::Error remaining = llvm::handleErrors(
+        candidate.takeError(),
+        [&](const detail::SystemCandidateInfeasible &) { infeasible = true; });
+    if (remaining)
+      return std::move(remaining);
+    if (!infeasible)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "System candidate rejection lost its cause");
+    return false;
+  };
+  auto solved = solve(solver, validate);
   if (!solved)
     return initializationFailure(
         solved.takeError(), solver.assignmentAttempts(), endpointExpansions);
@@ -572,6 +568,55 @@ loom::pnr::initializeCanonicalSystemCandidate(
         "initializer accepted no System candidate");
   return InitializedSystemCandidate{
       std::move(accepted), solved->assignmentAttempts, endpointExpansions};
+}
+
+} // namespace
+
+llvm::Expected<InitializedSystemCandidate>
+loom::pnr::initializeCanonicalSystemCandidate(
+    FrozenSystemPnrProblemHandle problem) {
+  return initializeSystemCandidateAttempt(std::move(problem), 0);
+}
+
+llvm::Expected<InitializedSystemCandidate>
+loom::pnr::initializeSystemCandidateAttempt(
+    FrozenSystemPnrProblemHandle problem, std::uint32_t attemptOrdinal) {
+  if (!problem)
+    return invalid("FrozenSystemPnrProblem owner is null");
+  const auto &policy = problem->config().policy();
+  if (attemptOrdinal >= policy.search.initializer.seedAttemptCount)
+    return invalid("System initializer attempt ordinal is out of range");
+  return solveSystemCandidate(
+      problem, [&](detail::InitializerRelationSolver &solver,
+                   auto validateCompleteAssignment) {
+        if (attemptOrdinal == 0)
+          return solver.solveCanonical(
+              policy.search.initializer.assignmentAttemptLimitPerSeed,
+              validateCompleteAssignment);
+        auto stream = DeterministicPnrRandomStream::create(
+            policy.determinism.masterSeed, attemptOrdinal,
+            PnrRandomStreamPurpose::InitializerDiversification);
+        return solver.solveDiversified(
+            policy.search.initializer.assignmentAttemptLimitPerSeed, stream,
+            validateCompleteAssignment);
+      });
+}
+
+llvm::Expected<InitializedSystemCandidate>
+loom::pnr::initializeSystemCandidateWithFixedChoices(
+    FrozenSystemPnrProblemHandle problem,
+    llvm::ArrayRef<PnrIndex> fixedChoices) {
+  if (!problem)
+    return invalid("FrozenSystemPnrProblem owner is null");
+  return solveSystemCandidate(
+      problem, [&](detail::InitializerRelationSolver &solver,
+                   auto validateCompleteAssignment) {
+        return solver.solveCanonicalWithFixedChoices(
+            problem->config()
+                .policy()
+                .search.initializer.assignmentAttemptLimitPerSeed,
+            fixedChoices, validateCompleteAssignment);
+      });
 }
 
 llvm::Expected<SystemCandidateStateHandle>

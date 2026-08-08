@@ -5,6 +5,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialPnrProblem.h"
+#include "PnR/System/SystemCandidateState.h"
 
 #include "llvm/Support/ErrorHandling.h"
 
@@ -12,7 +13,9 @@
 #include <array>
 #include <limits>
 #include <map>
+#include <set>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 using namespace loom;
@@ -40,6 +43,21 @@ constexpr std::array<MappingMeasureDescriptor, mappingMeasureKindCount>
 llvm::Error objectiveError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "mapping_objective_invalid: " + message);
+}
+
+llvm::Error unavailable(llvm::StringRef source) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::operation_not_supported),
+      "objective_unavailable: required Mapping objective source '%s' is "
+      "absent",
+      source.str().c_str());
+}
+
+llvm::Error invalidObjectiveReference(llvm::StringRef detail) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument),
+      "dse_objective_invalid: selected Mapping %s reference is out of range",
+      detail.str().c_str());
 }
 
 llvm::Error checkedAdd(std::uint64_t &value, std::uint64_t increment,
@@ -133,6 +151,183 @@ loom::pnr::spatialMappingMeasureValue(const SpatialCandidateState &candidate,
     return candidate.totalSelectedTraversalClaim();
   }
   llvm_unreachable("unknown Mapping measure kind");
+}
+
+llvm::Expected<std::uint64_t>
+loom::pnr::systemMappingViolationValue(const SystemCandidateState &candidate,
+                                       ResolvedPnrViolationKind kind) {
+  switch (kind) {
+  case ResolvedPnrViolationKind::UnroutedObligation:
+  case ResolvedPnrViolationKind::CapacityOveruse:
+  case ResolvedPnrViolationKind::TagUnassigned:
+  case ResolvedPnrViolationKind::TagConflict:
+    return 0;
+  case ResolvedPnrViolationKind::HardProgressViolation:
+    switch (candidate.problem().progressClosure().kind) {
+    case ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet:
+      return 0;
+    case ::loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet:
+      return 1;
+    case ::loom::mapping::MappingProgressClosureKind::ProofNotEstablished:
+      return llvm::createStringError(
+          std::make_error_code(std::errc::operation_not_supported),
+          "proof_not_established: System progress closure is unavailable");
+    }
+    llvm_unreachable("unknown System progress closure kind");
+  }
+  llvm_unreachable("unknown Mapping violation kind");
+}
+
+llvm::Expected<std::uint64_t>
+loom::pnr::systemMappingMeasureValue(const SystemCandidateState &candidate,
+                                     MappingMeasureKind kind) {
+  if (kind != MappingMeasureKind::TotalSelectedTraversalClaim)
+    llvm_unreachable("unknown Mapping measure kind");
+  const FrozenEndpointRoutingTopology &topology =
+      candidate.problem().routingTopology();
+  std::uint64_t total = 0;
+  for (const SystemServiceRouteSelection &route : candidate.serviceRoutes()) {
+    std::set<std::pair<PnrIndex, PnrIndex>> selectedClaims;
+    for (const SystemServiceRouteNodeSelection &node :
+         candidate.serviceRouteNodes().slice(route.nodeOffset,
+                                             route.nodeCount)) {
+      if (node.incomingTraversal == getInvalidPnrIndex())
+        continue;
+      if (node.incomingTraversal >= topology.traversals().size())
+        return objectiveError("System candidate has a foreign traversal");
+      const EndpointRoutingTraversal &traversal =
+          topology.traversals()[node.incomingTraversal];
+      if (traversal.capacityClaimOffset > topology.capacityClaims().size() ||
+          traversal.capacityClaimCount >
+              topology.capacityClaims().size() - traversal.capacityClaimOffset)
+        return objectiveError("System traversal has an invalid claim range");
+      for (const EndpointRoutingCapacityClaim &claim :
+           topology.capacityClaims().slice(traversal.capacityClaimOffset,
+                                           traversal.capacityClaimCount)) {
+        if (!selectedClaims.emplace(claim.activation, claim.cell).second)
+          continue;
+        if (llvm::Error error = checkedAdd(
+                total, claim.qCost, "System total selected traversal claim"))
+          return std::move(error);
+      }
+    }
+  }
+  return total;
+}
+
+llvm::Expected<MappingObjectiveProgram>
+MappingObjectiveProgram::get(const ResolvedObjectiveCatalogs &catalogs,
+                             const ResolvedPnrObjectiveSelection &selection) {
+  static_assert(resolvedPnrViolationKindCount <= 64);
+  static_assert(mappingMeasureKindCount <= 64);
+  auto program = dse::ObjectiveProgram::get(catalogs);
+  if (!program)
+    return program.takeError();
+  if (selection.selectedTotalOrdering >= program->totalOrderingCount())
+    return invalidObjectiveReference("total ordering");
+  if (selection.selectedSearchEnergy >= program->weightedLevelCount())
+    return invalidObjectiveReference("search energy");
+
+  std::uint64_t selectedViolations = 0;
+  std::uint64_t selectedMeasures = 0;
+  const auto violations = mappingViolationDescriptors();
+  for (const ResolvedObjectiveDimension &dimension : catalogs.dimensions) {
+    if (const auto *source =
+            std::get_if<ResolvedMappingViolationObjectiveSource>(
+                &dimension.source)) {
+      const std::uint32_t ordinal = static_cast<std::uint32_t>(source->kind);
+      if (ordinal >= violations.size() ||
+          !spatialMappingViolationAvailable(source->kind))
+        return unavailable(ordinal < violations.size()
+                               ? violations[ordinal].spelling
+                               : llvm::StringRef("Mapping violation"));
+      selectedViolations |= UINT64_C(1) << ordinal;
+      continue;
+    }
+    if (const auto *source = std::get_if<ResolvedMappingMeasureObjectiveSource>(
+            &dimension.source)) {
+      if (source->ordinal >= mappingMeasureKindCount)
+        return unavailable("Mapping measure");
+      selectedMeasures |= UINT64_C(1) << source->ordinal;
+      continue;
+    }
+    return unavailable("Evaluation metric interaction");
+  }
+  return MappingObjectiveProgram(
+      std::move(*program), selectedViolations, selectedMeasures,
+      selection.selectedTotalOrdering, selection.selectedSearchEnergy);
+}
+
+llvm::Expected<dse::ObjectiveVector> MappingObjectiveProgram::evaluate(
+    const SpatialCandidateState &candidate) const {
+  std::array<std::uint64_t, resolvedPnrViolationKindCount> violations{};
+  for (std::uint32_t ordinal = 0; ordinal != violations.size(); ++ordinal) {
+    if ((selectedViolations_ & (UINT64_C(1) << ordinal)) == 0)
+      continue;
+    auto value = spatialMappingViolationValue(
+        candidate, static_cast<ResolvedPnrViolationKind>(ordinal));
+    if (!value)
+      return value.takeError();
+    violations[ordinal] = *value;
+  }
+  std::array<std::uint64_t, mappingMeasureKindCount> measures{};
+  for (std::uint32_t ordinal = 0; ordinal != measures.size(); ++ordinal)
+    if ((selectedMeasures_ & (UINT64_C(1) << ordinal)) != 0)
+      measures[ordinal] = spatialMappingMeasureValue(
+          candidate, static_cast<MappingMeasureKind>(ordinal));
+  dse::ObjectiveVector result = program_.makeVector();
+  if (llvm::Error error = program_.evaluate({violations, measures, {}}, result))
+    return std::move(error);
+  return result;
+}
+
+llvm::Expected<dse::ObjectiveVector>
+MappingObjectiveProgram::evaluate(const SystemCandidateState &candidate) const {
+  std::array<std::uint64_t, resolvedPnrViolationKindCount> violations{};
+  for (std::uint32_t ordinal = 0; ordinal != violations.size(); ++ordinal) {
+    if ((selectedViolations_ & (UINT64_C(1) << ordinal)) == 0)
+      continue;
+    auto value = systemMappingViolationValue(
+        candidate, static_cast<ResolvedPnrViolationKind>(ordinal));
+    if (!value)
+      return value.takeError();
+    violations[ordinal] = *value;
+  }
+  std::array<std::uint64_t, mappingMeasureKindCount> measures{};
+  for (std::uint32_t ordinal = 0; ordinal != measures.size(); ++ordinal) {
+    if ((selectedMeasures_ & (UINT64_C(1) << ordinal)) == 0)
+      continue;
+    auto value = systemMappingMeasureValue(
+        candidate, static_cast<MappingMeasureKind>(ordinal));
+    if (!value)
+      return value.takeError();
+    measures[ordinal] = *value;
+  }
+  dse::ObjectiveVector result = program_.makeVector();
+  if (llvm::Error error = program_.evaluate({violations, measures, {}}, result))
+    return std::move(error);
+  return result;
+}
+
+llvm::Expected<dse::ObjectiveWideValue> MappingObjectiveProgram::selectedEnergy(
+    const dse::ObjectiveVector &vector) const {
+  return program_.weightedLevelValue(vector, selectedSearchEnergy_);
+}
+
+llvm::Expected<dse::ObjectiveSignedDifference>
+MappingObjectiveProgram::selectedEnergyDifference(
+    const dse::ObjectiveVector &left, const dse::ObjectiveVector &right) const {
+  return program_.signedWeightedLevelDifference(left, right,
+                                                selectedSearchEnergy_);
+}
+
+llvm::Expected<int> MappingObjectiveProgram::compareSelectedRank(
+    const dse::ObjectiveVector &left,
+    llvm::ArrayRef<std::uint8_t> leftCandidateKey,
+    const dse::ObjectiveVector &right,
+    llvm::ArrayRef<std::uint8_t> rightCandidateKey) const {
+  return program_.compareTotalOrdering(
+      left, leftCandidateKey, right, rightCandidateKey, selectedTotalOrdering_);
 }
 
 llvm::Expected<SpatialMappingTraversalClaimProjection>

@@ -20,7 +20,6 @@
 #include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialGlobalRoutingClosure.h"
-#include "PnR/SpatialObjective.h"
 #include "ResourceCapacityVerification.h"
 #include "SpatialMappingCapacityVerification.h"
 

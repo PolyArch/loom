@@ -21,6 +21,7 @@
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialPnrGenerator.h"
+#include "PnR/System/SystemAnnealingSearch.h"
 #include "PnR/System/SystemCandidateState.h"
 #include "PnR/System/SystemMappingMaterializer.h"
 #include "PnR/System/SystemPnrProblem.h"
@@ -304,6 +305,16 @@ loom::ResolvedConfig buildResolvedConfig() {
       loom::ResolvedPnrViolationKind::UnroutedObligation,
       loom::ResolvedPnrViolationKind::CapacityOveruse};
   resolved.dse.systemPnr.objectiveSelection = {0, 0, {}};
+  auto &systemSearch = resolved.dse.systemPnr.search;
+  systemSearch.initializer.seedAttemptCount = 1;
+  systemSearch.actionProposal = {1, 0, 0};
+  systemSearch.annealing.calibrationProposalCount = 1;
+  systemSearch.annealing.fallbackTemperature = 1;
+  systemSearch.annealing.minimumTemperature = 1;
+  systemSearch.annealing.coolingRatio = {1, 2};
+  systemSearch.annealing.proposalsPerLevelBase = 1;
+  systemSearch.annealing.proposalsPerMovableDecision = 0;
+  systemSearch.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
   return resolved;
 }
 
@@ -392,7 +403,10 @@ void verifyRootCompleteSystemAdapter(
                   loom::dse::rootCompleteSystemPnrCandidateGeneratorKind &&
               descriptor.inputSlots.size() == 3 &&
               descriptor.outputSlots.size() == 1 &&
-              descriptor.workUnits.size() == 2 &&
+              descriptor.implementationSemanticIdentity ==
+                  "loom.mapping.root_complete_system_pnr.generator.v2" &&
+              descriptor.workUnits.size() ==
+                  loom::dse::pnrCandidateGeneratorWorkUnits.size() &&
               descriptor.inputSlots[0].semanticRole == "dataflow" &&
               descriptor.inputSlots[1].semanticRole == "spatial_mapping" &&
               descriptor.inputSlots[2].semanticRole == "fabric",
@@ -410,8 +424,11 @@ void verifyRootCompleteSystemAdapter(
               completed->outputBindings.front().artifacts.size() == 1 &&
               completed->lineageEdges.size() == 1,
           "root-complete System adapter did not publish one SystemMapping");
-  require(first.workSummary.size() == 2 &&
-              first.workSummary.front().consumed != 0,
+  require(first.workSummary.size() ==
+                  loom::dse::pnrCandidateGeneratorWorkUnits.size() &&
+              first.workSummary[0].consumed == 1 &&
+              first.workSummary[4].consumed == 1 &&
+              first.workSummary[5].consumed != 0,
           "root-complete System adapter lost real bounded work");
   for (const auto &unit : first.workSummary)
     require(unit.planned == unit.consumed,
@@ -471,7 +488,8 @@ void verifyRootCompleteSystemAdapter(
                 incomplete->reason ==
                     loom::dse::CandidateGeneratorIncompleteReason::
                         SemanticLimitReached &&
-                limitedResult.workSummary.size() == 2 &&
+                limitedResult.workSummary.size() ==
+                    loom::dse::pnrCandidateGeneratorWorkUnits.size() &&
                 limitedResult.workSummary.front().consumed == 1,
             "bounded System search did not report typed semantic exhaustion");
   }
@@ -502,7 +520,8 @@ void verifyRootFreeSystemAdapter(
           &result.outcome);
   require(completed && completed->outputBindings.front().artifacts.empty() &&
               completed->lineageEdges.empty() &&
-              result.workSummary.size() == 2 &&
+              result.workSummary.size() ==
+                  loom::dse::pnrCandidateGeneratorWorkUnits.size() &&
               llvm::all_of(result.workSummary,
                            [](const auto &unit) {
                              return unit.planned == 0 && unit.consumed == 0;
@@ -731,6 +750,38 @@ int main() {
               sameOwner->selectedAccCore(consumerDecisions[0]) ==
                   sameOwner->selectedAccCore(consumerDecisions[1]),
           "candidate fixtures do not select the requested owner relation");
+
+  auto firstAnnealed = take(loom::pnr::initializeSystemCandidate(
+      problem, sameOwner->threadChoices(), sameOwner->graphChoices()));
+  auto secondAnnealed = take(loom::pnr::initializeSystemCandidate(
+      problem, sameOwner->threadChoices(), sameOwner->graphChoices()));
+  loom::pnr::SystemAnnealingSearchScratch firstSearch;
+  loom::pnr::SystemAnnealingSearchScratch secondSearch;
+  const auto firstStatistics = take(firstSearch.run(firstAnnealed, 0));
+  const auto secondStatistics = take(secondSearch.run(secondAnnealed, 0));
+  require(firstStatistics == secondStatistics,
+          "System transactional search changed work on replay");
+  require(firstStatistics.assignmentAttempts != 0,
+          "System transactional search performed no assignment probes");
+  require(firstStatistics.endpointExpansions != 0,
+          "System transactional search performed no endpoint probes");
+  require(firstAnnealed->threadChoices() == secondAnnealed->threadChoices() &&
+              firstAnnealed->graphChoices() == secondAnnealed->graphChoices(),
+          "System transactional search changed decisions on replay");
+  if (llvm::Error error = firstAnnealed->verify())
+    fail(llvm::toString(std::move(error)));
+  auto firstAnnealedDraft =
+      take(loom::pnr::materializeSystemCandidateDraft(*firstAnnealed, context));
+  auto secondAnnealedDraft = take(
+      loom::pnr::materializeSystemCandidateDraft(*secondAnnealed, context));
+  const auto firstAnnealedBytes =
+      take(loom::mapping::writeCanonicalSystemMappingAssembly(
+          mlir::cast<::mapping::SystemOp>(firstAnnealedDraft.get())));
+  const auto secondAnnealedBytes =
+      take(loom::mapping::writeCanonicalSystemMappingAssembly(
+          mlir::cast<::mapping::SystemOp>(secondAnnealedDraft.get())));
+  require(firstAnnealedBytes.bytes() == secondAnnealedBytes.bytes(),
+          "System transactional search changed canonical replay output");
 
   std::optional<loom::pnr::PnrIndex> channelLeg;
   for (const auto &[ordinal, leg] : llvm::enumerate(problem->serviceLegs()))

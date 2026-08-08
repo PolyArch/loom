@@ -407,7 +407,7 @@ loom::pnr::ResolvedPnrConfigView buildFeedbackSpatialConfig() {
 void requireSpatialWorkSummary(
     llvm::ArrayRef<loom::dse::CandidateGeneratorWorkUnitSummary> summary,
     bool expectConsumedWork) {
-  if (summary.size() != loom::dse::spatialPnrCandidateGeneratorWorkUnits.size())
+  if (summary.size() != loom::dse::pnrCandidateGeneratorWorkUnits.size())
     fail("Spatial PnR work summary does not cover the owner catalog");
   bool consumedAny = false;
   for (std::size_t ordinal = 0; ordinal != summary.size(); ++ordinal) {
@@ -872,13 +872,12 @@ void descriptorAndEmptySetAreClosed() {
           config.schemaDescriptorBytes())
     fail("root-complete Spatial descriptor is not closed over exact T/F");
   if (descriptor.workUnits.size() !=
-      loom::dse::spatialPnrCandidateGeneratorWorkUnits.size())
+      loom::dse::pnrCandidateGeneratorWorkUnits.size())
     fail("root-complete Spatial descriptor copied the PnR work-unit catalog");
   for (std::size_t ordinal = 0; ordinal != descriptor.workUnits.size();
        ++ordinal) {
     const auto &actual = descriptor.workUnits[ordinal];
-    const auto &owner =
-        loom::dse::spatialPnrCandidateGeneratorWorkUnits[ordinal];
+    const auto &owner = loom::dse::pnrCandidateGeneratorWorkUnits[ordinal];
     if (!(actual.unit == owner.unit) || actual.spelling != owner.spelling)
       fail("root-complete Spatial descriptor diverged from PnR work units");
   }

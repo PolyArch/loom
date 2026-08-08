@@ -37,6 +37,7 @@ struct EndpointRoutingCapacityClaim final {
   PnrIndex cell = 0;
   PnrIndex activation = 0;
   std::uint64_t amount = 0;
+  std::uint64_t qCost = 0;
 };
 
 struct EndpointRoutingArc final {

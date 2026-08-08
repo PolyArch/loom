@@ -11,7 +11,7 @@ namespace loom::dse {
 inline constexpr CandidateGeneratorKind spatialPnrCandidateGeneratorKind(0);
 
 inline constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 10>
-    spatialPnrCandidateGeneratorWorkUnits = {{
+    pnrCandidateGeneratorWorkUnits = {{
         {CandidateGeneratorWorkUnitRef(0), "seed_attempt"},
         {CandidateGeneratorWorkUnitRef(1), "assignment_attempt_per_seed"},
         {CandidateGeneratorWorkUnitRef(2), "endpoint_expansion"},

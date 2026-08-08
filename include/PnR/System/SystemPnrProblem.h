@@ -2,9 +2,11 @@
 #define LOOM_PNR_SYSTEM_SYSTEMPNRPROBLEM_H
 
 #include "Fabric/Artifact/FabricMemoryServiceClosure.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "PnR/EndpointRoutingTopology.h"
+#include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrIndex.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
@@ -166,6 +168,15 @@ public:
     return searchDomainDigest_;
   }
   const ResolvedPnrConfigView &config() const { return config_; }
+  const MappingObjectiveProgram &objectiveProgram() const {
+    return objectiveProgram_;
+  }
+  llvm::ArrayRef<DeterministicWorkBudgetEntry> workBudget() const {
+    return workBudget_;
+  }
+  const ::loom::mapping::MappingProgressClosure &progressClosure() const {
+    return progressClosure_;
+  }
   llvm::ArrayRef<::dataflow::RootThreadLaunchRef> rootThreadLaunches() const {
     return rootThreadLaunches_;
   }
@@ -220,13 +231,18 @@ public:
   llvm::ArrayRef<PnrIndex> serviceLegSinkTerminals(PnrIndex leg) const;
   PnrIndex accCoreTargetClass(PnrIndex core) const;
   PnrIndex spatialMappingTargetClass(PnrIndex mapping) const;
+  const detail::InitializerRelationModel &initializerRelations() const {
+    return *initializerRelations_;
+  }
 
 private:
   FrozenSystemPnrProblem(
       ArtifactIdentity dataflowIdentity, ArtifactIdentity fabricIdentity,
       ArtifactIdentity constraintIdentity,
       SystemPnrSearchDomainDigest searchDomainDigest,
-      ResolvedPnrConfigView config,
+      ResolvedPnrConfigView config, MappingObjectiveProgram objectiveProgram,
+      std::vector<DeterministicWorkBudgetEntry> workBudget,
+      ::loom::mapping::MappingProgressClosure progressClosure,
       std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
       std::vector<FrozenSystemSpatialTargetClass> targetClasses,
       std::vector<::loom::fabric::AccCoreOccurrenceRef> accCores,
@@ -260,6 +276,9 @@ private:
   ArtifactIdentity constraintIdentity_;
   SystemPnrSearchDomainDigest searchDomainDigest_;
   ResolvedPnrConfigView config_;
+  MappingObjectiveProgram objectiveProgram_;
+  std::vector<DeterministicWorkBudgetEntry> workBudget_;
+  ::loom::mapping::MappingProgressClosure progressClosure_;
   std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches_;
   std::vector<FrozenSystemSpatialTargetClass> targetClasses_;
   std::vector<::loom::fabric::AccCoreOccurrenceRef> accCores_;
@@ -291,6 +310,11 @@ private:
   friend class SystemCandidateState;
   friend llvm::Expected<InitializedSystemCandidate>
       initializeCanonicalSystemCandidate(FrozenSystemPnrProblemHandle);
+  friend llvm::Expected<InitializedSystemCandidate>
+  initializeSystemCandidateAttempt(FrozenSystemPnrProblemHandle, std::uint32_t);
+  friend llvm::Expected<InitializedSystemCandidate>
+      initializeSystemCandidateWithFixedChoices(FrozenSystemPnrProblemHandle,
+                                                llvm::ArrayRef<PnrIndex>);
   friend llvm::Expected<SystemCandidateStateHandle>
   initializeSystemCandidate(FrozenSystemPnrProblemHandle,
                             llvm::ArrayRef<PnrIndex>, llvm::ArrayRef<PnrIndex>,

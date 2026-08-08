@@ -16,17 +16,44 @@
 namespace loom::pnr {
 
 struct SystemPnrGenerationAccounting final {
+  std::uint64_t seedAttemptSlots = 0;
+  std::uint64_t preparedSeeds = 0;
   std::uint64_t initializerAssignmentAttempts = 0;
   std::uint64_t endpointExpansionSlots = 0;
+  std::uint64_t negotiationIterationSlots = 0;
+  std::uint64_t calibrationProposalSlots = 0;
+  std::uint64_t annealingBaseProposalSlots = 0;
+  std::uint64_t annealingMovableProposalSlots = 0;
+  std::uint64_t focusedClosureProposalSlots = 0;
+  std::uint64_t annealingAcceptedActions = 0;
+  std::uint64_t exactRepairInvocations = 0;
+  std::uint64_t exactRepairRegionDecisions = 0;
+  std::uint64_t exactRepairSolverCalls = 0;
+  std::uint64_t finalClosureAttempts = 0;
   std::uint64_t finalVerificationAttempts = 0;
+  std::uint64_t finalizedRestarts = 0;
   std::uint64_t publicationSlots = 0;
 
   friend bool operator==(const SystemPnrGenerationAccounting &lhs,
                          const SystemPnrGenerationAccounting &rhs) {
-    return lhs.initializerAssignmentAttempts ==
+    return lhs.seedAttemptSlots == rhs.seedAttemptSlots &&
+           lhs.preparedSeeds == rhs.preparedSeeds &&
+           lhs.initializerAssignmentAttempts ==
                rhs.initializerAssignmentAttempts &&
            lhs.endpointExpansionSlots == rhs.endpointExpansionSlots &&
+           lhs.negotiationIterationSlots == rhs.negotiationIterationSlots &&
+           lhs.calibrationProposalSlots == rhs.calibrationProposalSlots &&
+           lhs.annealingBaseProposalSlots == rhs.annealingBaseProposalSlots &&
+           lhs.annealingMovableProposalSlots ==
+               rhs.annealingMovableProposalSlots &&
+           lhs.focusedClosureProposalSlots == rhs.focusedClosureProposalSlots &&
+           lhs.annealingAcceptedActions == rhs.annealingAcceptedActions &&
+           lhs.exactRepairInvocations == rhs.exactRepairInvocations &&
+           lhs.exactRepairRegionDecisions == rhs.exactRepairRegionDecisions &&
+           lhs.exactRepairSolverCalls == rhs.exactRepairSolverCalls &&
+           lhs.finalClosureAttempts == rhs.finalClosureAttempts &&
            lhs.finalVerificationAttempts == rhs.finalVerificationAttempts &&
+           lhs.finalizedRestarts == rhs.finalizedRestarts &&
            lhs.publicationSlots == rhs.publicationSlots;
   }
 };
@@ -65,8 +92,11 @@ struct InvalidSystemPnrGeneration final {
 enum class InternalSystemPnrGenerationReason : std::uint8_t {
   FrozenModelConstruction,
   CandidateInitialization,
+  Annealing,
+  FinalClosure,
   CandidateVerification,
   CandidateFinalization,
+  AccountingOverflow,
 };
 
 struct InternalSystemPnrGeneration final {

@@ -529,6 +529,16 @@ InitializerRelationSolver::solveCanonical(
 llvm::Expected<InitializerRelationSolveResult>
 InitializerRelationSolver::solveCanonicalWithFixedChoices(
     std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices) {
+  return solveCanonicalWithFixedChoices(
+      assignmentLimit, fixedChoices,
+      [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return true; });
+}
+
+llvm::Expected<InitializerRelationSolveResult>
+InitializerRelationSolver::solveCanonicalWithFixedChoices(
+    std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
+    llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+        validateCompleteAssignment) {
   if (fixedChoices.size() != domainCounts_.size())
     return assignmentError(
         "fixed choice count does not match the decision domain");
@@ -548,9 +558,7 @@ InitializerRelationSolver::solveCanonicalWithFixedChoices(
             "Spatial initializer fixed choices are infeasible");
   }
 
-  auto result = search(
-      assignmentLimit, nullptr,
-      [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return true; });
+  auto result = search(assignmentLimit, nullptr, validateCompleteAssignment);
   if (!result)
     return result.takeError();
   if (*result == SearchResult::WorkLimit)
@@ -574,9 +582,19 @@ llvm::Expected<InitializerRelationSolveResult>
 InitializerRelationSolver::solveDiversified(
     std::uint64_t assignmentLimit,
     DeterministicPnrRandomStream &diversificationStream) {
-  return solve(
-      assignmentLimit, &diversificationStream,
+  return solveDiversified(
+      assignmentLimit, diversificationStream,
       [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return true; });
+}
+
+llvm::Expected<InitializerRelationSolveResult>
+InitializerRelationSolver::solveDiversified(
+    std::uint64_t assignmentLimit,
+    DeterministicPnrRandomStream &diversificationStream,
+    llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+        validateCompleteAssignment) {
+  return solve(assignmentLimit, &diversificationStream,
+               validateCompleteAssignment);
 }
 
 llvm::Expected<InitializerRelationSolveResult> InitializerRelationSolver::solve(

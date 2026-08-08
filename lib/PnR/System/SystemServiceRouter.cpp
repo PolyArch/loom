@@ -181,6 +181,36 @@ buildAtomicPatternCatalog(const FrozenEndpointRoutingTopology &topology) {
   return catalog;
 }
 
+llvm::Expected<std::vector<RouteCost>>
+staticLowerBoundArcCosts(const FrozenEndpointRoutingTopology &topology) {
+  std::vector<RouteCost> traversalCosts(topology.traversals().size(), 0);
+  for (const auto &[ordinal, traversal] :
+       llvm::enumerate(topology.traversals())) {
+    if (traversal.capacityClaimOffset > topology.capacityClaims().size() ||
+        traversal.capacityClaimCount >
+            topology.capacityClaims().size() - traversal.capacityClaimOffset)
+      return invalid("a traversal capacity range is out of bounds");
+    RouteCost cost = 0;
+    for (const EndpointRoutingCapacityClaim &claim :
+         topology.capacityClaims().slice(traversal.capacityClaimOffset,
+                                         traversal.capacityClaimCount)) {
+      auto accumulated = accumulateRouteCost(cost, claim.qCost);
+      if (!accumulated)
+        return accumulated.takeError();
+      cost = *accumulated;
+    }
+    traversalCosts[ordinal] = cost;
+  }
+  std::vector<RouteCost> arcCosts;
+  arcCosts.reserve(topology.arcs().size());
+  for (const EndpointRoutingArc &arc : topology.arcs()) {
+    if (arc.traversal >= traversalCosts.size())
+      return invalid("a routing arc names an invalid traversal");
+    arcCosts.push_back(traversalCosts[arc.traversal]);
+  }
+  return arcCosts;
+}
+
 llvm::Expected<std::pair<PnrIndex, PnrIndex>>
 traversalEndpoints(const FrozenEndpointRoutingTopology &topology,
                    PnrIndex traversal) {
@@ -487,7 +517,9 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
   EndpointRouteSearchScratch search;
   if (llvm::Error error = search.prepare(endpointRoutingGraphView(topology)))
     return std::move(error);
-  std::vector<RouteCost> arcCosts(topology.arcs().size(), 1);
+  auto arcCosts = staticLowerBoundArcCosts(topology);
+  if (!arcCosts)
+    return arcCosts.takeError();
   std::vector<std::uint64_t> capacityUsage;
   capacityUsage.reserve(topology.capacityCells().size());
   for (const auto &cell : topology.capacityCells())
@@ -547,11 +579,15 @@ loom::pnr::detail::buildCanonicalSystemServiceRoutes(
               llvm::ArrayRef<std::uint64_t> eligibleTraversals,
               std::optional<AtomicPatternUpgrade> upgrade) -> llvm::Error {
         auto routed = search.search(
-            {sources, sourceGroups, activeSink.endpoints, targetRanks, arcCosts,
-             arcCosts, leg.requiredPayloadWidthBits, 0,
+            {sources, sourceGroups, activeSink.endpoints, targetRanks,
+             *arcCosts, *arcCosts, leg.requiredPayloadWidthBits, 0,
              problem.config().policy().search.routing.endpointExpansionLimit,
              eligibleTraversals});
-        endpointExpansions = search.endpointExpansionCount();
+        const std::uint64_t consumed = search.endpointExpansionCount();
+        if (consumed >
+            std::numeric_limits<std::uint64_t>::max() - endpointExpansions)
+          return invalid("endpoint expansion accounting overflows u64");
+        endpointExpansions += consumed;
         if (!routed)
           return llvm::handleErrors(
               routed.takeError(),

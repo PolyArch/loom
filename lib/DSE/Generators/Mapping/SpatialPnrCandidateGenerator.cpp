@@ -65,7 +65,7 @@ const CandidateGeneratorDescriptor descriptor{
         ::loom::pnr::resolvedSpatialPnrConfigSchemaDescriptorBytes(),
         validateSpatialConfig},
     CandidateGeneratorDeterminism::Deterministic,
-    spatialPnrCandidateGeneratorWorkUnits,
+    pnrCandidateGeneratorWorkUnits,
     nullptr,
     ProviderForm::InProcess,
 };
@@ -88,10 +88,9 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
           {},
           {}});
     return CandidateGeneratorProviderResult{
-        CompletedCandidateGeneratorResult{
-            {{CandidateGeneratorOutputSlotRef(0),
-              std::move(generated->candidates)}},
-            std::move(lineageEdges)},
+        CompletedCandidateGeneratorResult{{{CandidateGeneratorOutputSlotRef(0),
+                                            std::move(generated->candidates)}},
+                                          std::move(lineageEdges)},
         spatialPnrCandidateGeneratorWorkSummary(generated->accounting)};
   }
   if (const auto *infeasible =
@@ -118,7 +117,8 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     return CandidateGeneratorProviderResult{
         IncompleteCandidateGeneratorResult{
             CandidateGeneratorIncompleteReason::Unsupported,
-            {{CandidateGeneratorOutputSlotRef(0), {}}}, {}},
+            {{CandidateGeneratorOutputSlotRef(0), {}}},
+            {}},
         spatialPnrCandidateGeneratorWorkSummary(unsupported->accounting)};
   if (const auto *invalid =
           std::get_if<::loom::pnr::InvalidSpatialPnrGeneration>(&outcome))
@@ -158,7 +158,7 @@ const CandidateGeneratorDescriptor &spatialPnrCandidateGeneratorDescriptor() {
 std::vector<CandidateGeneratorWorkUnitSummary>
 spatialPnrCandidateGeneratorWorkSummary(
     const ::loom::pnr::SpatialPnrGenerationAccounting &accounting) {
-  const std::array<std::uint64_t, spatialPnrCandidateGeneratorWorkUnits.size()>
+  const std::array<std::uint64_t, pnrCandidateGeneratorWorkUnits.size()>
       consumed = {
           accounting.seedAttemptSlots,
           accounting.initializerAssignmentAttempts,

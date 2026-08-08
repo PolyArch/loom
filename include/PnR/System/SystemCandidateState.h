@@ -86,6 +86,7 @@ public:
   ~SystemCandidateState() = default;
 
   const FrozenSystemPnrProblem &problem() const { return *problem_; }
+  FrozenSystemPnrProblemHandle problemHandle() const { return problem_; }
   llvm::ArrayRef<PnrIndex> threadChoices() const { return threadChoices_; }
   llvm::ArrayRef<PnrIndex> graphChoices() const { return graphChoices_; }
   llvm::ArrayRef<SystemServiceRouteSelection> serviceRoutes() const {
@@ -188,6 +189,15 @@ private:
 
 llvm::Expected<InitializedSystemCandidate>
 initializeCanonicalSystemCandidate(FrozenSystemPnrProblemHandle problem);
+
+llvm::Expected<InitializedSystemCandidate>
+initializeSystemCandidateAttempt(FrozenSystemPnrProblemHandle problem,
+                                 std::uint32_t attemptOrdinal);
+
+llvm::Expected<InitializedSystemCandidate>
+initializeSystemCandidateWithFixedChoices(
+    FrozenSystemPnrProblemHandle problem,
+    llvm::ArrayRef<PnrIndex> fixedChoices);
 
 llvm::Expected<SystemCandidateStateHandle>
 initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,

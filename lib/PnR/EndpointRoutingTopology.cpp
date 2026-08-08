@@ -1,6 +1,7 @@
 #include "PnR/EndpointRoutingTopology.h"
 
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "PnR/RoutingNegotiation.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
@@ -282,8 +283,13 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
           return invalid("one traversal activation has inconsistent claims");
       }
     }
-    for (const auto &[key, amount] : traversalClaims)
-      result.capacityClaims_.push_back({key.second, key.first, amount});
+    for (const auto &[key, amount] : traversalClaims) {
+      const auto &cell = result.capacityCells_[key.second];
+      auto qCost = normalizedRouteClaimCost(amount, cell.capacity);
+      if (!qCost)
+        return qCost.takeError();
+      result.capacityClaims_.push_back({key.second, key.first, amount, *qCost});
+    }
     auto capacityClaimCount =
         checked(capacityClaimContext, traversalClaims.size());
     if (!capacityClaimCount)

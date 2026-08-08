@@ -30,7 +30,6 @@ add_mlir_library(LoomPnR
   SpatialMappingMaterializer.cpp
   SpatialMoveTransaction.cpp
   SpatialNetRouter.cpp
-  SpatialObjective.cpp
   SpatialPnrCapacityIndex.cpp
   SpatialPathFinderRouter.cpp
   SpatialPnrHandshakeIndex.cpp
@@ -51,6 +50,8 @@ add_mlir_library(LoomPnR
   System/SystemPnrServiceDomain.cpp
   System/SystemPresburgerPartition.cpp
   System/SystemPnrProblem.cpp
+  System/SystemAction.cpp
+  System/SystemAnnealingSearch.cpp
   System/SystemCandidateState.cpp
   System/SystemCandidateServiceResolver.cpp
   System/SystemServiceRouter.cpp

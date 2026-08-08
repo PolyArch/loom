@@ -129,9 +129,18 @@ public:
   llvm::Expected<InitializerRelationSolveResult>
   solveCanonicalWithFixedChoices(std::uint64_t assignmentLimit,
                                  llvm::ArrayRef<PnrIndex> fixedChoices);
+  llvm::Expected<InitializerRelationSolveResult> solveCanonicalWithFixedChoices(
+      std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
+      llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+          validateCompleteAssignment);
   llvm::Expected<InitializerRelationSolveResult>
   solveDiversified(std::uint64_t assignmentLimit,
                    DeterministicPnrRandomStream &diversificationStream);
+  llvm::Expected<InitializerRelationSolveResult> solveDiversified(
+      std::uint64_t assignmentLimit,
+      DeterministicPnrRandomStream &diversificationStream,
+      llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+          validateCompleteAssignment);
 
   std::uint64_t assignmentAttempts() const { return assignmentAttempts_; }
   std::size_t retainedStorageBytes() const;

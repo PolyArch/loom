@@ -1357,7 +1357,9 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
     ArtifactIdentity dataflowIdentity, ArtifactIdentity fabricIdentity,
     ArtifactIdentity constraintIdentity,
     SystemPnrSearchDomainDigest searchDomainDigest,
-    ResolvedPnrConfigView config,
+    ResolvedPnrConfigView config, MappingObjectiveProgram objectiveProgram,
+    std::vector<DeterministicWorkBudgetEntry> workBudget,
+    ::loom::mapping::MappingProgressClosure progressClosure,
     std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
     std::vector<FrozenSystemSpatialTargetClass> targetClasses,
     std::vector<::loom::fabric::AccCoreOccurrenceRef> accCores,
@@ -1390,6 +1392,8 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
       constraintIdentity_(std::move(constraintIdentity)),
       searchDomainDigest_(std::move(searchDomainDigest)),
       config_(std::move(config)),
+      objectiveProgram_(std::move(objectiveProgram)),
+      workBudget_(std::move(workBudget)), progressClosure_(progressClosure),
       rootThreadLaunches_(std::move(rootThreadLaunches)),
       targetClasses_(std::move(targetClasses)), accCores_(std::move(accCores)),
       accCoreTargetClasses_(std::move(accCoreTargetClasses)),
@@ -1477,12 +1481,29 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
   if (llvm::Error error =
           validateInputs(dataflow, fabric, searchDomain, config, constraints))
     return std::move(error);
+  auto objectiveProgram = MappingObjectiveProgram::get(
+      config.selectedObjectiveCatalogs(), config.policy().objectiveSelection);
+  if (!objectiveProgram)
+    return objectiveProgram.takeError();
   auto catalogs = buildCatalogs(dataflow, fabric, searchDomain, store);
   if (!catalogs)
     return catalogs.takeError();
   auto decisions = buildDecisions(searchDomain, *catalogs);
   if (!decisions)
     return decisions.takeError();
+  std::vector<::dataflow::GraphRef> coveredGraphs;
+  std::set<std::uint64_t> coveredGraphEntities;
+  for (const FrozenSystemGraphExecutionDecision &decision : decisions->graphs) {
+    auto graph = dataflow.resolve(decision.launch);
+    if (!graph)
+      return graph.takeError();
+    if (coveredGraphEntities.insert(graph->entity.value()).second)
+      coveredGraphs.push_back(*graph);
+  }
+  auto progress =
+      ::loom::mapping::deriveMappingProgressClosure(dataflow, coveredGraphs);
+  if (!progress)
+    return progress.takeError();
   std::vector<PnrIndex> overlapOffsets;
   std::vector<PnrIndex> overlaps;
   auto relations =
@@ -1520,6 +1541,8 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
   return FrozenSystemPnrProblemHandle(new FrozenSystemPnrProblem(
       dataflow.identity(), fabric.artifact().identity(),
       constraints.view().identity(), searchDomain.digest(), config,
+      std::move(*objectiveProgram), deriveDeterministicWorkBudgetView(config),
+      *progress,
       std::vector<::dataflow::RootThreadLaunchRef>(
           searchDomain.rootThreadLaunches().begin(),
           searchDomain.rootThreadLaunches().end()),

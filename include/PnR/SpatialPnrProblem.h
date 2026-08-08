@@ -9,9 +9,9 @@
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "PnR/EndpointRoutingTopology.h"
 #include "PnR/FrozenConstraintIndex.h"
+#include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrIndex.h"
-#include "PnR/SpatialObjective.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -946,7 +946,7 @@ public:
     return constraintSetIdentity_;
   }
   const ResolvedPnrConfigView &config() const { return config_; }
-  const SpatialObjectiveProgram &objectiveProgram() const {
+  const MappingObjectiveProgram &objectiveProgram() const {
     return objectiveProgram_;
   }
   llvm::ArrayRef<DeterministicWorkBudgetEntry> workBudget() const {
@@ -984,7 +984,7 @@ private:
   FrozenSpatialPnrProblem(
       ArtifactIdentity dataflowIdentity, ArtifactIdentity techMappingIdentity,
       ArtifactIdentity fabricIdentity, ArtifactIdentity constraintSetIdentity,
-      ResolvedPnrConfigView config, SpatialObjectiveProgram objectiveProgram,
+      ResolvedPnrConfigView config, MappingObjectiveProgram objectiveProgram,
       std::vector<DeterministicWorkBudgetEntry> workBudget,
       FrozenConstraintIndex constraints,
       FrozenSpatialRealizationIndex realizations,
@@ -1024,7 +1024,7 @@ private:
   ArtifactIdentity fabricIdentity_;
   ArtifactIdentity constraintSetIdentity_;
   ResolvedPnrConfigView config_;
-  SpatialObjectiveProgram objectiveProgram_;
+  MappingObjectiveProgram objectiveProgram_;
   std::vector<DeterministicWorkBudgetEntry> workBudget_;
   FrozenConstraintIndex constraints_;
   FrozenSpatialRealizationIndex realizations_;

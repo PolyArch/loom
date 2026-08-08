@@ -72,7 +72,7 @@ const CandidateGeneratorDescriptor descriptor{
         ::loom::pnr::resolvedSpatialPnrConfigSchemaDescriptorBytes(),
         validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
-    spatialPnrCandidateGeneratorWorkUnits,
+    pnrCandidateGeneratorWorkUnits,
     nullptr,
     ProviderForm::InProcess,
 };
@@ -260,8 +260,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
             internal.diagnostic);
   }
 
-  return CandidateGeneratorProviderResult{
-      completed(std::move(outputs)), std::move(workSummary)};
+  return CandidateGeneratorProviderResult{completed(std::move(outputs)),
+                                          std::move(workSummary)};
 }
 
 const CandidateGeneratorProvider provider{

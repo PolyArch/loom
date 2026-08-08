@@ -67,14 +67,14 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSystemPnrCandidateGeneratorKind,
     "mapping.root_complete_system_pnr",
-    "loom.mapping.root_complete_system_pnr.generator.v1",
+    "loom.mapping.root_complete_system_pnr.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
         ::loom::pnr::resolvedSystemPnrConfigSchemaDescriptorBytes(),
         validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
-    rootCompleteSystemPnrCandidateGeneratorWorkUnits,
+    pnrCandidateGeneratorWorkUnits,
     nullptr,
     ProviderForm::InProcess,
 };
@@ -295,9 +295,17 @@ resolveRootCompleteSystemPnrCandidateGeneratorBinding(
 std::vector<CandidateGeneratorWorkUnitSummary>
 rootCompleteSystemPnrCandidateGeneratorWorkSummary(
     const ::loom::pnr::SystemPnrGenerationAccounting &accounting) {
-  const std::array<std::uint64_t, 2> consumed = {
-      accounting.initializerAssignmentAttempts,
-      accounting.endpointExpansionSlots};
+  const std::array<std::uint64_t, pnrCandidateGeneratorWorkUnits.size()>
+      consumed = {accounting.seedAttemptSlots,
+                  accounting.initializerAssignmentAttempts,
+                  accounting.endpointExpansionSlots,
+                  accounting.negotiationIterationSlots,
+                  accounting.calibrationProposalSlots,
+                  accounting.annealingBaseProposalSlots,
+                  accounting.annealingMovableProposalSlots,
+                  accounting.focusedClosureProposalSlots,
+                  accounting.exactRepairRegionDecisions,
+                  accounting.exactRepairSolverCalls};
   std::vector<CandidateGeneratorWorkUnitSummary> result;
   result.reserve(consumed.size());
   for (std::size_t ordinal = 0; ordinal != consumed.size(); ++ordinal)

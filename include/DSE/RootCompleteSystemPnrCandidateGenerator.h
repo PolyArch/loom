@@ -1,22 +1,14 @@
 #ifndef LOOM_DSE_ROOTCOMPLETESYSTEMPNRCANDIDATEGENERATOR_H
 #define LOOM_DSE_ROOTCOMPLETESYSTEMPNRCANDIDATEGENERATOR_H
 
-#include "DSE/CandidateGenerator.h"
+#include "DSE/MappingCandidateGenerator.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/System/SystemPnrGenerator.h"
-
-#include <array>
 
 namespace loom::dse {
 
 inline constexpr CandidateGeneratorKind
     rootCompleteSystemPnrCandidateGeneratorKind(9);
-
-inline constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 2>
-    rootCompleteSystemPnrCandidateGeneratorWorkUnits = {{
-        {CandidateGeneratorWorkUnitRef(0), "assignment_attempt"},
-        {CandidateGeneratorWorkUnitRef(1), "endpoint_expansion"},
-    }};
 
 const CandidateGeneratorDescriptor &
 rootCompleteSystemPnrCandidateGeneratorDescriptor();
