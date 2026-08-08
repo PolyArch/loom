@@ -1,0 +1,36 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-add-sub-test %t
+# RUN: FileCheck %s --check-prefix=SCALAR < %t/artifacts/scalar_float_add_sub.sv
+# RUN: FileCheck %s --check-prefix=VECTOR < %t/artifacts/fixed_vector_float_add_sub.sv
+# RUN: FileCheck %s --check-prefix=SINGLETON < %t/artifacts/scalar_float_add_singleton.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/artifacts/portable_float_add_sub.ys
+
+# SCALAR: module scalar_float_add_sub
+# SCALAR: function automatic
+# SCALAR: loom_float_add_sub
+# SCALAR: config_0
+# SCALAR-NOT: shortreal
+# SCALAR-NOT: DPI
+
+# VECTOR: module fixed_vector_float_add_sub
+# VECTOR: function automatic
+# VECTOR: loom_float_add_sub
+# VECTOR: config_0
+# VECTOR-NOT: shortreal
+# VECTOR-NOT: DPI
+
+# SINGLETON: module scalar_float_add_singleton
+# SINGLETON: loom_float_add_sub_e8_f23(
+# SINGLETON-NOT: config_0
+
+# TB: module scalar_float_add_sub_elastic
+# TB: always_ff @(posedge clock)
+# TB: module testbench
+# TB: check_scalar
+# TB: check_vector
+
+# YOSYS: hierarchy -check -top scalar_float_add_sub
+# YOSYS: hierarchy -check -top fixed_vector_float_add_sub
+# YOSYS: hierarchy -check -top scalar_float_add_singleton

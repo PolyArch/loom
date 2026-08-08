@@ -1,0 +1,7 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-add-sub-test %t
+# RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
+# RUN: cd %t/artifacts && yosys -q -s portable_float_add_sub.ys
+
+# YOSYS: Yosys 0.67
