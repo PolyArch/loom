@@ -1,0 +1,90 @@
+#include "DSE/CandidateGenerator.h"
+#include "DSE/DataflowRewriteCandidateGenerator.h"
+#include "DSE/MappingCandidateGenerator.h"
+#include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
+#include "DSE/RootCompleteSystemPnrCandidateGenerator.h"
+#include "DSE/RootCompleteTechMappingCandidateGenerator.h"
+#include "DSE/SpatialMappingFeedbackCandidateGenerator.h"
+#include "DSE/StructuredExecutionShapeCandidateGenerator.h"
+#include "DSE/StructuredMemoryCommunicationCandidateGenerator.h"
+#include "DSE/StructuredOwnershipCandidateGenerator.h"
+#include "DSE/StructuredScheduleCandidateGenerator.h"
+#include "DSE/StructuredSpecialMathAccuracyCandidateGenerator.h"
+
+#include "llvm/Support/Error.h"
+
+#include <cstdlib>
+#include <iostream>
+
+namespace {
+
+using loom::dse::CandidateGeneratorDescriptor;
+using loom::dse::CandidateGeneratorKind;
+
+void requireSuccess(llvm::Error error) {
+  if (!error)
+    return;
+  std::cerr << llvm::toString(std::move(error)) << '\n';
+  std::exit(1);
+}
+
+void requireRegistered(CandidateGeneratorKind kind,
+                       const CandidateGeneratorDescriptor &descriptor) {
+  if (loom::dse::findCandidateGeneratorDescriptor(kind) == &descriptor)
+    return;
+  std::cerr << "candidate generator kind " << kind.ordinal()
+            << " did not resolve to its production descriptor\n";
+  std::exit(1);
+}
+
+} // namespace
+
+int main() {
+  requireSuccess(loom::dse::registerSpatialPnrCandidateGenerator());
+  requireSuccess(loom::dse::registerStructuredOwnershipCandidateGenerator());
+  requireSuccess(loom::dse::registerStructuredScheduleCandidateGenerator());
+  requireSuccess(
+      loom::dse::registerStructuredExecutionShapeCandidateGenerator());
+  requireSuccess(loom::dse::registerDataflowRewriteCandidateGenerator());
+  requireSuccess(
+      loom::dse::registerStructuredMemoryCommunicationCandidateGenerator());
+  requireSuccess(
+      loom::dse::registerRootCompleteTechMappingCandidateGenerator());
+  requireSuccess(loom::dse::registerRootCompleteSpatialPnrCandidateGenerator());
+  requireSuccess(loom::dse::registerSpatialMappingFeedbackCandidateGenerator());
+  requireSuccess(loom::dse::registerRootCompleteSystemPnrCandidateGenerator());
+  requireSuccess(
+      loom::dse::registerStructuredSpecialMathAccuracyCandidateGenerator());
+
+  requireRegistered(CandidateGeneratorKind(0),
+                    loom::dse::spatialPnrCandidateGeneratorDescriptor());
+  requireRegistered(
+      CandidateGeneratorKind(1),
+      loom::dse::structuredOwnershipCandidateGeneratorDescriptor());
+  requireRegistered(
+      CandidateGeneratorKind(2),
+      loom::dse::structuredScheduleCandidateGeneratorDescriptor());
+  requireRegistered(
+      CandidateGeneratorKind(3),
+      loom::dse::structuredExecutionShapeCandidateGeneratorDescriptor());
+  requireRegistered(CandidateGeneratorKind(4),
+                    loom::dse::dataflowRewriteCandidateGeneratorDescriptor());
+  requireRegistered(
+      CandidateGeneratorKind(5),
+      loom::dse::structuredMemoryCommunicationCandidateGeneratorDescriptor());
+  requireRegistered(
+      CandidateGeneratorKind(6),
+      loom::dse::rootCompleteTechMappingCandidateGeneratorDescriptor());
+  requireRegistered(
+      CandidateGeneratorKind(7),
+      loom::dse::rootCompleteSpatialPnrCandidateGeneratorDescriptor());
+  requireRegistered(
+      CandidateGeneratorKind(8),
+      loom::dse::spatialMappingFeedbackCandidateGeneratorDescriptor());
+  requireRegistered(
+      CandidateGeneratorKind(9),
+      loom::dse::rootCompleteSystemPnrCandidateGeneratorDescriptor());
+  requireRegistered(
+      CandidateGeneratorKind(10),
+      loom::dse::structuredSpecialMathAccuracyCandidateGeneratorDescriptor());
+}

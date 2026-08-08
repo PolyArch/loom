@@ -14,7 +14,7 @@
 namespace loom::dse {
 
 inline constexpr CandidateGeneratorKind
-    structuredSpecialMathAccuracyCandidateGeneratorKind(9);
+    structuredSpecialMathAccuracyCandidateGeneratorKind(10);
 
 class ResolvedStructuredSpecialMathAccuracyGeneratorConfigView final {
 public:

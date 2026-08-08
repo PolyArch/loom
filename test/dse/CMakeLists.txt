@@ -6,6 +6,10 @@ add_executable(loom-dse-candidate-generator-test
   CandidateGeneratorTest.cpp
 )
 
+add_executable(loom-dse-production-candidate-generator-registration-test
+  ProductionCandidateGeneratorRegistrationTest.cpp
+)
+
 add_executable(loom-dse-plan-test
   PlanTest.cpp
 )
@@ -46,6 +50,13 @@ target_link_libraries(loom-dse-objective-test PRIVATE
 target_link_libraries(loom-dse-candidate-generator-test PRIVATE
   LoomDSECandidateGenerator
   LoomExternalTool
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-production-candidate-generator-registration-test PRIVATE
+  LoomDSECompilerGenerator
+  LoomDSEFeedback
+  LoomDSEMappingGenerator
   LLVMSupport
 )
 
