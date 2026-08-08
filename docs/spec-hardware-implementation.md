@@ -478,9 +478,7 @@ timing authority or a separate constraint artifact.
 
 ```text
 ImplementationInterface {
-  interface_key
-  role: ImplementationInterfaceRole
-  semantic_fabric_ref
+  semantic_ref: ImplementationInterfaceSemanticRef
   representation_locator
   device_pin_ref?
 }
@@ -490,13 +488,13 @@ ActivityPoint {
   semantic_fabric_ref?
 }
 
-ImplementationInterfaceRole =
-    Data
-  | Clock
-  | Reset
-  | Configuration
-  | Memory
-  | ExternalProtocol
+ImplementationInterfaceSemanticRef =
+    Data(FabricSpatialAttachmentEndpointRef on the Transport plane)
+  | Memory(FabricSpatialAttachmentEndpointRef on the Memory plane)
+  | Clock(HardwareDomainRef whose contract kind is Clock)
+  | Reset(HardwareDomainRef whose contract kind is Reset)
+  | Configuration(ProgrammingUnitRef in the exact ConfigurationABI)
+  | ExternalProtocol(ExternalBoundaryRef in the exact System)
 
 RepresentationLocator {
   object_kind: RepresentationObjectKind
@@ -521,11 +519,29 @@ Every locator encodes its `u32be` object-kind tag followed by the
 `u64be`-length-framed canonical-name bytes. Locator arrays are sorted by these
 canonical bytes and reject duplicates.
 
-The interface catalog binds Fabric-visible boundaries, clocks, resets,
-configuration transports, memories, and external protocols to exact
-implementation locators. The activity catalog is the sole implementation-
-local source for RTL, netlist, physical, and FPGA activity references used by
-simulation or Evaluation.
+The displayed interface-semantic alternatives have stable tags `0` through
+`5`. The tag is the interface role; no separately authored role or interface
+key can disagree with it. Each nested reference retains its owner-defined
+canonical bytes. `Configuration` contains the exact cross-Artifact
+`ProgrammingUnitRef` defined by `docs/spec-configuration-deployment.md`; its
+ConfigurationABI Artifact reference must equal `configuration_abi_ref`.
+
+The interface catalog binds declared Fabric-visible boundaries, clocks,
+resets, configuration transports, memories, and external protocols to exact
+implementation locators. The HardwareImplementation finalizer validates every
+declared semantic reference against its exact System or ConfigurationABI and
+validates every locator against the representation index. It does not invent
+a universal port or protocol-signal inventory. An invocation or runtime
+consumer declares the semantic interfaces it requires and rejects an absent or
+ambiguous match before execution. This keeps protocol decomposition with the
+consumer or provider that owns it instead of making HardwareImplementation a
+second AXI, JTAG, MMIO, memory, or external-protocol schema.
+
+The activity catalog is the sole implementation-local source for RTL,
+netlist, physical, and FPGA activity references used by simulation or
+Evaluation. Activity points are declared capabilities, not a universally
+derivable catalog. A consumer that requires one names its exact owner-local
+reference and fails before execution if it is absent.
 
 The enclosing representation and exact format descriptor give every locator
 its representation-local interpretation; a locator therefore does not repeat
@@ -537,14 +553,15 @@ resource from becoming interchangeable strings. A locator kind incompatible
 with the enclosing representation is invalid.
 
 Locators do not alter Fabric or Mapping identity. `device_pin_ref` is valid
-only for an FPGA representation with an exact FPGA target manifest. A missing
-required interface or activity point makes the artifact incomplete.
+only for an FPGA representation with an exact FPGA target manifest.
 
 Interfaces sort by their complete canonical records and activity points sort
 by `(representation_locator, optional semantic_fabric_ref)`. Both catalogs
-reject duplicate records and duplicate locators whose roles would be
-ambiguous. Their dense ordinals are derived only after sorting; no caller-
-authored interface or activity ID enters identity.
+reject duplicate records. One representation locator may implement several
+semantic references, and one semantic reference may require several locators;
+the exact consumer contract owns that grouping. Their dense ordinals are
+derived only after sorting; no caller-authored interface or activity ID enters
+identity.
 
 The schema-2.0 owner-local reference catalog is:
 

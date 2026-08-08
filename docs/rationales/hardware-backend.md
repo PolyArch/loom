@@ -248,6 +248,24 @@ reject incomplete or mismatched state. Downstream flows read those exact
 BlobDigests through BlobStore so a work-directory path or duplicate RTL string
 cannot silently substitute different hardware.
 
+An implementation interface uses one role-bearing semantic reference rather
+than a caller-authored key plus a separately authored role. The former is the
+smallest complete fact: its closed alternative selects Data, Memory, Clock,
+Reset, Configuration, or ExternalProtocol and embeds the exact Fabric or
+ConfigurationABI owner. Keeping a free key or a second role would add identity
+without adding meaning and would require reconciliation when they disagree.
+
+HardwareImplementation cannot own a universal list of required interface
+signals or activity points. Fabric owns hardware semantics, ConfigurationABI
+owns programming units, and each provider or consumer owns its protocol and
+required observation set. Projecting a mandatory global catalog would either
+duplicate those owners or require HardwareImplementation to invent protocol
+signal decomposition. The artifact therefore validates every declared typed
+binding and locator, while the exact invocation or runtime contract checks the
+subset it requires before execution. This also permits one physical locator to
+serve several semantic references and one protocol to use several locators
+without caller-authored grouping IDs.
+
 ## Why One Pinned Frontend Supplies HDL Representation Facts
 
 RTL generation and representation indexing answer different questions. CIRCT

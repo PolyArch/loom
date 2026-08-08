@@ -151,6 +151,11 @@ ProgrammingUnitRef =
   ArtifactReference<ConfigurationABI> + ABI-local unit_id
 ```
 
+Its canonical bytes are the Common exact ArtifactReference encoding followed
+by the `u64be` ABI-local `unit_id`. Decoding requires the referenced Artifact
+to be `loom.configuration_abi 2.0` and the unit ID to exist in its canonical
+programming-unit catalog.
+
 There is no global programming-unit registry or compatibility label. Each unit
 owns an exact Fabric occurrence closure. The first programming model installs
 a complete image and defines when that image becomes visible and active.
