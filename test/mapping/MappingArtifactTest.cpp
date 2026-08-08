@@ -258,7 +258,7 @@ std::string techModule(bool reverseRealizations, bool semanticDelta) {
   const std::string second = realization(2, 9, reverseRealizations ? 0 : 1);
   const std::string body =
       reverseRealizations ? second + first : first + second;
-  return "module {\n  mapping.tech version<3, 0> dataflow(" + dataflow +
+  return "module {\n  mapping.tech version<4, 0> dataflow(" + dataflow +
          ") fabric(" + fabric + ") covers([" + graph + "]) {" + body + "  }\n}";
 }
 
@@ -289,7 +289,7 @@ std::string memoryTechModule(bool reverseChildren, bool semanticDelta,
   const std::string children =
       reverseChildren ? edge + boundary + actor : actor + boundary + edge;
 
-  return "module {\n  mapping.tech version<3, 0> dataflow(" + dataflow +
+  return "module {\n  mapping.tech version<4, 0> dataflow(" + dataflow +
          ") fabric(" + fabric + ") covers([" + graphRef(0) + "]) {\n" +
          "      mapping.memory_realization 9 engine(" +
          memoryEngineTemplateRef(engine) + ") {\n" + children +
@@ -308,7 +308,7 @@ std::string memoryRealizationCardinalityModule() {
            ") operand_ports([" + memoryEngineEndpointRef(engine, 0) +
            "]) result_ports([" + memoryEngineEndpointRef(engine, 1) + "])\n";
   };
-  return "module {\n  mapping.tech version<3, 0> dataflow(" + dataflow +
+  return "module {\n  mapping.tech version<4, 0> dataflow(" + dataflow +
          ") fabric(" + fabric + ") covers([" + graphRef(0) + "]) {\n" +
          "      mapping.memory_realization 9 engine(" +
          memoryEngineTemplateRef(engine) + ") {\n" + actor(1) + actor(3) +
@@ -366,21 +366,21 @@ void testCanonicalAuthoringOrder() {
 
 void testMappingFamilyVersion() {
   if (loom::mapping::mappingArtifactSchema.identity != "loom.mapping" ||
-      loom::mapping::mappingArtifactSchema.version.major != 3 ||
+      loom::mapping::mappingArtifactSchema.version.major != 4 ||
       loom::mapping::mappingArtifactSchema.version.minor != 0)
-    fail("Mapping schema descriptor is not loom.mapping 3.0");
+    fail("Mapping schema descriptor is not loom.mapping 4.0");
 
   mlir::DialectRegistry registry;
   registry.insert<::mapping::MappingDialect>();
   mlir::MLIRContext context(registry);
   std::string legacy = techModule(false, false);
-  const std::string current = "version<3, 0>";
+  const std::string current = "version<4, 0>";
   const std::size_t position = legacy.find(current);
   if (position == std::string::npos)
     fail("Mapping version fixture has no current version");
-  legacy.replace(position, current.size(), "version<2, 0>");
+  legacy.replace(position, current.size(), "version<3, 0>");
   if (parse(context, legacy))
-    fail("mapping.tech 2.0 was accepted by the 3.0 parser");
+    fail("mapping.tech 3.0 was accepted by the 4.0 parser");
 }
 
 void testMalformedScopedReference() {

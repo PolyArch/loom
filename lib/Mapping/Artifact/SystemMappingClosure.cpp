@@ -191,12 +191,14 @@ importActivation(::mapping::SystemRelativeActivationAttr activation,
   auto trigger = importEventPoint(activation.getTrigger(), dataflow);
   if (!trigger)
     return trigger.takeError();
-  std::optional<SystemEventPointView> release;
-  if (activation.getRelease()) {
-    auto imported = importEventPoint(activation.getRelease(), dataflow);
+  std::vector<SystemEventPointView> release;
+  release.reserve(activation.getRelease().size());
+  for (mlir::Attribute attribute : activation.getRelease()) {
+    auto imported = importEventPoint(
+        mlir::cast<::mapping::SystemEventPointAttr>(attribute), dataflow);
     if (!imported)
       return imported.takeError();
-    release.emplace(std::move(*imported));
+    release.push_back(std::move(*imported));
   }
   return SystemRelativeActivationView{std::move(*trigger), std::move(release)};
 }
@@ -974,12 +976,13 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
 
     if (const auto *instruction =
             std::get_if<SystemInstructionResourceOwnerView>(&*owner)) {
-      if (!activation->release ||
+      if (activation->release.size() != 1 ||
           activation->trigger.event != rootStartEvent(instruction->root) ||
-          activation->release->event != rootCompletionEvent(instruction->root))
+          activation->release.front().event !=
+              rootCompletionEvent(instruction->root))
         return invalid("InstructionCore ResourceUse has the wrong activation");
     } else {
-      if (activation->release)
+      if (!activation->release.empty())
         return invalid("service ResourceUse has a causal release");
     }
     resourceUses.push_back(SystemResourceUseView{

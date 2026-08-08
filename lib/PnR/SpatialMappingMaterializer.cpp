@@ -6,6 +6,7 @@
 #include "Fabric/IR/PhysicalTag.h"
 #include "Fabric/IR/UsePatternValue.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/IR/MappingActivationKey.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/IR/MappingOps.h"
 
@@ -524,6 +525,7 @@ llvm::Error materializeResourceUse(
     mlir::OpBuilder &builder, mlir::Location location, mlir::Block &body,
     mlir::Attribute owner,
     const ::loom::mapping::SpatialActivityEventRef &event,
+    llvm::ArrayRef<::loom::mapping::SpatialActivityEventRef> releaseEvents,
     const ::loom::fabric::FabricUsePatternRef &pattern,
     const ArtifactIdentity &dataflowIdentity,
     const ::loom::fabric::FabricArtifactView &fabric,
@@ -550,8 +552,25 @@ llvm::Error materializeResourceUse(
     return encodedEvent.takeError();
   auto trigger = ::mapping::SpatialEventPointAttr::get(
       builder.getContext(), *encodedEvent, ::mapping::OwnerTypedValueAttr());
+  llvm::SmallVector<mlir::Attribute> release;
+  release.reserve(releaseEvents.size());
+  for (const auto &releaseEvent : releaseEvents) {
+    auto encodedRelease = materializeActivityEvent(
+        builder.getContext(), dataflowIdentity, releaseEvent);
+    if (!encodedRelease)
+      return encodedRelease.takeError();
+    release.push_back(::mapping::SpatialEventPointAttr::get(
+        builder.getContext(), *encodedRelease,
+        ::mapping::OwnerTypedValueAttr()));
+  }
+  llvm::sort(release, [](mlir::Attribute left, mlir::Attribute right) {
+    return ::loom::mapping::canonicalEventPointKey(
+               mlir::cast<::mapping::SpatialEventPointAttr>(left)) <
+           ::loom::mapping::canonicalEventPointKey(
+               mlir::cast<::mapping::SpatialEventPointAttr>(right));
+  });
   auto activation = ::mapping::SpatialRelativeActivationAttr::get(
-      builder.getContext(), trigger, ::mapping::SpatialEventPointAttr());
+      builder.getContext(), trigger, builder.getArrayAttr(release));
   builder.setInsertionPointToEnd(&body);
   ::mapping::ResourceUseOp::create(
       builder, location, owner,
@@ -571,7 +590,7 @@ llvm::Error materializeComputeResourceUses(
             builder, location, body,
             ::mapping::ComputeRealizationRefAttr::get(builder.getContext(),
                                                       use.realization),
-            use.trigger, use.pattern, dataflowIdentity, fabric))
+            use.trigger, use.release, use.pattern, dataflowIdentity, fabric))
       return error;
   return llvm::Error::success();
 }
@@ -608,7 +627,7 @@ llvm::Error materializeMemoryResourceUses(
               builder, location, body,
               ::mapping::MemoryRealizationRefAttr::get(
                   builder.getContext(), realization.reference.entity),
-              trigger, patterns[plans[plan].usePattern].reference,
+              trigger, {}, patterns[plans[plan].usePattern].reference,
               dataflow.identity(), fabric))
         return error;
 
@@ -646,7 +665,7 @@ llvm::Error materializeMemoryResourceUses(
                 builder, location, body,
                 ::mapping::MemoryBindingRefAttr::get(builder.getContext(),
                                                      *use.logicalBinding),
-                trigger, *option.serviceUsePattern, dataflow.identity(),
+                trigger, {}, *option.serviceUsePattern, dataflow.identity(),
                 fabric))
           return error;
       }
@@ -788,8 +807,8 @@ llvm::Error materializePhysicalTagResourceUses(
               builder, location, body, origin->owner,
               ::loom::mapping::SpatialActivityEventRef(
                   logicalNets[netOrdinal].producer),
-              origin->assignmentPoint.pattern, dataflow.identity(), fabric, {},
-              assignment))
+              {}, origin->assignmentPoint.pattern, dataflow.identity(), fabric,
+              {}, assignment))
         return error;
     }
   }

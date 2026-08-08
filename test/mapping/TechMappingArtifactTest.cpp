@@ -531,7 +531,7 @@ std::string mappingText(const dataflow::CanonicalDataflowProgramView &dataflow,
                        dataflow::GraphCompletionFrontierTokenRef{graph, 0}}}),
                dataflow::semantics::ServiceValueRole::Completion);
 
-  return "module {\n  mapping.tech version<3, 0> dataflow(" +
+  return "module {\n  mapping.tech version<4, 0> dataflow(" +
          identityAttr(dataflow.identity()) + ") fabric(" +
          identityAttr(fabric.identity()) + ") covers([" +
          dataflowAttr("graph_ref", dataflow.identity(), graph) +
@@ -576,7 +576,7 @@ computeMappingText(const dataflow::CanonicalDataflowProgramView &dataflow,
                   ") output " + std::to_string(ordinal) + " fu_port(" +
                   fabricAttr("fabric_fu_template_port_ref", port) + ")\n";
   }
-  return "module {\n  mapping.tech version<3, 0> dataflow(" +
+  return "module {\n  mapping.tech version<4, 0> dataflow(" +
          identityAttr(dataflow.identity()) + ") fabric(" +
          identityAttr(fabric.identity()) + ") covers([" +
          dataflowAttr("graph_ref", dataflow.identity(), graph) +

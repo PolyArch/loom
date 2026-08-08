@@ -12,6 +12,11 @@ namespace fabric {
 /// not a default for fabric.op.
 const ResourceContract &oneCycleElasticOperationResourceContract();
 
+/// Tests exact equality with the canonical one-cycle elastic operation
+/// contract without requiring consumers to duplicate its physical semantics.
+llvm::Expected<bool>
+isOneCycleElasticOperationResourceContract(const ResourceContract &contract);
+
 /// Exact initial contracts for the four loop-control implementation families.
 /// Every use-pattern ordinal is the ordinal of the corresponding schema-owned
 /// transition case. The ResourceContract owns only physical state, atomic use,

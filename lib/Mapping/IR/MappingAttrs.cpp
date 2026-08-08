@@ -1,4 +1,5 @@
 #include "Mapping/IR/MappingAttrs.h"
+#include "Mapping/IR/MappingActivationKey.h"
 
 #include "Common/Artifact.h"
 #include "Common/ArtifactLocalReference.h"
@@ -75,7 +76,112 @@ LogicalResult verifyFabricRef(function_ref<InFlightDiagnostic()> emitError,
   return success();
 }
 
+std::vector<std::uint8_t> recordBytes(DenseI8ArrayAttr attribute) {
+  std::vector<std::uint8_t> result;
+  result.reserve(attribute.size());
+  for (std::int8_t byte : attribute.asArrayRef())
+    result.push_back(static_cast<std::uint8_t>(byte));
+  return result;
+}
+
+void appendU32(std::vector<std::uint8_t> &result, std::uint32_t value) {
+  for (unsigned byte = 0; byte < 4; ++byte)
+    result.push_back(static_cast<std::uint8_t>(value >> (8 * (3 - byte))));
+}
+
+template <typename Point>
+LogicalResult
+verifyCanonicalRelease(function_ref<InFlightDiagnostic()> emitError,
+                       ArrayAttr release) {
+  std::vector<std::uint8_t> previous;
+  bool first = true;
+  for (Attribute attribute : release) {
+    auto point = dyn_cast<Point>(attribute);
+    if (!point) {
+      emitError() << "release contains an event point from the wrong domain";
+      return failure();
+    }
+    std::vector<std::uint8_t> current =
+        ::loom::mapping::canonicalEventPointKey(point);
+    if (!first && previous >= current) {
+      emitError() << "release event points must be strictly ordered by their "
+                     "complete canonical keys";
+      return failure();
+    }
+    previous = std::move(current);
+    first = false;
+  }
+  return success();
+}
+
 } // namespace
+
+std::vector<std::uint8_t> loom::mapping::canonicalSpatialActivityEventKey(
+    std::uint32_t eventKind, llvm::ArrayRef<std::uint8_t> eventRecord,
+    std::optional<std::uint32_t> transition) {
+  std::vector<std::uint8_t> result;
+  result.reserve(4 + eventRecord.size() + (transition ? 4 : 0));
+  appendU32(result, eventKind);
+  result.insert(result.end(), eventRecord.begin(), eventRecord.end());
+  if (transition)
+    appendU32(result, *transition);
+  return result;
+}
+
+std::vector<std::uint8_t> loom::mapping::canonicalSpatialEventPointKey(
+    std::uint32_t eventKind, llvm::ArrayRef<std::uint8_t> eventRecord,
+    std::optional<std::uint32_t> transition,
+    std::optional<llvm::ArrayRef<std::uint8_t>> guaranteedOffset) {
+  std::vector<std::uint8_t> result =
+      canonicalSpatialActivityEventKey(eventKind, eventRecord, transition);
+  result.reserve(result.size() + 4 +
+                 (guaranteedOffset ? guaranteedOffset->size() : 0));
+  appendU32(result, guaranteedOffset ? 1 : 0);
+  if (guaranteedOffset)
+    result.insert(result.end(), guaranteedOffset->begin(),
+                  guaranteedOffset->end());
+  return result;
+}
+
+std::vector<std::uint8_t>
+loom::mapping::canonicalEventPointKey(::mapping::SpatialEventPointAttr point) {
+  Attribute event = point.getEvent();
+  std::uint32_t eventKind = 0;
+  std::vector<std::uint8_t> eventRecord;
+  std::optional<std::uint32_t> transitionOrdinal;
+  if (auto transition = dyn_cast<::mapping::ActorTransitionEventAttr>(event)) {
+    eventRecord = recordBytes(transition.getActor().getRecord());
+    transitionOrdinal = transition.getTransition();
+  } else if (auto produced =
+                 dyn_cast<::mapping::GraphProducerEndpointRefAttr>(event)) {
+    eventKind = 1;
+    eventRecord = recordBytes(produced.getRecord());
+  } else {
+    auto consumed = cast<::mapping::GraphConsumerEndpointRefAttr>(event);
+    eventKind = 2;
+    eventRecord = recordBytes(consumed.getRecord());
+  }
+  auto offset = point.getGuaranteedOffset();
+  std::optional<std::vector<std::uint8_t>> offsetBytes;
+  if (offset)
+    offsetBytes = recordBytes(offset.getRecord());
+  return canonicalSpatialEventPointKey(
+      eventKind, eventRecord, transitionOrdinal,
+      offsetBytes ? std::optional<llvm::ArrayRef<std::uint8_t>>(*offsetBytes)
+                  : std::nullopt);
+}
+
+std::vector<std::uint8_t>
+loom::mapping::canonicalEventPointKey(::mapping::SystemEventPointAttr point) {
+  std::vector<std::uint8_t> result = recordBytes(point.getEvent().getRecord());
+  auto offset = point.getGuaranteedOffset();
+  appendU32(result, offset ? 1 : 0);
+  if (offset) {
+    std::vector<std::uint8_t> bytes = recordBytes(offset.getRecord());
+    result.insert(result.end(), bytes.begin(), bytes.end());
+  }
+  return result;
+}
 
 LogicalResult mapping::ArtifactIdentityAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
@@ -387,6 +493,20 @@ LogicalResult mapping::SpatialEventPointAttr::verify(
   }
   (void)guaranteedOffset;
   return success();
+}
+
+LogicalResult mapping::SpatialRelativeActivationAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, SpatialEventPointAttr trigger,
+    ArrayAttr release) {
+  (void)trigger;
+  return verifyCanonicalRelease<SpatialEventPointAttr>(emitError, release);
+}
+
+LogicalResult mapping::SystemRelativeActivationAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, SystemEventPointAttr trigger,
+    ArrayAttr release) {
+  (void)trigger;
+  return verifyCanonicalRelease<SystemEventPointAttr>(emitError, release);
 }
 
 LogicalResult mapping::SpatialTransferTerminalAttr::verify(

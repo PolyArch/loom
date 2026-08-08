@@ -8,7 +8,7 @@ include "mlir/IR/BuiltinAttributes.td"
 
 def Mapping_TechOp
     : Mapping_Op<"tech", [IsolatedFromAbove, SingleBlock, NoTerminator]> {
-  let summary = "complete loom.mapping 3.0 TechMapping root";
+  let summary = "complete loom.mapping 4.0 TechMapping root";
   let arguments = (ins Mapping_ArtifactIdentityAttr:$dataflow,
       Mapping_ArtifactIdentityAttr:$fabric, ArrayAttr:$covers);
   let regions = (region SizedRegion<1>:$body);
@@ -100,7 +100,7 @@ def Mapping_MemoryInternalEdgeOp
 
 def Mapping_SpatialOp
     : Mapping_Op<"spatial", [IsolatedFromAbove, SingleBlock, NoTerminator]> {
-  let summary = "complete loom.mapping 3.0 SpatialMapping root";
+  let summary = "complete loom.mapping 4.0 SpatialMapping root";
   let arguments = (ins Mapping_ArtifactIdentityAttr:$tech_mapping,
       Mapping_ArtifactIdentityAttr:$dataflow,
       Mapping_ArtifactIdentityAttr:$fabric);
@@ -261,7 +261,7 @@ def Mapping_ResourceUseOp : Mapping_Op<"resource_use"> {
 
 def Mapping_SystemOp
     : Mapping_Op<"system", [IsolatedFromAbove, SingleBlock, NoTerminator]> {
-  let summary = "complete loom.mapping 3.0 SystemMapping root";
+  let summary = "complete loom.mapping 4.0 SystemMapping root";
   let arguments = (ins Mapping_ArtifactIdentityAttr:$dataflow,
       Mapping_ArtifactIdentityAttr:$fabric,
       ArrayAttr:$spatial_mapping_imports,

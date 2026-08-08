@@ -422,10 +422,11 @@ def Mapping_SpatialEventPointAttr
 
 def Mapping_SpatialRelativeActivationAttr
     : Mapping_Attr<"SpatialRelativeActivation", "spatial_relative_activation"> {
-  let summary = "one trigger and intrinsic or causal release";
+  let summary = "one trigger and intrinsic or conjunctive release";
   let parameters = (ins "::mapping::SpatialEventPointAttr":$trigger,
-      OptionalParameter<"::mapping::SpatialEventPointAttr">:$release);
+      "::mlir::ArrayAttr":$release);
   let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
 }
 
 def Mapping_SystemEventPointAttr
@@ -438,10 +439,11 @@ def Mapping_SystemEventPointAttr
 
 def Mapping_SystemRelativeActivationAttr
     : Mapping_Attr<"SystemRelativeActivation", "system_relative_activation"> {
-  let summary = "one System trigger and intrinsic or causal release";
+  let summary = "one System trigger and intrinsic or conjunctive release";
   let parameters = (ins "::mapping::SystemEventPointAttr":$trigger,
-      OptionalParameter<"::mapping::SystemEventPointAttr">:$release);
+      "::mlir::ArrayAttr":$release);
   let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
 }
 
 def Mapping_InstructionExecutionResourceOwnerRefAttr

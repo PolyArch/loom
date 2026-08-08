@@ -608,7 +608,12 @@ void loom::test::exerciseCapacityOveruseCandidate(
          requirement.pattern,
          mapping::SpatialRelativeActivationView{
              mapping::SpatialEventPointView{requirement.trigger, std::nullopt},
-             std::nullopt},
+             [&] {
+               std::vector<mapping::SpatialEventPointView> release;
+               for (const auto &event : requirement.release)
+                 release.push_back({event, std::nullopt});
+               return release;
+             }()},
          {},
          {}});
   const auto coldOveruse = take(mapping::detail::deriveSpatialCapacityOveruse(
@@ -866,6 +871,7 @@ void loom::test::exerciseTemporalComputeUseProjection(
 
   const auto &realization = techMapping.computeRealizations().front();
   std::size_t expectedEnqueues = 0;
+  std::size_t expectedDequeues = 0;
   std::size_t expectedTransitionUses = 0;
   for (const auto &boundary : realization.boundaries)
     if (boundary.direction == fabric::FabricPortDirection::Input)
@@ -884,27 +890,41 @@ void loom::test::exerciseTemporalComputeUseProjection(
               return boundary.actor == binding.actor &&
                      boundary.direction == fabric::FabricPortDirection::Input &&
                      boundary.portOrdinal == operand;
-            }))
+            })) {
           ++expectedTransitionUses;
+          ++expectedDequeues;
+        }
     }
   }
 
   std::size_t enqueues = 0;
+  std::size_t dequeues = 0;
   std::size_t transitionUses = 0;
+  const auto peOwner = loom::fabric::FabricInventoryOwnerRef::of(context.pe);
   for (const auto &use : uses) {
     if (std::holds_alternative<dataflow::CanonicalGraphConsumerEndpointRef>(
             use.trigger)) {
+      if (!use.release.empty())
+        fail("temporal enqueue ResourceUse gained a causal release");
       ++enqueues;
       continue;
     }
     if (std::holds_alternative<mapping::SpatialActorTransitionEventRef>(
-            use.trigger))
+            use.trigger)) {
       ++transitionUses;
+      if (use.pattern.owner.catalog() == peOwner) {
+        if (!use.release.empty())
+          fail("temporal dequeue ResourceUse gained a causal release");
+        ++dequeues;
+      }
+    }
   }
   if (enqueues != expectedEnqueues)
     fail("temporal ResourceUse projection omitted operand enqueue events");
   if (transitionUses != expectedTransitionUses)
     fail("temporal ResourceUse projection omitted operation or dequeue events");
+  if (dequeues != expectedDequeues)
+    fail("temporal ResourceUse projection omitted operand dequeue events");
 
   const auto &capacity = problem->capacity();
   const auto offsets = capacity.computeInstructionContextEnvelopeOffsets();

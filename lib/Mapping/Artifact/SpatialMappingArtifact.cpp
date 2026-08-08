@@ -19,6 +19,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefText.h"
 #include "Mapping/Artifact/SpatialProgressAnalysis.h"
+#include "Mapping/IR/MappingActivationKey.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "MappingAssemblyInternal.h"
 #include "MappingResourceUseImport.h"
@@ -698,6 +699,14 @@ requiredUseKey(const RequiredComputeUse &use,
     return encodedEvent.takeError();
   appendFramed(*encodedEvent);
   appendFramed(::loom::fabric::canonicalFabricBytes(use.pattern));
+  appendU64(use.release.size());
+  for (const auto &release : use.release) {
+    auto encodedRelease =
+        encodeSpatialActivityEventKey(dataflowIdentity, release);
+    if (!encodedRelease)
+      return encodedRelease.takeError();
+    appendFramed(*encodedRelease);
+  }
   return result;
 }
 
@@ -817,8 +826,20 @@ llvm::Expected<SpatialResourceUseView> importResourceUse(
   auto trigger = importEventPoint(activation.getTrigger(), dataflow);
   if (!trigger)
     return trigger.takeError();
-  if (trigger->guaranteedOffset || activation.getRelease())
-    return invalid("ResourceUse must use intrinsic event activation");
+  if (trigger->guaranteedOffset)
+    return invalid("ResourceUse trigger has an unsupported guaranteed offset");
+  std::vector<SpatialEventPointView> release;
+  release.reserve(activation.getRelease().size());
+  for (mlir::Attribute attribute : activation.getRelease()) {
+    auto imported = importEventPoint(
+        mlir::cast<::mapping::SpatialEventPointAttr>(attribute), dataflow);
+    if (!imported)
+      return imported.takeError();
+    if (imported->guaranteedOffset)
+      return invalid(
+          "ResourceUse release has an unsupported guaranteed offset");
+    release.push_back(std::move(*imported));
+  }
   auto values =
       detail::importResourceUsePatternValues(record, fabric, *pattern);
   if (!values)
@@ -857,15 +878,22 @@ llvm::Expected<SpatialResourceUseView> importResourceUse(
         tagUse->second.routeTreeOrdinal, tagUse->second.segmentOrdinal,
         tagUse->second.nodeOrdinals, resourceUseOrdinal};
     requiredTags.erase(tagUse);
+    if (!release.empty())
+      return invalid("Physical Tag ResourceUse requires intrinsic release");
     return SpatialResourceUseView{
         std::move(*importedOwner), *pattern,
-        SpatialRelativeActivationView{std::move(*trigger), std::nullopt},
+        SpatialRelativeActivationView{std::move(*trigger), {}},
         std::move(values->parameters), std::move(values->sharingAssignments)};
   }
 
   if (auto compute =
           dyn_cast<::mapping::ComputeRealizationRefAttr>(record.getOwner())) {
-    RequiredComputeUse keyValue{compute.getEntity(), trigger->event, *pattern};
+    std::vector<SpatialActivityEventRef> releaseEvents;
+    releaseEvents.reserve(release.size());
+    for (const auto &point : release)
+      releaseEvents.push_back(point.event);
+    RequiredComputeUse keyValue{compute.getEntity(), trigger->event, *pattern,
+                                std::move(releaseEvents)};
     auto key = requiredUseKey(keyValue, dataflow.identity());
     if (!key)
       return key.takeError();
@@ -875,7 +903,7 @@ llvm::Expected<SpatialResourceUseView> importResourceUse(
     requiredCompute.erase(found);
     return SpatialResourceUseView{
         SpatialComputeResourceOwnerRef{compute.getEntity()}, *pattern,
-        SpatialRelativeActivationView{std::move(*trigger), std::nullopt},
+        SpatialRelativeActivationView{std::move(*trigger), std::move(release)},
         std::move(values->parameters), std::move(values->sharingAssignments)};
   }
 
@@ -899,9 +927,11 @@ llvm::Expected<SpatialResourceUseView> importResourceUse(
       !llvm::is_contained(found->second.admissiblePatterns, *pattern))
     return invalid("ResourceUse is not admitted by its memory owner");
   requiredMemory.erase(found);
+  if (!release.empty())
+    return invalid("memory ResourceUse requires intrinsic release");
   return SpatialResourceUseView{
       std::move(*importedOwner), *pattern,
-      SpatialRelativeActivationView{std::move(*trigger), std::nullopt},
+      SpatialRelativeActivationView{std::move(*trigger), {}},
       std::move(values->parameters), std::move(values->sharingAssignments)};
 }
 
@@ -1314,18 +1344,15 @@ encodeSpatialActivityEventKey(const ArtifactIdentity &dataflowIdentity,
                               const SpatialActivityEventRef &event) {
   auto encoded = std::visit(
       [&](const auto &typed)
-          -> llvm::Expected<
-              std::pair<std::uint32_t, std::vector<std::uint8_t>>> {
+          -> llvm::Expected<std::tuple<std::uint32_t, std::vector<std::uint8_t>,
+                                       std::optional<std::uint32_t>>> {
         using Event = std::decay_t<decltype(typed)>;
         if constexpr (std::is_same_v<Event, SpatialActorTransitionEventRef>) {
           auto actor = ::dataflow::encodeDataflowReference(dataflowIdentity,
                                                            typed.actor);
           if (!actor)
             return actor.takeError();
-          for (unsigned byte = 0; byte < 4; ++byte)
-            actor->push_back(static_cast<std::uint8_t>(typed.transition >>
-                                                       (8 * (3 - byte))));
-          return std::make_pair(0U, std::move(*actor));
+          return std::make_tuple(0U, std::move(*actor), typed.transition);
         } else {
           auto bytes =
               ::dataflow::encodeDataflowReference(dataflowIdentity, typed);
@@ -1336,19 +1363,14 @@ encodeSpatialActivityEventKey(const ArtifactIdentity &dataflowIdentity,
                              ::dataflow::CanonicalGraphProducerEndpointRef>
                   ? 1U
                   : 2U;
-          return std::make_pair(tag, std::move(*bytes));
+          return std::make_tuple(tag, std::move(*bytes), std::nullopt);
         }
       },
       event);
   if (!encoded)
     return encoded.takeError();
-  std::vector<std::uint8_t> result;
-  result.reserve(4 + encoded->second.size());
-  for (unsigned byte = 0; byte < 4; ++byte)
-    result.push_back(
-        static_cast<std::uint8_t>(encoded->first >> (8 * (3 - byte))));
-  result.insert(result.end(), encoded->second.begin(), encoded->second.end());
-  return result;
+  return canonicalSpatialActivityEventKey(
+      std::get<0>(*encoded), std::get<1>(*encoded), std::get<2>(*encoded));
 }
 
 llvm::Expected<std::vector<SpatialComputeUseRequirement>>
@@ -1385,7 +1407,8 @@ deriveSpatialComputeBindingUseRequirements(
           ::dataflow::CanonicalGraphConsumerEndpointRef(
               ::dataflow::ActorTokenOperandRef{boundary.actor,
                                                boundary.portOrdinal}),
-          *pattern});
+          *pattern,
+          {}});
     }
   }
 
@@ -1410,6 +1433,11 @@ deriveSpatialComputeBindingUseRequirements(
         fabric.resolvedFabricOpCapability(*occurrenceOperation);
     if (!capability)
       return invalid("selected compute actor has no physical capability");
+    auto holdsActiveResults =
+        ::fabric::isOneCycleElasticOperationResourceContract(
+            capability->resourceStateAndTimingContract);
+    if (!holdsActiveResults)
+      return holdsActiveResults.takeError();
     for (const auto &transition : *cases) {
       auto pattern = ::fabric::resolveOperationUsePattern(
           capability->resourceStateAndTimingContract, transition.ordinal);
@@ -1417,13 +1445,40 @@ deriveSpatialComputeBindingUseRequirements(
         return pattern.takeError();
       const SpatialActorTransitionEventRef event{actorBinding.actor,
                                                  transition.ordinal};
+      std::vector<SpatialActivityEventRef> release;
+      std::vector<std::pair<std::vector<std::uint8_t>, SpatialActivityEventRef>>
+          keyedRelease;
+      if (*holdsActiveResults) {
+        keyedRelease.reserve(transition.activeResults.size());
+        for (std::uint32_t resultOrdinal : transition.activeResults) {
+          SpatialActivityEventRef produced =
+              ::dataflow::CanonicalGraphProducerEndpointRef(
+                  ::dataflow::ActorTokenResultRef{actorBinding.actor,
+                                                  resultOrdinal});
+          auto key =
+              encodeSpatialActivityEventKey(dataflow.identity(), produced);
+          if (!key)
+            return key.takeError();
+          keyedRelease.emplace_back(std::move(*key), std::move(produced));
+        }
+      }
+      llvm::sort(keyedRelease, [](const auto &left, const auto &right) {
+        return left.first < right.first;
+      });
+      for (auto &entry : keyedRelease) {
+        if (!release.empty() &&
+            entry.first == keyedRelease[release.size() - 1].first)
+          return invalid("actor handshake case has duplicate active results");
+        release.push_back(std::move(entry.second));
+      }
       result.push_back(SpatialComputeUseRequirement{
           realization.entityId, event,
           ::loom::fabric::FabricUsePatternRef{
               ::loom::fabric::FabricUsePatternOwnerRef(
                   ::loom::fabric::FabricInventoryOwnerRef::of(
                       *occurrenceOperation)),
-              pattern->ordinal()}});
+              pattern->ordinal()},
+          std::move(release)});
       if (!temporal)
         continue;
       for (std::uint32_t operand : transition.consumedInputs) {
@@ -1447,8 +1502,8 @@ deriveSpatialComputeBindingUseRequirements(
             ::fabric::TemporalOperandQueueUse::Dequeue);
         if (!queuePattern)
           return queuePattern.takeError();
-        result.push_back(SpatialComputeUseRequirement{realization.entityId,
-                                                      event, *queuePattern});
+        result.push_back(SpatialComputeUseRequirement{
+            realization.entityId, event, *queuePattern, {}});
       }
     }
   }

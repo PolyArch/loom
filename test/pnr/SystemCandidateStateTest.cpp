@@ -892,7 +892,7 @@ int main() {
             "System ResourceUse lost its typed activation");
     if (mlir::isa<::mapping::InstructionExecutionResourceOwnerRefAttr>(
             use.getOwner())) {
-      require(static_cast<bool>(activation.getRelease()),
+      require(activation.getRelease().size() == 1,
               "InstructionCore occupancy lost root completion release");
       ++instructionUseCount;
       continue;
@@ -902,7 +902,7 @@ int main() {
     require(owner && mlir::isa<::mapping::MemoryRegionElementKeyAttr>(
                          owner.getElement()),
             "addressed service use lost its exact MemoryRegion owner");
-    require(!activation.getRelease(),
+    require(activation.getRelease().empty(),
             "addressed service use gained a causal release");
     auto event =
         take(dataflow::decodeDataflowReference<dataflow::EventFamilyKey>(

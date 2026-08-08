@@ -161,17 +161,17 @@ llvm::Error emitSystemResourceUse(
     return triggerAttr.takeError();
   auto trigger = ::mapping::SystemEventPointAttr::get(
       builder.getContext(), *triggerAttr, ::mapping::OwnerTypedValueAttr());
-  ::mapping::SystemEventPointAttr release;
+  llvm::SmallVector<mlir::Attribute, 1> release;
   if (releaseEvent) {
     auto releaseAttr =
         eventFamilyAttr(builder.getContext(), dataflowIdentity, *releaseEvent);
     if (!releaseAttr)
       return releaseAttr.takeError();
-    release = ::mapping::SystemEventPointAttr::get(
-        builder.getContext(), *releaseAttr, ::mapping::OwnerTypedValueAttr());
+    release.push_back(::mapping::SystemEventPointAttr::get(
+        builder.getContext(), *releaseAttr, ::mapping::OwnerTypedValueAttr()));
   }
   auto activation = ::mapping::SystemRelativeActivationAttr::get(
-      builder.getContext(), trigger, release);
+      builder.getContext(), trigger, builder.getArrayAttr(release));
   builder.setInsertionPointToEnd(&body);
   ::mapping::ResourceUseOp::create(
       builder, location, owner,

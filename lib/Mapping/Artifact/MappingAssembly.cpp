@@ -4,6 +4,7 @@
 #include "MappingAssemblyInternal.h"
 #include "TechMappingCanonicalKeyInternal.h"
 
+#include "Mapping/IR/MappingActivationKey.h"
 #include "Mapping/IR/MappingOps.h"
 
 #include "mlir/IR/Builders.h"
@@ -61,6 +62,11 @@ void appendFramed(std::string &result, llvm::StringRef value) {
   result.append(value.data(), value.size());
 }
 
+void appendFramed(std::string &result, llvm::ArrayRef<std::uint8_t> value) {
+  appendU64(result, value.size());
+  result.append(reinterpret_cast<const char *>(value.data()), value.size());
+}
+
 void canonicalizeRefinements(Operation *operation) {
   auto refinements = operation->getAttrOfType<ArrayAttr>("refinements");
   if (!refinements)
@@ -76,44 +82,6 @@ void canonicalizeRefinements(Operation *operation) {
   });
   operation->setAttr("refinements",
                      ArrayAttr::get(operation->getContext(), ordered));
-}
-
-std::string eventKey(Attribute event) {
-  std::string result;
-  if (auto transition = dyn_cast<::mapping::ActorTransitionEventAttr>(event)) {
-    appendU32(result, 0);
-    appendFramed(result, recordKey(transition.getActor().getRecord()));
-    appendU32(result, transition.getTransition());
-    return result;
-  }
-  if (auto produced =
-          dyn_cast<::mapping::GraphProducerEndpointRefAttr>(event)) {
-    appendU32(result, 1);
-    appendFramed(result, recordKey(produced.getRecord()));
-    return result;
-  }
-  auto consumed = cast<::mapping::GraphConsumerEndpointRefAttr>(event);
-  appendU32(result, 2);
-  appendFramed(result, recordKey(consumed.getRecord()));
-  return result;
-}
-
-std::string eventPointKey(::mapping::SpatialEventPointAttr point) {
-  std::string result = eventKey(point.getEvent());
-  auto offset = point.getGuaranteedOffset();
-  appendU32(result, offset ? 1 : 0);
-  if (offset)
-    appendFramed(result, recordKey(offset.getRecord()));
-  return result;
-}
-
-std::string eventPointKey(::mapping::SystemEventPointAttr point) {
-  std::string result = recordKey(point.getEvent().getRecord());
-  auto offset = point.getGuaranteedOffset();
-  appendU32(result, offset ? 1 : 0);
-  if (offset)
-    appendFramed(result, recordKey(offset.getRecord()));
-  return result;
 }
 
 std::string memoryIntervalKey(Attribute interval);
@@ -200,18 +168,21 @@ std::string resourceUseSemanticKey(::mapping::ResourceUseOp use) {
   auto activation = use.getActivation();
   if (auto spatial =
           dyn_cast<::mapping::SpatialRelativeActivationAttr>(activation)) {
-    appendFramed(result, eventPointKey(spatial.getTrigger()));
-    auto release = spatial.getRelease();
-    appendU32(result, release ? 1 : 0);
-    if (release)
-      appendFramed(result, eventPointKey(release));
+    appendFramed(result,
+                 ::loom::mapping::canonicalEventPointKey(spatial.getTrigger()));
+    appendU64(result, spatial.getRelease().size());
+    for (Attribute release : spatial.getRelease())
+      appendFramed(result,
+                   ::loom::mapping::canonicalEventPointKey(
+                       cast<::mapping::SpatialEventPointAttr>(release)));
   } else {
     auto system = cast<::mapping::SystemRelativeActivationAttr>(activation);
-    appendFramed(result, eventPointKey(system.getTrigger()));
-    auto release = system.getRelease();
-    appendU32(result, release ? 1 : 0);
-    if (release)
-      appendFramed(result, eventPointKey(release));
+    appendFramed(result,
+                 ::loom::mapping::canonicalEventPointKey(system.getTrigger()));
+    appendU64(result, system.getRelease().size());
+    for (Attribute release : system.getRelease())
+      appendFramed(result, ::loom::mapping::canonicalEventPointKey(
+                               cast<::mapping::SystemEventPointAttr>(release)));
   }
   appendTypedValues(result, use.getParameters());
   appendTypedValues(result, use.getSharingAssignments());

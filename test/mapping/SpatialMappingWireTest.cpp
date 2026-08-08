@@ -68,11 +68,25 @@ std::string fabricAttr(llvm::StringRef spelling, const Ref &ref) {
          byteList(loom::fabric::canonicalFabricBytes(ref)) + ">";
 }
 
-std::string spatialModule(bool duplicateUse, bool missingOwner) {
+enum class ReleaseShape {
+  Single,
+  CanonicalPair,
+  ReversedPair,
+  Duplicate,
+  CrossLengthPair,
+  ReversedCrossLengthPair,
+};
+
+std::string spatialModule(bool duplicateUse, bool missingOwner,
+                          ReleaseShape releaseShape = ReleaseShape::Single) {
   const loom::ArtifactIdentity dataflowOwner = identity(17);
   const dataflow::ActorRef actor{dataflowOwner, dataflow::ActorId(7)};
   const dataflow::CanonicalGraphProducerEndpointRef producer =
       dataflow::ActorTokenResultRef{actor, 0};
+  const dataflow::GraphRef graph{dataflowOwner, dataflow::GraphId(9)};
+  const dataflow::CanonicalGraphProducerEndpointRef graphInput =
+      dataflow::GraphIngressTokenRef{
+          dataflow::GraphValueInputTokenRef{graph, 0}};
   const loom::fabric::FabricFuOccurrenceRef occurrence(5);
   const loom::fabric::InstructionContextRef context{
       loom::fabric::FabricPeOccurrenceRef(3), 0};
@@ -89,12 +103,39 @@ std::string spatialModule(bool duplicateUse, bool missingOwner) {
       dataflowAttr("actor_ref", dataflowOwner, actor) + ", transition = 0>";
   const std::string producerEvent =
       dataflowAttr("graph_producer_endpoint_ref", dataflowOwner, producer);
+  const std::string graphInputEvent =
+      dataflowAttr("graph_producer_endpoint_ref", dataflowOwner, graphInput);
+  const std::string actorPoint =
+      "#mapping.spatial_event_point<event = " + actorEvent + ">";
+  const std::string producerPoint =
+      "#mapping.spatial_event_point<event = " + producerEvent + ">";
+  const std::string graphInputPoint =
+      "#mapping.spatial_event_point<event = " + graphInputEvent + ">";
+  std::string release;
+  switch (releaseShape) {
+  case ReleaseShape::Single:
+    release = producerPoint;
+    break;
+  case ReleaseShape::CanonicalPair:
+    release = actorPoint + ", " + producerPoint;
+    break;
+  case ReleaseShape::ReversedPair:
+    release = producerPoint + ", " + actorPoint;
+    break;
+  case ReleaseShape::Duplicate:
+    release = producerPoint + ", " + producerPoint;
+    break;
+  case ReleaseShape::CrossLengthPair:
+    release = graphInputPoint + ", " + producerPoint;
+    break;
+  case ReleaseShape::ReversedCrossLengthPair:
+    release = producerPoint + ", " + graphInputPoint;
+    break;
+  }
   const std::string activation =
       "#mapping.spatial_relative_activation<trigger = "
       "#mapping.spatial_event_point<event = " +
-      actorEvent +
-      ">, release = #mapping.spatial_event_point<event = " + producerEvent +
-      ">>";
+      actorEvent + ">, release = [" + release + "]>";
   const std::string use =
       "    mapping.resource_use owner(#mapping.compute_realization_ref<" +
       std::to_string(binding) + ">) use_site(" +
@@ -102,7 +143,7 @@ std::string spatialModule(bool duplicateUse, bool missingOwner) {
       activation + ") parameters([]) sharing([])\n";
 
   return "module {\n"
-         "  mapping.spatial version<3, 0> tech_mapping(" +
+         "  mapping.spatial version<4, 0> tech_mapping(" +
          identityAttr(identity(25)) + ") dataflow(" +
          identityAttr(dataflowOwner) + ") fabric(" +
          identityAttr(identity(34)) +
@@ -160,7 +201,7 @@ std::string routeModule(bool canonicalOrdinals, bool duplicateSink,
       ") node " + std::to_string(sinkNode) + "\n";
 
   return "module {\n"
-         "  mapping.spatial version<3, 0> tech_mapping(" +
+         "  mapping.spatial version<4, 0> tech_mapping(" +
          identityAttr(identity(25)) + ") dataflow(" +
          identityAttr(dataflowOwner) + ") fabric(" +
          identityAttr(identity(34)) +
@@ -215,7 +256,7 @@ std::string memoryBindingModule(bool localRegion, bool zeroSizedRange,
                              "target(#mapping.memory_boundary_proxy) {}\n";
 
   return "module {\n"
-         "  mapping.spatial version<3, 0> tech_mapping(" +
+         "  mapping.spatial version<4, 0> tech_mapping(" +
          identityAttr(identity(25)) + ") dataflow(" +
          identityAttr(dataflowOwner) + ") fabric(" +
          identityAttr(identity(34)) + ") {\n" + first + second +
@@ -255,7 +296,7 @@ std::string memoryBindingCanonicalModule(bool reverseAuthoringOrder) {
   const std::string body =
       reverseAuthoringOrder ? second + first : first + second;
   return "module {\n"
-         "  mapping.spatial version<3, 0> tech_mapping(" +
+         "  mapping.spatial version<4, 0> tech_mapping(" +
          identityAttr(identity(25)) + ") dataflow(" +
          identityAttr(dataflowOwner) + ") fabric(" +
          identityAttr(identity(34)) + ") {\n" + body +
@@ -318,7 +359,7 @@ std::string memoryOperationModule(bool localBinding, bool localDispatch,
                       (duplicateUse ? firstUse : "");
 
   return "module {\n"
-         "  mapping.spatial version<3, 0> tech_mapping(" +
+         "  mapping.spatial version<4, 0> tech_mapping(" +
          identityAttr(identity(25)) + ") dataflow(" +
          identityAttr(dataflowOwner) + ") fabric(" +
          identityAttr(identity(34)) +
@@ -382,7 +423,7 @@ std::string fenceOperationModule(bool reverseUses, bool duplicateUse,
                       (duplicateUse ? firstUse : "");
 
   return "module {\n"
-         "  mapping.spatial version<3, 0> tech_mapping(" +
+         "  mapping.spatial version<4, 0> tech_mapping(" +
          identityAttr(identity(25)) + ") dataflow(" +
          identityAttr(dataflowOwner) + ") fabric(" +
          identityAttr(identity(34)) +
@@ -420,13 +461,13 @@ void testTypedSpatialResourceUse() {
     fail("typed SpatialMapping ResourceUse did not verify");
 
   std::string legacy = spatialModule(false, false);
-  const std::string current = "version<3, 0>";
+  const std::string current = "version<4, 0>";
   const std::size_t position = legacy.find(current);
   if (position == std::string::npos)
     fail("SpatialMapping version fixture has no current version");
-  legacy.replace(position, current.size(), "version<2, 0>");
+  legacy.replace(position, current.size(), "version<3, 0>");
   if (parse(context, legacy))
-    fail("mapping.spatial 2.0 was accepted by the 3.0 parser");
+    fail("mapping.spatial 3.0 was accepted by the 4.0 parser");
 
   std::string printed;
   llvm::raw_string_ostream stream(printed);
@@ -435,6 +476,34 @@ void testTypedSpatialResourceUse() {
   auto reparsed = parse(context, printed);
   if (!reparsed || mlir::failed(mlir::verify(*reparsed)))
     fail("typed SpatialMapping ResourceUse did not round trip");
+
+  auto conjunctive =
+      parse(context, spatialModule(false, false, ReleaseShape::CanonicalPair));
+  if (!conjunctive || mlir::failed(mlir::verify(*conjunctive)))
+    fail("canonical conjunctive release did not verify");
+  if (!rejected(context,
+                spatialModule(false, false, ReleaseShape::ReversedPair)))
+    fail("conjunctive release accepted noncanonical member order");
+  if (!rejected(context, spatialModule(false, false, ReleaseShape::Duplicate)))
+    fail("conjunctive release accepted a duplicate event point");
+
+  auto crossLength = parse(
+      context, spatialModule(false, false, ReleaseShape::CrossLengthPair));
+  if (!crossLength || mlir::failed(mlir::verify(*crossLength)))
+    fail("canonical release ordered by exact reference bytes did not verify");
+  if (!rejected(context, spatialModule(false, false,
+                                       ReleaseShape::ReversedCrossLengthPair)))
+    fail("release ordering used framed reference lengths as an authority");
+
+  auto singleRoot = module->getOps<::mapping::SpatialOp>();
+  auto conjunctiveRoot = conjunctive->getOps<::mapping::SpatialOp>();
+  auto singleBytes = take(
+      loom::mapping::writeCanonicalSpatialMappingAssembly(*singleRoot.begin()));
+  auto conjunctiveBytes =
+      take(loom::mapping::writeCanonicalSpatialMappingAssembly(
+          *conjunctiveRoot.begin()));
+  if (singleBytes.bytes().equals(conjunctiveBytes.bytes()))
+    fail("release membership did not affect canonical Spatial identity bytes");
 }
 
 void testResourceUseOwnerClosure() {

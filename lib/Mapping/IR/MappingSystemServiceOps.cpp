@@ -181,13 +181,15 @@ LogicalResult mapping::SystemOp::verify() {
           instruction.getRoot(), *dataflowOwner);
       auto activation =
           dyn_cast<mapping::SystemRelativeActivationAttr>(use.getActivation());
-      if (!root || !activation || !activation.getRelease())
+      if (!root || !activation || activation.getRelease().size() != 1)
         return use.emitOpError(
             "InstructionCore occupancy requires root start and completion");
       auto trigger = decodeDataflow<::dataflow::EventFamilyKey>(
           activation.getTrigger().getEvent(), *dataflowOwner);
       auto release = decodeDataflow<::dataflow::EventFamilyKey>(
-          activation.getRelease().getEvent(), *dataflowOwner);
+          cast<mapping::SystemEventPointAttr>(*activation.getRelease().begin())
+              .getEvent(),
+          *dataflowOwner);
       if (!trigger || !release) {
         if (!trigger)
           return use.emitOpError() << llvm::toString(trigger.takeError());
@@ -240,7 +242,7 @@ LogicalResult mapping::SystemOp::verify() {
       return use.emitOpError("ServicePlanElement owner is absent");
     auto activation =
         cast<mapping::SystemRelativeActivationAttr>(use.getActivation());
-    if (activation.getRelease())
+    if (!activation.getRelease().empty())
       return use.emitOpError(
           "service ResourceUse requires intrinsic completion");
     auto trigger = decodeDataflow<::dataflow::EventFamilyKey>(

@@ -238,8 +238,8 @@ loom::adg::MemorySpec makeStorageProvider(mlir::MLIRContext &context) {
   auto write =
       take(::fabric::ClosedEnumDomain<::fabric::WriteSubwordSemantics>::
                fromCanonical({::fabric::WriteSubwordSemantics::NotApplicable}));
-  auto address = take(
-      ::fabric::MemoryAddressDomain::rootRelative(singleton(64)));
+  auto address =
+      take(::fabric::MemoryAddressDomain::rootRelative(singleton(64)));
   auto access = take(::fabric::MemoryAccessClass::create(
       ::dataflow::semantics::MemoryAccessForm::Element, singleton(32),
       singleton(1),
@@ -284,7 +284,9 @@ loom::adg::MemorySpec makeStorageProvider(mlir::MLIRContext &context) {
 
 void addTokenSyncFu(loom::adg::PeBuilder &pe,
                     llvm::ArrayRef<loom::adg::PeValue> inputs,
-                    const loom::adg::PortType &type) {
+                    const loom::adg::PortType &type,
+                    const ::fabric::ResourceContract &contract =
+                        ::fabric::oneCycleElasticOperationResourceContract()) {
   using loom::adg::FuCapabilityTemplateSpec;
   using loom::adg::FuSpec;
   using loom::adg::OperationCapabilitySpec;
@@ -295,12 +297,12 @@ void addTokenSyncFu(loom::adg::PeBuilder &pe,
   for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
     fuInputs.push_back(take(fu.input(ordinal)));
   auto operation = take(fu.addOperation(
-      fuInputs, OperationCapabilitySpec{
-                    ::fabric::ImplementationFamilyId::TokenSync,
-                    ::fabric::RoutedTokenParams{128, 4},
-                    {::dataflow::OperationSchemaId::DataflowSync},
-                    types,
-                    ::fabric::oneCycleElasticOperationResourceContract()}));
+      fuInputs,
+      OperationCapabilitySpec{::fabric::ImplementationFamilyId::TokenSync,
+                              ::fabric::RoutedTokenParams{128, 4},
+                              {::dataflow::OperationSchemaId::DataflowSync},
+                              types,
+                              contract}));
   requireSuccess(
       fu.addCapabilityTemplate(FuCapabilityTemplateSpec{{operation}, {}}));
   std::vector<loom::adg::FuValue> outputs;
@@ -309,7 +311,8 @@ void addTokenSyncFu(loom::adg::PeBuilder &pe,
   requireSuccess(fu.close(outputs));
 }
 
-loom::fabric::FinalizedFabricRoot buildFabric(loom::ArtifactStore &store) {
+loom::fabric::FinalizedFabricRoot buildFabric(loom::ArtifactStore &store,
+                                              bool oneCycleElastic = true) {
   using loom::adg::DesignBuilder;
   using loom::adg::PeSpec;
   using loom::adg::PortType;
@@ -325,7 +328,10 @@ loom::fabric::FinalizedFabricRoot buildFabric(loom::ArtifactStore &store) {
   std::vector<loom::adg::PeValue> peInputs;
   for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
     peInputs.push_back(take(pe.input(ordinal)));
-  addTokenSyncFu(pe, peInputs, bits128);
+  addTokenSyncFu(pe, peInputs, bits128,
+                 oneCycleElastic
+                     ? ::fabric::oneCycleElasticOperationResourceContract()
+                     : ::fabric::loopCarryOperationResourceContract());
   requireSuccess(pe.close());
   std::vector<loom::adg::SpatialValue> outputs;
   for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
@@ -342,8 +348,8 @@ loom::fabric::FinalizedFabricRoot buildMemoryFabric(loom::ArtifactStore &store,
   loom::adg::LocalMemoryParameters parameters;
   parameters.capacityBytes = 4096;
   parameters.interface = {
-      loom::adg::MemoryAccessDomainParameters{128, 128, 16, singleton(64)},
-      128, 128};
+      loom::adg::MemoryAccessDomainParameters{128, 128, 16, singleton(64)}, 128,
+      128};
   parameters.managerEndpoint = true;
   if (temporal)
     parameters.temporal = loom::adg::TemporalMemoryParameters{4, 2};
@@ -367,11 +373,9 @@ loom::fabric::FinalizedFabricRoot buildMemoryFabric(loom::ArtifactStore &store,
   std::vector<loom::adg::SpatialValue> combinedOutputs;
   combinedOutputs.reserve(memoryOutputs.values().size() +
                           storageOutputs.values().size());
-  combinedOutputs.insert(combinedOutputs.end(),
-                         memoryOutputs.values().begin(),
+  combinedOutputs.insert(combinedOutputs.end(), memoryOutputs.values().begin(),
                          memoryOutputs.values().end());
-  combinedOutputs.insert(combinedOutputs.end(),
-                         storageOutputs.values().begin(),
+  combinedOutputs.insert(combinedOutputs.end(), storageOutputs.values().begin(),
                          storageOutputs.values().end());
   requireSuccess(spatial.close(combinedOutputs));
   auto design = take(std::move(builder).finalize());
@@ -647,7 +651,8 @@ void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
 }
 
 void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
-                                bool forceTagConflict = false) {
+                                bool forceTagConflict = false,
+                                bool oneCycleElastic = true) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   llvm::SmallString<128> blobPath(directory.path());
@@ -663,7 +668,7 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
   auto dataflow = take(dataflowArtifact.view());
   const auto fabric = boundaryWrapped ? buildBoundaryTemporalFabric(store)
                       : temporal      ? buildTemporalFabric(store)
-                                      : buildFabric(store);
+                                      : buildFabric(store, oneCycleElastic);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 1;
@@ -687,7 +692,7 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
   if (!temporal && !boundaryWrapped && !forceTagConflict)
     loom::test::exerciseSpatialAttachmentConstraintRelations(
         context, dataflow, tech.view(), fabric.view(), store);
-  if (!temporal && !boundaryWrapped && !forceTagConflict) {
+  if (oneCycleElastic && !temporal && !boundaryWrapped && !forceTagConflict) {
     loom::ResolvedConfig generatorResolved =
         loom::test::buildSpatialPnrTestResolvedConfig();
     auto &search = generatorResolved.dse.spatialPnr.search;
@@ -1158,6 +1163,82 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
       imported.view().routeTrees().empty() ||
       imported.view().resourceUses().empty())
     fail("strict SpatialMapping round trip lost selected closure");
+  bool observedCompleteResultTuple = false;
+  bool sawComputeTransition = false;
+  bool allComputeIntrinsic = true;
+  for (const auto &use : imported.view().resourceUses()) {
+    if (!std::holds_alternative<loom::mapping::SpatialComputeResourceOwnerRef>(
+            use.owner) ||
+        !std::holds_alternative<loom::mapping::SpatialActorTransitionEventRef>(
+            use.activation.trigger.event))
+      continue;
+    sawComputeTransition = true;
+    allComputeIntrinsic &= use.activation.release.empty();
+    if (use.activation.release.size() != 2)
+      continue;
+    const auto &transition =
+        std::get<loom::mapping::SpatialActorTransitionEventRef>(
+            use.activation.trigger.event);
+    bool firstResult = false;
+    bool secondResult = false;
+    for (const auto &point : use.activation.release) {
+      const auto *producer =
+          std::get_if<dataflow::CanonicalGraphProducerEndpointRef>(
+              &point.event);
+      if (!producer)
+        continue;
+      const auto *result = std::get_if<dataflow::ActorTokenResultRef>(producer);
+      if (!result || result->actor != transition.actor)
+        continue;
+      firstResult |= result->ordinal == 0;
+      secondResult |= result->ordinal == 1;
+    }
+    observedCompleteResultTuple |= firstResult && secondResult;
+  }
+  if (oneCycleElastic && !observedCompleteResultTuple)
+    fail("Spatial compute use lost its complete active-result release tuple");
+  if (!oneCycleElastic && (!sawComputeTransition || !allComputeIntrinsic))
+    fail("same-cycle compute use gained a causal result release");
+  if (oneCycleElastic) {
+    const auto requireRejectedReleaseMutation = [&](bool removeMember) {
+      auto mutated = parseSpatial(context, finalized.canonicalBytes());
+      if (!mutated)
+        fail("cannot reparse active-result release fixture");
+      auto mutatedRoot = *mutated->getOps<::mapping::SpatialOp>().begin();
+      std::optional<::mapping::ResourceUseOp> computeUse;
+      for (auto use :
+           mutatedRoot.getBody().front().getOps<::mapping::ResourceUseOp>()) {
+        auto activation =
+            mlir::dyn_cast<::mapping::SpatialRelativeActivationAttr>(
+                use.getActivation());
+        if (activation && activation.getRelease().size() == 2) {
+          computeUse = use;
+          break;
+        }
+      }
+      if (!computeUse)
+        fail("SpatialMapping fixture has no complete result release tuple");
+      auto activation = mlir::cast<::mapping::SpatialRelativeActivationAttr>(
+          computeUse->getActivation());
+      auto release = llvm::to_vector(activation.getRelease());
+      if (removeMember) {
+        release.pop_back();
+      } else {
+        release.insert(release.begin(), activation.getTrigger());
+      }
+      computeUse->setActivationAttr(
+          ::mapping::SpatialRelativeActivationAttr::get(
+              &context, activation.getTrigger(),
+              mlir::ArrayAttr::get(&context, release)));
+      if (!rejected(loom::mapping::verifySpatialMappingBase(
+              mutatedRoot, dataflow, tech.view(), fabric.view())))
+        fail(removeMember
+                 ? "SpatialMapping accepted an incomplete result release tuple"
+                 : "SpatialMapping accepted an extra result release member");
+    };
+    requireRejectedReleaseMutation(true);
+    requireRejectedReleaseMutation(false);
+  }
   auto coldTraversalClaims =
       take(loom::pnr::projectSpatialMappingTraversalClaims(*problem,
                                                            imported.view()));
@@ -1168,9 +1249,12 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
     bool observedEnqueue = false;
     bool observedTransition = false;
     for (const auto &use : imported.view().resourceUses()) {
-      observedEnqueue |=
+      const bool enqueue =
           std::holds_alternative<dataflow::CanonicalGraphConsumerEndpointRef>(
               use.activation.trigger.event);
+      observedEnqueue |= enqueue;
+      if (enqueue && !use.activation.release.empty())
+        fail("Temporal queue use gained a causal result release");
       observedTransition |=
           std::holds_alternative<loom::mapping::SpatialActorTransitionEventRef>(
               use.activation.trigger.event);
@@ -1188,13 +1272,16 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
         dataflowReference, fabric.reference(), finalized.reference(),
         buildTemporalFabric(store).reference(), store, blobs, true);
     std::size_t observedAssignments = 0;
-    for (const auto &use : imported.view().resourceUses())
+    for (const auto &use : imported.view().resourceUses()) {
+      if (!use.sharingAssignments.empty() && !use.activation.release.empty())
+        fail("Physical Tag ResourceUse gained a causal release");
       for (const auto &value : use.sharingAssignments) {
         const auto *tag = std::get_if<fabric::PhysicalTagPatternValue>(&value);
         if (!tag || tag->value.getBitWidth() != 4)
           fail("SpatialMapping did not adopt an exact Physical Tag value");
         ++observedAssignments;
       }
+    }
     if (observedAssignments != expectedAssignments)
       fail("SpatialMapping did not persist every continuity origin exactly "
            "once");
@@ -1587,6 +1674,8 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   for (const auto &use : imported.view().resourceUses()) {
     if (!use.sharingAssignments.empty())
       continue;
+    if (!use.activation.release.empty())
+      fail("memory ResourceUse gained a causal release");
     operationPortUseCount += std::holds_alternative<
         loom::mapping::SpatialMemoryEngineResourceOwnerRef>(use.owner);
     localServiceUseCount += std::holds_alternative<
@@ -1700,6 +1789,7 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
 int main() {
   temporalPeTagMatchDomainsAreIngressLocal();
   completeCandidateRoundTrip(false);
+  completeCandidateRoundTrip(false, false, false, false);
   completeCandidateRoundTrip(true);
   completeCandidateRoundTrip(true, true);
   completeCandidateRoundTrip(true, true, true);

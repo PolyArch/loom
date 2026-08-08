@@ -1,4 +1,5 @@
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/IR/ResourceContractRecord.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -84,6 +85,18 @@ const fabric::ResourceContract &
 fabric::oneCycleElasticOperationResourceContract() {
   static const ResourceContract contract = createOneCycleElasticContract();
   return contract;
+}
+
+llvm::Expected<bool> fabric::isOneCycleElasticOperationResourceContract(
+    const ResourceContract &contract) {
+  auto actual = encodeResourceContractRecord(contract);
+  if (!actual)
+    return actual.takeError();
+  auto expected =
+      encodeResourceContractRecord(oneCycleElasticOperationResourceContract());
+  if (!expected)
+    return expected.takeError();
+  return *actual == *expected;
 }
 
 const fabric::ResourceContract &fabric::loopStreamOperationResourceContract() {

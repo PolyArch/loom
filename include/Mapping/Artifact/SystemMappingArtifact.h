@@ -165,7 +165,7 @@ struct SystemEventPointView final {
 
 struct SystemRelativeActivationView final {
   SystemEventPointView trigger;
-  std::optional<SystemEventPointView> release;
+  std::vector<SystemEventPointView> release;
 };
 
 struct SystemResourceUseView final {

@@ -169,9 +169,9 @@ ParseResult mapping::TechOp::parse(OpAsmParser &parser,
       parser.parseInteger(major) || parser.parseComma() ||
       parser.parseInteger(minor) || parser.parseGreater())
     return failure();
-  if (major != 3 || minor != 0)
+  if (major != 4 || minor != 0)
     return parser.emitError(parser.getCurrentLocation(),
-                            "mapping.tech requires schema version 3.0");
+                            "mapping.tech requires schema version 4.0");
 
   mapping::ArtifactIdentityAttr dataflow;
   mapping::ArtifactIdentityAttr fabric;
@@ -195,7 +195,7 @@ ParseResult mapping::TechOp::parse(OpAsmParser &parser,
 }
 
 void mapping::TechOp::print(OpAsmPrinter &printer) {
-  printer << " version<3, 0> dataflow(" << getDataflow() << ") fabric("
+  printer << " version<4, 0> dataflow(" << getDataflow() << ") fabric("
           << getFabric() << ") covers(" << getCovers() << ") ";
   printer.printRegion(getBody(), /*printEntryBlockArgs=*/false,
                       /*printBlockTerminators=*/false);
@@ -463,9 +463,9 @@ ParseResult mapping::SpatialOp::parse(OpAsmParser &parser,
       parser.parseInteger(major) || parser.parseComma() ||
       parser.parseInteger(minor) || parser.parseGreater())
     return failure();
-  if (major != 3 || minor != 0)
+  if (major != 4 || minor != 0)
     return parser.emitError(parser.getCurrentLocation(),
-                            "mapping.spatial requires schema version 3.0");
+                            "mapping.spatial requires schema version 4.0");
 
   mapping::ArtifactIdentityAttr techMapping;
   mapping::ArtifactIdentityAttr dataflow;
@@ -489,7 +489,7 @@ ParseResult mapping::SpatialOp::parse(OpAsmParser &parser,
 }
 
 void mapping::SpatialOp::print(OpAsmPrinter &printer) {
-  printer << " version<3, 0> tech_mapping(" << getTechMapping() << ") dataflow("
+  printer << " version<4, 0> tech_mapping(" << getTechMapping() << ") dataflow("
           << getDataflow() << ") fabric(" << getFabric() << ") ";
   printer.printRegion(getBody(), /*printEntryBlockArgs=*/false,
                       /*printBlockTerminators=*/false);
@@ -886,9 +886,9 @@ ParseResult mapping::SystemOp::parse(OpAsmParser &parser,
       parser.parseInteger(major) || parser.parseComma() ||
       parser.parseInteger(minor) || parser.parseGreater())
     return failure();
-  if (major != 3 || minor != 0)
+  if (major != 4 || minor != 0)
     return parser.emitError(parser.getCurrentLocation(),
-                            "mapping.system requires schema version 3.0");
+                            "mapping.system requires schema version 4.0");
 
   mapping::ArtifactIdentityAttr dataflow;
   mapping::ArtifactIdentityAttr fabric;
@@ -916,7 +916,7 @@ ParseResult mapping::SystemOp::parse(OpAsmParser &parser,
 }
 
 void mapping::SystemOp::print(OpAsmPrinter &printer) {
-  printer << " version<3, 0> dataflow(" << getDataflow() << ") fabric("
+  printer << " version<4, 0> dataflow(" << getDataflow() << ") fabric("
           << getFabric() << ") spatial_mapping_imports("
           << getSpatialMappingImports() << ") root_thread_launches("
           << getRootThreadLaunches() << ") ";

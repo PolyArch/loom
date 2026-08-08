@@ -1,5 +1,6 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
+#include "Mapping/IR/MappingActivationKey.h"
 #include "Mapping/IR/MappingDialect.h"
 
 #include "Dataflow/IR/DataflowReferenceCodec.h"
@@ -297,8 +298,8 @@ void testSystemResourceUseWire(mlir::MLIRContext &context,
       &context, eventAttr(startEvent), ::mapping::OwnerTypedValueAttr());
   const auto release = ::mapping::SystemEventPointAttr::get(
       &context, eventAttr(completionEvent), ::mapping::OwnerTypedValueAttr());
-  const auto activation =
-      ::mapping::SystemRelativeActivationAttr::get(&context, trigger, release);
+  const auto activation = ::mapping::SystemRelativeActivationAttr::get(
+      &context, trigger, mlir::ArrayAttr::get(&context, {release}));
   const auto owner = ::mapping::InstructionExecutionResourceOwnerRefAttr::get(
       &context,
       dataflowAttr<::mapping::RootThreadLaunchRefAttr>(
@@ -318,6 +319,71 @@ void testSystemResourceUseWire(mlir::MLIRContext &context,
   require(mlir::succeeded(mlir::verify(*reparsed)),
           "typed SystemMapping ResourceUse did not round trip");
 
+  auto missingRelease = buildSystem(context, fixture);
+  auto missingReleaseRoot =
+      mlir::cast<::mapping::SystemOp>(missingRelease.get());
+  mlir::OpBuilder missingReleaseBuilder(&context);
+  missingReleaseBuilder.setInsertionPointToEnd(
+      &missingReleaseRoot.getBody().front());
+  ::mapping::ResourceUseOp::create(
+      missingReleaseBuilder, missingReleaseBuilder.getUnknownLoc(), owner,
+      fabricAttr<::mapping::FabricUsePatternRefAttr>(&context, usePattern),
+      ::mapping::SystemRelativeActivationAttr::get(
+          &context, trigger, mlir::ArrayAttr::get(&context, {})),
+      missingReleaseBuilder.getArrayAttr({}),
+      missingReleaseBuilder.getArrayAttr({}));
+  requireVerificationFailure(missingReleaseRoot,
+                             "requires root start and completion");
+
+  auto excessRelease = buildSystem(context, fixture);
+  auto excessReleaseRoot = mlir::cast<::mapping::SystemOp>(excessRelease.get());
+  mlir::OpBuilder excessReleaseBuilder(&context);
+  excessReleaseBuilder.setInsertionPointToEnd(
+      &excessReleaseRoot.getBody().front());
+  std::array<::mapping::SystemEventPointAttr, 2> extraRelease = {trigger,
+                                                                 release};
+  llvm::sort(extraRelease, [](auto lhs, auto rhs) {
+    return loom::mapping::canonicalEventPointKey(lhs) <
+           loom::mapping::canonicalEventPointKey(rhs);
+  });
+  ::mapping::ResourceUseOp::create(
+      excessReleaseBuilder, excessReleaseBuilder.getUnknownLoc(), owner,
+      fabricAttr<::mapping::FabricUsePatternRefAttr>(&context, usePattern),
+      ::mapping::SystemRelativeActivationAttr::get(
+          &context, trigger,
+          mlir::ArrayAttr::get(&context, {mlir::Attribute(extraRelease[0]),
+                                          mlir::Attribute(extraRelease[1])})),
+      excessReleaseBuilder.getArrayAttr({}),
+      excessReleaseBuilder.getArrayAttr({}));
+  requireVerificationFailure(excessReleaseRoot,
+                             "requires root start and completion");
+
+  auto causalService = buildSystem(context, fixture);
+  auto causalServiceRoot = mlir::cast<::mapping::SystemOp>(causalService.get());
+  auto service = *causalServiceRoot.getBody()
+                      .front()
+                      .getOps<::mapping::ServiceRealizationOp>()
+                      .begin();
+  auto plan =
+      *service.getBody().front().getOps<::mapping::ServicePlanOp>().begin();
+  auto leg = *plan.getBody()
+                  .front()
+                  .getOps<::mapping::TransferLegRealizationOp>()
+                  .begin();
+  const auto serviceOwner = ::mapping::ServicePlanElementRefAttr::get(
+      &context, service.getKey(), plan.getPlanOrdinal(),
+      ::mapping::TransferLegElementKeyAttr::get(&context, leg.getLeg()));
+  mlir::OpBuilder causalServiceBuilder(&context);
+  causalServiceBuilder.setInsertionPointToEnd(
+      &causalServiceRoot.getBody().front());
+  ::mapping::ResourceUseOp::create(
+      causalServiceBuilder, causalServiceBuilder.getUnknownLoc(), serviceOwner,
+      fabricAttr<::mapping::FabricUsePatternRefAttr>(&context, usePattern),
+      activation, causalServiceBuilder.getArrayAttr({}),
+      causalServiceBuilder.getArrayAttr({}));
+  requireVerificationFailure(
+      causalServiceRoot, "service ResourceUse requires intrinsic completion");
+
   auto wrongActivation = buildSystem(context, fixture);
   auto wrongRoot = mlir::cast<::mapping::SystemOp>(wrongActivation.get());
   mlir::OpBuilder wrongBuilder(&context);
@@ -336,7 +402,7 @@ void testSystemResourceUseWire(mlir::MLIRContext &context,
       wrongBuilder, wrongBuilder.getUnknownLoc(), owner,
       fabricAttr<::mapping::FabricUsePatternRefAttr>(&context, usePattern),
       ::mapping::SpatialRelativeActivationAttr::get(
-          &context, spatialTrigger, ::mapping::SpatialEventPointAttr()),
+          &context, spatialTrigger, mlir::ArrayAttr::get(&context, {})),
       wrongBuilder.getArrayAttr({}), wrongBuilder.getArrayAttr({}));
   requireVerificationFailure(wrongRoot, "requires root start and completion");
 }
@@ -517,17 +583,17 @@ int main() {
   require(first.bytes() == second.bytes(),
           "System service route canonicalization is nondeterministic");
   std::string currentText(first.bytes().begin(), first.bytes().end());
-  const std::string currentVersion = "version<3, 0>";
+  const std::string currentVersion = "version<4, 0>";
   const std::size_t versionPosition = currentText.find(currentVersion);
   require(versionPosition != std::string::npos,
-          "canonical SystemMapping does not use version 3.0");
-  currentText.replace(versionPosition, currentVersion.size(), "version<2, 0>");
+          "canonical SystemMapping does not use version 4.0");
+  currentText.replace(versionPosition, currentVersion.size(), "version<3, 0>");
   {
     mlir::ScopedDiagnosticHandler capture(
         &context, [](mlir::Diagnostic &) { return mlir::success(); });
     auto legacy = mlir::parseSourceString<mlir::ModuleOp>(
         "module {\n" + currentText + "}\n", &context);
-    require(!legacy, "mapping.system 2.0 was accepted by the 3.0 parser");
+    require(!legacy, "mapping.system 3.0 was accepted by the 4.0 parser");
   }
   auto duplicatePlanSystem = buildSystem(context, fixture);
   auto duplicatePlanRoot =
