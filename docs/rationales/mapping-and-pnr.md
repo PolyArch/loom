@@ -686,6 +686,26 @@ exposure choices enter the dependent MRV only when their owner references can
 be resolved. This keeps one generic MRV and rollback protocol without inventing
 placeholder choices or a retry loop per decision kind.
 
+An unqualified canonical-first placement is nevertheless a pathological seed
+for repeated isomorphic domains: every independent compute realization selects
+the same physical instruction context. Routing then encounters a fixed-terminal
+port cut or a combinational handshake cycle before an outer placement Action
+can improve the candidate. Making instruction contexts hard-disjoint would
+incorrectly shrink the legal set because selected Fabric resource contracts,
+event-relative use, and explicit constraints are the only authorities that can
+forbid sharing. Moving initialization into a joint CP-SAT placement-and-routing
+solve would duplicate both the relation solver and bounded exact repair.
+
+The initializer therefore applies one deterministic least-selected physical
+context preference and asks the same relation solver to close compatibility
+again. Hard-constrained compute roots stay at their baseline choices, while
+port attachments remain derived rather than copied. A failed preference falls
+back to the already legal baseline. This keeps the complete legal domain and
+all capacity semantics unchanged, but prevents a repeated owner-local ordinal
+zero from dominating every independent root. Counting exact
+`InstructionContextRef` selections is sufficient for this tie-break; it is not
+a shadow capacity model or an infeasibility certificate.
+
 Local-memory byte offsets need a finite search representation. Enumerating
 every fitting byte would make a 4 GiB region contribute billions of choices
 even though, under the current containment and non-overlap contract, empty
