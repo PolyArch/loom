@@ -4,6 +4,7 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/JSON.h"
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -30,6 +31,31 @@ bool isPortableIdentifier(llvm::StringRef value) {
   if (value.empty() || !isFirst(value.front()))
     return false;
   return llvm::all_of(value.drop_front(), isRest);
+}
+
+enum class YosysTokenPolicy { Quoted, AbcCompatible };
+
+llvm::Expected<std::string>
+encodeYosysToken(llvm::StringRef value, YosysTokenPolicy policy) {
+  if (value.empty() || value.contains('\0') || value.contains('\n') ||
+      value.contains('\r') || value.contains('"') || value.contains('\\'))
+    return invalid("Yosys token is empty or cannot be represented consistently");
+  const bool bare = llvm::all_of(value, [](char character) {
+    return (character >= 'A' && character <= 'Z') ||
+           (character >= 'a' && character <= 'z') ||
+           (character >= '0' && character <= '9') || character == '_' ||
+           character == '-' || character == '+' || character == '.' ||
+           character == '/';
+  });
+  if (bare)
+    return value.str();
+  if (policy == YosysTokenPolicy::AbcCompatible)
+    return invalid("Liberty path requires quoting that ABC cannot preserve");
+  std::string encoded = "\"";
+  for (char character : value)
+    encoded.push_back(character);
+  encoded.push_back('"');
+  return encoded;
 }
 
 /// An attribute is a boolean fact only in Yosys's admitted scalar encodings;
@@ -147,24 +173,46 @@ parsePortGeometry(const llvm::json::Object &port, const llvm::Twine &context) {
 } // namespace
 
 llvm::Expected<std::string> renderYosysSynthesisDriver(llvm::StringRef topModule) {
+  const std::array<std::string, 1> sources{"inputs/design.sv"};
+  return renderYosysSynthesisDriver(topModule, sources, "inputs/library.lib");
+}
+
+llvm::Expected<std::string> renderYosysSynthesisDriver(
+    llvm::StringRef topModule, llvm::ArrayRef<std::string> rtlSources,
+    llvm::StringRef standardCellLiberty) {
   if (!isPortableIdentifier(topModule))
     return invalid("top module is not a portable HDL identifier");
+  if (rtlSources.empty())
+    return invalid("RTL source closure is empty");
+  std::vector<std::string> encodedSources;
+  encodedSources.reserve(rtlSources.size());
+  for (const std::string &source : rtlSources) {
+    auto encoded = encodeYosysToken(source, YosysTokenPolicy::Quoted);
+    if (!encoded)
+      return encoded.takeError();
+    encodedSources.push_back(std::move(*encoded));
+  }
+  auto encodedLiberty =
+      encodeYosysToken(standardCellLiberty, YosysTokenPolicy::AbcCompatible);
+  if (!encodedLiberty)
+    return encodedLiberty.takeError();
   std::string driver;
-  driver += "read_verilog -sv inputs/design.sv\n";
+  for (const std::string &source : encodedSources)
+    driver += "read_verilog -sv " + source + "\n";
   driver += "hierarchy -check -top " + topModule.str() + "\n";
   driver += "proc\n";
   driver += "opt\n";
   driver += "check -assert -nolatches\n";
   driver += "write_json outputs/rtl-structure.json\n";
-  driver += "synth -top " + topModule.str() + "\n";
-  driver += "dfflibmap -liberty inputs/library.lib\n";
-  driver += "abc -liberty inputs/library.lib\n";
-  driver += "read_liberty -lib inputs/library.lib\n";
+  driver += "synth -flatten -top " + topModule.str() + "\n";
+  driver += "dfflibmap -liberty " + *encodedLiberty + "\n";
+  driver += "abc -liberty " + *encodedLiberty + "\n";
+  driver += "read_liberty -lib " + *encodedLiberty + "\n";
   driver += "clean\n";
   driver += "check -assert -nolatches\n";
   driver += "write_verilog -noattr -nodec -simple-lhs outputs/netlist.v\n";
   driver += "design -reset\n";
-  driver += "read_liberty -lib inputs/library.lib\n";
+  driver += "read_liberty -lib " + *encodedLiberty + "\n";
   driver += "read_verilog outputs/netlist.v\n";
   driver += "hierarchy -check -top " + topModule.str() + "\n";
   driver += "proc\n";
@@ -394,8 +442,16 @@ compareYosysTopPortGeometry(const YosysStructureFacts &preSynthesis,
   if (pre == preSynthesis.modules.end() ||
       post == postSynthesis.modules.end())
     return invalid("structural JSON does not contain the exact top module");
-  if (pre->second.ports != post->second.ports)
+  if (pre->second.ports.size() != post->second.ports.size())
     return invalid("synthesized netlist changed the exact top port geometry");
+  auto prePort = pre->second.ports.begin();
+  auto postPort = post->second.ports.begin();
+  for (; prePort != pre->second.ports.end(); ++prePort, ++postPort)
+    if (prePort->first != postPort->first ||
+        prePort->second.direction != postPort->second.direction ||
+        prePort->second.bits.size() != postPort->second.bits.size())
+      return invalid(
+          "synthesized netlist changed the exact top port geometry");
   return llvm::Error::success();
 }
 

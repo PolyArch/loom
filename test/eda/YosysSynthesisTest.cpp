@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -352,7 +353,7 @@ proc
 opt
 check -assert -nolatches
 write_json outputs/rtl-structure.json
-synth -top top
+synth -flatten -top top
 dfflibmap -liberty inputs/library.lib
 abc -liberty inputs/library.lib
 read_liberty -lib inputs/library.lib
@@ -376,6 +377,36 @@ write_json outputs/netlist-structure.json
           take(__func__, renderYosysSynthesisDriver("my_core_2")) !=
               driver,
           "driver ignores the exact top");
+}
+
+void rtlSourcesRemainIndependentCompilationUnits() {
+  const std::vector<std::string> sources{
+      "inputs/rtl/rtl/package.sv", "inputs/rtl/rtl/top module.sv"};
+  const std::string driver = take(
+      __func__, renderYosysSynthesisDriver(
+                    "top", sources, "inputs/external/typical_cells.lib"));
+  require(__func__,
+          llvm::StringRef(driver).starts_with(
+              "read_verilog -sv inputs/rtl/rtl/package.sv\n"
+              "read_verilog -sv \"inputs/rtl/rtl/top module.sv\"\n"),
+          "RTL sources were not emitted as independent compilation units");
+  require(__func__,
+          llvm::StringRef(driver).contains(
+              "abc -liberty inputs/external/typical_cells.lib\n"),
+          "Liberty path was not retained as one bare ABC-compatible token");
+}
+
+void unrepresentableDriverTokensAreRejected() {
+  const std::vector<std::string> noSources;
+  expectInvalid(__func__,
+                renderYosysSynthesisDriver("top", noSources, "library.lib"));
+  for (const std::string &source : {"quote\".sv", "back\\slash.sv"})
+    expectInvalid(__func__, renderYosysSynthesisDriver(
+                                "top", {source}, "library.lib"));
+  for (llvm::StringRef liberty : {"quote\".lib", "back\\slash.lib",
+                                  "has space.lib", "apostrophe's.lib"})
+    expectInvalid(__func__, renderYosysSynthesisDriver(
+                                "top", {"design.sv"}, liberty));
 }
 
 void unsafeTopsAreRejected() {
@@ -549,11 +580,20 @@ void structuralConsistencyIsEnforced() {
          replaceAll(kMappedJson, "\"direction\": \"input\", ", ""));
 }
 
-void portGeometryComparisonIsExact() {
+void portGeometryComparisonUsesCanonicalFacts() {
   const YosysStructureFacts pre =
       take(__func__, parseYosysStructureFacts(kMappedJson));
   require(__func__, !compareYosysTopPortGeometry(pre, pre, "top"),
           "identical geometry was rejected");
+  const YosysStructureFacts rangeMetadata = take(
+      __func__, parseYosysStructureFacts(replaceAll(
+                    kMappedJson,
+                    "\"y\": {\"direction\": \"output\", \"bits\": [4]}",
+                    "\"y\": {\"direction\": \"output\", \"bits\": [4], "
+                    "\"offset\": 7, \"upto\": 1, \"signed\": 1}")));
+  require(__func__,
+          !compareYosysTopPortGeometry(pre, rangeMetadata, "top"),
+          "noncanonical Yosys range metadata changed descriptor port facts");
   expectInvalid(__func__,
                 compareYosysTopPortGeometry(
                     pre,
@@ -689,6 +729,14 @@ const std::string kConstantDesign = "module top(input a, output y);\n"
 const std::string kDollarDesign = "module dollar$1(input a, output y);\n"
                                   "  assign y = a;\n"
                                   "endmodule\n";
+const std::string kClosureHelper =
+    "module helper(input a, input b, output y);\n"
+    "  assign y = a & b;\n"
+    "endmodule\n";
+const std::string kClosureTop =
+    "module top(input a, input b, output y);\n"
+    "  helper helper_instance(.a(a), .b(b), .y(y));\n"
+    "endmodule\n";
 
 void writeFile(const std::filesystem::path &path, llvm::StringRef contents) {
   std::ofstream stream(path, std::ios::binary | std::ios::trunc);
@@ -702,6 +750,7 @@ int emit(const std::string &root, const std::string &kind) {
   std::filesystem::create_directories(base / "inputs");
   std::filesystem::create_directories(base / "outputs");
   std::string top = "top";
+  std::optional<std::string> driver;
   if (kind == "mapped")
     writeFile(base / "inputs" / "design.sv", kMappedDesign);
   else if (kind == "constant")
@@ -709,12 +758,26 @@ int emit(const std::string &root, const std::string &kind) {
   else if (kind == "dollar") {
     writeFile(base / "inputs" / "design.sv", kDollarDesign);
     top = "dollar$1";
+  } else if (kind == "closure") {
+    std::filesystem::create_directories(base / "inputs" / "rtl");
+    std::filesystem::create_directories(base / "inputs" / "external");
+    writeFile(base / "inputs" / "rtl" / "helper.sv", kClosureHelper);
+    writeFile(base / "inputs" / "rtl" / "top design.sv", kClosureTop);
+    writeFile(base / "inputs" / "external" / "typical_cells.lib",
+              syntheticLiberty);
+    driver = take("emit", renderYosysSynthesisDriver(
+                              top,
+                              {"inputs/rtl/helper.sv",
+                               "inputs/rtl/top design.sv"},
+                              "inputs/external/typical_cells.lib"));
   } else
     fail("emit", "unknown design kind");
-  writeFile(base / "inputs" / "library.lib", syntheticLiberty);
+  if (!driver) {
+    writeFile(base / "inputs" / "library.lib", syntheticLiberty);
+    driver = take("emit", renderYosysSynthesisDriver(top));
+  }
   writeFile(base / "top.txt", top);
-  writeFile(base / "synthesize.ys",
-            take("emit", renderYosysSynthesisDriver(top)));
+  writeFile(base / "synthesize.ys", *driver);
   return EXIT_SUCCESS;
 }
 
@@ -764,11 +827,13 @@ int main(int argc, char **argv) {
   if (argc != 1)
     fail("main", "unexpected arguments");
   driverBytesAreDeterministicAndExact();
+  rtlSourcesRemainIndependentCompilationUnits();
+  unrepresentableDriverTokensAreRejected();
   unsafeTopsAreRejected();
   malformedJsonIsRejected();
   positiveStructuresAreAccepted();
   adverseStructuresAreRejected();
   structuralConsistencyIsEnforced();
-  portGeometryComparisonIsExact();
+  portGeometryComparisonUsesCanonicalFacts();
   return EXIT_SUCCESS;
 }

@@ -1,6 +1,7 @@
 #ifndef LOOM_EDA_ADAPTERS_OPENSOURCE_YOSYS_H
 #define LOOM_EDA_ADAPTERS_OPENSOURCE_YOSYS_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
@@ -74,6 +75,14 @@ struct YosysStructureFacts final {
 /// rejected rather than quoted.
 llvm::Expected<std::string> renderYosysSynthesisDriver(llvm::StringRef topModule);
 
+/// Renders the same driver for an exact ordered RTL payload closure and one
+/// resolved standard-cell Liberty file. Each source remains an independent
+/// compilation unit. RTL paths may use Yosys quoting; the Liberty path must be
+/// one bare token because the downstream ABC script cannot preserve quoting.
+llvm::Expected<std::string> renderYosysSynthesisDriver(
+    llvm::StringRef topModule, llvm::ArrayRef<std::string> rtlSources,
+    llvm::StringRef standardCellLiberty);
+
 /// Parses one write_json document into the typed facts view. Malformed JSON,
 /// wrong field types, unknown port directions, and invalid signal bits are
 /// rejected here.
@@ -89,7 +98,9 @@ llvm::Error
 validateYosysSynthesizedStructure(const YosysStructureFacts &structure,
                                   llvm::StringRef topModule);
 
-/// The exact top port geometry must be identical before and after synthesis.
+/// The canonical top port names, directions, and widths must be identical
+/// before and after synthesis. Provider-local range metadata is not a second
+/// representation-fact authority.
 llvm::Error
 compareYosysTopPortGeometry(const YosysStructureFacts &preSynthesis,
                             const YosysStructureFacts &postSynthesis,
