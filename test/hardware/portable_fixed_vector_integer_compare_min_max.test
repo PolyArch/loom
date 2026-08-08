@@ -1,0 +1,27 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-integer-compare-min-max-test %t
+# RUN: FileCheck %s --check-prefix=RTL < %t/artifacts/fixed_vector_integer_compare_min_max.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/artifacts/portable_fixed_vector_integer_compare_min_max.ys
+
+# RTL: module fixed_vector_integer_compare_min_max
+# RTL: input [47:0] data_input_0
+# RTL: data_input_1,
+# RTL: input [4:0] config_0
+# RTL: output [47:0] data_output_0
+# RTL: $signed
+
+# TB: module testbench
+# TB: i8 signed less-than lanes failed
+# TB: i8 unsigned greater-than lanes failed
+# TB: i8 signed minimum lanes failed
+# TB: i8 unsigned maximum lanes failed
+# TB: i16 signed comparison lanes failed
+# TB: i16 unsigned comparison lanes failed
+# TB: i16 signed minimum lanes failed
+# TB: i16 unsigned maximum lanes failed
+# TB: unassigned code did not preserve inactive behavior
+
+# YOSYS: hierarchy -check -top fixed_vector_integer_compare_min_max
+# YOSYS: synth -top fixed_vector_integer_compare_min_max
