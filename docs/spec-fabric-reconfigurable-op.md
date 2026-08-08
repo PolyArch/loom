@@ -502,37 +502,42 @@ remain runtime operands and never enter this carrier.
 ```text
 block_width_minus_one
 left_block_count_minus_one
+result_block_count_minus_one
 selectors[0 .. max_result_blocks)
 ```
 
 Each selector has `cardinality_bits(max_source_blocks)` bits. Actor poison
-positions and slots after the exact result-block count canonicalize to selector
-zero. Selecting any defined source is a valid refinement of poison, so a
-sentinel would add an unobservable mode and an unnecessary RTL comparison.
-The left count distinguishes the two source images; no right-count or
-result-count field is added.
+positions canonicalize to selector zero. Selecting any defined source is a
+valid refinement of poison, so a sentinel would add an unobservable mode and
+an unnecessary RTL comparison. Slots after the exact positive result-block
+count also canonicalize to zero. The result count is retained because it
+distinguishes an active trailing selector-zero block from physical output
+padding; no selector value can encode that distinction without conflating a
+real source choice with padding. The left count distinguishes the two source
+images, so no right-count field is added.
 
-Decode block width `B`, left count `L`, and selector array `S`. Every selector
-must be below `max_source_blocks`, including binary overcodes when the maximum
-is not a power of two. Let `Rmin` be one when all selectors are zero and
-otherwise one past the final nonzero selector. Let
-`Nmin = max(L + 1, max(S) + 1)` and `Q = Nmin - L`. The value is in the exact
-projector image only when one admitted element width divides `B`, `B` fits the
-block capacity, `Nmin` fits source-block capacity, and the fixed physical roles
-can carry `L * B`, `Q * B`, and `Rmin * B` in input 0, input 1, and result 0.
-The corresponding operand and result parameter capacities intersect those
-physical limits. These minima are constructively sufficient: additional
-active selector-zero result blocks are indistinguishable from canonical
-trailing padding.
+Decode block width `B`, left count `L`, positive result count `R`, and selector
+array `S`. `R` must not exceed `max_result_blocks`; every selector in
+`S[0 .. R)` must be below `max_source_blocks`, including binary overcodes when
+the maximum is not a power of two, and every selector in `S[R ..)` must be
+zero. Let `Nmin = max(L + 1, max(S[0 .. R)) + 1)` and `Q = Nmin - L`. The value
+is in the exact projector image only when one admitted element width divides
+`B`, `B` fits the block capacity, `Nmin` fits source-block capacity, and the
+fixed physical roles can carry `L * B`, `Q * B`, and `R * B` in input 0,
+input 1, and result 0. The corresponding operand and result parameter
+capacities intersect those physical limits. These minima are constructively
+sufficient; trailing padding is identified only by `R`, never inferred from a
+selector value.
 
 All capacity products, offsets, and minimum-geometry arithmetic are checked;
 overflow is invalid Fabric rather than wraparound.
 
 The block-width field has
 `cardinality_bits(max_block_payload_bits)` bits, the left-count field has
-`cardinality_bits(max_source_blocks)` bits, and every selector has
+`cardinality_bits(max_source_blocks)` bits, the result-count field has
+`cardinality_bits(max_result_blocks)` bits, and every selector has
 `cardinality_bits(max_source_blocks)` bits. The exact carrier width is the sum
-of those first two widths and `max_result_blocks` selector widths.
+of those first three widths and `max_result_blocks` selector widths.
 
 The slice and shuffle codecs use the same least-significant-bit-first packing
 rule as `TokenConstant`. Their fixed carrier widths are derived solely from

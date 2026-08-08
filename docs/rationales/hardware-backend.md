@@ -61,9 +61,15 @@ semantics.
 Poison shuffle lanes canonicalize to ordinary selector zero. The software
 contract permits any defined refinement there, so a dedicated poison selector
 would create an unobservable configuration mode and a backend comparison that
-has no semantic owner. Likewise, constant type tags remain in actor identity
-but not in the physical bit carrier; equal emitted bits are one configured
-behavior.
+has no semantic owner. The positive result-block count remains explicit for a
+different reason: a trailing selector zero may be a real selection of source
+block zero, while a trailing physical slot may be inactive output padding.
+Those states have different observable hardware behavior and cannot be
+recovered from the selector array. One count field is the minimum complete
+carrier; a poison sentinel would not solve active trailing selector zero, and
+a per-slot validity mask would duplicate the same prefix boundary. Likewise,
+constant type tags remain in actor identity but not in the physical bit
+carrier; equal emitted bits are one configured behavior.
 
 Direct GEP support was deferred instead of assigning its unbounded static
 layout and index tuple a backend-private encoding. Normalizing stable-integral
@@ -76,8 +82,10 @@ the incomplete implementation as a compatible behavior. The generic 3.0
 relation already rejected a missing total projector and stated that poison
 creates no mode. Consequently, a GEP capability with no bounded projector and
 a shuffle poison sentinel were never specification-conforming artifacts whose
-identity could be retained. A future incompatible carrier still requires a
-new Fabric major version.
+identity could be retained. The result-count component closes the already
+required total projector: omitting it makes active trailing selector zero and
+padding indistinguishable. A future incompatible carrier still requires a new
+Fabric major version.
 
 This boundary also exposes the backend's natural implementation parallelism.
 Providers for independent implementation families or provider ecosystems share
