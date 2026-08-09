@@ -770,6 +770,15 @@ fingerprints. This keeps local paths out of semantic identity without letting
 the adapter infer a technology library, select an ambient library, or make
 ImplementationPlatform own provider files.
 
+Voltus also requires a named rail-accuracy mode, but that provider vocabulary
+is not a second provider-neutral model dimension. The initial adapter fixes
+high-definition accuracy in
+`loom.eda.cadence.voltus.rail@1` and emits it rather than relying on a tool
+default. Adding a one-value accuracy enum to `RailAnalysisModelConfig` would
+duplicate the adapter identity, while placing it in the PGV binding would make
+a resource locator own an algorithm. A different fixed solver selection uses
+a different implementation semantic identity.
+
 Single-domain rail correspondence is derived from the exact DEF rather than
 duplicated into ResolvedConfig. DEF already owns special-net use, routing, and
 top-level supply-pin geometry. Requiring exactly one routed POWER net, one

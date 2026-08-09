@@ -330,6 +330,11 @@ absolute frequency cannot be inferred from SDC bytes, PGV contents, or a tool
 default. Voltus consumes that projection together with the exact routed
 HardwareImplementation, ImplementationPlatform binding, and complete PGV file
 tree. It does not accept caller-authored Tcl values for any projected fact.
+The `loom.eda.cadence.voltus.rail@1` implementation semantic identity fixes
+Voltus high-definition rail accuracy and the adapter emits that mode
+explicitly. Accuracy is neither an ambient tool default nor a second mutable
+model input; changing the fixed provider algorithm requires another
+implementation semantic identity.
 
 The initial provider accepts only one routed `indexed_def_physical` root. That
 root supplies exactly one self-contained DEF, its retained structural gate

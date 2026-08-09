@@ -389,6 +389,15 @@ RailAnalysisModelConfig {
 }
 ```
 
+This provider-neutral config does not duplicate a provider's named solver
+mode. The registered implementation semantic identity owns any fixed
+provider-specific algorithm selection that is not a portable model dimension.
+For `loom.eda.cadence.voltus.rail@1`, that selection is Voltus
+high-definition rail accuracy. The adapter emits it explicitly; an ambient
+tool default cannot select it. Changing that selection requires a new
+implementation semantic identity rather than a mutable invocation option or
+another field in `RailAnalysisModelConfig`.
+
 Its resolved config-view schema 3.0 consumes exactly one typed provider binding
 from ResolvedConfig 4.0:
 
