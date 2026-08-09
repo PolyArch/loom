@@ -1,6 +1,7 @@
 # REQUIRES: circt
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: bash -n %S/Inputs/CadenceChipWare/run_tools.sh
+# RUN: FileCheck %s --check-prefix=PARALLEL < %S/Inputs/CadenceChipWare/run_tools.sh
 # RUN: %loom-cadence-chipware-scalar-integer-multiply-test %t
 # RUN: FileCheck %s < %t/native/provider_artifacts/cadence_chipware_scalar_integer_multiply.sv
 
@@ -18,3 +19,11 @@
 # CHECK: .Z(chipware_product)
 # CHECK: assign data_output_0 = chipware_product[7:0];
 # CHECK-NOT: data_input_0 * data_input_1
+
+# PARALLEL: run_xcelium &
+# PARALLEL-NEXT: xcelium_pid=$!
+# PARALLEL: run_genus &
+# PARALLEL-NEXT: genus_pid=$!
+# PARALLEL: wait "$xcelium_pid"
+# PARALLEL-NEXT: wait "$genus_pid"
+# PARALLEL: run_innovus

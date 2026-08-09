@@ -72,6 +72,14 @@ template <typename T> T take(llvm::StringRef test, llvm::Expected<T> value) {
   return std::move(*value);
 }
 
+void expectError(llvm::StringRef test, llvm::Error error,
+                 llvm::StringRef expected) {
+  require(test, static_cast<bool>(error), "expected operation to fail");
+  const std::string message = llvm::toString(std::move(error));
+  require(test, llvm::StringRef(message).contains(expected),
+          "error did not identify the rejected contract closure");
+}
+
 std::string moduleText(mlir::ModuleOp module) {
   std::string text;
   llvm::raw_string_ostream stream(text);
@@ -412,7 +420,7 @@ void registrationIsExplicit() {
                   std::vector<RepresentationRootVariant>{
                       RepresentationRootVariant::Rtl} &&
               contract->blackBoxContractRequired &&
-              !contract->memoryMacroCapable,
+              !contract->memoryMacroCapable && contract->validator,
           "ChipWare external contract is not exact");
 }
 
@@ -427,11 +435,9 @@ void writeText(llvm::StringRef test, const std::filesystem::path &path,
   require(test, static_cast<bool>(output), "could not write tool RTL");
 }
 
-void finalizeImplementation(
-    llvm::StringRef test, const std::filesystem::path &root,
-    const FabricFixture &fixture, const FinalizedConfigurationABI &abi,
-    const ExternalImplementationContractCatalog &contracts,
-    const SpecializationResult &result) {
+ImplementationRepresentationRoot
+makeRtlRepresentation(llvm::StringRef test, const std::filesystem::path &root,
+                      const SpecializationResult &result) {
   const std::filesystem::path blobRoot = root / "blobs";
   std::filesystem::create_directories(blobRoot);
   BlobStore blobs(blobRoot.string());
@@ -449,16 +455,24 @@ void finalizeImplementation(
   const auto format =
       take(test, RepresentationFormatDescriptorRef::get(
                      RepresentationFormatKind::SystemVerilogRtl));
-  ImplementationRepresentationRoot representation =
-      take(test, createImplementationRepresentationRoot(
-                     RepresentationRootVariant::Rtl, std::nullopt, format,
-                     {RepresentationObjectKind::Module, result.top},
-                     std::move(payloads)));
+  return take(test, createImplementationRepresentationRoot(
+                        RepresentationRootVariant::Rtl, std::nullopt, format,
+                        {RepresentationObjectKind::Module, result.top},
+                        std::move(payloads)));
+}
+
+void finalizeImplementation(
+    llvm::StringRef test, const std::filesystem::path &root,
+    const FabricFixture &fixture, const FinalizedConfigurationABI &abi,
+    const ExternalImplementationContractCatalog &contracts,
+    const SpecializationResult &result) {
+  const std::filesystem::path blobRoot = root / "blobs";
+  BlobStore blobs(blobRoot.string());
   HardwareImplementationDraft draft{
       fixture.system.reference(),
       abi.reference(),
       {},
-      std::move(representation),
+      makeRtlRepresentation(test, root, result),
       std::nullopt,
       {},
       result.output.activityPoints,
@@ -474,6 +488,40 @@ void finalizeImplementation(
       implementation.implementation().externalImplementationBindings().size() ==
           1,
       "ChipWare external binding did not finalize");
+}
+
+void exactExternalContractRejectsDifferentClosure(
+    const std::filesystem::path &root, const SpecializationResult &result,
+    const ExternalImplementationContractCatalog &contracts) {
+  const llvm::StringRef test = __func__;
+  const auto contract = contracts.find(cadenceChipWareExternalContractRef);
+  require(test, contract && contract->validator,
+          "ChipWare external contract has no exact binding validator");
+  if (!contract || !contract->validator)
+    return;
+
+  const ImplementationRepresentationRoot representation =
+      makeRtlRepresentation(test, root, result);
+  const ExternalImplementationBindingDraft exact =
+      result.output.externalImplementationBindings.front();
+  if (llvm::Error error = contract->validator(exact, representation, nullptr))
+    fail(test, llvm::toString(std::move(error)));
+
+  std::vector<ExternalImplementationBindingDraft> malformed;
+  malformed.push_back(exact);
+  std::get<ToolBundledResourceDependency>(
+      malformed.back().externalInputs.front().dependencyIdentity)
+      .resourceKey = "chipware:CW_addsub";
+  malformed.push_back(exact);
+  malformed.back().representationLocators.front().canonicalName = "CW_addsub";
+  malformed.push_back(exact);
+  malformed.back().blackBoxContractPayload->canonicalLogicalName =
+      "blackbox/wrong.txt";
+  malformed.push_back(exact);
+  malformed.back().fabricResourceRefs.clear();
+  for (const ExternalImplementationBindingDraft &binding : malformed)
+    expectError(test, contract->validator(binding, representation, nullptr),
+                "verified CW_mult closure");
 }
 
 void nativeOccurrenceIsDeterministic(const std::filesystem::path &root) {
@@ -524,6 +572,8 @@ void nativeOccurrenceIsDeterministic(const std::filesystem::path &root) {
   require(
       test,
       payload.role == PayloadRole::BlackBoxContract &&
+          payload.canonicalLogicalName ==
+              "blackbox/cadence-chipware-cw-mult-i8.txt" &&
           llvm::StringRef(reinterpret_cast<const char *>(payload.bytes.data()),
                           payload.bytes.size())
               .contains("component=CW_mult"),
@@ -545,6 +595,8 @@ void nativeOccurrenceIsDeterministic(const std::filesystem::path &root) {
                                            payload.canonicalLogicalName},
           "ChipWare provider did not preserve its exact occurrence binding");
   requireExactCapability(test, fixture);
+  exactExternalContractRejectsDifferentClosure(root / "contract", first,
+                                               contracts);
   finalizeImplementation(test, root, fixture, abi, contracts, first);
   writeText(test,
             root / "provider_artifacts" /

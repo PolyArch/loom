@@ -37,6 +37,11 @@ std::string chipWareBlackBoxContract() {
   return contract;
 }
 
+std::vector<std::uint8_t> chipWareBlackBoxBytes() {
+  const std::string contract = chipWareBlackBoxContract();
+  return {contract.begin(), contract.end()};
+}
+
 std::string chipWareInstantiation() {
   std::string instantiation = cadenceChipWareCwMultModuleName.str();
   instantiation += " #(\n"
@@ -60,6 +65,15 @@ llvm::Error invalid(const llvm::Twine &message) {
 llvm::Error unsupported(const FabricOperationProviderRequest &request) {
   return llvm::make_error<FabricOperationProviderUnsupportedError>(
       request.capability.implementationFamily, request.recipe);
+}
+
+bool isExactComponentInput(llvm::ArrayRef<ExternalInputBinding> inputs) {
+  if (inputs.size() != 1 || inputs.front().providerInputSlotRef !=
+                                cadenceChipWareComponentModelSlotRef)
+    return false;
+  const auto *resource = std::get_if<ToolBundledResourceDependency>(
+      &inputs.front().dependencyIdentity);
+  return resource && resource->resourceKey == cadenceChipWareCwMultResourceKey;
 }
 
 llvm::Expected<const ToolBundledResourceDependency *>
@@ -169,7 +183,6 @@ materializeCadenceChipWareScalarIntegerMultiply(
   if (llvm::Error error = requireExactBehavior(request))
     return std::move(error);
 
-  const std::string moduleName = request.leaf.getSymName().str();
   const std::string instantiation = chipWareInstantiation();
   mlir::OpBuilder builder(request.leaf.getContext());
   builder.setInsertionPoint(request.leaf);
@@ -197,13 +210,12 @@ materializeCadenceChipWareScalarIntegerMultiply(
       request.leaf.getParametersAttr());
   request.leaf.erase();
 
-  const std::string payloadName = "blackbox/" + moduleName + ".cw_mult.txt";
-  const std::string blackBoxContract = chipWareBlackBoxContract();
+  const std::string payloadName =
+      cadenceChipWareCwMultBlackBoxLogicalName.str();
+  const std::vector<std::uint8_t> blackBoxContract = chipWareBlackBoxBytes();
   FabricOperationProviderOutput output;
   output.payloads.push_back(
-      {PayloadRole::BlackBoxContract, payloadName,
-       std::vector<std::uint8_t>(blackBoxContract.begin(),
-                                 blackBoxContract.end())});
+      {PayloadRole::BlackBoxContract, payloadName, blackBoxContract});
   output.externalImplementationBindings.push_back(
       {cadenceChipWareExternalContractRef.str(),
        std::vector<ExternalInputBinding>(request.externalInputs.begin(),
@@ -213,6 +225,31 @@ materializeCadenceChipWareScalarIntegerMultiply(
          cadenceChipWareCwMultModuleName.str()}},
        ImplementationPayloadKey{PayloadRole::BlackBoxContract, payloadName}});
   return output;
+}
+
+llvm::Error
+validateChipWareBinding(const ExternalImplementationBindingDraft &binding,
+                        const ImplementationRepresentationRoot &representation,
+                        const platform::ImplementationPlatform *) {
+  const ImplementationPayloadKey expectedPayload{
+      PayloadRole::BlackBoxContract,
+      cadenceChipWareCwMultBlackBoxLogicalName.str()};
+  const ImplementationPayload expectedDescriptor{
+      expectedPayload.role, expectedPayload.canonicalLogicalName,
+      computeBlobDigest(chipWareBlackBoxBytes())};
+  if (representation.variant != RepresentationRootVariant::Rtl ||
+      binding.providerContractRef != cadenceChipWareExternalContractRef ||
+      !isExactComponentInput(binding.externalInputs) ||
+      binding.fabricResourceRefs.size() != 1 ||
+      binding.representationLocators !=
+          std::vector<RepresentationLocator>{
+              {RepresentationObjectKind::Module,
+               cadenceChipWareCwMultModuleName.str()}} ||
+      !binding.blackBoxContractPayload ||
+      !(*binding.blackBoxContractPayload == expectedPayload) ||
+      !llvm::is_contained(representation.payloads, expectedDescriptor))
+    return invalid("binding does not preserve the verified CW_mult closure");
+  return llvm::Error::success();
 }
 
 } // namespace
@@ -226,7 +263,7 @@ llvm::Error registerCadenceChipWareExternalImplementationContract(
       {RepresentationRootVariant::Rtl},
       true,
       false,
-      nullptr});
+      validateChipWareBinding});
 }
 
 llvm::Error registerCadenceChipWareScalarIntegerMultiplyProvider(

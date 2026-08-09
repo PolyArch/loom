@@ -24,36 +24,55 @@ top=chipware_scalar_integer_multiply
 mkdir -p "$work_directory/xcelium" "$work_directory/genus" \
   "$work_directory/innovus"
 
-(
-  cd "$work_directory/xcelium"
-  "$xrun_binary" -64bit -sv -clean \
-    -top chipware_scalar_integer_multiply_testbench \
-    "$simulation_model" "$generated_rtl" \
-    "$script_directory/cw_mult_testbench.sv" > xrun.log 2>&1
-)
-grep -Eq '^LOOM_CHIPWARE_XCELIUM_PASS vectors=65536$' \
-  "$work_directory/xcelium/xrun.log"
+run_xcelium() {
+  (
+    cd "$work_directory/xcelium"
+    "$xrun_binary" -64bit -sv -clean \
+      -top chipware_scalar_integer_multiply_testbench \
+      "$simulation_model" "$generated_rtl" \
+      "$script_directory/cw_mult_testbench.sv" > xrun.log 2>&1
+  )
+  grep -Eq '^LOOM_CHIPWARE_XCELIUM_PASS vectors=65536$' \
+    "$work_directory/xcelium/xrun.log"
+}
 
-(
-  cd "$work_directory/genus"
-  env LOOM_CHIPWARE_RTL="$generated_rtl" \
-    LOOM_CHIPWARE_SYN_MODEL="$synthesis_model" \
-    LOOM_CHIPWARE_LIBERTY="$liberty" LOOM_CHIPWARE_TOP="$top" \
-    "$genus_binary" -batch -files "$script_directory/genus.tcl" \
-    > genus.stdout.log 2>&1
-)
-grep -Eq '^LOOM_CHIPWARE_GENUS_PASS instances=[1-9][0-9]*$' \
-  "$work_directory/genus/genus.stdout.log"
+run_genus() {
+  (
+    cd "$work_directory/genus"
+    env LOOM_CHIPWARE_RTL="$generated_rtl" \
+      LOOM_CHIPWARE_SYN_MODEL="$synthesis_model" \
+      LOOM_CHIPWARE_LIBERTY="$liberty" LOOM_CHIPWARE_TOP="$top" \
+      "$genus_binary" -batch -files "$script_directory/genus.tcl" \
+      > genus.stdout.log 2>&1
+  )
+  grep -Eq '^LOOM_CHIPWARE_GENUS_PASS instances=[1-9][0-9]*$' \
+    "$work_directory/genus/genus.stdout.log"
+}
 
-(
-  cd "$work_directory/innovus"
-  env LOOM_CHIPWARE_MAPPED_NETLIST="$work_directory/genus/mapped.v" \
-    LOOM_CHIPWARE_TOP="$top" LOOM_CHIPWARE_TECH_LEF="$technology_lef" \
-    LOOM_CHIPWARE_CELL_LEF="$cell_lef" \
-    "$innovus_binary" -stylus -no_gui -files \
-    "$script_directory/innovus.tcl" > innovus.stdout.log 2>&1
-)
-grep -Eq '^LOOM_CHIPWARE_INNOVUS_PASS instances=[1-9][0-9]*$' \
-  "$work_directory/innovus/innovus.stdout.log"
+run_innovus() {
+  (
+    cd "$work_directory/innovus"
+    env LOOM_CHIPWARE_MAPPED_NETLIST="$work_directory/genus/mapped.v" \
+      LOOM_CHIPWARE_TOP="$top" LOOM_CHIPWARE_TECH_LEF="$technology_lef" \
+      LOOM_CHIPWARE_CELL_LEF="$cell_lef" \
+      "$innovus_binary" -stylus -no_gui -files \
+      "$script_directory/innovus.tcl" > innovus.stdout.log 2>&1
+  )
+  grep -Eq '^LOOM_CHIPWARE_INNOVUS_PASS instances=[1-9][0-9]*$' \
+    "$work_directory/innovus/innovus.stdout.log"
+}
+
+xcelium_status=0
+genus_status=0
+run_xcelium &
+xcelium_pid=$!
+run_genus &
+genus_pid=$!
+wait "$xcelium_pid" || xcelium_status=$?
+wait "$genus_pid" || genus_status=$?
+if ((xcelium_status != 0 || genus_status != 0)); then
+  exit 1
+fi
+run_innovus
 
 echo "LOOM_CHIPWARE_TOOL_CONSUMPTION_PASS"

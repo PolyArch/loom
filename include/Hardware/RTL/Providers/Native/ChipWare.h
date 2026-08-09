@@ -13,6 +13,8 @@ inline constexpr llvm::StringLiteral cadenceChipWareCwMultModuleName =
     "CW_mult";
 inline constexpr llvm::StringLiteral cadenceChipWareCwMultResourceKey =
     "chipware:CW_mult";
+inline constexpr llvm::StringLiteral cadenceChipWareCwMultBlackBoxLogicalName =
+    "blackbox/cadence-chipware-cw-mult-i8.txt";
 
 llvm::Error registerCadenceChipWareExternalImplementationContract(
     ExternalImplementationContractCatalog &catalog);
