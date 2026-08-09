@@ -59,12 +59,12 @@ int main() {
               openroad.binding.environmentCandidates[1].variable ==
                   "OPENROAD_HOME" &&
               openroad.binding.moduleAliases ==
-                  std::vector<std::string>{"openroad/2026.08.03-b076432014b5",
+                  std::vector<std::string>{"openroad/2026.08.06-b9a38929e342",
                                            "openroad"} &&
               openroad.versionProbe.arguments ==
                   std::vector<std::string>{"-version"} &&
-              openroad.versionProbe.requiredOutputSubstring == "b076432" &&
-              openroad.versionProbe.selectedOutputLineSubstring == "b076432",
+              openroad.versionProbe.requiredOutputSubstring == "b9a38929e" &&
+              openroad.versionProbe.selectedOutputLineSubstring == "b9a38929e",
           "OpenROAD provider contract is incomplete");
 
   const ExternalToolProviderDescriptor &vcs = vcsProvider();

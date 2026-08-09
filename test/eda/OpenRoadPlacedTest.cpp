@@ -1,4 +1,5 @@
 #include "EDA/Adapters/OpenSource/OpenRoad.h"
+#include "EDA/Adapters/OpenSource/YosysGateNetlist.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
@@ -194,6 +195,8 @@ endmodule
 )verilog";
 
 constexpr llvm::StringLiteral kBlackBoxContract = "BUF_X1 input A output Y\n";
+constexpr llvm::StringLiteral kSyntheticOpenRoadBuild =
+    "OpenROAD synthetic b9a38929e342";
 
 OpenRoadPlacementParameters parameters();
 
@@ -245,19 +248,10 @@ InvocationFixture makeInvocationFixture(llvm::StringRef test,
           format, {loom::hardware::RepresentationObjectKind::Module, "top"},
           {{loom::hardware::PayloadRole::Netlist, "netlist/top.v", netlist},
            {loom::hardware::PayloadRole::BlackBoxContract,
-            "contracts/BUF_X1.txt", contract}}));
+            "contracts/yosys-standard-cells.txt", contract}}));
 
-  loom::hardware::ExternalImplementationContractCatalog contracts;
-  requireSuccess(
-      test,
-      contracts.add(loom::hardware::ExternalImplementationContract{
-          "openroad.synthetic_cell",
-          {{"library", {loom::hardware::ExternalDependencyKind::ExplicitFile}}},
-          {loom::hardware::RepresentationRootVariant::GateNetlist,
-           loom::hardware::RepresentationRootVariant::AsicPhysical},
-          true,
-          false,
-          nullptr}));
+  loom::hardware::ExternalImplementationContractCatalog contracts =
+      take(test, makeYosysStandardCellContractCatalog());
   const loom::ExternalFileFingerprint liberty = contentFingerprint(kLiberty);
   auto gate = take(
       test,
@@ -271,13 +265,14 @@ InvocationFixture makeInvocationFixture(llvm::StringRef test,
               {},
               {},
               {},
-              {{"openroad.synthetic_cell",
-                {{"library", loom::hardware::ExplicitFileDependency{liberty}}},
+              {{"open_source.yosys.standard_cell_library",
+                {{"standard_cell_liberty",
+                  loom::hardware::ExplicitFileDependency{liberty}}},
                 {},
                 {{loom::hardware::RepresentationObjectKind::Module, "BUF_X1"}},
                 loom::hardware::ImplementationPayloadKey{
                     loom::hardware::PayloadRole::BlackBoxContract,
-                    "contracts/BUF_X1.txt"}}}},
+                    "contracts/yosys-standard-cells.txt"}}}},
           contracts, artifacts, blobs));
 
   const loom::platform::TechnologyCornerRef exactCorner{
@@ -330,6 +325,7 @@ InvocationHarness makeInvocationHarness(llvm::StringRef test,
 
   loom::external_tool::LocalToolConfig local =
       loom::external_tool::defaultLocalToolConfig();
+  local.runtimePolicy = loom::external_tool::RuntimePolicy::Host;
   local.externalFiles = {{"synthetic-tech", technology.string()},
                          {"synthetic-cells", cells.string()},
                          {"synthetic-liberty", liberty.string()}};
@@ -348,11 +344,13 @@ makeSyntheticInvocationHarness(llvm::StringRef test,
   const std::string toolBody =
       "#!/usr/bin/env bash\n"
       "set -eu\n"
-      "if [[ ${1-} == --version ]]; then\n"
+      "if [[ ${1-} == -version || ${1-} == --version ]]; then\n"
       "  : > \"" +
       probeMarker.string() +
       "\"\n"
-      "  printf '%s\\n' 'OpenROAD synthetic 2026.08.06'\n"
+      "  printf '%s\\n' '" +
+      kSyntheticOpenRoadBuild.str() +
+      "'\n"
       "  exit 0\n"
       "fi\n"
       "printf '%s\\n' 'synthetic placed database' > outputs/placed.odb\n"
@@ -360,30 +358,36 @@ makeSyntheticInvocationHarness(llvm::StringRef test,
       "\"version\":\"1.0\",\"stage\":\"placed\",\"top\":\"top\"}' "
       "> outputs/placed-result.json\n";
   writeText(test, tool, toolBody, true);
+  loom::external_tool::LocalToolConfig local =
+      loom::external_tool::defaultLocalToolConfig();
+  local.runtimePolicy = loom::external_tool::RuntimePolicy::Host;
+  local.tools["openroad"].binding.executable = tool.string();
 
   loom::external_tool::ExternalToolProviderDescriptor provider{
       loom::external_tool::ToolProviderDescriptor{
           "openroad", {"openroad"}, {}, {}},
       loom::external_tool::ToolVersionProbe{
-          {"--version"}, "OpenROAD synthetic 2026.08.06", {0}, std::nullopt},
+          {"--version"}, kSyntheticOpenRoadBuild.str(), {0}, std::nullopt},
       loom::external_tool::ToolRuntimeCompatibility{}};
   loom::external_tool::ResolvedToolBinding resolvedTool{
       "openroad",
       loom::external_tool::ToolBindingSource::Explicit,
       tool.string(),
-      "OpenROAD synthetic 2026.08.06",
+      kSyntheticOpenRoadBuild.str(),
       {},
       {},
       std::nullopt,
       std::nullopt};
   loom::external_tool::InvocationRuntimeBinding runtime;
   runtime.kind = loom::external_tool::InvocationRuntimeKind::Host;
-  return makeInvocationHarness(
-      test, root, fixture,
-      OpenRoadResolvedExecution{std::move(provider),
-                                std::move(resolvedTool),
-                                std::move(runtime),
-                                {}});
+  InvocationHarness harness =
+      makeInvocationHarness(test, root, fixture,
+                            OpenRoadResolvedExecution{std::move(provider),
+                                                      std::move(resolvedTool),
+                                                      std::move(runtime),
+                                                      {}});
+  harness.context.localConfig.tools = std::move(local.tools);
+  return harness;
 }
 
 void writeFailingSyntheticOpenRoad(llvm::StringRef test,
@@ -391,8 +395,10 @@ void writeFailingSyntheticOpenRoad(llvm::StringRef test,
   const std::string toolBody =
       "#!/usr/bin/env bash\n"
       "set -eu\n"
-      "if [[ ${1-} == --version ]]; then\n"
-      "  printf '%s\\n' 'OpenROAD synthetic 2026.08.06'\n"
+      "if [[ ${1-} == -version || ${1-} == --version ]]; then\n"
+      "  printf '%s\\n' '" +
+      kSyntheticOpenRoadBuild.str() +
+      "'\n"
       "  exit 0\n"
       "fi\n"
       "exit 37\n";
@@ -535,7 +541,7 @@ void configAndDescriptorAreTypedAndCanonical() {
   require(__func__, !validateCanonicalOpenRoadPlacedConfig(canonical, digest),
           "canonical config did not validate against its derived digest");
 
-  if (llvm::Error error = registerOpenRoadPlacedCandidateGeneratorDescriptor())
+  if (llvm::Error error = registerOpenRoadPlacedCandidateGenerator())
     fail(__func__, llvm::toString(std::move(error)));
   const loom::dse::CandidateGeneratorDescriptor &descriptor =
       openRoadPlacedCandidateGeneratorDescriptor();
@@ -557,7 +563,7 @@ void invocationBundleIsTheOnlyAttemptLifecycle(
   const loom::ArtifactStore artifacts((root / "artifacts").string());
   const loom::BlobStore blobs((root / "blobs").string());
   const InvocationFixture fixture = makeInvocationFixture(
-      __func__, artifacts, blobs, "OpenROAD synthetic 2026.08.06");
+      __func__, artifacts, blobs, kSyntheticOpenRoadBuild);
   InvocationHarness harness =
       makeSyntheticInvocationHarness(__func__, root, fixture);
 
@@ -565,10 +571,9 @@ void invocationBundleIsTheOnlyAttemptLifecycle(
     loom::external_tool::ExternalToolPreparationContext context =
         harness.context;
     context.bundleDestination = (root / name.str()).string();
-    return take(__func__,
-                prepareOpenRoadPlacedInvocation(
-                    harness.inputs, harness.binding, fixture.contracts,
-                    artifacts, blobs, harness.execution, context));
+    return take(__func__, loom::dse::prepareCandidateGeneratorInvocation(
+                              harness.inputs, harness.binding, artifacts, blobs,
+                              context));
   };
   const loom::external_tool::PreparedExternalToolInvocation first =
       prepareAt("bundle-a");
@@ -576,8 +581,8 @@ void invocationBundleIsTheOnlyAttemptLifecycle(
       prepareAt("bundle-b");
   require(__func__, first.manifestDigest == second.manifestDigest,
           "fresh destinations changed the deterministic manifest");
-  require(__func__, !std::filesystem::exists(root / "tool-was-probed"),
-          "preparation executed the tool version probe");
+  require(__func__, std::filesystem::exists(root / "tool-was-probed"),
+          "registered preparation did not resolve the OpenROAD tool");
 
   OpenRoadResolvedExecution mismatchedExecution = harness.execution;
   mismatchedExecution.tool.version += "-different";
@@ -643,9 +648,8 @@ void invocationBundleIsTheOnlyAttemptLifecycle(
                          first)) == 0,
       "synthetic OpenROAD invocation did not complete");
   const loom::dse::CandidateGeneratorProviderResult imported = take(
-      __func__,
-      importOpenRoadPlacedInvocation(harness.inputs, harness.binding, first,
-                                     fixture.contracts, artifacts, blobs));
+      __func__, loom::dse::importCandidateGeneratorInvocation(
+                    harness.inputs, harness.binding, first, artifacts, blobs));
   const auto *completed =
       std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
           &imported.outcome);
@@ -736,9 +740,8 @@ void invocationBundleIsTheOnlyAttemptLifecycle(
                          failed)) == 37,
       "synthetic OpenROAD failure did not preserve its exit code");
   const loom::dse::CandidateGeneratorProviderResult failedImport = take(
-      __func__,
-      importOpenRoadPlacedInvocation(harness.inputs, harness.binding, failed,
-                                     fixture.contracts, artifacts, blobs));
+      __func__, loom::dse::importCandidateGeneratorInvocation(
+                    harness.inputs, harness.binding, failed, artifacts, blobs));
   const auto *executionFailed =
       std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
           &failedImport.outcome);

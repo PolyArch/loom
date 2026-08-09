@@ -4,8 +4,11 @@
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
+#include "EDA/Adapters/OpenSource/YosysGateNetlist.h"
 #include "ExternalTool/ExternalFile.h"
 #include "ExternalTool/InvocationBundle.h"
+#include "ExternalTool/RuntimeBinding.h"
+#include "ExternalTool/ShellProbe.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "Hardware/Implementation/PhysicalRepresentationIndex.h"
 #include "Hardware/Implementation/RepresentationIndex.h"
@@ -20,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <iterator>
 #include <limits>
 #include <optional>
@@ -925,6 +929,102 @@ openRoadPlacedCandidateGeneratorDescriptor() {
 llvm::Error registerOpenRoadPlacedCandidateGeneratorDescriptor() {
   return dse::registerCandidateGeneratorDescriptor(
       openRoadPlacedCandidateGeneratorDescriptor());
+}
+
+namespace {
+
+llvm::Expected<OpenRoadResolvedExecution> resolveOpenRoadExecution(
+    llvm::StringRef providerBuild,
+    const external_tool::ExternalToolPreparationContext &context) {
+  const external_tool::ExternalToolProviderDescriptor &toolProvider =
+      external_tool::openRoadProvider();
+  const std::filesystem::path destination(context.bundleDestination);
+  const std::filesystem::path probeRoot = destination.parent_path();
+  external_tool::ShellToolBindingProbe toolProbe(probeRoot.string(),
+                                                 toolProvider.versionProbe);
+  const external_tool::ToolEnvironment toolEnvironment =
+      external_tool::captureToolEnvironment(toolProvider.binding);
+  auto tool = external_tool::resolveToolBinding(
+      toolProvider.binding, context.localConfig, toolEnvironment, toolProbe);
+  if (!tool)
+    return tool.takeError();
+  if (tool->version != providerBuild)
+    return invalid(llvm::Twine("resolved OpenROAD build '") + tool->version +
+                   "' does not match semantic build '" + providerBuild + "'");
+
+  std::vector<std::string> inheritEnvironment;
+  const auto configured =
+      context.localConfig.tools.find(toolProvider.binding.key);
+  if (configured != context.localConfig.tools.end())
+    inheritEnvironment = configured->second.inheritEnvironment;
+
+  const external_tool::ExternalToolProviderDescriptor &containerProvider =
+      external_tool::polyArchContainerProvider();
+  external_tool::ShellToolBindingProbe containerProbe(
+      probeRoot.string(), containerProvider.versionProbe);
+  const external_tool::ToolEnvironment containerEnvironment =
+      external_tool::captureToolEnvironment(containerProvider.binding);
+  auto runtime = external_tool::resolveInvocationRuntime(
+      *tool, context.localConfig, containerProvider.binding,
+      containerEnvironment, containerProbe, toolProvider.runtimeCompatibility,
+      [&](const external_tool::ResolvedToolBinding &resolvedTool,
+          const external_tool::ResolvedToolBinding &container,
+          llvm::StringRef os) -> llvm::Expected<std::optional<std::string>> {
+        return external_tool::probeContainerToolComposition(
+            probeRoot.string(), resolvedTool, toolProvider.versionProbe,
+            container, os, inheritEnvironment);
+      });
+  if (!runtime)
+    return runtime.takeError();
+
+  return OpenRoadResolvedExecution{toolProvider, std::move(*tool),
+                                   std::move(*runtime),
+                                   containerProvider.versionProbe};
+}
+
+llvm::Expected<external_tool::PreparedExternalToolInvocation>
+prepareRegisteredOpenRoad(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const external_tool::ExternalToolPreparationContext &context) {
+  auto config = decodeOpenRoadPlacedConfig(binding.canonicalConfigBytes());
+  if (!config)
+    return config.takeError();
+  auto execution = resolveOpenRoadExecution(config->providerBuild, context);
+  if (!execution)
+    return execution.takeError();
+  auto contracts = makeYosysStandardCellContractCatalog();
+  if (!contracts)
+    return contracts.takeError();
+  return prepareOpenRoadPlacedInvocation(inputs, binding, *contracts, artifacts,
+                                         blobs, *execution, context);
+}
+
+llvm::Expected<dse::CandidateGeneratorProviderResult> importRegisteredOpenRoad(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto contracts = makeYosysStandardCellContractCatalog();
+  if (!contracts)
+    return contracts.takeError();
+  return importOpenRoadPlacedInvocation(inputs, binding, prepared, *contracts,
+                                        artifacts, blobs);
+}
+
+} // namespace
+
+llvm::Error registerOpenRoadPlacedCandidateGenerator() {
+  const dse::CandidateGeneratorDescriptor &descriptor =
+      openRoadPlacedCandidateGeneratorDescriptor();
+  static const dse::CandidateGeneratorProvider provider{
+      descriptor.reference(),
+      dse::CandidateGeneratorExternalPrepareImportProvider{
+          prepareRegisteredOpenRoad, importRegisteredOpenRoad}};
+  if (llvm::Error error = dse::registerCandidateGeneratorDescriptor(descriptor))
+    return error;
+  return dse::registerCandidateGeneratorProvider(provider);
 }
 
 llvm::Expected<external_tool::PreparedExternalToolInvocation>

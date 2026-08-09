@@ -58,9 +58,9 @@ const ExternalToolProviderDescriptor &openRoadProvider() {
           {"openroad"},
           {{"OPENROAD_ROOT", "bin/openroad"},
            {"OPENROAD_HOME", "bin/openroad"}},
-          {"openroad/2026.08.03-b076432014b5", "openroad"},
+          {"openroad/2026.08.06-b9a38929e342", "openroad"},
       },
-      ToolVersionProbe{{"-version"}, "b076432", {0}, "b076432"},
+      ToolVersionProbe{{"-version"}, "b9a38929e", {0}, "b9a38929e"},
       edaContainerCompatibility(),
   };
   return provider;

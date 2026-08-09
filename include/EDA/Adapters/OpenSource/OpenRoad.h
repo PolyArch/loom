@@ -105,10 +105,14 @@ inline constexpr dse::CandidateGeneratorKind
 const dse::CandidateGeneratorDescriptor &
 openRoadPlacedCandidateGeneratorDescriptor();
 
-/// Registers only the semantic descriptor. A coordinator must not register a
-/// provider callback until it can supply a frozen tool/runtime binding without
-/// executing discovery during preparation.
+/// Registers only the semantic descriptor for callers that inject an already
+/// resolved execution closure through the direct helper below.
 llvm::Error registerOpenRoadPlacedCandidateGeneratorDescriptor();
+
+/// Registers the canonical provider facade. Preparation resolves and freezes
+/// the configured OpenROAD tool and runtime before delegating to the same
+/// strict invocation lifecycle used by the direct helper.
+llvm::Error registerOpenRoadPlacedCandidateGenerator();
 
 /// A coordinator-frozen nonsemantic execution closure. Construction and tool
 /// discovery happen before adapter preparation; preparation only validates
