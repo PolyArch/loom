@@ -354,12 +354,15 @@ result is the maximum delivered-voltage deficit over both nets in the sole
 complete domain, not the first report row or a provider severity threshold.
 
 The model's resolved config view additionally carries the exact stable Voltus
-provider build identity and canonical PGV member path/fingerprint table from
-the typed ResolvedConfig 3.3 binding. These facts enter Request identity.
-Preparation requires the resolved executable build to match that identity and
-uses `resolveExternalFileTrees` to select one local tree with exactly those
-members. A local path, directory key, first-match scan, or nearby PGV tree is
-not a semantic substitute.
+provider build identity, canonical PGV member path/fingerprint table, and
+ordered PGV entrypoint paths from the typed ResolvedConfig 4.0 binding. These
+facts enter Request identity. Every entrypoint references the same member table;
+the first is the provider-required technology PGV and the remaining order is
+consumed unchanged. Preparation requires the resolved executable build to match
+that identity and uses `resolveExternalFileTrees` to select one local tree with
+exactly those members. A local path, directory key, filename-based root or
+technology inference, first-match scan, or nearby PGV tree is not a semantic
+substitute.
 
 This initial model supports only one global applied supply, one global
 temperature, and one global activity clock with one exact required period. A

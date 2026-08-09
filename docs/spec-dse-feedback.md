@@ -389,21 +389,26 @@ RailAnalysisModelConfig {
 }
 ```
 
-Its resolved config-view schema 2.0 consumes exactly one typed provider binding
-from ResolvedConfig 3.3:
+Its resolved config-view schema 3.0 consumes exactly one typed provider binding
+from ResolvedConfig 4.0:
 
 ```text
 CadenceVoltusStaticRailProviderBinding {
   stable_provider_build_identity
   power_grid_library_members:
     canonical nonempty array<relative_path, sha256>
+  power_grid_library_entrypoints:
+    ordered nonempty array<relative_path>
 }
 ```
 
-The provider build and PGV member table affect the result and therefore enter
-the exact `ResolvedModelBinding` and Request identity. Machine-local PGV paths
-and keys remain outside the binding. An absent provider binding makes model
-projection unavailable; a projector cannot choose a configured tree.
+The provider build, PGV member table, and exact technology-first entrypoint
+order affect the result and therefore enter the exact `ResolvedModelBinding`
+and Request identity. Every entrypoint must reference one member; fingerprints
+remain owned only by the member table. Machine-local PGV paths and keys remain
+outside the binding. An absent provider binding makes model projection
+unavailable; a projector cannot choose a configured tree or infer PGV roots
+from member names.
 
 The corresponding provider configuration is derived only from that typed
 provider binding, descriptor contract, and validated Request conditions. The

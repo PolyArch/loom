@@ -763,10 +763,12 @@ capability authority.
 
 The fixed analysis facts and the provider resource binding are distinct but
 both have one owner. The model descriptor fixes method, activity basis,
-coverage, and uncertainty; its ResolvedConfig 3.3 component view fixes the
-actual Voltus build and complete PGV member fingerprints. This keeps local
-paths out of semantic identity without letting the adapter select an ambient
-library or making ImplementationPlatform own provider files.
+coverage, and uncertainty; its ResolvedConfig 4.0 component view fixes the
+actual Voltus build, complete PGV member fingerprints, and exact ordered PGV
+entrypoints. Entrypoints reference members rather than duplicating their
+fingerprints. This keeps local paths out of semantic identity without letting
+the adapter infer a technology library, select an ambient library, or make
+ImplementationPlatform own provider files.
 
 Single-domain rail correspondence is derived from the exact DEF rather than
 duplicated into ResolvedConfig. DEF already owns special-net use, routing, and

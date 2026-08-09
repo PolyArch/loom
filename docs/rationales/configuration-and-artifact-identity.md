@@ -61,6 +61,14 @@ matching local directory does not. Making the binding optional preserves
 software-only profiles while making absence explicit and preventing ambient
 tree selection.
 
+ResolvedConfig 4.0 adds the exact ordered PGV entrypoints to that binding.
+Voltus consumes an ordered library list and requires its technology PGV first;
+a complete directory fingerprint cannot answer either question. Storing only
+relative references into the existing member table preserves one owner for
+file content while preventing an adapter from guessing roots or order from
+filenames. Because no compatible default exists for an old 3.3 binding, this is
+an incompatible schema change.
+
 ## Why ResolvedConfig 2.0 Removes The Provisional Flat Knobs
 
 The first implementation carried a display `config_id`, three global hardware
