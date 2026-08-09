@@ -1,0 +1,7 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-scalar-math-hyperbolic-test %t
+# RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
+# RUN: cd %t/artifacts && yosys -q -s portable_scalar_math_hyperbolic.ys
+
+# YOSYS: Yosys 0.67

@@ -1,0 +1,27 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-scalar-math-hyperbolic-test %t
+# RUN: FileCheck %s --check-prefix=SINH < %t/artifacts/scalar_math_sinh.sv
+# RUN: FileCheck %s --check-prefix=COSH < %t/artifacts/scalar_math_cosh.sv
+# RUN: FileCheck %s --check-prefix=TANH < %t/artifacts/scalar_math_tanh.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/artifacts/testbench.sv
+
+# SINH: module scalar_math_sinh
+# SINH: function automatic
+# SINH-NOT: real
+# SINH-NOT: shortreal
+# SINH-NOT: DPI
+
+# COSH: module scalar_math_cosh
+# COSH: function automatic
+# COSH-NOT: real
+# COSH-NOT: shortreal
+# COSH-NOT: DPI
+
+# TANH: module scalar_math_tanh
+# TANH: function automatic
+# TANH-NOT: real
+# TANH-NOT: shortreal
+# TANH-NOT: DPI
+
+# TB: hyperbolic oracle mismatch
