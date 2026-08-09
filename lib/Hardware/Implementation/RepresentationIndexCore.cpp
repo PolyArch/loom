@@ -5,6 +5,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cassert>
 #include <utility>
 
 namespace loom::hardware {
@@ -96,6 +97,18 @@ RepresentationIndex::lookup(const RepresentationLocator &locator) const {
   if (found == entries_.end() || !(found->locator == locator))
     return std::optional<RepresentationObjectFacts>();
   return std::optional<RepresentationObjectFacts>(found->facts);
+}
+
+std::vector<RepresentationBoundaryPort>
+RepresentationIndex::rootBoundaryPorts() const {
+  std::vector<RepresentationBoundaryPort> ports;
+  for (const Entry &entry : entries_)
+    if (entry.facts.objectKind == RepresentationObjectKind::Port) {
+      assert(entry.facts.signalGeometry &&
+             "indexed Port must carry signal geometry");
+      ports.push_back({entry.locator, *entry.facts.signalGeometry});
+    }
+  return ports;
 }
 
 } // namespace loom::hardware

@@ -20,6 +20,12 @@ namespace loom::hardware {
 
 struct ImplementationRepresentationRoot;
 
+struct ImplementationPayloadBytes final {
+  PayloadRole role;
+  llvm::StringRef canonicalLogicalName;
+  llvm::ArrayRef<std::uint8_t> contents;
+};
+
 enum class RepresentationSignalDirection : std::uint32_t {
   Input = 0,
   Output = 1,
@@ -44,6 +50,16 @@ struct RepresentationObjectFacts final {
                          const RepresentationObjectFacts &rhs) {
     return lhs.objectKind == rhs.objectKind &&
            lhs.signalGeometry == rhs.signalGeometry;
+  }
+};
+
+struct RepresentationBoundaryPort final {
+  RepresentationLocator locator;
+  RepresentationSignalGeometry geometry;
+
+  friend bool operator==(const RepresentationBoundaryPort &lhs,
+                         const RepresentationBoundaryPort &rhs) {
+    return lhs.locator == rhs.locator && lhs.geometry == rhs.geometry;
   }
 };
 
@@ -82,6 +98,8 @@ public:
   llvm::Expected<std::optional<RepresentationObjectFacts>>
   lookup(const RepresentationLocator &locator) const;
 
+  std::vector<RepresentationBoundaryPort> rootBoundaryPorts() const;
+
   llvm::ArrayRef<RepresentationLocator> unresolvedExternalDefinitions() const {
     return unresolvedExternalDefinitions_;
   }
@@ -113,6 +131,10 @@ private:
   indexRepresentation(RepresentationFormatDescriptorRef,
                       const RepresentationLocator &,
                       llvm::ArrayRef<ImplementationPayload>, const BlobStore &);
+  friend llvm::Expected<RepresentationIndex>
+  indexProspectiveRepresentation(RepresentationFormatDescriptorRef,
+                                 const RepresentationLocator &,
+                                 llvm::ArrayRef<ImplementationPayloadBytes>);
 };
 
 /// Purely indexes one canonical payload closure through the selected static
@@ -122,6 +144,14 @@ indexRepresentation(RepresentationFormatDescriptorRef formatRef,
                     const RepresentationLocator &exactRoot,
                     llvm::ArrayRef<ImplementationPayload> canonicalPayloads,
                     const BlobStore &blobs);
+
+/// Indexes one prospective HDL payload closure without first publishing its
+/// bytes. The same static descriptor and parser own stored and prospective
+/// payload forms.
+llvm::Expected<RepresentationIndex> indexProspectiveRepresentation(
+    RepresentationFormatDescriptorRef formatRef,
+    const RepresentationLocator &exactRoot,
+    llvm::ArrayRef<ImplementationPayloadBytes> payloads);
 
 /// Indexes and verifies one complete typed representation root, including its
 /// exact variant and physical stage claim.

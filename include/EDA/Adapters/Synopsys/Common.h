@@ -149,6 +149,10 @@ importSynopsysInvocation(
     const external_tool::PreparedExternalToolInvocation &prepared,
     const SynopsysBundleInputs &inputs);
 
+llvm::Error
+validateSynopsysOutputInventory(const SynopsysInvocationDescriptor &descriptor,
+                                llvm::StringRef bundleRoot);
+
 llvm::Expected<std::string> readSynopsysDeclaredOutput(
     const SynopsysInvocationDescriptor &descriptor,
     const external_tool::ImportedExternalToolInvocationBundle &bundle,

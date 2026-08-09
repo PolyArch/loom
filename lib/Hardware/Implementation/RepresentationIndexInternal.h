@@ -96,6 +96,11 @@ indexHdlRepresentation(RepresentationFormatDescriptorRef formatRef,
                        llvm::ArrayRef<ImplementationPayload> canonicalPayloads,
                        const BlobStore &blobs);
 
+llvm::Expected<RawIndex>
+indexHdlRepresentation(RepresentationFormatDescriptorRef formatRef,
+                       const RepresentationLocator &exactRoot,
+                       llvm::ArrayRef<ImplementationPayloadBytes> payloads);
+
 llvm::Expected<RawIndex> indexPhysicalRepresentation(
     RepresentationFormatDescriptorRef formatRef,
     const RepresentationLocator &exactRoot,

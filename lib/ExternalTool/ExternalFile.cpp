@@ -330,6 +330,13 @@ llvm::Error validateProviderSlot(llvm::StringRef slot) {
 
 } // namespace
 
+llvm::Error validateExternalFileTreeRequirement(
+    const ExternalFileTreeRequirement &requirement) {
+  if (llvm::Error error = validateProviderSlot(requirement.providerInputSlot))
+    return error;
+  return validateFileTreeMembers(requirement.members);
+}
+
 llvm::Expected<std::vector<ResolvedExternalFile>>
 resolveExternalFiles(llvm::ArrayRef<ExternalFileRequirement> requirements,
                      const LocalToolConfig &config) {
@@ -388,13 +395,11 @@ llvm::Expected<std::vector<ResolvedExternalFileTree>> resolveExternalFileTrees(
     const LocalToolConfig &config) {
   std::set<std::string> slots;
   for (const ExternalFileTreeRequirement &requirement : requirements) {
-    if (llvm::Error error = validateProviderSlot(requirement.providerInputSlot))
-      return std::move(error);
+    if (llvm::Error error = validateExternalFileTreeRequirement(requirement))
+      return error;
     if (!slots.insert(requirement.providerInputSlot).second)
       return invalid("duplicate provider input slot '" +
                      requirement.providerInputSlot + "'");
-    if (llvm::Error error = validateFileTreeMembers(requirement.members))
-      return std::move(error);
   }
 
   std::set<std::string> paths;

@@ -14,6 +14,7 @@
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
+#include "Hardware/Implementation/RepresentationIndex.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -465,18 +466,24 @@ FinalizedHardwareImplementation successfulLifecyclePublishesGateNetlist(
 }
 
 void fusionCompilerPublicationIsClosed(
+    const std::filesystem::path &testRoot,
     const std::filesystem::path &fixtureRoot,
     const FinalizedHardwareImplementation &gate, const ArtifactStore &artifacts,
     const BlobStore &blobs) {
   const FusionCompilerPhysicalSnapshot snapshot{
       RepresentationPhysicalStage::Routed,
-      readFile(fixtureRoot / "expected/top.v"),
+      readFile(fixtureRoot / "expected/fusion-routed.v"),
       "VERSION 5.8 ;\nDESIGN top ;\nEND DESIGN\n",
       "create_clock -period 1 clk\n"};
   auto physical = take(__func__, publishFusionCompilerPhysicalImplementation(
                                      gate, snapshot, artifacts, blobs));
   const ImplementationRepresentationRoot &root =
       physical.implementation().representationRoot();
+  const RepresentationIndex sourceIndex =
+      take(__func__, indexRepresentationRoot(
+                         gate.implementation().representationRoot(), blobs));
+  const RepresentationIndex physicalIndex =
+      take(__func__, indexRepresentationRoot(root, blobs));
   require(
       __func__,
       root.variant == RepresentationRootVariant::AsicPhysical &&
@@ -504,6 +511,9 @@ void fusionCompilerPublicationIsClosed(
                            return payload.role == PayloadRole::BlackBoxContract;
                          }) == 1,
       "Fusion Compiler did not publish the exact routed physical closure");
+  require(__func__,
+          physicalIndex.rootBoundaryPorts() == sourceIndex.rootBoundaryPorts(),
+          "Fusion Compiler physical index lost the exact top boundary");
   const auto sourceBindings =
       gate.implementation().externalImplementationBindings();
   const auto physicalBindings =
@@ -519,10 +529,26 @@ void fusionCompilerPublicationIsClosed(
               physicalBindings.front().fabricResourceRefs ==
                   sourceBindings.front().fabricResourceRefs &&
               physicalBindings.front().representationLocators ==
-                  sourceBindings.front().representationLocators &&
+                  std::vector<RepresentationLocator>{
+                      {RepresentationObjectKind::Module, "INVX0"}} &&
+              sourceBindings.front().representationLocators ==
+                  std::vector<RepresentationLocator>{
+                      {RepresentationObjectKind::Module, "INVX1"}} &&
               physicalBindings.front().blackBoxContractPayloadRef.has_value(),
           "Fusion Compiler publication changed an exact implementation "
           "dependency");
+  const ImplementationPayload &physicalContract =
+      root.payloads[physicalBindings.front()
+                        .blackBoxContractPayloadRef->ordinal];
+  const std::vector<std::uint8_t> physicalContractBytes =
+      take(__func__, blobs.get(physicalContract.blobDigest));
+  const llvm::StringRef physicalContractText(
+      reinterpret_cast<const char *>(physicalContractBytes.data()),
+      physicalContractBytes.size());
+  require(__func__,
+          physicalContractText.contains("module=INVX0\n") &&
+              !physicalContractText.contains("module=INVX1\n"),
+          "Fusion Compiler did not derive the routed black-box closure");
 
   auto contracts = take(__func__, makeSynopsysStandardCellContractCatalog());
   auto strict =
@@ -530,6 +556,267 @@ void fusionCompilerPublicationIsClosed(
                                                   contracts, artifacts, blobs));
   require(__func__, strict.reference() == physical.reference(),
           "Fusion Compiler physical implementation did not strictly reimport");
+
+  const std::uint64_t artifactCount = regularFileCount(testRoot / "artifacts");
+  const std::uint64_t blobCount = regularFileCount(testRoot / "blobs");
+  const ExternalImplementationBinding &sourceBinding =
+      gate.implementation().externalImplementationBindings().front();
+  ExternalImplementationContractCatalog gateOnly;
+  if (llvm::Error error = gateOnly.add(ExternalImplementationContract{
+          sourceBinding.providerContractRef,
+          {{sourceBinding.externalInputs.front().providerInputSlotRef,
+            {ExternalDependencyKind::ExplicitFile}}},
+          {RepresentationRootVariant::GateNetlist},
+          true,
+          false,
+          nullptr}))
+    fail(__func__, llvm::toString(std::move(error)));
+  expectFailure(__func__,
+                publishFusionCompilerPhysicalImplementation(
+                    gate, snapshot, gateOnly, artifacts, blobs),
+                "does not support the representation");
+  require(__func__,
+          regularFileCount(testRoot / "artifacts") == artifactCount &&
+              regularFileCount(testRoot / "blobs") == blobCount,
+          "rejected external contract changed persistent state");
+
+  FusionCompilerPhysicalSnapshot missingBoundary = snapshot;
+  missingBoundary.netlistVerilog = "module top; endmodule\n";
+  expectFailure(__func__,
+                publishFusionCompilerPhysicalImplementation(
+                    gate, missingBoundary, artifacts, blobs),
+                "boundary");
+  require(__func__,
+          regularFileCount(testRoot / "artifacts") == artifactCount &&
+              regularFileCount(testRoot / "blobs") == blobCount,
+          "invalid routed boundary changed persistent state");
+}
+
+void fusionCompilerGeneratorIsClosed(
+    const std::filesystem::path &root, const std::filesystem::path &fixtureRoot,
+    const FinalizedHardwareImplementation &gate,
+    const platform::FinalizedImplementationPlatform &platform,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const std::vector<ExternalFileTreeMember> referenceLibrary{
+      {"parts/p0",
+       fingerprint(readFile(fixtureRoot / "reference.ndm/parts/p0"))},
+      {"pcat", fingerprint(readFile(fixtureRoot / "reference.ndm/pcat"))}};
+  const platform::TechnologyCornerRef corner{platform.reference().artifact,
+                                             platform::TechnologyCornerId(0)};
+  const std::string early = readFile(fixtureRoot / "early.tluplus");
+  const std::string late = readFile(fixtureRoot / "late.tluplus");
+  const std::string layerMap = readFile(fixtureRoot / "layers.map");
+  const std::string floorplan = readFile(fixtureRoot / "floorplan.def");
+  auto config =
+      take(__func__, createResolvedFusionCompilerRoutedConfigView(
+                         "fc_shell version - Y-2026.03", corner,
+                         referenceLibrary, fingerprint(early),
+                         fingerprint(late), fingerprint(layerMap), floorplan));
+  require(__func__,
+          config.stableProviderBuildIdentity() ==
+                  "fc_shell version - Y-2026.03" &&
+              config.technologyCorner() == corner &&
+              config.referenceLibraryMembers() ==
+                  llvm::ArrayRef<ExternalFileTreeMember>(referenceLibrary) &&
+              config.earlyParasiticTech() == fingerprint(early) &&
+              config.lateParasiticTech() == fingerprint(late) &&
+              config.parasiticLayerMap() == fingerprint(layerMap) &&
+              config.floorplanDef() == floorplan,
+          "Fusion Compiler config lost an exact semantic input");
+  std::vector<ExternalFileTreeMember> reversed = referenceLibrary;
+  std::reverse(reversed.begin(), reversed.end());
+  expectFailure(__func__,
+                createResolvedFusionCompilerRoutedConfigView(
+                    "fc_shell version - Y-2026.03", corner, reversed,
+                    fingerprint(early), fingerprint(late),
+                    fingerprint(layerMap), floorplan),
+                "sorted");
+
+  require(__func__, !registerFusionCompilerRoutedCandidateGenerator(),
+          "Fusion Compiler generator registration failed");
+  const CandidateGeneratorDescriptor &descriptor =
+      fusionCompilerRoutedCandidateGeneratorDescriptor();
+  require(__func__,
+          descriptor.kind == fusionCompilerRoutedCandidateGeneratorKind &&
+              descriptor.providerForm == ProviderForm::ExternalPrepareImport &&
+              descriptor.determinism ==
+                  CandidateGeneratorDeterminism::IndependentReplicates &&
+              descriptor.inputSlots.size() == 2 &&
+              descriptor.outputSlots.size() == 1 &&
+              descriptor.outputSlots.front().semanticRole ==
+                  "routed_asic_physical",
+          "Fusion Compiler descriptor lost its exact generator contract");
+
+  const auto inputs =
+      take(__func__, bindFusionCompilerRoutedInputs(gate.reference(),
+                                                    platform.reference()));
+  const auto binding =
+      take(__func__, resolveFusionCompilerRoutedBinding(config));
+  const auto makeLocal = [&](llvm::StringRef executable = "fake-fc_shell") {
+    LocalToolConfig local;
+    local.runtimePolicy = RuntimePolicy::Host;
+    local.tools["fc_shell"].binding.executable =
+        std::filesystem::canonical(fixtureRoot / executable.str()).string();
+    local.externalFiles["early_parasitic_tech"] =
+        std::filesystem::canonical(fixtureRoot / "early.tluplus").string();
+    local.externalFiles["late_parasitic_tech"] =
+        std::filesystem::canonical(fixtureRoot / "late.tluplus").string();
+    local.externalFiles["parasitic_layer_map"] =
+        std::filesystem::canonical(fixtureRoot / "layers.map").string();
+    local.externalFileTrees["reference_library"] =
+        std::filesystem::canonical(fixtureRoot / "reference.ndm").string();
+    return local;
+  };
+  auto wrongConfig =
+      take(__func__, createResolvedFusionCompilerRoutedConfigView(
+                         "fc_shell version - Y-2026.04", corner,
+                         referenceLibrary, fingerprint(early),
+                         fingerprint(late), fingerprint(layerMap), floorplan));
+  auto wrongBinding =
+      take(__func__, resolveFusionCompilerRoutedBinding(wrongConfig));
+  expectFailure(
+      __func__,
+      prepareCandidateGeneratorInvocation(
+          inputs, wrongBinding, artifacts, blobs,
+          ExternalToolPreparationContext{
+              makeLocal(), (root / "fusion-generator-wrong-build").string()}),
+      "does not match semantic build");
+
+  const std::filesystem::path bundle = root / "fusion-generator";
+  const PreparedExternalToolInvocation prepared =
+      take(__func__,
+           prepareCandidateGeneratorInvocation(
+               inputs, binding, artifacts, blobs,
+               ExternalToolPreparationContext{makeLocal(), bundle.string()}));
+  const std::string manifest = readFile(bundle / "tool-invocation.json");
+  require(__func__,
+          llvm::StringRef(manifest).contains("\"version\": \"2.1\"") &&
+              llvm::StringRef(manifest).contains("\"external_file_trees\"") &&
+              llvm::StringRef(manifest).contains("\"path\": \"parts/p0\"") &&
+              readFile(bundle / "drivers/fusion-floorplan.def") == floorplan,
+          "Fusion Compiler bundle lost its exact tree or floorplan closure");
+  const std::string driver = readFile(bundle / "drivers/fusion-compiler.tcl");
+  require(
+      __func__,
+      llvm::StringRef(driver).contains(
+          std::filesystem::canonical(fixtureRoot / "reference.ndm").string()) &&
+          llvm::StringRef(driver).contains(
+              std::filesystem::canonical(fixtureRoot / "early.tluplus")
+                  .string()) &&
+          llvm::StringRef(driver).contains(
+              std::filesystem::canonical(fixtureRoot / "late.tluplus")
+                  .string()) &&
+          llvm::StringRef(driver).contains(
+              std::filesystem::canonical(fixtureRoot / "layers.map").string()),
+      "Fusion Compiler driver lost a resolved physical input");
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
+          "fake Fusion Compiler execution failed");
+  CandidateGeneratorProviderResult result =
+      take(__func__, importCandidateGeneratorInvocation(
+                         inputs, binding, prepared, artifacts, blobs));
+  const auto *completed =
+      std::get_if<CompletedCandidateGeneratorResult>(&result.outcome);
+  require(__func__,
+          completed && completed->outputBindings.size() == 1 &&
+              completed->outputBindings.front().artifacts.size() == 1 &&
+              completed->lineageEdges.size() == 1 &&
+              result.workSummary ==
+                  std::vector<CandidateGeneratorWorkUnitSummary>{
+                      {CandidateGeneratorWorkUnitRef(0), 1, 1}},
+          "Fusion Compiler provider result is not one routed derivation");
+  const auto physical =
+      take(__func__, importFusionCompilerRoutedImplementation(
+                         completed->outputBindings.front().artifacts.front(),
+                         artifacts, blobs));
+  require(__func__,
+          physical.implementation().representationRoot().variant ==
+                  RepresentationRootVariant::AsicPhysical &&
+              physical.implementation().representationRoot().stage ==
+                  RepresentationPhysicalStage::Routed &&
+              physical.implementation().implementationPlatform() ==
+                  gate.implementation().implementationPlatform(),
+          "Fusion Compiler facade did not publish the exact routed state");
+  const std::uint64_t publishedArtifactCount =
+      regularFileCount(root / "artifacts");
+  const std::uint64_t publishedBlobCount = regularFileCount(root / "blobs");
+  expectFailure(__func__,
+                importCandidateGeneratorInvocation(inputs, wrongBinding,
+                                                   prepared, artifacts, blobs),
+                "semantic closure");
+  require(__func__,
+          regularFileCount(root / "artifacts") == publishedArtifactCount &&
+              regularFileCount(root / "blobs") == publishedBlobCount,
+          "mismatched Fusion Compiler expectation changed persistent state");
+
+  const PreparedExternalToolInvocation extra = take(
+      __func__,
+      prepareCandidateGeneratorInvocation(
+          inputs, binding, artifacts, blobs,
+          ExternalToolPreparationContext{
+              makeLocal(), (root / "fusion-generator-extra-output").string()}));
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(extra)) == 0,
+          "fake Fusion Compiler extra-output execution failed");
+  writeFile(std::filesystem::path(extra.bundleRoot) / "outputs/undeclared.txt",
+            "undeclared\n");
+  const std::uint64_t artifactCount = regularFileCount(root / "artifacts");
+  const std::uint64_t blobCount = regularFileCount(root / "blobs");
+  auto invalid = importCandidateGeneratorInvocation(inputs, binding, extra,
+                                                    artifacts, blobs);
+  expectFailure(__func__, std::move(invalid), "undeclared output");
+  require(__func__,
+          regularFileCount(root / "artifacts") == artifactCount &&
+              regularFileCount(root / "blobs") == blobCount,
+          "undeclared Fusion Compiler output changed persistent state");
+
+  const PreparedExternalToolInvocation failed =
+      take(__func__, prepareCandidateGeneratorInvocation(
+                         inputs, binding, artifacts, blobs,
+                         ExternalToolPreparationContext{
+                             makeLocal("fake-fc_shell-fail"),
+                             (root / "fusion-generator-tool-exit").string()}));
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(failed)) == 7,
+          "failing Fusion Compiler fixture returned the wrong exit status");
+  CandidateGeneratorProviderResult failedResult =
+      take(__func__, importCandidateGeneratorInvocation(inputs, binding, failed,
+                                                        artifacts, blobs));
+  const auto *incomplete =
+      std::get_if<IncompleteCandidateGeneratorResult>(&failedResult.outcome);
+  require(__func__,
+          incomplete &&
+              incomplete->reason ==
+                  CandidateGeneratorIncompleteReason::ExecutionFailed &&
+              incomplete->retainedOutputBindings.size() == 1 &&
+              incomplete->retainedOutputBindings.front().artifacts.empty() &&
+              regularFileCount(root / "artifacts") == artifactCount &&
+              regularFileCount(root / "blobs") == blobCount,
+          "Fusion Compiler ToolExit did not remain an unpublished incomplete "
+          "candidate");
+
+  const PreparedExternalToolInvocation missing = take(
+      __func__, prepareCandidateGeneratorInvocation(
+                    inputs, binding, artifacts, blobs,
+                    ExternalToolPreparationContext{
+                        makeLocal("fake-fc_shell-missing"),
+                        (root / "fusion-generator-missing-output").string()}));
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(missing)) != 0,
+          "incomplete Fusion Compiler fixture returned success");
+  CandidateGeneratorProviderResult missingResult =
+      take(__func__, importCandidateGeneratorInvocation(
+                         inputs, binding, missing, artifacts, blobs));
+  const auto *missingOutput =
+      std::get_if<IncompleteCandidateGeneratorResult>(&missingResult.outcome);
+  require(__func__,
+          missingOutput &&
+              missingOutput->reason ==
+                  CandidateGeneratorIncompleteReason::ExecutionFailed &&
+              regularFileCount(root / "artifacts") == artifactCount &&
+              regularFileCount(root / "blobs") == blobCount,
+          "Fusion Compiler MissingOutput did not remain an unpublished "
+          "incomplete candidate");
 }
 
 void requireNoPublication(
@@ -691,7 +978,9 @@ int main(int argc, char **argv) {
   mismatchedBuildCannotPrepare(root, fixtureRoot, fixture, artifacts, blobs);
   auto gate = successfulLifecyclePublishesGateNetlist(
       root, fixtureRoot, fixture, artifacts, blobs);
-  fusionCompilerPublicationIsClosed(fixtureRoot, gate, artifacts, blobs);
+  fusionCompilerPublicationIsClosed(root, fixtureRoot, gate, artifacts, blobs);
+  fusionCompilerGeneratorIsClosed(root, fixtureRoot, gate, fixture.platform,
+                                  artifacts, blobs);
   strictImportRejectsInvalidAttempts(root, fixtureRoot, fixture, artifacts,
                                      blobs, artifactsRoot, blobsRoot);
   failedToolIsAnIncompleteCandidate(root, fixtureRoot, fixture, artifacts,

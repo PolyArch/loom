@@ -1,8 +1,11 @@
 #include "EDA/Adapters/Synopsys/FusionCompiler.h"
 
 #include "EDA/Adapters/Synopsys/DesignCompiler.h"
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Hardware/Implementation/PhysicalRepresentationIndex.h"
 #include "Hardware/Implementation/RepresentationIndex.h"
+#include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -64,6 +67,12 @@ llvm::Expected<std::string> checkedWord(llvm::StringRef value,
   return renderTclWord(descriptor.implementationSemanticIdentity, value);
 }
 
+llvm::Expected<std::string> checkedFloorplanWord(llvm::StringRef value) {
+  if (value != "drivers/fusion-floorplan.def")
+    return checkedWord(value, true);
+  return renderTclWord(descriptor.implementationSemanticIdentity, value);
+}
+
 } // namespace
 
 const SynopsysInvocationDescriptor &fusionCompilerDescriptor() {
@@ -89,7 +98,7 @@ llvm::Expected<std::string> renderFusionCompilerDriver(
   auto constraintWord = checkedWord(generationConstraint, true);
   if (!constraintWord)
     return constraintWord.takeError();
-  auto floorplanWord = checkedWord(floorplan, true);
+  auto floorplanWord = checkedFloorplanWord(floorplan);
   if (!floorplanWord)
     return floorplanWord.takeError();
   auto libraryWord = checkedWord(referenceLibrary, false);
@@ -239,6 +248,7 @@ llvm::Expected<hardware::FinalizedHardwareImplementation>
 publishFusionCompilerPhysicalImplementation(
     const hardware::FinalizedHardwareImplementation &source,
     const FusionCompilerPhysicalSnapshot &snapshot,
+    const hardware::ExternalImplementationContractCatalog &contracts,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   using namespace hardware;
   const HardwareImplementation &input = source.implementation();
@@ -269,6 +279,25 @@ publishFusionCompilerPhysicalImplementation(
         SynopsysAdapterFailureKind::PublicationUnavailable,
         descriptor.implementationSemanticIdentity,
         llvm::toString(inputIndex.takeError()));
+  const ImplementationPayloadBytes outputNetlist{
+      PayloadRole::Netlist, "netlist/fusion-compiler-routed.v",
+      llvm::ArrayRef<std::uint8_t>(reinterpret_cast<const std::uint8_t *>(
+                                       checkedSnapshot->netlistVerilog.data()),
+                                   checkedSnapshot->netlistVerilog.size())};
+  auto outputIndex = indexProspectiveRepresentation(
+      inputRoot.formatRef, inputRoot.top,
+      llvm::ArrayRef<ImplementationPayloadBytes>(&outputNetlist, 1));
+  if (!outputIndex)
+    return makeSynopsysAdapterError(
+        SynopsysAdapterFailureKind::ParserFailure,
+        descriptor.implementationSemanticIdentity,
+        "routed boundary cannot be indexed: " +
+            llvm::toString(outputIndex.takeError()));
+  if (inputIndex->rootBoundaryPorts() != outputIndex->rootBoundaryPorts())
+    return makeSynopsysAdapterError(
+        SynopsysAdapterFailureKind::PublicationUnavailable,
+        descriptor.implementationSemanticIdentity,
+        "routed boundary changed the exact top port inventory");
   auto format = RepresentationFormatDescriptorRef::get(
       RepresentationFormatKind::IndexedPhysical);
   if (!format)
@@ -284,6 +313,9 @@ publishFusionCompilerPhysicalImplementation(
   };
   std::vector<PhysicalRepresentationObject> objects{
       {physicalTop, std::nullopt}};
+  for (const RepresentationBoundaryPort &port :
+       outputIndex->rootBoundaryPorts())
+    objects.push_back({port.locator, port.geometry});
   std::vector<RepresentationLocator> unresolved;
   const auto addReferencedObject =
       [&](const RepresentationLocator &sourceLocator) -> llvm::Error {
@@ -292,16 +324,25 @@ publishFusionCompilerPhysicalImplementation(
           return object.locator == locator;
         }))
       return llvm::Error::success();
-    auto facts = inputIndex->lookup(sourceLocator);
-    if (!facts)
-      return facts.takeError();
-    if (!*facts)
+    auto sourceFacts = inputIndex->lookup(sourceLocator);
+    if (!sourceFacts)
+      return sourceFacts.takeError();
+    if (!*sourceFacts)
       return makeSynopsysAdapterError(
           SynopsysAdapterFailureKind::PublicationUnavailable,
           descriptor.implementationSemanticIdentity,
           "source representation does not index locator '" +
               sourceLocator.canonicalName + "'");
-    objects.push_back({locator, (*facts)->signalGeometry});
+    auto routedFacts = outputIndex->lookup(sourceLocator);
+    if (!routedFacts)
+      return routedFacts.takeError();
+    if (!*routedFacts || !(**routedFacts == **sourceFacts))
+      return makeSynopsysAdapterError(
+          SynopsysAdapterFailureKind::PublicationUnavailable,
+          descriptor.implementationSemanticIdentity,
+          "routed boundary changed or omitted locator '" +
+              sourceLocator.canonicalName + "'");
+    objects.push_back({locator, (*sourceFacts)->signalGeometry});
     if (locator.kind == RepresentationObjectKind::Module)
       unresolved.push_back(locator);
     return llvm::Error::success();
@@ -324,77 +365,83 @@ publishFusionCompilerPhysicalImplementation(
     point.representationLocator = projectLocator(point.representationLocator);
   }
 
-  std::vector<ExternalImplementationBindingDraft> externalBindings;
-  for (const ExternalImplementationBinding &binding :
-       input.externalImplementationBindings()) {
-    std::vector<RepresentationLocator> locators(
-        binding.representationLocators.begin(),
-        binding.representationLocators.end());
-    for (RepresentationLocator &locator : locators) {
-      if (llvm::Error error = addReferencedObject(locator))
-        return std::move(error);
-      locator = projectLocator(locator);
-    }
-    std::optional<ImplementationPayloadKey> blackBoxContract;
-    if (binding.blackBoxContractPayloadRef) {
-      if (binding.blackBoxContractPayloadRef->ordinal >=
+  if (input.externalImplementationBindings().size() != 1 ||
+      !input.memoryMacroBindings().empty())
+    return makeSynopsysAdapterError(
+        SynopsysAdapterFailureKind::UnsupportedImplementation,
+        descriptor.implementationSemanticIdentity,
+        "standard-cell physical publication requires one non-memory external "
+        "binding");
+  const ExternalImplementationBinding &sourceBinding =
+      input.externalImplementationBindings().front();
+  if (!llvm::equal(sourceBinding.representationLocators,
+                   inputIndex->unresolvedExternalDefinitions()) ||
+      sourceBinding.externalInputs.size() != 1 ||
+      !sourceBinding.blackBoxContractPayloadRef ||
+      sourceBinding.blackBoxContractPayloadRef->ordinal >=
           inputRoot.payloads.size())
-        return makeSynopsysAdapterError(
-            SynopsysAdapterFailureKind::PublicationUnavailable,
-            descriptor.implementationSemanticIdentity,
-            "source black-box payload reference is out of range");
-      const ImplementationPayload &payload =
-          inputRoot.payloads[binding.blackBoxContractPayloadRef->ordinal];
-      blackBoxContract =
-          ImplementationPayloadKey{payload.role, payload.canonicalLogicalName};
-    }
-    externalBindings.push_back(ExternalImplementationBindingDraft{
-        binding.providerContractRef, binding.externalInputs,
-        binding.fabricResourceRefs, std::move(locators),
-        std::move(blackBoxContract)});
-  }
+    return makeSynopsysAdapterError(
+        SynopsysAdapterFailureKind::PublicationUnavailable,
+        descriptor.implementationSemanticIdentity,
+        "source standard-cell binding does not close the exact GateNetlist");
+  const auto *library = std::get_if<ExplicitFileDependency>(
+      &sourceBinding.externalInputs.front().dependencyIdentity);
+  if (!library)
+    return makeSynopsysAdapterError(
+        SynopsysAdapterFailureKind::PublicationUnavailable,
+        descriptor.implementationSemanticIdentity,
+        "source standard-cell binding lacks an explicit Liberty identity");
+  const ImplementationPayload &sourceContract =
+      inputRoot.payloads[sourceBinding.blackBoxContractPayloadRef->ordinal];
+  if (sourceContract.role != PayloadRole::BlackBoxContract)
+    return makeSynopsysAdapterError(
+        SynopsysAdapterFailureKind::PublicationUnavailable,
+        descriptor.implementationSemanticIdentity,
+        "source standard-cell binding references a non-contract payload");
 
-  std::vector<MemoryMacroBindingDraft> memoryBindings;
-  for (const MemoryMacroBinding &binding : input.memoryMacroBindings()) {
-    if (binding.externalImplementationBindingRef.ordinal >=
-        externalBindings.size())
+  for (const RepresentationLocator &locator :
+       outputIndex->unresolvedExternalDefinitions()) {
+    auto facts = outputIndex->lookup(locator);
+    if (!facts)
+      return facts.takeError();
+    if (!*facts || (*facts)->objectKind != RepresentationObjectKind::Module)
       return makeSynopsysAdapterError(
           SynopsysAdapterFailureKind::PublicationUnavailable,
           descriptor.implementationSemanticIdentity,
-          "source memory binding references an unknown external "
-          "implementation");
-    if (llvm::Error error = addReferencedObject(binding.representationLocator))
-      return std::move(error);
-    memoryBindings.push_back(MemoryMacroBindingDraft{
-        binding.fabricMemoryRef,
-        binding.externalImplementationBindingRef.ordinal,
-        projectLocator(binding.representationLocator)});
+          "routed unresolved definition is not an indexed Module");
+    objects.push_back({locator, (*facts)->signalGeometry});
+    unresolved.push_back(locator);
   }
-  for (const RepresentationLocator &locator :
-       inputIndex->unresolvedExternalDefinitions())
-    if (llvm::Error error = addReferencedObject(locator))
-      return std::move(error);
+  auto blackBoxContract = renderSynopsysStandardCellBlackBoxContract(
+      library->contentSha256, outputIndex->unresolvedExternalDefinitions());
+  if (!blackBoxContract)
+    return blackBoxContract.takeError();
+  std::vector<ExternalImplementationBindingDraft> externalBindings{
+      {sourceBinding.providerContractRef, sourceBinding.externalInputs,
+       sourceBinding.fabricResourceRefs,
+       outputIndex->unresolvedExternalDefinitions().vec(),
+       ImplementationPayloadKey{PayloadRole::BlackBoxContract,
+                                sourceContract.canonicalLogicalName}}};
+  std::vector<MemoryMacroBindingDraft> memoryBindings;
 
-  const auto storeBytes =
-      [&](llvm::StringRef contents) -> llvm::Expected<BlobDigest> {
-    return blobs.put(llvm::ArrayRef<std::uint8_t>(
+  const auto bytes = [](llvm::StringRef contents) {
+    return llvm::ArrayRef<std::uint8_t>(
         reinterpret_cast<const std::uint8_t *>(contents.data()),
-        contents.size()));
+        contents.size());
   };
-  auto databaseDigest = storeBytes(checkedSnapshot->designExchangeFormat);
-  if (!databaseDigest)
-    return databaseDigest.takeError();
-  auto constraintDigest = storeBytes(checkedSnapshot->generationConstraints);
-  if (!constraintDigest)
-    return constraintDigest.takeError();
+  const BlobDigest databaseDigest =
+      computeBlobDigest(bytes(checkedSnapshot->designExchangeFormat));
+  const BlobDigest constraintDigest =
+      computeBlobDigest(bytes(checkedSnapshot->generationConstraints));
+  const BlobDigest blackBoxContractDigest =
+      computeBlobDigest(bytes(*blackBoxContract));
   std::vector<ImplementationPayload> payloads{
       {PayloadRole::PhysicalDatabase, "database/fusion-compiler-routed.def",
-       *databaseDigest},
+       databaseDigest},
       {PayloadRole::GenerationConstraint,
-       "constraints/fusion-compiler-routed.sdc", *constraintDigest}};
-  for (const ImplementationPayload &payload : inputRoot.payloads)
-    if (payload.role == PayloadRole::BlackBoxContract)
-      payloads.push_back(payload);
+       "constraints/fusion-compiler-routed.sdc", constraintDigest},
+      {PayloadRole::BlackBoxContract, sourceContract.canonicalLogicalName,
+       blackBoxContractDigest}};
 
   auto physicalIndex = createPhysicalRepresentationIndexPayload(
       *format, RepresentationRootVariant::AsicPhysical,
@@ -410,11 +457,9 @@ publishFusionCompilerPhysicalImplementation(
       serializePhysicalRepresentationIndexPayloadJson(*physicalIndex);
   if (!indexBytes)
     return indexBytes.takeError();
-  auto indexDigest = storeBytes(*indexBytes);
-  if (!indexDigest)
-    return indexDigest.takeError();
+  const BlobDigest indexDigest = computeBlobDigest(bytes(*indexBytes));
   payloads.push_back({PayloadRole::RepresentationIndex,
-                      physicalIndex->indexLogicalName, *indexDigest});
+                      physicalIndex->indexLogicalName, indexDigest});
   auto representation = createImplementationRepresentationRoot(
       RepresentationRootVariant::AsicPhysical,
       RepresentationPhysicalStage::Routed, *format, physicalTop,
@@ -425,9 +470,49 @@ publishFusionCompilerPhysicalImplementation(
         descriptor.implementationSemanticIdentity,
         llvm::toString(representation.takeError()));
 
-  auto contracts = makeSynopsysStandardCellContractCatalog();
-  if (!contracts)
-    return contracts.takeError();
+  auto importedFabric =
+      fabric::importEntireFabricRoot(input.fabric(), artifacts);
+  if (!importedFabric)
+    return importedFabric.takeError();
+  auto system = fabric::requireSystemRoot(importedFabric->view());
+  if (!system)
+    return system.takeError();
+  auto target = platform::importImplementationPlatform(
+      *input.implementationPlatform(), artifacts);
+  if (!target)
+    return target.takeError();
+  std::vector<ExternalImplementationBindingDraft> checkedBindings =
+      externalBindings;
+  if (llvm::Error error = contracts.canonicalizeAndValidateBindings(
+          checkedBindings, *representation, &target->platform(), *system))
+    return makeSynopsysAdapterError(
+        SynopsysAdapterFailureKind::PublicationUnavailable,
+        descriptor.implementationSemanticIdentity,
+        llvm::toString(std::move(error)));
+
+  const auto storeExact = [&](llvm::StringRef contents,
+                              const BlobDigest &expected) -> llvm::Error {
+    auto stored = blobs.put(bytes(contents));
+    if (!stored)
+      return stored.takeError();
+    if (*stored != expected)
+      return makeSynopsysAdapterError(
+          SynopsysAdapterFailureKind::PublicationUnavailable,
+          descriptor.implementationSemanticIdentity,
+          "BlobStore returned a digest different from its prospective digest");
+    return llvm::Error::success();
+  };
+  if (llvm::Error error =
+          storeExact(checkedSnapshot->designExchangeFormat, databaseDigest))
+    return std::move(error);
+  if (llvm::Error error =
+          storeExact(checkedSnapshot->generationConstraints, constraintDigest))
+    return std::move(error);
+  if (llvm::Error error = storeExact(*blackBoxContract, blackBoxContractDigest))
+    return std::move(error);
+  if (llvm::Error error = storeExact(*indexBytes, indexDigest))
+    return std::move(error);
+
   auto finalized = finalizeHardwareImplementation(
       HardwareImplementationDraft{
           input.fabric(), input.configurationAbi(),
@@ -435,13 +520,13 @@ publishFusionCompilerPhysicalImplementation(
           input.implementationPlatform(), std::move(interfaces),
           std::move(activityPoints), std::move(memoryBindings),
           std::move(externalBindings)},
-      *contracts, artifacts, blobs);
+      contracts, artifacts, blobs);
   if (!finalized)
     return makeSynopsysAdapterError(
         SynopsysAdapterFailureKind::PublicationUnavailable,
         descriptor.implementationSemanticIdentity,
         llvm::toString(finalized.takeError()));
-  auto strict = importHardwareImplementation(finalized->reference(), *contracts,
+  auto strict = importHardwareImplementation(finalized->reference(), contracts,
                                              artifacts, blobs);
   if (!strict)
     return makeSynopsysAdapterError(
@@ -449,6 +534,18 @@ publishFusionCompilerPhysicalImplementation(
         descriptor.implementationSemanticIdentity,
         llvm::toString(strict.takeError()));
   return std::move(*strict);
+}
+
+llvm::Expected<hardware::FinalizedHardwareImplementation>
+publishFusionCompilerPhysicalImplementation(
+    const hardware::FinalizedHardwareImplementation &source,
+    const FusionCompilerPhysicalSnapshot &snapshot,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto contracts = makeSynopsysStandardCellContractCatalog();
+  if (!contracts)
+    return contracts.takeError();
+  return publishFusionCompilerPhysicalImplementation(
+      source, snapshot, *contracts, artifacts, blobs);
 }
 
 } // namespace loom::eda::synopsys

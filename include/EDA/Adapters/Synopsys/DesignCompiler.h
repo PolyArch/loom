@@ -114,6 +114,10 @@ importDesignCompilerGateNetlistInvocation(
 llvm::Expected<hardware::ExternalImplementationContractCatalog>
 makeSynopsysStandardCellContractCatalog();
 
+llvm::Expected<std::string> renderSynopsysStandardCellBlackBoxContract(
+    const ExternalFileFingerprint &standardCellLiberty,
+    llvm::ArrayRef<hardware::RepresentationLocator> unresolvedDefinitions);
+
 llvm::Expected<hardware::FinalizedHardwareImplementation>
 importDesignCompilerGateNetlistImplementation(
     const ArtifactRootReference &reference, const ArtifactStore &artifacts,

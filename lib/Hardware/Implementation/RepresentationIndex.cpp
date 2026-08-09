@@ -126,6 +126,11 @@ struct LoadedSource final {
   std::string bytes;
 };
 
+struct LoadedPayload final {
+  ImplementationPayload payload;
+  std::string bytes;
+};
+
 LanguageVersion languageVersion(RepresentationLanguageProfile profile) {
   switch (profile) {
   case RepresentationLanguageProfile::Ieee1800_2017:
@@ -223,15 +228,19 @@ admissionElaborationOptions(LanguageVersion version, llvm::StringRef exactTop) {
 llvm::Expected<std::vector<LoadedSource>>
 validateAndLoadClosure(const RepresentationFormatDescriptor &descriptor,
                        const RepresentationRootAdmission &admission,
-                       llvm::ArrayRef<ImplementationPayload> canonicalPayloads,
-                       const BlobStore &blobs) {
+                       llvm::ArrayRef<LoadedPayload> loadedPayloads) {
+  std::vector<ImplementationPayload> canonicalPayloads;
+  canonicalPayloads.reserve(loadedPayloads.size());
+  for (const LoadedPayload &loaded : loadedPayloads)
+    canonicalPayloads.push_back(loaded.payload);
   if (llvm::Error error =
           validateRepresentationPayloadCatalog(admission, canonicalPayloads))
     return detail::invalidIndex("payload closure is invalid: " +
                                 llvm::toString(std::move(error)));
 
   std::vector<LoadedSource> sources;
-  for (const ImplementationPayload &payload : canonicalPayloads) {
+  for (const LoadedPayload &loaded : loadedPayloads) {
+    const ImplementationPayload &payload = loaded.payload;
     const auto contract =
         llvm::find_if(admission.payloadContracts,
                       [&](const RepresentationPayloadContract &candidate) {
@@ -241,24 +250,52 @@ validateAndLoadClosure(const RepresentationFormatDescriptor &descriptor,
       return detail::invalidIndex(
           "payload role is not admitted by the selected format");
 
+    if (llvm::Error error = detail::validateRepresentationTextPolicy(
+            contract->textPolicy, payload,
+            llvm::ArrayRef<std::uint8_t>(
+                reinterpret_cast<const std::uint8_t *>(loaded.bytes.data()),
+                loaded.bytes.size())))
+      return std::move(error);
+    if (descriptor.frontendSourceRole &&
+        payload.role == *descriptor.frontendSourceRole) {
+      sources.push_back(
+          LoadedSource{payload.canonicalLogicalName, loaded.bytes});
+    }
+  }
+
+  return sources;
+}
+
+llvm::Expected<std::vector<LoadedPayload>>
+loadStoredPayloads(llvm::ArrayRef<ImplementationPayload> payloads,
+                   const BlobStore &blobs) {
+  std::vector<LoadedPayload> loaded;
+  loaded.reserve(payloads.size());
+  for (const ImplementationPayload &payload : payloads) {
     auto contents = blobs.get(payload.blobDigest);
     if (!contents)
       return detail::invalidIndex(
           "payload '" + payload.canonicalLogicalName +
           "' could not be loaded: " + llvm::toString(contents.takeError()));
-    if (llvm::Error error = detail::validateRepresentationTextPolicy(
-            contract->textPolicy, payload, *contents))
-      return std::move(error);
-    if (descriptor.frontendSourceRole &&
-        payload.role == *descriptor.frontendSourceRole) {
-      sources.push_back(LoadedSource{
-          payload.canonicalLogicalName,
-          std::string(reinterpret_cast<const char *>(contents->data()),
-                      contents->size())});
-    }
+    loaded.push_back(LoadedPayload{
+        payload, std::string(reinterpret_cast<const char *>(contents->data()),
+                             contents->size())});
   }
+  return loaded;
+}
 
-  return sources;
+std::vector<LoadedPayload>
+loadProspectivePayloads(llvm::ArrayRef<ImplementationPayloadBytes> payloads) {
+  std::vector<LoadedPayload> loaded;
+  loaded.reserve(payloads.size());
+  for (const ImplementationPayloadBytes &payload : payloads) {
+    const BlobDigest digest = computeBlobDigest(payload.contents);
+    loaded.push_back(LoadedPayload{
+        {payload.role, payload.canonicalLogicalName.str(), digest},
+        std::string(reinterpret_cast<const char *>(payload.contents.data()),
+                    payload.contents.size())});
+  }
+  return loaded;
 }
 
 bool isForbiddenRawDirective(slang::syntax::SyntaxKind kind) {
@@ -565,8 +602,7 @@ validateDefinitionClosure(const slang::ast::Compilation &compilation,
 llvm::Expected<RawIndex>
 indexInitialHdl(RepresentationFormatDescriptorRef formatRef,
                 const RepresentationLocator &exactRoot,
-                llvm::ArrayRef<ImplementationPayload> canonicalPayloads,
-                const BlobStore &blobs) {
+                llvm::ArrayRef<LoadedPayload> loadedPayloads) {
   const detail::StaticRepresentationFormatEntry &entry =
       detail::getStaticRepresentationFormatEntry(formatRef);
   const RepresentationFormatDescriptor &descriptor = entry.descriptor;
@@ -590,8 +626,7 @@ indexInitialHdl(RepresentationFormatDescriptorRef formatRef,
     return detail::invalidIndex(
         "built-in HDL indexer descriptor lacks source or language metadata");
 
-  auto sources =
-      validateAndLoadClosure(descriptor, *admission, canonicalPayloads, blobs);
+  auto sources = validateAndLoadClosure(descriptor, *admission, loadedPayloads);
   if (!sources)
     return sources.takeError();
   const LanguageVersion version = languageVersion(*descriptor.languageProfile);
@@ -732,7 +767,28 @@ llvm::Expected<detail::RawIndex> detail::indexHdlRepresentation(
     const RepresentationLocator &exactRoot,
     llvm::ArrayRef<ImplementationPayload> canonicalPayloads,
     const BlobStore &blobs) {
-  auto raw = indexInitialHdl(formatRef, exactRoot, canonicalPayloads, blobs);
+  auto loaded = loadStoredPayloads(canonicalPayloads, blobs);
+  if (!loaded)
+    return loaded.takeError();
+  auto raw = indexInitialHdl(formatRef, exactRoot, *loaded);
+  if (!raw)
+    return raw.takeError();
+  const detail::StaticRepresentationFormatEntry &entry =
+      detail::getStaticRepresentationFormatEntry(formatRef);
+  raw->rootVariant =
+      entry.indexer == BuiltinRepresentationIndexer::SystemVerilogRtl
+          ? RepresentationRootVariant::Rtl
+          : RepresentationRootVariant::GateNetlist;
+  raw->stage = std::nullopt;
+  return raw;
+}
+
+llvm::Expected<detail::RawIndex> detail::indexHdlRepresentation(
+    RepresentationFormatDescriptorRef formatRef,
+    const RepresentationLocator &exactRoot,
+    llvm::ArrayRef<ImplementationPayloadBytes> payloads) {
+  std::vector<LoadedPayload> loaded = loadProspectivePayloads(payloads);
+  auto raw = indexInitialHdl(formatRef, exactRoot, loaded);
   if (!raw)
     return raw.takeError();
   const detail::StaticRepresentationFormatEntry &entry =

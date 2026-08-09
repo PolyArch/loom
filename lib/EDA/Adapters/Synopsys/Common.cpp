@@ -366,6 +366,61 @@ importSynopsysInvocation(
           llvm::Twine(failed.exitCode) + ")");
 }
 
+llvm::Error
+validateSynopsysOutputInventory(const SynopsysInvocationDescriptor &descriptor,
+                                llvm::StringRef bundleRoot) {
+  std::set<std::string> allowed{"completion.json", "stderr.log", "stdout.log"};
+  for (llvm::StringLiteral output : descriptor.declaredOutputs) {
+    const std::filesystem::path path(output.str());
+    if (path.parent_path() != "outputs" || path.filename().empty())
+      return makeSynopsysAdapterError(
+          SynopsysAdapterFailureKind::DescriptorMismatch,
+          descriptor.implementationSemanticIdentity,
+          "declared output is not a direct member of outputs");
+    allowed.insert(path.filename().string());
+  }
+
+  const std::filesystem::path outputs =
+      std::filesystem::path(bundleRoot.str()) / "outputs";
+  std::set<std::string> found;
+  std::error_code error;
+  const std::filesystem::file_status rootStatus =
+      std::filesystem::symlink_status(outputs, error);
+  if (error || !std::filesystem::is_directory(rootStatus) ||
+      std::filesystem::is_symlink(rootStatus))
+    return makeSynopsysAdapterError(
+        SynopsysAdapterFailureKind::IntegrityFailure,
+        descriptor.implementationSemanticIdentity,
+        "outputs directory is missing or not an ordinary directory");
+  for (std::filesystem::directory_iterator iterator(outputs, error), end;
+       !error && iterator != end; iterator.increment(error)) {
+    const std::filesystem::path path = iterator->path();
+    const std::filesystem::file_status status =
+        std::filesystem::symlink_status(path, error);
+    if (error)
+      break;
+    const std::string name = path.filename().string();
+    if (!std::filesystem::is_regular_file(status) ||
+        std::filesystem::is_symlink(status) || !allowed.count(name))
+      return makeSynopsysAdapterError(
+          SynopsysAdapterFailureKind::IntegrityFailure,
+          descriptor.implementationSemanticIdentity,
+          "outputs directory contains undeclared output '" + name + "'");
+    found.insert(name);
+  }
+  if (error)
+    return makeSynopsysAdapterError(
+        SynopsysAdapterFailureKind::IntegrityFailure,
+        descriptor.implementationSemanticIdentity,
+        "could not enumerate outputs directory: " + error.message());
+  if (found != allowed)
+    return makeSynopsysAdapterError(
+        SynopsysAdapterFailureKind::IntegrityFailure,
+        descriptor.implementationSemanticIdentity,
+        "outputs directory omits a lifecycle or declared output");
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::string> readSynopsysDeclaredOutput(
     const SynopsysInvocationDescriptor &descriptor,
     const external_tool::ImportedExternalToolInvocationBundle &bundle,

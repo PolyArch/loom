@@ -567,6 +567,42 @@ void warningsAndAuthoringOrderAreNonsemantic(
           "authoring order changed unresolved gate definitions");
 }
 
+void prospectiveBytesUseTheExactGateIndexer(const std::filesystem::path &root) {
+  constexpr llvm::StringLiteral source =
+      "module top(input [1:0] a, output y); "
+      "missing_cell u(.A(a[0]), .Y(y)); endmodule\n";
+  RepresentationIndex stored =
+      buildGateIndex(root, "gate-prospective-stored-blobs", source);
+  const std::vector<std::uint8_t> sourceBytes = bytes(source);
+  const ImplementationPayloadBytes payload{PayloadRole::Netlist,
+                                           "netlist/design.v", sourceBytes};
+  RepresentationIndex prospective =
+      take(__func__,
+           indexProspectiveRepresentation(
+               gateFormat(__func__), {RepresentationObjectKind::Module, "top"},
+               llvm::ArrayRef<ImplementationPayloadBytes>(&payload, 1)));
+
+  for (const RepresentationLocator &locator :
+       std::vector<RepresentationLocator>{
+           {RepresentationObjectKind::Module, "top"},
+           {RepresentationObjectKind::Port, "top.a"},
+           {RepresentationObjectKind::Port, "top.y"},
+           {RepresentationObjectKind::Cell, "top.u"},
+           {RepresentationObjectKind::Pin, "top.u.A"},
+           {RepresentationObjectKind::Pin, "top.u.Y"}})
+    require(__func__,
+            take(__func__, prospective.lookup(locator)) ==
+                take(__func__, stored.lookup(locator)),
+            "prospective payload bytes changed exact gate facts");
+  require(__func__,
+          prospective.unresolvedExternalDefinitions() ==
+              stored.unresolvedExternalDefinitions(),
+          "prospective payload bytes changed unresolved definitions");
+  require(__func__,
+          prospective.rootBoundaryPorts() == stored.rootBoundaryPorts(),
+          "prospective payload bytes changed the exact top boundary");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -584,6 +620,7 @@ int main(int argc, char **argv) {
   lookupsOutsideTheExactRootAreInvalid(root);
   structuralGateRejectionsCoverTheWholePayload(root);
   warningsAndAuthoringOrderAreNonsemantic(root);
+  prospectiveBytesUseTheExactGateIndexer(root);
   std::filesystem::remove_all(root);
   return EXIT_SUCCESS;
 }

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1-}" == "-version" ]]; then
+  printf '%s\n' 'fc_shell version - Y-2026.03'
+  exit 0
+fi
+
+if [[ "$#" -ne 2 || "$1" != "-f" ||
+      "$2" != "drivers/fusion-compiler.tcl" ]]; then
+  exit 64
+fi
+
+test -f drivers/fusion-compiler.tcl
+test -f drivers/fusion-floorplan.def
+cat > outputs/fusion-compiler-routed.v <<'EOF'
+module top(a, y);
+  input a;
+  output y;
+  wire a;
+  wire y;
+  INVX0 u0 (.A(a), .Y(y));
+endmodule
+EOF
+cat > outputs/fusion-compiler-routed.def <<'EOF'
+VERSION 5.8 ;
+DESIGN top ;
+END DESIGN
+EOF
+cat > outputs/fusion-compiler-routed.sdc <<'EOF'
+create_clock -name synthetic_clock -period 10 [get_ports a]
+EOF

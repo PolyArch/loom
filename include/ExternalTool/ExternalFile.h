@@ -52,6 +52,9 @@ struct ResolvedExternalFileTree final {
   std::vector<ExternalFileTreeMember> members;
 };
 
+llvm::Error validateExternalFileTreeRequirement(
+    const ExternalFileTreeRequirement &requirement);
+
 llvm::Expected<std::vector<ResolvedExternalFile>>
 resolveExternalFiles(llvm::ArrayRef<ExternalFileRequirement> requirements,
                      const LocalToolConfig &config);

@@ -39,6 +39,31 @@ indexRepresentation(RepresentationFormatDescriptorRef formatRef,
                              std::move(raw->unresolved));
 }
 
+llvm::Expected<RepresentationIndex> indexProspectiveRepresentation(
+    RepresentationFormatDescriptorRef formatRef,
+    const RepresentationLocator &exactRoot,
+    llvm::ArrayRef<ImplementationPayloadBytes> payloads) {
+  const detail::StaticRepresentationFormatEntry &format =
+      detail::getStaticRepresentationFormatEntry(formatRef);
+  if (format.indexer == detail::BuiltinRepresentationIndexer::IndexedPhysical)
+    return detail::invalidIndex(
+        "prospective payload indexing is available only for HDL formats");
+  auto raw = detail::indexHdlRepresentation(formatRef, exactRoot, payloads);
+  if (!raw)
+    return raw.takeError();
+  if (!raw->rootVariant)
+    return detail::invalidIndex(
+        "representation indexer omitted its exact root variant claim");
+  std::vector<RepresentationIndex::Entry> entries;
+  entries.reserve(raw->entries.size());
+  for (detail::RawIndexEntry &entry : raw->entries)
+    entries.push_back(RepresentationIndex::Entry{std::move(entry.locator),
+                                                 std::move(entry.facts)});
+  return RepresentationIndex(formatRef, *raw->rootVariant, raw->stage,
+                             exactRoot, std::move(entries),
+                             std::move(raw->unresolved));
+}
+
 llvm::Expected<RepresentationIndex>
 indexRepresentationRoot(const ImplementationRepresentationRoot &root,
                         const BlobStore &blobs) {

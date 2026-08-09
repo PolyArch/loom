@@ -393,6 +393,28 @@ makeSynopsysStandardCellContractCatalog() {
   return catalog;
 }
 
+llvm::Expected<std::string> renderSynopsysStandardCellBlackBoxContract(
+    const ExternalFileFingerprint &standardCellLiberty,
+    llvm::ArrayRef<RepresentationLocator> unresolvedDefinitions) {
+  std::vector<RepresentationLocator> canonical(unresolvedDefinitions.begin(),
+                                               unresolvedDefinitions.end());
+  llvm::sort(canonical, representationLocatorCanonicalLess);
+  if (std::adjacent_find(canonical.begin(), canonical.end()) != canonical.end())
+    return invalid("standard-cell definition closure contains a duplicate");
+  std::string contract =
+      "loom.synopsys.design_compiler.standard_cell_contract.1.0\n"
+      "liberty_sha256=" +
+      formatExternalFileFingerprint(standardCellLiberty) + "\n";
+  for (const RepresentationLocator &locator : canonical) {
+    const llvm::StringRef name(locator.canonicalName);
+    if (locator.kind != RepresentationObjectKind::Module || name.empty() ||
+        name.contains('\0') || name.contains('\n') || name.contains('\r'))
+      return invalid("standard-cell definition is not a canonical Module");
+    contract += "module=" + locator.canonicalName + "\n";
+  }
+  return contract;
+}
+
 llvm::ArrayRef<std::uint8_t>
 resolvedDesignCompilerGateNetlistConfigSchemaDescriptorBytes() {
   return schemaBytes();
@@ -599,40 +621,6 @@ llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
                                               specification);
 }
 
-llvm::Error rejectUndeclaredOutputs(llvm::StringRef bundleRoot) {
-  const std::filesystem::path outputs =
-      std::filesystem::path(bundleRoot.str()) / "outputs";
-  const std::set<std::string> allowed{"completion.json",
-                                      "design-compiler-gate-netlist.v",
-                                      "stderr.log", "stdout.log"};
-  std::set<std::string> found;
-  std::error_code error;
-  const std::filesystem::file_status rootStatus =
-      std::filesystem::symlink_status(outputs, error);
-  if (error || !std::filesystem::is_directory(rootStatus) ||
-      std::filesystem::is_symlink(rootStatus))
-    return invalid("outputs directory is missing or not an ordinary directory");
-  for (std::filesystem::directory_iterator iterator(outputs, error), end;
-       !error && iterator != end; iterator.increment(error)) {
-    const std::filesystem::path path = iterator->path();
-    const std::filesystem::file_status status =
-        std::filesystem::symlink_status(path, error);
-    if (error)
-      break;
-    const std::string name = path.filename().string();
-    if (!std::filesystem::is_regular_file(status) ||
-        std::filesystem::is_symlink(status) || !allowed.count(name))
-      return invalid("outputs directory contains undeclared output '" + name +
-                     "'");
-    found.insert(name);
-  }
-  if (error)
-    return invalid("could not enumerate outputs directory: " + error.message());
-  if (found != allowed)
-    return invalid("outputs directory omits a lifecycle or declared output");
-  return llvm::Error::success();
-}
-
 llvm::Error validatePreservedInterfaces(const HardwareImplementation &source,
                                         const RepresentationIndex &output,
                                         const BlobStore &blobs) {
@@ -687,16 +675,14 @@ publishGateNetlist(const InvocationFacts &facts,
   if (llvm::Error error = validatePreservedInterfaces(source, *index, blobs))
     return std::move(error);
 
-  std::string contract =
-      "loom.synopsys.design_compiler.standard_cell_contract.1.0\n"
-      "liberty_sha256=" +
-      formatExternalFileFingerprint(facts.config.standardCellLiberty()) + "\n";
-  for (const RepresentationLocator &locator :
-       index->unresolvedExternalDefinitions())
-    contract += "module=" + locator.canonicalName + "\n";
+  auto contract = renderSynopsysStandardCellBlackBoxContract(
+      facts.config.standardCellLiberty(),
+      index->unresolvedExternalDefinitions());
+  if (!contract)
+    return contract.takeError();
   auto contractDigest = blobs.put(llvm::ArrayRef<std::uint8_t>(
-      reinterpret_cast<const std::uint8_t *>(contract.data()),
-      contract.size()));
+      reinterpret_cast<const std::uint8_t *>(contract->data()),
+      contract->size()));
   if (!contractDigest)
     return contractDigest.takeError();
   payloads.push_back({PayloadRole::BlackBoxContract,
@@ -781,7 +767,8 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
   }
   ImportedExternalToolInvocationBundle imported =
       std::get<ImportedExternalToolInvocationBundle>(std::move(*attempt));
-  if (llvm::Error error = rejectUndeclaredOutputs(prepared.bundleRoot))
+  if (llvm::Error error = validateSynopsysOutputInventory(
+          designCompilerDescriptor(), prepared.bundleRoot))
     return std::move(error);
   auto output = readExternalToolInvocationDeclaredOutput(imported, outputPath);
   if (!output)
