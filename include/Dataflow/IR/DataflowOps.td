@@ -25,6 +25,23 @@ def Dataflow_GraphType : AnyTypeOf<[
 // Thread Channel Endpoint Ops
 //===----------------------------------------------------------------------===//
 
+def Dataflow_ChannelCreateOp : Dataflow_Op<"channel.create"> {
+  let summary = "create one fresh thread-level logical channel";
+  let description = [{
+    Creates a fresh logical channel instance each time execution reaches this
+    operation. The result is connectivity identity only; capacity, buffering,
+    routing, and physical service selection are intentionally absent.
+
+    Creation is valid only outside `dataflow.graph`, `loom.spatial_region`,
+    and DynamicWork thread definitions. The operation is deliberately not
+    pure because distinct dynamic executions create distinct channels.
+  }];
+
+  let results = (outs Dataflow_ChannelType:$channel);
+  let assemblyFormat = "attr-dict `:` qualified(type($channel))";
+  let hasVerifier = 1;
+}
+
 def Dataflow_ChannelSendOp : Dataflow_Op<"channel.send", [
     TypesMatchWith<"'message' type matches channel element type",
                    "channel", "message",

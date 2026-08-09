@@ -52,10 +52,10 @@ using dataflow::ChannelRelation;
 
 llvm::Error verifyRootUses(mlir::Value root) {
   auto argument = llvm::dyn_cast<mlir::BlockArgument>(root);
-  if (!argument)
+  if (!argument && !root.getDefiningOp<dataflow::ChannelCreateOp>())
     return programError(
-        "channel values must be external block arguments in finalized "
-        "programs");
+        "channel roots must be external block arguments or "
+        "dataflow.channel.create results in finalized programs");
   for (mlir::OpOperand &use : root.getUses()) {
     auto launch = llvm::dyn_cast<dataflow::ThreadLaunchOp>(use.getOwner());
     if (!launch || !isThreadLaunchBodyOperand(launch, use))
@@ -70,7 +70,8 @@ llvm::Error verifyChannelUseSurface(mlir::ModuleOp module) {
   module.walk([&](mlir::Operation *op) {
     if (error)
       return mlir::WalkResult::interrupt();
-    if (llvm::any_of(op->getResultTypes(), containsChannelType)) {
+    if (llvm::any_of(op->getResultTypes(), containsChannelType) &&
+        !llvm::isa<dataflow::ChannelCreateOp>(op)) {
       error = programError(
           llvm::Twine("finalized program contains channel producer '") +
           op->getName().getStringRef() + "'");
@@ -111,15 +112,12 @@ llvm::Error verifyChannelUseSurface(mlir::ModuleOp module) {
   return error;
 }
 
-llvm::Error collectThreadArgumentBindings(dataflow::ThreadLaunchOp launch,
-                                          dataflow::ThreadOp thread,
-                                          unsigned argumentIndex,
-                                          mlir::Value root,
-                                          ChannelRelation &relation) {
-  mlir::BlockArgument argument =
-      thread.getBody().front().getArgument(argumentIndex);
-
-  for (mlir::OpOperand &use : argument.getUses()) {
+llvm::Error
+collectChannelEndpointBindings(dataflow::ThreadLaunchOp launch,
+                               dataflow::ThreadOp thread,
+                               std::optional<unsigned> argumentIndex,
+                               mlir::Value channel, ChannelRelation &relation) {
+  for (mlir::OpOperand &use : channel.getUses()) {
     mlir::Operation *owner = use.getOwner();
     if (auto graphLaunch = llvm::dyn_cast<dataflow::GraphLaunchOp>(owner)) {
       unsigned number = use.getOperandNumber();
@@ -159,12 +157,38 @@ llvm::Error collectThreadArgumentBindings(dataflow::ThreadLaunchOp launch,
           launch, thread, argumentIndex, owner, std::nullopt, std::nullopt});
       continue;
     }
-    return programError(llvm::Twine("thread channel argument #") +
-                        llvm::Twine(argumentIndex) + " of @" +
+    if (argumentIndex)
+      return programError(llvm::Twine("thread channel argument #") +
+                          llvm::Twine(*argumentIndex) + " of @" +
+                          thread.getSymName() + " has an unsupported use by '" +
+                          owner->getName().getStringRef() + "'");
+    return programError(llvm::Twine("thread-local channel of @") +
                         thread.getSymName() + " has an unsupported use by '" +
                         owner->getName().getStringRef() + "'");
   }
   return llvm::Error::success();
+}
+
+llvm::Expected<ChannelRelation>
+computeBoundChannelRelation(mlir::Value hostChannel) {
+  if (llvm::Error error = verifyRootUses(hostChannel))
+    return std::move(error);
+  ChannelRelation relation;
+  mlir::SymbolTableCollection symbols;
+  for (mlir::OpOperand &use : hostChannel.getUses()) {
+    auto launch = llvm::cast<dataflow::ThreadLaunchOp>(use.getOwner());
+    auto thread = symbols.lookupNearestSymbolFrom<dataflow::ThreadOp>(
+        launch, launch.getCalleeAttr());
+    if (!thread)
+      continue;
+    unsigned argumentIndex = use.getOperandNumber();
+    mlir::BlockArgument argument =
+        thread.getBody().front().getArgument(argumentIndex);
+    if (llvm::Error error = collectChannelEndpointBindings(
+            launch, thread, argumentIndex, argument, relation))
+      return std::move(error);
+  }
+  return relation;
 }
 
 llvm::Error verifyLaunchRank(dataflow::ThreadLaunchOp launch,
@@ -295,7 +319,7 @@ llvm::Error verifyChannelTopology(mlir::ModuleOp module) {
   if (error)
     return error;
 
-  return dataflow::forEachHostChannelRelation(
+  return dataflow::forEachChannelRelation(
       module, [](mlir::Value, const ChannelRelation &relation) {
         return verifyTopology(relation);
       });
@@ -465,32 +489,33 @@ llvm::Error verifyGraphWaitFrontiers(mlir::ModuleOp module,
 
 } // namespace
 
-llvm::Expected<dataflow::ChannelRelation>
-dataflow::computeChannelRelation(mlir::Value hostChannel) {
-  if (llvm::Error error = verifyRootUses(hostChannel))
-    return std::move(error);
-  ChannelRelation relation;
-  mlir::SymbolTableCollection symbols;
-  for (mlir::OpOperand &use : hostChannel.getUses()) {
-    auto launch = llvm::cast<dataflow::ThreadLaunchOp>(use.getOwner());
-    auto thread = symbols.lookupNearestSymbolFrom<dataflow::ThreadOp>(
-        launch, launch.getCalleeAttr());
-    if (!thread)
-      continue;
-    if (llvm::Error error = collectThreadArgumentBindings(
-            launch, thread, use.getOperandNumber(), hostChannel, relation))
-      return std::move(error);
-  }
-  return relation;
-}
-
-llvm::Error dataflow::forEachHostChannelRelation(
+llvm::Error dataflow::forEachChannelRelation(
     mlir::ModuleOp module,
     llvm::function_ref<llvm::Error(mlir::Value, const ChannelRelation &)>
         callback) {
-  llvm::SmallVector<mlir::Value> hostChannels;
+  struct ChannelRoot {
+    mlir::Value value;
+    dataflow::ThreadOp localThread;
+  };
+
+  mlir::SymbolTableCollection symbols;
+  llvm::DenseMap<mlir::Operation *,
+                 llvm::SmallVector<dataflow::ThreadLaunchOp, 2>>
+      rootsByThread;
+  module.walk([&](dataflow::ThreadLaunchOp launch) {
+    if (auto thread = symbols.lookupNearestSymbolFrom<dataflow::ThreadOp>(
+            launch, launch.getCalleeAttr()))
+      rootsByThread[thread].push_back(launch);
+  });
+
+  llvm::SmallVector<ChannelRoot> channelRoots;
   llvm::DenseSet<mlir::Value> seen;
   module.walk([&](mlir::Operation *op) {
+    if (auto create = llvm::dyn_cast<dataflow::ChannelCreateOp>(op)) {
+      dataflow::ThreadOp thread = create->getParentOfType<dataflow::ThreadOp>();
+      if (seen.insert(create.getChannel()).second)
+        channelRoots.push_back({create.getChannel(), thread});
+    }
     for (mlir::Region &region : op->getRegions())
       for (mlir::Block &block : region) {
         mlir::Operation *owner = block.getParentOp();
@@ -500,16 +525,31 @@ llvm::Error dataflow::forEachHostChannelRelation(
         for (mlir::BlockArgument argument : block.getArguments())
           if (llvm::isa<dataflow::ChannelType>(argument.getType()) &&
               seen.insert(argument).second)
-            hostChannels.push_back(argument);
+            channelRoots.push_back({argument, {}});
       }
   });
-  for (mlir::Value hostChannel : hostChannels) {
-    llvm::Expected<ChannelRelation> relation =
-        dataflow::computeChannelRelation(hostChannel);
-    if (!relation)
-      return relation.takeError();
-    if (llvm::Error error = callback(hostChannel, *relation))
-      return error;
+  for (const ChannelRoot &root : channelRoots) {
+    if (!root.localThread) {
+      llvm::Expected<ChannelRelation> relation =
+          computeBoundChannelRelation(root.value);
+      if (!relation)
+        return relation.takeError();
+      if (llvm::Error error = callback(root.value, *relation))
+        return error;
+      continue;
+    }
+
+    auto launches = rootsByThread.find(root.localThread);
+    if (launches == rootsByThread.end())
+      continue;
+    for (dataflow::ThreadLaunchOp launch : launches->second) {
+      ChannelRelation relation;
+      if (llvm::Error error = collectChannelEndpointBindings(
+              launch, root.localThread, std::nullopt, root.value, relation))
+        return error;
+      if (llvm::Error error = callback(root.value, relation))
+        return error;
+    }
   }
   return llvm::Error::success();
 }

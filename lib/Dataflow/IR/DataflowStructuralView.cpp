@@ -300,11 +300,11 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
           graphs_[gs].ref, {kGraphStreamInput, gs, k});
   }
 
-  // (4) Channel multicast relation, via the one shared host-channel discovery
-  // and relation owner. Each producer's canonically sorted multicast set is one
-  // contiguous range keyed by a collision-free typed producer key; its sink
-  // terminals share the range.
-  if (llvm::Error error = forEachHostChannelRelation(
+  // (4) Channel multicast relation, via the one shared channel-context
+  // discovery and relation owner. Each producer's canonically sorted multicast
+  // set is one contiguous range keyed by a collision-free typed producer key;
+  // its sink terminals share the range.
+  if (llvm::Error error = forEachChannelRelation(
           module, [&](Value, const ChannelRelation &relation) -> llvm::Error {
             llvm::SmallVector<ChannelConsumerBinding, 4> consumers;
             for (const ChannelEndpointBinding &binding : relation.consumers) {

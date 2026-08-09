@@ -180,8 +180,8 @@ LogicalResult SpatialRegionOp::verify() {
   Operation *forbidden = nullptr;
   getBody().walk([&](Operation *nested) {
     if (isa<SpatialRegionOp, dataflow::GraphOp, dataflow::GraphLaunchOp,
-            dataflow::ThreadOp, dataflow::ThreadLaunchOp>(nested) ||
-        nested->getName().getStringRef() == "dataflow.channel.create") {
+            dataflow::ThreadOp, dataflow::ThreadLaunchOp,
+            dataflow::ChannelCreateOp>(nested)) {
       forbidden = nested;
       return WalkResult::interrupt();
     }

@@ -61,6 +61,22 @@ dataflow.graph private @reject_receive_in_graph(%start: none) -> () {
 }
 
 // -----
+dataflow.graph private @reject_create_in_graph(%start: none) -> () {
+  // expected-error @+1 {{must not appear inside a dataflow.graph definition}}
+  %channel = dataflow.channel.create : !dataflow.channel<i32>
+  dataflow.graph.return %start : none
+}
+
+// -----
+dataflow.thread private @reject_dynamic_create
+    domain(#dataflow.thread_domain<dynamic_work, work_item_arg = 0>)(
+        %work: i32) ctrl (%ctrl: none) {
+  // expected-error @+1 {{must not appear inside a DynamicWork dataflow.thread definition}}
+  %channel = dataflow.channel.create : !dataflow.channel<i32>
+  dataflow.thread.yield
+}
+
+// -----
 // expected-error @+1 {{function_type input #0 must not be a dataflow channel type}}
 dataflow.graph private @reject_graph_channel_input(
     %start: none, %channel: !dataflow.channel<i32>) -> () {

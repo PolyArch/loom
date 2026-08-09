@@ -78,6 +78,7 @@ set(LOOM_TEST_DEPENDS
   loom-dataflow-activity-definedness-test
   loom-dataflow-ordered-cardinality-handshake-test
   loom-dataflow-canonical-artifact-test
+  loom-dataflow-channel-create-test
   loom-dataflow-canonical-reference-test
   loom-dataflow-memory-effect-test
   loom-dataflow-operation-schema-codec-test

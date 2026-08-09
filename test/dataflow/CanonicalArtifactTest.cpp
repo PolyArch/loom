@@ -746,7 +746,8 @@ module {
     %m = dataflow.channel.receive %ch : !dataflow.channel<i32>
     dataflow.thread.yield
   }
-  func.func private @host(%ch: !dataflow.channel<i32>) {
+  func.func private @host() {
+    %ch = dataflow.channel.create : !dataflow.channel<i32>
     %p = dataflow.thread.launch @producer(%ch) : (!dataflow.channel<i32>) -> !dataflow.thread_token
     %c1 = dataflow.thread.launch @streamconsumer(%ch) : (!dataflow.channel<i32>) -> !dataflow.thread_token
     %c2 = dataflow.thread.launch @directconsumer(%ch) : (!dataflow.channel<i32>) -> !dataflow.thread_token

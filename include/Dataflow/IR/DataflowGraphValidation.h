@@ -24,14 +24,14 @@ llvm::Error validateFinalizedProgram(::mlir::ModuleOp module);
 struct ChannelEndpointBinding {
   ThreadLaunchOp rootLaunch;
   ThreadOp thread;
-  unsigned threadArgumentOrdinal = 0;
+  std::optional<unsigned> threadArgumentOrdinal;
   ::mlir::Operation *site = nullptr;
   std::optional<unsigned> streamOrdinal;
   std::optional<::mlir::AffineMap> sourceMap;
 };
 
-/// The complete channel relation of one host channel value. Every producer
-/// site belongs to exactly one thread-launch body-operand binding; sequential
+/// The complete relation of one dynamic channel context. Every producer site
+/// belongs to exactly one thread argument or thread-local binding; sequential
 /// and structured mutually exclusive sites under that binding contribute to
 /// the same ordered event sequence. Consumers remain a non-empty set in
 /// program-discovery order.
@@ -40,19 +40,13 @@ struct ChannelRelation {
   llvm::SmallVector<ChannelEndpointBinding, 2> consumers;
 };
 
-/// Compute the channel relation for `hostChannel` (a channel-typed block
-/// argument bound at `dataflow.thread.launch` body operands), using the exact
-/// whole-program channel-topology rules. Fails on an unsupported use surface.
-/// This is the single owner of the channel binding relation; consumers do not
-/// re-derive it.
-llvm::Expected<ChannelRelation>
-computeChannelRelation(::mlir::Value hostChannel);
-
-/// Discover every host channel of `module` exactly once and deliver its exact
-/// computed relation to `callback`. This is the single shared owner of channel
-/// discovery: both finalized-program validation and read-only view import route
-/// through it, so neither rederives the host-channel walk or the relation.
-llvm::Error forEachHostChannelRelation(
+/// Discover every dynamic channel context of `module` and deliver its exact
+/// computed relation to `callback`. An externally bound or host-created channel
+/// contributes one relation. A channel created inside a dense thread
+/// definition contributes one relation for each root launch of that thread.
+/// This is the single shared owner of channel discovery: both finalized-program
+/// validation and read-only view import route through it.
+llvm::Error forEachChannelRelation(
     ::mlir::ModuleOp module,
     llvm::function_ref<llvm::Error(::mlir::Value, const ChannelRelation &)>
         callback);

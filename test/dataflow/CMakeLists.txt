@@ -57,6 +57,21 @@ target_link_libraries(loom-dataflow-canonical-artifact-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-dataflow-channel-create-test
+  ChannelCreateTest.cpp
+)
+
+target_link_libraries(loom-dataflow-channel-create-test PRIVATE
+  LoomCommon
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
 add_executable(loom-dataflow-activity-definedness-test
   ActivityDefinednessTest.cpp
 )

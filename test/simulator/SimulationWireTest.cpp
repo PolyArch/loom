@@ -306,7 +306,8 @@ module {
     %done = dataflow.graph.launch @gs deps(%ctrl) values() stream_inputs(%ch source_map affine_map<() -> ()>) memories() stream_outputs() : (none, !dataflow.channel<i32>) -> none
     dataflow.thread.yield %done : none
   }
-  func.func private @host(%ch: !dataflow.channel<i32>) {
+  func.func private @host() {
+    %ch = dataflow.channel.create : !dataflow.channel<i32>
     %p = dataflow.thread.launch @producer(%ch) : (!dataflow.channel<i32>) -> !dataflow.thread_token
     %c = dataflow.thread.launch @consumer(%ch) : (!dataflow.channel<i32>) -> !dataflow.thread_token
     return
@@ -428,7 +429,8 @@ module {
     %done = dataflow.graph.launch @gn deps(%ctrl) values() stream_inputs(%ch source_map affine_map<() -> ()>) memories() stream_outputs() : (none, !dataflow.channel<none>) -> none
     dataflow.thread.yield %done : none
   }
-  func.func private @host(%ch: !dataflow.channel<none>) {
+  func.func private @host() {
+    %ch = dataflow.channel.create : !dataflow.channel<none>
     %p = dataflow.thread.launch @producer(%ch) : (!dataflow.channel<none>) -> !dataflow.thread_token
     %c = dataflow.thread.launch @consumer(%ch) : (!dataflow.channel<none>) -> !dataflow.thread_token
     return

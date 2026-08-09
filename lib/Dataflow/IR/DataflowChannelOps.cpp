@@ -91,6 +91,22 @@ ChannelType::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
   return success();
 }
 
+LogicalResult ChannelCreateOp::verify() {
+  if ((*this)->getParentOfType<GraphOp>())
+    return emitOpError("must not appear inside a dataflow.graph definition");
+
+  for (Operation *parent = (*this)->getParentOp(); parent;
+       parent = parent->getParentOp())
+    if (parent->getName().getStringRef() == "loom.spatial_region")
+      return emitOpError("must not appear inside loom.spatial_region");
+
+  if (auto thread = (*this)->getParentOfType<ThreadOp>();
+      thread && thread.getDomain().getKind() == ThreadDomainKind::DynamicWork)
+    return emitOpError(
+        "must not appear inside a DynamicWork dataflow.thread definition");
+  return success();
+}
+
 LogicalResult ChannelSendOp::verify() {
   return verifyChannelEndpoint(getOperation());
 }
