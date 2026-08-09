@@ -647,8 +647,6 @@ void implementationOutputsRemainExact() {
                 parseFusionCompilerPhysicalSnapshot(
                     gate, def, constraints, "top",
                     loom::hardware::RepresentationPhysicalStage::Placed));
-  expectAdapterFailure(__func__, fusionCompilerPublicationUnavailable(),
-                       SynopsysAdapterFailureKind::PublicationUnavailable);
 }
 
 void invocationLifecycleIsSingleAndStrict(const std::filesystem::path &root) {

@@ -2,6 +2,7 @@
 #define LOOM_EDA_ADAPTERS_SYNOPSYS_FUSIONCOMPILER_H
 
 #include "EDA/Adapters/Synopsys/Common.h"
+#include "Hardware/Implementation/HardwareImplementation.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -42,7 +43,11 @@ importFusionCompilerPhysicalSnapshot(
     const external_tool::PreparedExternalToolInvocation &prepared,
     const SynopsysBundleInputs &inputs, llvm::StringRef top);
 
-llvm::Error fusionCompilerPublicationUnavailable();
+llvm::Expected<hardware::FinalizedHardwareImplementation>
+publishFusionCompilerPhysicalImplementation(
+    const hardware::FinalizedHardwareImplementation &source,
+    const FusionCompilerPhysicalSnapshot &snapshot,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
 
 } // namespace loom::eda::synopsys
 

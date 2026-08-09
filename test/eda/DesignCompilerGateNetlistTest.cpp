@@ -1,5 +1,6 @@
 #include "ConfigurationABI2TestSupport.h"
 #include "EDA/Adapters/Synopsys/DesignCompiler.h"
+#include "EDA/Adapters/Synopsys/FusionCompiler.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
@@ -366,7 +367,7 @@ void mismatchedBuildCannotPrepare(const std::filesystem::path &root,
                 "does not match semantic build");
 }
 
-void successfulLifecyclePublishesGateNetlist(
+FinalizedHardwareImplementation successfulLifecyclePublishesGateNetlist(
     const std::filesystem::path &root, const std::filesystem::path &fixtureRoot,
     const SemanticFixture &fixture, const ArtifactStore &artifacts,
     const BlobStore &blobs) {
@@ -460,6 +461,75 @@ void successfulLifecyclePublishesGateNetlist(
               implementation.implementation().activityPoints().empty(),
           "DesignCompiler output lost an exact dependency or retained unowned "
           "activity");
+  return implementation;
+}
+
+void fusionCompilerPublicationIsClosed(
+    const std::filesystem::path &fixtureRoot,
+    const FinalizedHardwareImplementation &gate, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
+  const FusionCompilerPhysicalSnapshot snapshot{
+      RepresentationPhysicalStage::Routed,
+      readFile(fixtureRoot / "expected/top.v"),
+      "VERSION 5.8 ;\nDESIGN top ;\nEND DESIGN\n",
+      "create_clock -period 1 clk\n"};
+  auto physical = take(__func__, publishFusionCompilerPhysicalImplementation(
+                                     gate, snapshot, artifacts, blobs));
+  const ImplementationRepresentationRoot &root =
+      physical.implementation().representationRoot();
+  require(
+      __func__,
+      root.variant == RepresentationRootVariant::AsicPhysical &&
+          root.stage == RepresentationPhysicalStage::Routed &&
+          root.formatRef.kind() == RepresentationFormatKind::IndexedPhysical &&
+          root.top ==
+              RepresentationLocator{RepresentationObjectKind::PhysicalObject,
+                                    "top"} &&
+          llvm::count_if(root.payloads,
+                         [](const auto &payload) {
+                           return payload.role == PayloadRole::PhysicalDatabase;
+                         }) == 1 &&
+          llvm::count_if(root.payloads,
+                         [](const auto &payload) {
+                           return payload.role ==
+                                  PayloadRole::RepresentationIndex;
+                         }) == 1 &&
+          llvm::count_if(root.payloads,
+                         [](const auto &payload) {
+                           return payload.role ==
+                                  PayloadRole::GenerationConstraint;
+                         }) == 1 &&
+          llvm::count_if(root.payloads,
+                         [](const auto &payload) {
+                           return payload.role == PayloadRole::BlackBoxContract;
+                         }) == 1,
+      "Fusion Compiler did not publish the exact routed physical closure");
+  const auto sourceBindings =
+      gate.implementation().externalImplementationBindings();
+  const auto physicalBindings =
+      physical.implementation().externalImplementationBindings();
+  require(__func__,
+          physical.implementation().implementationPlatform() ==
+                  gate.implementation().implementationPlatform() &&
+              physicalBindings.size() == 1 && sourceBindings.size() == 1 &&
+              physicalBindings.front().providerContractRef ==
+                  sourceBindings.front().providerContractRef &&
+              physicalBindings.front().externalInputs ==
+                  sourceBindings.front().externalInputs &&
+              physicalBindings.front().fabricResourceRefs ==
+                  sourceBindings.front().fabricResourceRefs &&
+              physicalBindings.front().representationLocators ==
+                  sourceBindings.front().representationLocators &&
+              physicalBindings.front().blackBoxContractPayloadRef.has_value(),
+          "Fusion Compiler publication changed an exact implementation "
+          "dependency");
+
+  auto contracts = take(__func__, makeSynopsysStandardCellContractCatalog());
+  auto strict =
+      take(__func__, importHardwareImplementation(physical.reference(),
+                                                  contracts, artifacts, blobs));
+  require(__func__, strict.reference() == physical.reference(),
+          "Fusion Compiler physical implementation did not strictly reimport");
 }
 
 void requireNoPublication(
@@ -619,8 +689,9 @@ int main(int argc, char **argv) {
   const SemanticFixture fixture =
       makeSemanticFixture(fixtureRoot, artifacts, blobs);
   mismatchedBuildCannotPrepare(root, fixtureRoot, fixture, artifacts, blobs);
-  successfulLifecyclePublishesGateNetlist(root, fixtureRoot, fixture, artifacts,
-                                          blobs);
+  auto gate = successfulLifecyclePublishesGateNetlist(
+      root, fixtureRoot, fixture, artifacts, blobs);
+  fusionCompilerPublicationIsClosed(fixtureRoot, gate, artifacts, blobs);
   strictImportRejectsInvalidAttempts(root, fixtureRoot, fixture, artifacts,
                                      blobs, artifactsRoot, blobsRoot);
   failedToolIsAnIncompleteCandidate(root, fixtureRoot, fixture, artifacts,
