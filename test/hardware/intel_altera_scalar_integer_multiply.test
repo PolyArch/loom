@@ -1,0 +1,46 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-intel-altera-scalar-integer-multiply-test %t
+# RUN: FileCheck %s --check-prefix=WRAPPER < %t/exact/provider_artifacts/intel_altera_scalar_integer_multiply.sv
+# RUN: FileCheck %s --check-prefix=SYSTEM < %t/exact/provider_artifacts/intel_altera_scalar_integer_multiply_system.sv
+
+# WRAPPER-LABEL: module intel_altera_multiply_0
+# WRAPPER: input [15:0] data_input_0
+# WRAPPER: data_input_1,
+# WRAPPER: output [15:0] data_output_0
+# WRAPPER: lpm_mult #(
+# WRAPPER: .lpm_widtha(16),
+# WRAPPER: .lpm_widthb(16),
+# WRAPPER: .lpm_widthp(32),
+# WRAPPER: .lpm_widths(1),
+# WRAPPER: .lpm_representation("UNSIGNED"),
+# WRAPPER: .lpm_pipeline(0),
+# WRAPPER: .lpm_type("LPM_MULT"),
+# WRAPPER: .lpm_hint("DEDICATED_MULTIPLIER_CIRCUITRY=YES")
+# WRAPPER: .dataa(data_input_0),
+# WRAPPER: .datab(data_input_1),
+# WRAPPER: .result(lpm_product)
+# WRAPPER: assign data_output_0 = lpm_product[15:0];
+# WRAPPER-NOT: always
+
+# SYSTEM-LABEL: module loom_module
+# SYSTEM: input {{ *}}clock
+# SYSTEM-NEXT: {{ *}}reset
+# SYSTEM: input [15:0] input_0_data
+# SYSTEM: input input_0_valid
+# SYSTEM: input [15:0] input_1_data
+# SYSTEM: input input_1_valid
+# SYSTEM: {{ *}}output_0_ready
+# SYSTEM: output {{ *}}input_0_ready
+# SYSTEM-NEXT: {{ *}}input_1_ready
+# SYSTEM: output [15:0] output_0_data
+# SYSTEM: output output_0_valid
+# SYSTEM: reg {{ *}}[15:0] result_data_reg
+# SYSTEM: reg {{ *}}result_valid_reg
+# SYSTEM: loom_fabric_operation_0 operation (
+# SYSTEM: .data_input_0
+# SYSTEM: .data_input_1
+# SYSTEM: .data_output_0
+# SYSTEM: always @(posedge clock or posedge reset)
+# SYSTEM: result_data_reg <= _operation_data_output_0
+# SYSTEM: result_valid_reg <=

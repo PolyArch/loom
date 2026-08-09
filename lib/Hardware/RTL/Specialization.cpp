@@ -302,19 +302,78 @@ applySpecializations(mlir::ModuleOp module,
   return llvm::Error::success();
 }
 
-void appendOutput(FabricOperationProviderOutput &destination,
-                  FabricOperationProviderOutput source) {
-  destination.payloads.insert(destination.payloads.end(),
-                              std::make_move_iterator(source.payloads.begin()),
-                              std::make_move_iterator(source.payloads.end()));
+bool sameLocatorSet(llvm::ArrayRef<RepresentationLocator> lhs,
+                    llvm::ArrayRef<RepresentationLocator> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  std::vector<RepresentationLocator> canonicalLhs(lhs.begin(), lhs.end());
+  std::vector<RepresentationLocator> canonicalRhs(rhs.begin(), rhs.end());
+  const auto less = [](const RepresentationLocator &a,
+                       const RepresentationLocator &b) {
+    return std::tie(a.kind, a.canonicalName) <
+           std::tie(b.kind, b.canonicalName);
+  };
+  llvm::sort(canonicalLhs, less);
+  llvm::sort(canonicalRhs, less);
+  return canonicalLhs == canonicalRhs;
+}
+
+bool sameExternalDefinition(const ExternalImplementationBindingDraft &lhs,
+                            const ExternalImplementationBindingDraft &rhs) {
+  return lhs.providerContractRef == rhs.providerContractRef &&
+         sameExternalInputs(lhs.externalInputs, rhs.externalInputs) &&
+         sameLocatorSet(lhs.representationLocators,
+                        rhs.representationLocators) &&
+         lhs.blackBoxContractPayload == rhs.blackBoxContractPayload;
+}
+
+void canonicalizePhysicalOwners(
+    std::vector<fabric::FabricPhysicalOccurrenceOwnerRef> &owners) {
+  llvm::sort(owners, [](const auto &lhs, const auto &rhs) {
+    return fabric::canonicalFabricBytes(lhs) <
+           fabric::canonicalFabricBytes(rhs);
+  });
+  owners.erase(std::unique(owners.begin(), owners.end()), owners.end());
+}
+
+llvm::Error appendOutput(FabricOperationProviderOutput &destination,
+                         FabricOperationProviderOutput source) {
+  for (FabricOperationProviderPayload &payload : source.payloads) {
+    auto existing = llvm::find_if(
+        destination.payloads,
+        [&](const FabricOperationProviderPayload &candidate) {
+          return candidate.role == payload.role &&
+                 candidate.canonicalLogicalName == payload.canonicalLogicalName;
+        });
+    if (existing == destination.payloads.end()) {
+      destination.payloads.push_back(std::move(payload));
+      continue;
+    }
+    if (existing->bytes != payload.bytes)
+      return invalid("provider payload key has conflicting bytes");
+  }
   destination.activityPoints.insert(
       destination.activityPoints.end(),
       std::make_move_iterator(source.activityPoints.begin()),
       std::make_move_iterator(source.activityPoints.end()));
-  destination.externalImplementationBindings.insert(
-      destination.externalImplementationBindings.end(),
-      std::make_move_iterator(source.externalImplementationBindings.begin()),
-      std::make_move_iterator(source.externalImplementationBindings.end()));
+  for (ExternalImplementationBindingDraft &binding :
+       source.externalImplementationBindings) {
+    auto existing =
+        llvm::find_if(destination.externalImplementationBindings,
+                      [&](const ExternalImplementationBindingDraft &candidate) {
+                        return sameExternalDefinition(candidate, binding);
+                      });
+    if (existing == destination.externalImplementationBindings.end()) {
+      canonicalizePhysicalOwners(binding.fabricResourceRefs);
+      destination.externalImplementationBindings.push_back(std::move(binding));
+      continue;
+    }
+    existing->fabricResourceRefs.insert(existing->fabricResourceRefs.end(),
+                                        binding.fabricResourceRefs.begin(),
+                                        binding.fabricResourceRefs.end());
+    canonicalizePhysicalOwners(existing->fabricResourceRefs);
+  }
+  return llvm::Error::success();
 }
 
 } // namespace
@@ -498,7 +557,9 @@ llvm::Expected<FabricOperationProviderOutput> specializeFabricOperationLeaves(
 
   FabricOperationProviderOutput output;
   for (PreparedSpecialization &specialization : prepared)
-    appendOutput(output, std::move(specialization.output));
+    if (llvm::Error error =
+            appendOutput(output, std::move(specialization.output)))
+      return std::move(error);
   mlir::OwningOpRef<mlir::ModuleOp> working(
       llvm::cast<mlir::ModuleOp>(module->clone()));
   if (llvm::Error error = applySpecializations(*working, prepared))

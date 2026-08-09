@@ -1,0 +1,12 @@
+# REQUIRES: circt, quartus-prime-pro-26.1
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-intel-altera-scalar-integer-multiply-test %t
+# RUN: cd %t/exact/provider_artifacts && quartus_sh -t %S/Inputs/IntelAlteraLpmMult/quartus.tcl
+# RUN: cd %t/exact/provider_artifacts && quartus_syn loom_intel_altera_lpm_mult --read_settings_files=on --write_settings_files=off > quartus_syn.log 2>&1
+# RUN: FileCheck %s --check-prefix=DSP --input-file=%t/exact/provider_artifacts/output_files/loom_intel_altera_lpm_mult.syn.rpt
+# RUN: cd %t/exact/provider_artifacts && quartus_fit loom_intel_altera_lpm_mult --read_settings_files=on --write_settings_files=off > quartus_fit.log 2>&1
+# RUN: cd %t/exact/provider_artifacts && quartus_sta loom_intel_altera_lpm_mult > quartus_sta.log 2>&1
+# RUN: cd %t/exact/provider_artifacts && quartus_asm loom_intel_altera_lpm_mult --read_settings_files=on > quartus_asm.log 2>&1
+# RUN: test -s %t/exact/provider_artifacts/output_files/loom_intel_altera_lpm_mult.sof
+
+# DSP: Implemented 1 DSP elements

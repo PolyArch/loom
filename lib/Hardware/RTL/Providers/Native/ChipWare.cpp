@@ -240,7 +240,7 @@ validateChipWareBinding(const ExternalImplementationBindingDraft &binding,
   if (representation.variant != RepresentationRootVariant::Rtl ||
       binding.providerContractRef != cadenceChipWareExternalContractRef ||
       !isExactComponentInput(binding.externalInputs) ||
-      binding.fabricResourceRefs.size() != 1 ||
+      binding.fabricResourceRefs.empty() ||
       binding.representationLocators !=
           std::vector<RepresentationLocator>{
               {RepresentationObjectKind::Module,

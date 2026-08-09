@@ -37,7 +37,9 @@ config.substitutions.append(
 llvm_config.with_system_environment(
     ["HOME", "INCLUDE", "LIB", "TMP", "TEMP",
      "JOBS", "LOOM_TEST_JOBS",
-     "LOOM_NATIVE_RUNNER_JOBS"])
+     "LOOM_NATIVE_RUNNER_JOBS", "LOCALDOMAIN", "LM_LICENSE_FILE",
+     "ALTERAD_LICENSE_FILE", "ALTERA_INSTALL_ROOT_HOME", "QUARTUS_ROOTDIR",
+     "QUARTUS_ROOTDIR_OVERRIDE", "QCORE_ROOTDIR", "QSYS_ROOTDIR"])
 llvm_config.use_default_substitutions()
 
 config.excludes = ["lit.cfg.py", "lit.site.cfg.py", "CMakeLists.txt"]

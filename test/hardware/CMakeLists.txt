@@ -646,6 +646,22 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-intel-altera-scalar-integer-multiply-test
+    IntelAlteraScalarIntegerMultiplyTest.cpp
+  )
+
+  target_link_libraries(loom-intel-altera-scalar-integer-multiply-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-fixed-vector-float-fma-test
     PortableFixedVectorFloatFmaTest.cpp
   )

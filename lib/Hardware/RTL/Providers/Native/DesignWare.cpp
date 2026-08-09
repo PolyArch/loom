@@ -120,8 +120,8 @@ validateBinding(const ExternalImplementationBindingDraft &binding,
   if (binding.providerContractRef != synopsysDesignWareContractRef ||
       !isExactComponentInput(binding.externalInputs))
     return invalid("binding does not select the verified component resource");
-  if (binding.fabricResourceRefs.size() != 1)
-    return invalid("binding does not own exactly one physical occurrence");
+  if (binding.fabricResourceRefs.empty())
+    return invalid("binding owns no physical occurrence");
   if (binding.representationLocators !=
       std::vector<RepresentationLocator>{
           {RepresentationObjectKind::Module, componentName.str()}})

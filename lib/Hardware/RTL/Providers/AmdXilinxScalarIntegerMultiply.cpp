@@ -367,7 +367,7 @@ validateDsp58Binding(const ExternalImplementationBindingDraft &binding,
       !isExactPlatform(platform) ||
       binding.providerContractRef != kContractRef ||
       !isExactExternalInput(binding.externalInputs) ||
-      binding.fabricResourceRefs.size() != 1 ||
+      binding.fabricResourceRefs.empty() ||
       binding.representationLocators !=
           std::vector<RepresentationLocator>{
               {RepresentationObjectKind::Module, kPrimitive.str()}} ||
