@@ -1,3 +1,16 @@
+add_library(LoomEDAAsicContracts
+  AsicStandardCellContracts.cpp
+)
+
+target_include_directories(LoomEDAAsicContracts PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomEDAAsicContracts PUBLIC
+  LoomHardwareImplementation
+  LLVMSupport
+)
+
 add_library(LoomEDAFpgaPublication
   FpgaImplementationPublication.cpp
 )

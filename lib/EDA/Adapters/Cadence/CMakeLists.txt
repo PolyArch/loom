@@ -10,6 +10,7 @@ add_llvm_library(LoomEDACadence
   LINK_LIBS
   LoomCommon
   LoomDSE
+  LoomEDAAsicContracts
   LoomExternalTool
   LoomHardwareImplementation
   LoomImplementationPlatform

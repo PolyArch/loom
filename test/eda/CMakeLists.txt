@@ -101,6 +101,17 @@ target_link_libraries(loom-cadence-adapter-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-voltus-rail-evaluation-test
+  VoltusRailEvaluationTest.cpp
+)
+
+target_link_libraries(loom-voltus-rail-evaluation-test PRIVATE
+  LoomEDACadence
+  LoomHardwareConfigurationTestSupport
+  MLIRParser
+  LLVMSupport
+)
+
 get_property(LOOM_EDA_TEST_TARGETS
   DIRECTORY
   PROPERTY BUILDSYSTEM_TARGETS

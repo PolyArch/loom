@@ -281,6 +281,30 @@ bundleInputs(const ImplementationRepresentationRoot &implementation,
   return result;
 }
 
+evaluation::models::CompleteRailAnalysisConfiguration
+railConfiguration(const PlatformFixture &platform,
+                  const ResolvedExternalFileTree &powerGridLibrary) {
+  const ArtifactRootReference hardware =
+      reference("loom.hardware_implementation", 'b');
+  const evaluation::SubjectTargetRef target{
+      evaluation::models::hardwareImplementationPhysicalSubjectRole(), hardware,
+      evaluation::SubjectTarget{hardware}};
+  const evaluation::ExplicitAssumptionSource activity{
+      target, take(__func__, evaluation::ExactRatio::get(1, 2)),
+      take(__func__, evaluation::ExactRatio::get(1, 10))};
+  return {evaluation::models::staticExplicitRailAnalysisModelConfig(),
+          {"fixture-tool 1.0",
+           powerGridLibrary.members,
+           {"technology.cl", "cells/stdcells.cl"}},
+          {target,
+           {platform.platform.reference().artifact,
+            platform::TechnologyCornerId(0)}},
+          {target, take(__func__, evaluation::DecimalValue::get(9, -1))},
+          {target, take(__func__, evaluation::DecimalValue::get(3, 2))},
+          {target, take(__func__, evaluation::DecimalValue::get(2, -9))},
+          {target, activity}};
+}
+
 bool hasStrictBatchEnvelope(llvm::StringRef driver) {
   return driver.starts_with("proc loom_main {} {\n") &&
          driver.contains("catch {loom_main} loom_error") &&
@@ -469,8 +493,12 @@ elif [[ "$args" == *"tempus.tcl"* ]]; then
   printf '{"schema":"loom.cadence.tempus_timing_result","version":"1.0","clock_period_seconds":"1e-9","limiting_clock_frequency_hz":"1e9"}\n' > outputs/tempus-timing-result.json
 elif [[ "$args" == *"joules.tcl"* ]]; then
   printf 'Instance: /top\nPower Unit: W\nPDB Frames: /stim#1/frame#0\nCategory,leakage,internal,switching,total,Row%%\nSubtotal,5e-6,1.75e-3,2.5e-4,2.005e-3,100.00%%\nPercentage,0.25%%,87.28%%,12.47%%,100.00%%,100.00%%\n' > outputs/joules-power-result.csv
-elif [[ "$args" == *"tree-bound-fixture.tcl"* ]]; then
-  printf '{"schema":"loom.cadence.voltus_rail_result","version":"1.0","maximum_voltage_drop_volts":"4.42943e-2"}\n' > outputs/voltus-rail-result.json
+elif [[ "$args" == *"voltus-rail.tcl"* ]]; then
+  grep -F 'set_rail_analysis_mode -method static' drivers/voltus-rail.tcl >/dev/null
+  grep -F 'report_power_rail_results -plot ivdd' drivers/voltus-rail.tcl >/dev/null
+  mkdir -p work
+  printf '# domain voltage-drop report\n1.25e-2 instance0 power_main ground_main\n4.42943e-2 instance1 power_main ground_main\n3.7e-2 instance2 power_main ground_main\n' > work/voltus-ivdd.rpt
+  tclsh drivers/voltus-rail-publish.tcl
 elif [[ "$args" == *"-64bit"* ]]; then
   printf '{"schema":"loom.cadence.xcelium_functional_result","version":"1.0","status":"passed","completed_transactions":3}\n' > outputs/xcelium-functional-result.json
 elif [[ "$args" == *"fail"* ]]; then
@@ -666,18 +694,27 @@ fi
               take(__func__, evaluation::DecimalValue::get(2, -3)),
           "Joules lifecycle lost the normalized observation");
 
-  CadenceBundleInputs voltusInputs =
-      bundleInputs(physical, voltusRailDescriptor(), evaluationClosure(),
-                   frozen(tool, "voltus", {}), {}, &platform);
-  voltusInputs.frozen.externalFileTrees.push_back(
-      fileTree(root / "voltus-pgv", "power_grid_library"));
-  const auto voltusSpec =
-      take(__func__,
-           makeCadenceInvocationBundleSpec(voltusRailDescriptor(), voltusInputs,
-                                           {{tool.string(), "-no_gui", "-files",
-                                             "drivers/tree-bound-fixture.tcl"}},
-                                           {{"drivers/tree-bound-fixture.tcl",
-                                             "exit\n", std::nullopt, false}}));
+  const ResolvedExternalFileTree voltusPgv =
+      fileTree(root / "voltus-pgv", "power_grid_library");
+  CadenceBundleInputs voltusInputs = bundleInputs(
+      physical, voltusRailDescriptor(), evaluationClosure(),
+      frozen(tool, "voltus", {}),
+      semanticFiles(
+          {{"inputs/netlist/top.v", "module top; endmodule\n"},
+           {"inputs/constraints/top.sdc", "create_clock -period 1 clk\n"},
+           {"inputs/physical/top.def",
+            "VERSION 5.8 ;\nDESIGN top ;\nEND DESIGN\n"}}),
+      &platform);
+  voltusInputs.frozen.externalFileTrees.push_back(voltusPgv);
+  const VoltusRailInvocationConfiguration voltusConfiguration{
+      "top",
+      {"inputs/netlist/top.v"},
+      {"inputs/constraints/top.sdc"},
+      "inputs/physical/top.def",
+      {"VDD", "VSS"},
+      railConfiguration(platform, voltusPgv)};
+  const auto voltusSpec = take(
+      __func__, makeVoltusRailBundleSpec(voltusInputs, voltusConfiguration));
   require(__func__,
           voltusSpec.externalFiles.empty() &&
               voltusSpec.externalFileTrees.size() == 1 &&
@@ -686,17 +723,31 @@ fi
               voltusSpec.externalFileTrees.front().members ==
                   voltusInputs.frozen.externalFileTrees.front().members,
           "Cadence bundle did not retain the exact PGV tree");
+  const auto voltusDriver =
+      llvm::find_if(voltusSpec.files, [](const MaterializedBundleFile &file) {
+        return file.relativePath == "drivers/voltus-rail.tcl";
+      });
+  require(
+      __func__,
+      voltusDriver != voltusSpec.files.end() &&
+          llvm::StringRef(voltusDriver->contents)
+              .contains("read_lib -pgv [list {") &&
+          llvm::StringRef(voltusDriver->contents)
+              .contains("technology.cl} {") &&
+          llvm::StringRef(voltusDriver->contents)
+              .contains("cells/stdcells.cl}") &&
+          llvm::StringRef(voltusDriver->contents)
+              .contains("set_default_switching_activity ") &&
+          llvm::StringRef(voltusDriver->contents)
+              .contains("-global_activity [expr {double(1) / 10}]") &&
+          llvm::StringRef(voltusDriver->contents)
+              .contains("-duty [expr {double(1) / 2}]") &&
+          llvm::StringRef(voltusDriver->contents).contains("-period {2e-9s}"),
+      "Voltus driver lost an exact projected rail input");
   const auto voltus = finalize("voltus", voltusSpec);
   execute(voltus);
-  const auto importedVoltus =
-      take(__func__, importCadenceInvocation(voltusRailDescriptor(), voltus,
-                                             voltusInputs));
   require(__func__,
-          take(__func__,
-               parseVoltusRailObservation(
-                   take(__func__, readCadenceDeclaredOutput(
-                                      voltusRailDescriptor(), importedVoltus,
-                                      "outputs/voltus-rail-result.json"))))
+          take(__func__, importVoltusRailObservation(voltus, voltusInputs))
                   .maximumVoltageDropVolts ==
               take(__func__, evaluation::DecimalValue::get(442943, -7)),
           "Cadence tree-bound import lost the normalized rail observation");
@@ -704,23 +755,22 @@ fi
   CadenceBundleInputs changedPgv = voltusInputs;
   changedPgv.frozen.externalFileTrees.front().members.front().fingerprint =
       fingerprint("changed standard cells\n");
-  expectAdapterFailure(
-      __func__,
-      importCadenceInvocation(voltusRailDescriptor(), voltus, changedPgv),
-      CadenceAdapterFailureKind::IntegrityFailure);
-  expectAdapterFailure(__func__, makeVoltusRailBundleSpec(voltusInputs),
-                       CadenceAdapterFailureKind::PublicationUnavailable);
+  expectAdapterFailure(__func__,
+                       importVoltusRailObservation(voltus, changedPgv),
+                       CadenceAdapterFailureKind::IntegrityFailure);
 
   CadenceBundleInputs missingPgv = voltusInputs;
   missingPgv.frozen.externalFileTrees.clear();
-  expectAdapterFailure(__func__, makeVoltusRailBundleSpec(missingPgv),
-                       CadenceAdapterFailureKind::MissingProviderInput);
+  expectAdapterFailure(
+      __func__, makeVoltusRailBundleSpec(missingPgv, voltusConfiguration),
+      CadenceAdapterFailureKind::MissingProviderInput);
 
   CadenceBundleInputs scalarPgv = missingPgv;
   scalarPgv.frozen.externalFiles.push_back(
       {"power_grid_library", "power_grid_library", liberty.string(),
        fingerprint(readFile(liberty))});
-  expectAdapterFailure(__func__, makeVoltusRailBundleSpec(scalarPgv),
+  expectAdapterFailure(__func__,
+                       makeVoltusRailBundleSpec(scalarPgv, voltusConfiguration),
                        CadenceAdapterFailureKind::MissingProviderInput);
 }
 

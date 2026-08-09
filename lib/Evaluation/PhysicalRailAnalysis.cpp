@@ -218,8 +218,7 @@ adoptConfig(llvm::ArrayRef<std::uint8_t> canonicalBytes,
       return fingerprintOrErr.takeError();
     members.push_back({std::move(*pathOrErr), std::move(*fingerprintOrErr)});
   }
-  auto entrypointCountOrErr =
-      reader.u64("power-grid library entrypoint count");
+  auto entrypointCountOrErr = reader.u64("power-grid library entrypoint count");
   if (!entrypointCountOrErr)
     return entrypointCountOrErr.takeError();
   if (*entrypointCountOrErr > canonicalBytes.size())
@@ -235,9 +234,8 @@ adoptConfig(llvm::ArrayRef<std::uint8_t> canonicalBytes,
   if (!reader.empty())
     return railError("resolved config view has trailing bytes");
 
-  CadenceVoltusStaticRailProviderBinding binding{std::move(*buildOrErr),
-                                                 std::move(members),
-                                                 std::move(entrypoints)};
+  CadenceVoltusStaticRailProviderBinding binding{
+      std::move(*buildOrErr), std::move(members), std::move(entrypoints)};
   if (llvm::Error error =
           validateCadenceVoltusStaticRailProviderBinding(binding))
     return std::move(error);
@@ -312,7 +310,8 @@ llvm::Error validateCadenceVoltusStaticRailProviderBinding(
       }))
     return railError("provider build identity is not one normalized line");
   if (llvm::Error error = external_tool::validateExternalFileTreeRequirement(
-          {"power_grid_library", binding.powerGridLibraryMembers}))
+          {cadenceVoltusPowerGridLibraryInputSlot.str(),
+           binding.powerGridLibraryMembers}))
     return error;
   if (binding.powerGridLibraryEntrypoints.empty())
     return railError("power-grid library entrypoint catalog is empty");

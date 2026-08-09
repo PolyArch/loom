@@ -15,6 +15,7 @@ target_include_directories(LoomEDASynopsys PUBLIC
 
 target_link_libraries(LoomEDASynopsys PUBLIC
   LoomDSECandidateGenerator
+  LoomEDAAsicContracts
   LoomEvaluation
   LoomExternalTool
   LoomHardwareImplementation

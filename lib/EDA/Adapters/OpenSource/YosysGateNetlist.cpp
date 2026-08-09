@@ -1,5 +1,6 @@
 #include "EDA/Adapters/OpenSource/YosysGateNetlist.h"
 
+#include "EDA/Adapters/AsicStandardCellContracts.h"
 #include "EDA/Adapters/OpenSource/Yosys.h"
 
 #include "Common/ArtifactLocalReference.h"
@@ -37,14 +38,11 @@ using namespace hardware;
 
 constexpr char configSchema[] =
     "loom.eda.open_source.yosys_gate_netlist_config.1.0";
-constexpr llvm::StringLiteral librarySlot = "standard_cell_liberty";
 constexpr llvm::StringLiteral netlistOutputPath = "outputs/netlist.v";
 constexpr llvm::StringLiteral rtlStructureOutputPath =
     "outputs/rtl-structure.json";
 constexpr llvm::StringLiteral netlistStructureOutputPath =
     "outputs/netlist-structure.json";
-constexpr llvm::StringLiteral externalContractRef =
-    "open_source.yosys.standard_cell_library";
 constexpr llvm::StringLiteral externalContractPayload =
     "contracts/yosys-standard-cells.txt";
 
@@ -366,7 +364,8 @@ expectation(const InvocationFacts &facts) {
             file.contents.size()))});
   }
   result.externalInputs.push_back(ExternalToolInvocationExternalInput{
-      librarySlot.str(), facts.config.standardCellLiberty()});
+      asicStandardCellLibertyInputSlot.str(),
+      facts.config.standardCellLiberty()});
   result.declaredOutputs.push_back(netlistOutputPath.str());
   result.declaredOutputs.push_back(rtlStructureOutputPath.str());
   result.declaredOutputs.push_back(netlistStructureOutputPath.str());
@@ -378,14 +377,8 @@ expectation(const InvocationFacts &facts) {
 llvm::Expected<ExternalImplementationContractCatalog>
 makeYosysStandardCellContractCatalog() {
   ExternalImplementationContractCatalog catalog;
-  if (llvm::Error error = catalog.add(ExternalImplementationContract{
-          externalContractRef.str(),
-          {{librarySlot.str(), {ExternalDependencyKind::ExplicitFile}}},
-          {RepresentationRootVariant::GateNetlist,
-           RepresentationRootVariant::AsicPhysical},
-          true,
-          false,
-          nullptr}))
+  if (llvm::Error error = addAsicStandardCellContract(
+          catalog, openSourceYosysStandardCellContractRef))
     return std::move(error);
   return catalog;
 }
@@ -523,9 +516,10 @@ llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
   auto facts = invocationFacts(inputs, binding, contracts, artifacts, blobs);
   if (!facts)
     return facts.takeError();
-  auto externalFiles = resolveExternalFiles(
-      {{librarySlot.str(), facts->config.standardCellLiberty()}},
-      context.localConfig);
+  auto externalFiles =
+      resolveExternalFiles({{asicStandardCellLibertyInputSlot.str(),
+                             facts->config.standardCellLiberty()}},
+                           context.localConfig);
   if (!externalFiles)
     return externalFiles.takeError();
 
@@ -724,8 +718,8 @@ publishGateNetlist(const InvocationFacts &facts, llvm::StringRef netlist,
       source.activityPoints().vec(),
       {},
       {ExternalImplementationBindingDraft{
-          externalContractRef.str(),
-          {{librarySlot.str(),
+          openSourceYosysStandardCellContractRef.str(),
+          {{asicStandardCellLibertyInputSlot.str(),
             ExplicitFileDependency{facts.config.standardCellLiberty()}}},
           {},
           index->unresolvedExternalDefinitions().vec(),

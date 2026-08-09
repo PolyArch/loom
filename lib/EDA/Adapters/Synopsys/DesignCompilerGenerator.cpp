@@ -1,5 +1,6 @@
 #include "EDA/Adapters/Synopsys/DesignCompiler.h"
 
+#include "EDA/Adapters/AsicStandardCellContracts.h"
 #include "EDA/Adapters/Synopsys/Common.h"
 
 #include "Common/ArtifactLocalReference.h"
@@ -38,11 +39,8 @@ using namespace hardware;
 
 constexpr char configSchema[] =
     "loom.eda.synopsys.design_compiler_gate_netlist_config.1.0";
-constexpr llvm::StringLiteral librarySlot = "standard_cell_liberty";
 constexpr llvm::StringLiteral outputPath =
     "outputs/design-compiler-gate-netlist.v";
-constexpr llvm::StringLiteral externalContractRef =
-    "synopsys.design_compiler.standard_cell_library";
 constexpr llvm::StringLiteral externalContractPayload =
     "contracts/design-compiler-standard-cells.txt";
 
@@ -371,7 +369,8 @@ expectation(const InvocationFacts &facts) {
             file.contents.size()))});
   }
   result.externalInputs.push_back(ExternalToolInvocationExternalInput{
-      librarySlot.str(), facts.config.standardCellLiberty()});
+      asicStandardCellLibertyInputSlot.str(),
+      facts.config.standardCellLiberty()});
   result.declaredOutputs.push_back(outputPath.str());
   return result;
 }
@@ -381,14 +380,8 @@ expectation(const InvocationFacts &facts) {
 llvm::Expected<ExternalImplementationContractCatalog>
 makeSynopsysStandardCellContractCatalog() {
   ExternalImplementationContractCatalog catalog;
-  if (llvm::Error error = catalog.add(ExternalImplementationContract{
-          externalContractRef.str(),
-          {{librarySlot.str(), {ExternalDependencyKind::ExplicitFile}}},
-          {RepresentationRootVariant::GateNetlist,
-           RepresentationRootVariant::AsicPhysical},
-          true,
-          false,
-          nullptr}))
+  if (llvm::Error error = addAsicStandardCellContract(
+          catalog, synopsysDesignCompilerStandardCellContractRef))
     return std::move(error);
   return catalog;
 }
@@ -548,9 +541,10 @@ llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
   auto facts = invocationFacts(inputs, binding, contracts, artifacts, blobs);
   if (!facts)
     return facts.takeError();
-  auto externalFiles = resolveExternalFiles(
-      {{librarySlot.str(), facts->config.standardCellLiberty()}},
-      context.localConfig);
+  auto externalFiles =
+      resolveExternalFiles({{asicStandardCellLibertyInputSlot.str(),
+                             facts->config.standardCellLiberty()}},
+                           context.localConfig);
   if (!externalFiles)
     return externalFiles.takeError();
 
@@ -706,8 +700,8 @@ publishGateNetlist(const InvocationFacts &facts,
       {},
       {},
       {ExternalImplementationBindingDraft{
-          externalContractRef.str(),
-          {{librarySlot.str(),
+          synopsysDesignCompilerStandardCellContractRef.str(),
+          {{asicStandardCellLibertyInputSlot.str(),
             ExplicitFileDependency{facts.config.standardCellLiberty()}}},
           {},
           index->unresolvedExternalDefinitions().vec(),

@@ -1,0 +1,2 @@
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-voltus-rail-evaluation-test %t

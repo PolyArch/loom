@@ -3,12 +3,16 @@
 
 #include "ExternalTool/ExternalFile.h"
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <string>
 #include <vector>
 
 namespace loom::evaluation::models {
+
+inline constexpr llvm::StringLiteral cadenceVoltusPowerGridLibraryInputSlot =
+    "power_grid_library";
 
 struct CadenceVoltusStaticRailProviderBinding final {
   std::string stableProviderBuildIdentity;

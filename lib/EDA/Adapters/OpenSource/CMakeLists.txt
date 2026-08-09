@@ -11,6 +11,7 @@ target_include_directories(LoomEDAOpenSource PUBLIC
 
 target_link_libraries(LoomEDAOpenSource PUBLIC
   LoomDSECandidateGenerator
+  LoomEDAAsicContracts
   LoomExternalTool
   LoomHardwareImplementation
   LoomImplementationPlatform
