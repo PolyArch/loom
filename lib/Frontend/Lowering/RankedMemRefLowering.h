@@ -17,11 +17,11 @@ namespace detail {
 ::mlir::LogicalResult checkRankedMemRefCopy(::mlir::memref::CopyOp copy,
                                             unsigned indexBits);
 
-::mlir::Value buildRowMajorLinearIndex(::mlir::OpBuilder &builder,
-                                       ::mlir::Location loc,
-                                       ::mlir::MemRefType type,
-                                       ::mlir::ValueRange indices,
-                                       ::mlir::Value execution);
+::mlir::Value buildExactLinearIndex(::mlir::OpBuilder &builder,
+                                    ::mlir::Location loc,
+                                    ::mlir::MemRefType type,
+                                    ::mlir::ValueRange indices,
+                                    ::mlir::Value execution);
 
 } // namespace detail
 } // namespace lowering

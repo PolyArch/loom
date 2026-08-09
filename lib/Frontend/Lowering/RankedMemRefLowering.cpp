@@ -1,53 +1,13 @@
 #include "RankedMemRefLowering.h"
 
 #include "Dataflow/IR/DataflowOps.h"
+#include "Frontend/Lowering/ExactMemRefLayout.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "llvm/ADT/APInt.h"
-#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/Error.h"
 
 #include <cstdint>
-#include <string>
-
-namespace {
-
-bool fitsSignedIndex(const ::llvm::APInt &value, unsigned indexBits) {
-  return value.getActiveBits() < indexBits;
-}
-
-::llvm::APInt getElementCount(::llvm::ArrayRef<std::int64_t> shape) {
-  ::llvm::APInt count(1, 1);
-  for (std::int64_t extent : shape) {
-    if (extent == 0)
-      return ::llvm::APInt(1, 0);
-    ::llvm::APInt factor(64, static_cast<std::uint64_t>(extent));
-    unsigned width = count.getActiveBits() + factor.getActiveBits();
-    count = count.zext(width);
-    count *= factor.zextOrTrunc(width);
-    count = count.trunc(count.getActiveBits());
-  }
-  return count;
-}
-
-::llvm::APInt getMaximumLinearAddress(::mlir::MemRefType type) {
-  ::llvm::APInt count = getElementCount(type.getShape());
-  if (count.isZero())
-    return count;
-  --count;
-  return count;
-}
-
-std::string formatUnsigned(const ::llvm::APInt &value) {
-  ::llvm::SmallString<32> text;
-  value.toString(text, 10, false);
-  return text.str().str();
-}
-
-bool hasStaticIdentityLayout(::mlir::MemRefType type) {
-  return type.hasStaticShape() && type.getLayout().isIdentity();
-}
-
-} // namespace
 
 namespace loom {
 namespace lowering {
@@ -57,41 +17,16 @@ namespace detail {
                                               ::mlir::MemRefType type,
                                               ::mlir::ValueRange indices,
                                               unsigned indexBits) {
-  if (!type.getLayout().isIdentity() ||
-      (type.getRank() > 1 && !type.hasStaticShape()))
-    return access->emitError()
-           << "loom-lower-graph-memory: " << access->getName().getStringRef()
-           << " requires an identity-layout memref whose shape is static when "
-              "rank exceeds one";
   if (indices.size() != static_cast<std::size_t>(type.getRank()))
     return access->emitError()
            << "loom-lower-graph-memory: " << access->getName().getStringRef()
            << " requires one index per memref dimension";
-
-  if (!type.hasStaticShape())
-    return ::mlir::success();
-
-  for (std::int64_t dimension = 1; dimension < type.getRank(); ++dimension) {
-    std::int64_t extent = type.getDimSize(dimension);
-    ::llvm::APInt value(64, static_cast<std::uint64_t>(extent));
-    if (!fitsSignedIndex(value, indexBits))
-      return access->emitError()
-             << "loom-lower-graph-memory: memref dimension extent " << extent
-             << " is not representable in the graph's resolved signed index "
-                "domain 'i"
-             << indexBits << "'";
-  }
-
-  ::llvm::APInt maximum = getMaximumLinearAddress(type);
-  if (!fitsSignedIndex(maximum, indexBits)) {
-    auto diagnostic =
-        access->emitError("loom-lower-graph-memory: maximum linear address ");
-    diagnostic << formatUnsigned(maximum);
-    diagnostic << " is not representable in the graph's resolved signed "
-                  "index domain 'i"
-               << indexBits << "'";
-    return ::mlir::failure();
-  }
+  auto layout = resolveExactMemRefLayout(type, indexBits);
+  if (!layout)
+    return access->emitError()
+           << "loom-lower-graph-memory: " << access->getName().getStringRef()
+           << " has no exactly addressable ranked layout: "
+           << ::llvm::toString(layout.takeError());
   return ::mlir::success();
 }
 
@@ -101,60 +36,66 @@ namespace detail {
       ::llvm::dyn_cast<::mlir::MemRefType>(copy.getSource().getType());
   auto target =
       ::llvm::dyn_cast<::mlir::MemRefType>(copy.getTarget().getType());
-  if (!source || !target || !hasStaticIdentityLayout(source) ||
-      !hasStaticIdentityLayout(target) ||
-      source.getShape() != target.getShape() ||
+  if (!source || !target || !source.hasStaticShape() ||
+      !target.hasStaticShape() || source.getShape() != target.getShape() ||
       source.getElementType() != target.getElementType())
     return copy.emitOpError(
         "loom-expand-graph-memref-copy: cannot expand memref.copy into a "
         "structured load/store loop; source and target must be ranked, "
-        "statically shaped, identity-layout memrefs with the same shape and "
-        "element type");
+        "statically shaped memrefs with the same shape and element type");
 
   for (std::int64_t extent : source.getShape()) {
     ::llvm::APInt value(64, static_cast<std::uint64_t>(extent));
-    if (!fitsSignedIndex(value, indexBits))
+    if (value.getActiveBits() >= indexBits)
       return copy.emitOpError(
                  "loom-expand-graph-memref-copy: cannot expand memref.copy "
                  "into a structured load/store loop; bound ")
              << extent << " is not representable in the graph's resolved "
              << "signed index domain 'i" << indexBits << "'";
   }
-
-  ::llvm::APInt maximum = getMaximumLinearAddress(source);
-  if (!fitsSignedIndex(maximum, indexBits)) {
-    auto diagnostic = copy.emitOpError(
-        "loom-expand-graph-memref-copy: cannot expand memref.copy into a "
-        "structured load/store loop; maximum linear address ");
-    diagnostic << formatUnsigned(maximum);
-    diagnostic << " is not representable in the graph's resolved signed "
-                  "index domain 'i"
-               << indexBits << "'";
-    return ::mlir::failure();
-  }
+  auto sourceLayout = resolveExactMemRefLayout(source, indexBits);
+  if (!sourceLayout)
+    return copy.emitOpError("source layout is not exactly addressable: ")
+           << ::llvm::toString(sourceLayout.takeError());
+  auto targetLayout = resolveExactMemRefLayout(target, indexBits);
+  if (!targetLayout)
+    return copy.emitOpError("target layout is not exactly addressable: ")
+           << ::llvm::toString(targetLayout.takeError());
   return ::mlir::success();
 }
 
-::mlir::Value buildRowMajorLinearIndex(::mlir::OpBuilder &builder,
-                                       ::mlir::Location loc,
-                                       ::mlir::MemRefType type,
-                                       ::mlir::ValueRange indices,
-                                       ::mlir::Value execution) {
-  if (indices.empty())
-    return ::dataflow::ConstantOp::create(builder, loc, builder.getIndexType(),
-                                          execution, builder.getIndexAttr(0))
-        .getValue();
-
-  ::mlir::Value linear = indices.front();
-  for (unsigned dimension = 1; dimension < indices.size(); ++dimension) {
-    ::mlir::Value extent = ::dataflow::ConstantOp::create(
-                               builder, loc, builder.getIndexType(), execution,
-                               builder.getIndexAttr(type.getDimSize(dimension)))
-                               .getValue();
-    linear = ::mlir::arith::MulIOp::create(builder, loc, linear, extent);
+::mlir::Value buildExactLinearIndex(::mlir::OpBuilder &builder,
+                                    ::mlir::Location loc,
+                                    ::mlir::MemRefType type,
+                                    ::mlir::ValueRange indices,
+                                    ::mlir::Value execution) {
+  ::llvm::SmallVector<std::int64_t, 4> strides;
+  std::int64_t offset = 0;
+  if (::mlir::failed(type.getStridesAndOffset(strides, offset)))
+    llvm_unreachable("validated ranked layout has no exact strides");
+  ::mlir::Value linear;
+  if (offset != 0)
     linear =
-        ::mlir::arith::AddIOp::create(builder, loc, linear, indices[dimension]);
+        ::dataflow::ConstantOp::create(builder, loc, builder.getIndexType(),
+                                       execution, builder.getIndexAttr(offset))
+            .getValue();
+  for (auto [index, strideValue] : ::llvm::zip(indices, strides)) {
+    ::mlir::Value term = index;
+    if (strideValue != 1) {
+      ::mlir::Value stride = ::dataflow::ConstantOp::create(
+                                 builder, loc, builder.getIndexType(),
+                                 execution, builder.getIndexAttr(strideValue))
+                                 .getValue();
+      term = ::mlir::arith::MulIOp::create(builder, loc, index, stride);
+    }
+    linear = linear ? ::mlir::arith::AddIOp::create(builder, loc, linear, term)
+                    : term;
   }
+  if (!linear)
+    linear =
+        ::dataflow::ConstantOp::create(builder, loc, builder.getIndexType(),
+                                       execution, builder.getIndexAttr(0))
+            .getValue();
   return linear;
 }
 

@@ -246,7 +246,8 @@ void constantGlobalStagingIsTypedAndMechanical() {
       take(loom::frontend::enumerateStructuredMemoryCommunicationDecisions(
           parent, 64));
   if (decisions.decisions.size() != 1 ||
-      decisions.decisions.front().kind !=
+      loom::frontend::structuredMemoryCommunicationDecisionKind(
+          decisions.decisions.front()) !=
           loom::frontend::StructuredMemoryCommunicationDecisionKind::
               StageConstantGlobal)
     fail("constant and mutable globals did not produce one exact decision");
@@ -564,19 +565,21 @@ void invalidInMemoryDecisionFailsClosed() {
           parent, 64));
   if (decisions.decisions.empty())
     fail("invalid-decision fixture has no legal memory decision");
-  decisions.decisions.front().kind =
-      static_cast<loom::frontend::StructuredMemoryCommunicationDecisionKind>(
-          99);
-  auto encoded = loom::frontend::encodeStructuredMemoryCommunicationDecision(
-      decisions.decisions.front());
+  const auto &anchor =
+      loom::frontend::structuredMemoryCommunicationDecisionAnchor(
+          decisions.decisions.front());
+  loom::frontend::StructuredMemoryCommunicationDecision invalid =
+      loom::frontend::PipelineStagedLoopDecision{anchor};
+  auto encoded =
+      loom::frontend::encodeStructuredMemoryCommunicationDecision(invalid);
   if (encoded)
-    fail("memory encoder accepted an unknown in-memory decision kind");
+    fail("memory encoder accepted a typed decision with the wrong anchor");
   llvm::consumeError(encoded.takeError());
   auto materialized =
-      loom::frontend::materializeStructuredMemoryCommunicationDecision(
-          parent, decisions.decisions.front());
+      loom::frontend::materializeStructuredMemoryCommunicationDecision(parent,
+                                                                       invalid);
   if (materialized)
-    fail("memory materializer accepted an unknown in-memory decision kind");
+    fail("memory materializer accepted a typed decision with the wrong anchor");
   llvm::consumeError(materialized.takeError());
 }
 
@@ -590,10 +593,10 @@ void lineageCodecRejectsAnOutOfRangeMemoryInput() {
   auto parent = parseProgram();
   auto parentReference =
       take(loom::frontend::publishStructuredProgram(parent, store));
-  const loom::frontend::StructuredMemoryCommunicationDecision decision{
-      {parent.identity(), loom::frontend::StructuredEntityKind::Value, 999999},
-      loom::frontend::StructuredMemoryCommunicationDecisionKind::
-          StageConstantGlobal};
+  const loom::frontend::StructuredMemoryCommunicationDecision decision =
+      loom::frontend::StageConstantGlobalDecision{
+          {parent.identity(), loom::frontend::StructuredEntityKind::Value,
+           999999}};
   auto encoded = take(
       loom::frontend::encodeStructuredMemoryCommunicationDecision(decision));
   const auto *contract =

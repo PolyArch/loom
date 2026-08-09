@@ -169,6 +169,7 @@ set(LOOM_TEST_DEPENDS
   loom-structured-call-ownership-test
   loom-structured-schedule-generator-test
   loom-structured-memory-communication-generator-test
+  loom-structured-memory-layout-test
   loom-structured-execution-shape-generator-test
   loom-structured-special-math-accuracy-generator-test
   loom-dataflow-rewrite-generator-test

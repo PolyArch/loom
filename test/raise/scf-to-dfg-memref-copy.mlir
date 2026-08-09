@@ -122,7 +122,7 @@
 // REJECT: loom.spatial_region
 // REJECT: memref.copy %{{.*}}, %{{.*}} : memref<4xi32> to memref<4xi32>
 
-// REJECT: error: 'memref.copy' op loom-expand-graph-memref-copy: cannot expand memref.copy into a structured load/store loop; maximum linear address 8 is not representable in the graph's resolved signed index domain 'i4'
+// REJECT: error: 'memref.copy' op source layout is not exactly addressable: exact_memref_layout_invalid: maximum linear address 8 exceeds the signed index domain
 // REJECT: dataflow.thread private @rank2_address_overflow domain(#dataflow.thread_domain<dense>)
 // REJECT: loom.spatial_region
 // REJECT: memref.copy %{{.*}}, %{{.*}} : memref<3x3xi32> to memref<3x3xi32>

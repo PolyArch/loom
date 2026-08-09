@@ -1,6 +1,6 @@
 // Expand SpatialCore-owned `memref.copy` into nested structured scalar
-// load/store loops. Only static identity layouts are admitted because layout
-// interpretation has no independent owner in this pass.
+// load/store loops over the shared logical index domain. Each endpoint keeps
+// its own exact layout for the later scalar-address lowering.
 
 #include "Frontend/Lowering/Passes.h"
 

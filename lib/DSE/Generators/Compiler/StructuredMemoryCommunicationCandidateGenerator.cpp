@@ -22,7 +22,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.structured_memory_communication_generator.config.1.0";
+    "loom.structured_memory_communication_generator.config.2.0";
 
 enum InputSlot : std::uint32_t {
   StructuredProgramsInput,
@@ -108,7 +108,8 @@ validateDecisionPayload(llvm::ArrayRef<std::uint8_t> bytes,
           frontend::structuredProgramArtifactSchema.identity ||
       parents.front().schemaVersion !=
           frontend::structuredProgramArtifactSchema.version ||
-      adopted->memoryInput.parent != parents.front().artifact)
+      frontend::structuredMemoryCommunicationDecisionAnchor(*adopted).parent !=
+          parents.front().artifact)
     return invalid("memory decision does not belong to its exact parent");
   auto parent = frontend::importStructuredProgram(parents.front(), store);
   if (!parent)
@@ -129,7 +130,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredMemoryCommunicationCandidateGeneratorKind,
     "compiler.structured_memory_communication",
-    "loom.compiler.structured_memory_communication.generator.v1",
+    "loom.compiler.structured_memory_communication.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -199,9 +200,9 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         std::numeric_limits<std::uint64_t>::max() - inspectedMemoryScopes)
       return invalid("memory-scope accounting overflows u64");
     inspectedMemoryScopes += decisions->inspectedMemoryScopes;
-    if (decisions->decisions.size() > remainingScopes)
-      return invalid("memory decision domain exceeded its resolved limit");
-    remainingScopes -= decisions->decisions.size();
+    if (decisions->inspectedMemoryScopes > remainingScopes)
+      return invalid("memory scope domain exceeded its resolved limit");
+    remainingScopes -= decisions->inspectedMemoryScopes;
     if (decisions->decisions.size() >
         std::numeric_limits<std::uint64_t>::max() - decisionAttempts)
       return invalid("memory-decision accounting overflows u64");
@@ -252,12 +253,12 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
           std::move(lineageEdges)},
       {{CandidateGeneratorWorkUnitRef(0), inspectedMemoryScopes,
         inspectedMemoryScopes},
-       {CandidateGeneratorWorkUnitRef(1), decisionAttempts,
-        decisionAttempts}}};
+       {CandidateGeneratorWorkUnitRef(1), decisionAttempts, decisionAttempts}}};
 }
 
 const CandidateGeneratorProvider provider{
-    descriptor.reference(), CandidateGeneratorInProcessProvider{invokeProvider}};
+    descriptor.reference(),
+    CandidateGeneratorInProcessProvider{invokeProvider}};
 
 } // namespace
 

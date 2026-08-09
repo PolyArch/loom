@@ -215,6 +215,28 @@ target_link_libraries(loom-structured-memory-communication-generator-test PRIVAT
   LLVMSupport
 )
 
+add_executable(loom-structured-memory-layout-test
+  StructuredMemoryLayoutTest.cpp
+)
+
+target_link_libraries(loom-structured-memory-layout-test PRIVATE
+  LoomFrontendCompilation
+  LoomNativeSimulationOracle
+  LoomSimulator
+  MLIRArithDialect
+  MLIRDLTIDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRLoom
+  MLIRMemRefDialect
+  MLIRParser
+  MLIRSCFDialect
+  MLIRSupport
+  LLVMSupport
+)
+
 add_executable(loom-structured-execution-shape-generator-test
   StructuredExecutionShapeGeneratorTest.cpp
 )

@@ -5,6 +5,7 @@
 #include "GraphStreamBoundaryLowering.h"
 #include "RankedMemRefLowering.h"
 
+#include "Frontend/Lowering/ExactMemRefLayout.h"
 #include "Frontend/Lowering/StreamLoopAttrs.h"
 
 #include "Common/IndexWidth.h"
@@ -141,6 +142,16 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
       if (::mlir::failed(::loom::lowering::detail::checkRankedMemRefAccess(
               store, store.getMemRefType(), store.getIndices(), indexBits)))
         return ::mlir::WalkResult::interrupt();
+    } else if (auto dealloc = ::llvm::dyn_cast<::mlir::memref::DeallocOp>(op)) {
+      auto allocation =
+          dealloc.getMemref().getDefiningOp<::mlir::memref::AllocOp>();
+      if (!allocation ||
+          allocation->getParentOfType<::dataflow::GraphOp>() != graph) {
+        dealloc.emitOpError(
+            "loom-lower-graph-memory: only graph-local allocations may be "
+            "deallocated inside a graph");
+        return ::mlir::WalkResult::interrupt();
+      }
     }
 
     auto findMemoryCapability = [&](::mlir::TypeRange types) {
@@ -287,6 +298,8 @@ public:
            "stream choice selectors must be bound before SCF erasure");
     assert(streamRepeatUsers.empty() &&
            "stream repeat selectors must be bound before SCF erasure");
+    if (::mlir::failed(normalizeLocalMemoryLayouts()))
+      return ::mlir::failure();
     ::loom::lowering::lowerGraphIndexDomains(graph, indexBits);
     auto returnOp = ::llvm::cast<::dataflow::GraphReturnOp>(anchor);
     if (transientStreamBoundary) {
@@ -331,6 +344,30 @@ private:
   ::llvm::DenseMap<::mlir::Operation *, ::llvm::SmallVector<unsigned, 4>>
       partitionsByAccess;
   ::llvm::DenseMap<::mlir::Operation *, FixedParallelDomain> parallelDomains;
+
+  ::mlir::LogicalResult normalizeLocalMemoryLayouts() {
+    ::mlir::WalkResult result =
+        graph.getBody().walk([&](::mlir::memref::AllocOp alloc) {
+          ::mlir::MemRefType type = alloc.getType();
+          if (type.getLayout().isIdentity())
+            return ::mlir::WalkResult::advance();
+          auto exact =
+              ::loom::lowering::resolveExactMemRefLayout(type, indexBits);
+          if (!exact || !exact->staticElementSpan) {
+            alloc.emitOpError("cannot normalize local memory layout: ")
+                << (exact ? "layout has no static element span"
+                          : ::llvm::toString(exact.takeError()));
+            return ::mlir::WalkResult::interrupt();
+          }
+          auto canonical = ::mlir::MemRefType::get(
+              {static_cast<std::int64_t>(*exact->staticElementSpan)},
+              type.getElementType(), ::mlir::MemRefLayoutAttrInterface{},
+              type.getMemorySpace());
+          alloc.getResult().setType(canonical);
+          return ::mlir::WalkResult::advance();
+        });
+    return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
+  }
 
   void setInsertionPoint(::mlir::Location) {
     builder.setInsertionPoint(anchor);
@@ -984,6 +1021,10 @@ private:
         lowerMemrefStore(store, execution, memory);
         continue;
       }
+      if (auto dealloc = ::llvm::dyn_cast<::mlir::memref::DeallocOp>(op)) {
+        dealloc.erase();
+        continue;
+      }
       if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(op)) {
         lowerDataflowLoad(load, execution, memory);
         continue;
@@ -1149,7 +1190,7 @@ private:
     ::llvm::SmallVector<unsigned, 4> membership = partitionsFor(load);
     ::mlir::Value ctrl = readControl(load, execution, memory);
     setInsertionPoint(load.getLoc());
-    ::mlir::Value address = ::loom::lowering::detail::buildRowMajorLinearIndex(
+    ::mlir::Value address = ::loom::lowering::detail::buildExactLinearIndex(
         builder, load.getLoc(), load.getMemRefType(), load.getIndices(),
         execution);
     auto lowered = ::dataflow::LoadOp::create(
@@ -1166,7 +1207,7 @@ private:
     ::llvm::SmallVector<unsigned, 4> membership = partitionsFor(store);
     ::mlir::Value ctrl = writeControl(store, execution, memory);
     setInsertionPoint(store.getLoc());
-    ::mlir::Value address = ::loom::lowering::detail::buildRowMajorLinearIndex(
+    ::mlir::Value address = ::loom::lowering::detail::buildExactLinearIndex(
         builder, store.getLoc(), store.getMemRefType(), store.getIndices(),
         execution);
     auto lowered = ::dataflow::StoreOp::create(

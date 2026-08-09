@@ -54,15 +54,15 @@ module attributes {
   }
 }
 
-// Static identity-layout memrefs flatten row-major indices mechanically.
+// Static ranked memrefs use their exact offset and per-dimension strides.
 
 // RANKED-LABEL: dataflow.graph private @rank3_row_major(
-// RANKED: %[[D1:.*]] = dataflow.constant %arg0 {const_value = 5 : index} : index
-// RANKED: %[[M1:.*]] = arith.muli %arg1, %[[D1]] : index
-// RANKED: %[[A1:.*]] = arith.addi %[[M1]], %arg2 : index
-// RANKED: %[[D2:.*]] = dataflow.constant %arg0 {const_value = 7 : index} : index
-// RANKED: %[[M2:.*]] = arith.muli %[[A1]], %[[D2]] : index
-// RANKED: %[[ADDRESS:.*]] = arith.addi %[[M2]], %arg3 : index
+// RANKED: %[[S0:.*]] = dataflow.constant %arg0 {const_value = 35 : index} : index
+// RANKED: %[[M0:.*]] = arith.muli %arg1, %[[S0]] : index
+// RANKED: %[[S1:.*]] = dataflow.constant %arg0 {const_value = 7 : index} : index
+// RANKED: %[[M1:.*]] = arith.muli %arg2, %[[S1]] : index
+// RANKED: %[[A1:.*]] = arith.addi %[[M0]], %[[M1]] : index
+// RANKED: %[[ADDRESS:.*]] = arith.addi %[[A1]], %arg3 : index
 // RANKED: dataflow.load %arg4[%[[ADDRESS]]]
 // RANKED: dataflow.store %arg4[{{%.*}}]
 
@@ -79,9 +79,10 @@ module {
   }
 }
 
-// A dynamic multidimensional shape has no exact static row-major projection.
+// A dynamic multidimensional shape has no exact static stride projection.
 
-// DYNAMIC-RANK: memref.load requires an identity-layout memref whose shape is static when rank exceeds one
+// DYNAMIC-RANK: memref.load has no exactly addressable ranked layout
+// DYNAMIC-RANK-SAME: dynamic shape is not exact for this ranked layout
 
 //--- dynamic-rank.mlir
 module {

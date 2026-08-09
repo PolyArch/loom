@@ -89,9 +89,9 @@ GraphLeafLowering classifyGraphLoweringLeaf(mlir::Operation *operation) {
       (dataflow::isCanonicalDataflowActor(operation) ||
        isGraphMemoryAddressLeaf(operation)))
     return GraphLeafLowering::Movable;
-  if (llvm::isa<mlir::memref::LoadOp, mlir::memref::StoreOp, dataflow::LoadOp,
-                dataflow::StoreOp, dataflow::ChannelSendOp,
-                dataflow::ChannelReceiveOp>(operation))
+  if (llvm::isa<mlir::memref::LoadOp, mlir::memref::StoreOp,
+                mlir::memref::DeallocOp, dataflow::LoadOp, dataflow::StoreOp,
+                dataflow::ChannelSendOp, dataflow::ChannelReceiveOp>(operation))
     return GraphLeafLowering::Implemented;
   if (llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp, mlir::LLVM::MemcpyOp,
                 mlir::LLVM::MemmoveOp, mlir::LLVM::MemsetOp>(operation))

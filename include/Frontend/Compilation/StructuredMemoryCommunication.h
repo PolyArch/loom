@@ -7,23 +7,71 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <variant>
 #include <vector>
 
 namespace loom::frontend {
 
 enum class StructuredMemoryCommunicationDecisionKind : std::uint32_t {
   StageConstantGlobal = 0,
+  PermuteLocalBufferLayout = 1,
+  PipelineStagedLoop = 2,
+  PromoteSpscBufferToChannel = 3,
 };
 
-struct StructuredMemoryCommunicationDecision final {
-  StructuredEntityRef memoryInput;
-  StructuredMemoryCommunicationDecisionKind kind;
+struct StageConstantGlobalDecision final {
+  StructuredEntityRef anchor;
 
-  friend bool operator==(const StructuredMemoryCommunicationDecision &lhs,
-                         const StructuredMemoryCommunicationDecision &rhs) {
-    return lhs.memoryInput == rhs.memoryInput && lhs.kind == rhs.kind;
+  friend bool operator==(const StageConstantGlobalDecision &lhs,
+                         const StageConstantGlobalDecision &rhs) {
+    return lhs.anchor == rhs.anchor;
   }
 };
+
+struct PermuteLocalBufferLayoutDecision final {
+  StructuredEntityRef anchor;
+  std::uint64_t adjacentStoragePosition = 0;
+
+  friend bool operator==(const PermuteLocalBufferLayoutDecision &lhs,
+                         const PermuteLocalBufferLayoutDecision &rhs) {
+    return lhs.anchor == rhs.anchor &&
+           lhs.adjacentStoragePosition == rhs.adjacentStoragePosition;
+  }
+};
+
+struct PipelineStagedLoopDecision final {
+  StructuredEntityRef anchor;
+
+  friend bool operator==(const PipelineStagedLoopDecision &lhs,
+                         const PipelineStagedLoopDecision &rhs) {
+    return lhs.anchor == rhs.anchor;
+  }
+};
+
+struct PromoteSpscBufferToChannelDecision final {
+  StructuredEntityRef anchor;
+
+  friend bool operator==(const PromoteSpscBufferToChannelDecision &lhs,
+                         const PromoteSpscBufferToChannelDecision &rhs) {
+    return lhs.anchor == rhs.anchor;
+  }
+};
+
+using StructuredMemoryCommunicationDecision =
+    std::variant<StageConstantGlobalDecision, PermuteLocalBufferLayoutDecision,
+                 PipelineStagedLoopDecision,
+                 PromoteSpscBufferToChannelDecision>;
+
+inline bool operator!=(const StructuredMemoryCommunicationDecision &lhs,
+                       const StructuredMemoryCommunicationDecision &rhs) {
+  return !(lhs == rhs);
+}
+
+StructuredMemoryCommunicationDecisionKind
+structuredMemoryCommunicationDecisionKind(
+    const StructuredMemoryCommunicationDecision &decision);
+const StructuredEntityRef &structuredMemoryCommunicationDecisionAnchor(
+    const StructuredMemoryCommunicationDecision &decision);
 
 struct MaterializedStructuredMemoryCommunicationCandidate final {
   StructuredProgramCandidate structuredProgram;
