@@ -771,7 +771,7 @@ compileFifoModel(const FabricArtifactView &view,
                        traversal.sources.front(),
                        traversal.destinations.front(),
                        payload.mode == FabricFifoTraversalMode::Bypass,
-                       /*backwardReady=*/true);
+                       payload.mode == FabricFifoTraversalMode::Bypass);
   }
   return builder.finish();
 }

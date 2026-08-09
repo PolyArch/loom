@@ -14,7 +14,7 @@ namespace loom {
 namespace fabric {
 
 inline constexpr ArtifactSchemaDescriptor fabricArtifactSchema{
-    "loom.fabric", SchemaVersion{3, 0}};
+    "loom.fabric", SchemaVersion{4, 0}};
 
 enum class FabricDependencyRole : std::uint32_t {
   ImportedModule = 0,

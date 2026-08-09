@@ -447,8 +447,8 @@ void fifoModeOwnsItsExactCombinationalBreak() {
       test, loom::fabric::resolveSelectedHandshake(*model, bufferedSelection));
   require(test,
           !hasPath(*model, bufferedActivation, inputValid, outputValid) &&
-              hasPath(*model, bufferedActivation, outputReady, inputReady),
-          "buffered FIFO mode changed its exact combinational break");
+              !hasPath(*model, bufferedActivation, outputReady, inputReady),
+          "buffered FIFO is not isolated in both handshake directions");
 
   FabricHandshakeSelection bypassSelection;
   bypassSelection.traversals.push_back(*bypass);
@@ -460,7 +460,7 @@ void fifoModeOwnsItsExactCombinationalBreak() {
           "FIFO bypass is not transparent in both directions");
 }
 
-void unconditionalReadyCycleIsRejectedBeforePublication() {
+void bufferedPhysicalCycleIsAcceptedBeforeSelection() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   ArtifactStore store(directory.path());
@@ -476,8 +476,9 @@ void unconditionalReadyCycleIsRejectedBeforePublication() {
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = spatial.close({}))
     fail(test, llvm::toString(std::move(error)));
-  requireRejected(test, std::move(design).finalize(),
-                  "UnconditionalCombinationalHandshakeCycle");
+  auto completed = take(test, std::move(design).finalize());
+  require(test, completed.roots().size() == 1,
+          "buffered physical cycle did not publish one Fabric root");
 }
 
 void selectedGlobalCycleUsesExactTraversalSelection() {
@@ -509,6 +510,7 @@ void selectedGlobalCycleUsesExactTraversalSelection() {
 
   std::vector<FabricPhysicalTraversalRef> acyclic;
   std::vector<FabricPhysicalTraversalRef> cyclic;
+  std::optional<FabricPhysicalTraversalRef> buffered;
   std::optional<FabricPhysicalTraversalRef> bypass;
   for (const auto &traversal : finalized.view().physicalTraversals()) {
     if (traversal.reference.kind() ==
@@ -528,10 +530,12 @@ void selectedGlobalCycleUsesExactTraversalSelection() {
       continue;
     const auto &payload = std::get<loom::fabric::FabricFifoTraversalPayload>(
         traversal.reference.payload);
-    if (payload.mode == loom::fabric::FabricFifoTraversalMode::Bypass)
+    if (payload.mode == loom::fabric::FabricFifoTraversalMode::Buffered)
+      buffered = traversal.reference;
+    else
       bypass = traversal.reference;
   }
-  require(test, acyclic.size() == 2 && cyclic.size() == 2 && bypass,
+  require(test, acyclic.size() == 2 && cyclic.size() == 2 && buffered && bypass,
           "fixture did not expose the exact switch and FIFO alternatives");
 
   FabricHandshakeSelection legal;
@@ -571,6 +575,15 @@ void selectedGlobalCycleUsesExactTraversalSelection() {
                                  loom::fabric::HandshakeDependencyArc{
                                      terminals[3], terminals[1]}),
           "selected reachability lost forward valid or backward ready");
+
+  FabricHandshakeSelection isolatedCycle;
+  isolatedCycle.traversals = cyclic;
+  isolatedCycle.traversals.push_back(*buffered);
+  if (llvm::Error error =
+          loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+              finalized.view(), isolatedCycle))
+    fail(test, "selected Buffered traversal did not isolate the cycle: " +
+                   llvm::toString(std::move(error)));
 
   FabricHandshakeSelection illegal;
   illegal.traversals = cyclic;
@@ -1107,7 +1120,7 @@ int main() {
   atomicBroadcastProjectionIsLinear(64);
   atomicBroadcastProjectionIsLinear(256);
   fifoModeOwnsItsExactCombinationalBreak();
-  unconditionalReadyCycleIsRejectedBeforePublication();
+  bufferedPhysicalCycleIsAcceptedBeforeSelection();
   selectedGlobalCycleUsesExactTraversalSelection();
   atomicBoundarySelectionActivatesWholeOwner();
   oneToOneBoundariesUseDirectHandshake();

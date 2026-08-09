@@ -149,7 +149,7 @@ CanonicalSemanticBytes
 implementationInputEnvelope(const ArtifactRootReference &refinedSystem,
                             const ArtifactRootReference &implementationInput,
                             std::initializer_list<std::uint8_t> payload) {
-  static constexpr char domain[] = "loom.fabric.semantic.v3\0";
+  static constexpr char domain[] = "loom.fabric.semantic.v4\0";
   std::vector<std::uint8_t> bytes(domain, domain + sizeof(domain) - 1);
   appendU32Be(bytes, 2);
   appendU64Be(bytes, 2);

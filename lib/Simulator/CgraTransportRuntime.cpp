@@ -597,7 +597,11 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
          plan.physicalUseClients[storage.simultaneousPhysicalUseOrdinal] !=
              CgraPhysicalUseClientKind::TraversalTransport))
       return invalid("CGRA buffered storage simultaneous action is absent");
-    auto queue = CgraTransportStorageRuntime::create(storage.capacity);
+    const bool fullReplacementAllowed =
+        storage.kind != CgraTraversalStorageKind::BufferedFifo &&
+        storage.independentReadWriteServices;
+    auto queue = CgraTransportStorageRuntime::create(
+        storage.capacity, fullReplacementAllowed);
     if (!queue)
       return queue.takeError();
     StorageBinding binding(std::move(*queue), storage.kind,
@@ -1514,13 +1518,9 @@ CgraTransportRuntime::advance() {
 
       const bool dequeue = dequeueEntry.has_value();
       bool enqueue = enqueueNode.has_value() && !storage.queue.full();
-      if (enqueueNode && dequeue) {
-        if (storage.kind == CgraTraversalStorageKind::BufferedFifo ||
-            storage.independentReadWriteServices)
-          enqueue = true;
-        else
-          enqueue = false;
-      }
+      if (enqueueNode && dequeue &&
+          storage.kind != CgraTraversalStorageKind::BufferedFifo)
+        enqueue = storage.independentReadWriteServices;
       if (!dequeue && !enqueue) {
         for (std::uint64_t node : storage.pendingEnqueueNodes) {
           const std::uint64_t slot = traversalNodeTransferSlots_[node];

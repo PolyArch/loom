@@ -15,10 +15,11 @@ llvm::Error invalid(const llvm::Twine &message) {
 } // namespace
 
 llvm::Expected<CgraTransportStorageRuntime>
-CgraTransportStorageRuntime::create(std::uint32_t capacity) {
+CgraTransportStorageRuntime::create(std::uint32_t capacity,
+                                    bool fullReplacementAllowed) {
   if (capacity == 0)
     return invalid("CGRA traversal storage capacity must be positive");
-  return CgraTransportStorageRuntime(capacity);
+  return CgraTransportStorageRuntime(capacity, fullReplacementAllowed);
 }
 
 const CgraTransportStorageEntry &CgraTransportStorageRuntime::front() const {
@@ -29,9 +30,11 @@ const CgraTransportStorageEntry &CgraTransportStorageRuntime::front() const {
 bool CgraTransportStorageRuntime::admits(bool enqueue, bool dequeue) const {
   if (!enqueue && !dequeue)
     return false;
-  const std::uint32_t dequeues = dequeue ? 1 : 0;
-  return dequeues <= occupancy_ &&
-         (!enqueue || occupancy_ - dequeues < entries_.size());
+  if (dequeue && empty())
+    return false;
+  if (!enqueue || !full())
+    return true;
+  return dequeue && fullReplacementAllowed_;
 }
 
 llvm::Expected<CgraTransportStorageCommit> CgraTransportStorageRuntime::commit(

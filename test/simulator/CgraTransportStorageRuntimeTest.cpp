@@ -27,7 +27,7 @@ void require(bool condition, llvm::StringRef message) {
     fail(message);
 }
 
-void bufferedQueuePreservesAtomicCycleSemantics() {
+void bufferedQueueUsesCycleStartCapacity() {
   auto queue = take(CgraTransportStorageRuntime::create(2));
   require(queue.empty() && queue.capacity() == 2,
           "new queue does not expose its exact empty capacity");
@@ -58,11 +58,20 @@ void bufferedQueuePreservesAtomicCycleSemantics() {
   require(static_cast<bool>(fullEnqueue), "full enqueue was accepted");
   llvm::consumeError(std::move(fullEnqueue));
 
-  auto fullReplace =
-      take(queue.commit(CgraTransportStorageEntry{11, 110}, true));
-  require(fullReplace.dequeued && fullReplace.dequeued->transferSlot == 9 &&
-              queue.occupancy() == 2,
-          "same-cycle dequeue did not make one full-queue slot available");
+  llvm::Error fullReplace =
+      queue.commit(CgraTransportStorageEntry{11, 110}, true).takeError();
+  require(static_cast<bool>(fullReplace),
+          "full queue borrowed current-cycle dequeue capacity");
+  llvm::consumeError(std::move(fullReplace));
+
+  auto released = take(queue.commit(std::nullopt, true));
+  require(released.dequeued && released.dequeued->transferSlot == 9 &&
+              queue.occupancy() == 1,
+          "full-queue dequeue did not release next-cycle capacity");
+  auto nextCycle =
+      take(queue.commit(CgraTransportStorageEntry{11, 110}, false));
+  require(nextCycle.enqueued && queue.occupancy() == 2,
+          "released capacity was unavailable in the following cycle");
   auto retained = take(queue.commit(std::nullopt, true));
   auto appended = take(queue.commit(std::nullopt, true));
   require(retained.dequeued && retained.dequeued->transferSlot == 10 &&
@@ -71,9 +80,23 @@ void bufferedQueuePreservesAtomicCycleSemantics() {
           "full-queue replacement changed canonical FIFO order");
 }
 
+void independentStorageAllowsFullReplacement() {
+  auto storage = take(CgraTransportStorageRuntime::create(
+      1, /*fullReplacementAllowed=*/true));
+  (void)take(storage.commit(CgraTransportStorageEntry{1, 10}, false));
+  auto replacement =
+      take(storage.commit(CgraTransportStorageEntry{2, 20}, true));
+  require(replacement.dequeued &&
+              replacement.dequeued->transferSlot == 1 &&
+              replacement.enqueued && storage.full() &&
+              storage.front().transferSlot == 2,
+          "independently serviced storage lost full replacement");
+}
+
 } // namespace
 
 int main() {
-  bufferedQueuePreservesAtomicCycleSemantics();
+  bufferedQueueUsesCycleStartCapacity();
+  independentStorageAllowsFullReplacement();
   return EXIT_SUCCESS;
 }

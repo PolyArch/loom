@@ -30,7 +30,7 @@ struct CgraTransportStorageCommit final {
 class CgraTransportStorageRuntime final {
 public:
   static llvm::Expected<CgraTransportStorageRuntime>
-  create(std::uint32_t capacity);
+  create(std::uint32_t capacity, bool fullReplacementAllowed = false);
 
   std::uint32_t capacity() const {
     return static_cast<std::uint32_t>(entries_.size());
@@ -41,21 +41,23 @@ public:
   const CgraTransportStorageEntry &front() const;
   bool admits(bool enqueue, bool dequeue) const;
 
-  /// Atomically applies one cycle-start dequeue and/or enqueue. A dequeue sees
-  /// only the cycle-start queue, while its released slot is available to the
-  /// same commit's enqueue. Consequently an empty simultaneous operation is
-  /// rejected and a full simultaneous replacement is admitted.
+  /// Atomically applies one cycle-start dequeue and/or enqueue. An ordinary
+  /// queue admits enqueue from cycle-start capacity, so a dequeue from a full
+  /// queue releases its slot for the next cycle. Independently serviced
+  /// storage may opt into full simultaneous replacement at construction.
   llvm::Expected<CgraTransportStorageCommit>
   commit(std::optional<CgraTransportStorageEntry> enqueue, bool dequeue);
 
 private:
-  explicit CgraTransportStorageRuntime(std::uint32_t capacity)
-      : entries_(capacity) {}
+  explicit CgraTransportStorageRuntime(std::uint32_t capacity,
+                                       bool fullReplacementAllowed)
+      : entries_(capacity), fullReplacementAllowed_(fullReplacementAllowed) {}
 
   std::vector<std::optional<CgraTransportStorageEntry>> entries_;
   std::uint32_t head_ = 0;
   std::uint32_t tail_ = 0;
   std::uint32_t occupancy_ = 0;
+  bool fullReplacementAllowed_ = false;
 };
 
 } // namespace loom::sim::detail

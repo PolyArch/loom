@@ -25,7 +25,7 @@ static_assert(fabricArtifactLocalReferenceKindOrdinal(
 static_assert(fabricArtifactLocalReferenceKindOrdinal(
                   FabricArtifactLocalReferenceKind::
                       FabricMemoryEngineTemplateInternalConnectionRef) == 49);
-static_assert(fabricArtifactSchema.version.major == 3);
+static_assert(fabricArtifactSchema.version.major == 4);
 static_assert(fabricArtifactSchema.version.minor == 0);
 
 namespace {
@@ -68,7 +68,7 @@ void requireTypedRoundTrip(const ArtifactIdentity &artifact,
 
 void testGeneratedCatalog() {
   const auto catalog = fabricArtifactLocalReferenceKindCatalog();
-  require(catalog.size() == 50, "loom.fabric 3.0 must register 50 local kinds");
+  require(catalog.size() == 50, "loom.fabric 4.0 must register 50 local kinds");
 
   std::set<std::string> targets;
   for (std::size_t index = 0; index < catalog.size(); ++index) {
@@ -141,10 +141,10 @@ void testStrictTypedDecodeRejections() {
   encoded =
       encodeFabricArtifactLocalReference(ArtifactReference<FabricFuTemplateRef>{
           artifact, FabricFuTemplateRef(23)});
-  encoded.artifact.schemaVersion = SchemaVersion{2, 0};
+  encoded.artifact.schemaVersion = SchemaVersion{3, 0};
   auto priorMajor =
       decodeFabricArtifactLocalReference<FabricFuTemplateRef>(encoded);
-  require(!priorMajor, "loom.fabric 2.0 local reference was accepted");
+  require(!priorMajor, "loom.fabric 3.0 local reference was accepted");
   llvm::consumeError(priorMajor.takeError());
 }
 
