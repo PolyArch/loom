@@ -2,7 +2,7 @@
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-math-root-test %t
 # RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
-# RUN: cd %t/generated && verilator --binary --timing --Wall --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench scalar_math_sqrt.sv sqrt_testbench.sv --Mdir sqrt_obj
-# RUN: %t/generated/sqrt_obj/Vtestbench
+# RUN: cd %t/generated && verilator --binary --timing --Wall -CFLAGS '-std=c++20' --top-module sqrt_testbench scalar_math_sqrt.sv sqrt_testbench.sv --Mdir sqrt_obj
+# RUN: %t/generated/sqrt_obj/Vsqrt_testbench
 
 # VERILATOR: Verilator 5.050

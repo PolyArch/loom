@@ -107,7 +107,7 @@ unsigned evenRadicandWidth(const Format &format) {
   return required + (required & 1U);
 }
 
-std::string buildDeclarations(const Format &format) {
+std::string buildDeclarations(RootFamily family, const Format &format) {
   const unsigned fractionBits = format.fractionBits;
   const unsigned radicandWidth = evenRadicandWidth(format);
   const unsigned rootBits = fractionBits + 2;
@@ -122,15 +122,16 @@ std::string buildDeclarations(const Format &format) {
          << "  reg [" << rootBits + 1 << ":0] remainder;\n"
          << "  reg [" << rootBits - 1 << ":0] root;\n"
          << "  reg [" << rootBits + 1 << ":0] trial;\n"
-         << "  reg [" << rootBits << ":0] rounded;\n"
-         << "  reg [" << radicandWidth - 1 << ":0] numerator;\n"
-         << "  reg [" << radicandWidth - 1 << ":0] quotient;\n"
-         << "  reg [" << fractionBits + 1 << ":0] divide_remainder;\n"
-         << "  reg [" << comparisonWidth - 1 << ":0] root_square;\n"
-         << "  reg [" << comparisonWidth - 1 << ":0] midpoint;\n"
-         << "  reg [" << comparisonWidth - 1 << ":0] midpoint_product;\n"
-         << "  reg [" << comparisonWidth - 1 << ":0] numerator_four;\n"
-         << "  reg [" << format.exponentBits - 1 << ":0] exponent_result;\n"
+         << "  reg [" << rootBits << ":0] rounded;\n";
+  if (family == RootFamily::Rsqrt)
+    output << "  reg [" << radicandWidth - 1 << ":0] numerator;\n"
+           << "  reg [" << radicandWidth - 1 << ":0] quotient;\n"
+           << "  reg [" << fractionBits + 1 << ":0] divide_remainder;\n"
+           << "  reg [" << comparisonWidth - 1 << ":0] root_square;\n"
+           << "  reg [" << comparisonWidth - 1 << ":0] midpoint;\n"
+           << "  reg [" << comparisonWidth - 1 << ":0] midpoint_product;\n"
+           << "  reg [" << comparisonWidth - 1 << ":0] numerator_four;\n";
+  output << "  reg [" << format.exponentBits - 1 << ":0] exponent_result;\n"
          << "  reg [" << fractionBits - 1 << ":0] fraction_result;\n"
          << "  integer exponent_value;\n"
          << "  integer leading_index;\n"
@@ -221,7 +222,7 @@ std::string buildSqrtFunction(const Format &format, llvm::StringRef name) {
   llvm::raw_string_ostream output(text);
   output << "function automatic [" << width - 1 << ":0] " << name << "(input ["
          << width - 1 << ":0] value);\n"
-         << buildDeclarations(format) << "  begin\n"
+         << buildDeclarations(RootFamily::Sqrt, format) << "  begin\n"
          << "    sign_input = value[" << width - 1 << "];\n"
          << "    exponent_input = value[" << width - 2 << ":" << fractionBits
          << "];\n"
@@ -290,7 +291,7 @@ std::string buildRsqrtFunction(const Format &format, llvm::StringRef name) {
   quietNaN.toStringUnsigned(nanDigits, 16);
   output << "function automatic [" << width - 1 << ":0] " << name << "(input ["
          << width - 1 << ":0] value);\n"
-         << buildDeclarations(format) << "  begin\n"
+         << buildDeclarations(RootFamily::Rsqrt, format) << "  begin\n"
          << "    sign_input = value[" << width - 1 << "];\n"
          << "    exponent_input = value[" << width - 2 << ":" << fractionBits
          << "];\n"
@@ -551,16 +552,21 @@ materializePortableRsqrt(FabricOperationProviderRequest request) {
 
 llvm::Error
 registerPortableMathRootProviders(FabricOperationProviderRegistry &registry) {
+  FabricOperationProviderRegistry candidate = registry;
   if (llvm::Error error =
-          registry.add({::fabric::ImplementationFamilyId::ScalarMathSqrt,
-                        BackendRecipeKey::PortableSystemVerilog,
-                        {},
-                        materializePortableSqrt}))
+          candidate.add({::fabric::ImplementationFamilyId::ScalarMathSqrt,
+                         BackendRecipeKey::PortableSystemVerilog,
+                         {},
+                         materializePortableSqrt}))
     return error;
-  return registry.add({::fabric::ImplementationFamilyId::ScalarMathRsqrt,
-                       BackendRecipeKey::PortableSystemVerilog,
-                       {},
-                       materializePortableRsqrt});
+  if (llvm::Error error =
+          candidate.add({::fabric::ImplementationFamilyId::ScalarMathRsqrt,
+                         BackendRecipeKey::PortableSystemVerilog,
+                         {},
+                         materializePortableRsqrt}))
+    return error;
+  registry = std::move(candidate);
+  return llvm::Error::success();
 }
 
 } // namespace loom::hardware::rtl

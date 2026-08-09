@@ -519,6 +519,12 @@ std::uint64_t nextRandom(std::uint64_t &state) {
   return state;
 }
 
+std::uint64_t encoded(::fabric::FloatFormat format, llvm::StringRef value) {
+  return llvm::APFloat(semantics(format), value)
+      .bitcastToAPInt()
+      .getZExtValue();
+}
+
 std::vector<RootVector> vectors(RootFamily family) {
   std::vector<RootVector> result;
   for (::fabric::FloatFormat format : ::fabric::floatFormatDomain) {
@@ -532,6 +538,16 @@ std::vector<RootVector> vectors(RootFamily family) {
     const std::uint64_t minimumNormal = std::uint64_t{1} << shape.fractionBits;
     const std::uint64_t maximumSubnormal = minimumNormal - 1;
     const std::uint64_t quiet = std::uint64_t{1} << (shape.fractionBits - 1);
+    auto append = [&](std::uint64_t input) {
+      result.push_back(
+          {format, input, evaluate("vectors", family, format, input)});
+    };
+    if (format == ::fabric::FloatFormat::F16 ||
+        format == ::fabric::FloatFormat::BF16) {
+      for (std::uint64_t input = 0; input <= widthMask(width); ++input)
+        append(input);
+      continue;
+    }
     const std::array curated = {
         std::uint64_t{0},
         sign,
@@ -549,28 +565,34 @@ std::vector<RootVector> vectors(RootFamily family) {
         infinity - 1,
     };
     for (std::uint64_t input : curated)
-      result.push_back(
-          {format, input, evaluate("vectors", family, format, input)});
+      append(input);
+
+    const std::uint64_t exponentOnes =
+        (std::uint64_t{1} << shape.exponentBits) - 1;
+    for (std::uint64_t exponent = 1; exponent < exponentOnes; ++exponent) {
+      const std::uint64_t boundary = exponent << shape.fractionBits;
+      append(boundary - 1);
+      append(boundary);
+      append(boundary + 1);
+    }
+    for (llvm::StringRef square :
+         {"0.25", "1.0", "2.25", "4.0", "9.0", "16.0", "256.0"}) {
+      const std::uint64_t input = encoded(format, square);
+      append(input - 1);
+      append(input);
+      append(input + 1);
+    }
+
     std::uint64_t state =
         0x9e3779b97f4a7c15ULL ^ width ^ static_cast<unsigned>(family);
-    for (unsigned count = 0; count != 24; ++count) {
+    for (unsigned count = 0; count != 256; ++count) {
       std::uint64_t input = nextRandom(state) & (infinity - 1);
       if (input == 0)
         input = one;
-      result.push_back(
-          {format, input, evaluate("vectors", family, format, input)});
+      append(input);
     }
   }
   return result;
-}
-
-std::string hexLiteral(const llvm::APInt &value) {
-  llvm::SmallString<64> digits;
-  value.toStringUnsigned(digits, 16);
-  const unsigned count = (value.getBitWidth() + 3) / 4;
-  std::string padded(count > digits.size() ? count - digits.size() : 0, '0');
-  padded += digits.str();
-  return std::to_string(value.getBitWidth()) + "'h" + padded;
 }
 
 std::uint64_t paddedInput(const RootVector &vector) {
@@ -580,13 +602,34 @@ std::uint64_t paddedInput(const RootVector &vector) {
   return vector.input | (0xa5a55a5a5a5aa5a5ULL & ~widthMask(width));
 }
 
-std::string makeTestbench(RootFamily family) {
+std::string makeVectorMemory(llvm::ArrayRef<RootVector> testVectors) {
   std::string text;
   llvm::raw_string_ostream output(text);
-  output << "module testbench;\n"
+  for (const RootVector &vector : testVectors) {
+    llvm::APInt entry(131, vector.expected);
+    entry.insertBits(llvm::APInt(64, paddedInput(vector)), 64);
+    entry.insertBits(llvm::APInt(3, modeCode(vector.format)), 128);
+    llvm::SmallString<40> digits;
+    entry.toStringUnsigned(digits, 16);
+    output << std::string(33 - digits.size(), '0') << digits << '\n';
+  }
+  return output.str();
+}
+
+std::string makeTestbench(RootFamily family, std::size_t vectorCount) {
+  const llvm::StringRef testbenchName =
+      family == RootFamily::Sqrt ? "sqrt_testbench" : "rsqrt_testbench";
+  const llvm::StringRef vectorFile =
+      family == RootFamily::Sqrt ? "sqrt_vectors.mem" : "rsqrt_vectors.mem";
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  output << "module " << testbenchName << ";\n"
+         << "  localparam integer VECTOR_COUNT = " << vectorCount << ";\n"
          << "  logic [63:0] input_value;\n"
          << "  logic [2:0] mode;\n"
          << "  logic [63:0] result;\n"
+         << "  logic [130:0] test_vectors [0:VECTOR_COUNT-1];\n"
+         << "  integer index;\n"
          << "  " << moduleName(family) << " dut(\n"
          << "      .data_input_0(input_value), .config_0(mode),\n"
          << "      .data_output_0(result));\n"
@@ -600,12 +643,12 @@ std::string makeTestbench(RootFamily family) {
             "got=%h expected=%h\", selected, input_bits, result, expected);\n"
          << "    end\n"
          << "  endtask\n"
-         << "  initial begin\n";
-  for (const RootVector &vector : vectors(family))
-    output << "    check(3'd" << unsigned(modeCode(vector.format)) << ", "
-           << hexLiteral(llvm::APInt(64, paddedInput(vector))) << ", "
-           << hexLiteral(llvm::APInt(64, vector.expected)) << ");\n";
-  output << "    $finish;\n  end\nendmodule\n";
+         << "  initial begin\n"
+         << "    $readmemh(\"" << vectorFile << "\", test_vectors);\n"
+         << "    for (index = 0; index < VECTOR_COUNT; index = index + 1)\n"
+         << "      check(test_vectors[index][130:128], "
+            "test_vectors[index][127:64], test_vectors[index][63:0]);\n"
+         << "    $finish;\n  end\nendmodule\n";
   return output.str();
 }
 
@@ -708,12 +751,18 @@ void configuredDomainAndArtifacts(const std::filesystem::path &root) {
   }
   const std::string sqrt = emitFamily(test, store, RootFamily::Sqrt);
   const std::string rsqrt = emitFamily(test, store, RootFamily::Rsqrt);
+  const std::vector<RootVector> sqrtVectors = vectors(RootFamily::Sqrt);
+  const std::vector<RootVector> rsqrtVectors = vectors(RootFamily::Rsqrt);
   if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
           root / "generated",
           {{"scalar_math_sqrt.sv", sqrt},
            {"scalar_math_rsqrt.sv", rsqrt},
-           {"sqrt_testbench.sv", makeTestbench(RootFamily::Sqrt)},
-           {"rsqrt_testbench.sv", makeTestbench(RootFamily::Rsqrt)},
+           {"sqrt_testbench.sv",
+            makeTestbench(RootFamily::Sqrt, sqrtVectors.size())},
+           {"rsqrt_testbench.sv",
+            makeTestbench(RootFamily::Rsqrt, rsqrtVectors.size())},
+           {"sqrt_vectors.mem", makeVectorMemory(sqrtVectors)},
+           {"rsqrt_vectors.mem", makeVectorMemory(rsqrtVectors)},
            {"portable_scalar_math_sqrt.ys", makeYosysScript(RootFamily::Sqrt)},
            {"portable_scalar_math_rsqrt.ys",
             makeYosysScript(RootFamily::Rsqrt)}}))
@@ -726,6 +775,7 @@ void accuracyTiersUseOneCorrectlyRoundedCircuit(
   std::filesystem::create_directories(root);
   ArtifactStore store(root.string());
   for (RootFamily family : {RootFamily::Sqrt, RootFamily::Rsqrt}) {
+    std::string referenceRtl;
     for (loom::SpecialMathAccuracyTier tier :
          loom::specialMathAccuracyTiers()) {
       FabricFixture fixture =
@@ -750,8 +800,42 @@ void accuracyTiersUseOneCorrectlyRoundedCircuit(
                                                 : "loom_math_rsqrt_e8_f23") &&
                   !llvm::StringRef(rtl).contains("config_0"),
               "math root tier did not use the singleton root circuit");
+      if (referenceRtl.empty())
+        referenceRtl = rtl;
+      else
+        require(test, rtl == referenceRtl,
+                "math root accuracy tiers changed the correctly rounded RTL");
     }
   }
+}
+
+llvm::Expected<FabricOperationProviderOutput>
+placeholderProvider(FabricOperationProviderRequest) {
+  return FabricOperationProviderOutput{};
+}
+
+void packageRegistrationIsTransactional() {
+  const llvm::StringRef test = __func__;
+  FabricOperationProviderRegistry registry;
+  if (llvm::Error error =
+          registry.add({::fabric::ImplementationFamilyId::ScalarMathRsqrt,
+                        BackendRecipeKey::PortableSystemVerilog,
+                        {},
+                        placeholderProvider}))
+    fail(test, llvm::toString(std::move(error)));
+  const auto before = registry.coverage();
+  llvm::Error error = registerPortableMathRootProviders(registry);
+  require(test, static_cast<bool>(error),
+          "math root package accepted a conflicting rsqrt provider");
+  llvm::consumeError(std::move(error));
+  const auto after = registry.coverage();
+  require(test, before.size() == after.size(),
+          "failed math root registration changed the coverage domain");
+  for (auto [oldEntry, newEntry] : llvm::zip(before, after))
+    require(test,
+            oldEntry.implementationFamily == newEntry.implementationFamily &&
+                oldEntry.recipes == newEntry.recipes,
+            "failed math root registration changed provider coverage");
 }
 
 void malformedInputsAreTransactional(const std::filesystem::path &root) {
@@ -822,6 +906,7 @@ int main(int argc, char **argv) {
   const std::filesystem::path root(argv[1]);
   configuredDomainAndArtifacts(root);
   accuracyTiersUseOneCorrectlyRoundedCircuit(root / "tiers");
+  packageRegistrationIsTransactional();
   malformedInputsAreTransactional(root / "malformed");
   return EXIT_SUCCESS;
 }
