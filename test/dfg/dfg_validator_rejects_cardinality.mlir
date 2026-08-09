@@ -10,6 +10,7 @@
 // RUN: not loom-dfg-sim %t.dir/stream-activated-schedule.mlir --graph stream_activated_schedule --arg 0=0 --arg 1=7 --output %t.dir/stream-activated.json 2>&1 | FileCheck %s --check-prefix=STREAM-ACTIVATED
 // RUN: not loom-dfg-sim %t.dir/stateful-activated-schedule.mlir --graph stateful_activated_schedule --arg 0=7 --arg 0=9 --output %t.dir/stateful-activated.json 2>&1 | FileCheck %s --check-prefix=STATEFUL-ACTIVATED
 // RUN: not loom-lower %t.dir/recursive-nested-activation.mlir -o %t.dir/recursive.out.mlir 2>&1 | FileCheck %s --check-prefix=RECURSIVE-NESTED
+// RUN: not loom-lower %t.dir/unselected-stream-lane.mlir -o %t.dir/unselected-stream-lane.out.mlir 2>&1 | FileCheck %s --check-prefix=UNSELECTED-STREAM-LANE
 // RUN: not loom-lower %t.dir/parallelize-under-supplied.mlir -o %t.dir/parallelize-under-supplied.out.mlir 2>&1 | FileCheck %s --check-prefix=PARALLELIZE-UNDER-SUPPLIED
 // RUN: not loom-lower %t.dir/serialize-under-supplied.mlir -o %t.dir/serialize-under-supplied.out.mlir 2>&1 | FileCheck %s --check-prefix=SERIALIZE-UNDER-SUPPLIED
 // RUN: test ! -e %t.dir/value.out.mlir
@@ -21,6 +22,7 @@
 // RUN: test ! -e %t.dir/stream-activated.json
 // RUN: test ! -e %t.dir/stateful-activated.json
 // RUN: test ! -e %t.dir/recursive.out.mlir
+// RUN: test ! -e %t.dir/unselected-stream-lane.out.mlir
 // RUN: test ! -e %t.dir/parallelize-under-supplied.out.mlir
 // RUN: test ! -e %t.dir/serialize-under-supplied.out.mlir
 
@@ -32,6 +34,7 @@
 // STREAM-ACTIVATED: graph @stream_activated_schedule value output #0 is not statically exact-one
 // STATEFUL-ACTIVATED: graph @stateful_activated_schedule value output #0 is not statically exact-one
 // RECURSIVE-NESTED: graph @recursive_nested_activation value output #0 is not statically exact-one
+// UNSELECTED-STREAM-LANE: graph @unselected_stream_lane completion witness #0 is not statically one-shot
 // PARALLELIZE-UNDER-SUPPLIED: graph @parallelize_under_supplied stream output #0 has no statically proven close/commit
 // SERIALIZE-UNDER-SUPPLIED: graph @serialize_under_supplied stream output #0 has no statically proven close/commit
 
@@ -106,6 +109,31 @@ module {
     %complete = dataflow.sync %start : (none) -> none
     dataflow.graph.return values(%published#1 : i32) streams() memories()
         complete(%complete : none)
+  }
+}
+
+// A phase-aligned selector token does not make the lane it never selects
+// available to the loop carry.
+//--- unselected-stream-lane.mlir
+module {
+  dataflow.graph private @unselected_stream_lane(
+      %start: none, %input: i32) -> ()
+      attributes {input_segments = array<i32: 0, 1, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %zero = dataflow.constant %start {const_value = 0 : i32} : i32
+    %two = dataflow.constant %start {const_value = 2 : i32} : i32
+    %one = dataflow.constant %start {const_value = 1 : i32} : i32
+    %iv, %phase = dataflow.stream %zero, %two, %one
+        step add while slt : i32
+    %control = dataflow.carry %phase, %start, %next#0 : none
+    %events:2 = dataflow.demux %phase, %control
+        : (i1, none) -> (none, none)
+    %select = dataflow.constant %events#1 {const_value = true} : i1
+    %lanes:2 = dataflow.demux %select, %input
+        : (i1, i32) -> (i32, i32)
+    %next:2 = dataflow.sync %events#1, %lanes#0
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return %events#0 : none
   }
 }
 

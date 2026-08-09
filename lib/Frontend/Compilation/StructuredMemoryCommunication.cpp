@@ -1,5 +1,7 @@
 #include "Frontend/Compilation/StructuredMemoryCommunication.h"
 
+#include "StructuredMemoryCommunicationDetail.h"
+
 #include "Common/IndexWidth.h"
 #include "Frontend/IR/LoomOps.h"
 #include "Frontend/Lowering/ExactMemRefLayout.h"
@@ -505,41 +507,6 @@ bool isClosedOutput(mlir::Value output, mlir::scf::ForOp loop,
   return hasStore;
 }
 
-mlir::Value exactMemoryRoot(mlir::Value value) {
-  while (true) {
-    if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
-      value = cast.getSource();
-      continue;
-    }
-    if (auto view = value.getDefiningOp<mlir::memref::SubViewOp>()) {
-      value = view.getSource();
-      continue;
-    }
-    if (auto reinterpret =
-            value.getDefiningOp<mlir::memref::ReinterpretCastOp>()) {
-      value = reinterpret.getSource();
-      continue;
-    }
-    return value;
-  }
-}
-
-bool areKnownDistinctMemoryRoots(mlir::Value lhs, mlir::Value rhs) {
-  lhs = exactMemoryRoot(lhs);
-  rhs = exactMemoryRoot(rhs);
-  if (lhs == rhs)
-    return false;
-  auto lhsGlobal = lhs.getDefiningOp<mlir::memref::GetGlobalOp>();
-  auto rhsGlobal = rhs.getDefiningOp<mlir::memref::GetGlobalOp>();
-  auto lhsAlloc = lhs.getDefiningOp<mlir::memref::AllocOp>();
-  auto rhsAlloc = rhs.getDefiningOp<mlir::memref::AllocOp>();
-  if (lhsGlobal && rhsGlobal)
-    return lhsGlobal.getName() != rhsGlobal.getName();
-  if (lhsAlloc && rhsAlloc)
-    return lhsAlloc != rhsAlloc;
-  return (lhsGlobal && rhsAlloc) || (lhsAlloc && rhsGlobal);
-}
-
 std::optional<unsigned>
 spatialMemoryThreadInputOrdinal(mlir::Value value,
                                 loom::SpatialRegionOp spatial,
@@ -585,8 +552,9 @@ bool areDistinctAtEveryRootLaunch(mlir::Value source, mlir::Value output,
     ++launchCount;
     if (*sourceOrdinal >= launch.getBodyOperands().size() ||
         *outputOrdinal >= launch.getBodyOperands().size() ||
-        !areKnownDistinctMemoryRoots(launch.getBodyOperands()[*sourceOrdinal],
-                                     launch.getBodyOperands()[*outputOrdinal]))
+        !detail::areKnownDistinctMemoryRoots(
+            launch.getBodyOperands()[*sourceOrdinal],
+            launch.getBodyOperands()[*outputOrdinal]))
       distinct = false;
   });
   return launchCount != 0 && distinct;
@@ -1132,21 +1100,24 @@ enumerateStructuredMemoryCommunicationDecisions(
     auto order = legalLocalLayoutOrder(alloc);
     if (!order)
       return order.takeError();
-    if (!*order)
-      continue;
     auto found = valueReferences.find(alloc.getResult());
-    if (found == valueReferences.end())
+    if ((*order || detail::canPromoteSpscBufferToChannel(alloc)) &&
+        found == valueReferences.end())
       return invalid("local allocation has no canonical value reference");
-    for (std::uint64_t position = 0; position + 1 < (*order)->size();
-         ++position) {
-      auto changed = exchangeAdjacentStoragePositions(alloc, position);
-      if (!changed) {
-        llvm::consumeError(changed.takeError());
-        continue;
+    if (*order) {
+      for (std::uint64_t position = 0; position + 1 < (*order)->size();
+           ++position) {
+        auto changed = exchangeAdjacentStoragePositions(alloc, position);
+        if (!changed) {
+          llvm::consumeError(changed.takeError());
+          continue;
+        }
+        decisions.emplace_back(
+            PermuteLocalBufferLayoutDecision{found->second, position});
       }
-      decisions.emplace_back(
-          PermuteLocalBufferLayoutDecision{found->second, position});
     }
+    if (detail::canPromoteSpscBufferToChannel(alloc))
+      decisions.emplace_back(PromoteSpscBufferToChannelDecision{found->second});
   }
   return StructuredMemoryCommunicationDecisionDomain{std::move(decisions),
                                                      inspectedMemoryScopes};
@@ -1186,8 +1157,17 @@ materializeStructuredMemoryCommunicationDecision(
     clone = std::move(*resolved);
     if (llvm::Error error = materializePipelineLoop(loop))
       return std::move(error);
+  } else if (const auto *channel =
+                 std::get_if<PromoteSpscBufferToChannelDecision>(&decision)) {
+    mlir::memref::AllocOp alloc;
+    auto resolved = cloneAndResolveAllocation(parent, channel->anchor, alloc);
+    if (!resolved)
+      return resolved.takeError();
+    clone = std::move(*resolved);
+    if (llvm::Error error = detail::promoteSpscBufferToChannel(alloc))
+      return std::move(error);
   } else {
-    return invalid("channel-promotion materialization is not implemented");
+    return invalid("unknown memory communication decision");
   }
   if (mlir::failed(mlir::verify(*clone)))
     return invalid("materialized memory candidate does not verify");

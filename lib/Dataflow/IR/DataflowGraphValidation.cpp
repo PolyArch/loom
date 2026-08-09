@@ -1151,7 +1151,12 @@ private:
                            /*truePhaseOnly=*/true, visited);
       if (truePhaseOnly)
         if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def);
-            demux && isGraphStreamInput(demux.getInput()))
+            demux && isGraphStreamInput(demux.getInput())) {
+          if (auto selected = getKnownUnsigned(demux.getSel());
+              selected && *selected == result.getResultNumber() &&
+              isAligned(demux.getSel(), phase, assumption,
+                        /*truePhaseOnly=*/true, visited))
+            return true;
           if (auto activation = dataflow::semantics::getSelectorActivation(
                   demux.getSel(), demux.getOutputs().size())) {
             mlir::Value alignment = *activation;
@@ -1163,6 +1168,7 @@ private:
             return isAligned(alignment, phase, assumption,
                              /*truePhaseOnly=*/true, visited);
           }
+        }
       if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
         bool hasAlignedInput = false;
         for (mlir::Value input : sync.getInputs()) {
