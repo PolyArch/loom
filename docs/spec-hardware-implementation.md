@@ -8,7 +8,7 @@ implementation state that cannot be recovered from Fabric alone.
 ## Artifact Family
 
 ```text
-loom.hardware_implementation 2.1
+loom.hardware_implementation 2.2
 ```
 
 ```text
@@ -134,13 +134,13 @@ RepresentationObjectFacts {
 ```
 
 The registry identity is
-`loom.hardware_representation_format`, version `2.1`. Its exact reference bytes
+`loom.hardware_representation_format`, version `2.2`. Its exact reference bytes
 are `u64be(identity length) || identity bytes || u32be(major) || u32be(minor) ||
 u32be(format kind)`. Existing format kinds retain their numeric meaning. A new
 major version owns an incompatible indexer, object-fact, locator, or
 failure-classification contract; a minor version is reserved for
 backward-compatible additions. A prior-version reference is never
-reinterpreted as `2.1`: there is no compatibility execution path or alias.
+reinterpreted as `2.2`: there is no compatibility execution path or alias.
 A canonical JSON reference is exactly the object fields `registry`, `major`,
 `minor`, and `kind` in that order, with the registry string above and canonical
 unsigned integers.
@@ -155,13 +155,14 @@ payload, locator, object fact, unresolved-definition fact, or failure
 classification, the registry version changes. A second semantic identity field
 or provider-private descriptor revision is forbidden.
 
-Registry 2.1 owns these format kinds:
+Registry 2.2 owns these format kinds:
 
 | Kind | Stable spelling | Admitted root | Payload contract |
 | ---: | --- | --- | --- |
 | 0 | `systemverilog_rtl` | `Rtl` | one or more `RtlSource`; zero or more `GenerationConstraint` and `BlackBoxContract` |
 | 1 | `structural_verilog_gate_netlist` | `GateNetlist` | one or more `Netlist`; zero or more `GenerationConstraint` and `BlackBoxContract` |
 | 2 | `indexed_physical` | every `AsicPhysical`, `FpgaPhysical`, and `FpgaImage` form listed below | the exact selected physical row, including exactly one `RepresentationIndex` |
+| 3 | `indexed_def_physical` | `AsicPhysical::Placed`, `AsicPhysical::Routed`, and `AsicPhysical::Extracted` | one or more structural-Verilog `Netlist`, exactly one DEF `PhysicalDatabase`, one or more `GenerationConstraint`, exactly one `RepresentationIndex`, plus the optional physical roles admitted by the selected stage |
 
 The two HDL descriptors use the exact media-type spellings
 `text/x-systemverilog; charset=utf-8` for `RtlSource`,
@@ -395,11 +396,33 @@ physical payload role uses `application/octet-stream`, except
 `application/vnd.loom.black-box-contract`. All non-index physical payloads are
 opaque to this descriptor and have no text-policy exception.
 
+The `indexed_def_physical` descriptor is the provider-neutral, self-contained
+LEF/DEF interchange form for ASIC physical state. It reuses the same physical
+locator grammar and canonical `RepresentationIndex`; it does not add another
+object catalog or provider identity. Its exact `PhysicalDatabase` payload is
+one DEF text unit with media type `application/vnd.eda.def; charset=utf-8`.
+Its `Netlist` payloads use the structural-Verilog media type and IEEE 1364-2005
+profile, and its `GenerationConstraint` payloads use the SDC media type. All
+three roles are UTF-8, LF-only, and NUL-free. Indexing independently validates
+the retained structural netlist closure and requires its top module name and
+unresolved external definitions to agree with the physical index. The DEF
+parser validates the exact design name and stage-relevant physical syntax;
+consumer-specific capability checks may strengthen that baseline without
+assigning a private meaning to a logical filename.
+
+The DEF descriptor exists because a routed interchange database and a
+provider-native checkpoint are not substitutable inputs. A producer cannot
+publish DEF bytes as opaque `indexed_physical` state when a downstream
+consumer must know that they are DEF, and a consumer cannot infer DEF from a
+suffix, producer name, or invocation history. Proprietary ASIC databases and
+FPGA checkpoints remain `indexed_physical`; consumers that require DEF return
+typed `Unsupported` for those roots.
+
 The canonical index payload is:
 
 ```text
 PhysicalRepresentationIndex {
-  format_ref: exact indexed_physical descriptor ref
+  format_ref: exact indexed_physical or indexed_def_physical descriptor ref
   variant: AsicPhysical | FpgaPhysical | FpgaImage
   stage?: Placed | Routed | Extracted
   top: exact outer representation-root locator
@@ -472,9 +495,9 @@ locator, admitted payload roles, and required cardinalities:
 | --- | --- |
 | `Rtl` | one or more `RtlSource`; zero or more `GenerationConstraint` and `BlackBoxContract` |
 | `GateNetlist` | one or more `Netlist`; zero or more `GenerationConstraint` and `BlackBoxContract` |
-| `AsicPhysical::Placed` | exactly one `RepresentationIndex`; one or more `PhysicalDatabase`; zero or more `GenerationConstraint` and `BlackBoxContract` |
-| `AsicPhysical::Routed` | exactly one `RepresentationIndex`; one or more `PhysicalDatabase`; zero or more `LayoutStream`, `GenerationConstraint`, and `BlackBoxContract` |
-| `AsicPhysical::Extracted` | exactly one `RepresentationIndex`; one or more each of `PhysicalDatabase` and `Parasitics`; zero or more `LayoutStream`, `GenerationConstraint`, and `BlackBoxContract` |
+| `AsicPhysical::Placed` | exactly one `RepresentationIndex`; one or more `PhysicalDatabase`; zero or more `Netlist`, `GenerationConstraint`, and `BlackBoxContract` |
+| `AsicPhysical::Routed` | exactly one `RepresentationIndex`; one or more `PhysicalDatabase`; zero or more `Netlist`, `LayoutStream`, `GenerationConstraint`, and `BlackBoxContract` |
+| `AsicPhysical::Extracted` | exactly one `RepresentationIndex`; one or more each of `PhysicalDatabase` and `Parasitics`; zero or more `Netlist`, `LayoutStream`, `GenerationConstraint`, and `BlackBoxContract` |
 | `FpgaPhysical` | exactly one `RepresentationIndex`; one or more `PhysicalDatabase`; zero or more `GenerationConstraint` and `BlackBoxContract` |
 | `FpgaImage` | exactly one each of `RepresentationIndex` and `DeviceImage` |
 
@@ -648,7 +671,7 @@ the exact consumer contract owns that grouping. Their dense ordinals are
 derived only after sorting; no caller-authored interface or activity ID enters
 identity.
 
-The schema-2.1 owner-local reference catalog is:
+The schema-2.2 owner-local reference catalog is:
 
 ```text
 0  HardwareImplementationInterfaceRef

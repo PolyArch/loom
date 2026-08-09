@@ -317,8 +317,18 @@ bytes that contain those bindings. This breaks the self-reference cycle
 without permitting undeclared payload state. Proprietary bytes remain opaque,
 but every declared blob is still re-read and digest-verified. Appending the
 role and format kind is a compatible schema extension, so
-HardwareImplementation and the representation-format registry advance from
-`2.0` to `2.1`; all existing numeric tags retain their meanings.
+HardwareImplementation and the representation-format registry advanced from
+`2.0` to `2.1`; all existing numeric tags retained their meanings.
+
+Rail closure exposed one further essential format distinction: opaque physical
+checkpoints and DEF interchange text cannot share one consumer contract. DEF
+must carry its retained structural netlist and constraints because immutable
+HardwareImplementation state cannot rely on a discarded parent gate artifact
+or an invocation edge. The provider-neutral `indexed_def_physical` kind is
+therefore appended as kind 3, and both schemas advance compatibly from `2.1`
+to `2.2`. It reuses the one physical index and locator grammar; it does not add
+a vendor-specific representation or duplicate object authority. Existing
+`indexed_physical` retains kind 2 and remains the opaque form.
 
 An implementation interface uses one role-bearing semantic reference rather
 than a caller-authored key plus a separately authored role. The former is the
@@ -757,3 +767,13 @@ coverage, and uncertainty; its ResolvedConfig 3.3 component view fixes the
 actual Voltus build and complete PGV member fingerprints. This keeps local
 paths out of semantic identity without letting the adapter select an ambient
 library or making ImplementationPlatform own provider files.
+
+Single-domain rail correspondence is derived from the exact DEF rather than
+duplicated into ResolvedConfig. DEF already owns special-net use, routing, and
+top-level supply-pin geometry. Requiring exactly one routed POWER net, one
+routed GROUND net, and connected matching top-level pins gives the initial
+provider a complete domain and deterministic voltage-source set. Conventional
+names such as `VDD` and `VSS`, the producing tool, and a nearby pad file are
+not authorities. Designs that need multiple domains, a separate package or
+pad model, dynamic activity, or partial-network analysis select a future exact
+model instead of weakening this one.

@@ -71,7 +71,7 @@ loom.deployment                    2.0
 
 The image and Deployment major versions change because their exact accepted
 child schemas change to `loom.configuration_abi 2.0` and
-`loom.hardware_implementation 2.1`. Their root shapes otherwise retain the
+`loom.hardware_implementation 2.2`. Their root shapes otherwise retain the
 contracts below; an old validator cannot reinterpret the new references under
 a 1.0 descriptor.
 

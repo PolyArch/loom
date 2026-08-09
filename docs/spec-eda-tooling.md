@@ -232,7 +232,7 @@ finalized implementation.
 The initial RTL implementation is a `MechanicalDerivation` from exact Fabric,
 exact `ConfigurationABI`, and the resolved generator binding. It publishes the
 closed `Rtl` representation root of
-`loom.hardware_implementation 2.1`. A later flow that
+`loom.hardware_implementation 2.2`. A later flow that
 consumes existing hardware state and preserves new state creates another
 immutable `HardwareImplementation`. `InvocationManifest`, not the output
 Artifact, owns both derivation records. Representative later derivations are:
@@ -330,6 +330,28 @@ absolute frequency cannot be inferred from SDC bytes, PGV contents, or a tool
 default. Voltus consumes that projection together with the exact routed
 HardwareImplementation, ImplementationPlatform binding, and complete PGV file
 tree. It does not accept caller-authored Tcl values for any projected fact.
+
+The initial provider accepts only one routed `indexed_def_physical` root. That
+root supplies exactly one self-contained DEF, its retained structural gate
+netlist, and its generation constraints. Preparation parses the DEF rather
+than a filename or producer record and requires exactly one routed special net
+with `USE POWER`, exactly one routed special net with `USE GROUND`, and at
+least one connected top-level `PIN` of the matching use for each net. These
+facts mechanically select the sole rail domain and the voltage-source sites.
+The global applied supply targets the power net relative to the ground net;
+the ground voltage is exactly zero. A second power or ground net, an absent or
+unrouted special net, an absent connected supply pin, multiple DEF payloads,
+an opaque physical database, or an incomplete retained logical closure is
+typed `Unsupported`. The adapter does not guess conventional net names, omit a
+network fragment, or synthesize source locations.
+
+Static power preparation reads the retained netlist and constraints, applies
+the exact Request period, transition density, and static probability as the
+single global vectorless activity assumption, and produces the current data
+consumed by static rail analysis. DEF supplies physical connectivity; the
+exact PGV tree supplies provider cell and technology models. The normalized
+result is the maximum delivered-voltage deficit over both nets in the sole
+complete domain, not the first report row or a provider severity threshold.
 
 The model's resolved config view additionally carries the exact stable Voltus
 provider build identity and canonical PGV member path/fingerprint table from
