@@ -1,0 +1,21 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-synopsys-designware-test %t
+# RUN: FileCheck %s < %t/exact/generated/designware_fma.sv
+
+# CHECK: module designware_fma(
+# CHECK: input  [63:0] data_input_0
+# CHECK: wire [31:0] dw_result;
+# CHECK: wire [7:0]  dw_status;
+# CHECK: DW_fp_mac #(
+# CHECK-NEXT: .sig_width(23),
+# CHECK-NEXT: .exp_width(8),
+# CHECK-NEXT: .ieee_compliance(1)
+# CHECK: .a(data_input_0[31:0]),
+# CHECK-NEXT: .b(data_input_1[31:0]),
+# CHECK-NEXT: .c(data_input_2[31:0]),
+# CHECK-NEXT: .rnd(3'b000),
+# CHECK-NEXT: .z(dw_result),
+# CHECK-NEXT: .status(dw_status)
+# CHECK: assign data_output_0 = {32'h0, dw_result};
+# CHECK-NOT: function automatic
