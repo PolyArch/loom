@@ -55,8 +55,7 @@ adg::FinalizedFabricDesign buildHeterogeneousSystem(
     bool routeExtraMemoryThroughTransform = false);
 
 adg::FinalizedFabricDesign
-buildSystemCandidateSpatialModule(ArtifactStore &store,
-                                  bool addBoundaryBuffer);
+buildSystemCandidateSpatialModule(ArtifactStore &store, bool addBoundaryBuffer);
 
 ResolvedConfig buildSystemCandidateResolvedConfig();
 
@@ -83,6 +82,10 @@ void verifySystemServiceTargetRejections(
     fabric::FabricMemoryServiceRegionRef foreignRegion);
 
 void verifySystemResourceAction(const SystemCandidateStateHandle &candidate);
+
+void verifySystemFixedTerminalCutAndAnnealing(
+    FrozenSystemPnrProblemHandle problem,
+    const SystemCandidateStateHandle &baseline);
 
 void verifySystemResourceActionWorkflow(
     ArtifactStore &store, const fabric::FinalizedFabricRoot &baselineSystem,

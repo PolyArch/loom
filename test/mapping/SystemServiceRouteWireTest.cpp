@@ -583,17 +583,17 @@ int main() {
   require(first.bytes() == second.bytes(),
           "System service route canonicalization is nondeterministic");
   std::string currentText(first.bytes().begin(), first.bytes().end());
-  const std::string currentVersion = "version<4, 0>";
+  const std::string currentVersion = "version<5, 0>";
   const std::size_t versionPosition = currentText.find(currentVersion);
   require(versionPosition != std::string::npos,
-          "canonical SystemMapping does not use version 4.0");
-  currentText.replace(versionPosition, currentVersion.size(), "version<3, 0>");
+          "canonical SystemMapping does not use version 5.0");
+  currentText.replace(versionPosition, currentVersion.size(), "version<4, 0>");
   {
     mlir::ScopedDiagnosticHandler capture(
         &context, [](mlir::Diagnostic &) { return mlir::success(); });
     auto legacy = mlir::parseSourceString<mlir::ModuleOp>(
         "module {\n" + currentText + "}\n", &context);
-    require(!legacy, "mapping.system 3.0 was accepted by the 4.0 parser");
+    require(!legacy, "mapping.system 4.0 was accepted by the 5.0 parser");
   }
   auto duplicatePlanSystem = buildSystem(context, fixture);
   auto duplicatePlanRoot =

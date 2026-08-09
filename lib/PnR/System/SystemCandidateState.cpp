@@ -1,5 +1,6 @@
 #include "PnR/System/SystemCandidateState.h"
 
+#include "Common/MappingDebugLog.h"
 #include "PnR/EndpointRouter.h"
 #include "PnR/InitializerRelationSolver.h"
 #include "SystemCandidateMutation.h"
@@ -422,7 +423,7 @@ SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
   if (!choices)
     return choices.takeError();
   if (llvm::Error error =
-          problem->initializerRelations_->verifyChoices(*choices))
+          problem->initializerRelations().verifyChoices(*choices))
     return llvm::joinErrors(
         invalid("thread and graph target classes are incompatible"),
         std::move(error));
@@ -601,6 +602,13 @@ llvm::Error SystemCandidateState::verify() const {
 
 namespace {
 
+llvm::Expected<SystemCandidateStateHandle> initializeSystemCandidateWithClosure(
+    FrozenSystemPnrProblemHandle problem,
+    llvm::ArrayRef<PnrIndex> threadChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices,
+    detail::SystemRoutingClosureRequirement closureRequirement,
+    std::uint64_t *endpointExpansions, std::uint64_t *negotiationIterations);
+
 template <typename Solve>
 llvm::Expected<InitializedSystemCandidate>
 solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
@@ -611,12 +619,30 @@ solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
   const auto validate =
       [&](llvm::ArrayRef<PnrIndex> choices) -> llvm::Expected<bool> {
     const std::size_t threadCount = problem->threadDecisions().size();
+    const auto emitChoice = [&](llvm::StringRef status) {
+      mapping_debug::emit(
+          mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::ContextChoice, [&](llvm::json::Object &fields) {
+            llvm::json::Array threadChoices;
+            for (PnrIndex choice : choices.take_front(threadCount))
+              threadChoices.push_back(choice);
+            llvm::json::Array graphChoices;
+            for (PnrIndex choice : choices.drop_front(threadCount))
+              graphChoices.push_back(choice);
+            fields["operation"] = "initializer_execution_assignment";
+            fields["assignment_attempt"] = solver.assignmentAttempts();
+            fields["thread_choices"] = std::move(threadChoices);
+            fields["graph_choices"] = std::move(graphChoices);
+            fields["status"] = status;
+          });
+    };
     std::uint64_t candidateEndpointExpansions = 0;
     std::uint64_t candidateNegotiationIterations = 0;
-    auto candidate = initializeSystemCandidate(
+    auto candidate = initializeSystemCandidateWithClosure(
         problem, choices.take_front(threadCount),
-        choices.drop_front(threadCount), &candidateEndpointExpansions,
-        &candidateNegotiationIterations);
+        choices.drop_front(threadCount),
+        detail::SystemRoutingClosureRequirement::Strict,
+        &candidateEndpointExpansions, &candidateNegotiationIterations);
     if (candidateEndpointExpansions >
         std::numeric_limits<std::uint64_t>::max() - endpointExpansions)
       return llvm::createStringError(
@@ -630,19 +656,30 @@ solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
           "System initializer negotiation iteration accounting overflow");
     negotiationIterations += candidateNegotiationIterations;
     if (candidate) {
+      emitChoice("accepted");
       accepted = std::move(*candidate);
       return true;
     }
     bool infeasible = false;
     llvm::Error remaining = llvm::handleErrors(
         candidate.takeError(),
-        [&](const detail::SystemCandidateInfeasible &) { infeasible = true; });
+        [&](const detail::SystemCandidateInfeasible &) { infeasible = true; },
+        [&](const detail::SystemRoutingClosureFailure &failure) -> llvm::Error {
+          if (failure.kind() == detail::SystemRoutingClosureFailureKind::
+                                    FixedTerminalCapacityCut) {
+            infeasible = true;
+            return llvm::Error::success();
+          }
+          return llvm::make_error<detail::SystemRoutingClosureFailure>(
+              failure.kind(), errorMessage(failure));
+        });
     if (remaining)
       return std::move(remaining);
     if (!infeasible)
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "System candidate rejection lost its cause");
+    emitChoice("rejected");
     return false;
   };
   auto solved = solve(solver, validate);
@@ -709,12 +746,14 @@ loom::pnr::initializeSystemCandidateWithFixedChoices(
       });
 }
 
-llvm::Expected<SystemCandidateStateHandle>
-loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
-                                     llvm::ArrayRef<PnrIndex> threadChoices,
-                                     llvm::ArrayRef<PnrIndex> graphChoices,
-                                     std::uint64_t *endpointExpansions,
-                                     std::uint64_t *negotiationIterations) {
+namespace {
+
+llvm::Expected<SystemCandidateStateHandle> initializeSystemCandidateWithClosure(
+    FrozenSystemPnrProblemHandle problem,
+    llvm::ArrayRef<PnrIndex> threadChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices,
+    detail::SystemRoutingClosureRequirement closureRequirement,
+    std::uint64_t *endpointExpansions, std::uint64_t *negotiationIterations) {
   if (endpointExpansions)
     *endpointExpansions = 0;
   if (negotiationIterations)
@@ -725,7 +764,7 @@ loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
   if (!choices)
     return choices.takeError();
   if (llvm::Error error =
-          problem->initializerRelations_->verifyChoices(*choices))
+          problem->initializerRelations().verifyChoices(*choices))
     return llvm::joinErrors(
         invalid("thread and graph target classes are incompatible"),
         std::move(error));
@@ -748,7 +787,8 @@ loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
   std::uint64_t routeNegotiationIterations = 0;
   auto routes = detail::negotiateSystemServiceRoutes(
       *problem, threadChoices, graphChoices, *instructionUses, *serviceUses,
-      routeEndpointExpansions, routeNegotiationIterations);
+      routeEndpointExpansions, routeNegotiationIterations, {}, std::nullopt,
+      std::nullopt, std::nullopt, closureRequirement);
   if (endpointExpansions)
     *endpointExpansions = routeEndpointExpansions;
   if (negotiationIterations)
@@ -759,6 +799,20 @@ loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
       std::move(problem),
       {threadChoices, graphChoices, routes->routes, routes->nodes,
        routes->sinks, *targets, *instructionUses, *serviceUses});
+}
+
+} // namespace
+
+llvm::Expected<SystemCandidateStateHandle>
+loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
+                                     llvm::ArrayRef<PnrIndex> threadChoices,
+                                     llvm::ArrayRef<PnrIndex> graphChoices,
+                                     std::uint64_t *endpointExpansions,
+                                     std::uint64_t *negotiationIterations) {
+  return initializeSystemCandidateWithClosure(
+      std::move(problem), threadChoices, graphChoices,
+      detail::SystemRoutingClosureRequirement::PolicyAdmittedTemporary,
+      endpointExpansions, negotiationIterations);
 }
 
 llvm::Expected<std::vector<SystemServiceTargetSelection>>

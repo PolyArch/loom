@@ -153,7 +153,10 @@ llvm::Error translateMutationFailure(llvm::Error error) {
       },
       [&](const detail::SystemRoutingClosureFailure &failure) -> llvm::Error {
         return llvm::make_error<SystemActionTransitionFailure>(
-            SystemActionTransitionFailureKind::WorkLimit,
+            failure.kind() == detail::SystemRoutingClosureFailureKind::
+                                  FixedTerminalCapacityCut
+                ? SystemActionTransitionFailureKind::IntrinsicInvalid
+                : SystemActionTransitionFailureKind::WorkLimit,
             errorMessage(failure));
       });
 }

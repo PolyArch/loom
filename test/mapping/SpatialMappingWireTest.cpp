@@ -143,7 +143,7 @@ std::string spatialModule(bool duplicateUse, bool missingOwner,
       activation + ") parameters([]) sharing([])\n";
 
   return "module {\n"
-         "  mapping.spatial version<4, 0> tech_mapping(" +
+         "  mapping.spatial version<5, 0> tech_mapping(" +
          identityAttr(identity(25)) + ") dataflow(" +
          identityAttr(dataflowOwner) + ") fabric(" +
          identityAttr(identity(34)) +
@@ -201,7 +201,7 @@ std::string routeModule(bool canonicalOrdinals, bool duplicateSink,
       ") node " + std::to_string(sinkNode) + "\n";
 
   return "module {\n"
-         "  mapping.spatial version<4, 0> tech_mapping(" +
+         "  mapping.spatial version<5, 0> tech_mapping(" +
          identityAttr(identity(25)) + ") dataflow(" +
          identityAttr(dataflowOwner) + ") fabric(" +
          identityAttr(identity(34)) +
@@ -256,7 +256,7 @@ std::string memoryBindingModule(bool localRegion, bool zeroSizedRange,
                              "target(#mapping.memory_boundary_proxy) {}\n";
 
   return "module {\n"
-         "  mapping.spatial version<4, 0> tech_mapping(" +
+         "  mapping.spatial version<5, 0> tech_mapping(" +
          identityAttr(identity(25)) + ") dataflow(" +
          identityAttr(dataflowOwner) + ") fabric(" +
          identityAttr(identity(34)) + ") {\n" + first + second +
@@ -296,7 +296,7 @@ std::string memoryBindingCanonicalModule(bool reverseAuthoringOrder) {
   const std::string body =
       reverseAuthoringOrder ? second + first : first + second;
   return "module {\n"
-         "  mapping.spatial version<4, 0> tech_mapping(" +
+         "  mapping.spatial version<5, 0> tech_mapping(" +
          identityAttr(identity(25)) + ") dataflow(" +
          identityAttr(dataflowOwner) + ") fabric(" +
          identityAttr(identity(34)) + ") {\n" + body +
@@ -359,7 +359,7 @@ std::string memoryOperationModule(bool localBinding, bool localDispatch,
                       (duplicateUse ? firstUse : "");
 
   return "module {\n"
-         "  mapping.spatial version<4, 0> tech_mapping(" +
+         "  mapping.spatial version<5, 0> tech_mapping(" +
          identityAttr(identity(25)) + ") dataflow(" +
          identityAttr(dataflowOwner) + ") fabric(" +
          identityAttr(identity(34)) +
@@ -423,7 +423,7 @@ std::string fenceOperationModule(bool reverseUses, bool duplicateUse,
                       (duplicateUse ? firstUse : "");
 
   return "module {\n"
-         "  mapping.spatial version<4, 0> tech_mapping(" +
+         "  mapping.spatial version<5, 0> tech_mapping(" +
          identityAttr(identity(25)) + ") dataflow(" +
          identityAttr(dataflowOwner) + ") fabric(" +
          identityAttr(identity(34)) +
@@ -461,13 +461,13 @@ void testTypedSpatialResourceUse() {
     fail("typed SpatialMapping ResourceUse did not verify");
 
   std::string legacy = spatialModule(false, false);
-  const std::string current = "version<4, 0>";
+  const std::string current = "version<5, 0>";
   const std::size_t position = legacy.find(current);
   if (position == std::string::npos)
     fail("SpatialMapping version fixture has no current version");
-  legacy.replace(position, current.size(), "version<3, 0>");
+  legacy.replace(position, current.size(), "version<4, 0>");
   if (parse(context, legacy))
-    fail("mapping.spatial 3.0 was accepted by the 4.0 parser");
+    fail("mapping.spatial 4.0 was accepted by the 5.0 parser");
 
   std::string printed;
   llvm::raw_string_ostream stream(printed);

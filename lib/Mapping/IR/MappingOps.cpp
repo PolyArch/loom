@@ -1,4 +1,5 @@
 #include "Mapping/IR/MappingOps.h"
+#include "Mapping/IR/MappingSchema.h"
 
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
@@ -20,6 +21,27 @@
 using namespace mlir;
 
 namespace {
+
+ParseResult parseMappingSchemaVersion(OpAsmParser &parser,
+                                      llvm::StringRef rootName) {
+  std::uint32_t major = 0;
+  std::uint32_t minor = 0;
+  if (parser.parseKeyword("version") || parser.parseLess() ||
+      parser.parseInteger(major) || parser.parseComma() ||
+      parser.parseInteger(minor) || parser.parseGreater())
+    return failure();
+  const auto expected = ::loom::mapping::mappingArtifactSchema.version;
+  if (major != expected.major || minor != expected.minor)
+    return parser.emitError(parser.getCurrentLocation())
+           << rootName << " requires schema version " << expected.major << '.'
+           << expected.minor;
+  return success();
+}
+
+void printMappingSchemaVersion(OpAsmPrinter &printer) {
+  const auto version = ::loom::mapping::mappingArtifactSchema.version;
+  printer << " version<" << version.major << ", " << version.minor << '>';
+}
 
 std::vector<std::uint8_t> unsignedBytes(DenseI8ArrayAttr record) {
   std::vector<std::uint8_t> bytes;
@@ -163,15 +185,8 @@ LogicalResult verifyMemoryDispatchTarget(Operation *operation,
 
 ParseResult mapping::TechOp::parse(OpAsmParser &parser,
                                    OperationState &result) {
-  std::uint32_t major = 0;
-  std::uint32_t minor = 0;
-  if (parser.parseKeyword("version") || parser.parseLess() ||
-      parser.parseInteger(major) || parser.parseComma() ||
-      parser.parseInteger(minor) || parser.parseGreater())
+  if (failed(parseMappingSchemaVersion(parser, "mapping.tech")))
     return failure();
-  if (major != 4 || minor != 0)
-    return parser.emitError(parser.getCurrentLocation(),
-                            "mapping.tech requires schema version 4.0");
 
   mapping::ArtifactIdentityAttr dataflow;
   mapping::ArtifactIdentityAttr fabric;
@@ -195,8 +210,9 @@ ParseResult mapping::TechOp::parse(OpAsmParser &parser,
 }
 
 void mapping::TechOp::print(OpAsmPrinter &printer) {
-  printer << " version<4, 0> dataflow(" << getDataflow() << ") fabric("
-          << getFabric() << ") covers(" << getCovers() << ") ";
+  printMappingSchemaVersion(printer);
+  printer << " dataflow(" << getDataflow() << ") fabric(" << getFabric()
+          << ") covers(" << getCovers() << ") ";
   printer.printRegion(getBody(), /*printEntryBlockArgs=*/false,
                       /*printBlockTerminators=*/false);
   printer.printOptionalAttrDict((*this)->getAttrs(),
@@ -457,15 +473,8 @@ LogicalResult mapping::MemoryInternalEdgeOp::verify() {
 
 ParseResult mapping::SpatialOp::parse(OpAsmParser &parser,
                                       OperationState &result) {
-  std::uint32_t major = 0;
-  std::uint32_t minor = 0;
-  if (parser.parseKeyword("version") || parser.parseLess() ||
-      parser.parseInteger(major) || parser.parseComma() ||
-      parser.parseInteger(minor) || parser.parseGreater())
+  if (failed(parseMappingSchemaVersion(parser, "mapping.spatial")))
     return failure();
-  if (major != 4 || minor != 0)
-    return parser.emitError(parser.getCurrentLocation(),
-                            "mapping.spatial requires schema version 4.0");
 
   mapping::ArtifactIdentityAttr techMapping;
   mapping::ArtifactIdentityAttr dataflow;
@@ -489,7 +498,8 @@ ParseResult mapping::SpatialOp::parse(OpAsmParser &parser,
 }
 
 void mapping::SpatialOp::print(OpAsmPrinter &printer) {
-  printer << " version<4, 0> tech_mapping(" << getTechMapping() << ") dataflow("
+  printMappingSchemaVersion(printer);
+  printer << " tech_mapping(" << getTechMapping() << ") dataflow("
           << getDataflow() << ") fabric(" << getFabric() << ") ";
   printer.printRegion(getBody(), /*printEntryBlockArgs=*/false,
                       /*printBlockTerminators=*/false);
@@ -880,15 +890,8 @@ LogicalResult mapping::ResourceUseOp::verify() {
 
 ParseResult mapping::SystemOp::parse(OpAsmParser &parser,
                                      OperationState &result) {
-  std::uint32_t major = 0;
-  std::uint32_t minor = 0;
-  if (parser.parseKeyword("version") || parser.parseLess() ||
-      parser.parseInteger(major) || parser.parseComma() ||
-      parser.parseInteger(minor) || parser.parseGreater())
+  if (failed(parseMappingSchemaVersion(parser, "mapping.system")))
     return failure();
-  if (major != 4 || minor != 0)
-    return parser.emitError(parser.getCurrentLocation(),
-                            "mapping.system requires schema version 4.0");
 
   mapping::ArtifactIdentityAttr dataflow;
   mapping::ArtifactIdentityAttr fabric;
@@ -916,10 +919,10 @@ ParseResult mapping::SystemOp::parse(OpAsmParser &parser,
 }
 
 void mapping::SystemOp::print(OpAsmPrinter &printer) {
-  printer << " version<4, 0> dataflow(" << getDataflow() << ") fabric("
-          << getFabric() << ") spatial_mapping_imports("
-          << getSpatialMappingImports() << ") root_thread_launches("
-          << getRootThreadLaunches() << ") ";
+  printMappingSchemaVersion(printer);
+  printer << " dataflow(" << getDataflow() << ") fabric(" << getFabric()
+          << ") spatial_mapping_imports(" << getSpatialMappingImports()
+          << ") root_thread_launches(" << getRootThreadLaunches() << ") ";
   printer.printRegion(getBody(), /*printEntryBlockArgs=*/false,
                       /*printBlockTerminators=*/false);
   printer.printOptionalAttrDict((*this)->getAttrs(), {"dataflow", "fabric",

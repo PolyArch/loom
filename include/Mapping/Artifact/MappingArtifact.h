@@ -9,6 +9,7 @@
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/ConfiguredHardwareProjection.h"
 #include "Mapping/IR/MappingOps.h"
+#include "Mapping/IR/MappingSchema.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -22,9 +23,6 @@
 namespace loom::mapping {
 
 class SpatialMappingConstraintSetView;
-
-inline constexpr ArtifactSchemaDescriptor mappingArtifactSchema{
-    "loom.mapping", SchemaVersion{4, 0}};
 
 /// Canonicalizes one complete in-memory Mapping root for final verification.
 /// This syntax layer normalizes schema-owned record order and Mapping-local
@@ -195,7 +193,7 @@ private:
 };
 
 /// The immutable result of failure-atomic publication or strict import of one
-/// exact mapping.tech 4.0 object.
+/// exact mapping.tech 5.0 object.
 class FinalizedTechMapping final {
 public:
   const ArtifactRootReference &reference() const { return reference_; }

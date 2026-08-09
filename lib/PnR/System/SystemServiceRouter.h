@@ -60,6 +60,28 @@ struct BuiltSystemServiceRoutes final {
   std::vector<std::uint64_t> capacityUsage;
 };
 
+struct SystemFixedTerminalCapacityLegEvidence final {
+  PnrIndex leg = getInvalidPnrIndex();
+  PnrIndex sourceEndpoint = getInvalidPnrIndex();
+  std::vector<PnrIndex> sinkEndpoints;
+  std::vector<PnrIndex> claimingTraversals;
+  std::uint64_t minimumClaim = 0;
+  std::uint64_t reachableEndpointCount = 0;
+  std::vector<PnrIndex> unreachableSinkEndpoints;
+
+  bool isForced() const { return !unreachableSinkEndpoints.empty(); }
+};
+
+struct SystemFixedTerminalCapacityConflict final {
+  PnrIndex capacityCell = getInvalidPnrIndex();
+  std::uint64_t usage = 0;
+  std::uint64_t capacity = 0;
+  std::uint64_t mandatoryUsage = 0;
+  std::vector<SystemFixedTerminalCapacityLegEvidence> logicalNets;
+
+  bool hasCertificate() const { return mandatoryUsage > capacity; }
+};
+
 llvm::Expected<std::vector<RouteCost>>
 buildSystemServiceRouteLowerBoundArcCosts(
     const FrozenEndpointRoutingTopology &topology);
@@ -77,6 +99,11 @@ measureSystemServiceRouteCapacityUsage(
 llvm::Expected<std::uint64_t> measureSystemServiceRouteTraversalClaim(
     const FrozenEndpointRoutingTopology &topology,
     SystemServiceRoutesView routes);
+
+llvm::Expected<std::vector<SystemFixedTerminalCapacityConflict>>
+analyzeSystemFixedTerminalCapacityConflicts(
+    const FrozenSystemPnrProblem &problem, SystemServiceRoutesView routes,
+    llvm::ArrayRef<std::uint64_t> capacityUsage);
 
 llvm::Expected<BuiltSystemServiceRoutes>
 buildSystemServiceRoutes(const FrozenSystemPnrProblem &problem,

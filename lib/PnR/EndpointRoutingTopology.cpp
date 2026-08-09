@@ -260,8 +260,9 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
           if (!index)
             return index.takeError();
           cellPosition = capacityCells.try_emplace(cell, *index).first;
-          result.capacityCells_.push_back(
-              {dimension.capacity.value(), dimension.initialOccupancy.value()});
+          result.capacityCells_.push_back({owner, claim.state, claim.dimension,
+                                           dimension.capacity.value(),
+                                           dimension.initialOccupancy.value()});
         } else {
           const auto &existing = result.capacityCells_[cellPosition->second];
           if (existing.capacity != dimension.capacity.value() ||

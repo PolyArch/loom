@@ -208,8 +208,8 @@ inOrderMicroarchitecture() {
 } // namespace
 
 loom::adg::FinalizedFabricDesign
-loom::pnr::test::buildSystemCandidateSpatialModule(
-    loom::ArtifactStore &store, bool addBoundaryBuffer) {
+loom::pnr::test::buildSystemCandidateSpatialModule(loom::ArtifactStore &store,
+                                                   bool addBoundaryBuffer) {
   const std::uint32_t payloadWidth = 128;
   const auto payloadType = take(loom::adg::PortType::bits(payloadWidth));
   const auto byteType = take(loom::adg::PortType::bits(8));
@@ -220,21 +220,15 @@ loom::pnr::test::buildSystemCandidateSpatialModule(
   std::vector<loom::adg::PortType> moduleInputTypes = boundaryTypes;
   moduleInputTypes.push_back(managerType);
   loom::adg::DesignBuilder design(store);
-  auto spatial = take(design.createSpatialCore(
-      addBoundaryBuffer ? "system-candidate-buffered"
-                        : "system-candidate-direct",
-      moduleInputTypes, boundaryTypes));
+  auto spatial = take(
+      design.createSpatialCore(addBoundaryBuffer ? "system-candidate-buffered"
+                                                 : "system-candidate-direct",
+                               moduleInputTypes, boundaryTypes));
   auto network = take(spatial.addMeshSwitchNetwork(
       take(loom::adg::MeshSwitchNetworkSpec::spatial(
           2, 2, 2, payloadType,
-          {{0,
-            0,
-            {payloadType, payloadType},
-            {payloadType, payloadType}},
-           {0,
-            1,
-            {payloadType, payloadType},
-            {payloadType, payloadType}},
+          {{0, 0, {payloadType, payloadType}, {payloadType, payloadType}},
+           {0, 1, {payloadType, payloadType}, {payloadType, payloadType}},
            {1, 0, peInputTypes, boundaryTypes},
            {1, 1, peInputTypes, boundaryTypes}}))));
 
@@ -248,15 +242,15 @@ loom::pnr::test::buildSystemCandidateSpatialModule(
   for (std::size_t attachmentOrdinal = 2; attachmentOrdinal != 4;
        ++attachmentOrdinal) {
     auto attachment = take(network.attachment(attachmentOrdinal));
-    auto pe = take(spatial.addPe(
-        attachment.inputs(),
-        loom::adg::PeSpec::spatial(peInputTypes, boundaryTypes)));
+    auto pe = take(
+        spatial.addPe(attachment.inputs(),
+                      loom::adg::PeSpec::spatial(peInputTypes, boundaryTypes)));
     std::vector<loom::adg::PeValue> peInputs;
     peInputs.reserve(peInputTypes.size());
     for (std::size_t ordinal = 0; ordinal != peInputTypes.size(); ++ordinal)
       peInputs.push_back(take(pe.input(ordinal)));
-    requireSuccess(loom::adg::addTokenControlFu(
-        pe, peInputs, {payloadWidth, 64}));
+    requireSuccess(
+        loom::adg::addTokenControlFu(pe, peInputs, {payloadWidth, 64}));
     requireSuccess(pe.close());
     std::vector<loom::adg::SpatialValue> peOutputs;
     peOutputs.reserve(boundaryTypes.size());
@@ -326,6 +320,17 @@ loom::ResolvedConfig loom::pnr::test::buildSystemCandidateResolvedConfig() {
       loom::ResolvedPnrViolationKind::UnroutedObligation,
       loom::ResolvedPnrViolationKind::CapacityOveruse};
   resolved.dse.systemPnr.objectiveSelection = {0, 0, {}};
+  auto &systemSearch = resolved.dse.systemPnr.search;
+  systemSearch.initializer.seedAttemptCount = 1;
+  systemSearch.routing.negotiationIterationLimit = 8;
+  systemSearch.actionProposal = {0, 1, 0};
+  systemSearch.annealing.calibrationProposalCount = 1;
+  systemSearch.annealing.fallbackTemperature = 1;
+  systemSearch.annealing.minimumTemperature = 1;
+  systemSearch.annealing.coolingRatio = {1, 2};
+  systemSearch.annealing.proposalsPerLevelBase = 1;
+  systemSearch.annealing.proposalsPerMovableDecision = 0;
+  systemSearch.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
   return resolved;
 }
 
@@ -1214,6 +1219,48 @@ void loom::pnr::test::verifySystemResourceAction(
   if (llvm::Error error = probe.candidate->verify())
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error = candidate->verify())
+    fail(llvm::toString(std::move(error)));
+}
+
+void loom::pnr::test::verifySystemFixedTerminalCutAndAnnealing(
+    FrozenSystemPnrProblemHandle problem,
+    const SystemCandidateStateHandle &baseline) {
+  std::vector<PnrIndex> threadChoices(problem->threadDecisions().size(), 0);
+  std::vector<PnrIndex> graphChoices(problem->graphDecisions().size(), 0);
+  auto candidate =
+      take(initializeSystemCandidate(problem, threadChoices, graphChoices));
+  require(candidate->capacityOveruse() != 0,
+          "fixed-terminal cut fixture unexpectedly closed capacity");
+
+  auto objective =
+      take(candidate->problem().objectiveProgram().evaluate(*candidate));
+  SystemActionProbeAccounting work;
+  auto probe =
+      probeSystemAction(candidate, objective,
+                        SystemMappingAction{SystemTransportRoutingAction{
+                            SystemGlobalRoutingAction{}}},
+                        work, SystemActionExecutionContext::FinalClosure);
+  require(!probe, "strict global Action ignored a fixed-terminal cut");
+  bool typedFixedTerminalCut = false;
+  llvm::Error failure = llvm::handleErrors(
+      probe.takeError(),
+      [&](const SystemActionTransitionFailure &transitionFailure) {
+        typedFixedTerminalCut =
+            transitionFailure.kind() ==
+            SystemActionTransitionFailureKind::IntrinsicInvalid;
+      });
+  if (failure)
+    fail(llvm::toString(std::move(failure)));
+  require(typedFixedTerminalCut && work.negotiationIterations == 1,
+          "fixed-terminal cut lost its intrinsic Action failure kind");
+
+  auto annealed = baseline;
+  SystemAnnealingSearchScratch annealing;
+  const auto statistics = take(annealing.run(annealed, 0));
+  require(statistics.calibrationProposalSlots == 1 &&
+              statistics.annealingBaseProposalSlots == 1,
+          "System annealing diagnostic fixture consumed unexpected work");
+  if (llvm::Error error = annealed->verify())
     fail(llvm::toString(std::move(error)));
 }
 

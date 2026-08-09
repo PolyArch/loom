@@ -1268,6 +1268,9 @@ void graphBindingWorkflow() {
   if (llvm::Error error = first.state->verify())
     fail(llvm::toString(std::move(error)));
 
+  loom::pnr::test::verifySystemFixedTerminalCutAndAnnealing(problem,
+                                                            first.state);
+
   std::vector<loom::pnr::SystemServiceRouteSelection> incompleteRoutes(
       first.state->serviceRoutes().begin(), first.state->serviceRoutes().end());
   incompleteRoutes.front().sinkCount = 0;

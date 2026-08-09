@@ -29,6 +29,9 @@ struct EndpointRoutingTraversal final {
 };
 
 struct EndpointRoutingCapacityCell final {
+  ::loom::fabric::FabricInventoryOwnerRef owner;
+  ::fabric::StateKey state;
+  ::fabric::CapacityDimensionKey dimension;
   std::uint64_t capacity = 0;
   std::uint64_t initialOccupancy = 0;
 };

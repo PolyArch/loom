@@ -15,6 +15,7 @@
 #include "PnR/System/SystemMappingMaterializer.h"
 #include "PnR/System/SystemPnrProblem.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
+#include "PnR/System/SystemServiceRouter.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -515,6 +516,16 @@ void loom::pnr::test::verifySystemNegotiatedRoutingWorkflow(
               first.state->capacityOveruse() ==
                   first.state->routeCapacityOveruse(),
           "first negotiated iterate did not expose one exact route bottleneck");
+  const auto firstUsage = selectedUsage(*first.state);
+  const auto firstConflicts =
+      take(detail::analyzeSystemFixedTerminalCapacityConflicts(
+          first.state->problem(),
+          {first.state->serviceRoutes(), first.state->serviceRouteNodes(),
+           first.state->serviceRouteSinks()},
+          firstUsage));
+  require(firstConflicts.size() == 1 &&
+              !firstConflicts.front().hasCertificate(),
+          "reroutable bottleneck was misclassified as a fixed-terminal cut");
 
   const auto instructionOveruse = repeatedOveruseSelections(
       system.artifact(), first.state->instructionResourceUses(),

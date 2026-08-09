@@ -34,6 +34,12 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "system_service_route_invalid: " + message);
 }
 
+llvm::Error arithmeticOverflow(const llvm::Twine &message) {
+  return llvm::make_error<RoutingNegotiationError>(
+      RoutingNegotiationError::Kind::ArithmeticOverflow,
+      ("routing negotiation arithmetic overflow: " + message).str());
+}
+
 llvm::Expected<PnrIndex> checked(PnrCapacityContext context,
                                  std::size_t value) {
   return checkedPnrIndex(context, static_cast<std::uint64_t>(value));
@@ -127,7 +133,7 @@ commitRouteCapacityTraversals(const FrozenEndpointRoutingTopology &topology,
   for (const auto &[key, amount] : selectedClaims) {
     std::uint64_t &addition = additions[key.second];
     if (amount > std::numeric_limits<std::uint64_t>::max() - addition)
-      return invalid("route capacity addition overflows u64");
+      return arithmeticOverflow("route capacity addition exceeds uint64_t");
     addition += amount;
   }
   for (const auto &[cellOrdinal, amount] : additions) {
@@ -139,7 +145,7 @@ commitRouteCapacityTraversals(const FrozenEndpointRoutingTopology &topology,
       return llvm::make_error<detail::SystemCandidateInfeasible>(
           "selected service routes exceed Fabric capacity");
     if (amount > std::numeric_limits<std::uint64_t>::max() - usage[cellOrdinal])
-      return invalid("route capacity usage overflows u64");
+      return arithmeticOverflow("route capacity usage exceeds uint64_t");
   }
   for (const auto &[cellOrdinal, amount] : additions)
     usage[cellOrdinal] += amount;
@@ -871,7 +877,8 @@ loom::pnr::detail::buildSystemServiceRoutes(
         const std::uint64_t consumed = search.endpointExpansionCount();
         if (consumed >
             std::numeric_limits<std::uint64_t>::max() - endpointExpansions)
-          return invalid("endpoint expansion accounting overflows u64");
+          return arithmeticOverflow(
+              "endpoint expansion accounting exceeds uint64_t");
         endpointExpansions += consumed;
         if (!routed)
           return llvm::handleErrors(
@@ -1059,6 +1066,167 @@ loom::pnr::detail::measureSystemServiceRouteTraversalClaim(
     }
   }
   return total;
+}
+
+llvm::Expected<std::vector<detail::SystemFixedTerminalCapacityConflict>>
+loom::pnr::detail::analyzeSystemFixedTerminalCapacityConflicts(
+    const FrozenSystemPnrProblem &problem, SystemServiceRoutesView routes,
+    llvm::ArrayRef<std::uint64_t> capacityUsage) {
+  const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
+  if (capacityUsage.size() != topology.capacityCells().size())
+    return invalid("capacity-cut usage has the wrong width");
+  if (routes.routes.size() != problem.serviceLegs().size())
+    return invalid("capacity-cut route count has the wrong width");
+
+  std::vector<std::uint32_t> traversalPayloadCapacity(
+      topology.traversals().size(), 0);
+  for (const EndpointRoutingArc &arc : topology.arcs()) {
+    if (arc.traversal >= traversalPayloadCapacity.size())
+      return invalid("capacity-cut arc names an invalid traversal");
+    traversalPayloadCapacity[arc.traversal] = std::max(
+        traversalPayloadCapacity[arc.traversal], arc.payloadCapacityBits);
+  }
+
+  std::vector<SystemFixedTerminalCapacityConflict> result;
+  std::vector<std::uint8_t> blockedTraversal(topology.traversals().size(), 0);
+  std::vector<std::uint64_t> minimumTraversalClaim(
+      topology.traversals().size(), std::numeric_limits<std::uint64_t>::max());
+  std::vector<std::uint8_t> reachable(topology.endpoints().size(), 0);
+  std::vector<PnrIndex> worklist;
+  worklist.reserve(topology.endpoints().size());
+
+  for (PnrIndex capacityCell = 0;
+       capacityCell < topology.capacityCells().size(); ++capacityCell) {
+    const EndpointRoutingCapacityCell &cell =
+        topology.capacityCells()[capacityCell];
+    if (capacityUsage[capacityCell] <= cell.capacity)
+      continue;
+
+    std::fill(blockedTraversal.begin(), blockedTraversal.end(), 0);
+    std::fill(minimumTraversalClaim.begin(), minimumTraversalClaim.end(),
+              std::numeric_limits<std::uint64_t>::max());
+    for (PnrIndex traversalOrdinal = 0;
+         traversalOrdinal < topology.traversals().size(); ++traversalOrdinal) {
+      const EndpointRoutingTraversal &traversal =
+          topology.traversals()[traversalOrdinal];
+      if (traversal.capacityClaimOffset > topology.capacityClaims().size() ||
+          traversal.capacityClaimCount >
+              topology.capacityClaims().size() - traversal.capacityClaimOffset)
+        return invalid("capacity-cut traversal claim range is out of bounds");
+      for (const EndpointRoutingCapacityClaim &claim :
+           topology.capacityClaims().slice(traversal.capacityClaimOffset,
+                                           traversal.capacityClaimCount)) {
+        if (claim.cell != capacityCell || claim.amount == 0)
+          continue;
+        blockedTraversal[traversalOrdinal] = 1;
+        minimumTraversalClaim[traversalOrdinal] =
+            std::min(minimumTraversalClaim[traversalOrdinal], claim.amount);
+      }
+    }
+
+    SystemFixedTerminalCapacityConflict conflict;
+    conflict.capacityCell = capacityCell;
+    conflict.usage = capacityUsage[capacityCell];
+    conflict.capacity = cell.capacity;
+    conflict.mandatoryUsage = cell.initialOccupancy;
+
+    for (const SystemServiceRouteSelection &route : routes.routes) {
+      if (route.leg >= problem.serviceLegs().size() ||
+          route.nodeOffset > routes.nodes.size() ||
+          route.nodeCount > routes.nodes.size() - route.nodeOffset ||
+          route.sinkOffset > routes.sinks.size() ||
+          route.sinkCount > routes.sinks.size() - route.sinkOffset ||
+          route.rootEndpoint >= topology.endpoints().size())
+        return invalid("capacity-cut route range is out of bounds");
+      const auto routeNodes =
+          routes.nodes.slice(route.nodeOffset, route.nodeCount);
+      const bool contributes = llvm::any_of(
+          routeNodes, [&](const SystemServiceRouteNodeSelection &node) {
+            return node.incomingTraversal != getInvalidPnrIndex() &&
+                   node.incomingTraversal < blockedTraversal.size() &&
+                   blockedTraversal[node.incomingTraversal] != 0;
+          });
+      if (!contributes)
+        continue;
+
+      SystemFixedTerminalCapacityLegEvidence evidence;
+      evidence.leg = route.leg;
+      evidence.sourceEndpoint = route.rootEndpoint;
+      for (const SystemServiceRouteNodeSelection &node : routeNodes)
+        if (node.incomingTraversal != getInvalidPnrIndex() &&
+            node.incomingTraversal < blockedTraversal.size() &&
+            blockedTraversal[node.incomingTraversal] != 0)
+          evidence.claimingTraversals.push_back(node.incomingTraversal);
+      llvm::sort(evidence.claimingTraversals);
+      evidence.claimingTraversals.erase(
+          std::unique(evidence.claimingTraversals.begin(),
+                      evidence.claimingTraversals.end()),
+          evidence.claimingTraversals.end());
+
+      const std::uint32_t requiredPayloadWidth =
+          problem.serviceLegs()[route.leg].requiredPayloadWidthBits;
+      std::uint64_t minimumClaim = std::numeric_limits<std::uint64_t>::max();
+      for (PnrIndex traversal = 0; traversal < blockedTraversal.size();
+           ++traversal)
+        if (blockedTraversal[traversal] &&
+            traversalPayloadCapacity[traversal] >= requiredPayloadWidth)
+          minimumClaim =
+              std::min(minimumClaim, minimumTraversalClaim[traversal]);
+      if (minimumClaim == std::numeric_limits<std::uint64_t>::max())
+        return invalid("capacity-cut contributing leg has no compatible claim");
+      evidence.minimumClaim = minimumClaim;
+
+      std::fill(reachable.begin(), reachable.end(), 0);
+      worklist.clear();
+      reachable[route.rootEndpoint] = 1;
+      worklist.push_back(route.rootEndpoint);
+      for (std::size_t cursor = 0; cursor < worklist.size(); ++cursor) {
+        const PnrIndex endpoint = worklist[cursor];
+        if (endpoint + 1 >= topology.adjacencyOffsets().size())
+          return invalid("capacity-cut endpoint has no adjacency range");
+        const PnrIndex begin = topology.adjacencyOffsets()[endpoint];
+        const PnrIndex end = topology.adjacencyOffsets()[endpoint + 1];
+        if (begin > end || end > topology.arcs().size())
+          return invalid("capacity-cut adjacency range is out of bounds");
+        for (PnrIndex arcOrdinal = begin; arcOrdinal < end; ++arcOrdinal) {
+          const EndpointRoutingArc &arc = topology.arcs()[arcOrdinal];
+          if (arc.traversal >= blockedTraversal.size() ||
+              arc.target >= reachable.size())
+            return invalid("capacity-cut arc is outside the frozen topology");
+          if (blockedTraversal[arc.traversal] ||
+              arc.payloadCapacityBits < requiredPayloadWidth ||
+              reachable[arc.target])
+            continue;
+          reachable[arc.target] = 1;
+          worklist.push_back(arc.target);
+        }
+      }
+      evidence.reachableEndpointCount = worklist.size();
+
+      for (const SystemServiceRouteSinkSelection &sink :
+           routes.sinks.slice(route.sinkOffset, route.sinkCount)) {
+        if (sink.node >= routeNodes.size() ||
+            routeNodes[sink.node].endpoint >= reachable.size())
+          return invalid("capacity-cut sink is outside its route tree");
+        const PnrIndex endpoint = routeNodes[sink.node].endpoint;
+        evidence.sinkEndpoints.push_back(endpoint);
+        if (!reachable[endpoint])
+          evidence.unreachableSinkEndpoints.push_back(endpoint);
+      }
+      if (!evidence.isForced()) {
+        conflict.logicalNets.push_back(std::move(evidence));
+        continue;
+      }
+      if (minimumClaim >
+          std::numeric_limits<std::uint64_t>::max() - conflict.mandatoryUsage)
+        return arithmeticOverflow(
+            "capacity-cut mandatory usage exceeds uint64_t");
+      conflict.mandatoryUsage += minimumClaim;
+      conflict.logicalNets.push_back(std::move(evidence));
+    }
+    result.push_back(std::move(conflict));
+  }
+  return result;
 }
 
 llvm::Expected<std::vector<PnrIndex>>

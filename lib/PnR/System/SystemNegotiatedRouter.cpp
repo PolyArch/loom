@@ -2,9 +2,13 @@
 
 #include "SystemCapacityProjection.h"
 
+#include "Common/MappingDebugLog.h"
+#include "Fabric/Identity/FabricRefText.h"
+#include "PnR/EndpointRouter.h"
 #include "PnR/RoutingNegotiation.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/Error.h"
 
 #include <limits>
@@ -38,9 +42,63 @@ llvm::Error invalid(const llvm::Twine &message) {
 llvm::Error checkedAdd(std::uint64_t amount, std::uint64_t &target,
                        llvm::StringRef subject) {
   if (amount > std::numeric_limits<std::uint64_t>::max() - target)
-    return invalid(subject + " accounting overflows u64");
+    return llvm::make_error<RoutingNegotiationError>(
+        RoutingNegotiationError::Kind::ArithmeticOverflow,
+        ("routing negotiation arithmetic overflow: " + subject +
+         " accounting exceeds uint64_t")
+            .str());
   target += amount;
   return llvm::Error::success();
+}
+
+std::string errorMessage(const llvm::ErrorInfoBase &error) {
+  std::string message;
+  llvm::raw_string_ostream stream(message);
+  error.log(stream);
+  return message;
+}
+
+llvm::Error
+observeArithmeticFailure(llvm::Error error, std::uint64_t iteration,
+                         llvm::StringRef operation,
+                         mapping_debug::MappingRunStatistics &statistics,
+                         llvm::StringRef &closureStatus) {
+  return llvm::handleErrors(
+      std::move(error),
+      [&](const RoutingNegotiationError &failure) -> llvm::Error {
+        if (failure.kind() ==
+            RoutingNegotiationError::Kind::ArithmeticOverflow) {
+          ++statistics.arithmeticFailures;
+          closureStatus = "arithmetic_failure";
+          mapping_debug::emit(mapping_debug::Level::Decision,
+                              mapping_debug::Stage::SystemPnr,
+                              mapping_debug::Event::ArithmeticFailure,
+                              [&](llvm::json::Object &fields) {
+                                fields["iteration"] = iteration;
+                                fields["operation"] = operation;
+                                fields["failure_kind"] = "routing_negotiation";
+                              });
+        }
+        return llvm::make_error<RoutingNegotiationError>(failure.kind(),
+                                                         errorMessage(failure));
+      },
+      [&](const EndpointRouteSearchFailure &failure) -> llvm::Error {
+        if (failure.kind() ==
+            EndpointRouteSearchFailureKind::ArithmeticOverflow) {
+          ++statistics.arithmeticFailures;
+          closureStatus = "arithmetic_failure";
+          mapping_debug::emit(
+              mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr,
+              mapping_debug::Event::ArithmeticFailure,
+              [&](llvm::json::Object &fields) {
+                fields["iteration"] = iteration;
+                fields["operation"] = operation;
+                fields["failure_kind"] = "endpoint_route_search";
+              });
+        }
+        return llvm::make_error<EndpointRouteSearchFailure>(
+            failure.kind(), errorMessage(failure));
+      });
 }
 
 llvm::Expected<std::vector<PnrIndex>>
@@ -112,6 +170,63 @@ std::vector<std::uint8_t> canonicalRoutingCandidateKey(
     appendU64(result, sink.node);
   }
   return result;
+}
+
+llvm::json::Array encodeCapacityConflictLogicalNets(
+    const FrozenSystemPnrProblem &problem,
+    const detail::SystemFixedTerminalCapacityConflict &conflict,
+    bool includeReachability) {
+  const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
+  llvm::json::Array logicalNets;
+  for (const detail::SystemFixedTerminalCapacityLegEvidence &evidence :
+       conflict.logicalNets) {
+    llvm::json::Object logicalNet;
+    logicalNet["logical_leg"] = evidence.leg;
+    logicalNet["source_endpoint"] = evidence.sourceEndpoint;
+    logicalNet["required_payload_width_bits"] =
+        problem.serviceLegs()[evidence.leg].requiredPayloadWidthBits;
+    logicalNet["minimum_claim"] = evidence.minimumClaim;
+    logicalNet["forced"] = evidence.isForced();
+
+    llvm::json::Array sinkEndpoints;
+    for (PnrIndex endpoint : evidence.sinkEndpoints)
+      sinkEndpoints.push_back(endpoint);
+    logicalNet["sink_endpoints"] = std::move(sinkEndpoints);
+
+    llvm::json::Array traversals;
+    for (PnrIndex traversalOrdinal : evidence.claimingTraversals) {
+      const EndpointRoutingTraversal &traversal =
+          topology.traversals()[traversalOrdinal];
+      llvm::json::Array claims;
+      for (const EndpointRoutingCapacityClaim &claim :
+           topology.capacityClaims().slice(traversal.capacityClaimOffset,
+                                           traversal.capacityClaimCount)) {
+        if (claim.cell != conflict.capacityCell || claim.amount == 0)
+          continue;
+        llvm::json::Object encodedClaim;
+        encodedClaim["activation"] = claim.activation;
+        encodedClaim["amount"] = claim.amount;
+        encodedClaim["q_cost"] = claim.qCost;
+        claims.push_back(std::move(encodedClaim));
+      }
+      llvm::json::Object encodedTraversal;
+      encodedTraversal["traversal"] = traversalOrdinal;
+      encodedTraversal["claims"] = std::move(claims);
+      traversals.push_back(std::move(encodedTraversal));
+    }
+    logicalNet["claiming_traversals"] = std::move(traversals);
+
+    if (includeReachability) {
+      logicalNet["reachable_endpoint_count"] = evidence.reachableEndpointCount;
+      llvm::json::Array unreachableSinkEndpoints;
+      for (PnrIndex endpoint : evidence.unreachableSinkEndpoints)
+        unreachableSinkEndpoints.push_back(endpoint);
+      logicalNet["unreachable_sink_endpoints"] =
+          std::move(unreachableSinkEndpoints);
+    }
+    logicalNets.push_back(std::move(logicalNet));
+  }
+  return logicalNets;
 }
 
 llvm::Expected<std::vector<RouteCost>>
@@ -226,9 +341,37 @@ detail::negotiateSystemServiceRoutes(
       routing.negotiationIterationLimit == 0)
     return invalid("routing work limits must be positive");
   const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
+
+  mapping_debug::MappingRunStatistics debugStatistics;
+  llvm::StringRef closureStatus = "failed";
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+      mapping_debug::Event::InvocationBegin, [&](llvm::json::Object &fields) {
+        fields["logical_leg_count"] = problem.serviceLegs().size();
+        fields["negotiation_iteration_limit"] =
+            routing.negotiationIterationLimit;
+        fields["endpoint_expansion_limit"] = routing.endpointExpansionLimit;
+        fields["strict_closure"] =
+            closureRequirement == SystemRoutingClosureRequirement::Strict;
+      });
+  llvm::scope_exit emitFinalDiagnostics([&] {
+    debugStatistics.aStarExpansions = endpointExpansions;
+    debugStatistics.negotiatedIterations = negotiationIterations;
+    mapping_debug::emit(
+        mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+        mapping_debug::Event::InvocationEnd, [&](llvm::json::Object &fields) {
+          fields["closure_status"] = closureStatus;
+          fields["a_star_expansions"] = endpointExpansions;
+          fields["negotiated_iterations"] = negotiationIterations;
+        });
+    debugStatistics.emit(mapping_debug::Stage::SystemPnr, closureStatus);
+  });
+
   auto lower = buildSystemServiceRouteLowerBoundArcCosts(topology);
   if (!lower)
-    return lower.takeError();
+    return observeArithmeticFailure(lower.takeError(), 0,
+                                    "lower_bound_cost_projection",
+                                    debugStatistics, closureStatus);
 
   std::vector<PnrIndex> order(problem.serviceLegs().size());
   std::iota(order.begin(), order.end(), PnrIndex{0});
@@ -276,7 +419,9 @@ detail::negotiateSystemServiceRoutes(
             routing.negotiation)) {
       auto costs = dualArcCosts(topology, prices);
       if (!costs)
-        return costs.takeError();
+        return observeArithmeticFailure(costs.takeError(), iteration,
+                                        "dual_arc_cost_projection",
+                                        debugStatistics, closureStatus);
       dualCosts = std::move(*costs);
     }
     std::vector<RouteCost> projectedCosts;
@@ -287,7 +432,9 @@ detail::negotiateSystemServiceRoutes(
         auto costs = pathFinderArcCosts(topology, workingUsage, *pathFinder,
                                         presentPressure, history);
         if (!costs)
-          return costs.takeError();
+          return observeArithmeticFailure(costs.takeError(), iteration,
+                                          "pathfinder_arc_cost_projection",
+                                          debugStatistics, closureStatus);
         projectedCosts = std::move(*costs);
         return projectedCosts;
       }
@@ -304,9 +451,13 @@ detail::negotiateSystemServiceRoutes(
         iterationExpansions);
     if (llvm::Error error = checkedAdd(iterationExpansions, endpointExpansions,
                                        "endpoint expansion"))
-      return std::move(error);
+      return observeArithmeticFailure(std::move(error), iteration,
+                                      "endpoint_expansion_accounting",
+                                      debugStatistics, closureStatus);
     if (!built)
-      return built.takeError();
+      return observeArithmeticFailure(built.takeError(), iteration,
+                                      "service_route_search", debugStatistics,
+                                      closureStatus);
     auto capacity = problem.capacityModel().project(
         problem, {threadChoices, graphChoices, built->selections.routes,
                   built->selections.nodes, instructionResourceUses,
@@ -318,6 +469,17 @@ detail::negotiateSystemServiceRoutes(
               problem, threadChoices, graphChoices, built->selections.routes,
               built->selections.nodes, built->selections.sinks))
         return std::move(error);
+      mapping_debug::emit(
+          mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::NegotiationIteration,
+          [&](llvm::json::Object &fields) {
+            fields["iteration"] = iteration;
+            fields["logical_leg_count"] = problem.serviceLegs().size();
+            fields["capacity_conflicts"] = 0;
+            fields["capacity_closed"] = true;
+            fields["a_star_expansions"] = endpointExpansions;
+          });
+      closureStatus = "closed";
       return std::move(built->selections);
     }
     const bool admitsTemporary =
@@ -352,9 +514,123 @@ detail::negotiateSystemServiceRoutes(
         bestKey = std::move(key);
       }
     }
-    if (iteration + 1 == routing.negotiationIterationLimit) {
-      if (best)
+
+    auto conflicts = analyzeSystemFixedTerminalCapacityConflicts(
+        problem,
+        {built->selections.routes, built->selections.nodes,
+         built->selections.sinks},
+        built->capacityUsage);
+    if (!conflicts)
+      return observeArithmeticFailure(conflicts.takeError(), iteration,
+                                      "fixed_terminal_capacity_cut",
+                                      debugStatistics, closureStatus);
+    debugStatistics.capacityConflicts += conflicts->size();
+    const SystemFixedTerminalCapacityConflict *certificate = nullptr;
+    for (const SystemFixedTerminalCapacityConflict &conflict : *conflicts) {
+      const EndpointRoutingCapacityCell &cell =
+          topology.capacityCells()[conflict.capacityCell];
+      mapping_debug::emit(
+          mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::CapacityConflict,
+          [&](llvm::json::Object &fields) {
+            llvm::json::Array contributingLegs;
+            llvm::json::Array forcedLegs;
+            for (const SystemFixedTerminalCapacityLegEvidence &evidence :
+                 conflict.logicalNets) {
+              contributingLegs.push_back(evidence.leg);
+              if (evidence.isForced())
+                forcedLegs.push_back(evidence.leg);
+            }
+            fields["iteration"] = iteration;
+            fields["capacity_ref"] = conflict.capacityCell;
+            fields["usage"] = conflict.usage;
+            fields["capacity"] = conflict.capacity;
+            fields["overuse"] = conflict.usage - conflict.capacity;
+            fields["initial_occupancy"] = cell.initialOccupancy;
+            fields["mandatory_usage_lower_bound"] = conflict.mandatoryUsage;
+            fields["fixed_terminal_cut_certificate"] =
+                conflict.hasCertificate();
+            fields["contributing_logical_legs"] = std::move(contributingLegs);
+            fields["forced_logical_legs"] = std::move(forcedLegs);
+            fields["logical_nets"] = encodeCapacityConflictLogicalNets(
+                problem, conflict, /*includeReachability=*/false);
+            fields["resource_owner_ref"] = fabric::printFabricRef(cell.owner);
+            fields["resource_state"] = cell.state.ordinal();
+            fields["capacity_dimension"] = cell.dimension.ordinal();
+          });
+      mapping_debug::emit(
+          mapping_debug::Level::Detail, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::CutAnalysis, [&](llvm::json::Object &fields) {
+            llvm::json::Array contributingLegs;
+            llvm::json::Array forcedLegs;
+            for (const SystemFixedTerminalCapacityLegEvidence &evidence :
+                 conflict.logicalNets) {
+              contributingLegs.push_back(evidence.leg);
+              if (evidence.isForced())
+                forcedLegs.push_back(evidence.leg);
+            }
+            fields["analysis_scope"] = "fixed_terminal_capacity_certificate";
+            fields["iteration"] = iteration;
+            fields["capacity_ref"] = conflict.capacityCell;
+            fields["mandatory_usage_lower_bound"] = conflict.mandatoryUsage;
+            fields["capacity"] = conflict.capacity;
+            fields["fixed_terminal_cut_certificate"] =
+                conflict.hasCertificate();
+            fields["contributing_logical_legs"] = std::move(contributingLegs);
+            fields["forced_logical_legs"] = std::move(forcedLegs);
+            fields["logical_nets"] = encodeCapacityConflictLogicalNets(
+                problem, conflict, /*includeReachability=*/true);
+            fields["resource_owner_ref"] = fabric::printFabricRef(cell.owner);
+            fields["resource_state"] = cell.state.ordinal();
+            fields["capacity_dimension"] = cell.dimension.ordinal();
+          });
+      if (!certificate && conflict.hasCertificate())
+        certificate = &conflict;
+    }
+    mapping_debug::emit(
+        mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr,
+        mapping_debug::Event::NegotiationIteration,
+        [&](llvm::json::Object &fields) {
+          fields["iteration"] = iteration;
+          fields["logical_leg_count"] = problem.serviceLegs().size();
+          fields["capacity_conflicts"] = conflicts->size();
+          fields["capacity_closed"] = false;
+          fields["fixed_terminal_cut_certificate"] = certificate != nullptr;
+          fields["a_star_expansions"] = endpointExpansions;
+        });
+    if (certificate) {
+      mapping_debug::emit(
+          mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["iteration"] = iteration;
+            fields["operation"] = "fixed_terminal_capacity_cut";
+            fields["capacity_ref"] = certificate->capacityCell;
+            fields["mandatory_usage"] = certificate->mandatoryUsage;
+            fields["capacity"] = certificate->capacity;
+            fields["temporary_return"] = best.has_value();
+          });
+      if (best) {
+        closureStatus = "fixed_terminal_cut_temporary";
         return std::move(*best);
+      }
+      closureStatus = "fixed_terminal_cut";
+      return llvm::make_error<SystemRoutingClosureFailure>(
+          SystemRoutingClosureFailureKind::FixedTerminalCapacityCut,
+          "System routing negotiation proved fixed-terminal capacity cut at "
+          "capacity " +
+              std::to_string(certificate->capacityCell) +
+              " with mandatory usage " +
+              std::to_string(certificate->mandatoryUsage) +
+              " greater than capacity " +
+              std::to_string(certificate->capacity));
+    }
+    if (iteration + 1 == routing.negotiationIterationLimit) {
+      if (best) {
+        closureStatus = "temporary_capacity";
+        return std::move(*best);
+      }
+      closureStatus = "iteration_limit";
       return llvm::make_error<SystemRoutingClosureFailure>(
           SystemRoutingClosureFailureKind::NonClosure,
           "System routing negotiation exhausted its iteration limit before "
@@ -368,37 +644,51 @@ detail::negotiateSystemServiceRoutes(
             normalizedRouteOveruseCost(built->capacityUsage[cell], 0,
                                        topology.capacityCells()[cell].capacity);
         if (!overuse)
-          return overuse.takeError();
+          return observeArithmeticFailure(overuse.takeError(), iteration,
+                                          "pathfinder_overuse_projection",
+                                          debugStatistics, closureStatus);
         auto next = pathFinderHistoryUpdate(
             history[cell], pathFinder->historyPressureIncrement, *overuse);
         if (!next)
-          return next.takeError();
+          return observeArithmeticFailure(next.takeError(), iteration,
+                                          "pathfinder_history_update",
+                                          debugStatistics, closureStatus);
         history[cell] = *next;
       }
       auto nextPressure = ceilMulDiv(
           presentPressure, pathFinder->presentPressureGrowth.numerator,
           pathFinder->presentPressureGrowth.denominator);
       if (!nextPressure)
-        return nextPressure.takeError();
+        return observeArithmeticFailure(nextPressure.takeError(), iteration,
+                                        "pathfinder_present_pressure_update",
+                                        debugStatistics, closureStatus);
       presentPressure = *nextPressure;
     } else {
       const auto &dual =
           std::get<ResolvedDualSubgradientPolicy>(routing.negotiation);
       auto step = dualStepAt(dual.stepSchedule, iteration);
       if (!step)
-        return step.takeError();
+        return observeArithmeticFailure(step.takeError(), iteration,
+                                        "dual_step_projection", debugStatistics,
+                                        closureStatus);
       for (PnrIndex cell = 0; cell < prices.size(); ++cell) {
         auto residual = dualResidual(built->capacityUsage[cell],
                                      topology.capacityCells()[cell].capacity);
         if (!residual)
-          return residual.takeError();
+          return observeArithmeticFailure(residual.takeError(), iteration,
+                                          "dual_residual_projection",
+                                          debugStatistics, closureStatus);
         auto direction = dualDirectionFromResidual(dual, *residual,
                                                    previousDirections[cell]);
         if (!direction)
-          return direction.takeError();
+          return observeArithmeticFailure(direction.takeError(), iteration,
+                                          "dual_direction_update",
+                                          debugStatistics, closureStatus);
         auto price = dualPriceUpdate(prices[cell], *step, *direction);
         if (!price)
-          return price.takeError();
+          return observeArithmeticFailure(price.takeError(), iteration,
+                                          "dual_price_update", debugStatistics,
+                                          closureStatus);
         prices[cell] = *price;
         previousDirections[cell] =
             dual.directionKernel ==

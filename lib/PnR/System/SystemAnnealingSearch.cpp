@@ -1,12 +1,15 @@
 #include "PnR/System/SystemAnnealingSearch.h"
 
+#include "Common/MappingDebugLog.h"
 #include "PnR/System/SystemPnrProblem.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <limits>
+#include <optional>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 using namespace loom;
@@ -77,6 +80,119 @@ llvm::Error accountProbe(const SystemActionProbeAccounting &work,
                     scope + " negotiation iteration");
 }
 
+void encodeSystemAction(llvm::json::Object &fields,
+                        const SystemMappingAction &action) {
+  std::visit(
+      [&](const auto &domainAction) {
+        using DomainAction = std::decay_t<decltype(domainAction)>;
+        if constexpr (std::is_same_v<DomainAction,
+                                     SystemExecutionBindingAction>) {
+          fields["action_domain"] = "execution_binding";
+          fields["action_kind"] = "execution_binding";
+          fields["decision"] = domainAction.decision;
+          fields["choice"] = domainAction.choice;
+        } else if constexpr (std::is_same_v<DomainAction,
+                                            SystemTransportRoutingAction>) {
+          fields["action_domain"] = "routing";
+          std::visit(
+              [&](const auto &choice) {
+                using Choice = std::decay_t<decltype(choice)>;
+                if constexpr (std::is_same_v<Choice,
+                                             SystemWholeLegRoutingAction>) {
+                  fields["action_kind"] = "whole_leg";
+                  fields["logical_leg"] = choice.leg;
+                } else if constexpr (std::is_same_v<
+                                         Choice,
+                                         SystemSingleSinkRoutingAction>) {
+                  fields["action_kind"] = "single_sink";
+                  fields["logical_leg"] = choice.leg;
+                  fields["sink_obligation"] = choice.sinkObligation;
+                } else if constexpr (std::is_same_v<
+                                         Choice,
+                                         SystemRootedSubtreeRoutingAction>) {
+                  fields["action_kind"] = "rooted_subtree";
+                  fields["logical_leg"] = choice.leg;
+                  fields["root_endpoint"] = choice.rootEndpoint;
+                } else if constexpr (std::is_same_v<
+                                         Choice,
+                                         SystemWitnessRegionRoutingAction>) {
+                  fields["action_kind"] = "witness_region";
+                  fields["witness_kind"] =
+                      static_cast<std::uint64_t>(choice.witnessKind);
+                  fields["witness_ordinal"] = choice.witnessOrdinal;
+                } else {
+                  fields["action_kind"] = "global";
+                }
+              },
+              domainAction);
+        } else {
+          fields["action_domain"] = "resource";
+          std::visit(
+              [&](const auto &choice) {
+                using Choice = std::decay_t<decltype(choice)>;
+                if constexpr (std::is_same_v<Choice,
+                                             SystemServiceTargetAction>) {
+                  fields["action_kind"] = "service_target";
+                  fields["context"] = choice.context;
+                  fields["choice"] = choice.choice;
+                } else if constexpr (std::is_same_v<
+                                         Choice,
+                                         SystemInstructionUsePatternAction>) {
+                  fields["action_kind"] = "instruction_use_pattern";
+                  fields["use"] = choice.use;
+                  fields["choice"] = choice.choice;
+                } else {
+                  fields["action_kind"] = "service_use_pattern";
+                  fields["use"] = choice.use;
+                  fields["choice"] = choice.choice;
+                }
+              },
+              domainAction);
+        }
+      },
+      action);
+}
+
+llvm::StringRef differenceSign(dse::ObjectiveDifferenceSign sign) {
+  switch (sign) {
+  case dse::ObjectiveDifferenceSign::Negative:
+    return "negative";
+  case dse::ObjectiveDifferenceSign::Zero:
+    return "zero";
+  case dse::ObjectiveDifferenceSign::Positive:
+    return "positive";
+  }
+  llvm_unreachable("unknown objective difference sign");
+}
+
+void emitSystemActionEvent(
+    mapping_debug::Event event, const SystemMappingAction &action,
+    llvm::StringRef scope, std::uint64_t seedAttemptOrdinal,
+    std::uint64_t proposalSlot, std::optional<std::uint64_t> temperatureLevel,
+    std::optional<std::uint64_t> temperature, llvm::StringRef outcome = {},
+    std::optional<dse::ObjectiveSignedDifference> difference = std::nullopt) {
+  mapping_debug::emit(
+      mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr, event,
+      [&](llvm::json::Object &fields) {
+        fields["search_scope"] = scope;
+        fields["seed_attempt"] = seedAttemptOrdinal;
+        fields["proposal_slot"] = proposalSlot;
+        if (temperatureLevel)
+          fields["temperature_level"] = *temperatureLevel;
+        if (temperature)
+          fields["temperature"] = *temperature;
+        if (!outcome.empty())
+          fields["outcome"] = outcome;
+        encodeSystemAction(fields, action);
+        if (difference &&
+            mapping_debug::enabled(mapping_debug::Level::Detail)) {
+          fields["energy_difference_sign"] = differenceSign(difference->sign);
+          fields["energy_difference_high"] = difference->magnitude.high;
+          fields["energy_difference_low"] = difference->magnitude.low;
+        }
+      });
+}
+
 } // namespace
 
 llvm::Expected<SystemAnnealingStatistics>
@@ -114,6 +230,9 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
       return action.takeError();
     if (!*action)
       continue;
+    emitSystemActionEvent(mapping_debug::Event::ActionProposal, **action,
+                          "calibration", seedAttemptOrdinal, slot, std::nullopt,
+                          std::nullopt);
     SystemActionProbeAccounting work;
     auto probe = probeSystemAction(candidate, currentObjective, **action, work);
     if (llvm::Error error = accountProbe(work, statistics, "calibration"))
@@ -124,10 +243,16 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
         return consumed.takeError();
       if (!*consumed)
         return invalid("Action failure had no classification");
+      emitSystemActionEvent(mapping_debug::Event::ActionOutcome, **action,
+                            "calibration", seedAttemptOrdinal, slot,
+                            std::nullopt, std::nullopt, "transition_failure");
       continue;
     }
     if (probe->energyDifference.sign == dse::ObjectiveDifferenceSign::Positive)
       positiveCalibrationDeltas_.push_back(probe->energyDifference.magnitude);
+    emitSystemActionEvent(mapping_debug::Event::ActionOutcome, **action,
+                          "calibration", seedAttemptOrdinal, slot, std::nullopt,
+                          std::nullopt, "discarded", probe->energyDifference);
   }
 
   auto initialTemperature =
@@ -146,6 +271,7 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
       DeterministicPnrRandomStream::create(policy.determinism.masterSeed,
                                            seedAttemptOrdinal,
                                            PnrRandomStreamPurpose::Acceptance);
+  std::uint64_t temperatureLevel = 0;
   do {
     if (llvm::Error error = actionDomain_.rebuild(*candidate))
       return std::move(error);
@@ -179,6 +305,9 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
         return action.takeError();
       if (!*action)
         continue;
+      emitSystemActionEvent(mapping_debug::Event::ActionProposal, **action,
+                            "annealing", seedAttemptOrdinal, slot,
+                            temperatureLevel, schedule->temperature());
       SystemActionProbeAccounting work;
       auto probe =
           probeSystemAction(candidate, currentObjective, **action, work);
@@ -190,6 +319,10 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
           return consumed.takeError();
         if (!*consumed)
           return invalid("Action failure had no classification");
+        emitSystemActionEvent(mapping_debug::Event::ActionOutcome, **action,
+                              "annealing", seedAttemptOrdinal, slot,
+                              temperatureLevel, schedule->temperature(),
+                              "transition_failure");
         continue;
       }
       auto accepted = acceptAnnealingDelta(
@@ -205,7 +338,12 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
         ++statistics.acceptedActionCount;
         domainCurrent = false;
       }
+      emitSystemActionEvent(
+          mapping_debug::Event::ActionOutcome, **action, "annealing",
+          seedAttemptOrdinal, slot, temperatureLevel, schedule->temperature(),
+          *accepted ? "accepted" : "rejected", probe->energyDifference);
     }
+    ++temperatureLevel;
   } while (schedule->advanceAfterCompletedLevel());
 
   if (llvm::Error error = candidate->verify())

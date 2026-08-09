@@ -1,0 +1,12 @@
+# RUN: env LOOM_DEBUG_VERBOSE=3 %loom-system-candidate-state-test graph-binding > %t.out 2> %t.log
+# RUN: rg '"event":"negotiation_iteration".*"stage":"system_pnr"' %t.log
+# RUN: rg '"event":"capacity_conflict".*"fixed_terminal_cut_certificate":true.*"stage":"system_pnr"' %t.log
+# RUN: rg '"event":"capacity_conflict".*"logical_nets":\[.*"amount":[1-9][0-9]*.*"source_endpoint":[0-9]+.*"stage":"system_pnr"' %t.log
+# RUN: rg '"event":"cut_analysis".*"resource_owner_ref":".*".*"stage":"system_pnr"' %t.log
+# RUN: rg '"event":"cut_analysis".*"logical_nets":\[.*"reachable_endpoint_count":[0-9]+.*"unreachable_sink_endpoints":\[[0-9].*"stage":"system_pnr"' %t.log
+# RUN: rg '"closure_status":"fixed_terminal_cut".*"event":"statistics".*"stage":"system_pnr"' %t.log
+# RUN: rg '"event":"context_choice".*"stage":"system_pnr"' %t.log
+# RUN: rg '"event":"action_proposal".*"search_scope":"calibration".*"stage":"system_pnr"' %t.log
+# RUN: rg '"event":"action_outcome".*"outcome":"discarded".*"stage":"system_pnr"' %t.log
+# RUN: rg '"event":"action_proposal".*"search_scope":"annealing".*"stage":"system_pnr"' %t.log
+# RUN: rg '"event":"action_outcome".*"outcome":"accepted".*"stage":"system_pnr"' %t.log
