@@ -70,9 +70,10 @@ loom.deployment                    2.0
 ```
 
 The image and Deployment major versions change because their exact accepted
-ConfigurationABI and HardwareImplementation child schemas change to 2.0. Their
-root shapes otherwise retain the contracts below; an old validator cannot
-reinterpret the new references under a 1.0 descriptor.
+child schemas change to `loom.configuration_abi 2.0` and
+`loom.hardware_implementation 2.1`. Their root shapes otherwise retain the
+contracts below; an old validator cannot reinterpret the new references under
+a 1.0 descriptor.
 
 The frontend relocatable accelerator payload is an input to final linking, not
 a Deployment child. `CompilerTargetBinding`, `InstructionCoreBinary`, host

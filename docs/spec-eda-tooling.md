@@ -211,7 +211,7 @@ finalized implementation.
 The initial RTL implementation is a `MechanicalDerivation` from exact Fabric,
 exact `ConfigurationABI`, and the resolved generator binding. It publishes the
 closed `Rtl` representation root of
-`loom.hardware_implementation 2.0`. A later flow that
+`loom.hardware_implementation 2.1`. A later flow that
 consumes existing hardware state and preserves new state creates another
 immutable `HardwareImplementation`. `InvocationManifest`, not the output
 Artifact, owns both derivation records. Representative later derivations are:

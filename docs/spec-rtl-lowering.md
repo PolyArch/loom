@@ -17,7 +17,7 @@ Fabric-to-RTL consumes:
 * exact provider-owned external input bindings required by selected Fabric
   resources or implementation recipes.
 
-It produces one `loom.hardware_implementation 2.0` whose closed `Rtl`
+It produces one `loom.hardware_implementation 2.1` whose closed `Rtl`
 representation root owns the exact top Module locator and content-addressed
 SystemVerilog source closure. The implementation also owns the interfaces,
 constraints, black-box contracts, activity-point catalog, and implementation

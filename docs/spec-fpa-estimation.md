@@ -142,7 +142,7 @@ calibration validator. A model input slot references this exact contract and
 never owns a copied coefficient layout or inference formula.
 
 Contract major 2 is required because its exact Evaluation registry refs and
-ground-truth feature projector admit `loom.hardware_implementation 2.0`.
+ground-truth feature projector admit `loom.hardware_implementation 2.1`.
 `FpaMetricPredictionView 1.0` remains the output payload schema because its
 metric tuple and codec do not change; the versioned contract ref, not the
 payload shape, owns subject admission.

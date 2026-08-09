@@ -31,6 +31,12 @@ Mapping, implementation, and platform facts from their owners. It does not copy
 topology or configuration fields. A content-addressed directory package is a
 projection of Deployment, not an installation or distribution system.
 
+Compatible schema evolution does not make an exact Artifact reference
+version-polymorphic. Deployment consumes the current exact
+`loom.hardware_implementation 2.1` descriptor; accepting an older minor would
+require an explicit additional schema alternative rather than reinterpretation
+or a compatibility alias.
+
 Ordinary compiler `-o` semantics remain those of the selected Clang/GCC driver
 mode. Complete Deployment requires an explicit output request at final link.
 This preserves drop-in behavior and avoids turning compile-only objects into
