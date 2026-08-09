@@ -1,0 +1,16 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-math-logarithm-test %t
+# RUN: FileCheck %s --check-prefix=LOG < %t/generated/scalar_math_log.sv
+# RUN: FileCheck %s --check-prefix=LOG2 < %t/generated/scalar_math_log2.sv
+# RUN: FileCheck %s --check-prefix=LOG10 < %t/generated/scalar_math_log10.sv
+# RUN: FileCheck %s --check-prefix=LOG1P < %t/generated/scalar_math_log1p.sv
+
+# LOG: module scalar_math_log
+# LOG: loom_math_log_e8_f23
+# LOG2: module scalar_math_log2
+# LOG2: loom_math_log2_e8_f23
+# LOG10: module scalar_math_log10
+# LOG10: loom_math_log10_e8_f23
+# LOG1P: module scalar_math_log1p
+# LOG1P: loom_math_log1p_e8_f23
