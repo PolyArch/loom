@@ -83,13 +83,16 @@ The local configuration is strict versioned JSON. Its initial authoring shape
 is:
 
 ```text
-LocalToolConfigV1 {
+LocalToolConfigV1_1 {
   schema = "loom.local_tool_config"
-  version = "1.0"
+  version = "1.1"
   experiment_root?: absolute_path
   module? { init: absolute_path }
   external_files?: {
     local_file_key: absolute_file_path
+  }
+  external_file_trees?: {
+    local_file_tree_key: absolute_directory_path
   }
   runtime? {
     policy: "auto" | "host" | "polyarch_container"
@@ -120,27 +123,32 @@ the exact provider descriptor's closed typed local schema. The initial common
 schema has no arbitrary argument list or environment-value map.
 
 `external_files` maps opaque machine-local keys to explicitly named absolute
-ordinary files. The resolver rejects duplicate canonical paths, symlinks,
-special files, and observed mutation while reading. It hashes every configured
-file, indexes the exact bytes by SHA-256, requires the fingerprint already
-frozen by the semantic generator or model binding, and produces a nonsemantic
-local projection for the bundle. When several configured files have identical
-bytes, the resolver freezes the lexicographically first canonical path; the
-choice cannot change semantics.
+ordinary files. `external_file_trees`, added compatibly in local-config 1.1,
+maps separate opaque keys to absolute directory roots. Local-config 1.0 remains
+valid but cannot spell a file tree. The resolver rejects duplicate canonical
+paths, symlinks, special files, and observed mutation while reading. It hashes
+every configured ordinary file by SHA-256 and produces a nonsemantic local
+projection for the bundle. When several configured files or trees have
+identical required contents, the resolver freezes the lexicographically first
+canonical path; the choice cannot change semantics.
 
-The key, path spelling, and selected projection mode are not target,
+The keys and path spellings are not target,
 HardwareImplementation, Request, or Evidence identity. The map cannot declare
 technology identity, target, corner membership, provider compatibility,
-library role, expected fingerprint, directory filter, or glob. Those facts
+library role, expected fingerprint, tree membership, directory filter, or glob. Those facts
 remain owned by the exact provider descriptor and resolved semantic binding.
 Listing a file never authorizes recursive scanning, PDK import, tool
 installation hashing, or implicit file discovery.
 
-The initial common contract admits explicitly named ordinary files only. A
-provider that consumes a logical directory must declare the complete ordinary
-file set and deterministic projected layout. It cannot promote ambient
-directory membership into semantic input or reuse the removed platform
-directory-manifest mechanism.
+An `ExternalFileTreeRequirement` is one provider-owned input slot plus a
+nonempty canonical sorted-unique list of `(relative_path, SHA-256)` ordinary
+file members. Relative paths are canonical, nonempty, and cannot traverse
+parents. Resolution recursively inspects a configured tree only to prove exact
+equality with that already frozen list: a missing, extra, changed, symlink, or
+special member is invalid. The requirement, not the scan, owns semantic
+membership and layout. Empty directories have no semantic role. This is the
+only logical-directory contract; it cannot promote ambient membership into a
+binding or reuse the removed platform directory-manifest mechanism.
 
 Omitted `runtime.policy` resolves to `auto`; omitted environment lists and
 provider-option objects are empty. In `auto`, each provider supplies one
@@ -323,7 +331,7 @@ those services.
 The manifest schema owned by this section is:
 
 ```text
-loom.external_tool_invocation 2.0
+loom.external_tool_invocation 2.1
 
 SemanticInvocationClosure =
     CandidateGenerator {
@@ -366,7 +374,7 @@ not author any of its three fields, expose the low-level owner codecs as an
 adapter protocol, or assemble a contract from display names and private
 bytes.
 
-The 2.0 manifest uses stable closure tags `CandidateGenerator = 0` and
+The 2.x manifest uses stable closure tags `CandidateGenerator = 0` and
 `Evaluation = 1`. Canonical JSON spells them `candidate_generator` and
 `evaluation`. Candidate resolved-binding canonical bytes and all descriptor-
 derived identity bytes are lowercase hexadecimal with fixed digest length
@@ -375,7 +383,9 @@ the bundle JSON parser cannot reinterpret those bytes. This is a major change
 from manifest 1.0, whose free semantic-binding field cannot be imported as a
 typed 2.0 closure.
 
-Bundle finalization is failure-atomic. A complete bundle contains:
+Manifest 2.1 compatibly adds `external_file_trees`; the 2.0 form remains
+importable and denotes an empty tree-input list. A 2.0 manifest cannot contain
+the new field. Bundle finalization is failure-atomic. A complete bundle contains:
 
 ```text
 tool-invocation.json
@@ -392,8 +402,11 @@ outputs/...
 - materialization rows that reference the closure's typed input slots or exact
   Request-owned Artifacts and bind them to relative paths;
 - the SHA-256 digest of every materialized driver and input byte sequence;
-- every provider-declared external input slot, its semantic fingerprint, and
-  either its materialized relative path or frozen absolute local path;
+- every provider-declared external ordinary-file input slot, its semantic
+  fingerprint, and either its materialized relative path or frozen absolute
+  local path;
+- every provider-declared external file-tree input slot, its canonical member
+  paths and fingerprints, and its frozen absolute local root;
 - the mechanically derived provider semantic identity and provider-form tag;
 - frozen tool and runtime bindings, their resolution sources, and version
   probe results;
@@ -459,7 +472,8 @@ is the executable projection of the bundle manifest and frozen local binding.
 Neither is an independently editable authority. The script performs no tool,
 module, or runtime search. It initializes the frozen module closure when
 needed, validates every materialized content digest, rehashes every directly
-referenced external file, validates the frozen provider version with the
+referenced external ordinary file and every member and membership count of a
+referenced external file tree, validates the frozen provider version with the
 descriptor's exact exit-code and stable-line rules, invokes the provider
 driver, retains raw stdout/stderr and reports in declared locations, and
 atomically publishes one completion record.

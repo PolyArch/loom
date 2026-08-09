@@ -1,9 +1,12 @@
 {
   "schema": "loom.local_tool_config",
-  "version": "1.0",
+  "version": "1.1",
   "experiment_root": "/scratch/loom-user",
   "external_files": {
     "asic_liberty": "/path/to/pdk/library/typical.lib"
+  },
+  "external_file_trees": {
+    "asic_reference_library": "/path/to/pdk/library/reference.ndm"
   },
   "runtime": {
     "policy": "auto",

@@ -39,6 +39,7 @@ struct InvocationManifestData final {
   std::vector<std::string> inheritEnvironment;
   std::vector<ManifestMaterializedFile> materializedFiles;
   std::vector<ResolvedExternalFile> externalFiles;
+  std::vector<ResolvedExternalFileTree> externalFileTrees;
   std::vector<std::string> declaredOutputs;
 };
 
@@ -47,7 +48,8 @@ struct InvocationManifestData final {
 BlobDigest contentDigest(llvm::StringRef contents);
 
 /// The canonical manifest JSON bytes of one invocation bundle.
-std::string serializeManifest(const InvocationManifestData &manifest);
+std::string serializeManifest(const InvocationManifestData &manifest,
+                              llvm::StringRef version = "2.1");
 
 /// The deterministic run.sh bytes of one invocation bundle.
 std::string renderRunScript(const InvocationManifestData &manifest);

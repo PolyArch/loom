@@ -652,9 +652,11 @@ black-box user IP remains an external binding with an explicit black-box
 contract. Neither case broadens ImplementationPlatform.
 
 There is no generic directory-import contract. When a provider genuinely needs
-a logical directory, its typed input declares the exact relative file set and
-layout it consumes. Loom never scans or hashes an installation, PDK, or IP tree
-to discover semantic membership.
+a logical directory, its typed input declares the exact relative ordinary-file
+set, per-file fingerprints, and layout it consumes. The local file-tree
+resolver scans only a user-selected root to prove that frozen requirement; it
+cannot derive or broaden semantic membership. Loom never scans or hashes an
+installation, PDK, or IP tree to discover semantic membership.
 
 ## Why Tool-Bundled Resources Use Provider Build Identity
 

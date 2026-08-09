@@ -113,6 +113,7 @@ struct ExternalToolInvocationBundleSpec {
   std::vector<std::string> declaredOutputs;
   std::vector<MaterializedBundleFile> files;
   std::vector<ResolvedExternalFile> externalFiles;
+  std::vector<ResolvedExternalFileTree> externalFileTrees;
 };
 
 enum class InvocationCompletionStatus {
@@ -156,10 +157,22 @@ struct ExternalToolInvocationExternalInput final {
   }
 };
 
+struct ExternalToolInvocationExternalFileTree final {
+  std::string providerInputSlot;
+  std::vector<ExternalFileTreeMember> members;
+
+  friend bool operator==(const ExternalToolInvocationExternalFileTree &lhs,
+                         const ExternalToolInvocationExternalFileTree &rhs) {
+    return lhs.providerInputSlot == rhs.providerInputSlot &&
+           lhs.members == rhs.members;
+  }
+};
+
 struct ExternalToolInvocationImportExpectation final {
   ExternalToolSemanticContract semanticContract;
   std::vector<ExternalToolInvocationSemanticInput> semanticInputs;
   std::vector<ExternalToolInvocationExternalInput> externalInputs;
+  std::vector<ExternalToolInvocationExternalFileTree> externalFileTrees;
   std::vector<std::string> declaredOutputs;
 };
 
@@ -219,7 +232,8 @@ public:
   }
 };
 
-llvm::Expected<PreparedExternalToolInvocation> finalizeExternalToolInvocationBundle(
+llvm::Expected<PreparedExternalToolInvocation>
+finalizeExternalToolInvocationBundle(
     llvm::StringRef bundleRoot,
     const ExternalToolInvocationBundleSpec &specification);
 
@@ -230,8 +244,7 @@ llvm::Expected<int> executeExternalToolInvocationBundle(
 /// the prepared manifest is verified through the shared integrity helper and
 /// the record is parsed from the same open bundle root. It is a raw
 /// diagnostic view only, not an import or execution authority.
-llvm::Expected<InvocationCompletion>
-loadExternalToolInvocationCompletion(
+llvm::Expected<InvocationCompletion> loadExternalToolInvocationCompletion(
     const PreparedExternalToolInvocation &prepared);
 
 /// Imports one canonical attempt against the exact prepared handle and full

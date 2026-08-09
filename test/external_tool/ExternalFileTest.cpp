@@ -64,6 +64,12 @@ ExternalFileFingerprint alphaFingerprint(llvm::StringRef test) {
                         "018e8f2223f8"));
 }
 
+ExternalFileFingerprint betaFingerprint(llvm::StringRef test) {
+  return take(test, parseExternalFileFingerprint(
+                        "f44e64e75f3948e9f73f8dfa94721c4ce8cbb4f265c4790c702"
+                        "b2d41cfbf2753"));
+}
+
 void exactBytesResolveByFingerprint(const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
   const std::filesystem::path later = root / "z" / "alpha.lib";
@@ -148,6 +154,83 @@ void unsafeLocalEntriesFail(const std::filesystem::path &root) {
       "duplicate canonical path");
 }
 
+void exactFileTreesResolveByMemberLayout(const std::filesystem::path &root) {
+  const llvm::StringRef test = __func__;
+  const std::filesystem::path later = root / "tree-z" / "reference.ndm";
+  const std::filesystem::path earlier = root / "tree-a" / "reference.ndm";
+  for (const std::filesystem::path &tree : {later, earlier}) {
+    writeFile(test, tree / "pcat", "alpha");
+    writeFile(test, tree / "parts" / "p0", "beta");
+  }
+
+  LocalToolConfig config;
+  config.externalFileTrees = {{"later", later.string()},
+                              {"earlier", earlier.string()}};
+  const ExternalFileTreeRequirement requirement{
+      "reference_library",
+      {{"parts/p0", betaFingerprint(test)}, {"pcat", alphaFingerprint(test)}}};
+  std::vector<ResolvedExternalFileTree> resolved =
+      take(test, resolveExternalFileTrees({requirement}, config));
+  require(test, resolved.size() == 1, "wrong resolved tree count");
+  require(test,
+          resolved.front().providerInputSlot == "reference_library" &&
+              resolved.front().localFileTreeKey == "earlier" &&
+              resolved.front().absolutePath == earlier.string() &&
+              resolved.front().members == requirement.members,
+          "resolver did not freeze the canonical matching tree");
+
+  writeFile(test, earlier / "pcat", "beta");
+  writeFile(test, later / "pcat", "beta");
+  expectErrorContains(test, resolveExternalFileTrees({requirement}, config),
+                      "no configured external file tree matches");
+  writeFile(test, earlier / "pcat", "alpha");
+  writeFile(test, later / "pcat", "alpha");
+
+  std::filesystem::remove(earlier / "parts" / "p0");
+  std::filesystem::remove(later / "parts" / "p0");
+  expectErrorContains(test, resolveExternalFileTrees({requirement}, config),
+                      "no configured external file tree matches");
+  writeFile(test, earlier / "parts" / "p0", "beta");
+  writeFile(test, later / "parts" / "p0", "beta");
+
+  writeFile(test, earlier / "extra", "alpha");
+  writeFile(test, later / "extra", "alpha");
+  expectErrorContains(test, resolveExternalFileTrees({requirement}, config),
+                      "no configured external file tree matches");
+}
+
+void malformedAndUnsafeFileTreesFail(const std::filesystem::path &root) {
+  const llvm::StringRef test = __func__;
+  const std::filesystem::path tree = root / "unsafe-tree";
+  writeFile(test, tree / "member", "alpha");
+  LocalToolConfig config;
+  config.externalFileTrees = {{"tree", tree.string()}};
+
+  expectErrorContains(
+      test,
+      resolveExternalFileTrees(
+          {{"reference_library", {{"../member", alphaFingerprint(test)}}}},
+          config),
+      "canonical relative path");
+  expectErrorContains(
+      test,
+      resolveExternalFileTrees({{"reference_library",
+                                 {{"member", alphaFingerprint(test)},
+                                  {"member", alphaFingerprint(test)}}}},
+                               config),
+      "duplicate member path");
+
+  std::filesystem::remove(tree / "member");
+  std::filesystem::create_symlink(root / "tree-a" / "reference.ndm" / "pcat",
+                                  tree / "member");
+  expectErrorContains(
+      test,
+      resolveExternalFileTrees(
+          {{"reference_library", {{"member", alphaFingerprint(test)}}}},
+          config),
+      "symlink");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -159,5 +242,7 @@ int main(int argc, char **argv) {
   exactBytesResolveByFingerprint(root);
   missingAndMalformedRequirementsFail(root);
   unsafeLocalEntriesFail(root);
+  exactFileTreesResolveByMemberLayout(root);
+  malformedAndUnsafeFileTreesFail(root);
   return 0;
 }

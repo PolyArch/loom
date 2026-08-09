@@ -41,6 +41,7 @@ struct LocalToolConfig {
   std::optional<std::string> experimentRoot;
   std::optional<std::string> moduleInit;
   std::map<std::string, std::string> externalFiles;
+  std::map<std::string, std::string> externalFileTrees;
   RuntimePolicy runtimePolicy = RuntimePolicy::Auto;
   LocalContainerConfig polyArchContainer;
   std::map<std::string, LocalProviderConfig> tools;

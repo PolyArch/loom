@@ -101,6 +101,37 @@ void parsesExplicitBindings() {
           "tool provider option was not preserved");
 }
 
+void parsesExplicitFileTrees() {
+  const char *body = R"json({
+    "schema": "loom.local_tool_config",
+    "version": "1.1",
+    "external_files": {
+      "timing": "/opt/pdk/tt.lib"
+    },
+    "external_file_trees": {
+      "reference_library": "/opt/pdk/reference.ndm"
+    }
+  })json";
+
+  LocalToolConfig config = take(__func__, parseLocalToolConfig(body, "test"));
+  require(__func__,
+          config.externalFiles ==
+              std::map<std::string, std::string>{{"timing", "/opt/pdk/tt.lib"}},
+          "external file was not parsed");
+  require(__func__,
+          config.externalFileTrees ==
+              std::map<std::string, std::string>{
+                  {"reference_library", "/opt/pdk/reference.ndm"}},
+          "external file tree was not parsed");
+
+  expectErrorContains(
+      __func__,
+      parseLocalToolConfig(
+          R"json({"schema":"loom.local_tool_config","version":"1.0","external_file_trees":{"reference_library":"/opt/pdk/reference.ndm"}})json",
+          "old-tree-config.json"),
+      "external_file_trees requires version 1.1");
+}
+
 void rejectsDuplicateKeys() {
   const char *body = R"json({
     "schema": "wrong",
@@ -211,6 +242,12 @@ void rejectsInvalidBindingsAndNames() {
           R"json({"schema":"loom.local_tool_config","version":"1.0","external_files":{"liberty":"/opt/pdk/tt.lib\u0000suffix"}})json",
           "nul-external-file.json"),
       "external_files.liberty contains NUL");
+  expectErrorContains(
+      __func__,
+      parseLocalToolConfig(
+          R"json({"schema":"loom.local_tool_config","version":"1.1","external_file_trees":{"reference_library":"relative/reference.ndm"}})json",
+          "relative-external-file-tree.json"),
+      "external_file_trees.reference_library must be an absolute path");
 
   expectErrorContains(
       __func__,
@@ -226,7 +263,7 @@ void defaultsDoNotLoadMachineState() {
           "default runtime policy is not auto");
   require(__func__,
           !config.moduleInit && config.externalFiles.empty() &&
-              !config.experimentRoot &&
+              config.externalFileTrees.empty() && !config.experimentRoot &&
               config.tools.empty() &&
               !config.polyArchContainer.binding.isConfigured() &&
               !config.polyArchContainer.os,
@@ -237,6 +274,7 @@ void defaultsDoNotLoadMachineState() {
 
 int main(int argc, char **argv) {
   parsesExplicitBindings();
+  parsesExplicitFileTrees();
   rejectsDuplicateKeys();
   rejectsUnknownFields();
   rejectsInvalidBindingsAndNames();
@@ -252,6 +290,12 @@ int main(int argc, char **argv) {
               std::map<std::string, std::string>{
                   {"asic_liberty", "/path/to/pdk/library/typical.lib"}},
           "the example must show one placeholder external file");
+  require(
+      __func__,
+      example.externalFileTrees ==
+          std::map<std::string, std::string>{
+              {"asic_reference_library", "/path/to/pdk/library/reference.ndm"}},
+      "the example must show one placeholder external file tree");
   require(__func__, example.tools.count("verilator") == 1,
           "the example must include a Verilator binding");
   return 0;

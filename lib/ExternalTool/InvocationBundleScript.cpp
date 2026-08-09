@@ -7,6 +7,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
@@ -85,6 +86,34 @@ void appendContentDigestCheck(std::string &script, llvm::StringRef path,
             shellQuote(expectedDigest) + " ]]; then\n";
   appendFailure(script, "bundle_content_mismatch", 121);
   script += "fi\n";
+}
+
+void appendFileTreeCheck(std::string &script,
+                         const ResolvedExternalFileTree &tree) {
+  script += "if [[ ! -d " + shellQuote(tree.absolutePath) + " || -L " +
+            shellQuote(tree.absolutePath) + " ]]; then\n";
+  appendFailure(script, "bundle_content_mismatch", 121);
+  script += "fi\n";
+  script += "loom_tree_special=$(find -P -- " + shellQuote(tree.absolutePath) +
+            " ! -type d ! -type f -print -quit 2>/dev/null)\n";
+  script += "loom_status=$?\n";
+  script += "if (( loom_status != 0 )) || [[ -n \"$loom_tree_special\" ]]; "
+            "then\n";
+  appendFailure(script, "bundle_content_mismatch", 121);
+  script += "fi\n";
+  script += "loom_tree_count=$(find -P -- " + shellQuote(tree.absolutePath) +
+            " -type f -printf . 2>/dev/null | wc -c)\n";
+  script += "loom_status=$?\n";
+  script += "if (( loom_status != 0 )) || [[ \"$loom_tree_count\" != " +
+            shellQuote(std::to_string(tree.members.size())) + " ]]; then\n";
+  appendFailure(script, "bundle_content_mismatch", 121);
+  script += "fi\n";
+  for (const ExternalFileTreeMember &member : tree.members) {
+    const std::filesystem::path path =
+        std::filesystem::path(tree.absolutePath) / member.relativePath;
+    appendContentDigestCheck(script, path.string(),
+                             formatExternalFileFingerprint(member.fingerprint));
+  }
 }
 
 void appendVersionStatusCheck(std::string &script,
@@ -179,7 +208,7 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
       formatBlobDigestHex(contentDigest(serializeManifest(manifest)));
   std::string script =
       "#!/usr/bin/env bash\n"
-      "set -u\n"
+      "set -u -o pipefail\n"
       "loom_bundle_root=$(CDPATH= cd -- \"$(dirname -- "
       "\"${BASH_SOURCE[0]}\")\" && pwd -P)\n"
       "cd -- \"$loom_bundle_root\" || exit 126\n"
@@ -218,7 +247,9 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
       "  exit 121\n"
       "fi\n";
 
-  script += "if ! command -v sha256sum >/dev/null 2>&1; then\n";
+  script += "if ! command -v sha256sum >/dev/null 2>&1 || "
+            "! command -v find >/dev/null 2>&1 || "
+            "! command -v wc >/dev/null 2>&1; then\n";
   appendFailure(script, "bundle_content_mismatch", 121);
   script += "fi\n";
   appendContentDigestCheck(script, kManifestName, manifestDigest);
@@ -228,6 +259,8 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
   for (const ResolvedExternalFile &file : manifest.externalFiles)
     appendContentDigestCheck(script, file.absolutePath,
                              formatExternalFileFingerprint(file.fingerprint));
+  for (const ResolvedExternalFileTree &tree : manifest.externalFileTrees)
+    appendFileTreeCheck(script, tree);
   for (const std::string &output : manifest.declaredOutputs) {
     script += "if ! rm -f -- " + shellQuote(output) + "; then\n";
     appendFailure(script, "bundle_content_mismatch", 121);

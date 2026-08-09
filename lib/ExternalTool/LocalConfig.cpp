@@ -230,16 +230,19 @@ parseLocalToolConfig(llvm::StringRef body, llvm::StringRef sourceName) {
   const llvm::json::Object *root = parsed->getAsObject();
   if (!root)
     return configError(sourceName, "the top-level value must be an object");
-  if (llvm::Error error =
-          requireOnlyKeys(*root,
-                          {"schema", "version", "experiment_root", "module",
-                           "external_files", "runtime", "tools"},
-                          sourceName, ""))
+  if (llvm::Error error = requireOnlyKeys(
+          *root,
+          {"schema", "version", "experiment_root", "module", "external_files",
+           "external_file_trees", "runtime", "tools"},
+          sourceName, ""))
     return std::move(error);
   if (root->getString("schema") != "loom.local_tool_config")
     return configError(sourceName, "schema must be loom.local_tool_config");
-  if (root->getString("version") != "1.0")
-    return configError(sourceName, "version must be 1.0");
+  const std::optional<llvm::StringRef> version = root->getString("version");
+  if (!version || (*version != "1.0" && *version != "1.1"))
+    return configError(sourceName, "version must be 1.0 or 1.1");
+  if (*version == "1.0" && root->get("external_file_trees"))
+    return configError(sourceName, "external_file_trees requires version 1.1");
 
   LocalToolConfig config;
   if (const llvm::json::Value *rootValue = root->get("experiment_root")) {
@@ -278,8 +281,7 @@ parseLocalToolConfig(llvm::StringRef body, llvm::StringRef sourceName) {
         return configError(sourceName, "external file key contains NUL");
       if (keyRef.empty())
         return configError(sourceName, "external file key must be nonempty");
-      const std::string field =
-          (llvm::Twine("external_files.") + keyRef).str();
+      const std::string field = (llvm::Twine("external_files.") + keyRef).str();
       std::optional<llvm::StringRef> path = value.getAsString();
       if (!path)
         return configError(sourceName, field + " must be a string");
@@ -288,6 +290,30 @@ parseLocalToolConfig(llvm::StringRef body, llvm::StringRef sourceName) {
       if (path->empty() || !llvm::sys::path::is_absolute(*path))
         return configError(sourceName, field + " must be an absolute path");
       config.externalFiles.emplace(keyRef.str(), path->str());
+    }
+  }
+
+  if (const llvm::json::Value *treesValue = root->get("external_file_trees")) {
+    const llvm::json::Object *trees = treesValue->getAsObject();
+    if (!trees)
+      return configError(sourceName, "external_file_trees must be an object");
+    for (const auto &[key, value] : *trees) {
+      const llvm::StringRef keyRef = key;
+      if (containsNull(keyRef))
+        return configError(sourceName, "external file tree key contains NUL");
+      if (keyRef.empty())
+        return configError(sourceName,
+                           "external file tree key must be nonempty");
+      const std::string field =
+          (llvm::Twine("external_file_trees.") + keyRef).str();
+      std::optional<llvm::StringRef> path = value.getAsString();
+      if (!path)
+        return configError(sourceName, field + " must be a string");
+      if (containsNull(*path))
+        return configError(sourceName, field + " contains NUL");
+      if (path->empty() || !llvm::sys::path::is_absolute(*path))
+        return configError(sourceName, field + " must be an absolute path");
+      config.externalFileTrees.emplace(keyRef.str(), path->str());
     }
   }
 

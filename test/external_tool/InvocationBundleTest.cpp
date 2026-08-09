@@ -186,6 +186,9 @@ importExpectation(const ExternalToolInvocationBundleSpec &spec) {
   for (const ResolvedExternalFile &file : spec.externalFiles)
     expectation.externalInputs.push_back(
         {file.providerInputSlot, file.fingerprint});
+  for (const ResolvedExternalFileTree &tree : spec.externalFileTrees)
+    expectation.externalFileTrees.push_back(
+        {tree.providerInputSlot, tree.members});
   expectation.declaredOutputs = spec.declaredOutputs;
   return expectation;
 }
@@ -352,6 +355,75 @@ void externalFileIsRevalidated(const std::filesystem::path &root,
           "changed external content was not distinguished in completion");
   require(__func__, !std::filesystem::exists(changedBundle / output),
           "the tool ran after external content verification failed");
+}
+
+void externalFileTreeIsRevalidated(const std::filesystem::path &root,
+                                   const std::filesystem::path &tool) {
+  const std::filesystem::path tree = root / "external-tree" / "reference.ndm";
+  writeText(tree / "pcat", "catalog");
+  writeText(tree / "parts" / "p0", "payload");
+  const ExternalFileTreeRequirement requirement{
+      "reference_library",
+      {{"parts/p0", fingerprint("payload")}, {"pcat", fingerprint("catalog")}}};
+  LocalToolConfig config;
+  config.externalFileTrees.emplace("saed_reference", tree.string());
+  std::vector<ResolvedExternalFileTree> resolved =
+      take(__func__, resolveExternalFileTrees({requirement}, config));
+
+  const std::filesystem::path bundle = root / "external-tree-bundle";
+  ExternalToolInvocationBundleSpec spec =
+      baseSpec(tool, "outputs/external-tree-result.txt");
+  spec.externalFileTrees = resolved;
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  const std::string manifest = readFile(bundle / "tool-invocation.json");
+  require(__func__,
+          manifest.find("\"version\": \"2.1\"") != std::string::npos &&
+              manifest.find("\"external_file_trees\"") != std::string::npos &&
+              manifest.find("\"path\": \"parts/p0\"") != std::string::npos,
+          "resolved external file tree is absent from the 2.1 manifest");
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
+          "bundle rejected an unchanged external file tree");
+  take(__func__,
+       importExternalToolInvocationBundle(prepared, importExpectation(spec)));
+
+  ExternalToolInvocationImportExpectation wrong = importExpectation(spec);
+  wrong.externalFileTrees.front().members.front().fingerprint =
+      fingerprint("wrong");
+  requireFailureContains(__func__,
+                         importExternalToolInvocationBundle(prepared, wrong),
+                         "external file trees");
+
+  writeText(tree / "extra", "extra");
+  const std::filesystem::path changed = root / "changed-external-tree-bundle";
+  const PreparedExternalToolInvocation changedPrepared = take(
+      __func__, finalizeExternalToolInvocationBundle(changed.string(), spec));
+  require(
+      __func__,
+      take(__func__, executeExternalToolInvocationBundle(changedPrepared)) != 0,
+      "bundle accepted changed external file tree membership");
+  require(__func__,
+          take(__func__, loadExternalToolInvocationCompletion(changedPrepared))
+                  .status == InvocationCompletionStatus::BundleContentMismatch,
+          "changed external file tree was not an integrity failure");
+
+  std::filesystem::remove(tree / "extra");
+  writeText(tree / "pcat", "changed");
+  const std::filesystem::path changedMember =
+      root / "changed-external-tree-member-bundle";
+  const PreparedExternalToolInvocation changedMemberPrepared =
+      take(__func__,
+           finalizeExternalToolInvocationBundle(changedMember.string(), spec));
+  require(__func__,
+          take(__func__,
+               executeExternalToolInvocationBundle(changedMemberPrepared)) != 0,
+          "bundle accepted changed external file tree member content");
+  require(__func__,
+          take(__func__,
+               loadExternalToolInvocationCompletion(changedMemberPrepared))
+                  .status == InvocationCompletionStatus::BundleContentMismatch,
+          "changed external file tree member was not an integrity failure");
 }
 
 void missingOutputIsRecorded(const std::filesystem::path &root,
@@ -839,7 +911,7 @@ void strictImportRejectsAttemptTampering(const std::filesystem::path &root,
   const std::filesystem::path unknownManifest =
       unknownBundle / "tool-invocation.json";
   std::string unknownText = readFile(unknownManifest);
-  const std::size_t version = unknownText.find("  \"version\": \"2.0\",");
+  const std::size_t version = unknownText.find("  \"version\": \"2.1\",");
   require(__func__, version != std::string::npos,
           "cannot locate manifest version field");
   unknownText.insert(version, "  \"unknown\": true,\n");
@@ -957,15 +1029,46 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
           (root / "empty-closure").string(), emptyClosure),
       "empty owner bytes");
 
+  // Compatible 2.0 manifests have no external tree field and remain
+  // importable under the 2.1 reader.
+  const std::filesystem::path compatible = root / "compatible-manifest";
+  take(__func__,
+       finalizeExternalToolInvocationBundle(compatible.string(), spec));
+  const std::filesystem::path compatibleManifest =
+      compatible / "tool-invocation.json";
+  std::string compatibleText = readFile(compatibleManifest);
+  const std::size_t compatibleVersion =
+      compatibleText.find("\"version\": \"2.1\"");
+  const std::string treeField = "  \"external_file_trees\": [],\n";
+  const std::size_t treeFieldOffset = compatibleText.find(treeField);
+  require(__func__,
+          compatibleVersion != std::string::npos &&
+              treeFieldOffset != std::string::npos,
+          "cannot derive the compatible 2.0 manifest fixture");
+  compatibleText.replace(compatibleVersion,
+                         std::string("\"version\": \"2.1\"").size(),
+                         "\"version\": \"2.0\"");
+  compatibleText.erase(treeFieldOffset, treeField.size());
+  writeText(compatibleManifest, compatibleText);
+  const PreparedExternalToolInvocation compatibleHandle{
+      compatible.string(), blobDigest(compatibleText)};
+  ExternalToolInvocationAttemptOutcome compatibleAttempt =
+      take(__func__, importExternalToolInvocationAttempt(
+                         compatibleHandle, importExpectation(spec)));
+  require(__func__,
+          std::holds_alternative<IncompleteExternalToolInvocationAttempt>(
+              compatibleAttempt),
+          "compatible 2.0 manifest did not reach typed incomplete import");
+
   // A legacy 1.0 manifest is rejected by name; no upgrade path exists.
   const std::filesystem::path legacy = root / "legacy-manifest";
   take(__func__, finalizeExternalToolInvocationBundle(legacy.string(), spec));
   const std::filesystem::path legacyManifest = legacy / "tool-invocation.json";
   std::string legacyText = readFile(legacyManifest);
-  const std::size_t version = legacyText.find("\"version\": \"2.0\"");
+  const std::size_t version = legacyText.find("\"version\": \"2.1\"");
   require(__func__, version != std::string::npos,
-          "cannot locate the 2.0 manifest version");
-  legacyText.replace(version, std::string("\"version\": \"2.0\"").size(),
+          "cannot locate the 2.1 manifest version");
+  legacyText.replace(version, std::string("\"version\": \"2.1\"").size(),
                      "\"version\": \"1.0\"");
   writeText(legacyManifest, legacyText);
   // The handle must bind the tampered bytes exactly, or the import stops at
@@ -1260,6 +1363,7 @@ int main(int argc, char **argv) {
   deterministicHostBundleExecutes(root, tool);
   containerBundleExecutes(root, tool, container);
   externalFileIsRevalidated(root, tool);
+  externalFileTreeIsRevalidated(root, tool);
   missingOutputIsRecorded(root, tool);
   versionNormalizationMatchesDiscovery(root);
   invalidPathLeavesNoBundle(root, tool);

@@ -270,6 +270,34 @@ validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
       return bundleError(
           "external file path must be an absolute canonical path");
   }
+  for (const ResolvedExternalFileTree &tree : specification.externalFileTrees) {
+    if (tree.providerInputSlot.empty() ||
+        containsNull(tree.providerInputSlot) ||
+        !externalSlots.insert(tree.providerInputSlot).second)
+      return bundleError(
+          "external file tree provider input slot is invalid or duplicated");
+    if (tree.localFileTreeKey.empty() || containsNull(tree.localFileTreeKey))
+      return bundleError("external file tree local key is invalid");
+    if (tree.absolutePath.empty() || containsNull(tree.absolutePath))
+      return bundleError("external file tree path is empty or contains NUL");
+    const std::filesystem::path path(tree.absolutePath);
+    if (!path.is_absolute() || path.lexically_normal() != path)
+      return bundleError(
+          "external file tree path must be an absolute canonical path");
+    if (tree.members.empty())
+      return bundleError("external file tree has no members");
+    std::string previous;
+    for (const ExternalFileTreeMember &member : tree.members) {
+      auto relative = normalizedRelativePath(member.relativePath,
+                                             "external file tree member");
+      if (!relative)
+        return relative.takeError();
+      if (!previous.empty() && previous >= *relative)
+        return bundleError(
+            "external file tree members are not canonical sorted-unique");
+      previous = *relative;
+    }
+  }
 
   std::set<std::string> paths{kManifestName.str(),   kRunScriptName.str(),
                               kCompletionPath.str(), kStdoutPath.str(),
@@ -387,16 +415,13 @@ void writeArtifactReference(llvm::json::OStream &json,
 
 InvocationManifestData
 makeManifest(const ExternalToolInvocationBundleSpec &specification) {
-  InvocationManifestData manifest{specification.semanticContract,
-                                  specification.tool,
-                                  specification.toolVersionProbe,
-                                  specification.runtime,
-                                  specification.containerVersionProbe,
-                                  specification.commands,
-                                  specification.inheritEnvironment,
-                                  {},
-                                  specification.externalFiles,
-                                  specification.declaredOutputs};
+  InvocationManifestData manifest{
+      specification.semanticContract,      specification.tool,
+      specification.toolVersionProbe,      specification.runtime,
+      specification.containerVersionProbe, specification.commands,
+      specification.inheritEnvironment,    {},
+      specification.externalFiles,         specification.externalFileTrees,
+      specification.declaredOutputs};
   manifest.materializedFiles.reserve(specification.files.size());
   for (const MaterializedBundleFile &file : specification.files)
     manifest.materializedFiles.push_back(ManifestMaterializedFile{
@@ -417,6 +442,7 @@ makeValidationSpecification(const InvocationManifestData &manifest) {
   specification.inheritEnvironment = manifest.inheritEnvironment;
   specification.declaredOutputs = manifest.declaredOutputs;
   specification.externalFiles = manifest.externalFiles;
+  specification.externalFileTrees = manifest.externalFileTrees;
   specification.files.reserve(manifest.materializedFiles.size());
   for (const ManifestMaterializedFile &file : manifest.materializedFiles)
     specification.files.push_back(MaterializedBundleFile{
@@ -737,8 +763,8 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
           {"schema", "version", "provider_identity", "semantic_closure",
            "result_importer_identity", "tool_binding", "tool_version_probe",
            "runtime_binding", "commands", "inherit_environment",
-           "materialized_files", "external_files", "declared_outputs",
-           "stdout", "stderr", "completion_record"}))
+           "materialized_files", "external_files", "external_file_trees",
+           "declared_outputs", "stdout", "stderr", "completion_record"}))
     return std::move(error);
   auto schema = requireString(*root, "schema", "invocation manifest");
   if (!schema)
@@ -751,8 +777,11 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
   if (*version == "1.0")
     return bundleError("invocation manifest 1.0 free semantic identity is "
                        "not supported");
-  if (*version != "2.0")
+  if (*version != "2.0" && *version != "2.1")
     return bundleError("invocation manifest schema or version is unsupported");
+  if (*version == "2.0" && root->get("external_file_trees"))
+    return bundleError(
+        "invocation manifest 2.0 cannot contain external file trees");
   auto provider =
       requireString(*root, "provider_identity", "invocation manifest");
   if (!provider)
@@ -795,6 +824,14 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
       requireArray(*root, "external_files", "invocation manifest");
   if (!externalArray)
     return externalArray.takeError();
+  const llvm::json::Array *externalTreeArray = nullptr;
+  if (*version == "2.1") {
+    auto trees =
+        requireArray(*root, "external_file_trees", "invocation manifest");
+    if (!trees)
+      return trees.takeError();
+    externalTreeArray = *trees;
+  }
   auto declared =
       parseStringArray(*root, "declared_outputs", "invocation manifest");
   if (!declared)
@@ -906,19 +943,76 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
         slot->str(), key->str(), path->str(), std::move(*digest)});
   }
 
+  std::vector<ResolvedExternalFileTree> externalFileTrees;
+  if (externalTreeArray)
+    for (const llvm::json::Value &value : *externalTreeArray) {
+      const llvm::json::Object *tree = value.getAsObject();
+      if (!tree)
+        return bundleError("external file tree record must be an object");
+      if (llvm::Error error =
+              rejectUnknownFields(*tree, "external file tree",
+                                  {"provider_input_slot", "local_file_tree_key",
+                                   "path", "members"}))
+        return std::move(error);
+      auto slot =
+          requireString(*tree, "provider_input_slot", "external file tree");
+      if (!slot)
+        return slot.takeError();
+      auto key =
+          requireString(*tree, "local_file_tree_key", "external file tree");
+      if (!key)
+        return key.takeError();
+      auto path = requireString(*tree, "path", "external file tree");
+      if (!path)
+        return path.takeError();
+      auto memberArray = requireArray(*tree, "members", "external file tree");
+      if (!memberArray)
+        return memberArray.takeError();
+      std::vector<ExternalFileTreeMember> members;
+      members.reserve((*memberArray)->size());
+      for (const llvm::json::Value &memberValue : **memberArray) {
+        const llvm::json::Object *member = memberValue.getAsObject();
+        if (!member)
+          return bundleError("external file tree member must be an object");
+        if (llvm::Error error =
+                rejectUnknownFields(*member, "external file tree member",
+                                    {"path", "content_sha256"}))
+          return std::move(error);
+        auto memberPath =
+            requireString(*member, "path", "external file tree member");
+        if (!memberPath)
+          return memberPath.takeError();
+        auto digestText = requireString(*member, "content_sha256",
+                                        "external file tree member");
+        if (!digestText)
+          return digestText.takeError();
+        auto digest = parseExternalFileFingerprint(*digestText);
+        if (!digest)
+          return digest.takeError();
+        members.push_back({memberPath->str(), std::move(*digest)});
+      }
+      externalFileTrees.push_back(ResolvedExternalFileTree{
+          slot->str(), key->str(), path->str(), std::move(members)});
+    }
+
   InvocationManifestData manifest{
       ExternalToolSemanticContract{provider->str(), std::move(*closure),
                                    importer->str()},
       std::move(*tool),
-      std::move(*toolProbe),     std::move(*runtime),
-      std::move(containerProbe), std::move(commands),
-      std::move(*inherited),     std::move(materializedFiles),
-      std::move(externalFiles),  std::move(*declared)};
+      std::move(*toolProbe),
+      std::move(*runtime),
+      std::move(containerProbe),
+      std::move(commands),
+      std::move(*inherited),
+      std::move(materializedFiles),
+      std::move(externalFiles),
+      std::move(externalFileTrees),
+      std::move(*declared)};
   ExternalToolInvocationBundleSpec validation =
       makeValidationSpecification(manifest);
   if (llvm::Error error = validateSpecification(validation))
     return std::move(error);
-  if (contents != serializeManifest(manifest))
+  if (contents != serializeManifest(manifest, *version))
     return bundleError("invocation manifest is not canonical");
   return manifest;
 }
@@ -1254,13 +1348,14 @@ llvm::Expected<std::string> deriveExternalToolResultImporterIdentity(
   return formatBlobDigestHex(computeBlobDigest(preimage));
 }
 
-std::string serializeManifest(const InvocationManifestData &manifest) {
+std::string serializeManifest(const InvocationManifestData &manifest,
+                              llvm::StringRef version) {
   llvm::SmallString<4096> storage;
   llvm::raw_svector_ostream output(storage);
   llvm::json::OStream json(output, 2);
   json.object([&] {
     json.attribute("schema", "loom.external_tool_invocation");
-    json.attribute("version", "2.0");
+    json.attribute("version", version);
     json.attribute("provider_identity",
                    manifest.semanticContract.providerIdentity);
     json.attributeObject("semantic_closure", [&] {
@@ -1341,6 +1436,27 @@ std::string serializeManifest(const InvocationManifestData &manifest) {
         });
       }
     });
+    if (version == "2.1")
+      json.attributeArray("external_file_trees", [&] {
+        for (const ResolvedExternalFileTree &tree :
+             manifest.externalFileTrees) {
+          json.object([&] {
+            json.attribute("provider_input_slot", tree.providerInputSlot);
+            json.attribute("local_file_tree_key", tree.localFileTreeKey);
+            json.attribute("path", tree.absolutePath);
+            json.attributeArray("members", [&] {
+              for (const ExternalFileTreeMember &member : tree.members) {
+                json.object([&] {
+                  json.attribute("path", member.relativePath);
+                  json.attribute(
+                      "content_sha256",
+                      formatExternalFileFingerprint(member.fingerprint));
+                });
+              }
+            });
+          });
+        }
+      });
     json.attributeBegin("declared_outputs");
     writeStringArray(json, manifest.declaredOutputs);
     json.attributeEnd();
@@ -1477,6 +1593,13 @@ importExternalToolInvocationAttempt(
         file.providerInputSlot, file.fingerprint});
   if (externalInputs != expectation.externalInputs)
     return bundleError("invocation external inputs do not match importer");
+  std::vector<ExternalToolInvocationExternalFileTree> externalFileTrees;
+  externalFileTrees.reserve(manifest->externalFileTrees.size());
+  for (const ResolvedExternalFileTree &tree : manifest->externalFileTrees)
+    externalFileTrees.push_back(ExternalToolInvocationExternalFileTree{
+        tree.providerInputSlot, tree.members});
+  if (externalFileTrees != expectation.externalFileTrees)
+    return bundleError("invocation external file trees do not match importer");
   if (manifest->declaredOutputs != expectation.declaredOutputs)
     return bundleError("invocation declared outputs do not match importer");
 

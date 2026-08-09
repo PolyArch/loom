@@ -404,7 +404,8 @@ makeCadenceInvocationBundleSpec(
       inputs.frozen.inheritEnvironment,
       std::move(outputs),
       std::move(files),
-      inputs.frozen.externalFiles};
+      inputs.frozen.externalFiles,
+      {}};
 }
 
 llvm::Expected<external_tool::ImportedExternalToolInvocationBundle>

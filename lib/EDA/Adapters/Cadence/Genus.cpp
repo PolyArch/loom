@@ -689,7 +689,8 @@ llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
       std::move(inheritEnvironment),
       {outputPath.str()},
       std::move(files),
-      std::move(*externalFiles)};
+      std::move(*externalFiles),
+      {}};
   return finalizeExternalToolInvocationBundle(context.bundleDestination,
                                               specification);
 }

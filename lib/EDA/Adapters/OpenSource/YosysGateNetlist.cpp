@@ -590,7 +590,8 @@ llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
       {netlistOutputPath.str(), rtlStructureOutputPath.str(),
        netlistStructureOutputPath.str()},
       std::move(files),
-      std::move(*externalFiles)};
+      std::move(*externalFiles),
+      {}};
   return finalizeExternalToolInvocationBundle(context.bundleDestination,
                                               specification);
 }
