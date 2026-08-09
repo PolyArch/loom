@@ -1,5 +1,6 @@
 #include "ADG/Builder.h"
 #include "ConfigurationABI2TestSupport.h"
+#include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/FixedVectorParallelizeSerialize.h"
@@ -8,8 +9,10 @@
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/Identity/FabricPeConfiguration.h"
 
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
@@ -65,6 +68,12 @@ struct SkeletonFixture final {
 struct AdapterMode final {
   unsigned elementWidth = 0;
   unsigned laneCount = 0;
+};
+
+struct CommonConfiguration final {
+  std::string portName;
+  std::uint64_t bitCount = 0;
+  std::vector<std::uint8_t> image;
 };
 
 [[noreturn]] void fail(llvm::StringRef test, const std::string &message) {
@@ -392,6 +401,171 @@ std::string specialize(llvm::StringRef test, SkeletonFixture skeleton,
               conformance.providerOutput.activityPoints.empty() &&
               conformance.providerOutput.externalImplementationBindings.empty(),
           "portable adapter emitted external implementation state");
+  return std::move(conformance.systemVerilog);
+}
+
+const loom::fabric::FabricTransportEndpointRef &
+boundaryEndpoint(llvm::StringRef test,
+                 const loom::fabric::FabricArtifactView &module,
+                 loom::fabric::FabricPortDirection direction,
+                 loom::fabric::FabricOrdinal ordinal) {
+  const loom::fabric::FabricTransportEndpointRef *result = nullptr;
+  for (const auto &attachment : module.moduleBoundaryTransportAttachments()) {
+    if (attachment.boundary.direction != direction ||
+        attachment.boundary.ordinal != ordinal)
+      continue;
+    require(test, result == nullptr,
+            "Module boundary endpoint has duplicate attachments");
+    result = &attachment.endpoint;
+  }
+  require(test, result != nullptr, "Module boundary endpoint is unattached");
+  return *result;
+}
+
+loom::fabric::FabricPhysicalConfigurationFieldRef
+qualifyPeField(llvm::StringRef test,
+               loom::fabric::SpatialCoreOccurrenceRef spatialCore,
+               const loom::fabric::FabricSemanticConfigFieldRef &field) {
+  auto target =
+      take(test, loom::fabric::FabricModulePhysicalTargetRef::create(field));
+  return take(test, loom::fabric::FabricPhysicalConfigurationFieldRef::create(
+                        loom::fabric::SpatialCoreInternalOccurrenceRef{
+                            spatialCore, std::move(target)}));
+}
+
+const ProgrammingUnit *findProgrammingUnit(
+    llvm::StringRef test, const ConfigurationABI &abi,
+    const loom::fabric::FabricPhysicalConfigurationFieldRef &field) {
+  const ProgrammingUnit *result = nullptr;
+  for (const ProgrammingUnit &unit : abi.programmingUnits())
+    for (const ConfigurationFieldEncoding &encoding : unit.fields)
+      if (encoding.field == field) {
+        require(test, result == nullptr,
+                "configuration field has duplicate programming owners");
+        result = &unit;
+      }
+  require(test, result != nullptr,
+          "configuration field has no programming owner");
+  return result;
+}
+
+CommonConfiguration
+makeCommonConfiguration(llvm::StringRef test, const FabricFixture &fixture,
+                        const FinalizedConfigurationABI &abi) {
+  auto system =
+      take(test, loom::fabric::requireSystemRoot(fixture.system.view()));
+  require(test, system.artifact().accCoreOccurrences().size() == 1,
+          "adapter System does not have one SpatialCore");
+  const loom::fabric::SpatialCoreOccurrenceRef spatialCore{
+      system.artifact().accCoreOccurrences().front()};
+  const auto &module = fixture.fabric.view();
+  require(test,
+          module.peOccurrences().size() == 1 &&
+              module.fuOccurrences().size() == 1,
+          "adapter Module changed its PE/FU shape");
+  const auto pe = module.peOccurrences().front();
+  const auto fu = module.fuOccurrences().front();
+  auto peSchema = take(test, module.spatialPeConfigurationSchema(pe));
+  std::vector<SemanticConfigurationValue> values;
+  const ProgrammingUnit *owner = nullptr;
+  for (const auto &descriptor : peSchema.fields()) {
+    loom::fabric::FabricPeConfigurationValue value;
+    if (descriptor.kind ==
+        loom::fabric::FabricPeConfigurationFieldKind::Activation) {
+      value = loom::fabric::FabricPeActive{fu};
+    } else {
+      require(test, descriptor.port.has_value(),
+              "adapter selector field has no FU port");
+      const auto &port = *descriptor.port;
+      value = loom::fabric::FabricPeRoute{
+          boundaryEndpoint(test, module, port.direction, port.ordinal)};
+    }
+    const auto physical =
+        qualifyPeField(test, spatialCore, descriptor.reference);
+    const ProgrammingUnit *fieldOwner =
+        findProgrammingUnit(test, abi.abi(), physical);
+    if (owner)
+      require(test, owner->id == fieldOwner->id,
+              "adapter fields span multiple programming units");
+    else
+      owner = fieldOwner;
+    const auto bytes = take(test, peSchema.encode(descriptor.reference, value));
+    values.push_back(
+        {physical, std::vector<std::uint8_t>(bytes.bytes().begin(),
+                                             bytes.bytes().end())});
+  }
+
+  const auto &resolved = capability(test, fixture);
+  auto relation =
+      take(test, resolved.resolveSemanticFieldRelation(fabricContext()));
+  const auto selected =
+      llvm::find_if(relation.finiteBehaviorDomain(), [&](const auto &point) {
+        const AdapterMode mode =
+            modeOf(test, fixture.kind, point.representativeActor);
+        return mode.elementWidth == 8 && mode.laneCount == 4;
+      });
+  require(test,
+          selected != relation.finiteBehaviorDomain().end() &&
+              selected->semanticConfiguration.has_value(),
+          "adapter relation has no i8x4 behavior");
+  require(test, resolved.configurationFieldSchema.size() == 1,
+          "adapter operation does not have one configuration field");
+  const auto operationField =
+      take(test, loom::hardware::test::qualifyPhysicalConfigurationField(
+                     fixture.physicalOccurrence,
+                     resolved.configurationFieldSchema.front().ordinal));
+  const ProgrammingUnit *operationOwner =
+      findProgrammingUnit(test, abi.abi(), operationField);
+  if (owner)
+    require(test, owner->id == operationOwner->id,
+            "adapter fields span multiple programming units");
+  else
+    owner = operationOwner;
+  values.push_back(
+      {operationField, std::vector<std::uint8_t>(
+                           selected->semanticConfiguration->bytes().begin(),
+                           selected->semanticConfiguration->bytes().end())});
+  require(test, owner != nullptr, "adapter has no programming unit");
+  return {"configuration_" + std::to_string(owner->id), owner->payloadBitCount,
+          take(test, abi.abi().encode(owner->id, values))};
+}
+
+std::string bitLiteral(llvm::ArrayRef<std::uint8_t> bytes,
+                       std::uint64_t bitCount) {
+  std::string result;
+  result.reserve(static_cast<std::size_t>(bitCount));
+  for (std::uint64_t bit = bitCount; bit > 0; --bit) {
+    const std::uint64_t index = bit - 1;
+    result.push_back(
+        ((bytes[static_cast<std::size_t>(index / 8)] >> (index % 8)) & 1U) != 0
+            ? '1'
+            : '0');
+  }
+  return result;
+}
+
+std::string specializeCommonSkeleton(llvm::StringRef test,
+                                     const FabricFixture &fixture,
+                                     const FinalizedConfigurationABI &abi) {
+  auto system =
+      take(test, loom::fabric::requireSystemRoot(fixture.system.view()));
+  require(test, system.artifact().accCoreOccurrences().size() == 1,
+          "adapter System does not have one SpatialCore");
+  const loom::fabric::SpatialCoreOccurrenceRef spatialCore{
+      system.artifact().accCoreOccurrences().front()};
+  std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
+  auto skeleton = take(
+      test, buildModuleRootCirctSkeleton(*context, spatialCore, abi.abi()));
+  require(test,
+          skeleton.operationLeaves.size() == 1 &&
+              skeleton.operationLeaves.front().occurrence ==
+                  fixture.physicalOccurrence,
+          "common skeleton did not expose the exact adapter occurrence");
+  FabricOperationProviderRegistry registry = makeRegistry(test);
+  ExternalImplementationContractCatalog externalContracts;
+  auto conformance =
+      take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                     std::move(skeleton), abi, registry, externalContracts));
   return std::move(conformance.systemVerilog);
 }
 
@@ -738,6 +912,184 @@ endmodule
 )sv";
 }
 
+std::string
+commonParallelizeTestbench(const CommonConfiguration &configuration) {
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  output << R"sv(module testbench;
+  logic clock;
+  logic reset;
+  always #5 clock = ~clock;
+  logic [31:0] input_0_data, input_1_data;
+  logic input_0_valid, input_1_valid;
+  logic input_0_ready, input_1_ready;
+  logic [31:0] output_0_data, output_1_data, output_2_data;
+  logic output_0_valid, output_1_valid, output_2_valid;
+  logic output_0_ready, output_1_ready, output_2_ready;
+)sv";
+  output << "  logic [" << configuration.bitCount - 1 << ":0] "
+         << configuration.portName << ";\n\n";
+  output << R"sv(  loom_module dut(.*);
+
+  task automatic send_item(input [7:0] item);
+    begin
+      input_0_data = {24'h0, item}; input_1_data = 32'h1;
+      input_0_valid = 1; input_1_valid = 1; #1;
+      if (!input_0_ready || !input_1_ready)
+        $fatal(1, "common parallelize rejected an accumulating item");
+      @(posedge clock); #1;
+      input_0_valid = 0; input_1_valid = 0;
+    end
+  endtask
+
+  initial begin
+    clock = 0; reset = 1;
+    input_0_data = 0; input_1_data = 0;
+    input_0_valid = 0; input_1_valid = 0;
+    output_0_ready = 1; output_1_ready = 1; output_2_ready = 1;
+)sv";
+  output << "    " << configuration.portName << " = " << configuration.bitCount
+         << "'b" << bitLiteral(configuration.image, configuration.bitCount)
+         << ";\n";
+  output << R"sv(    repeat (2) @(posedge clock);
+    @(negedge clock); reset = 0;
+
+    send_item(8'haa); send_item(8'hbb);
+    input_1_data = 0; input_1_valid = 1; #1;
+    if (!input_1_ready)
+      $fatal(1, "common parallelize rejected partial close");
+    output_1_ready = 0;
+    @(posedge clock); #1;
+    input_1_valid = 0;
+    if (output_0_valid || !output_1_valid || output_2_valid ||
+        output_0_data !== 32'h0000bbaa || output_1_data !== 32'h3 ||
+        output_2_data !== 32'h1)
+      $fatal(1, "common parallelize lost its held payload group");
+
+    input_0_data = 32'hcc; input_1_data = 32'h1;
+    input_0_valid = 1; input_1_valid = 1;
+    repeat (2) begin
+      @(posedge clock); #1;
+      if (output_0_valid || !output_1_valid || output_2_valid ||
+          output_0_data !== 32'h0000bbaa || output_1_data !== 32'h3 ||
+          input_0_ready || input_1_ready)
+        $fatal(1, "common parallelize changed a stalled payload group");
+    end
+
+    output_1_ready = 1;
+    @(posedge clock); #1; output_2_ready = 0; #1;
+    if (output_0_valid || output_1_valid || !output_2_valid ||
+        output_2_data !== 0 || input_0_ready || input_1_ready)
+      $fatal(1, "common parallelize lost terminal continuation");
+    output_2_ready = 1; #1;
+    if (!input_0_ready || !input_1_ready)
+      $fatal(1, "common parallelize final handoff blocked replacement");
+    @(posedge clock); #1;
+    input_0_valid = 0; input_1_valid = 0;
+    if (output_0_valid || output_1_valid || output_2_valid)
+      $fatal(1, "common parallelize retained a released terminal group");
+
+    send_item(8'h5a);
+    input_1_data = 0; input_1_valid = 1; #1;
+    output_1_ready = 0;
+    @(posedge clock); #1;
+    input_1_valid = 0;
+    if (output_0_valid || !output_1_valid || output_2_valid)
+      $fatal(1, "common parallelize did not enter reset drain");
+    @(negedge clock); reset = 1; #1;
+    if (output_0_valid || output_1_valid || output_2_valid ||
+        input_0_ready || input_1_ready)
+      $fatal(1, "common parallelize reset did not clear held state");
+    reset = 0;
+    $finish;
+  end
+endmodule
+)sv";
+  return text;
+}
+
+std::string commonSerializeTestbench(const CommonConfiguration &configuration) {
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  output << R"sv(module testbench;
+  logic clock;
+  logic reset;
+  always #5 clock = ~clock;
+  logic [31:0] input_0_data, input_1_data, input_2_data;
+  logic input_0_valid, input_1_valid, input_2_valid;
+  logic input_0_ready, input_1_ready, input_2_ready;
+  logic [31:0] output_0_data, output_1_data;
+  logic output_0_valid, output_1_valid;
+  logic output_0_ready, output_1_ready;
+)sv";
+  output << "  logic [" << configuration.bitCount - 1 << ":0] "
+         << configuration.portName << ";\n\n";
+  output << R"sv(  loom_module dut(.*);
+
+  initial begin
+    clock = 0; reset = 1;
+    input_0_data = 0; input_1_data = 0; input_2_data = 0;
+    input_0_valid = 0; input_1_valid = 0; input_2_valid = 0;
+    output_0_ready = 1; output_1_ready = 1;
+)sv";
+  output << "    " << configuration.portName << " = " << configuration.bitCount
+         << "'b" << bitLiteral(configuration.image, configuration.bitCount)
+         << ";\n";
+  output << R"sv(    repeat (2) @(posedge clock);
+    @(negedge clock); reset = 0;
+
+    input_0_data = 32'h44332211; input_1_data = 32'ha;
+    input_2_data = 32'h1;
+    input_0_valid = 1; input_1_valid = 1; input_2_valid = 1; #1;
+    if (!input_0_ready || !input_1_ready || !input_2_ready)
+      $fatal(1, "common serialize rejected a sparse group");
+    output_1_ready = 0;
+    @(posedge clock); #1;
+    input_0_data = 32'hdeadbeef; input_1_data = 0;
+    if (output_0_valid || !output_1_valid || output_0_data !== 32'h22 ||
+        output_1_data !== 32'h1 || input_0_ready || input_1_ready ||
+        input_2_ready)
+      $fatal(1, "common serialize lost its first held lane");
+    repeat (2) begin
+      @(posedge clock); #1;
+      if (output_0_valid || !output_1_valid || output_0_data !== 32'h22 ||
+          input_0_ready || input_1_ready || input_2_ready)
+        $fatal(1, "common serialize changed its stalled lane");
+    end
+
+    output_0_ready = 1; output_1_ready = 1;
+    @(posedge clock); #1; output_1_ready = 0; #1;
+    if (output_0_valid || !output_1_valid || output_0_data !== 32'h44 ||
+        output_1_data !== 32'h1 || input_0_ready || input_1_ready ||
+        input_2_ready)
+      $fatal(1, "common serialize lost its final sparse lane");
+    output_0_ready = 1; output_1_ready = 1; #1;
+    if (!input_0_ready || !input_1_ready || !input_2_ready)
+      $fatal(1, "common serialize final handoff blocked replacement");
+    @(posedge clock); #1;
+    input_0_valid = 0; input_1_valid = 0; input_2_valid = 0;
+    if (output_0_valid || output_1_valid)
+      $fatal(1, "common serialize zero-mask replacement produced output");
+
+    input_0_data = 32'h44332211; input_1_data = 32'ha;
+    input_2_data = 32'h1;
+    input_0_valid = 1; input_1_valid = 1; input_2_valid = 1; #1;
+    output_1_ready = 0; #1;
+    @(posedge clock); #1;
+    if (output_0_valid || !output_1_valid)
+      $fatal(1, "common serialize did not enter reset drain");
+    @(negedge clock); reset = 1; #1;
+    if (output_0_valid || output_1_valid || input_0_ready ||
+        input_1_ready || input_2_ready)
+      $fatal(1, "common serialize reset did not clear held state");
+    reset = 0;
+    $finish;
+  end
+endmodule
+)sv";
+  return text;
+}
+
 std::string yosysScript(AdapterKind kind) {
   const llvm::StringRef name = moduleName(kind);
   std::string text;
@@ -823,6 +1175,19 @@ void configuredProvidersAndArtifacts(const std::filesystem::path &root) {
     require(test, firstRtl == secondRtl,
             "identical adapter inputs produced nondeterministic RTL");
     artifacts.push_back({moduleName(kind).str() + ".sv", firstRtl});
+
+    const CommonConfiguration commonConfiguration =
+        makeCommonConfiguration(test, fixture, abi);
+    const std::string commonRtl = specializeCommonSkeleton(test, fixture, abi);
+    if (kind == AdapterKind::Parallelize) {
+      artifacts.push_back({"common_parallelize.sv", commonRtl});
+      artifacts.push_back({"common_parallelize_testbench.sv",
+                           commonParallelizeTestbench(commonConfiguration)});
+    } else {
+      artifacts.push_back({"common_serialize.sv", commonRtl});
+      artifacts.push_back({"common_serialize_testbench.sv",
+                           commonSerializeTestbench(commonConfiguration)});
+    }
   }
   artifacts.push_back({"parallelize_testbench.sv", parallelizeTestbench()});
   artifacts.push_back({"serialize_testbench.sv", serializeTestbench()});
