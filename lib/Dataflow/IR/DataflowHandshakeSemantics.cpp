@@ -3,7 +3,9 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <utility>
 
 namespace dataflow::semantics {
 namespace {
@@ -28,6 +30,48 @@ llvm::SmallVector<std::uint32_t, 4> ordinalsFromMask(SemanticInputMask mask,
     if ((mask & (SemanticInputMask{1} << ordinal)) != 0)
       result.push_back(ordinal);
   return result;
+}
+
+ActorResultProductionGroup
+onceGroup(llvm::SmallVector<std::uint32_t, 4> activeResults) {
+  return ActorResultProductionGroup{std::move(activeResults),
+                                    ActorResultProductionOnce{}};
+}
+
+ActorResultProductionGroup
+repeatedLaneGroup(std::uint32_t maskInputOrdinal,
+                  llvm::SmallVector<std::uint32_t, 4> activeResults) {
+  return ActorResultProductionGroup{
+      std::move(activeResults),
+      ActorResultProductionForEachDefinedOneLane{maskInputOrdinal}};
+}
+
+ActorHandshakeCase
+makeCase(std::uint32_t ordinal,
+         llvm::SmallVector<std::uint32_t, 4> consumedInputs,
+         llvm::SmallVector<ActorResultProductionGroup, 2> productionGroups) {
+  ActorHandshakeCase result;
+  result.ordinal = ordinal;
+  result.consumedInputs = std::move(consumedInputs);
+  result.productionGroups = std::move(productionGroups);
+  for (const ActorResultProductionGroup &group : result.productionGroups)
+    result.activeResults.append(group.activeResults.begin(),
+                                group.activeResults.end());
+  llvm::sort(result.activeResults);
+  result.activeResults.erase(
+      std::unique(result.activeResults.begin(), result.activeResults.end()),
+      result.activeResults.end());
+  return result;
+}
+
+ActorHandshakeCase
+oneGroupCase(std::uint32_t ordinal,
+             llvm::SmallVector<std::uint32_t, 4> consumedInputs,
+             llvm::SmallVector<std::uint32_t, 4> activeResults) {
+  llvm::SmallVector<ActorResultProductionGroup, 2> groups;
+  if (!activeResults.empty())
+    groups.push_back(onceGroup(std::move(activeResults)));
+  return makeCase(ordinal, std::move(consumedInputs), std::move(groups));
 }
 
 llvm::Expected<llvm::SmallVector<ActorHandshakeCase, 4>>
@@ -59,11 +103,14 @@ projectActorHandshakeCases(::dataflow::OperationSchemaId schema,
       value.ordinal = static_cast<std::uint32_t>(transition);
       value.consumedInputs =
           ordinalsFromMask(descriptor.consumedInputs, inputCount);
+      llvm::SmallVector<std::uint32_t, 4> activeResults;
       if (descriptor.ivSource != StreamOutputSource::None)
-        value.activeResults.push_back(0);
+        activeResults.push_back(0);
       if (descriptor.emitPhase)
-        value.activeResults.push_back(1);
-      cases.push_back(std::move(value));
+        activeResults.push_back(1);
+      cases.push_back(oneGroupCase(value.ordinal,
+                                   std::move(value.consumedInputs),
+                                   std::move(activeResults)));
     }
     return requireArity(inputCount, resultCount, 3, 2, std::move(cases));
   }
@@ -72,11 +119,11 @@ projectActorHandshakeCases(::dataflow::OperationSchemaId schema,
         CarryCase::Init, CarryCase::Next, CarryCase::Close};
     for (CarryCase transition : transitions) {
       const CarryCaseDescriptor descriptor = carryCaseDescriptor(transition);
-      cases.push_back(ActorHandshakeCase{
+      cases.push_back(oneGroupCase(
           static_cast<std::uint32_t>(transition),
           ordinalsFromMask(descriptor.consumedInputs, inputCount),
           descriptor.forwardedInput ? llvm::SmallVector<std::uint32_t, 4>{0}
-                                    : llvm::SmallVector<std::uint32_t, 4>{}});
+                                    : llvm::SmallVector<std::uint32_t, 4>{}));
     }
     return requireArity(inputCount, resultCount, 3, 1, std::move(cases));
   }
@@ -86,12 +133,12 @@ projectActorHandshakeCases(::dataflow::OperationSchemaId schema,
     for (InvariantCase transition : transitions) {
       const InvariantCaseDescriptor descriptor =
           invariantCaseDescriptor(transition);
-      cases.push_back(ActorHandshakeCase{
-          static_cast<std::uint32_t>(transition),
-          ordinalsFromMask(descriptor.consumedInputs, inputCount),
-          descriptor.output != InvariantOutputSource::None
-              ? llvm::SmallVector<std::uint32_t, 4>{0}
-              : llvm::SmallVector<std::uint32_t, 4>{}});
+      cases.push_back(
+          oneGroupCase(static_cast<std::uint32_t>(transition),
+                       ordinalsFromMask(descriptor.consumedInputs, inputCount),
+                       descriptor.output != InvariantOutputSource::None
+                           ? llvm::SmallVector<std::uint32_t, 4>{0}
+                           : llvm::SmallVector<std::uint32_t, 4>{}));
     }
     return requireArity(inputCount, resultCount, 2, 1, std::move(cases));
   }
@@ -105,11 +152,14 @@ projectActorHandshakeCases(::dataflow::OperationSchemaId schema,
       value.ordinal = static_cast<std::uint32_t>(transition);
       value.consumedInputs =
           ordinalsFromMask(descriptor.consumedInputs, inputCount);
+      llvm::SmallVector<std::uint32_t, 4> activeResults;
       if (descriptor.emitPhase)
-        value.activeResults.push_back(0);
+        activeResults.push_back(0);
       if (descriptor.forwardedInput)
-        value.activeResults.push_back(1);
-      cases.push_back(std::move(value));
+        activeResults.push_back(1);
+      cases.push_back(oneGroupCase(value.ordinal,
+                                   std::move(value.consumedInputs),
+                                   std::move(activeResults)));
     }
     return requireArity(inputCount, resultCount, 2, 2, std::move(cases));
   }
@@ -129,13 +179,17 @@ projectActorHandshakeCases(::dataflow::OperationSchemaId schema,
       value.ordinal = static_cast<std::uint32_t>(ordinal);
       value.consumedInputs =
           ordinalsFromMask(transition.firing.consumedInputs, inputCount);
+      llvm::SmallVector<ActorResultProductionGroup, 2> groups;
       if (transition.emitGroup) {
-        value.activeResults.push_back(0);
-        value.activeResults.push_back(1);
+        llvm::SmallVector<std::uint32_t, 4> groupResults{0, 1};
+        if (transition.emitTruePhase)
+          groupResults.push_back(2);
+        groups.push_back(onceGroup(std::move(groupResults)));
       }
-      if (transition.emitTruePhase || transition.emitFalsePhase)
-        value.activeResults.push_back(2);
-      cases.push_back(std::move(value));
+      if (transition.emitFalsePhase)
+        groups.push_back(onceGroup({2}));
+      cases.push_back(makeCase(value.ordinal, std::move(value.consumedInputs),
+                               std::move(groups)));
     }
     return requireArity(inputCount, resultCount, 2, 3, std::move(cases));
   }
@@ -150,41 +204,44 @@ projectActorHandshakeCases(::dataflow::OperationSchemaId schema,
       value.ordinal = static_cast<std::uint32_t>(ordinal);
       value.consumedInputs =
           ordinalsFromMask(transition.firing.consumedInputs, inputCount);
+      llvm::SmallVector<ActorResultProductionGroup, 2> groups;
       if (transition.emitActiveItems) {
-        value.activeResults.push_back(0);
-        value.activeResults.push_back(1);
+        groups.push_back(repeatedLaneGroup(
+            static_cast<std::uint32_t>(SerializeInput::Mask), {0, 1}));
       } else if (transition.emitFalsePhase) {
-        value.activeResults.push_back(1);
+        groups.push_back(onceGroup({1}));
       }
-      cases.push_back(std::move(value));
+      cases.push_back(makeCase(value.ordinal, std::move(value.consumedInputs),
+                               std::move(groups)));
     }
     return requireArity(inputCount, resultCount, 3, 2, std::move(cases));
   }
   case Schema::DataflowConstant:
-    return requireArity(inputCount, resultCount, 1, 1, {{0, {0}, {0}}});
+    cases.push_back(oneGroupCase(0, {0}, {0}));
+    return requireArity(inputCount, resultCount, 1, 1, std::move(cases));
   case Schema::DataflowSync:
     if (inputCount == 0 || inputCount != resultCount)
       return invalid("dataflow.sync requires equal nonempty input and result "
                      "arity");
     return llvm::SmallVector<ActorHandshakeCase, 4>{
-        {0, ordinalRange(inputCount), ordinalRange(resultCount)}};
+        oneGroupCase(0, ordinalRange(inputCount), ordinalRange(resultCount))};
   case Schema::DataflowMux:
     if (inputCount < 3 || resultCount != 1)
       return invalid("dataflow.mux requires a selector, at least two data "
                      "inputs, and one result");
     for (std::uint32_t lane = 0; lane + 1 < inputCount; ++lane)
-      cases.push_back({lane, {0, lane + 1}, {0}});
+      cases.push_back(oneGroupCase(lane, {0, lane + 1}, {0}));
     return cases;
   case Schema::DataflowDemux:
     if (inputCount != 2 || resultCount < 2)
       return invalid("dataflow.demux requires a selector, one data input, and "
                      "at least two results");
     for (std::uint32_t lane = 0; lane < resultCount; ++lane)
-      cases.push_back({lane, {0, 1}, {lane}});
+      cases.push_back(oneGroupCase(lane, {0, 1}, {lane}));
     return cases;
   default:
     return llvm::SmallVector<ActorHandshakeCase, 4>{
-        {0, ordinalRange(inputCount), ordinalRange(resultCount)}};
+        oneGroupCase(0, ordinalRange(inputCount), ordinalRange(resultCount))};
   }
 }
 

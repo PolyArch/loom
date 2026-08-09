@@ -76,6 +76,7 @@ set(LOOM_TEST_DEPENDS
   loom-common-mapping-debug-log-test
   loom-common-special-math-accuracy-test
   loom-dataflow-activity-definedness-test
+  loom-dataflow-ordered-cardinality-handshake-test
   loom-dataflow-canonical-artifact-test
   loom-dataflow-canonical-reference-test
   loom-dataflow-memory-effect-test

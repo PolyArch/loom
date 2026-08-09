@@ -55,16 +55,17 @@ struct SelectableResource {
 };
 
 struct RoutedResource {
-  RoutedResource(ImplementationFamilyId family,
-                 FamilyCapabilityParams parameters,
-                 std::vector<std::uint32_t> inputRoles,
-                 std::vector<PortType> resultTypes,
-                 std::vector<std::uint32_t> outputRoles,
-                 std::vector<OperationSchemaId> enabledOperations = {})
+  RoutedResource(
+      ImplementationFamilyId family, FamilyCapabilityParams parameters,
+      std::vector<std::uint32_t> inputRoles, std::vector<PortType> resultTypes,
+      std::vector<std::uint32_t> outputRoles,
+      std::vector<OperationSchemaId> enabledOperations = {},
+      std::optional<::fabric::ResourceContract> resourceContract = std::nullopt)
       : family(family), parameters(std::move(parameters)),
         inputRoles(std::move(inputRoles)), resultTypes(std::move(resultTypes)),
         outputRoles(std::move(outputRoles)),
-        enabledOperations(std::move(enabledOperations)) {}
+        enabledOperations(std::move(enabledOperations)),
+        resourceContract(std::move(resourceContract)) {}
 
   ImplementationFamilyId family;
   FamilyCapabilityParams parameters;
@@ -72,6 +73,7 @@ struct RoutedResource {
   std::vector<PortType> resultTypes;
   std::vector<std::uint32_t> outputRoles;
   std::vector<OperationSchemaId> enabledOperations;
+  std::optional<::fabric::ResourceContract> resourceContract;
 };
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -280,7 +282,9 @@ llvm::Error addRoutedFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
             resource.enabledOperations.empty() ? familyMembers(resource.family)
                                                : resource.enabledOperations,
             resource.resultTypes,
-            ::fabric::oneCycleElasticOperationResourceContract()});
+            resource.resourceContract
+                ? *resource.resourceContract
+                : ::fabric::oneCycleElasticOperationResourceContract()});
     if (!operation)
       return operation.takeError();
     for (auto [resultOrdinal, role] : llvm::enumerate(resource.outputRoles)) {
@@ -1119,6 +1123,20 @@ llvm::Error addVectorAdapterFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
     return bits1.takeError();
   const ::fabric::FixedVectorAdapterParams parameters{logicIntegerWidths(),
                                                       floatFormats(), 128};
+  auto maximumLaneCount =
+      ::fabric::maximumFixedVectorAdapterLaneCount(parameters);
+  if (!maximumLaneCount)
+    return maximumLaneCount.takeError();
+  auto parallelizeContract =
+      ::fabric::createOrderedCardinalityOperationResourceContract(
+          OperationSchemaId::DataflowParallelize, *maximumLaneCount);
+  if (!parallelizeContract)
+    return parallelizeContract.takeError();
+  auto serializeContract =
+      ::fabric::createOrderedCardinalityOperationResourceContract(
+          OperationSchemaId::DataflowSerialize, *maximumLaneCount);
+  if (!serializeContract)
+    return serializeContract.takeError();
   std::vector<RoutedResource> resources = {
       {ImplementationFamilyId::FixedVectorPack,
        parameters,
@@ -1134,12 +1152,16 @@ llvm::Error addVectorAdapterFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
        parameters,
        {0, 2},
        {*bits128, *bits128, *bits1},
-       {0, 1, 2}},
+       {0, 1, 2},
+       {},
+       std::move(*parallelizeContract)},
       {ImplementationFamilyId::FixedVectorSerialize,
        parameters,
        {0, 1, 2},
        {*bits128, *bits1},
-       {0, 2}},
+       {0, 2},
+       {},
+       std::move(*serializeContract)},
   };
   return addRoutedFu(pe, inputs, {*bits128, *bits128, *bits1},
                      {*bits128, *bits128, *bits128}, resources);

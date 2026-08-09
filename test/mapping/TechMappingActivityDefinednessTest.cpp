@@ -6,6 +6,8 @@
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Fabric/IR/ImplementationFamily.h"
+#include "Fabric/IR/OperationResourceContract.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 
@@ -163,6 +165,112 @@ loom::fabric::FinalizedFabricRoot buildFabric(loom::ArtifactStore &store) {
   auto design = take(std::move(builder).finalize());
   if (design.roots().size() != 1)
     fail("builtin Fabric did not publish one root");
+  bool sawParallelize = false;
+  bool sawSerialize = false;
+  const auto view = design.roots().front().view();
+  for (std::uint64_t entity = 0;; ++entity) {
+    const auto kind = view.entityKind(entity);
+    if (!kind)
+      break;
+    if (*kind != loom::fabric::FabricEntityKind::FabricFuTemplate)
+      continue;
+    const loom::fabric::FabricFuTemplateRef fu(entity);
+    for (const auto &capability : view.resolvedFabricOpCapabilities(fu)) {
+      dataflow::OperationSchemaId schema;
+      bool *observed = nullptr;
+      if (capability.implementationFamily ==
+          fabric::ImplementationFamilyId::FixedVectorParallelize) {
+        schema = dataflow::OperationSchemaId::DataflowParallelize;
+        observed = &sawParallelize;
+      } else if (capability.implementationFamily ==
+                 fabric::ImplementationFamilyId::FixedVectorSerialize) {
+        schema = dataflow::OperationSchemaId::DataflowSerialize;
+        observed = &sawSerialize;
+      } else {
+        continue;
+      }
+      const auto *parameters = std::get_if<fabric::FixedVectorAdapterParams>(
+          &capability.parameterizedCapability);
+      if (!parameters)
+        fail("builtin adapter lost its typed capability parameters");
+      const auto maximumLaneCount =
+          take(fabric::maximumFixedVectorAdapterLaneCount(*parameters));
+      const auto exact =
+          take(fabric::isOrderedCardinalityOperationResourceContract(
+              capability.resourceStateAndTimingContract, schema,
+              maximumLaneCount));
+      if (!exact)
+        fail("builtin adapter does not carry its exact ordered contract");
+      *observed = true;
+    }
+  }
+  if (!sawParallelize || !sawSerialize)
+    fail("builtin Fabric lost an ordered-cardinality adapter family");
+  return design.roots().front();
+}
+
+loom::fabric::FinalizedFabricRoot
+buildLegacyAdapterFabric(loom::ArtifactStore &store,
+                         fabric::ImplementationFamilyId family) {
+  const bool parallelize =
+      family == fabric::ImplementationFamilyId::FixedVectorParallelize;
+  if (!parallelize &&
+      family != fabric::ImplementationFamilyId::FixedVectorSerialize)
+    fail("legacy adapter fixture received a non-adapter family");
+  const dataflow::OperationSchemaId schema =
+      parallelize ? dataflow::OperationSchemaId::DataflowParallelize
+                  : dataflow::OperationSchemaId::DataflowSerialize;
+  const std::size_t inputCount = parallelize ? 2 : 3;
+  const std::size_t resultCount = parallelize ? 3 : 2;
+  const auto bits128 = take(loom::adg::PortType::bits(128));
+  const std::vector<loom::adg::PortType> inputTypes(inputCount, bits128);
+  const std::vector<loom::adg::PortType> resultTypes(resultCount, bits128);
+
+  loom::adg::DesignBuilder builder(store);
+  auto spatial = take(builder.createSpatialCore(
+      parallelize ? "legacy-parallelize" : "legacy-serialize", inputTypes,
+      resultTypes));
+  std::vector<loom::adg::SpatialValue> spatialInputs;
+  for (std::size_t ordinal = 0; ordinal != inputCount; ++ordinal)
+    spatialInputs.push_back(take(spatial.input(ordinal)));
+  auto pe = take(spatial.addPe(
+      spatialInputs, loom::adg::PeSpec::spatial(inputTypes, resultTypes)));
+  std::vector<loom::adg::PeValue> peInputs;
+  for (std::size_t ordinal = 0; ordinal != inputCount; ++ordinal)
+    peInputs.push_back(take(pe.input(ordinal)));
+  auto fu =
+      take(pe.addFu(peInputs, loom::adg::FuSpec{inputTypes, resultTypes}));
+  std::vector<loom::adg::FuValue> fuInputs;
+  for (std::size_t ordinal = 0; ordinal != inputCount; ++ordinal)
+    fuInputs.push_back(take(fu.input(ordinal)));
+  const fabric::FixedVectorAdapterParams parameters{
+      fabric::IntegerWidthSet::get({fabric::IntegerWidth::I8}),
+      fabric::FloatFormatSet{}, 128};
+  auto operation = take(fu.addOperation(
+      fuInputs, loom::adg::OperationCapabilitySpec{
+                    family,
+                    parameters,
+                    {schema},
+                    resultTypes,
+                    fabric::oneCycleElasticOperationResourceContract()}));
+  if (llvm::Error error = fu.addCapabilityTemplate(
+          loom::adg::FuCapabilityTemplateSpec{{operation}, {}}))
+    fail(llvm::toString(std::move(error)));
+  std::vector<loom::adg::FuValue> fuOutputs;
+  for (std::size_t ordinal = 0; ordinal != resultCount; ++ordinal)
+    fuOutputs.push_back(take(operation.output(ordinal)));
+  if (llvm::Error error = fu.close(fuOutputs))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = pe.close())
+    fail(llvm::toString(std::move(error)));
+  std::vector<loom::adg::SpatialValue> spatialOutputs;
+  for (std::size_t ordinal = 0; ordinal != resultCount; ++ordinal)
+    spatialOutputs.push_back(take(pe.output(ordinal)));
+  if (llvm::Error error = spatial.close(spatialOutputs))
+    fail(llvm::toString(std::move(error)));
+  auto design = take(std::move(builder).finalize());
+  if (design.roots().size() != 1)
+    fail("legacy adapter fixture did not publish one root");
   return design.roots().front();
 }
 
@@ -239,6 +347,26 @@ void activityProofGatesProspectiveSeeds(llvm::StringRef storeRoot) {
   check(serializeDataflow(context, true, false),
         dataflow::OperationSchemaId::DataflowSerialize, false,
         "unproved serialize phase admitted a match row");
+
+  const auto legacyParallelize = buildLegacyAdapterFabric(
+      store, fabric::ImplementationFamilyId::FixedVectorParallelize);
+  auto definedParallelize = parallelizeDataflow(context, true);
+  const DerivedRows rejectedParallelize = deriveRows(
+      definedParallelize, dataflow::OperationSchemaId::DataflowParallelize,
+      legacyParallelize, store);
+  if (rejectedParallelize.rows != 0 ||
+      rejectedParallelize.capabilityRejections == 0)
+    fail("legacy one-cycle parallelize contract was admitted");
+
+  const auto legacySerialize = buildLegacyAdapterFabric(
+      store, fabric::ImplementationFamilyId::FixedVectorSerialize);
+  auto definedSerialize = serializeDataflow(context, true, true);
+  const DerivedRows rejectedSerialize = deriveRows(
+      definedSerialize, dataflow::OperationSchemaId::DataflowSerialize,
+      legacySerialize, store);
+  if (rejectedSerialize.rows != 0 ||
+      rejectedSerialize.capabilityRejections == 0)
+    fail("legacy one-cycle serialize contract was admitted");
 }
 
 } // namespace

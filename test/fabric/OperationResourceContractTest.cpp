@@ -18,8 +18,7 @@ void require(bool condition, llvm::StringRef message) {
 
 void oneCycleElasticContractOwnsOnePublishedResultSlot() {
   using namespace fabric;
-  const ResourceContract &contract =
-      oneCycleElasticOperationResourceContract();
+  const ResourceContract &contract = oneCycleElasticOperationResourceContract();
 
   require(contract.stateCount() == 1,
           "one-cycle operation lost its result-slot state");
@@ -30,8 +29,8 @@ void oneCycleElasticContractOwnsOnePublishedResultSlot() {
           "one-cycle operation result slot is not empty capacity one");
   require(contract.resourceTransitionCount() == 1,
           "one-cycle operation lost its Publish transition");
-  require(contract.requesterCount() == 1 &&
-              contract.eligibilityCount() == 1 && contract.eventCount() == 3 &&
+  require(contract.requesterCount() == 1 && contract.eligibilityCount() == 1 &&
+              contract.eventCount() == 3 &&
               contract.timingContractCount() == 1 &&
               contract.usePatternCount() == 1,
           "one-cycle operation owner domains changed");
@@ -80,10 +79,83 @@ void activeResultHandoffIsOwnedByExactContracts() {
         "transparent LoopGate acquired a result-holding handoff");
 }
 
+void orderedCardinalityContractOwnsOneClaimEnvelope() {
+  using namespace fabric;
+  using Schema = dataflow::OperationSchemaId;
+
+  const ResourceContract parallelize =
+      llvm::cantFail(createOrderedCardinalityOperationResourceContract(
+          Schema::DataflowParallelize, 8));
+  require(parallelize.stateCount() == 2 &&
+              parallelize.resourceTransitionCount() == 4 &&
+              parallelize.requesterCount() == 1 &&
+              parallelize.eligibilityCount() == 4 &&
+              parallelize.eventCount() == 3 &&
+              parallelize.timingContractCount() == 1 &&
+              parallelize.usePatternCount() == 4,
+          "parallelize ordered-cardinality owner domains changed");
+  for (std::uint32_t state = 0; state != 2; ++state) {
+    const auto dimensions = parallelize.capacityDimensions(StateKey(state));
+    require(dimensions.size() == 1 &&
+                dimensions.front().capacity == CapacityUnits(1) &&
+                dimensions.front().initialOccupancy == CapacityUnits(0),
+            "ordered-cardinality state is not empty capacity one");
+  }
+  require(parallelize.eventOrder(TimingContractKey(0)) ==
+              llvm::ArrayRef<std::uint32_t>({0, 1, 1}),
+          "ordered-cardinality event ranks changed");
+  constexpr std::uint32_t parallelTransactions[] = {0, 1, 1, 2};
+  for (std::uint32_t ordinal = 0; ordinal != 4; ++ordinal) {
+    const UsePattern pattern = parallelize.usePattern(UsePatternKey(ordinal));
+    require(
+        pattern.requester == RequesterKey(0) &&
+            pattern.eligibility == EligibilityKey(ordinal) &&
+            pattern.acquire == EventKey(0) && pattern.release == EventKey(2) &&
+            pattern.commit && pattern.commit->event == EventKey(1) &&
+            pattern.commit->transition == ResourceTransitionKey(ordinal) &&
+            pattern.timingAndProgress == TimingContractKey(0) &&
+            pattern.internalTransactionCount == parallelTransactions[ordinal] &&
+            pattern.parameters.empty() && pattern.sharingAssignments.empty(),
+        "parallelize use pattern lost its exact claim lifetime");
+    require(pattern.claims.size() ==
+                (parallelTransactions[ordinal] == 0 ? 1U : 2U),
+            "parallelize use pattern has the wrong claim envelope");
+    for (std::uint32_t transaction = 0;
+         transaction != pattern.internalTransactionCount; ++transaction)
+      require(parallelize.internalTransaction(UsePatternKey(ordinal),
+                                              transaction) ==
+                  llvm::ArrayRef<ClaimKey>({ClaimKey(1)}),
+              "parallelize transaction does not select the group slot");
+  }
+
+  const ResourceContract serialize =
+      llvm::cantFail(createOrderedCardinalityOperationResourceContract(
+          Schema::DataflowSerialize, 7));
+  require(serialize.usePatternCount() == 2 &&
+              serialize.usePattern(UsePatternKey(0)).internalTransactionCount ==
+                  7 &&
+              serialize.usePattern(UsePatternKey(1)).internalTransactionCount ==
+                  1,
+          "serialize transaction inventory is not M/1");
+
+  auto exact = isOrderedCardinalityOperationResourceContract(
+      serialize, Schema::DataflowSerialize, 7);
+  require(exact && *exact, "exact serialize contract was not recognized");
+  auto wrongLaneCount = isOrderedCardinalityOperationResourceContract(
+      serialize, Schema::DataflowSerialize, 6);
+  require(wrongLaneCount && !*wrongLaneCount,
+          "serialize contract ignored maximum lane count");
+  auto legacy = isOrderedCardinalityOperationResourceContract(
+      oneCycleElasticOperationResourceContract(), Schema::DataflowSerialize, 7);
+  require(legacy && !*legacy,
+          "legacy one-cycle contract was accepted as ordered-cardinality");
+}
+
 } // namespace
 
 int main() {
   oneCycleElasticContractOwnsOnePublishedResultSlot();
   activeResultHandoffIsOwnedByExactContracts();
+  orderedCardinalityContractOwnsOneClaimEnvelope();
   return EXIT_SUCCESS;
 }

@@ -13,16 +13,39 @@
 
 #include <cstdint>
 #include <optional>
+#include <variant>
 
 namespace dataflow::semantics {
 
+struct ActorResultProductionOnce final {};
+
+struct ActorResultProductionForEachDefinedOneLane final {
+  std::uint32_t maskInputOrdinal = 0;
+};
+
+using ActorResultProductionRepeat =
+    std::variant<ActorResultProductionOnce,
+                 ActorResultProductionForEachDefinedOneLane>;
+
+/// One atomic result tuple in a logical firing's canonical production order.
+/// A repeated tuple scans the named rank-one mask from lane zero upward and
+/// publishes once for each defined-one lane.
+struct ActorResultProductionGroup final {
+  llvm::SmallVector<std::uint32_t, 4> activeResults;
+  ActorResultProductionRepeat repeat = ActorResultProductionOnce{};
+};
+
 /// One possible transition shape of a registered actor schema. The operation
 /// schema remains the sole owner of which logical inputs are consumed and
-/// which results are active. Fabric, Mapping, simulators, and RTL providers
-/// consume this projection rather than maintaining operation-name tables.
+/// which ordered result tuples are produced. `activeResults` is only the
+/// sorted-unique compatibility projection of `productionGroups`; retirement
+/// and execution consume the groups. Fabric, Mapping, simulators, and RTL
+/// providers consume this projection rather than maintaining operation-name
+/// tables.
 struct ActorHandshakeCase final {
   std::uint32_t ordinal = 0;
   llvm::SmallVector<std::uint32_t, 4> consumedInputs;
+  llvm::SmallVector<ActorResultProductionGroup, 2> productionGroups;
   llvm::SmallVector<std::uint32_t, 4> activeResults;
 };
 

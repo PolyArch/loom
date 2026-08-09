@@ -4,6 +4,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/IR/ImplementationFamily.h"
+#include "Fabric/IR/OperationResourceContract.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -198,12 +199,29 @@ llvm::Expected<bool> activityDefinednessAdmits(
       return fact.takeError();
     return *fact == ::dataflow::ActivityDefinedness::AlwaysDefined;
   };
+  const auto orderedContractAdmits =
+      [&](::dataflow::OperationSchemaId schema) -> llvm::Expected<bool> {
+    const auto *parameters = std::get_if<::fabric::FixedVectorAdapterParams>(
+        &capability.parameterizedCapability);
+    if (!parameters)
+      return false;
+    auto maximumLaneCount =
+        ::fabric::maximumFixedVectorAdapterLaneCount(*parameters);
+    if (!maximumLaneCount)
+      return maximumLaneCount.takeError();
+    return ::fabric::isOrderedCardinalityOperationResourceContract(
+        capability.resourceStateAndTimingContract, schema, *maximumLaneCount);
+  };
 
   switch (capability.implementationFamily) {
   case ::fabric::ImplementationFamilyId::FixedVectorParallelize: {
     auto adapter = llvm::dyn_cast<::dataflow::ParallelizeOp>(actor.op);
     if (!adapter)
       return false;
+    auto contract = orderedContractAdmits(
+        ::dataflow::OperationSchemaId::DataflowParallelize);
+    if (!contract || !*contract)
+      return contract;
     return operandIsAlwaysDefined(
         adapter.getScalarPhaseMutable().getOperandNumber());
   }
@@ -211,6 +229,10 @@ llvm::Expected<bool> activityDefinednessAdmits(
     auto adapter = llvm::dyn_cast<::dataflow::SerializeOp>(actor.op);
     if (!adapter)
       return false;
+    auto contract =
+        orderedContractAdmits(::dataflow::OperationSchemaId::DataflowSerialize);
+    if (!contract || !*contract)
+      return contract;
     auto mask =
         operandIsAlwaysDefined(adapter.getMaskMutable().getOperandNumber());
     if (!mask || !*mask)

@@ -17,6 +17,21 @@ const ResourceContract &oneCycleElasticOperationResourceContract();
 llvm::Expected<bool>
 isOneCycleElasticOperationResourceContract(const ResourceContract &contract);
 
+/// Builds the exact shared claim envelope for a fixed-vector parallelize or
+/// serialize capability. `maximumLaneCount` is the greatest rank-one lane
+/// count admitted by the sealed capability and determines repeated serialize
+/// transactions. Dataflow remains the owner of production order and mask
+/// selection.
+llvm::Expected<ResourceContract>
+createOrderedCardinalityOperationResourceContract(
+    ::dataflow::OperationSchemaId schema, std::uint32_t maximumLaneCount);
+
+/// Tests exact equality with the canonical ordered-cardinality contract for
+/// one adapter schema and sealed maximum lane count.
+llvm::Expected<bool> isOrderedCardinalityOperationResourceContract(
+    const ResourceContract &contract, ::dataflow::OperationSchemaId schema,
+    std::uint32_t maximumLaneCount);
+
 /// Reports whether an exact built-in operation contract retains each active
 /// result until its Dataflow handoff. Mapping consumes this Fabric-owned fact
 /// when deriving causal release and does not maintain a family table.

@@ -61,6 +61,10 @@ add_executable(loom-dataflow-activity-definedness-test
   ActivityDefinednessTest.cpp
 )
 
+add_executable(loom-dataflow-ordered-cardinality-handshake-test
+  OrderedCardinalityHandshakeTest.cpp
+)
+
 target_link_libraries(loom-dataflow-activity-definedness-test PRIVATE
   LoomCommon
   MLIRArithDialect
@@ -72,6 +76,11 @@ target_link_libraries(loom-dataflow-activity-definedness-test PRIVATE
   MLIRParser
   MLIRSupport
   MLIRUBDialect
+  LLVMSupport
+)
+
+target_link_libraries(loom-dataflow-ordered-cardinality-handshake-test PRIVATE
+  MLIRDataflow
   LLVMSupport
 )
 

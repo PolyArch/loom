@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -382,6 +383,29 @@ unsigned fabric::getBitWidth(FloatFormat format) {
     return 64;
   }
   llvm_unreachable("invalid floating format");
+}
+
+llvm::Expected<std::uint32_t> fabric::maximumFixedVectorAdapterLaneCount(
+    const FixedVectorAdapterParams &params) {
+  std::optional<unsigned> minimumReachableWidth;
+  const auto consider = [&](unsigned width) {
+    if (width > params.maxPayloadBits)
+      return;
+    if (!minimumReachableWidth || width < *minimumReachableWidth)
+      minimumReachableWidth = width;
+  };
+  for (IntegerWidth width : integerWidthDomain)
+    if (params.integerElementWidths.contains(width))
+      consider(getBitWidth(width));
+  for (FloatFormat format : floatFormatDomain)
+    if (params.floatElementFormats.contains(format))
+      consider(getBitWidth(format));
+  if (!minimumReachableWidth)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "fixed-vector adapter has no element width reachable by its payload "
+        "capacity");
+  return params.maxPayloadBits / *minimumReachableWidth;
 }
 
 namespace fabric::detail {

@@ -4,6 +4,11 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
+#include <limits>
+#include <system_error>
+#include <variant>
+
 namespace {
 
 template <typename Case> fabric::UsePatternKey usePattern(Case transition) {
@@ -80,6 +85,101 @@ fabric::ResourceContract createOneCycleElasticContract() {
   return llvm::cantFail(ResourceContract::create(declaration));
 }
 
+llvm::Expected<fabric::ResourceContract>
+createOrderedCardinalityContract(dataflow::OperationSchemaId schema,
+                                 std::uint32_t maximumLaneCount) {
+  using namespace dataflow::semantics;
+  using namespace fabric;
+  if (maximumLaneCount == 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "ordered-cardinality maximum lane count must be positive");
+
+  std::uint32_t inputCount = 0;
+  std::uint32_t resultCount = 0;
+  switch (schema) {
+  case dataflow::OperationSchemaId::DataflowParallelize:
+    inputCount = 2;
+    resultCount = 3;
+    break;
+  case dataflow::OperationSchemaId::DataflowSerialize:
+    inputCount = 3;
+    resultCount = 2;
+    break;
+  default:
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "ordered-cardinality contract requires parallelize or serialize");
+  }
+
+  auto cases = projectActorHandshakeCases(schema, inputCount, resultCount);
+  if (!cases)
+    return cases.takeError();
+
+  ResourceContractDeclaration declaration;
+  declaration.states = {
+      ResourceStateDeclaration{
+          StateKey(0),
+          {CapacityDimensionDeclaration{CapacityDimensionKey(0),
+                                        CapacityUnits(1), CapacityUnits(0)}}},
+      ResourceStateDeclaration{
+          StateKey(1),
+          {CapacityDimensionDeclaration{CapacityDimensionKey(0),
+                                        CapacityUnits(1), CapacityUnits(0)}}},
+  };
+  declaration.requesters = {RequesterKey(0)};
+  declaration.eligibilityCount = cases->size();
+  declaration.eventCount = 3;
+  declaration.timingContracts = {
+      TimingContractDeclaration{TimingContractKey(0), {0, 1, 1}}};
+  declaration.resourceTransitions.reserve(cases->size());
+  declaration.usePatterns.reserve(cases->size());
+
+  for (const ActorHandshakeCase &handshake : *cases) {
+    std::uint64_t transactionCount = 0;
+    for (const ActorResultProductionGroup &group : handshake.productionGroups) {
+      const std::uint64_t increment =
+          std::holds_alternative<ActorResultProductionOnce>(group.repeat)
+              ? 1
+              : maximumLaneCount;
+      if (transactionCount >
+          std::numeric_limits<std::uint32_t>::max() - increment)
+        return llvm::createStringError(
+            std::errc::value_too_large,
+            "ordered-cardinality transaction inventory exceeds uint32");
+      transactionCount += increment;
+    }
+
+    declaration.resourceTransitions.push_back(
+        ResourceTransitionKey(handshake.ordinal));
+    std::vector<ClaimDeclaration> claims = {ClaimDeclaration{
+        ClaimKey(0), StateKey(0), CapacityDimensionKey(0), CapacityUnits(1)}};
+    std::vector<InternalTransactionDeclaration> transactions;
+    transactions.reserve(static_cast<std::size_t>(transactionCount));
+    if (transactionCount != 0) {
+      claims.push_back(ClaimDeclaration{
+          ClaimKey(1), StateKey(1), CapacityDimensionKey(0), CapacityUnits(1)});
+      for (std::uint64_t transaction = 0; transaction != transactionCount;
+           ++transaction)
+        transactions.push_back(InternalTransactionDeclaration{{ClaimKey(1)}});
+    }
+    declaration.usePatterns.push_back(UsePatternDeclaration{
+        UsePatternKey(handshake.ordinal),
+        RequesterKey(0),
+        EligibilityKey(handshake.ordinal),
+        EventKey(0),
+        EventKey(2),
+        CommitDeclaration{EventKey(1),
+                          ResourceTransitionKey(handshake.ordinal)},
+        TimingContractKey(0),
+        std::move(claims),
+        std::move(transactions),
+        {},
+        {}});
+  }
+  return ResourceContract::create(std::move(declaration));
+}
+
 } // namespace
 
 const fabric::ResourceContract &
@@ -98,6 +198,27 @@ llvm::Expected<bool> fabric::isOneCycleElasticOperationResourceContract(
   if (!expected)
     return expected.takeError();
   return *actual == *expected;
+}
+
+llvm::Expected<fabric::ResourceContract>
+fabric::createOrderedCardinalityOperationResourceContract(
+    ::dataflow::OperationSchemaId schema, std::uint32_t maximumLaneCount) {
+  return createOrderedCardinalityContract(schema, maximumLaneCount);
+}
+
+llvm::Expected<bool> fabric::isOrderedCardinalityOperationResourceContract(
+    const ResourceContract &contract, ::dataflow::OperationSchemaId schema,
+    std::uint32_t maximumLaneCount) {
+  auto expected = createOrderedCardinalityContract(schema, maximumLaneCount);
+  if (!expected)
+    return expected.takeError();
+  auto actualBytes = encodeResourceContractRecord(contract);
+  if (!actualBytes)
+    return actualBytes.takeError();
+  auto expectedBytes = encodeResourceContractRecord(*expected);
+  if (!expectedBytes)
+    return expectedBytes.takeError();
+  return *actualBytes == *expectedBytes;
 }
 
 const fabric::ResourceContract &fabric::loopStreamOperationResourceContract() {

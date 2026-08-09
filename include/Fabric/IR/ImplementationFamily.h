@@ -529,6 +529,12 @@ struct FixedVectorAdapterParams {
   std::uint32_t maxPayloadBits;
 };
 
+/// Greatest positive rank-one lane count reachable by the exact adapter
+/// capability. The result is derived from its admitted element-width domain
+/// and payload capacity rather than restated by Builder or Mapping.
+llvm::Expected<std::uint32_t>
+maximumFixedVectorAdapterLaneCount(const FixedVectorAdapterParams &params);
+
 struct PayloadCapacityParams {
   static constexpr CapabilityParamsSchemaId schemaId =
       CapabilityParamsSchemaId::PayloadCapacityParams;

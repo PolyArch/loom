@@ -22,4 +22,5 @@ add_dependencies(LoomFabricResourceContract
 target_link_libraries(LoomFabricResourceContract PUBLIC
   LLVM
   LoomFabricPhysicalTag
+  MLIRDataflow
 )
