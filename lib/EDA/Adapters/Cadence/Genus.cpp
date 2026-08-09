@@ -1,5 +1,7 @@
 #include "EDA/Adapters/Cadence/Genus.h"
 
+#include "EDA/Adapters/Cadence/Common.h"
+
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobDigest.h"
@@ -35,9 +37,6 @@ using namespace hardware;
 
 constexpr char configSchema[] =
     "loom.eda.cadence.genus_gate_netlist_config.1.0";
-constexpr llvm::StringLiteral providerIdentity = "cadence.genus.gate_netlist@1";
-constexpr llvm::StringLiteral importerIdentity =
-    "loom.eda.cadence.genus.gate_netlist.importer@1";
 constexpr llvm::StringLiteral librarySlot = "standard_cell_liberty";
 constexpr llvm::StringLiteral outputPath = "outputs/genus-gate-netlist.v";
 constexpr llvm::StringLiteral externalContractRef =
@@ -239,51 +238,11 @@ bool containsTopModule(llvm::StringRef text, llvm::StringRef top) {
   }
 }
 
-std::vector<std::uint8_t> canonicalInputBindings(
-    llvm::ArrayRef<CandidateGeneratorInputBinding> bindings) {
-  std::vector<std::uint8_t> bytes;
-  appendU64(bytes, bindings.size());
-  for (const CandidateGeneratorInputBinding &binding : bindings) {
-    appendU32(bytes, binding.slot.ordinal());
-    appendU64(bytes, binding.artifacts.size());
-    for (const ArtifactRootReference &artifact : binding.artifacts) {
-      const std::vector<std::uint8_t> encoded =
-          encodeArtifactRootReference(artifact);
-      bytes.insert(bytes.end(), encoded.begin(), encoded.end());
-    }
-  }
-  return bytes;
-}
-
-std::vector<std::uint8_t>
-canonicalResolvedBinding(const ResolvedCandidateGeneratorBinding &binding) {
-  const std::vector<std::uint8_t> reference =
-      canonicalCandidateGeneratorDescriptorReferenceBytes(
-          binding.descriptorRef());
-  std::vector<std::uint8_t> bytes(reference.begin(), reference.end());
-  appendU64(bytes, binding.canonicalConfigBytes().size());
-  bytes.insert(bytes.end(), binding.canonicalConfigBytes().begin(),
-               binding.canonicalConfigBytes().end());
-  bytes.insert(bytes.end(), binding.configDigest().bytes().begin(),
-               binding.configDigest().bytes().end());
-  return bytes;
-}
-
-SemanticInvocationClosure
-makeClosure(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
-            const ResolvedCandidateGeneratorBinding &binding) {
-  const BlobDigest identity = deriveCandidateGeneratorBindingIdentity(
-      binding.descriptorRef(), binding.canonicalConfigBytes());
-  return CandidateGeneratorInvocationClosure{canonicalInputBindings(inputs),
-                                             canonicalResolvedBinding(binding),
-                                             identity.bytes()};
-}
-
 struct InvocationFacts final {
   FinalizedHardwareImplementation rtl;
   platform::FinalizedImplementationPlatform platform;
   ResolvedGenusGateNetlistConfigView config;
-  SemanticInvocationClosure closure;
+  ExternalToolSemanticContract semanticContract;
   std::vector<MaterializedBundleFile> semanticInputs;
   std::vector<std::string> rtlPaths;
   std::vector<std::string> constraintPaths;
@@ -379,10 +338,13 @@ invocationFacts(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                   platformBytes.size()),
       target->reference(), false});
   const std::string top = representation.top.canonicalName;
+  auto semanticContract = deriveExternalToolSemanticContract(inputs, binding);
+  if (!semanticContract)
+    return semanticContract.takeError();
   return InvocationFacts{std::move(*rtl),
                          std::move(*target),
                          std::move(*config),
-                         makeClosure(inputs, binding),
+                         std::move(*semanticContract),
                          std::move(materialized),
                          std::move(rtlPaths),
                          std::move(constraintPaths),
@@ -392,9 +354,7 @@ invocationFacts(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
 ExternalToolInvocationImportExpectation
 expectation(const InvocationFacts &facts) {
   ExternalToolInvocationImportExpectation result;
-  result.providerIdentity = providerIdentity.str();
-  result.semanticClosure = facts.closure;
-  result.resultImporterIdentity = importerIdentity.str();
+  result.semanticContract = facts.semanticContract;
   for (const MaterializedBundleFile &file : facts.semanticInputs) {
     result.semanticInputs.push_back(ExternalToolInvocationSemanticInput{
         file.relativePath, *file.sourceArtifact,
@@ -408,20 +368,22 @@ expectation(const InvocationFacts &facts) {
   return result;
 }
 
-llvm::Expected<ExternalImplementationContractCatalog> makeExternalCatalog() {
+} // namespace
+
+llvm::Expected<ExternalImplementationContractCatalog>
+makeCadenceStandardCellContractCatalog() {
   ExternalImplementationContractCatalog catalog;
   if (llvm::Error error = catalog.add(ExternalImplementationContract{
           externalContractRef.str(),
           {{librarySlot.str(), {ExternalDependencyKind::ExplicitFile}}},
-          {RepresentationRootVariant::GateNetlist},
+          {RepresentationRootVariant::GateNetlist,
+           RepresentationRootVariant::AsicPhysical},
           true,
           false,
           nullptr}))
     return std::move(error);
   return catalog;
 }
-
-} // namespace
 
 llvm::ArrayRef<std::uint8_t>
 resolvedGenusGateNetlistConfigSchemaDescriptorBytes() {
@@ -561,21 +523,20 @@ renderGenusGateNetlistDriver(llvm::StringRef top,
       return word.takeError();
     sources += (sources.empty() ? "" : " ") + *word;
   }
-  std::string script = "read_libs " + *libraryWord + "\n";
-  script += "read_hdl -sv [list " + sources + "]\n";
-  script += "elaborate " + *topWord + "\n";
+  std::string commands = "read_libs " + *libraryWord + "\n";
+  commands += "read_hdl -sv [list " + sources + "]\n";
+  commands += "elaborate " + *topWord + "\n";
   for (const std::string &path : generationConstraints) {
     auto word = tclWord(path);
     if (!word)
       return word.takeError();
-    script += "read_sdc " + *word + "\n";
+    commands += "read_sdc " + *word + "\n";
   }
-  script += "syn_generic\n"
-            "syn_map\n"
-            "syn_opt\n"
-            "write_hdl > {outputs/genus-gate-netlist.v}\n"
-            "exit\n";
-  return script;
+  commands += "syn_generic\n"
+              "syn_map\n"
+              "syn_opt\n";
+  return renderCadenceTclBatch(commands,
+                               "write_hdl > {outputs/genus-gate-netlist.v}\n");
 }
 
 llvm::Expected<GenusGateNetlist> parseGenusGateNetlist(llvm::StringRef contents,
@@ -594,7 +555,7 @@ llvm::Expected<hardware::FinalizedHardwareImplementation>
 importGenusGateNetlistImplementation(const ArtifactRootReference &reference,
                                      const ArtifactStore &artifacts,
                                      const BlobStore &blobs) {
-  auto catalog = makeExternalCatalog();
+  auto catalog = makeCadenceStandardCellContractCatalog();
   if (!catalog)
     return catalog.takeError();
   return importHardwareImplementation(reference, *catalog, artifacts, blobs);
@@ -668,9 +629,7 @@ prepareProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                facts->semanticInputs.end());
   const std::string executable = tool->executable;
   ExternalToolInvocationBundleSpec specification{
-      providerIdentity.str(),
-      facts->closure,
-      importerIdentity.str(),
+      facts->semanticContract,
       std::move(*tool),
       toolProvider.versionProbe,
       std::move(*runtime),
@@ -790,7 +749,7 @@ publishGateNetlist(const InvocationFacts &facts,
   if (!representation)
     return representation.takeError();
 
-  auto catalog = makeExternalCatalog();
+  auto catalog = makeCadenceStandardCellContractCatalog();
   if (!catalog)
     return catalog.takeError();
   HardwareImplementationDraft draft{
@@ -829,13 +788,21 @@ importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   auto facts = invocationFacts(inputs, binding, artifacts, blobs);
   if (!facts)
     return facts.takeError();
-  auto imported =
-      importExternalToolInvocationBundle(prepared, expectation(*facts));
-  if (!imported)
-    return imported.takeError();
+  auto attempt =
+      importExternalToolInvocationAttempt(prepared, expectation(*facts));
+  if (!attempt)
+    return attempt.takeError();
+  if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))
+    return llvm::make_error<IncompleteExternalToolInvocationError>();
+  if (const auto *failed =
+          std::get_if<FailedExternalToolInvocationAttempt>(&*attempt))
+    return makeCadenceFailedInvocationError(
+        facts->semanticContract.providerIdentity, *failed);
+  ImportedExternalToolInvocationBundle imported =
+      std::get<ImportedExternalToolInvocationBundle>(std::move(*attempt));
   if (llvm::Error error = rejectUndeclaredOutputs(prepared.bundleRoot))
     return std::move(error);
-  auto output = readExternalToolInvocationDeclaredOutput(*imported, outputPath);
+  auto output = readExternalToolInvocationDeclaredOutput(imported, outputPath);
   if (!output)
     return output.takeError();
   auto netlist = parseGenusGateNetlist(*output, facts->top);

@@ -94,7 +94,7 @@ int main() {
           xcelium.binding.environmentCandidates.front().variable ==
               "XCELIUM_HOME" &&
           xcelium.binding.environmentCandidates.front().relativeExecutable ==
-              "tools.lnx86/bin/64bit/xrun" &&
+              "tools.lnx86/inca/bin/64bit/xrun" &&
           xcelium.binding.moduleAliases.front() == "cadence/XCELIUM/2603",
       "Xcelium provider contract is incomplete");
 
@@ -103,6 +103,17 @@ int main() {
   require(genus.binding.moduleAliases.front() == "cadence/DDI/261" &&
               innovus.binding.moduleAliases.front() == "cadence/DDI/261",
           "Cadence DDI provider contracts are incomplete");
+
+  const ExternalToolProviderDescriptor &joules = joulesProvider();
+  const ExternalToolProviderDescriptor &tempus = tempusProvider();
+  const ExternalToolProviderDescriptor &voltus = voltusProvider();
+  require(joules.binding.key == "joules" &&
+              joules.binding.moduleAliases.front() == "cadence/JOULES/261" &&
+              tempus.binding.key == "tempus" &&
+              tempus.binding.moduleAliases.front() == "cadence/TEMPUS/261" &&
+              voltus.binding.key == "voltus" &&
+              voltus.binding.moduleAliases.front() == "cadence/VOLTUS/261",
+          "Cadence evaluation provider contracts are incomplete");
 
   const ExternalToolProviderDescriptor &vivado = vivadoProvider();
   require(vivado.binding.key == "vivado" &&

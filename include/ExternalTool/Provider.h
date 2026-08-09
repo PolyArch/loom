@@ -23,6 +23,9 @@ const ExternalToolProviderDescriptor &fusionCompilerProvider();
 const ExternalToolProviderDescriptor &xceliumProvider();
 const ExternalToolProviderDescriptor &genusProvider();
 const ExternalToolProviderDescriptor &innovusProvider();
+const ExternalToolProviderDescriptor &joulesProvider();
+const ExternalToolProviderDescriptor &tempusProvider();
+const ExternalToolProviderDescriptor &voltusProvider();
 const ExternalToolProviderDescriptor &vivadoProvider();
 const ExternalToolProviderDescriptor &quartusPrimeProvider();
 

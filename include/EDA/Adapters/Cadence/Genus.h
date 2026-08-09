@@ -105,6 +105,9 @@ renderGenusGateNetlistDriver(llvm::StringRef top,
 llvm::Expected<GenusGateNetlist> parseGenusGateNetlist(llvm::StringRef contents,
                                                        llvm::StringRef top);
 
+llvm::Expected<hardware::ExternalImplementationContractCatalog>
+makeCadenceStandardCellContractCatalog();
+
 /// Imports a Genus-owned GateNetlist through its exact external dependency
 /// contract. Generic HardwareImplementation import cannot infer that contract.
 llvm::Expected<hardware::FinalizedHardwareImplementation>

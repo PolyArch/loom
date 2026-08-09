@@ -1,5 +1,5 @@
-#include "EDA/Adapters/Cadence/Deferred.h"
 #include "EDA/Adapters/Cadence/Genus.h"
+#include "EDA/Adapters/Cadence/Innovus.h"
 
 #include "ConfigurationABI2TestSupport.h"
 
@@ -268,6 +268,7 @@ void descriptorAndConfigAreExact() {
 
 void driverAndParserAreDeterministic(const std::filesystem::path &fixtureRoot) {
   const std::string expected =
+      "proc loom_main {} {\n"
       "read_libs {/libraries/slow.lib}\n"
       "read_hdl -sv [list {inputs/implementation/rtl/package.sv} "
       "{inputs/implementation/rtl/top.sv}]\n"
@@ -277,7 +278,12 @@ void driverAndParserAreDeterministic(const std::filesystem::path &fixtureRoot) {
       "syn_map\n"
       "syn_opt\n"
       "write_hdl > {outputs/genus-gate-netlist.v}\n"
-      "exit\n";
+      "}\n"
+      "if {[catch {loom_main} loom_error]} {\n"
+      "  puts stderr $loom_error\n"
+      "  exit 1\n"
+      "}\n"
+      "exit 0\n";
   const std::string driver =
       take(__func__, renderGenusGateNetlistDriver(
                          "top",
@@ -319,59 +325,6 @@ void driverAndParserAreDeterministic(const std::filesystem::path &fixtureRoot) {
       __func__,
       parseGenusGateNetlist(std::string("module top;\0endmodule\n", 22), "top"),
       "LF text contract");
-}
-
-void deferredStagesAreTypedUnsupported() {
-  const BlobDigest zeroDigest =
-      take(__func__, BlobDigest::fromBytes(std::array<std::uint8_t, 32>{}));
-  const CadenceDeferredStage stages[]{
-      CadenceDeferredStage::XceliumFunctionalEvaluation,
-      CadenceDeferredStage::InnovusAsicPhysical,
-      CadenceDeferredStage::JoulesPowerEvaluation,
-      CadenceDeferredStage::TempusTimingEvaluation,
-      CadenceDeferredStage::VoltusRailEvaluation};
-  for (CadenceDeferredStage stage : stages) {
-    auto prepared = prepareDeferredCadenceStage(stage);
-    require(__func__, !prepared, "deferred Cadence prepare succeeded");
-    bool sawPrepare = false;
-    llvm::handleAllErrors(
-        prepared.takeError(),
-        [&](const CadenceStageUnsupportedError &error) {
-          sawPrepare = error.stage() == stage &&
-                       error.boundary() == CadenceDeferredBoundary::Prepare;
-        },
-        [&](const llvm::ErrorInfoBase &error) {
-          fail(__func__, "wrong deferred prepare error: " + error.message());
-        });
-    require(__func__, sawPrepare, "prepare lost typed Unsupported");
-
-    llvm::Error parsed = parseDeferredCadenceStage(stage, "untrusted");
-    bool sawParse = false;
-    llvm::handleAllErrors(
-        std::move(parsed),
-        [&](const CadenceStageUnsupportedError &error) {
-          sawParse = error.stage() == stage &&
-                     error.boundary() == CadenceDeferredBoundary::Parse;
-        },
-        [&](const llvm::ErrorInfoBase &error) {
-          fail(__func__, "wrong deferred parse error: " + error.message());
-        });
-    require(__func__, sawParse, "parser lost typed Unsupported");
-
-    llvm::Error imported = importDeferredCadenceStage(
-        stage, PreparedExternalToolInvocation{"unused", zeroDigest});
-    bool sawImport = false;
-    llvm::handleAllErrors(
-        std::move(imported),
-        [&](const CadenceStageUnsupportedError &error) {
-          sawImport = error.stage() == stage &&
-                      error.boundary() == CadenceDeferredBoundary::StrictImport;
-        },
-        [&](const llvm::ErrorInfoBase &error) {
-          fail(__func__, "wrong deferred import error: " + error.message());
-        });
-    require(__func__, sawImport, "strict import lost typed Unsupported");
-  }
 }
 
 void mismatchedBuildCannotPrepare(const std::filesystem::path &root,
@@ -483,6 +436,31 @@ void successfulLifecyclePublishesGateNetlist(
                       .size() == 1 &&
               implementation.implementation().activityPoints().empty(),
           "Genus output lost an exact dependency or retained unowned activity");
+
+  const InnovusPhysicalSnapshot physicalSnapshot =
+      take(__func__, parseInnovusPhysicalSnapshot(
+                         readFile(fixtureRoot / "expected/top.v"),
+                         "VERSION 5.8 ;\nDESIGN top ;\nNETS 1 ;\n"
+                         "- clk + ROUTED Metal2 ( 0 0 ) ( 100 0 ) ;\n"
+                         "END NETS\nEND DESIGN\n",
+                         readFile(fixtureRoot / "constraints/top.sdc"), "top",
+                         RepresentationPhysicalStage::Routed));
+  const FinalizedHardwareImplementation physical =
+      take(__func__, publishInnovusPhysicalImplementation(
+                         implementation, physicalSnapshot, artifacts, blobs));
+  const ImplementationRepresentationRoot &physicalRoot =
+      physical.implementation().representationRoot();
+  require(
+      __func__,
+      physicalRoot.variant == RepresentationRootVariant::AsicPhysical &&
+          physicalRoot.stage == RepresentationPhysicalStage::Routed &&
+          physicalRoot.formatRef.kind() ==
+              RepresentationFormatKind::IndexedPhysical &&
+          physical.implementation().interfaces() ==
+              implementation.implementation().interfaces() &&
+          physical.implementation().externalImplementationBindings().size() ==
+              1,
+      "Innovus publication lost exact physical state or semantic ownership");
 }
 
 void requireNoPublication(
@@ -600,7 +578,6 @@ int main(int argc, char **argv) {
 
   descriptorAndConfigAreExact();
   driverAndParserAreDeterministic(fixtureRoot);
-  deferredStagesAreTypedUnsupported();
   const SemanticFixture fixture =
       makeSemanticFixture(fixtureRoot, artifacts, blobs);
   mismatchedBuildCannotPrepare(root, fixtureRoot, fixture, artifacts, blobs);

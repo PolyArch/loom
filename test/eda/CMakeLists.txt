@@ -50,12 +50,32 @@ target_link_libraries(loom-vivado-static-full-device-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-cadence-genus-test
+  CadenceGenusTest.cpp
+)
+
+target_link_libraries(loom-cadence-genus-test PRIVATE
+  LoomEDACadence
+  LoomHardwareConfigurationTestSupport
+  MLIRParser
+  LLVMSupport
+)
+
 add_executable(loom-synopsys-adapter-test
   SynopsysAdapterTest.cpp
 )
 
 target_link_libraries(loom-synopsys-adapter-test PRIVATE
   LoomEDASynopsys
+  LLVMSupport
+)
+
+add_executable(loom-cadence-adapter-test
+  CadenceAdapterTest.cpp
+)
+
+target_link_libraries(loom-cadence-adapter-test PRIVATE
+  LoomEDACadence
   LLVMSupport
 )
 

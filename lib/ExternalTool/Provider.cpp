@@ -117,8 +117,8 @@ const ExternalToolProviderDescriptor &xceliumProvider() {
       ToolProviderDescriptor{
           "xrun",
           {"xrun"},
-          {{"XCELIUM_HOME", "tools.lnx86/bin/64bit/xrun"},
-           {"XRUN_HOME", "tools.lnx86/bin/64bit/xrun"}},
+          {{"XCELIUM_HOME", "tools.lnx86/inca/bin/64bit/xrun"},
+           {"XRUN_HOME", "tools.lnx86/inca/bin/64bit/xrun"}},
           {"cadence/XCELIUM/2603", "cadence/XCELIUM"},
       },
       ToolVersionProbe{{"-version"}, "xrun", {0}, "xrun"},
@@ -152,6 +152,55 @@ const ExternalToolProviderDescriptor &innovusProvider() {
       },
       ToolVersionProbe{
           {"-version"}, "@(#)CDS: Innovus", {0}, "@(#)CDS: Innovus"},
+      edaContainerCompatibility(),
+  };
+  return provider;
+}
+
+const ExternalToolProviderDescriptor &joulesProvider() {
+  static const ExternalToolProviderDescriptor provider{
+      ToolProviderDescriptor{
+          "joules",
+          {"joules"},
+          {{"JOULES_HOME", "bin/joules"},
+           {"DDI_HOME", "bin/joules"},
+           {"CDS_INST_DIR", "bin/joules"}},
+          {"cadence/JOULES/261", "cadence/JOULES"},
+      },
+      ToolVersionProbe{
+          {"-version"}, "Program Name: Joules", {0}, "Program Name: Joules"},
+      edaContainerCompatibility(),
+  };
+  return provider;
+}
+
+const ExternalToolProviderDescriptor &tempusProvider() {
+  static const ExternalToolProviderDescriptor provider{
+      ToolProviderDescriptor{
+          "tempus",
+          {"tempus"},
+          {{"TEMPUS_HOME", "bin/tempus"},
+           {"SSV_HOME", "bin/tempus"},
+           {"CDS_INST_DIR", "bin/tempus"}},
+          {"cadence/TEMPUS/261", "cadence/TEMPUS"},
+      },
+      ToolVersionProbe{{"-version"}, "@(#)CDS: Tempus", {0}, "@(#)CDS: Tempus"},
+      edaContainerCompatibility(),
+  };
+  return provider;
+}
+
+const ExternalToolProviderDescriptor &voltusProvider() {
+  static const ExternalToolProviderDescriptor provider{
+      ToolProviderDescriptor{
+          "voltus",
+          {"voltus"},
+          {{"VOLTUS_HOME", "bin/voltus"},
+           {"SSV_HOME", "bin/voltus"},
+           {"CDS_INST_DIR", "bin/voltus"}},
+          {"cadence/VOLTUS/261", "cadence/VOLTUS"},
+      },
+      ToolVersionProbe{{"-version"}, "@(#)CDS: Voltus", {0}, "@(#)CDS: Voltus"},
       edaContainerCompatibility(),
   };
   return provider;
