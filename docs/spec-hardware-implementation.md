@@ -8,7 +8,7 @@ implementation state that cannot be recovered from Fabric alone.
 ## Artifact Family
 
 ```text
-loom.hardware_implementation 2.0
+loom.hardware_implementation 2.1
 ```
 
 ```text
@@ -107,9 +107,13 @@ interpreted:
 ```text
 RepresentationFormatDescriptor {
   format_ref: RepresentationFormatDescriptorRef
-  admitted root variant and stage set
-  exact payload role, media-type, and cardinality contract
   canonical locator grammar
+  admissions[]: {
+    exact root variant and optional stage
+    exact root object kind
+    exact admitted object-kind set
+    exact payload role, media-type, and cardinality contract
+  }
   index(
     exact root locator admitted by this descriptor,
     canonical logical payload closure read through BlobStore
@@ -130,13 +134,13 @@ RepresentationObjectFacts {
 ```
 
 The registry identity is
-`loom.hardware_representation_format`, version `2.0`. Its exact reference bytes
+`loom.hardware_representation_format`, version `2.1`. Its exact reference bytes
 are `u64be(identity length) || identity bytes || u32be(major) || u32be(minor) ||
 u32be(format kind)`. Existing format kinds retain their numeric meaning. A new
 major version owns an incompatible indexer, object-fact, locator, or
 failure-classification contract; a minor version is reserved for
-backward-compatible additions. A `1.x` reference is never reinterpreted as
-`2.0`: there is no compatibility execution path or alias.
+backward-compatible additions. A prior-version reference is never
+reinterpreted as `2.1`: there is no compatibility execution path or alias.
 A canonical JSON reference is exactly the object fields `registry`, `major`,
 `minor`, and `kind` in that order, with the registry string above and canonical
 unsigned integers.
@@ -151,14 +155,15 @@ payload, locator, object fact, unresolved-definition fact, or failure
 classification, the registry version changes. A second semantic identity field
 or provider-private descriptor revision is forbidden.
 
-Registry 2.0 owns these initial format kinds:
+Registry 2.1 owns these format kinds:
 
 | Kind | Stable spelling | Admitted root | Payload contract |
 | ---: | --- | --- | --- |
 | 0 | `systemverilog_rtl` | `Rtl` | one or more `RtlSource`; zero or more `GenerationConstraint` and `BlackBoxContract` |
 | 1 | `structural_verilog_gate_netlist` | `GateNetlist` | one or more `Netlist`; zero or more `GenerationConstraint` and `BlackBoxContract` |
+| 2 | `indexed_physical` | every `AsicPhysical`, `FpgaPhysical`, and `FpgaImage` form listed below | the exact selected physical row, including exactly one `RepresentationIndex` |
 
-Both descriptors use the exact media-type spellings
+The two HDL descriptors use the exact media-type spellings
 `text/x-systemverilog; charset=utf-8` for `RtlSource`,
 `text/x-verilog; charset=utf-8` for `Netlist`,
 `application/x-sdc; charset=utf-8` for `GenerationConstraint`, and
@@ -169,13 +174,14 @@ units are compiled in canonical logical-name order. An unresolved external
 definition is accepted only when the complete HardwareImplementation closes it
 through an exact black-box contract and external implementation binding.
 
-Registry 2.0 has one fixed HDL frontend profile. `systemverilog_rtl` uses IEEE
+The two HDL descriptors have one fixed frontend profile.
+`systemverilog_rtl` uses IEEE
 1800-2017 and `structural_verilog_gate_netlist` uses IEEE 1364-2005. Every
 source or netlist payload is an independent preprocessing compilation unit;
 all admitted declarations then participate in one elaboration library. Units
 are processed in canonical logical-name order. Source-local macro definitions
 are legal only within their own unit. An `include` directive is outside both
-initial descriptors. There are no caller-supplied macros, include paths,
+HDL descriptors. There are no caller-supplied macros, include paths,
 library search paths, top-level parameter overrides, or default timescale.
 Source-encoded declarations and instance parameter values remain part of the
 payload bytes and are interpreted only under the selected language profile.
@@ -192,7 +198,7 @@ identifiers, ambient generate-name inference, and filename-derived module names
 are outside these two descriptors. Another grammar requires another exact
 format reference.
 
-Both initial descriptors use the repository-pinned Slang frontend as their sole
+Both HDL descriptors use the repository-pinned Slang frontend as their sole
 parse and elaboration source. One descriptor-owned traversal derives the
 removable RepresentationIndex; the Slang Compilation or AST is not the index
 and is not exposed or persisted. CIRCT IR, emitted HDL, diagnostics, and a
@@ -206,7 +212,8 @@ inferred from a filename, source order, first definition, or frontend-selected
 root. A frontend-created top instance is not a second indexed object; the exact
 root is classified only as `Module`.
 
-Registry 2.0 admits only hierarchy paths expressible by its locator grammar.
+The two HDL descriptors admit only hierarchy paths expressible by their
+locator grammar.
 Every occurrence is explicitly named and scalar. A generate scope may
 contribute a path segment only when it is explicitly named and elaborates to
 one scalar scope. Implicit generate names, generate arrays, instance arrays,
@@ -339,7 +346,7 @@ width and exact direction. An unresolved module occurrence is still indexed as
 an `Instance` for RTL or a `Cell` for a gate netlist, while its descriptor-owned
 unresolved-definition name contributes one canonical `Module` locator.
 Repeated uses of the same unresolved-definition name contribute one inventory
-entry. The initial descriptors do not guess `Pin` names, directions, or widths
+entry. The HDL descriptors do not guess `Pin` names, directions, or widths
 for an unresolved cell. Named actual connections on such a cell are checked
 only as `GateWiringExpression` values; their source spelling cannot create Pin
 facts. Such facts remain unavailable until a versioned BlackBoxContract schema
@@ -377,13 +384,85 @@ binding that closes no indexed definition. The format descriptor does not
 redefine Fabric semantics, and the finalizer does not parse a format
 independently.
 
-A descriptor for an otherwise opaque vendor database must require a canonical
-provider-produced index within its declared logical payload closure and return
-the same typed object facts from that index. Until such a descriptor and
-indexer exist, that representation is typed `Unsupported` rather than a blob
-plus an unverified top claim. New format kinds are allocated only by this
-registry; provider registration cannot assign a private meaning to an existing
-kind.
+The `indexed_physical` descriptor is the sole provider-neutral interpretation
+of opaque ASIC and FPGA state. It never parses proprietary database, layout,
+parasitic, constraint, or image bytes. It re-reads and verifies every declared
+BlobDigest, then parses exactly one provider-produced `RepresentationIndex`
+payload with media type
+`application/vnd.loom.physical-representation-index+json`. Every other
+physical payload role uses `application/octet-stream`, except
+`BlackBoxContract`, which retains
+`application/vnd.loom.black-box-contract`. All non-index physical payloads are
+opaque to this descriptor and have no text-policy exception.
+
+The canonical index payload is:
+
+```text
+PhysicalRepresentationIndex {
+  format_ref: exact indexed_physical descriptor ref
+  variant: AsicPhysical | FpgaPhysical | FpgaImage
+  stage?: Placed | Routed | Extracted
+  top: exact outer representation-root locator
+  index_logical_name: exact logical name of this RepresentationIndex payload
+  payloads[]: canonical nonempty array<ImplementationPayload>
+  objects[]: canonical nonempty array<PhysicalRepresentationObject>
+  unresolved_external_definitions[]:
+    canonical array<RepresentationLocator<Module>>
+}
+
+PhysicalRepresentationObject {
+  locator: RepresentationLocator
+  signal_geometry?: {
+    direction: Input | Output | Inout
+    bit_width: positive uint64
+  }
+}
+```
+
+Its canonical JSON fields occur in the displayed order; `stage` is present
+exactly for `AsicPhysical` and `FpgaPhysical`. Object fields are `locator` and,
+when present, `signal_geometry` in that order. Signal-geometry fields are
+`direction` and `bit_width` in that order. `payloads` is exactly the outer
+canonical payload catalog with its one `RepresentationIndex` payload removed;
+it cannot contain `RepresentationIndex`. The excluded index payload is bound
+without a digest cycle by `index_logical_name`; its outer BlobDigest must equal
+the digest of these exact canonical JSON bytes.
+
+Objects sort by their locator canonical bytes and reject duplicate locators.
+The exact top occurs once and has no signal geometry. `Port` and `Pin` objects
+have signal geometry; every other object omits it. Unresolved definitions sort
+and deduplicate by locator canonical bytes, contain only `Module` locators, and
+equal exactly the set of indexed `Module` objects. The ordinary object catalog
+contains only the exact top and objects rooted beneath `top` by the
+descriptor's `.` separator; an unresolved one-identifier `Module` is the only
+unrooted form.
+
+The physical locator grammar reuses the unescaped HDL identifier grammar. The
+top `PhysicalObject` or `DeviceResource` is one identifier. Every rooted object
+appends one or more `.`-separated identifiers; a `Pin` appends a terminal after
+its containing object. An ASIC admission allows `Module`, `Instance`, `Port`,
+`Net`, `Register`, `Memory`, `Cell`, `Pin`, and `PhysicalObject`. An FPGA
+admission allows the same logical kinds with `DeviceResource` in place of
+`PhysicalObject`. A physical index cannot use a vendor-native name that is not
+representable by this grammar; the provider must author the stable Loom
+logical locator it publishes and use that locator consistently.
+
+Indexing first establishes canonical outer payload state and exactly one index
+role, parses the index bytes canonically, selects the exact descriptor
+admission named by its variant and stage, and validates that admission's root
+kind, object kinds, roles, cardinalities, and BlobStore contents. It then
+requires exact equality for format ref, top, index logical name, and every
+non-index payload descriptor before constructing the removable
+RepresentationIndex. The HardwareImplementation finalizer additionally
+requires the index variant and stage to equal the outer closed root. Missing,
+stale, tampered, partial, foreign, duplicate, noncanonical, or undeclared
+index, payload, or object state is `Invalid`. No provider registration can
+assign a private meaning to the format kind or amend index facts.
+
+An otherwise opaque representation that does not satisfy this complete
+contract remains typed `Unsupported` rather than becoming a blob plus an
+unverified top claim. New format kinds are allocated only by this registry;
+provider registration cannot assign a private meaning to an existing kind.
 
 This closed root, rather than a flat tag plus an independently interpreted
 payload bag, is the sole representation authority. Its variant owns the root
@@ -393,11 +472,11 @@ locator, admitted payload roles, and required cardinalities:
 | --- | --- |
 | `Rtl` | one or more `RtlSource`; zero or more `GenerationConstraint` and `BlackBoxContract` |
 | `GateNetlist` | one or more `Netlist`; zero or more `GenerationConstraint` and `BlackBoxContract` |
-| `AsicPhysical::Placed` | one or more `PhysicalDatabase`; zero or more `GenerationConstraint` and `BlackBoxContract` |
-| `AsicPhysical::Routed` | one or more `PhysicalDatabase`; zero or more `LayoutStream`, `GenerationConstraint`, and `BlackBoxContract` |
-| `AsicPhysical::Extracted` | one or more each of `PhysicalDatabase` and `Parasitics`; zero or more `LayoutStream`, `GenerationConstraint`, and `BlackBoxContract` |
-| `FpgaPhysical` | one or more `PhysicalDatabase`; zero or more `GenerationConstraint` and `BlackBoxContract` |
-| `FpgaImage` | exactly one `DeviceImage` |
+| `AsicPhysical::Placed` | exactly one `RepresentationIndex`; one or more `PhysicalDatabase`; zero or more `GenerationConstraint` and `BlackBoxContract` |
+| `AsicPhysical::Routed` | exactly one `RepresentationIndex`; one or more `PhysicalDatabase`; zero or more `LayoutStream`, `GenerationConstraint`, and `BlackBoxContract` |
+| `AsicPhysical::Extracted` | exactly one `RepresentationIndex`; one or more each of `PhysicalDatabase` and `Parasitics`; zero or more `LayoutStream`, `GenerationConstraint`, and `BlackBoxContract` |
+| `FpgaPhysical` | exactly one `RepresentationIndex`; one or more `PhysicalDatabase`; zero or more `GenerationConstraint` and `BlackBoxContract` |
+| `FpgaImage` | exactly one each of `RepresentationIndex` and `DeviceImage` |
 
 `GenerationConstraint` and `BlackBoxContract` payloads are present exactly
 when required to reconstruct or consume that represented state. Any role or
@@ -456,9 +535,11 @@ PayloadRole =
   | DeviceImage
   | GenerationConstraint
   | BlackBoxContract
+  | RepresentationIndex
 ```
 
-The displayed order fixes stable role tags `0` through `7`. Each payload
+The displayed order fixes stable role tags `0` through `8`; the existing tags
+`0` through `7` retain their meanings. Each payload
 records a closed role, canonical logical name, and BlobDigest; the selected
 representation-format descriptor owns its exact media type and parser. The
 artifact contains every payload required to reconstruct or consume the
@@ -567,7 +648,7 @@ the exact consumer contract owns that grouping. Their dense ordinals are
 derived only after sorting; no caller-authored interface or activity ID enters
 identity.
 
-The schema-2.0 owner-local reference catalog is:
+The schema-2.1 owner-local reference catalog is:
 
 ```text
 0  HardwareImplementationInterfaceRef
@@ -791,6 +872,9 @@ Anchor tests cover:
 * missing representation-format providers, wrong-format payloads, locators
   absent from the exact logical representation, and an opaque database without
   its descriptor-required canonical index;
+* physical index encode/decode/re-encode determinism and rejection of a
+  missing, stale, tampered, partial, foreign, duplicate, noncanonical, or
+  undeclared index, payload, object, or top claim;
 * required interface, activity-point, memory-macro, and configuration-
   transport coverage;
 * explicit-file and tool-bundled external identities producing distinct

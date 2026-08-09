@@ -291,6 +291,35 @@ reject incomplete or mismatched state. Downstream flows read those exact
 BlobDigests through BlobStore so a work-directory path or duplicate RTL string
 cannot silently substitute different hardware.
 
+Opaque physical state needs one additional authored fact: a logical object
+index that can be checked without understanding proprietary bytes. Three
+remedies were considered:
+
+* one provider-neutral canonical index payload and one physical descriptor
+  shared by ASIC physical, FPGA physical, and FPGA image roots;
+* a reserved filename or an overloaded `PhysicalDatabase` or `DeviceImage`
+  payload that changes meaning when it happens to carry the index; and
+* separate tool-named descriptors or index schemas for each physical provider.
+
+The first remedy is selected. `RepresentationIndex` gives the index one exact
+role and media type, while `indexed_physical` gives its grammar and validation
+one semantic owner. The root variant and stage select the exact admission row,
+so the format kind does not duplicate those state distinctions. The second
+remedy would make a logical name or overloaded role into a hidden discriminator
+and would leave media type ambiguous. The third would duplicate identical
+closure, locator, and object rules across providers and make tool identity part
+of representation semantics.
+
+The index binds its format ref, root claim, own logical name, every other
+payload descriptor, object catalog, and unresolved-definition set. It omits
+only its own digest, which is necessarily the digest of the canonical index
+bytes that contain those bindings. This breaks the self-reference cycle
+without permitting undeclared payload state. Proprietary bytes remain opaque,
+but every declared blob is still re-read and digest-verified. Appending the
+role and format kind is a compatible schema extension, so
+HardwareImplementation and the representation-format registry advance from
+`2.0` to `2.1`; all existing numeric tags retain their meanings.
+
 An implementation interface uses one role-bearing semantic reference rather
 than a caller-authored key plus a separately authored role. The former is the
 smallest complete fact: its closed alternative selects Data, Memory, Clock,
