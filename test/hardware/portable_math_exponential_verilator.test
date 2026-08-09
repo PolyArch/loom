@@ -1,0 +1,8 @@
+# REQUIRES: circt, verilator
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-math-exponential-test %t
+# RUN: cd %t/artifacts && verilator --binary --timing --Wall --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL --Wno-WIDTH -CFLAGS '-std=c++20' --top-module testbench scalar_math_exp.sv scalar_math_exp2.sv scalar_math_expm1.sv testbench.sv --Mdir obj_dir
+# RUN: cd %t/artifacts && ./obj_dir/Vtestbench
+# RUN: %loom-portable-math-exponential-test --verify %t/artifacts/results.hex | FileCheck %s
+
+# CHECK: verified {{[0-9]+}} exact exceptional and {{[0-9]+}} finite exponential results; maximum ULP {{[0-4]}}

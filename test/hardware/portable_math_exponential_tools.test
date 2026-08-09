@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-math-exponential-test %t
+# RUN: cd %t/artifacts && yosys -q -s portable_math_exponential.ys

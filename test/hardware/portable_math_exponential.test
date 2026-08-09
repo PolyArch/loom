@@ -1,0 +1,43 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-math-exponential-test %t | FileCheck %s --check-prefix=GENERATE
+# RUN: FileCheck %s --check-prefix=EXP < %t/artifacts/scalar_math_exp.sv
+# RUN: FileCheck %s --check-prefix=EXP2 < %t/artifacts/scalar_math_exp2.sv
+# RUN: FileCheck %s --check-prefix=EXPM1 < %t/artifacts/scalar_math_expm1.sv
+
+# GENERATE: generated 393234 exponential numerical vectors
+
+# EXP: module scalar_math_exp
+# EXP: input [2:0] config_0
+# EXP: function automatic
+# EXP: signed [39:0]
+# EXP: signed [79:0]
+# EXP: 24'h800000
+# EXP: range_reduced
+# EXP-NOT: [63:0]
+# EXP-NOT: [127:0]
+# EXP-NOT: shortreal
+# EXP-NOT: $exp
+
+# EXP2: module scalar_math_exp2
+# EXP2: input [2:0] config_0
+# EXP2: function automatic
+# EXP2: signed [39:0]
+# EXP2: signed [79:0]
+# EXP2: range_reduced
+# EXP2-NOT: [63:0]
+# EXP2-NOT: [127:0]
+# EXP2-NOT: shortreal
+# EXP2-NOT: $pow
+
+# EXPM1: module scalar_math_expm1
+# EXPM1: input [2:0] config_0
+# EXPM1: function automatic
+# EXPM1: signed [39:0]
+# EXPM1: signed [79:0]
+# EXPM1: near_zero
+# EXPM1: pack_fixed
+# EXPM1-NOT: [63:0]
+# EXPM1-NOT: [127:0]
+# EXPM1-NOT: shortreal
+# EXPM1-NOT: $exp
