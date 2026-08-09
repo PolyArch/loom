@@ -1,0 +1,31 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-loop-stream-test %t
+# RUN: FileCheck %s --check-prefix=LEAF < %t/artifacts/loop_stream_leaf.sv
+# RUN: FileCheck %s --check-prefix=SYSTEM < %t/artifacts/loop_stream_system.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/artifacts/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/artifacts/portable_loop_stream.ys
+
+# LEAF-LABEL: module loop_stream_leaf
+# LEAF: input [15:0] data_input_0
+# LEAF: input [48:0] state_current
+# LEAF: input [2:0] config_0
+# LEAF: output [48:0] state_next
+# LEAF: output state_write
+# LEAF-NOT: always_ff
+
+# SYSTEM-LABEL: module loom_module
+# SYSTEM: input clock
+# SYSTEM: reset,
+# SYSTEM-NOT: result_data_reg
+# SYSTEM-NOT: result_valid_reg
+# SYSTEM: operation_state_reg
+# SYSTEM: always @(posedge clock or posedge reset)
+
+# TB: stalled IV changed or retired
+# TB: close did not terminate the stream
+# TB: reset did not restore Idle
+
+# YOSYS: hierarchy -check -top loom_module
+# YOSYS: select -assert-none t:$dlatch t:$_DLATCH_*
+# YOSYS: synth -top loom_module
