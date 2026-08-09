@@ -20,6 +20,7 @@
 #include "Hardware/RTL/Providers/LoopCarry.h"
 #include "Hardware/RTL/Providers/LoopGate.h"
 #include "Hardware/RTL/Providers/LoopInvariant.h"
+#include "Hardware/RTL/Providers/LoopStream.h"
 #include "Hardware/RTL/Providers/ScalarBitReinterpret.h"
 #include "Hardware/RTL/Providers/ScalarFloatFma.h"
 #include "Hardware/RTL/Providers/ScalarIntegerAddSub.h"
@@ -29,6 +30,8 @@
 #include "Hardware/RTL/Providers/ScalarSignedIntegerDivRem.h"
 #include "Hardware/RTL/Providers/ScalarUnsignedIntegerDivRem.h"
 #include "Hardware/RTL/Providers/ScalarValueSelect.h"
+#include "Hardware/RTL/Providers/TokenConstantSync.h"
+#include "Hardware/RTL/Providers/TokenMuxDemux.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -117,6 +120,8 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
   requireRegistration(
       loom::hardware::rtl::registerPortableLoopGateProvider(registry));
   requireRegistration(
+      loom::hardware::rtl::registerPortableLoopStreamProvider(registry));
+  requireRegistration(
       loom::hardware::rtl::registerPortableFixedVectorIntegerAddSubProvider(
           registry));
   requireRegistration(
@@ -150,6 +155,11 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
   requireRegistration(
       loom::hardware::rtl::registerPortableFixedVectorShuffleProvider(
           registry));
+  requireRegistration(
+      loom::hardware::rtl::registerPortableTokenConstantSyncProviders(
+          registry));
+  requireRegistration(
+      loom::hardware::rtl::registerPortableTokenMuxDemuxProviders(registry));
 }
 
 std::vector<::fabric::ImplementationFamilyId>
@@ -196,6 +206,7 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
       ::fabric::ImplementationFamilyId::ScalarFloatMultiply,
       ::fabric::ImplementationFamilyId::ScalarFloatFma,
+      ::fabric::ImplementationFamilyId::LoopStream,
       ::fabric::ImplementationFamilyId::LoopCarry,
       ::fabric::ImplementationFamilyId::LoopInvariant,
       ::fabric::ImplementationFamilyId::LoopGate,
@@ -212,6 +223,10 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::FixedVectorFloatFma,
       ::fabric::ImplementationFamilyId::FixedVectorPack,
       ::fabric::ImplementationFamilyId::FixedVectorUnpack,
+      ::fabric::ImplementationFamilyId::TokenConstant,
+      ::fabric::ImplementationFamilyId::TokenSync,
+      ::fabric::ImplementationFamilyId::TokenMux,
+      ::fabric::ImplementationFamilyId::TokenDemux,
       ::fabric::ImplementationFamilyId::ScalarSignedIntegerDivRem,
       ::fabric::ImplementationFamilyId::ScalarUnsignedIntegerDivRem,
       ::fabric::ImplementationFamilyId::ScalarFloatDivide,

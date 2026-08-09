@@ -460,6 +460,54 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-loop-stream-test
+    PortableLoopStreamTest.cpp
+  )
+
+  target_link_libraries(loom-portable-loop-stream-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
+  add_executable(loom-portable-token-constant-sync-test
+    PortableTokenConstantSyncTest.cpp
+  )
+
+  target_link_libraries(loom-portable-token-constant-sync-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
+  add_executable(loom-portable-token-mux-demux-test
+    PortableTokenMuxDemuxTest.cpp
+  )
+
+  target_link_libraries(loom-portable-token-mux-demux-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-operation-leaf-state-layout-test
     OperationLeafStateLayoutTest.cpp
   )

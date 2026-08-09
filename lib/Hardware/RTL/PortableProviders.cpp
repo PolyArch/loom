@@ -21,6 +21,7 @@
 #include "Hardware/RTL/Providers/LoopCarry.h"
 #include "Hardware/RTL/Providers/LoopGate.h"
 #include "Hardware/RTL/Providers/LoopInvariant.h"
+#include "Hardware/RTL/Providers/LoopStream.h"
 #include "Hardware/RTL/Providers/ScalarBitReinterpret.h"
 #include "Hardware/RTL/Providers/ScalarFloatFma.h"
 #include "Hardware/RTL/Providers/ScalarIntegerAddSub.h"
@@ -30,6 +31,8 @@
 #include "Hardware/RTL/Providers/ScalarSignedIntegerDivRem.h"
 #include "Hardware/RTL/Providers/ScalarUnsignedIntegerDivRem.h"
 #include "Hardware/RTL/Providers/ScalarValueSelect.h"
+#include "Hardware/RTL/Providers/TokenConstantSync.h"
+#include "Hardware/RTL/Providers/TokenMuxDemux.h"
 
 #include <utility>
 
@@ -83,6 +86,8 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
     return error;
   if (llvm::Error error = registerPortableLoopGateProvider(candidate))
     return error;
+  if (llvm::Error error = registerPortableLoopStreamProvider(candidate))
+    return error;
   if (llvm::Error error =
           registerPortableFixedVectorIntegerAddSubProvider(candidate))
     return error;
@@ -114,6 +119,10 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
           registerPortableFixedVectorSliceAlignMergeProvider(candidate))
     return error;
   if (llvm::Error error = registerPortableFixedVectorShuffleProvider(candidate))
+    return error;
+  if (llvm::Error error = registerPortableTokenConstantSyncProviders(candidate))
+    return error;
+  if (llvm::Error error = registerPortableTokenMuxDemuxProviders(candidate))
     return error;
   registry = std::move(candidate);
   return llvm::Error::success();

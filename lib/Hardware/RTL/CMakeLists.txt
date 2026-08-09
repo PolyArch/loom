@@ -25,6 +25,7 @@ add_library(LoomHardwareRTL
   Providers/LoopCarry.cpp
   Providers/LoopGate.cpp
   Providers/LoopInvariant.cpp
+  Providers/LoopStream.cpp
   Providers/ProviderSupport.cpp
   Providers/ScalarBitReinterpret.cpp
   Providers/ScalarFloatFma.cpp
@@ -35,6 +36,8 @@ add_library(LoomHardwareRTL
   Providers/ScalarSignedIntegerDivRem.cpp
   Providers/ScalarUnsignedIntegerDivRem.cpp
   Providers/ScalarValueSelect.cpp
+  Providers/TokenConstantSync.cpp
+  Providers/TokenMuxDemux.cpp
   Specialization.cpp
   Transport.cpp
 )
