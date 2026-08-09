@@ -727,3 +727,10 @@ preparation-time capability rejection finalizes that existing outcome directly;
 manufacturing a no-op Voltus bundle would create an attempt that never measured
 the requested physical implementation and would make completion a second
 capability authority.
+
+The fixed analysis facts and the provider resource binding are distinct but
+both have one owner. The model descriptor fixes method, activity basis,
+coverage, and uncertainty; its ResolvedConfig 3.3 component view fixes the
+actual Voltus build and complete PGV member fingerprints. This keeps local
+paths out of semantic identity without letting the adapter select an ambient
+library or making ImplementationPlatform own provider files.

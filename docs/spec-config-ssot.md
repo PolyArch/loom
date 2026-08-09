@@ -93,7 +93,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 3.2`. Version 2.0 was an
+The current schema is `loom.config.resolved 3.3`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -119,7 +119,11 @@ Version 3.2 is a compatible extension that adds the Structured
 MemoryCommunication generator's positive semantic expansion limit. It changes
 neither an existing field nor physical memory ownership.
 
-The 3.2 schema composes these active policy domains:
+Version 3.3 compatibly adds an optional typed Evaluation provider-binding
+domain. An absent binding leaves the corresponding model unavailable; it never
+selects an ambient provider build or external input.
+
+The 3.3 schema composes these active policy domains:
 
 ```text
 ResolvedConfig {
@@ -134,8 +138,25 @@ ResolvedConfig {
     system_pnr
     evaluation_and_objective_catalogs
   }
+  evaluation {
+    cadence_voltus_static_rail: optional {
+      stable_provider_build_identity
+      power_grid_library_members[] {
+        relative_path
+        sha256
+      }
+    }
+  }
 }
 ```
+
+`evaluation.cadence_voltus_static_rail` is the sole resolved source for the
+result-affecting Voltus build and complete PGV tree used by model kind 12. The
+member table is nonempty, sorted by canonical relative path, duplicate-free,
+and contains the exact SHA-256 fingerprint of every member. It contains no
+local directory key or absolute path. The model's descriptor-owned projector
+consumes only this typed binding; local configuration resolves a matching tree
+without changing the model binding.
 
 `dse.evaluation_and_objective_catalogs` materializes exactly the owner tables
 of the [Resolved Configuration View](spec-dse-feedback.md#resolved-configuration-view):

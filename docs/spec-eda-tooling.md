@@ -318,6 +318,14 @@ default. Voltus consumes that projection together with the exact routed
 HardwareImplementation, ImplementationPlatform binding, and complete PGV file
 tree. It does not accept caller-authored Tcl values for any projected fact.
 
+The model's resolved config view additionally carries the exact stable Voltus
+provider build identity and canonical PGV member path/fingerprint table from
+the typed ResolvedConfig 3.3 binding. These facts enter Request identity.
+Preparation requires the resolved executable build to match that identity and
+uses `resolveExternalFileTrees` to select one local tree with exactly those
+members. A local path, directory key, first-match scan, or nearby PGV tree is
+not a semantic substitute.
+
 This initial model supports only one global applied supply, one global
 temperature, and one global activity clock with one exact required period. A
 provider must return typed `Unsupported` for a physical implementation that

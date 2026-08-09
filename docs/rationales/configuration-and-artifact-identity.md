@@ -54,6 +54,13 @@ option that can change a result still belongs to the semantic model or
 generator binding. Only provider-declared operational launch values may remain
 local.
 
+ResolvedConfig 3.3 therefore adds one typed Voltus rail provider binding rather
+than a generic EDA property map. The stable provider build and exact PGV member
+fingerprints change the model result and belong in its component view; the
+matching local directory does not. Making the binding optional preserves
+software-only profiles while making absence explicit and preventing ambient
+tree selection.
+
 ## Why ResolvedConfig 2.0 Removes The Provisional Flat Knobs
 
 The first implementation carried a display `config_id`, three global hardware

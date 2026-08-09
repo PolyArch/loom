@@ -116,15 +116,19 @@ for the exact external resources it consumes. Its resolved semantic binding
 identifies each selected input by role and either:
 
 * the exact content fingerprint of an explicitly supplied ordinary file; or
+* a canonical nonempty table of relative member paths and exact content
+  fingerprints for an explicitly supplied directory-valued input; or
 * an exact provider semantic identity and resource key for content shipped as
   part of a verified tool release.
 
 The common platform schema does not define a generic library-role bag. A
 provider cannot claim an undeclared input, infer a role from a filename, or
 substitute a nearby view. Explicit external files are fingerprinted
-individually. Loom does not recursively scan, import, copy, or hash a PDK,
-vendor SDK, IP tree, or tool installation merely because a configured path
-exists.
+individually. A directory-valued input is fingerprinted only when its
+descriptor declares an exact file-tree slot and its semantic binding supplies
+the complete expected member table. Loom does not recursively scan, import,
+copy, or hash a PDK, vendor SDK, IP tree, or tool installation merely because a
+configured path exists.
 
 Machine-local paths are resolved through the explicit local configuration and
 frozen into the ignored ExternalToolInvocationBundle. They do not enter the

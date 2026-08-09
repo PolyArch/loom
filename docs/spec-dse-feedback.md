@@ -378,8 +378,7 @@ clock domain. Transition density is measured per that clock, so neither an
 opaque SDC payload, a PGV library, nor a tool default may provide a second
 absolute-frequency authority. A technology corner does not encode temperature,
 so neither it nor a provider default may become a second thermal authority. Its
-descriptor-owned resolved config view decodes to one fixed provider-neutral
-contract:
+descriptor owns one fixed provider-neutral analysis contract:
 
 ```text
 RailAnalysisModelConfig {
@@ -390,9 +389,26 @@ RailAnalysisModelConfig {
 }
 ```
 
+Its resolved config-view schema 2.0 consumes exactly one typed provider binding
+from ResolvedConfig 3.3:
+
+```text
+CadenceVoltusStaticRailProviderBinding {
+  stable_provider_build_identity
+  power_grid_library_members:
+    canonical nonempty array<relative_path, sha256>
+}
+```
+
+The provider build and PGV member table affect the result and therefore enter
+the exact `ResolvedModelBinding` and Request identity. Machine-local PGV paths
+and keys remain outside the binding. An absent provider binding makes model
+projection unavailable; a projector cannot choose a configured tree.
+
 The corresponding provider configuration is derived only from that typed
-config view and the validated Request conditions. The initial model admits one
-global applied supply, one global temperature, and one global activity clock
+provider binding, descriptor contract, and validated Request conditions. The
+initial model admits one global applied supply, one global temperature, and one
+global activity clock
 with one exact period for an always-on implementation. A multi-supply,
 multi-temperature, multi-clock, partial-network, or execution-activity case is
 typed `Unsupported`; a provider cannot select one domain, invent a nominal
