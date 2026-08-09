@@ -298,6 +298,7 @@ constructed roots use registry-2.0 refs.
 | 6 | `system_simulation` | `0: Deployment`, `1: Gem5 Simulation Binding` | both required; the workload and runtime input are System roots coupled to the exact Deployment |
 | 7 | `cgra_simulation` | `0: Canonical Dataflow Program`, `1: Fabric`, `2: SpatialMapping` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
 | 8 | `simulation_execution_comparison` | `0: reference SimulationExecution`, `1: candidate SimulationExecution` | both forbidden; each execution's exact Request closure must resolve the same workload and runtime input |
+| 9 | `canonical_dataflow_source_functional_comparison` | `0: Canonical Dataflow Program`, `1: selected Structured Program parent` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
 
 The matching initial model descriptors are:
 
@@ -312,6 +313,8 @@ The matching initial model descriptors are:
 | 8 | `canonical_dataflow_fabric_calibrated_fpa` | 1 | the same calibrated FPA predictions for one Canonical Dataflow/Fabric pair |
 | 9 | `cgra_simulator` | 7 | deterministic Simulation of the exact mapped Spatial workload, with one `SimulationExecution` output and exact whole-case CycleCount |
 | 10 | `simulation_execution_comparison` | 8 | deterministic comparison of compatible execution observations for the whole-case `functional_mismatch` finding |
+| 11 | `canonical_dataflow_source_functional` | 9 | deterministic Simulation comparison of one Canonical Dataflow candidate and its selected Structured parent against the workload-owned source, producing only the whole-case `functional_mismatch` finding |
+| 12 | `cadence_voltus_static_rail` | 5 | deterministic ToolMeasurement point observation of whole-case `MaximumVoltageDrop` using the shared static rail-analysis contract |
 
 Model kinds 2 and 3 consume the exact shared low-confidence config-view
 contract. Model kinds 4, 5, and 6 each consume a distinct zero-field config
@@ -346,6 +349,48 @@ coordinate; otherwise that metric implementation is unavailable rather than
 rounded. Model kind 10 has no cycle basis and compares no timing metric. It
 requires exact workload/runtime-input identity through each execution's
 Request closure and emits only the ordinary `functional_mismatch` result.
+
+Model kind 11 uses a distinct zero-field config view. Its exact Canonical
+Dataflow and selected Structured parent are both case subjects; neither is
+recovered from provider-local cache state. It has the same source-backed
+functional outcome boundary as model kind 4 and does not claim timing or
+physical observations.
+
+Case kind 5 initially permits the following HardwareImplementation-rooted
+Base-condition patterns. Both positions of the explicit-assumption form name
+the same sole subject role; their payload roles remain distinct and ordered:
+
+```text
+ProcessCorner                         -> [HardwareImplementation root]
+SupplyVoltage                         -> [HardwareImplementation root]
+Temperature                           -> [HardwareImplementation root]
+RequiredClockPeriod                   -> [HardwareImplementation root]
+ActivityBinding.ExecutionActivity     -> [HardwareImplementation root]
+ActivityBinding.ExplicitAssumption    -> [HardwareImplementation root,
+                                           HardwareImplementation root]
+```
+
+Model kind 12 consumes and requires exactly `ProcessCorner`, `SupplyVoltage`,
+and the two-target explicit `ActivityBinding` pattern. Its descriptor-owned
+resolved config view decodes to one fixed provider-neutral contract:
+
+```text
+RailAnalysisModelConfig {
+  method: Static
+  activity_basis: ExplicitAssumption
+  network_coverage: CompleteAnalyzedNetwork
+  uncertainty: ExactWithinModel
+}
+```
+
+The corresponding provider configuration is derived only from that typed
+config view and the validated Request conditions. The initial model admits
+one global applied supply and one global activity clock for an always-on
+implementation. A multi-supply, multi-clock, partial-network, or execution-
+activity case is typed `Unsupported`; a provider cannot select one domain,
+invent a nominal voltage, or reinterpret a partial network as the whole-case
+metric. Supporting another method or activity basis requires another exact
+model descriptor and config-view contract, not a mutable invocation flag.
 
 Case kinds 0 and 1 admit the exact Fabric-anchored target patterns owned by
 `ProcessCorner`, `SupplyVoltage`, `Temperature`, `RequiredClockPeriod`,

@@ -296,6 +296,24 @@ HardwareImplementation-anchored `SupplyVoltage` base conditions. Tool names,
 report severity classes, selected nodes, and private voltage-drop fields do
 not become MetricKinds.
 
+The initial Voltus descriptor is the exact static, explicit-assumption model
+registered as Evaluation model kind 12. Evaluation projects one
+`CompleteRailAnalysisConfiguration` from its descriptor-owned config view and
+the already validated Request. The projection contains the exact process
+corner, global applied supply, explicit activity assumption, static method,
+complete-network coverage, and `ExactWithinModel` uncertainty. Voltus consumes
+that projection together with the exact routed HardwareImplementation,
+ImplementationPlatform binding, and complete PGV file tree. It does not
+accept caller-authored Tcl values for any projected fact.
+
+This initial model supports only one global applied supply and one global
+activity clock. A provider must return typed `Unsupported` for a physical
+implementation that cannot be represented by that exact contract. It cannot
+choose one domain, substitute a Fabric nominal voltage, omit uncovered power
+nodes, or infer activity from an ambient report. A later multi-domain or
+dynamic provider uses another exact model descriptor while retaining the same
+provider-neutral MetricKind.
+
 FPGA prototype or measured-hardware execution uses the same
 EvaluationRequest, SimulationWorkload, SimulationRuntimeInput, and Evidence
 owners when a concrete evaluator is available. Loom does not add a measured

@@ -317,6 +317,16 @@ unavailable or incomplete rail network cannot be replaced by a nominal-
 voltage default. A later per-domain question requires another owner-defined
 scope form rather than a vendor-specific MetricKind.
 
+The initial registered rail model uses a complete-network static method with
+one global HardwareImplementation-rooted `SupplyVoltage` and one explicit
+activity assumption. Its model config fixes the method, activity-basis kind,
+coverage, and `ExactWithinModel` uncertainty; the Request conditions carry
+the process-corner reference and exact numeric supply and activity values.
+These facts are projected together into the provider configuration. A partial
+network or a physical subject requiring more than one supply or activity
+clock is unsupported by this model and cannot publish a whole-case
+`MaximumVoltageDrop` result through it.
+
 Each prediction-error descriptor owns one permitted-and-required
 request-condition pattern: `Quantile` with the exact
 `fpa_model_parameter_calibration` case signature and an empty target tuple.
