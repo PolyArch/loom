@@ -1,0 +1,2 @@
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: timeout 15s loom-structured-memory-communication-lineage-test %t
