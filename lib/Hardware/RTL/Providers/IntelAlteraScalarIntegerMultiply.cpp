@@ -1,6 +1,6 @@
 #include "Hardware/RTL/Providers/IntelAlteraScalarIntegerMultiply.h"
 
-#include "Common/BlobDigest.h"
+#include "Hardware/Implementation/FpgaNativeExternalContracts.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
@@ -22,25 +22,9 @@
 namespace loom::hardware::rtl {
 namespace {
 
-constexpr llvm::StringLiteral contractRef = "intel.altera.lpm_mult@1";
-constexpr llvm::StringLiteral inputSlot = "configured_ip";
-constexpr llvm::StringLiteral providerBuild =
-    "altera.quartus-prime-pro:26.1.0-build-110";
-constexpr llvm::StringLiteral resourceKey = "altera_lpm:lpm_mult";
-constexpr llvm::StringLiteral device = "AGIA040R39A1E1VC";
-constexpr llvm::StringLiteral moduleName = "lpm_mult";
-constexpr llvm::StringLiteral payloadName =
-    "contracts/intel_altera_lpm_mult_i16.json";
-constexpr llvm::StringLiteral blackBoxContract =
-    "{\"contract\":\"intel.altera.lpm_mult@1\","
-    "\"device\":\"AGIA040R39A1E1VC\","
-    "\"latency\":\"combinational\",\"module\":\"lpm_mult\","
-    "\"operation\":\"i16_mul_mod\","
-    "\"parameters\":\"widtha:16,widthb:16,widthp:32,pipeline:0,"
-    "representation:UNSIGNED,dedicated_multiplier:YES\","
-    "\"ports\":\"dataa:input:16,datab:input:16,result:output:32\","
-    "\"resource\":\"altera_lpm:lpm_mult\","
-    "\"tool_build\":\"altera.quartus-prime-pro:26.1.0-build-110\"}\n";
+const FpgaNativeExternalModuleContract &nativeContract() {
+  return intelAlteraLpmMultExternalModuleContract();
+}
 
 llvm::Error unsupported() {
   return llvm::make_error<FabricOperationProviderUnsupportedError>(
@@ -52,17 +36,20 @@ bool isExactPlatform(const platform::ImplementationPlatform *platform) {
   if (!platform)
     return false;
   const auto *target = std::get_if<platform::FpgaTarget>(&platform->target());
-  return target && target->vendor == platform::FpgaVendor::IntelAltera &&
-         target->deviceOrderingCode == device;
+  return target && target->vendor == nativeContract().vendor &&
+         target->deviceOrderingCode == nativeContract().deviceOrderingCode;
 }
 
 bool isExactExternalInput(llvm::ArrayRef<ExternalInputBinding> inputs) {
-  if (inputs.size() != 1 || inputs.front().providerInputSlotRef != inputSlot)
+  if (inputs.size() != 1 || inputs.front().providerInputSlotRef !=
+                                nativeContract().providerInputSlotRef)
     return false;
   const auto *resource = std::get_if<ToolBundledResourceDependency>(
       &inputs.front().dependencyIdentity);
-  return resource && resource->stableProviderBuildIdentity == providerBuild &&
-         resource->resourceKey == resourceKey;
+  return resource &&
+         resource->stableProviderBuildIdentity ==
+             nativeContract().stableProviderBuildIdentity &&
+         resource->resourceKey == nativeContract().resourceKey;
 }
 
 bool hasExactCapability(const fabric::ResolvedFabricOpCapabilityView &view) {
@@ -171,7 +158,8 @@ llvm::Expected<FabricOperationProviderOutput>
 materializeIntelAlteraScalarIntegerMultiply(
     FabricOperationProviderRequest request) {
   if (request.recipe != BackendRecipeKey::IntelAltera ||
-      request.externalImplementationContractRef != contractRef ||
+      request.externalImplementationContractRef !=
+          nativeContract().contractRef ||
       !isExactPlatform(request.implementationPlatform) ||
       !isExactExternalInput(request.externalInputs) ||
       !hasExactCapability(request.capability))
@@ -189,44 +177,21 @@ materializeIntelAlteraScalarIntegerMultiply(
   materializeLpmMult(request);
   FabricOperationProviderOutput output;
   output.payloads.push_back(
-      {PayloadRole::BlackBoxContract, payloadName.str(),
-       std::vector<std::uint8_t>(blackBoxContract.bytes_begin(),
-                                 blackBoxContract.bytes_end())});
+      {PayloadRole::BlackBoxContract,
+       nativeContract().blackBoxPayloadLogicalName.str(),
+       std::vector<std::uint8_t>(
+           nativeContract().blackBoxContractBytes.bytes_begin(),
+           nativeContract().blackBoxContractBytes.bytes_end())});
   output.externalImplementationBindings.push_back(
-      {contractRef.str(),
+      {nativeContract().contractRef.str(),
        std::vector<ExternalInputBinding>(request.externalInputs.begin(),
                                          request.externalInputs.end()),
        {},
-       {{RepresentationObjectKind::Module, moduleName.str()}},
-       ImplementationPayloadKey{PayloadRole::BlackBoxContract,
-                                payloadName.str()}});
+       {{RepresentationObjectKind::Module, nativeContract().moduleName.str()}},
+       ImplementationPayloadKey{
+           PayloadRole::BlackBoxContract,
+           nativeContract().blackBoxPayloadLogicalName.str()}});
   return output;
-}
-
-llvm::Error
-validateLpmMultBinding(const ExternalImplementationBindingDraft &binding,
-                       const ImplementationRepresentationRoot &representation,
-                       const platform::ImplementationPlatform *platform) {
-  const ImplementationPayload expectedPayload{
-      PayloadRole::BlackBoxContract, payloadName.str(),
-      computeBlobDigest(std::vector<std::uint8_t>(
-          blackBoxContract.bytes_begin(), blackBoxContract.bytes_end()))};
-  if ((representation.variant != RepresentationRootVariant::Rtl &&
-       representation.variant != RepresentationRootVariant::FpgaPhysical) ||
-      !isExactPlatform(platform) ||
-      binding.providerContractRef != contractRef ||
-      !isExactExternalInput(binding.externalInputs) ||
-      binding.fabricResourceRefs.empty() ||
-      binding.representationLocators !=
-          std::vector<RepresentationLocator>{
-              {RepresentationObjectKind::Module, moduleName.str()}} ||
-      !binding.blackBoxContractPayload ||
-      !(*binding.blackBoxContractPayload ==
-        ImplementationPayloadKey{PayloadRole::BlackBoxContract,
-                                 payloadName.str()}) ||
-      !llvm::is_contained(representation.payloads, expectedPayload))
-    return unsupported();
-  return llvm::Error::success();
 }
 
 } // namespace
@@ -234,19 +199,21 @@ validateLpmMultBinding(const ExternalImplementationBindingDraft &binding,
 llvm::Error registerIntelAlteraScalarIntegerMultiplyProvider(
     FabricOperationProviderRegistry &registry) {
   return registry.add({::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
-                       BackendRecipeKey::IntelAltera, contractRef.str(),
+                       BackendRecipeKey::IntelAltera,
+                       nativeContract().contractRef.str(),
                        materializeIntelAlteraScalarIntegerMultiply});
 }
 
 llvm::Error registerIntelAlteraLpmMultExternalImplementationContract(
     ExternalImplementationContractCatalog &catalog) {
-  return catalog.add(ExternalImplementationContract{
-      contractRef.str(),
-      {{inputSlot.str(), {ExternalDependencyKind::ToolBundledResource}}},
-      {RepresentationRootVariant::Rtl, RepresentationRootVariant::FpgaPhysical},
-      true,
-      false,
-      validateLpmMultBinding});
+  auto builtins = makeFpgaNativeExternalImplementationContractCatalog();
+  if (!builtins)
+    return builtins.takeError();
+  auto contract = builtins->find(nativeContract().contractRef);
+  if (!contract)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "Intel LPM_MULT contract is not registered");
+  return catalog.add(std::move(*contract));
 }
 
 } // namespace loom::hardware::rtl

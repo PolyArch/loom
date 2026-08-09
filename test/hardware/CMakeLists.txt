@@ -45,6 +45,16 @@ target_link_libraries(loom-hardware-implementation-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-fpga-native-external-contracts-test
+  FpgaNativeExternalContractsTest.cpp
+)
+
+target_link_libraries(loom-fpga-native-external-contracts-test PRIVATE
+  LoomHardwareImplementation
+  LoomImplementationPlatform
+  LLVMSupport
+)
+
 add_executable(loom-representation-format-test
   RepresentationFormatTest.cpp
 )

@@ -1,6 +1,7 @@
 #include "EDA/Adapters/IntelAltera/Quartus.h"
 
 #include "EDA/Adapters/FpgaImplementationPublication.h"
+#include "Hardware/Implementation/FpgaNativeExternalContracts.h"
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
@@ -467,8 +468,11 @@ prepareProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                 const ResolvedCandidateGeneratorBinding &binding,
                 const ArtifactStore &artifacts, const BlobStore &blobs,
                 const ExternalToolPreparationContext &context) {
-  static const ExternalImplementationContractCatalog contracts;
-  return prepareProviderWithContracts(inputBindings, binding, contracts,
+  auto contracts =
+      hardware::makeFpgaNativeExternalImplementationContractCatalog();
+  if (!contracts)
+    return contracts.takeError();
+  return prepareProviderWithContracts(inputBindings, binding, *contracts,
                                       artifacts, blobs, context);
 }
 
@@ -477,9 +481,12 @@ importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
                const PreparedExternalToolInvocation &prepared,
                const ArtifactStore &artifacts, const BlobStore &blobs) {
-  static const ExternalImplementationContractCatalog contracts;
+  auto contracts =
+      hardware::makeFpgaNativeExternalImplementationContractCatalog();
+  if (!contracts)
+    return contracts.takeError();
   return importProviderWithContracts(inputBindings, binding, prepared,
-                                     contracts, artifacts, blobs);
+                                     *contracts, artifacts, blobs);
 }
 
 const CandidateGeneratorDescriptor kDescriptor{

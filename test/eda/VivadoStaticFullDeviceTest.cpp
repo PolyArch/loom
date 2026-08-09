@@ -13,6 +13,7 @@
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
+#include "Hardware/Implementation/FpgaNativeExternalContracts.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
@@ -380,6 +381,59 @@ FinalizedHardwareImplementation makeNativeImplementation(
                                                    artifacts, blobs));
 }
 
+FinalizedHardwareImplementation makeBuiltInNativeImplementation(
+    llvm::StringRef test, const Fixture &fixture,
+    const platform::FinalizedImplementationPlatform &platform,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const FpgaNativeExternalModuleContract &definition =
+      amdXilinxDsp58ExternalModuleContract();
+  const std::string rtl = "module top(input logic a, output logic y);\n  " +
+                          definition.moduleName.str() +
+                          " u_native();\n  assign y = a;\nendmodule\n";
+  std::vector<ImplementationPayload> payloads{
+      {PayloadRole::RtlSource, "rtl/top.sv", take(test, blobs.put(bytes(rtl)))},
+      {PayloadRole::GenerationConstraint, "constraints/top.sdc",
+       take(test, blobs.put(bytes(kConstraint)))},
+      {PayloadRole::BlackBoxContract,
+       definition.blackBoxPayloadLogicalName.str(),
+       take(test, blobs.put(bytes(definition.blackBoxContractBytes)))}};
+  const auto format =
+      take(test, RepresentationFormatDescriptorRef::get(
+                     RepresentationFormatKind::SystemVerilogRtl));
+  auto representation =
+      take(test,
+           createImplementationRepresentationRoot(
+               RepresentationRootVariant::Rtl, std::nullopt, format,
+               {RepresentationObjectKind::Module, "top"}, std::move(payloads)));
+  HardwareImplementationDraft draft{
+      fixture.system.reference(),
+      fixture.abi.reference(),
+      {},
+      std::move(representation),
+      platform.reference(),
+      {{ImplementationDataInterfaceRef{fixture.firstDataEndpoint},
+        {RepresentationObjectKind::Port, "top.a"},
+        std::nullopt}},
+      {{{RepresentationObjectKind::Module, "top"}, fixture.firstOwner},
+       {{RepresentationObjectKind::Module, definition.moduleName.str()},
+        fixture.firstOwner}},
+      {},
+      {{definition.contractRef.str(),
+        {{definition.providerInputSlotRef.str(),
+          ToolBundledResourceDependency{
+              definition.stableProviderBuildIdentity.str(),
+              definition.resourceKey.str()}}},
+        {fixture.firstOwner},
+        {{RepresentationObjectKind::Module, definition.moduleName.str()}},
+        ImplementationPayloadKey{
+            PayloadRole::BlackBoxContract,
+            definition.blackBoxPayloadLogicalName.str()}}}};
+  ExternalImplementationContractCatalog contracts =
+      take(test, makeFpgaNativeExternalImplementationContractCatalog());
+  return take(test, finalizeHardwareImplementation(std::move(draft), contracts,
+                                                   artifacts, blobs));
+}
+
 std::string synthesisMetadata(llvm::StringRef part) {
   return "{\"schema\":\"loom.vivado_synthesis_attempt\",\"version\":"
          "\"1.0\",\"top\":\"top\",\"device_ordering_code\":\"" +
@@ -401,13 +455,16 @@ std::string imageMetadata(llvm::StringRef part) {
 
 void makeFakeVivado(const std::filesystem::path &path, bool badMetadata,
                     bool deviceAvailable = true, bool failSynthesis = false,
-                    bool omitImage = false) {
+                    bool omitImage = false,
+                    llvm::StringRef build = kSyntheticBuild,
+                    llvm::StringRef part = kSyntheticPart) {
   std::string script =
       "#!/usr/bin/env bash\n"
       "set -euo pipefail\n"
       "if [[ \"${1-}\" == -version ]]; then\n"
-      "  printf '%s\\n' 'vivado v2099.1 (64-bit)' "
-      "'SW Build 9000000 on Mon Jan 01 00:00:00 UTC 2099'\n"
+      "  printf '%s\\n' 'vivado v2099.1 (64-bit)' '" +
+      build.str() +
+      "'\n"
       "  exit 0\n"
       "fi\n"
       "loom_source=''\n"
@@ -418,17 +475,17 @@ void makeFakeVivado(const std::filesystem::path &path, bool badMetadata,
       "case \"$loom_source\" in\n"
       "  *drivers/validate-device.tcl)\n"
       "    [[ -f \"$loom_source\" ]]\n"
-      "    printf '%s\\n' 'vivado v2099.1 (64-bit)' "
-      "'**** SW Build 9000000 on Mon Jan 01 00:00:00 UTC 2099'\n" +
+      "    printf '%s\\n' 'vivado v2099.1 (64-bit)' '**** " +
+      build.str() + "'\n" +
       (deviceAvailable ? "    printf '%s\\n' 'LOOM_VIVADO_DEVICE_AVAILABLE " +
-                             kSyntheticPart.str() + "'\n    exit 0\n"
+                             part.str() + "'\n    exit 0\n"
                        : "    exit 1\n") +
       "    ;;\n"
       "  drivers/synthesize.tcl)\n" +
       (failSynthesis ? "    exit 9\n" : "") +
       "    printf 'SYNTHETIC-DCP\\n' >outputs/synthesized.dcp\n"
       "    printf '%s' '" +
-      synthesisMetadata(kSyntheticPart) +
+      synthesisMetadata(part) +
       "' >outputs/synthesis.json\n"
       "    ;;\n"
       "  drivers/implement.tcl)\n"
@@ -436,7 +493,7 @@ void makeFakeVivado(const std::filesystem::path &path, bool badMetadata,
       "    printf 'ROUTED-SYNTHETIC-DCP\\n' >outputs/routed.dcp\n"
       "    printf '%s' '" +
       (badMetadata ? physicalMetadata("xc7a100tcsg324-1")
-                   : physicalMetadata(kSyntheticPart)) +
+                   : physicalMetadata(part)) +
       "' >outputs/fpga-physical.json\n"
       "    ;;\n"
       "  drivers/image.tcl)\n"
@@ -444,7 +501,7 @@ void makeFakeVivado(const std::filesystem::path &path, bool badMetadata,
       (omitImage
            ? ""
            : "    printf 'SYNTHETIC-DEVICE-IMAGE\\n' >outputs/device.pdi\n") +
-      "    printf '%s' '" + imageMetadata(kSyntheticPart) +
+      "    printf '%s' '" + imageMetadata(part) +
       "' >outputs/fpga-image.json\n"
       "    ;;\n"
       "  *) exit 64 ;;\n"
@@ -1093,6 +1150,41 @@ void explicitContractCatalogPublishesNativeClosure(
       "explicit native contract closure was not preserved then absorbed");
 }
 
+void registeredProviderImportsBuiltInNativeClosure(
+    const std::filesystem::path &root) {
+  const std::filesystem::path data = root / "built-in-native-closure";
+  createStoreDirectories(data);
+  ArtifactStore artifacts((data / "artifacts").string());
+  BlobStore blobs((data / "blobs").string());
+  Fixture fabric = makeFixture(__func__, artifacts);
+  const FpgaNativeExternalModuleContract &definition =
+      amdXilinxDsp58ExternalModuleContract();
+  auto platform = makePlatform(__func__, artifacts, definition.vendor,
+                               definition.deviceOrderingCode);
+  FinalizedHardwareImplementation implementation =
+      makeBuiltInNativeImplementation(__func__, fabric, platform, artifacts,
+                                      blobs);
+  auto inputs =
+      take(__func__, bindVivadoStaticFullDeviceCandidateGeneratorInputs(
+                         implementation.reference(), platform.reference()));
+  constexpr llvm::StringLiteral build =
+      "SW Build 6060944 on Thu Mar 06 19:10:09 MST 2025";
+  auto config = take(__func__, projectResolvedVivadoStaticFullDeviceConfigView(
+                                   build, definition.deviceOrderingCode));
+  auto binding = take(
+      __func__, resolveVivadoStaticFullDeviceCandidateGeneratorBinding(config));
+  const std::filesystem::path tool = root / "tools" / "built-in-vivado";
+  makeFakeVivado(tool, false, true, false, false, build,
+                 definition.deviceOrderingCode);
+  PreparedExternalToolInvocation prepared = take(
+      __func__, prepareCandidateGeneratorInvocation(
+                    inputs, binding, artifacts, blobs,
+                    preparationContext(root / "built-in-native-bundle", tool)));
+  expectTypedFailure<IncompleteExternalToolInvocationError>(
+      __func__, importCandidateGeneratorInvocation(inputs, binding, prepared,
+                                                   artifacts, blobs));
+}
+
 void typedAdmissionFailuresArePreserved(const std::filesystem::path &root) {
   const std::filesystem::path amdData = root / "admission-amd";
   createStoreDirectories(amdData);
@@ -1241,6 +1333,7 @@ void runSyntheticTests(const std::filesystem::path &root) {
   driversAreDeterministicAndDoNotInfer();
   bundleLifecycleIsStrict(root);
   explicitContractCatalogPublishesNativeClosure(root);
+  registeredProviderImportsBuiltInNativeClosure(root);
   typedAdmissionFailuresArePreserved(root);
   containerEnvironmentIsFrozen(root);
 }

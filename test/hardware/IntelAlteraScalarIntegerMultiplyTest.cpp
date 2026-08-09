@@ -119,6 +119,16 @@ void expectUnsupported(llvm::StringRef test,
   expectUnsupportedError(test, value.takeError(), family);
 }
 
+void expectExternalContractError(llvm::StringRef test, llvm::Error error) {
+  require(test, static_cast<bool>(error),
+          "accepted an invalid native FPGA external binding");
+  const std::string message = llvm::toString(std::move(error));
+  require(test,
+          llvm::StringRef(message).starts_with(
+              "fpga_native_external_contract_invalid:"),
+          "invalid external binding lost its owner error classification");
+}
+
 mlir::MLIRContext &fabricContext() {
   static mlir::MLIRContext *context = [] {
     mlir::DialectRegistry registry;
@@ -670,21 +680,17 @@ void exactOccurrenceMaterializesDeterministically(
       firstOutput.externalImplementationBindings;
   wrongBindings.front().representationLocators.front().canonicalName =
       "altmult_add";
-  expectUnsupportedError(
-      test,
-      contracts.canonicalizeAndValidateBindings(wrongBindings, representation,
-                                                &platform.platform(), system),
-      ::fabric::ImplementationFamilyId::ScalarIntegerMultiply);
+  expectExternalContractError(
+      test, contracts.canonicalizeAndValidateBindings(
+                wrongBindings, representation, &platform.platform(), system));
   ImplementationRepresentationRoot wrongPayloadRepresentation = representation;
   wrongPayloadRepresentation.payloads.front().blobDigest =
       loom::computeBlobDigest(std::array<std::uint8_t, 1>{0});
   validatedBindings = firstOutput.externalImplementationBindings;
-  expectUnsupportedError(
-      test,
-      contracts.canonicalizeAndValidateBindings(validatedBindings,
-                                                wrongPayloadRepresentation,
-                                                &platform.platform(), system),
-      ::fabric::ImplementationFamilyId::ScalarIntegerMultiply);
+  expectExternalContractError(test,
+                              contracts.canonicalizeAndValidateBindings(
+                                  validatedBindings, wrongPayloadRepresentation,
+                                  &platform.platform(), system));
 
   auto wrapper = first.module->lookupSymbol<circt::hw::HWModuleOp>(
       "intel_altera_multiply_0");

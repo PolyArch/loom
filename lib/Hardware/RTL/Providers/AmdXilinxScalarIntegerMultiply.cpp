@@ -1,5 +1,6 @@
 #include "Hardware/RTL/Providers/AmdXilinxScalarIntegerMultiply.h"
 
+#include "Hardware/Implementation/FpgaNativeExternalContracts.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 #include "ProviderSupport.h"
@@ -24,23 +25,9 @@
 namespace loom::hardware::rtl {
 namespace {
 
-constexpr llvm::StringLiteral kContractRef = "amd.xilinx.unisim.dsp58@1";
-constexpr llvm::StringLiteral kInputSlot = "primitive";
-constexpr llvm::StringLiteral kProviderBuild =
-    "amd.vivado:2024.2.2-build.6060944-ip.6050500-shared.6060542";
-constexpr llvm::StringLiteral kResourceKey = "unisim:versal:DSP58";
-constexpr llvm::StringLiteral kPart = "xcvp1802-vsva5601-3HP-e-S";
-constexpr llvm::StringLiteral kPrimitive = "DSP58";
-constexpr llvm::StringLiteral kPayloadName =
-    "contracts/amd_xilinx_unisim_dsp58.json";
-constexpr llvm::StringLiteral kBlackBoxContract =
-    "{\"contract\":\"amd.xilinx.unisim.dsp58@1\","
-    "\"device\":\"xcvp1802-vsva5601-3HP-e-S\","
-    "\"latency\":\"combinational\",\"module\":\"DSP58\","
-    "\"operation\":\"i16_mul_mod\","
-    "\"resource\":\"unisim:versal:DSP58\","
-    "\"tool_build\":"
-    "\"amd.vivado:2024.2.2-build.6060944-ip.6050500-shared.6060542\"}\n";
+const FpgaNativeExternalModuleContract &nativeContract() {
+  return amdXilinxDsp58ExternalModuleContract();
+}
 
 llvm::Error unsupported() {
   return llvm::make_error<FabricOperationProviderUnsupportedError>(
@@ -52,17 +39,20 @@ bool isExactPlatform(const platform::ImplementationPlatform *platform) {
   if (!platform)
     return false;
   const auto *target = std::get_if<platform::FpgaTarget>(&platform->target());
-  return target && target->vendor == platform::FpgaVendor::AmdXilinx &&
-         target->deviceOrderingCode == kPart;
+  return target && target->vendor == nativeContract().vendor &&
+         target->deviceOrderingCode == nativeContract().deviceOrderingCode;
 }
 
 bool isExactExternalInput(llvm::ArrayRef<ExternalInputBinding> inputs) {
-  if (inputs.size() != 1 || inputs.front().providerInputSlotRef != kInputSlot)
+  if (inputs.size() != 1 || inputs.front().providerInputSlotRef !=
+                                nativeContract().providerInputSlotRef)
     return false;
   const auto *resource = std::get_if<ToolBundledResourceDependency>(
       &inputs.front().dependencyIdentity);
-  return resource && resource->stableProviderBuildIdentity == kProviderBuild &&
-         resource->resourceKey == kResourceKey;
+  return resource &&
+         resource->stableProviderBuildIdentity ==
+             nativeContract().stableProviderBuildIdentity &&
+         resource->resourceKey == nativeContract().resourceKey;
 }
 
 bool hasExactCapability(const fabric::ResolvedFabricOpCapabilityView &view) {
@@ -270,8 +260,8 @@ void materializeDsp58(FabricOperationProviderRequest request) {
   const std::vector<circt::hw::PortInfo> primitivePorts = dsp58Ports(builder);
   const Dsp58Parameters parameters = dsp58Parameters(builder);
   circt::hw::HWModuleExternOp primitive = circt::hw::HWModuleExternOp::create(
-      builder, location, builder.getStringAttr(kPrimitive),
-      circt::hw::ModulePortInfo(primitivePorts), kPrimitive,
+      builder, location, builder.getStringAttr(nativeContract().moduleName),
+      circt::hw::ModulePortInfo(primitivePorts), nativeContract().moduleName,
       parameters.declarations);
 
   const auto wrapperPortStorage = request.leaf.getPortList();
@@ -326,7 +316,8 @@ llvm::Expected<FabricOperationProviderOutput>
 materializeAmdXilinxScalarIntegerMultiply(
     FabricOperationProviderRequest request) {
   if (request.recipe != BackendRecipeKey::AmdXilinx ||
-      request.externalImplementationContractRef != kContractRef ||
+      request.externalImplementationContractRef !=
+          nativeContract().contractRef ||
       !isExactPlatform(request.implementationPlatform) ||
       !isExactExternalInput(request.externalInputs) ||
       !hasExactCapability(request.capability))
@@ -344,39 +335,21 @@ materializeAmdXilinxScalarIntegerMultiply(
   materializeDsp58(request);
   FabricOperationProviderOutput output;
   output.payloads.push_back(
-      {PayloadRole::BlackBoxContract, kPayloadName.str(),
-       std::vector<std::uint8_t>(kBlackBoxContract.bytes_begin(),
-                                 kBlackBoxContract.bytes_end())});
+      {PayloadRole::BlackBoxContract,
+       nativeContract().blackBoxPayloadLogicalName.str(),
+       std::vector<std::uint8_t>(
+           nativeContract().blackBoxContractBytes.bytes_begin(),
+           nativeContract().blackBoxContractBytes.bytes_end())});
   output.externalImplementationBindings.push_back(
-      {kContractRef.str(),
+      {nativeContract().contractRef.str(),
        std::vector<ExternalInputBinding>(request.externalInputs.begin(),
                                          request.externalInputs.end()),
        {},
-       {{RepresentationObjectKind::Module, kPrimitive.str()}},
-       ImplementationPayloadKey{PayloadRole::BlackBoxContract,
-                                kPayloadName.str()}});
+       {{RepresentationObjectKind::Module, nativeContract().moduleName.str()}},
+       ImplementationPayloadKey{
+           PayloadRole::BlackBoxContract,
+           nativeContract().blackBoxPayloadLogicalName.str()}});
   return output;
-}
-
-llvm::Error
-validateDsp58Binding(const ExternalImplementationBindingDraft &binding,
-                     const ImplementationRepresentationRoot &representation,
-                     const platform::ImplementationPlatform *platform) {
-  if ((representation.variant != RepresentationRootVariant::Rtl &&
-       representation.variant != RepresentationRootVariant::FpgaPhysical) ||
-      !isExactPlatform(platform) ||
-      binding.providerContractRef != kContractRef ||
-      !isExactExternalInput(binding.externalInputs) ||
-      binding.fabricResourceRefs.empty() ||
-      binding.representationLocators !=
-          std::vector<RepresentationLocator>{
-              {RepresentationObjectKind::Module, kPrimitive.str()}} ||
-      !binding.blackBoxContractPayload ||
-      !(*binding.blackBoxContractPayload ==
-        ImplementationPayloadKey{PayloadRole::BlackBoxContract,
-                                 kPayloadName.str()}))
-    return unsupported();
-  return llvm::Error::success();
 }
 
 } // namespace
@@ -384,19 +357,21 @@ validateDsp58Binding(const ExternalImplementationBindingDraft &binding,
 llvm::Error registerAmdXilinxScalarIntegerMultiplyProvider(
     FabricOperationProviderRegistry &registry) {
   return registry.add({::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
-                       BackendRecipeKey::AmdXilinx, kContractRef.str(),
+                       BackendRecipeKey::AmdXilinx,
+                       nativeContract().contractRef.str(),
                        materializeAmdXilinxScalarIntegerMultiply});
 }
 
 llvm::Error registerAmdXilinxDsp58ExternalImplementationContract(
     ExternalImplementationContractCatalog &catalog) {
-  return catalog.add(ExternalImplementationContract{
-      kContractRef.str(),
-      {{kInputSlot.str(), {ExternalDependencyKind::ToolBundledResource}}},
-      {RepresentationRootVariant::Rtl, RepresentationRootVariant::FpgaPhysical},
-      true,
-      false,
-      validateDsp58Binding});
+  auto builtins = makeFpgaNativeExternalImplementationContractCatalog();
+  if (!builtins)
+    return builtins.takeError();
+  auto contract = builtins->find(nativeContract().contractRef);
+  if (!contract)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "AMD DSP58 contract is not registered");
+  return catalog.add(std::move(*contract));
 }
 
 } // namespace loom::hardware::rtl

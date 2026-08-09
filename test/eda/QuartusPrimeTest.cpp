@@ -9,6 +9,7 @@
 #include "ExternalTool/InvocationBundle.h"
 #include "ExternalTool/Provider.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
+#include "Hardware/Implementation/FpgaNativeExternalContracts.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
@@ -249,6 +250,57 @@ FinalizedHardwareImplementation makeImplementation(
       {}};
   return take(
       test, finalizeHardwareImplementation(std::move(draft), artifacts, blobs));
+}
+
+FinalizedHardwareImplementation makeBuiltInNativeImplementation(
+    llvm::StringRef test, const SemanticFixture &fixture,
+    const FinalizedImplementationPlatform &platform,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const FpgaNativeExternalModuleContract &definition =
+      intelAlteraLpmMultExternalModuleContract();
+  const std::string rtl = "module " + kTop.str() + "; " +
+                          definition.moduleName.str() +
+                          " u_native(); endmodule\n";
+  std::vector<ImplementationPayload> payloads{
+      {PayloadRole::RtlSource, "rtl/top.sv", take(test, blobs.put(bytes(rtl)))},
+      {PayloadRole::GenerationConstraint, "constraints/top.sdc",
+       take(test, blobs.put(bytes("# exact constraint payload\n")))},
+      {PayloadRole::BlackBoxContract,
+       definition.blackBoxPayloadLogicalName.str(),
+       take(test, blobs.put(bytes(definition.blackBoxContractBytes)))}};
+  const RepresentationFormatDescriptorRef format =
+      take(test, RepresentationFormatDescriptorRef::get(
+                     RepresentationFormatKind::SystemVerilogRtl));
+  ImplementationRepresentationRoot representation =
+      take(test, createImplementationRepresentationRoot(
+                     RepresentationRootVariant::Rtl, std::nullopt, format,
+                     {RepresentationObjectKind::Module, kTop.str()},
+                     std::move(payloads)));
+  HardwareImplementationDraft draft{
+      fixture.system.reference(),
+      fixture.abi.reference(),
+      {},
+      std::move(representation),
+      platform.reference(),
+      {},
+      {{{RepresentationObjectKind::Module, kTop.str()}, fixture.firstOwner},
+       {{RepresentationObjectKind::Module, definition.moduleName.str()},
+        fixture.firstOwner}},
+      {},
+      {{definition.contractRef.str(),
+        {{definition.providerInputSlotRef.str(),
+          ToolBundledResourceDependency{
+              definition.stableProviderBuildIdentity.str(),
+              definition.resourceKey.str()}}},
+        {fixture.firstOwner},
+        {{RepresentationObjectKind::Module, definition.moduleName.str()}},
+        ImplementationPayloadKey{
+            PayloadRole::BlackBoxContract,
+            definition.blackBoxPayloadLogicalName.str()}}}};
+  ExternalImplementationContractCatalog contracts =
+      take(test, makeFpgaNativeExternalImplementationContractCatalog());
+  return take(test, finalizeHardwareImplementation(std::move(draft), contracts,
+                                                   artifacts, blobs));
 }
 
 std::string physicalMetadata(llvm::StringRef providerBuild,
@@ -769,11 +821,46 @@ void strictImportUsesOnlyTheCompletedDeclaredSnapshot(
                         "semantic closure");
 }
 
+void registeredProviderImportsBuiltInNativeClosure(
+    const std::filesystem::path &root) {
+  const std::filesystem::path data = root / "built-in-native-closure";
+  createStoreDirectories(data);
+  ArtifactStore artifacts((data / "artifacts").string());
+  BlobStore blobs((data / "blobs").string());
+  SemanticFixture semantics = makeSemanticFixture(__func__, artifacts);
+  const FpgaNativeExternalModuleContract &definition =
+      intelAlteraLpmMultExternalModuleContract();
+  FinalizedImplementationPlatform platform = makePlatform(
+      __func__, artifacts, definition.vendor, definition.deviceOrderingCode);
+  FinalizedHardwareImplementation implementation =
+      makeBuiltInNativeImplementation(__func__, semantics, platform, artifacts,
+                                      blobs);
+  auto inputs =
+      take(__func__, bindQuartusPrimeStaticFullDeviceCandidateGeneratorInputs(
+                         implementation.reference(), platform.reference()));
+  auto config =
+      take(__func__, projectResolvedQuartusPrimeStaticFullDeviceConfigView(
+                         definition.stableProviderBuildIdentity, kToolVersion,
+                         definition.deviceOrderingCode));
+  auto binding = take(
+      __func__,
+      resolveQuartusPrimeStaticFullDeviceCandidateGeneratorBinding(config));
+  const std::filesystem::path tool = root / "tools" / "built-in-quartus";
+  writeFakeQuartus(tool);
+  PreparedExternalToolInvocation prepared = take(
+      __func__, prepareCandidateGeneratorInvocation(
+                    inputs, binding, artifacts, blobs,
+                    preparationContext(root / "built-in-native-bundle", tool)));
+  expectIncomplete(__func__, importCandidateGeneratorInvocation(
+                                 inputs, binding, prepared, artifacts, blobs));
+}
+
 void runSynthetic(const std::filesystem::path &root) {
   descriptorAndConfigAreExact();
   deterministicPreparationUsesExactInputs(root);
   exactAdmissionIsTyped(root);
   strictImportUsesOnlyTheCompletedDeclaredSnapshot(root);
+  registeredProviderImportsBuiltInNativeClosure(root);
 }
 
 void runRealSmoke(const std::filesystem::path &root, llvm::StringRef module,

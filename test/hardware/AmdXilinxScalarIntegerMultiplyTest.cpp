@@ -52,22 +52,23 @@ using namespace loom::hardware;
 using namespace loom::hardware::rtl;
 namespace platform = loom::platform;
 
-constexpr llvm::StringLiteral kContractRef = "amd.xilinx.unisim.dsp58@1";
+constexpr llvm::StringLiteral kContractRef = "amd.xilinx.unisim.dsp58@2";
 constexpr llvm::StringLiteral kInputSlot = "primitive";
 constexpr llvm::StringLiteral kProviderBuild =
-    "amd.vivado:2024.2.2-build.6060944-ip.6050500-shared.6060542";
+    "amd_vivado_build_5357204275696c642036303630393434206f6e20546875204d61"
+    "722030362031393a31303a3039204d53542032303235";
 constexpr llvm::StringLiteral kResourceKey = "unisim:versal:DSP58";
 constexpr llvm::StringLiteral kPart = "xcvp1802-vsva5601-3HP-e-S";
 constexpr llvm::StringLiteral kPayloadName =
     "contracts/amd_xilinx_unisim_dsp58.json";
 constexpr llvm::StringLiteral kBlackBoxContract =
-    "{\"contract\":\"amd.xilinx.unisim.dsp58@1\","
+    "{\"contract\":\"amd.xilinx.unisim.dsp58@2\","
     "\"device\":\"xcvp1802-vsva5601-3HP-e-S\","
     "\"latency\":\"combinational\",\"module\":\"DSP58\","
     "\"operation\":\"i16_mul_mod\","
     "\"resource\":\"unisim:versal:DSP58\","
-    "\"tool_build\":"
-    "\"amd.vivado:2024.2.2-build.6060944-ip.6050500-shared.6060542\"}\n";
+    "\"tool_build\":\"amd_vivado_build_5357204275696c642036303630393434"
+    "206f6e20546875204d61722030362031393a31303a3039204d53542032303235\"}\n";
 
 [[noreturn]] void fail(llvm::StringRef test, const std::string &message) {
   llvm::errs() << test << ": " << message << '\n';
@@ -115,6 +116,16 @@ void expectUnsupported(llvm::StringRef test,
                        ::fabric::ImplementationFamilyId family) {
   require(test, !value, "accepted an unverified AMD/Xilinx recipe");
   expectUnsupportedError(test, value.takeError(), family);
+}
+
+void expectExternalContractError(llvm::StringRef test, llvm::Error error) {
+  require(test, static_cast<bool>(error),
+          "accepted an invalid native FPGA external binding");
+  const std::string message = llvm::toString(std::move(error));
+  require(test,
+          llvm::StringRef(message).starts_with(
+              "fpga_native_external_contract_invalid:"),
+          "invalid external binding lost its owner error classification");
 }
 
 mlir::MLIRContext &fabricContext() {
@@ -739,12 +750,15 @@ void exactOccurrenceMaterializesDeterministically(
   const auto format =
       take(test, RepresentationFormatDescriptorRef::get(
                      RepresentationFormatKind::SystemVerilogRtl));
+  const ImplementationPayload contractPayload{
+      PayloadRole::BlackBoxContract, kPayloadName.str(),
+      loom::computeBlobDigest(expectedBlackBox)};
   const ImplementationRepresentationRoot representation{
       RepresentationRootVariant::Rtl,
       std::nullopt,
       format,
       {RepresentationObjectKind::Module, "amd_xilinx_multiply_0"},
-      {}};
+      {contractPayload}};
   auto system =
       take(test, loom::fabric::requireSystemRoot(fixture.system.view()));
   std::vector<ExternalImplementationBindingDraft> validatedBindings =
@@ -758,7 +772,7 @@ void exactOccurrenceMaterializesDeterministically(
       format,
       {RepresentationObjectKind::DeviceResource,
        "device_78637670313830322d76737661353630312d3348502d652d53"},
-      {}};
+      {contractPayload}};
   validatedBindings = firstOutput.externalImplementationBindings;
   if (llvm::Error error = contracts.canonicalizeAndValidateBindings(
           validatedBindings, physicalRepresentation, &platform.platform(),
@@ -768,11 +782,9 @@ void exactOccurrenceMaterializesDeterministically(
       firstOutput.externalImplementationBindings;
   wrongBindings.front().representationLocators.front().canonicalName =
       "DSP48E2";
-  expectUnsupportedError(
-      test,
-      contracts.canonicalizeAndValidateBindings(wrongBindings, representation,
-                                                &platform.platform(), system),
-      ::fabric::ImplementationFamilyId::ScalarIntegerMultiply);
+  expectExternalContractError(
+      test, contracts.canonicalizeAndValidateBindings(
+                wrongBindings, representation, &platform.platform(), system));
 
   auto primitive =
       first.module->lookupSymbol<circt::hw::HWModuleExternOp>("DSP58");
@@ -914,11 +926,13 @@ void unsupportedBoundaryIsTyped(const std::filesystem::path &root) {
 
   auto exactPlatform = makePlatform(test, store);
   for (const ExternalInputBinding &wrong : std::array<ExternalInputBinding, 2>{
-           ExternalInputBinding{kInputSlot.str(),
-                                ToolBundledResourceDependency{
-                                    "amd.vivado:2024.2.2-build.6060944-ip."
-                                    "6050500-shared.6060541",
-                                    kResourceKey.str()}},
+           ExternalInputBinding{
+               kInputSlot.str(),
+               ToolBundledResourceDependency{
+                   "amd_vivado_build_5357204275696c6420363036"
+                   "30393434206f6e20546875204d61722030362031393a"
+                   "31303a3039204d53542032303234",
+                   kResourceKey.str()}},
            ExternalInputBinding{
                kInputSlot.str(),
                ToolBundledResourceDependency{kProviderBuild.str(),
