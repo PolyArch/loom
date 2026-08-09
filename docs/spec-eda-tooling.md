@@ -300,19 +300,21 @@ The initial Voltus descriptor is the exact static, explicit-assumption model
 registered as Evaluation model kind 12. Evaluation projects one
 `CompleteRailAnalysisConfiguration` from its descriptor-owned config view and
 the already validated Request. The projection contains the exact process
-corner, global applied supply, explicit activity assumption, static method,
-complete-network coverage, and `ExactWithinModel` uncertainty. Voltus consumes
-that projection together with the exact routed HardwareImplementation,
-ImplementationPlatform binding, and complete PGV file tree. It does not
-accept caller-authored Tcl values for any projected fact.
+corner, global applied supply, global required clock period, explicit activity
+assumption, static method, complete-network coverage, and `ExactWithinModel`
+uncertainty. The period targets the explicit assumption's sole global clock;
+its absolute frequency cannot be inferred from SDC bytes, PGV contents, or a
+tool default. Voltus consumes that projection together with the exact routed
+HardwareImplementation, ImplementationPlatform binding, and complete PGV file
+tree. It does not accept caller-authored Tcl values for any projected fact.
 
 This initial model supports only one global applied supply and one global
-activity clock. A provider must return typed `Unsupported` for a physical
-implementation that cannot be represented by that exact contract. It cannot
-choose one domain, substitute a Fabric nominal voltage, omit uncovered power
-nodes, or infer activity from an ambient report. A later multi-domain or
-dynamic provider uses another exact model descriptor while retaining the same
-provider-neutral MetricKind.
+activity clock with one exact required period. A provider must return typed
+`Unsupported` for a physical implementation that cannot be represented by
+that exact contract. It cannot choose one domain, substitute a Fabric nominal
+voltage, omit uncovered power nodes, or infer activity from an ambient report.
+A later multi-domain or dynamic provider uses another exact model descriptor
+while retaining the same provider-neutral MetricKind.
 
 FPGA prototype or measured-hardware execution uses the same
 EvaluationRequest, SimulationWorkload, SimulationRuntimeInput, and Evidence

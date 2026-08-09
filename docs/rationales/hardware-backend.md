@@ -710,10 +710,13 @@ report field or severity label into an Evaluation authority.
 The initial shared rail contract deliberately has no second provider-config
 authority. Fixed method, activity-basis kind, complete-network coverage, and
 uncertainty are recovered from the exact model config view; process corner,
-applied voltage, and activity values are recovered from the same validated
-Request. The Voltus adapter only translates that closed projection and binds
-its exact PGV tree. Keeping the first model to one global supply and activity
-clock avoids inventing a premature power-domain-to-layout schema while making
-the limitation observable as typed `Unsupported`. Multi-domain or dynamic
-analysis can add an exact model when its physical correspondence is owned,
-without weakening the existing whole-case metric.
+applied voltage, required clock period, and activity values are recovered from
+the same validated Request. Activity density is dimensionless per clock;
+requiring the existing absolute-period condition avoids a hidden frequency
+default or an adapter-specific SDC parser becoming a competing authority. The
+Voltus adapter only translates that closed projection and binds its exact PGV
+tree. Keeping the first model to one global supply and one activity clock with
+one period avoids inventing a premature power-domain-to-layout schema while
+making the limitation observable as typed `Unsupported`. Multi-domain or
+dynamic analysis can add an exact model when its physical correspondence is
+owned, without weakening the existing whole-case metric.

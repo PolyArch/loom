@@ -371,8 +371,12 @@ ActivityBinding.ExplicitAssumption    -> [HardwareImplementation root,
 ```
 
 Model kind 12 consumes and requires exactly `ProcessCorner`, `SupplyVoltage`,
-and the two-target explicit `ActivityBinding` pattern. Its descriptor-owned
-resolved config view decodes to one fixed provider-neutral contract:
+`RequiredClockPeriod`, and the two-target explicit `ActivityBinding` pattern.
+The required period targets the same global HardwareImplementation root as the
+explicit assumption's clock domain. Transition density is measured per that
+clock, so neither an opaque SDC payload, a PGV library, nor a tool default may
+provide a second absolute-frequency authority. Its descriptor-owned resolved
+config view decodes to one fixed provider-neutral contract:
 
 ```text
 RailAnalysisModelConfig {
@@ -385,12 +389,13 @@ RailAnalysisModelConfig {
 
 The corresponding provider configuration is derived only from that typed
 config view and the validated Request conditions. The initial model admits
-one global applied supply and one global activity clock for an always-on
-implementation. A multi-supply, multi-clock, partial-network, or execution-
-activity case is typed `Unsupported`; a provider cannot select one domain,
-invent a nominal voltage, or reinterpret a partial network as the whole-case
-metric. Supporting another method or activity basis requires another exact
-model descriptor and config-view contract, not a mutable invocation flag.
+one global applied supply and one global activity clock with one exact period
+for an always-on implementation. A multi-supply, multi-clock, partial-network,
+or execution-activity case is typed `Unsupported`; a provider cannot select
+one domain, invent a nominal voltage or clock period, or reinterpret a partial
+network as the whole-case metric. Supporting another method or activity basis
+requires another exact model descriptor and config-view contract, not a
+mutable invocation flag.
 
 Case kinds 0 and 1 admit the exact Fabric-anchored target patterns owned by
 `ProcessCorner`, `SupplyVoltage`, `Temperature`, `RequiredClockPeriod`,
