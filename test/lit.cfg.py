@@ -16,6 +16,7 @@ for executable, feature in (
     ("verilator", "verilator"),
     ("yosys", "yosys"),
     ("openroad", "openroad-2026-08-06"),
+    ("quartus_sh", "quartus-prime-pro-26.1"),
 ):
     if shutil.which(executable, path=config.environment.get("PATH")):
         config.available_features.add(feature)

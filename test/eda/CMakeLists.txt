@@ -26,6 +26,16 @@ target_link_libraries(loom-openroad-placed-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-quartus-prime-test
+  QuartusPrimeTest.cpp
+)
+
+target_link_libraries(loom-quartus-prime-test PRIVATE
+  LoomHardwareConfigurationTestSupport
+  LoomEDAIntelAltera
+  LLVMSupport
+)
+
 add_executable(loom-synopsys-adapter-test
   SynopsysAdapterTest.cpp
 )
