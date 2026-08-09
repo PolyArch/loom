@@ -1,5 +1,7 @@
 #include "EDA/Adapters/AMD/Vivado.h"
 
+#include "EDA/Adapters/FpgaImplementationPublication.h"
+
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobDigest.h"
@@ -407,19 +409,42 @@ struct InvocationInputs final {
 llvm::Expected<InvocationInputs> collectInvocationInputs(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
+
+llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolPreparationContext &context);
+
+llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalImplementationContractCatalog &contracts,
     const ArtifactStore &artifacts, const BlobStore &blobs);
 
 llvm::Expected<PreparedExternalToolInvocation>
 prepareProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                 const ResolvedCandidateGeneratorBinding &binding,
                 const ArtifactStore &artifacts, const BlobStore &blobs,
-                const ExternalToolPreparationContext &context);
+                const ExternalToolPreparationContext &context) {
+  static const ExternalImplementationContractCatalog contracts;
+  return prepareProviderWithContracts(inputBindings, binding, contracts,
+                                      artifacts, blobs, context);
+}
 
 llvm::Expected<CandidateGeneratorProviderResult>
 importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
                const PreparedExternalToolInvocation &prepared,
-               const ArtifactStore &artifacts, const BlobStore &blobs);
+               const ArtifactStore &artifacts, const BlobStore &blobs) {
+  static const ExternalImplementationContractCatalog contracts;
+  return importProviderWithContracts(inputBindings, binding, prepared,
+                                     contracts, artifacts, blobs);
+}
 
 llvm::Error validateExactManifestContract(
     const PreparedExternalToolInvocation &prepared,
@@ -429,11 +454,11 @@ llvm::Error validateExactManifestContract(
 const CandidateGeneratorDescriptor descriptor{
     vivadoStaticFullDeviceCandidateGeneratorKind,
     "eda.amd.vivado_static_full_device",
-    "loom.eda.amd.vivado_static_full_device.generator.v1",
+    "loom.eda.amd.vivado_static_full_device.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
-    CandidateGeneratorDeterminism::Deterministic,
+    CandidateGeneratorDeterminism::IndependentReplicates,
     workUnits,
     nullptr,
     ProviderForm::ExternalPrepareImport,
@@ -446,6 +471,7 @@ const CandidateGeneratorProvider provider{
 llvm::Expected<InvocationInputs> collectInvocationInputs(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
+    const ExternalImplementationContractCatalog &contracts,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (binding.descriptorRef() != descriptor.reference())
     return invalid("binding does not select the Vivado generator");
@@ -459,8 +485,8 @@ llvm::Expected<InvocationInputs> collectInvocationInputs(
     return config.takeError();
 
   auto implementation = importHardwareImplementation(
-      inputBindings[RtlImplementationInput].artifacts.front(), artifacts,
-      blobs);
+      inputBindings[RtlImplementationInput].artifacts.front(), contracts,
+      artifacts, blobs);
   if (!implementation)
     return implementation.takeError();
   auto targetPlatform = platform::importImplementationPlatform(
@@ -473,10 +499,23 @@ llvm::Expected<InvocationInputs> collectInvocationInputs(
   if (root.variant != RepresentationRootVariant::Rtl ||
       root.formatRef.kind() != RepresentationFormatKind::SystemVerilogRtl)
     return unsupported("input implementation is not exact SystemVerilog RTL");
-  if (!hardware.memoryMacroBindings().empty() ||
-      !hardware.externalImplementationBindings().empty())
-    return unsupported(
-        "input RTL requires primitive, macro, or external provider contracts");
+  if (!hardware.memoryMacroBindings().empty())
+    return unsupported("input RTL requires unsupported memory macro binding");
+  for (const ExternalImplementationBinding &external :
+       hardware.externalImplementationBindings())
+    for (const ExternalInputBinding &input : external.externalInputs) {
+      if (std::holds_alternative<ExplicitFileDependency>(
+              input.dependencyIdentity))
+        return unsupported(
+            "occurrence-scoped explicit-file projection is unavailable");
+      const auto &resource =
+          std::get<ToolBundledResourceDependency>(input.dependencyIdentity);
+      if (resource.stableProviderBuildIdentity !=
+          vivadoToolBundledResourceProviderIdentity(
+              config->stableProviderBuildIdentity()))
+        return unsupported(
+            "RTL bundled resource belongs to another provider build");
+    }
   if (hardware.implementationPlatform() &&
       *hardware.implementationPlatform() != targetPlatform->reference())
     return unsupported(
@@ -505,6 +544,8 @@ llvm::Expected<InvocationInputs> collectInvocationInputs(
     } else if (payload.role == PayloadRole::GenerationConstraint) {
       path = ordinalPath(constraintOrdinal++, "inputs/constraints/", ".sdc");
       result.constraints.push_back(path);
+    } else if (payload.role == PayloadRole::BlackBoxContract) {
+      continue;
     } else {
       return unsupported(
           "RTL payload closure contains an unsupported provider contract");
@@ -536,13 +577,14 @@ void appendInheritedEnvironment(std::vector<std::string> &destination,
       destination.push_back(name);
 }
 
-llvm::Expected<PreparedExternalToolInvocation>
-prepareProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
-                const ResolvedCandidateGeneratorBinding &binding,
-                const ArtifactStore &artifacts, const BlobStore &blobs,
-                const ExternalToolPreparationContext &context) {
-  auto inputs =
-      collectInvocationInputs(inputBindings, binding, artifacts, blobs);
+llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolPreparationContext &context) {
+  auto inputs = collectInvocationInputs(inputBindings, binding, contracts,
+                                        artifacts, blobs);
   if (!inputs)
     return inputs.takeError();
   auto semanticContract =
@@ -885,13 +927,14 @@ llvm::Error validateExactManifestContract(
   return llvm::Error::success();
 }
 
-llvm::Expected<CandidateGeneratorProviderResult>
-importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
-               const ResolvedCandidateGeneratorBinding &binding,
-               const PreparedExternalToolInvocation &prepared,
-               const ArtifactStore &artifacts, const BlobStore &blobs) {
-  auto inputs =
-      collectInvocationInputs(inputBindings, binding, artifacts, blobs);
+llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto inputs = collectInvocationInputs(inputBindings, binding, contracts,
+                                        artifacts, blobs);
   if (!inputs)
     return inputs.takeError();
 
@@ -992,21 +1035,62 @@ importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   if (*imageFacts != imageMetadata(inputs->top, inputs->device))
     return invalid("image metadata is not exact");
 
+  auto source = importHardwareImplementation(
+      inputBindings[RtlImplementationInput].artifacts.front(), contracts,
+      artifacts, blobs);
+  if (!source)
+    return source.takeError();
+  auto publishedPhysical = publishRoutedFpgaPhysicalImplementation(
+      *source, inputBindings[ImplementationPlatformInput].artifacts.front(),
+      inputs->device, "database/vivado-routed.dcp", *routed, contracts,
+      artifacts, blobs);
+  if (!publishedPhysical)
+    return publishedPhysical.takeError();
+  auto publishedImage = publishFpgaImageImplementation(
+      *publishedPhysical,
+      inputBindings[ImplementationPlatformInput].artifacts.front(),
+      inputs->device, "image/device.bit", *bitstream, contracts, artifacts,
+      blobs);
+  if (!publishedImage)
+    return publishedImage.takeError();
+
   return CandidateGeneratorProviderResult{
-      IncompleteCandidateGeneratorResult{
-          CandidateGeneratorIncompleteReason::Unsupported,
-          {{CandidateGeneratorOutputSlotRef(FpgaPhysicalOutput), {}},
-           {CandidateGeneratorOutputSlotRef(FpgaImageOutput), {}}},
-          {}},
+      CompletedCandidateGeneratorResult{
+          {{CandidateGeneratorOutputSlotRef(FpgaPhysicalOutput),
+            {publishedPhysical->reference()}},
+           {CandidateGeneratorOutputSlotRef(FpgaImageOutput),
+            {publishedImage->reference()}}},
+          {{CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+            CandidateGeneratorOutputSlotRef(FpgaPhysicalOutput),
+            publishedPhysical->reference(),
+            {},
+            {}},
+           {CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+            CandidateGeneratorOutputSlotRef(FpgaImageOutput),
+            publishedImage->reference(),
+            {},
+            {}}}},
       {{CandidateGeneratorWorkUnitRef(0), 1, 1},
-       {CandidateGeneratorWorkUnitRef(1), 1, 0},
-       {CandidateGeneratorWorkUnitRef(2), 1, 0}}};
+       {CandidateGeneratorWorkUnitRef(1), 1, 1},
+       {CandidateGeneratorWorkUnitRef(2), 1, 1}}};
 }
 
 } // namespace
 
 llvm::ArrayRef<std::uint8_t> resolvedVivadoStaticFullDeviceConfigSchemaBytes() {
   return descriptorBytes();
+}
+
+std::string vivadoToolBundledResourceProviderIdentity(
+    llvm::StringRef stableProviderBuildIdentity) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string result = "amd_vivado_build_";
+  result.reserve(result.size() + stableProviderBuildIdentity.size() * 2);
+  for (const unsigned char byte : stableProviderBuildIdentity.bytes()) {
+    result.push_back(kHex[byte >> 4]);
+    result.push_back(kHex[byte & 0x0f]);
+  }
+  return result;
 }
 
 llvm::Expected<ResolvedVivadoStaticFullDeviceConfigView>
@@ -1081,6 +1165,28 @@ resolveVivadoStaticFullDeviceCandidateGeneratorBinding(
     return std::move(error);
   return ResolvedCandidateGeneratorBinding::get(
       descriptor.reference(), config.canonicalViewBytes(), config.digest());
+}
+
+llvm::Expected<PreparedExternalToolInvocation>
+prepareVivadoStaticFullDeviceInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolPreparationContext &context) {
+  return prepareProviderWithContracts(inputs, binding, contracts, artifacts,
+                                      blobs, context);
+}
+
+llvm::Expected<CandidateGeneratorProviderResult>
+importVivadoStaticFullDeviceInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return importProviderWithContracts(inputs, binding, prepared, contracts,
+                                     artifacts, blobs);
 }
 
 llvm::Expected<std::string>

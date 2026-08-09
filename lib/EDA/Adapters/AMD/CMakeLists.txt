@@ -8,6 +8,7 @@ target_include_directories(LoomEDAAMD PUBLIC
 
 target_link_libraries(LoomEDAAMD PUBLIC
   LoomDSECandidateGenerator
+  LoomEDAFpgaPublication
   LoomExternalTool
   LoomHardwareImplementation
   LoomImplementationPlatform

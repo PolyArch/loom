@@ -37,6 +37,8 @@ using namespace loom::platform;
 namespace {
 
 constexpr llvm::StringLiteral kDevice = "AGIA040R39A1E1VC";
+constexpr llvm::StringLiteral kPhysicalRoot =
+    "device_41474941303430523339413145315643";
 constexpr llvm::StringLiteral kProviderBuild =
     "altera.quartus-prime-pro:26.1.0-build-110";
 constexpr llvm::StringLiteral kToolVersion =
@@ -152,6 +154,7 @@ struct SemanticFixture final {
   loom::fabric::FinalizedFabricRoot module;
   loom::fabric::FinalizedFabricRoot system;
   FinalizedConfigurationABI abi;
+  loom::fabric::FabricPhysicalOccurrenceOwnerRef firstOwner;
 };
 
 SemanticFixture makeSemanticFixture(llvm::StringRef test,
@@ -174,7 +177,14 @@ SemanticFixture makeSemanticFixture(llvm::StringRef test,
       take(test, hardware::test::makeCompleteConfigurationABIDraft(system));
   FinalizedConfigurationABI abi =
       take(test, finalizeConfigurationABI(std::move(abiDraft), artifacts));
-  return {std::move(module), std::move(system), std::move(abi)};
+  const auto cores = system.view().accCoreOccurrences();
+  require(test, cores.size() == 1,
+          "fixture did not produce one accelerator-core occurrence");
+  const auto firstOwner = take(
+      test, loom::fabric::FabricPhysicalOccurrenceOwnerRef::create(
+                loom::fabric::FabricInventoryOwnerRef::of(
+                    loom::fabric::SpatialCoreOccurrenceRef{cores.front()})));
+  return {std::move(module), std::move(system), std::move(abi), firstOwner};
 }
 
 FinalizedImplementationPlatform makePlatform(llvm::StringRef test,
@@ -234,7 +244,7 @@ FinalizedHardwareImplementation makeImplementation(
       makeRepresentation(test, blobs, variant, withConstraint),
       std::move(platformReference),
       {},
-      {},
+      {{{RepresentationObjectKind::Module, kTop.str()}, fixture.firstOwner}},
       {},
       {}};
   return take(
@@ -359,9 +369,11 @@ PreparedExternalToolInvocation
 prepareBundle(llvm::StringRef test, const LaneFixture &fixture,
               const std::filesystem::path &bundle,
               const std::filesystem::path &tool) {
-  return take(test, prepareCandidateGeneratorInvocation(
-                        fixture.inputs, fixture.binding, fixture.artifacts,
-                        fixture.blobs, preparationContext(bundle, tool)));
+  const ExternalImplementationContractCatalog contracts;
+  return take(test,
+              prepareQuartusPrimeStaticFullDeviceInvocation(
+                  fixture.inputs, fixture.binding, contracts, fixture.artifacts,
+                  fixture.blobs, preparationContext(bundle, tool)));
 }
 
 void descriptorAndConfigAreExact() {
@@ -649,6 +661,15 @@ void requirePublishedResult(llvm::StringRef test, const LaneFixture &fixture,
                   RepresentationRootVariant::FpgaImage &&
               !image.implementation().representationRoot().stage,
           "FpgaImage publication lost its exact semantic closure");
+  for (const HardwareImplementation *implementation :
+       {&physical.implementation(), &image.implementation()})
+    require(
+        test,
+        implementation->activityPoints().size() == 1 &&
+            implementation->activityPoints().front().representationLocator ==
+                RepresentationLocator{RepresentationObjectKind::DeviceResource,
+                                      kPhysicalRoot.str()},
+        "FPGA publication did not project the activity locator");
   require(test,
           completed->lineageEdges[0].output == physical.reference() &&
               completed->lineageEdges[0].parents.empty() &&
@@ -674,8 +695,10 @@ void strictImportUsesOnlyTheCompletedDeclaredSnapshot(
   writeFakeQuartus(tool);
   const auto import = [&](const PreparedExternalToolInvocation &prepared,
                           const ResolvedCandidateGeneratorBinding &binding) {
-    return importCandidateGeneratorInvocation(fixture.inputs, binding, prepared,
-                                              fixture.artifacts, fixture.blobs);
+    const ExternalImplementationContractCatalog contracts;
+    return importQuartusPrimeStaticFullDeviceInvocation(
+        fixture.inputs, binding, prepared, contracts, fixture.artifacts,
+        fixture.blobs);
   };
 
   PreparedExternalToolInvocation incomplete =

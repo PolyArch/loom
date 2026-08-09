@@ -3,6 +3,8 @@
 
 #include "Common/ComponentViewDigest.h"
 #include "DSE/CandidateGenerator.h"
+#include "ExternalTool/Provider.h"
+#include "Hardware/Implementation/HardwareImplementation.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -97,6 +99,9 @@ adoptResolvedVivadoStaticFullDeviceConfigView(
     llvm::ArrayRef<std::uint8_t> canonicalViewBytes,
     const ComponentViewDigest &digest);
 
+std::string vivadoToolBundledResourceProviderIdentity(
+    llvm::StringRef stableProviderBuildIdentity);
+
 const dse::CandidateGeneratorDescriptor &
 vivadoStaticFullDeviceCandidateGeneratorDescriptor();
 llvm::Error registerVivadoStaticFullDeviceCandidateGenerator();
@@ -109,6 +114,22 @@ bindVivadoStaticFullDeviceCandidateGeneratorInputs(
 llvm::Expected<dse::ResolvedCandidateGeneratorBinding>
 resolveVivadoStaticFullDeviceCandidateGeneratorBinding(
     const ResolvedVivadoStaticFullDeviceConfigView &config);
+
+llvm::Expected<external_tool::PreparedExternalToolInvocation>
+prepareVivadoStaticFullDeviceInvocation(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const external_tool::ExternalToolPreparationContext &context);
+
+llvm::Expected<dse::CandidateGeneratorProviderResult>
+importVivadoStaticFullDeviceInvocation(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
 
 llvm::Expected<std::string>
 renderVivadoSynthesisDriver(llvm::StringRef topModule,

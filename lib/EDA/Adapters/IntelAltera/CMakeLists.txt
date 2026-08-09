@@ -8,6 +8,7 @@ target_include_directories(LoomEDAIntelAltera PUBLIC
 
 target_link_libraries(LoomEDAIntelAltera PUBLIC
   LoomDSECandidateGenerator
+  LoomEDAFpgaPublication
   LoomExternalTool
   LoomHardwareImplementation
   LoomImplementationPlatform

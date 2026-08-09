@@ -50,6 +50,8 @@ namespace {
 constexpr llvm::StringLiteral kSyntheticBuild =
     "SW Build 9000000 on Mon Jan 01 00:00:00 UTC 2099";
 constexpr llvm::StringLiteral kSyntheticPart = "xcvh1782-lsva4737-3HP-e-S";
+constexpr llvm::StringLiteral kSyntheticPhysicalRoot =
+    "device_78637668313738322d6c737661343733372d3348502d652d53";
 constexpr std::array<llvm::StringLiteral, 4> kSupportedParts = {
     "xcvh1782-lsva4737-3HP-e-S",
     "xcvp1802-vsva5601-3HP-e-S",
@@ -64,6 +66,11 @@ constexpr llvm::StringLiteral kConstraint =
     "set_property PACKAGE_PIN V17 [get_ports {a}]\n"
     "set_property PACKAGE_PIN U16 [get_ports {y}]\n"
     "set_property IOSTANDARD LVCMOS33 [get_ports {a y}]\n";
+constexpr llvm::StringLiteral kNativeContract = "test.amd.native";
+constexpr llvm::StringLiteral kNativeModule = "amd_native_cell";
+constexpr llvm::StringLiteral kNativeResource = "amd:test-native-cell";
+constexpr CandidateGeneratorOutputSlotRef kPhysicalOutput(0);
+constexpr CandidateGeneratorOutputSlotRef kImageOutput(1);
 
 [[noreturn]] void fail(llvm::StringRef test, const std::string &message) {
   llvm::errs() << test << ": " << message << '\n';
@@ -302,6 +309,68 @@ makeImplementation(llvm::StringRef test, const Fixture &fixture,
       test, finalizeHardwareImplementation(std::move(draft), artifacts, blobs));
 }
 
+ExternalImplementationContractCatalog
+makeNativeContractCatalog(llvm::StringRef test) {
+  ExternalImplementationContractCatalog catalog;
+  if (llvm::Error error = catalog.add(ExternalImplementationContract{
+          kNativeContract.str(),
+          {{"primitive", {ExternalDependencyKind::ToolBundledResource}}},
+          {RepresentationRootVariant::Rtl,
+           RepresentationRootVariant::FpgaPhysical},
+          true,
+          false,
+          nullptr}))
+    fail(test, llvm::toString(std::move(error)));
+  return catalog;
+}
+
+FinalizedHardwareImplementation makeNativeImplementation(
+    llvm::StringRef test, const Fixture &fixture,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalImplementationContractCatalog &contracts) {
+  constexpr llvm::StringLiteral rtl =
+      "module top(input logic a, output logic y);\n"
+      "  amd_native_cell u_native(.a(a), .y(y));\n"
+      "endmodule\n";
+  constexpr llvm::StringLiteral blackBox = "amd-native-cell-contract\n";
+  std::vector<ImplementationPayload> payloads{
+      {PayloadRole::RtlSource, "rtl/top.sv", take(test, blobs.put(bytes(rtl)))},
+      {PayloadRole::GenerationConstraint, "constraints/top.sdc",
+       take(test, blobs.put(bytes(kConstraint)))},
+      {PayloadRole::BlackBoxContract, "contracts/amd-native.bin",
+       take(test, blobs.put(bytes(blackBox)))}};
+  const auto format =
+      take(test, RepresentationFormatDescriptorRef::get(
+                     RepresentationFormatKind::SystemVerilogRtl));
+  auto representation =
+      take(test,
+           createImplementationRepresentationRoot(
+               RepresentationRootVariant::Rtl, std::nullopt, format,
+               {RepresentationObjectKind::Module, "top"}, std::move(payloads)));
+  HardwareImplementationDraft draft{
+      fixture.system.reference(),
+      fixture.abi.reference(),
+      {},
+      std::move(representation),
+      std::nullopt,
+      {{ImplementationDataInterfaceRef{fixture.firstDataEndpoint},
+        {RepresentationObjectKind::Port, "top.a"},
+        std::nullopt}},
+      {{{RepresentationObjectKind::Module, "top"}, fixture.firstOwner}},
+      {},
+      {{kNativeContract.str(),
+        {{"primitive",
+          ToolBundledResourceDependency{
+              vivadoToolBundledResourceProviderIdentity(kSyntheticBuild),
+              kNativeResource.str()}}},
+        {fixture.firstOwner},
+        {{RepresentationObjectKind::Module, kNativeModule.str()}},
+        ImplementationPayloadKey{PayloadRole::BlackBoxContract,
+                                 "contracts/amd-native.bin"}}}};
+  return take(test, finalizeHardwareImplementation(std::move(draft), contracts,
+                                                   artifacts, blobs));
+}
+
 std::string synthesisMetadata(llvm::StringRef part) {
   return "{\"schema\":\"loom.vivado_synthesis_attempt\",\"version\":"
          "\"1.0\",\"top\":\"top\",\"device_ordering_code\":\"" +
@@ -413,6 +482,10 @@ preparationContext(const std::filesystem::path &bundle,
 }
 
 void descriptorAndConfigAreExact() {
+  require(__func__,
+          vivadoToolBundledResourceProviderIdentity("Build 1") ==
+              "amd_vivado_build_4275696c642031",
+          "tool-bundled resource provider identity is not injective bytes");
   for (llvm::StringRef part : kSupportedParts)
     take(__func__, projectResolvedVivadoStaticFullDeviceConfigView(
                        kSyntheticBuild, part));
@@ -451,8 +524,10 @@ void descriptorAndConfigAreExact() {
               descriptor.inputSlots.size() == 2 &&
               descriptor.outputSlots.size() == 2 &&
               descriptor.providerForm == ProviderForm::ExternalPrepareImport &&
+              descriptor.implementationSemanticIdentity ==
+                  "loom.eda.amd.vivado_static_full_device.generator.v2" &&
               descriptor.determinism ==
-                  CandidateGeneratorDeterminism::Deterministic,
+                  CandidateGeneratorDeterminism::IndependentReplicates,
           "Vivado descriptor shape is not exact");
   require(
       __func__,
@@ -549,6 +624,90 @@ struct LaneFixture final {
 void createStoreDirectories(const std::filesystem::path &root) {
   std::filesystem::create_directories(root / "artifacts");
   std::filesystem::create_directories(root / "blobs");
+}
+
+void requirePublishedResult(llvm::StringRef test, const LaneFixture &fixture,
+                            CandidateGeneratorProviderResult result) {
+  const auto *completed =
+      std::get_if<CompletedCandidateGeneratorResult>(&result.outcome);
+  require(test,
+          completed && completed->outputBindings.size() == 2 &&
+              completed->outputBindings[0].slot == kPhysicalOutput &&
+              completed->outputBindings[0].artifacts.size() == 1 &&
+              completed->outputBindings[1].slot == kImageOutput &&
+              completed->outputBindings[1].artifacts.size() == 1 &&
+              completed->lineageEdges.size() == 2,
+          "successful invocation did not publish both exact outputs");
+
+  FinalizedHardwareImplementation physical =
+      take(test, importHardwareImplementation(
+                     completed->outputBindings[0].artifacts.front(),
+                     fixture.artifacts, fixture.blobs));
+  FinalizedHardwareImplementation image =
+      take(test, importHardwareImplementation(
+                     completed->outputBindings[1].artifacts.front(),
+                     fixture.artifacts, fixture.blobs));
+  const HardwareImplementation &source =
+      fixture.implementation.implementation();
+  const HardwareImplementation &physicalImplementation =
+      physical.implementation();
+  const HardwareImplementation &imageImplementation = image.implementation();
+  require(test,
+          physicalImplementation.fabric() == source.fabric() &&
+              physicalImplementation.configurationAbi() ==
+                  source.configurationAbi() &&
+              physicalImplementation.implementationPlatform() ==
+                  fixture.platform.reference() &&
+              physicalImplementation.representationRoot().variant ==
+                  RepresentationRootVariant::FpgaPhysical &&
+              physicalImplementation.representationRoot().stage ==
+                  RepresentationPhysicalStage::Routed,
+          "FpgaPhysical publication lost its exact semantic closure");
+  require(test,
+          imageImplementation.fabric() == source.fabric() &&
+              imageImplementation.configurationAbi() ==
+                  source.configurationAbi() &&
+              imageImplementation.implementationPlatform() ==
+                  fixture.platform.reference() &&
+              imageImplementation.representationRoot().variant ==
+                  RepresentationRootVariant::FpgaImage &&
+              !imageImplementation.representationRoot().stage,
+          "FpgaImage publication lost its exact semantic closure");
+
+  const std::string projectedPort = kSyntheticPhysicalRoot.str() + ".a";
+  for (const HardwareImplementation *implementation :
+       {&physicalImplementation, &imageImplementation}) {
+    require(
+        test,
+        implementation->interfaces().size() == 2 &&
+            llvm::all_of(implementation->interfaces(),
+                         [&](const ImplementationInterface &interface) {
+                           return interface.representationLocator ==
+                                  RepresentationLocator{
+                                      RepresentationObjectKind::Port,
+                                      projectedPort};
+                         }) &&
+            implementation->activityPoints().size() == 1 &&
+            implementation->activityPoints().front().representationLocator ==
+                RepresentationLocator{RepresentationObjectKind::DeviceResource,
+                                      kSyntheticPhysicalRoot.str()},
+        "FPGA publication did not prefix-project interface and activity "
+        "locators");
+  }
+  require(test,
+          completed->lineageEdges[0].output == physical.reference() &&
+              completed->lineageEdges[0].parents.empty() &&
+              completed->lineageEdges[1].output == image.reference() &&
+              completed->lineageEdges[1].parents.empty(),
+          "mechanical output lineage is not exact");
+  require(test,
+          result.workSummary.size() == 3 &&
+              llvm::all_of(result.workSummary,
+                           [](const auto &summary) {
+                             return summary.planned == 1 &&
+                                    summary.consumed == 1;
+                           }),
+          "successful publication did not consume all three work units");
 }
 
 PreparedExternalToolInvocation
@@ -666,33 +825,7 @@ void bundleLifecycleIsStrict(const std::filesystem::path &root) {
       __func__,
       importCandidateGeneratorInvocation(fixture.inputs, fixture.binding, first,
                                          fixture.artifacts, fixture.blobs));
-  const auto *unsupported =
-      std::get_if<IncompleteCandidateGeneratorResult>(&result.outcome);
-  require(__func__,
-          unsupported &&
-              unsupported->reason ==
-                  CandidateGeneratorIncompleteReason::Unsupported &&
-              unsupported->retainedOutputBindings.size() == 2 &&
-              unsupported->retainedOutputBindings[0].slot ==
-                  vivadoStaticFullDeviceCandidateGeneratorDescriptor()
-                      .outputSlots[0]
-                      .slot &&
-              unsupported->retainedOutputBindings[1].slot ==
-                  vivadoStaticFullDeviceCandidateGeneratorDescriptor()
-                      .outputSlots[1]
-                      .slot &&
-              unsupported->retainedOutputBindings[0].artifacts.empty() &&
-              unsupported->retainedOutputBindings[1].artifacts.empty(),
-          "schema-limited import did not preserve typed Unsupported");
-  require(__func__,
-          result.workSummary.size() == 3 &&
-              result.workSummary[0].planned == 1 &&
-              result.workSummary[0].consumed == 1 &&
-              result.workSummary[1].planned == 1 &&
-              result.workSummary[1].consumed == 0 &&
-              result.workSummary[2].planned == 1 &&
-              result.workSummary[2].consumed == 0,
-          "Vivado work accounting is not exact");
+  requirePublishedResult(__func__, fixture, std::move(result));
 
   expectFailureContains(
       __func__,
@@ -806,6 +939,67 @@ void bundleLifecycleIsStrict(const std::filesystem::path &root) {
                             fixture.inputs, fixture.binding, incoherent,
                             fixture.artifacts, fixture.blobs),
                         "physical metadata");
+}
+
+void explicitContractCatalogPublishesNativeClosure(
+    const std::filesystem::path &root) {
+  const std::filesystem::path data = root / "native-closure";
+  createStoreDirectories(data);
+  ArtifactStore artifacts((data / "artifacts").string());
+  BlobStore blobs((data / "blobs").string());
+  Fixture fabric = makeFixture(__func__, artifacts);
+  auto platform = makePlatform(__func__, artifacts,
+                               platform::FpgaVendor::AmdXilinx, kSyntheticPart);
+  ExternalImplementationContractCatalog contracts =
+      makeNativeContractCatalog(__func__);
+  auto implementation =
+      makeNativeImplementation(__func__, fabric, artifacts, blobs, contracts);
+  auto inputs =
+      take(__func__, bindVivadoStaticFullDeviceCandidateGeneratorInputs(
+                         implementation.reference(), platform.reference()));
+  auto config = take(__func__, projectResolvedVivadoStaticFullDeviceConfigView(
+                                   kSyntheticBuild, kSyntheticPart));
+  auto binding = take(
+      __func__, resolveVivadoStaticFullDeviceCandidateGeneratorBinding(config));
+  const std::filesystem::path tool = root / "tools" / "native-vivado";
+  makeFakeVivado(tool, false);
+  PreparedExternalToolInvocation prepared =
+      take(__func__, prepareVivadoStaticFullDeviceInvocation(
+                         inputs, binding, contracts, artifacts, blobs,
+                         preparationContext(root / "native-bundle", tool)));
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
+          "native-closure synthetic Vivado invocation failed");
+  CandidateGeneratorProviderResult result = take(
+      __func__, importVivadoStaticFullDeviceInvocation(
+                    inputs, binding, prepared, contracts, artifacts, blobs));
+  const auto *completed =
+      std::get_if<CompletedCandidateGeneratorResult>(&result.outcome);
+  require(__func__,
+          completed && completed->outputBindings.size() == 2 &&
+              completed->outputBindings[0].artifacts.size() == 1 &&
+              completed->outputBindings[1].artifacts.size() == 1,
+          "native closure did not publish both FPGA states");
+  auto physical =
+      take(__func__, importHardwareImplementation(
+                         completed->outputBindings[0].artifacts.front(),
+                         contracts, artifacts, blobs));
+  auto image =
+      take(__func__, importHardwareImplementation(
+                         completed->outputBindings[1].artifacts.front(),
+                         contracts, artifacts, blobs));
+  const auto physicalBindings =
+      physical.implementation().externalImplementationBindings();
+  require(
+      __func__,
+      physicalBindings.size() == 1 &&
+          physicalBindings.front().providerContractRef == kNativeContract &&
+          physicalBindings.front().representationLocators ==
+              std::vector<RepresentationLocator>{
+                  {RepresentationObjectKind::Module, kNativeModule.str()}} &&
+          physicalBindings.front().externalInputs.size() == 1 &&
+          image.implementation().externalImplementationBindings().empty(),
+      "explicit native contract closure was not preserved then absorbed");
 }
 
 void typedAdmissionFailuresArePreserved(const std::filesystem::path &root) {
@@ -955,6 +1149,7 @@ void runSyntheticTests(const std::filesystem::path &root) {
   descriptorAndConfigAreExact();
   driversAreDeterministicAndDoNotInfer();
   bundleLifecycleIsStrict(root);
+  explicitContractCatalogPublishesNativeClosure(root);
   typedAdmissionFailuresArePreserved(root);
   containerEnvironmentIsFrozen(root);
 }
@@ -994,14 +1189,12 @@ void runRealSmoke(const std::filesystem::path &root, llvm::StringRef module,
   CandidateGeneratorProviderResult result =
       take(__func__, importCandidateGeneratorInvocation(
                          inputs, binding, prepared, artifacts, blobs));
-  const auto *unsupported =
-      std::get_if<IncompleteCandidateGeneratorResult>(&result.outcome);
-  require(__func__,
-          unsupported && unsupported->reason ==
-                             CandidateGeneratorIncompleteReason::Unsupported,
-          "real smoke crossed the schema-limited publication boundary");
+  const auto *completed =
+      std::get_if<CompletedCandidateGeneratorResult>(&result.outcome);
+  require(__func__, completed && completed->outputBindings.size() == 2,
+          "real Vivado smoke did not publish both hardware states");
   llvm::outs() << "vivado_smoke build=\"" << build << "\" device=\"" << part
-               << "\" module=\"" << module << "\" publication=unsupported\n";
+               << "\" module=\"" << module << "\" publication=complete\n";
 }
 
 } // namespace

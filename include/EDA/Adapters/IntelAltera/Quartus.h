@@ -3,6 +3,8 @@
 
 #include "Common/ComponentViewDigest.h"
 #include "DSE/CandidateGenerator.h"
+#include "ExternalTool/Provider.h"
+#include "Hardware/Implementation/HardwareImplementation.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -139,6 +141,22 @@ bindQuartusPrimeStaticFullDeviceCandidateGeneratorInputs(
 llvm::Expected<dse::ResolvedCandidateGeneratorBinding>
 resolveQuartusPrimeStaticFullDeviceCandidateGeneratorBinding(
     const ResolvedQuartusPrimeStaticFullDeviceConfigView &config);
+
+llvm::Expected<external_tool::PreparedExternalToolInvocation>
+prepareQuartusPrimeStaticFullDeviceInvocation(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const external_tool::ExternalToolPreparationContext &context);
+
+llvm::Expected<dse::CandidateGeneratorProviderResult>
+importQuartusPrimeStaticFullDeviceInvocation(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
 
 } // namespace loom::eda::intel_altera
 
