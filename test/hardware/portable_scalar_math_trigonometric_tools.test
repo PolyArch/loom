@@ -1,7 +1,7 @@
 # REQUIRES: circt, yosys
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-scalar-math-trigonometric-test %t
-# RUN: cd %t/generated && yosys -s portable_scalar_math_trigonometric.ys > %t/yosys.log 2>&1
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/yosys.log
+# RUN: cd %t/generated && yosys -s portable_scalar_math_trigonometric.ys > %t/synthesis.log 2>&1
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/synthesis.log
 
 # YOSYS: Yosys 0.67
