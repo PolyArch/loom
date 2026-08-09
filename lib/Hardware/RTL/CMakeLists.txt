@@ -30,6 +30,7 @@ add_library(LoomHardwareRTL
   Providers/MathErf.cpp
   Providers/MathExponential.cpp
   Providers/MathLogarithm.cpp
+  Providers/MathPower.cpp
   Providers/MathRounding.cpp
   Providers/MathRoot.cpp
   Providers/ProviderSupport.cpp
@@ -39,6 +40,8 @@ add_library(LoomHardwareRTL
   Providers/ScalarIntegerCast.cpp
   Providers/ScalarIntegerCompareMinMax.cpp
   Providers/ScalarIntegerMultiply.cpp
+  Providers/ScalarMathHyperbolic.cpp
+  Providers/ScalarMathTrigonometric.cpp
   Providers/ScalarSignedIntegerDivRem.cpp
   Providers/ScalarUnsignedIntegerDivRem.cpp
   Providers/ScalarValueSelect.cpp

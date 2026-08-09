@@ -25,6 +25,7 @@
 #include "Hardware/RTL/Providers/MathErf.h"
 #include "Hardware/RTL/Providers/MathExponential.h"
 #include "Hardware/RTL/Providers/MathLogarithm.h"
+#include "Hardware/RTL/Providers/MathPower.h"
 #include "Hardware/RTL/Providers/MathRoot.h"
 #include "Hardware/RTL/Providers/MathRounding.h"
 #include "Hardware/RTL/Providers/ScalarBitReinterpret.h"
@@ -33,6 +34,8 @@
 #include "Hardware/RTL/Providers/ScalarIntegerCast.h"
 #include "Hardware/RTL/Providers/ScalarIntegerCompareMinMax.h"
 #include "Hardware/RTL/Providers/ScalarIntegerMultiply.h"
+#include "Hardware/RTL/Providers/ScalarMathHyperbolic.h"
+#include "Hardware/RTL/Providers/ScalarMathTrigonometric.h"
 #include "Hardware/RTL/Providers/ScalarSignedIntegerDivRem.h"
 #include "Hardware/RTL/Providers/ScalarUnsignedIntegerDivRem.h"
 #include "Hardware/RTL/Providers/ScalarValueSelect.h"
@@ -128,6 +131,12 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
   requireRegistration(
       loom::hardware::rtl::registerPortableLoopStreamProvider(registry));
   requireRegistration(
+      loom::hardware::rtl::registerPortableScalarMathTrigonometricProviders(
+          registry));
+  requireRegistration(
+      loom::hardware::rtl::registerPortableScalarMathHyperbolicProviders(
+          registry));
+  requireRegistration(
       loom::hardware::rtl::registerPortableMathExponentialProviders(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableMathLogarithmProviders(registry));
@@ -137,6 +146,8 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
       loom::hardware::rtl::registerPortableMathRootProviders(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableMathErfProvider(registry));
+  requireRegistration(
+      loom::hardware::rtl::registerPortableMathPowerProvider(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableFixedVectorIntegerAddSubProvider(
           registry));
@@ -252,6 +263,12 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::ScalarUnsignedIntegerDivRem,
       ::fabric::ImplementationFamilyId::ScalarFloatDivide,
       ::fabric::ImplementationFamilyId::ScalarFloatRemainder,
+      ::fabric::ImplementationFamilyId::ScalarMathSin,
+      ::fabric::ImplementationFamilyId::ScalarMathCos,
+      ::fabric::ImplementationFamilyId::ScalarMathTan,
+      ::fabric::ImplementationFamilyId::ScalarMathSinh,
+      ::fabric::ImplementationFamilyId::ScalarMathCosh,
+      ::fabric::ImplementationFamilyId::ScalarMathTanh,
       ::fabric::ImplementationFamilyId::ScalarMathExp,
       ::fabric::ImplementationFamilyId::ScalarMathExp2,
       ::fabric::ImplementationFamilyId::ScalarMathExpM1,
@@ -271,6 +288,7 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::FixedVectorIntegerSaturatingAddSub,
       ::fabric::ImplementationFamilyId::ScalarIntegerCountZeros,
       ::fabric::ImplementationFamilyId::FixedVectorIntegerCountZeros,
+      ::fabric::ImplementationFamilyId::ScalarMathPow,
       ::fabric::ImplementationFamilyId::FixedVectorSliceAlignMerge,
       ::fabric::ImplementationFamilyId::FixedVectorShuffle,
   };

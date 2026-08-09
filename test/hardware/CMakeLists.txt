@@ -737,6 +737,58 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-scalar-math-trigonometric-test
+    PortableScalarMathTrigonometricTest.cpp
+  )
+
+  target_include_directories(loom-portable-scalar-math-trigonometric-test PRIVATE
+    ${LOOM_MPFR_INCLUDE_DIR}
+  )
+
+  target_link_libraries(loom-portable-scalar-math-trigonometric-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+    ${LOOM_MPFR_LIBRARY}
+  )
+
+  add_executable(loom-portable-scalar-math-hyperbolic-test
+    PortableScalarMathHyperbolicTest.cpp
+  )
+
+  target_link_libraries(loom-portable-scalar-math-hyperbolic-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    LoomSimulator
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
+  add_executable(loom-portable-math-power-test
+    PortableMathPowerTest.cpp
+  )
+
+  target_link_libraries(loom-portable-math-power-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    LoomSimulator
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-math-root-test
     PortableMathRootTest.cpp
   )

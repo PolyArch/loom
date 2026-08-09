@@ -26,6 +26,7 @@
 #include "Hardware/RTL/Providers/MathErf.h"
 #include "Hardware/RTL/Providers/MathExponential.h"
 #include "Hardware/RTL/Providers/MathLogarithm.h"
+#include "Hardware/RTL/Providers/MathPower.h"
 #include "Hardware/RTL/Providers/MathRoot.h"
 #include "Hardware/RTL/Providers/MathRounding.h"
 #include "Hardware/RTL/Providers/ScalarBitReinterpret.h"
@@ -34,6 +35,8 @@
 #include "Hardware/RTL/Providers/ScalarIntegerCast.h"
 #include "Hardware/RTL/Providers/ScalarIntegerCompareMinMax.h"
 #include "Hardware/RTL/Providers/ScalarIntegerMultiply.h"
+#include "Hardware/RTL/Providers/ScalarMathHyperbolic.h"
+#include "Hardware/RTL/Providers/ScalarMathTrigonometric.h"
 #include "Hardware/RTL/Providers/ScalarSignedIntegerDivRem.h"
 #include "Hardware/RTL/Providers/ScalarUnsignedIntegerDivRem.h"
 #include "Hardware/RTL/Providers/ScalarValueSelect.h"
@@ -94,6 +97,12 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
     return error;
   if (llvm::Error error = registerPortableLoopStreamProvider(candidate))
     return error;
+  if (llvm::Error error =
+          registerPortableScalarMathTrigonometricProviders(candidate))
+    return error;
+  if (llvm::Error error =
+          registerPortableScalarMathHyperbolicProviders(candidate))
+    return error;
   if (llvm::Error error = registerPortableMathExponentialProviders(candidate))
     return error;
   if (llvm::Error error = registerPortableMathLogarithmProviders(candidate))
@@ -103,6 +112,8 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
   if (llvm::Error error = registerPortableMathRootProviders(candidate))
     return error;
   if (llvm::Error error = registerPortableMathErfProvider(candidate))
+    return error;
+  if (llvm::Error error = registerPortableMathPowerProvider(candidate))
     return error;
   if (llvm::Error error =
           registerPortableFixedVectorIntegerAddSubProvider(candidate))
