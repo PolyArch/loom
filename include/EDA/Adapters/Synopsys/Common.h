@@ -106,7 +106,8 @@ llvm::Error validateSynopsysRepresentation(
 
 llvm::Error validateSynopsysProviderInputs(
     const SynopsysInvocationDescriptor &descriptor,
-    llvm::ArrayRef<external_tool::ResolvedExternalFile> inputs);
+    llvm::ArrayRef<external_tool::ResolvedExternalFile> files,
+    llvm::ArrayRef<external_tool::ResolvedExternalFileTree> fileTrees);
 
 /// A binding already frozen by the shared resolver. No adapter API accepts a
 /// LocalToolConfig, probes PATH, activates modules, or chooses a runtime.
@@ -117,6 +118,7 @@ struct SynopsysFrozenInvocation final {
   external_tool::ToolVersionProbe containerVersionProbe;
   std::vector<std::string> inheritEnvironment;
   std::vector<external_tool::ResolvedExternalFile> externalFiles;
+  std::vector<external_tool::ResolvedExternalFileTree> externalFileTrees;
 };
 
 struct SynopsysBundleInputs final {

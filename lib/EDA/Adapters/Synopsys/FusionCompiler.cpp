@@ -46,6 +46,15 @@ findExternal(const SynopsysBundleInputs &inputs, llvm::StringRef slot) {
   return found == inputs.frozen.externalFiles.end() ? nullptr : &*found;
 }
 
+const external_tool::ResolvedExternalFileTree *
+findExternalTree(const SynopsysBundleInputs &inputs, llvm::StringRef slot) {
+  const auto found =
+      llvm::find_if(inputs.frozen.externalFileTrees, [&](const auto &tree) {
+        return tree.providerInputSlot == slot;
+      });
+  return found == inputs.frozen.externalFileTrees.end() ? nullptr : &*found;
+}
+
 llvm::Expected<std::string> checkedWord(llvm::StringRef value,
                                         bool bundleInput) {
   if (bundleInput)
@@ -175,8 +184,8 @@ makeFusionCompilerBundleSpec(const SynopsysBundleInputs &inputs,
   if (llvm::Error error =
           validateSynopsysSemanticInputs(descriptor, inputs, requiredInputs))
     return std::move(error);
-  const external_tool::ResolvedExternalFile *library =
-      findExternal(inputs, "reference_library");
+  const external_tool::ResolvedExternalFileTree *library =
+      findExternalTree(inputs, "reference_library");
   const external_tool::ResolvedExternalFile *earlyParasitic =
       findExternal(inputs, "early_parasitic_tech");
   const external_tool::ResolvedExternalFile *lateParasitic =

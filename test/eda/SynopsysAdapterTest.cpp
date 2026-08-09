@@ -692,7 +692,9 @@ fi
   const std::filesystem::path timingLibrary = root / "fixtures" / "timing.db";
   const std::filesystem::path powerLibrary = root / "fixtures" / "power.db";
   writeFile(targetLibrary, "authored target library fixture\n");
-  writeFile(referenceLibrary, "authored reference library fixture\n");
+  writeFile(referenceLibrary / "pcat", "authored reference catalog fixture\n");
+  writeFile(referenceLibrary / "parts" / "p0",
+            "authored reference payload fixture\n");
   writeFile(earlyParasiticTech, "authored early parasitic fixture\n");
   writeFile(lateParasiticTech, "authored late parasitic fixture\n");
   writeFile(parasiticLayerMap, "authored parasitic map fixture\n");
@@ -952,13 +954,19 @@ fi
                   .verilog.find("module top") != std::string::npos,
           "Design Compiler lifecycle lost the exact netlist");
 
-  SynopsysBundleInputs fcInputs = bundleInputs(
-      gate, fusionCompilerDescriptor(), generatorClosure(),
+  SynopsysFrozenInvocation fcFrozen =
       frozen(tool, "fc_shell",
-             {{"reference_library", referenceLibrary},
-              {"early_parasitic_tech", earlyParasiticTech},
+             {{"early_parasitic_tech", earlyParasiticTech},
               {"late_parasitic_tech", lateParasiticTech},
-              {"parasitic_layer_map", parasiticLayerMap}}),
+              {"parasitic_layer_map", parasiticLayerMap}});
+  fcFrozen.externalFileTrees.push_back(
+      {"reference_library",
+       "reference_library",
+       std::filesystem::canonical(referenceLibrary).string(),
+       {{"parts/p0", fingerprint("authored reference payload fixture\n")},
+        {"pcat", fingerprint("authored reference catalog fixture\n")}}});
+  SynopsysBundleInputs fcInputs = bundleInputs(
+      gate, fusionCompilerDescriptor(), generatorClosure(), std::move(fcFrozen),
       semanticFiles({{"inputs/implementation/netlist/top.v",
                       "module top(input wire a, output wire y); assign y = a; "
                       "endmodule\n"},
@@ -972,8 +980,43 @@ fi
                          fcInputs, "top", "inputs/implementation/netlist/top.v",
                          "inputs/implementation/constraints/top.sdc",
                          "inputs/physical/floorplan.def"));
+  require(__func__,
+          fcSpec.externalFiles.size() == 3 &&
+              fcSpec.externalFileTrees.size() == 1 &&
+              fcSpec.externalFileTrees.front().providerInputSlot ==
+                  "reference_library",
+          "Fusion Compiler did not preserve the exact reference-library tree");
+  SynopsysBundleInputs missingFcTree = fcInputs;
+  missingFcTree.frozen.externalFileTrees.clear();
+  expectAdapterFailure(
+      __func__,
+      makeFusionCompilerBundleSpec(missingFcTree, "top",
+                                   "inputs/implementation/netlist/top.v",
+                                   "inputs/implementation/constraints/top.sdc",
+                                   "inputs/physical/floorplan.def"),
+      SynopsysAdapterFailureKind::MissingProviderInput);
+  SynopsysBundleInputs wrongFcInputKind = missingFcTree;
+  wrongFcInputKind.frozen.externalFiles.push_back(
+      {"reference_library", "reference_library",
+       std::filesystem::canonical(referenceLibrary / "pcat").string(),
+       fingerprint("authored reference catalog fixture\n")});
+  expectAdapterFailure(
+      __func__,
+      makeFusionCompilerBundleSpec(wrongFcInputKind, "top",
+                                   "inputs/implementation/netlist/top.v",
+                                   "inputs/implementation/constraints/top.sdc",
+                                   "inputs/physical/floorplan.def"),
+      SynopsysAdapterFailureKind::MissingProviderInput);
   const auto fcPrepared = finalize(root / "fc", fcSpec);
   execute(fcPrepared);
+  SynopsysBundleInputs wrongFcTreeClosure = fcInputs;
+  wrongFcTreeClosure.frozen.externalFileTrees.front()
+      .members.front()
+      .fingerprint = fingerprint("wrong");
+  expectAdapterFailure(__func__,
+                       importFusionCompilerPhysicalSnapshot(
+                           fcPrepared, wrongFcTreeClosure, "top"),
+                       SynopsysAdapterFailureKind::IntegrityFailure);
   require(__func__,
           take(__func__, importFusionCompilerPhysicalSnapshot(fcPrepared,
                                                               fcInputs, "top"))

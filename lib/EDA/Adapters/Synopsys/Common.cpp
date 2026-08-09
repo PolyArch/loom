@@ -98,7 +98,8 @@ llvm::Error validateBundleInputs(const SynopsysInvocationDescriptor &descriptor,
         descriptor.implementationSemanticIdentity,
         "frozen tool binding has key '" + inputs.frozen.tool.toolKey + "'");
   if (llvm::Error error = validateSynopsysProviderInputs(
-          descriptor, inputs.frozen.externalFiles))
+          descriptor, inputs.frozen.externalFiles,
+          inputs.frozen.externalFileTrees))
     return error;
   for (const external_tool::MaterializedBundleFile &file :
        inputs.semanticInputs) {
@@ -133,6 +134,11 @@ makeExpectation(const SynopsysInvocationDescriptor &descriptor,
     expectation.externalInputs.push_back(
         external_tool::ExternalToolInvocationExternalInput{
             file.providerInputSlot, file.fingerprint});
+  for (const external_tool::ResolvedExternalFileTree &tree :
+       inputs.frozen.externalFileTrees)
+    expectation.externalFileTrees.push_back(
+        external_tool::ExternalToolInvocationExternalFileTree{
+            tree.providerInputSlot, tree.members});
   for (llvm::StringLiteral output : descriptor.declaredOutputs)
     expectation.declaredOutputs.push_back(output.str());
   return expectation;
@@ -208,11 +214,14 @@ llvm::Error validateSynopsysRepresentation(
 
 llvm::Error validateSynopsysProviderInputs(
     const SynopsysInvocationDescriptor &descriptor,
-    llvm::ArrayRef<external_tool::ResolvedExternalFile> inputs) {
+    llvm::ArrayRef<external_tool::ResolvedExternalFile> files,
+    llvm::ArrayRef<external_tool::ResolvedExternalFileTree> fileTrees) {
   std::vector<std::string> actual;
-  actual.reserve(inputs.size());
-  for (const external_tool::ResolvedExternalFile &input : inputs)
-    actual.push_back(input.providerInputSlot);
+  actual.reserve(files.size() + fileTrees.size());
+  for (const external_tool::ResolvedExternalFile &file : files)
+    actual.push_back(file.providerInputSlot);
+  for (const external_tool::ResolvedExternalFileTree &tree : fileTrees)
+    actual.push_back(tree.providerInputSlot);
   llvm::sort(actual);
   if (std::adjacent_find(actual.begin(), actual.end()) != actual.end())
     return makeSynopsysAdapterError(
@@ -298,7 +307,7 @@ makeSynopsysInvocationBundleSpec(
       std::move(outputs),
       std::move(files),
       inputs.frozen.externalFiles,
-      {}};
+      inputs.frozen.externalFileTrees};
 }
 
 llvm::Expected<external_tool::ImportedExternalToolInvocationBundle>
