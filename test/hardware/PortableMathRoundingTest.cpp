@@ -560,44 +560,69 @@ std::vector<std::uint64_t> inputs(::fabric::FloatFormat format) {
   const std::uint64_t quarter = half - (unit >> 1);
   const std::uint64_t infinity = shape.infinity();
   const std::uint64_t quiet = std::uint64_t{1} << (shape.fractionBits - 1);
-  return {0,
-          sign,
-          1,
-          sign | 1,
-          unit - 1,
-          sign | (unit - 1),
-          quarter,
-          sign | quarter,
-          half - 1,
-          sign | (half - 1),
-          half,
-          sign | half,
-          half + 1,
-          sign | (half + 1),
-          one,
-          sign | one,
-          one + (unit >> 2),
-          sign | (one + (unit >> 2)),
-          one + (unit >> 1),
-          sign | (one + (unit >> 1)),
-          one + (unit >> 1) + (unit >> 2),
-          sign | (one + (unit >> 1) + (unit >> 2)),
-          one + unit + (unit >> 1),
-          sign | (one + unit + (unit >> 1)),
-          one + 2 * unit + (unit >> 1),
-          sign | (one + 2 * unit + (unit >> 1)),
-          infinity - 1,
-          sign | (infinity - 1),
-          infinity,
-          sign | infinity,
-          infinity | quiet | 0x5,
-          sign | infinity | quiet | 0x5,
-          infinity | 0x3,
-          sign | infinity | 0x3,
-          encoded(format, "2.5"),
-          encoded(format, "-2.5"),
-          encoded(format, "3.5"),
-          encoded(format, "-3.5")};
+  std::vector<std::uint64_t> result = {0,
+                                       sign,
+                                       1,
+                                       sign | 1,
+                                       unit - 1,
+                                       sign | (unit - 1),
+                                       quarter,
+                                       sign | quarter,
+                                       half - 1,
+                                       sign | (half - 1),
+                                       half,
+                                       sign | half,
+                                       half + 1,
+                                       sign | (half + 1),
+                                       one,
+                                       sign | one,
+                                       one + (unit >> 2),
+                                       sign | (one + (unit >> 2)),
+                                       one + (unit >> 1),
+                                       sign | (one + (unit >> 1)),
+                                       one + (unit >> 1) + (unit >> 2),
+                                       sign | (one + (unit >> 1) + (unit >> 2)),
+                                       one + unit + (unit >> 1),
+                                       sign | (one + unit + (unit >> 1)),
+                                       one + 2 * unit + (unit >> 1),
+                                       sign | (one + 2 * unit + (unit >> 1)),
+                                       infinity - 1,
+                                       sign | (infinity - 1),
+                                       infinity,
+                                       sign | infinity,
+                                       infinity | quiet | 0x5,
+                                       sign | infinity | quiet | 0x5,
+                                       infinity | 0x3,
+                                       sign | infinity | 0x3,
+                                       encoded(format, "2.5"),
+                                       encoded(format, "-2.5"),
+                                       encoded(format, "3.5"),
+                                       encoded(format, "-3.5")};
+
+  const std::uint64_t bias = (std::uint64_t{1} << (shape.exponentBits - 1)) - 1;
+  auto appendSigned = [&](std::uint64_t magnitude) {
+    result.push_back(magnitude);
+    result.push_back(sign | magnitude);
+  };
+  for (unsigned unbiasedExponent = 0; unbiasedExponent < shape.fractionBits;
+       ++unbiasedExponent) {
+    const unsigned clearCount = shape.fractionBits - unbiasedExponent;
+    const std::uint64_t exponent = (bias + unbiasedExponent)
+                                   << shape.fractionBits;
+    const std::uint64_t retainedOdd = std::uint64_t{1} << clearCount;
+    const std::uint64_t guard = std::uint64_t{1} << (clearCount - 1);
+    appendSigned(exponent | retainedOdd);
+    if (clearCount > 1)
+      appendSigned(exponent | retainedOdd | (guard >> 1));
+    appendSigned(exponent | retainedOdd | guard);
+    if (clearCount > 1)
+      appendSigned(exponent | retainedOdd | guard | 1);
+  }
+
+  const std::uint64_t integralBoundaryExponent = (bias + shape.fractionBits)
+                                                 << shape.fractionBits;
+  appendSigned(integralBoundaryExponent | (unit - 1));
+  return result;
 }
 
 std::vector<Vector> vectors() {
