@@ -1,0 +1,36 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-math-rounding-test %t
+# RUN: FileCheck %s --check-prefix=FLOOR < %t/generated/scalar_math_floor.sv
+# RUN: FileCheck %s --check-prefix=EVEN < %t/generated/scalar_math_roundeven.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/generated/testbench.sv
+# RUN: FileCheck %s --check-prefix=VECTORS < %t/generated/vectors.mem
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/generated/portable_math_rounding.ys
+
+# FLOOR: module scalar_math_floor
+# FLOOR: input [63:0] data_input_0
+# FLOOR: input [2:0] config_0
+# FLOOR: output [63:0] data_output_0
+# FLOOR: function automatic [15:0] loom_math_rounding_e5_f10
+# FLOOR: function automatic [63:0] loom_math_rounding_e11_f52
+# FLOOR-NOT: shortreal
+# FLOOR-NOT: DPI
+# FLOOR-NOT: valid_
+# FLOOR-NOT: ready_
+
+# EVEN: module scalar_math_roundeven
+# EVEN: function automatic [31:0] loom_math_rounding_e8_f23
+# EVEN-NOT: shortreal
+# EVEN-NOT: DPI
+
+# TB: math rounding mismatch
+# TB: $readmemh("vectors.mem", test_vectors);
+# TB: check_value(test_vectors[vector_index][133:131],
+
+# VECTORS: 13A5A55A5A3F000000000000003F800000
+# VECTORS: 23A5A55A5A402000000000000040000000
+# VECTORS: 23A5A55A5A406000000000000040800000
+
+# YOSYS: hierarchy -check -top math_rounding_synthesis_top
+# YOSYS: select -assert-none
+# YOSYS: synth -noabc -top math_rounding_synthesis_top
