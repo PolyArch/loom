@@ -69,7 +69,8 @@ void builtInMetricsOwnWholeCaseFormZero() {
   for (MetricKind metric :
        {MetricKind::CycleCount, MetricKind::ClockPeriod, MetricKind::Runtime,
         MetricKind::LimitingClockFrequency, MetricKind::TotalArea,
-        MetricKind::DynamicPower, MetricKind::LeakagePower}) {
+        MetricKind::DynamicPower, MetricKind::LeakagePower,
+        MetricKind::MaximumVoltageDrop}) {
     const MetricDescriptor &descriptor = metricDescriptor(metric);
     require(__func__, descriptor.scopeForms.size() == 1,
             "built-in metric lost its sole whole-case scope form");
@@ -132,6 +133,8 @@ void builtInMetricsOwnWholeCaseFormZero() {
        "watt"},
       {MetricKind::LeakagePower, "leakage_power", MetricDimension::Power,
        "watt"},
+      {MetricKind::MaximumVoltageDrop, "maximum_voltage_drop",
+       MetricDimension::Voltage, "volt"},
   };
   for (const PhysicalMetricExpectation &expected : physicalMetrics) {
     const MetricDescriptor &descriptor = metricDescriptor(expected.kind);

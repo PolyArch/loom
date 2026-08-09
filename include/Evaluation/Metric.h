@@ -24,9 +24,10 @@ enum class MetricKind {
   TotalArea,
   DynamicPower,
   LeakagePower,
+  MaximumVoltageDrop,
 };
 enum class MetricValueKind { Integer, Decimal };
-enum class MetricDimension { Cycle, Time, Frequency, Area, Power };
+enum class MetricDimension { Cycle, Time, Frequency, Area, Power, Voltage };
 enum class MetricValueDomain { NonNegative, Positive };
 
 enum class ObservationForm { Point, Interval, Censored, NotApplicable };

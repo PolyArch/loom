@@ -563,6 +563,7 @@ LowConfidenceMetricSet::result(MetricKind metric) const {
                          "leakage-power estimate");
   case MetricKind::CycleCount:
   case MetricKind::ClockPeriod:
+  case MetricKind::MaximumVoltageDrop:
     llvm_unreachable("unsupported metric passed quantum validation");
   }
   llvm_unreachable("unknown MetricKind");
@@ -581,6 +582,7 @@ lowConfidenceMetricQuantumBase10Exponent(MetricKind metric) {
     return -6;
   case MetricKind::CycleCount:
   case MetricKind::ClockPeriod:
+  case MetricKind::MaximumVoltageDrop:
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "low_confidence_model_invalid: unsupported metric '%s'",

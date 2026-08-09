@@ -54,7 +54,7 @@ const ScopeFormDescriptor runtimeWholeCaseScopeForms[] = {
      WholeExactCaseScope{}, nullptr, ReferenceCycleRequirement::NotRequired},
 };
 
-const std::array<MetricDescriptor, 7> metricDescriptors = {{
+const std::array<MetricDescriptor, 8> metricDescriptors = {{
     {MetricKind::CycleCount,
      "cycle_count",
      "Number of subject clock cycles required by the observed work.",
@@ -131,6 +131,18 @@ const std::array<MetricDescriptor, 7> metricDescriptors = {{
      MetricValueKind::Decimal,
      MetricDimension::Power,
      "watt",
+     MetricValueDomain::NonNegative,
+     runtimeWholeCaseScopeForms,
+     {},
+     nonCensoredObservationForms,
+     std::nullopt},
+    {MetricKind::MaximumVoltageDrop,
+     "maximum_voltage_drop",
+     "Greatest nonnegative applied-to-delivered supply-voltage difference "
+     "over the complete analyzed power network of the exact evaluated case.",
+     MetricValueKind::Decimal,
+     MetricDimension::Voltage,
+     "volt",
      MetricValueDomain::NonNegative,
      runtimeWholeCaseScopeForms,
      {},
