@@ -15,22 +15,8 @@ namespace detail {
 struct ConfiguredHardwareProjectionViewAccess;
 }
 
-/// One independently configurable physical semantic field. The field owner is
-/// occurrence-scoped; the instruction context distinguishes resident
-/// configurations of a temporal resource. Both references are existing
-/// Fabric identities, so this slot introduces no Mapping-local identity.
-struct ConfiguredHardwareFieldSlotRef final {
-  ::loom::fabric::InstructionContextRef context;
-  ::loom::fabric::FabricSemanticConfigFieldRef field;
-
-  friend bool operator==(const ConfiguredHardwareFieldSlotRef &lhs,
-                         const ConfiguredHardwareFieldSlotRef &rhs) {
-    return lhs.context == rhs.context && lhs.field == rhs.field;
-  }
-};
-
 struct ConfiguredHardwareFieldValueView final {
-  ConfiguredHardwareFieldSlotRef slot;
+  ::loom::fabric::FabricConfigurationSlotRef slot;
   CanonicalSemanticBytes value;
 };
 

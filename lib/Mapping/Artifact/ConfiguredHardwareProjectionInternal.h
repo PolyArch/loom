@@ -21,7 +21,8 @@ deriveConfiguredHardwareProjection(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
-    llvm::ArrayRef<SpatialComputeBindingView> bindings);
+    llvm::ArrayRef<SpatialComputeBindingView> bindings,
+    llvm::ArrayRef<SpatialRouteTreeView> routes);
 
 } // namespace loom::mapping::detail
 

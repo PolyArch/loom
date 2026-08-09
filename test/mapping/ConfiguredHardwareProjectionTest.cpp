@@ -388,23 +388,27 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
       spatialCandidates->candidates.front(), store));
 
   const auto fields = spatial.view().configuredHardware().fields();
-  if (fields.size() != 2)
-    fail("complete Mapping did not derive both semantic fields");
+  if (fields.size() != 3)
+    fail("complete Mapping did not derive the FU topology and operation "
+         "fields");
+  std::size_t topologyFieldCount = 0;
+  std::size_t operationFieldCount = 0;
   for (const auto &field : fields) {
     const auto &owner = field.slot.field.owner.catalog();
-    if (owner.kind() !=
-        loom::fabric::FabricInventoryOwnerKind::FuOccurrenceNode)
-      fail("configured operation field has a non-operation owner");
-    const auto occurrence =
-        std::get<loom::fabric::FabricFuOccurrenceNodeRef>(owner.payload);
-    const auto *fieldCapability =
-        fabric.view().resolvedFabricOpCapability(occurrence);
-    if (!fieldCapability)
-      fail("configured operation field has no sealed capability");
+    if (owner.kind() == loom::fabric::FabricInventoryOwnerKind::FuOccurrence) {
+      ++topologyFieldCount;
+    } else if (owner.kind() ==
+               loom::fabric::FabricInventoryOwnerKind::FuOccurrenceNode) {
+      ++operationFieldCount;
+    } else {
+      fail("configured compute field has a non-FU occurrence owner");
+    }
     auto relation =
-        take(fieldCapability->resolveSemanticFieldRelation(context));
+        take(fabric.view().semanticFieldRelation(field.slot.field, context));
     requireSuccess(relation.validateSemanticValue(field.value.bytes()));
   }
+  if (topologyFieldCount != 1 || operationFieldCount != 2)
+    fail("configured compute fields have the wrong semantic owners");
   const auto bindings = spatial.view().computeBindings();
   const auto realizations = tech.view().computeRealizations();
   const loom::mapping::TechComputeActorView *actorBinding = nullptr;
@@ -459,7 +463,9 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
   const loom::mapping::ConfiguredHardwareFieldValueView *projectedField =
       nullptr;
   for (const auto &field : fields)
-    if (field.slot.context == binding->context &&
+    if (std::holds_alternative<
+            loom::fabric::FabricStaticConfigurationResidency>(
+            field.slot.residency) &&
         field.slot.field == expectedField) {
       if (projectedField)
         fail("configured projection duplicated the shuffle field");
@@ -529,10 +535,12 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
     fail("configuration conflict returned the wrong diagnostic");
 
   auto secondContext = *projectedField;
-  if (secondContext.slot.context.ordinal ==
+  if (binding->context.ordinal ==
       std::numeric_limits<loom::fabric::FabricOrdinal>::max())
     fail("configured projection fixture context cannot be incremented");
-  ++secondContext.slot.context.ordinal;
+  auto distinctContext = binding->context;
+  ++distinctContext.ordinal;
+  secondContext.slot.residency = distinctContext;
   std::vector<loom::mapping::ConfiguredHardwareFieldValueView> contextRows = {
       *projectedField, std::move(secondContext)};
   const auto separated =
@@ -545,7 +553,7 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
       dataflowReference, fabric.reference(),
       spatialCandidates->candidates.front(), store));
   const auto summary = prepared.summary();
-  if (summary.semanticConfigurationFieldCount != 2 ||
+  if (summary.semanticConfigurationFieldCount != fields.size() ||
       summary.computeActorCount != 2 ||
       summary.computeTransitionPhysicalUseCount == 0 ||
       summary.routeTreeCount == 0 || summary.routeSinkCount == 0)

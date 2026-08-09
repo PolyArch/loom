@@ -300,9 +300,9 @@ resolvePhysicalField(const fabric::FabricSystemRootView &system,
                                    internal.target.payload())};
 }
 
-llvm::Error validatePhysicalSlot(
-    const fabric::FabricSystemRootView &system,
-    const fabric::FabricPhysicalConfigurationSlotRef &slot) {
+llvm::Error
+validatePhysicalSlot(const fabric::FabricSystemRootView &system,
+                     const fabric::FabricPhysicalConfigurationSlotRef &slot) {
   const auto field = fabric::configurationField(slot);
   if (llvm::Error error = validatePhysicalField(system, field))
     return error;
@@ -313,65 +313,19 @@ llvm::Error validatePhysicalSlot(
       fabric::configurationSlot(slot));
 }
 
-llvm::Expected<::fabric::FabricOpSemanticFieldRelation>
-operationFieldRelation(const ResolvedPhysicalField &field,
-                       mlir::MLIRContext &context) {
-  const auto &owner = field.local.owner.catalog();
-  if (owner.kind() != fabric::FabricInventoryOwnerKind::FuOccurrenceNode)
-    return invalid("configuration field is not operation-owned");
-  const auto occurrence =
-      std::get<fabric::FabricFuOccurrenceNodeRef>(owner.payload);
-  const auto *capability =
-      field.artifact.resolvedFabricOpCapability(occurrence);
-  if (!capability)
-    return invalid("operation configuration field has no capability");
-  if (capability->configurationFieldSchema.size() != 1 ||
-      capability->configurationFieldSchema.front().ordinal !=
-          field.local.ordinal)
-    return invalid("operation configuration field is not canonical");
-  return capability->resolveSemanticFieldRelation(context);
-}
-
 llvm::Expected<std::set<ByteVector>>
 finiteSemanticDomain(const ResolvedPhysicalField &field,
                      mlir::MLIRContext &context) {
-  const auto &owner = field.local.owner.catalog();
-  if (owner.kind() == fabric::FabricInventoryOwnerKind::PeOccurrence) {
-    auto schema = field.artifact.spatialPeConfigurationSchema(
-        std::get<fabric::FabricPeOccurrenceRef>(owner.payload));
-    if (!schema)
-      return schema.takeError();
-    auto domain = schema->finiteDomain(field.local);
-    if (!domain)
-      return domain.takeError();
-    std::set<ByteVector> result;
-    for (const fabric::FabricPeConfigurationValue &value : *domain) {
-      auto encoded = schema->encode(field.local, value);
-      if (!encoded)
-        return encoded.takeError();
-      if (!result
-               .insert(
-                   ByteVector(encoded->bytes().begin(), encoded->bytes().end()))
-               .second)
-        return invalid("PE configuration domain has a duplicate value");
-    }
-    return result;
-  }
-
-  auto relation = operationFieldRelation(field, context);
+  auto relation = field.artifact.semanticFieldRelation(field.local, context);
   if (!relation)
     return relation.takeError();
-  if (relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::Finite)
+  if (relation->kind() != fabric::FabricSemanticFieldRelationKind::Finite)
     return invalid("configuration field does not have a finite domain");
   std::set<ByteVector> result;
-  for (const auto &point : relation->finiteBehaviorDomain()) {
-    if (!point.semanticConfiguration)
-      return invalid("finite operation behavior has no semantic value");
-    if (!result
-             .insert(ByteVector(point.semanticConfiguration->bytes().begin(),
-                                point.semanticConfiguration->bytes().end()))
+  for (const CanonicalSemanticBytes &value : relation->finiteDomain()) {
+    if (!result.insert(ByteVector(value.bytes().begin(), value.bytes().end()))
              .second)
-      return invalid("operation configuration domain has a duplicate value");
+      return invalid("configuration domain has a duplicate value");
   }
   return result;
 }
@@ -383,20 +337,9 @@ validateSemanticValue(const fabric::FabricSystemRootView &system,
   auto resolved = resolvePhysicalField(system, field);
   if (!resolved)
     return resolved.takeError();
-  const auto &owner = resolved->local.owner.catalog();
-  if (owner.kind() == fabric::FabricInventoryOwnerKind::PeOccurrence) {
-    auto schema = resolved->artifact.spatialPeConfigurationSchema(
-        std::get<fabric::FabricPeOccurrenceRef>(owner.payload));
-    if (!schema)
-      return schema.takeError();
-    auto decoded = schema->decode(resolved->local, value);
-    if (!decoded)
-      return decoded.takeError();
-    return llvm::Error::success();
-  }
-
   mlir::MLIRContext context;
-  auto relation = operationFieldRelation(*resolved, context);
+  auto relation =
+      resolved->artifact.semanticFieldRelation(resolved->local, context);
   if (!relation)
     return relation.takeError();
   return relation->validateSemanticValue(value);
@@ -726,61 +669,19 @@ llvm::Error validateFieldEncoding(const fabric::FabricSystemRootView &system,
   auto resolved = resolvePhysicalField(system, physicalField);
   if (!resolved)
     return resolved.takeError();
-  const auto &owner = resolved->local.owner.catalog();
-  if (owner.kind() == fabric::FabricInventoryOwnerKind::PeOccurrence) {
-    const auto *codebook =
-        std::get_if<FiniteCodebookEncoding>(&field.semanticEncoding);
-    if (!codebook)
-      return invalid("PE configuration field requires a finite codebook");
-    mlir::MLIRContext context;
-    auto expected = finiteSemanticDomain(*resolved, context);
-    if (!expected)
-      return expected.takeError();
-    std::set<ByteVector> actual;
-    for (const FiniteCodebookEntry &entry : codebook->entries) {
-      if (llvm::Error error =
-              validateSemanticValue(system, physicalField,
-                                    entry.semanticValue))
-        return error;
-      actual.insert(entry.semanticValue);
-    }
-    if (actual != *expected)
-      return invalid("PE finite codebook does not equal its Fabric domain");
-
-    auto schema = resolved->artifact.spatialPeConfigurationSchema(
-        std::get<fabric::FabricPeOccurrenceRef>(owner.payload));
-    if (!schema)
-      return schema.takeError();
-    const auto descriptor =
-        llvm::find_if(schema->fields(), [&](const auto &candidate) {
-          return candidate.reference == resolved->local;
-        });
-    if (descriptor == schema->fields().end())
-      return invalid("PE configuration field is absent from its schema");
-    if (descriptor->kind ==
-        fabric::FabricPeConfigurationFieldKind::Activation) {
-      auto disabled =
-          schema->encode(resolved->local, fabric::FabricPeDisabled{});
-      if (!disabled)
-        return disabled.takeError();
-      if (!disabled->bytes().equals(field.inactiveValue))
-        return invalid("PE activation inactive value is not Disabled");
-    }
-    return llvm::Error::success();
-  }
-
   mlir::MLIRContext context;
-  auto relation = operationFieldRelation(*resolved, context);
+  auto relation =
+      resolved->artifact.semanticFieldRelation(resolved->local, context);
   if (!relation)
     return relation.takeError();
   switch (relation->kind()) {
-  case ::fabric::FabricOpSemanticFieldRelationKind::None:
-    return invalid("field is present for a fixed operation capability");
-  case ::fabric::FabricOpSemanticFieldRelationKind::Finite: {
+  case fabric::FabricSemanticFieldRelationKind::None:
+    return invalid("field is present for a fixed Fabric resource");
+  case fabric::FabricSemanticFieldRelationKind::Finite: {
     const auto *codebook =
         std::get_if<FiniteCodebookEncoding>(&field.semanticEncoding);
     if (!codebook)
-      return invalid("finite operation field requires a finite codebook");
+      return invalid("finite Fabric field requires a finite codebook");
     auto expected = finiteSemanticDomain(*resolved, context);
     if (!expected)
       return expected.takeError();
@@ -792,22 +693,44 @@ llvm::Error validateFieldEncoding(const fabric::FabricSystemRootView &system,
       actual.insert(entry.semanticValue);
     }
     if (actual != *expected)
-      return invalid(
-          "operation finite codebook does not equal its Fabric relation");
+      return invalid("finite codebook does not equal its Fabric relation");
+
+    const auto &owner = resolved->local.owner.catalog();
+    if (owner.kind() == fabric::FabricInventoryOwnerKind::PeOccurrence) {
+      auto schema = resolved->artifact.spatialPeConfigurationSchema(
+          std::get<fabric::FabricPeOccurrenceRef>(owner.payload));
+      if (!schema)
+        return schema.takeError();
+      const auto descriptor =
+          llvm::find_if(schema->fields(), [&](const auto &candidate) {
+            return candidate.reference == resolved->local;
+          });
+      if (descriptor == schema->fields().end())
+        return invalid("PE configuration field is absent from its schema");
+      if (descriptor->kind ==
+          fabric::FabricPeConfigurationFieldKind::Activation) {
+        auto disabled =
+            schema->encode(resolved->local, fabric::FabricPeDisabled{});
+        if (!disabled)
+          return disabled.takeError();
+        if (!disabled->bytes().equals(field.inactiveValue))
+          return invalid("PE activation inactive value is not Disabled");
+      }
+    }
     return llvm::Error::success();
   }
-  case ::fabric::FabricOpSemanticFieldRelationKind::Direct: {
+  case fabric::FabricSemanticFieldRelationKind::Direct: {
     const auto *direct =
         std::get_if<DirectBitsEncoding>(&field.semanticEncoding);
     if (!direct)
-      return invalid("direct operation field requires DirectBits");
+      return invalid("direct Fabric field requires DirectBits");
     if (!relation->directEncodedBitCount() ||
         direct->encodedBitCount != *relation->directEncodedBitCount())
       return invalid("DirectBits width does not equal its Fabric relation");
     return relation->validateSemanticValue(field.inactiveValue);
   }
   }
-  llvm_unreachable("unknown operation semantic field relation kind");
+  llvm_unreachable("unknown Fabric semantic field relation kind");
 }
 
 llvm::Expected<fabric::FabricPhysicalConfigurationFieldRef>
@@ -845,8 +768,8 @@ expectedPhysicalSlots(const fabric::FabricSystemRootView &system) {
         return residencies.takeError();
       for (const fabric::FabricConfigurationResidency &residency :
            *residencies) {
-        auto physical = qualify(
-            fabric::FabricConfigurationSlotRef{local, residency});
+        auto physical =
+            qualify(fabric::FabricConfigurationSlotRef{local, residency});
         if (!physical)
           return physical.takeError();
         if (llvm::Error error = append(*physical))
@@ -910,8 +833,8 @@ expectedPhysicalSlots(const fabric::FabricSystemRootView &system) {
               *module, owner,
               [&](const fabric::FabricConfigurationSlotRef &local) {
                 return fabric::FabricPhysicalConfigurationSlotRef::create(
-                    fabric::SpatialCoreInternalConfigurationSlotRef{
-                        spatialCore, local});
+                    fabric::SpatialCoreInternalConfigurationSlotRef{spatialCore,
+                                                                    local});
               }))
         return std::move(error);
     }
@@ -1058,12 +981,14 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
   if (!expectedSlots)
     return expectedSlots.takeError();
   if (allFields != *expectedSlots) {
-    const auto missing = llvm::find_if(
-        *expectedSlots,
-        [&](const ByteVector &slot) { return !allFields.count(slot); });
-    const auto unexpected = llvm::find_if(
-        allFields,
-        [&](const ByteVector &slot) { return !expectedSlots->count(slot); });
+    const auto missing =
+        llvm::find_if(*expectedSlots, [&](const ByteVector &slot) {
+          return !allFields.count(slot);
+        });
+    const auto unexpected =
+        llvm::find_if(allFields, [&](const ByteVector &slot) {
+          return !expectedSlots->count(slot);
+        });
     std::string detail =
         "programming units do not cover every Fabric configuration slot "
         "(actual=" +
@@ -1071,18 +996,18 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
         ", expected=" + std::to_string(expectedSlots->size());
     if (missing != expectedSlots->end()) {
       detail += ", first_missing=" + formatArtifactLocalPayloadHex(*missing);
-      auto decoded = fabric::decodeFabricRef<
-          fabric::FabricPhysicalConfigurationSlotRef>(*missing);
+      auto decoded =
+          fabric::decodeFabricRef<fabric::FabricPhysicalConfigurationSlotRef>(
+              *missing);
       if (decoded) {
         const auto &local = fabric::configurationSlot(*decoded);
-        detail += ", missing_owner_kind=" +
-                  std::to_string(static_cast<unsigned>(
-                      local.field.owner.catalog().kind())) +
-                  ", missing_field_ordinal=" +
-                  std::to_string(local.field.ordinal);
-        if (decoded->kind() ==
-            fabric::FabricPhysicalConfigurationSlotKind::
-                SpatialCoreInternalSlot) {
+        detail +=
+            ", missing_owner_kind=" +
+            std::to_string(
+                static_cast<unsigned>(local.field.owner.catalog().kind())) +
+            ", missing_field_ordinal=" + std::to_string(local.field.ordinal);
+        if (decoded->kind() == fabric::FabricPhysicalConfigurationSlotKind::
+                                   SpatialCoreInternalSlot) {
           const auto &internal =
               std::get<fabric::SpatialCoreInternalConfigurationSlotRef>(
                   decoded->payload());
@@ -1091,18 +1016,15 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
         }
         if (local.field.owner.catalog().kind() ==
             fabric::FabricInventoryOwnerKind::FuOccurrenceNode) {
-          const auto &node =
-              std::get<fabric::FabricFuOccurrenceNodeRef>(
-                  local.field.owner.catalog().payload);
+          const auto &node = std::get<fabric::FabricFuOccurrenceNodeRef>(
+              local.field.owner.catalog().payload);
           detail += ", missing_fu=" + std::to_string(node.fu.id()) +
                     ", missing_node_kind=" +
                     std::to_string(static_cast<unsigned>(node.node)) +
-                    ", missing_node_ordinal=" +
-                    std::to_string(node.ordinal);
+                    ", missing_node_ordinal=" + std::to_string(node.ordinal);
         }
         if (const auto *context =
-                std::get_if<fabric::InstructionContextRef>(
-                    &local.residency))
+                std::get_if<fabric::InstructionContextRef>(&local.residency))
           detail += ", missing_instruction_context=" +
                     std::to_string(context->ordinal);
         else

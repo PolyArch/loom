@@ -338,10 +338,10 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
 
     const auto physical = qualifyConfigurationField(test, fixture.spatialCore,
                                                     descriptor.reference);
-    const auto slot = take(
-        test, loom::fabric::qualifyFabricConfigurationSlot(
-                  physical,
-                  loom::fabric::FabricStaticConfigurationResidency{}));
+    const auto slot =
+        take(test,
+             loom::fabric::qualifyFabricConfigurationSlot(
+                 physical, loom::fabric::FabricStaticConfigurationResidency{}));
     const loom::hardware::ProgrammingUnit *fieldOwner = nullptr;
     for (const auto &unit : fixture.abi.abi().programmingUnits())
       for (const auto &field : unit.fields)
@@ -431,6 +431,40 @@ void repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
     require(test, internal.spatialCore == spatialCore,
             "one SpatialCore skeleton associated a foreign operation");
   }
+}
+
+void configurationAbiIncludesFuTopology() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  SystemFixture fabric =
+      makeSystemFixture(test, store, makeOperationFabric(test, store));
+  require(test, fabric.module.view().fuOccurrences().size() == 1,
+          "configuration fixture changed its FU shape");
+  const auto fu = fabric.module.view().fuOccurrences().front();
+  const loom::fabric::FabricInventoryOwnerRef owner =
+      loom::fabric::FabricInventoryOwnerRef::of(fu);
+  require(test,
+          fabric.module.view().inventorySize(
+              owner, loom::fabric::FabricInventoryKind::SemanticConfigField) ==
+              1,
+          "FU topology is absent from the Fabric configuration inventory");
+
+  const loom::fabric::FabricSemanticConfigFieldRef local{
+      loom::fabric::FabricConfigurationOwnerRef(owner), 0};
+  const auto physical =
+      qualifyConfigurationField(test, fabric.spatialCore, local);
+  const auto slot = take(
+      test, loom::fabric::qualifyFabricConfigurationSlot(
+                physical, loom::fabric::FabricStaticConfigurationResidency{}));
+  const auto *encoding = fabric.abi.abi().findField(slot);
+  require(test, encoding != nullptr,
+          "ConfigurationABI omitted the FU topology slot");
+  const auto *codebook = std::get_if<loom::hardware::FiniteCodebookEncoding>(
+      &encoding->semanticEncoding);
+  require(test, codebook != nullptr && codebook->entries.size() == 2,
+          "single-template FU topology does not have Disabled and Active "
+          "codes");
 }
 
 void commonSkeletonRejectsUnresolvedOrUnboundLeaves() {
@@ -1014,6 +1048,7 @@ int main(int argc, char **argv) {
   require("main", argc == 1 || argc == 2,
           "expected at most one output directory");
   repeatedSpatialCoreBuildsOccurrenceLocalSkeleton();
+  configurationAbiIncludesFuTopology();
   commonSkeletonRejectsUnresolvedOrUnboundLeaves();
   const std::string systemVerilog =
       moduleBoundaryPassthroughBuildsDeterministicSkeleton();

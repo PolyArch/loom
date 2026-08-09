@@ -110,6 +110,19 @@ FabricArtifactView::peFuConfigurationStorageMode(
   return record ? record->peFuConfigurationStorageMode : std::nullopt;
 }
 
+std::optional<::fabric::Schedule>
+FabricArtifactView::switchSchedule(FabricSwitchOccurrenceRef occurrence) const {
+  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
+  return record ? record->switchSchedule : std::nullopt;
+}
+
+std::uint64_t FabricArtifactView::switchRouteTableSize(
+    FabricSwitchOccurrenceRef occurrence) const {
+  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
+  return record && record->switchRouteTableSize ? *record->switchRouteTableSize
+                                                : 0;
+}
+
 llvm::Expected<std::vector<FabricConfigurationResidency>>
 FabricArtifactView::configurationResidencies(
     const FabricSemanticConfigFieldRef &field) const {
@@ -121,8 +134,7 @@ FabricArtifactView::configurationResidencies(
   if (owner.kind() == FabricInventoryOwnerKind::FuOccurrence) {
     pe = parentPeOf(std::get<FabricFuOccurrenceRef>(owner.payload));
   } else if (owner.kind() == FabricInventoryOwnerKind::FuOccurrenceNode) {
-    pe = parentPeOf(
-        std::get<FabricFuOccurrenceNodeRef>(owner.payload).fu);
+    pe = parentPeOf(std::get<FabricFuOccurrenceNodeRef>(owner.payload).fu);
   }
 
   if (!pe || peSchedule(*pe) != ::fabric::Schedule::Temporal ||

@@ -11,6 +11,7 @@
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefs.h"
+#include "Fabric/Identity/FabricSemanticFieldRelation.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -24,6 +25,10 @@
 namespace fabric {
 class MemoryServiceContractRecord;
 } // namespace fabric
+
+namespace mlir {
+class Operation;
+} // namespace mlir
 
 namespace loom {
 namespace fabric {
@@ -318,6 +323,10 @@ public:
   const ArtifactIdentity &identity() const;
   FabricRootKind rootKind() const;
 
+  /// Read-only canonical MLIR root retained as a rebuildable import cache.
+  /// It is absent for roots whose importer does not expose structural SSA.
+  const ::mlir::Operation *canonicalOperation() const;
+
   /// The unique canonical Module template owned by a Module root. Other root
   /// kinds return no value.
   std::optional<FabricModuleTemplateRef> moduleRootTemplate() const;
@@ -488,10 +497,21 @@ public:
   std::optional<FabricPeOccurrenceRef>
   parentPeOf(FabricFuOccurrenceRef occurrence) const;
 
+  std::optional<::fabric::Schedule>
+  switchSchedule(FabricSwitchOccurrenceRef occurrence) const;
+  std::uint64_t
+  switchRouteTableSize(FabricSwitchOccurrenceRef occurrence) const;
+
   llvm::Expected<std::vector<FabricConfigurationResidency>>
   configurationResidencies(const FabricSemanticConfigFieldRef &field) const;
   llvm::Error
   validateConfigurationSlot(const FabricConfigurationSlotRef &slot) const;
+
+  /// Rebuild the exact semantic domain of one local configuration field.
+  /// This is the shared owner consumed by Mapping, ConfigurationABI, and RTL.
+  llvm::Expected<FabricSemanticFieldRelation>
+  semanticFieldRelation(const FabricSemanticConfigFieldRef &field,
+                        ::mlir::MLIRContext &context) const;
 
   /// The complete static factorized configuration schema of one Spatial PE.
   /// The view is rebuilt from canonical occurrence, port, and endpoint

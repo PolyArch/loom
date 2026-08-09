@@ -137,67 +137,17 @@ struct FieldDomain final {
 llvm::Expected<FieldDomain>
 finiteFieldDomain(const fabric::FabricArtifactView &module,
                   const fabric::FabricSemanticConfigFieldRef &field) {
-  const fabric::FabricInventoryOwnerRef &owner = field.owner.catalog();
-  if (owner.kind() == fabric::FabricInventoryOwnerKind::PeOccurrence) {
-    auto schema = module.spatialPeConfigurationSchema(
-        std::get<fabric::FabricPeOccurrenceRef>(owner.payload));
-    if (!schema)
-      return schema.takeError();
-    auto domain = schema->finiteDomain(field);
-    if (!domain)
-      return domain.takeError();
-    FieldDomain result;
-    for (const fabric::FabricPeConfigurationValue &value : *domain) {
-      auto encoded = schema->encode(field, value);
-      if (!encoded)
-        return encoded.takeError();
-      result.values.emplace_back(encoded->bytes().begin(),
-                                 encoded->bytes().end());
-    }
-    const auto descriptor =
-        llvm::find_if(schema->fields(), [&](const auto &candidate) {
-          return candidate.reference == field;
-        });
-    if (descriptor == schema->fields().end())
-      return invalid("PE configuration field is absent from its schema");
-    if (descriptor->kind ==
-        fabric::FabricPeConfigurationFieldKind::Activation) {
-      auto disabled = schema->encode(field, fabric::FabricPeDisabled{});
-      if (!disabled)
-        return disabled.takeError();
-      result.inactiveValue.assign(disabled->bytes().begin(),
-                                  disabled->bytes().end());
-    } else {
-      if (result.values.empty())
-        return invalid("PE configuration field has an empty domain");
-      result.inactiveValue = result.values.front();
-    }
-    return result;
-  }
-
-  if (owner.kind() != fabric::FabricInventoryOwnerKind::FuOccurrenceNode)
-    return invalid("test support cannot derive this configuration field");
-  const auto occurrence =
-      std::get<fabric::FabricFuOccurrenceNodeRef>(owner.payload);
-  const fabric::ResolvedFabricOpCapabilityView *capability =
-      module.resolvedFabricOpCapability(occurrence);
-  if (!capability)
-    return invalid("operation configuration field has no capability");
-  auto relation = capability->resolveSemanticFieldRelation(relationContext());
+  auto relation = module.semanticFieldRelation(field, relationContext());
   if (!relation)
     return relation.takeError();
-  if (relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::Finite)
+  if (relation->kind() != fabric::FabricSemanticFieldRelationKind::Finite)
     return invalid("direct operation field requires an explicit override");
 
   FieldDomain result;
-  for (const auto &point : relation->finiteBehaviorDomain()) {
-    if (!point.semanticConfiguration)
-      return invalid("finite operation behavior has no semantic carrier");
-    result.values.emplace_back(point.semanticConfiguration->bytes().begin(),
-                               point.semanticConfiguration->bytes().end());
-  }
+  for (const CanonicalSemanticBytes &value : relation->finiteDomain())
+    result.values.emplace_back(value.bytes().begin(), value.bytes().end());
   if (result.values.empty())
-    return invalid("finite operation configuration domain is empty");
+    return invalid("finite configuration domain is empty");
   result.inactiveValue = result.values.front();
   return result;
 }
@@ -210,8 +160,8 @@ defaultFieldEncoding(const fabric::FabricArtifactView &module,
   auto physical = qualifyField(spatialCore, localField);
   if (!physical)
     return physical.takeError();
-  auto slot = fabric::qualifyFabricConfigurationSlot(
-      *physical, std::move(residency));
+  auto slot =
+      fabric::qualifyFabricConfigurationSlot(*physical, std::move(residency));
   if (!slot)
     return slot.takeError();
   auto domain = finiteFieldDomain(module, localField);

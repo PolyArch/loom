@@ -197,13 +197,14 @@ reorderCanonicalGraphRegions(::fabric::ModuleOp root,
   return llvm::Error::success();
 }
 
-llvm::Expected<FabricArtifactView>
-buildModuleView(::fabric::ModuleOp root,
-                const detail::FabricCanonicalLabeling &labeling,
-                const ArtifactIdentity &identity,
-                std::shared_ptr<mlir::MLIRContext> contextOwner) {
+llvm::Expected<FabricArtifactView> buildModuleView(
+    ::fabric::ModuleOp root, const detail::FabricCanonicalLabeling &labeling,
+    const ArtifactIdentity &identity,
+    std::shared_ptr<mlir::MLIRContext> contextOwner,
+    std::shared_ptr<mlir::OwningOpRef<mlir::ModuleOp>> canonicalModule) {
   detail::FabricArtifactViewData data(identity, FabricRootKind::Module);
   data.contextOwner = std::move(contextOwner);
+  data.canonicalModule = std::move(canonicalModule);
   data.entities.resize(labeling.carriers.size());
 
   llvm::DenseMap<Operation *, const detail::FabricEntityCarrier *> carrierByOp;
@@ -243,6 +244,8 @@ buildModuleView(::fabric::ModuleOp root,
       if (found == labeling.fuTemplateIdByOccurrence.end())
         return invalid("an FU occurrence has no template relation");
       entity.fuTemplate = FabricFuTemplateRef(found->second);
+      entity.owner.inventoryCounts[static_cast<std::size_t>(
+          FabricInventoryKind::SemanticConfigField)] = 1;
     }
     if (auto pe = dyn_cast<::fabric::PeOp>(carrier.op)) {
       entity.peSchedule = pe.getSchedule();
@@ -279,12 +282,33 @@ buildModuleView(::fabric::ModuleOp root,
            entity.instructionContexts)
         context.inventoryCounts = detail::emptyFabricInventories();
     }
+    if (auto sw = dyn_cast<::fabric::SwitchOp>(carrier.op)) {
+      entity.switchSchedule = sw.getSchedule();
+      if (sw.getSchedule() == ::fabric::Schedule::Temporal) {
+        auto parameters = sw.getHwParamsAttr();
+        auto dictionary = parameters && parameters.size() == 1
+                              ? dyn_cast<DictionaryAttr>(parameters[0])
+                              : DictionaryAttr();
+        auto count = dictionary ? dyn_cast_or_null<IntegerAttr>(
+                                      dictionary.get("route_table_size"))
+                                : IntegerAttr();
+        if (!count || count.getInt() <= 0)
+          return invalid("a temporal switch has no resident route capacity");
+        entity.switchRouteTableSize =
+            static_cast<std::uint64_t>(count.getInt());
+      }
+      entity.owner.inventoryCounts[static_cast<std::size_t>(
+          FabricInventoryKind::SemanticConfigField)] = 1;
+    }
     if (carrier.kind == FabricEntityKind::FabricMemoryOccurrence) {
       auto found = labeling.memoryEngineTemplateIdByOccurrence.find(carrier.op);
       if (found != labeling.memoryEngineTemplateIdByOccurrence.end())
         entity.memoryEngineTemplate =
             FabricMemoryEngineTemplateRef(found->second);
     }
+    if (carrier.kind == FabricEntityKind::FabricFifoOccurrence)
+      entity.owner.inventoryCounts[static_cast<std::size_t>(
+          FabricInventoryKind::SemanticConfigField)] = 1;
 
     auto contract =
         detail::validateFabricResourceContract(carrier.op, labeling);
@@ -647,8 +671,10 @@ strictImportModule(const ArtifactRootReference &reference,
   if (llvm::Error error =
           detail::setModuleBoundaryInventory(root, boundaryProjection))
     return std::move(error);
-  auto view =
-      buildModuleView(root, *labeling, reference.artifact, parsed->context);
+  auto canonicalModule = std::make_shared<mlir::OwningOpRef<mlir::ModuleOp>>(
+      std::move(parsed->module));
+  auto view = buildModuleView(root, *labeling, reference.artifact,
+                              parsed->context, std::move(canonicalModule));
   if (!view)
     return view.takeError();
   if (llvm::Error error = validateUnconditionalHandshakeClosure(*view))

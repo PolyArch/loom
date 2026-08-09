@@ -11,6 +11,7 @@
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricSemanticFieldRelation.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
 
@@ -414,9 +415,22 @@ fieldDomain(llvm::StringRef test,
   SemanticFieldDomain result{
       take(test, loom::fabric::qualifyFabricConfigurationSlot(
                      field, std::move(residency))),
-      {}, {}, std::nullopt};
+      {},
+      {},
+      std::nullopt};
   const loom::fabric::FabricInventoryOwnerRef &owner = local.owner.catalog();
-  if (owner.kind() == loom::fabric::FabricInventoryOwnerKind::PeOccurrence) {
+  if (owner.kind() == loom::fabric::FabricInventoryOwnerKind::FuOccurrence) {
+    auto relation = take(test, module.semanticFieldRelation(local, context()));
+    require(test,
+            relation.kind() ==
+                loom::fabric::FabricSemanticFieldRelationKind::Finite,
+            "FU topology field is not finite");
+    for (const loom::CanonicalSemanticBytes &value : relation.finiteDomain())
+      result.values.emplace_back(value.bytes().begin(), value.bytes().end());
+    require(test, !result.values.empty(), "FU topology domain is empty");
+    result.inactive = result.values.front();
+  } else if (owner.kind() ==
+             loom::fabric::FabricInventoryOwnerKind::PeOccurrence) {
     auto schema =
         take(test,
              module.spatialPeConfigurationSchema(
@@ -786,9 +800,9 @@ void canonicalArtifactAndBitRoundTrip(const std::filesystem::path &root) {
   for (const ConfigurationFieldEncoding &field : unit.fields) {
     const auto *codebook =
         std::get_if<FiniteCodebookEncoding>(&field.semanticEncoding);
-    selected.push_back(
-        {field.slot, codebook ? activeEntry(test, field).semanticValue
-                               : field.inactiveValue});
+    selected.push_back({field.slot, codebook
+                                        ? activeEntry(test, field).semanticValue
+                                        : field.inactiveValue});
   }
   std::vector<std::uint8_t> payload =
       take(test, first.abi().encode(unit.id, selected));

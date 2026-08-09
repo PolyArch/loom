@@ -1,0 +1,378 @@
+#include "Fabric/Identity/FabricSemanticFieldRelation.h"
+
+#include "Fabric/Identity/FabricPeConfiguration.h"
+#include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricRefImport.h"
+
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <set>
+#include <tuple>
+#include <vector>
+
+namespace loom::fabric {
+namespace {
+
+llvm::Error rejected(const llvm::Twine &message) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "fabric_semantic_field_relation_rejected: " +
+                                     message);
+}
+
+CanonicalSemanticBytes tagged(std::uint32_t tag) {
+  FabricByteWriter writer;
+  writer.tag(tag);
+  return CanonicalSemanticBytes(writer.take());
+}
+
+template <typename Ref>
+CanonicalSemanticBytes tagged(std::uint32_t tag, const Ref &reference) {
+  FabricByteWriter writer;
+  writer.tag(tag);
+  encodeFabricRef(writer, reference);
+  return CanonicalSemanticBytes(writer.take());
+}
+
+std::vector<std::uint8_t> zeroBits(std::uint64_t bitCount) {
+  return std::vector<std::uint8_t>(
+      static_cast<std::size_t>(bitCount / 8 + (bitCount % 8 != 0)), 0);
+}
+
+bool bit(llvm::ArrayRef<std::uint8_t> bytes, std::uint64_t index) {
+  return ((bytes[static_cast<std::size_t>(index / 8)] >> (index % 8)) & 1U) !=
+         0;
+}
+
+void setBit(std::vector<std::uint8_t> &bytes, std::uint64_t index) {
+  bytes[static_cast<std::size_t>(index / 8)] |=
+      static_cast<std::uint8_t>(1U << (index % 8));
+}
+
+llvm::Error validateBitCarrier(llvm::ArrayRef<std::uint8_t> bytes,
+                               std::uint64_t bitCount) {
+  const std::uint64_t byteCount = bitCount / 8 + (bitCount % 8 != 0);
+  if (bytes.size() != byteCount)
+    return rejected("direct value has the wrong byte count");
+  const unsigned usedBits = static_cast<unsigned>(bitCount % 8);
+  if (usedBits != 0 && !bytes.empty() &&
+      (bytes.back() & static_cast<std::uint8_t>(0xffU << usedBits)) != 0)
+    return rejected("direct value has nonzero padding bits");
+  return llvm::Error::success();
+}
+
+struct SwitchCrosspoint final {
+  FabricOrdinal input = 0;
+  FabricOrdinal output = 0;
+};
+
+std::vector<SwitchCrosspoint>
+switchCrosspoints(const FabricArtifactView &fabric,
+                  FabricSwitchOccurrenceRef sw) {
+  std::vector<SwitchCrosspoint> result;
+  for (const FabricPhysicalTraversalRef &traversal :
+       fabric.admittedTraversals()) {
+    const auto *payload =
+        std::get_if<FabricSwitchTraversalPayload>(&traversal.payload);
+    if (payload && payload->owner == sw)
+      result.push_back({payload->input, payload->output});
+  }
+  llvm::sort(result, [](const SwitchCrosspoint &lhs,
+                        const SwitchCrosspoint &rhs) {
+    return std::tie(lhs.output, lhs.input) < std::tie(rhs.output, rhs.input);
+  });
+  return result;
+}
+
+} // namespace
+
+llvm::Error FabricSemanticFieldRelation::validateSemanticValue(
+    llvm::ArrayRef<std::uint8_t> value) const {
+  switch (kind_) {
+  case FabricSemanticFieldRelationKind::None:
+    return rejected("field has no semantic configuration domain");
+  case FabricSemanticFieldRelationKind::Finite:
+    if (validator_)
+      return validator_(value);
+    for (const CanonicalSemanticBytes &candidate : finiteDomain_)
+      if (candidate.bytes().equals(value))
+        return llvm::Error::success();
+    return rejected("value is outside the finite semantic domain");
+  case FabricSemanticFieldRelationKind::Direct:
+    if (!validator_)
+      return rejected("direct semantic domain has no validator");
+    return validator_(value);
+  }
+  llvm_unreachable("unknown Fabric semantic field relation kind");
+}
+
+llvm::Expected<FabricSemanticFieldRelation>
+FabricArtifactView::semanticFieldRelation(
+    const FabricSemanticConfigFieldRef &field,
+    ::mlir::MLIRContext &context) const {
+  if (llvm::Error error = validateFabricRef(*this, field))
+    return error;
+
+  const FabricInventoryOwnerRef &owner = field.owner.catalog();
+  if (owner.kind() == FabricInventoryOwnerKind::PeOccurrence) {
+    auto schema = spatialPeConfigurationSchema(
+        std::get<FabricPeOccurrenceRef>(owner.payload));
+    if (!schema)
+      return schema.takeError();
+    auto values = schema->finiteDomain(field);
+    if (!values)
+      return values.takeError();
+    std::vector<CanonicalSemanticBytes> domain;
+    domain.reserve(values->size());
+    for (const FabricPeConfigurationValue &value : *values) {
+      auto encoded = schema->encode(field, value);
+      if (!encoded)
+        return encoded.takeError();
+      domain.push_back(std::move(*encoded));
+    }
+    if (domain.empty())
+      return rejected("Spatial PE field has an empty semantic domain");
+    return FabricSemanticFieldRelation(FabricSemanticFieldRelationKind::Finite,
+                                       std::move(domain), 0);
+  }
+
+  if (owner.kind() == FabricInventoryOwnerKind::FuOccurrenceNode) {
+    const auto occurrence = std::get<FabricFuOccurrenceNodeRef>(owner.payload);
+    const auto *capability = resolvedFabricOpCapability(occurrence);
+    if (!capability)
+      return rejected("operation field has no concrete capability");
+    auto operationRelation = capability->resolveSemanticFieldRelation(context);
+    if (!operationRelation)
+      return operationRelation.takeError();
+    if (operationRelation->kind() ==
+        ::fabric::FabricOpSemanticFieldRelationKind::None)
+      return rejected("fixed operation capability owns no field");
+
+    if (operationRelation->kind() ==
+        ::fabric::FabricOpSemanticFieldRelationKind::Finite) {
+      auto shared = std::make_shared<::fabric::FabricOpSemanticFieldRelation>(
+          std::move(*operationRelation));
+      std::vector<CanonicalSemanticBytes> domain;
+      for (const auto &point : shared->finiteBehaviorDomain()) {
+        if (!point.semanticConfiguration)
+          return rejected("finite operation behavior has no semantic value");
+        domain.push_back(*point.semanticConfiguration);
+      }
+      if (domain.empty())
+        return rejected("operation field has an empty finite domain");
+      return FabricSemanticFieldRelation(
+          FabricSemanticFieldRelationKind::Finite, std::move(domain), 0,
+          [shared](llvm::ArrayRef<std::uint8_t> value) {
+            return shared->validateSemanticValue(value);
+          });
+    }
+
+    const std::uint64_t width = *operationRelation->directEncodedBitCount();
+    auto shared = std::make_shared<::fabric::FabricOpSemanticFieldRelation>(
+        std::move(*operationRelation));
+    return FabricSemanticFieldRelation(
+        FabricSemanticFieldRelationKind::Direct, {}, width,
+        [shared](llvm::ArrayRef<std::uint8_t> value) {
+          return shared->validateSemanticValue(value);
+        });
+  }
+
+  if (owner.kind() == FabricInventoryOwnerKind::FuOccurrence) {
+    if (field.ordinal != 0)
+      return rejected("FU topology field ordinal is not zero");
+    const auto fu = std::get<FabricFuOccurrenceRef>(owner.payload);
+    const auto definition = fuTemplateOf(fu);
+    if (!definition)
+      return rejected("FU occurrence has no exact template");
+    std::vector<CanonicalSemanticBytes> domain;
+    domain.push_back(tagged(0));
+    const auto templates = fuCapabilityTemplates(*definition);
+    domain.reserve(1 + templates.size());
+    for (FabricOrdinal ordinal = 0; ordinal < templates.size(); ++ordinal)
+      domain.push_back(
+          tagged(1, FabricFuCapabilityTemplateRef{*definition, ordinal}));
+    if (domain.size() == 1)
+      return rejected("FU occurrence has no capability template");
+    return FabricSemanticFieldRelation(FabricSemanticFieldRelationKind::Finite,
+                                       std::move(domain), 0);
+  }
+
+  if (owner.kind() == FabricInventoryOwnerKind::FifoOccurrence) {
+    if (field.ordinal != 0)
+      return rejected("FIFO mode field ordinal is not zero");
+    const auto fifo = std::get<FabricFifoOccurrenceRef>(owner.payload);
+    std::vector<CanonicalSemanticBytes> domain;
+    domain.push_back(tagged(0));
+    domain.push_back(tagged(1));
+    if (admitsTraversal(FabricPhysicalTraversalRef::fifoTraversal(
+            fifo, FabricFifoTraversalMode::Bypass)))
+      domain.push_back(tagged(2));
+    return FabricSemanticFieldRelation(FabricSemanticFieldRelationKind::Finite,
+                                       std::move(domain), 0);
+  }
+
+  if (owner.kind() == FabricInventoryOwnerKind::SwitchOccurrence) {
+    if (field.ordinal != 0)
+      return rejected("switch route field ordinal is not zero");
+    const auto sw = std::get<FabricSwitchOccurrenceRef>(owner.payload);
+    std::vector<SwitchCrosspoint> crosspoints = switchCrosspoints(*this, sw);
+    if (crosspoints.empty())
+      return rejected("switch has no admitted crosspoint");
+
+    const auto schedule = switchSchedule(sw);
+    if (!schedule)
+      return rejected("switch has no schedule");
+    std::uint64_t entryCount = 1;
+    std::uint64_t tagWidth = 0;
+    if (*schedule == ::fabric::Schedule::Temporal) {
+      entryCount = switchRouteTableSize(sw);
+      const FabricTransportEndpointRef first{
+          FabricTransportEndpointOwnerRef::of(sw), 0};
+      const auto path = transportEndpointDataPath(first);
+      if (entryCount == 0 || !path || path->tagWidthBits == 0)
+        return rejected("temporal switch has an incomplete route shape");
+      tagWidth = path->tagWidthBits;
+    } else if (*schedule != ::fabric::Schedule::Spatial) {
+      return rejected("switch has an unknown schedule");
+    }
+
+    const std::uint64_t entryWidth =
+        (*schedule == ::fabric::Schedule::Temporal ? 1 + tagWidth : 0) +
+        crosspoints.size();
+    if (entryCount > UINT64_MAX / entryWidth)
+      return rejected("switch route carrier is too large");
+    const std::uint64_t width = entryCount * entryWidth;
+    auto validator =
+        [crosspoints, schedule = *schedule, entryCount, tagWidth,
+         entryWidth](llvm::ArrayRef<std::uint8_t> value) -> llvm::Error {
+      const std::uint64_t width = entryCount * entryWidth;
+      if (llvm::Error error = validateBitCarrier(value, width))
+        return error;
+      std::set<std::uint64_t> tags;
+      for (std::uint64_t entry = 0; entry < entryCount; ++entry) {
+        const std::uint64_t base = entry * entryWidth;
+        const bool valid =
+            schedule == ::fabric::Schedule::Spatial || bit(value, base);
+        const std::uint64_t routeBase =
+            base +
+            (schedule == ::fabric::Schedule::Temporal ? 1 + tagWidth : 0);
+        if (!valid) {
+          for (std::uint64_t offset = 1; offset < entryWidth; ++offset)
+            if (bit(value, base + offset))
+              return rejected("unused switch row has nonzero payload");
+          continue;
+        }
+        std::set<FabricOrdinal> selectedOutputs;
+        bool selected = false;
+        for (const auto &[ordinal, crosspoint] : llvm::enumerate(crosspoints)) {
+          if (!bit(value, routeBase + ordinal))
+            continue;
+          selected = true;
+          if (!selectedOutputs.insert(crosspoint.output).second)
+            return rejected("switch row selects fan-in for one output");
+        }
+        if (schedule == ::fabric::Schedule::Temporal) {
+          if (!selected)
+            return rejected("active temporal switch row selects no route");
+          std::uint64_t tag = 0;
+          for (std::uint64_t tagBit = 0; tagBit < tagWidth; ++tagBit)
+            tag |= static_cast<std::uint64_t>(bit(value, base + 1 + tagBit))
+                   << tagBit;
+          if (!tags.insert(tag).second)
+            return rejected("temporal switch rows repeat a tag");
+        }
+      }
+      return llvm::Error::success();
+    };
+    return FabricSemanticFieldRelation(FabricSemanticFieldRelationKind::Direct,
+                                       {}, width, std::move(validator));
+  }
+
+  return rejected("field owner has no shared semantic relation");
+}
+
+llvm::Expected<CanonicalSemanticBytes> encodeFabricFuConfiguration(
+    const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
+    std::optional<FabricFuCapabilityTemplateRef> activeTemplate) {
+  const FabricInventoryOwnerRef &owner = field.owner.catalog();
+  if (owner.kind() != FabricInventoryOwnerKind::FuOccurrence ||
+      field.ordinal != 0)
+    return rejected("FU codec received a non-FU topology field");
+  const auto fu = std::get<FabricFuOccurrenceRef>(owner.payload);
+  const auto definition = fabric.fuTemplateOf(fu);
+  if (!definition)
+    return rejected("FU codec cannot resolve the occurrence template");
+  CanonicalSemanticBytes encoded =
+      activeTemplate ? tagged(1, *activeTemplate) : tagged(0);
+  if (activeTemplate && activeTemplate->fu != *definition)
+    return rejected("FU codec selected a template from another definition");
+  mlir::MLIRContext context;
+  auto relation = fabric.semanticFieldRelation(field, context);
+  if (!relation)
+    return relation.takeError();
+  if (llvm::Error error = relation->validateSemanticValue(encoded.bytes()))
+    return std::move(error);
+  return encoded;
+}
+
+llvm::Expected<CanonicalSemanticBytes> encodeFabricFifoConfiguration(
+    const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
+    std::optional<FabricFifoTraversalMode> activeMode) {
+  const FabricInventoryOwnerRef &owner = field.owner.catalog();
+  if (owner.kind() != FabricInventoryOwnerKind::FifoOccurrence ||
+      field.ordinal != 0)
+    return rejected("FIFO codec received a non-FIFO mode field");
+  std::uint32_t tag = 0;
+  if (activeMode)
+    tag = *activeMode == FabricFifoTraversalMode::Buffered ? 1 : 2;
+  CanonicalSemanticBytes encoded = tagged(tag);
+  mlir::MLIRContext context;
+  auto relation = fabric.semanticFieldRelation(field, context);
+  if (!relation)
+    return relation.takeError();
+  if (llvm::Error error = relation->validateSemanticValue(encoded.bytes()))
+    return std::move(error);
+  return encoded;
+}
+
+llvm::Expected<CanonicalSemanticBytes> encodeSpatialSwitchConfiguration(
+    const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
+    llvm::ArrayRef<FabricPhysicalTraversalRef> selectedTraversals) {
+  const FabricInventoryOwnerRef &owner = field.owner.catalog();
+  if (owner.kind() != FabricInventoryOwnerKind::SwitchOccurrence ||
+      field.ordinal != 0)
+    return rejected("switch codec received a non-switch route field");
+  const auto sw = std::get<FabricSwitchOccurrenceRef>(owner.payload);
+  if (fabric.switchSchedule(sw) != ::fabric::Schedule::Spatial)
+    return rejected("Spatial switch codec received a Temporal switch");
+  const std::vector<SwitchCrosspoint> crosspoints =
+      switchCrosspoints(fabric, sw);
+  std::vector<std::uint8_t> carrier = zeroBits(crosspoints.size());
+  for (const FabricPhysicalTraversalRef &traversal : selectedTraversals) {
+    const auto *payload =
+        std::get_if<FabricSwitchTraversalPayload>(&traversal.payload);
+    if (!payload || payload->owner != sw)
+      return rejected("switch codec received a foreign traversal");
+    const auto found = llvm::find_if(crosspoints, [&](const auto &candidate) {
+      return candidate.input == payload->input &&
+             candidate.output == payload->output;
+    });
+    if (found == crosspoints.end())
+      return rejected("switch codec received an unadmitted traversal");
+    setBit(carrier, static_cast<std::uint64_t>(found - crosspoints.begin()));
+  }
+  CanonicalSemanticBytes encoded(std::move(carrier));
+  mlir::MLIRContext context;
+  auto relation = fabric.semanticFieldRelation(field, context);
+  if (!relation)
+    return relation.takeError();
+  if (llvm::Error error = relation->validateSemanticValue(encoded.bytes()))
+    return std::move(error);
+  return encoded;
+}
+
+} // namespace loom::fabric

@@ -158,6 +158,12 @@ FabricRootKind FabricArtifactView::rootKind() const {
   return storage_->data.rootKind;
 }
 
+const ::mlir::Operation *FabricArtifactView::canonicalOperation() const {
+  return storage_->data.canonicalModule && *storage_->data.canonicalModule
+             ? storage_->data.canonicalModule->get().getOperation()
+             : nullptr;
+}
+
 std::optional<FabricModuleTemplateRef>
 FabricArtifactView::moduleRootTemplate() const {
   if (rootKind() != FabricRootKind::Module)

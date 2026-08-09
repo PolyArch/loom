@@ -35,6 +35,7 @@ using loom::adg::FifoSpec;
 using loom::adg::PortType;
 using loom::adg::SpatialValue;
 using loom::adg::SwitchSpec;
+using loom::fabric::FabricConfigurationOwnerRef;
 using loom::fabric::FabricFuCapabilityTemplateRef;
 using loom::fabric::FabricFuNodeKind;
 using loom::fabric::FabricFuOccurrenceRef;
@@ -50,6 +51,8 @@ using loom::fabric::FabricPhysicalTraversalKind;
 using loom::fabric::FabricPhysicalTraversalRef;
 using loom::fabric::FabricPortDirection;
 using loom::fabric::FabricRegisterFifoPathRole;
+using loom::fabric::FabricSemanticConfigFieldRef;
+using loom::fabric::FabricSemanticFieldRelationKind;
 using loom::fabric::FabricSwitchOccurrenceRef;
 using loom::fabric::FinalizedFabricRoot;
 using loom::fabric::HandshakeOwnerModel;
@@ -507,6 +510,36 @@ void selectedGlobalCycleUsesExactTraversalSelection() {
   require(test, completed.roots().size() == 1,
           "fixture did not publish exactly one Fabric root");
   const FinalizedFabricRoot &finalized = completed.roots().front();
+
+  require(test,
+          finalized.view().switchOccurrences().size() == 1 &&
+              finalized.view().fifoOccurrences().size() == 1,
+          "configured relation fixture changed its routing shape");
+  mlir::MLIRContext relationContext;
+  const FabricInventoryOwnerRef switchOwner =
+      FabricInventoryOwnerRef::of(finalized.view().switchOccurrences().front());
+  const FabricSemanticConfigFieldRef switchField{
+      FabricConfigurationOwnerRef(switchOwner), 0};
+  const auto switchRelation = take(test, finalized.view().semanticFieldRelation(
+                                             switchField, relationContext));
+  require(test,
+          switchRelation.kind() == FabricSemanticFieldRelationKind::Direct &&
+              switchRelation.directEncodedBitCount() == 4,
+          "2x2 Spatial switch does not own its four-crosspoint carrier");
+  if (llvm::Error error = switchRelation.validateSemanticValue({0x05}))
+    fail(test, llvm::toString(std::move(error)));
+  requireRejected(test, switchRelation.validateSemanticValue({0x03}), "fan-in");
+
+  const FabricInventoryOwnerRef fifoOwner =
+      FabricInventoryOwnerRef::of(finalized.view().fifoOccurrences().front());
+  const FabricSemanticConfigFieldRef fifoField{
+      FabricConfigurationOwnerRef(fifoOwner), 0};
+  const auto fifoRelation = take(
+      test, finalized.view().semanticFieldRelation(fifoField, relationContext));
+  require(test,
+          fifoRelation.kind() == FabricSemanticFieldRelationKind::Finite &&
+              fifoRelation.finiteDomain().size() == 3,
+          "bypassable FIFO does not own Disabled, Buffered, and Bypass");
 
   std::vector<FabricPhysicalTraversalRef> acyclic;
   std::vector<FabricPhysicalTraversalRef> cyclic;

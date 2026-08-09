@@ -12,6 +12,9 @@
 
 #include "llvm/Support/Error.h"
 
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/OwningOpRef.h"
+
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -87,6 +90,8 @@ struct FabricEntityViewData {
       instructionCoreMicroarchitecture;
   std::optional<FabricLocalMemoryServiceViewData> localMemoryService;
   std::optional<::fabric::Schedule> peSchedule;
+  std::optional<::fabric::Schedule> switchSchedule;
+  std::optional<std::uint64_t> switchRouteTableSize;
   std::optional<FabricFuConfigurationStorageMode> peFuConfigurationStorageMode;
   std::optional<FabricPeOccurrenceRef> parentPe;
   std::optional<FabricFuTemplateRef> fuTemplate;
@@ -111,6 +116,7 @@ struct FabricArtifactViewData {
   ArtifactIdentity identity;
   FabricRootKind rootKind = FabricRootKind::Module;
   std::shared_ptr<mlir::MLIRContext> contextOwner;
+  std::shared_ptr<mlir::OwningOpRef<mlir::ModuleOp>> canonicalModule;
   std::vector<FabricEntityViewData> entities;
   std::vector<FabricPointConnectionPayload> pointConnections;
   std::vector<FabricMemoryServiceConnectionPayload> memoryServiceConnections;

@@ -24,11 +24,10 @@ llvm::Error invalid(const llvm::Twine &message) {
 }
 
 struct SlotKey final {
-  ByteVector context;
-  ByteVector field;
+  ByteVector slot;
 
   friend bool operator<(const SlotKey &lhs, const SlotKey &rhs) {
-    return std::tie(lhs.context, lhs.field) < std::tie(rhs.context, rhs.field);
+    return lhs.slot < rhs.slot;
   }
 };
 
@@ -60,10 +59,43 @@ resolvePointerLayout(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   return std::optional<::loom::PointerLayout>(*layout);
 }
 
-SlotKey key(const ::loom::fabric::InstructionContextRef &context,
-            const ::loom::fabric::FabricSemanticConfigFieldRef &field) {
-  return {::loom::fabric::canonicalFabricBytes(context),
-          ::loom::fabric::canonicalFabricBytes(field)};
+SlotKey key(const ::loom::fabric::FabricConfigurationSlotRef &slot) {
+  return {::loom::fabric::canonicalFabricBytes(slot)};
+}
+
+llvm::Expected<::loom::fabric::FabricConfigurationSlotRef> configurationSlot(
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ::loom::fabric::FabricSemanticConfigFieldRef &field,
+    std::optional<::loom::fabric::InstructionContextRef> instructionContext =
+        std::nullopt) {
+  auto residencies = fabric.configurationResidencies(field);
+  if (!residencies)
+    return residencies.takeError();
+  const ::loom::fabric::FabricConfigurationResidency staticResidency =
+      ::loom::fabric::FabricStaticConfigurationResidency{};
+  if (llvm::is_contained(*residencies, staticResidency))
+    return ::loom::fabric::FabricConfigurationSlotRef{field, staticResidency};
+  if (!instructionContext)
+    return invalid("configuration field requires an instruction context");
+  const ::loom::fabric::FabricConfigurationResidency selected =
+      *instructionContext;
+  if (!llvm::is_contained(*residencies, selected))
+    return invalid("configuration field does not admit its bound instruction "
+                   "context");
+  return ::loom::fabric::FabricConfigurationSlotRef{field, selected};
+}
+
+void appendRouteTraversals(
+    const SpatialRouteTreeView &route,
+    std::vector<::loom::fabric::FabricPhysicalTraversalRef> &result) {
+  if (route.localTraversal)
+    result.push_back(*route.localTraversal);
+  for (const SpatialRouteNodeView &node : route.nodes)
+    if (node.incomingTraversal)
+      result.push_back(*node.incomingTraversal);
+  for (const SpatialRouteSinkView &sink : route.sinks)
+    if (sink.localTraversal)
+      result.push_back(*sink.localTraversal);
 }
 
 } // namespace
@@ -73,7 +105,7 @@ canonicalizeConfiguredHardwareProjection(
     std::vector<ConfiguredHardwareFieldValueView> selectedFields) {
   std::map<SlotKey, ConfiguredHardwareFieldValueView> fields;
   for (ConfiguredHardwareFieldValueView &selected : selectedFields) {
-    const SlotKey selectedKey = key(selected.slot.context, selected.slot.field);
+    const SlotKey selectedKey = key(selected.slot);
     auto found = fields.find(selectedKey);
     if (found == fields.end()) {
       fields.emplace(selectedKey, std::move(selected));
@@ -99,7 +131,8 @@ deriveConfiguredHardwareProjection(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
-    llvm::ArrayRef<SpatialComputeBindingView> bindings) {
+    llvm::ArrayRef<SpatialComputeBindingView> bindings,
+    llvm::ArrayRef<SpatialRouteTreeView> routes) {
   if (bindings.size() != techMapping.computeRealizations().size())
     return invalid("configured hardware projection has incomplete bindings");
 
@@ -111,6 +144,19 @@ deriveConfiguredHardwareProjection(
     if (!binding)
       return invalid("configured hardware projection has a missing or "
                      "duplicate compute binding");
+
+    const ::loom::fabric::FabricSemanticConfigFieldRef fuField{
+        ::loom::fabric::FabricConfigurationOwnerRef(
+            ::loom::fabric::FabricInventoryOwnerRef::of(binding->occurrence)),
+        0};
+    auto fuSlot = configurationSlot(fabric, fuField, binding->context);
+    if (!fuSlot)
+      return fuSlot.takeError();
+    auto fuValue = ::loom::fabric::encodeFabricFuConfiguration(
+        fabric, fuField, realization.capabilityTemplate);
+    if (!fuValue)
+      return fuValue.takeError();
+    fields.push_back({std::move(*fuSlot), std::move(*fuValue)});
 
     for (const TechComputeActorView &actorBinding : realization.actors) {
       auto actor = dataflow.resolve(actorBinding.actor);
@@ -153,10 +199,77 @@ deriveConfiguredHardwareProjection(
                 ::loom::fabric::validateFabricRef(fabric, occurrenceField))
           return std::move(error);
 
-        fields.push_back(
-            {{binding->context, occurrenceField}, std::move(*value)});
+        auto slot =
+            configurationSlot(fabric, occurrenceField, binding->context);
+        if (!slot)
+          return slot.takeError();
+
+        fields.push_back({std::move(*slot), std::move(*value)});
       }
     }
+  }
+
+  std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversals;
+  for (const SpatialRouteTreeView &route : routes)
+    appendRouteTraversals(route, traversals);
+  llvm::sort(traversals, [](const auto &lhs, const auto &rhs) {
+    return ::loom::fabric::canonicalFabricBytes(lhs) <
+           ::loom::fabric::canonicalFabricBytes(rhs);
+  });
+  traversals.erase(std::unique(traversals.begin(), traversals.end()),
+                   traversals.end());
+
+  for (const auto sw : fabric.switchOccurrences()) {
+    std::vector<::loom::fabric::FabricPhysicalTraversalRef> selected;
+    for (const auto &traversal : traversals) {
+      const auto *payload =
+          std::get_if<::loom::fabric::FabricSwitchTraversalPayload>(
+              &traversal.payload);
+      if (payload && payload->owner == sw)
+        selected.push_back(traversal);
+    }
+    if (selected.empty())
+      continue;
+    const ::loom::fabric::FabricSemanticConfigFieldRef field{
+        ::loom::fabric::FabricConfigurationOwnerRef(
+            ::loom::fabric::FabricInventoryOwnerRef::of(sw)),
+        0};
+    auto slot = configurationSlot(fabric, field);
+    if (!slot)
+      return slot.takeError();
+    auto value = ::loom::fabric::encodeSpatialSwitchConfiguration(fabric, field,
+                                                                  selected);
+    if (!value)
+      return value.takeError();
+    fields.push_back({std::move(*slot), std::move(*value)});
+  }
+
+  for (const auto fifo : fabric.fifoOccurrences()) {
+    std::optional<::loom::fabric::FabricFifoTraversalMode> selectedMode;
+    for (const auto &traversal : traversals) {
+      const auto *payload =
+          std::get_if<::loom::fabric::FabricFifoTraversalPayload>(
+              &traversal.payload);
+      if (!payload || payload->owner != fifo)
+        continue;
+      if (selectedMode && *selectedMode != payload->mode)
+        return invalid("one FIFO selects both Buffered and Bypass modes");
+      selectedMode = payload->mode;
+    }
+    if (!selectedMode)
+      continue;
+    const ::loom::fabric::FabricSemanticConfigFieldRef field{
+        ::loom::fabric::FabricConfigurationOwnerRef(
+            ::loom::fabric::FabricInventoryOwnerRef::of(fifo)),
+        0};
+    auto slot = configurationSlot(fabric, field);
+    if (!slot)
+      return slot.takeError();
+    auto value = ::loom::fabric::encodeFabricFifoConfiguration(fabric, field,
+                                                               selectedMode);
+    if (!value)
+      return value.takeError();
+    fields.push_back({std::move(*slot), std::move(*value)});
   }
   return canonicalizeConfiguredHardwareProjection(std::move(fields));
 }
