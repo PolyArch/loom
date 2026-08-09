@@ -22,6 +22,9 @@
 #include "Hardware/RTL/Providers/LoopGate.h"
 #include "Hardware/RTL/Providers/LoopInvariant.h"
 #include "Hardware/RTL/Providers/LoopStream.h"
+#include "Hardware/RTL/Providers/MathErf.h"
+#include "Hardware/RTL/Providers/MathExponential.h"
+#include "Hardware/RTL/Providers/MathLogarithm.h"
 #include "Hardware/RTL/Providers/MathRoot.h"
 #include "Hardware/RTL/Providers/MathRounding.h"
 #include "Hardware/RTL/Providers/ScalarBitReinterpret.h"
@@ -125,9 +128,15 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
   requireRegistration(
       loom::hardware::rtl::registerPortableLoopStreamProvider(registry));
   requireRegistration(
+      loom::hardware::rtl::registerPortableMathExponentialProviders(registry));
+  requireRegistration(
+      loom::hardware::rtl::registerPortableMathLogarithmProviders(registry));
+  requireRegistration(
       loom::hardware::rtl::registerPortableMathRoundingProviders(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableMathRootProviders(registry));
+  requireRegistration(
+      loom::hardware::rtl::registerPortableMathErfProvider(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableFixedVectorIntegerAddSubProvider(
           registry));
@@ -243,6 +252,13 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::ScalarUnsignedIntegerDivRem,
       ::fabric::ImplementationFamilyId::ScalarFloatDivide,
       ::fabric::ImplementationFamilyId::ScalarFloatRemainder,
+      ::fabric::ImplementationFamilyId::ScalarMathExp,
+      ::fabric::ImplementationFamilyId::ScalarMathExp2,
+      ::fabric::ImplementationFamilyId::ScalarMathExpM1,
+      ::fabric::ImplementationFamilyId::ScalarMathLog,
+      ::fabric::ImplementationFamilyId::ScalarMathLog2,
+      ::fabric::ImplementationFamilyId::ScalarMathLog10,
+      ::fabric::ImplementationFamilyId::ScalarMathLog1p,
       ::fabric::ImplementationFamilyId::ScalarMathFloor,
       ::fabric::ImplementationFamilyId::ScalarMathCeil,
       ::fabric::ImplementationFamilyId::ScalarMathRound,
@@ -250,6 +266,7 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::ScalarMathRoundEven,
       ::fabric::ImplementationFamilyId::ScalarMathSqrt,
       ::fabric::ImplementationFamilyId::ScalarMathRsqrt,
+      ::fabric::ImplementationFamilyId::ScalarMathErf,
       ::fabric::ImplementationFamilyId::ScalarIntegerSaturatingAddSub,
       ::fabric::ImplementationFamilyId::FixedVectorIntegerSaturatingAddSub,
       ::fabric::ImplementationFamilyId::ScalarIntegerCountZeros,

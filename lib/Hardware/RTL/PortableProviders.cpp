@@ -23,6 +23,9 @@
 #include "Hardware/RTL/Providers/LoopGate.h"
 #include "Hardware/RTL/Providers/LoopInvariant.h"
 #include "Hardware/RTL/Providers/LoopStream.h"
+#include "Hardware/RTL/Providers/MathErf.h"
+#include "Hardware/RTL/Providers/MathExponential.h"
+#include "Hardware/RTL/Providers/MathLogarithm.h"
 #include "Hardware/RTL/Providers/MathRoot.h"
 #include "Hardware/RTL/Providers/MathRounding.h"
 #include "Hardware/RTL/Providers/ScalarBitReinterpret.h"
@@ -91,9 +94,15 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
     return error;
   if (llvm::Error error = registerPortableLoopStreamProvider(candidate))
     return error;
+  if (llvm::Error error = registerPortableMathExponentialProviders(candidate))
+    return error;
+  if (llvm::Error error = registerPortableMathLogarithmProviders(candidate))
+    return error;
   if (llvm::Error error = registerPortableMathRoundingProviders(candidate))
     return error;
   if (llvm::Error error = registerPortableMathRootProviders(candidate))
+    return error;
+  if (llvm::Error error = registerPortableMathErfProvider(candidate))
     return error;
   if (llvm::Error error =
           registerPortableFixedVectorIntegerAddSubProvider(candidate))

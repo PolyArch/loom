@@ -685,6 +685,58 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-math-exponential-test
+    PortableMathExponentialTest.cpp
+  )
+
+  target_include_directories(loom-portable-math-exponential-test PRIVATE
+    ${LOOM_MPFR_INCLUDE_DIR}
+  )
+
+  target_link_libraries(loom-portable-math-exponential-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+    ${LOOM_MPFR_LIBRARY}
+  )
+
+  add_executable(loom-portable-math-logarithm-test
+    PortableMathLogarithmTest.cpp
+  )
+
+  target_link_libraries(loom-portable-math-logarithm-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    LoomSimulator
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
+  add_executable(loom-portable-math-erf-test
+    PortableMathErfTest.cpp
+  )
+
+  target_link_libraries(loom-portable-math-erf-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    LoomSimulator
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-math-root-test
     PortableMathRootTest.cpp
   )

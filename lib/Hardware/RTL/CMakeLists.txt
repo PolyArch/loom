@@ -27,6 +27,9 @@ add_library(LoomHardwareRTL
   Providers/LoopGate.cpp
   Providers/LoopInvariant.cpp
   Providers/LoopStream.cpp
+  Providers/MathErf.cpp
+  Providers/MathExponential.cpp
+  Providers/MathLogarithm.cpp
   Providers/MathRounding.cpp
   Providers/MathRoot.cpp
   Providers/ProviderSupport.cpp
