@@ -8,11 +8,41 @@ isolation, scheduling, or Evaluation result schemas.
 
 ## Ownership
 
-A local external-tool provider owns one static typed local descriptor, its
-driver-script projection, and its version probe. The descriptor declares the
-logical tool key, executable names, provider-recognized environment roots,
-module candidates, runtime compatibility, and the exact local binding fields
-it expects from its semantic owner.
+`loom.external_tool.backend_catalog 1.0` is the sole owner of every backend
+tool's logical key, official product name, static typed local descriptor, and
+validated release profiles. The descriptor declares executable names,
+provider-recognized environment roots, ordered module candidates, runtime
+compatibility, the version probe, and the exact local binding fields expected
+from its semantic owner. The catalog is closed, deterministic, iterable, and
+rejects duplicate keys, official names, conformance features, and provider
+descriptor instances.
+
+```text
+BackendToolCatalogEntry {
+  logical_tool_key
+  official_product_name
+  provider_descriptor
+  validated_releases[] {
+    conformance_feature
+    module_alias_ref: optional
+    exact_version_probe
+  }
+}
+```
+
+A validated release profile records a repository conformance baseline. It may
+enable tests only after its exact structured probe succeeds for the executable
+selected from the current test environment. Executable presence alone is not a
+release match. A profile does not select a semantic model, authorize a tool
+build for a Request, or replace the exact result-affecting provider build in a
+model or generator binding.
+
+Adapters reference their catalog entry and cannot repeat a logical key,
+official name, module release, or version-probe convention. Machine-local
+configuration may contain an unused key, but only a registered catalog entry
+can consume it or create a provider capability. Lit and other conformance
+harnesses consume a machine-readable projection of this catalog; they cannot
+maintain another executable/version/feature table.
 
 The exact `CandidateGeneratorDescriptor` or `EvaluationModelDescriptor` owns
 the typed semantic `prepare/import` boundary and its result contract. A local
@@ -249,6 +279,10 @@ rank arbitrary installation-directory names, or implement a competing
 the exact ordered loaded-module closure. Final execution loads the frozen exact
 closure and verifies the resolved executable and version instead of repeating
 discovery.
+
+The versioned aliases and their conformance probes are catalog-owned release
+profiles. Generic site aliases remain descriptor-owned fallbacks and never
+imply that a particular repository baseline was verified.
 
 The same compatibility probe applies to an executable selected by explicit
 configuration or the current environment. Explicit configuration has highest
@@ -608,6 +642,9 @@ Stable tests cover:
   candidate, and mandatory VCS `-full64` projection into compile and
   elaboration commands;
 - nonzero successful version statuses and stable-line normalization;
+- catalog uniqueness, adapter-to-catalog identity, and machine-readable
+  conformance feature derivation from a successful exact release probe;
+- rejection of presence-only or wrong-version feature discovery;
 - independent tool/runtime selection plus rejected incompatible composition;
 - shell-safe projection of adversarial paths, arguments, and module names;
 - deterministic byte-identical manifests and scripts from identical inputs;

@@ -43,6 +43,14 @@ inspect `PATH`, source module initialization, choose a container, or read a
 machine-local configuration itself. It supplies its provider descriptor and
 consumes the frozen binding produced by the shared resolver.
 
+The provider descriptor is referenced from the single
+`loom.external_tool.backend_catalog 1.0` entry owned by
+[External Tool Invocation](spec-external-tool-invocation.md#ownership). An
+adapter cannot copy its logical key, official product name, validated module
+release, or version-probe rule. Repository conformance features are derived
+from the same catalog by real probes; they are not a second provider or
+semantic-build registry.
+
 An adapter consumes the exact `GenerationConstraint` payload of its
 HardwareImplementation. It may translate that payload into vendor syntax, but
 it cannot infer a hidden clock, reset exception, CDC waiver, false path,
@@ -131,6 +139,11 @@ bundle, completion contract, HardwareImplementation finalization, and Evidence
 registries. An unavailable executable, license, target, external input,
 primitive, or provider capability is typed `Unavailable` or `Unsupported`;
 it never selects another provider or a lower-fidelity model implicitly.
+
+The provider matrix names products for capability communication only. Exact
+supported local keys and validated release profiles come from the backend tool
+catalog; exact result-affecting builds still come from each resolved model or
+generator binding.
 
 DesignWare, ChipWare, AMD/Xilinx primitives, and Intel/Altera primitives are
 RTL implementation providers rather than environment-discovery or Evaluation

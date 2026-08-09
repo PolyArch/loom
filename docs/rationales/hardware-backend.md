@@ -620,6 +620,29 @@ to deterministic command projection and cannot be accidentally removed. This
 keeps local installation paths private while making the generated script's
 actual architecture choice inspectable.
 
+## Why One Catalog Owns Tool Names And Validated Releases
+
+Provider discovery, adapter validation, and conformance testing all need the
+same local tool identity, but they do not need three independently maintained
+string tables. Independent tables had already allowed a test feature to claim
+a dated release after checking only that an executable with the right basename
+existed. They also allowed an adapter key and its provider descriptor to drift
+without a structural error.
+
+The backend tool catalog therefore owns the logical key, official name,
+descriptor, and validated release profiles once. Adapters hold references to
+entries, while the test harness consumes a machine-readable availability
+projection produced by the same owner. This is smaller than an external
+catalog schema and code generator, while still preventing source and test
+metadata from becoming competing authorities.
+
+A validated release is deliberately not the semantic provider build. The
+release says which exact probe has passed repository conformance testing. A
+model or generator binding still records the exact result-affecting build used
+for its Request or candidate. Keeping those roles separate lets a provider add
+another verified release without rewriting existing semantic identities, and
+prevents a convenient local baseline from silently selecting a model.
+
 ## Why ImplementationPlatform Is A Target Manifest
 
 The ASIC and FPGA conformance targets prove materially different technology and
