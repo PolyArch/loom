@@ -29,7 +29,7 @@ constexpr llvm::StringLiteral declaredOutputs[]{
 };
 
 const SynopsysInvocationDescriptor descriptor{
-    "fc_shell",
+    &external_tool::fusionCompilerProvider(),
     "loom.eda.synopsys.fusion_compiler.asic_physical@1",
     SynopsysOperation::PhysicalImplementation,
     acceptedStates,

@@ -603,7 +603,7 @@ llvm::Expected<InvocationInputs> collectInvocationInputs(
 
 std::vector<std::string>
 localInheritedEnvironment(const LocalToolConfig &config) {
-  auto tool = config.tools.find("vivado");
+  auto tool = config.tools.find(external_tool::vivadoProvider().binding.key);
   return tool == config.tools.end() ? std::vector<std::string>{}
                                     : tool->second.inheritEnvironment;
 }
@@ -875,8 +875,9 @@ llvm::Error validateExactManifestContract(
       tool ? tool->getString("executable") : std::nullopt;
   const std::optional<llvm::StringRef> version =
       tool ? tool->getString("version") : std::nullopt;
-  if (!toolKey || *toolKey != "vivado" || !executable || executable->empty() ||
-      !version || *version != config.stableProviderBuildIdentity())
+  if (!toolKey || *toolKey != external_tool::vivadoProvider().binding.key ||
+      !executable || executable->empty() || !version ||
+      *version != config.stableProviderBuildIdentity())
     return invalid("prepared manifest violates the exact provider contract");
 
   const ToolVersionProbe expectedProbe =

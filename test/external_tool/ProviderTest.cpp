@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,29 @@ void require(bool condition, const std::string &message) {
 } // namespace
 
 int main() {
+  if (llvm::Error error = validateBackendToolCatalog())
+    fail("backend tool catalog is invalid: " +
+         llvm::toString(std::move(error)));
+  const llvm::ArrayRef<BackendToolCatalogEntry> catalog = backendToolCatalog();
+  require(catalog.size() == 16,
+          "backend tool catalog does not cover every supported provider");
+  std::set<std::string> keys;
+  std::set<std::string> names;
+  std::set<std::string> features;
+  for (const BackendToolCatalogEntry &entry : catalog) {
+    require(keys.insert(entry.provider.binding.key).second,
+            "backend tool catalog contains a duplicate key");
+    require(names.insert(entry.officialProductName).second,
+            "backend tool catalog contains a duplicate official name");
+    for (const BackendToolReleaseProfile &release : entry.validatedReleases)
+      require(features.insert(release.conformanceFeature).second,
+              "backend tool catalog contains a duplicate feature");
+  }
+  require(findBackendTool("missing") == nullptr &&
+              findBackendTool("verilator") &&
+              &findBackendTool("verilator")->provider == &verilatorProvider(),
+          "backend tool catalog lookup is not deterministic");
+
   const ExternalToolProviderDescriptor &container = polyArchContainerProvider();
   require(container.binding.key == "polyarch_container" &&
               container.binding.executableNames ==
@@ -29,7 +53,10 @@ int main() {
               container.versionProbe.arguments ==
                   std::vector<std::string>{"--version"} &&
               container.versionProbe.requiredOutputSubstring ==
-                  "PolyArch container",
+                  "PolyArch container" &&
+              findBackendTool("polyarch_container")
+                      ->validatedReleases.front()
+                      .conformanceFeature == "polyarch-container-0.1.0",
           "PolyArch/container provider contract is incomplete");
 
   const ExternalToolProviderDescriptor &verilator = verilatorProvider();
@@ -37,9 +64,21 @@ int main() {
               verilator.binding.environmentCandidates.front().variable ==
                   "VERILATOR_ROOT" &&
               verilator.binding.moduleAliases ==
-                  std::vector<std::string>{"verilator"} &&
+                  std::vector<std::string>{"verilator/5.050", "verilator"} &&
               verilator.runtimeCompatibility.supportsPolyArchContainer,
           "Verilator provider contract is incomplete");
+  const BackendToolCatalogEntry *verilatorEntry = findBackendTool("verilator");
+  require(verilatorEntry &&
+              verilatorEntry->officialProductName == "Verilator" &&
+              verilatorEntry->validatedReleases.size() == 1 &&
+              verilatorEntry->validatedReleases.front().conformanceFeature ==
+                  "verilator" &&
+              verilatorEntry->validatedReleases.front().moduleAlias ==
+                  std::optional<std::string>{"verilator/5.050"} &&
+              verilatorEntry->validatedReleases.front()
+                      .exactVersionProbe.requiredOutputSubstring ==
+                  std::optional<std::string>{"Verilator 5.050"},
+          "Verilator validated release is incomplete");
 
   const ExternalToolProviderDescriptor &yosys = yosysProvider();
   require(yosys.binding.key == "yosys" &&
@@ -88,6 +127,11 @@ int main() {
                   "synopsys/fusioncompiler/Y-2026.03",
           "Fusion Compiler provider contract is incomplete");
 
+  const ExternalToolProviderDescriptor &pt = primeTimeProvider();
+  require(pt.binding.key == "pt_shell" && pt.binding.moduleAliases.front() ==
+                                              "synopsys/prime/Y-2026.03-SP2",
+          "PrimeTime provider contract is incomplete");
+
   const ExternalToolProviderDescriptor &xcelium = xceliumProvider();
   require(
       xcelium.binding.key == "xrun" &&
@@ -95,7 +139,10 @@ int main() {
               "XCELIUM_HOME" &&
           xcelium.binding.environmentCandidates.front().relativeExecutable ==
               "tools.lnx86/inca/bin/64bit/xrun" &&
-          xcelium.binding.moduleAliases.front() == "cadence/XCELIUM/2603",
+          xcelium.binding.moduleAliases.front() == "cadence/XCELIUM/2603" &&
+          findBackendTool("xrun")
+                  ->validatedReleases.front()
+                  .conformanceFeature == "xcelium-26.03-s005",
       "Xcelium provider contract is incomplete");
 
   const ExternalToolProviderDescriptor &genus = genusProvider();
@@ -117,8 +164,11 @@ int main() {
 
   const ExternalToolProviderDescriptor &vivado = vivadoProvider();
   require(vivado.binding.key == "vivado" &&
-              vivado.binding.moduleAliases.front() == "amd/2026.1",
-          "Vivado provider must prefer the selected AMD 2026.1 suite");
+              vivado.binding.moduleAliases.front() == "amd/vivado/2024.2" &&
+              findBackendTool("vivado")
+                      ->validatedReleases.front()
+                      .conformanceFeature == "vivado-2024.2.2",
+          "Vivado provider must prefer the validated 2024.2 release");
 
   const ExternalToolProviderDescriptor &quartus = quartusPrimeProvider();
   require(quartus.binding.key == "quartus_sh" &&

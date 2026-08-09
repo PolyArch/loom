@@ -20,7 +20,7 @@ constexpr llvm::StringLiteral declaredOutputs[]{
     "outputs/tempus-timing-result.json"};
 
 const CadenceInvocationDescriptor descriptor{
-    "tempus",
+    &external_tool::tempusProvider(),
     "loom.eda.cadence.tempus.timing@1",
     CadenceOperation::TimingEvaluation,
     acceptedStates,

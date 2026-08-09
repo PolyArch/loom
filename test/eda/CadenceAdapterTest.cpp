@@ -294,9 +294,10 @@ void descriptorsAndParsersAreExact(const std::filesystem::path &root) {
   const auto &tempus = tempusTimingDescriptor();
   const auto &voltus = voltusRailDescriptor();
   require(__func__,
-          xcelium.toolKey == "xrun" &&
+          xcelium.toolProvider == &external_tool::xceliumProvider() &&
               xcelium.operation == CadenceOperation::FunctionalEvaluation &&
-              !xcelium.requiresAsicPlatform && innovus.toolKey == "innovus" &&
+              !xcelium.requiresAsicPlatform &&
+              innovus.toolProvider == &external_tool::innovusProvider() &&
               innovus.operation == CadenceOperation::PhysicalImplementation &&
               innovus.requiredProviderInputs.size() == 4 &&
               joules.operation == CadenceOperation::PowerEvaluation &&

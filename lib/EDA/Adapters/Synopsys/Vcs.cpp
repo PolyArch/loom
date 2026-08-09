@@ -19,7 +19,7 @@ constexpr llvm::StringLiteral declaredOutputs[]{
     "outputs/vcs-functional-result.json"};
 
 const SynopsysInvocationDescriptor descriptor{
-    "vcs",
+    &external_tool::vcsProvider(),
     "loom.eda.synopsys.vcs.functional@1",
     SynopsysOperation::FunctionalEvaluation,
     acceptedStates,

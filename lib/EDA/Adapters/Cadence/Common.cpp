@@ -92,7 +92,19 @@ validateInvocationInputs(const CadenceInvocationDescriptor &descriptor,
     return error;
   if (llvm::Error error = validateTarget(descriptor, inputs))
     return error;
-  if (inputs.frozen.tool.toolKey != descriptor.toolKey)
+  if (!descriptor.toolProvider)
+    return makeCadenceAdapterError(
+        CadenceAdapterFailureKind::DescriptorMismatch,
+        descriptor.implementationSemanticIdentity,
+        "adapter has no backend tool catalog entry");
+  const auto *catalogEntry =
+      external_tool::findBackendTool(descriptor.toolProvider->binding.key);
+  if (!catalogEntry || &catalogEntry->provider != descriptor.toolProvider)
+    return makeCadenceAdapterError(
+        CadenceAdapterFailureKind::DescriptorMismatch,
+        descriptor.implementationSemanticIdentity,
+        "adapter provider is not owned by the backend tool catalog");
+  if (inputs.frozen.tool.toolKey != descriptor.toolProvider->binding.key)
     return makeCadenceAdapterError(
         CadenceAdapterFailureKind::DescriptorMismatch,
         descriptor.implementationSemanticIdentity,

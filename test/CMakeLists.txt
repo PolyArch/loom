@@ -64,6 +64,7 @@ set(LOOM_TEST_DEPENDS
   loom-raise
   loom-raise-opt
   loom-accelerator-final-link-test
+  loom-backend-tool-catalog
   loom-adg-builder-api-test
   loom-adg-mesh-switch-network-test
   loom-config-test

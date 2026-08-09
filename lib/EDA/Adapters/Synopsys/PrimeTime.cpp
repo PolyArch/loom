@@ -19,7 +19,7 @@ constexpr llvm::StringLiteral declaredOutputs[]{
     "outputs/primetime-timing-result.json"};
 
 const SynopsysInvocationDescriptor descriptor{
-    "pt_shell",
+    &external_tool::primeTimeProvider(),
     "loom.eda.synopsys.primetime.timing@1",
     SynopsysOperation::TimingEvaluation,
     acceptedStates,

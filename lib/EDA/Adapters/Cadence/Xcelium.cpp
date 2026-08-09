@@ -19,7 +19,7 @@ constexpr llvm::StringLiteral declaredOutputs[]{
     "outputs/xcelium-functional-result.json"};
 
 const CadenceInvocationDescriptor descriptor{
-    "xrun",
+    &external_tool::xceliumProvider(),
     "loom.eda.cadence.xcelium.functional@1",
     CadenceOperation::FunctionalEvaluation,
     acceptedStates,

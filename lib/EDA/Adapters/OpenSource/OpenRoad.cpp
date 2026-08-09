@@ -717,8 +717,9 @@ incompleteResult(dse::CandidateGeneratorIncompleteReason reason) {
 
 llvm::Error validateExecution(const OpenRoadResolvedExecution &execution,
                               llvm::StringRef providerBuild) {
-  if (execution.provider.binding.key != "openroad" ||
-      execution.tool.toolKey != "openroad")
+  const auto &provider = external_tool::openRoadProvider();
+  if (execution.provider.binding.key != provider.binding.key ||
+      execution.tool.toolKey != provider.binding.key)
     return invalid("resolved execution does not bind the OpenROAD provider");
   if (execution.tool.version != providerBuild)
     return invalid("resolved OpenROAD build does not match candidate config");

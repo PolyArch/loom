@@ -18,7 +18,7 @@ constexpr llvm::StringLiteral declaredOutputs[]{
     "outputs/design-compiler-gate-netlist.v"};
 
 const SynopsysInvocationDescriptor descriptor{
-    "dc_shell",
+    &external_tool::designCompilerProvider(),
     "loom.eda.synopsys.design_compiler.gate_netlist@1",
     SynopsysOperation::LogicSynthesis,
     acceptedStates,

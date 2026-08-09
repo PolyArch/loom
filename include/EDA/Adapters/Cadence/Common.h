@@ -3,6 +3,7 @@
 
 #include "Evaluation/NumericValue.h"
 #include "ExternalTool/InvocationBundle.h"
+#include "ExternalTool/Provider.h"
 #include "Hardware/Implementation/ImplementationRepresentationRoot.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
@@ -40,7 +41,7 @@ struct CadenceImplementationState final {
 /// Adapter-local invocation facts. Persistent generator and evaluation
 /// descriptor references remain owned by their central registries.
 struct CadenceInvocationDescriptor final {
-  llvm::StringLiteral toolKey;
+  const external_tool::ExternalToolProviderDescriptor *toolProvider;
   llvm::StringLiteral implementationSemanticIdentity;
   CadenceOperation operation;
   llvm::ArrayRef<CadenceImplementationState> acceptedStates;

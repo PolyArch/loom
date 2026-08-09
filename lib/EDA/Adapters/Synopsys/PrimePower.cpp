@@ -19,7 +19,7 @@ constexpr llvm::StringLiteral declaredOutputs[]{
     "outputs/primepower-power-result.json"};
 
 const SynopsysInvocationDescriptor descriptor{
-    "pt_shell",
+    &external_tool::primeTimeProvider(),
     "loom.eda.synopsys.primepower.power@1",
     SynopsysOperation::PowerEvaluation,
     acceptedStates,

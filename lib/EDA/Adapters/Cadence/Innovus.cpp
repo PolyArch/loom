@@ -25,7 +25,7 @@ constexpr llvm::StringLiteral declaredOutputs[]{
 };
 
 const CadenceInvocationDescriptor descriptor{
-    "innovus",
+    &external_tool::innovusProvider(),
     "loom.eda.cadence.innovus.asic_physical@1",
     CadenceOperation::PhysicalImplementation,
     acceptedStates,

@@ -15,7 +15,7 @@ constexpr llvm::StringLiteral declaredOutputs[]{
     "outputs/voltus-rail-result.json"};
 
 const CadenceInvocationDescriptor descriptor{
-    "voltus",
+    &external_tool::voltusProvider(),
     "loom.eda.cadence.voltus.rail@1",
     CadenceOperation::RailEvaluation,
     acceptedStates,

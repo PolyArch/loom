@@ -3,6 +3,7 @@
 
 #include "Evaluation/NumericValue.h"
 #include "ExternalTool/InvocationBundle.h"
+#include "ExternalTool/Provider.h"
 #include "Hardware/Implementation/ImplementationRepresentationRoot.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
@@ -39,7 +40,7 @@ struct SynopsysImplementationState final {
 /// Adapter-local invocation facts. Persistent generator and evaluation
 /// descriptor references remain owned by their central registries.
 struct SynopsysInvocationDescriptor final {
-  llvm::StringLiteral toolKey;
+  const external_tool::ExternalToolProviderDescriptor *toolProvider;
   llvm::StringLiteral implementationSemanticIdentity;
   SynopsysOperation operation;
   llvm::ArrayRef<SynopsysImplementationState> acceptedStates;

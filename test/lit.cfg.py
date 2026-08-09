@@ -1,5 +1,6 @@
+import json
 import os
-import shutil
+import subprocess
 import sys
 
 import lit.formats
@@ -12,15 +13,30 @@ config.suffixes = [".mlir", ".test"]
 if getattr(config, "loom_have_circt", False):
     config.available_features.add("circt")
 
-for executable, feature in (
-    ("verilator", "verilator"),
-    ("yosys", "yosys"),
-    ("openroad", "openroad-2026-08-06"),
-    ("quartus_sh", "quartus-prime-pro-26.1"),
-    ("vivado", "vivado-2024.2.2"),
-):
-    if shutil.which(executable, path=config.environment.get("PATH")):
-        config.available_features.add(feature)
+catalog_executable = os.path.join(
+    config.loom_obj_root, "bin", "loom-backend-tool-catalog")
+try:
+    catalog_result = subprocess.run(
+        [catalog_executable, "--probe-dir", config.loom_obj_root],
+        check=True,
+        capture_output=True,
+        env=config.environment,
+        text=True,
+        timeout=60,
+    )
+    catalog_projection = json.loads(catalog_result.stdout)
+except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+    lit_config.fatal("backend tool catalog probe failed: {}".format(error))
+
+if (catalog_projection.get("schema") !=
+        "loom.external_tool.backend_catalog" or
+        catalog_projection.get("version") != "1.0"):
+    lit_config.fatal("backend tool catalog projection has an unknown schema")
+available_backend_features = catalog_projection.get("available_features")
+if not isinstance(available_backend_features, list) or not all(
+        isinstance(feature, str) for feature in available_backend_features):
+    lit_config.fatal("backend tool catalog projection has invalid features")
+config.available_features.update(available_backend_features)
 
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.loom_obj_root, "test")
@@ -66,6 +82,7 @@ tool_dirs = [
 tools = [
     "loom",
     "loom-adg",
+    "loom-backend-tool-catalog",
     "loom-tblgen",
     "loom-config-test",
     "loom-compiler-target-binding-test",

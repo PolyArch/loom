@@ -5,6 +5,15 @@
 #include "ExternalTool/RuntimeBinding.h"
 #include "ExternalTool/ShellProbe.h"
 
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
+
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
 namespace loom::external_tool {
 
 struct ExternalToolProviderDescriptor {
@@ -13,6 +22,22 @@ struct ExternalToolProviderDescriptor {
   ToolRuntimeCompatibility runtimeCompatibility;
 };
 
+struct BackendToolReleaseProfile final {
+  std::string conformanceFeature;
+  std::optional<std::string> moduleAlias;
+  ToolVersionProbe exactVersionProbe;
+};
+
+struct BackendToolCatalogEntry final {
+  std::string officialProductName;
+  ExternalToolProviderDescriptor provider;
+  std::vector<BackendToolReleaseProfile> validatedReleases;
+};
+
+llvm::ArrayRef<BackendToolCatalogEntry> backendToolCatalog();
+const BackendToolCatalogEntry *findBackendTool(llvm::StringRef logicalToolKey);
+llvm::Error validateBackendToolCatalog();
+
 const ExternalToolProviderDescriptor &polyArchContainerProvider();
 const ExternalToolProviderDescriptor &verilatorProvider();
 const ExternalToolProviderDescriptor &yosysProvider();
@@ -20,6 +45,7 @@ const ExternalToolProviderDescriptor &openRoadProvider();
 const ExternalToolProviderDescriptor &vcsProvider();
 const ExternalToolProviderDescriptor &designCompilerProvider();
 const ExternalToolProviderDescriptor &fusionCompilerProvider();
+const ExternalToolProviderDescriptor &primeTimeProvider();
 const ExternalToolProviderDescriptor &xceliumProvider();
 const ExternalToolProviderDescriptor &genusProvider();
 const ExternalToolProviderDescriptor &innovusProvider();

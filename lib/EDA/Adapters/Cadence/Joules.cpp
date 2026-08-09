@@ -25,7 +25,7 @@ constexpr llvm::StringLiteral declaredOutputs[]{
     "outputs/joules-power-result.csv"};
 
 const CadenceInvocationDescriptor descriptor{
-    "joules",
+    &external_tool::joulesProvider(),
     "loom.eda.cadence.joules.power@1",
     CadenceOperation::PowerEvaluation,
     acceptedStates,

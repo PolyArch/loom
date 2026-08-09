@@ -1,0 +1,10 @@
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %python %S/backend_tool_catalog_fixture.py %t/bin
+# RUN: env PATH=%t/bin:/usr/bin:/bin loom-backend-tool-catalog --probe-dir %t > %t/catalog.json
+# RUN: FileCheck %s < %t/catalog.json
+
+# CHECK: "available_features": [
+# CHECK-NEXT: "verilator"
+# CHECK-NEXT: ]
+# CHECK: "schema": "loom.external_tool.backend_catalog"
+# CHECK: "version": "1.0"
