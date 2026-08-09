@@ -1,0 +1,8 @@
+# REQUIRES: circt, verilator
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-scalar-math-trigonometric-test %t
+# RUN: cd %t/generated && verilator --binary --timing --Wall --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench scalar_math_sin.sv scalar_math_cos.sv scalar_math_tan.sv testbench.sv --Mdir obj_dir > %t/verilator.log 2>&1
+# RUN: FileCheck %s --check-prefix=VERILATOR < %t/verilator.log
+# RUN: %t/generated/obj_dir/Vtestbench
+
+# VERILATOR: Verilator 5.050
