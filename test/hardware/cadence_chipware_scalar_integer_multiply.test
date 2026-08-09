@@ -1,0 +1,20 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: bash -n %S/Inputs/CadenceChipWare/run_tools.sh
+# RUN: %loom-cadence-chipware-scalar-integer-multiply-test %t
+# RUN: FileCheck %s < %t/native/provider_artifacts/cadence_chipware_scalar_integer_multiply.sv
+
+# CHECK: module chipware_scalar_integer_multiply
+# CHECK: input [7:0] data_input_0
+# CHECK: data_input_1,
+# CHECK: output [7:0] data_output_0
+# CHECK: wire [15:0] chipware_product;
+# CHECK: CW_mult #(
+# CHECK: .wA(8),
+# CHECK: .wB(8)
+# CHECK: .A(data_input_0),
+# CHECK: .B(data_input_1),
+# CHECK: .TC(1'b0),
+# CHECK: .Z(chipware_product)
+# CHECK: assign data_output_0 = chipware_product[7:0];
+# CHECK-NOT: data_input_0 * data_input_1
