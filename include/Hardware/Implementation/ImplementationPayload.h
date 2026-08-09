@@ -50,7 +50,7 @@ encodeImplementationPayload(const ImplementationPayload &payload);
 llvm::Expected<ImplementationPayload>
 decodeImplementationPayload(llvm::ArrayRef<std::uint8_t> bytes);
 
-/// Uses the schema-2.1 field names and exact displayed payload-role spellings.
+/// Uses the schema-2.2 field names and exact displayed payload-role spellings.
 llvm::Expected<std::string>
 serializeImplementationPayloadJson(const ImplementationPayload &payload);
 

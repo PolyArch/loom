@@ -103,26 +103,27 @@ struct PublishedPhysicalRoot final {
   std::string indexBytes;
 };
 
-PublishedPhysicalRoot
-publishRoot(llvm::StringRef test, const BlobStore &store,
-            RepresentationRootVariant variant,
-            std::optional<RepresentationPhysicalStage> stage,
-            RepresentationLocator top,
-            std::vector<ImplementationPayload> payloads,
-            std::vector<PhysicalRepresentationObject> objects,
-            std::vector<RepresentationLocator> unresolved = {},
-            llvm::StringRef indexLogicalName = "index/physical.json") {
+PublishedPhysicalRoot publishRoot(
+    llvm::StringRef test, const BlobStore &store,
+    RepresentationRootVariant variant,
+    std::optional<RepresentationPhysicalStage> stage, RepresentationLocator top,
+    std::vector<ImplementationPayload> payloads,
+    std::vector<PhysicalRepresentationObject> objects,
+    std::vector<RepresentationLocator> unresolved = {},
+    llvm::StringRef indexLogicalName = "index/physical.json",
+    std::optional<RepresentationFormatDescriptorRef> format = std::nullopt) {
+  const RepresentationFormatDescriptorRef selected =
+      format.value_or(physicalFormat(test));
   PhysicalRepresentationIndexPayload index =
       take(test, createPhysicalRepresentationIndexPayload(
-                     physicalFormat(test), variant, stage, top,
-                     indexLogicalName.str(), payloads, std::move(objects),
-                     std::move(unresolved)));
+                     selected, variant, stage, top, indexLogicalName.str(),
+                     payloads, std::move(objects), std::move(unresolved)));
   const std::string indexBytes =
       take(test, serializePhysicalRepresentationIndexPayloadJson(index));
   payloads.push_back({PayloadRole::RepresentationIndex, index.indexLogicalName,
                       take(test, store.put(bytes(indexBytes)))});
   return {take(test, createImplementationRepresentationRoot(
-                         variant, stage, physicalFormat(test), std::move(top),
+                         variant, stage, selected, std::move(top),
                          std::move(payloads))),
           std::move(index), indexBytes};
 }
@@ -441,7 +442,7 @@ void missingStaleForeignAndUndeclaredStateIsRejected(
                                   undeclared.formatRef, undeclared.top,
                                   undeclared.payloads));
   expectInvalidIndex(__func__, indexRepresentationRoot(undeclared, store),
-                     "role");
+                     "payload catalog");
 
   const ImplementationPayload database =
       putPayload(__func__, store, PayloadRole::PhysicalDatabase,
@@ -569,6 +570,70 @@ void noncanonicalIndexTextIsRejected(const std::filesystem::path &root) {
   expectRejected("index-invalid-utf8", std::move(invalidUtf8), "valid UTF-8");
 }
 
+void indexedDefClosureIsSelfContained(const std::filesystem::path &root) {
+  const std::filesystem::path storePath = root / "indexed-def-blobs";
+  std::filesystem::create_directories(storePath);
+  const BlobStore store(storePath.string());
+  const RepresentationFormatDescriptorRef format =
+      take(__func__, RepresentationFormatDescriptorRef::get(
+                         RepresentationFormatKind::IndexedDefPhysical));
+  const std::string netlist = "module top(input a, output y);\n"
+                              "  fixture_cell u0(.A(a), .Z(y));\n"
+                              "endmodule\n";
+  const std::string def =
+      "VERSION 5.8 ;\n"
+      "DESIGN top ;\n"
+      "PINS 2 ;\n"
+      "- VPWR + NET power_main + USE POWER + LAYER M4 ( 0 0 ) ( 1 1 ) "
+      "+ FIXED ( 2 2 ) N ;\n"
+      "- VGND + NET ground_main + USE GROUND + LAYER M4 ( 0 0 ) ( 1 1 ) "
+      "+ FIXED ( 4 2 ) N ;\n"
+      "END PINS\n"
+      "SPECIALNETS 2 ;\n"
+      "- power_main + USE POWER + ROUTED M4 ( 2 2 ) ( 8 2 ) ;\n"
+      "- ground_main + USE GROUND + ROUTED M4 ( 4 2 ) ( 8 4 ) ;\n"
+      "END SPECIALNETS\n"
+      "NETS 1 ;\n"
+      "- signal_a ( u0 A ) ( PIN a ) + ROUTED M2 ( 1 1 ) ( 2 2 ) ;\n"
+      "END NETS\n"
+      "END DESIGN\n";
+  std::vector<ImplementationPayload> payloads{
+      putPayload(__func__, store, PayloadRole::Netlist, "netlist/top.v",
+                 netlist),
+      putPayload(__func__, store, PayloadRole::PhysicalDatabase,
+                 "database/top.def", def),
+      putPayload(__func__, store, PayloadRole::GenerationConstraint,
+                 "constraints/top.sdc", "create_clock -period 1 clk\n")};
+  const RepresentationLocator unresolved{RepresentationObjectKind::Module,
+                                         "fixture_cell"};
+  PublishedPhysicalRoot valid =
+      publishRoot(__func__, store, RepresentationRootVariant::AsicPhysical,
+                  RepresentationPhysicalStage::Routed,
+                  {RepresentationObjectKind::PhysicalObject, "top"}, payloads,
+                  {object(RepresentationObjectKind::PhysicalObject, "top"),
+                   terminal(RepresentationObjectKind::Port, "top.a",
+                            RepresentationSignalDirection::Input, 1),
+                   terminal(RepresentationObjectKind::Port, "top.y",
+                            RepresentationSignalDirection::Output, 1),
+                   object(RepresentationObjectKind::Module, "fixture_cell")},
+                  {unresolved}, "index/physical.json", format);
+  take(__func__, indexRepresentationRoot(valid.root, store));
+
+  ImplementationRepresentationRoot foreignClosure = valid.root;
+  std::vector<ImplementationPayload> foreignPayloads;
+  for (const ImplementationPayload &payload : foreignClosure.payloads)
+    if (payload.role != PayloadRole::RepresentationIndex)
+      foreignPayloads.push_back(payload);
+  PublishedPhysicalRoot foreign = publishRoot(
+      __func__, store, RepresentationRootVariant::AsicPhysical,
+      RepresentationPhysicalStage::Routed,
+      {RepresentationObjectKind::PhysicalObject, "top"}, foreignPayloads,
+      {object(RepresentationObjectKind::PhysicalObject, "top")}, {},
+      "index/foreign.json", format);
+  expectInvalidIndex(__func__, indexRepresentationRoot(foreign.root, store),
+                     "unresolved definitions disagree");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -581,5 +646,6 @@ int main(int argc, char **argv) {
   missingStaleForeignAndUndeclaredStateIsRejected(root);
   tamperedAndNoncanonicalIndexBytesAreRejected(root);
   noncanonicalIndexTextIsRejected(root);
+  indexedDefClosureIsSelfContained(root);
   return EXIT_SUCCESS;
 }

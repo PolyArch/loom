@@ -102,6 +102,8 @@ const RepresentationFormatDescriptorRef structuralVerilogGateNetlistRef =
     knownRef(RepresentationFormatKind::StructuralVerilogGateNetlist);
 const RepresentationFormatDescriptorRef indexedPhysicalRef =
     knownRef(RepresentationFormatKind::IndexedPhysical);
+const RepresentationFormatDescriptorRef indexedDefPhysicalRef =
+    knownRef(RepresentationFormatKind::IndexedDefPhysical);
 
 constexpr std::array<RepresentationPayloadContract, 3> rtlPayloadContracts{{
     {PayloadRole::RtlSource, "text/x-systemverilog; charset=utf-8", 1,
@@ -155,6 +157,9 @@ constexpr RepresentationPayloadContract physicalIndexContract{
 constexpr RepresentationPayloadContract physicalDatabaseContract{
     PayloadRole::PhysicalDatabase, "application/octet-stream", 1, std::nullopt,
     RepresentationTextPolicy::Opaque};
+constexpr RepresentationPayloadContract physicalNetlistContract{
+    PayloadRole::Netlist, "application/octet-stream", 0, std::nullopt,
+    RepresentationTextPolicy::Opaque};
 constexpr RepresentationPayloadContract generationConstraintContract{
     PayloadRole::GenerationConstraint, "application/octet-stream", 0,
     std::nullopt, RepresentationTextPolicy::Opaque};
@@ -171,22 +176,51 @@ constexpr RepresentationPayloadContract deviceImageContract{
     PayloadRole::DeviceImage, "application/octet-stream", 1,
     std::optional<std::uint64_t>(1), RepresentationTextPolicy::Opaque};
 
-constexpr std::array<RepresentationPayloadContract, 4>
-    physicalPlacedPayloadContracts{
-        {physicalDatabaseContract, generationConstraintContract,
-         physicalBlackBoxContract, physicalIndexContract}};
+constexpr RepresentationPayloadContract defNetlistContract{
+    PayloadRole::Netlist, "text/x-verilog; charset=utf-8", 1, std::nullopt,
+    RepresentationTextPolicy::Utf8LfNoNul};
+constexpr RepresentationPayloadContract defDatabaseContract{
+    PayloadRole::PhysicalDatabase, "application/vnd.eda.def; charset=utf-8", 1,
+    std::optional<std::uint64_t>(1), RepresentationTextPolicy::Utf8LfNoNul};
+constexpr RepresentationPayloadContract defConstraintContract{
+    PayloadRole::GenerationConstraint, "application/x-sdc; charset=utf-8", 1,
+    std::nullopt, RepresentationTextPolicy::Utf8LfNoNul};
+
 constexpr std::array<RepresentationPayloadContract, 5>
-    asicRoutedPayloadContracts{{physicalDatabaseContract, layoutStreamContract,
-                                generationConstraintContract,
-                                physicalBlackBoxContract,
-                                physicalIndexContract}};
-constexpr std::array<RepresentationPayloadContract, 6>
-    asicExtractedPayloadContracts{
-        {physicalDatabaseContract, parasiticsContract, layoutStreamContract,
+    asicPlacedPayloadContracts{
+        {physicalDatabaseContract, physicalNetlistContract,
          generationConstraintContract, physicalBlackBoxContract,
          physicalIndexContract}};
+constexpr std::array<RepresentationPayloadContract, 6>
+    asicRoutedPayloadContracts{
+        {physicalDatabaseContract, physicalNetlistContract,
+         layoutStreamContract, generationConstraintContract,
+         physicalBlackBoxContract, physicalIndexContract}};
+constexpr std::array<RepresentationPayloadContract, 7>
+    asicExtractedPayloadContracts{
+        {physicalDatabaseContract, physicalNetlistContract, parasiticsContract,
+         layoutStreamContract, generationConstraintContract,
+         physicalBlackBoxContract, physicalIndexContract}};
+constexpr std::array<RepresentationPayloadContract, 4>
+    fpgaPhysicalPayloadContracts{
+        {physicalDatabaseContract, generationConstraintContract,
+         physicalBlackBoxContract, physicalIndexContract}};
 constexpr std::array<RepresentationPayloadContract, 2>
     fpgaImagePayloadContracts{{deviceImageContract, physicalIndexContract}};
+constexpr std::array<RepresentationPayloadContract, 5>
+    defPlacedPayloadContracts{{defNetlistContract, defDatabaseContract,
+                               defConstraintContract, physicalBlackBoxContract,
+                               physicalIndexContract}};
+constexpr std::array<RepresentationPayloadContract, 6>
+    defRoutedPayloadContracts{{defNetlistContract, defDatabaseContract,
+                               defConstraintContract, layoutStreamContract,
+                               physicalBlackBoxContract,
+                               physicalIndexContract}};
+constexpr std::array<RepresentationPayloadContract, 7>
+    defExtractedPayloadContracts{
+        {defNetlistContract, defDatabaseContract, defConstraintContract,
+         parasiticsContract, layoutStreamContract, physicalBlackBoxContract,
+         physicalIndexContract}};
 
 constexpr std::array<RepresentationRootAdmission, 1> rtlRootAdmissions{{
     {RepresentationRootVariant::Rtl, std::nullopt,
@@ -202,7 +236,7 @@ constexpr std::array<RepresentationRootAdmission, 1> gateRootAdmissions{{
 constexpr std::array<RepresentationRootAdmission, 6> physicalRootAdmissions{{
     {RepresentationRootVariant::AsicPhysical,
      RepresentationPhysicalStage::Placed,
-     RepresentationObjectKind::PhysicalObject, physicalPlacedPayloadContracts,
+     RepresentationObjectKind::PhysicalObject, asicPlacedPayloadContracts,
      asicPhysicalObjectKinds},
     {RepresentationRootVariant::AsicPhysical,
      RepresentationPhysicalStage::Routed,
@@ -214,18 +248,33 @@ constexpr std::array<RepresentationRootAdmission, 6> physicalRootAdmissions{{
      asicPhysicalObjectKinds},
     {RepresentationRootVariant::FpgaPhysical,
      RepresentationPhysicalStage::Placed,
-     RepresentationObjectKind::DeviceResource, physicalPlacedPayloadContracts,
+     RepresentationObjectKind::DeviceResource, fpgaPhysicalPayloadContracts,
      fpgaPhysicalObjectKinds},
     {RepresentationRootVariant::FpgaPhysical,
      RepresentationPhysicalStage::Routed,
-     RepresentationObjectKind::DeviceResource, physicalPlacedPayloadContracts,
+     RepresentationObjectKind::DeviceResource, fpgaPhysicalPayloadContracts,
      fpgaPhysicalObjectKinds},
     {RepresentationRootVariant::FpgaImage, std::nullopt,
      RepresentationObjectKind::DeviceResource, fpgaImagePayloadContracts,
      fpgaPhysicalObjectKinds},
 }};
 
-const std::array<detail::StaticRepresentationFormatEntry, 3>
+constexpr std::array<RepresentationRootAdmission, 3> defPhysicalRootAdmissions{{
+    {RepresentationRootVariant::AsicPhysical,
+     RepresentationPhysicalStage::Placed,
+     RepresentationObjectKind::PhysicalObject, defPlacedPayloadContracts,
+     asicPhysicalObjectKinds},
+    {RepresentationRootVariant::AsicPhysical,
+     RepresentationPhysicalStage::Routed,
+     RepresentationObjectKind::PhysicalObject, defRoutedPayloadContracts,
+     asicPhysicalObjectKinds},
+    {RepresentationRootVariant::AsicPhysical,
+     RepresentationPhysicalStage::Extracted,
+     RepresentationObjectKind::PhysicalObject, defExtractedPayloadContracts,
+     asicPhysicalObjectKinds},
+}};
+
+const std::array<detail::StaticRepresentationFormatEntry, 4>
     representationFormats{{
         {{systemVerilogRtlRef, PayloadRole::RtlSource,
           RepresentationLanguageProfile::Ieee1800_2017, rtlRootAdmissions},
@@ -235,6 +284,10 @@ const std::array<detail::StaticRepresentationFormatEntry, 3>
          detail::BuiltinRepresentationIndexer::StructuralVerilogGateNetlist},
         {{indexedPhysicalRef, std::nullopt, std::nullopt,
           physicalRootAdmissions},
+         detail::BuiltinRepresentationIndexer::IndexedPhysical},
+        {{indexedDefPhysicalRef, std::nullopt,
+          RepresentationLanguageProfile::Ieee1364_2005,
+          defPhysicalRootAdmissions},
          detail::BuiltinRepresentationIndexer::IndexedPhysical},
     }};
 
@@ -246,6 +299,7 @@ RepresentationFormatDescriptorRef::get(RepresentationFormatKind kind) {
   case RepresentationFormatKind::SystemVerilogRtl:
   case RepresentationFormatKind::StructuralVerilogGateNetlist:
   case RepresentationFormatKind::IndexedPhysical:
+  case RepresentationFormatKind::IndexedDefPhysical:
     return RepresentationFormatDescriptorRef(kind);
   }
   return invalid("representation format kind is unsupported");

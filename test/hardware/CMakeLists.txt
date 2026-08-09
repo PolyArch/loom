@@ -100,6 +100,15 @@ target_link_libraries(loom-physical-representation-index-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-def-physical-test
+  DefPhysicalTest.cpp
+)
+
+target_link_libraries(loom-def-physical-test PRIVATE
+  LoomHardwareImplementation
+  LLVMSupport
+)
+
 if(NOT LOOM_HAVE_CIRCT)
   add_executable(loom-representation-index-unavailable-test
     RepresentationIndexUnavailableTest.cpp

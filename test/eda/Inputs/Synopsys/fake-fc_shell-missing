@@ -23,5 +23,8 @@ EOF
 cat > outputs/fusion-compiler-routed.def <<'EOF'
 VERSION 5.8 ;
 DESIGN top ;
+NETS 1 ;
+- a + ROUTED Metal2 ( 0 0 ) ( 100 0 ) ;
+END NETS
 END DESIGN
 EOF

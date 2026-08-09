@@ -521,12 +521,12 @@ void jsonIsStrictlyCanonical() {
   expectRejection("{\"variant\":\"Rtl\"}", "format_ref");
   expectRejection(
       "{\"variant\":\"rtl\",\"format_ref\":{\"registry\":\"loom.hardware_"
-      "representation_format\",\"major\":2,\"minor\":1,\"kind\":0},\"top\":{"
+      "representation_format\",\"major\":2,\"minor\":2,\"kind\":0},\"top\":{"
       "\"object_kind\":\"Module\",\"canonical_name\":\"top\"},\"payloads\":[]}",
       "variant");
   expectRejection(
       "{\"variant\":\"Rtl\",\"stage\":null,\"format_ref\":{\"registry\":\"loom."
-      "hardware_representation_format\",\"major\":2,\"minor\":1,\"kind\":0}}",
+      "hardware_representation_format\",\"major\":2,\"minor\":2,\"kind\":0}}",
       "stage");
   expectRejection(json + " ", "canonical");
 
@@ -537,7 +537,7 @@ void jsonIsStrictlyCanonical() {
                     RepresentationObjectKind::DeviceResource, __func__)));
   expectRejection(
       "{\"format_ref\":{\"registry\":\"loom.hardware_representation_format\","
-      "\"major\":2,\"minor\":1,\"kind\":0},\"variant\":\"FpgaPhysical\","
+      "\"major\":2,\"minor\":2,\"kind\":0},\"variant\":\"FpgaPhysical\","
       "\"stage\":\"Placed\",\"top\":{\"object_kind\":\"DeviceResource\","
       "\"canonical_name\":\"top\"},\"payloads\":[{\"role\":\"RtlSource\","
       "\"canonical_logical_name\":\"rtl/top.sv\",\"blob_digest\":\"" +

@@ -50,7 +50,7 @@ expectedBinaryReference(RepresentationFormatKind kind) {
   std::vector<std::uint8_t> expected{0, 0, 0, 0, 0, 0, 0, 35};
   expected.insert(expected.end(), identity.bytes_begin(), identity.bytes_end());
   const std::vector<std::uint8_t> suffix{
-      0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, static_cast<std::uint8_t>(kind),
+      0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, static_cast<std::uint8_t>(kind),
   };
   expected.insert(expected.end(), suffix.begin(), suffix.end());
   return expected;
@@ -66,6 +66,9 @@ void exactBinaryCodecIsClosed() {
   const auto physical =
       take(__func__, RepresentationFormatDescriptorRef::get(
                          RepresentationFormatKind::IndexedPhysical));
+  const auto defPhysical =
+      take(__func__, RepresentationFormatDescriptorRef::get(
+                         RepresentationFormatKind::IndexedDefPhysical));
 
   require(__func__,
           hardwareRepresentationFormatRegistry.identity ==
@@ -73,7 +76,7 @@ void exactBinaryCodecIsClosed() {
           "registry identity changed");
   require(__func__,
           hardwareRepresentationFormatRegistry.version ==
-              loom::SchemaVersion{2, 1},
+              loom::SchemaVersion{2, 2},
           "registry version changed");
   require(__func__, rtl.kind() == RepresentationFormatKind::SystemVerilogRtl,
           "RTL kind changed");
@@ -84,6 +87,9 @@ void exactBinaryCodecIsClosed() {
   require(__func__,
           physical.kind() == RepresentationFormatKind::IndexedPhysical,
           "indexed-physical kind changed");
+  require(__func__,
+          defPhysical.kind() == RepresentationFormatKind::IndexedDefPhysical,
+          "indexed-DEF-physical kind changed");
 
   const std::vector<std::uint8_t> rtlBytes =
       encodeRepresentationFormatDescriptorRef(rtl);
@@ -91,12 +97,17 @@ void exactBinaryCodecIsClosed() {
       encodeRepresentationFormatDescriptorRef(netlist);
   const std::vector<std::uint8_t> physicalBytes =
       encodeRepresentationFormatDescriptorRef(physical);
+  const std::vector<std::uint8_t> defPhysicalBytes =
+      encodeRepresentationFormatDescriptorRef(defPhysical);
   require(__func__, rtlBytes == expectedBinaryReference(rtl.kind()),
           "RTL reference bytes changed");
   require(__func__, netlistBytes == expectedBinaryReference(netlist.kind()),
           "gate-netlist reference bytes changed");
   require(__func__, physicalBytes == expectedBinaryReference(physical.kind()),
           "indexed-physical reference bytes changed");
+  require(__func__,
+          defPhysicalBytes == expectedBinaryReference(defPhysical.kind()),
+          "indexed-DEF-physical reference bytes changed");
   require(__func__, rtlBytes.size() == 55,
           "reference framing has the wrong size");
   require(__func__,
@@ -111,10 +122,14 @@ void exactBinaryCodecIsClosed() {
           take(__func__, decodeRepresentationFormatDescriptorRef(
                              physicalBytes)) == physical,
           "indexed-physical binary reference did not round-trip");
+  require(__func__,
+          take(__func__, decodeRepresentationFormatDescriptorRef(
+                             defPhysicalBytes)) == defPhysical,
+          "indexed-DEF-physical binary reference did not round-trip");
 
   expectError(__func__,
               RepresentationFormatDescriptorRef::get(
-                  static_cast<RepresentationFormatKind>(3)),
+                  static_cast<RepresentationFormatKind>(4)),
               "kind");
 
   for (std::size_t size = 0; size < rtlBytes.size(); ++size)
@@ -139,7 +154,7 @@ void exactBinaryCodecIsClosed() {
               "version");
 
   std::vector<std::uint8_t> wrongKind = rtlBytes;
-  wrongKind[54] = 3;
+  wrongKind[54] = 4;
   expectError(__func__, decodeRepresentationFormatDescriptorRef(wrongKind),
               "kind");
 }
@@ -154,12 +169,17 @@ void exactJsonCodecIsClosed() {
   const auto physical =
       take(__func__, RepresentationFormatDescriptorRef::get(
                          RepresentationFormatKind::IndexedPhysical));
+  const auto defPhysical =
+      take(__func__, RepresentationFormatDescriptorRef::get(
+                         RepresentationFormatKind::IndexedDefPhysical));
   constexpr llvm::StringLiteral rtlJson =
-      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":1,"kind":0})json";
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":0})json";
   constexpr llvm::StringLiteral netlistJson =
-      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":1,"kind":1})json";
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":1})json";
   constexpr llvm::StringLiteral physicalJson =
-      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":1,"kind":2})json";
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":2})json";
+  constexpr llvm::StringLiteral defPhysicalJson =
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":3})json";
 
   require(__func__,
           serializeRepresentationFormatDescriptorRefJson(rtl) == rtlJson,
@@ -173,6 +193,10 @@ void exactJsonCodecIsClosed() {
               physicalJson,
           "indexed-physical canonical JSON changed");
   require(__func__,
+          serializeRepresentationFormatDescriptorRefJson(defPhysical) ==
+              defPhysicalJson,
+          "indexed-DEF-physical canonical JSON changed");
+  require(__func__,
           take(__func__, parseRepresentationFormatDescriptorRefJson(rtlJson)) ==
               rtl,
           "RTL JSON reference did not round-trip");
@@ -184,21 +208,25 @@ void exactJsonCodecIsClosed() {
           take(__func__, parseRepresentationFormatDescriptorRefJson(
                              physicalJson)) == physical,
           "indexed-physical JSON reference did not round-trip");
+  require(__func__,
+          take(__func__, parseRepresentationFormatDescriptorRefJson(
+                             defPhysicalJson)) == defPhysical,
+          "indexed-DEF-physical JSON reference did not round-trip");
 
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"major":2,"registry":"loom.hardware_representation_format","minor":1,"kind":0})json"),
+          R"json({"major":2,"registry":"loom.hardware_representation_format","minor":2,"kind":0})json"),
       "canonical");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":1,"kind":0,"name":"sv"})json"),
+          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":0,"name":"sv"})json"),
       "field");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"other","major":2,"minor":1,"kind":0})json"),
+          R"json({"registry":"other","major":2,"minor":2,"kind":0})json"),
       "registry");
   expectError(
       __func__,
@@ -213,12 +241,12 @@ void exactJsonCodecIsClosed() {
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":1,"kind":3})json"),
+          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":4})json"),
       "kind");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":1,"kind":-1})json"),
+          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":-1})json"),
       "unsigned");
 }
 
@@ -261,16 +289,22 @@ void staticDescriptorMetadataIsClosedWithoutCirct() {
   const RepresentationFormatDescriptorRef physicalRef =
       take(__func__, RepresentationFormatDescriptorRef::get(
                          RepresentationFormatKind::IndexedPhysical));
+  const RepresentationFormatDescriptorRef defPhysicalRef =
+      take(__func__, RepresentationFormatDescriptorRef::get(
+                         RepresentationFormatKind::IndexedDefPhysical));
   const RepresentationFormatDescriptor &rtl =
       getRepresentationFormatDescriptor(rtlRef);
   const RepresentationFormatDescriptor &gate =
       getRepresentationFormatDescriptor(gateRef);
   const RepresentationFormatDescriptor &physical =
       getRepresentationFormatDescriptor(physicalRef);
+  const RepresentationFormatDescriptor &defPhysical =
+      getRepresentationFormatDescriptor(defPhysicalRef);
 
   require(__func__,
           rtl.formatRef == rtlRef && gate.formatRef == gateRef &&
-              physical.formatRef == physicalRef,
+              physical.formatRef == physicalRef &&
+              defPhysical.formatRef == defPhysicalRef,
           "static descriptor changed its exact format reference");
   const RepresentationRootAdmission &rtlAdmission = requireAdmission(
       __func__, rtl, RepresentationRootVariant::Rtl, std::nullopt);
@@ -321,6 +355,12 @@ void staticDescriptorMetadataIsClosedWithoutCirct() {
           "indexed-physical descriptor has the wrong admission count");
   require(__func__, !physical.frontendSourceRole && !physical.languageProfile,
           "indexed-physical descriptor acquired an HDL frontend");
+  require(__func__,
+          defPhysical.admittedRoots.size() == 3 &&
+              !defPhysical.frontendSourceRole &&
+              defPhysical.languageProfile ==
+                  std::optional(RepresentationLanguageProfile::Ieee1364_2005),
+          "indexed-DEF-physical descriptor metadata changed");
 
   const auto opaque = [](PayloadRole role, std::uint64_t minimum,
                          std::optional<std::uint64_t> maximum = std::nullopt) {
@@ -356,17 +396,19 @@ void staticDescriptorMetadataIsClosedWithoutCirct() {
 
   requireContracts(__func__, asicPlaced,
                    {opaque(PayloadRole::PhysicalDatabase, 1),
-                    opaque(PayloadRole::GenerationConstraint, 0), blackBox,
-                    index});
-  requireContracts(__func__, asicRouted,
-                   {opaque(PayloadRole::PhysicalDatabase, 1),
-                    opaque(PayloadRole::LayoutStream, 0),
+                    opaque(PayloadRole::Netlist, 0),
                     opaque(PayloadRole::GenerationConstraint, 0), blackBox,
                     index});
   requireContracts(
+      __func__, asicRouted,
+      {opaque(PayloadRole::PhysicalDatabase, 1),
+       opaque(PayloadRole::Netlist, 0), opaque(PayloadRole::LayoutStream, 0),
+       opaque(PayloadRole::GenerationConstraint, 0), blackBox, index});
+  requireContracts(
       __func__, asicExtracted,
       {opaque(PayloadRole::PhysicalDatabase, 1),
-       opaque(PayloadRole::Parasitics, 1), opaque(PayloadRole::LayoutStream, 0),
+       opaque(PayloadRole::Netlist, 0), opaque(PayloadRole::Parasitics, 1),
+       opaque(PayloadRole::LayoutStream, 0),
        opaque(PayloadRole::GenerationConstraint, 0), blackBox, index});
   for (const RepresentationRootAdmission *admission :
        {&fpgaPlaced, &fpgaRouted})
@@ -378,6 +420,40 @@ void staticDescriptorMetadataIsClosedWithoutCirct() {
       __func__, fpgaImage,
       {opaque(PayloadRole::DeviceImage, 1, std::optional<std::uint64_t>(1)),
        index});
+
+  const RepresentationPayloadContract defNetlist{
+      PayloadRole::Netlist, "text/x-verilog; charset=utf-8", 1, std::nullopt,
+      RepresentationTextPolicy::Utf8LfNoNul};
+  const RepresentationPayloadContract defDatabase{
+      PayloadRole::PhysicalDatabase, "application/vnd.eda.def; charset=utf-8",
+      1, std::optional<std::uint64_t>(1),
+      RepresentationTextPolicy::Utf8LfNoNul};
+  const RepresentationPayloadContract defConstraint{
+      PayloadRole::GenerationConstraint, "application/x-sdc; charset=utf-8", 1,
+      std::nullopt, RepresentationTextPolicy::Utf8LfNoNul};
+  const RepresentationRootAdmission &defPlaced = requireAdmission(
+      __func__, defPhysical, RepresentationRootVariant::AsicPhysical,
+      RepresentationPhysicalStage::Placed);
+  const RepresentationRootAdmission &defRouted = requireAdmission(
+      __func__, defPhysical, RepresentationRootVariant::AsicPhysical,
+      RepresentationPhysicalStage::Routed);
+  const RepresentationRootAdmission &defExtracted = requireAdmission(
+      __func__, defPhysical, RepresentationRootVariant::AsicPhysical,
+      RepresentationPhysicalStage::Extracted);
+  requireContracts(__func__, defPlaced,
+                   {defNetlist, defDatabase, defConstraint, blackBox, index});
+  requireContracts(__func__, defRouted,
+                   {defNetlist, defDatabase, defConstraint,
+                    opaque(PayloadRole::LayoutStream, 0), blackBox, index});
+  requireContracts(__func__, defExtracted,
+                   {defNetlist, defDatabase, defConstraint,
+                    opaque(PayloadRole::Parasitics, 1),
+                    opaque(PayloadRole::LayoutStream, 0), blackBox, index});
+  require(__func__,
+          !admitsRepresentationRoot(defPhysical,
+                                    RepresentationRootVariant::FpgaPhysical,
+                                    RepresentationPhysicalStage::Routed),
+          "indexed-DEF-physical admitted FPGA state");
 
   for (const RepresentationRootAdmission *admission :
        {&asicPlaced, &asicRouted, &asicExtracted}) {

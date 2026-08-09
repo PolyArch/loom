@@ -33,12 +33,13 @@ enum class RepresentationObjectKind : std::uint32_t {
 };
 
 inline constexpr ArtifactSchemaDescriptor hardwareRepresentationFormatRegistry{
-    "loom.hardware_representation_format", SchemaVersion{2, 1}};
+    "loom.hardware_representation_format", SchemaVersion{2, 2}};
 
 enum class RepresentationFormatKind : std::uint32_t {
   SystemVerilogRtl = 0,
   StructuralVerilogGateNetlist = 1,
   IndexedPhysical = 2,
+  IndexedDefPhysical = 3,
 };
 
 /// Closed root variants of one HardwareImplementation representation, with

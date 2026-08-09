@@ -299,7 +299,7 @@ publishFusionCompilerPhysicalImplementation(
         descriptor.implementationSemanticIdentity,
         "routed boundary changed the exact top port inventory");
   auto format = RepresentationFormatDescriptorRef::get(
-      RepresentationFormatKind::IndexedPhysical);
+      RepresentationFormatKind::IndexedDefPhysical);
   if (!format)
     return makeSynopsysAdapterError(
         SynopsysAdapterFailureKind::PublicationUnavailable,
@@ -431,11 +431,14 @@ publishFusionCompilerPhysicalImplementation(
   };
   const BlobDigest databaseDigest =
       computeBlobDigest(bytes(checkedSnapshot->designExchangeFormat));
+  const BlobDigest netlistDigest =
+      computeBlobDigest(bytes(checkedSnapshot->netlistVerilog));
   const BlobDigest constraintDigest =
       computeBlobDigest(bytes(checkedSnapshot->generationConstraints));
   const BlobDigest blackBoxContractDigest =
       computeBlobDigest(bytes(*blackBoxContract));
   std::vector<ImplementationPayload> payloads{
+      {PayloadRole::Netlist, "netlist/fusion-compiler-routed.v", netlistDigest},
       {PayloadRole::PhysicalDatabase, "database/fusion-compiler-routed.def",
        databaseDigest},
       {PayloadRole::GenerationConstraint,
@@ -502,6 +505,9 @@ publishFusionCompilerPhysicalImplementation(
           "BlobStore returned a digest different from its prospective digest");
     return llvm::Error::success();
   };
+  if (llvm::Error error =
+          storeExact(checkedSnapshot->netlistVerilog, netlistDigest))
+    return std::move(error);
   if (llvm::Error error =
           storeExact(checkedSnapshot->designExchangeFormat, databaseDigest))
     return std::move(error);

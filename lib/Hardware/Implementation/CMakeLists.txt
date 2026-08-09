@@ -1,4 +1,5 @@
 add_library(LoomHardwareImplementation
+  DefPhysical.cpp
   ExternalImplementationContract.cpp
   FpgaNativeExternalContracts.cpp
   SynopsysDesignWareExternalContract.cpp

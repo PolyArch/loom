@@ -1,6 +1,7 @@
 #include "Hardware/Implementation/PhysicalRepresentationIndex.h"
 
 #include "Common/BlobDigest.h"
+#include "Hardware/Implementation/DefPhysical.h"
 #include "RepresentationIndexInternal.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -188,8 +189,9 @@ createPhysicalRepresentationIndexPayload(
 
 llvm::Error validatePhysicalRepresentationIndexPayload(
     const PhysicalRepresentationIndexPayload &index) {
-  if (index.formatRef.kind() != RepresentationFormatKind::IndexedPhysical)
-    return invalid("format_ref is not indexed_physical");
+  if (index.formatRef.kind() != RepresentationFormatKind::IndexedPhysical &&
+      index.formatRef.kind() != RepresentationFormatKind::IndexedDefPhysical)
+    return invalid("format_ref is not a physical index format");
   const RepresentationFormatDescriptor &descriptor =
       getRepresentationFormatDescriptor(index.formatRef);
   const RepresentationRootAdmission *admission =
@@ -501,6 +503,8 @@ llvm::Expected<RawIndex> indexPhysicalRepresentation(
 
   const ImplementationPayload *indexDescriptor = nullptr;
   std::vector<ImplementationPayload> nonIndexPayloads;
+  std::vector<std::vector<std::uint8_t>> loadedPayloads;
+  loadedPayloads.reserve(canonicalPayloads.size());
   std::vector<std::uint8_t> indexBytes;
   for (const ImplementationPayload &payload : canonicalPayloads) {
     auto contents = blobs.get(payload.blobDigest);
@@ -508,15 +512,17 @@ llvm::Expected<RawIndex> indexPhysicalRepresentation(
       return invalidIndex(
           "payload '" + payload.canonicalLogicalName +
           "' could not be loaded: " + llvm::toString(contents.takeError()));
+    loadedPayloads.push_back(std::move(*contents));
+    const auto &loaded = loadedPayloads.back();
     if (payload.role == PayloadRole::RepresentationIndex) {
       if (indexDescriptor)
         return invalidIndex(
             "RepresentationIndex payload role cardinality is above its "
             "maximum");
       indexDescriptor = &payload;
-      indexBytes.assign(contents->begin(), contents->end());
+      indexBytes.assign(loaded.begin(), loaded.end());
       if (llvm::Error error = validateRepresentationTextPolicy(
-              RepresentationTextPolicy::Utf8LfNoNul, payload, *contents))
+              RepresentationTextPolicy::Utf8LfNoNul, payload, loaded))
         return std::move(error);
     } else {
       nonIndexPayloads.push_back(payload);
@@ -552,6 +558,61 @@ llvm::Expected<RawIndex> indexPhysicalRepresentation(
           validateRepresentationPayloadCatalog(*admission, canonicalPayloads))
     return invalidIndex("payload catalog violates the root admission: " +
                         llvm::toString(std::move(error)));
+
+  for (auto [payload, contents] :
+       llvm::zip_equal(canonicalPayloads, loadedPayloads)) {
+    const auto contract =
+        llvm::find_if(admission->payloadContracts,
+                      [&](const RepresentationPayloadContract &candidate) {
+                        return candidate.role == payload.role;
+                      });
+    if (contract == admission->payloadContracts.end())
+      return invalidIndex("payload role is absent from its admitted root");
+    if (llvm::Error error = validateRepresentationTextPolicy(
+            contract->textPolicy, payload, contents))
+      return std::move(error);
+  }
+
+  if (formatRef.kind() == RepresentationFormatKind::IndexedDefPhysical) {
+    const ImplementationPayload *database = nullptr;
+    std::vector<ImplementationPayload> logicalPayloads;
+    for (const ImplementationPayload &payload : nonIndexPayloads) {
+      if (payload.role == PayloadRole::PhysicalDatabase)
+        database = &payload;
+      if (payload.role == PayloadRole::Netlist ||
+          payload.role == PayloadRole::GenerationConstraint ||
+          payload.role == PayloadRole::BlackBoxContract)
+        logicalPayloads.push_back(payload);
+    }
+    if (!database || !index->stage)
+      return invalidIndex("indexed DEF closure lacks its exact database stage");
+    auto databaseBytes = blobs.get(database->blobDigest);
+    if (!databaseBytes)
+      return invalidIndex("DEF payload could not be loaded: " +
+                          llvm::toString(databaseBytes.takeError()));
+    auto def = parseDefPhysicalDesign(
+        llvm::StringRef(reinterpret_cast<const char *>(databaseBytes->data()),
+                        databaseBytes->size()),
+        exactRoot.canonicalName, *index->stage);
+    if (!def)
+      return invalidIndex("DEF payload is invalid: " +
+                          llvm::toString(def.takeError()));
+
+    auto gateFormat = RepresentationFormatDescriptorRef::get(
+        RepresentationFormatKind::StructuralVerilogGateNetlist);
+    if (!gateFormat)
+      return invalidIndex(llvm::toString(gateFormat.takeError()));
+    auto logical = indexHdlRepresentation(
+        *gateFormat,
+        {RepresentationObjectKind::Module, exactRoot.canonicalName},
+        logicalPayloads, blobs);
+    if (!logical)
+      return invalidIndex("retained gate closure is invalid: " +
+                          llvm::toString(logical.takeError()));
+    if (logical->unresolved != index->unresolvedExternalDefinitions)
+      return invalidIndex(
+          "retained gate and physical unresolved definitions disagree");
+  }
 
   RawIndex raw;
   raw.rootVariant = index->variant;

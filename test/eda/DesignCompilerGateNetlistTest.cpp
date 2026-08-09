@@ -473,7 +473,9 @@ void fusionCompilerPublicationIsClosed(
   const FusionCompilerPhysicalSnapshot snapshot{
       RepresentationPhysicalStage::Routed,
       readFile(fixtureRoot / "expected/fusion-routed.v"),
-      "VERSION 5.8 ;\nDESIGN top ;\nEND DESIGN\n",
+      "VERSION 5.8 ;\nDESIGN top ;\nNETS 1 ;\n"
+      "- clk + ROUTED Metal2 ( 0 0 ) ( 100 0 ) ;\n"
+      "END NETS\nEND DESIGN\n",
       "create_clock -period 1 clk\n"};
   auto physical = take(__func__, publishFusionCompilerPhysicalImplementation(
                                      gate, snapshot, artifacts, blobs));
@@ -488,10 +490,15 @@ void fusionCompilerPublicationIsClosed(
       __func__,
       root.variant == RepresentationRootVariant::AsicPhysical &&
           root.stage == RepresentationPhysicalStage::Routed &&
-          root.formatRef.kind() == RepresentationFormatKind::IndexedPhysical &&
+          root.formatRef.kind() ==
+              RepresentationFormatKind::IndexedDefPhysical &&
           root.top ==
               RepresentationLocator{RepresentationObjectKind::PhysicalObject,
                                     "top"} &&
+          llvm::count_if(root.payloads,
+                         [](const auto &payload) {
+                           return payload.role == PayloadRole::Netlist;
+                         }) == 1 &&
           llvm::count_if(root.payloads,
                          [](const auto &payload) {
                            return payload.role == PayloadRole::PhysicalDatabase;

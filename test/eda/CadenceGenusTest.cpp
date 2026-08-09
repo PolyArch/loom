@@ -546,7 +546,11 @@ void successfulLifecyclePublishesGateNetlist(
       physicalRoot.variant == RepresentationRootVariant::AsicPhysical &&
           physicalRoot.stage == RepresentationPhysicalStage::Routed &&
           physicalRoot.formatRef.kind() ==
-              RepresentationFormatKind::IndexedPhysical &&
+              RepresentationFormatKind::IndexedDefPhysical &&
+          llvm::count_if(physicalRoot.payloads,
+                         [](const auto &payload) {
+                           return payload.role == PayloadRole::Netlist;
+                         }) == 1 &&
           physical.implementation().interfaces() ==
               implementation.implementation().interfaces() &&
           physical.implementation().externalImplementationBindings().size() ==

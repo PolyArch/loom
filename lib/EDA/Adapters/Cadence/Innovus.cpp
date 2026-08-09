@@ -270,14 +270,41 @@ publishInnovusPhysicalImplementation(
         descriptor.implementationSemanticIdentity,
         "GateNetlist has no exact implementation platform");
 
+  auto checkedSnapshot = parseInnovusPhysicalSnapshot(
+      snapshot.netlistVerilog, snapshot.designExchangeFormat,
+      snapshot.generationConstraints, inputRoot.top.canonicalName,
+      snapshot.stage);
+  if (!checkedSnapshot)
+    return checkedSnapshot.takeError();
   auto inputIndex = indexRepresentationRoot(inputRoot, blobs);
   if (!inputIndex)
     return makeCadenceAdapterError(
         CadenceAdapterFailureKind::PublicationUnavailable,
         descriptor.implementationSemanticIdentity,
         llvm::toString(inputIndex.takeError()));
+  const ImplementationPayloadBytes outputNetlist{
+      PayloadRole::Netlist, "netlist/innovus-routed.v",
+      llvm::ArrayRef<std::uint8_t>(reinterpret_cast<const std::uint8_t *>(
+                                       checkedSnapshot->netlistVerilog.data()),
+                                   checkedSnapshot->netlistVerilog.size())};
+  auto outputIndex = indexProspectiveRepresentation(
+      inputRoot.formatRef, inputRoot.top,
+      llvm::ArrayRef<ImplementationPayloadBytes>(&outputNetlist, 1));
+  if (!outputIndex)
+    return makeCadenceAdapterError(CadenceAdapterFailureKind::ParserFailure,
+                                   descriptor.implementationSemanticIdentity,
+                                   "routed boundary cannot be indexed: " +
+                                       llvm::toString(outputIndex.takeError()));
+  if (inputIndex->rootBoundaryPorts() != outputIndex->rootBoundaryPorts() ||
+      inputIndex->unresolvedExternalDefinitions() !=
+          outputIndex->unresolvedExternalDefinitions())
+    return makeCadenceAdapterError(
+        CadenceAdapterFailureKind::PublicationUnavailable,
+        descriptor.implementationSemanticIdentity,
+        "routed netlist changed the exact boundary or external definition "
+        "closure");
   auto format = RepresentationFormatDescriptorRef::get(
-      RepresentationFormatKind::IndexedPhysical);
+      RepresentationFormatKind::IndexedDefPhysical);
   if (!format)
     return makeCadenceAdapterError(
         CadenceAdapterFailureKind::PublicationUnavailable,
@@ -290,13 +317,17 @@ publishInnovusPhysicalImplementation(
         reinterpret_cast<const std::uint8_t *>(contents.data()),
         contents.size()));
   };
-  auto databaseDigest = storeBytes(snapshot.designExchangeFormat);
+  auto netlistDigest = storeBytes(checkedSnapshot->netlistVerilog);
+  if (!netlistDigest)
+    return netlistDigest.takeError();
+  auto databaseDigest = storeBytes(checkedSnapshot->designExchangeFormat);
   if (!databaseDigest)
     return databaseDigest.takeError();
-  auto constraintDigest = storeBytes(snapshot.generationConstraints);
+  auto constraintDigest = storeBytes(checkedSnapshot->generationConstraints);
   if (!constraintDigest)
     return constraintDigest.takeError();
   std::vector<ImplementationPayload> payloads{
+      {PayloadRole::Netlist, "netlist/innovus-routed.v", *netlistDigest},
       {PayloadRole::PhysicalDatabase, "database/innovus-routed.def",
        *databaseDigest},
       {PayloadRole::GenerationConstraint, "constraints/innovus-routed.sdc",
@@ -324,6 +355,15 @@ publishInnovusPhysicalImplementation(
           descriptor.implementationSemanticIdentity,
           "source representation does not index locator '" +
               locator.canonicalName + "'");
+    auto routedFacts = outputIndex->lookup(locator);
+    if (!routedFacts)
+      return routedFacts.takeError();
+    if (!*routedFacts || !(**routedFacts == **facts))
+      return makeCadenceAdapterError(
+          CadenceAdapterFailureKind::PublicationUnavailable,
+          descriptor.implementationSemanticIdentity,
+          "routed netlist changed or omitted locator '" +
+              locator.canonicalName + "'");
     objects.push_back({locator, (*facts)->signalGeometry});
     return llvm::Error::success();
   };
@@ -346,7 +386,7 @@ publishInnovusPhysicalImplementation(
       *format, RepresentationRootVariant::AsicPhysical,
       RepresentationPhysicalStage::Routed, physicalTop,
       "index/innovus-physical.json", payloads, std::move(objects),
-      inputIndex->unresolvedExternalDefinitions().vec());
+      outputIndex->unresolvedExternalDefinitions().vec());
   if (!physicalIndex)
     return makeCadenceAdapterError(
         CadenceAdapterFailureKind::PublicationUnavailable,
