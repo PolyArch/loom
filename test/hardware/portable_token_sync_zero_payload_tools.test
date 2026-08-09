@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-token-constant-sync-test %t
+# RUN: cd %t/artifacts && yosys -q -s portable_token_sync_zero_payload.ys

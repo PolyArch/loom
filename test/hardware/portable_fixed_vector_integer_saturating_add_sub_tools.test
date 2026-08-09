@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-integer-saturating-add-sub-test %t
+# RUN: cd %t/vector/artifacts && yosys -q -s portable_fixed_vector_integer_saturating_add_sub.ys

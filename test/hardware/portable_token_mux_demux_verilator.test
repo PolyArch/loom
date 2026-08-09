@@ -1,0 +1,8 @@
+# REQUIRES: circt, verilator
+# RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-token-mux-demux-test %t
+# RUN: cd %t/leaf && verilator --binary --timing --Wall --Wno-fatal --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench token_mux.sv token_demux.sv testbench.sv --Mdir obj_dir
+# RUN: %t/leaf/obj_dir/Vtestbench
+
+# VERILATOR: Verilator 5.050

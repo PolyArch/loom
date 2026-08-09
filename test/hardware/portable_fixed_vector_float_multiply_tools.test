@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-multiply-test %t
+# RUN: cd %t/generated && yosys -q -s portable_fixed_vector_float_multiply.ys

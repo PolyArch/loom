@@ -914,53 +914,22 @@ endmodule
   return output.str();
 }
 
-std::string yosysScript() {
-  return R"ys(
-read_verilog -sv token_constant.sv
-hierarchy -check -top token_constant
-proc
-check -assert
-select -assert-none token_constant/t:$*ff* token_constant/t:$*latch* token_constant/t:$mem*
-synth -top token_constant
-check -assert
-
-design -reset
-read_verilog -sv token_sync.sv
-hierarchy -check -top token_sync
-proc
-check -assert
-select -assert-none token_sync/t:$*ff* token_sync/t:$*latch* token_sync/t:$mem*
-synth -top token_sync
-check -assert
-
-design -reset
-read_verilog -sv token_sync_singleton.sv
-hierarchy -check -top token_sync_singleton
-proc
-check -assert
-select -assert-none token_sync_singleton/t:$*ff* token_sync_singleton/t:$*latch* token_sync_singleton/t:$mem*
-synth -top token_sync_singleton
-check -assert
-
-design -reset
-read_verilog -sv token_sync_zero_payload.sv
-hierarchy -check -top token_sync_zero_payload
-proc
-check -assert
-select -assert-none token_sync_zero_payload/t:$*ff* token_sync_zero_payload/t:$*latch* token_sync_zero_payload/t:$mem*
-synth -top token_sync_zero_payload
-check -assert
-
-design -reset
-read_verilog -sv token_sync_system.sv
-hierarchy -check -top loom_module
-proc
-check -assert
-select -assert-none loom_module/t:$*latch* loom_module/t:$mem*
-synth -top loom_module
-check -assert
-select -assert-none loom_module/t:$*latch* loom_module/t:$mem*
-)ys";
+std::string yosysScript(llvm::StringRef top, llvm::StringRef source,
+                        bool allowFlipFlops = false) {
+  std::string script;
+  llvm::raw_string_ostream output(script);
+  const std::string forbidden =
+      allowFlipFlops
+          ? (top + "/t:$*latch* " + top + "/t:$mem*").str()
+          : (top + "/t:$*ff* " + top + "/t:$*latch* " + top + "/t:$mem*").str();
+  output << "read_verilog -sv " << source << '\n'
+         << "hierarchy -check -top " << top << '\n'
+         << "proc\ncheck -assert\n"
+         << "select -assert-none " << forbidden << '\n'
+         << "synth -top " << top << '\n'
+         << "check -assert\n"
+         << "select -assert-none " << forbidden << '\n';
+  return output.str();
 }
 
 std::string moduleText(mlir::ModuleOp module) {
@@ -1153,7 +1122,17 @@ void emitArtifacts(const std::filesystem::path &root) {
             leafTestbench(syncCodes, zeroPayloadCodes)},
            {"token_sync_system.sv", system.first},
            {"system_testbench.sv", systemTestbench(system.second)},
-           {"portable_token_constant_sync.ys", yosysScript()}}))
+           {"portable_token_constant.ys",
+            yosysScript("token_constant", "token_constant.sv")},
+           {"portable_token_sync.ys",
+            yosysScript("token_sync", "token_sync.sv")},
+           {"portable_token_sync_singleton.ys",
+            yosysScript("token_sync_singleton", "token_sync_singleton.sv")},
+           {"portable_token_sync_zero_payload.ys",
+            yosysScript("token_sync_zero_payload",
+                        "token_sync_zero_payload.sv")},
+           {"portable_token_sync_system.ys",
+            yosysScript("loom_module", "token_sync_system.sv", true)}}))
     fail(test, llvm::toString(std::move(error)));
 }
 

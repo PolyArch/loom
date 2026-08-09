@@ -1,0 +1,8 @@
+# REQUIRES: circt, verilator
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-pack-unpack-test %t
+# RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
+# RUN: cd %t/tool-artifacts && verilator --binary --timing --Wall --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench fixed_vector_pack.sv fixed_vector_unpack.sv testbench.sv --Mdir obj_dir
+# RUN: %t/tool-artifacts/obj_dir/Vtestbench
+
+# VERILATOR: Verilator 5.050

@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-scalar-integer-add-sub-test %t
+# RUN: cd %t/subtract_inactive/artifacts && yosys -q -s portable_scalar_integer_add_sub.ys

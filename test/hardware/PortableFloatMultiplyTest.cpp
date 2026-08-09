@@ -670,7 +670,8 @@ std::uint64_t paddedScalarInput(const ScalarVector &vector,
 std::string makeTestbench() {
   std::string text;
   llvm::raw_string_ostream output(text);
-  output << R"sv(module elastic_scalar_float_multiply(
+  output << R"sv(`ifdef TEST_SCALAR
+module elastic_scalar_float_multiply(
     input logic clock,
     input logic reset,
     input logic input_valid,
@@ -696,6 +697,7 @@ std::string makeTestbench() {
     end
   end
 endmodule
+`endif
 
 module testbench;
   logic [63:0] scalar_lhs;
@@ -717,12 +719,17 @@ module testbench;
   logic [63:0] elastic_rhs;
   logic [63:0] elastic_result;
 
+`ifdef TEST_SCALAR
   scalar_float_multiply scalar_dut(
       .data_input_0(scalar_lhs), .data_input_1(scalar_rhs),
       .config_0(scalar_mode), .data_output_0(scalar_result));
+`else
   fixed_vector_float_multiply vector_dut(
       .data_input_0(vector_lhs), .data_input_1(vector_rhs),
       .config_0(vector_mode), .data_output_0(vector_result));
+`endif
+
+`ifdef TEST_SCALAR
   elastic_scalar_float_multiply elastic_dut(
       .clock(clock), .reset(reset), .input_valid(input_valid),
       .input_ready(input_ready), .output_ready(output_ready),
@@ -748,6 +755,7 @@ module testbench;
     end
   endtask
 
+`else
   task automatic check_vector(
       input logic [4:0] mode,
       input logic [79:0] lhs,
@@ -763,10 +771,12 @@ module testbench;
                mode, vector_result, expected);
     end
   endtask
+`endif
 
   initial begin
 )sv";
 
+  output << "`ifdef TEST_SCALAR\n";
   for (const ScalarVector &vector : scalarVectors()) {
     output << "    check_scalar(5'd"
            << unsigned(modeCode(vector.format, vector.rounding)) << ", "
@@ -776,6 +786,7 @@ module testbench;
            << ", " << hexLiteral(llvm::APInt(64, vector.expected)) << ");\n";
   }
 
+  output << "`else\n";
   constexpr std::array roundings = {mlir::arith::RoundingMode::to_nearest_even,
                                     mlir::arith::RoundingMode::downward,
                                     mlir::arith::RoundingMode::upward,
@@ -817,11 +828,13 @@ module testbench;
              << hexLiteral(expected) << ");\n";
     }
   }
+  output << "`endif\n";
 
   const std::uint8_t inactive = modeCode(
       ::fabric::FloatFormat::F32, mlir::arith::RoundingMode::to_nearest_even);
   (void)inactive;
   output << R"sv(
+`ifdef TEST_SCALAR
     check_scalar(5'd0, 64'h000000003fc00000, 64'h0000000040000000,
                  64'h0000000040400000);
 
@@ -865,6 +878,7 @@ module testbench;
     @(posedge clock);
     #1;
     if (output_valid) $fatal(1, "reset did not discard stalled occupancy");
+`endif
     $finish;
   end
 endmodule

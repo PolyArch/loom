@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-conversions-test %t
+# RUN: cd %t/generated && yosys -q -s portable_float_to_signed_integer_singleton.ys

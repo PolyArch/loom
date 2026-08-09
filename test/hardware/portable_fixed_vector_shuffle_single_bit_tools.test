@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-shuffle-test %t
+# RUN: cd %t/single-bit/tool-artifacts && yosys -q -p 'read_verilog fixed_vector_shuffle.sv; hierarchy -check -top fixed_vector_shuffle; check -assert; synth -top fixed_vector_shuffle; check -assert'

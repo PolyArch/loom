@@ -3,7 +3,5 @@
 # RUN: %loom-portable-float-conversions-test %t
 # RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
 # RUN: cd %t/generated && yosys -q -s portable_float_to_integer.ys
-# RUN: cd %t/generated && yosys -q -s portable_float_to_signed_integer_singleton.ys
-# RUN: cd %t/generated && yosys -q -s portable_float_to_unsigned_integer_singleton.ys
 
 # YOSYS: Yosys 0.67

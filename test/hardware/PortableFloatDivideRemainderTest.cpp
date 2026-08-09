@@ -709,64 +709,48 @@ std::uint64_t paddedInput(const NumericVector &vector, std::uint64_t value) {
   return value | (0xa5a55a5a5a55aa5ULL & ~widthMask(width));
 }
 
-std::string makeTestbench() {
+std::string makeTestbench(FloatFamily family) {
   std::string text;
   llvm::raw_string_ostream output(text);
-  output << R"sv(module testbench;
-  logic [63:0] lhs;
+  const llvm::StringRef familyName =
+      family == FloatFamily::Divide ? "divide" : "remainder";
+  output << "module testbench;\n"
+         << R"sv(  logic [63:0] lhs;
   logic [63:0] rhs;
-  logic [5:0] divide_mode;
-  logic [5:0] remainder_mode;
-  logic [63:0] divide_result;
-  logic [63:0] remainder_result;
+  logic [5:0] mode_select;
+  logic [63:0] result;
 
-  scalar_float_divide divide_dut(
-      .data_input_0(lhs), .data_input_1(rhs), .config_0(divide_mode),
-      .data_output_0(divide_result));
-  scalar_float_remainder remainder_dut(
-      .data_input_0(lhs), .data_input_1(rhs), .config_0(remainder_mode),
-      .data_output_0(remainder_result));
-
-  task automatic check_divide(
+)sv"
+         << "  scalar_float_" << familyName << " dut(\n"
+         << "      .data_input_0(lhs), .data_input_1(rhs), "
+            ".config_0(mode_select),\n"
+         << "      .data_output_0(result));\n\n"
+         << R"sv(  task automatic check_result(
       input logic [5:0] mode,
       input logic [63:0] left,
       input logic [63:0] right,
       input logic [63:0] expected);
     begin
-      divide_mode = mode;
+      mode_select = mode;
       lhs = left;
       rhs = right;
       #1;
-      if (divide_result !== expected)
-        $fatal(1, "divide mismatch mode=%0d lhs=%h rhs=%h got=%h expected=%h",
-               mode, left, right, divide_result, expected);
-    end
-  endtask
-
-  task automatic check_remainder(
-      input logic [5:0] mode,
-      input logic [63:0] left,
-      input logic [63:0] right,
-      input logic [63:0] expected);
-    begin
-      remainder_mode = mode;
-      lhs = left;
-      rhs = right;
-      #1;
-      if (remainder_result !== expected)
-        $fatal(1, "remainder mismatch mode=%0d lhs=%h rhs=%h got=%h expected=%h",
-               mode, left, right, remainder_result, expected);
-    end
+      if (result !== expected)
+)sv"
+         << "        $fatal(1, \"" << familyName
+         << " mismatch mode=%0d lhs=%h rhs=%h got=%h expected=%h\",\n"
+         << "               mode, left, right, result, expected);\n"
+         << R"sv(    end
   endtask
 
   initial begin
 )sv";
 
   for (const NumericVector &vector : numericVectors()) {
-    output << (vector.family == FloatFamily::Divide ? "    check_divide(6'd"
-                                                    : "    check_remainder(6'd")
-           << unsigned(
-                  physicalCode(vector.family, vector.format, vector.rounding))
+    if (vector.family != family)
+      continue;
+    output << "    check_result(6'd"
+           << unsigned(physicalCode(family, vector.format, vector.rounding))
            << ", "
            << hexLiteral(llvm::APInt(64, paddedInput(vector, vector.lhs)))
            << ", "
@@ -774,11 +758,17 @@ std::string makeTestbench() {
            << ", " << hexLiteral(llvm::APInt(64, vector.expected)) << ");\n";
   }
 
-  output << R"sv(
-    check_divide(6'd0, 64'hffffffff40c00000, 64'hffffffff40000000,
+  if (family == FloatFamily::Divide)
+    output
+        << R"sv(    check_result(6'd0, 64'hffffffff40c00000, 64'hffffffff40000000,
                  64'h0000000040400000);
-    check_remainder(6'd0, 64'hffffffff40b00000, 64'hffffffff40000000,
-                    64'h000000003fc00000);
+)sv";
+  else
+    output
+        << R"sv(    check_result(6'd0, 64'hffffffff40b00000, 64'hffffffff40000000,
+                 64'h000000003fc00000);
+)sv";
+  output << R"sv(
     $finish;
   end
 endmodule
@@ -898,7 +888,8 @@ void configuredBehaviorAndArtifacts(const std::filesystem::path &root) {
           root / "generated",
           {{"scalar_float_divide.sv", divide},
            {"scalar_float_remainder.sv", remainder},
-           {"testbench.sv", makeTestbench()},
+           {"divide_testbench.sv", makeTestbench(FloatFamily::Divide)},
+           {"remainder_testbench.sv", makeTestbench(FloatFamily::Remainder)},
            {"portable_scalar_float_divide.ys",
             makeYosysScript("scalar_float_divide", "scalar_float_divide.sv")},
            {"portable_scalar_float_remainder.ys",

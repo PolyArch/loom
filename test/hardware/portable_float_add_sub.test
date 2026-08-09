@@ -5,7 +5,9 @@
 # RUN: FileCheck %s --check-prefix=VECTOR < %t/artifacts/fixed_vector_float_add_sub.sv
 # RUN: FileCheck %s --check-prefix=SINGLETON < %t/artifacts/scalar_float_add_singleton.sv
 # RUN: FileCheck %s --check-prefix=TB < %t/artifacts/testbench.sv
-# RUN: FileCheck %s --check-prefix=YOSYS < %t/artifacts/portable_float_add_sub.ys
+# RUN: FileCheck %s --check-prefix=YOSYS-SCALAR < %t/artifacts/portable_scalar_float_add_sub.ys
+# RUN: FileCheck %s --check-prefix=YOSYS-VECTOR < %t/artifacts/portable_fixed_vector_float_add_sub.ys
+# RUN: FileCheck %s --check-prefix=YOSYS-SINGLETON < %t/artifacts/portable_scalar_float_add_singleton.ys
 
 # SCALAR: module scalar_float_add_sub
 # SCALAR: function automatic
@@ -29,6 +31,6 @@
 # TB: check_scalar
 # TB: check_vector
 
-# YOSYS: hierarchy -check -top scalar_float_add_sub
-# YOSYS: hierarchy -check -top fixed_vector_float_add_sub
-# YOSYS: hierarchy -check -top scalar_float_add_singleton
+# YOSYS-SCALAR: hierarchy -check -top scalar_float_add_sub
+# YOSYS-VECTOR: hierarchy -check -top fixed_vector_float_add_sub
+# YOSYS-SINGLETON: hierarchy -check -top scalar_float_add_singleton

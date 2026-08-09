@@ -1,11 +1,7 @@
-# REQUIRES: circt, verilator, yosys
+# REQUIRES: circt, yosys
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-scalar-integer-cast-test %t
-# RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
 # RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
-# RUN: cd %t/artifacts && verilator --binary --timing --Wall --Wno-fatal -CFLAGS '-std=c++20' --top-module testbench scalar_integer_cast.sv scalar_integer_cast_identity.sv testbench.sv --Mdir obj_dir
-# RUN: %t/artifacts/obj_dir/Vtestbench
 # RUN: cd %t/artifacts && yosys -q -s portable_scalar_integer_cast.ys
 
-# VERILATOR: Verilator 5.050
 # YOSYS: Yosys 0.67

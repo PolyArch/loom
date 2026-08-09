@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-loop-gate-test %t
+# RUN: cd %t/zero_payload/artifacts && yosys -q -s portable_loop_gate.ys

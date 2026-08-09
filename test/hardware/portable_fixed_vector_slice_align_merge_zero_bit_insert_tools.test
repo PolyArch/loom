@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-slice-align-merge-test %t
+# RUN: cd %t/zero-bit/insert/tool-artifacts && yosys -q -s portable_fixed_vector_slice_align_merge.ys

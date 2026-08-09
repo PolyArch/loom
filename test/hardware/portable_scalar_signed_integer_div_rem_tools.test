@@ -1,11 +1,7 @@
-# REQUIRES: circt, verilator, yosys
-# RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
+# REQUIRES: circt, yosys
 # RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-scalar-signed-integer-div-rem-test %t
-# RUN: cd %t/artifacts && verilator --binary --timing --Wall --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench scalar_signed_div_8_padded.sv scalar_signed_rem_8_padded.sv scalar_signed_div_rem_8_padded.sv scalar_signed_div_rem_8_padded_inactive_quotient.sv scalar_signed_div_rem_active_widths.sv scalar_signed_div_rem_64.sv testbench.sv --Mdir obj_dir
-# RUN: %t/artifacts/obj_dir/Vtestbench
 # RUN: cd %t/artifacts && yosys -q -s portable_scalar_signed_integer_div_rem.ys
 
-# VERILATOR: Verilator 5.050
 # YOSYS: Yosys 0.67

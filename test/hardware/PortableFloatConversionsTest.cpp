@@ -945,24 +945,35 @@ std::string makeTestbench(llvm::ArrayRef<ModeInfo> widthModes,
   logic [66:0] ordinary_unsigned_input;
   logic [66:0] ordinary_unsigned_output;
 
+`ifdef TEST_WIDTH_CAST
   scalar_float_width_cast width_dut(
       .data_input_0(width_input), .config_0(width_mode),
       .data_output_0(width_output));
+`endif
+`ifdef TEST_INTEGER_TO_FLOAT
   scalar_integer_to_float integer_to_float_dut(
       .data_input_0(integer_to_float_input),
       .config_0(integer_to_float_mode),
       .data_output_0(integer_to_float_output));
+`endif
+`ifdef TEST_FLOAT_TO_INTEGER
   scalar_float_to_integer float_to_integer_dut(
       .data_input_0(float_to_integer_input),
       .config_0(float_to_integer_mode),
       .data_output_0(float_to_integer_output));
+`endif
+`ifdef TEST_SIGNED_SINGLETON
   scalar_float_to_signed_integer_singleton ordinary_signed_dut(
       .data_input_0(ordinary_signed_input),
       .data_output_0(ordinary_signed_output));
+`endif
+`ifdef TEST_UNSIGNED_SINGLETON
   scalar_float_to_unsigned_integer_singleton ordinary_unsigned_dut(
       .data_input_0(ordinary_unsigned_input),
       .data_output_0(ordinary_unsigned_output));
+`endif
 
+`ifdef TEST_WIDTH_CAST
   task automatic check_width(
       input logic [5:0] mode, input logic [66:0] value,
       input logic [66:0] expected);
@@ -975,7 +986,9 @@ std::string makeTestbench(llvm::ArrayRef<ModeInfo> widthModes,
                mode, value, width_output, expected);
     end
   endtask
+`endif
 
+`ifdef TEST_INTEGER_TO_FLOAT
   task automatic check_integer_to_float(
       input logic [5:0] mode, input logic [66:0] value,
       input logic [66:0] expected);
@@ -988,7 +1001,9 @@ std::string makeTestbench(llvm::ArrayRef<ModeInfo> widthModes,
                mode, value, integer_to_float_output, expected);
     end
   endtask
+`endif
 
+`ifdef TEST_FLOAT_TO_INTEGER
   task automatic check_float_to_integer(
       input logic [5:0] mode, input logic [66:0] value,
       input logic [66:0] expected);
@@ -1001,7 +1016,9 @@ std::string makeTestbench(llvm::ArrayRef<ModeInfo> widthModes,
                mode, value, float_to_integer_output, expected);
     end
   endtask
+`endif
 
+`ifdef TEST_SIGNED_SINGLETON
   task automatic check_ordinary_signed(
       input logic [66:0] value, input logic [66:0] expected);
     begin
@@ -1012,7 +1029,9 @@ std::string makeTestbench(llvm::ArrayRef<ModeInfo> widthModes,
                value, ordinary_signed_output, expected);
     end
   endtask
+`endif
 
+`ifdef TEST_UNSIGNED_SINGLETON
   task automatic check_ordinary_unsigned(
       input logic [66:0] value, input logic [66:0] expected);
     begin
@@ -1023,6 +1042,7 @@ std::string makeTestbench(llvm::ArrayRef<ModeInfo> widthModes,
                value, ordinary_unsigned_output, expected);
     end
   endtask
+`endif
 
   initial begin
 )sv";
@@ -1057,12 +1077,16 @@ std::string makeTestbench(llvm::ArrayRef<ModeInfo> widthModes,
            << hexLiteral(evaluateMode("makeTestbench", mode, input).zext(67))
            << ");\n";
   };
+  output << "`ifdef TEST_WIDTH_CAST\n";
   emit("check_width", widthModes);
-  emit("check_integer_to_float", integerToFloatModes);
-  emit("check_float_to_integer", floatToIntegerModes);
   emitInactive("check_width", widthModes);
+  output << "`endif\n`ifdef TEST_INTEGER_TO_FLOAT\n";
+  emit("check_integer_to_float", integerToFloatModes);
   emitInactive("check_integer_to_float", integerToFloatModes);
+  output << "`endif\n`ifdef TEST_FLOAT_TO_INTEGER\n";
+  emit("check_float_to_integer", floatToIntegerModes);
   emitInactive("check_float_to_integer", floatToIntegerModes);
+  output << "`endif\n";
   const auto emitOrdinary = [&](llvm::StringRef task, const ModeInfo &mode) {
     for (const llvm::APInt &input : ordinaryFloatToIntegerInputs(mode)) {
       output << "    " << task << "(" << hexLiteral(physicalInput(mode, input))
@@ -1071,8 +1095,11 @@ std::string makeTestbench(llvm::ArrayRef<ModeInfo> widthModes,
              << ");\n";
     }
   };
+  output << "`ifdef TEST_SIGNED_SINGLETON\n";
   emitOrdinary("check_ordinary_signed", ordinarySignedMode);
+  output << "`endif\n`ifdef TEST_UNSIGNED_SINGLETON\n";
   emitOrdinary("check_ordinary_unsigned", ordinaryUnsignedMode);
+  output << "`endif\n";
   output << R"sv(    $finish;
   end
 endmodule

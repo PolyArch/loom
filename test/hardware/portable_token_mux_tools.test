@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-token-mux-demux-test %t
+# RUN: cd %t/mux_system && yosys -q -s token_mux_system.ys

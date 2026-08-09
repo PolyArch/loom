@@ -726,25 +726,17 @@ endmodule
 )sv";
 }
 
-std::string directYosysScript() {
-  return R"ys(read_verilog -sv token_mux.sv token_demux.sv
-hierarchy -check -top token_mux
-proc
-opt
-check -assert
-select -assert-none t:$*ff* t:$*latch* t:$_*FF* t:$_*LATCH* t:$mem*
-synth -top token_mux
-check -assert
-design -reset
-read_verilog -sv token_mux.sv token_demux.sv
-hierarchy -check -top token_demux
-proc
-opt
-check -assert
-select -assert-none t:$*ff* t:$*latch* t:$_*FF* t:$_*LATCH* t:$mem*
-synth -top token_demux
-check -assert
-)ys";
+std::string directYosysScript(llvm::StringRef top, llvm::StringRef source) {
+  std::string script;
+  llvm::raw_string_ostream output(script);
+  output << "read_verilog -sv " << source << '\n'
+         << "hierarchy -check -top " << top << '\n'
+         << "proc\nopt\ncheck -assert\n"
+         << "select -assert-none t:$*ff* t:$*latch* t:$_*FF* "
+            "t:$_*LATCH* t:$mem*\n"
+         << "synth -top " << top << '\n'
+         << "check -assert\n";
+  return output.str();
 }
 
 std::string muxSystemTestbench(const ConfigurationImages &configuration) {
@@ -1040,10 +1032,13 @@ void validateAndWrite(const std::filesystem::path &root) {
   const ConfigurationImages demuxConfiguration =
       makeConfigurationImages(test, demux);
   if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
-          root / "leaf", {{"token_mux.sv", muxRtl},
-                          {"token_demux.sv", demuxRtl},
-                          {"testbench.sv", leafTestbench()},
-                          {"token_mux_demux.ys", directYosysScript()}}))
+          root / "leaf",
+          {{"token_mux.sv", muxRtl},
+           {"token_demux.sv", demuxRtl},
+           {"testbench.sv", leafTestbench()},
+           {"token_mux.ys", directYosysScript("token_mux", "token_mux.sv")},
+           {"token_demux.ys",
+            directYosysScript("token_demux", "token_demux.sv")}}))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
           root / "mux_system",

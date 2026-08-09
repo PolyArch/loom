@@ -1,0 +1,5 @@
+# REQUIRES: circt, verilator
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-scalar-integer-add-sub-test %t
+# RUN: cd %t/artifacts && verilator --binary --timing --Wall --Wno-fatal -CFLAGS '-std=c++20' --top-module testbench scalar_integer_add_sub.sv testbench.sv --Mdir obj_dir
+# RUN: %t/artifacts/obj_dir/Vtestbench

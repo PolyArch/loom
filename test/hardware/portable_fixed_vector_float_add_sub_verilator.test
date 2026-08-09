@@ -1,0 +1,5 @@
+# REQUIRES: circt, verilator
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-float-add-sub-test %t
+# RUN: cd %t/artifacts && verilator --binary --timing --Wall --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL -DTEST_VECTOR -CFLAGS '-std=c++20' --top-module testbench fixed_vector_float_add_sub.sv testbench.sv --Mdir obj_dir
+# RUN: %t/artifacts/obj_dir/Vtestbench

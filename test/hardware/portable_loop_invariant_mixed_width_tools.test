@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-loop-invariant-test %t
+# RUN: cd %t/mixed_width/artifacts && yosys -q -s portable_loop_invariant.ys

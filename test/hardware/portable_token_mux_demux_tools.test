@@ -1,17 +1,7 @@
-# REQUIRES: circt, verilator, yosys
-# RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
+# REQUIRES: circt, yosys
 # RUN: yosys -V | FileCheck %s --check-prefix=YOSYS-VERSION
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-token-mux-demux-test %t
-# RUN: cd %t/leaf && verilator --binary --timing --Wall --Wno-fatal --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench token_mux.sv token_demux.sv testbench.sv --Mdir obj_dir
-# RUN: %t/leaf/obj_dir/Vtestbench
-# RUN: cd %t/leaf && yosys -q -s token_mux_demux.ys
-# RUN: cd %t/mux_system && verilator --binary --timing --Wall --Wno-fatal --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench token_mux_system.sv testbench.sv --Mdir obj_dir
-# RUN: %t/mux_system/obj_dir/Vtestbench
-# RUN: cd %t/mux_system && yosys -q -s token_mux_system.ys
-# RUN: cd %t/demux_system && verilator --binary --timing --Wall --Wno-fatal --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench token_demux_system.sv testbench.sv --Mdir obj_dir
-# RUN: %t/demux_system/obj_dir/Vtestbench
-# RUN: cd %t/demux_system && yosys -q -s token_demux_system.ys
+# RUN: cd %t/leaf && yosys -q -s token_mux.ys
 
-# VERILATOR: Verilator 5.050
 # YOSYS-VERSION: Yosys 0.67

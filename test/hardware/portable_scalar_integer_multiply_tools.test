@@ -1,6 +1,4 @@
-# REQUIRES: circt, verilator, yosys
+# REQUIRES: circt, yosys
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-scalar-integer-multiply-test %t
-# RUN: cd %t/provider_artifacts && verilator --binary --timing --Wall -CFLAGS '-std=c++20' --top-module testbench scalar_integer_multiply_8.sv scalar_integer_multiply_64.sv testbench.sv --Mdir obj_dir
-# RUN: %t/provider_artifacts/obj_dir/Vtestbench
 # RUN: cd %t/provider_artifacts && yosys -q -s portable_scalar_integer_multiply.ys

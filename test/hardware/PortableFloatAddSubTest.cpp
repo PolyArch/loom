@@ -758,21 +758,28 @@ module testbench;
   logic [31:0] singleton_rhs;
   logic [31:0] singleton_result;
 
+`ifdef TEST_SCALAR
   scalar_float_add_sub scalar_dut(
       .data_input_0(scalar_lhs),
       .data_input_1(scalar_rhs),
       .config_0(scalar_config),
       .data_output_0(scalar_result));
+`endif
+`ifdef TEST_VECTOR
   fixed_vector_float_add_sub vector_dut(
       .data_input_0(vector_lhs),
       .data_input_1(vector_rhs),
       .config_0(vector_config),
       .data_output_0(vector_result));
+`endif
+`ifdef TEST_SINGLETON
   scalar_float_add_singleton singleton_dut(
       .data_input_0(singleton_lhs),
       .data_input_1(singleton_rhs),
       .data_output_0(singleton_result));
+`endif
 
+`ifdef TEST_SCALAR
   task automatic check_scalar(
       input logic [5:0] mode,
       input logic [63:0] lhs,
@@ -788,7 +795,9 @@ module testbench;
                mode, lhs, rhs, scalar_result, expected);
     end
   endtask
+`endif
 
+`ifdef TEST_VECTOR
   task automatic check_vector(
       input logic [5:0] mode,
       input logic [95:0] lhs,
@@ -804,10 +813,12 @@ module testbench;
                mode, lhs, rhs, vector_result, expected);
     end
   endtask
+`endif
 
   initial begin
 )sv";
 
+  output << "`ifdef TEST_SCALAR\n";
   for (const Mode &mode : scalarModes) {
     for (const TestVector &vector : testVectors(mode.format)) {
       output << "    check_scalar(6'd" << unsigned(physicalCode(mode)) << ", "
@@ -820,6 +831,7 @@ module testbench;
              << ");\n";
     }
   }
+  output << "`endif\n`ifdef TEST_VECTOR\n";
 
   for (const Mode &mode : vectorModes) {
     const unsigned width = bitWidth(mode.format);
@@ -845,6 +857,7 @@ module testbench;
            << hexLiteral(96, lhs) << ", " << hexLiteral(96, rhs) << ", "
            << hexLiteral(96, result) << ");\n";
   }
+  output << "`endif\n";
 
   const Mode inactive{::fabric::FloatFormat::F32,
                       mlir::arith::RoundingMode::to_nearest_even, false, 1};
@@ -856,6 +869,7 @@ module testbench;
   llvm::APInt inactiveLhs(96, 0);
   llvm::APInt inactiveRhs(96, 0);
   llvm::APInt inactiveResult(96, 0);
+  output << "`ifdef TEST_SCALAR\n";
   for (unsigned lane = 0; lane < inactiveVectors.size(); ++lane) {
     const TestVector vector = inactiveVectors[lane];
     const std::uint64_t result = expected(inactive, vector.lhs, vector.rhs);
@@ -866,15 +880,19 @@ module testbench;
     inactiveRhs.insertBits(llvm::APInt(32, vector.rhs), lane * 32);
     inactiveResult.insertBits(llvm::APInt(32, result), lane * 32);
   }
+  output << "`endif\n`ifdef TEST_VECTOR\n";
   output << "    check_vector(6'd63, " << hexLiteral(96, inactiveLhs) << ", "
          << hexLiteral(96, inactiveRhs) << ", "
          << hexLiteral(96, inactiveResult) << ");\n";
+  output << "`endif\n";
   output << R"sv(
+`ifdef TEST_SINGLETON
     singleton_lhs = 32'h3f800000;
     singleton_rhs = 32'h40000000;
     #1;
     if (singleton_result !== 32'h40400000)
       $fatal(1, "configuration-free f32 add produced the wrong result");
+`endif
     $finish;
   end
 endmodule
@@ -882,43 +900,20 @@ endmodule
   return output.str();
 }
 
-std::string yosysScript() {
-  return R"ys(
-read_verilog -sv scalar_float_add_sub.sv
-hierarchy -check -top scalar_float_add_sub
-proc
-opt
-check -assert
-select -assert-none t:$*ff* t:$*latch* t:$_*FF* t:$_*LATCH* t:$mem*
-synth -noabc -top scalar_float_add_sub
-check -assert
-select -assert-none t:$*ff* t:$*latch* t:$_*FF* t:$_*LATCH* t:$mem*
-stat
-design -reset
-
-read_verilog -sv fixed_vector_float_add_sub.sv
-hierarchy -check -top fixed_vector_float_add_sub
-proc
-opt
-check -assert
-select -assert-none t:$*ff* t:$*latch* t:$_*FF* t:$_*LATCH* t:$mem*
-synth -noabc -top fixed_vector_float_add_sub
-check -assert
-select -assert-none t:$*ff* t:$*latch* t:$_*FF* t:$_*LATCH* t:$mem*
-stat
-design -reset
-
-read_verilog -sv scalar_float_add_singleton.sv
-hierarchy -check -top scalar_float_add_singleton
-proc
-opt
-check -assert
-select -assert-none t:$*ff* t:$*latch* t:$_*FF* t:$_*LATCH* t:$mem*
-synth -noabc -top scalar_float_add_singleton
-check -assert
-select -assert-none t:$*ff* t:$*latch* t:$_*FF* t:$_*LATCH* t:$mem*
-stat
-)ys";
+std::string yosysScript(llvm::StringRef top, llvm::StringRef source) {
+  std::string script;
+  llvm::raw_string_ostream output(script);
+  output << "read_verilog -sv " << source << '\n'
+         << "hierarchy -check -top " << top << '\n'
+         << "proc\nopt\ncheck -assert\n"
+         << "select -assert-none t:$*ff* t:$*latch* t:$_*FF* "
+            "t:$_*LATCH* t:$mem*\n"
+         << "synth -noabc -top " << top << '\n'
+         << "check -assert\n"
+         << "select -assert-none t:$*ff* t:$*latch* t:$_*FF* "
+            "t:$_*LATCH* t:$mem*\n"
+         << "stat\n";
+  return output.str();
 }
 
 template <typename T>
@@ -1144,7 +1139,14 @@ void emitConformanceArtifacts(const std::filesystem::path &root) {
            {"scalar_float_add_singleton.sv",
             std::move(singleton.systemVerilog)},
            {"testbench.sv", buildTestbench(scalar.modes, vector.modes)},
-           {"portable_float_add_sub.ys", yosysScript()}}))
+           {"portable_scalar_float_add_sub.ys",
+            yosysScript("scalar_float_add_sub", "scalar_float_add_sub.sv")},
+           {"portable_fixed_vector_float_add_sub.ys",
+            yosysScript("fixed_vector_float_add_sub",
+                        "fixed_vector_float_add_sub.sv")},
+           {"portable_scalar_float_add_singleton.ys",
+            yosysScript("scalar_float_add_singleton",
+                        "scalar_float_add_singleton.sv")}}))
     fail(test, llvm::toString(std::move(error)));
 }
 

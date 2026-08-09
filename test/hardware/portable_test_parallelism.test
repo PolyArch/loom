@@ -1,0 +1,1 @@
+# RUN: %python %S/check_portable_test_parallelism.py %S

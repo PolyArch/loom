@@ -3,6 +3,5 @@
 # RUN: %loom-portable-float-multiply-test %t
 # RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
 # RUN: cd %t/generated && yosys -q -s portable_scalar_float_multiply.ys
-# RUN: cd %t/generated && yosys -q -s portable_fixed_vector_float_multiply.ys
 
 # YOSYS: Yosys 0.67
