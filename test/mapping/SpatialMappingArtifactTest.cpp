@@ -312,8 +312,24 @@ void addTokenSyncFu(loom::adg::PeBuilder &pe,
   requireSuccess(fu.close(outputs));
 }
 
-loom::fabric::FinalizedFabricRoot buildFabric(loom::ArtifactStore &store,
-                                              bool oneCycleElastic = true) {
+enum class ComputeContractKind { OneCycleElastic, LoopStream, Transparent };
+
+const ::fabric::ResourceContract &
+computeContract(ComputeContractKind contractKind) {
+  switch (contractKind) {
+  case ComputeContractKind::OneCycleElastic:
+    return ::fabric::oneCycleElasticOperationResourceContract();
+  case ComputeContractKind::LoopStream:
+    return ::fabric::loopStreamOperationResourceContract();
+  case ComputeContractKind::Transparent:
+    return ::fabric::loopCarryOperationResourceContract();
+  }
+  fail("unknown compute contract kind");
+}
+
+loom::fabric::FinalizedFabricRoot buildFabric(
+    loom::ArtifactStore &store,
+    ComputeContractKind contractKind = ComputeContractKind::OneCycleElastic) {
   using loom::adg::DesignBuilder;
   using loom::adg::PeSpec;
   using loom::adg::PortType;
@@ -329,10 +345,7 @@ loom::fabric::FinalizedFabricRoot buildFabric(loom::ArtifactStore &store,
   std::vector<loom::adg::PeValue> peInputs;
   for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
     peInputs.push_back(take(pe.input(ordinal)));
-  addTokenSyncFu(pe, peInputs, bits128,
-                 oneCycleElastic
-                     ? ::fabric::oneCycleElasticOperationResourceContract()
-                     : ::fabric::loopCarryOperationResourceContract());
+  addTokenSyncFu(pe, peInputs, bits128, computeContract(contractKind));
   requireSuccess(pe.close());
   std::vector<loom::adg::SpatialValue> outputs;
   for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
@@ -619,9 +632,9 @@ void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
   requireSuccess(move.commit());
 }
 
-void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
-                                bool forceTagConflict = false,
-                                bool oneCycleElastic = true) {
+void completeCandidateRoundTrip(
+    bool temporal, bool boundaryWrapped = false, bool forceTagConflict = false,
+    ComputeContractKind contractKind = ComputeContractKind::OneCycleElastic) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   llvm::SmallString<128> blobPath(directory.path());
@@ -637,7 +650,7 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
   auto dataflow = take(dataflowArtifact.view());
   const auto fabric = boundaryWrapped ? buildBoundaryTemporalFabric(store)
                       : temporal      ? buildTemporalFabric(store)
-                                      : buildFabric(store, oneCycleElastic);
+                                      : buildFabric(store, contractKind);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 1;
@@ -661,7 +674,8 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
   if (!temporal && !boundaryWrapped && !forceTagConflict)
     loom::test::exerciseSpatialAttachmentConstraintRelations(
         context, dataflow, tech.view(), fabric.view(), store);
-  if (oneCycleElastic && !temporal && !boundaryWrapped && !forceTagConflict) {
+  if (contractKind == ComputeContractKind::OneCycleElastic && !temporal &&
+      !boundaryWrapped && !forceTagConflict) {
     loom::ResolvedConfig generatorResolved =
         loom::test::buildSpatialPnrTestResolvedConfig();
     auto &search = generatorResolved.dse.spatialPnr.search;
@@ -1173,11 +1187,14 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
     }
     observedCompleteResultTuple |= firstResult && secondResult;
   }
-  if (oneCycleElastic && !observedCompleteResultTuple)
+  const bool requiresActiveResultHandoff =
+      contractKind != ComputeContractKind::Transparent;
+  if (requiresActiveResultHandoff && !observedCompleteResultTuple)
     fail("Spatial compute use lost its complete active-result release tuple");
-  if (!oneCycleElastic && (!sawComputeTransition || !allComputeIntrinsic))
+  if (!requiresActiveResultHandoff &&
+      (!sawComputeTransition || !allComputeIntrinsic))
     fail("same-cycle compute use gained a causal result release");
-  if (oneCycleElastic) {
+  if (requiresActiveResultHandoff) {
     const auto requireRejectedReleaseMutation = [&](bool removeMember) {
       auto mutated = parseSpatial(context, finalized.canonicalBytes());
       if (!mutated)
@@ -1768,7 +1785,10 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
 int main() {
   temporalPeTagMatchDomainsAreIngressLocal();
   completeCandidateRoundTrip(false);
-  completeCandidateRoundTrip(false, false, false, false);
+  completeCandidateRoundTrip(false, false, false,
+                             ComputeContractKind::LoopStream);
+  completeCandidateRoundTrip(false, false, false,
+                             ComputeContractKind::Transparent);
   completeCandidateRoundTrip(true);
   completeCandidateRoundTrip(true, true);
   completeCandidateRoundTrip(true, true, true);

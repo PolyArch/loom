@@ -17,6 +17,12 @@ const ResourceContract &oneCycleElasticOperationResourceContract();
 llvm::Expected<bool>
 isOneCycleElasticOperationResourceContract(const ResourceContract &contract);
 
+/// Reports whether an exact built-in operation contract retains each active
+/// result until its Dataflow handoff. Mapping consumes this Fabric-owned fact
+/// when deriving causal release and does not maintain a family table.
+llvm::Expected<bool>
+requiresActiveResultHandoff(const ResourceContract &contract);
+
 /// Exact initial contracts for the four loop-control implementation families.
 /// Every use-pattern ordinal is the ordinal of the corresponding schema-owned
 /// transition case. The ResourceContract owns only physical state, atomic use,

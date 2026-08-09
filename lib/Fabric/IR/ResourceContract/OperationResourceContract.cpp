@@ -109,6 +109,22 @@ const fabric::ResourceContract &fabric::loopStreamOperationResourceContract() {
   return contract;
 }
 
+llvm::Expected<bool>
+fabric::requiresActiveResultHandoff(const ResourceContract &contract) {
+  auto oneCycle = isOneCycleElasticOperationResourceContract(contract);
+  if (!oneCycle || *oneCycle)
+    return oneCycle;
+
+  auto actual = encodeResourceContractRecord(contract);
+  if (!actual)
+    return actual.takeError();
+  auto loopStream =
+      encodeResourceContractRecord(loopStreamOperationResourceContract());
+  if (!loopStream)
+    return loopStream.takeError();
+  return *actual == *loopStream;
+}
+
 const fabric::ResourceContract &fabric::loopCarryOperationResourceContract() {
   using Case = ::dataflow::semantics::CarryCase;
   static constexpr Case cases[] = {Case::Init, Case::Next, Case::Close};

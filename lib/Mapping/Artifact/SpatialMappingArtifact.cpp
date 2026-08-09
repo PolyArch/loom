@@ -1444,11 +1444,10 @@ deriveSpatialComputeBindingUseRequirements(
         fabric.resolvedFabricOpCapability(*occurrenceOperation);
     if (!capability)
       return invalid("selected compute actor has no physical capability");
-    auto holdsActiveResults =
-        ::fabric::isOneCycleElasticOperationResourceContract(
-            capability->resourceStateAndTimingContract);
-    if (!holdsActiveResults)
-      return holdsActiveResults.takeError();
+    auto requiresHandoff = ::fabric::requiresActiveResultHandoff(
+        capability->resourceStateAndTimingContract);
+    if (!requiresHandoff)
+      return requiresHandoff.takeError();
     for (const auto &transition : *cases) {
       auto pattern = ::fabric::resolveOperationUsePattern(
           capability->resourceStateAndTimingContract, transition.ordinal);
@@ -1459,7 +1458,7 @@ deriveSpatialComputeBindingUseRequirements(
       std::vector<SpatialActivityEventRef> release;
       std::vector<std::pair<std::vector<std::uint8_t>, SpatialActivityEventRef>>
           keyedRelease;
-      if (*holdsActiveResults) {
+      if (*requiresHandoff) {
         keyedRelease.reserve(transition.activeResults.size());
         for (std::uint32_t resultOrdinal : transition.activeResults) {
           SpatialActivityEventRef produced =

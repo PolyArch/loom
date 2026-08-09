@@ -57,9 +57,33 @@ void oneCycleElasticContractOwnsOnePublishedResultSlot() {
           "active operation use does not claim the complete result slot");
 }
 
+void activeResultHandoffIsOwnedByExactContracts() {
+  using namespace fabric;
+
+  auto check = [](const ResourceContract &contract, bool expected,
+                  llvm::StringRef message) {
+    auto actual = requiresActiveResultHandoff(contract);
+    if (!actual)
+      fail(llvm::toString(actual.takeError()));
+    require(*actual == expected, message);
+  };
+
+  check(oneCycleElasticOperationResourceContract(), true,
+        "one-cycle result slot lost its active-result handoff");
+  check(loopStreamOperationResourceContract(), true,
+        "registered LoopStream lost its active-result handoff");
+  check(loopCarryOperationResourceContract(), false,
+        "transparent LoopCarry acquired a result-holding handoff");
+  check(loopInvariantOperationResourceContract(), false,
+        "transparent LoopInvariant acquired a result-holding handoff");
+  check(loopGateOperationResourceContract(), false,
+        "transparent LoopGate acquired a result-holding handoff");
+}
+
 } // namespace
 
 int main() {
   oneCycleElasticContractOwnsOnePublishedResultSlot();
+  activeResultHandoffIsOwnedByExactContracts();
   return EXIT_SUCCESS;
 }

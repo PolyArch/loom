@@ -552,11 +552,15 @@ the later of the Fabric use pattern's intrinsic release eligibility and
 completion of every member. A one-member conjunction is the ordinary
 single-event case and receives no shorthand encoding or aggregate event ID.
 
-For the registered one-cycle elastic operation pattern, a compute ResourceUse
-triggers on the selected actor transition and derives one `Produced` member for
-every logical result in that exact `ActorHandshakeCase::activeResults`. The
-set describes the complete held tuple. Mapping cannot select one result,
-invent an all-results event, or release the use from authoring order.
+For every exact built-in operation contract that Fabric classifies as
+requiring active-result handoff, a compute ResourceUse triggers on the selected
+actor transition and derives one `Produced` member for every logical result in
+that exact `ActorHandshakeCase::activeResults`. The closed set currently
+contains the registered one-cycle elastic pattern and the exact registered
+`LoopStream` pattern. The set describes the complete held tuple. Mapping
+consumes this Fabric-owned classification; it cannot select one result,
+maintain a family table, invent an all-results event, or release the use from
+authoring order.
 
 A fixed-vector parallelize or serialize capability carrying the exact
 portable ordered-cardinality ResourceContract instead uses `Intrinsic`

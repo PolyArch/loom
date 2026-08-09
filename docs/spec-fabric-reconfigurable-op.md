@@ -934,7 +934,10 @@ insert another register stage.
 An add, subtract, or shift update may make the next state available each
 cycle, while a multiply or divide update may be multi-cycle. Acceptance
 atomically reserves all resources required by the selected transition. The
-same context cannot perform its next transition until its next state is
+exact registered contract retains every active result until its Dataflow
+handoff; intrinsic timing alone cannot retire a result-producing use while its
+consumer is backpressured. The same context cannot perform its next transition
+until its next state is
 available. Other contexts may interleave only when the concrete Fabric
 capacity, initiation interval, and grant policy permit it.
 
