@@ -202,6 +202,34 @@ already owns. Those dialects remain available when a future source contract
 actually requires their semantics; they are not mandatory transit layers for
 an already scheduled Fabric.
 
+## Why The Portable Configuration Port Is AXI4-Lite
+
+Configuration loading needs addressed writes, explicit completion, and
+hardware-visible readback, but it does not need bursts, transaction IDs, or
+outstanding reordering. A 32-bit AXI4-Lite subordinate is the smallest standard
+interface that supplies those facts and connects directly to common FPGA and
+SoC control fabrics. Full AXI would add states that do not express another
+Loom requirement. A private ready/valid command bus would be smaller in RTL but
+would force every deployment target to own a bridge and another protocol
+contract.
+
+The ConfigurationABI already owns the complete image bit layout. The portable
+transport therefore derives dense word windows from that ABI instead of
+persisting addresses beside it. Shadow and active banks are necessary, not
+speculative buffering: without them, a streamed partial image would violate
+`CompleteImageAtomic`. Reading the active bank after commit makes the same
+physical path check both loading and use; reading shadow state would only prove
+that a bus echo worked.
+
+Core selection belongs outside a reusable SpatialCore definition. Adding a
+Core ID or target mask to every local CGRA top would make occurrence identity
+part of an otherwise shareable Module specialization and would duplicate the
+System and runtime programming bindings. Runtime can instead group already
+required, occurrence-qualified images when their rebased layouts and complete
+payloads are equal. A provider may encode that exact endpoint set as a bitmask
+when hardware supports multicast, while unicast providers retain identical
+portable semantics.
+
 ## Why Ordered Cardinality Uses One Shared Claim Boundary
 
 `parallelize` and `serialize` are unusual because one logical firing can

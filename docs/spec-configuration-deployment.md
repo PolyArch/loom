@@ -204,6 +204,36 @@ configuration. Transport framing, addresses, write beats, and the mechanism
 that commits staging state are HardwareImplementation details derived from
 this contract; they are not additional ABI fields.
 
+One implementation transport may serve several Programming Units. Its address
+layout is a removable mechanical projection, not another Artifact or an ABI
+field:
+
+```text
+ConfigurationTransportLayout = derive(
+  exact ConfigurationABI,
+  exact SpatialCoreOccurrenceRef,
+  exact implementation transport profile)
+```
+
+The projection selects exactly the Programming Units whose complete Fabric
+resource closure belongs to the selected SpatialCore occurrence, rebases their
+occurrence-qualified closures and fields to the imported Module definition,
+orders equal definitions identically, and assigns transport-local windows. A
+unit spanning more than one SpatialCore occurrence is outside a local
+SpatialCore transport profile and must receive a different exact
+HardwareImplementation. The projection retains the exact `ProgrammingUnitRef`
+for image and runtime binding, but occurrence identity cannot perturb the
+definition-local window shape. RTL generation, HardwareImplementation
+interface publication, and the runtime provider must call the same derivation;
+none may maintain an independent address table.
+
+The common portable transport profile and its exact word, window, staging,
+commit, status, and readback behavior are owned by
+`docs/spec-rtl-lowering.md`. Another implementation may select another typed
+provider transport while preserving `CompleteImageAtomic`. Such a transport
+choice changes HardwareImplementation identity, not ConfigurationABI or a
+HardwareConfigurationImage.
+
 All ABI bit vectors use one fixed representation. Logical bit `i` is bit
 `i % 8` of byte `i / 8`, where bit zero is the least-significant bit of the
 byte. The byte vector has exactly `ceil(bit_count / 8)` bytes and unused high
@@ -456,6 +486,13 @@ configuration-image set equals the transitive closure mechanically required by
 the complete Mapping and exact ABI programming units. Selected
 HardwareImplementations must implement that ABI; they cannot change image
 membership or content.
+
+Equal payload bytes for several occurrence-qualified images may share blob
+storage and may be installed by one provider multicast transaction. Every
+image reference and programming binding remains present and independently
+verified. Multicast is therefore an execution optimization over the exact
+Deployment closure; it cannot merge Programming Units, replace an image,
+change its source Mapping, or create a cross-core configuration identity.
 
 A verified SystemMapping closure, joined only with the exact downstream leaves
 named by each schema, mechanically derives `ThreadDispatchImage`,

@@ -645,6 +645,15 @@ ambiguous match before execution. This keeps protocol decomposition with the
 consumer or provider that owns it instead of making HardwareImplementation a
 second AXI, JTAG, MMIO, memory, or external-protocol schema.
 
+Several `Configuration(ProgrammingUnitRef)` records may intentionally name the
+same top-module locator when one shared transport serves their exact
+occurrence-local units. The selected provider contract owns the transport
+signal decomposition, while the shared `ConfigurationTransportLayout`
+derivation owned by the Configuration/RTL contracts maps each semantic unit to
+its transport-local window. HardwareImplementation does not copy that address
+table or invent a Core ID. A missing semantic unit record, a foreign unit, or a
+provider projection that disagrees with the shared derivation is invalid.
+
 The activity catalog is the sole implementation-local source for RTL,
 netlist, physical, and FPGA activity references used by simulation or
 Evaluation. Activity points are declared capabilities, not a universally

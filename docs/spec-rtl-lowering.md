@@ -567,6 +567,69 @@ Mapped RTL execution must program the implementation through decoded
 Mapping directly in a testbench and bypassing the physical programming path is
 invalid.
 
+### Common Portable AXI4-Lite Configuration Transport
+
+The common target-independent SpatialCore implementation uses one shared
+AXI4-Lite subordinate configuration port. This is an implementation profile,
+not a second ConfigurationABI. It has 32-bit `AWADDR` and `ARADDR`, 32-bit
+`WDATA` and `RDATA`, four byte strobes, standard `AW/W/B` and `AR/R` channels,
+and no burst, ID, or outstanding-reordering mechanism. It shares the selected
+SpatialCore Clock and Reset domain; a clock crossing requires another exact
+implementation profile.
+
+The top-level signal prefix is `cfg_`. The profile supports one outstanding
+write response and one outstanding read response. Write address and data
+channels remain independent as AXI4-Lite requires: the implementation captures
+at most one address and one data beat in either arrival order, applies the
+write only after both are present, and does not accept another pair until the
+response is consumed.
+
+The shared `ConfigurationTransportLayout` begins at byte address zero. It
+selects the occurrence-local Programming Units and sorts them by the canonical
+bytes of their definition-rebased Fabric resource closure and field schema.
+For each unit it allocates, without gaps:
+
+```text
+payload_word_count = ceil(payload_bit_count / 32)
+payload addresses  = base + 4 * [0, payload_word_count)
+commit address     = base + 4 * payload_word_count
+status address     = commit address + 4
+next base          = status address + 4
+```
+
+All addresses are four-byte aligned. Layout derivation rejects a total span
+that cannot be represented by the 32-bit address bus. Each entry retains the
+exact `ProgrammingUnitRef`; the local address order does not replace global
+occurrence-qualified identity.
+
+Payload writes update only a shadow bank. `WSTRB` selects the written bytes and
+a per-byte coverage bitmap records which required payload bytes have been
+received since reset or the last commit. A write that sets any ABI-unused high
+bit in the final byte is rejected without changing shadow state. Payload reads
+return the active bank, so readback after commit verifies the configuration
+that the SpatialCore is actually using rather than merely echoing staging
+state.
+
+Writing bit zero as one at a unit's commit address requests activation. The
+write succeeds only when every required payload byte is covered and all other
+strobed command bits are zero. On the accepting Clock edge, the complete
+shadow image becomes the active image atomically and the coverage bitmap is
+cleared. An incomplete or malformed commit returns `SLVERR` and leaves the
+active image unchanged. The status word is read-only; bit zero reports whether
+the shadow coverage is complete and all other bits are zero.
+
+Reset initializes both banks from the exact ABI inactive image and clears all
+coverage. Valid payload and status accesses return `OKAY`; a write to status, a
+malformed payload or commit write, or another request forbidden by the profile
+returns `SLVERR`; an unallocated or misaligned address returns `DECERR`.
+Responses are deterministic and never partially update active configuration.
+
+Internal hierarchy modules consume parallel active configuration slices
+derived from the same layout and ABI destination slices. Those parallel wires
+are private implementation detail. Only the top-level AXI4-Lite port is a
+programming interface, and no test or provider may bypass its staging,
+readback, and atomic-commit behavior.
+
 ## Activity And Observability
 
 The implementation owns a deterministic activity-point catalog. Each

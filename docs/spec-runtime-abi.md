@@ -405,6 +405,34 @@ validate package and Deployment closure
   -> execute and retire
 ```
 
+For the common portable AXI4-Lite configuration profile, installation derives
+the exact `ConfigurationTransportLayout` from the bound implementation,
+SpatialCore occurrence, and ConfigurationABI. It writes the complete image,
+commits the target unit, reads every active payload word back through the same
+port, masks only ABI-unused high bits, and compares the result with the exact
+`HardwareConfigurationImage`. A successful write response without matching
+active readback is a programming failure. No runtime-authored address table or
+wide parallel configuration shortcut is permitted.
+
+The loader may coalesce several required programming operations into one
+provider multicast only when all of the following are true:
+
+* every exact image and programming binding remains independently present in
+  the verified Deployment;
+* the provider declares an atomic multicast operation for the selected
+  endpoints;
+* the definition-rebased configuration transport layouts are byte-identical;
+* the complete image payload bytes and payload bit counts are equal; and
+* all target SpatialCore occurrences are quiesced and share the same required
+  activation event.
+
+The provider receives a set of exact programming endpoint bindings. It may
+lower that set to Core IDs, a hardware target bitmask, or repeated unicast
+writes. Those encodings are provider-local transport facts and never enter
+ConfigurationABI, HardwareConfigurationImage, Deployment, or the local
+SpatialCore RTL interface. Failure on any target fails the multicast operation
+and subjects every affected target to the existing reset-and-reverify rule.
+
 Before activation, failure releases acquired resources after restoring the
 declared clean state. After any partial programming or runtime fault, the
 provider must reset and reverify the implementation before reuse; if it cannot
