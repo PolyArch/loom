@@ -111,35 +111,35 @@ std::string buildDeclarations(RootFamily family, const Format &format) {
   const unsigned fractionBits = format.fractionBits;
   const unsigned radicandWidth = evenRadicandWidth(format);
   const unsigned rootBits = fractionBits + 2;
-  const unsigned comparisonWidth = 3 * fractionBits + 8;
+  const unsigned quotientWidth = 2 * rootBits;
+  const unsigned roundingWidth = fractionBits + 3;
   std::string text;
   llvm::raw_string_ostream output(text);
   output << "  reg sign_input;\n"
          << "  reg [" << format.exponentBits - 1 << ":0] exponent_input;\n"
          << "  reg [" << fractionBits - 1 << ":0] fraction_input;\n"
          << "  reg [" << fractionBits << ":0] mantissa;\n"
-         << "  reg [" << radicandWidth - 1 << ":0] radicand;\n"
          << "  reg [" << rootBits + 1 << ":0] remainder;\n"
          << "  reg [" << rootBits - 1 << ":0] root;\n"
          << "  reg [" << rootBits + 1 << ":0] trial;\n"
          << "  reg [" << rootBits << ":0] rounded;\n";
-  if (family == RootFamily::Rsqrt)
-    output << "  reg [" << radicandWidth - 1 << ":0] numerator;\n"
-           << "  reg [" << radicandWidth - 1 << ":0] quotient;\n"
+  if (family == RootFamily::Sqrt)
+    output << "  reg [" << radicandWidth - 1 << ":0] radicand;\n";
+  else
+    output << "  reg [" << fractionBits << ":0] normalized_mantissa;\n"
+           << "  reg [" << quotientWidth - 1 << ":0] quotient;\n"
            << "  reg [" << fractionBits + 1 << ":0] divide_remainder;\n"
-           << "  reg [" << comparisonWidth - 1 << ":0] root_square;\n"
-           << "  reg [" << comparisonWidth - 1 << ":0] midpoint;\n"
-           << "  reg [" << comparisonWidth - 1 << ":0] midpoint_product;\n"
-           << "  reg [" << comparisonWidth - 1 << ":0] numerator_four;\n";
+           << "  reg [" << roundingWidth - 1 << ":0] divide_remainder_four;\n";
   output << "  reg [" << format.exponentBits - 1 << ":0] exponent_result;\n"
          << "  reg [" << fractionBits - 1 << ":0] fraction_result;\n"
          << "  integer exponent_value;\n"
          << "  integer leading_index;\n"
          << "  integer normalized_exponent;\n"
          << "  integer parity;\n"
-         << "  integer result_exponent_value;\n"
-         << "  integer shift_amount;\n"
-         << "  integer index;\n"
+         << "  integer result_exponent_value;\n";
+  if (family == RootFamily::Sqrt)
+    output << "  integer shift_amount;\n";
+  output << "  integer index;\n"
          << "  reg found;\n";
   return output.str();
 }
@@ -268,14 +268,14 @@ std::string buildSqrtFunction(const Format &format, llvm::StringRef name) {
   return output.str();
 }
 
-// The reciprocal root rounds sqrt(2^scale / mantissa) by comparing its exact
-// rational value against the midpoint between adjacent integer significands.
+// For N = D*q + u and q = r*r + s, midpoint rounding compares s with r.
+// Only s == r needs the residual comparison 4*u against D because 0 <= u < D.
 std::string buildRsqrtFunction(const Format &format, llvm::StringRef name) {
   const unsigned width = format.width();
   const unsigned fractionBits = format.fractionBits;
-  const unsigned radicandWidth = evenRadicandWidth(format);
-  const unsigned comparisonWidth = 3 * fractionBits + 8;
   const unsigned rootBits = fractionBits + 2;
+  const unsigned quotientWidth = 2 * rootBits;
+  const unsigned divisionSteps = 2 * fractionBits + 3;
   const llvm::APInt quietBit =
       llvm::APInt::getOneBitSet(width, fractionBits - 1);
   const llvm::APInt exponentOnes =
@@ -315,42 +315,39 @@ std::string buildRsqrtFunction(const Format &format, llvm::StringRef name) {
          << buildCommonDecode(format)
          << "      result_exponent_value = -((normalized_exponent - parity) "
             ">>> 1) - 1;\n"
-         << "      shift_amount = " << 2 * fractionBits
-         << " + leading_index + (parity != 0 ? 1 : 2);\n"
-         << "      numerator = " << radicandWidth << "'d1 << shift_amount;\n"
-         << "      radicand = numerator;\n"
-         << "      quotient = " << radicandWidth << "'d0;\n"
-         << "      divide_remainder = " << fractionBits + 2 << "'d0;\n"
-         << "      for (index = " << radicandWidth - 1
+         << "      normalized_mantissa = mantissa << (" << fractionBits
+         << " - leading_index);\n"
+         << "      quotient = " << quotientWidth << "'d0;\n"
+         << "      divide_remainder = " << fractionBits + 2
+         << "'d1 << (parity != 0 ? " << fractionBits - 2 << " : "
+         << fractionBits - 1 << ");\n"
+         << "      for (index = " << divisionSteps - 1
          << "; index >= 0; index = index - 1) begin\n"
          << "        divide_remainder = {divide_remainder[" << fractionBits
-         << ":0], numerator[" << radicandWidth - 1 << "]};\n"
-         << "        numerator = {numerator[" << radicandWidth - 2
          << ":0], 1'b0};\n"
-         << "        if (divide_remainder >= {1'b0, mantissa}) begin\n"
-         << "          divide_remainder = divide_remainder - mantissa;\n"
-         << "          quotient = {quotient[" << radicandWidth - 2
+         << "        if (divide_remainder >= {1'b0, "
+            "normalized_mantissa}) begin\n"
+         << "          divide_remainder = divide_remainder - "
+            "normalized_mantissa;\n"
+         << "          quotient = {quotient[" << quotientWidth - 2
          << ":0], 1'b1};\n"
          << "        end else begin\n"
-         << "          quotient = {quotient[" << radicandWidth - 2
+         << "          quotient = {quotient[" << quotientWidth - 2
          << ":0], 1'b0};\n"
          << "        end\n"
          << "      end\n"
          << buildIntegerSquareRoot(format, "quotient")
-         << "      root_square = " << comparisonWidth << "'d0;\n"
-         << "      root_square[" << 2 * rootBits - 1 << ":0] = root * root;\n"
-         << "      midpoint = root_square << 2;\n"
-         << "      midpoint = midpoint + ({{" << comparisonWidth - rootBits
-         << "{1'b0}}, root} << 2);\n"
-         << "      midpoint = midpoint + " << comparisonWidth << "'d1;\n"
-         << "      midpoint_product = {{" << comparisonWidth - fractionBits - 1
-         << "{1'b0}}, mantissa} * midpoint;\n"
-         << "      numerator_four = {{" << comparisonWidth - radicandWidth
-         << "{1'b0}}, radicand} << 2;\n"
          << "      rounded = {1'b0, root};\n"
-         << "      if (numerator_four > midpoint_product ||\n"
-         << "          (numerator_four == midpoint_product && root[0]))\n"
+         << "      if (remainder > {{2{1'b0}}, root}) begin\n"
          << "        rounded = rounded + " << fractionBits + 3 << "'d1;\n"
+         << "      end else if (remainder == {{2{1'b0}}, root}) begin\n"
+         << "        divide_remainder_four = {1'b0, divide_remainder} << 2;\n"
+         << "        if (divide_remainder_four > {{2{1'b0}}, "
+            "normalized_mantissa} ||\n"
+         << "            (divide_remainder_four == {{2{1'b0}}, "
+            "normalized_mantissa} && root[0]))\n"
+         << "          rounded = rounded + " << fractionBits + 3 << "'d1;\n"
+         << "      end\n"
          << buildPack(format) << "      " << name
          << " = {1'b0, exponent_result, "
             "fraction_result};\n"

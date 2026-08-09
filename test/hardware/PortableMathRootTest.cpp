@@ -729,6 +729,12 @@ std::string emitFamily(llvm::StringRef test, const ArtifactStore &store,
               !rtl.contains("shortreal") && !rtl.contains(" DPI") &&
               !rtl.contains(" real"),
           "math root RTL is incomplete or not portable synthesizable logic");
+  if (family == RootFamily::Rsqrt)
+    require(test,
+            !rtl.contains("normalized_mantissa *") &&
+                !rtl.contains("root * root") && !rtl.contains("* midpoint"),
+            "rsqrt RTL reconstructs a wide squared midpoint instead of "
+            "rounding from the exact division and square-root residuals");
   return firstRtl;
 }
 
