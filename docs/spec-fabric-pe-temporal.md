@@ -198,6 +198,31 @@ entry carries its FU configuration and there is no top-level
 Absence of the configured view means no workload has been finalized; it does
 not add a default software realization.
 
+One Temporal PE occurrence owns exactly one ordinal-zero
+`FabricSemanticConfigFieldRef`. It is a direct carrier for the complete bounded
+instruction dispatch table, not one field per instruction, selector, FU, or
+tag. The carrier begins with one active bit and then contains exactly
+`num_instruction` fixed-capacity instruction rows in context-ordinal order.
+Each row begins with one valid bit; an invalid row has zero payload bits.
+Within a valid row, selected FU, operand selectors, result selectors, and tags
+follow the `InstructionEntry` order below and finite selections use canonical
+Fabric inventory order. The all-zero carrier is `Disabled`.
+
+`fu_sw_configs` remains the semantic composition of the selected FU and
+operation fields rather than a byte copy inside the PE carrier. Under
+`per_instruction_fu_config`, those fields have one configuration slot per
+`InstructionContextRef`. Under `per_fu_config`, they have one Static slot
+shared by every active instruction row. The residency rule is owned by
+`docs/spec-configuration-deployment.md`; neither form invents another context
+or duplicates a behavior codec.
+
+The Fabric-owned relation derives the exact width from the immutable PE shape
+and validates the complete dispatch record, including selected-FU ownership,
+selector ranges, relevant-field presence, and tag bounds. The complete
+configuration validator also checks the mode-specific FU and operation slot
+closure. ConfigurationABI may scatter the PE carrier but cannot split it into
+independently writable row or selector authorities.
+
 ## Per-instruction format
 
 Each `instruction_mem` entry is one member of a closed typed sum:

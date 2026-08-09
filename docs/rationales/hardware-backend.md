@@ -50,6 +50,24 @@ The specification therefore defines component order and validity once; the
 Fabric resolver implements that contract, and every provider consumes the
 sealed result.
 
+The same relation must cover structural owners, not only operation leaves.
+Switch routes, temporal instruction rows, memory dispatch, and boundary lookup
+rows contain correlated choices whose independent combinations are not all
+legal. Giving each visible subfield an ABI field would force the ABI or every
+backend to reconstruct component legality and would create a second semantic
+owner. The minimum complete representation is one joint field per such owner,
+with factorization retained only where Fabric already proves independence.
+
+This is why Spatial PE selectors remain separate while a switch route table is
+joint. A PE selector field chooses one endpoint from its own exact domain and
+does not change another selector's meaning. By contrast, a temporal switch
+entry couples validity, tag, and all output selections, and tag uniqueness is
+an owner-wide invariant. One direct carrier preserves that relation without
+enumerating a route-table Cartesian product. Small finite owner domains, such
+as FIFO mode and FU capability-template selection, use codebooks instead. Both
+forms consume the same Fabric relation interface, so ConfigurationABI and RTL
+need no component-name dispatch table of their own.
+
 Floating arithmetic uses exact formats rather than representation widths in
 its quotient because equal-width formats can have different exponent and
 significand behavior. Sign manipulation is an unconditional exception: negate
@@ -170,6 +188,13 @@ execution, and the execution harness must retain that gate. Feeding Mapping
 into RTL lowering would either make the implementation workload-specific or
 create a second owner for route and selector choices; both would defeat the
 Fabric and ConfigurationABI boundary.
+
+An architecture-only skeleton therefore still contains every PE, FU, switch,
+FIFO, boundary, memory resource, point connection, and configuration decoder.
+Inactive values keep unselected resources inert; they do not license the
+backend to omit those resources. A configured mapped implementation may
+specialize constants after proving equivalence, but it remains a derived form
+of the same complete skeleton rather than a different topology owner.
 
 Lowering the complete design through Handshake or DC-SC would add another
 authority for scheduling, buffering, progress, and resource sharing that Fabric

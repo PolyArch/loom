@@ -294,7 +294,7 @@ constructed roots use registry-2.0 refs.
 | 2 | `structured_program_functional_comparison` | `0: selected Structured Program Candidate` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
 | 3 | `canonical_dataflow_simulation` | `0: Canonical Dataflow Program` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
 | 4 | `fpa_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with an FPA prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
-| 5 | `hardware_implementation_physical` | `0: exact loom.hardware_implementation 2.2` | both forbidden |
+| 5 | `hardware_implementation_physical` | `0: exact loom.hardware_implementation 3.0` | both forbidden |
 | 6 | `system_simulation` | `0: Deployment`, `1: Gem5 Simulation Binding` | both required; the workload and runtime input are System roots coupled to the exact Deployment |
 | 7 | `cgra_simulation` | `0: Canonical Dataflow Program`, `1: Fabric`, `2: SpatialMapping` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
 | 8 | `simulation_execution_comparison` | `0: reference SimulationExecution`, `1: candidate SimulationExecution` | both forbidden; each execution's exact Request closure must resolve the same workload and runtime input |
@@ -2311,9 +2311,9 @@ property bag, hardware action language, mutable candidate IR, or
 evaluator-owned rewrite.
 
 Hardware generator and evaluator descriptors introduced by this contract
-accept or produce exact `loom.hardware_implementation 2.2` slots. A registry
+accept or produce exact `loom.hardware_implementation 3.0` slots. A registry
 must allocate a new descriptor version or exact reference when changing an
-existing slot from the 1.0 root shape to 2.2 or when changing an existing
+existing slot from the 1.0 root shape to 3.0 or when changing an existing
 provider from `InProcess` to `ExternalPrepareImport`; it cannot reinterpret a
 published descriptor reference. EvaluationRequest and EvaluationEvidence root
 shapes do not change merely because their exact case signature admits the new
@@ -2507,7 +2507,7 @@ matches.
 
 The FPA contract major changes because its case-signature refs and physical
 feature projector now admit the registry-2.0
-`loom.hardware_implementation 2.2` subject. Its prediction payload schema may
+`loom.hardware_implementation 3.0` subject. Its prediction payload schema may
 remain `FpaMetricPredictionView 1.0`; unchanged coefficient bytes do not permit
 an old contract ref to acquire the new subject validator.
 

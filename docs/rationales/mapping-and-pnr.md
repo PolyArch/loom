@@ -834,6 +834,15 @@ single validation boundary.
 Instruction contexts qualify resident compute configuration because one
 temporal occurrence may retain different settings in different contexts.
 
+Residency is part of the Fabric-qualified slot because a raw
+`InstructionContextRef` is neither universal nor optional by convention.
+Static route tables and component modes have no PE context, while a Temporal
+PE may physically bank its FU configuration per resident instruction. The
+closed `Static | InstructionContext` residency selected from immutable Fabric
+shape represents exactly that distinction. A sentinel context would alias a
+real context ordinal, and making every field context-indexed would duplicate
+shared switch, memory, and per-FU state.
+
 Physical refinement does not imply one universal value language. Pipeline
 insertion, a transport-specific handshake break, and a memory implementation
 choice have different legal domains and semantic-preservation proofs. Encoding

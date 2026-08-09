@@ -57,6 +57,14 @@ complete Mapping; `ConfigurationABI` alone owns its physical encoding. If
 multiple temporal uses share one occurrence, Mapping must prove compatible
 mode residency, reconfiguration, and resource-time use.
 
+Each FIFO occurrence owns exactly one ordinal-zero
+`FabricSemanticConfigFieldRef`. Its finite domain is `Disabled`, `Buffered`,
+and, exactly when `bypassable = true`, `Bypass`. Canonical semantic bytes are
+the single `u32be` tags 0, 1, and 2 in that order. The ABI finite codebook must
+cover the exact occurrence domain and use `Disabled` as the inactive value.
+Depth and bypass capability are immutable hardware facts and never appear in
+this field.
+
 ## Buffered Execution
 
 Buffered mode owns a FIFO queue with capacity `max_depth`. In one local clock

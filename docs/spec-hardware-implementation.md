@@ -8,7 +8,7 @@ implementation state that cannot be recovered from Fabric alone.
 ## Artifact Family
 
 ```text
-loom.hardware_implementation 2.2
+loom.hardware_implementation 3.0
 ```
 
 ```text
@@ -27,7 +27,7 @@ HardwareImplementation {
 ```
 
 `fabric_ref` is an exact `loom.fabric 4.0` System root and
-`configuration_abi_ref` is an exact `loom.configuration_abi 2.0` root bound to
+`configuration_abi_ref` is an exact `loom.configuration_abi 3.0` root bound to
 that same System. Imported Module internals referenced by interfaces, activity,
 configuration, memory, recipe, or external bindings use exact
 occurrence-qualified physical targets. A bare Module root or unqualified

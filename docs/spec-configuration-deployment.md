@@ -64,16 +64,16 @@ same semantic configuration encodes to the same
 The complete Artifact families have these fixed schema descriptors:
 
 ```text
-loom.configuration_abi             2.0
-loom.hardware_configuration_image  2.0
-loom.deployment                    2.0
+loom.configuration_abi             3.0
+loom.hardware_configuration_image  3.0
+loom.deployment                    3.0
 ```
 
-The image and Deployment major versions change because their exact accepted
-child schemas change to `loom.configuration_abi 2.0` and
-`loom.hardware_implementation 2.2`. Their root shapes otherwise retain the
+The three major versions change because the ABI now rejects any image that
+omits a configurable Fabric owner and the exact implementation child is
+`loom.hardware_implementation 3.0`. Their root shapes otherwise retain the
 contracts below; an old validator cannot reinterpret the new references under
-a 1.0 descriptor.
+a 2.x descriptor.
 
 The frontend relocatable accelerator payload is an input to final linking, not
 a Deployment child. `CompilerTargetBinding`, `InstructionCoreBinary`, host
@@ -105,7 +105,7 @@ ConfigurationABI {
     exact_fabric_resource_closure[]
     programming_model
     fields[] {
-      fabric_config_field_ref
+      fabric_config_slot_ref
       semantic_encoding
       destination_slices[]
       inactive_value
@@ -114,7 +114,7 @@ ConfigurationABI {
 }
 ```
 
-In `loom.configuration_abi 2.0`, `fabric_ref` is an exact
+In `loom.configuration_abi 3.0`, `fabric_ref` is an exact
 `loom.fabric 4.0` System root. A complete implementation cannot bind an
 uninstantiated Module root. The physical references used by the two nested
 fields above are closed unions:
@@ -122,15 +122,29 @@ fields above are closed unions:
 ```text
 FabricPhysicalOccurrenceOwnerRef
 FabricPhysicalConfigurationFieldRef
+FabricPhysicalConfigurationSlotRef
 ```
 
 `exact_fabric_resource_closure` contains
-`FabricPhysicalOccurrenceOwnerRef`; `fabric_config_field_ref` contains
-`FabricPhysicalConfigurationFieldRef`. Their closed variants are owned by
+`FabricPhysicalOccurrenceOwnerRef`; `fabric_config_slot_ref` contains
+`FabricPhysicalConfigurationSlotRef`. Its field is the exact occurrence-
+qualified `FabricPhysicalConfigurationFieldRef`; its residency is the closed
+`Static | InstructionContext(InstructionContextRef)` union. Their closed
+variants, canonical bytes, and validators are owned by
 `docs/spec-fabric-identity.md`. A bare imported Module-local owner or
 configuration-field reference is invalid because it would alias two physical
 SpatialCore occurrences. These unions only qualify existing Fabric facts and
 do not copy topology, capability, selected values, or configuration domains.
+
+Fabric alone derives residency. A field owned by a Spatial PE, switch, FIFO,
+boundary, memory occurrence, Temporal PE instruction table, or FU/operation
+under a Spatial PE is `Static`. A FU or operation field under a Temporal PE is
+`InstructionContext` for every resident context exactly when that PE uses
+`per_instruction_fu_config`; it is `Static` when the PE uses `per_fu_config`.
+No caller may attach an arbitrary context to a static field, omit a required
+resident slot, or use a context owned by another PE. This one distinction is
+enough to represent both shared physical FU configuration and context-banked
+configuration without a sentinel context or duplicate field identity.
 
 The ABI describes how every Fabric-owned semantic field is represented and
 installed. It does not select a field value, reference a Mapping, or constitute
@@ -154,7 +168,7 @@ ProgrammingUnitRef =
 
 Its canonical bytes are the Common exact ArtifactReference encoding followed
 by the `u64be` ABI-local `unit_id`. Decoding requires the referenced Artifact
-to be `loom.configuration_abi 2.0` and the unit ID to exist in its canonical
+to be `loom.configuration_abi 3.0` and the unit ID to exist in its canonical
 programming-unit catalog.
 
 There is no global programming-unit registry or compatibility label. Each unit
@@ -165,7 +179,7 @@ that realizes the ABI; the ABI does not contain a command-script language.
 
 ### Complete-Image Programming Model
 
-`loom.configuration_abi 2.0` has one closed programming model:
+`loom.configuration_abi 3.0` has one closed programming model:
 
 ```text
 CompleteImageAtomic {
@@ -232,25 +246,80 @@ uses that same representation with `encoded_bit_count`; semantic values and
 physical codes are each unique. `inactive_value` uses the same semantic carrier
 and must be encodable by the selected atom.
 
-Each operation field validates against the exact sealed
-`FabricOpSemanticFieldRelation` owned by its Fabric resource:
+Every field validates against one exact sealed
+`FabricSemanticFieldRelation` owned by its Fabric resource:
 
 * `None` admits no ABI field;
 * `Finite` requires the set of `semantic_value` entries to equal the Fabric
-  relation's canonical behavior-key domain exactly, with no missing or extra
-  key, and requires every value to round-trip through that relation's codec;
+  relation's canonical value domain exactly, with no missing or extra value,
+  and requires every value to round-trip through that relation's codec;
 * `Direct` requires `DirectBits`, exact equality of `encoded_bit_count`, the
   same canonical fixed-width carrier, and acceptance by the Fabric-owned
   direct-domain validator; and
 * no other pairing is legal.
 
-Each Spatial PE activation or selector field validates against the exact sealed
-PE configuration-schema view owned by its Fabric resource. These fields require
-`FiniteCodebook`, and the semantic-value set must equal the corresponding
-finite domain exactly. The activation field additionally requires canonical
-`Disabled` as `inactive_value`. The ABI cannot merge PE fields, copy FU
-operation fields into a PE codebook, or assign a field to a Mapping-selected
-dynamic schema.
+`FabricOpSemanticFieldRelation` and the Spatial PE selector schema are typed
+projections of this shared relation; they do not remain alternate ABI
+contracts. Operation fields retain their existing `None | Finite | Direct`
+behavior relation. Spatial PE activation and selector fields are `Finite`, and
+the activation field additionally requires canonical `Disabled` as
+`inactive_value`.
+
+### Complete Fabric Field Inventory
+
+The static configuration-field inventory is derived from canonical Fabric and
+is independent of a Mapping. A complete ABI contains every field in this
+inventory exactly once:
+
+* a Spatial PE owns its existing factorized activation and per-FU boundary
+  selector fields;
+* a Temporal PE owns one joint instruction-table field;
+* each FU occurrence owns one joint configured-graph field;
+* each switch, FIFO, boundary, and memory occurrence owns one joint field;
+* each configurable `fabric.op` occurrence node owns its existing operation
+  field, projected into the residency derived above; and
+* fixed point connections and owners whose specification declares no
+  configuration own no field.
+
+Every joint field is ordinal zero for its owner. Operation fields and Spatial
+PE selectors remain separate because their semantic owners already prove those
+choices independent. A component's correlated route table, resident rows,
+tags, mode, capability template, provider decode, or internal graph must not
+be split into fields whose independent ABI values could form an invalid
+Cartesian product.
+
+The component specification owns the exact relation:
+
+* an FU field is the finite domain `Disabled | Active(capability_template)`;
+* a FIFO field is the finite domain `Disabled | Buffered`, with `Bypass` added
+  exactly when that occurrence is bypassable;
+* a Spatial switch uses one direct carrier containing its complete selected
+  crosspoint relation; each output selects at most one physically admitted
+  input and all-zero means `Disabled`;
+* a Temporal switch uses one direct carrier containing all bounded resident
+  entries, including entry-valid, tag, and complete route selection; unused
+  rows are zero, tags of valid rows are unique, and all-zero means `Disabled`;
+* a boundary uses a finite `Disabled | Active` relation when its active shape
+  has no payload and otherwise one direct carrier with explicit active or
+  row-valid bits so tag zero never aliases `Disabled`;
+* a Temporal PE and memory occurrence each use one direct carrier for their
+  complete owner-local bounded record defined by their component
+  specification; nested FU and operation values remain in their own slots,
+  inactive or unused rows have exactly one zero representation, and the
+  relation validator enforces every owner-local cross-field invariant; and
+* a Spatial PE and operation use their existing exact codecs through the same
+  shared relation interface.
+
+Direct semantic carriers use the ABI bit-vector convention, but their field
+order, width, canonical inactive form, and validity predicate are Fabric facts.
+The ABI may scatter or recode only as allowed by `DirectBits` or
+`FiniteCodebook`; this semantic carrier is not a configuration-memory address
+layout. A backend cannot infer a component mode from field ordinal or replace
+the Fabric validator with a private route or instruction codec.
+
+The ABI cannot merge fields, copy FU operation fields into a PE or FU codebook,
+omit an owner because one Mapping leaves it inactive, or assign a field to a
+Mapping-selected dynamic schema.
 
 The ABI owns physical codes, destination slices, padding, and inactive bits.
 Fabric owns semantic field need, the one joint behavior domain, its projector,

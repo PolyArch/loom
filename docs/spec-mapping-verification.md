@@ -281,6 +281,15 @@ values. A missing value, an unencodable value, or two different values for one
 slot is `Invalid` Mapping input. Distinct independently configurable contexts
 remain distinct slots.
 
+The slot is the exact `FabricPhysicalConfigurationSlotRef` owned by
+`docs/spec-configuration-deployment.md`. Static fields carry `Static` residency
+and are derived once from the complete Mapping, including joint switch,
+boundary, FIFO, memory, and Temporal PE tables. FU and operation fields under a
+Temporal PE use either one Static slot or one slot per resident
+`InstructionContextRef`, mechanically selected by that PE's immutable
+`fu_config_mode`. A Mapping cannot attach a context to another owner, collapse
+required resident slots, or duplicate a shared static value per context.
+
 For a configured Spatial PE, the same layer projects the PE-owned activation
 field, every input/output selector field of the selected FU, and that FU's
 existing operation fields. Each operation field replaces its template-node

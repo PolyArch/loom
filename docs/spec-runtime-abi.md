@@ -26,7 +26,7 @@ loom.gem5_simulation_binding  2.0
 ```
 
 The major versions change because the first root admits an exact
-`loom.hardware_implementation 2.2` and the second admits exact
+`loom.hardware_implementation 3.0` and the second admits exact
 `loom.fabric 4.0` roots. Their record shapes remain as specified below; no 1.0
 reference is reinterpreted with a different accepted dependency schema.
 

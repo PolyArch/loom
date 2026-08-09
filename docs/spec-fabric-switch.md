@@ -209,6 +209,28 @@ writer continuity and `ResourceUse` sharing assignments. It is a local
 interpretation key where co-resident incompatible routes require distinction,
 not a firing, iteration, invocation, or logical-token identity.
 
+### Configuration field carrier
+
+Each switch occurrence owns exactly one ordinal-zero
+`FabricSemanticConfigFieldRef` with one Fabric-owned direct-bit relation. Let
+`C` be the canonical concatenation, by output ordinal and then admitted input
+ordinal, of all physically admitted crosspoints. A Spatial switch carrier is
+exactly `|C|` bits. Bit one selects that crosspoint, every output group has at
+most one selected bit, broadcast across output groups is legal, and the
+all-zero carrier is `Disabled`.
+
+For a Temporal switch, one resident entry contains one valid bit, `T` tag
+bits, and `|C|` route bits in that order. Entries concatenate by resident-entry
+ordinal. An invalid entry has every remaining bit zero. A valid entry obeys the
+same per-output route rule, selects at least one crosspoint, and valid entries
+have distinct tags. An all-invalid carrier is `Disabled`. Unused high bits in
+the final byte are zero under the shared bit-vector convention.
+
+This carrier is the canonical semantic projection of the complete route table,
+not its SRAM address layout. ConfigurationABI may place its bits only through
+the one direct field; it cannot create per-output or per-entry fields whose
+independent values bypass route-table validation.
+
 ### Handshake Dependency Projection
 
 `connectivity_table` declares capability and contributes no active arc by

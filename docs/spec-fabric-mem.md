@@ -1095,6 +1095,29 @@ MemoryConfiguration =
 values. The physical inactive encoding belongs only to ConfigurationABI. An
 Active projection with no active request source canonicalizes to `Disabled`.
 
+Each memory occurrence owns exactly one ordinal-zero
+`FabricSemanticConfigFieldRef`. It is one direct carrier for the complete
+bounded `MemoryConfiguration`, not independent fields for operation rows,
+sources, targets, exposure bits, or provider decode. The carrier begins with
+one active bit. Operation rows follow the canonical physical operation-port
+and resident-context order; provider-decode rows follow subordinate endpoint
+and bounded binding order. Every bounded row begins with one valid bit, and an
+invalid row has zero payload bits. A valid row then carries its typed fields in
+the order defined below. Finite choices use the minimum-width unsigned index
+into the exact canonical Fabric inventory, while integer, tag, address, and
+bounded parameter values use their declared unsigned widths. A field that
+would require an unbounded or variable-width value makes the Fabric invalid;
+it cannot be smuggled into the carrier as opaque bytes. The all-zero carrier
+is `Disabled`.
+
+The Fabric-owned direct relation derives the exact width from the immutable
+operation-engine, endpoint, dispatch, table-capacity, address-width, and
+matching contracts. Its validator checks the complete correlated record,
+including role-dependent field presence, source and target eligibility,
+unique temporal matches, internal-edge legality, exposure atomicity, and
+bounded provider decode. ConfigurationABI owns placement but cannot split the
+carrier into independently valid rows or selectors.
+
 Each physical row is `Unused` or an `Active` variant. `Unused` carries no
 fields. The minimum Active Spatial load fields are:
 

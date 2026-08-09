@@ -77,6 +77,17 @@ Canonical hardware-only Fabric contains no selected projection. The
 `sw_configs` spellings below are only the Active projection's semantic fields;
 they are not optional values independent of the closed variant.
 
+Each boundary occurrence owns exactly one ordinal-zero
+`FabricSemanticConfigFieldRef`. A shape with no Active payload uses the finite
+domain `Disabled | Active`, encoded by `u32be(0)` and `u32be(1)`. A
+configurable-tag `s2t` uses a direct carrier containing one active bit followed
+by the tag bits. A `t2t` boundary uses `lut_size` canonical rows, each containing
+one valid bit followed by input-tag and output-tag bits; rows concatenate by
+row ordinal. Inactive or invalid rows have zero payload bits, selected input
+tags are unique, and at least one valid row is required for Active. Therefore
+tag zero and a zero-to-zero rewrite remain distinct from `Disabled`. The
+all-zero direct carrier is the mandatory inactive value.
+
 ## Atomic Transfer And Handshake
 
 Let `x.valid` denote the producer-valid signal of endpoint `x`, and let

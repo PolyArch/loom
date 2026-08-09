@@ -72,6 +72,16 @@ one uniquely meaningful configured software graph; two configuration values
 that materialize the same typed graph and physical behavior are invalid
 duplicates, not alternative functions.
 
+Each concrete FU occurrence owns exactly one ordinal-zero
+`FabricSemanticConfigFieldRef`. Its finite domain is `Disabled` followed by one
+`Active(FabricFuCapabilityTemplateRef)` value for every canonical capability
+template of the occurrence's definition. The reference must name that exact
+definition. Canonical bytes use `u32be(0)` for `Disabled` and `u32be(1)` plus
+the canonical local capability-template reference for `Active`. The ABI finite
+codebook must cover this domain exactly and use `Disabled` as the inactive
+value. Operation-owned fields remain separate; the FU field selects only the
+coherent topology row and never copies an operation behavior key.
+
 An FU is the physical configured-graph and capability boundary. It is not a
 macro actor, an all-input rendezvous, or a dynamic atomicity boundary. Active
 inner `fabric.op` resources execute the Canonical Dataflow actors' ordinary
