@@ -1,0 +1,6 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-math-power-test %t
+# RUN: cd %t/generated && yosys -s portable_scalar_math_pow.ys | FileCheck %s --check-prefix=YOSYS
+
+# YOSYS: Yosys 0.67

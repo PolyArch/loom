@@ -1,0 +1,8 @@
+# REQUIRES: circt, verilator
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-math-power-test %t
+# RUN: cd %t/generated && verilator --binary --timing --Wall --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench scalar_math_pow.sv testbench.sv --Mdir pow_obj
+# RUN: %t/generated/pow_obj/Vtestbench
+# RUN: FileCheck %s --check-prefix=VERILATOR < %t/generated/pow_obj/Vtestbench__verFiles.dat
+
+# VERILATOR: /verilator/5.050/
