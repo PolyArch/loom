@@ -2,6 +2,13 @@ add_mlir_library(LoomFabricMemoryOperationPort
   MemoryOperationPort.cpp
   MemoryOperationPortCodec.cpp
 
+  DEPENDS
+  LoomOperationSchemasIncGen
+  MLIRDataflowAttrsIncGen
+  MLIRDataflowDialectIncGen
+  MLIRDataflowInterfacesIncGen
+  MLIRDataflowOpsIncGen
+
 )
 
 target_link_libraries(LoomFabricMemoryOperationPort PUBLIC
