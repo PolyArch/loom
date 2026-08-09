@@ -259,6 +259,17 @@ reference plus the ordinary child Structured Program produced by the pinned
 inliner. The no-inline coordinate remains observable and fails normally when
 it cannot form a closed Spatial region.
 
+The call site may also be the selected ownership scope when it is an exact
+inlineable direct leaf. Consecutive producer and consumer stage calls otherwise
+have no independent structured-region roots: requiring source authors to wrap
+each call in a one-trip loop or constant branch would make accidental control
+syntax an ownership prerequisite. Admitting only the already-owned exact call
+coordinate removes that accident without admitting arbitrary regionless
+operations. The private materializer may use an exact-once boundary to derive
+the post-inline SSA closure, but that boundary disappears before publication;
+the existing decision, call-site reference, child Structured Program, and
+lineage remain the only authorities.
+
 Nested structured scopes need the same coordinate. Treating `llvm.call` as a
 generally supported graph leaf would weaken the finalizer, while rejecting the
 scope before decision enumeration would hide the only transformation that can

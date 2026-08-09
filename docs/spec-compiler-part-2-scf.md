@@ -1028,21 +1028,23 @@ or second profile authority.
 
 The remaining active scopes form one ownership hierarchy derived from the
 Structured Program's exact operation ownership. A callable is a root; a nested
-loop, selection, or other structured region names its nearest enclosing
-ownership scope. This parent relation is an ephemeral generator view, not a
-new persistent program reference. The resolved Structured ownership policy
-expands this hierarchy through the workload-prioritized finite frontier defined
-by the central DSE specification. Every expanded scope retains its complete
+loop, selection, other structured region, or exact inlineable direct leaf call
+names its nearest enclosing ownership scope. A direct leaf call is a scope only
+for the existing explicit inline decision; arbitrary regionless operations are
+not scopes. This parent relation is an ephemeral generator view, not a new
+persistent program reference. The resolved Structured ownership policy expands
+this hierarchy through the workload-prioritized finite frontier defined by the
+central DSE specification. Every expanded scope retains its complete
 scope-local decision domain. Descendants beyond the resolved semantic expansion
 limit are outside the finite Generate domain rather than rejected candidates.
 
-An ownership decision is one dependency-closed structured-region decision,
-not separate whole-callable and single-operation semantics. Callable, loop,
-selection, and nested-region roots differ only in how their common data,
-control, memory, channel, and ownership closure is derived. A direct call may
-be specialized or inlined before closure, or remain in InstructionCore while
-independent regions on either side are considered. A canonical graph never
-contains a general call.
+An ownership decision is one dependency-closed selected-entity decision, not
+separate whole-callable, structured-region, and direct-call semantics.
+Callable, loop, selection, nested-region, and exact direct-call roots differ
+only in how their common data, control, memory, channel, and ownership closure
+is derived. A direct call may be specialized or inlined before closure, or
+remain in InstructionCore while independent regions on either side are
+considered. A canonical graph never contains a general call.
 
 The current `SpatialOwnershipDecisionPoint` contract represents candidate-local direct
 call inlining with an optional exact parent-local operation reference. The
@@ -1053,19 +1055,24 @@ materialization records a typed `NonFinalizable` disposition rather than
 rejecting the callable before its decision domain is visible.
 
 An inline coordinate is admitted when the selected scope contains exactly one
-general call, that operation is a direct `llvm.call`, and its exact module
-definition is non-variadic, single-block, and contains no general call. The
-pinned MLIR inliner applies the transformation only to the private candidate
-clone. The parent Structured Program and the callee definition remain
-unchanged. Structural preflight may defer only that exact call leaf while it
-checks every other operation in the selected nested scope; the call does not
-thereby become graph-lowerable. After inlining and any selected specialization,
-the lowering-owned structural preflight checks the resulting selected scope in
-its materialized context. A fresh allocation directly in the resulting
-callable block is at the prospective graph frontier and is therefore legal;
-an unsupported callee leaf rejects only the inline coordinate. A residual
-`llvm.call` or `llvm.invoke` after the selected transform rejects that
-coordinate.
+general call, or is itself that exact direct leaf call, and the call's exact
+module definition is non-variadic, single-block, and contains no general call.
+The pinned MLIR inliner applies the transformation only to the private
+candidate clone. The parent Structured Program and the callee definition remain
+unchanged. For a direct-call root, the private materializer derives one
+exact-once dependency closure around the inlined body and removes that
+ephemeral boundary before publishing the child; it is not a new Structured
+operation, Artifact, or graph leaf. Structural preflight may defer only that
+exact call leaf while it checks every other operation in a selected enclosing
+scope; the call does not thereby become graph-lowerable. After inlining and any
+selected specialization, the lowering-owned structural preflight checks the
+resulting selected scope in its materialized context. A fresh allocation
+directly in the resulting callable block is at the prospective graph frontier
+and is therefore legal; an unsupported callee leaf rejects only the inline
+coordinate. A residual `llvm.call` or `llvm.invoke` after the selected
+transform rejects that coordinate. The absent inline coordinate of a
+direct-call root remains part of the finite domain and records
+`NonFinalizable`; it does not silently keep the call in a Spatial graph.
 
 A refusal returned by the pinned inliner is a candidate-local
 `NonFinalizable` result. Malformed input, post-inline IR verification failure,
@@ -1162,12 +1169,13 @@ topology.
 
 An Ownership Generate invocation enumerates one finite scope-local domain in
 canonical Structured operation order. Every maximal dependency-closed
-structured scope with positive activation under the exact source workload and
-considered for ownership appears exactly once. A scope that
-cannot yet be materialized records one coordinate with no decision and a typed
-`NonFinalizable` disposition. External declarations and operations that are
-not ownership scopes are not candidate attempts. Every accepted scope then
-enumerates its typed decision domain in owner-defined canonical order.
+structured scope, and every exact inlineable direct leaf call admitted above,
+with positive activation under the exact source workload and considered for
+ownership appears exactly once. A scope that cannot yet be materialized records
+one coordinate with no decision and a typed `NonFinalizable` disposition.
+External declarations and other operations that are not ownership scopes are
+not candidate attempts. Every accepted scope then enumerates its typed decision
+domain in owner-defined canonical order.
 
 Each concrete decision records exactly one of:
 
