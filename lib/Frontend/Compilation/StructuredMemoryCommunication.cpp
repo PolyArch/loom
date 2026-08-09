@@ -6,13 +6,17 @@
 
 #include "Dataflow/IR/DataflowOps.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
@@ -20,6 +24,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <numeric>
 #include <optional>
@@ -415,6 +420,544 @@ permuteLocalBufferLayout(mlir::memref::AllocOp alloc,
   return llvm::Error::success();
 }
 
+struct PipelineLoopPlan final {
+  mlir::scf::ForOp loop;
+  mlir::memref::AllocOp buffer;
+  mlir::memref::CopyOp copy;
+  mlir::memref::DeallocOp dealloc;
+  mlir::Value source;
+  mlir::memref::SubViewOp sourceView;
+  std::uint64_t tripCount = 0;
+};
+
+std::optional<std::uint64_t> normalizedStaticTripCount(mlir::scf::ForOp loop) {
+  if (!loop.getInitArgs().empty() || loop->getNumResults() != 0)
+    return std::nullopt;
+  llvm::APInt lower;
+  llvm::APInt step;
+  if (!mlir::matchPattern(loop.getLowerBound(), mlir::m_ConstantInt(&lower)) ||
+      !mlir::matchPattern(loop.getStep(), mlir::m_ConstantInt(&step)) ||
+      !lower.isZero() || step.getLimitedValue(2) != 1)
+    return std::nullopt;
+  std::optional<llvm::APInt> count = loop.getStaticTripCount();
+  if (!count || count->getActiveBits() > 64)
+    return std::nullopt;
+  return count->getZExtValue();
+}
+
+bool isDefinedOutside(mlir::Value value, mlir::scf::ForOp loop) {
+  mlir::Region *region = value.getParentRegion();
+  return !region || !loop.getRegion().isAncestor(region);
+}
+
+bool isExactStaticMemRef(mlir::Value value, unsigned indexBits) {
+  auto type = llvm::dyn_cast<mlir::MemRefType>(value.getType());
+  if (!type || !type.hasStaticShape())
+    return false;
+  auto layout = lowering::resolveExactMemRefLayout(type, indexBits);
+  if (!layout) {
+    llvm::consumeError(layout.takeError());
+    return false;
+  }
+  return true;
+}
+
+bool hasOneExactIterationDimension(mlir::ValueRange indices,
+                                   mlir::MemRefType type, mlir::Value iv,
+                                   std::uint64_t tripCount) {
+  if (indices.size() != static_cast<std::size_t>(type.getRank()))
+    return false;
+  bool foundIteration = false;
+  for (auto [index, extent] : llvm::zip(indices, type.getShape())) {
+    if (index == iv) {
+      if (foundIteration || extent < 0 ||
+          tripCount > static_cast<std::uint64_t>(extent))
+        return false;
+      foundIteration = true;
+      continue;
+    }
+    llvm::APInt constant;
+    if (!mlir::matchPattern(index, mlir::m_ConstantInt(&constant)) ||
+        !constant.isSignedIntN(64))
+      return false;
+    const std::int64_t coordinate = constant.getSExtValue();
+    if (coordinate < 0 || extent < 0 || coordinate >= extent)
+      return false;
+  }
+  return foundIteration;
+}
+
+bool isClosedOutput(mlir::Value output, mlir::scf::ForOp loop,
+                    std::uint64_t tripCount) {
+  auto type = llvm::dyn_cast<mlir::MemRefType>(output.getType());
+  if (!type || !type.hasStaticShape() || !isDefinedOutside(output, loop))
+    return false;
+  bool hasStore = false;
+  for (mlir::OpOperand &use : output.getUses()) {
+    auto store = llvm::dyn_cast<mlir::memref::StoreOp>(use.getOwner());
+    if (!store || store.getMemref() != output ||
+        !loop.getRegion().isAncestor(store->getParentRegion()) ||
+        !hasOneExactIterationDimension(store.getIndices(), type,
+                                       loop.getInductionVar(), tripCount))
+      return false;
+    hasStore = true;
+  }
+  return hasStore;
+}
+
+mlir::Value exactMemoryRoot(mlir::Value value) {
+  while (true) {
+    if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
+      value = cast.getSource();
+      continue;
+    }
+    if (auto view = value.getDefiningOp<mlir::memref::SubViewOp>()) {
+      value = view.getSource();
+      continue;
+    }
+    if (auto reinterpret =
+            value.getDefiningOp<mlir::memref::ReinterpretCastOp>()) {
+      value = reinterpret.getSource();
+      continue;
+    }
+    return value;
+  }
+}
+
+bool areKnownDistinctMemoryRoots(mlir::Value lhs, mlir::Value rhs) {
+  lhs = exactMemoryRoot(lhs);
+  rhs = exactMemoryRoot(rhs);
+  if (lhs == rhs)
+    return false;
+  auto lhsGlobal = lhs.getDefiningOp<mlir::memref::GetGlobalOp>();
+  auto rhsGlobal = rhs.getDefiningOp<mlir::memref::GetGlobalOp>();
+  auto lhsAlloc = lhs.getDefiningOp<mlir::memref::AllocOp>();
+  auto rhsAlloc = rhs.getDefiningOp<mlir::memref::AllocOp>();
+  if (lhsGlobal && rhsGlobal)
+    return lhsGlobal.getName() != rhsGlobal.getName();
+  if (lhsAlloc && rhsAlloc)
+    return lhsAlloc != rhsAlloc;
+  return (lhsGlobal && rhsAlloc) || (lhsAlloc && rhsGlobal);
+}
+
+std::optional<unsigned>
+spatialMemoryThreadInputOrdinal(mlir::Value value,
+                                loom::SpatialRegionOp spatial,
+                                dataflow::ThreadOp thread) {
+  auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
+  if (!argument || argument.getOwner() != &spatial.getBody().front())
+    return std::nullopt;
+  const std::uint64_t memoryBase =
+      spatial.getValueInputs().size() + spatial.getStreamInputs().size();
+  if (argument.getArgNumber() < memoryBase)
+    return std::nullopt;
+  const std::uint64_t memoryOrdinal = argument.getArgNumber() - memoryBase;
+  if (memoryOrdinal >= spatial.getMemoryInputs().size())
+    return std::nullopt;
+  auto threadArgument = llvm::dyn_cast<mlir::BlockArgument>(
+      spatial.getMemoryInputs()[memoryOrdinal]);
+  if (!threadArgument || threadArgument.getOwner() != &thread.getBody().front())
+    return std::nullopt;
+  return threadArgument.getArgNumber();
+}
+
+bool areDistinctAtEveryRootLaunch(mlir::Value source, mlir::Value output,
+                                  loom::SpatialRegionOp spatial) {
+  auto thread = spatial->getParentOfType<dataflow::ThreadOp>();
+  auto module = spatial->getParentOfType<mlir::ModuleOp>();
+  if (!thread || !module)
+    return false;
+  std::optional<unsigned> sourceOrdinal =
+      spatialMemoryThreadInputOrdinal(source, spatial, thread);
+  std::optional<unsigned> outputOrdinal =
+      spatialMemoryThreadInputOrdinal(output, spatial, thread);
+  if (!sourceOrdinal || !outputOrdinal || *sourceOrdinal == *outputOrdinal)
+    return false;
+
+  std::uint64_t launchCount = 0;
+  bool distinct = true;
+  module.walk([&](dataflow::ThreadLaunchOp launch) {
+    auto callee =
+        mlir::SymbolTable::lookupNearestSymbolFrom<dataflow::ThreadOp>(
+            launch, launch.getCalleeAttr());
+    if (callee != thread)
+      return;
+    ++launchCount;
+    if (*sourceOrdinal >= launch.getBodyOperands().size() ||
+        *outputOrdinal >= launch.getBodyOperands().size() ||
+        !areKnownDistinctMemoryRoots(launch.getBodyOperands()[*sourceOrdinal],
+                                     launch.getBodyOperands()[*outputOrdinal]))
+      distinct = false;
+  });
+  return launchCount != 0 && distinct;
+}
+
+bool isConstantAtEveryRootLaunch(mlir::Value source,
+                                 loom::SpatialRegionOp spatial) {
+  auto thread = spatial->getParentOfType<dataflow::ThreadOp>();
+  if (!thread)
+    return false;
+  std::optional<unsigned> sourceOrdinal =
+      spatialMemoryThreadInputOrdinal(source, spatial, thread);
+  return sourceOrdinal && isConstantAtEveryRootLaunch(thread, *sourceOrdinal);
+}
+
+bool isClosedSubviewSource(mlir::memref::SubViewOp view,
+                           mlir::MemRefType bufferType, mlir::scf::ForOp loop,
+                           std::uint64_t tripCount, unsigned indexBits) {
+  auto sourceType =
+      llvm::dyn_cast<mlir::MemRefType>(view.getSource().getType());
+  auto viewType = llvm::dyn_cast<mlir::MemRefType>(view.getType());
+  if (!sourceType || !viewType || !sourceType.hasStaticShape() ||
+      viewType.getRank() != sourceType.getRank() ||
+      viewType.getShape() != bufferType.getShape() ||
+      viewType.getElementType() != bufferType.getElementType() ||
+      !isDefinedOutside(view.getSource(), loop) ||
+      !isExactStaticMemRef(view.getSource(), indexBits))
+    return false;
+
+  bool foundIteration = false;
+  for (auto [offset, size, stride, sourceExtent, bufferExtent] : llvm::zip(
+           view.getMixedOffsets(), view.getMixedSizes(), view.getMixedStrides(),
+           sourceType.getShape(), bufferType.getShape())) {
+    const std::optional<std::int64_t> staticSize =
+        mlir::getConstantIntValue(size);
+    const std::optional<std::int64_t> staticStride =
+        mlir::getConstantIntValue(stride);
+    if (!staticSize || !staticStride || *staticSize != bufferExtent ||
+        *staticSize <= 0 || *staticStride != 1)
+      return false;
+    if (mlir::Value dynamic = offset.dyn_cast<mlir::Value>()) {
+      if (foundIteration || dynamic != loop.getInductionVar() ||
+          *staticSize != 1 || sourceExtent < 0 ||
+          tripCount > static_cast<std::uint64_t>(sourceExtent))
+        return false;
+      foundIteration = true;
+      continue;
+    }
+    const std::optional<std::int64_t> staticOffset =
+        mlir::getConstantIntValue(offset);
+    if (!staticOffset || *staticOffset < 0 || sourceExtent < 0 ||
+        *staticOffset > sourceExtent - *staticSize)
+      return false;
+  }
+  if (!foundIteration)
+    return false;
+  if (!llvm::hasSingleElement(view.getResult().getUses()))
+    return false;
+  return llvm::hasSingleElement(view.getSource().getUses()) &&
+         view.getSource().use_begin()->getOwner() == view.getOperation();
+}
+
+std::optional<PipelineLoopPlan> analyzePipelineLoop(mlir::scf::ForOp loop) {
+  std::optional<std::uint64_t> tripCount = normalizedStaticTripCount(loop);
+  auto spatial = loop->getParentOfType<loom::SpatialRegionOp>();
+  if (!tripCount || *tripCount < 2 || !spatial ||
+      loop->getParentRegion() != &spatial.getBody())
+    return std::nullopt;
+  auto indexBits = loom::getIndexBitWidth(loop);
+  if (!indexBits) {
+    llvm::consumeError(indexBits.takeError());
+    return std::nullopt;
+  }
+
+  PipelineLoopPlan plan;
+  plan.loop = loop;
+  plan.tripCount = *tripCount;
+  llvm::SmallVector<mlir::Operation *, 16> operations;
+  for (mlir::Operation &operation : loop.getBody()->without_terminator()) {
+    if (operation.getNumRegions() != 0)
+      return std::nullopt;
+    operations.push_back(&operation);
+    if (auto alloc = llvm::dyn_cast<mlir::memref::AllocOp>(operation)) {
+      if (plan.buffer)
+        return std::nullopt;
+      plan.buffer = alloc;
+    } else if (auto copy = llvm::dyn_cast<mlir::memref::CopyOp>(operation)) {
+      if (plan.copy)
+        return std::nullopt;
+      plan.copy = copy;
+    } else if (auto dealloc =
+                   llvm::dyn_cast<mlir::memref::DeallocOp>(operation)) {
+      if (plan.dealloc)
+        return std::nullopt;
+      plan.dealloc = dealloc;
+    }
+  }
+  if (!plan.buffer || !plan.copy || !plan.dealloc ||
+      plan.copy.getTarget() != plan.buffer.getResult() ||
+      plan.dealloc.getMemref() != plan.buffer.getResult())
+    return std::nullopt;
+  auto bufferType = plan.buffer.getType();
+  if (!bufferType.hasStaticShape() || !bufferType.getLayout().isIdentity() ||
+      llvm::any_of(bufferType.getShape(),
+                   [](std::int64_t extent) { return extent <= 0; }) ||
+      !plan.buffer.getDynamicSizes().empty() ||
+      !plan.buffer.getSymbolOperands().empty())
+    return std::nullopt;
+
+  plan.sourceView =
+      plan.copy.getSource().getDefiningOp<mlir::memref::SubViewOp>();
+  if (plan.sourceView) {
+    plan.source = plan.sourceView.getSource();
+    if (!isClosedSubviewSource(plan.sourceView, bufferType, loop, *tripCount,
+                               *indexBits))
+      return std::nullopt;
+  } else {
+    plan.source = plan.copy.getSource();
+    auto sourceType = llvm::dyn_cast<mlir::MemRefType>(plan.source.getType());
+    if (!sourceType || sourceType.getShape() != bufferType.getShape() ||
+        sourceType.getElementType() != bufferType.getElementType() ||
+        !isDefinedOutside(plan.source, loop) ||
+        !isExactStaticMemRef(plan.source, *indexBits) ||
+        !isConstantAtEveryRootLaunch(plan.source, spatial) ||
+        !llvm::hasSingleElement(plan.source.getUses()) ||
+        plan.source.use_begin()->getOwner() != plan.copy.getOperation())
+      return std::nullopt;
+  }
+
+  auto allocPosition = llvm::find(operations, plan.buffer.getOperation());
+  auto viewPosition =
+      plan.sourceView ? llvm::find(operations, plan.sourceView.getOperation())
+                      : operations.end();
+  auto copyPosition = llvm::find(operations, plan.copy.getOperation());
+  auto deallocPosition = llvm::find(operations, plan.dealloc.getOperation());
+  if (allocPosition == operations.end() || copyPosition == operations.end() ||
+      deallocPosition == operations.end() || allocPosition >= copyPosition ||
+      (plan.sourceView && viewPosition >= copyPosition) ||
+      copyPosition >= deallocPosition ||
+      std::next(deallocPosition) != operations.end())
+    return std::nullopt;
+  for (auto position = operations.begin(); position != copyPosition; ++position)
+    if (*position != plan.buffer.getOperation() &&
+        (!plan.sourceView || *position != plan.sourceView.getOperation()))
+      return std::nullopt;
+
+  bool hasBufferLoad = false;
+  llvm::SmallVector<mlir::Value, 4> outputs;
+  for (auto position = std::next(copyPosition); position != operations.end();
+       ++position) {
+    mlir::Operation *operation = *position;
+    if (operation == plan.dealloc.getOperation())
+      continue;
+    if (auto load = llvm::dyn_cast<mlir::memref::LoadOp>(operation)) {
+      if (load.getMemref() != plan.buffer.getResult())
+        return std::nullopt;
+      hasBufferLoad = true;
+      continue;
+    }
+    if (auto store = llvm::dyn_cast<mlir::memref::StoreOp>(operation)) {
+      if (store.getMemref() == plan.buffer.getResult() ||
+          !hasOneExactIterationDimension(store.getIndices(),
+                                         store.getMemRefType(),
+                                         loop.getInductionVar(), *tripCount))
+        return std::nullopt;
+      outputs.push_back(store.getMemref());
+      continue;
+    }
+    if (!mlir::isMemoryEffectFree(operation))
+      return std::nullopt;
+    for (mlir::Value operand : operation->getOperands()) {
+      if (operand == loop.getInductionVar() || isDefinedOutside(operand, loop))
+        continue;
+      mlir::Operation *definition = operand.getDefiningOp();
+      if (!definition || llvm::find(operations, definition) >= position ||
+          llvm::find(operations, definition) <= copyPosition)
+        return std::nullopt;
+    }
+  }
+  if (!hasBufferLoad || outputs.empty())
+    return std::nullopt;
+  llvm::SmallVector<mlir::Value, 4> uniqueOutputs;
+  for (mlir::Value output : outputs)
+    if (!llvm::is_contained(uniqueOutputs, output))
+      uniqueOutputs.push_back(output);
+  for (mlir::Value output : uniqueOutputs)
+    if (output == plan.source || !isExactStaticMemRef(output, *indexBits) ||
+        !isClosedOutput(output, loop, *tripCount) ||
+        !areDistinctAtEveryRootLaunch(plan.source, output, spatial))
+      return std::nullopt;
+
+  unsigned copyUses = 0;
+  unsigned loadUses = 0;
+  unsigned deallocUses = 0;
+  for (mlir::OpOperand &use : plan.buffer.getResult().getUses()) {
+    mlir::Operation *owner = use.getOwner();
+    if (owner == plan.copy.getOperation() &&
+        plan.copy.getTarget() == plan.buffer.getResult())
+      ++copyUses;
+    else if (auto load = llvm::dyn_cast<mlir::memref::LoadOp>(owner);
+             load && load.getMemref() == plan.buffer.getResult())
+      ++loadUses;
+    else if (owner == plan.dealloc.getOperation())
+      ++deallocUses;
+    else
+      return std::nullopt;
+  }
+  if (copyUses != 1 || loadUses == 0 || deallocUses != 1)
+    return std::nullopt;
+  return plan;
+}
+
+llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>>
+cloneAndResolvePipelineLoop(const StructuredProgramCandidate &parent,
+                            const StructuredEntityRef &reference,
+                            mlir::scf::ForOp &clonedLoop) {
+  if (reference.kind != StructuredEntityKind::Operation)
+    return invalid("pipeline decision does not reference an operation");
+  auto view = parent.view();
+  if (!view)
+    return view.takeError();
+  auto entity = view->resolve(reference);
+  if (!entity)
+    return entity.takeError();
+  auto sourceLoop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(entity->operation);
+  if (!sourceLoop)
+    return invalid("pipeline decision does not reference scf.for");
+
+  mlir::IRMapping mapping;
+  mlir::OwningOpRef<mlir::ModuleOp> clone(
+      llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
+  clonedLoop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(
+      mapping.lookupOrNull(sourceLoop.getOperation()));
+  if (!clonedLoop)
+    return invalid("selected pipeline loop was not mapped into the clone");
+  return clone;
+}
+
+mlir::Value constantIndex(mlir::OpBuilder &builder, mlir::Location location,
+                          std::uint64_t value) {
+  return mlir::arith::ConstantOp::create(
+             builder, location,
+             builder.getIntegerAttr(builder.getIndexType(), value))
+      .getResult();
+}
+
+void emitStagingCopy(mlir::OpBuilder &builder, PipelineLoopPlan &plan,
+                     mlir::Value ring, mlir::Value logicalIteration,
+                     mlir::Value slot) {
+  const auto bufferType = plan.buffer.getType();
+  llvm::SmallVector<mlir::Value, 4> logicalIndices;
+  std::function<void(unsigned)> emitDimension = [&](unsigned dimension) {
+    if (dimension == static_cast<unsigned>(bufferType.getRank())) {
+      llvm::SmallVector<mlir::Value, 4> sourceIndices;
+      if (plan.sourceView) {
+        for (auto [offset, logicalIndex] :
+             llvm::zip(plan.sourceView.getMixedOffsets(), logicalIndices)) {
+          mlir::Value base;
+          if (mlir::Value dynamic = offset.dyn_cast<mlir::Value>()) {
+            base = logicalIteration;
+          } else {
+            base = constantIndex(
+                builder, plan.loop.getLoc(),
+                static_cast<std::uint64_t>(*mlir::getConstantIntValue(offset)));
+          }
+          sourceIndices.push_back(
+              mlir::arith::AddIOp::create(builder, plan.loop.getLoc(), base,
+                                          logicalIndex)
+                  .getResult());
+        }
+      } else {
+        sourceIndices.assign(logicalIndices.begin(), logicalIndices.end());
+      }
+      llvm::SmallVector<mlir::Value, 5> ringIndices{slot};
+      ringIndices.append(logicalIndices.begin(), logicalIndices.end());
+      mlir::Value element =
+          mlir::memref::LoadOp::create(builder, plan.loop.getLoc(), plan.source,
+                                       sourceIndices)
+              .getResult();
+      mlir::memref::StoreOp::create(builder, plan.loop.getLoc(), element, ring,
+                                    ringIndices);
+      return;
+    }
+    mlir::Value lower = constantIndex(builder, plan.loop.getLoc(), 0);
+    mlir::Value upper = constantIndex(
+        builder, plan.loop.getLoc(),
+        static_cast<std::uint64_t>(bufferType.getDimSize(dimension)));
+    mlir::Value step = constantIndex(builder, plan.loop.getLoc(), 1);
+    auto loop = mlir::scf::ForOp::create(builder, plan.loop.getLoc(), lower,
+                                         upper, step);
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPoint(loop.getBody()->getTerminator());
+    logicalIndices.push_back(loop.getInductionVar());
+    emitDimension(dimension + 1);
+    logicalIndices.pop_back();
+  };
+  emitDimension(0);
+}
+
+void emitComputeSuffix(mlir::OpBuilder &builder, PipelineLoopPlan &plan,
+                       mlir::Value ring, mlir::Value logicalIteration,
+                       mlir::Value slot) {
+  mlir::IRMapping mapping;
+  mapping.map(plan.loop.getInductionVar(), logicalIteration);
+  bool afterCopy = false;
+  for (mlir::Operation &operation : plan.loop.getBody()->without_terminator()) {
+    if (&operation == plan.copy.getOperation()) {
+      afterCopy = true;
+      continue;
+    }
+    if (!afterCopy || &operation == plan.dealloc.getOperation())
+      continue;
+    if (auto load = llvm::dyn_cast<mlir::memref::LoadOp>(operation)) {
+      llvm::SmallVector<mlir::Value, 5> indices{slot};
+      for (mlir::Value index : load.getIndices())
+        indices.push_back(mapping.lookupOrDefault(index));
+      auto replacement =
+          mlir::memref::LoadOp::create(builder, load.getLoc(), ring, indices);
+      replacement->setAttrs(load->getAttrs());
+      mapping.map(load.getResult(), replacement.getResult());
+      continue;
+    }
+    builder.clone(operation, mapping);
+  }
+}
+
+llvm::Error materializePipelineLoop(mlir::scf::ForOp loop) {
+  std::optional<PipelineLoopPlan> plan = analyzePipelineLoop(loop);
+  if (!plan)
+    return invalid("pipeline preconditions are not satisfied");
+  mlir::OpBuilder builder(loop);
+  mlir::Location location = loop.getLoc();
+  llvm::SmallVector<std::int64_t, 5> ringShape{2};
+  ringShape.append(plan->buffer.getType().getShape().begin(),
+                   plan->buffer.getType().getShape().end());
+  auto ringType = mlir::MemRefType::get(
+      ringShape, plan->buffer.getType().getElementType(), mlir::AffineMap(),
+      plan->buffer.getType().getMemorySpace());
+  auto ring = mlir::memref::AllocOp::create(builder, location, ringType,
+                                            plan->buffer.getAlignmentAttr());
+
+  mlir::Value zero = constantIndex(builder, location, 0);
+  mlir::Value one = constantIndex(builder, location, 1);
+  mlir::Value two = constantIndex(builder, location, 2);
+  mlir::Value last = constantIndex(builder, location, plan->tripCount - 1);
+  emitStagingCopy(builder, *plan, ring, zero, zero);
+
+  auto kernel = mlir::scf::ForOp::create(builder, location, zero, last, one);
+  {
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPoint(kernel.getBody()->getTerminator());
+    mlir::Value iteration = kernel.getInductionVar();
+    mlir::Value next =
+        mlir::arith::AddIOp::create(builder, location, iteration, one)
+            .getResult();
+    mlir::Value nextSlot =
+        mlir::arith::RemUIOp::create(builder, location, next, two).getResult();
+    emitStagingCopy(builder, *plan, ring, next, nextSlot);
+    mlir::Value slot =
+        mlir::arith::RemUIOp::create(builder, location, iteration, two)
+            .getResult();
+    emitComputeSuffix(builder, *plan, ring, iteration, slot);
+  }
+  mlir::Value lastSlot =
+      constantIndex(builder, location, (plan->tripCount - 1) % 2);
+  emitComputeSuffix(builder, *plan, ring, last, lastSlot);
+  mlir::memref::DeallocOp::create(builder, location, ring);
+  loop.erase();
+  return llvm::Error::success();
+}
+
 } // namespace
 
 StructuredMemoryCommunicationDecisionKind
@@ -567,6 +1110,17 @@ enumerateStructuredMemoryCommunicationDecisions(
       continue;
     }
 
+    if (auto loop =
+            llvm::dyn_cast_or_null<mlir::scf::ForOp>(entity.operation)) {
+      if (inspectedMemoryScopes == scopeExpansionLimit)
+        return StructuredMemoryCommunicationDecisionDomain{
+            std::move(decisions), inspectedMemoryScopes};
+      ++inspectedMemoryScopes;
+      if (analyzePipelineLoop(loop))
+        decisions.emplace_back(PipelineStagedLoopDecision{entity.reference});
+      continue;
+    }
+
     auto alloc =
         llvm::dyn_cast_or_null<mlir::memref::AllocOp>(entity.operation);
     if (!alloc)
@@ -623,8 +1177,15 @@ materializeStructuredMemoryCommunicationDecision(
     clone = std::move(*resolved);
     if (llvm::Error error = permuteLocalBufferLayout(alloc, *layout))
       return std::move(error);
-  } else if (std::holds_alternative<PipelineStagedLoopDecision>(decision)) {
-    return invalid("pipeline materialization is not implemented");
+  } else if (const auto *pipeline =
+                 std::get_if<PipelineStagedLoopDecision>(&decision)) {
+    mlir::scf::ForOp loop;
+    auto resolved = cloneAndResolvePipelineLoop(parent, pipeline->anchor, loop);
+    if (!resolved)
+      return resolved.takeError();
+    clone = std::move(*resolved);
+    if (llvm::Error error = materializePipelineLoop(loop))
+      return std::move(error);
   } else {
     return invalid("channel-promotion materialization is not implemented");
   }
