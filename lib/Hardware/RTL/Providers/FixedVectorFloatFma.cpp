@@ -14,7 +14,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -214,24 +213,50 @@ materializePortableFixedVectorFloatFma(FabricOperationProviderRequest request) {
   mlir::OpBuilder builder(request.leaf.getContext());
   builder.setInsertionPoint(request.leaf);
   const mlir::Location location = request.leaf.getLoc();
-  circt::hw::HWModuleOp::create(
+  llvm::SmallVector<circt::hw::HWModuleOp, 4> laneModules;
+  laneModules.reserve(loweredModes.size());
+  for (const LoweredMode &mode : loweredModes) {
+    const mlir::Type elementType =
+        builder.getIntegerType(mode.format.width());
+    llvm::SmallVector<circt::hw::PortInfo, 3> laneInputs;
+    for (llvm::StringRef name : {"data_lhs", "data_rhs", "data_addend"})
+      laneInputs.push_back(circt::hw::PortInfo{
+          {builder.getStringAttr(name), elementType,
+           circt::hw::ModulePort::Direction::Input}});
+    llvm::SmallVector<circt::hw::PortInfo, 1> laneOutputs{
+        circt::hw::PortInfo{{builder.getStringAttr("result"), elementType,
+                             circt::hw::ModulePort::Direction::Output}}};
+    const std::string moduleName =
+        request.leaf.getSymName().str() + "_lane_e" +
+        std::to_string(mode.format.exponentBits) + "_f" +
+        std::to_string(mode.format.fractionBits);
+    laneModules.push_back(circt::hw::HWModuleOp::create(
+        builder, location, builder.getStringAttr(moduleName),
+        circt::hw::ModulePortInfo(laneInputs, laneOutputs),
+        [&](mlir::OpBuilder &bodyBuilder,
+            circt::hw::HWModulePortAccessor &accessor) {
+          circt::sv::VerbatimOp::create(
+              bodyBuilder, location,
+              bodyBuilder.getStringAttr(detail::buildPortableFloatFmaFunction(
+                  mode.format, mode.functionName)));
+          llvm::SmallVector<mlir::Value, 3> arguments{
+              accessor.getInput("data_lhs"), accessor.getInput("data_rhs"),
+              accessor.getInput("data_addend")};
+          mlir::Value result = circt::sv::VerbatimExprOp::create(
+              bodyBuilder, location, elementType,
+              mode.functionName + "({{0}}, {{1}}, {{2}})", arguments);
+          accessor.setOutput("result", result);
+        }));
+  }
+
+  circt::hw::HWModuleOp top = circt::hw::HWModuleOp::create(
       builder, location, request.leaf.getSymNameAttr(),
       circt::hw::ModulePortInfo(request.leaf.getPortList()),
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
-        std::string declarations;
-        llvm::raw_string_ostream declarationStream(declarations);
-        for (const LoweredMode &mode : loweredModes)
-          declarationStream << detail::buildPortableFloatFmaFunction(
-                                   mode.format, mode.functionName)
-                            << '\n';
-        circt::sv::VerbatimOp::create(
-            bodyBuilder, location,
-            bodyBuilder.getStringAttr(declarationStream.str()));
-
         std::vector<mlir::Value> results;
         results.reserve(loweredModes.size());
-        for (const LoweredMode &mode : loweredModes) {
+        for (const auto &[modeIndex, mode] : llvm::enumerate(loweredModes)) {
           const unsigned elementWidth = mode.format.width();
           std::vector<mlir::Value> laneResults;
           laneResults.reserve(mode.laneCount);
@@ -243,9 +268,14 @@ materializePortableFixedVectorFloatFma(FabricOperationProviderRequest request) {
                   bodyBuilder, location,
                   accessor.getInput("data_input_" + std::to_string(index)),
                   lowBit, elementWidth));
-            laneResults.push_back(circt::sv::VerbatimExprOp::create(
-                bodyBuilder, location, bodyBuilder.getIntegerType(elementWidth),
-                mode.functionName + "({{0}}, {{1}}, {{2}})", arguments));
+            laneResults.push_back(
+                circt::hw::InstanceOp::create(
+                    bodyBuilder, location,
+                    laneModules[modeIndex].getOperation(),
+                    "lane_" + std::to_string(modeIndex) + "_" +
+                        std::to_string(lane),
+                    arguments)
+                    .getResult(0));
           }
           mlir::Value value = laneResults.front();
           if (laneResults.size() > 1) {
@@ -282,6 +312,8 @@ materializePortableFixedVectorFloatFma(FabricOperationProviderRequest request) {
         accessor.setOutput("data_output_0", result);
       },
       request.leaf.getParametersAttr());
+  for (circt::hw::HWModuleOp laneModule : llvm::reverse(laneModules))
+    laneModule->moveAfter(top);
   request.leaf.erase();
   return FabricOperationProviderOutput{};
 }

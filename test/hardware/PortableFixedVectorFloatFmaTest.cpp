@@ -846,6 +846,15 @@ void configuredBehaviorAndArtifacts(const std::filesystem::path &root) {
               !rtl.contains("ready_") && !rtl.contains("clock") &&
               !rtl.contains("reset"),
           "FMA RTL is incomplete or adds non-payload semantics");
+  const auto requireLaneModule = [&](llvm::StringRef moduleName,
+                                     unsigned laneCount) {
+    require(test, rtl.count(moduleName) == laneCount + 1,
+            "FMA RTL did not share one format-local module across its lanes");
+  };
+  requireLaneModule("fixed_vector_float_fma_lane_e5_f10", 5);
+  requireLaneModule("fixed_vector_float_fma_lane_e8_f7", 5);
+  requireLaneModule("fixed_vector_float_fma_lane_e8_f23", 2);
+  requireLaneModule("fixed_vector_float_fma_lane_e11_f52", 1);
 
   if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
           root / "generated",
@@ -882,6 +891,8 @@ void singletonNeedsNoSelector(const std::filesystem::path &root) {
   const std::string rtl = specialize(test, std::move(skeleton), fabric, abi);
   require(test,
           llvm::StringRef(rtl).contains("loom_fixed_vector_fma_e8_f23") &&
+              llvm::StringRef(rtl).count(
+                  "fixed_vector_float_fma_singleton_lane_e8_f23") == 3 &&
               !llvm::StringRef(rtl).contains("config_0"),
           "singleton FMA emitted configurable or non-f32 logic");
   if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
