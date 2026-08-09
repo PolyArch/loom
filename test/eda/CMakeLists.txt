@@ -16,6 +16,15 @@ target_link_libraries(loom-verilator-functional-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-synopsys-adapter-test
+  SynopsysAdapterTest.cpp
+)
+
+target_link_libraries(loom-synopsys-adapter-test PRIVATE
+  LoomEDASynopsys
+  LLVMSupport
+)
+
 get_property(LOOM_EDA_TEST_TARGETS
   DIRECTORY
   PROPERTY BUILDSYSTEM_TARGETS
