@@ -1,0 +1,32 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-math-erf-test %t
+# RUN: FileCheck %s --check-prefix=RTL < %t/configured/generated/scalar_math_erf.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/configured/generated/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/configured/generated/portable_scalar_math_erf.ys
+
+# RTL: module scalar_math_erf
+# RTL: input [20:0] data_input_0
+# RTL: input [1:0] config_0
+# RTL: output [20:0] data_output_0
+# RTL: function automatic
+# RTL: loom_erf_e5_f10
+# RTL: loom_erf_e8_f7
+# RTL-NOT: shortreal
+# RTL-NOT: DPI
+# RTL-NOT: $erf
+# RTL-NOT: $exp
+# RTL-NOT: valid_
+# RTL-NOT: ready_
+
+# TB: scalar erf output padding is nonzero
+# TB: scalar erf exceeds one ULP
+# TB: $readmemh("erf_f16_expected.hex"
+# TB: $readmemh("erf_bf16_expected.hex"
+# TB: scalar erf f16 odd symmetry mismatch
+# TB: scalar erf bf16 odd symmetry mismatch
+
+# YOSYS: hierarchy -check -top scalar_math_erf_synthesis_top
+# YOSYS: memory_map
+# YOSYS: select -assert-none t:$*ff* t:$*latch* t:$mem*
+# YOSYS: synth -noabc -top scalar_math_erf_synthesis_top

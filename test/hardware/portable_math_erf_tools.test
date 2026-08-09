@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-math-erf-test %t
+# RUN: cd %t/configured/generated && yosys -q -s portable_scalar_math_erf.ys
