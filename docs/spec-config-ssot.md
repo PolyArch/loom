@@ -202,11 +202,15 @@ descriptor rather than reinterpreting its limit.
 The Dataflow rewrite generator policy owns:
 
 ```text
-dse.dataflow_rewrite.scope_expansion_limit: positive uint32 = 64
+dse.dataflow_rewrite.scope_expansion_limit: positive uint32 = 256
 ```
 
 Its exact accounting and incomplete-search behavior are owned by
 [Deterministic Work, Candidate Sets, and Cache](spec-dse-feedback.md#deterministic-work-candidate-sets-and-cache).
+The default is a usable baseline for the complete normalized rewrite catalog,
+not a completeness promise for every program. An invocation whose next
+canonical decision does not fit still returns the exact typed incomplete
+outcome owned by that contract.
 The immutable component view descriptor is
 `loom.dataflow_rewrite_generator.config.1.1`; its canonical bytes are exactly
 one unsigned 64-bit big-endian projection of this resolved value. The adopter

@@ -141,6 +141,15 @@ deduplication, and local work. The central controller owns lineage, scheduling,
 Evidence acquisition, promotion, Pareto selection, and deterministic replay.
 It does not define one generic mutable candidate or action language.
 
+The Dataflow rewrite default is larger than the unrelated Structured scope
+defaults because the normalized catalog includes reversible local rules and
+charges attempts before identity deduplication. Even a small graph can
+therefore traverse dozens of immutable identities and their inverse edges.
+Using the same numeric default for all generators would be accidental coupling,
+while suppressing inverse charges would make replay work depend on cache state.
+The rewrite default remains only an operating point: the typed semantic-limit
+outcome, rather than an implicit partial candidate set, handles larger domains.
+
 When two domain owners expose different granularities, an explicitly typed
 generator adapter composes them without broadening central semantics. The
 root-complete TechMapping adapter is the representative case: the plan binds
