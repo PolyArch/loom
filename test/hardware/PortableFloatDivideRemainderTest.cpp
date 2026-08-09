@@ -848,19 +848,29 @@ std::string emitFamily(llvm::StringRef test, const ArtifactStore &store,
           "identical floating inputs produced different SystemVerilog");
   const llvm::StringRef rtl(first);
   const llvm::StringRef core = family == FloatFamily::Divide
-                                   ? "loom_float_divide_e11_f52_rna"
-                                   : "loom_float_remainder_e11_f52";
+                                   ? "loom_float_divide_e11_f52_core"
+                                   : "loom_float_remainder_core";
   require(test,
           rtl.contains("function automatic") && rtl.contains("config_0") &&
               rtl.contains(core) && !rtl.contains("shortreal") &&
               !rtl.contains(" real") && !rtl.contains("DPI"),
           "floating RTL is incomplete or not synthesizable bit logic");
-  if (family == FloatFamily::Remainder)
+  if (family == FloatFamily::Divide) {
+    for (llvm::StringRef divideCore :
+         {"loom_float_divide_e5_f10_core(", "loom_float_divide_e8_f7_core(",
+          "loom_float_divide_e8_f23_core(", "loom_float_divide_e11_f52_core("})
+      require(test, rtl.count(divideCore) == 2,
+              "floating divide evaluates a format core more than once");
+  } else {
     require(test,
-            rtl.contains("for (index = 0; index < 11;") &&
+            rtl.count("loom_float_remainder_core(") == 2 &&
+                rtl.contains("for (index = 0; index < 11;") &&
                 !rtl.contains("for (index = 0; index < 2046;") &&
+                rtl.contains("multiply_index = multiply_index - 4") &&
+                !rtl.contains("multiply_index = multiply_index - 1") &&
                 !rtl.contains('%'),
             "floating remainder uses an unbounded or divider-based scale");
+  }
   return first;
 }
 
@@ -921,8 +931,8 @@ void singletonRelationsNeedNoSelector(const std::filesystem::path &root) {
             "singleton floating leaf retained a selector port");
     const std::string rtl = specialize(test, std::move(skeleton), fabric, abi);
     const llvm::StringRef expected = family == FloatFamily::Divide
-                                         ? "loom_float_divide_e8_f23_rne"
-                                         : "loom_float_remainder_e8_f23";
+                                         ? "loom_float_divide_e8_f23_core"
+                                         : "loom_float_remainder_core";
     require(test,
             llvm::StringRef(rtl).contains(expected) &&
                 !llvm::StringRef(rtl).contains("config_0"),

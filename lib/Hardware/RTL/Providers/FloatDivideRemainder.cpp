@@ -10,6 +10,7 @@
 #include "circt/Dialect/SV/SVOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
@@ -40,7 +41,7 @@ struct Mode final {
 struct LoweredMode final {
   Format format;
   mlir::arith::RoundingMode rounding;
-  std::string functionName;
+  std::string semanticKey;
 };
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -87,15 +88,14 @@ unsigned roundingCode(mlir::arith::RoundingMode rounding) {
   return static_cast<unsigned>(rounding);
 }
 
-std::string coreName(FloatFamily family, const Format &format) {
-  return std::string("loom_float_") +
-         (family == FloatFamily::Divide ? "divide" : "remainder") + "_e" +
+std::string divideCoreName(const Format &format) {
+  return std::string("loom_float_divide_e") +
          std::to_string(format.exponentBits) + "_f" +
          std::to_string(format.fractionBits) + "_core";
 }
 
-std::string modeName(FloatFamily family, const Format &format,
-                     mlir::arith::RoundingMode rounding) {
+std::string semanticModeKey(FloatFamily family, const Format &format,
+                            mlir::arith::RoundingMode rounding) {
   std::string name = std::string("loom_float_") +
                      (family == FloatFamily::Divide ? "divide" : "remainder") +
                      "_e" + std::to_string(format.exponentBits) + "_f" +
@@ -126,7 +126,8 @@ lowerMode(FloatFamily family,
     return invalid("remainder behavior unexpectedly selects rounding");
   const mlir::arith::RoundingMode rounding = payload->roundingMode.value_or(
       mlir::arith::RoundingMode::to_nearest_even);
-  return LoweredMode{*format, rounding, modeName(family, *format, rounding)};
+  return LoweredMode{*format, rounding,
+                     semanticModeKey(family, *format, rounding)};
 }
 
 std::string hexLiteral(unsigned width, std::uint64_t value) {
@@ -147,7 +148,7 @@ std::string buildDivideCoreFunction(const Format &format) {
   const std::uint64_t infinity = exponentMask << fractionBits;
   const std::uint64_t quietBit = std::uint64_t{1} << (fractionBits - 1);
   const std::uint64_t quietNaN = infinity | quietBit;
-  const std::string name = coreName(FloatFamily::Divide, format);
+  const std::string name = divideCoreName(format);
   const std::string exponentAllOnes = hexLiteral(exponentBits, exponentMask);
   const std::string exponentMaxFinite =
       hexLiteral(exponentBits, exponentMask - 1);
@@ -354,42 +355,100 @@ std::string buildDivideCoreFunction(const Format &format) {
   return output.str();
 }
 
-std::string buildRemainderCoreFunction(const Format &format) {
-  const unsigned width = format.width();
-  const unsigned exponentBits = format.exponentBits;
-  const unsigned fractionBits = format.fractionBits;
-  const unsigned precision = format.precision();
-  const std::uint64_t exponentMask = (std::uint64_t{1} << exponentBits) - 1;
-  const std::uint64_t infinity = exponentMask << fractionBits;
-  const std::uint64_t quietBit = std::uint64_t{1} << (fractionBits - 1);
-  const std::uint64_t quietNaN = infinity | quietBit;
-  const std::string name = coreName(FloatFamily::Remainder, format);
-  const std::string exponentAllOnes = hexLiteral(exponentBits, exponentMask);
+llvm::StringRef sharedRemainderMultiplyName() {
+  return "loom_float_remainder_modular_multiply_radix16";
+}
 
+llvm::StringRef sharedRemainderCoreName() {
+  return "loom_float_remainder_core";
+}
+
+unsigned remainderFormatCode(const Format &format) {
+  if (format == Format{5, 10})
+    return 0;
+  if (format == Format{8, 7})
+    return 1;
+  if (format == Format{8, 23})
+    return 2;
+  if (format == Format{11, 52})
+    return 3;
+  llvm_unreachable("unsupported portable remainder format");
+}
+
+std::string buildSharedRemainderMultiplyFunction() {
+  constexpr unsigned paddedPrecision = 56;
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  // Each radix-16 candidate is below 31 * modulus, so subtracting the five
+  // binary-weighted multiples leaves the exact residue.
+  output
+      << "function automatic [52:0] " << sharedRemainderMultiplyName()
+      << "(input [52:0] multiplicand, input [52:0] multiplier, "
+         "input [52:0] modulus);\n"
+      << "  reg [52:0] accumulator;\n"
+      << "  reg [55:0] multiplier_bits;\n"
+      << "  reg [57:0] candidate;\n"
+      << "  integer multiply_index;\n"
+      << "  begin\n"
+      << "    accumulator = 53'd0;\n"
+      << "    multiplier_bits = {{3{1'b0}}, multiplier};\n"
+      << "    for (multiply_index = " << paddedPrecision - 4
+      << "; multiply_index >= 0; multiply_index = multiply_index - 4) begin\n"
+      << "      candidate = {1'b0, accumulator, 4'b0};\n"
+      << "      if (multiplier_bits[multiply_index])\n"
+      << "        candidate = candidate + {{5{1'b0}}, multiplicand};\n"
+      << "      if (multiplier_bits[multiply_index + 1])\n"
+      << "        candidate = candidate + {{4{1'b0}}, multiplicand, 1'b0};\n"
+      << "      if (multiplier_bits[multiply_index + 2])\n"
+      << "        candidate = candidate + {{3{1'b0}}, multiplicand, 2'b0};\n"
+      << "      if (multiplier_bits[multiply_index + 3])\n"
+      << "        candidate = candidate + {{2{1'b0}}, multiplicand, 3'b0};\n"
+      << "      if (candidate >= {1'b0, modulus, 4'b0})\n"
+      << "        candidate = candidate - {1'b0, modulus, 4'b0};\n"
+      << "      if (candidate >= {{2{1'b0}}, modulus, 3'b0})\n"
+      << "        candidate = candidate - {{2{1'b0}}, modulus, 3'b0};\n"
+      << "      if (candidate >= {{3{1'b0}}, modulus, 2'b0})\n"
+      << "        candidate = candidate - {{3{1'b0}}, modulus, 2'b0};\n"
+      << "      if (candidate >= {{4{1'b0}}, modulus, 1'b0})\n"
+      << "        candidate = candidate - {{4{1'b0}}, modulus, 1'b0};\n"
+      << "      if (candidate >= {{5{1'b0}}, modulus})\n"
+      << "        candidate = candidate - {{5{1'b0}}, modulus};\n"
+      << "      accumulator = candidate[52:0];\n"
+      << "    end\n"
+      << "    " << sharedRemainderMultiplyName() << " = accumulator;\n"
+      << "  end\n"
+      << "endfunction\n";
+  return output.str();
+}
+
+std::string buildSharedRemainderCoreFunction() {
   std::string text;
   llvm::raw_string_ostream output(text);
   output
-      << "function automatic [" << width - 1 << ":0] " << name << "(input ["
-      << width - 1 << ":0] lhs, input [" << width - 1 << ":0] rhs);\n"
+      << "function automatic [63:0] " << sharedRemainderCoreName()
+      << "(input [63:0] lhs, input [63:0] rhs, input [1:0] format);\n"
       << "  reg sign_result;\n"
-      << "  reg [" << exponentBits - 1 << ":0] exponent_lhs;\n"
-      << "  reg [" << exponentBits - 1 << ":0] exponent_rhs;\n"
-      << "  reg [" << exponentBits - 1 << ":0] exponent_result;\n"
-      << "  reg [" << fractionBits - 1 << ":0] fraction_lhs;\n"
-      << "  reg [" << fractionBits - 1 << ":0] fraction_rhs;\n"
-      << "  reg [" << fractionBits - 1 << ":0] fraction_result;\n"
-      << "  reg [" << precision - 1 << ":0] significand_lhs;\n"
-      << "  reg [" << precision - 1 << ":0] significand_rhs;\n"
-      << "  reg [" << precision - 1 << ":0] remainder_value;\n"
-      << "  reg [" << precision - 1 << ":0] power_value;\n"
-      << "  reg [" << precision - 1 << ":0] remainder_accumulator;\n"
-      << "  reg [" << precision - 1 << ":0] power_accumulator;\n"
-      << "  reg [" << precision << ":0] shifted_remainder;\n"
-      << "  reg [" << precision + 1 << ":0] modular_candidate;\n"
-      << "  reg [" << precision << ":0] doubled_multiplicand;\n"
-      << "  reg [" << exponentBits - 1 << ":0] exponent_delta_bits;\n"
+      << "  reg [10:0] exponent_lhs;\n"
+      << "  reg [10:0] exponent_rhs;\n"
+      << "  reg [10:0] exponent_all_ones;\n"
+      << "  reg [52:0] fraction_lhs;\n"
+      << "  reg [52:0] fraction_rhs;\n"
+      << "  reg [52:0] significand_lhs;\n"
+      << "  reg [52:0] significand_rhs;\n"
+      << "  reg [52:0] remainder_value;\n"
+      << "  reg [52:0] power_value;\n"
+      << "  reg [53:0] shifted_remainder;\n"
+      << "  reg [53:0] doubled_multiplicand;\n"
+      << "  reg [10:0] exponent_delta_bits;\n"
+      << "  reg [63:0] input_mask;\n"
+      << "  reg [63:0] sign_mask;\n"
+      << "  reg [63:0] quiet_mask;\n"
+      << "  reg [63:0] quiet_nan;\n"
       << "  reg found;\n"
       << "  reg magnitude_is_smaller;\n"
+      << "  integer fraction_bits;\n"
+      << "  integer exponent_bias;\n"
+      << "  integer minimum_exponent;\n"
       << "  integer exponent_lhs_value;\n"
       << "  integer exponent_rhs_value;\n"
       << "  integer exponent_delta;\n"
@@ -397,141 +456,168 @@ std::string buildRemainderCoreFunction(const Format &format) {
       << "  integer encoded_exponent;\n"
       << "  integer leading_index;\n"
       << "  integer index;\n"
-      << "  integer multiply_index;\n"
       << "  begin\n"
-      << "    " << name << " = " << hexLiteral(width, quietNaN) << ";\n"
-      << "    sign_result = lhs[" << width - 1 << "];\n"
-      << "    exponent_lhs = lhs[" << width - 2 << ':' << fractionBits << "];\n"
-      << "    exponent_rhs = rhs[" << width - 2 << ':' << fractionBits << "];\n"
-      << "    fraction_lhs = lhs[" << fractionBits - 1 << ":0];\n"
-      << "    fraction_rhs = rhs[" << fractionBits - 1 << ":0];\n"
-      << "    if (exponent_lhs == " << exponentAllOnes
-      << " && fraction_lhs != 0) begin\n"
-      << "      " << name << " = lhs | " << hexLiteral(width, quietBit) << ";\n"
-      << "    end else if (exponent_rhs == " << exponentAllOnes
-      << " && fraction_rhs != 0) begin\n"
-      << "      " << name << " = rhs | " << hexLiteral(width, quietBit) << ";\n"
-      << "    end else if ((exponent_lhs == " << exponentAllOnes
-      << " && fraction_lhs == 0) ||\n"
+      << "    case (format)\n"
+      << "      2'd0: begin\n"
+      << "        sign_result = lhs[15];\n"
+      << "        exponent_lhs = {6'd0, lhs[14:10]};\n"
+      << "        exponent_rhs = {6'd0, rhs[14:10]};\n"
+      << "        fraction_lhs = {43'd0, lhs[9:0]};\n"
+      << "        fraction_rhs = {43'd0, rhs[9:0]};\n"
+      << "        exponent_all_ones = 11'd31;\n"
+      << "        fraction_bits = 10;\n"
+      << "        exponent_bias = 15;\n"
+      << "        minimum_exponent = -14;\n"
+      << "        input_mask = 64'h000000000000ffff;\n"
+      << "        sign_mask = 64'h0000000000008000;\n"
+      << "        quiet_mask = 64'h0000000000000200;\n"
+      << "        quiet_nan = 64'h0000000000007e00;\n"
+      << "      end\n"
+      << "      2'd1: begin\n"
+      << "        sign_result = lhs[15];\n"
+      << "        exponent_lhs = {3'd0, lhs[14:7]};\n"
+      << "        exponent_rhs = {3'd0, rhs[14:7]};\n"
+      << "        fraction_lhs = {46'd0, lhs[6:0]};\n"
+      << "        fraction_rhs = {46'd0, rhs[6:0]};\n"
+      << "        exponent_all_ones = 11'd255;\n"
+      << "        fraction_bits = 7;\n"
+      << "        exponent_bias = 127;\n"
+      << "        minimum_exponent = -126;\n"
+      << "        input_mask = 64'h000000000000ffff;\n"
+      << "        sign_mask = 64'h0000000000008000;\n"
+      << "        quiet_mask = 64'h0000000000000040;\n"
+      << "        quiet_nan = 64'h0000000000007fc0;\n"
+      << "      end\n"
+      << "      2'd2: begin\n"
+      << "        sign_result = lhs[31];\n"
+      << "        exponent_lhs = {3'd0, lhs[30:23]};\n"
+      << "        exponent_rhs = {3'd0, rhs[30:23]};\n"
+      << "        fraction_lhs = {30'd0, lhs[22:0]};\n"
+      << "        fraction_rhs = {30'd0, rhs[22:0]};\n"
+      << "        exponent_all_ones = 11'd255;\n"
+      << "        fraction_bits = 23;\n"
+      << "        exponent_bias = 127;\n"
+      << "        minimum_exponent = -126;\n"
+      << "        input_mask = 64'h00000000ffffffff;\n"
+      << "        sign_mask = 64'h0000000080000000;\n"
+      << "        quiet_mask = 64'h0000000000400000;\n"
+      << "        quiet_nan = 64'h000000007fc00000;\n"
+      << "      end\n"
+      << "      2'd3: begin\n"
+      << "        sign_result = lhs[63];\n"
+      << "        exponent_lhs = lhs[62:52];\n"
+      << "        exponent_rhs = rhs[62:52];\n"
+      << "        fraction_lhs = {1'b0, lhs[51:0]};\n"
+      << "        fraction_rhs = {1'b0, rhs[51:0]};\n"
+      << "        exponent_all_ones = 11'd2047;\n"
+      << "        fraction_bits = 52;\n"
+      << "        exponent_bias = 1023;\n"
+      << "        minimum_exponent = -1022;\n"
+      << "        input_mask = 64'hffffffffffffffff;\n"
+      << "        sign_mask = 64'h8000000000000000;\n"
+      << "        quiet_mask = 64'h0008000000000000;\n"
+      << "        quiet_nan = 64'h7ff8000000000000;\n"
+      << "      end\n"
+      << "    endcase\n"
+      << "    " << sharedRemainderCoreName() << " = quiet_nan;\n"
+      << "    if (exponent_lhs == exponent_all_ones && fraction_lhs != 0) "
+         "begin\n"
+      << "      " << sharedRemainderCoreName()
+      << " = (lhs & input_mask) | quiet_mask;\n"
+      << "    end else if (exponent_rhs == exponent_all_ones && "
+         "fraction_rhs != 0) begin\n"
+      << "      " << sharedRemainderCoreName()
+      << " = (rhs & input_mask) | quiet_mask;\n"
+      << "    end else if ((exponent_lhs == exponent_all_ones && "
+         "fraction_lhs == 0) ||\n"
       << "                 (exponent_rhs == 0 && fraction_rhs == 0)) begin\n"
-      << "      " << name << " = " << hexLiteral(width, quietNaN) << ";\n"
+      << "      " << sharedRemainderCoreName() << " = quiet_nan;\n"
       << "    end else if ((exponent_lhs == 0 && fraction_lhs == 0) ||\n"
-      << "                 (exponent_rhs == " << exponentAllOnes
-      << " && fraction_rhs == 0)) begin\n"
-      << "      " << name << " = lhs;\n"
+      << "                 (exponent_rhs == exponent_all_ones && "
+         "fraction_rhs == 0)) begin\n"
+      << "      " << sharedRemainderCoreName() << " = lhs & input_mask;\n"
       << "    end else begin\n"
-      << "      significand_lhs = exponent_lhs == 0"
-         " ? {1'b0, fraction_lhs} : {1'b1, fraction_lhs};\n"
-      << "      significand_rhs = exponent_rhs == 0"
-         " ? {1'b0, fraction_rhs} : {1'b1, fraction_rhs};\n"
+      << "      significand_lhs = fraction_lhs;\n"
+      << "      significand_rhs = fraction_rhs;\n"
+      << "      if (exponent_lhs != 0)\n"
+      << "        significand_lhs[fraction_bits] = 1'b1;\n"
+      << "      if (exponent_rhs != 0)\n"
+      << "        significand_rhs[fraction_bits] = 1'b1;\n"
       << "      exponent_lhs_value = integer'(exponent_lhs);\n"
       << "      exponent_rhs_value = integer'(exponent_rhs);\n"
-      << "      exponent_lhs_value = exponent_lhs == 0 ? "
-      << format.minimumExponent() << " : exponent_lhs_value - " << format.bias()
-      << ";\n"
-      << "      exponent_rhs_value = exponent_rhs == 0 ? "
-      << format.minimumExponent() << " : exponent_rhs_value - " << format.bias()
-      << ";\n"
+      << "      exponent_lhs_value = exponent_lhs == 0 ? minimum_exponent : "
+         "exponent_lhs_value - exponent_bias;\n"
+      << "      exponent_rhs_value = exponent_rhs == 0 ? minimum_exponent : "
+         "exponent_rhs_value - exponent_bias;\n"
       << "      magnitude_is_smaller = exponent_lhs_value < "
          "exponent_rhs_value ||\n"
       << "          (exponent_lhs_value == exponent_rhs_value && "
          "significand_lhs < significand_rhs);\n"
       << "      if (magnitude_is_smaller) begin\n"
-      << "        " << name << " = lhs;\n"
+      << "        " << sharedRemainderCoreName() << " = lhs & input_mask;\n"
       << "      end else begin\n"
       << "        exponent_delta = exponent_lhs_value - exponent_rhs_value;\n"
-      << "        exponent_delta_bits = exponent_delta[" << exponentBits - 1
-      << ":0];\n"
-      << "        power_value = significand_rhs == " << precision << "'d1 ? "
-      << precision << "'d0 : " << precision << "'d1;\n"
-      << "        for (index = 0; index < " << exponentBits
-      << "; index = index + 1) begin\n"
-      << "          power_accumulator = " << precision << "'d0;\n"
-      << "          for (multiply_index = " << precision - 1
-      << "; multiply_index >= 0; multiply_index = multiply_index - 1) begin\n"
-      << "            modular_candidate = "
-         "{1'b0, power_accumulator, 1'b0};\n"
-      << "            if (power_value[multiply_index])\n"
-      << "              modular_candidate = modular_candidate + {{2{1'b0}}, "
-         "power_value};\n"
-      << "            if (modular_candidate >= "
-         "{1'b0, significand_rhs, 1'b0})\n"
-      << "              modular_candidate = modular_candidate - "
-         "{1'b0, significand_rhs, 1'b0};\n"
-      << "            else if (modular_candidate >= "
-         "{{2{1'b0}}, significand_rhs})\n"
-      << "              modular_candidate = modular_candidate - "
-         "{{2{1'b0}}, significand_rhs};\n"
-      << "            power_accumulator = modular_candidate[" << precision - 1
-      << ":0];\n"
-      << "          end\n"
-      << "          power_value = power_accumulator;\n"
-      << "          if (exponent_delta_bits[" << exponentBits - 1
-      << " - index]) begin\n"
+      << "        exponent_delta_bits = exponent_delta[10:0];\n"
+      << "        power_value = significand_rhs == 53'd1 ? 53'd0 : 53'd1;\n"
+      << "        for (index = 0; index < 11; index = index + 1) begin\n"
+      << "          power_value = " << sharedRemainderMultiplyName()
+      << "(power_value, power_value, significand_rhs);\n"
+      << "          if (exponent_delta_bits[10 - index]) begin\n"
       << "            doubled_multiplicand = {power_value, 1'b0};\n"
-      << "            if (doubled_multiplicand >= "
-         "{1'b0, significand_rhs})\n"
+      << "            if (doubled_multiplicand >= {1'b0, significand_rhs})\n"
       << "              doubled_multiplicand = doubled_multiplicand - "
          "{1'b0, significand_rhs};\n"
-      << "            power_value = doubled_multiplicand[" << precision - 1
-      << ":0];\n"
+      << "            power_value = doubled_multiplicand[52:0];\n"
       << "          end\n"
       << "        end\n"
-      << "        remainder_accumulator = " << precision << "'d0;\n"
-      << "        for (multiply_index = " << precision - 1
-      << "; multiply_index >= 0; multiply_index = multiply_index - 1) begin\n"
-      << "          modular_candidate = "
-         "{1'b0, remainder_accumulator, 1'b0};\n"
-      << "          if (significand_lhs[multiply_index])\n"
-      << "            modular_candidate = modular_candidate + "
-         "{{2{1'b0}}, power_value};\n"
-      << "          if (modular_candidate >= "
-         "{1'b0, significand_rhs, 1'b0})\n"
-      << "            modular_candidate = modular_candidate - "
-         "{1'b0, significand_rhs, 1'b0};\n"
-      << "          else if (modular_candidate >= "
-         "{{2{1'b0}}, significand_rhs})\n"
-      << "            modular_candidate = modular_candidate - "
-         "{{2{1'b0}}, significand_rhs};\n"
-      << "          remainder_accumulator = modular_candidate[" << precision - 1
-      << ":0];\n"
-      << "        end\n"
-      << "        remainder_value = remainder_accumulator;\n"
+      << "        remainder_value = " << sharedRemainderMultiplyName()
+      << "(power_value, significand_lhs, significand_rhs);\n"
       << "        if (remainder_value == 0) begin\n"
-      << "          " << name << " = {sign_result, " << exponentBits << "'d0, "
-      << fractionBits << "'d0};\n"
+      << "          " << sharedRemainderCoreName()
+      << " = sign_result ? sign_mask : 64'd0;\n"
       << "        end else begin\n"
       << "          leading_index = 0;\n"
       << "          found = 1'b0;\n"
-      << "          for (index = " << precision - 1
-      << "; index >= 0; index = index - 1) begin\n"
+      << "          for (index = 52; index >= 0; index = index - 1) begin\n"
       << "            if (!found && remainder_value[index]) begin\n"
       << "              leading_index = index;\n"
       << "              found = 1'b1;\n"
       << "            end\n"
       << "          end\n"
       << "          result_exponent_value = exponent_rhs_value - "
-      << fractionBits << " + leading_index;\n"
-      << "          if (result_exponent_value >= " << format.minimumExponent()
-      << ") begin\n"
-      << "            shifted_remainder = {1'b0, remainder_value} << ("
-      << fractionBits << " - leading_index);\n"
+         "fraction_bits + leading_index;\n"
+      << "          if (result_exponent_value >= minimum_exponent) begin\n"
+      << "            shifted_remainder = {1'b0, remainder_value} << "
+         "(fraction_bits - leading_index);\n"
       << "            encoded_exponent = result_exponent_value + "
-      << format.bias() << ";\n"
-      << "            exponent_result = encoded_exponent[" << exponentBits - 1
-      << ":0];\n"
-      << "            fraction_result = shifted_remainder[" << fractionBits - 1
-      << ":0];\n"
-      << "            " << name
-      << " = {sign_result, exponent_result, fraction_result};\n"
+         "exponent_bias;\n"
+      << "            case (format)\n"
+      << "              2'd0: " << sharedRemainderCoreName()
+      << " = {48'd0, sign_result, encoded_exponent[4:0], "
+         "shifted_remainder[9:0]};\n"
+      << "              2'd1: " << sharedRemainderCoreName()
+      << " = {48'd0, sign_result, encoded_exponent[7:0], "
+         "shifted_remainder[6:0]};\n"
+      << "              2'd2: " << sharedRemainderCoreName()
+      << " = {32'd0, sign_result, encoded_exponent[7:0], "
+         "shifted_remainder[22:0]};\n"
+      << "              2'd3: " << sharedRemainderCoreName()
+      << " = {sign_result, encoded_exponent[10:0], "
+         "shifted_remainder[51:0]};\n"
+      << "            endcase\n"
       << "          end else begin\n"
       << "            shifted_remainder = {1'b0, remainder_value} << "
-         "(exponent_rhs_value - "
-      << format.minimumExponent() << ");\n"
-      << "            fraction_result = shifted_remainder[" << fractionBits - 1
-      << ":0];\n"
-      << "            " << name << " = {sign_result, " << exponentBits
-      << "'d0, fraction_result};\n"
+         "(exponent_rhs_value - minimum_exponent);\n"
+      << "            case (format)\n"
+      << "              2'd0: " << sharedRemainderCoreName()
+      << " = {48'd0, sign_result, 5'd0, shifted_remainder[9:0]};\n"
+      << "              2'd1: " << sharedRemainderCoreName()
+      << " = {48'd0, sign_result, 8'd0, shifted_remainder[6:0]};\n"
+      << "              2'd2: " << sharedRemainderCoreName()
+      << " = {32'd0, sign_result, 8'd0, shifted_remainder[22:0]};\n"
+      << "              2'd3: " << sharedRemainderCoreName()
+      << " = {sign_result, 11'd0, shifted_remainder[51:0]};\n"
+      << "            endcase\n"
       << "          end\n"
       << "        end\n"
       << "      end\n"
@@ -541,42 +627,35 @@ std::string buildRemainderCoreFunction(const Format &format) {
   return output.str();
 }
 
-std::string buildModeFunction(FloatFamily family, const LoweredMode &mode) {
-  std::string text;
-  llvm::raw_string_ostream output(text);
-  output << "function automatic [" << mode.format.width() - 1 << ":0] "
-         << mode.functionName << "(input [" << mode.format.width() - 1
-         << ":0] lhs, input [" << mode.format.width() - 1 << ":0] rhs);\n"
-         << "  begin\n"
-         << "    " << mode.functionName << " = "
-         << coreName(family, mode.format) << "(lhs, rhs";
-  if (family == FloatFamily::Divide)
-    output << ", 3'd" << roundingCode(mode.rounding);
-  output << ");\n"
-         << "  end\n"
-         << "endfunction\n";
-  return output.str();
-}
-
-mlir::Value callMode(mlir::OpBuilder &builder, mlir::Location location,
-                     llvm::StringRef functionName, mlir::Value lhs,
-                     mlir::Value rhs, unsigned width) {
-  return circt::sv::VerbatimExprOp::create(
-      builder, location, builder.getIntegerType(width),
-      functionName.str() + "({{0}}, {{1}})",
-      llvm::SmallVector<mlir::Value, 2>{lhs, rhs});
-}
-
-mlir::Value materializeMode(mlir::OpBuilder &builder, mlir::Location location,
-                            circt::hw::HWModulePortAccessor &accessor,
-                            const LoweredMode &mode, unsigned outputWidth) {
-  const unsigned width = mode.format.width();
+mlir::Value materializeDivideFormat(mlir::OpBuilder &builder,
+                                    mlir::Location location,
+                                    circt::hw::HWModulePortAccessor &accessor,
+                                    const Format &format, mlir::Value rounding,
+                                    unsigned outputWidth) {
+  const unsigned width = format.width();
   mlir::Value lhs = detail::resizeUnsigned(
       builder, location, accessor.getInput("data_input_0"), width);
   mlir::Value rhs = detail::resizeUnsigned(
       builder, location, accessor.getInput("data_input_1"), width);
-  mlir::Value result =
-      callMode(builder, location, mode.functionName, lhs, rhs, width);
+  mlir::Value result = circt::sv::VerbatimExprOp::create(
+      builder, location, builder.getIntegerType(width),
+      divideCoreName(format) + "({{0}}, {{1}}, {{2}})",
+      llvm::SmallVector<mlir::Value, 3>{lhs, rhs, rounding});
+  return detail::resizeUnsigned(builder, location, result, outputWidth);
+}
+
+mlir::Value materializeRemainder(mlir::OpBuilder &builder,
+                                 mlir::Location location,
+                                 circt::hw::HWModulePortAccessor &accessor,
+                                 mlir::Value format, unsigned outputWidth) {
+  mlir::Value lhs = detail::resizeUnsigned(
+      builder, location, accessor.getInput("data_input_0"), 64);
+  mlir::Value rhs = detail::resizeUnsigned(
+      builder, location, accessor.getInput("data_input_1"), 64);
+  mlir::Value result = circt::sv::VerbatimExprOp::create(
+      builder, location, builder.getI64Type(),
+      sharedRemainderCoreName().str() + "({{0}}, {{1}}, {{2}})",
+      llvm::SmallVector<mlir::Value, 3>{lhs, rhs, format});
   return detail::resizeUnsigned(builder, location, result, outputWidth);
 }
 
@@ -698,13 +777,13 @@ materializePortableFloatDivideRemainder(FabricOperationProviderRequest request,
   }
 
   std::vector<LoweredMode> loweredModes;
-  std::set<std::string> functionNames;
+  std::set<std::string> semanticModes;
   loweredModes.reserve(modes.size());
   for (const Mode &mode : modes) {
     auto lowered = lowerMode(family, mode.actor);
     if (!lowered)
       return lowered.takeError();
-    if (!functionNames.insert(lowered->functionName).second)
+    if (!semanticModes.insert(lowered->semanticKey).second)
       return invalid("sealed relation contains a duplicate floating mode");
     const unsigned width = lowered->format.width();
     if (width > inputs[0]->payloadWidthBits ||
@@ -724,49 +803,121 @@ materializePortableFloatDivideRemainder(FabricOperationProviderRequest request,
           circt::hw::HWModulePortAccessor &accessor) {
         std::string declarations;
         llvm::raw_string_ostream declarationStream(declarations);
-        std::vector<Format> emittedFormats;
-        for (const LoweredMode &mode : loweredModes) {
-          if (llvm::is_contained(emittedFormats, mode.format))
-            continue;
-          emittedFormats.push_back(mode.format);
-          declarationStream << (family == FloatFamily::Divide
-                                    ? buildDivideCoreFunction(mode.format)
-                                    : buildRemainderCoreFunction(mode.format))
-                            << '\n';
+        if (family == FloatFamily::Divide) {
+          std::vector<Format> emittedFormats;
+          for (const LoweredMode &mode : loweredModes) {
+            if (llvm::is_contained(emittedFormats, mode.format))
+              continue;
+            emittedFormats.push_back(mode.format);
+            declarationStream << buildDivideCoreFunction(mode.format) << '\n';
+          }
+        } else {
+          declarationStream << buildSharedRemainderMultiplyFunction() << '\n'
+                            << buildSharedRemainderCoreFunction() << '\n';
         }
-        for (const LoweredMode &mode : loweredModes)
-          declarationStream << buildModeFunction(family, mode) << '\n';
         circt::sv::VerbatimOp::create(
             bodyBuilder, location,
             bodyBuilder.getStringAttr(declarationStream.str()));
 
-        std::vector<mlir::Value> results;
-        results.reserve(loweredModes.size());
-        for (const LoweredMode &mode : loweredModes)
-          results.push_back(materializeMode(bodyBuilder, location, accessor,
-                                            mode,
-                                            outputs[0]->payloadWidthBits));
-
-        mlir::Value result = results[inactiveMode];
-        if (field) {
-          mlir::Value configuration = accessor.getInput(
+        mlir::Value configuration;
+        if (field)
+          configuration = accessor.getInput(
               "config_" +
               std::to_string(
                   request.capability.configurationFieldSchema.front().ordinal));
-          for (std::size_t index = 0; index < modes.size(); ++index) {
-            if (index == inactiveMode)
-              continue;
-            mlir::Value code = circt::hw::ConstantOp::create(
-                bodyBuilder, location,
-                detail::decodePhysicalCode(
-                    modes[index].codebookEntry->physicalCode,
-                    codebook->encodedBitCount));
-            mlir::Value selected = circt::comb::ICmpOp::create(
-                bodyBuilder, location, circt::comb::ICmpPredicate::eq,
-                configuration, code, true);
-            result = circt::comb::MuxOp::create(bodyBuilder, location, selected,
-                                                results[index], result, true);
+
+        mlir::Value result;
+        if (family == FloatFamily::Divide) {
+          std::vector<mlir::Value> results;
+          results.reserve(loweredModes.size());
+          mlir::Value selectedRounding = circt::hw::ConstantOp::create(
+              bodyBuilder, location,
+              llvm::APInt(3,
+                          roundingCode(loweredModes[inactiveMode].rounding)));
+          if (field) {
+            for (std::size_t index = 0; index < modes.size(); ++index) {
+              if (index == inactiveMode)
+                continue;
+              mlir::Value code = circt::hw::ConstantOp::create(
+                  bodyBuilder, location,
+                  detail::decodePhysicalCode(
+                      modes[index].codebookEntry->physicalCode,
+                      codebook->encodedBitCount));
+              mlir::Value selected = circt::comb::ICmpOp::create(
+                  bodyBuilder, location, circt::comb::ICmpPredicate::eq,
+                  configuration, code, true);
+              mlir::Value rounding = circt::hw::ConstantOp::create(
+                  bodyBuilder, location,
+                  llvm::APInt(3, roundingCode(loweredModes[index].rounding)));
+              selectedRounding =
+                  circt::comb::MuxOp::create(bodyBuilder, location, selected,
+                                             rounding, selectedRounding, true);
+            }
           }
+
+          std::vector<Format> evaluatedFormats;
+          std::vector<mlir::Value> evaluatedResults;
+          for (const LoweredMode &mode : loweredModes) {
+            const auto existing = llvm::find(evaluatedFormats, mode.format);
+            if (existing == evaluatedFormats.end()) {
+              evaluatedFormats.push_back(mode.format);
+              evaluatedResults.push_back(materializeDivideFormat(
+                  bodyBuilder, location, accessor, mode.format,
+                  selectedRounding, outputs[0]->payloadWidthBits));
+              results.push_back(evaluatedResults.back());
+              continue;
+            }
+            results.push_back(evaluatedResults[static_cast<std::size_t>(
+                existing - evaluatedFormats.begin())]);
+          }
+
+          result = results[inactiveMode];
+          if (field) {
+            for (std::size_t index = 0; index < modes.size(); ++index) {
+              if (index == inactiveMode)
+                continue;
+              mlir::Value code = circt::hw::ConstantOp::create(
+                  bodyBuilder, location,
+                  detail::decodePhysicalCode(
+                      modes[index].codebookEntry->physicalCode,
+                      codebook->encodedBitCount));
+              mlir::Value selected = circt::comb::ICmpOp::create(
+                  bodyBuilder, location, circt::comb::ICmpPredicate::eq,
+                  configuration, code, true);
+              result =
+                  circt::comb::MuxOp::create(bodyBuilder, location, selected,
+                                             results[index], result, true);
+            }
+          }
+        } else {
+          mlir::Value selectedFormat = circt::hw::ConstantOp::create(
+              bodyBuilder, location,
+              llvm::APInt(
+                  2, remainderFormatCode(loweredModes[inactiveMode].format)));
+          if (field) {
+            for (std::size_t index = 0; index < modes.size(); ++index) {
+              if (index == inactiveMode)
+                continue;
+              mlir::Value code = circt::hw::ConstantOp::create(
+                  bodyBuilder, location,
+                  detail::decodePhysicalCode(
+                      modes[index].codebookEntry->physicalCode,
+                      codebook->encodedBitCount));
+              mlir::Value selected = circt::comb::ICmpOp::create(
+                  bodyBuilder, location, circt::comb::ICmpPredicate::eq,
+                  configuration, code, true);
+              mlir::Value format = circt::hw::ConstantOp::create(
+                  bodyBuilder, location,
+                  llvm::APInt(2,
+                              remainderFormatCode(loweredModes[index].format)));
+              selectedFormat =
+                  circt::comb::MuxOp::create(bodyBuilder, location, selected,
+                                             format, selectedFormat, true);
+            }
+          }
+          result = materializeRemainder(bodyBuilder, location, accessor,
+                                        selectedFormat,
+                                        outputs[0]->payloadWidthBits);
         }
         accessor.setOutput("data_output_0", result);
       },

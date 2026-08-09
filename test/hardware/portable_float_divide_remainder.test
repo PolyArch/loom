@@ -7,13 +7,13 @@
 # DIVIDE: module scalar_float_divide
 # DIVIDE: input [5:0] config_0
 # DIVIDE: function automatic
-# DIVIDE: loom_float_divide_e11_f52_rna
+# DIVIDE: loom_float_divide_e11_f52_core
 # DIVIDE-NOT: shortreal
 # DIVIDE-NOT: DPI
 
 # REMAINDER: module scalar_float_remainder
 # REMAINDER: input [5:0] config_0
 # REMAINDER: function automatic
-# REMAINDER: loom_float_remainder_e11_f52
+# REMAINDER: loom_float_remainder_core
 # REMAINDER-NOT: shortreal
 # REMAINDER-NOT: DPI
