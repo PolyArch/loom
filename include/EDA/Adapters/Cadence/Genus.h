@@ -4,6 +4,7 @@
 #include "Common/ComponentViewDigest.h"
 #include "Common/ExternalFileFingerprint.h"
 #include "DSE/CandidateGenerator.h"
+#include "ExternalTool/Provider.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "ImplementationPlatform/TechnologyCorner.h"
 
@@ -79,6 +80,9 @@ adoptResolvedGenusGateNetlistConfigView(
     llvm::ArrayRef<std::uint8_t> canonicalViewBytes,
     const ComponentViewDigest &digest);
 
+std::string genusToolBundledResourceProviderIdentity(
+    llvm::StringRef stableProviderBuildIdentity);
+
 const dse::CandidateGeneratorDescriptor &
 genusGateNetlistCandidateGeneratorDescriptor();
 
@@ -91,6 +95,22 @@ bindGenusGateNetlistInputs(const ArtifactRootReference &rtlImplementation,
 llvm::Expected<dse::ResolvedCandidateGeneratorBinding>
 resolveGenusGateNetlistBinding(
     const ResolvedGenusGateNetlistConfigView &config);
+
+llvm::Expected<external_tool::PreparedExternalToolInvocation>
+prepareGenusGateNetlistInvocation(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const external_tool::ExternalToolPreparationContext &context);
+
+llvm::Expected<dse::CandidateGeneratorProviderResult>
+importGenusGateNetlistInvocation(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
 
 struct GenusGateNetlist final {
   std::string verilog;

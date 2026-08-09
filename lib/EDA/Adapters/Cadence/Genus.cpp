@@ -147,16 +147,38 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 }
 
 llvm::Expected<PreparedExternalToolInvocation>
-prepareProvider(llvm::ArrayRef<CandidateGeneratorInputBinding>,
-                const ResolvedCandidateGeneratorBinding &,
-                const ArtifactStore &, const BlobStore &,
-                const ExternalToolPreparationContext &);
+prepareProviderWithContracts(llvm::ArrayRef<CandidateGeneratorInputBinding>,
+                             const ResolvedCandidateGeneratorBinding &,
+                             const ExternalImplementationContractCatalog &,
+                             const ArtifactStore &, const BlobStore &,
+                             const ExternalToolPreparationContext &);
 
 llvm::Expected<CandidateGeneratorProviderResult>
-importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding>,
-               const ResolvedCandidateGeneratorBinding &,
-               const PreparedExternalToolInvocation &, const ArtifactStore &,
-               const BlobStore &);
+importProviderWithContracts(llvm::ArrayRef<CandidateGeneratorInputBinding>,
+                            const ResolvedCandidateGeneratorBinding &,
+                            const PreparedExternalToolInvocation &,
+                            const ExternalImplementationContractCatalog &,
+                            const ArtifactStore &, const BlobStore &);
+
+llvm::Expected<PreparedExternalToolInvocation>
+prepareProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+                const ResolvedCandidateGeneratorBinding &binding,
+                const ArtifactStore &artifacts, const BlobStore &blobs,
+                const ExternalToolPreparationContext &context) {
+  static const ExternalImplementationContractCatalog contracts;
+  return prepareProviderWithContracts(inputs, binding, contracts, artifacts,
+                                      blobs, context);
+}
+
+llvm::Expected<CandidateGeneratorProviderResult>
+importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+               const ResolvedCandidateGeneratorBinding &binding,
+               const PreparedExternalToolInvocation &prepared,
+               const ArtifactStore &artifacts, const BlobStore &blobs) {
+  static const ExternalImplementationContractCatalog contracts;
+  return importProviderWithContracts(inputs, binding, prepared, contracts,
+                                     artifacts, blobs);
+}
 
 const CandidateGeneratorDescriptor descriptor{
     genusGateNetlistCandidateGeneratorKind,
@@ -261,6 +283,7 @@ llvm::Expected<std::string> blobText(const BlobStore &blobs,
 llvm::Expected<InvocationFacts>
 invocationFacts(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                 const ResolvedCandidateGeneratorBinding &binding,
+                const ExternalImplementationContractCatalog &contracts,
                 const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (inputs.size() != InputSlotCount ||
       inputs[RtlImplementationInput].artifacts.size() != 1 ||
@@ -271,7 +294,8 @@ invocationFacts(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   if (!config)
     return config.takeError();
   auto rtl = importHardwareImplementation(
-      inputs[RtlImplementationInput].artifacts.front(), artifacts, blobs);
+      inputs[RtlImplementationInput].artifacts.front(), contracts, artifacts,
+      blobs);
   if (!rtl)
     return rtl.takeError();
   auto target = platform::importImplementationPlatform(
@@ -297,9 +321,23 @@ invocationFacts(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
       !target->platform().findTechnologyCorner(
           config->technologyCorner().entity))
     return invalid("resolved technology corner is outside the exact target");
-  if (!implementation.externalImplementationBindings().empty() ||
-      !implementation.memoryMacroBindings().empty())
-    return invalid("RTL with external implementation bindings is unsupported");
+  if (!implementation.memoryMacroBindings().empty())
+    return invalid("RTL with memory macro bindings is unsupported");
+  for (const ExternalImplementationBinding &external :
+       implementation.externalImplementationBindings()) {
+    for (const ExternalInputBinding &input : external.externalInputs) {
+      if (std::holds_alternative<ExplicitFileDependency>(
+              input.dependencyIdentity))
+        return invalid("RTL external implementation requires an explicit "
+                       "component file");
+      const auto &resource =
+          std::get<ToolBundledResourceDependency>(input.dependencyIdentity);
+      if (resource.stableProviderBuildIdentity !=
+          genusToolBundledResourceProviderIdentity(
+              config->stableProviderBuildIdentity()))
+        return invalid("RTL bundled component belongs to another Genus build");
+    }
+  }
   if (representation.top.kind != RepresentationObjectKind::Module ||
       !isPortableIdentifier(representation.top.canonicalName))
     return invalid("RTL top is not a portable module identifier");
@@ -388,6 +426,18 @@ makeCadenceStandardCellContractCatalog() {
 llvm::ArrayRef<std::uint8_t>
 resolvedGenusGateNetlistConfigSchemaDescriptorBytes() {
   return schemaBytes();
+}
+
+std::string genusToolBundledResourceProviderIdentity(
+    llvm::StringRef stableProviderBuildIdentity) {
+  static constexpr char hex[] = "0123456789abcdef";
+  std::string result = "cadence_genus_build_";
+  result.reserve(result.size() + stableProviderBuildIdentity.size() * 2);
+  for (const unsigned char byte : stableProviderBuildIdentity.bytes()) {
+    result.push_back(hex[byte >> 4]);
+    result.push_back(hex[byte & 0x0f]);
+  }
+  return result;
 }
 
 llvm::Expected<ResolvedGenusGateNetlistConfigView>
@@ -563,12 +613,13 @@ importGenusGateNetlistImplementation(const ArtifactRootReference &reference,
 
 namespace {
 
-llvm::Expected<PreparedExternalToolInvocation>
-prepareProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
-                const ResolvedCandidateGeneratorBinding &binding,
-                const ArtifactStore &artifacts, const BlobStore &blobs,
-                const ExternalToolPreparationContext &context) {
-  auto facts = invocationFacts(inputs, binding, artifacts, blobs);
+llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolPreparationContext &context) {
+  auto facts = invocationFacts(inputs, binding, contracts, artifacts, blobs);
   if (!facts)
     return facts.takeError();
   auto externalFiles = resolveExternalFiles(
@@ -780,12 +831,13 @@ publishGateNetlist(const InvocationFacts &facts,
   return strict->reference();
 }
 
-llvm::Expected<CandidateGeneratorProviderResult>
-importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
-               const ResolvedCandidateGeneratorBinding &binding,
-               const PreparedExternalToolInvocation &prepared,
-               const ArtifactStore &artifacts, const BlobStore &blobs) {
-  auto facts = invocationFacts(inputs, binding, artifacts, blobs);
+llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto facts = invocationFacts(inputs, binding, contracts, artifacts, blobs);
   if (!facts)
     return facts.takeError();
   auto attempt =
@@ -823,4 +875,27 @@ importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
 }
 
 } // namespace
+
+llvm::Expected<external_tool::PreparedExternalToolInvocation>
+prepareGenusGateNetlistInvocation(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const external_tool::ExternalToolPreparationContext &context) {
+  return prepareProviderWithContracts(inputs, binding, contracts, artifacts,
+                                      blobs, context);
+}
+
+llvm::Expected<dse::CandidateGeneratorProviderResult>
+importGenusGateNetlistInvocation(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return importProviderWithContracts(inputs, binding, prepared, contracts,
+                                     artifacts, blobs);
+}
+
 } // namespace loom::eda::cadence

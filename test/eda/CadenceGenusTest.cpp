@@ -133,10 +133,12 @@ struct SemanticFixture final {
   ResolvedGenusGateNetlistConfigView config;
   std::vector<CandidateGeneratorInputBinding> inputs;
   ResolvedCandidateGeneratorBinding binding;
+  ExternalImplementationContractCatalog contracts;
 };
-SemanticFixture makeSemanticFixture(const std::filesystem::path &fixtureRoot,
-                                    const ArtifactStore &artifacts,
-                                    const BlobStore &blobs) {
+SemanticFixture
+makeSemanticFixture(const std::filesystem::path &fixtureRoot,
+                    const ArtifactStore &artifacts, const BlobStore &blobs,
+                    std::optional<std::string> componentBuild = std::nullopt) {
   auto module = makeModule(artifacts);
   auto system = take(
       __func__, hardware::test::makeSingleSpatialCoreSystem(module, artifacts));
@@ -150,20 +152,54 @@ SemanticFixture makeSemanticFixture(const std::filesystem::path &fixtureRoot,
                              {"synthetic_slow"}},
                          artifacts));
 
-  const std::string rtl = readFile(fixtureRoot / "rtl/top.sv");
+  std::string rtl = readFile(fixtureRoot / "rtl/top.sv");
+  if (componentBuild) {
+    const std::size_t insertion = rtl.find("  assign y = ~a;");
+    require(__func__, insertion != std::string::npos,
+            "RTL fixture has no component insertion anchor");
+    rtl.insert(insertion, "  fixture_component u_component();\n");
+  }
   const std::string sdc = readFile(fixtureRoot / "constraints/top.sdc");
   const BlobDigest rtlDigest = take(__func__, blobs.put(bytes(rtl)));
   const BlobDigest sdcDigest = take(__func__, blobs.put(bytes(sdc)));
+  std::vector<ImplementationPayload> payloads{
+      {PayloadRole::RtlSource, "rtl/top.sv", rtlDigest},
+      {PayloadRole::GenerationConstraint, "constraints/top.sdc", sdcDigest}};
+  std::vector<ExternalImplementationBindingDraft> externalBindings;
+  ExternalImplementationContractCatalog contracts;
+  if (componentBuild) {
+    const std::string blackBox = "fixture_component@1\n";
+    payloads.push_back({PayloadRole::BlackBoxContract,
+                        "blackbox/fixture-component.txt",
+                        take(__func__, blobs.put(bytes(blackBox)))});
+    if (llvm::Error error = contracts.add(ExternalImplementationContract{
+            "fixture.genus.component",
+            {{"component_model",
+              {ExternalDependencyKind::ToolBundledResource}}},
+            {RepresentationRootVariant::Rtl},
+            true,
+            false,
+            nullptr}))
+      fail(__func__, llvm::toString(std::move(error)));
+    externalBindings.push_back(
+        {"fixture.genus.component",
+         {{"component_model",
+           ToolBundledResourceDependency{
+               genusToolBundledResourceProviderIdentity(*componentBuild),
+               "chipware:fixture_component"}}},
+         {},
+         {{RepresentationObjectKind::Module, "fixture_component"}},
+         ImplementationPayloadKey{PayloadRole::BlackBoxContract,
+                                  "blackbox/fixture-component.txt"}});
+  }
   const auto format =
       take(__func__, RepresentationFormatDescriptorRef::get(
                          RepresentationFormatKind::SystemVerilogRtl));
   auto representation =
-      take(__func__, createImplementationRepresentationRoot(
-                         RepresentationRootVariant::Rtl, std::nullopt, format,
-                         {RepresentationObjectKind::Module, "top"},
-                         {{PayloadRole::RtlSource, "rtl/top.sv", rtlDigest},
-                          {PayloadRole::GenerationConstraint,
-                           "constraints/top.sdc", sdcDigest}}));
+      take(__func__,
+           createImplementationRepresentationRoot(
+               RepresentationRootVariant::Rtl, std::nullopt, format,
+               {RepresentationObjectKind::Module, "top"}, std::move(payloads)));
   auto implementation =
       take(__func__,
            finalizeHardwareImplementation(
@@ -176,8 +212,8 @@ SemanticFixture makeSemanticFixture(const std::filesystem::path &fixtureRoot,
                    {},
                    {{{RepresentationObjectKind::Port, "top.a"}, std::nullopt}},
                    {},
-                   {}},
-               artifacts, blobs));
+                   std::move(externalBindings)},
+               contracts, artifacts, blobs));
 
   const std::string liberty = readFile(fixtureRoot / "standard-cell.lib");
   const platform::TechnologyCornerRef corner{platform.reference().artifact,
@@ -190,8 +226,8 @@ SemanticFixture makeSemanticFixture(const std::filesystem::path &fixtureRoot,
                                                 platform.reference()));
   auto binding = take(__func__, resolveGenusGateNetlistBinding(config));
   return SemanticFixture{std::move(platform), std::move(implementation),
-                         std::move(config), std::move(inputs),
-                         std::move(binding)};
+                         std::move(config),   std::move(inputs),
+                         std::move(binding),  std::move(contracts)};
 }
 ExternalToolPreparationContext
 makePreparationContext(const std::filesystem::path &bundle,
@@ -343,6 +379,61 @@ void mismatchedBuildCannotPrepare(const std::filesystem::path &root,
                     fixture.inputs, wrongBinding, artifacts, blobs,
                     makePreparationContext(root / "wrong-build", fixtureRoot)),
                 "does not match semantic build");
+}
+
+void toolBundledRtlUsesExactProviderBuild(
+    const std::filesystem::path &root, const std::filesystem::path &fixtureRoot,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  require(__func__,
+          genusToolBundledResourceProviderIdentity("Build 1") ==
+              "cadence_genus_build_4275696c642031",
+          "tool-bundled resource provider identity is not injective bytes");
+  const std::string build = "Program Name: Genus fixture 26.1";
+  const SemanticFixture fixture =
+      makeSemanticFixture(fixtureRoot, artifacts, blobs, build);
+  const PreparedExternalToolInvocation prepared = take(
+      __func__,
+      prepareGenusGateNetlistInvocation(
+          fixture.inputs, fixture.binding, fixture.contracts, artifacts, blobs,
+          makePreparationContext(root / "tool-bundled", fixtureRoot)));
+  const std::string driver = readFile(root / "tool-bundled/drivers/genus.tcl");
+  require(__func__,
+          driver.find("chipware:fixture_component") == std::string::npos,
+          "Genus driver leaked a semantic resource key as a host path");
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
+          "caller-owned external-bound Genus execution failed");
+  CandidateGeneratorProviderResult result =
+      take(__func__, importGenusGateNetlistInvocation(
+                         fixture.inputs, fixture.binding, prepared,
+                         fixture.contracts, artifacts, blobs));
+  const auto *completed =
+      std::get_if<CompletedCandidateGeneratorResult>(&result.outcome);
+  require(__func__, completed && completed->outputBindings.size() == 1,
+          "external-bound Genus invocation did not publish one output");
+  auto output =
+      take(__func__, importGenusGateNetlistImplementation(
+                         completed->outputBindings.front().artifacts.front(),
+                         artifacts, blobs));
+  require(__func__,
+          output.implementation().externalImplementationBindings().size() ==
+                  1 &&
+              output.implementation()
+                      .externalImplementationBindings()
+                      .front()
+                      .providerContractRef != "fixture.genus.component",
+          "Genus retained the consumed RTL component binding");
+
+  const SemanticFixture wrong = makeSemanticFixture(
+      fixtureRoot, artifacts, blobs, "Program Name: Genus different build");
+  expectFailure(
+      __func__,
+      prepareGenusGateNetlistInvocation(
+          wrong.inputs, wrong.binding, wrong.contracts, artifacts, blobs,
+          makePreparationContext(root / "wrong-component-build", fixtureRoot)),
+      "another Genus build");
+  require(__func__, !std::filesystem::exists(root / "wrong-component-build"),
+          "wrong component build mutated the bundle destination");
 }
 
 void successfulLifecyclePublishesGateNetlist(
@@ -581,6 +672,7 @@ int main(int argc, char **argv) {
   const SemanticFixture fixture =
       makeSemanticFixture(fixtureRoot, artifacts, blobs);
   mismatchedBuildCannotPrepare(root, fixtureRoot, fixture, artifacts, blobs);
+  toolBundledRtlUsesExactProviderBuild(root, fixtureRoot, artifacts, blobs);
   successfulLifecyclePublishesGateNetlist(root, fixtureRoot, fixture, artifacts,
                                           blobs);
   strictImportRejectsInvalidAttempts(root, fixtureRoot, fixture, artifacts,
