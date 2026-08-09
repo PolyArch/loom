@@ -16,6 +16,16 @@ target_link_libraries(loom-verilator-functional-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-openroad-placed-test
+  OpenRoadPlacedTest.cpp
+)
+
+target_link_libraries(loom-openroad-placed-test PRIVATE
+  LoomHardwareConfigurationTestSupport
+  LoomEDAOpenSource
+  LLVMSupport
+)
+
 add_executable(loom-synopsys-adapter-test
   SynopsysAdapterTest.cpp
 )

@@ -12,9 +12,13 @@ config.suffixes = [".mlir", ".test"]
 if getattr(config, "loom_have_circt", False):
     config.available_features.add("circt")
 
-for tool in ("verilator", "yosys"):
-    if shutil.which(tool, path=config.environment.get("PATH")):
-        config.available_features.add(tool)
+for executable, feature in (
+    ("verilator", "verilator"),
+    ("yosys", "yosys"),
+    ("openroad", "openroad-2026-08-06"),
+):
+    if shutil.which(executable, path=config.environment.get("PATH")):
+        config.available_features.add(feature)
 
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.loom_obj_root, "test")
