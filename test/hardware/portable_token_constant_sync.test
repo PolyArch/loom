@@ -1,0 +1,38 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-token-constant-sync-test %t
+# RUN: FileCheck %s --check-prefix=CONSTANT < %t/artifacts/token_constant.sv
+# RUN: FileCheck %s --check-prefix=SYNC < %t/artifacts/token_sync.sv
+# RUN: FileCheck %s --check-prefix=SINGLETON < %t/artifacts/token_sync_singleton.sv
+# RUN: FileCheck %s --check-prefix=ZERO < %t/artifacts/token_sync_zero_payload.sv
+# RUN: FileCheck %s --check-prefix=SYSTEM < %t/artifacts/token_sync_system.sv
+
+# CONSTANT: module token_constant
+# CONSTANT: input [7:0] config_0
+# CONSTANT: output [11:0] data_output_0
+# CONSTANT-NOT: always @
+
+# SYNC: module token_sync
+# SYNC: input [3:0] config_0
+# SYNC: output [11:0] data_output_0
+# SYNC: output [7:0] data_output_1
+# SYNC: output [23:0] data_output_2
+# SYNC-NOT: always @
+
+# SINGLETON: module token_sync_singleton
+# SINGLETON-NOT: config_0
+# SINGLETON-NOT: always @
+
+# ZERO: module token_sync_zero_payload
+# ZERO-NOT: data_input_0
+# ZERO: input valid_input_0
+# ZERO-NOT: data_output_0
+# ZERO: output valid_output_0
+# ZERO-NOT: always @
+
+# SYSTEM: module loom_module
+# SYSTEM: input clock
+# SYSTEM: reset
+# SYSTEM: always @(posedge clock
+# SYSTEM: result_valid_0_reg
+# SYSTEM: result_valid_1_reg

@@ -1,0 +1,10 @@
+# REQUIRES: circt, verilator
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-token-constant-sync-test %t
+# RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
+# RUN: cd %t/artifacts && verilator --binary --timing --Wall --Wno-fatal --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module provider_testbench token_constant.sv token_sync.sv token_sync_singleton.sv token_sync_zero_payload.sv provider_testbench.sv --Mdir provider_obj
+# RUN: %t/artifacts/provider_obj/Vprovider_testbench
+# RUN: cd %t/artifacts && verilator --binary --timing --Wall --Wno-fatal --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module system_testbench token_sync_system.sv system_testbench.sv --Mdir system_obj
+# RUN: %t/artifacts/system_obj/Vsystem_testbench
+
+# VERILATOR: Verilator 5.050
