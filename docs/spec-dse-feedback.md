@@ -404,6 +404,25 @@ stored-program baseline. Passing one gate cannot imply the other. A host-only
 selection is a valid DSE result only when complete candidate dispositions and
 workload-aware Evidence justify it; it is not an accelerator-success result.
 
+Pre-Mapping ownership selection has two exact intents. `BenefitQualified`
+requires both gates and continues through the configured Dataflow rewrite
+generator so the resolved objective can compare QoR alternatives.
+`SemanticConformance` is feasibility-only and makes no QoR-optimality claim.
+After one selected Structured candidate lowers mechanically to D0, the
+controller queries the exact Fabric capability index. If every D0 actor is
+admitted, the controller retains that exact input directly as D*, instantiates
+the ordinary functional Evidence obligation, and does not create a Dataflow
+rewrite Generate invocation. If D0 has a first inadmissible actor, the
+controller invokes the Dataflow rewrite generator to seek an admitted D*.
+
+This feasibility shortcut does not alter the rewrite generator's domain. When
+that generator is invoked, every fixed rule remains eligible for every popped
+frontier Artifact, including an admitted Artifact, and vector decomposition is
+added only for the first missing actor as specified below. An incomplete
+generator result still cannot promote its retained candidates. A functional
+mismatch on an admitted D0 produces no feasible semantic-conformance result;
+semantics-preserving rewrites cannot be used as a fallback to repair it.
+
 ## EvaluationRequest and Model Descriptor
 
 `evaluation.request.1.0` has one strict typed root:

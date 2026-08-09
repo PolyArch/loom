@@ -690,6 +690,30 @@ rationale owns only the reason for that split. A plugin registry or generic
 rewrite-law DSL would add an authority without making any current rule more
 expressive.
 
+## Why Semantic Conformance May Retain D0 Directly
+
+Semantic conformance asks whether the exact source workload has one
+functionally equivalent program admitted by the selected Fabric. It does not
+ask which equivalent topology has the best predicted quality. Once exact
+capability analysis admits every D0 actor, ordinary functional Evidence is the
+remaining proof and the already finalized D0 is a legal D*. Running the
+recursive rewrite catalog at that point would turn a feasibility gate into an
+unrequested QoR search and can spend its finite semantic budget enumerating
+independent topology combinations.
+
+The existing selection intent is sufficient to express this distinction; a
+runner flag, catalog subset, or special anchor policy would create another
+authority. Benefit-qualified compilation still invokes the full rewrite
+generator. Semantic conformance also invokes it when D0 is not admitted,
+because only a materialized rewrite can establish an alternative feasible D*.
+The exact Fabric capability index owns that branch. Runtime duration, worker
+count, graph size, and test identity do not participate.
+
+Skipping optional rewrites cannot hide a functional mismatch. Every admitted
+D0 still passes the same source-backed functional obligation, and a mismatch
+ends the conformance attempt. Since every catalog rule is required to preserve
+software semantics, trying another topology would not be a valid repair.
+
 ## Why Structured Vectorization Is Primary
 
 Vector computation is selected while loop and memory structure are available.
