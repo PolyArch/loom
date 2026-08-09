@@ -9,6 +9,7 @@
 #include "llvm/Support/Error.h"
 
 #include <array>
+#include <set>
 #include <system_error>
 #include <vector>
 
@@ -159,12 +160,15 @@ encodeProviderBinding(const CadenceVoltusStaticRailProviderBinding &binding) {
     bytes.insert(bytes.end(), member.fingerprint.bytes().begin(),
                  member.fingerprint.bytes().end());
   }
+  detail::appendU64Be(bytes, binding.powerGridLibraryEntrypoints.size());
+  for (const std::string &entrypoint : binding.powerGridLibraryEntrypoints)
+    detail::appendFramedString(bytes, entrypoint);
   return bytes;
 }
 
 llvm::ArrayRef<std::uint8_t> configSchemaBytes() {
   static constexpr llvm::StringLiteral descriptor =
-      "loom.evaluation.static_explicit_rail.config.2.0";
+      "loom.evaluation.static_explicit_rail.config.3.0";
   return {reinterpret_cast<const std::uint8_t *>(descriptor.data()),
           descriptor.size()};
 }
@@ -214,11 +218,26 @@ adoptConfig(llvm::ArrayRef<std::uint8_t> canonicalBytes,
       return fingerprintOrErr.takeError();
     members.push_back({std::move(*pathOrErr), std::move(*fingerprintOrErr)});
   }
+  auto entrypointCountOrErr =
+      reader.u64("power-grid library entrypoint count");
+  if (!entrypointCountOrErr)
+    return entrypointCountOrErr.takeError();
+  if (*entrypointCountOrErr > canonicalBytes.size())
+    return railError("power-grid library entrypoint count is invalid");
+  std::vector<std::string> entrypoints;
+  entrypoints.reserve(static_cast<std::size_t>(*entrypointCountOrErr));
+  for (std::uint64_t index = 0; index < *entrypointCountOrErr; ++index) {
+    auto entrypointOrErr = reader.text("power-grid library entrypoint path");
+    if (!entrypointOrErr)
+      return entrypointOrErr.takeError();
+    entrypoints.push_back(std::move(*entrypointOrErr));
+  }
   if (!reader.empty())
     return railError("resolved config view has trailing bytes");
 
   CadenceVoltusStaticRailProviderBinding binding{std::move(*buildOrErr),
-                                                 std::move(members)};
+                                                 std::move(members),
+                                                 std::move(entrypoints)};
   if (llvm::Error error =
           validateCadenceVoltusStaticRailProviderBinding(binding))
     return std::move(error);
@@ -292,8 +311,26 @@ llvm::Error validateCadenceVoltusStaticRailProviderBinding(
         return character >= 0x20 && character <= 0x7e;
       }))
     return railError("provider build identity is not one normalized line");
-  return external_tool::validateExternalFileTreeRequirement(
-      {"power_grid_library", binding.powerGridLibraryMembers});
+  if (llvm::Error error = external_tool::validateExternalFileTreeRequirement(
+          {"power_grid_library", binding.powerGridLibraryMembers}))
+    return error;
+  if (binding.powerGridLibraryEntrypoints.empty())
+    return railError("power-grid library entrypoint catalog is empty");
+  std::set<std::string> seen;
+  for (const std::string &entrypoint : binding.powerGridLibraryEntrypoints) {
+    if (!seen.insert(entrypoint).second)
+      return railError(
+          "power-grid library entrypoint catalog contains a duplicate");
+    const bool member = llvm::any_of(
+        binding.powerGridLibraryMembers,
+        [&](const external_tool::ExternalFileTreeMember &candidate) {
+          return candidate.relativePath == entrypoint;
+        });
+    if (!member)
+      return railError(
+          "power-grid library entrypoint is absent from the member table");
+  }
+  return llvm::Error::success();
 }
 
 llvm::Expected<CompleteRailAnalysisConfiguration>

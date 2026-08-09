@@ -13,11 +13,13 @@ namespace loom::evaluation::models {
 struct CadenceVoltusStaticRailProviderBinding final {
   std::string stableProviderBuildIdentity;
   std::vector<external_tool::ExternalFileTreeMember> powerGridLibraryMembers;
+  std::vector<std::string> powerGridLibraryEntrypoints;
 
   friend bool operator==(const CadenceVoltusStaticRailProviderBinding &lhs,
                          const CadenceVoltusStaticRailProviderBinding &rhs) {
     return lhs.stableProviderBuildIdentity == rhs.stableProviderBuildIdentity &&
-           lhs.powerGridLibraryMembers == rhs.powerGridLibraryMembers;
+           lhs.powerGridLibraryMembers == rhs.powerGridLibraryMembers &&
+           lhs.powerGridLibraryEntrypoints == rhs.powerGridLibraryEntrypoints;
   }
   friend bool operator!=(const CadenceVoltusStaticRailProviderBinding &lhs,
                          const CadenceVoltusStaticRailProviderBinding &rhs) {

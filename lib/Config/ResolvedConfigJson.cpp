@@ -312,11 +312,17 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
           {"relative_path", member.relativePath},
           {"sha256", loom::formatExternalFileFingerprint(member.fingerprint)}});
     }
+    llvm::json::Array entrypoints;
+    for (const std::string &entrypoint :
+         binding.powerGridLibraryEntrypoints)
+      entrypoints.push_back(entrypoint);
     evaluation.insert({"cadence_voltus_static_rail",
                        llvm::json::Object{{"stable_provider_build_identity",
                                            binding.stableProviderBuildIdentity},
                                           {"power_grid_library_members",
-                                           std::move(members)}}});
+                                           std::move(members)},
+                                          {"power_grid_library_entrypoints",
+                                           std::move(entrypoints)}}});
   }
   return llvm::json::Object{
       {"hardware_target",

@@ -1391,7 +1391,8 @@ parseCadenceVoltusStaticRailBinding(const ConfigSyntax *node) {
       "evaluation.cadence_voltus_static_rail";
   auto fieldsOrErr = ClosedMapping::parse(
       node, prefix,
-      {"stable_provider_build_identity", "power_grid_library_members"});
+      {"stable_provider_build_identity", "power_grid_library_members",
+       "power_grid_library_entrypoints"});
   if (!fieldsOrErr)
     return fieldsOrErr.takeError();
 
@@ -1405,6 +1406,11 @@ parseCadenceVoltusStaticRailBinding(const ConfigSyntax *node) {
                       prefix + ".power_grid_library_members");
   if (!membersOrErr)
     return membersOrErr.takeError();
+  auto entrypointsOrErr =
+      requireSequence(fieldsOrErr->at("power_grid_library_entrypoints"),
+                      prefix + ".power_grid_library_entrypoints");
+  if (!entrypointsOrErr)
+    return entrypointsOrErr.takeError();
 
   std::vector<loom::external_tool::ExternalFileTreeMember> members;
   members.reserve((*membersOrErr)->size());
@@ -1431,8 +1437,20 @@ parseCadenceVoltusStaticRailBinding(const ConfigSyntax *node) {
     members.push_back({std::move(*pathOrErr), std::move(*fingerprintOrErr)});
   }
 
+  std::vector<std::string> entrypoints;
+  entrypoints.reserve((*entrypointsOrErr)->size());
+  for (std::size_t index = 0; index < (*entrypointsOrErr)->size(); ++index) {
+    auto entrypointOrErr = requireScalarString(
+        &(*entrypointsOrErr)->at(index),
+        prefix + ".power_grid_library_entrypoints[" + llvm::Twine(index) +
+            "]");
+    if (!entrypointOrErr)
+      return entrypointOrErr.takeError();
+    entrypoints.push_back(std::move(*entrypointOrErr));
+  }
+
   loom::evaluation::models::CadenceVoltusStaticRailProviderBinding binding{
-      std::move(*buildOrErr), std::move(members)};
+      std::move(*buildOrErr), std::move(members), std::move(entrypoints)};
   if (llvm::Error error = loom::evaluation::models::
           validateCadenceVoltusStaticRailProviderBinding(binding))
     return std::move(error);

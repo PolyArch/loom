@@ -122,7 +122,8 @@ ExternalFileFingerprint fingerprint(std::uint8_t seed) {
 CadenceVoltusStaticRailProviderBinding providerBinding() {
   return {"Voltus 26.10-p001_1",
           {{"libraries/standard_cells.cl", fingerprint(1)},
-           {"technology.cl", fingerprint(2)}}};
+           {"technology.cl", fingerprint(2)}},
+          {"technology.cl", "libraries/standard_cells.cl"}};
 }
 
 ResolvedConfig railResolvedConfig() {
@@ -179,6 +180,11 @@ void exactRequestProjectsOneCompleteConfiguration(const ArtifactStore &store) {
           "projection changed the descriptor-owned rail model config");
   require(test, projected.providerBinding == providerBinding(),
           "projection changed the exact Voltus provider binding");
+  require(test,
+          projected.providerBinding.powerGridLibraryEntrypoints ==
+              std::vector<std::string>({"technology.cl",
+                                        "libraries/standard_cells.cl"}),
+          "projection changed the ordered PGV entrypoints");
   require(
       test,
       projected.processCorner.corner ==
@@ -244,6 +250,33 @@ void ownerAndConfigBoundariesRejectInvalidInputs(const ArtifactStore &store) {
       ResolvedModelBinding::project(cadenceVoltusStaticRailModelDescriptorRef(),
                                     {}, unsortedMembers),
       "sorted by relative path");
+
+  ResolvedConfig missingEntrypoints = railResolvedConfig();
+  missingEntrypoints.evaluation.cadenceVoltusStaticRail
+      ->powerGridLibraryEntrypoints.clear();
+  expectErrorContains(
+      test,
+      ResolvedModelBinding::project(cadenceVoltusStaticRailModelDescriptorRef(),
+                                    {}, missingEntrypoints),
+      "entrypoint catalog is empty");
+
+  ResolvedConfig duplicateEntrypoints = railResolvedConfig();
+  duplicateEntrypoints.evaluation.cadenceVoltusStaticRail
+      ->powerGridLibraryEntrypoints = {"technology.cl", "technology.cl"};
+  expectErrorContains(
+      test,
+      ResolvedModelBinding::project(cadenceVoltusStaticRailModelDescriptorRef(),
+                                    {}, duplicateEntrypoints),
+      "entrypoint catalog contains a duplicate");
+
+  ResolvedConfig foreignEntrypoint = railResolvedConfig();
+  foreignEntrypoint.evaluation.cadenceVoltusStaticRail
+      ->powerGridLibraryEntrypoints = {"missing.cl"};
+  expectErrorContains(
+      test,
+      ResolvedModelBinding::project(cadenceVoltusStaticRailModelDescriptorRef(),
+                                    {}, foreignEntrypoint),
+      "entrypoint is absent from the member table");
 
   const EvaluationModelDescriptor *descriptor =
       cadenceVoltusStaticRailModelDescriptorRef().descriptor();
