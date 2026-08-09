@@ -24,7 +24,7 @@ inline constexpr std::uint64_t kSwitchCrosspointWarningThreshold = 64;
 inline constexpr std::uint64_t kSwitchCrosspointLimit = 256;
 
 /// Returns the exact crosspoint product for a nonempty switch shape within the
-/// Fabric limit. The limit check is performed before multiplication.
+/// Fabric limit. Multiplication uses the shared overflow-safe arithmetic.
 llvm::Expected<std::uint64_t>
 validatedSwitchCrosspointCount(std::uint64_t inputCount,
                                std::uint64_t outputCount);

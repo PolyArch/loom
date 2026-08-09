@@ -1,6 +1,7 @@
 #include "Fabric/IR/FabricOps.h"
 
 #include "Common/IndexWidth.h"
+#include "Fabric/IR/Crosspoint.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "mlir/IR/Builders.h"
@@ -822,6 +823,16 @@ LogicalResult PeOp::verify() {
           "named fabric.pe terminator must not carry a 'declared_types' "
           "attribute; 'function_type' alone owns the PE result ports");
   }
+
+  auto crosspoints = validatedPeBoundaryCrosspointCount(declaredIns.size(),
+                                                        declaredOuts.size());
+  if (!crosspoints)
+    return emitOpError(llvm::toString(crosspoints.takeError()));
+  if (*crosspoints > kPeCrosspointWarningThreshold)
+    mlir::emitWarning(getLoc())
+        << "fabric.pe boundary selectors have " << *crosspoints
+        << " crosspoints; values above " << kPeCrosspointWarningThreshold
+        << " may be implementation-inefficient";
 
   return success();
 }

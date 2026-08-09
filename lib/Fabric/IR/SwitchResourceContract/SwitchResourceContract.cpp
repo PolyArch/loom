@@ -1,5 +1,7 @@
 #include "Fabric/IR/SwitchResourceContract.h"
 
+#include "Fabric/IR/Crosspoint.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
@@ -42,23 +44,16 @@ std::vector<RequesterKey> requesterKeys(std::uint32_t inputCount) {
 llvm::Expected<std::uint64_t>
 fabric::validatedSwitchCrosspointCount(std::uint64_t inputCount,
                                        std::uint64_t outputCount) {
-  if (inputCount == 0 || outputCount == 0)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "switch crossbar dimensions must be "
-                                   "non-empty");
-  if (inputCount > std::numeric_limits<std::uint64_t>::max() / outputCount)
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "switch crossbar exceeds maximum %llu crosspoints",
-        static_cast<unsigned long long>(kSwitchCrosspointLimit));
-  const std::uint64_t crosspoints = inputCount * outputCount;
-  if (crosspoints > kSwitchCrosspointLimit)
+  auto crosspoints = checkedCrosspointCount(inputCount, outputCount);
+  if (!crosspoints)
+    return crosspoints.takeError();
+  if (*crosspoints > kSwitchCrosspointLimit)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "switch crossbar has %llu crosspoints, exceeding maximum %llu",
-        static_cast<unsigned long long>(crosspoints),
+        static_cast<unsigned long long>(*crosspoints),
         static_cast<unsigned long long>(kSwitchCrosspointLimit));
-  return crosspoints;
+  return *crosspoints;
 }
 
 llvm::Expected<SwitchResourceContract>

@@ -13,6 +13,7 @@ add_subdirectory(ResourceContract)
 add_subdirectory(BoundaryTransfer)
 add_subdirectory(FifoResourceContract)
 add_subdirectory(TemporalOperandBuffer)
+add_subdirectory(Crosspoint)
 add_subdirectory(SwitchResourceContract)
 
 add_mlir_library(MLIRFabricEnums
@@ -113,6 +114,7 @@ add_mlir_dialect_library(MLIRFabric
 target_link_libraries(MLIRFabric PUBLIC
   LoomCommon
   LoomFabricBoundaryDataPath
+  LoomFabricCrosspoint
   LoomFabricFuCapabilityDomain
   LoomFabricHardwareDomainContracts
   LoomFabricImplementationFamily

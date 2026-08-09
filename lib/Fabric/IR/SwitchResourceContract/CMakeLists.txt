@@ -8,6 +8,7 @@ target_include_directories(LoomFabricSwitchResourceContract PUBLIC
 
 target_link_libraries(LoomFabricSwitchResourceContract PUBLIC
   LLVM
+  LoomFabricCrosspoint
   LoomFabricResourceContract
   MLIRFabricEnums
 )

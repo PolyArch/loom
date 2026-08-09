@@ -1,9 +1,11 @@
 #include "Fabric/IR/SwitchResourceContract.h"
+#include "Fabric/IR/Crosspoint.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -142,6 +144,38 @@ void crosspointProductOwnsTheShapeLimit() {
                  "crosspoint");
 }
 
+void sharedCrosspointArithmeticIsOverflowSafe() {
+  const char *test = __func__;
+  require(test, take(test, fabric::checkedCrosspointCount(4, 4)) == 16,
+          "shared crosspoint arithmetic changed an exact product");
+  auto empty = fabric::checkedCrosspointCount(0, 4);
+  require(test, !empty, "empty crosspoint dimension was accepted");
+  require(test,
+          llvm::toString(empty.takeError()).find("must be non-empty") !=
+              std::string::npos,
+          "empty crosspoint diagnostic was not owner-derived");
+  require(test,
+          take(test, fabric::validatedPeBoundaryCrosspointCount(4, 5)) == 20 &&
+              take(test, fabric::validatedPeBoundaryCrosspointCount(8, 8)) ==
+                  64,
+          "PE crosspoint policy rejected a valid boundary");
+
+  auto oversized = fabric::validatedPeBoundaryCrosspointCount(9, 8);
+  require(test, !oversized, "oversized PE crosspoint product was accepted");
+  require(test,
+          llvm::toString(oversized.takeError()).find("maximum 64") !=
+              std::string::npos,
+          "oversized PE diagnostic lost the exact limit");
+
+  auto overflow = fabric::checkedCrosspointCount(
+      std::numeric_limits<std::uint64_t>::max(), 2);
+  require(test, !overflow, "crosspoint multiplication overflow was accepted");
+  require(test,
+          llvm::toString(overflow.takeError()).find("overflows u64") !=
+              std::string::npos,
+          "crosspoint overflow diagnostic was not owner-derived");
+}
+
 } // namespace
 
 int main() {
@@ -149,6 +183,7 @@ int main() {
   fanInWithoutPolicyIsRejected();
   spatialAlternativesShareOneConfigurationRequester();
   crosspointProductOwnsTheShapeLimit();
+  sharedCrosspointArithmeticIsOverflowSafe();
   llvm::outs() << "switch resource contract ok\n";
   return EXIT_SUCCESS;
 }

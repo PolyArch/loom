@@ -15,6 +15,7 @@
 
 #include "Fabric/IR/FabricOps.h"
 
+#include "Fabric/IR/Crosspoint.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -745,9 +746,17 @@ LogicalResult verifyPeTemporal(PeOp op) {
     return op.emitOpError(
         "body requires at least one fabric.fu or fabric.instantiate");
 
-  if (failed(verifyTemporalSwConfigs(op, numFu, K, L, maxFuInputs,
-                                     maxFuOutputs)))
+  if (failed(
+          verifyTemporalSwConfigs(op, numFu, K, L, maxFuInputs, maxFuOutputs)))
     return failure();
+  auto crosspoints = validatedPeBoundaryCrosspointCount(K, L);
+  if (!crosspoints)
+    return op.emitOpError(llvm::toString(crosspoints.takeError()));
+  if (*crosspoints > kPeCrosspointWarningThreshold)
+    mlir::emitWarning(op.getLoc())
+        << "fabric.pe boundary selectors have " << *crosspoints
+        << " crosspoints; values above " << kPeCrosspointWarningThreshold
+        << " may be implementation-inefficient";
   return success();
 }
 

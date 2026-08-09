@@ -171,18 +171,18 @@ buildWideSyncDataflow(mlir::MLIRContext &context) {
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   dataflow.graph private @wide_sync(
       %start: none, %v0: i32, %v1: i32, %v2: i32, %v3: i32,
-      %v4: i32, %v5: i32, %v6: i32, %v7: i32)
-      -> (i32, i32, i32, i32, i32, i32, i32, i32)
-      attributes {input_segments = array<i32: 8, 0, 0>,
-                  result_segments = array<i32: 8, 0, 0>} {
-    %result:9 = dataflow.sync %start, %v0, %v1, %v2, %v3,
-        %v4, %v5, %v6, %v7
-        : (none, i32, i32, i32, i32, i32, i32, i32, i32)
-          -> (none, i32, i32, i32, i32, i32, i32, i32, i32)
+      %v4: i32, %v5: i32, %v6: i32)
+      -> (i32, i32, i32, i32, i32, i32, i32)
+      attributes {input_segments = array<i32: 7, 0, 0>,
+                  result_segments = array<i32: 7, 0, 0>} {
+    %result:8 = dataflow.sync %start, %v0, %v1, %v2, %v3,
+        %v4, %v5, %v6
+        : (none, i32, i32, i32, i32, i32, i32, i32)
+          -> (none, i32, i32, i32, i32, i32, i32, i32)
     dataflow.graph.return values(
         %result#1, %result#2, %result#3, %result#4,
-        %result#5, %result#6, %result#7, %result#8
-        : i32, i32, i32, i32, i32, i32, i32, i32)
+        %result#5, %result#6, %result#7
+        : i32, i32, i32, i32, i32, i32, i32)
         streams() memories() complete(%result#0 : none)
   }
 }
@@ -857,7 +857,7 @@ void wideTokenSyncUsesFamilyCorrespondenceDomain() {
   auto dataflowArtifact = buildWideSyncDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
-  const auto fabric = buildTokenSyncFabric(store, 9);
+  const auto fabric = buildTokenSyncFabric(store, 8);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 1;
