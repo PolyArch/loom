@@ -1,0 +1,3 @@
+# REQUIRES: quartus-prime-pro-26.1
+# RUN: rm -rf %t
+# RUN: %loom-quartus-prime-test --real-smoke %t "%quartus-module" "%quartus-version" "%quartus-provider-build" "%quartus-device"
