@@ -279,6 +279,17 @@ backpressure contract. A generic shell may not consume an inactive operand,
 publish an inactive result, advance logical state while blocked, or convert
 an operation-specific state machine into a stateless pipeline.
 
+`FixedVectorParallelize` and `FixedVectorSerialize` consume the registered
+ordered production groups rather than the one-tuple shell. Their provider
+computes only the schema-owned data, mask, phase, and adapter-state relation.
+The common skeleton owns the capacity-one production slot and the logical-use
+claim. It accepts the provider's contract-derived final-production signal only
+with a published group, retains the claim across non-final handoffs, permits
+the next group to replace a released group without a bubble, and admits a new
+logical firing only after the accepted firing has no remaining group. A
+provider-local busy convention, hidden output queue, or independently decoded
+lane counter is not a valid substitute.
+
 The `LoopStream`, `LoopCarry`, `LoopInvariant`, and `LoopGate` providers are
 dispatched by those exact family IDs. They consume the operation schema's
 closed typed transition-case descriptors; they must not reconstruct a second

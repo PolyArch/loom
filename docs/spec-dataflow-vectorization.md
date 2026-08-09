@@ -226,6 +226,56 @@ A false group phase consumes neither vector nor mask. It publishes one false
 scalar phase and resets. Together, `parallelize` and `serialize` preserve the
 order of active scalar items and activation boundaries.
 
+### Canonical Ordered Production
+
+The registered `ActorHandshakeCase` projection owns both atomic operand
+consumption and the complete ordered result production of one logical firing.
+Its result side is an ordered array of production groups:
+
+```text
+ActorResultProductionGroup {
+  active_results : nonempty ordered array<result_ordinal>
+  repeat : Once
+         | ForEachDefinedOneLane { mask_input_ordinal }
+}
+```
+
+`Once` publishes one atomic tuple over exactly `active_results`.
+`ForEachDefinedOneLane` publishes one such tuple for each defined-one lane of
+the named rank-one `vector<Nxi1>` operand, in ascending lane order. Defined
+zero lanes publish nothing. Poison or undef mask lanes retain the exceptional
+mask rule above and cannot be converted to an arbitrary production count.
+An empty production-group array is a firing with no result token.
+
+The legacy set-like view of active results is derived as the sorted unique
+union of every group's `active_results`; it is not an independently stored
+authority. It remains sufficient for static reachability and handshake-cycle
+analysis, while retirement and execution consume the ordered groups.
+
+The four canonical `parallelize` cases are:
+
+```text
+accumulate    : []
+full          : [Once(vector, mask, group_phase)]
+empty_close   : [Once(group_phase)]
+partial_close : [Once(vector, mask, group_phase), Once(group_phase)]
+```
+
+The first `partial_close` group carries a true phase and the second carries the
+terminal false phase. The two canonical `serialize` cases are:
+
+```text
+active_group : [ForEachDefinedOneLane { mask_input = mask }(data,
+                scalar_phase)]
+close        : [Once(scalar_phase)]
+```
+
+Every repeated `active_group` tuple carries the selected scalar data lane and
+a true scalar phase. A logical firing retires only after its final production
+group handoff. A firing whose ordered projection produces no tuple retires
+after its state transition commits. Backpressure may delay a group but cannot
+reorder it, duplicate it, skip a defined-one lane, or expose a later group.
+
 These actors are semantic cardinality adapters. Physical serialization,
 packetization, or a narrow Fabric port is not a reason to insert either actor.
 

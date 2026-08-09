@@ -177,6 +177,29 @@ already owns. Those dialects remain available when a future source contract
 actually requires their semantics; they are not mandatory transit layers for
 an already scheduled Fabric.
 
+## Why Ordered Cardinality Uses One Shared Claim Boundary
+
+`parallelize` and `serialize` are unusual because one logical firing can
+publish several ordered token tuples. Treating each tuple as an ordinary
+one-cycle firing would release the Fabric claim too early and would lose the
+software firing identity. Keeping a provider-private continuation flag would
+hide the same lifetime from Fabric, Mapping, and common backpressure logic.
+
+The distilled boundary keeps the distinctions already present. Dataflow owns
+the ordered production groups and their runtime multiplicity. The concrete
+Fabric operation owns one claim envelope, adapter state, commit, and final
+release. The common skeleton owns the physical holding slot and retires the
+claim only after the provider identifies the Dataflow-derived final group.
+This composes three existing owners without a second actor or scheduler.
+
+Two broader alternatives were rejected. Expanding each lane or terminal phase
+into a separate Dataflow actor would change canonical firing identity and make
+these implementation families redundant. A generic provider-managed
+microtransaction engine would add another state-machine protocol even though
+the registered production projection already supplies the only sequencing
+needed. Both add conceptual surface without representing another observable
+behavior.
+
 ## Why Non-Defined Values Need No RTL Sideband
 
 Poison and Undef describe where the software semantic model no longer requires

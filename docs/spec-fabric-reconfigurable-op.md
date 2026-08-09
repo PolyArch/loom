@@ -749,6 +749,34 @@ concrete Fabric resource owns only the physical state capacity, holding
 resources, atomic transition use patterns, exact transition timing, and
 backpressure behavior needed to implement that schema.
 
+It also does not apply to `dataflow.parallelize` or `dataflow.serialize`.
+Those schemas own the ordered production groups defined by the Dataflow vector
+specification. Their two concrete implementation families share one
+ordered-cardinality resource shape: one owner-defined UsePattern per canonical
+`ActorHandshakeCase`, the exact adapter state, and one capacity-one result
+holding slot for at most one production group. The family-specific contract
+selects the schema's case ordinal mechanically; it does not encode another
+phase decoder, mask traversal, lane order, or production table.
+
+Acceptance consumes exactly the selected case's operands. Its state transition
+commits at `t + 1`, and the first nonempty production group may become visible
+at that coordinate. A group occupies the complete result slot until every
+active result in that group handshakes. A following group may replace it in
+the same coordinate as final handoff, but a different logical firing cannot
+acquire the adapter while any production group of the accepted firing remains.
+The one claim envelope is released only by the final group handoff. A case
+with no production group commits and retires at `t + 1` without manufacturing
+an output claim.
+
+For `FixedVectorParallelize`, the partial-close pattern therefore retains its
+claim across the true `(vector, mask, group_phase)` group and the following
+false `group_phase` group. For `FixedVectorSerialize`, the active-group pattern
+retains its claim across every defined-one mask lane in ascending order; an
+all-zero mask commits and retires without publishing a tuple. Published
+payload, validity, current lane, pending group state, and the final-production
+decision remain stable while blocked. Reset discards both durable adapter
+state and any active-use-local production state.
+
 For a stateful transition, blocked result capacity cannot cause early operand
 consumption or a state update. Only results produced by the selected
 transition create output obligations; an inactive result never backpressures
