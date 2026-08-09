@@ -834,6 +834,14 @@ single validation boundary.
 Instruction contexts qualify resident compute configuration because one
 temporal occurrence may retain different settings in different contexts.
 
+SpatialMapping cannot own a System-qualified slot because its exact hardware
+binding is a reusable Module. Keeping its projection Module-local preserves
+that reuse. SystemMapping already owns the execution binding that selects each
+physical SpatialCore occurrence, so qualifying the complete local slot there
+is mechanical and introduces no new decision. Qualifying only the field would
+lose the residency invariant; copying values into SystemMapping would create a
+second configuration authority.
+
 Residency is part of the Fabric-qualified slot because a raw
 `InstructionContextRef` is neither universal nor optional by convention.
 Static route tables and component modes have no PE context, while a Temporal

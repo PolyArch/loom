@@ -281,14 +281,21 @@ values. A missing value, an unencodable value, or two different values for one
 slot is `Invalid` Mapping input. Distinct independently configurable contexts
 remain distinct slots.
 
-The slot is the exact `FabricPhysicalConfigurationSlotRef` owned by
-`docs/spec-configuration-deployment.md`. Static fields carry `Static` residency
-and are derived once from the complete Mapping, including joint switch,
-boundary, FIFO, memory, and Temporal PE tables. FU and operation fields under a
-Temporal PE use either one Static slot or one slot per resident
-`InstructionContextRef`, mechanically selected by that PE's immutable
+The SpatialMapping slot is the exact Module-local
+`FabricConfigurationSlotRef` owned by `docs/spec-fabric-identity.md`. Static
+fields carry `Static` residency and are derived once from the complete Mapping,
+including joint switch, boundary, FIFO, memory, and Temporal PE tables. FU and
+operation fields under a Temporal PE use either one Static slot or one slot per
+resident `InstructionContextRef`, mechanically selected by that PE's immutable
 `fu_config_mode`. A Mapping cannot attach a context to another owner, collapse
 required resident slots, or duplicate a shared static value per context.
+
+SystemMapping does not rederive those values. It resolves each imported
+SpatialMapping projection and qualifies the complete local slot with the exact
+`SpatialCoreOccurrenceRef` selected by its execution binding, producing the
+`FabricPhysicalConfigurationSlotRef` consumed by ConfigurationABI. Reusing one
+SpatialMapping for several occurrences therefore yields distinct physical
+slots with byte-identical local values rather than one aliased slot.
 
 For a configured Spatial PE, the same layer projects the PE-owned activation
 field, every input/output selector field of the selected FU, and that FU's

@@ -352,10 +352,18 @@ FabricConfigurationResidency =
     Static
   | InstructionContext(InstructionContextRef)
 
-FabricPhysicalConfigurationSlotRef = {
-  field : FabricPhysicalConfigurationFieldRef
+FabricConfigurationSlotRef = {
+  field : FabricSemanticConfigFieldRef
   residency : FabricConfigurationResidency
 }
+
+FabricPhysicalConfigurationSlotRef =
+    DirectSystemSlot(FabricConfigurationSlotRef
+      whose field owner is declared by the System root)
+  | SpatialCoreInternalSlot(
+      SpatialCoreOccurrenceRef,
+      FabricConfigurationSlotRef whose field owner is declared by the
+      imported Module)
 ```
 
 The direct variants admit only owners or fields declared by the System root;
@@ -365,16 +373,23 @@ local-kind ordinal. This document owns them so ConfigurationABI,
 HardwareImplementation, Mapping, and RTL cannot define competing physical
 owner or field unions.
 
-`FabricPhysicalConfigurationSlotRef` is the exact physical storage identity
-for one semantic field. Its canonical bytes are the canonical physical field
-bytes followed by a `u32be` residency tag: zero for `Static`, or one followed
-by the canonical `InstructionContextRef` bytes. Fabric derives the only legal
-residency set from immutable resource shape. Static fields admit exactly the
-`Static` variant. A context-banked FU or operation field admits exactly the
-resident contexts of its owning Temporal PE, and the carried context must name
-that PE. No sentinel context, absent-context convention, or caller-selected
-residency is legal. The slot composition receives no standalone local-kind
-ordinal.
+`FabricConfigurationSlotRef` is one Module- or System-local semantic storage
+identity. Its canonical bytes are the canonical local field bytes followed by
+a `u32be` residency tag: zero for `Static`, or one followed by the canonical
+`InstructionContextRef` bytes. Fabric derives the only legal residency set
+from immutable resource shape. Static fields admit exactly the `Static`
+variant. A context-banked FU or operation field admits exactly the resident
+contexts of its owning Temporal PE, and the carried context must name that PE.
+No sentinel context, absent-context convention, or caller-selected residency
+is legal.
+
+`FabricPhysicalConfigurationSlotRef` qualifies that complete local slot, not
+only its field. Its direct variant is valid only for a System-local field. Its
+SpatialCore variant carries the selected occurrence plus one slot valid in the
+exact imported Module. The context remains Module-local and is never rebound
+or renumbered. The physical slot's canonical bytes are its `u32be` union tag,
+the direct local slot or exact `SpatialCoreOccurrenceRef`, and then the local
+slot bytes. Both slot compositions receive no standalone local-kind ordinal.
 
 Hardware-domain membership uses this closed composition:
 

@@ -146,6 +146,16 @@ resident slot, or use a context owned by another PE. This one distinction is
 enough to represent both shared physical FU configuration and context-banked
 configuration without a sentinel context or duplicate field identity.
 
+A SpatialMapping's `ConfiguredHardwareProjection` contains Module-local
+`FabricConfigurationSlotRef` values because SpatialMapping binds a Module
+root, not a System occurrence. SystemMapping resolves each imported projection
+through its exact execution binding and mechanically qualifies the complete
+local slot with the selected `SpatialCoreOccurrenceRef`. Configuration-image
+finalization consumes only those resulting
+`FabricPhysicalConfigurationSlotRef` values. It cannot attach an occurrence to
+a field without the exact imported SpatialMapping binding or renumber a local
+instruction context.
+
 The ABI describes how every Fabric-owned semantic field is represented and
 installed. It does not select a field value, reference a Mapping, or constitute
 a configured hardware state. A selected value exists only in the transient
