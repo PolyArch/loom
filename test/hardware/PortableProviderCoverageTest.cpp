@@ -21,6 +21,7 @@
 #include "Hardware/RTL/Providers/LoopGate.h"
 #include "Hardware/RTL/Providers/LoopInvariant.h"
 #include "Hardware/RTL/Providers/LoopStream.h"
+#include "Hardware/RTL/Providers/MathRounding.h"
 #include "Hardware/RTL/Providers/MathRoot.h"
 #include "Hardware/RTL/Providers/ScalarBitReinterpret.h"
 #include "Hardware/RTL/Providers/ScalarFloatFma.h"
@@ -122,6 +123,8 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
       loom::hardware::rtl::registerPortableLoopGateProvider(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableLoopStreamProvider(registry));
+  requireRegistration(
+      loom::hardware::rtl::registerPortableMathRoundingProviders(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableMathRootProviders(registry));
   requireRegistration(
@@ -234,6 +237,11 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::ScalarUnsignedIntegerDivRem,
       ::fabric::ImplementationFamilyId::ScalarFloatDivide,
       ::fabric::ImplementationFamilyId::ScalarFloatRemainder,
+      ::fabric::ImplementationFamilyId::ScalarMathFloor,
+      ::fabric::ImplementationFamilyId::ScalarMathCeil,
+      ::fabric::ImplementationFamilyId::ScalarMathRound,
+      ::fabric::ImplementationFamilyId::ScalarMathTrunc,
+      ::fabric::ImplementationFamilyId::ScalarMathRoundEven,
       ::fabric::ImplementationFamilyId::ScalarMathSqrt,
       ::fabric::ImplementationFamilyId::ScalarMathRsqrt,
       ::fabric::ImplementationFamilyId::ScalarIntegerSaturatingAddSub,

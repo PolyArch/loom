@@ -22,6 +22,7 @@
 #include "Hardware/RTL/Providers/LoopGate.h"
 #include "Hardware/RTL/Providers/LoopInvariant.h"
 #include "Hardware/RTL/Providers/LoopStream.h"
+#include "Hardware/RTL/Providers/MathRounding.h"
 #include "Hardware/RTL/Providers/MathRoot.h"
 #include "Hardware/RTL/Providers/ScalarBitReinterpret.h"
 #include "Hardware/RTL/Providers/ScalarFloatFma.h"
@@ -88,6 +89,8 @@ registerPortableOperationProviders(FabricOperationProviderRegistry &registry) {
   if (llvm::Error error = registerPortableLoopGateProvider(candidate))
     return error;
   if (llvm::Error error = registerPortableLoopStreamProvider(candidate))
+    return error;
+  if (llvm::Error error = registerPortableMathRoundingProviders(candidate))
     return error;
   if (llvm::Error error = registerPortableMathRootProviders(candidate))
     return error;
