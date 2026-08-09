@@ -1,0 +1,17 @@
+# RUN: %loom-small-cc -emit-llvm -S -O1 -gline-tables-only -fno-math-errno %S/../app/attention/main_func.c -o %t.ll
+# RUN: %loom-raise %t.ll -o %t.s0.mlir
+# RUN: loom-source-backed-attention-channel-test %t.s0.mlir %t.channel.mlir
+# RUN: FileCheck %s --input-file=%t.channel.mlir --check-prefix=DATAFLOW
+# RUN: mkdir -p %t.store
+# RUN: loom-dfg-run --builtin=small --artifact-store=%t.store \
+# RUN:   --candidate-jobs=4 --operator-protocol-symbol=attention_kernel \
+# RUN:   --expected-entry-result=0 --canonical-output=%t.runner.mlir \
+# RUN:   --output=%t.json %t.ll
+# RUN: %python %S/check_source_to_dataflow_anchor.py --report=%t.json \
+# RUN:   --source=%S/../app/attention/main_func.c
+
+# DATAFLOW-DAG: dataflow.channel.create
+# DATAFLOW-DAG: dataflow.graph private
+# DATAFLOW-DAG: dataflow.graph.launch
+# DATAFLOW-DAG: stream_inputs(
+# DATAFLOW-DAG: stream_outputs(

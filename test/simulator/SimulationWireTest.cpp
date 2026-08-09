@@ -964,10 +964,9 @@ void streamHorizonAndCardinality() {
     fail(test, "typed stream admission failed: " +
                    llvm::toString(report.takeError()));
   require(test,
-          report->status == "unsupported" && report->diagnostics.size() == 1 &&
-              report->diagnostics.front() ==
-                  "typed runtime stream termination is unsupported",
-          "DFG-sim must fail closed until typed stream horizons are modeled");
+          report->status == "pass" && report->diagnostics.empty() &&
+              report->dynamicWorkItems == 2,
+          "DFG-sim did not execute the exact finite runtime stream prefix");
 }
 
 // (d) Canonical object-ordinal invariance under author ordering and

@@ -459,6 +459,15 @@ OwnershipScopeAnalysis analyzeOwnershipScope(mlir::Operation *operation) {
   return {callable, OwnershipScopeRejection::None};
 }
 
+bool isExactDirectCallLeafScope(mlir::ModuleOp module,
+                                mlir::Operation *operation) {
+  if (!llvm::isa_and_nonnull<mlir::LLVM::CallOp>(operation))
+    return false;
+  std::optional<detail::ExactDirectCallSiteInliningCandidate> candidate =
+      detail::findExactDirectCallSiteInliningCandidate(module, operation);
+  return candidate && candidate->callSite == operation;
+}
+
 /// Returns the ordinary LLVM callable that owns the selected operation after
 /// proving that the operation is an ownership-free structured entity.
 llvm::Expected<mlir::LLVM::LLVMFuncOp>
@@ -883,7 +892,16 @@ materializePreparedOperation(PreparedSpatialOwnershipSelection &prepared,
   builder.setInsertionPointToEnd(boundary->spatialEntry);
   for (mlir::arith::ConstantOp constant : closure.constants)
     builder.clone(*constant, mapping);
-  builder.clone(*operation, mapping);
+  auto exactClosure = llvm::dyn_cast<mlir::scf::ExecuteRegionOp>(operation);
+  if (exactClosure) {
+    if (!exactClosure.getRegion().hasOneBlock())
+      return invalid("direct-call exact closure is not single-block");
+    for (mlir::Operation &nested :
+         exactClosure.getRegion().front().without_terminator())
+      builder.clone(nested, mapping);
+  } else {
+    builder.clone(*operation, mapping);
+  }
   if (llvm::Error error =
           propagateClonedBlockBindings(prepared, mapping, sourceBindingCount))
     return error;
@@ -895,8 +913,25 @@ materializePreparedOperation(PreparedSpatialOwnershipSelection &prepared,
     return error;
   llvm::SmallVector<mlir::Value, 4> yieldedValues;
   yieldedValues.reserve(closure.liveOuts.size());
-  for (mlir::Value liveOut : closure.liveOuts)
-    yieldedValues.push_back(mapping.lookup(liveOut));
+  if (exactClosure) {
+    auto yield = llvm::dyn_cast<mlir::scf::YieldOp>(
+        exactClosure.getRegion().front().getTerminator());
+    if (!yield || yield.getNumOperands() != exactClosure.getNumResults())
+      return invalid("direct-call exact closure has an invalid yield");
+    for (mlir::Value liveOut : closure.liveOuts) {
+      auto result = llvm::dyn_cast<mlir::OpResult>(liveOut);
+      if (!result || result.getOwner() != exactClosure.getOperation() ||
+          result.getResultNumber() >= yield.getNumOperands())
+        return invalid("direct-call exact closure has an invalid live result");
+      mlir::Value yielded = yield.getOperand(result.getResultNumber());
+      if (!mapping.contains(yielded))
+        return invalid("direct-call exact closure result was not cloned");
+      yieldedValues.push_back(mapping.lookup(yielded));
+    }
+  } else {
+    for (mlir::Value liveOut : closure.liveOuts)
+      yieldedValues.push_back(mapping.lookup(liveOut));
+  }
   loom::SpatialYieldOp::create(builder, location, yieldedValues,
                                mlir::ValueRange{});
 
@@ -1183,8 +1218,10 @@ enumerateSpatialOwnershipScopeDomainImpl(
       scopeOperations.push_back(entity.operation);
       continue;
     }
-    if (analyzeOwnershipScope(entity.operation).rejection !=
-        OwnershipScopeRejection::None)
+    OwnershipScopeAnalysis analysis = analyzeOwnershipScope(entity.operation);
+    if (analysis.rejection != OwnershipScopeRejection::None &&
+        !(analysis.rejection == OwnershipScopeRejection::NoRegion &&
+          isExactDirectCallLeafScope(parent.module(), entity.operation)))
       continue;
     SpatialOwnershipScope scope{entity.reference};
     if (std::optional<std::string> rejection =
@@ -1301,8 +1338,9 @@ enumerateSpatialOwnershipDecisionDomain(
   if (auto callable = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(operation)) {
     if (llvm::Error error = verifyEligibleCallable(callable))
       return std::move(error);
-  } else if (auto callable = eligibleOwningCallable(operation); !callable) {
-    return callable.takeError();
+  } else if (!isExactDirectCallLeafScope(parent.module(), operation)) {
+    if (auto callable = eligibleOwningCallable(operation); !callable)
+      return callable.takeError();
   }
 
   llvm::SmallVector<std::optional<ForallOwnershipShape>, 2> forallShapes;
@@ -1442,10 +1480,15 @@ prepareSpatialOwnershipSelection(
   if (!selection)
     return selection.takeError();
   mlir::Operation *operation = selection->operation;
+  const bool directCallRoot =
+      isExactDirectCallLeafScope(selection->clone.get(), operation);
+  if (directCallRoot && !decision.directCallInlining)
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  "direct-call root requires its exact inline coordinate");
   if (auto function = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(operation)) {
     if (llvm::Error error = verifyEligibleCallable(function))
       return std::move(error);
-  } else {
+  } else if (!directCallRoot) {
     if (auto callable = eligibleOwningCallable(operation); !callable)
       return callable.takeError();
   }
@@ -1480,6 +1523,18 @@ prepareSpatialOwnershipSelection(
       return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                     "pinned MLIR inliner rejected the exact direct call");
     operation = (*inlined)->selection;
+    if ((*inlined)->exactClosureBlock) {
+      auto source = llvm::find_if(
+          selection->sourceBlocks,
+          [&](const PreparedSpatialOwnershipSelection::SourceBlockBinding
+                  &binding) {
+            return binding.candidateBlock == operation->getBlock();
+          });
+      if (source == selection->sourceBlocks.end())
+        return invalid("direct-call root has no source block lineage");
+      selection->sourceBlocks.push_back(
+          {(*inlined)->exactClosureBlock, source->parentBlock});
+    }
     if (llvm::Error error = propagateInlinedBlockBindings(
             selection->sourceBlocks, (*inlined)->clonedBlocks,
             sourceBindingCount))
@@ -1503,10 +1558,16 @@ prepareSpatialOwnershipSelection(
   if (detail::containsGeneralCall(operation))
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                   "selected scope contains an unresolved general call");
-  if (std::optional<std::string> rejection =
-          lowering::explainGraphRegionStructuralRejection(operation))
+  std::optional<std::string> structuralRejection;
+  if (llvm::isa<mlir::scf::ExecuteRegionOp>(operation))
+    structuralRejection =
+        lowering::explainGraphRegionStructuralRejection(operation, operation);
+  else
+    structuralRejection =
+        lowering::explainGraphRegionStructuralRejection(operation);
+  if (structuralRejection)
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                  *rejection);
+                  *structuralRejection);
   if (llvm::Error error = detail::materializeDataLayoutEndiannessProjection(
           selection->clone.get()))
     return std::move(error);

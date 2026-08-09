@@ -16,6 +16,7 @@
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/StandardFindings.h"
+#include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Simulator/SimulationArtifacts.h"
 
@@ -329,16 +330,30 @@ struct CompletedDataflowSelection final {
 using DataflowSelectionOutcome =
     std::variant<CompletedDataflowSelection, IncompletePreMappingExploration>;
 
-llvm::Expected<DataflowSelectionOutcome> exploreDataflowCandidates(
-    const ArtifactRootReference &d0,
-    const ArtifactRootReference &structuredParent,
-    const ArtifactRootReference &fabric, const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
-    const StructuredOwnershipTopKSelection &selection,
-    const ArtifactStore &store, const BlobStore &blobs) {
+llvm::Expected<DataflowSelectionOutcome>
+exploreDataflowCandidates(const ArtifactRootReference &d0,
+                          const ArtifactRootReference &structuredParent,
+                          const fabric::FinalizedFabricRoot &fabric,
+                          const ArtifactRootReference &workload,
+                          const ArtifactRootReference &runtimeInput,
+                          const ResolvedConfig &config,
+                          const StructuredOwnershipTopKSelection &selection,
+                          StructuredOwnershipSelectionMode selectionMode,
+                          const ArtifactStore &store, const BlobStore &blobs) {
+  bool requiresRewriteExploration = true;
+  if (selectionMode == StructuredOwnershipSelectionMode::SemanticConformance) {
+    auto initial = dataflow::importCanonicalDataflow(d0, store);
+    if (!initial)
+      return initial.takeError();
+    frontend::FabricCapabilityIndex capabilities(fabric.view());
+    auto missing = capabilities.firstInadmissibleActor(*initial);
+    if (!missing)
+      return missing.takeError();
+    requiresRewriteExploration = missing->has_value();
+  }
   auto analytic =
       prepareCanonicalDataflowFabricAnalyticEvidenceObligationTemplate(
-          d0, fabric, config, store);
+          d0, fabric.reference(), config, store);
   if (!analytic)
     return analytic.takeError();
   auto functional =
@@ -373,22 +388,39 @@ llvm::Expected<DataflowSelectionOutcome> exploreDataflowCandidates(
   planConfig.dse.evidenceObligationTemplates = obligations->templates;
   planConfig.dse.objectiveCatalogs = std::move(*objectives);
   planConfig.dse.qualityGatePolicies = {*gate};
-  planConfig.dse.planNodes = {
-      GeneratePlanNodeDefinition{
-          dataflowRewriteCandidateGeneratorDescriptor().reference(),
-          {ExactPlanArtifacts{{d0}}, ExactPlanArtifacts{{fabric}}},
-          generatorConfig->canonicalViewBytes().vec(),
-          generatorConfig->digest()},
-      PromotePlanNodeDefinition{
-          dataflowEvaluationPromotionAcquisitionDescriptor().reference(),
-          {PlanOutputRef{0, 0}, ExactPlanArtifacts{{structuredParent}},
-           ExactPlanArtifacts{{fabric}}, ExactPlanArtifacts{{workload}},
-           ExactPlanArtifacts{{runtimeInput}}},
-          acquisitionConfig->canonicalViewBytes().vec(),
-          acquisitionConfig->digest(),
-          QualityGatePolicyRef(0),
-          TopKSelection{0, selection.k},
-          PromotePurpose::CandidateSelection}};
+  std::uint64_t selectionNode = 0;
+  if (requiresRewriteExploration) {
+    planConfig.dse.planNodes = {
+        GeneratePlanNodeDefinition{
+            dataflowRewriteCandidateGeneratorDescriptor().reference(),
+            {ExactPlanArtifacts{{d0}},
+             ExactPlanArtifacts{{fabric.reference()}}},
+            generatorConfig->canonicalViewBytes().vec(),
+            generatorConfig->digest()},
+        PromotePlanNodeDefinition{
+            dataflowEvaluationPromotionAcquisitionDescriptor().reference(),
+            {PlanOutputRef{0, 0}, ExactPlanArtifacts{{structuredParent}},
+             ExactPlanArtifacts{{fabric.reference()}},
+             ExactPlanArtifacts{{workload}},
+             ExactPlanArtifacts{{runtimeInput}}},
+            acquisitionConfig->canonicalViewBytes().vec(),
+            acquisitionConfig->digest(),
+            QualityGatePolicyRef(0),
+            TopKSelection{0, selection.k},
+            PromotePurpose::CandidateSelection}};
+    selectionNode = 1;
+  } else {
+    planConfig.dse.planNodes = {PromotePlanNodeDefinition{
+        dataflowEvaluationPromotionAcquisitionDescriptor().reference(),
+        {ExactPlanArtifacts{{d0}}, ExactPlanArtifacts{{structuredParent}},
+         ExactPlanArtifacts{{fabric.reference()}},
+         ExactPlanArtifacts{{workload}}, ExactPlanArtifacts{{runtimeInput}}},
+        acquisitionConfig->canonicalViewBytes().vec(),
+        acquisitionConfig->digest(),
+        QualityGatePolicyRef(0),
+        TopKSelection{0, selection.k},
+        PromotePurpose::CandidateSelection}};
+  }
   auto view = projectResolvedDseConfigView(planConfig);
   if (!view)
     return view.takeError();
@@ -407,8 +439,10 @@ llvm::Expected<DataflowSelectionOutcome> exploreDataflowCandidates(
         std::move(generateInvocations)}};
   }
   auto &completed = std::get<CompletedDsePlanExecution>(*executed);
-  std::vector<ArtifactRootReference> selected = completed.resolve({1, 0}).vec();
-  std::vector<ArtifactRootReference> evidence = completed.resolve({1, 1}).vec();
+  std::vector<ArtifactRootReference> selected =
+      completed.resolve({selectionNode, 0}).vec();
+  std::vector<ArtifactRootReference> evidence =
+      completed.resolve({selectionNode, 1}).vec();
   return DataflowSelectionOutcome{CompletedDataflowSelection{
       std::move(selected), std::move(evidence),
       takeDsePlanGenerateInvocationRecords(std::move(*executed))}};
@@ -647,8 +681,8 @@ exploreStructuredCompilationToPreMapping(
     if (!d0)
       return d0.takeError();
     auto dataflowSelection = exploreDataflowCandidates(
-        *d0, reference, fabric.reference(), *workloadReference,
-        *runtimeInputReference, config, options.ownership.selection,
+        *d0, reference, fabric, *workloadReference, *runtimeInputReference,
+        config, options.ownership.selection, options.ownership.selectionMode,
         artifactStore, blobStore);
     if (!dataflowSelection)
       return dataflowSelection.takeError();

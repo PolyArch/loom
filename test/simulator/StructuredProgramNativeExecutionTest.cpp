@@ -138,6 +138,51 @@ module {
   return take(test, loom::frontend::finalizeStructuredProgram(module.get()));
 }
 
+loom::frontend::StructuredProgramCandidate
+selectedForallProgram(llvm::StringRef test, const llvm::DataLayout &layout) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.thread private @selected domain(#dataflow.thread_domain<dense>)(
+      %value: i32, %written: !llvm.ptr) ctrl (%ctrl: none) {
+    "loom.spatial_region"(%value, %written)
+        <{operandSegmentSizes = array<i32: 2, 0, 0, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%payload: i32, %target: !llvm.ptr):
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        scf.forall (%i) = (%c0) to (%c1) step (%c1) {
+          llvm.store %payload, %target : i32, !llvm.ptr
+          scf.forall.in_parallel {}
+        }
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "selected_graph", source_maps = []} :
+        (i32, !llvm.ptr) -> ()
+    dataflow.thread.yield
+  }
+
+  llvm.func @kernel(%value: i32, %written: !llvm.ptr,
+                    %observed: !llvm.ptr) -> i32 {
+    %token = dataflow.thread.launch @selected(%value, %written) :
+        (i32, !llvm.ptr) -> !dataflow.thread_token
+    dataflow.thread.wait %token : !dataflow.thread_token
+    %loaded = llvm.load %observed : !llvm.ptr -> i32
+    llvm.return %loaded : i32
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail(test, "cannot parse the selected forall Structured Program");
+  module->getOperation()->setAttr(
+      "llvm.target_triple",
+      mlir::StringAttr::get(&context(), "riscv64-unknown-unknown-elf"));
+  module->getOperation()->setAttr(
+      "llvm.data_layout",
+      mlir::StringAttr::get(&context(), layout.getStringRepresentation()));
+  return take(test, loom::frontend::finalizeStructuredProgram(module.get()));
+}
+
 loom::frontend::StructuredEntityRef
 entryRef(llvm::StringRef test,
          const loom::frontend::StructuredProgramCandidateView &view) {
@@ -366,6 +411,40 @@ void selectedOwnershipCarriersExecuteAsWholeProgram() {
           "selected ownership carriers changed whole-program semantics");
   require(test, candidate.blockActivations.empty(),
           "selected candidate execution invented a source coverage profile");
+}
+
+void forallAggregationRegionsAreNotProfileBlocks() {
+  const char *test = __func__;
+  SourceProgram source = sourceProgram(test);
+  auto sourceView = take(test, source.candidate.view());
+  auto workload =
+      take(test,
+           loom::sim::finalizeSimulationWorkload(
+               makeWorkload(entryRef(test, sourceView), definedI32(0x12345678)),
+               sourceView));
+  auto input = take(
+      test, loom::sim::finalizeSimulationRuntimeInput(
+                makeRuntimeInput(workload.identity()), workload, sourceView));
+  auto selected = selectedForallProgram(test, source.layout);
+
+  const auto reference = take(test, loom::sim::executeNativeStructuredProgram(
+                                        source.candidate, workload, input));
+  const auto candidate =
+      take(test, loom::sim::executeProfiledSelectedStructuredProgram(
+                     selected, source.candidate, workload, input));
+  require(test,
+          loom::sim::haveEquivalentFunctionalObservations(reference, candidate),
+          "profiled forall ownership changed whole-program semantics");
+  require(test, !candidate.blockActivations.empty(),
+          "profiled forall ownership produced no block activations");
+  auto selectedView = take(test, selected.view());
+  for (const auto &activation : candidate.blockActivations) {
+    auto entity = take(test, selectedView.resolve(activation.block));
+    require(test,
+            entity.block && !llvm::isa<mlir::scf::InParallelOp>(
+                                entity.block->getParentOp()),
+            "forall aggregation region entered the executable profile");
+  }
 }
 
 void storedPointerPayloadExecutesThroughNativeObjectRegistry() {
@@ -891,6 +970,7 @@ int main() {
   nonDefinedInputsFailClosed();
   typedCosineUsesCanonicalNativeSemantics();
   selectedOwnershipCarriersExecuteAsWholeProgram();
+  forallAggregationRegionsAreNotProfileBlocks();
   storedPointerPayloadExecutesThroughNativeObjectRegistry();
   denseThreadDomainsPreserveWholeProgramSemantics();
   negativeDynamicThreadExtentFailsExecution();

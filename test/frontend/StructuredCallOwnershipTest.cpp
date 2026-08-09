@@ -67,6 +67,11 @@ module attributes {
     %result = llvm.call @helper(%value) : (i32) -> i32
     llvm.return %result : i32
   }
+
+  llvm.func @dead_result_caller(%value: i32) -> i32 {
+    %unused = llvm.call @helper(%value) : (i32) -> i32
+    llvm.return %value : i32
+  }
 }
 )mlir",
                                                         &context);
@@ -527,6 +532,96 @@ void exactDirectCallSiteProducesAnInlineCandidate() {
     fail("cannot remove ArtifactStore directory: " + error.message());
 }
 
+void exactDirectCallLeafProducesAnAtomicCandidate() {
+  auto program = makeProgram();
+  const loom::frontend::StructuredEntityRef call =
+      findCall(program, "kernel", "helper");
+
+  auto scopes =
+      take(loom::frontend::enumerateSpatialOwnershipScopeDomain(program));
+  bool acceptedCall = false;
+  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : scopes)
+    if (const auto *scope =
+            std::get_if<loom::frontend::SpatialOwnershipScope>(&entry))
+      acceptedCall |= scope->selection == call;
+  if (!acceptedCall)
+    fail("exact direct leaf call was not an ownership scope");
+
+  auto decisions = take(
+      loom::frontend::enumerateSpatialOwnershipDecisionDomain(program, call));
+  if (decisions.size() != 2 || decisions.front().directCallInlining ||
+      !decisions.back().directCallInlining ||
+      decisions.back().directCallInlining->callSite != call)
+    fail("direct-call leaf decision domain is not canonical");
+
+  auto unresolved =
+      loom::frontend::materializeStructuredSpatialOwnershipDecision(
+          program, {call}, decisions.front());
+  if (unresolved)
+    fail("a direct-call leaf entered a Spatial region without inlining");
+  bool classifiedNonFinalizable = false;
+  llvm::Error unhandled = llvm::handleErrors(
+      unresolved.takeError(),
+      [&](const loom::frontend::SpatialOwnershipCandidateRejection &error) {
+        classifiedNonFinalizable =
+            error.kind() ==
+                loom::frontend::SpatialOwnershipCandidateRejectionKind::
+                    NonFinalizable &&
+            error.message().find("requires its exact inline coordinate") !=
+                std::string::npos;
+      });
+  if (unhandled)
+    fail("direct-call leaf refusal escaped candidate classification: " +
+         llvm::toString(std::move(unhandled)));
+  if (!classifiedNonFinalizable)
+    fail("direct-call leaf refusal lacked typed NonFinalizable");
+
+  auto materialized =
+      take(loom::frontend::materializeStructuredSpatialOwnershipDecision(
+          program, {call}, decisions.back()));
+  bool sawThreadLaunch = false;
+  bool sawCallerMultiply = false;
+  bool sawCallInSpatialRegion = false;
+  materialized.structuredProgram.module().walk([&](mlir::Operation *operation) {
+    sawThreadLaunch |= llvm::isa<dataflow::ThreadLaunchOp>(operation);
+    if (auto multiply = llvm::dyn_cast<mlir::arith::MulIOp>(operation))
+      sawCallerMultiply |= !multiply->getParentOfType<loom::SpatialRegionOp>();
+    if (auto spatial = llvm::dyn_cast<loom::SpatialRegionOp>(operation))
+      spatial.walk([&](mlir::LLVM::CallOp) { sawCallInSpatialRegion = true; });
+  });
+  if (!sawThreadLaunch || !sawCallerMultiply || sawCallInSpatialRegion)
+    fail("direct-call leaf did not preserve the exact caller/callee boundary");
+}
+
+void exactDirectCallLeafDropsDeadResultsAtTheOwnershipBoundary() {
+  auto program = makeProgram();
+  const loom::frontend::StructuredEntityRef call =
+      findCall(program, "dead_result_caller", "helper");
+  auto decisions = take(
+      loom::frontend::enumerateSpatialOwnershipDecisionDomain(program, call));
+  const auto inlineDecision = llvm::find_if(
+      decisions,
+      [](const loom::frontend::SpatialOwnershipDecisionPoint &point) {
+        return point.directCallInlining.has_value();
+      });
+  if (inlineDecision == decisions.end())
+    fail("dead direct-call result omitted the exact inline coordinate");
+
+  auto materialized =
+      take(loom::frontend::materializeStructuredSpatialOwnershipDecision(
+          program, {call}, *inlineDecision));
+  bool sawZeroResultSpatial = false;
+  bool sawCallInSpatialRegion = false;
+  materialized.structuredProgram.module().walk(
+      [&](loom::SpatialRegionOp spatial) {
+        sawZeroResultSpatial |= spatial.getValueResults().empty();
+        spatial.walk(
+            [&](mlir::LLVM::CallOp) { sawCallInSpatialRegion = true; });
+      });
+  if (!sawZeroResultSpatial || sawCallInSpatialRegion)
+    fail("dead direct-call result crossed the ownership boundary");
+}
+
 void nestedStructuredScopeRequiresExactActivityObservations() {
   auto program = makeNestedProgram();
   const loom::frontend::StructuredEntityRef loop =
@@ -775,6 +870,8 @@ void selectedDynamicPointerServiceCutIsNonFinalizable() {
 int main() {
   decisionCodecHasStableFraming();
   exactDirectCallSiteProducesAnInlineCandidate();
+  exactDirectCallLeafProducesAnAtomicCandidate();
+  exactDirectCallLeafDropsDeadResultsAtTheOwnershipBoundary();
   nestedStructuredScopeRequiresExactActivityObservations();
   pinnedInlinerRefusalIsCandidateLocal();
   callablePreflightRejectsAnUnregisteredIntrinsic();

@@ -1033,6 +1033,25 @@ private:
         lowerDataflowStore(store, execution, memory);
         continue;
       }
+      if (::loom::lowering::detail::isGraphRegionRepresentationBitcast(op)) {
+        auto bitcast = ::mlir::cast<::mlir::LLVM::BitcastOp>(op);
+        builder.setInsertionPoint(bitcast);
+        ::mlir::Type inputType = bitcast.getArg().getType();
+        ::mlir::Type resultType = bitcast.getRes().getType();
+        ::mlir::Value replacement;
+        if (::llvm::isa<::mlir::VectorType>(inputType))
+          replacement = ::dataflow::PackOp::create(builder, bitcast.getLoc(),
+                                                   resultType, bitcast.getArg())
+                            .getPacked();
+        else
+          replacement =
+              ::dataflow::UnpackOp::create(builder, bitcast.getLoc(),
+                                           resultType, bitcast.getArg())
+                  .getVector();
+        bitcast.getRes().replaceAllUsesWith(replacement);
+        bitcast.erase();
+        continue;
+      }
       if (auto constant = ::llvm::dyn_cast<::mlir::arith::ConstantOp>(op)) {
         if (constant->getBlock() == &entry)
           continue;

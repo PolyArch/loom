@@ -293,10 +293,27 @@ target_link_libraries(loom-structured-memory-channel-test PRIVATE
   MLIRDataflow
   MLIRFuncDialect
   MLIRIR
+  MLIRLLVMDialect
   MLIRLoom
   MLIRMemRefDialect
   MLIRParser
   MLIRSCFDialect
+  MLIRSupport
+  LLVMSupport
+)
+
+add_executable(loom-source-backed-attention-channel-test
+  SourceBackedAttentionChannelTest.cpp
+)
+
+target_link_libraries(loom-source-backed-attention-channel-test PRIVATE
+  LoomFrontendCompilation
+  LoomSimulator
+  MLIRDataflow
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRLoom
+  MLIRParser
   MLIRSupport
   LLVMSupport
 )

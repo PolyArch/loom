@@ -9,8 +9,9 @@
 #include <optional>
 
 namespace mlir {
+class Block;
 class Operation;
-}
+} // namespace mlir
 
 namespace loom::frontend::detail {
 
@@ -57,6 +58,10 @@ bool exactDirectCallSiteInliningRequiresCanonicalAddressIndexDecision(
 struct DirectCallInliningMaterialization final {
   mlir::Operation *selection;
   mlir::IRMapping clonedBlocks;
+  /// Present only when the selected scope was the direct call itself. The
+  /// exact-once block is private materialization state and must not survive
+  /// ownership publication.
+  mlir::Block *exactClosureBlock = nullptr;
 };
 
 /// A successful Expected containing nullopt is an ordinary refusal by the

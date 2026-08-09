@@ -4,6 +4,7 @@
 #include "Frontend/IR/StructuredProgramArtifact.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
@@ -16,6 +17,20 @@
 #include <new>
 #include <system_error>
 #include <utility>
+
+bool loom::sim::isNativeStructuredProfileBlock(mlir::Block *block) {
+  mlir::Operation *owner = block ? block->getParentOp() : nullptr;
+  if (!owner || llvm::isa<mlir::scf::InParallelOp>(owner) ||
+      owner->getParentOfType<mlir::scf::InParallelOp>())
+    return false;
+  auto function = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(owner);
+  if (!function && owner)
+    function = owner->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (function && !function.getBody().empty())
+    return true;
+  return llvm::isa<dataflow::ThreadOp>(owner) ||
+         static_cast<bool>(owner->getParentOfType<dataflow::ThreadOp>());
+}
 
 namespace loom::sim::native_detail {
 namespace {
@@ -30,24 +45,6 @@ llvm::Error executionFailed(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::io_error),
       llvm::Twine("native_structured_program_execution_failed: ") + message);
-}
-
-mlir::LLVM::LLVMFuncOp enclosingDefinedLlvmFunction(mlir::Block *block) {
-  mlir::Operation *owner = block ? block->getParentOp() : nullptr;
-  auto function = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(owner);
-  if (!function && owner)
-    function = owner->getParentOfType<mlir::LLVM::LLVMFuncOp>();
-  return function && !function.getBody().empty() ? function
-                                                 : mlir::LLVM::LLVMFuncOp{};
-}
-
-bool isProfiledStructuredBlock(mlir::Block *block) {
-  if (enclosingDefinedLlvmFunction(block))
-    return true;
-  mlir::Operation *owner = block ? block->getParentOp() : nullptr;
-  return owner &&
-         (llvm::isa<dataflow::ThreadOp>(owner) ||
-          static_cast<bool>(owner->getParentOfType<dataflow::ThreadOp>()));
 }
 
 std::vector<SemanticMemoryByte>
@@ -190,7 +187,7 @@ instrumentBlockActivations(mlir::ModuleOp module,
   std::vector<ProfileSite> sites;
   for (const frontend::StructuredEntity &entity :
        view->entities(frontend::StructuredEntityKind::Block))
-    if (isProfiledStructuredBlock(entity.block))
+    if (isNativeStructuredProfileBlock(entity.block))
       sites.push_back({entity.reference, entity.block});
 
   const std::string callbackName =

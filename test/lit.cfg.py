@@ -175,6 +175,7 @@ tools = [
     "loom-structured-memory-communication-generator-test",
     "loom-structured-memory-communication-lineage-test",
     "loom-structured-memory-channel-test",
+    "loom-source-backed-attention-channel-test",
     "loom-structured-memory-layout-test",
     "loom-structured-memory-pipeline-test",
     "loom-structured-execution-shape-generator-test",

@@ -74,6 +74,23 @@ template <typename T> T take(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
+bool hasCompletedGenerator(
+    const loom::dse::CompletedPreMappingSelection &selection,
+    llvm::StringRef spelling) {
+  for (const loom::dse::DsePlanGenerateInvocationRecords &planInvocation :
+       selection.planGenerateInvocations)
+    for (const loom::dse::GenerateInvocationRecord &record :
+         planInvocation.completed()) {
+      const loom::dse::CandidateGeneratorDescriptor *descriptor =
+          record.generatorBinding.descriptorRef().descriptor();
+      if (!descriptor)
+        fail("pre-Mapping Generate provenance lost its exact descriptor");
+      if (descriptor->spelling == spelling)
+        return true;
+    }
+  return false;
+}
+
 std::unique_ptr<llvm::Module> parseModule(llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
 define void @kernel(ptr %a, ptr %b, ptr %c) {
@@ -168,15 +185,15 @@ module {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c8 = arith.constant 8 : index
+    %floating = arith.constant 1.0 : f32
+    %sine = math.sin %floating : f32
+    %bits = arith.bitcast %sine : f32 to i32
+    %address = llvm.getelementptr inbounds %out[0]
+        : (!llvm.ptr) -> !llvm.ptr, i32
+    llvm.store %bits, %address : i32, !llvm.ptr
     scf.for %index = %c0 to %c8 step %c1 {
       %wide = arith.index_cast %index : index to i64
-      %address = llvm.getelementptr inbounds %out[%wide]
-          : (!llvm.ptr, i64) -> !llvm.ptr, i32
-      %value = arith.index_cast %index : index to i32
-      %floating = arith.sitofp %value : i32 to f32
-      %sine = math.sin %floating : f32
-      %bits = arith.bitcast %sine : f32 to i32
-      llvm.store %bits, %address : i32, !llvm.ptr
+      %doubled = arith.addi %wide, %wide : i64
     }
     llvm.return
   }
@@ -425,11 +442,11 @@ void centralPlanEvaluatesScheduleChildren() {
   const loom::BlobStore blobs(blobPath);
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Large));
-  auto spatial = take(loom::fabric::importEntireFabricRoot(
-      design.roots().front().directDependencies().front().root, store));
+  auto system = take(loom::fabric::importEntireFabricRoot(
+      design.roots().front().reference(), store));
 
   loom::frontend::StructuredCompilation compilation{
-      spatial.reference(), {}, makeScheduledLoopProgram(), {}};
+      system.reference(), {}, makeScheduledLoopProgram(), {}};
   auto inputs = makeScheduledLoopInputs(compilation.structuredProgram, store);
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
   config.dse.schedule.scopeExpansionLimit = 8;
@@ -443,7 +460,7 @@ void centralPlanEvaluatesScheduleChildren() {
       findCallable(compilation.structuredProgram, "loop_kernel")};
 
   auto explored = take(loom::dse::exploreStructuredCompilationToPreMapping(
-      std::move(compilation), inputs.workload, inputs.runtimeInput, spatial,
+      std::move(compilation), inputs.workload, inputs.runtimeInput, system,
       config, options, store, blobs));
   const auto *selection =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
@@ -460,7 +477,6 @@ void centralPlanEvaluatesScheduleChildren() {
 
   bool sawStructuredMemoryCommunication = false;
   bool sawSpecialMathAccuracy = false;
-  bool sawDataflowRewrite = false;
   bool sawCanonicalGeneratorOrder = false;
   const std::vector<std::string> expectedGeneratorOrder = {
       "compiler.structured_ownership", "compiler.structured_execution_shape",
@@ -486,7 +502,6 @@ void centralPlanEvaluatesScheduleChildren() {
           descriptor->spelling == "compiler.structured_memory_communication";
       sawSpecialMathAccuracy |=
           descriptor->spelling == "compiler.structured_special_math_accuracy";
-      sawDataflowRewrite |= descriptor->spelling == "compiler.dataflow_rewrite";
     }
     auto first = generatorByPlanNode.find(0);
     if (first == generatorByPlanNode.end() ||
@@ -502,24 +517,21 @@ void centralPlanEvaluatesScheduleChildren() {
     sawCanonicalGeneratorOrder = true;
   }
   if (!sawStructuredMemoryCommunication || !sawSpecialMathAccuracy ||
-      !sawDataflowRewrite || !sawCanonicalGeneratorOrder)
+      !sawCanonicalGeneratorOrder)
     fail("production pre-Mapping boundary discarded Generate provenance");
+  if (hasCompletedGenerator(*selection, "compiler.dataflow_rewrite"))
+    fail("semantic conformance rewrote an already admitted D0");
 
   bool sawScheduleChild = false;
-  loom::frontend::FabricCapabilityIndex capabilities(spatial.view());
+  loom::frontend::FabricCapabilityIndex capabilities(system.view());
   for (const loom::dse::SelectedPreMappingCompilation &selected :
        selection->selected) {
-    std::size_t stores = 0;
-    selected.compilation.structuredProgram.module().walk(
-        [&](mlir::LLVM::StoreOp) { ++stores; });
-    if (stores <= 1)
+    if (selected.scheduleDerivations.empty())
       continue;
     if (!selected.functionalReplay ||
         selected.functionalReplay->status !=
             loom::sim::SourceBackedDfgValidationStatus::Equivalent)
       fail("selected schedule child lacks equivalent source-backed replay");
-    if (selected.scheduleDerivations.empty())
-      fail("selected schedule child lost its typed parent lineage");
     if (!selected.specialMathAccuracyDerivations.empty())
       fail("strict special math created an accuracy decision lineage");
     bool sawCorrectlyRoundedSine = false;
@@ -1504,6 +1516,11 @@ void runEvaluationAnchor() {
         loom::ResolvedObjectiveDirection::Minimize, 1}}};
   auto exploredSource = take(loom::frontend::raiseLlvmModuleToStructured(
       parseModule(context), design.roots().front()));
+  exploration.ownership.protocolCallableRoots = {
+      findCallable(exploredSource.structuredProgram, "kernel"),
+      findCallable(exploredSource.structuredProgram, "cold"),
+      findCallable(exploredSource.structuredProgram, "warm"),
+      findCallable(exploredSource.structuredProgram, "tiny")};
   auto explored = take(loom::dse::exploreStructuredCompilationToPreMapping(
       std::move(exploredSource), inputs.workload, inputs.runtimeInput,
       design.roots().front(), loom::defaultResolvedConfig(), exploration, store,
@@ -1512,6 +1529,8 @@ void runEvaluationAnchor() {
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!exploredSelection || exploredSelection->selected.size() != 1)
     fail("central ownership exploration did not select one survivor");
+  if (!hasCompletedGenerator(*exploredSelection, "compiler.dataflow_rewrite"))
+    fail("benefit-qualified exploration skipped Dataflow rewrites");
   const loom::ArtifactRootReference selectedRef =
       take(loom::frontend::publishStructuredProgram(
           exploredSelection->selected.front().compilation.structuredProgram,
@@ -1571,6 +1590,12 @@ void runEvaluationAnchor() {
       semanticOnlySelection->selected.front().functionalReplay->status !=
           loom::sim::SourceBackedDfgValidationStatus::Equivalent)
     fail("semantic conformance did not select the executed equivalent graph");
+  if (hasCompletedGenerator(*semanticOnlySelection,
+                            "compiler.dataflow_rewrite"))
+    fail("semantic conformance rewrote an already admitted D0");
+  if (!semanticOnlySelection->selected.front()
+           .dataflowRewriteDerivations.empty())
+    fail("semantic conformance retained optional Dataflow rewrite lineage");
   auto semanticOnlyView = take(semanticOnlySelection->selected.front()
                                    .compilation.canonicalDataflow.view());
   if (semanticOnlyView.graphs().empty() || semanticOnlyView.actors().empty())

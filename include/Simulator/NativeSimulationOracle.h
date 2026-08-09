@@ -63,6 +63,12 @@ struct NativeStructuredProgramObservations {
   std::vector<NativeStructuredBlockActivation> blockActivations;
 };
 
+/// Returns whether one Structured block belongs to the native executable
+/// activity projection. Structural aggregation regions such as
+/// scf.forall.in_parallel are excluded because their contents are governed by
+/// the enclosing operation rather than ordinary block execution.
+bool isNativeStructuredProfileBlock(mlir::Block *block);
+
 /// One Dataflow logical root and the exact Structured pointer value presented
 /// at a selected region boundary. The pointer is an ephemeral instrumentation
 /// handle. Workload-backed execution resolves it through the one runtime

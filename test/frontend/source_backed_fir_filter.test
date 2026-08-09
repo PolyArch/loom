@@ -1,0 +1,12 @@
+# RUN: %loom-small-cc -std=c++17 -emit-llvm -S -O1 -gline-tables-only %S/../app/fir_filter/main_func.cpp -o %t.ll
+# RUN: mkdir -p %t.store
+# RUN: loom-dfg-run --builtin=small --artifact-store=%t.store \
+# RUN:   --candidate-jobs=4 --operator-protocol-symbol=fir_filter_kernel \
+# RUN:   --expected-entry-result=0 --canonical-output=%t.mlir \
+# RUN:   --output=%t.json %t.ll
+# RUN: FileCheck %s --input-file=%t.mlir --check-prefix=DATAFLOW
+# RUN: %python %S/check_source_to_dataflow_anchor.py --report=%t.json \
+# RUN:   --source=%S/../app/fir_filter/main_func.cpp
+
+# DATAFLOW: dataflow.graph private
+# DATAFLOW: dataflow.graph.launch

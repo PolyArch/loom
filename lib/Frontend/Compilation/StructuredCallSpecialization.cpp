@@ -4,6 +4,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
@@ -310,7 +311,8 @@ llvm::Expected<std::optional<DirectCallInliningMaterialization>>
 materializeExactDirectCallSiteInlining(mlir::ModuleOp module,
                                        mlir::Operation *selection,
                                        mlir::Operation *callSite) {
-  if (!module || !selection || !callSite || !selection->isAncestor(callSite))
+  if (!module || !selection || !callSite ||
+      (selection != callSite && !selection->isAncestor(callSite)))
     return invalid("direct-call inline site is outside the selected scope");
   std::optional<ExactDirectCallSiteInliningCandidate> candidate =
       findExactDirectCallSiteInliningCandidate(module, selection);
@@ -318,6 +320,25 @@ materializeExactDirectCallSiteInlining(mlir::ModuleOp module,
     return invalid("selected call has no exact inlineable local definition");
   auto call = llvm::cast<mlir::LLVM::CallOp>(callSite);
   auto callee = llvm::cast<mlir::LLVM::LLVMFuncOp>(candidate->callee);
+
+  mlir::Block *exactClosureBlock = nullptr;
+  if (selection == callSite) {
+    mlir::OpBuilder builder(call);
+    auto exactClosure = mlir::scf::ExecuteRegionOp::create(
+        builder, call.getLoc(), call.getResultTypes(), /*no_inline=*/true);
+    exactClosureBlock = new mlir::Block();
+    exactClosure.getRegion().push_back(exactClosureBlock);
+    call->moveBefore(exactClosureBlock, exactClosureBlock->end());
+    builder.setInsertionPointToEnd(exactClosureBlock);
+    mlir::scf::YieldOp::create(builder, call.getLoc(), call.getResults());
+    for (auto [callResult, closureResult] :
+         llvm::zip_equal(call.getResults(), exactClosure.getResults())) {
+      callResult.replaceUsesWithIf(closureResult, [&](mlir::OpOperand &use) {
+        return !exactClosure->isAncestor(use.getOwner());
+      });
+    }
+    selection = exactClosure.getOperation();
+  }
 
   mlir::InlinerInterface interface(module.getContext());
   mlir::IRMapping clonedBlocks;
@@ -351,7 +372,8 @@ materializeExactDirectCallSiteInlining(mlir::ModuleOp module,
     return invalid("direct-call inlining produced invalid Structured IR");
   return std::optional<DirectCallInliningMaterialization>(
       std::in_place,
-      DirectCallInliningMaterialization{selection, std::move(clonedBlocks)});
+      DirectCallInliningMaterialization{selection, std::move(clonedBlocks),
+                                        exactClosureBlock});
 }
 
 } // namespace loom::frontend::detail

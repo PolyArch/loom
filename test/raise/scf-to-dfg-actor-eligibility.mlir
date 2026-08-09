@@ -9,8 +9,10 @@
 // RUN: loom-dfg-sim %t.dir/canonical-backend-gap.mlir --graph canonical_backend_gap --arg 0=1 --arg 1=2 --output %t.canonical-backend-gap.json
 // RUN: FileCheck %s --check-prefix=CANONICAL-BACKEND-GAP < %t.canonical-backend-gap.json
 // RUN: not loom-dfg-sim %t.dir/unregistered-graph.mlir --graph unregistered_graph_actor --arg 0=1 --output %t.unregistered.json 2>&1 | FileCheck %s --check-prefix=VALIDATOR-REJECT
-// RUN: not loom-raise-opt --loom-lower-graph-memory %t.dir/vector-to-integer-bitcast.mlir 2>&1 | FileCheck %s --check-prefix=GRAPH-BITCAST-REJECT
-// RUN: not loom-dfg-sim %t.dir/vector-to-integer-bitcast.mlir --graph vector_to_integer_bitcast --arg 0=513 --output %t.vector-bitcast.json 2>&1 | FileCheck %s --check-prefix=VALIDATOR-BITCAST-REJECT
+// RUN: loom-raise-opt --loom-lower-graph-memory %t.dir/vector-to-integer-bitcast.mlir -o %t.vector-bitcast.mlir
+// RUN: FileCheck %s --check-prefix=GRAPH-BITCAST < %t.vector-bitcast.mlir
+// RUN: loom-dfg-sim %t.vector-bitcast.mlir --graph vector_to_integer_bitcast --arg 0=513 --output %t.vector-bitcast.json
+// RUN: FileCheck %s --check-prefix=VALIDATOR-BITCAST < %t.vector-bitcast.json
 
 // SPATIAL-REGISTERED-LABEL: dataflow.thread private @registered_spatial domain(#dataflow.thread_domain<dense>)
 // SPATIAL-REGISTERED: %{{.*}}, %[[DONE:.*]] = dataflow.graph.launch @registered_actor_graph
@@ -133,5 +135,8 @@ module {
   }
 }
 
-// GRAPH-BITCAST-REJECT: error: loom-lower-graph-memory: operation 'llvm.bitcast' is not a registered canonical Dataflow actor or a supported graph-lowering operation
-// VALIDATOR-BITCAST-REJECT: finalized graph contains unregistered actor 'llvm.bitcast'
+// GRAPH-BITCAST: dataflow.pack %arg1 : vector<2xi8> -> i16
+// GRAPH-BITCAST-NOT: llvm.bitcast
+// VALIDATOR-BITCAST: "i16:513"
+// VALIDATOR-BITCAST: "dataflow.pack": 1
+// VALIDATOR-BITCAST: "status": "pass"

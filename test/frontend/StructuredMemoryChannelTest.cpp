@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -46,7 +47,7 @@ mlir::MLIRContext &context() {
     registry.insert<dataflow::DataflowDialect, loom::LoomDialect,
                     mlir::arith::ArithDialect, mlir::DLTIDialect,
                     mlir::func::FuncDialect, mlir::memref::MemRefDialect,
-                    mlir::scf::SCFDialect>();
+                    mlir::scf::SCFDialect, mlir::LLVM::LLVMDialect>();
     auto *created =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     created->loadAllAvailableDialects();
@@ -185,6 +186,148 @@ module attributes {dlti.dl_spec = #layout} {
   return take(loom::frontend::finalizeStructuredProgram(module.get()));
 }
 
+enum class SourceAllocaMutation {
+  None,
+  ArrayCountTwo,
+  MissingLifetimeEnd,
+  ReorderedConsumer,
+  AliasedSideMemory,
+};
+
+loom::frontend::StructuredProgramCandidate parseSourceAllocaProgram(
+    SourceAllocaMutation mutation = SourceAllocaMutation::None) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>,
+                        #dlti.dl_entry<!llvm.ptr,
+                                           dense<64> : vector<4xi64>>>
+module attributes {dlti.dl_spec = #layout} {
+  dataflow.thread private @source_producer
+      domain(#dataflow.thread_domain<dense>)(%source: !llvm.ptr,
+                                             %temporary: !llvm.ptr)
+      ctrl (%start: none) {
+    "loom.spatial_region"(%source, %temporary)
+        <{operandSegmentSizes = array<i32: 2, 0, 0, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%source_ptr: !llvm.ptr, %buffer: !llvm.ptr):
+        %c4 = arith.constant 4 : i64
+        %c8 = arith.constant 8 : i64
+        %c12 = arith.constant 12 : i64
+        %v0 = llvm.load %source_ptr : !llvm.ptr -> i32
+        %v1 = arith.constant 3 : i32
+        %v2 = arith.constant 5 : i32
+        %v3 = arith.constant 7 : i32
+        llvm.store %v0, %buffer : i32, !llvm.ptr
+        %p1 = llvm.getelementptr inbounds %buffer[%c4] :
+            (!llvm.ptr, i64) -> !llvm.ptr, i8
+        llvm.store %v1, %p1 : i32, !llvm.ptr
+        %p2 = llvm.getelementptr inbounds %buffer[%c8] :
+            (!llvm.ptr, i64) -> !llvm.ptr, i8
+        llvm.store %v2, %p2 : i32, !llvm.ptr
+        %p3 = llvm.getelementptr inbounds %buffer[%c12] :
+            (!llvm.ptr, i64) -> !llvm.ptr, i8
+        llvm.store %v3, %p3 : i32, !llvm.ptr
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "source_channel_producer", source_maps = []} :
+        (!llvm.ptr, !llvm.ptr) -> ()
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @source_consumer
+      domain(#dataflow.thread_domain<dense>)(%temporary: !llvm.ptr,
+                                             %target: !llvm.ptr)
+      ctrl (%start: none) {
+    "loom.spatial_region"(%temporary, %target)
+        <{operandSegmentSizes = array<i32: 2, 0, 0, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%buffer: !llvm.ptr, %target_ptr: !llvm.ptr):
+        %c4 = arith.constant 4 : i64
+        %c8 = arith.constant 8 : i64
+        %c12 = arith.constant 12 : i64
+        %v0 = llvm.load %buffer : !llvm.ptr -> i32
+        %p1 = llvm.getelementptr inbounds %buffer[%c4] :
+            (!llvm.ptr, i64) -> !llvm.ptr, i8
+        %v1 = llvm.load %p1 : !llvm.ptr -> i32
+        %p2 = llvm.getelementptr inbounds %buffer[%c8] :
+            (!llvm.ptr, i64) -> !llvm.ptr, i8
+        %v2 = llvm.load %p2 : !llvm.ptr -> i32
+        %p3 = llvm.getelementptr inbounds %buffer[%c12] :
+            (!llvm.ptr, i64) -> !llvm.ptr, i8
+        %v3 = llvm.load %p3 : !llvm.ptr -> i32
+        %sum0 = arith.addi %v0, %v1 : i32
+        %sum1 = arith.addi %v2, %v3 : i32
+        %sum = arith.addi %sum0, %sum1 : i32
+        llvm.store %sum, %target_ptr : i32, !llvm.ptr
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "source_channel_consumer", source_maps = []} :
+        (!llvm.ptr, !llvm.ptr) -> ()
+    dataflow.thread.yield
+  }
+
+  llvm.func @entry(%source: !llvm.ptr, %target: !llvm.ptr) {
+    %c1 = arith.constant 1 : i32
+    %source_local = llvm.alloca %c1 x !llvm.array<1 x i32> :
+        (i32) -> !llvm.ptr
+    %temporary = llvm.alloca %c1 x !llvm.array<4 x i32> :
+        (i32) -> !llvm.ptr
+    llvm.intr.lifetime.start %temporary : !llvm.ptr
+    %producer = dataflow.thread.launch @source_producer(%source_local, %temporary) :
+        (!llvm.ptr, !llvm.ptr) -> !dataflow.thread_token
+    dataflow.thread.wait %producer : !dataflow.thread_token
+    %consumer = dataflow.thread.launch @source_consumer(%temporary, %target) :
+        (!llvm.ptr, !llvm.ptr) -> !dataflow.thread_token
+    dataflow.thread.wait %consumer : !dataflow.thread_token
+    llvm.intr.lifetime.end %temporary : !llvm.ptr
+    llvm.return
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail("cannot parse the source alloca channel fixture");
+  if (mutation == SourceAllocaMutation::ArrayCountTwo) {
+    module->walk([&](mlir::LLVM::AllocaOp allocation) {
+      auto count =
+          allocation.getArraySize().getDefiningOp<mlir::arith::ConstantOp>();
+      count.setValueAttr(mlir::IntegerAttr::get(count.getType(), 2));
+    });
+  } else if (mutation == SourceAllocaMutation::MissingLifetimeEnd) {
+    module->walk([&](mlir::LLVM::LifetimeEndOp end) { end.erase(); });
+  } else if (mutation == SourceAllocaMutation::ReorderedConsumer) {
+    auto consumer = module->lookupSymbol<dataflow::ThreadOp>("source_consumer");
+    llvm::SmallVector<mlir::LLVM::GEPOp, 3> addresses;
+    consumer.walk(
+        [&](mlir::LLVM::GEPOp address) { addresses.push_back(address); });
+    if (addresses.size() != 3)
+      fail("source alloca fixture lost its consumer addresses");
+    auto first = addresses[0]
+                     .getDynamicIndices()
+                     .front()
+                     .getDefiningOp<mlir::arith::ConstantOp>();
+    auto second = addresses[1]
+                      .getDynamicIndices()
+                      .front()
+                      .getDefiningOp<mlir::arith::ConstantOp>();
+    first.setValueAttr(mlir::IntegerAttr::get(first.getType(), 8));
+    second.setValueAttr(mlir::IntegerAttr::get(second.getType(), 4));
+  } else if (mutation == SourceAllocaMutation::AliasedSideMemory) {
+    llvm::SmallVector<mlir::LLVM::AllocaOp, 2> allocations;
+    module->walk([&](mlir::LLVM::AllocaOp allocation) {
+      allocations.push_back(allocation);
+    });
+    dataflow::ThreadLaunchOp consumer;
+    module->walk([&](dataflow::ThreadLaunchOp launch) {
+      if (launch.getCallee() == "source_consumer")
+        consumer = launch;
+    });
+    if (allocations.size() != 2 || !consumer)
+      fail("source alloca fixture lost its side-memory roots");
+    consumer->setOperand(1, allocations.front().getRes());
+  }
+  return take(loom::frontend::finalizeStructuredProgram(module.get()));
+}
+
 std::vector<loom::frontend::StructuredMemoryCommunicationDecision>
 channelDecisions(const loom::frontend::StructuredProgramCandidate &candidate) {
   auto domain =
@@ -311,6 +454,59 @@ void exactSpscMaterializesAndSimulates() {
     fail("consumer DFG changed the promoted memory observables");
 }
 
+void exactSourceAllocaMaterializesTheSameChannelDecision() {
+  auto parent = parseSourceAllocaProgram();
+  auto decisions = channelDecisions(parent);
+  if (decisions.size() != 1)
+    fail("one exact source alloca did not expose one channel decision");
+
+  auto selected =
+      take(loom::frontend::materializeStructuredMemoryCommunicationDecision(
+          parent, decisions.front()));
+  std::size_t creates = 0;
+  std::size_t sends = 0;
+  std::size_t receives = 0;
+  std::size_t allocas = 0;
+  std::size_t geps = 0;
+  std::size_t lifetimes = 0;
+  selected.structuredProgram.module().walk(
+      [&](dataflow::ChannelCreateOp) { ++creates; });
+  selected.structuredProgram.module().walk(
+      [&](dataflow::ChannelSendOp) { ++sends; });
+  selected.structuredProgram.module().walk(
+      [&](dataflow::ChannelReceiveOp) { ++receives; });
+  selected.structuredProgram.module().walk(
+      [&](mlir::LLVM::AllocaOp) { ++allocas; });
+  selected.structuredProgram.module().walk([&](mlir::LLVM::GEPOp) { ++geps; });
+  selected.structuredProgram.module().walk([&](mlir::Operation *operation) {
+    lifetimes +=
+        llvm::isa<mlir::LLVM::LifetimeStartOp, mlir::LLVM::LifetimeEndOp>(
+            operation);
+  });
+  if (creates != 1 || sends != 4 || receives != 4 || allocas != 1 ||
+      geps != 0 || lifetimes != 0)
+    fail("source alloca promotion retained its pointer closure");
+}
+
+void rejectsUnprovedSourceAllocas() {
+  if (!channelDecisions(
+           parseSourceAllocaProgram(SourceAllocaMutation::ArrayCountTwo))
+           .empty())
+    fail("a multi-object source alloca was promoted");
+  if (!channelDecisions(
+           parseSourceAllocaProgram(SourceAllocaMutation::MissingLifetimeEnd))
+           .empty())
+    fail("a source alloca with an open lifetime was promoted");
+  if (!channelDecisions(
+           parseSourceAllocaProgram(SourceAllocaMutation::ReorderedConsumer))
+           .empty())
+    fail("a source alloca with reordered consumption was promoted");
+  if (!channelDecisions(
+           parseSourceAllocaProgram(SourceAllocaMutation::AliasedSideMemory))
+           .empty())
+    fail("a source alloca with aliased side memory was promoted");
+}
+
 void rejectsUnprovedCommunication() {
   if (!channelDecisions(parseProgram({.twoConsumers = true})).empty())
     fail("a temporary with two consumers was promoted");
@@ -347,6 +543,8 @@ void sharedDefinitionsSpecializeOnlySelectedLaunches() {
 
 int main() {
   exactSpscMaterializesAndSimulates();
+  exactSourceAllocaMaterializesTheSameChannelDecision();
+  rejectsUnprovedSourceAllocas();
   rejectsUnprovedCommunication();
   sharedDefinitionsSpecializeOnlySelectedLaunches();
   return EXIT_SUCCESS;

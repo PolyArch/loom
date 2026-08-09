@@ -9,6 +9,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -300,6 +301,33 @@ cloneAndResolveAllocation(const StructuredProgramCandidate &parent,
   clonedAlloc = clonedValue.getDefiningOp<mlir::memref::AllocOp>();
   if (!clonedAlloc)
     return invalid("selected allocation was not mapped into the clone");
+  return clone;
+}
+
+llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>>
+cloneAndResolveChannelAllocation(const StructuredProgramCandidate &parent,
+                                 const StructuredEntityRef &reference,
+                                 mlir::Value &clonedValue) {
+  if (reference.kind != StructuredEntityKind::Value)
+    return invalid("channel decision does not reference a value");
+  auto view = parent.view();
+  if (!view)
+    return view.takeError();
+  auto entity = view->resolve(reference);
+  if (!entity)
+    return entity.takeError();
+  if (!entity->value ||
+      (!entity->value.getDefiningOp<mlir::memref::AllocOp>() &&
+       !entity->value.getDefiningOp<mlir::LLVM::AllocaOp>()))
+    return invalid(
+        "channel decision does not reference a supported allocation result");
+
+  mlir::IRMapping mapping;
+  mlir::OwningOpRef<mlir::ModuleOp> clone(
+      llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
+  clonedValue = mapping.lookupOrNull(entity->value);
+  if (!clonedValue)
+    return invalid("selected channel allocation was not mapped into the clone");
   return clone;
 }
 
@@ -1089,6 +1117,22 @@ enumerateStructuredMemoryCommunicationDecisions(
       continue;
     }
 
+    if (auto alloca =
+            llvm::dyn_cast_or_null<mlir::LLVM::AllocaOp>(entity.operation)) {
+      if (inspectedMemoryScopes == scopeExpansionLimit)
+        return StructuredMemoryCommunicationDecisionDomain{
+            std::move(decisions), inspectedMemoryScopes};
+      ++inspectedMemoryScopes;
+      auto found = valueReferences.find(alloca.getRes());
+      if (detail::canPromoteSpscBufferToChannel(alloca)) {
+        if (found == valueReferences.end())
+          return invalid("source allocation has no canonical value reference");
+        decisions.emplace_back(
+            PromoteSpscBufferToChannelDecision{found->second});
+      }
+      continue;
+    }
+
     auto alloc =
         llvm::dyn_cast_or_null<mlir::memref::AllocOp>(entity.operation);
     if (!alloc)
@@ -1159,13 +1203,21 @@ materializeStructuredMemoryCommunicationDecision(
       return std::move(error);
   } else if (const auto *channel =
                  std::get_if<PromoteSpscBufferToChannelDecision>(&decision)) {
-    mlir::memref::AllocOp alloc;
-    auto resolved = cloneAndResolveAllocation(parent, channel->anchor, alloc);
+    mlir::Value allocation;
+    auto resolved =
+        cloneAndResolveChannelAllocation(parent, channel->anchor, allocation);
     if (!resolved)
       return resolved.takeError();
     clone = std::move(*resolved);
-    if (llvm::Error error = detail::promoteSpscBufferToChannel(alloc))
-      return std::move(error);
+    if (auto alloc = allocation.getDefiningOp<mlir::memref::AllocOp>()) {
+      if (llvm::Error error = detail::promoteSpscBufferToChannel(alloc))
+        return std::move(error);
+    } else if (auto alloca = allocation.getDefiningOp<mlir::LLVM::AllocaOp>()) {
+      if (llvm::Error error = detail::promoteSpscBufferToChannel(alloca))
+        return std::move(error);
+    } else {
+      return invalid("channel allocation changed representation in the clone");
+    }
   } else {
     return invalid("unknown memory communication decision");
   }

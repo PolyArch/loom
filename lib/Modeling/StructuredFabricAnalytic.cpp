@@ -146,7 +146,8 @@ bool isInsideGlobal(mlir::Operation *operation) {
 }
 
 bool isExecutableLeaf(mlir::Operation *operation) {
-  if (operation->getNumRegions() != 0 ||
+  if (!sim::isNativeStructuredProfileBlock(operation->getBlock()) ||
+      operation->getNumRegions() != 0 ||
       operation->hasTrait<mlir::OpTrait::IsTerminator>() ||
       mlir::isa<mlir::SymbolOpInterface>(operation) ||
       isInsideGlobal(operation))
@@ -180,26 +181,6 @@ metricCacheKey(const ArtifactRootReference &structuredProgram,
                const ComponentViewDigest &configDigest) {
   return {structuredProgram, fabricReference, workload, runtimeInput,
           configDigest};
-}
-
-mlir::LLVM::LLVMFuncOp enclosingDefinedLlvmFunction(mlir::Block *block) {
-  mlir::Operation *owner = block ? block->getParentOp() : nullptr;
-  auto function = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(owner);
-  if (!function && owner)
-    function = owner->getParentOfType<mlir::LLVM::LLVMFuncOp>();
-  return function && !function.getBody().empty() ? function
-                                                 : mlir::LLVM::LLVMFuncOp{};
-}
-
-bool isInsideThread(mlir::Block *block) {
-  mlir::Operation *owner = block ? block->getParentOp() : nullptr;
-  return owner &&
-         (llvm::isa<dataflow::ThreadOp>(owner) ||
-          static_cast<bool>(owner->getParentOfType<dataflow::ThreadOp>()));
-}
-
-bool isProfiledStructuredBlock(mlir::Block *block) {
-  return enclosingDefinedLlvmFunction(block) || isInsideThread(block);
 }
 
 bool isInsideSpatialRegion(mlir::Operation *operation) {
@@ -237,7 +218,7 @@ llvm::Expected<BlockActivityProjection> projectBlockActivity(
   std::vector<const frontend::StructuredEntity *> expectedBlocks;
   for (const frontend::StructuredEntity &entity :
        view->entities(frontend::StructuredEntityKind::Block))
-    if (isProfiledStructuredBlock(entity.block))
+    if (sim::isNativeStructuredProfileBlock(entity.block))
       expectedBlocks.push_back(&entity);
   if (expectedBlocks.size() != observations.blockActivations.size())
     return llvm::createStringError(
@@ -311,7 +292,7 @@ llvm::Expected<BlockActivityProjection> projectBlockActivity(
           llvm::inconvertibleErrorCode(),
           "structured_fabric_model_invalid: block activity lineage did not "
           "resolve to blocks");
-    if (!isProfiledStructuredBlock(child->block))
+    if (!sim::isNativeStructuredProfileBlock(child->block))
       continue;
     auto activation = source.activations.find(parent->block);
     if (activation == source.activations.end())
@@ -324,7 +305,7 @@ llvm::Expected<BlockActivityProjection> projectBlockActivity(
 
   for (const frontend::StructuredEntity &entity :
        projection.view.entities(frontend::StructuredEntityKind::Block)) {
-    if (!isProfiledStructuredBlock(entity.block))
+    if (!sim::isNativeStructuredProfileBlock(entity.block))
       continue;
     auto activation = projection.activations.find(entity.block);
     if (activation == projection.activations.end())
@@ -691,8 +672,7 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
 }
 
 const EvaluationModelProvider kProvider{
-    kModelDescriptor.reference(),
-    EvaluationModelInProcessProvider{&evaluate}};
+    kModelDescriptor.reference(), EvaluationModelInProcessProvider{&evaluate}};
 
 } // namespace
 

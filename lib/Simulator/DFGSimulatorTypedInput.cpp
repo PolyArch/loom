@@ -120,8 +120,6 @@ unsupportedTypedDfgInput(const CanonicalSimulationWorkload &workload,
                          const ResolvedLaunchContext &context) {
   (void)workload;
   const SpatialSimulationRuntimeInput &input = *runtimeInput.spatial();
-  if (!input.runtimeStreams.empty())
-    return "typed runtime stream termination is unsupported";
   for (const auto &root : context.memoryInputRoots)
     if (!root)
       return "a graph memory input without a runtime root is unsupported";

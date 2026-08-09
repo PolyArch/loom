@@ -1,0 +1,16 @@
+# RUN: %loom-small-cc -emit-llvm -S -O1 -gline-tables-only %S/../app/vector_pack/main_func.c -o %t.ll
+# RUN: mkdir -p %t.store
+# RUN: loom-dfg-run --builtin=small --artifact-store=%t.store \
+# RUN:   --candidate-jobs=4 --operator-protocol-symbol=vector_pack_kernel \
+# RUN:   --expected-entry-result=0 --canonical-output=%t.mlir \
+# RUN:   --output=%t.json %t.ll
+# RUN: FileCheck %s --input-file=%t.mlir --check-prefix=DATAFLOW
+# RUN: %python %S/check_source_to_dataflow_anchor.py --report=%t.json \
+# RUN:   --source=%S/../app/vector_pack/main_func.c \
+# RUN:   --require-operation=dataflow.pack \
+# RUN:   --require-operation=dataflow.unpack
+
+# DATAFLOW: dataflow.graph private
+# DATAFLOW: dataflow.pack
+# DATAFLOW: dataflow.unpack
+# DATAFLOW: dataflow.graph.launch

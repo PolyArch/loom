@@ -1,10 +1,11 @@
 # RUN: %loom-small-cc -emit-llvm -S -O1 -gline-tables-only \
 # RUN:   %S/../app/vecadd/main_func.c -o %t.vecadd.ll
 # RUN: mkdir -p %t.incomplete.store
-# RUN: not loom-dfg-run --builtin=small \
+# RUN: not loom-pre-mapping --builtin=small \
 # RUN:   --artifact-store=%t.incomplete.store \
 # RUN:   --loom-accel-profile=%S/Inputs/dataflow_semantic_limit.yaml \
-# RUN:   --candidate-jobs=4 --output=%t.incomplete.json %t.vecadd.ll 2>&1 \
+# RUN:   --candidate-jobs=4 --counts=%t.incomplete.json \
+# RUN:   -o %t.incomplete.mlir %t.vecadd.ll 2>&1 \
 # RUN:   | FileCheck %s --check-prefix=INCOMPLETE
 # RUN: mkdir -p %t.no-feasible.store
 # RUN: not loom-dfg-run --builtin=small \
@@ -12,9 +13,9 @@
 # RUN:   --output=%t.no-feasible.json %S/Inputs/no_feasible_readcycle.ll 2>&1 \
 # RUN:   | FileCheck %s --check-prefix=NO-FEASIBLE
 
-# INCOMPLETE: central DSE did not complete: reason=candidate_semantic_limit_reached
-# INCOMPLETE-SAME: completed_generate_invocations={{[1-9][0-9]*}}
-# INCOMPLETE-SAME: incomplete_generate_invocations=1
+# INCOMPLETE: central DSE is incomplete at plan node 0: candidate_semantic_limit_reached
+# INCOMPLETE-SAME: completed Generate invocations={{[1-9][0-9]*}}
+# INCOMPLETE-SAME: incomplete Generate invocations=1
 
 # NO-FEASIBLE: central DSE found no feasible ownership candidate after
 # NO-FEASIBLE-SAME: {{[1-9][0-9]*}} completed Generate invocations

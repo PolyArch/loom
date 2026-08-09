@@ -78,6 +78,18 @@ bool isGraphRegionControlOperation(mlir::Operation *operation) {
                    mlir::scf::InParallelOp, dataflow::GraphReturnOp>(operation);
 }
 
+bool isGraphRegionRepresentationBitcast(mlir::Operation *operation) {
+  auto bitcast = llvm::dyn_cast_or_null<mlir::LLVM::BitcastOp>(operation);
+  if (!bitcast)
+    return false;
+  mlir::Type input = bitcast.getArg().getType();
+  mlir::Type result = bitcast.getRes().getType();
+  return (llvm::isa<mlir::VectorType>(input) &&
+          llvm::isa<mlir::IntegerType>(result)) ||
+         (llvm::isa<mlir::IntegerType>(input) &&
+          llvm::isa<mlir::VectorType>(result));
+}
+
 } // namespace detail
 
 GraphLeafLowering classifyGraphLoweringLeaf(mlir::Operation *operation) {
@@ -92,6 +104,8 @@ GraphLeafLowering classifyGraphLoweringLeaf(mlir::Operation *operation) {
   if (llvm::isa<mlir::memref::LoadOp, mlir::memref::StoreOp,
                 mlir::memref::DeallocOp, dataflow::LoadOp, dataflow::StoreOp,
                 dataflow::ChannelSendOp, dataflow::ChannelReceiveOp>(operation))
+    return GraphLeafLowering::Implemented;
+  if (detail::isGraphRegionRepresentationBitcast(operation))
     return GraphLeafLowering::Implemented;
   if (llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp, mlir::LLVM::MemcpyOp,
                 mlir::LLVM::MemmoveOp, mlir::LLVM::MemsetOp>(operation))
