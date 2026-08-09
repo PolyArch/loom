@@ -669,6 +669,22 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-math-root-test
+    PortableMathRootTest.cpp
+  )
+
+  target_link_libraries(loom-portable-math-root-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomHardwareRTL
+    LoomSimulator
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-scalar-value-select-test
     PortableScalarValueSelectTest.cpp
   )

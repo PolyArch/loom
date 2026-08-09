@@ -21,6 +21,7 @@
 #include "Hardware/RTL/Providers/LoopGate.h"
 #include "Hardware/RTL/Providers/LoopInvariant.h"
 #include "Hardware/RTL/Providers/LoopStream.h"
+#include "Hardware/RTL/Providers/MathRoot.h"
 #include "Hardware/RTL/Providers/ScalarBitReinterpret.h"
 #include "Hardware/RTL/Providers/ScalarFloatFma.h"
 #include "Hardware/RTL/Providers/ScalarIntegerAddSub.h"
@@ -121,6 +122,8 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
       loom::hardware::rtl::registerPortableLoopGateProvider(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableLoopStreamProvider(registry));
+  requireRegistration(
+      loom::hardware::rtl::registerPortableMathRootProviders(registry));
   requireRegistration(
       loom::hardware::rtl::registerPortableFixedVectorIntegerAddSubProvider(
           registry));
@@ -231,6 +234,8 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::ScalarUnsignedIntegerDivRem,
       ::fabric::ImplementationFamilyId::ScalarFloatDivide,
       ::fabric::ImplementationFamilyId::ScalarFloatRemainder,
+      ::fabric::ImplementationFamilyId::ScalarMathSqrt,
+      ::fabric::ImplementationFamilyId::ScalarMathRsqrt,
       ::fabric::ImplementationFamilyId::ScalarIntegerSaturatingAddSub,
       ::fabric::ImplementationFamilyId::FixedVectorIntegerSaturatingAddSub,
       ::fabric::ImplementationFamilyId::ScalarIntegerCountZeros,

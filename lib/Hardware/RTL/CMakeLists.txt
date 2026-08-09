@@ -26,6 +26,7 @@ add_library(LoomHardwareRTL
   Providers/LoopGate.cpp
   Providers/LoopInvariant.cpp
   Providers/LoopStream.cpp
+  Providers/MathRoot.cpp
   Providers/ProviderSupport.cpp
   Providers/ScalarBitReinterpret.cpp
   Providers/ScalarFloatFma.cpp
