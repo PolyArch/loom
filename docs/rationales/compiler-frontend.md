@@ -548,6 +548,47 @@ memory realization is feasible and worthwhile. This keeps software
 transformation, memory hardware, and placement as three separate owners while
 allowing central DSE to compare the complete immutable alternatives.
 
+## Why Memory Communication Uses Four Closed Transforms
+
+Staging alone leaves three software distinctions that materially change the
+program presented to Mapping: logical storage order, overlap between a staged
+copy and its consumer, and whether a proved point-to-point temporary is memory
+or a stream. These are not physical memory choices. Deferring them to Fabric or
+Mapping would make hardware placement silently rewrite the software program;
+encoding them in a generic memory-plan record would create a second authority
+beside ordinary Structured and Dataflow IR.
+
+The closed four-kind catalog is the smallest current surface that owns those
+distinctions. `StageConstantGlobal` introduces an explicit logical buffer,
+`PermuteLocalBufferLayout` changes only its dense storage order,
+`PipelineStagedLoop` changes only a proved two-stage logical schedule, and
+`PromoteSpscBufferToChannel` replaces one proved ordered temporary with the
+canonical channel operations. Each decision materializes ordinary IR and then
+disappears; no persistent plan object is needed.
+
+Adjacent storage-position exchange is sufficient because repeated exchanges
+generate every dense permutation. Enumerating complete permutations in one
+decision would make the same final layout reachable through a factorial
+parameter domain and duplicate work without adding semantics. Logical indices
+remain unchanged, while each endpoint's ordinary memref strides own its
+address. A copy between different layouts therefore computes its two addresses
+independently instead of assuming identical linearization.
+
+Likewise, multibuffering is derived from the proved pipeline rather than a
+separate knob. A value live across `d` logical iteration boundaries requires
+exactly `d + 1` ring slots; the admitted copy/compute schedule has `d = 1` and
+therefore double buffering. Making buffer count independently configurable
+would admit redundant or insufficient states and would confuse a logical
+iteration relation with physical latency.
+
+Channel promotion requires an exact single-producer/single-consumer event
+bijection and effect-safe launch motion. That narrow proof avoids inventing a
+general concurrent alias model while still exposing an important streaming
+alternative. Channel capacity, physical FIFO choice, banking, coalescing,
+service endpoints, and routes remain downstream Fabric and Mapping facts.
+Keeping those facts out of all four decisions preserves one owner for each
+software or hardware distinction.
+
 ## Why SCF-To-Dataflow Is Mechanical
 
 Once the candidate fixes schedule, shape, reduction, and ownership, lowering

@@ -45,7 +45,11 @@ Every PE input port and every PE output port has type
 `!fabric.bits_tag<W, T>` with the same `W >= 0` and the same `T >= 1`.
 The verifier extracts `(W, T)` from PE input #0 and rejects any other
 port with a different shape. The `tag_width` hardware attribute must
-equal `T`.
+equal `T`. The input and output counts also obey the shared overflow-safe PE
+boundary selector crosspoint contract in
+[Fabric PE](spec-fabric-pe.md#boundary-selector-crosspoint-contract): products
+through 16 are quiet, products from 17 through 64 warn, and larger products are
+invalid.
 
 ## Implicit boundary tag handling
 
@@ -487,8 +491,10 @@ identity and backpressure, rejection of an absent or nonpositive
 `operand_buffer_size` in every mode, canonical allocation-unit derivation for
 all three modes, one enqueue's atomic short service claim plus durable append
 transition, simultaneous dequeue/enqueue without same-cycle bypass, and
-deterministic round-robin contention between two logical queues. Tests do not
-construct a queue-count, depth, context, FU-input, or arbitration cross product.
+deterministic round-robin contention between two logical queues. Boundary tests
+also cover the shared quiet, warning, hard-limit, and overflow cases for both
+anonymous and named temporal PEs. Tests do not construct a queue-count, depth,
+context, FU-input, or arbitration cross product.
 
 ## Cross-reference
 

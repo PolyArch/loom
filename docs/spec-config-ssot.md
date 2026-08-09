@@ -187,14 +187,17 @@ The Structured MemoryCommunication generator policy owns:
 dse.memory_communication.scope_expansion_limit: positive uint32 = 64
 ```
 
-This is the number of constant-memory staging scopes admitted from canonical
-Structured operation order into one invocation's finite domain. It is a
-semantic work limit, not a physical memory capacity, worker count, or wall-time
-budget. The immutable component view descriptor is
-`loom.structured_memory_communication_generator.config.1.0`; its canonical
+This is the number of memory-relevant structural scopes admitted from
+canonical Structured entity order into one invocation's finite domain. Every
+admitted scope retains its complete applicable decision and parameter domain.
+It is a semantic work limit, not a physical memory capacity, worker count, or
+wall-time budget. The immutable component view descriptor is
+`loom.structured_memory_communication_generator.config.2.0`; its canonical
 bytes are one unsigned 64-bit big-endian projection of this resolved value.
 Import rejects zero and every value outside the positive `uint32` owner domain;
-the wider wire encoding does not enlarge the semantic value set.
+the wider wire encoding does not enlarge the semantic value set. Version 2.0
+replaces the constant-staging-only scope domain of 1.0; adopters reject the 1.0
+descriptor rather than reinterpreting its limit.
 
 The Dataflow rewrite generator policy owns:
 

@@ -66,6 +66,22 @@ paths, finite local bottlenecks, and enough pressure to exercise placement and
 routing. It remains an example recipe rather than a Fabric assumption: custom
 hardware can use any explicit directed topology, including a non-grid graph.
 
+The same physical argument applies one level below the network. A PE's external
+ports are selected onto its internal FU-facing ports by mux and demux logic, so
+an unbounded PE signature would merely hide a large crossbar inside a compute
+tile. The PE therefore uses the same overflow-safe crosspoint calculation as a
+switch while owning tighter thresholds: up to 16 crosspoints is the ordinary
+compute-tile envelope, 17 through 64 is legal but worth an implementation
+warning, and more than 64 is invalid. Sharing the arithmetic prevents two
+definitions of multiplication overflow; keeping the threshold records distinct
+reflects the different physical roles of routing switches and compute PEs.
+
+The limit is a product rather than an independent per-dimension cap. A PE with
+many inputs and one result does not contain the same selector cost as a square
+PE with the same largest dimension. Larger architectures remain expressible by
+composing bounded PEs with explicit arbitrary-topology Fabric connections,
+which keeps the actual connectivity visible to Mapping and the backend.
+
 The general builtin memory is broader than the initial Hybrid32 convenience
 recipe because a preset-wide scalar type floor is meaningful only when both
 compute and memory resources admit it. Reusing Hybrid32 made a 64-bit ALU

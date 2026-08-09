@@ -767,17 +767,66 @@ the exact selected tier byte for byte.
 
 ### Structured MemoryCommunication Generator
 
-The current Structured MemoryCommunication generator consumes a finite set of exact
-Structured Program references and one exact finalized Fabric. It emits every
-input parent plus each distinct child obtained by one legal atomic logical
-memory decision. An empty input set produces an empty output set. Its resolved
-component view contains only the positive `scope_expansion_limit` owned by the
-Resolved Configuration View.
+The current Structured MemoryCommunication generator consumes a finite set of
+exact Structured Program references and one exact finalized Fabric. It emits
+every input parent plus each distinct child obtained by one legal atomic
+logical memory decision. An empty input set produces an empty output set. Its
+resolved component view contains only the positive `scope_expansion_limit`
+owned by the Resolved Configuration View.
 
-The first current decision is `StageConstantGlobal`. Its scope is an exact
-memory block argument of one selected `loom.spatial_region`, identified by the
-parent-local `StructuredEntityRef`. The decision exists only when all of the
-following are proved from the complete parent:
+The current closed decision catalog and stable ordinals are:
+
+```text
+StructuredMemoryCommunicationDecisionKind =
+    StageConstantGlobal          = 0
+  | PermuteLocalBufferLayout     = 1
+  | PipelineStagedLoop           = 2
+  | PromoteSpscBufferToChannel   = 3
+```
+
+The canonical lineage-payload schema is
+`loom.structured_memory_communication.decision.2.0`. Its bytes are:
+
+```text
+u32be(kind)
+|| StructuredEntityRef(anchor)
+|| kind_payload
+
+kind_payload(StageConstantGlobal)        = empty
+kind_payload(PermuteLocalBufferLayout)   = u64be(adjacent_storage_position)
+kind_payload(PipelineStagedLoop)         = empty
+kind_payload(PromoteSpscBufferToChannel) = empty
+```
+
+The anchor is respectively the selected Spatial memory block argument, local
+`memref.alloc` result, `scf.for` operation, or fresh temporary allocation
+result. The kind determines the anchor category and payload shape; there is no
+generic option dictionary, dormant parameter slot, or memory-plan record.
+Malformed anchors, unknown kinds, unexpected payload bytes, and every 1.x
+decision payload are rejected rather than reinterpreted.
+
+The provider for this catalog, decision schema, and component-view schema has
+implementation semantic identity
+`loom.compiler.structured_memory_communication.generator.v2`. The existing
+`loom.compiler.structured_memory_communication.generator.v1` identity remains
+bound to the incompatible constant-staging-only behavior and cannot be
+reinterpreted. Registry, manifest, cache, replay, and lineage validation must
+therefore distinguish the providers without a compatibility switch.
+
+Memory-relevant structural scopes are visited in canonical Structured entity
+order. The first `scope_expansion_limit` scopes across the ordered input
+parents are inspected. Each inspected scope retains its complete applicable
+kind and parameter domain; the limit cannot cut the adjacent-layout choices of
+one admitted allocation. The two descriptor-owned work units remain inspected
+memory scopes and attempted decisions. Worker count, completion order, exact
+Fabric capacity, and wall time cannot change this finite semantic domain.
+
+#### `StageConstantGlobal`
+
+Its scope is an exact memory block argument of one selected
+`loom.spatial_region`, identified by the parent-local `StructuredEntityRef`.
+The decision exists only when all of the following are proved from the
+complete parent:
 
 1. the argument has a statically shaped identity-layout ranked memref type;
 2. every use of that exact region argument is a direct `memref.load` in the
@@ -814,12 +863,96 @@ load/store actors; finalized D0 contains neither `memref.copy` nor
 `memref.get_global` inside a graph. Complete exact-Fabric actor admission runs
 before publication.
 
-This decision chooses a software-visible logical buffer and copy, not a
-physical SRAM, bank, address, memory service, route, overlap schedule, or
-Mapping. Later MemoryCommunication decisions may add typed layout,
-multibuffering, pipelining, or channel alternatives, but they compose as
-ordinary immutable children and cannot weaken the proof above or introduce a
-parallel memory authority.
+#### `PermuteLocalBufferLayout`
+
+This decision anchors one `memref.alloc` result wholly owned by a selected
+Spatial region. The allocation must have a static rank of at least two, a
+positive static shape, and a dense permutation layout. It must not escape the
+region or cross a callable, region, yield, or ownership boundary. Its complete
+use closure contains only direct `memref.load`, `memref.store`, compatible
+`memref.copy`, and `memref.dealloc` uses whose index and element semantics are
+preserved by changing the allocation type. Unknown aliases, casts, rank
+reduction, opaque calls, atomics, volatile accesses, or an unrepresentable
+address make the decision absent.
+
+`adjacent_storage_position` is in `[0, rank - 1)` and exchanges two adjacent
+positions in the allocation's current dense storage order. The logical shape
+and every logical access index remain unchanged. Repeated immutable decisions
+compose arbitrary storage-order permutations without enumerating a factorial
+domain. Materialization writes the selected dense strided layout into the
+ordinary memref type and updates the exact closed use set; it adds no layout
+record or target annotation.
+
+Mechanical D0 lowering computes each load, store, and copy endpoint from that
+endpoint's exact memref offset and strides. A copy iterates the common logical
+index domain and computes source and destination addresses independently, so
+different admitted dense layouts remain semantic copies. Rejecting a layout
+that cannot be lowered is preferable to publishing an incomplete candidate or
+silently reverting to identity layout.
+
+#### `PipelineStagedLoop`
+
+This decision anchors one normalized `scf.for` with an exact trip count of at
+least two. The current profile admits one closed two-stage shape: each
+iteration has one complete staging copy into a fresh private local buffer,
+followed by a compute suffix whose accesses to that buffer are read-only. The
+copy source is an exact static memref or non-rank-reducing static view. The
+buffer does not escape, and exact alias, effect, and dependence analysis proves
+that all cross-iteration dependences other than reuse of that private buffer
+are absent. In particular, source accesses and externally visible output
+effects are iteration-disjoint, and an unknown call, atomic, volatile access,
+or unproved memory relation makes the decision absent.
+
+Materialization uses ordinary SCF and memref operations to form a prologue,
+overlapped kernel, epilogue, and ring-buffer selection. The copy for logical
+iteration `i + 1` may overlap the compute suffix for `i`; program values and
+effects retain their original logical iteration order. The buffer count is not
+an independent choice:
+
+```text
+buffer_count = maximum_live_iteration_distance + 1
+```
+
+The current two-stage schedule has distance one and therefore exactly two
+buffers. A future catalog that admits a longer logical stage schedule derives
+its ring count by the same equation. Pipeline offsets are logical iteration
+offsets, not cycle slots, a predicted initiation interval, physical memory
+latency, or a Mapping reservation.
+
+#### `PromoteSpscBufferToChannel`
+
+This decision anchors one fresh temporary allocation in an InstructionCore
+caller. Its complete use and symbol closure must identify exactly one producer
+thread launch and one consumer thread launch. After any required private
+thread-definition specialization, the producer performs one total ordered
+write sequence and the consumer performs one total ordered read sequence over
+the allocation's exact logical domain. Their affine event correspondence must
+be a bijection with identical payload type and order. The allocation has no
+other read, write, capture, alias, escape, or observation.
+
+The launch and effect proof must also establish that moving the consumer
+launch before the producer-completion wait is behavior-preserving: the
+consumer performs no externally visible effect before its first blocking
+receive, and all remaining producer and consumer effects are disjoint or keep
+the original causal order. A competing consumer, partial domain, reordered
+access, unknown effect, visible temporary state, or unproved launch motion
+makes the decision absent.
+
+Materialization creates one fresh `dataflow.channel.create`, specializes only
+the selected producer and consumer definitions when they have other users,
+replaces the proved writes and reads with ordered send and receive endpoints,
+updates the two launches, and removes the dead allocation. The canonical
+Dataflow channel owner derives endpoint identity, event correspondence, and
+any required source map from the resulting program. The decision does not
+select logical capacity, a physical FIFO, a NoC, a memory-backed queue, or a
+route.
+
+All four decisions choose software-visible logical storage, order, or carrier
+structure. They never choose a physical SRAM, bank, address, coalescing or
+burst service, service endpoint, route, overlap latency, or Mapping record.
+Bulk intrinsics have already been expanded before ownership. Each decision
+composes as an ordinary immutable child and cannot introduce a parallel memory
+authority.
 
 ### Workload-Aware Ownership Selection
 

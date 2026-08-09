@@ -55,6 +55,28 @@ placement of `fabric.pe`.
 In any given configuration, a `fabric.pe [spatial]` activates at most one
 contained FU. A disabled PE activates none.
 
+## Boundary selector crosspoint contract
+
+Every spatial or temporal PE boundary is implemented by finite selector logic
+between the PE ports and its internal FU-facing ports. For both schedule
+branches, let `K` be the PE input-port count and `L` the PE output-port count,
+derived from the anonymous SSA signature or named `function_type`. Both counts
+must be positive, and the overflow-safe product must satisfy `K * L <= 64`.
+
+A PE with `K * L <= 16` is valid without an efficiency diagnostic. A PE with
+`16 < K * L <= 64` remains valid but verification emits one non-fatal
+implementation-efficiency warning for that occurrence. The warning is
+advisory, does not enter Fabric identity, and changes neither Mapping legality
+nor selector capacity. A product greater than 64 is invalid. Thus `4 x 4` is
+quiet, `4 x 5` warns, `8 x 8` warns but remains valid, and `9 x 8` is invalid.
+
+The product models the PE boundary selector fabric, not FU functionality.
+Architectures that require more boundary connectivity compose multiple PEs and
+explicit Fabric routing resources instead of hiding a larger crossbar inside
+one PE. Switches use the same overflow-safe crosspoint arithmetic but retain
+their independently owned warning and hard thresholds from
+`spec-fabric-switch.md`.
+
 ## Background
 
 `fabric.fu` models a CGRA-style functional unit: a PE-internal graph-region
@@ -552,6 +574,9 @@ The verifier emits free-form diagnostics for the following conditions:
 
 * PE port type or width violations (mixed types, mixed widths,
   non-`bits` types, `K < 1` or `L < 1`).
+* An overflow or `K * L > 64` in the PE boundary selector crosspoint count.
+  A product in `(16, 64]` is valid and emits the advisory warning exactly once
+  for that PE occurrence.
 * Empty concrete FU occurrence set.
 * A finalized anonymous-form body contains an op other than an anonymous
   `fabric.fu` occurrence (in particular, no `fabric.yield` may appear directly
