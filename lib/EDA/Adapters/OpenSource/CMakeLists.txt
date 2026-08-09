@@ -2,6 +2,7 @@ add_library(LoomEDAOpenSource
   OpenRoad.cpp
   Verilator.cpp
   Yosys.cpp
+  YosysGateNetlist.cpp
 )
 
 target_include_directories(LoomEDAOpenSource PUBLIC

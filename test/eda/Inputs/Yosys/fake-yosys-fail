@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1-}" == "-V" ]]; then
+  printf '%s\n' 'Yosys 0.67 fixture'
+  exit 0
+fi
+
+exit 7

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1-}" == "-V" ]]; then
+  printf '%s\n' 'Yosys 0.67 fixture'
+  exit 0
+fi
+
+if [[ "$#" -ne 3 || "$1" != "-q" || "$2" != "-s" ||
+      "$3" != "drivers/synthesize.ys" ]]; then
+  exit 64
+fi
+
+test -f drivers/synthesize.ys
+grep -F 'abc -liberty ' drivers/synthesize.ys > /dev/null
+cat > outputs/netlist.v <<'EOF'
+module top(a, y);
+  input a;
+  output y;
+  wire a;
+  wire y;
+  INVX1 u0 (.A(a), .Y(y));
+endmodule
+EOF
+cp inputs/implementation/rtl/top.sv /dev/null
+cat > outputs/rtl-structure.json <<'EOF'
+{"creator":"authored Yosys fixture","modules":{"top":{"attributes":{"top":"1"},"ports":{"a":{"direction":"input","bits":[2]},"y":{"direction":"output","bits":[3]}},"cells":{},"netnames":{"a":{"bits":[2]},"y":{"bits":[3]}}}}}
+EOF
+cat > outputs/netlist-structure.json <<'EOF'
+{"creator":"authored Yosys fixture","modules":{"INVX1":{"attributes":{"blackbox":"1"},"ports":{"A":{"direction":"input","bits":[2]},"Y":{"direction":"output","bits":[3]}},"cells":{},"netnames":{"A":{"bits":[2]},"Y":{"bits":[3]}}},"top":{"attributes":{"top":"1"},"ports":{"a":{"direction":"input","bits":[2]},"y":{"direction":"output","bits":[3]}},"cells":{"u0":{"type":"INVX1","port_directions":{"A":"input","Y":"output"},"connections":{"A":[2],"Y":[3]}}},"netnames":{"a":{"bits":[2]},"y":{"bits":[3]}}}}}
+EOF

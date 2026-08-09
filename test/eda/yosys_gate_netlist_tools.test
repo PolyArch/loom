@@ -1,0 +1,3 @@
+# REQUIRES: yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %python -c 'import shutil, subprocess; y = shutil.which("yosys"); v = subprocess.check_output([y, "-V"], text=True).strip(); subprocess.run(["%loom-yosys-gate-netlist-test", "%t", "%S/Inputs/Yosys", y, v], check=True)'

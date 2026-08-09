@@ -7,6 +7,17 @@ target_link_libraries(loom-yosys-synthesis-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-yosys-gate-netlist-test
+  YosysGateNetlistTest.cpp
+)
+
+target_link_libraries(loom-yosys-gate-netlist-test PRIVATE
+  LoomHardwareConfigurationTestSupport
+  LoomEDAOpenSource
+  MLIRParser
+  LLVMSupport
+)
+
 add_executable(loom-verilator-functional-test
   VerilatorFunctionalTest.cpp
 )

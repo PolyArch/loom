@@ -1,0 +1,1 @@
+{"creator":"authored Yosys fixture","modules":{"top":{"attributes":{"top":"1"},"ports":{"a":{"direction":"input","bits":[2]},"y":{"direction":"output","bits":[3]}},"cells":{},"netnames":{"a":{"bits":[2]},"y":{"bits":[3]}}}}}
