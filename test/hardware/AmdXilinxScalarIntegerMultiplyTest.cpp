@@ -672,7 +672,8 @@ void sealedCapabilityAndRegistration(const std::filesystem::path &root) {
                       ExternalDependencyKind::ToolBundledResource} &&
               contract->supportedRepresentations ==
                   std::vector<RepresentationRootVariant>{
-                      RepresentationRootVariant::Rtl} &&
+                      RepresentationRootVariant::Rtl,
+                      RepresentationRootVariant::FpgaPhysical} &&
               contract->blackBoxContractRequired &&
               !contract->memoryMacroCapable && contract->validator,
           "DSP58 external contract changed its exact closure");
@@ -750,6 +751,18 @@ void exactOccurrenceMaterializesDeterministically(
       firstOutput.externalImplementationBindings;
   if (llvm::Error error = contracts.canonicalizeAndValidateBindings(
           validatedBindings, representation, &platform.platform(), system))
+    fail(test, llvm::toString(std::move(error)));
+  const ImplementationRepresentationRoot physicalRepresentation{
+      RepresentationRootVariant::FpgaPhysical,
+      RepresentationPhysicalStage::Routed,
+      format,
+      {RepresentationObjectKind::DeviceResource,
+       "device_78637670313830322d76737661353630312d3348502d652d53"},
+      {}};
+  validatedBindings = firstOutput.externalImplementationBindings;
+  if (llvm::Error error = contracts.canonicalizeAndValidateBindings(
+          validatedBindings, physicalRepresentation, &platform.platform(),
+          system))
     fail(test, llvm::toString(std::move(error)));
   std::vector<ExternalImplementationBindingDraft> wrongBindings =
       firstOutput.externalImplementationBindings;

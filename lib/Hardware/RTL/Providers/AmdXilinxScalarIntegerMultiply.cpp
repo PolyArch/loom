@@ -362,7 +362,8 @@ llvm::Error
 validateDsp58Binding(const ExternalImplementationBindingDraft &binding,
                      const ImplementationRepresentationRoot &representation,
                      const platform::ImplementationPlatform *platform) {
-  if (representation.variant != RepresentationRootVariant::Rtl ||
+  if ((representation.variant != RepresentationRootVariant::Rtl &&
+       representation.variant != RepresentationRootVariant::FpgaPhysical) ||
       !isExactPlatform(platform) ||
       binding.providerContractRef != kContractRef ||
       !isExactExternalInput(binding.externalInputs) ||
@@ -392,7 +393,7 @@ llvm::Error registerAmdXilinxDsp58ExternalImplementationContract(
   return catalog.add(ExternalImplementationContract{
       kContractRef.str(),
       {{kInputSlot.str(), {ExternalDependencyKind::ToolBundledResource}}},
-      {RepresentationRootVariant::Rtl},
+      {RepresentationRootVariant::Rtl, RepresentationRootVariant::FpgaPhysical},
       true,
       false,
       validateDsp58Binding});

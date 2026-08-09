@@ -1,0 +1,6 @@
+# REQUIRES: circt, vivado-2024.2.2
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-amd-xilinx-scalar-integer-multiply-test %t
+# RUN: cd %t/exact/provider_artifacts && vivado -mode batch -nojournal -nolog -notrace -source %S/Inputs/AmdXilinxDSP58/vivado.tcl | FileCheck %s
+
+# CHECK: LOOM_DSP58_CELLS 1
