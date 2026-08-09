@@ -95,6 +95,12 @@ void encodeFabricRef(FabricByteWriter &writer,
 void encodeFabricRef(FabricByteWriter &writer,
                      const FabricPhysicalConfigurationFieldRef &field);
 void encodeFabricRef(FabricByteWriter &writer,
+                     const FabricConfigurationSlotRef &slot);
+void encodeFabricRef(FabricByteWriter &writer,
+                     const SpatialCoreInternalConfigurationSlotRef &slot);
+void encodeFabricRef(FabricByteWriter &writer,
+                     const FabricPhysicalConfigurationSlotRef &slot);
+void encodeFabricRef(FabricByteWriter &writer,
                      const FabricHardwareDomainMemberRef &member);
 void encodeFabricRef(FabricByteWriter &writer,
                      const FabricClockResetDirectOwnerRef &owner);
@@ -176,6 +182,12 @@ llvm::Error decodeFabricRefInto(FabricByteReader &reader,
                                 FabricPhysicalOccurrenceOwnerRef &owner);
 llvm::Error decodeFabricRefInto(FabricByteReader &reader,
                                 FabricPhysicalConfigurationFieldRef &field);
+llvm::Error decodeFabricRefInto(FabricByteReader &reader,
+                                FabricConfigurationSlotRef &slot);
+llvm::Error decodeFabricRefInto(
+    FabricByteReader &reader, SpatialCoreInternalConfigurationSlotRef &slot);
+llvm::Error decodeFabricRefInto(FabricByteReader &reader,
+                                FabricPhysicalConfigurationSlotRef &slot);
 llvm::Error decodeFabricRefInto(FabricByteReader &reader,
                                 FabricHardwareDomainMemberRef &member);
 llvm::Error decodeFabricRefInto(FabricByteReader &reader,

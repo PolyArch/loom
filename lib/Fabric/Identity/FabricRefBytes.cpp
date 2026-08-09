@@ -144,6 +144,30 @@ void loom::fabric::encodeFabricRef(
 }
 
 void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
+                                   const FabricConfigurationSlotRef &value) {
+  encodeFabricRef(writer, value.field);
+  writer.tag(static_cast<std::uint32_t>(value.residency.index()));
+  if (const auto *context =
+          std::get_if<InstructionContextRef>(&value.residency))
+    encodeFabricRef(writer, *context);
+}
+
+void loom::fabric::encodeFabricRef(
+    FabricByteWriter &writer,
+    const SpatialCoreInternalConfigurationSlotRef &value) {
+  encodeFabricRef(writer, value.spatialCore);
+  encodeFabricRef(writer, value.slot);
+}
+
+void loom::fabric::encodeFabricRef(
+    FabricByteWriter &writer,
+    const FabricPhysicalConfigurationSlotRef &value) {
+  writer.tag(static_cast<std::uint32_t>(value.kind()));
+  std::visit([&](const auto &payload) { encodeFabricRef(writer, payload); },
+             value.payload());
+}
+
+void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
                                    const FabricHardwareDomainMemberRef &value) {
   writer.tag(static_cast<std::uint32_t>(value.kind()));
   switch (value.kind()) {
@@ -375,6 +399,64 @@ loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
   return makeFabricRefError(
       FabricRefErrorKind::MalformedSyntax,
       llvm::Twine("unknown physical configuration field ") + llvm::Twine(*tag));
+}
+
+llvm::Error loom::fabric::decodeFabricRefInto(
+    FabricByteReader &reader, FabricConfigurationSlotRef &value) {
+  FabricSemanticConfigFieldRef field;
+  if (llvm::Error error = decodeFabricRefInto(reader, field))
+    return error;
+  auto tag = readFabricClosedTag(reader, 2, "configuration residency");
+  if (!tag)
+    return tag.takeError();
+  FabricConfigurationResidency residency =
+      FabricStaticConfigurationResidency{};
+  if (*tag == 1) {
+    InstructionContextRef context;
+    if (llvm::Error error = decodeFabricRefInto(reader, context))
+      return error;
+    residency = context;
+  }
+  value = FabricConfigurationSlotRef{std::move(field), std::move(residency)};
+  return llvm::Error::success();
+}
+
+llvm::Error loom::fabric::decodeFabricRefInto(
+    FabricByteReader &reader, SpatialCoreInternalConfigurationSlotRef &value) {
+  SpatialCoreOccurrenceRef spatialCore;
+  if (llvm::Error error = decodeFabricRefInto(reader, spatialCore))
+    return error;
+  FabricConfigurationSlotRef slot;
+  if (llvm::Error error = decodeFabricRefInto(reader, slot))
+    return error;
+  value = SpatialCoreInternalConfigurationSlotRef{spatialCore,
+                                                   std::move(slot)};
+  return llvm::Error::success();
+}
+
+llvm::Error loom::fabric::decodeFabricRefInto(
+    FabricByteReader &reader, FabricPhysicalConfigurationSlotRef &value) {
+  auto tag = readFabricClosedTag(reader, 2, "physical configuration slot");
+  if (!tag)
+    return tag.takeError();
+  if (*tag == 0) {
+    FabricConfigurationSlotRef direct;
+    if (llvm::Error error = decodeFabricRefInto(reader, direct))
+      return error;
+    auto parsed = FabricPhysicalConfigurationSlotRef::create(direct);
+    if (!parsed)
+      return parsed.takeError();
+    value = std::move(*parsed);
+    return llvm::Error::success();
+  }
+  SpatialCoreInternalConfigurationSlotRef internal;
+  if (llvm::Error error = decodeFabricRefInto(reader, internal))
+    return error;
+  auto parsed = FabricPhysicalConfigurationSlotRef::create(internal);
+  if (!parsed)
+    return parsed.takeError();
+  value = std::move(*parsed);
+  return llvm::Error::success();
 }
 
 llvm::Error

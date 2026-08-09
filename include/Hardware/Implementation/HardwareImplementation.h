@@ -35,7 +35,7 @@ class FabricSystemRootView;
 namespace loom::hardware {
 
 inline constexpr ArtifactSchemaDescriptor hardwareImplementationSchema{
-    "loom.hardware_implementation", SchemaVersion{2, 2}};
+    "loom.hardware_implementation", SchemaVersion{3, 0}};
 
 struct ImplementationDataInterfaceRef final {
   fabric::FabricSpatialAttachmentEndpointRef endpoint;

@@ -1,5 +1,5 @@
 #include "ADG/Builder.h"
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/FixedVectorShuffle.h"
@@ -537,11 +537,11 @@ std::vector<std::uint8_t> encodedConfiguration(
   require(test, field != nullptr,
           "shuffle operation field is absent from the ABI");
   const std::vector<SemanticConfigurationValue> values = {
-      {field->field, semantic}};
+      {field->slot, semantic}};
   const auto unit = llvm::find_if(
       abi.programmingUnits(), [&](const ProgrammingUnit &candidate) {
         return llvm::any_of(candidate.fields, [&](const auto &candidateField) {
-          return candidateField.field == field->field;
+          return candidateField.slot == field->slot;
         });
       });
   require(test, unit != abi.programmingUnits().end(),

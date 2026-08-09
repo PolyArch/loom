@@ -1,4 +1,4 @@
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "EDA/Adapters/Synopsys/DesignCompiler.h"
 #include "EDA/Adapters/Synopsys/FusionCompiler.h"
 

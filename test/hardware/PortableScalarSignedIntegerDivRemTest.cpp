@@ -1,4 +1,4 @@
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "PortableProviderTestSupport.h"
 
 #include "Hardware/RTL/OperationLeaf.h"
@@ -461,7 +461,8 @@ ConfigurationABIDraft makeConfigurationAbiDraft(
     bool removed = false;
     for (ProgrammingUnitDraft &unit : draft.programmingUnits) {
       const auto found = llvm::find_if(unit.fields, [&](const auto &candidate) {
-        return candidate.field == physicalField;
+        return loom::fabric::configurationField(candidate.slot) ==
+               physicalField;
       });
       if (found == unit.fields.end())
         continue;

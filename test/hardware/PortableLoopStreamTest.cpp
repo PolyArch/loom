@@ -1,4 +1,4 @@
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
@@ -446,10 +446,14 @@ ConfigurationImage makeRouteConfiguration(llvm::StringRef test,
     }
     const auto physical = qualifyConfigurationField(test, fixture.spatialCore,
                                                     descriptor.reference);
+    const auto slot = take(
+        test, loom::fabric::qualifyFabricConfigurationSlot(
+                  physical,
+                  loom::fabric::FabricStaticConfigurationResidency{}));
     const ProgrammingUnit *fieldOwner = nullptr;
     for (const ProgrammingUnit &unit : abi.programmingUnits())
       for (const ConfigurationFieldEncoding &field : unit.fields)
-        if (field.field == physical)
+        if (field.slot == slot)
           fieldOwner = &unit;
     if (!fieldOwner)
       fail(test, "configuration field has no programming owner");
@@ -460,8 +464,8 @@ ConfigurationImage makeRouteConfiguration(llvm::StringRef test,
       owner = fieldOwner;
     auto encoded = take(test, schema.encode(descriptor.reference, value));
     values.push_back(
-        {physical, std::vector<std::uint8_t>(encoded.bytes().begin(),
-                                             encoded.bytes().end())});
+        {slot, std::vector<std::uint8_t>(encoded.bytes().begin(),
+                                         encoded.bytes().end())});
   }
   if (!owner)
     fail(test, "route configuration has no programming unit");

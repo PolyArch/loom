@@ -1,4 +1,4 @@
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/FloatConversions.h"
@@ -1144,7 +1144,7 @@ std::string emitSpecialized(llvm::StringRef test, const FabricFixture &fabric,
           ports.size() == (configured ? 3 : 2) &&
               ports.atInput(0).getName() == "data_input_0" &&
               ports.atOutput(0).getName() == "data_output_0",
-          "conversion leaf ports do not follow ConfigurationABI 2.0");
+          "conversion leaf ports do not follow ConfigurationABI 3.0");
   if (configured)
     require(test,
             ports.atInput(1).getName() == "config_0" &&

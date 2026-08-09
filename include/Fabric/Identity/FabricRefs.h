@@ -1029,6 +1029,48 @@ LOOM_FABRIC_REF_EQUALITY(FabricTransportEndpointRef,
 LOOM_FABRIC_REF_EQUALITY(FabricMemoryEndpointRef,
                          lhs.owner == rhs.owner && lhs.ordinal == rhs.ordinal)
 
+struct FabricStaticConfigurationResidency final {
+  friend bool operator==(FabricStaticConfigurationResidency,
+                         FabricStaticConfigurationResidency) {
+    return true;
+  }
+};
+
+using FabricConfigurationResidency =
+    std::variant<FabricStaticConfigurationResidency, InstructionContextRef>;
+
+/// One independently stored semantic field in a Module or System root.
+struct FabricConfigurationSlotRef final {
+  FabricSemanticConfigFieldRef field;
+  FabricConfigurationResidency residency;
+
+  friend bool operator==(const FabricConfigurationSlotRef &lhs,
+                         const FabricConfigurationSlotRef &rhs) {
+    return lhs.field == rhs.field && lhs.residency == rhs.residency;
+  }
+  friend bool operator!=(const FabricConfigurationSlotRef &lhs,
+                         const FabricConfigurationSlotRef &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// Occurrence qualification for one complete Module-local configuration slot.
+struct SpatialCoreInternalConfigurationSlotRef final {
+  SpatialCoreOccurrenceRef spatialCore;
+  FabricConfigurationSlotRef slot;
+
+  friend bool operator==(
+      const SpatialCoreInternalConfigurationSlotRef &lhs,
+      const SpatialCoreInternalConfigurationSlotRef &rhs) {
+    return lhs.spatialCore == rhs.spatialCore && lhs.slot == rhs.slot;
+  }
+  friend bool operator!=(
+      const SpatialCoreInternalConfigurationSlotRef &lhs,
+      const SpatialCoreInternalConfigurationSlotRef &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
 //===---------------------------------------------------------------------===//
 // Directed physical traversals
 //===---------------------------------------------------------------------===//
@@ -1564,6 +1606,66 @@ inline bool operator!=(const FabricPhysicalConfigurationFieldRef &lhs,
                        const FabricPhysicalConfigurationFieldRef &rhs) {
   return !(lhs == rhs);
 }
+
+enum class FabricPhysicalConfigurationSlotKind : std::uint32_t {
+  DirectSystemSlot = 0,
+  SpatialCoreInternalSlot = 1,
+};
+
+/// One exact configuration storage slot in a complete System.
+class FabricPhysicalConfigurationSlotRef final {
+public:
+  using Payload =
+      std::variant<FabricConfigurationSlotRef,
+                   SpatialCoreInternalConfigurationSlotRef>;
+
+  FabricPhysicalConfigurationSlotRef()
+      : payload_(std::in_place_type<FabricConfigurationSlotRef>,
+                 FabricConfigurationSlotRef{
+                     FabricSemanticConfigFieldRef{
+                         FabricConfigurationOwnerRef(
+                             FabricInventoryOwnerRef::of(
+                                 HostCoreOccurrenceRef(0))),
+                         0},
+                     FabricStaticConfigurationResidency{}}) {}
+
+  FabricPhysicalConfigurationSlotKind kind() const {
+    return static_cast<FabricPhysicalConfigurationSlotKind>(payload_.index());
+  }
+
+  static llvm::Expected<FabricPhysicalConfigurationSlotRef>
+  create(const FabricConfigurationSlotRef &value);
+  static llvm::Expected<FabricPhysicalConfigurationSlotRef>
+  create(const SpatialCoreInternalConfigurationSlotRef &value);
+
+  const Payload &payload() const { return payload_; }
+
+private:
+  explicit FabricPhysicalConfigurationSlotRef(Payload payload)
+      : payload_(std::move(payload)) {}
+
+  Payload payload_;
+};
+
+inline bool operator==(const FabricPhysicalConfigurationSlotRef &lhs,
+                       const FabricPhysicalConfigurationSlotRef &rhs) {
+  return lhs.payload() == rhs.payload();
+}
+inline bool operator!=(const FabricPhysicalConfigurationSlotRef &lhs,
+                       const FabricPhysicalConfigurationSlotRef &rhs) {
+  return !(lhs == rhs);
+}
+
+llvm::Expected<FabricPhysicalConfigurationSlotRef>
+qualifyFabricConfigurationSlot(
+    const FabricPhysicalConfigurationFieldRef &field,
+    FabricConfigurationResidency residency);
+
+FabricPhysicalConfigurationFieldRef configurationField(
+    const FabricPhysicalConfigurationSlotRef &slot);
+
+const FabricConfigurationSlotRef &configurationSlot(
+    const FabricPhysicalConfigurationSlotRef &slot);
 
 /// One complete-System hardware-domain member. Imported Module membership is
 /// expressed only by its occurrence-qualified symbolic slot.

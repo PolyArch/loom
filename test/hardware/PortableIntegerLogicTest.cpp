@@ -1,4 +1,4 @@
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/IntegerLogic.h"

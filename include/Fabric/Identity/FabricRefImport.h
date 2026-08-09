@@ -100,7 +100,7 @@ struct ResolvedFabricOpCapabilityView {
       const ::loom::PointerLayout *pointerLayout = nullptr) const;
 
   /// Rebuilds the exact sealed relation that owns this capability's semantic
-  /// field. ConfigurationABI 2.0 consumes this relation directly; it does not
+  /// field. ConfigurationABI 3.0 consumes this relation directly; it does not
   /// reinterpret family parameters or maintain a second behavior domain.
   llvm::Expected<::fabric::FabricOpSemanticFieldRelation>
   resolveSemanticFieldRelation(::mlir::MLIRContext &context) const;
@@ -215,6 +215,11 @@ struct FabricTraversalActivationGroupView final {
 struct FabricTraversalUseView final {
   FabricUsePatternRef pattern;
   FabricTraversalActivationGroupView activationGroup;
+};
+
+enum class FabricFuConfigurationStorageMode : std::uint32_t {
+  PerFu,
+  PerInstruction,
 };
 
 /// The exact endpoint relation of one admitted physical traversal. The
@@ -478,8 +483,15 @@ public:
   std::optional<::fabric::Schedule>
   peSchedule(FabricPeOccurrenceRef occurrence) const;
   std::uint64_t peResidentContextCount(FabricPeOccurrenceRef occurrence) const;
+  std::optional<FabricFuConfigurationStorageMode>
+  peFuConfigurationStorageMode(FabricPeOccurrenceRef occurrence) const;
   std::optional<FabricPeOccurrenceRef>
   parentPeOf(FabricFuOccurrenceRef occurrence) const;
+
+  llvm::Expected<std::vector<FabricConfigurationResidency>>
+  configurationResidencies(const FabricSemanticConfigFieldRef &field) const;
+  llvm::Error
+  validateConfigurationSlot(const FabricConfigurationSlotRef &slot) const;
 
   /// The complete static factorized configuration schema of one Spatial PE.
   /// The view is rebuilt from canonical occurrence, port, and endpoint

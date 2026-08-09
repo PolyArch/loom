@@ -1,5 +1,5 @@
 #include "ADG/Builder.h"
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/FixedVectorSliceAlignMerge.h"
@@ -357,7 +357,7 @@ ConfigurationABIDraft makeConfigurationAbiDraft(
     for (ProgrammingUnitDraft &unit : draft.programmingUnits)
       for (auto field = unit.fields.begin(); field != unit.fields.end();
            ++field)
-        if (field->field == physicalField) {
+        if (loom::fabric::configurationField(field->slot) == physicalField) {
           unit.fields.erase(field);
           removed = true;
           break;
@@ -1009,7 +1009,7 @@ void malformedAndUnsupportedInputsAreTransactional(
       finalizeConfigurationABI(
           makeConfigurationAbiDraft(test, valid, ConfigurationAbiKind::Missing),
           store),
-      "cover every Fabric configuration field");
+      "cover every Fabric configuration slot");
 
   FabricFixture unsupportedContract = makeFabric(
       test, store, "unsupported-contract", {130, 130, 64, 64}, 130, true);

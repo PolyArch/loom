@@ -225,6 +225,51 @@ void hardwareDomainMembersUseOneSystemWire() {
                             printFabricRef(moduleOwner)));
 }
 
+void configurationSlotsPreserveResidencyAndOccurrence() {
+  const llvm::StringRef test = __func__;
+  const FabricInventoryOwnerRef moduleOwner =
+      FabricInventoryOwnerRef::of(FabricFuOccurrenceNodeRef{
+          FabricFuNodeKind::Op, FabricFuOccurrenceRef(70), 0});
+  const FabricSemanticConfigFieldRef field{
+      FabricConfigurationOwnerRef(moduleOwner), 0};
+  const FabricConfigurationSlotRef staticSlot{
+      field, FabricStaticConfigurationResidency{}};
+  const FabricConfigurationSlotRef firstContextSlot{
+      field, InstructionContextRef{FabricPeOccurrenceRef(71), 0}};
+  const FabricConfigurationSlotRef secondContextSlot{
+      field, InstructionContextRef{FabricPeOccurrenceRef(71), 1}};
+
+  require(test,
+          canonicalFabricBytes(staticSlot) !=
+                  canonicalFabricBytes(firstContextSlot) &&
+              canonicalFabricBytes(firstContextSlot) !=
+                  canonicalFabricBytes(secondContextSlot),
+          "configuration slot residency aliased a distinct storage slot");
+  require(test,
+          take(test, decodeFabricRef<FabricConfigurationSlotRef>(
+                         canonicalFabricBytes(staticSlot))) == staticSlot &&
+              take(test, decodeFabricRef<FabricConfigurationSlotRef>(
+                             canonicalFabricBytes(firstContextSlot))) ==
+                  firstContextSlot,
+          "configuration slot codec changed residency");
+
+  const SpatialCoreInternalConfigurationSlotRef firstPhysical{
+      SpatialCoreOccurrenceRef{AccCoreOccurrenceRef(72)}, firstContextSlot};
+  const SpatialCoreInternalConfigurationSlotRef secondPhysical{
+      SpatialCoreOccurrenceRef{AccCoreOccurrenceRef(73)}, firstContextSlot};
+  const FabricPhysicalConfigurationSlotRef first =
+      take(test, FabricPhysicalConfigurationSlotRef::create(firstPhysical));
+  const FabricPhysicalConfigurationSlotRef second =
+      take(test, FabricPhysicalConfigurationSlotRef::create(secondPhysical));
+  require(test, canonicalFabricBytes(first) != canonicalFabricBytes(second),
+          "physical configuration slot lost its SpatialCore occurrence");
+  require(test,
+          take(test, decodeFabricRef<FabricPhysicalConfigurationSlotRef>(
+                         canonicalFabricBytes(first))) == first,
+          "physical configuration slot codec changed its payload");
+  requireRejected(test, FabricPhysicalConfigurationSlotRef::create(staticSlot));
+}
+
 void clockResetDirectOwnerIsOneValidatedRefinement() {
   const llvm::StringRef test = __func__;
   const auto requireAdmitted = [&](const FabricInventoryOwnerRef &owner) {
@@ -317,6 +362,7 @@ void decoderWorkspaceDefaultsRemainStructurallyValid() {
 int main() {
   spatialCoreDomainTargetsAreOccurrenceExact();
   physicalOwnerAndConfigurationFieldRolesStayDisjoint();
+  configurationSlotsPreserveResidencyAndOccurrence();
   hardwareDomainMembersUseOneSystemWire();
   clockResetDirectOwnerIsOneValidatedRefinement();
   decoderWorkspaceDefaultsRemainStructurallyValid();

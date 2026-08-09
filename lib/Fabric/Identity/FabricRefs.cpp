@@ -287,6 +287,86 @@ llvm::Error validateFabricSpatialCoreInternalConfigurationField(
   }
 #include "Fabric/Identity/FabricRefs.def"
 
+llvm::Expected<FabricPhysicalConfigurationSlotRef>
+FabricPhysicalConfigurationSlotRef::create(
+    const FabricConfigurationSlotRef &value) {
+  auto field = FabricPhysicalConfigurationFieldRef::create(value.field);
+  if (!field)
+    return field.takeError();
+  return FabricPhysicalConfigurationSlotRef(
+      Payload(std::in_place_type<FabricConfigurationSlotRef>, value));
+}
+
+llvm::Expected<FabricPhysicalConfigurationSlotRef>
+FabricPhysicalConfigurationSlotRef::create(
+    const SpatialCoreInternalConfigurationSlotRef &value) {
+  auto target = FabricModulePhysicalTargetRef::create(value.slot.field);
+  if (!target)
+    return target.takeError();
+  auto field = FabricPhysicalConfigurationFieldRef::create(
+      SpatialCoreInternalOccurrenceRef{value.spatialCore, std::move(*target)});
+  if (!field)
+    return field.takeError();
+  return FabricPhysicalConfigurationSlotRef(
+      Payload(std::in_place_type<SpatialCoreInternalConfigurationSlotRef>,
+              value));
+}
+
+llvm::Expected<FabricPhysicalConfigurationSlotRef>
+loom::fabric::qualifyFabricConfigurationSlot(
+    const FabricPhysicalConfigurationFieldRef &field,
+    FabricConfigurationResidency residency) {
+  switch (field.kind()) {
+  case FabricPhysicalConfigurationFieldKind::DirectSystemField:
+    return FabricPhysicalConfigurationSlotRef::create(
+        FabricConfigurationSlotRef{
+            std::get<FabricSemanticConfigFieldRef>(field.payload()),
+            std::move(residency)});
+  case FabricPhysicalConfigurationFieldKind::SpatialCoreInternalField: {
+    const auto &internal =
+        std::get<SpatialCoreInternalOccurrenceRef>(field.payload());
+    const auto &local =
+        std::get<FabricSemanticConfigFieldRef>(internal.target.payload());
+    return FabricPhysicalConfigurationSlotRef::create(
+        SpatialCoreInternalConfigurationSlotRef{
+            internal.spatialCore,
+            FabricConfigurationSlotRef{local, std::move(residency)}});
+  }
+  }
+  llvm_unreachable("unknown physical configuration field kind");
+}
+
+FabricPhysicalConfigurationFieldRef loom::fabric::configurationField(
+    const FabricPhysicalConfigurationSlotRef &slot) {
+  switch (slot.kind()) {
+  case FabricPhysicalConfigurationSlotKind::DirectSystemSlot:
+    return llvm::cantFail(FabricPhysicalConfigurationFieldRef::create(
+        std::get<FabricConfigurationSlotRef>(slot.payload()).field));
+  case FabricPhysicalConfigurationSlotKind::SpatialCoreInternalSlot: {
+    const auto &internal = std::get<SpatialCoreInternalConfigurationSlotRef>(
+        slot.payload());
+    auto target = llvm::cantFail(
+        FabricModulePhysicalTargetRef::create(internal.slot.field));
+    return llvm::cantFail(FabricPhysicalConfigurationFieldRef::create(
+        SpatialCoreInternalOccurrenceRef{internal.spatialCore,
+                                         std::move(target)}));
+  }
+  }
+  llvm_unreachable("unknown physical configuration slot kind");
+}
+
+const FabricConfigurationSlotRef &loom::fabric::configurationSlot(
+    const FabricPhysicalConfigurationSlotRef &slot) {
+  switch (slot.kind()) {
+  case FabricPhysicalConfigurationSlotKind::DirectSystemSlot:
+    return std::get<FabricConfigurationSlotRef>(slot.payload());
+  case FabricPhysicalConfigurationSlotKind::SpatialCoreInternalSlot:
+    return std::get<SpatialCoreInternalConfigurationSlotRef>(slot.payload())
+        .slot;
+  }
+  llvm_unreachable("unknown physical configuration slot kind");
+}
+
 #define LOOM_FABRIC_HARDWARE_DOMAIN_MEMBER(Ordinal, Name, Type, Validator)     \
   llvm::Expected<FabricHardwareDomainMemberRef>                                \
   FabricHardwareDomainMemberRef::create(const Type &value) {                   \

@@ -1,4 +1,4 @@
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 
 #include "ADG/Builder.h"
 #include "ADG/Builtin.h"
@@ -205,10 +205,15 @@ finiteFieldDomain(const fabric::FabricArtifactView &module,
 llvm::Expected<ConfigurationFieldEncoding>
 defaultFieldEncoding(const fabric::FabricArtifactView &module,
                      fabric::SpatialCoreOccurrenceRef spatialCore,
-                     const fabric::FabricSemanticConfigFieldRef &localField) {
+                     const fabric::FabricSemanticConfigFieldRef &localField,
+                     fabric::FabricConfigurationResidency residency) {
   auto physical = qualifyField(spatialCore, localField);
   if (!physical)
     return physical.takeError();
+  auto slot = fabric::qualifyFabricConfigurationSlot(
+      *physical, std::move(residency));
+  if (!slot)
+    return slot.takeError();
   auto domain = finiteFieldDomain(module, localField);
   if (!domain)
     return domain.takeError();
@@ -226,7 +231,7 @@ defaultFieldEncoding(const fabric::FabricArtifactView &module,
     entries.push_back(
         {value, bitVector(static_cast<std::uint64_t>(ordinal), bitCount)});
   return ConfigurationFieldEncoding{
-      std::move(*physical),
+      std::move(*slot),
       FiniteCodebookEncoding{bitCount, std::move(entries)},
       {},
       std::move(domain->inactiveValue)};
@@ -376,19 +381,31 @@ llvm::Expected<ConfigurationABIDraft> makeCompleteConfigurationABIDraft(
           return physicalField.takeError();
         const OverrideKey key = overrideKey(*physicalField);
         const auto override = overrideByField.find(key);
-        if (override != overrideByField.end()) {
-          fields.push_back(
-              ConfigurationFieldEncoding{override->second->field,
-                                         override->second->semanticEncoding,
-                                         {},
-                                         override->second->inactiveValue});
-          consumedOverrides.insert(key);
-          continue;
+        auto residencies = module->configurationResidencies(localField);
+        if (!residencies)
+          return residencies.takeError();
+        for (const fabric::FabricConfigurationResidency &residency :
+             *residencies) {
+          if (override != overrideByField.end()) {
+            auto slot = fabric::qualifyFabricConfigurationSlot(
+                override->second->field, residency);
+            if (!slot)
+              return slot.takeError();
+            fields.push_back(
+                ConfigurationFieldEncoding{std::move(*slot),
+                                           override->second->semanticEncoding,
+                                           {},
+                                           override->second->inactiveValue});
+            continue;
+          }
+          auto field =
+              defaultFieldEncoding(*module, spatialCore, localField, residency);
+          if (!field)
+            return field.takeError();
+          fields.push_back(std::move(*field));
         }
-        auto field = defaultFieldEncoding(*module, spatialCore, localField);
-        if (!field)
-          return field.takeError();
-        fields.push_back(std::move(*field));
+        if (override != overrideByField.end())
+          consumedOverrides.insert(key);
       }
     }
     if (fields.empty())

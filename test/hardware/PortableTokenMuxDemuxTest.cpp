@@ -1,5 +1,5 @@
 #include "ADG/Builder.h"
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
@@ -451,10 +451,10 @@ loom::fabric::FabricPhysicalConfigurationFieldRef qualifyConfigurationField(
 
 const ProgrammingUnit *
 fieldOwner(const ConfigurationABI &abi,
-           const loom::fabric::FabricPhysicalConfigurationFieldRef &field) {
+           const loom::fabric::FabricPhysicalConfigurationSlotRef &slot) {
   for (const ProgrammingUnit &unit : abi.programmingUnits())
     if (llvm::any_of(unit.fields, [&](const auto &candidate) {
-          return candidate.field == field;
+          return candidate.slot == slot;
         }))
       return &unit;
   return nullptr;
@@ -501,7 +501,11 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
     }
     const auto physical = qualifyConfigurationField(test, fixture.spatialCore,
                                                     descriptor.reference);
-    const ProgrammingUnit *candidate = fieldOwner(fixture.abi.abi(), physical);
+    const auto slot = take(
+        test, loom::fabric::qualifyFabricConfigurationSlot(
+                  physical,
+                  loom::fabric::FabricStaticConfigurationResidency{}));
+    const ProgrammingUnit *candidate = fieldOwner(fixture.abi.abi(), slot);
     require(test, candidate != nullptr,
             "PE configuration field has no programming owner");
     if (owner)
@@ -511,8 +515,8 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
       owner = candidate;
     auto encoded = take(test, schema.encode(descriptor.reference, value));
     values.push_back(
-        {physical, std::vector<std::uint8_t>(encoded.bytes().begin(),
-                                             encoded.bytes().end())});
+        {slot, std::vector<std::uint8_t>(encoded.bytes().begin(),
+                                         encoded.bytes().end())});
   }
 
   const auto &operation = fixture.operation();
@@ -522,9 +526,9 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
       fixture.abi.abi().findOperationField(operation.physicalOccurrence,
                                            ordinal);
   require(test, operationField != nullptr,
-          "operation configuration field is absent from ABI 2.0");
+          "operation configuration field is absent from ABI 3.0");
   const ProgrammingUnit *operationOwner =
-      fieldOwner(fixture.abi.abi(), operationField->field);
+      fieldOwner(fixture.abi.abi(), operationField->slot);
   require(test, operationOwner != nullptr,
           "operation field has no programming owner");
   if (owner)
@@ -532,7 +536,7 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
             "operation and PE configuration have different owners");
   else
     owner = operationOwner;
-  values.push_back({operationField->field, fixture.targetSemantic});
+  values.push_back({operationField->slot, fixture.targetSemantic});
   std::vector<std::uint8_t> target =
       take(test, fixture.abi.abi().encode(owner->id, values));
   std::vector<std::uint8_t> invalid = target;

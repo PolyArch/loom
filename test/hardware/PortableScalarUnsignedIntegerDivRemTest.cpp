@@ -1,4 +1,4 @@
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarUnsignedIntegerDivRem.h"
@@ -482,7 +482,8 @@ ConfigurationABIDraft makeConfigurationAbiDraft(
     bool removed = false;
     for (ProgrammingUnitDraft &unit : draft.programmingUnits) {
       const auto field = llvm::find_if(unit.fields, [&](const auto &candidate) {
-        return candidate.field == physicalField;
+        return loom::fabric::configurationField(candidate.slot) ==
+               physicalField;
       });
       if (field == unit.fields.end())
         continue;
@@ -1152,7 +1153,7 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
           multiWidthRelation.kind() ==
                   ::fabric::FabricOpSemanticFieldRelationKind::Finite &&
               multiWidthRelation.finiteBehaviorDomain().size() == 2,
-          "ABI 2.0 relation lost the div width dimension");
+          "ABI 3.0 relation lost the div width dimension");
 
   FabricFixture multiOperationWidth =
       makeFabric(test, store, multiOperationWidthSpec());
@@ -1163,7 +1164,7 @@ void malformedInputsAreTransactional(const std::filesystem::path &root) {
           multiOperationWidthRelation.kind() ==
                   ::fabric::FabricOpSemanticFieldRelationKind::Finite &&
               multiOperationWidthRelation.finiteBehaviorDomain().size() == 4,
-          "ABI 2.0 relation lost the div/rem operation-width product");
+          "ABI 3.0 relation lost the div/rem operation-width product");
 
   constexpr std::array nativeRecipes = {
       BackendRecipeKey::SynopsysDesignWare,

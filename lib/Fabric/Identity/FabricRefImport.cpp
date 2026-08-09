@@ -1231,15 +1231,23 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
           "PE occurrence and scheduling projection do not correspond");
     if (isPe) {
       if (*entity.peSchedule == ::fabric::Schedule::Spatial) {
+        if (entity.peFuConfigurationStorageMode)
+          return invalidView(
+              "spatial PE occurrence owns a temporal FU storage mode");
         if (entity.instructionContexts.size() != 1)
           return invalidView(
               "spatial PE occurrence does not own its sole context");
       } else if (*entity.peSchedule == ::fabric::Schedule::Temporal) {
+        if (!entity.peFuConfigurationStorageMode)
+          return invalidView(
+              "temporal PE occurrence has no FU configuration storage mode");
         if (entity.instructionContexts.empty())
           return invalidView("temporal PE occurrence has no resident contexts");
       } else {
         return invalidView("PE occurrence has an unknown schedule");
       }
+    } else if (entity.peFuConfigurationStorageMode) {
+      return invalidView("non-PE entity owns an FU configuration storage mode");
     }
 
     const bool isFuOccurrence =

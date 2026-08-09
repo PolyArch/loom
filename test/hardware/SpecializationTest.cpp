@@ -1,5 +1,5 @@
 #include "Hardware/RTL/Specialization.h"
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobDigest.h"

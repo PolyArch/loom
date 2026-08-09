@@ -300,6 +300,19 @@ resolvePhysicalField(const fabric::FabricSystemRootView &system,
                                    internal.target.payload())};
 }
 
+llvm::Error validatePhysicalSlot(
+    const fabric::FabricSystemRootView &system,
+    const fabric::FabricPhysicalConfigurationSlotRef &slot) {
+  const auto field = fabric::configurationField(slot);
+  if (llvm::Error error = validatePhysicalField(system, field))
+    return error;
+  auto resolved = resolvePhysicalField(system, field);
+  if (!resolved)
+    return resolved.takeError();
+  return resolved->artifact.validateConfigurationSlot(
+      fabric::configurationSlot(slot));
+}
+
 llvm::Expected<::fabric::FabricOpSemanticFieldRelation>
 operationFieldRelation(const ResolvedPhysicalField &field,
                        mlir::MLIRContext &context) {
@@ -520,16 +533,16 @@ parseField(const llvm::json::Value &value) {
     return invalid(context + " must be an object");
   if (llvm::Error error =
           rejectUnknownFields(*object, context,
-                              {"fabric_config_field_ref", "semantic_encoding",
+                              {"fabric_config_slot_ref", "semantic_encoding",
                                "destination_slices", "inactive_value"}))
     return std::move(error);
-  auto fieldText = requireString(*object, "fabric_config_field_ref", context);
-  if (!fieldText)
-    return fieldText.takeError();
-  auto field = parseReference<fabric::FabricPhysicalConfigurationFieldRef>(
-      *fieldText, "fabric_config_field_ref");
-  if (!field)
-    return field.takeError();
+  auto slotText = requireString(*object, "fabric_config_slot_ref", context);
+  if (!slotText)
+    return slotText.takeError();
+  auto slot = parseReference<fabric::FabricPhysicalConfigurationSlotRef>(
+      *slotText, "fabric_config_slot_ref");
+  if (!slot)
+    return slot.takeError();
   auto encodingObject = requireObject(*object, "semantic_encoding", context);
   if (!encodingObject)
     return encodingObject.takeError();
@@ -554,7 +567,7 @@ parseField(const llvm::json::Value &value) {
       contextual(parseArtifactLocalPayloadHex(*inactive), context);
   if (!inactiveBytes)
     return inactiveBytes.takeError();
-  return ConfigurationFieldEncoding{std::move(*field), std::move(*encoding),
+  return ConfigurationFieldEncoding{std::move(*slot), std::move(*encoding),
                                     std::move(parsedSlices),
                                     std::move(*inactiveBytes)};
 }
@@ -709,7 +722,8 @@ llvm::Error canonicalizeEncoding(ConfigurationFieldEncoding &field) {
 
 llvm::Error validateFieldEncoding(const fabric::FabricSystemRootView &system,
                                   const ConfigurationFieldEncoding &field) {
-  auto resolved = resolvePhysicalField(system, field.field);
+  const auto physicalField = fabric::configurationField(field.slot);
+  auto resolved = resolvePhysicalField(system, physicalField);
   if (!resolved)
     return resolved.takeError();
   const auto &owner = resolved->local.owner.catalog();
@@ -725,7 +739,8 @@ llvm::Error validateFieldEncoding(const fabric::FabricSystemRootView &system,
     std::set<ByteVector> actual;
     for (const FiniteCodebookEntry &entry : codebook->entries) {
       if (llvm::Error error =
-              validateSemanticValue(system, field.field, entry.semanticValue))
+              validateSemanticValue(system, physicalField,
+                                    entry.semanticValue))
         return error;
       actual.insert(entry.semanticValue);
     }
@@ -807,28 +822,36 @@ qualifyModuleField(const fabric::SpatialCoreOccurrenceRef &spatialCore,
 }
 
 llvm::Expected<std::set<ByteVector>>
-expectedPhysicalFields(const fabric::FabricSystemRootView &system) {
+expectedPhysicalSlots(const fabric::FabricSystemRootView &system) {
   std::set<ByteVector> result;
   const auto append =
-      [&](const fabric::FabricPhysicalConfigurationFieldRef &field)
+      [&](const fabric::FabricPhysicalConfigurationSlotRef &slot)
       -> llvm::Error {
-    if (!result.insert(referenceKey(field)).second)
-      return invalid("Fabric physical configuration field is duplicated");
+    if (!result.insert(referenceKey(slot)).second)
+      return invalid("Fabric physical configuration slot is duplicated");
     return llvm::Error::success();
   };
 
-  const auto appendOwner = [&](const fabric::FabricInventoryOwnerRef &owner,
+  const auto appendOwner = [&](const fabric::FabricArtifactView &view,
+                               const fabric::FabricInventoryOwnerRef &owner,
                                const auto &qualify) -> llvm::Error {
-    const std::uint64_t count = system.artifact().inventorySize(
+    const std::uint64_t count = view.inventorySize(
         owner, fabric::FabricInventoryKind::SemanticConfigField);
     for (fabric::FabricOrdinal ordinal = 0; ordinal < count; ++ordinal) {
       fabric::FabricSemanticConfigFieldRef local{
           fabric::FabricConfigurationOwnerRef(owner), ordinal};
-      auto physical = qualify(local);
-      if (!physical)
-        return physical.takeError();
-      if (llvm::Error error = append(*physical))
-        return error;
+      auto residencies = view.configurationResidencies(local);
+      if (!residencies)
+        return residencies.takeError();
+      for (const fabric::FabricConfigurationResidency &residency :
+           *residencies) {
+        auto physical = qualify(
+            fabric::FabricConfigurationSlotRef{local, residency});
+        if (!physical)
+          return physical.takeError();
+        if (llvm::Error error = append(*physical))
+          return error;
+      }
     }
     return llvm::Error::success();
   };
@@ -863,8 +886,9 @@ expectedPhysicalFields(const fabric::FabricSystemRootView &system) {
 
   for (const fabric::FabricInventoryOwnerRef &owner : directOwners) {
     if (llvm::Error error = appendOwner(
-            owner, [](const fabric::FabricSemanticConfigFieldRef &local) {
-              return fabric::FabricPhysicalConfigurationFieldRef::create(local);
+            artifact, owner,
+            [](const fabric::FabricConfigurationSlotRef &local) {
+              return fabric::FabricPhysicalConfigurationSlotRef::create(local);
             }))
       return std::move(error);
   }
@@ -882,17 +906,14 @@ expectedPhysicalFields(const fabric::FabricSystemRootView &system) {
           std::get<fabric::FabricModulePhysicalOwnerRef>(member.payload);
       const fabric::FabricInventoryOwnerRef owner =
           inventoryOwner(physicalOwner);
-      const std::uint64_t count = module->inventorySize(
-          owner, fabric::FabricInventoryKind::SemanticConfigField);
-      for (fabric::FabricOrdinal ordinal = 0; ordinal < count; ++ordinal) {
-        fabric::FabricSemanticConfigFieldRef local{
-            fabric::FabricConfigurationOwnerRef(owner), ordinal};
-        auto physical = qualifyModuleField(spatialCore, local);
-        if (!physical)
-          return physical.takeError();
-        if (llvm::Error error = append(*physical))
-          return std::move(error);
-      }
+      if (llvm::Error error = appendOwner(
+              *module, owner,
+              [&](const fabric::FabricConfigurationSlotRef &local) {
+                return fabric::FabricPhysicalConfigurationSlotRef::create(
+                    fabric::SpatialCoreInternalConfigurationSlotRef{
+                        spatialCore, local});
+              }))
+        return std::move(error);
     }
   }
   return result;
@@ -999,13 +1020,14 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
     std::vector<std::pair<std::uint64_t, std::uint64_t>> destinationRanges;
     for (ConfigurationFieldEncoding &field : unit.fields) {
       if (llvm::Error error =
-              contextual(validatePhysicalField(*system, field.field),
-                         "configuration field does not resolve in Fabric"))
+              contextual(validatePhysicalSlot(*system, field.slot),
+                         "configuration slot does not resolve in Fabric"))
         return std::move(error);
-      ByteVector fieldKey = referenceKey(field.field);
+      ByteVector fieldKey = referenceKey(field.slot);
       if (!allFields.insert(fieldKey).second)
-        return invalid("configuration field belongs to more than one unit");
-      auto physicalOwner = physicalOwnerForField(field.field);
+        return invalid("configuration slot belongs to more than one unit");
+      const auto physicalField = fabric::configurationField(field.slot);
+      auto physicalOwner = physicalOwnerForField(physicalField);
       if (!physicalOwner)
         return physicalOwner.takeError();
       if (unitOwners.find(referenceKey(*physicalOwner)) == unitOwners.end())
@@ -1021,7 +1043,7 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
     }
     llvm::sort(unit.fields, [](const ConfigurationFieldEncoding &lhs,
                                const ConfigurationFieldEncoding &rhs) {
-      return referenceKey(lhs.field) < referenceKey(rhs.field);
+      return referenceKey(lhs.slot) < referenceKey(rhs.slot);
     });
     llvm::sort(destinationRanges);
     for (std::size_t index = 1; index < destinationRanges.size(); ++index)
@@ -1032,12 +1054,69 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
                         unit.payloadBitCount, std::move(unit.fields)});
   }
 
-  auto expectedFields = expectedPhysicalFields(*system);
-  if (!expectedFields)
-    return expectedFields.takeError();
-  if (allFields != *expectedFields)
-    return invalid(
-        "programming units do not cover every Fabric configuration field");
+  auto expectedSlots = expectedPhysicalSlots(*system);
+  if (!expectedSlots)
+    return expectedSlots.takeError();
+  if (allFields != *expectedSlots) {
+    const auto missing = llvm::find_if(
+        *expectedSlots,
+        [&](const ByteVector &slot) { return !allFields.count(slot); });
+    const auto unexpected = llvm::find_if(
+        allFields,
+        [&](const ByteVector &slot) { return !expectedSlots->count(slot); });
+    std::string detail =
+        "programming units do not cover every Fabric configuration slot "
+        "(actual=" +
+        std::to_string(allFields.size()) +
+        ", expected=" + std::to_string(expectedSlots->size());
+    if (missing != expectedSlots->end()) {
+      detail += ", first_missing=" + formatArtifactLocalPayloadHex(*missing);
+      auto decoded = fabric::decodeFabricRef<
+          fabric::FabricPhysicalConfigurationSlotRef>(*missing);
+      if (decoded) {
+        const auto &local = fabric::configurationSlot(*decoded);
+        detail += ", missing_owner_kind=" +
+                  std::to_string(static_cast<unsigned>(
+                      local.field.owner.catalog().kind())) +
+                  ", missing_field_ordinal=" +
+                  std::to_string(local.field.ordinal);
+        if (decoded->kind() ==
+            fabric::FabricPhysicalConfigurationSlotKind::
+                SpatialCoreInternalSlot) {
+          const auto &internal =
+              std::get<fabric::SpatialCoreInternalConfigurationSlotRef>(
+                  decoded->payload());
+          detail += ", missing_spatial_core=" +
+                    std::to_string(internal.spatialCore.core.id());
+        }
+        if (local.field.owner.catalog().kind() ==
+            fabric::FabricInventoryOwnerKind::FuOccurrenceNode) {
+          const auto &node =
+              std::get<fabric::FabricFuOccurrenceNodeRef>(
+                  local.field.owner.catalog().payload);
+          detail += ", missing_fu=" + std::to_string(node.fu.id()) +
+                    ", missing_node_kind=" +
+                    std::to_string(static_cast<unsigned>(node.node)) +
+                    ", missing_node_ordinal=" +
+                    std::to_string(node.ordinal);
+        }
+        if (const auto *context =
+                std::get_if<fabric::InstructionContextRef>(
+                    &local.residency))
+          detail += ", missing_instruction_context=" +
+                    std::to_string(context->ordinal);
+        else
+          detail += ", missing_residency=static";
+      } else {
+        llvm::consumeError(decoded.takeError());
+      }
+    }
+    if (unexpected != allFields.end())
+      detail +=
+          ", first_unexpected=" + formatArtifactLocalPayloadHex(*unexpected);
+    detail += ")";
+    return invalid(detail);
+  }
 
   llvm::sort(units, [](const ProgrammingUnit &lhs, const ProgrammingUnit &rhs) {
     return closureKey(lhs) < closureKey(rhs);
@@ -1113,8 +1192,8 @@ serializeConfigurationABI(const ArtifactRootReference &fabricReference,
             for (const ConfigurationFieldEncoding &field : unit.fields) {
               json.object([&] {
                 json.attribute(
-                    "fabric_config_field_ref",
-                    formatArtifactLocalPayloadHex(referenceKey(field.field)));
+                    "fabric_config_slot_ref",
+                    formatArtifactLocalPayloadHex(referenceKey(field.slot)));
                 json.attributeObject("semantic_encoding", [&] {
                   writeSemanticEncoding(json, field.semanticEncoding);
                 });
@@ -1145,7 +1224,7 @@ serializeConfigurationABI(const ArtifactRootReference &fabricReference,
 const ConfigurationFieldEncoding *
 findFieldInUnit(const ProgrammingUnit &unit, llvm::ArrayRef<std::uint8_t> key) {
   for (const ConfigurationFieldEncoding &field : unit.fields)
-    if (llvm::ArrayRef<std::uint8_t>(referenceKey(field.field)).equals(key))
+    if (llvm::ArrayRef<std::uint8_t>(referenceKey(field.slot)).equals(key))
       return &field;
   return nullptr;
 }
@@ -1183,8 +1262,8 @@ ConfigurationABI::findProgrammingUnit(ProgrammingUnitId id) const {
 }
 
 const ConfigurationFieldEncoding *ConfigurationABI::findField(
-    const fabric::FabricPhysicalConfigurationFieldRef &field) const {
-  const ByteVector key = referenceKey(field);
+    const fabric::FabricPhysicalConfigurationSlotRef &slot) const {
+  const ByteVector key = referenceKey(slot);
   for (const ProgrammingUnit &unit : programmingUnits_)
     if (const ConfigurationFieldEncoding *encoding = findFieldInUnit(unit, key))
       return encoding;
@@ -1216,7 +1295,13 @@ const ConfigurationFieldEncoding *ConfigurationABI::findOperationField(
     llvm::consumeError(physical.takeError());
     return nullptr;
   }
-  return findField(*physical);
+  auto slot = fabric::qualifyFabricConfigurationSlot(
+      *physical, fabric::FabricStaticConfigurationResidency{});
+  if (!slot) {
+    llvm::consumeError(slot.takeError());
+    return nullptr;
+  }
+  return findField(*slot);
 }
 
 llvm::Expected<std::vector<std::uint8_t>> ConfigurationABI::encode(
@@ -1233,7 +1318,7 @@ llvm::Expected<std::vector<std::uint8_t>> ConfigurationABI::encode(
 
   std::map<ByteVector, llvm::ArrayRef<std::uint8_t>> selected;
   for (const SemanticConfigurationValue &value : values) {
-    ByteVector key = referenceKey(value.field);
+    ByteVector key = referenceKey(value.slot);
     if (!findFieldInUnit(*unit, key))
       return invalid(
           "semantic value names a field outside the programming unit");
@@ -1242,14 +1327,14 @@ llvm::Expected<std::vector<std::uint8_t>> ConfigurationABI::encode(
   }
 
   for (const ConfigurationFieldEncoding &field : unit->fields) {
-    ByteVector key = referenceKey(field.field);
+    ByteVector key = referenceKey(field.slot);
     auto found = selected.find(key);
     llvm::ArrayRef<std::uint8_t> semantic =
         found == selected.end()
             ? llvm::ArrayRef<std::uint8_t>(field.inactiveValue)
             : found->second;
-    if (llvm::Error error =
-            validateSemanticValue(system_, field.field, semantic))
+    if (llvm::Error error = validateSemanticValue(
+            system_, fabric::configurationField(field.slot), semantic))
       return std::move(error);
     auto encoded = encodeField(field, semantic);
     if (!encoded)
@@ -1308,11 +1393,11 @@ ConfigurationABI::decode(ProgrammingUnitId id,
         return invalid("finite codebook cannot decode physical code");
       semantic = entry->semanticValue;
     }
-    if (llvm::Error error =
-            validateSemanticValue(system_, field.field, semantic))
+    if (llvm::Error error = validateSemanticValue(
+            system_, fabric::configurationField(field.slot), semantic))
       return std::move(error);
     values.push_back(
-        SemanticConfigurationValue{field.field, std::move(semantic)});
+        SemanticConfigurationValue{field.slot, std::move(semantic)});
   }
 
   for (std::uint64_t index = 0; index < unit->payloadBitCount; ++index)
@@ -1356,7 +1441,7 @@ importConfigurationABI(const ArtifactRootReference &reference,
                        const ArtifactStore &store) {
   if (reference.schemaIdentity != configurationAbiSchema.identity ||
       reference.schemaVersion != configurationAbiSchema.version)
-    return invalid("reference is not loom.configuration_abi 2.0");
+    return invalid("reference is not loom.configuration_abi 3.0");
   auto bytes = store.get(reference);
   if (!bytes)
     return bytes.takeError();

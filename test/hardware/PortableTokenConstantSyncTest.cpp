@@ -1,5 +1,5 @@
 #include "ADG/Builder.h"
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
@@ -739,10 +739,14 @@ makeSystemConfiguration(llvm::StringRef test, const FabricFixture &fixture,
           descriptor.port->ordinal)};
     }
     const auto physical = qualifyField(test, spatialCore, descriptor.reference);
+    const auto slot = take(
+        test, loom::fabric::qualifyFabricConfigurationSlot(
+                  physical,
+                  loom::fabric::FabricStaticConfigurationResidency{}));
     const ProgrammingUnit *fieldOwner = nullptr;
     for (const ProgrammingUnit &unit : abi.programmingUnits())
       for (const ConfigurationFieldEncoding &field : unit.fields)
-        if (field.field == physical)
+        if (field.slot == slot)
           fieldOwner = &unit;
     require(test, fieldOwner != nullptr, "PE field has no programming unit");
     if (owner)
@@ -752,8 +756,8 @@ makeSystemConfiguration(llvm::StringRef test, const FabricFixture &fixture,
       owner = fieldOwner;
     auto semantic = take(test, schema.encode(descriptor.reference, value));
     values.push_back(
-        {physical, std::vector<std::uint8_t>(semantic.bytes().begin(),
-                                             semantic.bytes().end())});
+        {slot, std::vector<std::uint8_t>(semantic.bytes().begin(),
+                                         semantic.bytes().end())});
   }
   require(test, owner != nullptr, "route configuration has no owner");
   return SystemConfiguration{"configuration_" + std::to_string(owner->id),

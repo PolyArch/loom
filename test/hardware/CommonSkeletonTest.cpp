@@ -4,7 +4,7 @@
 #include "Hardware/RTL/Providers/ScalarIntegerAddSub.h"
 #include "Hardware/RTL/Specialization.h"
 
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "PortableProviderTestSupport.h"
 
 #include "Common/ArtifactStore.h"
@@ -338,10 +338,14 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
 
     const auto physical = qualifyConfigurationField(test, fixture.spatialCore,
                                                     descriptor.reference);
+    const auto slot = take(
+        test, loom::fabric::qualifyFabricConfigurationSlot(
+                  physical,
+                  loom::fabric::FabricStaticConfigurationResidency{}));
     const loom::hardware::ProgrammingUnit *fieldOwner = nullptr;
     for (const auto &unit : fixture.abi.abi().programmingUnits())
       for (const auto &field : unit.fields)
-        if (field.field == physical) {
+        if (field.slot == slot) {
           require(test, fieldOwner == nullptr,
                   "configuration field has duplicate programming owners");
           fieldOwner = &unit;
@@ -357,13 +361,13 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
     const auto routeBytes =
         take(test, schema.encode(descriptor.reference, routeValue));
     routeValues.push_back(
-        {physical, std::vector<std::uint8_t>(routeBytes.bytes().begin(),
-                                             routeBytes.bytes().end())});
+        {slot, std::vector<std::uint8_t>(routeBytes.bytes().begin(),
+                                         routeBytes.bytes().end())});
     const auto discardBytes =
         take(test, schema.encode(descriptor.reference, discardValue));
     discardValues.push_back(
-        {physical, std::vector<std::uint8_t>(discardBytes.bytes().begin(),
-                                             discardBytes.bytes().end())});
+        {slot, std::vector<std::uint8_t>(discardBytes.bytes().begin(),
+                                         discardBytes.bytes().end())});
   }
   require(test, owner != nullptr, "fixture has no programming unit");
   return ConfigurationImages{

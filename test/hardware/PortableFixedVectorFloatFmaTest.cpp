@@ -1,4 +1,4 @@
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/FixedVectorFloatFma.h"
@@ -822,7 +822,7 @@ void configuredBehaviorAndArtifacts(const std::filesystem::path &root) {
               ports.atInput(3).type ==
                   mlir::IntegerType::get(firstContext.get(), 3) &&
               ports.atOutput(0).getName() == "data_output_0",
-          "FMA leaf ports do not follow ConfigurationABI 2.0");
+          "FMA leaf ports do not follow ConfigurationABI 3.0");
   const std::string first =
       specialize(test, std::move(firstSkeleton), fabric, abi);
 

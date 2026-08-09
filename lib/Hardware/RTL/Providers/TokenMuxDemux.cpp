@@ -399,7 +399,7 @@ materializePortableTokenRouting(FabricOperationProviderRequest request,
     field = request.configurationAbi.findOperationField(request.occurrence,
                                                         fieldOrdinal);
     if (!field)
-      return invalid("configured routed field is absent from ABI 2.0");
+      return invalid("configured routed field is absent from ABI 3.0");
     codebook = std::get_if<FiniteCodebookEncoding>(&field->semanticEncoding);
     if (!codebook)
       return invalid("configured routed field is not a finite codebook");

@@ -1,4 +1,4 @@
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/MathLogarithm.h"
@@ -865,7 +865,7 @@ std::string emitFamily(llvm::StringRef test, const ArtifactStore &store,
               ports.atInput(1).type ==
                   mlir::IntegerType::get(firstContext.get(), 6) &&
               ports.atOutput(0).getName() == "data_output_0",
-          "logarithm leaf ports do not follow ConfigurationABI 2.0");
+          "logarithm leaf ports do not follow ConfigurationABI 3.0");
   const std::string first =
       specialize(test, std::move(firstSkeleton), fabric, abi);
 

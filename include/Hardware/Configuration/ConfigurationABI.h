@@ -20,7 +20,7 @@ class ArtifactStore;
 namespace loom::hardware {
 
 inline constexpr ArtifactSchemaDescriptor configurationAbiSchema{
-    "loom.configuration_abi", SchemaVersion{2, 0}};
+    "loom.configuration_abi", SchemaVersion{3, 0}};
 
 using ProgrammingUnitId = std::uint64_t;
 
@@ -90,7 +90,7 @@ using SemanticFieldEncoding =
     std::variant<DirectBitsEncoding, FiniteCodebookEncoding>;
 
 struct ConfigurationFieldEncoding final {
-  fabric::FabricPhysicalConfigurationFieldRef field;
+  fabric::FabricPhysicalConfigurationSlotRef slot;
   SemanticFieldEncoding semanticEncoding;
   std::vector<DestinationSlice> destinationSlices;
   std::vector<std::uint8_t> inactiveValue;
@@ -123,7 +123,7 @@ struct ProgrammingUnit final {
 };
 
 struct SemanticConfigurationValue final {
-  fabric::FabricPhysicalConfigurationFieldRef field;
+  fabric::FabricPhysicalConfigurationSlotRef slot;
   std::vector<std::uint8_t> value;
 };
 
@@ -136,7 +136,7 @@ public:
   }
   const ProgrammingUnit *findProgrammingUnit(ProgrammingUnitId id) const;
   const ConfigurationFieldEncoding *
-  findField(const fabric::FabricPhysicalConfigurationFieldRef &field) const;
+  findField(const fabric::FabricPhysicalConfigurationSlotRef &slot) const;
   const ConfigurationFieldEncoding *
   findOperationField(const fabric::FabricPhysicalOccurrenceOwnerRef &operation,
                      fabric::FabricOrdinal fieldOrdinal) const;

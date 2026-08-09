@@ -52,7 +52,7 @@ detail::decodeProgrammingUnitRefFraming(llvm::ArrayRef<std::uint8_t> bytes) {
     return root.takeError();
   if (root->reference.schemaIdentity != configurationAbiSchema.identity ||
       root->reference.schemaVersion != configurationAbiSchema.version)
-    return invalid("reference does not name loom.configuration_abi 2.0");
+    return invalid("reference does not name loom.configuration_abi 3.0");
   auto unitId = readU64Be(bytes, root->byteCount);
   if (!unitId)
     return unitId.takeError();

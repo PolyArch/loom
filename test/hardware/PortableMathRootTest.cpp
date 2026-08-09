@@ -1,4 +1,4 @@
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/MathRoot.h"
@@ -710,7 +710,7 @@ std::string emitFamily(llvm::StringRef test, const ArtifactStore &store,
               ports.atInput(1).type ==
                   mlir::IntegerType::get(firstContext.get(), 3) &&
               ports.atOutput(0).getName() == "data_output_0",
-          "math root leaf ports do not follow ConfigurationABI 2.0");
+          "math root leaf ports do not follow ConfigurationABI 3.0");
   const std::string firstRtl = specialize(test, std::move(first), fixture, abi);
   std::unique_ptr<mlir::MLIRContext> secondContext = makeCirctContext();
   SkeletonFixture second =

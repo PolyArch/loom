@@ -1,5 +1,5 @@
 #include "ADG/Builder.h"
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
@@ -435,11 +435,11 @@ qualifyPeField(llvm::StringRef test,
 
 const ProgrammingUnit *findProgrammingUnit(
     llvm::StringRef test, const ConfigurationABI &abi,
-    const loom::fabric::FabricPhysicalConfigurationFieldRef &field) {
+    const loom::fabric::FabricPhysicalConfigurationSlotRef &slot) {
   const ProgrammingUnit *result = nullptr;
   for (const ProgrammingUnit &unit : abi.programmingUnits())
     for (const ConfigurationFieldEncoding &encoding : unit.fields)
-      if (encoding.field == field) {
+      if (encoding.slot == slot) {
         require(test, result == nullptr,
                 "configuration field has duplicate programming owners");
         result = &unit;
@@ -482,8 +482,12 @@ makeCommonConfiguration(llvm::StringRef test, const FabricFixture &fixture,
     }
     const auto physical =
         qualifyPeField(test, spatialCore, descriptor.reference);
+    const auto slot = take(
+        test, loom::fabric::qualifyFabricConfigurationSlot(
+                  physical,
+                  loom::fabric::FabricStaticConfigurationResidency{}));
     const ProgrammingUnit *fieldOwner =
-        findProgrammingUnit(test, abi.abi(), physical);
+        findProgrammingUnit(test, abi.abi(), slot);
     if (owner)
       require(test, owner->id == fieldOwner->id,
               "adapter fields span multiple programming units");
@@ -491,8 +495,8 @@ makeCommonConfiguration(llvm::StringRef test, const FabricFixture &fixture,
       owner = fieldOwner;
     const auto bytes = take(test, peSchema.encode(descriptor.reference, value));
     values.push_back(
-        {physical, std::vector<std::uint8_t>(bytes.bytes().begin(),
-                                             bytes.bytes().end())});
+        {slot, std::vector<std::uint8_t>(bytes.bytes().begin(),
+                                         bytes.bytes().end())});
   }
 
   const auto &resolved = capability(test, fixture);
@@ -514,17 +518,21 @@ makeCommonConfiguration(llvm::StringRef test, const FabricFixture &fixture,
       take(test, loom::hardware::test::qualifyPhysicalConfigurationField(
                      fixture.physicalOccurrence,
                      resolved.configurationFieldSchema.front().ordinal));
+  const auto operationSlot = take(
+      test, loom::fabric::qualifyFabricConfigurationSlot(
+                operationField,
+                loom::fabric::FabricStaticConfigurationResidency{}));
   const ProgrammingUnit *operationOwner =
-      findProgrammingUnit(test, abi.abi(), operationField);
+      findProgrammingUnit(test, abi.abi(), operationSlot);
   if (owner)
     require(test, owner->id == operationOwner->id,
             "adapter fields span multiple programming units");
   else
     owner = operationOwner;
   values.push_back(
-      {operationField, std::vector<std::uint8_t>(
-                           selected->semanticConfiguration->bytes().begin(),
-                           selected->semanticConfiguration->bytes().end())});
+      {operationSlot, std::vector<std::uint8_t>(
+                          selected->semanticConfiguration->bytes().begin(),
+                          selected->semanticConfiguration->bytes().end())});
   require(test, owner != nullptr, "adapter has no programming unit");
   return {"configuration_" + std::to_string(owner->id), owner->payloadBitCount,
           take(test, abi.abi().encode(owner->id, values))};

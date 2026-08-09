@@ -1,6 +1,6 @@
 #include "EDA/Adapters/OpenSource/YosysGateNetlist.h"
 
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"

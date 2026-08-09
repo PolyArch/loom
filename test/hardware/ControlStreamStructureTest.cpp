@@ -1,6 +1,6 @@
 #include "ADG/Builder.h"
 #include "ADG/Builtin.h"
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/Identity/FabricPeConfiguration.h"
@@ -193,10 +193,14 @@ makeRouteConfiguration(llvm::StringRef test,
     }
     const auto physical =
         qualifyConfigurationField(test, spatialCore, descriptor.reference);
+    const auto slot = take(
+        test, loom::fabric::qualifyFabricConfigurationSlot(
+                  physical,
+                  loom::fabric::FabricStaticConfigurationResidency{}));
     const loom::hardware::ProgrammingUnit *fieldOwner = nullptr;
     for (const auto &unit : abi.programmingUnits())
       for (const auto &field : unit.fields)
-        if (field.field == physical) {
+        if (field.slot == slot) {
           require(test, fieldOwner == nullptr,
                   "configuration field has duplicate programming owners");
           fieldOwner = &unit;
@@ -210,8 +214,8 @@ makeRouteConfiguration(llvm::StringRef test,
       owner = fieldOwner;
     auto encoded = take(test, schema.encode(descriptor.reference, value));
     values.push_back(
-        {physical, std::vector<std::uint8_t>(encoded.bytes().begin(),
-                                             encoded.bytes().end())});
+        {slot, std::vector<std::uint8_t>(encoded.bytes().begin(),
+                                         encoded.bytes().end())});
   }
   if (!owner)
     fail(test, "route configuration has no programming unit");

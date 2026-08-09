@@ -579,7 +579,7 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
     return !schema ? schema.takeError() : version.takeError();
   if (*schema != hardwareImplementationSchema.identity ||
       *version != formatSchemaVersion(hardwareImplementationSchema.version))
-    return invalid("root schema is not loom.hardware_implementation 2.2");
+    return invalid("root schema is not loom.hardware_implementation 3.0");
 
   auto fabricObject = requireObject(*root, "fabric_ref", "root");
   auto abiObject = requireObject(*root, "configuration_abi_ref", "root");
@@ -977,7 +977,7 @@ canonicalize(HardwareImplementationDraft draft,
   if (draft.configurationAbi.schemaIdentity !=
           configurationAbiSchema.identity ||
       draft.configurationAbi.schemaVersion != configurationAbiSchema.version)
-    return invalid("configuration_abi_ref requires loom.configuration_abi 2.0");
+    return invalid("configuration_abi_ref requires loom.configuration_abi 3.0");
   auto abi = importConfigurationABI(draft.configurationAbi, artifacts);
   if (!abi)
     return abi.takeError();
@@ -1205,7 +1205,7 @@ llvm::Expected<FinalizedHardwareImplementation> importHardwareImplementation(
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (reference.schemaIdentity != hardwareImplementationSchema.identity ||
       reference.schemaVersion != hardwareImplementationSchema.version)
-    return invalid("reference schema is not loom.hardware_implementation 2.2");
+    return invalid("reference schema is not loom.hardware_implementation 3.0");
   auto bytes = artifacts.get(hardwareImplementationSchema, reference.artifact);
   if (!bytes)
     return bytes.takeError();

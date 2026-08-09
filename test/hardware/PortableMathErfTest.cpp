@@ -1,4 +1,4 @@
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/MathErf.h"
@@ -731,7 +731,7 @@ void configuredBehaviorAndArtifacts(const std::filesystem::path &root) {
               portInfo.atOutput(0).getName() == "data_output_0" &&
               portInfo.atOutput(0).type ==
                   mlir::IntegerType::get(portContext.get(), 21),
-          "scalar erf leaf ports do not follow ConfigurationABI 2.0");
+          "scalar erf leaf ports do not follow ConfigurationABI 3.0");
 
   std::unique_ptr<mlir::MLIRContext> firstContext = makeCirctContext();
   std::unique_ptr<mlir::MLIRContext> secondContext = makeCirctContext();

@@ -4,6 +4,8 @@
 #include "FabricArtifactViewInternal.h"
 #include "FabricArtifactViewStorage.h"
 
+#include "llvm/ADT/STLExtras.h"
+
 using namespace loom::fabric;
 
 llvm::ArrayRef<FabricInventoryOwnerRef>
@@ -99,6 +101,55 @@ std::uint64_t FabricArtifactView::peResidentContextCount(
     FabricPeOccurrenceRef occurrence) const {
   const detail::FabricEntityViewData *record = storage_->entity(occurrence);
   return record ? record->instructionContexts.size() : 0;
+}
+
+std::optional<FabricFuConfigurationStorageMode>
+FabricArtifactView::peFuConfigurationStorageMode(
+    FabricPeOccurrenceRef occurrence) const {
+  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
+  return record ? record->peFuConfigurationStorageMode : std::nullopt;
+}
+
+llvm::Expected<std::vector<FabricConfigurationResidency>>
+FabricArtifactView::configurationResidencies(
+    const FabricSemanticConfigFieldRef &field) const {
+  if (llvm::Error error = validateFabricRef(*this, field))
+    return error;
+
+  std::optional<FabricPeOccurrenceRef> pe;
+  const FabricInventoryOwnerRef &owner = field.owner.catalog();
+  if (owner.kind() == FabricInventoryOwnerKind::FuOccurrence) {
+    pe = parentPeOf(std::get<FabricFuOccurrenceRef>(owner.payload));
+  } else if (owner.kind() == FabricInventoryOwnerKind::FuOccurrenceNode) {
+    pe = parentPeOf(
+        std::get<FabricFuOccurrenceNodeRef>(owner.payload).fu);
+  }
+
+  if (!pe || peSchedule(*pe) != ::fabric::Schedule::Temporal ||
+      peFuConfigurationStorageMode(*pe) !=
+          FabricFuConfigurationStorageMode::PerInstruction)
+    return std::vector<FabricConfigurationResidency>{
+        FabricStaticConfigurationResidency{}};
+
+  std::vector<FabricConfigurationResidency> result;
+  const std::uint64_t count = peResidentContextCount(*pe);
+  result.reserve(static_cast<std::size_t>(count));
+  for (FabricOrdinal ordinal = 0; ordinal < count; ++ordinal)
+    result.emplace_back(InstructionContextRef{*pe, ordinal});
+  return result;
+}
+
+llvm::Error FabricArtifactView::validateConfigurationSlot(
+    const FabricConfigurationSlotRef &slot) const {
+  auto residencies = configurationResidencies(slot.field);
+  if (!residencies)
+    return residencies.takeError();
+  if (!llvm::is_contained(*residencies, slot.residency))
+    return makeFabricRefError(
+        FabricRefErrorKind::InvalidOwnerFamily,
+        "configuration slot has a residency not admitted by its Fabric "
+        "owner");
+  return llvm::Error::success();
 }
 
 std::optional<FabricFuTemplateRef>

@@ -15,7 +15,7 @@
 #include "Hardware/Implementation/PhysicalRepresentationIndex.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"

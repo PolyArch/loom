@@ -1,7 +1,7 @@
 #include "EDA/Adapters/AMD/Vivado.h"
 #include "EDA/Adapters/FpgaImplementationPublication.h"
 
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"

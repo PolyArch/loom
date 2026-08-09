@@ -248,6 +248,19 @@ buildModuleView(::fabric::ModuleOp root,
       entity.peSchedule = pe.getSchedule();
       std::uint64_t contextCount = 1;
       if (pe.getSchedule() == ::fabric::Schedule::Temporal) {
+        auto mode = pe.getFuConfigModeAttr();
+        if (!mode)
+          return invalid("a temporal PE occurrence has no FU configuration "
+                         "storage mode");
+        if (mode.getValue() == "per_fu_config")
+          entity.peFuConfigurationStorageMode =
+              FabricFuConfigurationStorageMode::PerFu;
+        else if (mode.getValue() == "per_instruction_fu_config")
+          entity.peFuConfigurationStorageMode =
+              FabricFuConfigurationStorageMode::PerInstruction;
+        else
+          return invalid("a temporal PE occurrence has an unknown FU "
+                         "configuration storage mode");
         auto count = pe.getNumInstruction();
         if (!count || *count <= 0)
           return invalid("a temporal PE occurrence has no resident contexts");

@@ -385,7 +385,7 @@ qualifyField(llvm::StringRef test,
 }
 
 struct SemanticFieldDomain final {
-  FabricPhysicalConfigurationFieldRef field;
+  loom::fabric::FabricPhysicalConfigurationSlotRef slot;
   std::vector<std::vector<std::uint8_t>> values;
   std::vector<std::uint8_t> inactive;
   std::optional<std::uint64_t> directBitCount;
@@ -408,9 +408,13 @@ SemanticFieldDomain
 fieldDomain(llvm::StringRef test,
             const loom::fabric::FabricArtifactView &module,
             const loom::fabric::SpatialCoreOccurrenceRef &spatialCore,
-            const loom::fabric::FabricSemanticConfigFieldRef &local) {
+            const loom::fabric::FabricSemanticConfigFieldRef &local,
+            loom::fabric::FabricConfigurationResidency residency) {
+  const auto field = qualifyField(test, spatialCore, local);
   SemanticFieldDomain result{
-      qualifyField(test, spatialCore, local), {}, {}, std::nullopt};
+      take(test, loom::fabric::qualifyFabricConfigurationSlot(
+                     field, std::move(residency))),
+      {}, {}, std::nullopt};
   const loom::fabric::FabricInventoryOwnerRef &owner = local.owner.catalog();
   if (owner.kind() == loom::fabric::FabricInventoryOwnerKind::PeOccurrence) {
     auto schema =
@@ -513,7 +517,7 @@ ConfigurationFieldEncoding fieldEncoding(llvm::StringRef test,
                                          SemanticFieldDomain domain) {
   if (domain.directBitCount)
     return ConfigurationFieldEncoding{
-        std::move(domain.field),
+        std::move(domain.slot),
         DirectBitsEncoding{*domain.directBitCount},
         {},
         std::move(domain.inactive)};
@@ -528,7 +532,7 @@ ConfigurationFieldEncoding fieldEncoding(llvm::StringRef test,
   for (const auto &[ordinal, value] : llvm::enumerate(domain.values))
     entries.push_back(FiniteCodebookEntry{value, bitVector(ordinal, bits)});
   return ConfigurationFieldEncoding{
-      std::move(domain.field),
+      std::move(domain.slot),
       FiniteCodebookEncoding{bits, std::move(entries)},
       {},
       std::move(domain.inactive)};
@@ -563,8 +567,11 @@ makeProgrammingUnit(llvm::StringRef test,
       sawOperationField |=
           owner.kind() ==
           loom::fabric::FabricInventoryOwnerKind::FuOccurrenceNode;
-      fields.push_back(
-          fieldEncoding(test, fieldDomain(test, module, spatialCore, local)));
+      const auto residencies =
+          take(test, module.configurationResidencies(local));
+      for (const auto &residency : residencies)
+        fields.push_back(fieldEncoding(
+            test, fieldDomain(test, module, spatialCore, local, residency)));
     }
   }
   require(test, sawPeField && sawOperationField,
@@ -637,8 +644,8 @@ ConfigurationABIDraft makeDraft(const FabricFixture &fixture) {
   require(test,
           units.front().exactFabricResourceClosure.front() !=
                   units.back().exactFabricResourceClosure.front() &&
-              units.front().fields.front().field !=
-                  units.back().fields.front().field,
+              units.front().fields.front().slot !=
+                  units.back().fields.front().slot,
           "occurrence qualification aliased two imported Module instances");
   return ConfigurationABIDraft{fixture.system.reference(), std::move(units)};
 }
@@ -688,9 +695,10 @@ outsideSemanticCarrier(llvm::StringRef test,
 }
 
 bool isOperationField(const ConfigurationFieldEncoding &field) {
+  const auto physicalField = loom::fabric::configurationField(field.slot);
   const auto &internal =
       std::get<loom::fabric::SpatialCoreInternalOccurrenceRef>(
-          field.field.payload());
+          physicalField.payload());
   const auto &local = std::get<loom::fabric::FabricSemanticConfigFieldRef>(
       internal.target.payload());
   return local.owner.catalog().kind() ==
@@ -736,10 +744,10 @@ finiteOperationField(llvm::StringRef test,
 
 const SemanticConfigurationValue *
 findValue(llvm::ArrayRef<SemanticConfigurationValue> values,
-          const FabricPhysicalConfigurationFieldRef &field) {
+          const loom::fabric::FabricPhysicalConfigurationSlotRef &slot) {
   const auto found = std::find_if(values.begin(), values.end(),
                                   [&](const SemanticConfigurationValue &value) {
-                                    return value.field == field;
+                                    return value.slot == slot;
                                   });
   return found == values.end() ? nullptr : &*found;
 }
@@ -751,9 +759,9 @@ void requireDecodedValues(llvm::StringRef test,
   require(test, decoded.size() == fields.size(),
           "decode did not return every programming-unit field");
   for (const ConfigurationFieldEncoding &field : fields) {
-    const SemanticConfigurationValue *actual = findValue(decoded, field.field);
+    const SemanticConfigurationValue *actual = findValue(decoded, field.slot);
     const SemanticConfigurationValue *selection =
-        findValue(selected, field.field);
+        findValue(selected, field.slot);
     require(test,
             actual != nullptr &&
                 actual->value ==
@@ -779,7 +787,7 @@ void canonicalArtifactAndBitRoundTrip(const std::filesystem::path &root) {
     const auto *codebook =
         std::get_if<FiniteCodebookEncoding>(&field.semanticEncoding);
     selected.push_back(
-        {field.field, codebook ? activeEntry(test, field).semanticValue
+        {field.slot, codebook ? activeEntry(test, field).semanticValue
                                : field.inactiveValue});
   }
   std::vector<std::uint8_t> payload =
@@ -874,7 +882,7 @@ void invalidSemanticDomainsAreRejected(const std::filesystem::path &root) {
           "out-of-domain carrier does not preserve the valid carrier width");
   expectError(test,
               abi.abi().encode(unit.id, {SemanticConfigurationValue{
-                                            field.field, std::move(outside)}}),
+                                            field.slot, std::move(outside)}}),
               "finite behavior domain");
 
   ConfigurationABIDraft foreignDomain = makeDraft(fabric);
@@ -946,7 +954,7 @@ void invalidSemanticDomainsAreRejected(const std::filesystem::path &root) {
           "DirectBits invalid carrier aliases the valid inactive value");
   expectError(test,
               abi.abi().encode(unit.id, {SemanticConfigurationValue{
-                                            direct->field, outsideDirect}}),
+                                            direct->slot, outsideDirect}}),
               "outside its domain");
 
   std::vector<std::uint8_t> invalidDirectPayload =
@@ -1008,7 +1016,7 @@ void invalidImagesAndLayoutsAreRejected(const std::filesystem::path &root) {
   ConfigurationABIDraft missingField = makeDraft(fabric);
   missingField.programmingUnits.front().fields.pop_back();
   expectError(test, finalizeConfigurationABI(std::move(missingField), store),
-              "cover every Fabric configuration field");
+              "cover every Fabric configuration slot");
 }
 
 void schemaAndRootBoundaryAreVersionedAtomically(
@@ -1016,8 +1024,8 @@ void schemaAndRootBoundaryAreVersionedAtomically(
   const llvm::StringRef test = __func__;
   require(test,
           configurationAbiSchema.identity == "loom.configuration_abi" &&
-              configurationAbiSchema.version == loom::SchemaVersion{2, 0},
-          "ConfigurationABI schema is not loom.configuration_abi 2.0");
+              configurationAbiSchema.version == loom::SchemaVersion{3, 0},
+          "ConfigurationABI schema is not loom.configuration_abi 3.0");
 
   std::filesystem::create_directories(root);
   ArtifactStore store(root.string());
@@ -1081,7 +1089,7 @@ void programmingUnitReferenceCodecIsExact(const std::filesystem::path &root) {
   expectError(
       test,
       decodeProgrammingUnitRef(encodeProgrammingUnitRef(wrongSchema), store),
-      "loom.configuration_abi 2.0");
+      "loom.configuration_abi 3.0");
 }
 
 } // namespace

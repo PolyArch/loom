@@ -1,6 +1,6 @@
 #include "EDA/Adapters/IntelAltera/Quartus.h"
 
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 
 #include "ADG/Builder.h"
 #include "Common/ArtifactStore.h"

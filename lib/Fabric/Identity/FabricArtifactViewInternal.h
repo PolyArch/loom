@@ -87,6 +87,7 @@ struct FabricEntityViewData {
       instructionCoreMicroarchitecture;
   std::optional<FabricLocalMemoryServiceViewData> localMemoryService;
   std::optional<::fabric::Schedule> peSchedule;
+  std::optional<FabricFuConfigurationStorageMode> peFuConfigurationStorageMode;
   std::optional<FabricPeOccurrenceRef> parentPe;
   std::optional<FabricFuTemplateRef> fuTemplate;
   std::optional<FabricMemoryEngineTemplateRef> memoryEngineTemplate;

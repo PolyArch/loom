@@ -1,6 +1,6 @@
 #include "Hardware/Implementation/HardwareImplementation.h"
 
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 
 #include "ADG/Builder.h"
 #include "ADG/MemoryLibrary.h"
@@ -550,11 +550,11 @@ void systemRootAndTypedRepresentationRoundTrip(const ArtifactStore &artifacts,
   require(__func__, first.reference() == second.reference(),
           "authoring order changed HardwareImplementation identity");
   require(__func__,
-          first.reference().schemaVersion == SchemaVersion{2, 2} &&
+          first.reference().schemaVersion == SchemaVersion{3, 0} &&
               first.implementation().fabric() == fixture.system.reference() &&
               first.implementation().representationRoot().variant ==
                   RepresentationRootVariant::Rtl,
-          "finalized root did not retain the exact schema-2.2 owners");
+          "finalized root did not retain the exact schema-3.0 owners");
   const FinalizedHardwareImplementation imported =
       take(__func__,
            importHardwareImplementation(first.reference(), artifacts, blobs));
@@ -900,7 +900,7 @@ void ownerLocalReferencesAreExactAndBounded(const ArtifactStore &artifacts,
   expectError(__func__,
               decodeHardwareImplementationLocalReference<
                   HardwareImplementationActivityPointRef>(wrongSchema),
-              "loom.hardware_implementation 2.2");
+              "loom.hardware_implementation 3.0");
 
   EncodedArtifactLocalReference malformed = wrongKind;
   malformed.payload.pop_back();

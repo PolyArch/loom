@@ -282,7 +282,7 @@ DFG-simulation, FPA, and system-simulation flows described here:
 
 Registry 2.0 is a new exact descriptor namespace. No 1.0 case or model
 descriptor reference is reinterpreted to accept Fabric, ConfigurationABI, or
-HardwareImplementation 2.2. The `evaluation.request.1.0` and
+HardwareImplementation 3.0. The `evaluation.request.1.0` and
 `evaluation.evidence.1.0` root record shapes remain unchanged because they
 already carry exact versioned descriptor and Artifact references; newly
 constructed roots use registry-2.0 refs.
@@ -2034,7 +2034,7 @@ Candidate-generator descriptor registry schema 2.0 is a new exact registry
 namespace. Its descriptor reference uses the shared owner-local registry
 framing with `loom.candidate_generator_descriptor`, version 2.0, and the
 generator kind. Registry 2.0 adds `ProviderForm` to the canonical descriptor
-projection and admits exact HardwareImplementation 2.2 slots. No registry-1.0
+projection and admits exact HardwareImplementation 3.0 slots. No registry-1.0
 descriptor reference is reinterpreted; an existing semantic generator that
 adopts either change receives the corresponding registry-2.0 reference.
 

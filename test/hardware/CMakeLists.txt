@@ -1,5 +1,5 @@
 add_library(LoomHardwareConfigurationTestSupport
-  ConfigurationABI2TestSupport.cpp
+  ConfigurationABI3TestSupport.cpp
 )
 
 target_include_directories(LoomHardwareConfigurationTestSupport PUBLIC

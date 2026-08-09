@@ -255,8 +255,12 @@ prepareFieldDecoder(fabric::SpatialCoreOccurrenceRef spatialCore,
   auto physical = qualifyConfigurationField(spatialCore, field);
   if (!physical)
     return physical.takeError();
+  auto slot = fabric::qualifyFabricConfigurationSlot(
+      *physical, fabric::FabricStaticConfigurationResidency{});
+  if (!slot)
+    return slot.takeError();
   const ConfigurationFieldEncoding *encoding =
-      configurationAbi.findField(*physical);
+      configurationAbi.findField(*slot);
   if (!encoding)
     return skeletonError("PE configuration field is absent from the ABI");
   return prepareFieldDecoder(*encoding, configurationAbi);
@@ -296,8 +300,12 @@ prepareFiniteField(fabric::SpatialCoreOccurrenceRef spatialCore,
   auto physical = qualifyConfigurationField(spatialCore, field);
   if (!physical)
     return physical.takeError();
+  auto slot = fabric::qualifyFabricConfigurationSlot(
+      *physical, fabric::FabricStaticConfigurationResidency{});
+  if (!slot)
+    return slot.takeError();
   const auto *codebook = std::get_if<FiniteCodebookEncoding>(
-      &configurationAbi.findField(*physical)->semanticEncoding);
+      &configurationAbi.findField(*slot)->semanticEncoding);
   if (!codebook || codebook->encodedBitCount != decoder->encodedBitCount)
     return structuralUnsupported(
         "PE selector requires one exact finite ABI codebook");

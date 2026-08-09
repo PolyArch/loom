@@ -1,4 +1,4 @@
-#include "ConfigurationABI2TestSupport.h"
+#include "ConfigurationABI3TestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
@@ -534,7 +534,7 @@ void nativeOccurrenceIsDeterministic(const std::filesystem::path &root) {
   require(test,
           abi.reference().schemaIdentity == configurationAbiSchema.identity &&
               abi.reference().schemaVersion == configurationAbiSchema.version,
-          "ChipWare specialization did not use ConfigurationABI 2.0");
+          "ChipWare specialization did not use ConfigurationABI 3.0");
 
   FabricOperationProviderRegistry providers;
   ExternalImplementationContractCatalog contracts;
