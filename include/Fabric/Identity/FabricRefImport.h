@@ -361,6 +361,10 @@ public:
   /// domain, and a foreign or malformed reference returns no value.
   std::optional<FabricBoundaryTagContinuityPointView>
   boundaryTagContinuityPoint(FabricBoundaryOccurrenceRef boundary) const;
+  /// Exact bounded row capacity of a tag-rewrite boundary. Other boundary
+  /// shapes and invalid references have zero rows.
+  std::uint64_t
+  boundaryLookupTableSize(FabricBoundaryOccurrenceRef boundary) const;
 
   /// Complete canonical token-endpoint inventory and its typed physical data
   /// path. The latter is decoded from the endpoint's canonical type bytes and

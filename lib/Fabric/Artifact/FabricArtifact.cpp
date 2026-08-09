@@ -316,9 +316,26 @@ llvm::Expected<FabricArtifactView> buildModuleView(
       return contract.takeError();
     entity.owner.resourceContract = std::move(*contract);
 
-    if (auto boundary = dyn_cast<::fabric::BoundaryOp>(carrier.op))
+    if (auto boundary = dyn_cast<::fabric::BoundaryOp>(carrier.op)) {
+      entity.owner.inventoryCounts[static_cast<std::size_t>(
+          FabricInventoryKind::SemanticConfigField)] = 1;
       entity.owner.inventoryCounts[static_cast<std::size_t>(
           FabricInventoryKind::BoundaryOutput)] = boundary.getNumResults();
+      if (boundary.getDirection() == ::fabric::BoundaryDirection::T2t) {
+        auto parameters = boundary.getHwParamsAttr();
+        auto dictionary = parameters && parameters.size() == 1
+                              ? dyn_cast<DictionaryAttr>(parameters[0])
+                              : DictionaryAttr();
+        auto count =
+            dictionary
+                ? dyn_cast_or_null<IntegerAttr>(dictionary.get("lut_size"))
+                : IntegerAttr();
+        if (!count || count.getInt() <= 0)
+          return invalid("a t2t boundary has no lookup-table capacity");
+        entity.boundaryLookupTableSize =
+            static_cast<std::uint64_t>(count.getInt());
+      }
+    }
     if (auto sw = dyn_cast<::fabric::SwitchOp>(carrier.op)) {
       entity.owner.inventoryCounts[static_cast<std::size_t>(
           FabricInventoryKind::SwitchInput)] = sw.getNumOperands();

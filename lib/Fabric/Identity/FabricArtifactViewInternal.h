@@ -92,6 +92,7 @@ struct FabricEntityViewData {
   std::optional<::fabric::Schedule> peSchedule;
   std::optional<::fabric::Schedule> switchSchedule;
   std::optional<std::uint64_t> switchRouteTableSize;
+  std::optional<std::uint64_t> boundaryLookupTableSize;
   std::optional<FabricFuConfigurationStorageMode> peFuConfigurationStorageMode;
   std::optional<FabricPeOccurrenceRef> parentPe;
   std::optional<FabricFuTemplateRef> fuTemplate;

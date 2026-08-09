@@ -215,6 +215,73 @@ FabricArtifactView::semanticFieldRelation(
                                        std::move(domain), 0);
   }
 
+  if (owner.kind() == FabricInventoryOwnerKind::BoundaryOccurrence) {
+    if (field.ordinal != 0)
+      return rejected("boundary configuration field ordinal is not zero");
+    const auto boundary = std::get<FabricBoundaryOccurrenceRef>(owner.payload);
+    const auto point = boundaryTagContinuityPoint(boundary);
+    if (!point)
+      return rejected("boundary has no exact continuity shape");
+    if (point->kind == FabricBoundaryTagContinuityKind::TokenWriter ||
+        point->kind == FabricBoundaryTagContinuityKind::Remover)
+      return FabricSemanticFieldRelation(
+          FabricSemanticFieldRelationKind::Finite, {tagged(0), tagged(1)}, 0);
+
+    if (point->kind == FabricBoundaryTagContinuityKind::ConfigurableWriter) {
+      const std::uint64_t width = 1 + point->outputTagWidthBits;
+      auto validator =
+          [width](llvm::ArrayRef<std::uint8_t> value) -> llvm::Error {
+        if (llvm::Error error = validateBitCarrier(value, width))
+          return error;
+        if (!bit(value, 0))
+          for (std::uint64_t index = 1; index < width; ++index)
+            if (bit(value, index))
+              return rejected(
+                  "disabled boundary tag carrier has nonzero payload");
+        return llvm::Error::success();
+      };
+      return FabricSemanticFieldRelation(
+          FabricSemanticFieldRelationKind::Direct, {}, width,
+          std::move(validator));
+    }
+
+    const std::uint64_t rowCount = boundaryLookupTableSize(boundary);
+    const std::uint64_t rowWidth =
+        1 + point->inputTagWidthBits + point->outputTagWidthBits;
+    if (rowCount == 0 || rowWidth == 0 || rowCount > UINT64_MAX / rowWidth)
+      return rejected("boundary lookup carrier is too large");
+    const std::uint64_t width = rowCount * rowWidth;
+    auto validator = [rowCount, rowWidth,
+                      inputWidth = point->inputTagWidthBits](
+                         llvm::ArrayRef<std::uint8_t> value) -> llvm::Error {
+      const std::uint64_t width = rowCount * rowWidth;
+      if (llvm::Error error = validateBitCarrier(value, width))
+        return error;
+      std::set<std::vector<std::uint8_t>> inputTags;
+      for (std::uint64_t row = 0; row < rowCount; ++row) {
+        const std::uint64_t base = row * rowWidth;
+        if (!bit(value, base)) {
+          for (std::uint64_t offset = 1; offset < rowWidth; ++offset)
+            if (bit(value, base + offset))
+              return rejected(
+                  "inactive boundary lookup row has nonzero payload");
+          continue;
+        }
+        std::vector<std::uint8_t> inputTag(
+            static_cast<std::size_t>((inputWidth + 7) / 8), 0);
+        for (std::uint64_t tagBit = 0; tagBit < inputWidth; ++tagBit)
+          if (bit(value, base + 1 + tagBit))
+            inputTag[static_cast<std::size_t>(tagBit / 8)] |=
+                static_cast<std::uint8_t>(1U << (tagBit % 8));
+        if (!inputTags.insert(std::move(inputTag)).second)
+          return rejected("boundary lookup rows repeat an input tag");
+      }
+      return llvm::Error::success();
+    };
+    return FabricSemanticFieldRelation(FabricSemanticFieldRelationKind::Direct,
+                                       {}, width, std::move(validator));
+  }
+
   if (owner.kind() == FabricInventoryOwnerKind::SwitchOccurrence) {
     if (field.ordinal != 0)
       return rejected("switch route field ordinal is not zero");

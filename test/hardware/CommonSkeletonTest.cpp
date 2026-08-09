@@ -7,6 +7,7 @@
 #include "ConfigurationABI3TestSupport.h"
 #include "PortableProviderTestSupport.h"
 
+#include "ADG/Builder.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -252,6 +253,62 @@ FinalizedFabricRoot makeBoundaryOnlyFabric(llvm::StringRef test,
   return take(test, loom::fabric::finalizeFabricRoot(root, store));
 }
 
+FinalizedFabricRoot makeSpatialHierarchyFabric(llvm::StringRef test,
+                                               const ArtifactStore &store) {
+  using namespace loom::adg;
+  DesignBuilder design(store);
+  const PortType bits2 = take(test, PortType::bits(2));
+  const PortType bits8 = take(test, PortType::bits(8));
+  const PortType tagged8x2 = take(test, PortType::taggedBits(8, 2));
+  auto spatial =
+      take(test, design.createSpatialCore("spatial-hierarchy",
+                                          {bits8, bits8, bits2}, {tagged8x2}));
+  auto routed = take(
+      test, spatial.addSwitch(
+                {take(test, spatial.input(0)), take(test, spatial.input(1))},
+                SwitchSpec::spatial({bits8, bits8}, {bits8, bits8},
+                                    {{0, 1}, {0, 1}})));
+  auto pe = take(test, spatial.addPe(routed.values(),
+                                     PeSpec::spatial({bits8, bits8}, {bits8})));
+  auto fu =
+      take(test, pe.addFu({take(test, pe.input(0)), take(test, pe.input(1))},
+                          FuSpec{{bits8, bits8}, {bits8}}));
+  const auto width =
+      llvm::find_if(::fabric::integerWidthDomain, [](auto candidate) {
+        return ::fabric::getBitWidth(candidate) == 8;
+      });
+  require(test, width != ::fabric::integerWidthDomain.end(),
+          "integer width catalog omitted i8");
+  auto operation = take(
+      test, fu.addOperation(
+                {take(test, fu.input(0)), take(test, fu.input(1))},
+                OperationCapabilitySpec{
+                    ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                    ::fabric::ScalarIntegerParams{
+                        ::fabric::IntegerWidthSet::get({*width})},
+                    {::dataflow::OperationSchemaId::ArithAddI},
+                    {bits8},
+                    ::fabric::oneCycleElasticOperationResourceContract()}));
+  if (llvm::Error error =
+          fu.addCapabilityTemplate(FuCapabilityTemplateSpec{{operation}, {}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = fu.close({take(test, operation.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = pe.close())
+    fail(test, llvm::toString(std::move(error)));
+  auto fifo = take(test, spatial.addFifo(take(test, pe.output(0)),
+                                         FifoSpec{bits8, 2, true}));
+  auto boundary = take(
+      test, spatial.addBoundary({fifo.value(), take(test, spatial.input(2))},
+                                BoundarySpec::s2t(bits8, bits2, tagged8x2)));
+  if (llvm::Error error = spatial.close({boundary.front()}))
+    fail(test, llvm::toString(std::move(error)));
+  auto finalized = take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 1,
+          "hierarchy fixture did not finalize one Module");
+  return std::move(finalized.roots().front());
+}
+
 struct SystemFixture final {
   FinalizedFabricRoot module;
   FinalizedFabricRoot system;
@@ -386,21 +443,78 @@ SystemFixture makeSystemFixture(llvm::StringRef test,
   FinalizedFabricRoot system =
       take(test, loom::hardware::test::makeSpatialCoreSystem(module, store,
                                                              spatialCoreCount));
-  auto abiDraft = take(
-      test, loom::hardware::test::makeCompleteConfigurationABIDraft(system));
-  FinalizedConfigurationABI abi =
-      take(test, loom::hardware::finalizeConfigurationABI(std::move(abiDraft),
-                                                          store));
   auto systemView = take(test, loom::fabric::requireSystemRoot(system.view()));
   require(test,
           systemView.artifact().accCoreOccurrences().size() == spatialCoreCount,
           "test System changed its accelerator core count");
   const loom::fabric::SpatialCoreOccurrenceRef spatialCore{
       systemView.artifact().accCoreOccurrences().front()};
+  std::vector<loom::hardware::test::ConfigurationFieldEncodingOverride>
+      overrides;
+  const auto addDirectOverrides = [&](const auto &occurrences) {
+    for (const auto occurrence : occurrences) {
+      const loom::fabric::FabricInventoryOwnerRef owner =
+          loom::fabric::FabricInventoryOwnerRef::of(occurrence);
+      const std::uint64_t fieldCount = module.view().inventorySize(
+          owner, loom::fabric::FabricInventoryKind::SemanticConfigField);
+      for (std::uint64_t ordinal = 0; ordinal < fieldCount; ++ordinal) {
+        const loom::fabric::FabricSemanticConfigFieldRef field{
+            loom::fabric::FabricConfigurationOwnerRef(owner), ordinal};
+        auto relation =
+            take(test, module.view().semanticFieldRelation(
+                           field, *const_cast<mlir::Operation *>(
+                                       module.view().canonicalOperation())
+                                       ->getContext()));
+        if (relation.kind() !=
+            loom::fabric::FabricSemanticFieldRelationKind::Direct)
+          continue;
+        const std::uint64_t bitCount = *relation.directEncodedBitCount();
+        overrides.push_back(
+            {qualifyConfigurationField(test, spatialCore, field),
+             loom::hardware::DirectBitsEncoding{bitCount},
+             std::vector<std::uint8_t>((bitCount + 7) / 8, 0)});
+      }
+    }
+  };
+  addDirectOverrides(module.view().switchOccurrences());
+  addDirectOverrides(module.view().boundaryOccurrences());
+  addDirectOverrides(module.view().memoryOccurrences());
+  auto abiDraft =
+      take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
+                     system, overrides));
+  FinalizedConfigurationABI abi =
+      take(test, loom::hardware::finalizeConfigurationABI(std::move(abiDraft),
+                                                          store));
   auto operations = take(
       test, loom::hardware::rtl::enumerateFabricPhysicalOperations(systemView));
   return SystemFixture{std::move(module), std::move(system), std::move(abi),
                        spatialCore, std::move(operations)};
+}
+
+void spatialHierarchyBuildsStructuralSkeleton() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  SystemFixture fabric =
+      makeSystemFixture(test, store, makeSpatialHierarchyFabric(test, store));
+
+  mlir::MLIRContext context;
+  context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
+                      circt::seq::SeqDialect, circt::sv::SVDialect>();
+  auto skeleton =
+      take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                     context, fabric.spatialCore, fabric.abi.abi()));
+  require(test, skeleton.operationLeaves.size() == 1,
+          "hierarchy skeleton omitted its physical operation");
+  std::string text;
+  llvm::raw_string_ostream(text) << *skeleton.module;
+  require(test,
+          llvm::StringRef(text).contains("loom_spatial_pe_") &&
+              llvm::StringRef(text).contains("loom_fabric_fu_") &&
+              llvm::StringRef(text).contains("loom_spatial_switch_") &&
+              llvm::StringRef(text).contains("loom_fabric_fifo_") &&
+              llvm::StringRef(text).contains("loom_fabric_boundary_"),
+          "hierarchy skeleton flattened or omitted a Fabric resource owner");
 }
 
 void repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
@@ -1047,6 +1161,7 @@ select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
 int main(int argc, char **argv) {
   require("main", argc == 1 || argc == 2,
           "expected at most one output directory");
+  spatialHierarchyBuildsStructuralSkeleton();
   repeatedSpatialCoreBuildsOccurrenceLocalSkeleton();
   configurationAbiIncludesFuTopology();
   commonSkeletonRejectsUnresolvedOrUnboundLeaves();

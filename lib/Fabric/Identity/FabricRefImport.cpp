@@ -318,6 +318,15 @@ FabricArtifactView::boundaryTagContinuityPoint(
   return std::nullopt;
 }
 
+std::uint64_t FabricArtifactView::boundaryLookupTableSize(
+    FabricBoundaryOccurrenceRef boundary) const {
+  const detail::FabricEntityViewData *entity = storage_->entity(boundary);
+  return entity && entity->kind == FabricEntityKind::FabricBoundaryOccurrence &&
+                 entity->boundaryLookupTableSize
+             ? *entity->boundaryLookupTableSize
+             : 0;
+}
+
 llvm::ArrayRef<FabricTransportEndpointRef>
 FabricArtifactView::transportEndpoints() const {
   return storage_->transportEndpoints;

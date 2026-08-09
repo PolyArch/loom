@@ -1,5 +1,7 @@
 #include "Hardware/RTL/CommonSkeleton.h"
 
+#include "Hierarchy/ModuleHierarchy.h"
+
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
@@ -1409,9 +1411,24 @@ buildModuleRootCirctSkeleton(mlir::MLIRContext &context,
       !fabric.fuOccurrences().empty() || !fabric.memoryOccurrences().empty() ||
       !fabric.switchOccurrences().empty() ||
       !fabric.fifoOccurrences().empty() ||
-      !fabric.boundaryOccurrences().empty())
-    return buildInternalOperationSkeleton(
+      !fabric.boundaryOccurrences().empty()) {
+    auto legacy = buildInternalOperationSkeleton(
         context, spatialCore, configurationAbi, fabric, *projections);
+    if (legacy)
+      return legacy;
+    bool unsupported = false;
+    llvm::Error error = llvm::handleErrors(
+        legacy.takeError(),
+        [&](const FabricStructuralLoweringUnsupportedError &) {
+          unsupported = true;
+        });
+    if (error)
+      return std::move(error);
+    if (!unsupported)
+      return skeletonError("structural lowering returned no typed outcome");
+    return hierarchy::buildModuleHierarchySkeleton(
+        context, spatialCore, configurationAbi, fabric, *projections);
+  }
 
   const std::uint64_t inputCount = fabric.moduleBoundaryEndpointCount(
       *root, fabric::FabricPortDirection::Input);

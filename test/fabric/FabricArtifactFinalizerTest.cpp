@@ -8,6 +8,7 @@
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricSemanticFieldRelation.h"
 
 #include "FabricTraversalProjection.h"
 
@@ -798,26 +799,57 @@ void boundaryTagContinuityProjection() {
     require(test, index < seen.size() && !seen[index],
             "tag-continuity kind is duplicate or outside the closed domain");
     seen[index] = true;
+    const loom::fabric::FabricInventoryOwnerRef owner =
+        loom::fabric::FabricInventoryOwnerRef::of(boundary);
+    require(
+        test,
+        finalized.view().inventorySize(
+            owner, loom::fabric::FabricInventoryKind::SemanticConfigField) == 1,
+        "boundary occurrence omitted its joint configuration field");
+    const loom::fabric::FabricSemanticConfigFieldRef field{
+        loom::fabric::FabricConfigurationOwnerRef(owner), 0};
+    const auto relation =
+        take(test, finalized.view().semanticFieldRelation(field, context()));
     switch (point->kind) {
     case Kind::TokenWriter:
       require(test,
               point->inputTagWidthBits == 0 && point->outputTagWidthBits == 4,
               "dynamic writer changed its continuity widths");
+      require(test,
+              relation.kind() ==
+                      loom::fabric::FabricSemanticFieldRelationKind::Finite &&
+                  relation.finiteDomain().size() == 2,
+              "dynamic writer changed Disabled/Active configuration");
       break;
     case Kind::ConfigurableWriter:
       require(test,
               point->inputTagWidthBits == 0 && point->outputTagWidthBits == 6,
               "configurable writer changed its continuity widths");
+      require(test,
+              relation.kind() ==
+                      loom::fabric::FabricSemanticFieldRelationKind::Direct &&
+                  relation.directEncodedBitCount() == 7,
+              "configured writer changed its active-plus-tag carrier");
       break;
     case Kind::Rewriter:
       require(test,
               point->inputTagWidthBits == 3 && point->outputTagWidthBits == 7,
               "rewriter changed its continuity widths");
+      require(test,
+              relation.kind() ==
+                      loom::fabric::FabricSemanticFieldRelationKind::Direct &&
+                  relation.directEncodedBitCount() == 55,
+              "rewriter changed its bounded lookup carrier");
       break;
     case Kind::Remover:
       require(test,
               point->inputTagWidthBits == 5 && point->outputTagWidthBits == 0,
               "remover changed its continuity widths");
+      require(test,
+              relation.kind() ==
+                      loom::fabric::FabricSemanticFieldRelationKind::Finite &&
+                  relation.finiteDomain().size() == 2,
+              "remover changed Disabled/Active configuration");
       break;
     }
   }
