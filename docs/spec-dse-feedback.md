@@ -1445,7 +1445,7 @@ spelling `mapping.root_complete_system_pnr`, schema
 `loom.mapping.root_complete_system_pnr.generator.v2`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, and
 `fabric: ExactlyOne`. Its sole output slot is
-`system_mapping: CandidateSet<loom.mapping 4.0>, FiniteSet`; its resolved view
+`system_mapping: CandidateSet<loom.mapping 5.0>, FiniteSet`; its resolved view
 is the exact System PnR component view. The explicit Dataflow input remains
 necessary because an InstructionCore-only closure has no SpatialMapping from
 which to recover `D`, and because `D` uniquely owns the complete root-launch

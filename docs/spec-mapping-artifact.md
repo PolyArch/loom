@@ -20,9 +20,9 @@ All persistent Mapping objects belong to the single schema family
 
 | Semantic root | Schema version | Required root bindings | Top-level record families |
 |---------------|----------------|------------------------|---------------------------|
-| `mapping.tech` | `4.0` | Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeRealization`, `MemoryRealization` |
-| `mapping.spatial` | `4.0` | TechMapping `T`, Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeBinding`, `MemoryEngineBinding`, `MemoryBinding`, `RouteTree`, `ResourceUse` |
-| `mapping.system` | `4.0` | Canonical Dataflow Program `D`, architecture-only Fabric Hardware Description `F`, canonical SpatialMapping import table | `ExecutionBinding`, `ServiceRealization`, `ResourceUse` |
+| `mapping.tech` | `5.0` | Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeRealization`, `MemoryRealization` |
+| `mapping.spatial` | `5.0` | TechMapping `T`, Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeBinding`, `MemoryEngineBinding`, `MemoryBinding`, `RouteTree`, `ResourceUse` |
+| `mapping.system` | `5.0` | Canonical Dataflow Program `D`, architecture-only Fabric Hardware Description `F`, canonical SpatialMapping import table | `ExecutionBinding`, `ServiceRealization`, `ResourceUse` |
 
 The root operation is the profile discriminator. A Mapping object does not
 also carry a profile enum, a generic artifact root, or inactive optional
@@ -37,8 +37,16 @@ version framing and Common `ArtifactSchemaDescriptor` are mechanically
 derived from that declaration. Callers must not construct schema strings or
 maintain parallel version facts.
 
-The current schema is the complete `loom.mapping 4.0` contract with all three
-roots. Version 4.0 replaces the optional single causal release point in 3.0
+The current schema is the complete `loom.mapping 5.0` contract with all three
+roots. Version 5.0 requires an ordered-cardinality adapter realization to use
+the exact Fabric-owned contract and its intrinsic release. A 4.0 resource use
+could instead pair that actor with a one-cycle contract and collapse repeated
+or zero productions into `AllOf(activeResults)`; this is not a complete
+realization. The accepted cross-artifact relation therefore changes even
+though the ResourceUse wire variants do not, so a 5.0 parser rejects every 4.0
+root rather than reinterpreting it.
+
+Version 4.0 replaced the optional single causal release point in 3.0
 with one explicit closed release condition: intrinsic release or a canonical
 nonempty conjunction of existing event points. This changes accepted canonical
 content, so a 4.0 parser rejects every 3.0 root rather than treating one absent
@@ -49,7 +57,7 @@ rather than requiring one attachment for every static sink terminal, and a
 message plan may be empty only when that applicable set is proven empty. These
 changes altered the accepted canonical content, so a 3.0 parser rejected every
 2.0 root rather than reinterpreting it. TechMapping retains its 3.0 payload
-shape but uses 4.0 because `loom.mapping` has one family version, not
+shape but uses 5.0 because `loom.mapping` has one family version, not
 independent profile versions. `loom.mapping 1.0`'s
 load/store-only `AccessEntry` and logical-memory-only operation-service owner
 are superseded by the closed `MemoryOperationEntry` and fence-aware
@@ -550,6 +558,21 @@ every logical result in that exact `ActorHandshakeCase::activeResults`. The
 set describes the complete held tuple. Mapping cannot select one result,
 invent an all-results event, or release the use from authoring order.
 
+A fixed-vector parallelize or serialize capability carrying the exact
+portable ordered-cardinality ResourceContract instead uses `Intrinsic`
+release. Its one ResourceUse still triggers on the selected
+`ActorTransition(case ordinal)`, but the Fabric-owned internal production
+sequence decides retirement. Mapping must not derive an `AllOf` condition from
+the legacy active-result union: an all-zero serialize mask produces no event,
+and a partial close repeats the phase result without creating a second static
+result ordinal. The previously used exact one-cycle elastic record remains
+valid when imported as a generic Fabric record. Pairing it with either
+ordered-cardinality actor rejects the prospective TechMapping capability seed
+as `CapabilityInadmissible`, so no ResourceUse is created. If architecture RTL
+lowering is invoked directly on that family/contract combination, the portable
+provider returns typed `Unsupported`. No Mapping release projection is defined
+for the mismatched pair or another unregistered contract shape.
+
 Pattern parameters and sharing assignments are canonical positional arrays in
 the exact use site's closed owner schemas. Each value is encoded by that
 position's owner codec, adopted as an immutable typed value, re-encoded, and
@@ -754,7 +777,7 @@ target SpatialCore parent must belong to the AccCore selected by `B_thread`.
 ExecutionBinding owns only where computation executes; it owns no service
 route, capacity, or relative-time facts.
 
-Mapping 4.0 consumes the Fabric-owned rule that each AccCore has exactly one
+Mapping 5.0 consumes the Fabric-owned rule that each AccCore has exactly one
 InstructionCore context. Its `InstructionCoreContextRef` is mechanically
 derived through the framing owned by `docs/spec-fabric-identity.md`.
 
@@ -1217,6 +1240,19 @@ a Mapping artifact. The corresponding reader parses the exact supported
 version, resolves every exact upstream reference, runs the same independent
 base verifier, and only then derives immutable C++ views or native hot
 projections.
+
+## Validation Anchors
+
+Stable Mapping anchors require one ResourceUse per selected adapter transition
+case and `Intrinsic` release for the exact portable ordered-cardinality
+contract. Sparse and all-zero masks are executions of the same static
+serialize active-group ResourceUse, not different Mapping records. The anchors
+reject any exact-adapter projection that derives `AllOf` from the active-result
+union or that accepts a missing Dataflow activity-definedness proof. Reordered
+authoring produces the same canonical ResourceUse bytes. Compatibility anchors
+also import the old one-cycle Fabric record, reject its ordered-adapter
+TechMapping seed as `CapabilityInadmissible`, and require the portable RTL
+provider to return typed `Unsupported`.
 
 ## Derived And External State
 

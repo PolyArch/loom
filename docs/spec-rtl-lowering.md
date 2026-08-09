@@ -282,13 +282,15 @@ an operation-specific state machine into a stateless pipeline.
 `FixedVectorParallelize` and `FixedVectorSerialize` consume the registered
 ordered production groups rather than the one-tuple shell. Their provider
 computes only the schema-owned data, mask, phase, and adapter-state relation.
-The common skeleton owns the capacity-one production slot and the logical-use
-claim. It accepts the provider's contract-derived final-production signal only
-with a published group, retains the claim across non-final handoffs, permits
-the next group to replace a released group without a bubble, and admits a new
-logical firing only after the accepted firing has no remaining group. A
-provider-local busy convention, hidden output queue, or independently decoded
-lane counter is not a valid substitute.
+Fabric owns the logical-use claim; the common skeleton materializes that claim
+and its capacity-one production slot. It samples the provider's
+contract-derived final-production signal only when it captures the matching
+group and retains continuation state across every non-final handoff. A held
+group or continuation makes the use busy. A zero-output case retires at commit.
+The final group handoff releases before acquisition at the same coordinate, so
+the following firing may replace it without a bubble. Reset clears both the
+slot and continuation together. A provider-local busy convention, hidden
+output queue, or independently decoded lane counter is not a valid substitute.
 
 The `LoopStream`, `LoopCarry`, `LoopInvariant`, and `LoopGate` providers are
 dispatched by those exact family IDs. They consume the operation schema's
@@ -655,6 +657,10 @@ Stable anchors cover:
   providers contain no 128-bit datapath default;
 * atomic two-input `s2t` and two-output `t2s` handshakes with no partial
   transfer or hidden holding;
+* parallelize partial-close and sparse serialize providers using the exact
+  common outer-claim materialization, including per-group backpressure,
+  zero-output commit, reset during drain, final-production sampling with group
+  capture, and release-before-acquire replacement;
 * dispatch of one operation schema through two implementation families and
   typed rejection of a missing provider;
 * correctly-rounded, one-ULP, two-ULP, and four-ULP special-math admission,

@@ -758,6 +758,40 @@ holding slot for at most one production group. The family-specific contract
 selects the schema's case ordinal mechanically; it does not encode another
 phase decoder, mask traversal, lane order, or production table.
 
+The exact `ResourceContractRecord` has two `ResourceState`s, each with
+capacity-dimension key zero, capacity one, and initial occupancy zero. State
+zero is the outer-use state and state one is the claim-local group-slot state.
+There is exactly one requester, requester key zero, and no grant policy. There
+are three events: `Accept` is event zero, `Commit` is event one, and
+`Release` is event two. One timing contract, timing key zero, gives those
+events ranks `{0, 1, 1}`.
+
+For a schema with `C` canonical handshake cases, the eligibility,
+resource-transition, and use-pattern domains each contain exactly `C` keys,
+with key `c` owned by case ordinal `c`. Pattern `c` uses requester zero,
+eligibility `c`, transition `c`, timing zero, acquire event zero, commit
+event one, and release event two. It always declares claim zero over state
+zero, dimension zero, amount one. It additionally declares claim one over
+state one, dimension zero, amount one exactly when the case's production
+schema can emit at least one group. All claims of the pattern are acquired and
+released as one envelope; an internal transaction neither acquires, commits,
+nor releases it. Every pattern has empty parameter and sharing-assignment
+schemas.
+
+Internal transactions are a physical refinement of that one accepted use.
+They select exactly claim one and preserve declaration order. Parallelize
+declares zero, one, one, and two transaction slots for accumulate, full,
+empty-close, and partial-close respectively. Serialize active-group declares
+the exact maximum reachable lane count `M` of the sealed capability and close
+declares one slot. For a selected actor with exact logical mask length `L`,
+where `L <= M`, active-group transaction `i` corresponds mechanically to
+lane `i`; it activates exactly when `i < L` and logical mask lane `i` is a
+defined one. Transactions at `i >= L` never activate and never observe
+physical padding bits. Activated transactions issue in ascending `i`, and
+the greatest activated ordinal is the final production. Dataflow's production
+projection alone selects that subsequence and supplies each lane; the static
+transaction inventory is not another mask decoder or production catalog.
+
 Acceptance consumes exactly the selected case's operands. Its state transition
 commits at `t + 1`, and the first nonempty production group may become visible
 at that coordinate. A group occupies the complete result slot until every
@@ -766,7 +800,11 @@ the same coordinate as final handoff, but a different logical firing cannot
 acquire the adapter while any production group of the accepted firing remains.
 The one claim envelope is released only by the final group handoff. A case
 with no production group commits and retires at `t + 1` without manufacturing
-an output claim.
+an output claim. A serialize active-group with no defined-one lane likewise
+releases intrinsically at commit. Otherwise intrinsic release is the later of
+`t + 1` and the final activated internal transaction's complete group
+handoff. The fixed timing rank is the earliest release coordinate, not a rule
+that discards unfinished claim-local progress.
 
 For `FixedVectorParallelize`, the partial-close pattern therefore retains its
 claim across the true `(vector, mask, group_phase)` group and the following
@@ -776,6 +814,19 @@ all-zero mask commits and retires without publishing a tuple. Published
 payload, validity, current lane, pending group state, and the final-production
 decision remain stable while blocked. Reset discards both durable adapter
 state and any active-use-local production state.
+
+Admission additionally requires the Dataflow-owned activity-definedness proof
+for the phase and, for serialize, mask operands. The physical bits ports carry
+only proved-defined values; they do not encode poison or undef. A missing proof
+rejects the prospective TechMapping capability seed as
+`CapabilityInadmissible` before a Fabric use is created. The Fabric family
+does not own a second definedness analysis or semantic-state sideband.
+
+The portable parallelize and serialize providers admit only this exact
+contract shape. Other independently well-formed ResourceContract records,
+including the previously used one-cycle elastic record, remain valid Fabric
+records and preserve the existing importer language, but matching either
+portable adapter family against one returns typed `Unsupported`.
 
 For a stateful transition, blocked result capacity cannot cause early operand
 consumption or a state update. Only results produced by the selected
@@ -1162,6 +1213,17 @@ Anchor tests should pin only the stable semantic boundaries:
   second firing, and final handoff permits same-coordinate replacement; one
   logically stateful transition remains governed by its operation-specific
   state and use patterns; and
+* parallelize partial close and sparse serialize retain one outer claim across
+  every ordered group, an all-zero serialize retires at commit, each stalled
+  group remains stable, final handoff permits same-coordinate replacement,
+  reset during drain clears slot and continuation, and missing activity
+  definedness rejects before creating a Fabric use; and
+* both adapter contracts round-trip through the canonical resource-contract
+  codec to the exact normalized two-state record, including all domain counts,
+  keys, claims, amounts, transaction selections, timing ranks, and absent
+  grant policy; and
+* a serialize actor with `L < M` activates no transaction at or above `L`
+  and never observes physical padding bits; and
 * equal repeated semantic assignments to one physical configuration slot
   collapse to one value, conflicting assignments are rejected, and a declared
   semantic-preserving physical refinement leaves the software function

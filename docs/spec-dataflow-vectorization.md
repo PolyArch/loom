@@ -175,6 +175,11 @@ change memory, or report a blocked wait set. The current exact DFG and CGRA
 execution provide only the exact single-path activity model and therefore
 reject such an exceptional mask firing.
 
+A phase operand is the same kind of activity decision. A poison or undef
+phase rejects the firing under the same atomic rule, before operand
+consumption, state transition, result publication, or wait-set construction.
+Neither a simulator nor a hardware provider may coerce it to true or false.
+
 ## Stream Cardinality Boundary
 
 `dataflow.parallelize` and `dataflow.serialize` are the only canonical actors
@@ -247,6 +252,14 @@ zero lanes publish nothing. Poison or undef mask lanes retain the exceptional
 mask rule above and cannot be converted to an arbitrary production count.
 An empty production-group array is a firing with no result token.
 
+`ActorHandshakeCase::productionGroups` is the canonical derived interface for
+this structure. A runtime expands the array in order. It emits a `Once` group
+exactly once and expands `ForEachDefinedOneLane` by scanning the named mask
+operand from lane zero upward, emitting one atomic tuple for each defined-one
+lane. The selected lane ordinal is the data projection for that tuple. The
+runtime neither flattens repeated groups into result ordinals nor reconstructs
+the order from emitted tokens.
+
 The legacy set-like view of active results is derived as the sorted unique
 union of every group's `active_results`; it is not an independently stored
 authority. It remains sufficient for static reachability and handshake-cycle
@@ -275,6 +288,35 @@ a true scalar phase. A logical firing retires only after its final production
 group handoff. A firing whose ordered projection produces no tuple retires
 after its state transition commits. Backpressure may delay a group but cannot
 reorder it, duplicate it, skip a defined-one lane, or expose a later group.
+
+### Activity Definedness
+
+The canonical Dataflow actor graph also owns a derived activity-definedness
+projection. It proves whether every phase and mask lane used to choose token
+consumption or production is `Defined` for every execution admitted by the
+graph. Its domain is the two-point lattice `Unproven < AlwaysDefined`. The
+projection is the least fixed point of the registered result-wise transfer
+relations over the exact canonical graph edges. Canonical defined constants
+seed `AlwaysDefined`; graph inputs, block arguments, explicit poison or undef,
+and a result whose registered operation schema has no transfer relation seed
+`Unproven`. Each registered transfer relation is monotone and may promote a
+result to `AlwaysDefined` only from the exact proved inputs and semantic
+properties it owns. Evaluation visits actors and result ordinals in canonical
+order until no fact changes; an unseeded cycle remains `Unproven`.
+
+The operation-schema registry owns a transfer relation for every result that
+can reach a phase or mask activity decision. A missing relation is therefore
+fail-closed, not an implicit identity rule. The proof is recomputed solely
+from the canonical Dataflow graph. It is not an invocation promise, persisted
+property, Mapping flag, or provider hint.
+
+TechMapping of `dataflow.parallelize` or `dataflow.serialize` to a bits-only
+Fabric adapter requires this proof for the consumed phase and, for serialize,
+every mask lane. An absent proof rejects the prospective TechMapping capability
+seed as `CapabilityInadmissible`; the generator's eventual outcome follows
+the ordinary exhaustive-search and limit rules. A provider may not reinterpret
+the physical bit as proof, add a private definedness rule, or accept a firing
+and choose an arbitrary cardinality.
 
 These actors are semantic cardinality adapters. Physical serialization,
 packetization, or a narrow Fabric port is not a reason to insert either actor.
@@ -575,7 +617,15 @@ Stable anchor tests cover:
   plus shuffle selection, duplication, and poison blocks;
 * rejection of a selected SpatialRegion whose scalable vector has not been
   materialized to fixed structured semantics;
-* rank-one partial-group `parallelize` and `serialize` behavior;
+* rank-one `parallelize` partial close with its two ordered phase productions,
+  plus sparse and all-zero `serialize` masks expanded in ascending lane order;
+* rejection of poison or undef phase and mask activity at execution, and
+  rejection of a bits-only adapter Mapping without the derived
+  activity-definedness proof;
+* activity-definedness seeds for a canonical defined constant and an
+  unproved graph input, result-wise transfer through a registered operation,
+  an unseeded cycle that remains unproved, and fail-closed handling of a
+  missing transfer relation;
 * exact and partial-tail activation closure;
 * rank-one and multi-rank `pack`/`unpack` round trips, including floating-point
   payload bits;

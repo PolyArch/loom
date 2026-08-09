@@ -391,7 +391,7 @@ Each key stores only its minimal derivation anchor. For a transfer key, the
 exact Dataflow program, workload scope, and producer derive one canonical
 sorted unique non-empty sink set. The sink set is not serialized in the key.
 This is the static obligation universe, not a claim that every sink has a
-`source_map` preimage at every producer point. Mapping 4.0 derives per-point
+`source_map` preimage at every producer point. Mapping 5.0 derives per-point
 message route applicability without extending the obligation key.
 For a logical-memory owner, the exact Dataflow program derives the complete
 canonical addressed-memory member set, including applicable load, store,
@@ -540,7 +540,7 @@ different artifact context.
 ## Classification Boundary
 
 The table in this document closes identity classification for every Mapping
-record family in the complete `loom.mapping 4.0` schema. This document does
+record family in the complete `loom.mapping 5.0` schema. This document does
 not make additional classifications for upstream Dataflow channels,
 unqualified Fabric resources, deployment objects, or other objects whose
 independent reference requirements are owned elsewhere.

@@ -1239,7 +1239,7 @@ native flat handles, decision-atom ordinals, and H lookup state. Hierarchical
 and flat search therefore share one endpoint-compatibility rule without
 sharing mutable identity.
 
-Mapping 4.0 derives each Fabric-owned `InstructionCoreContextRef` from the
+Mapping 5.0 derives each Fabric-owned `InstructionCoreContextRef` from the
 selected AccCore and its one-per-AccCore cardinality. A selected service
 plan element is addressed by
 `ServicePlanElementRef = (ServiceRealizationKey, canonical plan ordinal,

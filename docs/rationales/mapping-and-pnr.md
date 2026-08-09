@@ -29,6 +29,26 @@ partial/complete object or a separate witness schema would force consumers to
 interpret lifecycle state. Each profile is complete under its own verifier and
 references its exact predecessor.
 
+## Why Ordered Cardinality Requires Mapping 5.0
+
+The 4.0 release algebra can encode both `Intrinsic` and
+`AllOf(activeResults)`, but an ordered-cardinality actor changes which form
+is a complete realization. A one-cycle adapter contract cannot represent a
+zero-production firing or repeated production of one result ordinal. Pairing
+it with parallelize or serialize was therefore an accepted-language error,
+not missing backend availability.
+
+Three repairs were considered. Keeping the pair valid and rejecting it only
+during RTL lowering would let a complete Mapping describe an unrealizable
+claim lifetime. Adding an implicit 4.0 compatibility interpretation would
+create a second release authority and still lack the dynamic production
+sequence needed to adapt the record. The selected repair makes the exact
+Fabric ordered-cardinality contract a Mapping 5.0 admissibility condition.
+Version 5.0 rejects every 4.0 root, while the old one-cycle contract remains a
+valid generic Fabric record. A source-version migration must rebuild and
+finalize Mapping from the exact Dataflow and Fabric closure; it cannot preserve
+the old Mapping identity or patch its text.
+
 ## Why Mapping Uses One Graded Diagnostic Channel
 
 TechMapping and PnR failures often become visible far from their cause. A final

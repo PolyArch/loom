@@ -59,7 +59,7 @@ error.
 
 ## TechMapping Verifier
 
-The TechMapping verifier consumes one `mapping.tech` `4.0` root and its exact
+The TechMapping verifier consumes one `mapping.tech` `5.0` root and its exact
 Canonical Dataflow Program `D` and Fabric Hardware Description `F`. It checks
 at least:
 
@@ -136,7 +136,7 @@ or FrozenModel caches, search history, Evaluation Evidence, or runtime state.
 
 The verifier checks in dependency order:
 
-* the `mapping.spatial` `4.0` root shape and exact `T`, `D`, and `F` bindings;
+* the `mapping.spatial` `5.0` root shape and exact `T`, `D`, and `F` bindings;
 * `T.D == D`, `T.F == F`, and complete inherited TechMapping coverage;
 * exactly one ComputeBinding per Compute Realization and one
   MemoryEngineBinding per Memory Realization;
@@ -347,7 +347,7 @@ The intrinsic verifier is:
 SystemMappingBaseVerifier(D, F, M, ExactSpatialMappingSet(M))
 ```
 
-`M` is a `mapping.system` `4.0` root. `F` supplies the architecture-only
+`M` is a `mapping.system` `5.0` root. `F` supplies the architecture-only
 Fabric system and exact Transport Architecture; protocol-specific
 Interconnect Implementation is not a Mapping input.
 
@@ -541,7 +541,7 @@ Those fields do not exist in the Mapping schema.
 
 Tests should protect stable semantic anchors:
 
-* exact 4.0 schema profile, rejection of every 3.0 profile root,
+* exact 5.0 schema profile, rejection of every 4.0 profile root,
   UpstreamArtifactBinding, predecessor, and import coupling;
 * authoring-order invariance of canonical bytes and ArtifactIdentity;
 * foreign, wrong-kind, wrong-owner, unknown-field, duplicate-key, and

@@ -305,7 +305,7 @@ Several input roles in one Temporal row may select the same tagged ingress
 only because the Fabric-owned row architecture provides one independent
 matcher and ordered queue per role. Their may-overlap interpretations require
 distinct tags. Output role endpoints within one row remain injective under
-`loom.fabric 4.0` and Mapping 4.0; Mapping cannot synthesize an unmodeled
+`loom.fabric 4.0` and Mapping 5.0; Mapping cannot synthesize an unmodeled
 result serializer.
 
 Every addressed atomic operation and fence resolves through its selected

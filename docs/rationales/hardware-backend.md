@@ -188,8 +188,9 @@ hide the same lifetime from Fabric, Mapping, and common backpressure logic.
 The distilled boundary keeps the distinctions already present. Dataflow owns
 the ordered production groups and their runtime multiplicity. The concrete
 Fabric operation owns one claim envelope, adapter state, commit, and final
-release. The common skeleton owns the physical holding slot and retires the
-claim only after the provider identifies the Dataflow-derived final group.
+release. The common skeleton materializes the physical holding slot and retires
+the Fabric-owned claim only after the provider identifies the Dataflow-derived
+final group.
 This composes three existing owners without a second actor or scheduler.
 
 Two broader alternatives were rejected. Expanding each lane or terminal phase
@@ -199,6 +200,25 @@ microtransaction engine would add another state-machine protocol even though
 the registered production projection already supplies the only sequencing
 needed. Both add conceptual surface without representing another observable
 behavior.
+
+Bits-only adapter ports also cannot discover poison or undef activity at
+runtime. Three remedies were considered. A semantic-state sideband would widen
+the entire Fabric transport model. Declaring both families permanently
+unsupported would discard their defined behavior. The selected remedy keeps
+Dataflow as the sole semantic owner: its derived activity-definedness proof is
+the graph-only least fixed point of registered result transfer relations and
+is required by TechMapping before choosing a bits-only adapter. It neither
+depends on an invocation nor adds a persisted promise, and every backend
+consumes the same proof boundary.
+
+Ordered production groups and activity-definedness are derived views of the
+existing Dataflow graph, Mapping persists `Intrinsic` release only for the
+exact portable ordered-cardinality contract, and Fabric reuses the existing
+ResourceContract fields. No artifact wire field, reference kind, or importer
+accepted-language change is introduced. Previously authored one-cycle adapter
+resources remain valid generic Fabric records but do not satisfy the portable
+adapter provider; this is a support correction rather than an artifact schema
+change.
 
 ## Why Non-Defined Values Need No RTL Sideband
 
