@@ -1,0 +1,2 @@
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-design-compiler-gate-netlist-test %t %S/Inputs/Synopsys

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1-}" == "-version" ]]; then
+  printf '%s\n' 'dc_shell version - Y-2026.03-SP2'
+  exit 0
+fi
+
+if [[ "$#" -ne 2 || "$1" != "-f" ||
+      "$2" != "drivers/design-compiler.tcl" ]]; then
+  exit 64
+fi
+
+test -f drivers/design-compiler.tcl
+cat > outputs/design-compiler-gate-netlist.v <<'EOF'
+module top(a, y);
+  input a;
+  output y;
+  wire a;
+  wire y;
+  INVX1 u0 (.A(a), .Y(y));
+endmodule
+EOF

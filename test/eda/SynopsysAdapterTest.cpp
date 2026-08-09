@@ -466,15 +466,16 @@ void implementationDriversAreDeterministic() {
       renderDesignCompilerDriver("top",
                                  {"inputs/implementation/rtl/package.sv",
                                   "inputs/implementation/rtl/top.sv"},
-                                 "inputs/implementation/constraints/top.sdc",
+                                 {"inputs/implementation/constraints/top.sdc"},
                                  "/libraries/saed.db"));
   require(__func__,
-          dc == take(__func__, renderDesignCompilerDriver(
-                                   "top",
-                                   {"inputs/implementation/rtl/package.sv",
-                                    "inputs/implementation/rtl/top.sv"},
-                                   "inputs/implementation/constraints/top.sdc",
-                                   "/libraries/saed.db")),
+          dc ==
+              take(__func__, renderDesignCompilerDriver(
+                                 "top",
+                                 {"inputs/implementation/rtl/package.sv",
+                                  "inputs/implementation/rtl/top.sv"},
+                                 {"inputs/implementation/constraints/top.sdc"},
+                                 "/libraries/saed.db")),
           "Design Compiler driver is not deterministic");
   require(
       __func__,
@@ -518,7 +519,7 @@ void implementationDriversAreDeterministic() {
       "Fusion Compiler driver does not close one routed snapshot");
 
   expectFailure(__func__, renderDesignCompilerDriver(
-                              "top", {}, "inputs/top.sdc", "/library.db"));
+                              "top", {}, {"inputs/top.sdc"}, "/library.db"));
   expectFailure(__func__,
                 renderFusionCompilerDriver("top", "inputs/top.v",
                                            "inputs/top.sdc", "../floorplan.def",
@@ -902,49 +903,49 @@ fi
       &platform);
   SynopsysBundleInputs wrongDcClosure = dcInputs;
   wrongDcClosure.semanticContract.semanticClosure = evaluationClosure();
-  expectAdapterFailure(
-      __func__,
-      makeDesignCompilerBundleSpec(wrongDcClosure, "top",
-                                   {"inputs/implementation/rtl/top.sv"},
-                                   "inputs/implementation/constraints/top.sdc"),
-      SynopsysAdapterFailureKind::DescriptorMismatch);
+  expectAdapterFailure(__func__,
+                       makeDesignCompilerBundleSpec(
+                           wrongDcClosure, "top",
+                           {"inputs/implementation/rtl/top.sv"},
+                           {"inputs/implementation/constraints/top.sdc"}),
+                       SynopsysAdapterFailureKind::DescriptorMismatch);
   SynopsysBundleInputs missingDcTarget = dcInputs;
   missingDcTarget.implementationPlatform.reset();
-  expectAdapterFailure(
-      __func__,
-      makeDesignCompilerBundleSpec(missingDcTarget, "top",
-                                   {"inputs/implementation/rtl/top.sv"},
-                                   "inputs/implementation/constraints/top.sdc"),
-      SynopsysAdapterFailureKind::MissingTarget);
+  expectAdapterFailure(__func__,
+                       makeDesignCompilerBundleSpec(
+                           missingDcTarget, "top",
+                           {"inputs/implementation/rtl/top.sv"},
+                           {"inputs/implementation/constraints/top.sdc"}),
+                       SynopsysAdapterFailureKind::MissingTarget);
   SynopsysBundleInputs missingDcCorner = dcInputs;
   missingDcCorner.technologyCorner.reset();
-  expectAdapterFailure(
-      __func__,
-      makeDesignCompilerBundleSpec(missingDcCorner, "top",
-                                   {"inputs/implementation/rtl/top.sv"},
-                                   "inputs/implementation/constraints/top.sdc"),
-      SynopsysAdapterFailureKind::MissingCorner);
+  expectAdapterFailure(__func__,
+                       makeDesignCompilerBundleSpec(
+                           missingDcCorner, "top",
+                           {"inputs/implementation/rtl/top.sv"},
+                           {"inputs/implementation/constraints/top.sdc"}),
+                       SynopsysAdapterFailureKind::MissingCorner);
   SynopsysBundleInputs wrongDcTool = dcInputs;
   wrongDcTool.frozen.tool.toolKey = "fc_shell";
-  expectAdapterFailure(
-      __func__,
-      makeDesignCompilerBundleSpec(wrongDcTool, "top",
-                                   {"inputs/implementation/rtl/top.sv"},
-                                   "inputs/implementation/constraints/top.sdc"),
-      SynopsysAdapterFailureKind::DescriptorMismatch);
+  expectAdapterFailure(__func__,
+                       makeDesignCompilerBundleSpec(
+                           wrongDcTool, "top",
+                           {"inputs/implementation/rtl/top.sv"},
+                           {"inputs/implementation/constraints/top.sdc"}),
+                       SynopsysAdapterFailureKind::DescriptorMismatch);
   SynopsysBundleInputs missingDcProviderInput = dcInputs;
   missingDcProviderInput.frozen.externalFiles.front().providerInputSlot =
       "other_library";
-  expectAdapterFailure(
-      __func__,
-      makeDesignCompilerBundleSpec(missingDcProviderInput, "top",
-                                   {"inputs/implementation/rtl/top.sv"},
-                                   "inputs/implementation/constraints/top.sdc"),
-      SynopsysAdapterFailureKind::MissingProviderInput);
+  expectAdapterFailure(__func__,
+                       makeDesignCompilerBundleSpec(
+                           missingDcProviderInput, "top",
+                           {"inputs/implementation/rtl/top.sv"},
+                           {"inputs/implementation/constraints/top.sdc"}),
+                       SynopsysAdapterFailureKind::MissingProviderInput);
   const auto dcSpec =
       take(__func__, makeDesignCompilerBundleSpec(
                          dcInputs, "top", {"inputs/implementation/rtl/top.sv"},
-                         "inputs/implementation/constraints/top.sdc"));
+                         {"inputs/implementation/constraints/top.sdc"}));
   const auto dcPrepared = finalize(root / "dc", dcSpec);
   execute(dcPrepared);
   require(__func__,

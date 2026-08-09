@@ -3,6 +3,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -69,9 +70,11 @@ const SynopsysInvocationDescriptor &designCompilerDescriptor() {
   return descriptor;
 }
 
-llvm::Expected<std::string> renderDesignCompilerDriver(
-    llvm::StringRef top, llvm::ArrayRef<std::string> rtlSources,
-    llvm::StringRef generationConstraint, llvm::StringRef targetLibrary) {
+llvm::Expected<std::string>
+renderDesignCompilerDriver(llvm::StringRef top,
+                           llvm::ArrayRef<std::string> rtlSources,
+                           llvm::ArrayRef<std::string> generationConstraints,
+                           llvm::StringRef targetLibrary) {
   if (!isPortableHdlIdentifier(top))
     return makeSynopsysAdapterError(
         SynopsysAdapterFailureKind::MissingSemanticInput,
@@ -86,16 +89,22 @@ llvm::Expected<std::string> renderDesignCompilerDriver(
     if (llvm::Error error = validateBundleInputPath(
             descriptor.implementationSemanticIdentity, source))
       return std::move(error);
-  if (llvm::Error error = validateBundleInputPath(
-          descriptor.implementationSemanticIdentity, generationConstraint))
-    return std::move(error);
+  if (generationConstraints.empty() ||
+      !llvm::is_sorted(generationConstraints) ||
+      std::adjacent_find(generationConstraints.begin(),
+                         generationConstraints.end()) !=
+          generationConstraints.end())
+    return makeSynopsysAdapterError(
+        SynopsysAdapterFailureKind::MissingSemanticInput,
+        descriptor.implementationSemanticIdentity,
+        "generation constraint inventory is empty or not canonical");
+  for (llvm::StringRef constraint : generationConstraints)
+    if (llvm::Error error = validateBundleInputPath(
+            descriptor.implementationSemanticIdentity, constraint))
+      return std::move(error);
   auto topWord = renderTclWord(descriptor.implementationSemanticIdentity, top);
   if (!topWord)
     return topWord.takeError();
-  auto constraintWord = renderTclWord(descriptor.implementationSemanticIdentity,
-                                      generationConstraint);
-  if (!constraintWord)
-    return constraintWord.takeError();
   auto libraryWord =
       renderTclWord(descriptor.implementationSemanticIdentity, targetLibrary);
   if (!libraryWord)
@@ -109,7 +118,7 @@ llvm::Expected<std::string> renderDesignCompilerDriver(
       return word.takeError();
     sourceList += (sourceList.empty() ? "" : " ") + *word;
   }
-  const std::string commands =
+  std::string commands =
       "set loom_target_library [list " + *libraryWord +
       "]\n"
       "set_app_var target_library $loom_target_library\n"
@@ -123,12 +132,16 @@ llvm::Expected<std::string> renderDesignCompilerDriver(
       "current_design " +
       *topWord +
       "\n"
-      "link\n"
-      "read_sdc " +
-      *constraintWord +
-      "\n"
-      "compile_ultra\n"
-      "check_design\n";
+      "link\n";
+  for (llvm::StringRef constraint : generationConstraints) {
+    auto word =
+        renderTclWord(descriptor.implementationSemanticIdentity, constraint);
+    if (!word)
+      return word.takeError();
+    commands += "read_sdc " + *word + "\n";
+  }
+  commands += "compile_ultra\n"
+              "check_design\n";
   return renderSynopsysTclBatch(commands,
                                 "write -format verilog -hierarchy -output "
                                 "{outputs/design-compiler-gate-netlist.v}\n");
@@ -155,12 +168,13 @@ parseDesignCompilerGateNetlist(llvm::StringRef contents, llvm::StringRef top) {
 }
 
 llvm::Expected<external_tool::ExternalToolInvocationBundleSpec>
-makeDesignCompilerBundleSpec(const SynopsysBundleInputs &inputs,
-                             llvm::StringRef top,
-                             llvm::ArrayRef<std::string> rtlSources,
-                             llvm::StringRef generationConstraint) {
+makeDesignCompilerBundleSpec(
+    const SynopsysBundleInputs &inputs, llvm::StringRef top,
+    llvm::ArrayRef<std::string> rtlSources,
+    llvm::ArrayRef<std::string> generationConstraints) {
   std::vector<std::string> requiredInputs(rtlSources.begin(), rtlSources.end());
-  requiredInputs.push_back(generationConstraint.str());
+  requiredInputs.insert(requiredInputs.end(), generationConstraints.begin(),
+                        generationConstraints.end());
   if (llvm::Error error =
           validateSynopsysSemanticInputs(descriptor, inputs, requiredInputs))
     return std::move(error);
@@ -171,7 +185,7 @@ makeDesignCompilerBundleSpec(const SynopsysBundleInputs &inputs,
         SynopsysAdapterFailureKind::MissingProviderInput,
         descriptor.implementationSemanticIdentity, "target_library is absent");
   auto driver = renderDesignCompilerDriver(
-      top, rtlSources, generationConstraint, library->absolutePath);
+      top, rtlSources, generationConstraints, library->absolutePath);
   if (!driver)
     return driver.takeError();
   std::vector<std::vector<std::string>> commands{

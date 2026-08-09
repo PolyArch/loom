@@ -81,6 +81,17 @@ target_link_libraries(loom-synopsys-adapter-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-design-compiler-gate-netlist-test
+  DesignCompilerGateNetlistTest.cpp
+)
+
+target_link_libraries(loom-design-compiler-gate-netlist-test PRIVATE
+  LoomHardwareConfigurationTestSupport
+  LoomEDASynopsys
+  MLIRParser
+  LLVMSupport
+)
+
 add_executable(loom-cadence-adapter-test
   CadenceAdapterTest.cpp
 )

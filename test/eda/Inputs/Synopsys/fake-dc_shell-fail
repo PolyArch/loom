@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1-}" == "-version" ]]; then
+  printf '%s\n' 'dc_shell version - Y-2026.03-SP2'
+  exit 0
+fi
+
+exit 7

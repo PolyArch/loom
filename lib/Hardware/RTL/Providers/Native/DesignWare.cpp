@@ -24,14 +24,10 @@
 namespace loom::hardware::rtl {
 namespace {
 
-inline constexpr llvm::StringLiteral componentName = "DW_fp_mac";
-inline constexpr llvm::StringLiteral blackBoxLogicalName =
-    "black-box/synopsys-designware-dw-fp-mac-f32-rne-ieee-v1";
-inline constexpr llvm::StringLiteral blackBoxContract =
-    "synopsys.designware.DW_fp_mac.f32.rne.ieee.v1\n";
-
 std::vector<std::uint8_t> blackBoxBytes() {
-  return {blackBoxContract.begin(), blackBoxContract.end()};
+  const llvm::ArrayRef<std::uint8_t> bytes =
+      synopsysDesignWareDwFpMacBlackBoxContractBytes();
+  return {bytes.begin(), bytes.end()};
 }
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -42,18 +38,6 @@ llvm::Error invalid(const llvm::Twine &message) {
 llvm::Error unsupported(const FabricOperationProviderRequest &request) {
   return llvm::make_error<FabricOperationProviderUnsupportedError>(
       request.capability.implementationFamily, request.recipe);
-}
-
-bool isExactComponentInput(llvm::ArrayRef<ExternalInputBinding> inputs) {
-  if (inputs.size() != 1 || inputs.front().providerInputSlotRef !=
-                                synopsysDesignWareComponentInputSlot)
-    return false;
-  const auto *resource = std::get_if<ToolBundledResourceDependency>(
-      &inputs.front().dependencyIdentity);
-  return resource &&
-         resource->stableProviderBuildIdentity ==
-             synopsysDesignWareBuildIdentity &&
-         resource->resourceKey == synopsysDesignWareDwFpMacResourceKey;
 }
 
 bool isExactProfile(const ::fabric::ScalarFloatParams &parameters) {
@@ -111,34 +95,6 @@ exactPorts(const FabricOperationProviderRequest &request,
   return ports;
 }
 
-llvm::Error
-validateBinding(const ExternalImplementationBindingDraft &binding,
-                const ImplementationRepresentationRoot &representation,
-                const platform::ImplementationPlatform *) {
-  if (representation.variant != RepresentationRootVariant::Rtl)
-    return invalid("binding representation is not RTL");
-  if (binding.providerContractRef != synopsysDesignWareContractRef ||
-      !isExactComponentInput(binding.externalInputs))
-    return invalid("binding does not select the verified component resource");
-  if (binding.fabricResourceRefs.empty())
-    return invalid("binding owns no physical occurrence");
-  if (binding.representationLocators !=
-      std::vector<RepresentationLocator>{
-          {RepresentationObjectKind::Module, componentName.str()}})
-    return invalid("binding does not locate the exact component module");
-  if (!binding.blackBoxContractPayload ||
-      !(*binding.blackBoxContractPayload ==
-        ImplementationPayloadKey{PayloadRole::BlackBoxContract,
-                                 blackBoxLogicalName.str()}))
-    return invalid("binding does not select the exact BlackBoxContract");
-  const ImplementationPayload expected{PayloadRole::BlackBoxContract,
-                                       blackBoxLogicalName.str(),
-                                       computeBlobDigest(blackBoxBytes())};
-  if (!llvm::is_contained(representation.payloads, expected))
-    return invalid("representation omits the exact BlackBoxContract payload");
-  return llvm::Error::success();
-}
-
 llvm::Expected<FabricOperationProviderOutput>
 materializeScalarFloatFma(FabricOperationProviderRequest request) {
   if (request.recipe != BackendRecipeKey::SynopsysDesignWare)
@@ -149,7 +105,7 @@ materializeScalarFloatFma(FabricOperationProviderRequest request) {
   if (request.externalImplementationContractRef !=
       synopsysDesignWareContractRef)
     return invalid("provider received a different external contract");
-  if (!isExactComponentInput(request.externalInputs))
+  if (!isSynopsysDesignWareDwFpMacComponentInput(request.externalInputs))
     return unsupported(request);
 
   const auto *parameters = std::get_if<::fabric::ScalarFloatParams>(
@@ -240,15 +196,18 @@ materializeScalarFloatFma(FabricOperationProviderRequest request) {
 
   FabricOperationProviderOutput output;
   output.payloads.push_back({PayloadRole::BlackBoxContract,
-                             blackBoxLogicalName.str(), blackBoxBytes()});
+                             synopsysDesignWareDwFpMacBlackBoxLogicalName.str(),
+                             blackBoxBytes()});
   output.externalImplementationBindings.push_back(
       {synopsysDesignWareContractRef.str(),
        std::vector<ExternalInputBinding>(request.externalInputs.begin(),
                                          request.externalInputs.end()),
        {},
-       {{RepresentationObjectKind::Module, componentName.str()}},
-       ImplementationPayloadKey{PayloadRole::BlackBoxContract,
-                                blackBoxLogicalName.str()}});
+       {{RepresentationObjectKind::Module,
+         synopsysDesignWareDwFpMacComponentName.str()}},
+       ImplementationPayloadKey{
+           PayloadRole::BlackBoxContract,
+           synopsysDesignWareDwFpMacBlackBoxLogicalName.str()}});
   return output;
 }
 
@@ -260,17 +219,6 @@ llvm::Error registerSynopsysDesignWareScalarFloatFmaProvider(
                        BackendRecipeKey::SynopsysDesignWare,
                        synopsysDesignWareContractRef.str(),
                        materializeScalarFloatFma});
-}
-
-llvm::Error registerSynopsysDesignWareExternalContract(
-    ExternalImplementationContractCatalog &catalog) {
-  return catalog.add({synopsysDesignWareContractRef.str(),
-                      {{synopsysDesignWareComponentInputSlot.str(),
-                        {ExternalDependencyKind::ToolBundledResource}}},
-                      {RepresentationRootVariant::Rtl},
-                      true,
-                      false,
-                      validateBinding});
 }
 
 } // namespace loom::hardware::rtl
