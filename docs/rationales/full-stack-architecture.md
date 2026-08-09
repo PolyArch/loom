@@ -213,12 +213,25 @@ never that proof.
 
 ## Why Real Applications Are A Separate Portfolio
 
-The 889-row corpus is broad operator evidence, not a substitute for complete
+The 892-row corpus is broad operator evidence, not a substitute for complete
 applications. Its units intentionally isolate typed call protocols so failures
 can be localized and compilation work can be shared across vectors. That
 granularity does not exercise whole-program ownership, multi-stage data
 movement, cross-graph scheduling, SystemMapping, deployment, or sustained
 feedback between quality and compiler cost.
+
+The initial ten frontend anchors exposed a concrete inventory conflict:
+`vector_pack`, `stencil3d`, and `attention` were required as independent
+source-to-Dataflow workflows, while the pinned LoomBench manifest contained no
+matching operator identities. Treating `pack_bits`, a seven-point Jacobi
+kernel, and standalone softmax as aliases would conflate different protocols.
+Replacing those existing rows would discard valid corpus coverage. Keeping the
+new workflows outside the manifest would create a second application
+inventory. The selected closure therefore appends three ordinary LoomBench
+operator rows and advances the representative gate from 889 to 892 without
+removing or renaming any existing row. This preserves the manifest as the sole
+membership authority and lets each workflow retain its own source, protocol,
+and oracle.
 
 The real-application portfolio therefore starts with five complementary
 programs: two streaming ML workloads, one compact language-model inference,

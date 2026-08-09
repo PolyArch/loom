@@ -485,10 +485,10 @@ currently pinned inputs the gate is:
 
 | Suite | Representative operator executions |
 | --- | ---: |
-| LoomBench | 132 |
+| LoomBench | 135 |
 | CMSIS-DSP | 571 |
 | CMSIS-NN | 186 |
-| Total | 889 |
+| Total | 892 |
 
 Profiles, producer aliases, and additional vectors do not multiply this total.
 They remain extended coverage and may reuse the same final link and DSE result.
