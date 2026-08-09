@@ -401,8 +401,11 @@ void descriptorAndConfigAreExact() {
               descriptor.inputSlots.size() == 2 &&
               descriptor.outputSlots.size() == 2 &&
               descriptor.providerForm == ProviderForm::ExternalPrepareImport &&
+              descriptor.implementationSemanticIdentity ==
+                  "loom.eda.intel_altera.quartus_prime_static_full_device."
+                  "generator.v2" &&
               descriptor.determinism ==
-                  CandidateGeneratorDeterminism::Deterministic,
+                  CandidateGeneratorDeterminism::IndependentReplicates,
           "Quartus descriptor shape is not exact");
   require(
       __func__,
