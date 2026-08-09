@@ -30,9 +30,7 @@ struct ManifestMaterializedFile final {
 };
 
 struct InvocationManifestData final {
-  std::string providerIdentity;
-  SemanticInvocationClosure semanticClosure;
-  std::string resultImporterIdentity;
+  ExternalToolSemanticContract semanticContract;
   ResolvedToolBinding tool;
   ToolVersionProbe toolVersionProbe;
   InvocationRuntimeBinding runtime;

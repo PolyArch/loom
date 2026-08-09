@@ -1,5 +1,6 @@
 #include "Evaluation/ModelProvider.h"
 
+#include <cstdint>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -57,6 +58,37 @@ registerEvaluationModelProvider(const EvaluationModelProvider &provider) {
   }
   providers().push_back(&provider);
   return llvm::Error::success();
+}
+
+llvm::Expected<external_tool::ExternalToolSemanticContract>
+deriveExternalToolSemanticContract(const EvaluationRequest &request) {
+  const EvaluationModelDescriptorRef reference =
+      request.modelBinding().descriptorRef();
+  const EvaluationModelDescriptor *descriptor = reference.descriptor();
+  if (!descriptor)
+    return invalid("request references an unregistered model descriptor");
+  if (descriptor->providerForm != ProviderForm::ExternalPrepareImport)
+    return invalid(
+        "external semantic contract requires ExternalPrepareImport");
+
+  std::vector<std::uint8_t> descriptorReference;
+  descriptorReference.reserve(12);
+  const auto appendU32 = [&descriptorReference](std::uint32_t value) {
+    descriptorReference.push_back(static_cast<std::uint8_t>(value >> 24));
+    descriptorReference.push_back(static_cast<std::uint8_t>(value >> 16));
+    descriptorReference.push_back(static_cast<std::uint8_t>(value >> 8));
+    descriptorReference.push_back(static_cast<std::uint8_t>(value));
+  };
+  appendU32(reference.schemaVersion().major);
+  appendU32(reference.schemaVersion().minor);
+  appendU32(reference.modelKind().ordinal());
+  auto importer = external_tool::deriveExternalToolResultImporterIdentity(
+      descriptorReference, descriptor->providerForm);
+  if (!importer)
+    return importer.takeError();
+  return external_tool::ExternalToolSemanticContract{
+      descriptor->implementationSemanticIdentity.str(),
+      evaluationRequestReference(request), std::move(*importer)};
 }
 
 llvm::Expected<EvaluationEvidence>

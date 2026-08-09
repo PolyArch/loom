@@ -926,6 +926,28 @@ void externalModelProviderFormAdmission() {
       __func__, store, externalModelDescriptor.reference());
   takeExpected(__func__,
                publishEvaluationRequest(registeredExternalRequest, store));
+  const external_tool::ExternalToolSemanticContract semanticContract =
+      takeExpected(__func__,
+                   deriveExternalToolSemanticContract(registeredExternalRequest));
+  require(__func__,
+          semanticContract.providerIdentity ==
+              externalModelDescriptor.implementationSemanticIdentity,
+          "external semantic contract lost the model provider identity");
+  const auto *requestClosure =
+      std::get_if<ArtifactRootReference>(&semanticContract.semanticClosure);
+  require(__func__, requestClosure &&
+                        *requestClosure == evaluationRequestReference(
+                                               registeredExternalRequest),
+          "external semantic contract lost the exact EvaluationRequest");
+  require(__func__,
+          semanticContract.resultImporterIdentity ==
+              "cab2d0e8f81b45f9ca0ef6afecd30d33b74b2900108a6904c2f912afeddc8223",
+          "external semantic contract changed the evaluator importer identity");
+  auto inProcessContract = deriveExternalToolSemanticContract(inProcessRequest);
+  if (inProcessContract)
+    fail(__func__, "an in-process model acquired an external semantic contract");
+  expectErrorContains(__func__, std::move(inProcessContract),
+                      "ExternalPrepareImport");
   auto prepared = prepareEvaluationModelInvocation(
       registeredExternalRequest, caseResolution(__func__), store, blobs,
       context);

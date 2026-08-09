@@ -9,6 +9,7 @@
 
 #include "Common/Artifact.h"
 #include "Common/BlobDigest.h"
+#include "Common/ProviderForm.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -49,6 +50,33 @@ struct CandidateGeneratorInvocationClosure final {
 using SemanticInvocationClosure =
     std::variant<CandidateGeneratorInvocationClosure, ArtifactRootReference>;
 
+/// The complete semantic portion of one external-tool invocation. DSE or
+/// Evaluation derives this value from its exact descriptor and typed closure;
+/// adapters transport it without re-encoding any field.
+struct ExternalToolSemanticContract final {
+  std::string providerIdentity;
+  SemanticInvocationClosure semanticClosure;
+  std::string resultImporterIdentity;
+
+  friend bool operator==(const ExternalToolSemanticContract &lhs,
+                         const ExternalToolSemanticContract &rhs) {
+    return lhs.providerIdentity == rhs.providerIdentity &&
+           lhs.semanticClosure == rhs.semanticClosure &&
+           lhs.resultImporterIdentity == rhs.resultImporterIdentity;
+  }
+  friend bool operator!=(const ExternalToolSemanticContract &lhs,
+                         const ExternalToolSemanticContract &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// The ExternalTool-owned verification digest framing for one exact semantic
+/// descriptor reference. Semantic owners supply the canonical reference bytes
+/// and may request only the ExternalPrepareImport form.
+llvm::Expected<std::string> deriveExternalToolResultImporterIdentity(
+    llvm::ArrayRef<std::uint8_t> semanticDescriptorReferenceBytes,
+    ProviderForm providerForm);
+
 struct MaterializedBundleFile {
   std::string relativePath;
   std::string contents;
@@ -75,9 +103,7 @@ struct PreparedExternalToolInvocation final {
 };
 
 struct ExternalToolInvocationBundleSpec {
-  std::string providerIdentity;
-  SemanticInvocationClosure semanticClosure;
-  std::string resultImporterIdentity;
+  ExternalToolSemanticContract semanticContract;
   ResolvedToolBinding tool;
   ToolVersionProbe toolVersionProbe;
   InvocationRuntimeBinding runtime;
@@ -131,9 +157,7 @@ struct ExternalToolInvocationExternalInput final {
 };
 
 struct ExternalToolInvocationImportExpectation final {
-  std::string providerIdentity;
-  SemanticInvocationClosure semanticClosure;
-  std::string resultImporterIdentity;
+  ExternalToolSemanticContract semanticContract;
   std::vector<ExternalToolInvocationSemanticInput> semanticInputs;
   std::vector<ExternalToolInvocationExternalInput> externalInputs;
   std::vector<std::string> declaredOutputs;

@@ -77,6 +77,12 @@ struct EvaluationModelProvider final {
 llvm::Error
 registerEvaluationModelProvider(const EvaluationModelProvider &provider);
 
+/// Derives the complete external-tool semantic contract from one exact
+/// EvaluationRequest. The request's model descriptor must select
+/// ExternalPrepareImport; adapters consume the returned value unchanged.
+llvm::Expected<external_tool::ExternalToolSemanticContract>
+deriveExternalToolSemanticContract(const EvaluationRequest &request);
+
 /// Verifies and executes one exact Request through the in-process provider
 /// form. Provider absence is a stable Unsupported outcome for this exact
 /// Request; an ExternalPrepareImport provider is never invoked through this

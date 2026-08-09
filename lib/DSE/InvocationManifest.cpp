@@ -1,5 +1,7 @@
 #include "DSE/InvocationManifest.h"
 
+#include "CandidateGeneratorCanonical.h"
+
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
@@ -533,13 +535,8 @@ decodeIncompleteReason(Decoder &decoder) {
 
 void encodeGeneratorBinding(Encoder &encoder,
                             const ResolvedCandidateGeneratorBinding &binding) {
-  const CandidateGeneratorDescriptorRef reference = binding.descriptorRef();
-  encoder.text(reference.descriptorSchema().identity);
-  encoder.u32(reference.descriptorSchema().version.major);
-  encoder.u32(reference.descriptorSchema().version.minor);
-  encoder.u32(reference.kind().ordinal());
-  encoder.bytes(binding.canonicalConfigBytes());
-  encoder.fixed(binding.configDigest().bytes());
+  encoder.fixed(
+      detail::encodeCanonicalResolvedCandidateGeneratorBinding(binding));
 }
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
@@ -575,11 +572,8 @@ decodeGeneratorBinding(Decoder &decoder) {
 
 void encodeInputBindings(
     Encoder &encoder, llvm::ArrayRef<CandidateGeneratorInputBinding> bindings) {
-  encoder.u64(bindings.size());
-  for (const CandidateGeneratorInputBinding &binding : bindings) {
-    encoder.u32(binding.slot.ordinal());
-    encodeRoots(encoder, binding.artifacts);
-  }
+  encoder.fixed(
+      detail::encodeCanonicalCandidateGeneratorInputBindings(bindings));
 }
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>

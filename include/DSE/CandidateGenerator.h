@@ -415,6 +415,14 @@ BlobDigest deriveCandidateGeneratorBindingIdentity(
     CandidateGeneratorDescriptorRef descriptor,
     llvm::ArrayRef<std::uint8_t> canonicalConfigBytes);
 
+/// Derives the complete external-tool semantic contract from the exact typed
+/// generator invocation. The descriptor must select ExternalPrepareImport;
+/// adapters consume the returned value without encoding any semantic field.
+llvm::Expected<external_tool::ExternalToolSemanticContract>
+deriveExternalToolSemanticContract(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding);
+
 /// Strictly revalidates one immutable invocation record at an external
 /// consumption boundary. The check imports every exact input, output, parent,
 /// and internal lineage target; it does not create another record authority.

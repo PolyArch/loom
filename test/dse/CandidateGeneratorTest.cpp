@@ -1,5 +1,6 @@
 #include "DSE/CandidateGenerator.h"
 
+#include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobDigest.h"
 #include "Common/BlobStore.h"
@@ -45,6 +46,19 @@ void requireErrorContains(llvm::Error error, llvm::StringRef expected) {
   std::string message = llvm::toString(std::move(error));
   if (message.find(expected.str()) == std::string::npos)
     fail(("error did not contain expected text: " + expected).str());
+}
+
+void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
+  bytes.push_back(static_cast<std::uint8_t>(value >> 24));
+  bytes.push_back(static_cast<std::uint8_t>(value >> 16));
+  bytes.push_back(static_cast<std::uint8_t>(value >> 8));
+  bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
+  for (unsigned shift = 56; shift != 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+  bytes.push_back(static_cast<std::uint8_t>(value));
 }
 
 constexpr ArtifactSchemaDescriptor inputSchema{"loom.test.generator_input",
@@ -490,6 +504,48 @@ void externalProviderFormAdmission() {
   // The in-process facade never invokes a registered external provider.
   auto binding = take(ResolvedCandidateGeneratorBinding::get(
       external.reference(), canonicalConfig, digest));
+  const loom::external_tool::ExternalToolSemanticContract semanticContract =
+      take(deriveExternalToolSemanticContract(inputs, binding));
+  if (semanticContract.providerIdentity !=
+      external.implementationSemanticIdentity)
+    fail("external semantic contract lost the generator provider identity");
+  const auto *generatorClosure = std::get_if<
+      loom::external_tool::CandidateGeneratorInvocationClosure>(
+      &semanticContract.semanticClosure);
+  if (!generatorClosure)
+    fail("external semantic contract used the wrong closure form");
+  std::vector<std::uint8_t> expectedInputs;
+  appendU64(expectedInputs, 1);
+  appendU32(expectedInputs, 0);
+  appendU64(expectedInputs, 1);
+  const std::vector<std::uint8_t> rootBytes =
+      loom::encodeArtifactRootReference(inputs.front().artifacts.front());
+  expectedInputs.insert(expectedInputs.end(), rootBytes.begin(),
+                        rootBytes.end());
+  if (generatorClosure->typedInputBindings != expectedInputs)
+    fail("external semantic contract changed typed input-binding bytes");
+  std::vector<std::uint8_t> expectedBinding =
+      canonicalCandidateGeneratorDescriptorReferenceBytes(
+          binding.descriptorRef());
+  appendU64(expectedBinding, canonicalConfig.size());
+  expectedBinding.insert(expectedBinding.end(), canonicalConfig.begin(),
+                         canonicalConfig.end());
+  expectedBinding.insert(expectedBinding.end(), digest.bytes().begin(),
+                         digest.bytes().end());
+  if (generatorClosure->resolvedBinding != expectedBinding ||
+      generatorClosure->bindingIdentity !=
+          deriveCandidateGeneratorBindingIdentity(binding.descriptorRef(),
+                                                  canonicalConfig)
+              .bytes())
+    fail("external semantic contract changed resolved binding ownership");
+  if (semanticContract.resultImporterIdentity !=
+      "ccb998841fd4f25b54e4cbc492f3ef7bf5ac6ec6aa892ea06bde69a6f171920f")
+    fail("external semantic contract changed the generator importer identity");
+  auto inProcessContract =
+      deriveExternalToolSemanticContract(inputs, inProcessBinding);
+  if (inProcessContract)
+    fail("an in-process generator acquired an external semantic contract");
+  requireErrorContains(inProcessContract.takeError(), "ExternalPrepareImport");
   auto outcome = invokeCandidateGenerator(inputs, binding, store, blobs);
   if (outcome)
     fail("the in-process facade invoked an external provider");

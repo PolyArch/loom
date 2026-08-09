@@ -8,6 +8,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/SHA256.h"
 
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -117,6 +118,27 @@ loom::BlobDigest blobDigest(llvm::StringRef contents) {
       llvm::ArrayRef<std::uint8_t>(bytes, contents.size()));
 }
 
+void resultImporterIdentityUsesCanonicalFraming() {
+  const std::array<std::uint8_t, 2> descriptorReference = {0x01, 0x02};
+  const std::string identity = take(
+      __func__, deriveExternalToolResultImporterIdentity(
+                    descriptorReference,
+                    loom::ProviderForm::ExternalPrepareImport));
+  require(__func__,
+          identity ==
+              "a64d161a4e75675a8338e952ac0d199d9f31863e9f2aa881227c57a316c9389b",
+          "result-importer digest framing changed");
+  requireFailureContains(
+      __func__,
+      deriveExternalToolResultImporterIdentity(descriptorReference,
+                                               loom::ProviderForm::InProcess),
+      "ExternalPrepareImport");
+  requireFailureContains(
+      __func__, deriveExternalToolResultImporterIdentity(
+                    {}, loom::ProviderForm::ExternalPrepareImport),
+      "descriptor reference");
+}
+
 ResolvedToolBinding toolBinding(const std::filesystem::path &executable,
                                 ToolBindingSource source) {
   return ResolvedToolBinding{"fake_eda",     source,      executable.string(),
@@ -127,13 +149,13 @@ ResolvedToolBinding toolBinding(const std::filesystem::path &executable,
 ExternalToolInvocationBundleSpec baseSpec(const std::filesystem::path &tool,
                                           const std::filesystem::path &output) {
   ExternalToolInvocationBundleSpec spec;
-  spec.providerIdentity = "fake_eda@1";
-  spec.semanticClosure = SemanticInvocationClosure(
+  spec.semanticContract.providerIdentity = "fake_eda@1";
+  spec.semanticContract.semanticClosure = SemanticInvocationClosure(
       CandidateGeneratorInvocationClosure{{0x01, 0x02},
                                           {0x03, 0x04},
                                           blobDigest("fake-model-binding")
                                               .bytes()});
-  spec.resultImporterIdentity = "fake_importer@1";
+  spec.semanticContract.resultImporterIdentity = std::string(64, 'a');
   spec.tool = toolBinding(tool, ToolBindingSource::Explicit);
   spec.toolVersionProbe = ToolVersionProbe{{"--version"}, "Fake EDA"};
   spec.runtime.kind = InvocationRuntimeKind::Host;
@@ -156,9 +178,7 @@ ExternalToolInvocationBundleSpec baseSpec(const std::filesystem::path &tool,
 ExternalToolInvocationImportExpectation
 importExpectation(const ExternalToolInvocationBundleSpec &spec) {
   ExternalToolInvocationImportExpectation expectation;
-  expectation.providerIdentity = spec.providerIdentity;
-  expectation.semanticClosure = spec.semanticClosure;
-  expectation.resultImporterIdentity = spec.resultImporterIdentity;
+  expectation.semanticContract = spec.semanticContract;
   for (const MaterializedBundleFile &file : spec.files)
     if (file.sourceArtifact)
       expectation.semanticInputs.push_back(
@@ -428,6 +448,19 @@ void invalidPathLeavesNoBundle(const std::filesystem::path &root,
           "failed finalization published a bundle");
 }
 
+void malformedSemanticContractLeavesNoBundle(
+    const std::filesystem::path &root, const std::filesystem::path &tool) {
+  const std::filesystem::path bundle = root / "malformed-contract";
+  ExternalToolInvocationBundleSpec spec =
+      baseSpec(tool, "outputs/required.txt");
+  spec.semanticContract.resultImporterIdentity = "not-a-digest";
+  requireFailureContains(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec),
+      "result importer identity");
+  require(__func__, !std::filesystem::exists(bundle),
+          "malformed semantic contract published a bundle");
+}
+
 void conflictingPathLeavesNoBundle(const std::filesystem::path &root,
                                    const std::filesystem::path &tool) {
   const std::filesystem::path bundle = root / "conflicting-bundle";
@@ -618,20 +651,22 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
                  "an undeclared output was readable");
 
   ExternalToolInvocationImportExpectation wrong = expected;
-  wrong.providerIdentity = "other-provider@1";
+  wrong.semanticContract.providerIdentity = "other-provider@1";
   requireFailure(__func__,
                  importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong provider identity was accepted");
   wrong = expected;
-  wrong.semanticClosure = SemanticInvocationClosure(loom::ArtifactRootReference{
-      "loom.test_request",
-      {1, 0},
-      take(__func__, loom::parseArtifactIdentityHex(std::string(64, '3')))});
+  wrong.semanticContract.semanticClosure =
+      SemanticInvocationClosure(loom::ArtifactRootReference{
+          "loom.test_request",
+          {1, 0},
+          take(__func__,
+               loom::parseArtifactIdentityHex(std::string(64, '3')))});
   requireFailure(__func__,
                  importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong semantic closure was accepted");
   wrong = expected;
-  wrong.resultImporterIdentity = "other-importer@1";
+  wrong.semanticContract.resultImporterIdentity = std::string(64, 'b');
   requireFailure(__func__,
                  importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong result importer identity was accepted");
@@ -868,10 +903,12 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
   // import.
   const std::filesystem::path bundle = root / "evaluation-closure";
   ExternalToolInvocationBundleSpec spec = baseSpec(tool, "outputs/result.txt");
-  spec.semanticClosure = SemanticInvocationClosure(loom::ArtifactRootReference{
-      "loom.test_request",
-      {1, 0},
-      take(__func__, loom::parseArtifactIdentityHex(std::string(64, '7')))});
+  spec.semanticContract.semanticClosure =
+      SemanticInvocationClosure(loom::ArtifactRootReference{
+          "loom.test_request",
+          {1, 0},
+          take(__func__,
+               loom::parseArtifactIdentityHex(std::string(64, '7')))});
   const PreparedExternalToolInvocation prepared = take(
       __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
   require(__func__,
@@ -885,7 +922,7 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
   // finalization.
   ExternalToolInvocationBundleSpec emptyClosure =
       baseSpec(tool, "outputs/result.txt");
-  emptyClosure.semanticClosure =
+  emptyClosure.semanticContract.semanticClosure =
       SemanticInvocationClosure(CandidateGeneratorInvocationClosure{});
   requireFailureContains(
       __func__,
@@ -1102,12 +1139,14 @@ int main(int argc, char **argv) {
   require("main",
           ::setenv("LOOM_BUNDLE_TEST_LICENSE", "license-secret-value", 1) == 0,
           "could not set test environment");
+  resultImporterIdentityUsesCanonicalFraming();
   deterministicHostBundleExecutes(root, tool);
   containerBundleExecutes(root, tool, container);
   externalFileIsRevalidated(root, tool);
   missingOutputIsRecorded(root, tool);
   versionNormalizationMatchesDiscovery(root);
   invalidPathLeavesNoBundle(root, tool);
+  malformedSemanticContractLeavesNoBundle(root, tool);
   conflictingPathLeavesNoBundle(root, tool);
   internalVersionPathCannotBeDeclared(root, tool);
   independentBundlesExecuteInParallel(root, tool);

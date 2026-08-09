@@ -181,22 +181,24 @@ llvm::Error validateVersionProbe(const ToolVersionProbe &probe,
 
 llvm::Error
 validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
-  const std::string *identities[] = {
-      &specification.providerIdentity,
-      &specification.resultImporterIdentity,
-  };
-  for (const std::string *identity : identities)
-    if (identity->empty() || containsNull(*identity))
-      return bundleError("bundle identity is empty or contains NUL");
+  if (specification.semanticContract.providerIdentity.empty() ||
+      containsNull(specification.semanticContract.providerIdentity))
+    return bundleError("provider identity is empty or contains NUL");
+  auto importerIdentity =
+      parseBlobDigestHex(specification.semanticContract.resultImporterIdentity);
+  if (!importerIdentity)
+    return bundleError("result importer identity is invalid: " +
+                       llvm::toString(importerIdentity.takeError()));
   if (const auto *closure = std::get_if<CandidateGeneratorInvocationClosure>(
-          &specification.semanticClosure)) {
+          &specification.semanticContract.semanticClosure)) {
     if (closure->typedInputBindings.empty() ||
         closure->resolvedBinding.empty())
       return bundleError(
           "candidate generator closure carries empty owner bytes");
   } else {
     const ArtifactRootReference &request =
-        std::get<ArtifactRootReference>(specification.semanticClosure);
+        std::get<ArtifactRootReference>(
+            specification.semanticContract.semanticClosure);
     if (request.schemaIdentity.empty() ||
         containsNull(request.schemaIdentity))
       return bundleError(
@@ -385,9 +387,7 @@ void writeArtifactReference(llvm::json::OStream &json,
 
 InvocationManifestData
 makeManifest(const ExternalToolInvocationBundleSpec &specification) {
-  InvocationManifestData manifest{specification.providerIdentity,
-                                  specification.semanticClosure,
-                                  specification.resultImporterIdentity,
+  InvocationManifestData manifest{specification.semanticContract,
                                   specification.tool,
                                   specification.toolVersionProbe,
                                   specification.runtime,
@@ -408,9 +408,7 @@ makeManifest(const ExternalToolInvocationBundleSpec &specification) {
 ExternalToolInvocationBundleSpec
 makeValidationSpecification(const InvocationManifestData &manifest) {
   ExternalToolInvocationBundleSpec specification;
-  specification.providerIdentity = manifest.providerIdentity;
-  specification.semanticClosure = manifest.semanticClosure;
-  specification.resultImporterIdentity = manifest.resultImporterIdentity;
+  specification.semanticContract = manifest.semanticContract;
   specification.tool = manifest.tool;
   specification.toolVersionProbe = manifest.toolVersionProbe;
   specification.runtime = manifest.runtime;
@@ -909,8 +907,9 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
   }
 
   InvocationManifestData manifest{
-      provider->str(),           std::move(*closure),
-      importer->str(),           std::move(*tool),
+      ExternalToolSemanticContract{provider->str(), std::move(*closure),
+                                   importer->str()},
+      std::move(*tool),
       std::move(*toolProbe),     std::move(*runtime),
       std::move(containerProbe), std::move(commands),
       std::move(*inherited),     std::move(materializedFiles),
@@ -1224,6 +1223,37 @@ BlobDigest contentDigest(llvm::StringRef contents) {
       llvm::ArrayRef<std::uint8_t>(bytes, contents.size()));
 }
 
+llvm::Expected<std::string> deriveExternalToolResultImporterIdentity(
+    llvm::ArrayRef<std::uint8_t> semanticDescriptorReferenceBytes,
+    ProviderForm providerForm) {
+  if (semanticDescriptorReferenceBytes.empty())
+    return bundleError("semantic descriptor reference is empty");
+  if (providerForm != ProviderForm::ExternalPrepareImport)
+    return bundleError(
+        "result importer identity requires ExternalPrepareImport");
+
+  static constexpr llvm::StringLiteral domain =
+      "loom.external_tool_importer.v1";
+  std::vector<std::uint8_t> preimage;
+  preimage.reserve(domain.size() + 1 + 8 +
+                   semanticDescriptorReferenceBytes.size() + 4);
+  preimage.insert(preimage.end(), domain.bytes_begin(), domain.bytes_end());
+  preimage.push_back(0);
+  const std::uint64_t referenceSize =
+      semanticDescriptorReferenceBytes.size();
+  for (unsigned shift = 56; shift != 0; shift -= 8)
+    preimage.push_back(static_cast<std::uint8_t>(referenceSize >> shift));
+  preimage.push_back(static_cast<std::uint8_t>(referenceSize));
+  preimage.insert(preimage.end(), semanticDescriptorReferenceBytes.begin(),
+                  semanticDescriptorReferenceBytes.end());
+  const std::uint32_t form = static_cast<std::uint32_t>(providerForm);
+  preimage.push_back(static_cast<std::uint8_t>(form >> 24));
+  preimage.push_back(static_cast<std::uint8_t>(form >> 16));
+  preimage.push_back(static_cast<std::uint8_t>(form >> 8));
+  preimage.push_back(static_cast<std::uint8_t>(form));
+  return formatBlobDigestHex(computeBlobDigest(preimage));
+}
+
 std::string serializeManifest(const InvocationManifestData &manifest) {
   llvm::SmallString<4096> storage;
   llvm::raw_svector_ostream output(storage);
@@ -1231,11 +1261,12 @@ std::string serializeManifest(const InvocationManifestData &manifest) {
   json.object([&] {
     json.attribute("schema", "loom.external_tool_invocation");
     json.attribute("version", "2.0");
-    json.attribute("provider_identity", manifest.providerIdentity);
+    json.attribute("provider_identity",
+                   manifest.semanticContract.providerIdentity);
     json.attributeObject("semantic_closure", [&] {
       if (const auto *closure =
               std::get_if<CandidateGeneratorInvocationClosure>(
-                  &manifest.semanticClosure)) {
+                  &manifest.semanticContract.semanticClosure)) {
         json.attribute("form", "candidate_generator");
         json.attribute("typed_input_bindings",
                        formatCanonicalHex(closure->typedInputBindings));
@@ -1247,11 +1278,13 @@ std::string serializeManifest(const InvocationManifestData &manifest) {
         json.attribute("form", "evaluation");
         json.attributeBegin("request");
         writeArtifactReference(
-            json, std::get<ArtifactRootReference>(manifest.semanticClosure));
+            json, std::get<ArtifactRootReference>(
+                      manifest.semanticContract.semanticClosure));
         json.attributeEnd();
       }
     });
-    json.attribute("result_importer_identity", manifest.resultImporterIdentity);
+    json.attribute("result_importer_identity",
+                   manifest.semanticContract.resultImporterIdentity);
     json.attributeBegin("tool_binding");
     writeBinding(json, manifest.tool);
     json.attributeEnd();
@@ -1419,12 +1452,15 @@ importExternalToolInvocationBundle(
   auto manifest = parseManifest(bundle->manifestBytes);
   if (!manifest)
     return manifest.takeError();
-  if (manifest->providerIdentity != expectation.providerIdentity)
+  if (manifest->semanticContract.providerIdentity !=
+      expectation.semanticContract.providerIdentity)
     return bundleError("invocation provider identity does not match importer");
-  if (manifest->semanticClosure != expectation.semanticClosure)
+  if (manifest->semanticContract.semanticClosure !=
+      expectation.semanticContract.semanticClosure)
     return bundleError(
         "invocation semantic closure does not match importer");
-  if (manifest->resultImporterIdentity != expectation.resultImporterIdentity)
+  if (manifest->semanticContract.resultImporterIdentity !=
+      expectation.semanticContract.resultImporterIdentity)
     return bundleError("invocation result importer identity does not match");
 
   std::vector<ExternalToolInvocationSemanticInput> semanticInputs;

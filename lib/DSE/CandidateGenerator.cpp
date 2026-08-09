@@ -1,5 +1,7 @@
 #include "DSE/CandidateGenerator.h"
 
+#include "CandidateGeneratorCanonical.h"
+
 #include "Common/ArtifactStore.h"
 
 #include "Common/ArtifactLocalReference.h"
@@ -485,6 +487,85 @@ BlobDigest deriveCandidateGeneratorBindingIdentity(
   appendFramed(referenceBytes);
   appendFramed(canonicalConfigBytes);
   return loom::computeBlobDigest(payload);
+}
+
+namespace detail {
+
+std::vector<std::uint8_t> encodeCanonicalCandidateGeneratorInputBindings(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> bindings) {
+  std::vector<std::uint8_t> bytes;
+  const auto appendU32 = [&bytes](std::uint32_t value) {
+    bytes.push_back(static_cast<std::uint8_t>(value >> 24));
+    bytes.push_back(static_cast<std::uint8_t>(value >> 16));
+    bytes.push_back(static_cast<std::uint8_t>(value >> 8));
+    bytes.push_back(static_cast<std::uint8_t>(value));
+  };
+  const auto appendU64 = [&bytes](std::uint64_t value) {
+    for (unsigned shift = 56; shift != 0; shift -= 8)
+      bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+    bytes.push_back(static_cast<std::uint8_t>(value));
+  };
+  appendU64(bindings.size());
+  for (const CandidateGeneratorInputBinding &binding : bindings) {
+    appendU32(binding.slot.ordinal());
+    appendU64(binding.artifacts.size());
+    for (const ArtifactRootReference &artifact : binding.artifacts) {
+      const std::vector<std::uint8_t> root =
+          encodeArtifactRootReference(artifact);
+      bytes.insert(bytes.end(), root.begin(), root.end());
+    }
+  }
+  return bytes;
+}
+
+std::vector<std::uint8_t> encodeCanonicalResolvedCandidateGeneratorBinding(
+    const ResolvedCandidateGeneratorBinding &binding) {
+  std::vector<std::uint8_t> bytes =
+      canonicalCandidateGeneratorDescriptorReferenceBytes(
+          binding.descriptorRef());
+  const std::uint64_t configSize = binding.canonicalConfigBytes().size();
+  for (unsigned shift = 56; shift != 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(configSize >> shift));
+  bytes.push_back(static_cast<std::uint8_t>(configSize));
+  bytes.insert(bytes.end(), binding.canonicalConfigBytes().begin(),
+               binding.canonicalConfigBytes().end());
+  bytes.insert(bytes.end(), binding.configDigest().bytes().begin(),
+               binding.configDigest().bytes().end());
+  return bytes;
+}
+
+} // namespace detail
+
+llvm::Expected<external_tool::ExternalToolSemanticContract>
+deriveExternalToolSemanticContract(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding) {
+  const CandidateGeneratorDescriptor *descriptor =
+      binding.descriptorRef().descriptor();
+  if (!descriptor)
+    return invalid("binding references an unregistered descriptor");
+  if (descriptor->providerForm != ProviderForm::ExternalPrepareImport)
+    return invalid(
+        "external semantic contract requires ExternalPrepareImport");
+  if (llvm::Error error = validateCandidateGeneratorInputBindings(
+          binding.descriptorRef(), inputs))
+    return std::move(error);
+  const std::vector<std::uint8_t> descriptorReference =
+      canonicalCandidateGeneratorDescriptorReferenceBytes(
+          binding.descriptorRef());
+  auto importer = external_tool::deriveExternalToolResultImporterIdentity(
+      descriptorReference, descriptor->providerForm);
+  if (!importer)
+    return importer.takeError();
+  return external_tool::ExternalToolSemanticContract{
+      descriptor->implementationSemanticIdentity.str(),
+      external_tool::CandidateGeneratorInvocationClosure{
+          detail::encodeCanonicalCandidateGeneratorInputBindings(inputs),
+          detail::encodeCanonicalResolvedCandidateGeneratorBinding(binding),
+          deriveCandidateGeneratorBindingIdentity(
+              binding.descriptorRef(), binding.canonicalConfigBytes())
+              .bytes()},
+      std::move(*importer)};
 }
 
 const CandidateGeneratorInputSlotDescriptor *
