@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -223,10 +224,10 @@ void registerOwner() {
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error = registerCandidateGeneratorDescriptor(generator))
     fail(llvm::toString(std::move(error)));
-  if (llvm::Error error = registerCandidateGeneratorProvider(
-          CandidateGeneratorProvider{generator.reference(),
-                                     CandidateGeneratorInProcessProvider{
-                                         generate}}))
+  if (llvm::Error error =
+          registerCandidateGeneratorProvider(CandidateGeneratorProvider{
+              generator.reference(),
+              CandidateGeneratorInProcessProvider{generate}}))
     fail(llvm::toString(std::move(error)));
 }
 
@@ -284,7 +285,7 @@ struct Fixture final {
 };
 
 Fixture makeFixture(const ArtifactStore &store, const BlobStore &blobs,
-                    bool stopEarly = false) {
+                    bool stopEarly = false, std::size_t planNodeCount = 1) {
   const ComponentViewDigest digest =
       take(computeComponentViewDigest(configSchema, {0x01}));
   ResolvedConfig config = defaultResolvedConfig();
@@ -293,8 +294,10 @@ Fixture makeFixture(const ArtifactStore &store, const BlobStore &blobs,
   config.dse.objectiveCatalogs = {};
   config.dse.qualityGatePolicies.clear();
   ArtifactRootReference source = publish(store, sourceSchema, 0x11);
-  config.dse.planNodes = {GeneratePlanNodeDefinition{
-      generator.reference(), {ExactPlanArtifacts{{source}}}, {0x01}, digest}};
+  config.dse.planNodes.reserve(planNodeCount);
+  for (std::size_t node = 0; node != planNodeCount; ++node)
+    config.dse.planNodes.push_back(GeneratePlanNodeDefinition{
+        generator.reference(), {ExactPlanArtifacts{{source}}}, {0x01}, digest});
   const ArtifactIdentity storedConfig = take(store.put(
       ResolvedConfig::artifactSchema, canonicalResolvedConfigBytes(config)));
   if (storedConfig != resolvedConfigIdentity(config))
@@ -442,6 +445,156 @@ void testIncompleteReasonRoundTripCoverage(const ArtifactStore &store,
   }
 }
 
+void writeU32(std::vector<std::uint8_t> &bytes, std::size_t offset,
+              std::uint32_t value) {
+  if (offset > bytes.size() || bytes.size() - offset < 4)
+    fail("test attempted to patch outside canonical bytes");
+  for (std::size_t index = 0; index != 4; ++index)
+    bytes[offset + index] =
+        static_cast<std::uint8_t>(value >> ((3 - index) * 8));
+}
+
+void writeU64(std::vector<std::uint8_t> &bytes, std::size_t offset,
+              std::uint64_t value) {
+  if (offset > bytes.size() || bytes.size() - offset < 8)
+    fail("test attempted to patch outside canonical bytes");
+  for (std::size_t index = 0; index != 8; ++index)
+    bytes[offset + index] =
+        static_cast<std::uint8_t>(value >> ((7 - index) * 8));
+}
+
+InvocationOperationalObservations operationalObservations(
+    std::vector<PlanNodeOperationalObservation> planNodes = {{0, 23, 31}}) {
+  return InvocationOperationalObservations{101, 211, 4096,
+                                           4,   16,  std::move(planNodes)};
+}
+
+void testOperationalObservationCompatibility(const ArtifactStore &store,
+                                             const BlobStore &blobs) {
+  Fixture fixture = makeFixture(store, blobs);
+  const InvocationControllerOutcome outcome = InvocationCompletedSelection{
+      {fixture.selected}, {fixture.preexistingEvidence}};
+  InvocationManifest absent = take(InvocationManifest::get(
+      makeClosure(fixture, store, {fixture.source}), 8, std::nullopt,
+      fixture.config, fixture.records, outcome, store));
+  InvocationManifest present = take(
+      InvocationManifest::get(makeClosure(fixture, store, {fixture.source}), 8,
+                              std::nullopt, fixture.config, fixture.records,
+                              outcome, store, operationalObservations()));
+
+  if (absent.operationalObservations() || !present.operationalObservations() ||
+      present.operationalObservations()->planNodes.size() != 1 ||
+      present.operationalObservations()->planNodes.front().planNodeOrdinal != 0)
+    fail("operational observation presence or node reference changed");
+  InvocationManifest adoptedPresent = take(
+      adoptInvocationManifest(present.canonicalBytes(), fixture.config, store));
+  InvocationManifest adoptedAbsent = take(
+      adoptInvocationManifest(absent.canonicalBytes(), fixture.config, store));
+  if (adoptedPresent.canonicalBytes() != present.canonicalBytes() ||
+      adoptedPresent.operationalObservations() !=
+          present.operationalObservations() ||
+      adoptedAbsent.canonicalBytes() != absent.canonicalBytes() ||
+      adoptedAbsent.operationalObservations())
+    fail("schema 1.1 operational observations did not round-trip exactly");
+
+  const auto *absentSelection =
+      std::get_if<InvocationCompletedSelection>(&absent.outcome());
+  const auto *presentSelection =
+      std::get_if<InvocationCompletedSelection>(&present.outcome());
+  if (absent.occurrence() != present.occurrence() ||
+      absent.closure().runKey() != present.closure().runKey() ||
+      absent.generateRecords().size() != present.generateRecords().size() ||
+      !absentSelection || !presentSelection ||
+      absentSelection->selected != presentSelection->selected ||
+      absentSelection->satisfiedEvidence != presentSelection->satisfiedEvidence)
+    fail("operational observations changed formal invocation semantics");
+
+  std::vector<std::uint8_t> legacy(absent.canonicalBytes().begin(),
+                                   absent.canonicalBytes().end());
+  if (legacy.size() < 4)
+    fail("schema 1.1 absent manifest is unexpectedly short");
+  legacy.resize(legacy.size() - 4);
+  const std::size_t minorOffset =
+      8 + InvocationManifest::schemaIdentity.size() + 4;
+  writeU32(legacy, minorOffset, 0);
+  InvocationManifest adoptedLegacy =
+      take(adoptInvocationManifest(legacy, fixture.config, store));
+  if (adoptedLegacy.canonicalBytes() != absent.canonicalBytes() ||
+      adoptedLegacy.operationalObservations())
+    fail("schema 1.0 import did not produce canonical schema 1.1 output");
+
+  InvocationManifest resumedAbsent = take(InvocationManifest::get(
+      makeClosure(fixture, store, {fixture.source}), 9,
+      InvocationOccurrenceRef{absent.occurrence().runKey, 8}, fixture.config,
+      fixture.records, outcome, store));
+  InvocationManifest resumedPresent = take(InvocationManifest::get(
+      makeClosure(fixture, store, {fixture.source}), 9,
+      InvocationOccurrenceRef{absent.occurrence().runKey, 8}, fixture.config,
+      fixture.records, outcome, store, operationalObservations()));
+  if (resumedAbsent.occurrence() != resumedPresent.occurrence() ||
+      resumedAbsent.resumedFrom() != resumedPresent.resumedFrom())
+    fail("operational observations changed resume provenance");
+}
+
+void testOperationalObservationRejections(const ArtifactStore &store,
+                                          const BlobStore &blobs) {
+  Fixture fixture = makeFixture(store, blobs, false, 2);
+  const InvocationControllerOutcome outcome = InvocationCompletedSelection{
+      {fixture.selected}, {fixture.preexistingEvidence}};
+  InvocationManifest valid = take(InvocationManifest::get(
+      makeClosure(fixture, store, {fixture.source}), 1, std::nullopt,
+      fixture.config, fixture.records, outcome, store,
+      operationalObservations({{0, 7, 11}, {1, 13, 17}})));
+  constexpr std::size_t observationSuffixWidth = 4 + 5 * 8 + 8 + 2 * 24;
+  if (valid.canonicalBytes().size() < observationSuffixWidth)
+    fail("schema 1.1 observation suffix is unexpectedly short");
+  const std::size_t suffix =
+      valid.canonicalBytes().size() - observationSuffixWidth;
+
+  auto expectRejected = [&](std::vector<std::uint8_t> bytes,
+                            llvm::StringRef needle) {
+    auto result = adoptInvocationManifest(bytes, fixture.config, store);
+    if (result)
+      fail("manifest importer accepted invalid operational observations");
+    requireErrorContains(result.takeError(), needle);
+  };
+
+  std::vector<std::uint8_t> zeroWorkers(valid.canonicalBytes().begin(),
+                                        valid.canonicalBytes().end());
+  writeU64(zeroWorkers, suffix + 28, 0);
+  expectRejected(std::move(zeroWorkers), "worker count");
+
+  std::vector<std::uint8_t> zeroCpus(valid.canonicalBytes().begin(),
+                                     valid.canonicalBytes().end());
+  writeU64(zeroCpus, suffix + 36, 0);
+  expectRejected(std::move(zeroCpus), "logical CPU count");
+
+  std::vector<std::uint8_t> unknown(valid.canonicalBytes().begin(),
+                                    valid.canonicalBytes().end());
+  writeU64(unknown, suffix + 76, 2);
+  expectRejected(std::move(unknown), "unknown plan node");
+
+  std::vector<std::uint8_t> duplicate(valid.canonicalBytes().begin(),
+                                      valid.canonicalBytes().end());
+  writeU64(duplicate, suffix + 76, 0);
+  expectRejected(std::move(duplicate), "strictly increasing");
+
+  std::vector<std::uint8_t> unsorted(valid.canonicalBytes().begin(),
+                                     valid.canonicalBytes().end());
+  writeU64(unsorted, suffix + 52, 1);
+  writeU64(unsorted, suffix + 76, 0);
+  expectRejected(std::move(unsorted), "strictly increasing");
+
+  std::vector<std::uint8_t> overflowing(valid.canonicalBytes().begin(),
+                                        valid.canonicalBytes().end());
+  writeU64(overflowing, suffix + 44, std::numeric_limits<std::uint64_t>::max());
+  expectRejected(std::move(overflowing), "remaining wire");
+
+  std::vector<std::uint8_t> partial(valid.canonicalBytes().begin(),
+                                    valid.canonicalBytes().end() - 8);
+  expectRejected(std::move(partial), "remaining wire");
+}
+
 void testStrictFailures(const ArtifactStore &store, const BlobStore &blobs) {
   Fixture fixture = makeFixture(store, blobs);
   DseRunClosure closure = makeClosure(fixture, store, {fixture.source});
@@ -507,6 +660,8 @@ int main(int argc, char **argv) {
   testRunKeyAndRoundTrip(store, blobs);
   testIncompleteWorkPreservation(store, blobs);
   testIncompleteReasonRoundTripCoverage(store, blobs);
+  testOperationalObservationCompatibility(store, blobs);
+  testOperationalObservationRejections(store, blobs);
   testStrictFailures(store, blobs);
   return 0;
 }

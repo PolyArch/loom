@@ -27,6 +27,7 @@ namespace loom::dse {
 namespace {
 
 constexpr char runKeyDomain[] = "loom.dse.run_key.1.0\0";
+constexpr SchemaVersion legacyInvocationManifestSchemaVersion{1, 0};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -838,11 +839,14 @@ encodeManifest(const InvocationOccurrenceRef &occurrence,
                llvm::ArrayRef<std::uint8_t> dseViewDescriptor,
                const ComponentViewDigest &dseViewDigest,
                llvm::ArrayRef<InvocationGenerateRecord> generateRecords,
-               const InvocationControllerOutcome &outcome) {
+               const InvocationControllerOutcome &outcome,
+               const std::optional<InvocationOperationalObservations>
+                   &operationalObservations,
+               SchemaVersion schemaVersion) {
   Encoder encoder;
   encoder.text(InvocationManifest::schemaIdentity);
-  encoder.u32(InvocationManifest::schemaVersion.major);
-  encoder.u32(InvocationManifest::schemaVersion.minor);
+  encoder.u32(schemaVersion.major);
+  encoder.u32(schemaVersion.minor);
   encoder.text(closure.producer().spelling());
   encodeRoots(encoder, closure.semanticInputs());
   encoder.fixed(closure.resolvedConfigIdentity().bytes());
@@ -860,7 +864,100 @@ encodeManifest(const InvocationOccurrenceRef &occurrence,
   for (const InvocationGenerateRecord &record : generateRecords)
     encodeGenerateRecord(encoder, record);
   encodeOutcome(encoder, outcome);
+  if (schemaVersion == InvocationManifest::schemaVersion) {
+    encoder.u32(operationalObservations ? 1 : 0);
+    if (operationalObservations) {
+      encoder.u64(operationalObservations->totalActiveWallTimeNanoseconds);
+      encoder.u64(operationalObservations->totalProcessCpuTimeNanoseconds);
+      encoder.u64(operationalObservations->peakResidentBytes);
+      encoder.u64(operationalObservations->requestedWorkerCount);
+      encoder.u64(operationalObservations->availableLogicalCpuCount);
+      encoder.u64(operationalObservations->planNodes.size());
+      for (const PlanNodeOperationalObservation &node :
+           operationalObservations->planNodes) {
+        encoder.u64(node.planNodeOrdinal);
+        encoder.u64(node.activeWallTimeNanoseconds);
+        encoder.u64(node.processCpuTimeNanoseconds);
+      }
+    }
+  }
   return encoder.take();
+}
+
+llvm::Expected<std::optional<InvocationOperationalObservations>>
+decodeOperationalObservations(Decoder &decoder) {
+  auto present = decoder.u32("operational observation presence");
+  if (!present)
+    return present.takeError();
+  if (*present > 1)
+    return invalid("operational observation presence is not boolean");
+  if (*present == 0)
+    return std::optional<InvocationOperationalObservations>{};
+
+  auto totalWall = decoder.u64("total active wall time");
+  if (!totalWall)
+    return totalWall.takeError();
+  auto totalCpu = decoder.u64("total process CPU time");
+  if (!totalCpu)
+    return totalCpu.takeError();
+  auto peakResident = decoder.u64("peak resident bytes");
+  if (!peakResident)
+    return peakResident.takeError();
+  auto requestedWorkers = decoder.u64("requested worker count");
+  if (!requestedWorkers)
+    return requestedWorkers.takeError();
+  auto availableCpus = decoder.u64("available logical CPU count");
+  if (!availableCpus)
+    return availableCpus.takeError();
+  auto nodeCount = decoder.u64("plan-node operational observation count");
+  if (!nodeCount)
+    return nodeCount.takeError();
+  constexpr std::uint64_t encodedNodeWidth = 3 * sizeof(std::uint64_t);
+  if (*nodeCount > std::numeric_limits<std::size_t>::max() ||
+      *nodeCount > decoder.remaining() / encodedNodeWidth)
+    return invalid("plan-node operational observation count is not "
+                   "representable by the remaining wire");
+
+  std::vector<PlanNodeOperationalObservation> planNodes;
+  planNodes.reserve(static_cast<std::size_t>(*nodeCount));
+  for (std::uint64_t index = 0; index != *nodeCount; ++index) {
+    auto planNode = decoder.u64("operational observation plan node");
+    if (!planNode)
+      return planNode.takeError();
+    auto activeWall = decoder.u64("plan-node active wall time");
+    if (!activeWall)
+      return activeWall.takeError();
+    auto processCpu = decoder.u64("plan-node process CPU time");
+    if (!processCpu)
+      return processCpu.takeError();
+    planNodes.push_back({*planNode, *activeWall, *processCpu});
+  }
+  return std::optional<InvocationOperationalObservations>{
+      InvocationOperationalObservations{*totalWall, *totalCpu, *peakResident,
+                                        *requestedWorkers, *availableCpus,
+                                        std::move(planNodes)}};
+}
+
+llvm::Error validateOperationalObservations(
+    const std::optional<InvocationOperationalObservations> &observations,
+    const ResolvedDseConfigView &view) {
+  if (!observations)
+    return llvm::Error::success();
+  if (observations->requestedWorkerCount == 0)
+    return invalid("requested worker count must be positive");
+  if (observations->availableLogicalCpuCount == 0)
+    return invalid("available logical CPU count must be positive");
+
+  std::optional<std::uint64_t> previous;
+  for (const PlanNodeOperationalObservation &node : observations->planNodes) {
+    if (node.planNodeOrdinal >= view.plan().nodes().size())
+      return invalid("operational observations reference an unknown plan node");
+    if (previous && node.planNodeOrdinal <= *previous)
+      return invalid("operational observation plan nodes must be strictly "
+                     "increasing");
+    previous = node.planNodeOrdinal;
+  }
+  return llvm::Error::success();
 }
 
 llvm::Error validateManifest(
@@ -870,6 +967,8 @@ llvm::Error validateManifest(
     const ComponentViewDigest &dseViewDigest,
     llvm::ArrayRef<InvocationGenerateRecord> generateRecords,
     const InvocationControllerOutcome &outcome,
+    const std::optional<InvocationOperationalObservations>
+        &operationalObservations,
     const ResolvedDseConfigView &view, const ArtifactStore &store) {
   if (occurrence.runKey != closure.runKey())
     return invalid("occurrence run key disagrees with its semantic closure");
@@ -885,7 +984,10 @@ llvm::Error validateManifest(
   if (llvm::Error error =
           validateGenerateSequence(generateRecords, view, outcome, store))
     return error;
-  return validateOutcome(outcome, generateRecords, closure, view, store);
+  if (llvm::Error error =
+          validateOutcome(outcome, generateRecords, closure, view, store))
+    return error;
+  return validateOperationalObservations(operationalObservations, view);
 }
 
 llvm::Expected<std::vector<InvocationGenerateRecord>>
@@ -959,13 +1061,13 @@ DseRunClosure::get(DseProducerSemanticBuildIdentity producer,
                        std::move(runKey));
 }
 
-llvm::Expected<InvocationManifest>
-InvocationManifest::get(DseRunClosure closure, std::uint64_t occurrenceOrdinal,
-                        std::optional<InvocationOccurrenceRef> resumedFrom,
-                        const ResolvedConfig &resolvedConfig,
-                        const DsePlanGenerateInvocationRecords &generateRecords,
-                        InvocationControllerOutcome outcome,
-                        const ArtifactStore &artifactStore) {
+llvm::Expected<InvocationManifest> InvocationManifest::get(
+    DseRunClosure closure, std::uint64_t occurrenceOrdinal,
+    std::optional<InvocationOccurrenceRef> resumedFrom,
+    const ResolvedConfig &resolvedConfig,
+    const DsePlanGenerateInvocationRecords &generateRecords,
+    InvocationControllerOutcome outcome, const ArtifactStore &artifactStore,
+    std::optional<InvocationOperationalObservations> operationalObservations) {
   if (closure.resolvedConfigIdentity() !=
       loom::resolvedConfigIdentity(resolvedConfig))
     return invalid("run closure names a different ResolvedConfig identity");
@@ -982,15 +1084,18 @@ InvocationManifest::get(DseRunClosure closure, std::uint64_t occurrenceOrdinal,
   InvocationOccurrenceRef occurrence{closure.runKey(), occurrenceOrdinal};
   if (llvm::Error error = validateManifest(
           occurrence, closure, resumedFrom, view->schemaDescriptorBytes(),
-          view->digest(), *flattened, outcome, *view, artifactStore))
+          view->digest(), *flattened, outcome, operationalObservations, *view,
+          artifactStore))
     return std::move(error);
-  std::vector<std::uint8_t> canonical = encodeManifest(
-      occurrence, closure, resumedFrom, view->schemaDescriptorBytes(),
-      view->digest(), *flattened, outcome);
+  std::vector<std::uint8_t> canonical =
+      encodeManifest(occurrence, closure, resumedFrom,
+                     view->schemaDescriptorBytes(), view->digest(), *flattened,
+                     outcome, operationalObservations, schemaVersion);
   return InvocationManifest(
       std::move(occurrence), std::move(closure), std::move(resumedFrom),
       view->schemaDescriptorBytes().vec(), view->digest(),
-      std::move(*flattened), std::move(outcome), std::move(canonical));
+      std::move(*flattened), std::move(outcome),
+      std::move(operationalObservations), std::move(canonical));
 }
 
 llvm::Expected<InvocationManifest>
@@ -1007,8 +1112,10 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
   auto minor = decoder.u32("InvocationManifest schema minor");
   if (!minor)
     return minor.takeError();
+  const SchemaVersion sourceSchemaVersion{*major, *minor};
   if (*schema != InvocationManifest::schemaIdentity ||
-      SchemaVersion{*major, *minor} != InvocationManifest::schemaVersion)
+      (sourceSchemaVersion != legacyInvocationManifestSchemaVersion &&
+       sourceSchemaVersion != InvocationManifest::schemaVersion))
     return invalid("unsupported InvocationManifest schema");
 
   auto producerSpelling = decoder.text("producer semantic/build identity");
@@ -1068,6 +1175,13 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
   auto outcome = decodeOutcome(decoder);
   if (!outcome)
     return outcome.takeError();
+  std::optional<InvocationOperationalObservations> operationalObservations;
+  if (sourceSchemaVersion == InvocationManifest::schemaVersion) {
+    auto decodedObservations = decodeOperationalObservations(decoder);
+    if (!decodedObservations)
+      return decodedObservations.takeError();
+    operationalObservations = std::move(*decodedObservations);
+  }
   if (!decoder.atEnd())
     return invalid("canonical InvocationManifest has trailing bytes");
 
@@ -1089,17 +1203,25 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
   InvocationOccurrenceRef occurrence{closure->runKey(), *occurrenceOrdinal};
   if (llvm::Error error = validateManifest(
           occurrence, *closure, resumedFrom, *dseViewDescriptor, *dseViewDigest,
-          records, *outcome, *view, artifactStore))
+          records, *outcome, operationalObservations, *view, artifactStore))
     return std::move(error);
-  std::vector<std::uint8_t> reencoded =
-      encodeManifest(occurrence, *closure, resumedFrom, *dseViewDescriptor,
-                     *dseViewDigest, records, *outcome);
-  if (llvm::ArrayRef<std::uint8_t>(reencoded) != canonicalBytes)
+  std::vector<std::uint8_t> sourceCanonical = encodeManifest(
+      occurrence, *closure, resumedFrom, *dseViewDescriptor, *dseViewDigest,
+      records, *outcome, operationalObservations, sourceSchemaVersion);
+  if (llvm::ArrayRef<std::uint8_t>(sourceCanonical) != canonicalBytes)
     return invalid("InvocationManifest bytes are not canonical");
+  std::vector<std::uint8_t> currentCanonical =
+      sourceSchemaVersion == InvocationManifest::schemaVersion
+          ? std::move(sourceCanonical)
+          : encodeManifest(occurrence, *closure, resumedFrom,
+                           *dseViewDescriptor, *dseViewDigest, records,
+                           *outcome, operationalObservations,
+                           InvocationManifest::schemaVersion);
   return InvocationManifest(
       std::move(occurrence), std::move(*closure), std::move(resumedFrom),
       std::move(*dseViewDescriptor), std::move(*dseViewDigest),
-      std::move(records), std::move(*outcome), std::move(reencoded));
+      std::move(records), std::move(*outcome),
+      std::move(operationalObservations), std::move(currentCanonical));
 }
 
 } // namespace loom::dse

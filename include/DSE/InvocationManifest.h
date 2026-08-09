@@ -150,18 +150,62 @@ struct InvocationGenerateRecord final {
   GenerateInvocationWorkSummary workSummary;
 };
 
+struct PlanNodeOperationalObservation final {
+  std::uint64_t planNodeOrdinal = 0;
+  std::uint64_t activeWallTimeNanoseconds = 0;
+  std::uint64_t processCpuTimeNanoseconds = 0;
+
+  friend bool operator==(const PlanNodeOperationalObservation &lhs,
+                         const PlanNodeOperationalObservation &rhs) {
+    return lhs.planNodeOrdinal == rhs.planNodeOrdinal &&
+           lhs.activeWallTimeNanoseconds == rhs.activeWallTimeNanoseconds &&
+           lhs.processCpuTimeNanoseconds == rhs.processCpuTimeNanoseconds;
+  }
+  friend bool operator!=(const PlanNodeOperationalObservation &lhs,
+                         const PlanNodeOperationalObservation &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+struct InvocationOperationalObservations final {
+  std::uint64_t totalActiveWallTimeNanoseconds = 0;
+  std::uint64_t totalProcessCpuTimeNanoseconds = 0;
+  std::uint64_t peakResidentBytes = 0;
+  std::uint64_t requestedWorkerCount = 0;
+  std::uint64_t availableLogicalCpuCount = 0;
+  std::vector<PlanNodeOperationalObservation> planNodes;
+
+  friend bool operator==(const InvocationOperationalObservations &lhs,
+                         const InvocationOperationalObservations &rhs) {
+    return lhs.totalActiveWallTimeNanoseconds ==
+               rhs.totalActiveWallTimeNanoseconds &&
+           lhs.totalProcessCpuTimeNanoseconds ==
+               rhs.totalProcessCpuTimeNanoseconds &&
+           lhs.peakResidentBytes == rhs.peakResidentBytes &&
+           lhs.requestedWorkerCount == rhs.requestedWorkerCount &&
+           lhs.availableLogicalCpuCount == rhs.availableLogicalCpuCount &&
+           lhs.planNodes == rhs.planNodes;
+  }
+  friend bool operator!=(const InvocationOperationalObservations &lhs,
+                         const InvocationOperationalObservations &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
 class InvocationManifest final {
 public:
   static constexpr llvm::StringLiteral schemaIdentity =
       "loom.dse.invocation_manifest";
-  static constexpr SchemaVersion schemaVersion{1, 0};
+  static constexpr SchemaVersion schemaVersion{1, 1};
 
   static llvm::Expected<InvocationManifest>
   get(DseRunClosure closure, std::uint64_t occurrenceOrdinal,
       std::optional<InvocationOccurrenceRef> resumedFrom,
       const ResolvedConfig &resolvedConfig,
       const DsePlanGenerateInvocationRecords &generateRecords,
-      InvocationControllerOutcome outcome, const ArtifactStore &artifactStore);
+      InvocationControllerOutcome outcome, const ArtifactStore &artifactStore,
+      std::optional<InvocationOperationalObservations> operationalObservations =
+          std::nullopt);
 
   const InvocationOccurrenceRef &occurrence() const { return occurrence_; }
   const DseRunClosure &closure() const { return closure_; }
@@ -178,6 +222,10 @@ public:
     return generateRecords_;
   }
   const InvocationControllerOutcome &outcome() const { return outcome_; }
+  const std::optional<InvocationOperationalObservations> &
+  operationalObservations() const {
+    return operationalObservations_;
+  }
   llvm::ArrayRef<std::uint8_t> canonicalBytes() const {
     return canonicalBytes_;
   }
@@ -190,6 +238,7 @@ private:
       ComponentViewDigest resolvedDseConfigViewDigest,
       std::vector<InvocationGenerateRecord> generateRecords,
       InvocationControllerOutcome outcome,
+      std::optional<InvocationOperationalObservations> operationalObservations,
       std::vector<std::uint8_t> canonicalBytes)
       : occurrence_(std::move(occurrence)), closure_(std::move(closure)),
         resumedFrom_(std::move(resumedFrom)),
@@ -198,6 +247,7 @@ private:
         resolvedDseConfigViewDigest_(resolvedDseConfigViewDigest),
         generateRecords_(std::move(generateRecords)),
         outcome_(std::move(outcome)),
+        operationalObservations_(std::move(operationalObservations)),
         canonicalBytes_(std::move(canonicalBytes)) {}
 
   InvocationOccurrenceRef occurrence_;
@@ -207,6 +257,7 @@ private:
   ComponentViewDigest resolvedDseConfigViewDigest_;
   std::vector<InvocationGenerateRecord> generateRecords_;
   InvocationControllerOutcome outcome_;
+  std::optional<InvocationOperationalObservations> operationalObservations_;
   std::vector<std::uint8_t> canonicalBytes_;
 
   friend llvm::Expected<InvocationManifest>
