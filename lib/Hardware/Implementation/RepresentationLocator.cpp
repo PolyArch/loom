@@ -282,14 +282,22 @@ validateRepresentationLocatorSyntax(RepresentationFormatDescriptorRef format,
     return spelling.takeError();
   const RepresentationFormatDescriptor &descriptor =
       getRepresentationFormatDescriptor(format);
-  if (!llvm::is_contained(descriptor.admittedObjectKinds, locator.kind))
+  const bool admitted = llvm::any_of(
+      descriptor.admittedRoots,
+      [&](const RepresentationRootAdmission &admission) {
+        return llvm::is_contained(admission.admittedObjectKinds, locator.kind);
+      });
+  if (!admitted)
     return invalid("locator kind is incompatible with the selected format");
   auto segmentCount = validateHdlPath(locator.canonicalName);
   if (!segmentCount)
     return segmentCount.takeError();
   if (locator.kind == RepresentationObjectKind::Module && *segmentCount != 1)
     return invalid("Module locator name must be one HDL identifier");
-  if (locator.kind != RepresentationObjectKind::Module && *segmentCount < 2)
+  if (locator.kind != RepresentationObjectKind::Module &&
+      locator.kind != RepresentationObjectKind::PhysicalObject &&
+      locator.kind != RepresentationObjectKind::DeviceResource &&
+      *segmentCount < 2)
     return invalid("non-Module locator name must be top-rooted");
   if (locator.kind == RepresentationObjectKind::Pin && *segmentCount < 3)
     return invalid("Pin locator name must append a terminal identifier");

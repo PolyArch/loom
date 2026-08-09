@@ -18,6 +18,8 @@
 
 namespace loom::hardware {
 
+struct ImplementationRepresentationRoot;
+
 enum class RepresentationSignalDirection : std::uint32_t {
   Input = 0,
   Output = 1,
@@ -73,6 +75,8 @@ private:
 class RepresentationIndex final {
 public:
   RepresentationFormatDescriptorRef formatRef() const { return formatRef_; }
+  RepresentationRootVariant rootVariant() const { return rootVariant_; }
+  std::optional<RepresentationPhysicalStage> stage() const { return stage_; }
   const RepresentationLocator &exactRoot() const { return exactRoot_; }
 
   llvm::Expected<std::optional<RepresentationObjectFacts>>
@@ -89,14 +93,18 @@ private:
   };
 
   RepresentationIndex(RepresentationFormatDescriptorRef formatRef,
+                      RepresentationRootVariant rootVariant,
+                      std::optional<RepresentationPhysicalStage> stage,
                       RepresentationLocator exactRoot,
                       std::vector<Entry> entries,
                       std::vector<RepresentationLocator> unresolved)
-      : formatRef_(formatRef), exactRoot_(std::move(exactRoot)),
-        entries_(std::move(entries)),
+      : formatRef_(formatRef), rootVariant_(rootVariant), stage_(stage),
+        exactRoot_(std::move(exactRoot)), entries_(std::move(entries)),
         unresolvedExternalDefinitions_(std::move(unresolved)) {}
 
   RepresentationFormatDescriptorRef formatRef_;
+  RepresentationRootVariant rootVariant_;
+  std::optional<RepresentationPhysicalStage> stage_;
   RepresentationLocator exactRoot_;
   std::vector<Entry> entries_;
   std::vector<RepresentationLocator> unresolvedExternalDefinitions_;
@@ -114,6 +122,12 @@ indexRepresentation(RepresentationFormatDescriptorRef formatRef,
                     const RepresentationLocator &exactRoot,
                     llvm::ArrayRef<ImplementationPayload> canonicalPayloads,
                     const BlobStore &blobs);
+
+/// Indexes and verifies one complete typed representation root, including its
+/// exact variant and physical stage claim.
+llvm::Expected<RepresentationIndex>
+indexRepresentationRoot(const ImplementationRepresentationRoot &root,
+                        const BlobStore &blobs);
 
 } // namespace loom::hardware
 

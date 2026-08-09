@@ -33,7 +33,7 @@ encodeRepresentationLocator(const RepresentationLocator &locator);
 llvm::Expected<RepresentationLocator>
 decodeRepresentationLocator(llvm::ArrayRef<std::uint8_t> bytes);
 
-/// Uses the schema-2.0 field names and exact displayed object-kind spellings.
+/// Uses the schema-2.1 field names and exact displayed object-kind spellings.
 llvm::Expected<std::string>
 serializeRepresentationLocatorJson(const RepresentationLocator &locator);
 

@@ -579,7 +579,7 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
     return !schema ? schema.takeError() : version.takeError();
   if (*schema != hardwareImplementationSchema.identity ||
       *version != formatSchemaVersion(hardwareImplementationSchema.version))
-    return invalid("root schema is not loom.hardware_implementation 2.0");
+    return invalid("root schema is not loom.hardware_implementation 2.1");
 
   auto fabricObject = requireObject(*root, "fabric_ref", "root");
   auto abiObject = requireObject(*root, "configuration_abi_ref", "root");
@@ -1005,17 +1005,8 @@ canonicalize(HardwareImplementationDraft draft,
       return invalid("interconnect implementation does not refine fabric_ref");
   }
 
-  if (llvm::Error error =
-          validateImplementationRepresentationRoot(draft.representationRoot))
-    return std::move(error);
-  const RepresentationFormatDescriptor &descriptor =
-      getRepresentationFormatDescriptor(draft.representationRoot.formatRef);
-  if (llvm::Error error = validateRepresentationRootAdmission(
-          descriptor, draft.representationRoot))
-    return std::move(error);
-  auto representationIndex = indexRepresentation(
-      draft.representationRoot.formatRef, draft.representationRoot.top,
-      draft.representationRoot.payloads, blobs);
+  auto representationIndex =
+      indexRepresentationRoot(draft.representationRoot, blobs);
   if (!representationIndex)
     return representationIndex.takeError();
 
@@ -1117,17 +1108,28 @@ canonicalize(HardwareImplementationDraft draft,
                                                   "memory macro locator"))
       return std::move(error);
 
-  for (const RepresentationLocator &unresolved :
-       representationIndex->unresolvedExternalDefinitions()) {
-    std::size_t closures = 0;
-    for (const ExternalImplementationBinding &binding : *externalBindings)
-      if (binding.blackBoxContractPayloadRef &&
-          llvm::is_contained(binding.representationLocators, unresolved))
-        ++closures;
+  const llvm::ArrayRef<RepresentationLocator> unresolvedDefinitions =
+      representationIndex->unresolvedExternalDefinitions();
+  std::vector<std::size_t> closureCounts(unresolvedDefinitions.size(), 0);
+  for (const ExternalImplementationBinding &binding : *externalBindings) {
+    if (!binding.blackBoxContractPayloadRef)
+      continue;
+    bool closesDefinition = false;
+    for (std::size_t ordinal = 0; ordinal < unresolvedDefinitions.size();
+         ++ordinal) {
+      if (!llvm::is_contained(binding.representationLocators,
+                              unresolvedDefinitions[ordinal]))
+        continue;
+      ++closureCounts[ordinal];
+      closesDefinition = true;
+    }
+    if (!closesDefinition)
+      return invalid("black-box binding closes no indexed definition");
+  }
+  for (std::size_t closures : closureCounts)
     if (closures != 1)
       return invalid("unresolved external definition does not have one exact "
                      "black-box binding");
-  }
 
   return detail::HardwareImplementationBuilder::create(
       std::move(draft), std::move(*memoryBindings),
@@ -1203,7 +1205,7 @@ llvm::Expected<FinalizedHardwareImplementation> importHardwareImplementation(
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (reference.schemaIdentity != hardwareImplementationSchema.identity ||
       reference.schemaVersion != hardwareImplementationSchema.version)
-    return invalid("reference schema is not loom.hardware_implementation 2.0");
+    return invalid("reference schema is not loom.hardware_implementation 2.1");
   auto bytes = artifacts.get(hardwareImplementationSchema, reference.artifact);
   if (!bytes)
     return bytes.takeError();

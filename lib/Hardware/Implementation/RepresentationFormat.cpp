@@ -2,8 +2,8 @@
 
 #include "RepresentationIndexInternal.h"
 
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
@@ -100,6 +100,8 @@ const RepresentationFormatDescriptorRef systemVerilogRtlRef =
     knownRef(RepresentationFormatKind::SystemVerilogRtl);
 const RepresentationFormatDescriptorRef structuralVerilogGateNetlistRef =
     knownRef(RepresentationFormatKind::StructuralVerilogGateNetlist);
+const RepresentationFormatDescriptorRef indexedPhysicalRef =
+    knownRef(RepresentationFormatKind::IndexedPhysical);
 
 constexpr std::array<RepresentationPayloadContract, 3> rtlPayloadContracts{{
     {PayloadRole::RtlSource, "text/x-systemverilog; charset=utf-8", 1,
@@ -131,26 +133,109 @@ constexpr std::array<RepresentationObjectKind, 5> gateObjectKinds{
     RepresentationObjectKind::Port, RepresentationObjectKind::Pin,
     RepresentationObjectKind::Net};
 
+constexpr std::array<RepresentationObjectKind, 9> asicPhysicalObjectKinds{
+    RepresentationObjectKind::Module,        RepresentationObjectKind::Instance,
+    RepresentationObjectKind::Port,          RepresentationObjectKind::Net,
+    RepresentationObjectKind::Register,      RepresentationObjectKind::Memory,
+    RepresentationObjectKind::Cell,          RepresentationObjectKind::Pin,
+    RepresentationObjectKind::PhysicalObject};
+
+constexpr std::array<RepresentationObjectKind, 9> fpgaPhysicalObjectKinds{
+    RepresentationObjectKind::Module,        RepresentationObjectKind::Instance,
+    RepresentationObjectKind::Port,          RepresentationObjectKind::Net,
+    RepresentationObjectKind::Register,      RepresentationObjectKind::Memory,
+    RepresentationObjectKind::Cell,          RepresentationObjectKind::Pin,
+    RepresentationObjectKind::DeviceResource};
+
+constexpr RepresentationPayloadContract physicalIndexContract{
+    PayloadRole::RepresentationIndex,
+    "application/vnd.loom.physical-representation-index+json", 1,
+    std::optional<std::uint64_t>(1), RepresentationTextPolicy::Utf8LfNoNul};
+
+constexpr RepresentationPayloadContract physicalDatabaseContract{
+    PayloadRole::PhysicalDatabase, "application/octet-stream", 1, std::nullopt,
+    RepresentationTextPolicy::Opaque};
+constexpr RepresentationPayloadContract generationConstraintContract{
+    PayloadRole::GenerationConstraint, "application/octet-stream", 0,
+    std::nullopt, RepresentationTextPolicy::Opaque};
+constexpr RepresentationPayloadContract physicalBlackBoxContract{
+    PayloadRole::BlackBoxContract, "application/vnd.loom.black-box-contract", 0,
+    std::nullopt, RepresentationTextPolicy::Opaque};
+constexpr RepresentationPayloadContract layoutStreamContract{
+    PayloadRole::LayoutStream, "application/octet-stream", 0, std::nullopt,
+    RepresentationTextPolicy::Opaque};
+constexpr RepresentationPayloadContract parasiticsContract{
+    PayloadRole::Parasitics, "application/octet-stream", 1, std::nullopt,
+    RepresentationTextPolicy::Opaque};
+constexpr RepresentationPayloadContract deviceImageContract{
+    PayloadRole::DeviceImage, "application/octet-stream", 1,
+    std::optional<std::uint64_t>(1), RepresentationTextPolicy::Opaque};
+
+constexpr std::array<RepresentationPayloadContract, 4>
+    physicalPlacedPayloadContracts{
+        {physicalDatabaseContract, generationConstraintContract,
+         physicalBlackBoxContract, physicalIndexContract}};
+constexpr std::array<RepresentationPayloadContract, 5>
+    asicRoutedPayloadContracts{{physicalDatabaseContract, layoutStreamContract,
+                                generationConstraintContract,
+                                physicalBlackBoxContract,
+                                physicalIndexContract}};
+constexpr std::array<RepresentationPayloadContract, 6>
+    asicExtractedPayloadContracts{
+        {physicalDatabaseContract, parasiticsContract, layoutStreamContract,
+         generationConstraintContract, physicalBlackBoxContract,
+         physicalIndexContract}};
+constexpr std::array<RepresentationPayloadContract, 2>
+    fpgaImagePayloadContracts{{deviceImageContract, physicalIndexContract}};
+
 constexpr std::array<RepresentationRootAdmission, 1> rtlRootAdmissions{{
-    {RepresentationRootVariant::Rtl, {}},
+    {RepresentationRootVariant::Rtl, std::nullopt,
+     RepresentationObjectKind::Module, rtlPayloadContracts, rtlObjectKinds},
 }};
 
 constexpr std::array<RepresentationRootAdmission, 1> gateRootAdmissions{{
-    {RepresentationRootVariant::GateNetlist, {}},
+    {RepresentationRootVariant::GateNetlist, std::nullopt,
+     RepresentationObjectKind::Module, gateNetlistPayloadContracts,
+     gateObjectKinds},
 }};
 
-const std::array<detail::StaticRepresentationFormatEntry, 2>
+constexpr std::array<RepresentationRootAdmission, 6> physicalRootAdmissions{{
+    {RepresentationRootVariant::AsicPhysical,
+     RepresentationPhysicalStage::Placed,
+     RepresentationObjectKind::PhysicalObject, physicalPlacedPayloadContracts,
+     asicPhysicalObjectKinds},
+    {RepresentationRootVariant::AsicPhysical,
+     RepresentationPhysicalStage::Routed,
+     RepresentationObjectKind::PhysicalObject, asicRoutedPayloadContracts,
+     asicPhysicalObjectKinds},
+    {RepresentationRootVariant::AsicPhysical,
+     RepresentationPhysicalStage::Extracted,
+     RepresentationObjectKind::PhysicalObject, asicExtractedPayloadContracts,
+     asicPhysicalObjectKinds},
+    {RepresentationRootVariant::FpgaPhysical,
+     RepresentationPhysicalStage::Placed,
+     RepresentationObjectKind::DeviceResource, physicalPlacedPayloadContracts,
+     fpgaPhysicalObjectKinds},
+    {RepresentationRootVariant::FpgaPhysical,
+     RepresentationPhysicalStage::Routed,
+     RepresentationObjectKind::DeviceResource, physicalPlacedPayloadContracts,
+     fpgaPhysicalObjectKinds},
+    {RepresentationRootVariant::FpgaImage, std::nullopt,
+     RepresentationObjectKind::DeviceResource, fpgaImagePayloadContracts,
+     fpgaPhysicalObjectKinds},
+}};
+
+const std::array<detail::StaticRepresentationFormatEntry, 3>
     representationFormats{{
-        {{systemVerilogRtlRef, RepresentationObjectKind::Module,
-          rtlPayloadContracts, PayloadRole::RtlSource,
-          RepresentationLanguageProfile::Ieee1800_2017, rtlObjectKinds,
-          rtlRootAdmissions},
+        {{systemVerilogRtlRef, PayloadRole::RtlSource,
+          RepresentationLanguageProfile::Ieee1800_2017, rtlRootAdmissions},
          detail::BuiltinRepresentationIndexer::SystemVerilogRtl},
-        {{structuralVerilogGateNetlistRef, RepresentationObjectKind::Module,
-          gateNetlistPayloadContracts, PayloadRole::Netlist,
-          RepresentationLanguageProfile::Ieee1364_2005, gateObjectKinds,
-          gateRootAdmissions},
+        {{structuralVerilogGateNetlistRef, PayloadRole::Netlist,
+          RepresentationLanguageProfile::Ieee1364_2005, gateRootAdmissions},
          detail::BuiltinRepresentationIndexer::StructuralVerilogGateNetlist},
+        {{indexedPhysicalRef, std::nullopt, std::nullopt,
+          physicalRootAdmissions},
+         detail::BuiltinRepresentationIndexer::IndexedPhysical},
     }};
 
 } // namespace
@@ -160,6 +245,7 @@ RepresentationFormatDescriptorRef::get(RepresentationFormatKind kind) {
   switch (kind) {
   case RepresentationFormatKind::SystemVerilogRtl:
   case RepresentationFormatKind::StructuralVerilogGateNetlist:
+  case RepresentationFormatKind::IndexedPhysical:
     return RepresentationFormatDescriptorRef(kind);
   }
   return invalid("representation format kind is unsupported");
@@ -174,14 +260,51 @@ bool admitsRepresentationRoot(
     const RepresentationFormatDescriptor &descriptor,
     RepresentationRootVariant variant,
     std::optional<RepresentationPhysicalStage> stage) {
-  for (const RepresentationRootAdmission &admission : descriptor.admittedRoots) {
-    if (admission.variant != variant)
-      continue;
-    if (!stage)
-      return admission.admittedStages.empty();
-    return llvm::is_contained(admission.admittedStages, *stage);
+  return findRepresentationRootAdmission(descriptor, variant, stage) != nullptr;
+}
+
+const RepresentationRootAdmission *findRepresentationRootAdmission(
+    const RepresentationFormatDescriptor &descriptor,
+    RepresentationRootVariant variant,
+    std::optional<RepresentationPhysicalStage> stage) {
+  const auto admission = llvm::find_if(
+      descriptor.admittedRoots,
+      [&](const RepresentationRootAdmission &candidate) {
+        return candidate.variant == variant && candidate.stage == stage;
+      });
+  return admission == descriptor.admittedRoots.end() ? nullptr : &*admission;
+}
+
+llvm::Error validateRepresentationPayloadCatalog(
+    const RepresentationRootAdmission &admission,
+    llvm::ArrayRef<ImplementationPayload> canonicalPayloads) {
+  auto canonical = canonicalizeImplementationPayloadCatalog(canonicalPayloads);
+  if (!canonical)
+    return invalid("payload catalog is invalid: " +
+                   llvm::toString(canonical.takeError()));
+  if (!llvm::equal(*canonical, canonicalPayloads))
+    return invalid("payload catalog is not in canonical order");
+
+  std::vector<std::uint64_t> counts(admission.payloadContracts.size());
+  for (const ImplementationPayload &payload : canonicalPayloads) {
+    const auto contract =
+        llvm::find_if(admission.payloadContracts,
+                      [&](const RepresentationPayloadContract &candidate) {
+                        return candidate.role == payload.role;
+                      });
+    if (contract == admission.payloadContracts.end())
+      return invalid("payload role is not admitted by the selected root");
+    ++counts[static_cast<std::size_t>(contract -
+                                      admission.payloadContracts.begin())];
   }
-  return false;
+  for (auto [contract, count] :
+       llvm::zip_equal(admission.payloadContracts, counts)) {
+    if (count < contract.minimumCount)
+      return invalid("payload role cardinality is below its minimum");
+    if (contract.maximumCount && count > *contract.maximumCount)
+      return invalid("payload role cardinality is above its maximum");
+  }
+  return llvm::Error::success();
 }
 
 namespace detail {

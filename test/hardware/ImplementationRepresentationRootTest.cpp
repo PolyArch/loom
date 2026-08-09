@@ -3,12 +3,14 @@
 #include "Common/BlobDigest.h"
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <cstdint>
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <utility>
@@ -45,9 +47,8 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value,
 }
 
 BlobDigest digest(llvm::StringRef contents) {
-  return computeBlobDigest(
-      llvm::ArrayRef<std::uint8_t>(contents.bytes_begin(),
-                                   contents.bytes_end()));
+  return computeBlobDigest(llvm::ArrayRef<std::uint8_t>(contents.bytes_begin(),
+                                                        contents.bytes_end()));
 }
 
 RepresentationFormatDescriptorRef rtlFormat(llvm::StringRef test) {
@@ -56,8 +57,14 @@ RepresentationFormatDescriptorRef rtlFormat(llvm::StringRef test) {
 }
 
 RepresentationFormatDescriptorRef gateFormat(llvm::StringRef test) {
+  return take(test,
+              RepresentationFormatDescriptorRef::get(
+                  RepresentationFormatKind::StructuralVerilogGateNetlist));
+}
+
+RepresentationFormatDescriptorRef physicalFormat(llvm::StringRef test) {
   return take(test, RepresentationFormatDescriptorRef::get(
-                        RepresentationFormatKind::StructuralVerilogGateNetlist));
+                        RepresentationFormatKind::IndexedPhysical));
 }
 
 std::vector<ImplementationPayload> rtlPayloads() {
@@ -65,13 +72,27 @@ std::vector<ImplementationPayload> rtlPayloads() {
           {PayloadRole::BlackBoxContract, "ip/pll.bb", digest("ip")}};
 }
 
+std::vector<ImplementationPayload>
+physicalPayloads(std::initializer_list<PayloadRole> roles) {
+  std::vector<ImplementationPayload> payloads;
+  for (PayloadRole role : roles)
+    payloads.push_back(
+        {role,
+         role == PayloadRole::RepresentationIndex
+             ? "index/physical.json"
+             : ("payload/" + std::to_string(static_cast<std::uint32_t>(role))),
+         digest(llvm::Twine(static_cast<std::uint32_t>(role)).str())});
+  return take(__func__, canonicalizeImplementationPayloadCatalog(payloads));
+}
+
 ImplementationRepresentationRoot
 makeRoot(RepresentationRootVariant variant,
          std::optional<RepresentationPhysicalStage> stage,
-         RepresentationFormatDescriptorRef format, RepresentationObjectKind topKind,
-         llvm::StringRef test) {
-  return take(test, createImplementationRepresentationRoot(
-                        variant, stage, format, {topKind, "top"}, rtlPayloads()));
+         RepresentationFormatDescriptorRef format,
+         RepresentationObjectKind topKind, llvm::StringRef test) {
+  return take(test,
+              createImplementationRepresentationRoot(
+                  variant, stage, format, {topKind, "top"}, rtlPayloads()));
 }
 
 void appendBytes(std::vector<std::uint8_t> &target,
@@ -102,8 +123,8 @@ expectedRootBytes(RepresentationRootVariant variant,
   expected.insert(expected.end(), 8 - 1, 0);
   expected.push_back(static_cast<std::uint8_t>(payloads.size()));
   for (const ImplementationPayload &payload : payloads)
-    appendBytes(expected,
-                take("expectedRootBytes", encodeImplementationPayload(payload)));
+    appendBytes(expected, take("expectedRootBytes",
+                               encodeImplementationPayload(payload)));
   return expected;
 }
 
@@ -121,17 +142,19 @@ void closedVariantsRoundTripExactly() {
       {RepresentationRootVariant::GateNetlist, std::nullopt,
        RepresentationObjectKind::Module, "GateNetlist", std::nullopt},
       {RepresentationRootVariant::AsicPhysical,
-       RepresentationPhysicalStage::Placed, RepresentationObjectKind::PhysicalObject,
-       "AsicPhysical", "Placed"},
+       RepresentationPhysicalStage::Placed,
+       RepresentationObjectKind::PhysicalObject, "AsicPhysical", "Placed"},
       {RepresentationRootVariant::AsicPhysical,
-       RepresentationPhysicalStage::Routed, RepresentationObjectKind::PhysicalObject,
-       "AsicPhysical", "Routed"},
+       RepresentationPhysicalStage::Routed,
+       RepresentationObjectKind::PhysicalObject, "AsicPhysical", "Routed"},
       {RepresentationRootVariant::AsicPhysical,
        RepresentationPhysicalStage::Extracted,
        RepresentationObjectKind::PhysicalObject, "AsicPhysical", "Extracted"},
-      {RepresentationRootVariant::FpgaPhysical, RepresentationPhysicalStage::Placed,
+      {RepresentationRootVariant::FpgaPhysical,
+       RepresentationPhysicalStage::Placed,
        RepresentationObjectKind::DeviceResource, "FpgaPhysical", "Placed"},
-      {RepresentationRootVariant::FpgaPhysical, RepresentationPhysicalStage::Routed,
+      {RepresentationRootVariant::FpgaPhysical,
+       RepresentationPhysicalStage::Routed,
        RepresentationObjectKind::DeviceResource, "FpgaPhysical", "Routed"},
       {RepresentationRootVariant::FpgaImage, std::nullopt,
        RepresentationObjectKind::DeviceResource, "FpgaImage", std::nullopt},
@@ -140,7 +163,8 @@ void closedVariantsRoundTripExactly() {
     const ImplementationRepresentationRoot root =
         makeRoot(entry.variant, entry.stage, rtlFormat(__func__), entry.topKind,
                  __func__);
-    require(__func__, root.variant == entry.variant && root.stage == entry.stage,
+    require(__func__,
+            root.variant == entry.variant && root.stage == entry.stage,
             "root lost its variant or stage");
 
     const std::vector<std::uint8_t> expected =
@@ -150,7 +174,8 @@ void closedVariantsRoundTripExactly() {
         take(__func__, encodeImplementationRepresentationRoot(root));
     require(__func__, bytes == expected, "root binary framing changed");
     require(__func__,
-            take(__func__, decodeImplementationRepresentationRoot(bytes)) == root,
+            take(__func__, decodeImplementationRepresentationRoot(bytes)) ==
+                root,
             "root binary did not round-trip");
 
     std::string expectedJson = "{\"variant\":\"";
@@ -162,11 +187,11 @@ void closedVariantsRoundTripExactly() {
       expectedJson += "\",";
     }
     expectedJson += "\"format_ref\":";
-    expectedJson += serializeRepresentationFormatDescriptorRefJson(
-        rtlFormat(__func__));
+    expectedJson +=
+        serializeRepresentationFormatDescriptorRefJson(rtlFormat(__func__));
     expectedJson += ",\"top\":";
-    expectedJson += take(__func__, serializeRepresentationLocatorJson(
-                                       {entry.topKind, "top"}));
+    expectedJson += take(
+        __func__, serializeRepresentationLocatorJson({entry.topKind, "top"}));
     expectedJson += ",\"payloads\":[";
     bool first = true;
     for (const ImplementationPayload &payload : rtlPayloads()) {
@@ -181,8 +206,8 @@ void closedVariantsRoundTripExactly() {
         take(__func__, serializeImplementationRepresentationRootJson(root));
     require(__func__, json == expectedJson, "root canonical JSON changed");
     require(__func__,
-            take(__func__,
-                 parseImplementationRepresentationRootJson(json)) == root,
+            take(__func__, parseImplementationRepresentationRootJson(json)) ==
+                root,
             "root JSON did not round-trip");
   }
 }
@@ -212,28 +237,23 @@ void binaryFramingIsStrict() {
   // variant; the stage tag is misparsed as the format-reference length.
   std::vector<std::uint8_t> stageOnRtl = bytes;
   stageOnRtl.insert(stageOnRtl.begin() + 4, {0, 0, 0, 0});
-  expectError(__func__, decodeImplementationRepresentationRoot(stageOnRtl),
-              "");
+  expectError(__func__, decodeImplementationRepresentationRoot(stageOnRtl), "");
 
   std::vector<std::uint8_t> wrongStage = bytes;
   std::vector<std::uint8_t> physical = take(
-      __func__,
-      encodeImplementationRepresentationRoot(
-          makeRoot(RepresentationRootVariant::AsicPhysical,
-                   RepresentationPhysicalStage::Placed,
-                   rtlFormat(__func__), RepresentationObjectKind::PhysicalObject,
-                   __func__)));
+      __func__, encodeImplementationRepresentationRoot(makeRoot(
+                    RepresentationRootVariant::AsicPhysical,
+                    RepresentationPhysicalStage::Placed, rtlFormat(__func__),
+                    RepresentationObjectKind::PhysicalObject, __func__)));
   wrongStage = physical;
   wrongStage[7] = 3;
   expectError(__func__, decodeImplementationRepresentationRoot(wrongStage),
               "stage");
   std::vector<std::uint8_t> fpgaExtracted = take(
-      __func__,
-      encodeImplementationRepresentationRoot(
-          makeRoot(RepresentationRootVariant::FpgaPhysical,
-                   RepresentationPhysicalStage::Routed,
-                   rtlFormat(__func__), RepresentationObjectKind::DeviceResource,
-                   __func__)));
+      __func__, encodeImplementationRepresentationRoot(makeRoot(
+                    RepresentationRootVariant::FpgaPhysical,
+                    RepresentationPhysicalStage::Routed, rtlFormat(__func__),
+                    RepresentationObjectKind::DeviceResource, __func__)));
   fpgaExtracted[7] = 2;
   expectError(__func__, decodeImplementationRepresentationRoot(fpgaExtracted),
               "stage");
@@ -270,13 +290,12 @@ void variantStageLegalityIsClosedAtAuthoring() {
 }
 
 void topKindMatchesVariant() {
-  expectError(__func__,
-              createImplementationRepresentationRoot(
-                  RepresentationRootVariant::Rtl, std::nullopt,
-                  rtlFormat(__func__),
-                  {RepresentationObjectKind::PhysicalObject, "top"},
-                  rtlPayloads()),
-              "top");
+  expectError(
+      __func__,
+      createImplementationRepresentationRoot(
+          RepresentationRootVariant::Rtl, std::nullopt, rtlFormat(__func__),
+          {RepresentationObjectKind::PhysicalObject, "top"}, rtlPayloads()),
+      "top");
   expectError(__func__,
               createImplementationRepresentationRoot(
                   RepresentationRootVariant::GateNetlist, std::nullopt,
@@ -316,16 +335,16 @@ void payloadCatalogIsCanonicalAndUnique() {
 
   std::vector<ImplementationPayload> reversed = rtlPayloads();
   std::reverse(reversed.begin(), reversed.end());
-  const ImplementationRepresentationRoot authored = take(
-      __func__,
-      createImplementationRepresentationRoot(
-          RepresentationRootVariant::Rtl, std::nullopt, rtlFormat(__func__),
-          {RepresentationObjectKind::Module, "top"}, reversed));
+  const ImplementationRepresentationRoot authored =
+      take(__func__, createImplementationRepresentationRoot(
+                         RepresentationRootVariant::Rtl, std::nullopt,
+                         rtlFormat(__func__),
+                         {RepresentationObjectKind::Module, "top"}, reversed));
   const ImplementationRepresentationRoot canonical =
       makeRoot(RepresentationRootVariant::Rtl, std::nullopt,
                rtlFormat(__func__), RepresentationObjectKind::Module, __func__);
   require(__func__, authored == canonical,
-            "authoring order changed the canonical root");
+          "authoring order changed the canonical root");
   require(__func__,
           take(__func__, encodeImplementationRepresentationRoot(authored)) ==
               take(__func__, encodeImplementationRepresentationRoot(canonical)),
@@ -340,8 +359,8 @@ void payloadCatalogIsCanonicalAndUnique() {
       take(__func__, encodeImplementationPayload(rtlPayloads().front()));
   const std::vector<std::uint8_t> second =
       take(__func__, encodeImplementationPayload(rtlPayloads().back()));
-  const std::size_t header = canonicalBytes.size() - first.size() -
-                             second.size();
+  const std::size_t header =
+      canonicalBytes.size() - first.size() - second.size();
   reordered.insert(reordered.end(), canonicalBytes.begin(),
                    canonicalBytes.begin() + header);
   appendBytes(reordered, second);
@@ -365,6 +384,8 @@ void descriptorAdmissionIsDataDriven() {
       getRepresentationFormatDescriptor(rtlFormat(__func__));
   const RepresentationFormatDescriptor &gate =
       getRepresentationFormatDescriptor(gateFormat(__func__));
+  const RepresentationFormatDescriptor &physical =
+      getRepresentationFormatDescriptor(physicalFormat(__func__));
   require(__func__,
           admitsRepresentationRoot(rtl, RepresentationRootVariant::Rtl,
                                    std::nullopt),
@@ -374,8 +395,7 @@ void descriptorAdmissionIsDataDriven() {
                                     RepresentationPhysicalStage::Placed),
           "RTL descriptor admitted a staged Rtl root");
   require(__func__,
-          admitsRepresentationRoot(gate,
-                                   RepresentationRootVariant::GateNetlist,
+          admitsRepresentationRoot(gate, RepresentationRootVariant::GateNetlist,
                                    std::nullopt),
           "gate descriptor lost its stageless GateNetlist admission");
   for (RepresentationRootVariant variant :
@@ -391,25 +411,109 @@ void descriptorAdmissionIsDataDriven() {
   const ImplementationRepresentationRoot rtlRoot =
       makeRoot(RepresentationRootVariant::Rtl, std::nullopt,
                rtlFormat(__func__), RepresentationObjectKind::Module, __func__);
-  require(__func__,
-          !admissionFails(__func__, rtl, rtlRoot),
+  require(__func__, !admissionFails(__func__, rtl, rtlRoot),
           "RTL root was rejected by its own descriptor");
   require(__func__, admissionFails(__func__, gate, rtlRoot),
           "RTL root was admitted by the gate descriptor");
 
-  const ImplementationRepresentationRoot physicalRoot = makeRoot(
-      RepresentationRootVariant::AsicPhysical, RepresentationPhysicalStage::Placed,
-      rtlFormat(__func__), RepresentationObjectKind::PhysicalObject, __func__);
+  const ImplementationRepresentationRoot physicalRoot =
+      makeRoot(RepresentationRootVariant::AsicPhysical,
+               RepresentationPhysicalStage::Placed, rtlFormat(__func__),
+               RepresentationObjectKind::PhysicalObject, __func__);
   require(__func__, admissionFails(__func__, rtl, physicalRoot),
           "a physical root was admitted without a physical descriptor");
+
+  struct PhysicalCase final {
+    RepresentationRootVariant variant;
+    std::optional<RepresentationPhysicalStage> stage;
+    RepresentationObjectKind topKind;
+    std::vector<ImplementationPayload> payloads;
+  };
+  const std::vector<PhysicalCase> cases{
+      {RepresentationRootVariant::AsicPhysical,
+       RepresentationPhysicalStage::Placed,
+       RepresentationObjectKind::PhysicalObject,
+       physicalPayloads(
+           {PayloadRole::PhysicalDatabase, PayloadRole::RepresentationIndex})},
+      {RepresentationRootVariant::AsicPhysical,
+       RepresentationPhysicalStage::Routed,
+       RepresentationObjectKind::PhysicalObject,
+       physicalPayloads({PayloadRole::PhysicalDatabase,
+                         PayloadRole::LayoutStream,
+                         PayloadRole::RepresentationIndex})},
+      {RepresentationRootVariant::AsicPhysical,
+       RepresentationPhysicalStage::Extracted,
+       RepresentationObjectKind::PhysicalObject,
+       physicalPayloads({PayloadRole::PhysicalDatabase, PayloadRole::Parasitics,
+                         PayloadRole::RepresentationIndex})},
+      {RepresentationRootVariant::FpgaPhysical,
+       RepresentationPhysicalStage::Placed,
+       RepresentationObjectKind::DeviceResource,
+       physicalPayloads(
+           {PayloadRole::PhysicalDatabase, PayloadRole::RepresentationIndex})},
+      {RepresentationRootVariant::FpgaPhysical,
+       RepresentationPhysicalStage::Routed,
+       RepresentationObjectKind::DeviceResource,
+       physicalPayloads(
+           {PayloadRole::PhysicalDatabase, PayloadRole::RepresentationIndex})},
+      {RepresentationRootVariant::FpgaImage, std::nullopt,
+       RepresentationObjectKind::DeviceResource,
+       physicalPayloads(
+           {PayloadRole::DeviceImage, PayloadRole::RepresentationIndex})},
+  };
+  for (const PhysicalCase &entry : cases) {
+    const ImplementationRepresentationRoot root =
+        take(__func__, createImplementationRepresentationRoot(
+                           entry.variant, entry.stage, physicalFormat(__func__),
+                           {entry.topKind, "top"}, entry.payloads));
+    require(__func__, !admissionFails(__func__, physical, root),
+            "indexed-physical descriptor rejected an exact physical root");
+  }
+
+  auto rejectPhysicalRoles =
+      [&](RepresentationRootVariant variant,
+          std::optional<RepresentationPhysicalStage> stage,
+          RepresentationObjectKind topKind,
+          std::initializer_list<PayloadRole> roles) {
+        const ImplementationRepresentationRoot root =
+            take(__func__, createImplementationRepresentationRoot(
+                               variant, stage, physicalFormat(__func__),
+                               {topKind, "top"}, physicalPayloads(roles)));
+        require(
+            __func__, admissionFails(__func__, physical, root),
+            "indexed-physical descriptor admitted the wrong payload closure");
+      };
+  rejectPhysicalRoles(RepresentationRootVariant::AsicPhysical,
+                      RepresentationPhysicalStage::Placed,
+                      RepresentationObjectKind::PhysicalObject,
+                      {PayloadRole::PhysicalDatabase});
+  rejectPhysicalRoles(RepresentationRootVariant::AsicPhysical,
+                      RepresentationPhysicalStage::Placed,
+                      RepresentationObjectKind::PhysicalObject,
+                      {PayloadRole::PhysicalDatabase, PayloadRole::Parasitics,
+                       PayloadRole::RepresentationIndex});
+  rejectPhysicalRoles(
+      RepresentationRootVariant::AsicPhysical,
+      RepresentationPhysicalStage::Extracted,
+      RepresentationObjectKind::PhysicalObject,
+      {PayloadRole::PhysicalDatabase, PayloadRole::RepresentationIndex});
+  rejectPhysicalRoles(RepresentationRootVariant::FpgaPhysical,
+                      RepresentationPhysicalStage::Routed,
+                      RepresentationObjectKind::DeviceResource,
+                      {PayloadRole::PhysicalDatabase, PayloadRole::LayoutStream,
+                       PayloadRole::RepresentationIndex});
+  rejectPhysicalRoles(RepresentationRootVariant::FpgaImage, std::nullopt,
+                      RepresentationObjectKind::DeviceResource,
+                      {PayloadRole::DeviceImage, PayloadRole::PhysicalDatabase,
+                       PayloadRole::RepresentationIndex});
 }
 
 void jsonIsStrictlyCanonical() {
-  const std::string json = take(
-      __func__, serializeImplementationRepresentationRootJson(
-                    makeRoot(RepresentationRootVariant::Rtl, std::nullopt,
-                             rtlFormat(__func__), RepresentationObjectKind::Module,
-                             __func__)));
+  const std::string json =
+      take(__func__, serializeImplementationRepresentationRootJson(
+                         makeRoot(RepresentationRootVariant::Rtl, std::nullopt,
+                                  rtlFormat(__func__),
+                                  RepresentationObjectKind::Module, __func__)));
   auto expectRejection = [&](llvm::StringRef text, llvm::StringRef expected) {
     expectError(__func__, parseImplementationRepresentationRootJson(text),
                 expected);
@@ -417,40 +521,39 @@ void jsonIsStrictlyCanonical() {
   expectRejection("{\"variant\":\"Rtl\"}", "format_ref");
   expectRejection(
       "{\"variant\":\"rtl\",\"format_ref\":{\"registry\":\"loom.hardware_"
-      "representation_format\",\"major\":2,\"minor\":0,\"kind\":0},\"top\":{"
+      "representation_format\",\"major\":2,\"minor\":1,\"kind\":0},\"top\":{"
       "\"object_kind\":\"Module\",\"canonical_name\":\"top\"},\"payloads\":[]}",
       "variant");
   expectRejection(
       "{\"variant\":\"Rtl\",\"stage\":null,\"format_ref\":{\"registry\":\"loom."
-      "hardware_representation_format\",\"major\":2,\"minor\":0,\"kind\":0}}",
+      "hardware_representation_format\",\"major\":2,\"minor\":1,\"kind\":0}}",
       "stage");
   expectRejection(json + " ", "canonical");
 
   const std::string physicalJson = take(
-      __func__, serializeImplementationRepresentationRootJson(
-                    makeRoot(RepresentationRootVariant::FpgaPhysical,
-                             RepresentationPhysicalStage::Placed,
-                             rtlFormat(__func__),
-                             RepresentationObjectKind::DeviceResource,
-                             __func__)));
+      __func__, serializeImplementationRepresentationRootJson(makeRoot(
+                    RepresentationRootVariant::FpgaPhysical,
+                    RepresentationPhysicalStage::Placed, rtlFormat(__func__),
+                    RepresentationObjectKind::DeviceResource, __func__)));
   expectRejection(
       "{\"format_ref\":{\"registry\":\"loom.hardware_representation_format\","
-      "\"major\":2,\"minor\":0,\"kind\":0},\"variant\":\"FpgaPhysical\","
+      "\"major\":2,\"minor\":1,\"kind\":0},\"variant\":\"FpgaPhysical\","
       "\"stage\":\"Placed\",\"top\":{\"object_kind\":\"DeviceResource\","
       "\"canonical_name\":\"top\"},\"payloads\":[{\"role\":\"RtlSource\","
       "\"canonical_logical_name\":\"rtl/top.sv\",\"blob_digest\":\"" +
-          formatBlobDigestHex(digest("rtl")) + "\"},{\"role\":"
+          formatBlobDigestHex(digest("rtl")) +
+          "\"},{\"role\":"
           "\"BlackBoxContract\",\"canonical_logical_name\":\"ip/pll.bb\","
           "\"blob_digest\":\"" +
           formatBlobDigestHex(digest("ip")) + "\"}]}",
       "canonical");
-  require(__func__,
-          take(__func__, parseImplementationRepresentationRootJson(
-                             physicalJson)) ==
-              makeRoot(RepresentationRootVariant::FpgaPhysical,
-                       RepresentationPhysicalStage::Placed, rtlFormat(__func__),
-                       RepresentationObjectKind::DeviceResource, __func__),
-          "physical root JSON did not round-trip");
+  require(
+      __func__,
+      take(__func__, parseImplementationRepresentationRootJson(physicalJson)) ==
+          makeRoot(RepresentationRootVariant::FpgaPhysical,
+                   RepresentationPhysicalStage::Placed, rtlFormat(__func__),
+                   RepresentationObjectKind::DeviceResource, __func__),
+      "physical root JSON did not round-trip");
 }
 
 } // namespace

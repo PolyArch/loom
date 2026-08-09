@@ -8,7 +8,6 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -34,11 +33,12 @@ enum class RepresentationObjectKind : std::uint32_t {
 };
 
 inline constexpr ArtifactSchemaDescriptor hardwareRepresentationFormatRegistry{
-    "loom.hardware_representation_format", SchemaVersion{2, 0}};
+    "loom.hardware_representation_format", SchemaVersion{2, 1}};
 
 enum class RepresentationFormatKind : std::uint32_t {
   SystemVerilogRtl = 0,
   StructuralVerilogGateNetlist = 1,
+  IndexedPhysical = 2,
 };
 
 /// Closed root variants of one HardwareImplementation representation, with
@@ -58,21 +58,6 @@ enum class RepresentationPhysicalStage : std::uint32_t {
   Placed = 0,
   Routed = 1,
   Extracted = 2,
-};
-
-/// One admitted root variant and, for a physical variant, its exact admitted
-/// stage set. An empty stage set admits only the stageless form.
-struct RepresentationRootAdmission final {
-  RepresentationRootVariant variant;
-  llvm::ArrayRef<RepresentationPhysicalStage> admittedStages;
-
-  friend bool operator==(const RepresentationRootAdmission &lhs,
-                         const RepresentationRootAdmission &rhs) {
-    return lhs.variant == rhs.variant &&
-           lhs.admittedStages.size() == rhs.admittedStages.size() &&
-           std::equal(lhs.admittedStages.begin(), lhs.admittedStages.end(),
-                      rhs.admittedStages.begin());
-  }
 };
 
 enum class RepresentationTextPolicy : std::uint32_t {
@@ -124,22 +109,36 @@ struct RepresentationPayloadContract final {
   }
 };
 
-struct RepresentationFormatDescriptor final {
-  RepresentationFormatDescriptorRef formatRef;
+/// One exact admitted root form and all contracts specific to that form.
+struct RepresentationRootAdmission final {
+  RepresentationRootVariant variant;
+  std::optional<RepresentationPhysicalStage> stage;
   RepresentationObjectKind exactRootKind;
   llvm::ArrayRef<RepresentationPayloadContract> payloadContracts;
+  llvm::ArrayRef<RepresentationObjectKind> admittedObjectKinds;
+};
+
+struct RepresentationFormatDescriptor final {
+  RepresentationFormatDescriptorRef formatRef;
   std::optional<PayloadRole> frontendSourceRole;
   std::optional<RepresentationLanguageProfile> languageProfile;
-  llvm::ArrayRef<RepresentationObjectKind> admittedObjectKinds;
   llvm::ArrayRef<RepresentationRootAdmission> admittedRoots;
 };
 
 /// Data-driven admission query: the descriptor alone decides whether one
 /// (variant, stage) pair is admitted. No caller-side branch may substitute.
-bool admitsRepresentationRoot(
+bool admitsRepresentationRoot(const RepresentationFormatDescriptor &descriptor,
+                              RepresentationRootVariant variant,
+                              std::optional<RepresentationPhysicalStage> stage);
+
+const RepresentationRootAdmission *findRepresentationRootAdmission(
     const RepresentationFormatDescriptor &descriptor,
     RepresentationRootVariant variant,
     std::optional<RepresentationPhysicalStage> stage);
+
+llvm::Error validateRepresentationPayloadCatalog(
+    const RepresentationRootAdmission &admission,
+    llvm::ArrayRef<ImplementationPayload> canonicalPayloads);
 
 /// Returns immutable metadata owned by the closed static format registry.
 const RepresentationFormatDescriptor &

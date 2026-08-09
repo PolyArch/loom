@@ -26,6 +26,7 @@ enum class PayloadRole : std::uint32_t {
   DeviceImage = 5,
   GenerationConstraint = 6,
   BlackBoxContract = 7,
+  RepresentationIndex = 8,
 };
 
 struct ImplementationPayload final {
@@ -49,7 +50,7 @@ encodeImplementationPayload(const ImplementationPayload &payload);
 llvm::Expected<ImplementationPayload>
 decodeImplementationPayload(llvm::ArrayRef<std::uint8_t> bytes);
 
-/// Uses the schema-2.0 field names and exact displayed payload-role spellings.
+/// Uses the schema-2.1 field names and exact displayed payload-role spellings.
 llvm::Expected<std::string>
 serializeImplementationPayloadJson(const ImplementationPayload &payload);
 

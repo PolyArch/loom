@@ -23,7 +23,6 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -42,16 +41,6 @@ BOOST_NORETURN void throw_exception(const std::exception &) { std::abort(); }
 
 namespace loom::hardware {
 namespace detail {
-
-llvm::Error invalidIndex(const llvm::Twine &reason) {
-  return llvm::make_error<RepresentationIndexFailure>(
-      RepresentationIndexFailureKind::Invalid, reason.str());
-}
-
-llvm::Error unsupportedIndex(const llvm::Twine &reason) {
-  return llvm::make_error<RepresentationIndexFailure>(
-      RepresentationIndexFailureKind::Unsupported, reason.str());
-}
 
 std::string childPath(llvm::StringRef parent, std::string_view child) {
   return (parent + "." + llvm::StringRef(child)).str();
@@ -231,59 +220,35 @@ admissionElaborationOptions(LanguageVersion version, llvm::StringRef exactTop) {
   return options;
 }
 
-llvm::Error validateTextPayload(const ImplementationPayload &payload,
-                                llvm::ArrayRef<std::uint8_t> bytes) {
-  const llvm::StringRef text(reinterpret_cast<const char *>(bytes.data()),
-                             bytes.size());
-  if (text.contains('\0'))
-    return detail::invalidIndex("text payload '" +
-                                payload.canonicalLogicalName +
-                                "' contains a NUL byte");
-  if (text.contains('\r'))
-    return detail::invalidIndex("text payload '" +
-                                payload.canonicalLogicalName +
-                                "' does not use LF line endings");
-  if (!llvm::json::isUTF8(text))
-    return detail::invalidIndex("text payload '" +
-                                payload.canonicalLogicalName +
-                                "' is not valid UTF-8");
-  return llvm::Error::success();
-}
-
 llvm::Expected<std::vector<LoadedSource>>
 validateAndLoadClosure(const RepresentationFormatDescriptor &descriptor,
+                       const RepresentationRootAdmission &admission,
                        llvm::ArrayRef<ImplementationPayload> canonicalPayloads,
                        const BlobStore &blobs) {
-  auto canonical = canonicalizeImplementationPayloadCatalog(canonicalPayloads);
-  if (!canonical)
+  if (llvm::Error error =
+          validateRepresentationPayloadCatalog(admission, canonicalPayloads))
     return detail::invalidIndex("payload closure is invalid: " +
-                                llvm::toString(canonical.takeError()));
-  if (!llvm::equal(*canonical, canonicalPayloads))
-    return detail::invalidIndex("payload closure is not in canonical order");
+                                llvm::toString(std::move(error)));
 
-  std::vector<std::uint64_t> counts(descriptor.payloadContracts.size());
   std::vector<LoadedSource> sources;
   for (const ImplementationPayload &payload : canonicalPayloads) {
     const auto contract =
-        llvm::find_if(descriptor.payloadContracts,
+        llvm::find_if(admission.payloadContracts,
                       [&](const RepresentationPayloadContract &candidate) {
                         return candidate.role == payload.role;
                       });
-    if (contract == descriptor.payloadContracts.end())
+    if (contract == admission.payloadContracts.end())
       return detail::invalidIndex(
           "payload role is not admitted by the selected format");
-    const std::size_t contractIndex = static_cast<std::size_t>(
-        contract - descriptor.payloadContracts.begin());
-    ++counts[contractIndex];
 
     auto contents = blobs.get(payload.blobDigest);
     if (!contents)
       return detail::invalidIndex(
           "payload '" + payload.canonicalLogicalName +
           "' could not be loaded: " + llvm::toString(contents.takeError()));
-    if (contract->textPolicy == RepresentationTextPolicy::Utf8LfNoNul)
-      if (llvm::Error error = validateTextPayload(payload, *contents))
-        return std::move(error);
+    if (llvm::Error error = detail::validateRepresentationTextPolicy(
+            contract->textPolicy, payload, *contents))
+      return std::move(error);
     if (descriptor.frontendSourceRole &&
         payload.role == *descriptor.frontendSourceRole) {
       sources.push_back(LoadedSource{
@@ -293,15 +258,6 @@ validateAndLoadClosure(const RepresentationFormatDescriptor &descriptor,
     }
   }
 
-  for (auto [contract, count] :
-       llvm::zip_equal(descriptor.payloadContracts, counts)) {
-    if (count < contract.minimumCount)
-      return detail::invalidIndex(
-          "payload role cardinality is below its minimum");
-    if (contract.maximumCount && count > *contract.maximumCount)
-      return detail::invalidIndex(
-          "payload role cardinality is above its maximum");
-  }
   return sources;
 }
 
@@ -614,7 +570,16 @@ indexInitialHdl(RepresentationFormatDescriptorRef formatRef,
   const detail::StaticRepresentationFormatEntry &entry =
       detail::getStaticRepresentationFormatEntry(formatRef);
   const RepresentationFormatDescriptor &descriptor = entry.descriptor;
-  if (exactRoot.kind != descriptor.exactRootKind)
+  const RepresentationRootVariant rootVariant =
+      entry.indexer == BuiltinRepresentationIndexer::SystemVerilogRtl
+          ? RepresentationRootVariant::Rtl
+          : RepresentationRootVariant::GateNetlist;
+  const RepresentationRootAdmission *admission =
+      findRepresentationRootAdmission(descriptor, rootVariant, std::nullopt);
+  if (!admission)
+    return detail::invalidIndex(
+        "built-in HDL descriptor lacks its root admission");
+  if (exactRoot.kind != admission->exactRootKind)
     return detail::invalidIndex(
         "exact root has the wrong representation object kind");
   if (llvm::Error error =
@@ -625,7 +590,8 @@ indexInitialHdl(RepresentationFormatDescriptorRef formatRef,
     return detail::invalidIndex(
         "built-in HDL indexer descriptor lacks source or language metadata");
 
-  auto sources = validateAndLoadClosure(descriptor, canonicalPayloads, blobs);
+  auto sources =
+      validateAndLoadClosure(descriptor, *admission, canonicalPayloads, blobs);
   if (!sources)
     return sources.takeError();
   const LanguageVersion version = languageVersion(*descriptor.languageProfile);
@@ -753,27 +719,30 @@ indexInitialHdl(RepresentationFormatDescriptorRef formatRef,
   case BuiltinRepresentationIndexer::StructuralVerilogGateNetlist:
     return detail::indexStructuralVerilogGateNetlist(formatRef, *top,
                                                      exactRoot);
+  case BuiltinRepresentationIndexer::IndexedPhysical:
+    llvm_unreachable("physical format cannot use the HDL indexer");
   }
   llvm_unreachable("closed built-in representation indexer");
 }
 
 } // namespace
 
-llvm::Expected<RepresentationIndex>
-indexRepresentation(RepresentationFormatDescriptorRef formatRef,
-                    const RepresentationLocator &exactRoot,
-                    llvm::ArrayRef<ImplementationPayload> canonicalPayloads,
-                    const BlobStore &blobs) {
+llvm::Expected<detail::RawIndex> detail::indexHdlRepresentation(
+    RepresentationFormatDescriptorRef formatRef,
+    const RepresentationLocator &exactRoot,
+    llvm::ArrayRef<ImplementationPayload> canonicalPayloads,
+    const BlobStore &blobs) {
   auto raw = indexInitialHdl(formatRef, exactRoot, canonicalPayloads, blobs);
   if (!raw)
     return raw.takeError();
-  std::vector<RepresentationIndex::Entry> entries;
-  entries.reserve(raw->entries.size());
-  for (detail::RawIndexEntry &entry : raw->entries)
-    entries.push_back(RepresentationIndex::Entry{std::move(entry.locator),
-                                                 std::move(entry.facts)});
-  return RepresentationIndex(formatRef, exactRoot, std::move(entries),
-                             std::move(raw->unresolved));
+  const detail::StaticRepresentationFormatEntry &entry =
+      detail::getStaticRepresentationFormatEntry(formatRef);
+  raw->rootVariant =
+      entry.indexer == BuiltinRepresentationIndexer::SystemVerilogRtl
+          ? RepresentationRootVariant::Rtl
+          : RepresentationRootVariant::GateNetlist;
+  raw->stage = std::nullopt;
+  return raw;
 }
 
 } // namespace loom::hardware

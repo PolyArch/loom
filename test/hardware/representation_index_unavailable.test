@@ -1,0 +1,3 @@
+# UNSUPPORTED: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-representation-index-unavailable-test %t

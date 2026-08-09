@@ -81,6 +81,26 @@ target_link_libraries(loom-implementation-representation-root-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-physical-representation-index-test
+  PhysicalRepresentationIndexTest.cpp
+)
+
+target_link_libraries(loom-physical-representation-index-test PRIVATE
+  LoomHardwareImplementation
+  LLVMSupport
+)
+
+if(NOT LOOM_HAVE_CIRCT)
+  add_executable(loom-representation-index-unavailable-test
+    RepresentationIndexUnavailableTest.cpp
+  )
+
+  target_link_libraries(loom-representation-index-unavailable-test PRIVATE
+    LoomHardwareImplementation
+    LLVMSupport
+  )
+endif()
+
 if(LOOM_HAVE_CIRCT)
   add_library(LoomPortableProviderTestSupport
     PortableProviderTestSupport.cpp

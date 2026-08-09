@@ -41,6 +41,8 @@ llvm::Expected<llvm::StringRef> roleSpelling(PayloadRole role) {
     return llvm::StringRef("GenerationConstraint");
   case PayloadRole::BlackBoxContract:
     return llvm::StringRef("BlackBoxContract");
+  case PayloadRole::RepresentationIndex:
+    return llvm::StringRef("RepresentationIndex");
   }
   return invalid("payload role is unsupported");
 }
@@ -62,6 +64,8 @@ std::optional<PayloadRole> parseRole(llvm::StringRef spelling) {
     return PayloadRole::GenerationConstraint;
   if (spelling == "BlackBoxContract")
     return PayloadRole::BlackBoxContract;
+  if (spelling == "RepresentationIndex")
+    return PayloadRole::RepresentationIndex;
   return std::nullopt;
 }
 

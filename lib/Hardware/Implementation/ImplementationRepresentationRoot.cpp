@@ -21,8 +21,10 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "representation_root_invalid: " + message);
 }
 
+} // namespace
+
 llvm::Expected<llvm::StringRef>
-variantSpelling(RepresentationRootVariant variant) {
+representationRootVariantSpelling(RepresentationRootVariant variant) {
   switch (variant) {
   case RepresentationRootVariant::Rtl:
     return llvm::StringRef("Rtl");
@@ -39,7 +41,7 @@ variantSpelling(RepresentationRootVariant variant) {
 }
 
 std::optional<RepresentationRootVariant>
-parseVariant(llvm::StringRef spelling) {
+parseRepresentationRootVariantSpelling(llvm::StringRef spelling) {
   if (spelling == "Rtl")
     return RepresentationRootVariant::Rtl;
   if (spelling == "GateNetlist")
@@ -54,7 +56,7 @@ parseVariant(llvm::StringRef spelling) {
 }
 
 llvm::Expected<llvm::StringRef>
-stageSpelling(RepresentationPhysicalStage stage) {
+representationPhysicalStageSpelling(RepresentationPhysicalStage stage) {
   switch (stage) {
   case RepresentationPhysicalStage::Placed:
     return llvm::StringRef("Placed");
@@ -67,7 +69,7 @@ stageSpelling(RepresentationPhysicalStage stage) {
 }
 
 std::optional<RepresentationPhysicalStage>
-parseStage(llvm::StringRef spelling) {
+parseRepresentationPhysicalStageSpelling(llvm::StringRef spelling) {
   if (spelling == "Placed")
     return RepresentationPhysicalStage::Placed;
   if (spelling == "Routed")
@@ -76,6 +78,8 @@ parseStage(llvm::StringRef spelling) {
     return RepresentationPhysicalStage::Extracted;
   return std::nullopt;
 }
+
+namespace {
 
 bool variantHasStage(RepresentationRootVariant variant) {
   return variant == RepresentationRootVariant::AsicPhysical ||
@@ -234,13 +238,13 @@ createImplementationRepresentationRoot(
 
 llvm::Error validateImplementationRepresentationRoot(
     const ImplementationRepresentationRoot &root) {
-  auto spelling = variantSpelling(root.variant);
+  auto spelling = representationRootVariantSpelling(root.variant);
   if (!spelling)
     return spelling.takeError();
   if (variantHasStage(root.variant)) {
     if (!root.stage)
       return invalid("representation root variant requires an exact stage");
-    auto stageText = stageSpelling(*root.stage);
+    auto stageText = representationPhysicalStageSpelling(*root.stage);
     if (!stageText)
       return stageText.takeError();
     if (root.variant == RepresentationRootVariant::FpgaPhysical &&
@@ -270,9 +274,17 @@ llvm::Error validateRepresentationRootAdmission(
   if (root.formatRef != descriptor.formatRef)
     return invalid("representation root format reference does not match the "
                    "selected descriptor");
-  if (!admitsRepresentationRoot(descriptor, root.variant, root.stage))
+  const RepresentationRootAdmission *admission =
+      findRepresentationRootAdmission(descriptor, root.variant, root.stage);
+  if (!admission)
     return invalid("representation root variant or stage is not admitted by "
                    "the selected descriptor");
+  if (root.top.kind != admission->exactRootKind)
+    return invalid("representation root top kind does not match the exact "
+                   "descriptor admission");
+  if (llvm::Error error =
+          validateRepresentationPayloadCatalog(*admission, root.payloads))
+    return invalid("representation root " + llvm::toString(std::move(error)));
   return llvm::Error::success();
 }
 
@@ -309,7 +321,7 @@ decodeImplementationRepresentationRoot(llvm::ArrayRef<std::uint8_t> bytes) {
   if (!variantTag)
     return variantTag.takeError();
   const auto variant = static_cast<RepresentationRootVariant>(*variantTag);
-  if (auto spelling = variantSpelling(variant); !spelling)
+  if (auto spelling = representationRootVariantSpelling(variant); !spelling)
     return spelling.takeError();
   std::optional<RepresentationPhysicalStage> stage;
   if (variantHasStage(variant)) {
@@ -317,7 +329,7 @@ decodeImplementationRepresentationRoot(llvm::ArrayRef<std::uint8_t> bytes) {
     if (!stageTag)
       return stageTag.takeError();
     const auto value = static_cast<RepresentationPhysicalStage>(*stageTag);
-    if (auto spelling = stageSpelling(value); !spelling)
+    if (auto spelling = representationPhysicalStageSpelling(value); !spelling)
       return spelling.takeError();
     stage = value;
   }
@@ -357,12 +369,12 @@ llvm::Expected<std::string> serializeImplementationRepresentationRootJson(
     const ImplementationRepresentationRoot &root) {
   if (llvm::Error error = validateImplementationRepresentationRoot(root))
     return std::move(error);
-  auto variantText = variantSpelling(root.variant);
+  auto variantText = representationRootVariantSpelling(root.variant);
   if (!variantText)
     return variantText.takeError();
   std::string result = "{\"variant\":\"" + variantText->str() + "\",";
   if (root.stage) {
-    auto stageText = stageSpelling(*root.stage);
+    auto stageText = representationPhysicalStageSpelling(*root.stage);
     if (!stageText)
       return stageText.takeError();
     result += "\"stage\":\"" + stageText->str() + "\",";
@@ -404,7 +416,7 @@ parseImplementationRepresentationRootJsonValue(
   if (!variantText)
     return invalid("representation root field 'variant' must be a string");
   const std::optional<RepresentationRootVariant> variant =
-      parseVariant(*variantText);
+      parseRepresentationRootVariantSpelling(*variantText);
   if (!variant)
     return invalid("representation root variant is unsupported");
 
@@ -414,7 +426,7 @@ parseImplementationRepresentationRootJsonValue(
       return invalid("representation root variant carries no stage");
     if (const std::optional<llvm::StringRef> stageText =
             stageValue->getAsString()) {
-      stage = parseStage(*stageText);
+      stage = parseRepresentationPhysicalStageSpelling(*stageText);
     }
     if (!stage)
       return invalid("representation root stage is unsupported");

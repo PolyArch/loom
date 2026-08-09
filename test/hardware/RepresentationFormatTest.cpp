@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <utility>
@@ -49,7 +50,7 @@ expectedBinaryReference(RepresentationFormatKind kind) {
   std::vector<std::uint8_t> expected{0, 0, 0, 0, 0, 0, 0, 35};
   expected.insert(expected.end(), identity.bytes_begin(), identity.bytes_end());
   const std::vector<std::uint8_t> suffix{
-      0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, static_cast<std::uint8_t>(kind),
+      0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, static_cast<std::uint8_t>(kind),
   };
   expected.insert(expected.end(), suffix.begin(), suffix.end());
   return expected;
@@ -62,6 +63,9 @@ void exactBinaryCodecIsClosed() {
   const auto netlist = take(
       __func__, RepresentationFormatDescriptorRef::get(
                     RepresentationFormatKind::StructuralVerilogGateNetlist));
+  const auto physical =
+      take(__func__, RepresentationFormatDescriptorRef::get(
+                         RepresentationFormatKind::IndexedPhysical));
 
   require(__func__,
           hardwareRepresentationFormatRegistry.identity ==
@@ -69,7 +73,7 @@ void exactBinaryCodecIsClosed() {
           "registry identity changed");
   require(__func__,
           hardwareRepresentationFormatRegistry.version ==
-              loom::SchemaVersion{2, 0},
+              loom::SchemaVersion{2, 1},
           "registry version changed");
   require(__func__, rtl.kind() == RepresentationFormatKind::SystemVerilogRtl,
           "RTL kind changed");
@@ -77,15 +81,22 @@ void exactBinaryCodecIsClosed() {
           netlist.kind() ==
               RepresentationFormatKind::StructuralVerilogGateNetlist,
           "gate-netlist kind changed");
+  require(__func__,
+          physical.kind() == RepresentationFormatKind::IndexedPhysical,
+          "indexed-physical kind changed");
 
   const std::vector<std::uint8_t> rtlBytes =
       encodeRepresentationFormatDescriptorRef(rtl);
   const std::vector<std::uint8_t> netlistBytes =
       encodeRepresentationFormatDescriptorRef(netlist);
+  const std::vector<std::uint8_t> physicalBytes =
+      encodeRepresentationFormatDescriptorRef(physical);
   require(__func__, rtlBytes == expectedBinaryReference(rtl.kind()),
           "RTL reference bytes changed");
   require(__func__, netlistBytes == expectedBinaryReference(netlist.kind()),
           "gate-netlist reference bytes changed");
+  require(__func__, physicalBytes == expectedBinaryReference(physical.kind()),
+          "indexed-physical reference bytes changed");
   require(__func__, rtlBytes.size() == 55,
           "reference framing has the wrong size");
   require(__func__,
@@ -96,10 +107,14 @@ void exactBinaryCodecIsClosed() {
           take(__func__, decodeRepresentationFormatDescriptorRef(
                              netlistBytes)) == netlist,
           "gate-netlist binary reference did not round-trip");
+  require(__func__,
+          take(__func__, decodeRepresentationFormatDescriptorRef(
+                             physicalBytes)) == physical,
+          "indexed-physical binary reference did not round-trip");
 
   expectError(__func__,
               RepresentationFormatDescriptorRef::get(
-                  static_cast<RepresentationFormatKind>(2)),
+                  static_cast<RepresentationFormatKind>(3)),
               "kind");
 
   for (std::size_t size = 0; size < rtlBytes.size(); ++size)
@@ -124,7 +139,7 @@ void exactBinaryCodecIsClosed() {
               "version");
 
   std::vector<std::uint8_t> wrongKind = rtlBytes;
-  wrongKind[54] = 2;
+  wrongKind[54] = 3;
   expectError(__func__, decodeRepresentationFormatDescriptorRef(wrongKind),
               "kind");
 }
@@ -136,10 +151,15 @@ void exactJsonCodecIsClosed() {
   const auto netlist = take(
       __func__, RepresentationFormatDescriptorRef::get(
                     RepresentationFormatKind::StructuralVerilogGateNetlist));
+  const auto physical =
+      take(__func__, RepresentationFormatDescriptorRef::get(
+                         RepresentationFormatKind::IndexedPhysical));
   constexpr llvm::StringLiteral rtlJson =
-      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":0,"kind":0})json";
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":1,"kind":0})json";
   constexpr llvm::StringLiteral netlistJson =
-      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":0,"kind":1})json";
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":1,"kind":1})json";
+  constexpr llvm::StringLiteral physicalJson =
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":1,"kind":2})json";
 
   require(__func__,
           serializeRepresentationFormatDescriptorRefJson(rtl) == rtlJson,
@@ -149,6 +169,10 @@ void exactJsonCodecIsClosed() {
               netlistJson,
           "gate-netlist canonical JSON changed");
   require(__func__,
+          serializeRepresentationFormatDescriptorRefJson(physical) ==
+              physicalJson,
+          "indexed-physical canonical JSON changed");
+  require(__func__,
           take(__func__, parseRepresentationFormatDescriptorRefJson(rtlJson)) ==
               rtl,
           "RTL JSON reference did not round-trip");
@@ -156,21 +180,25 @@ void exactJsonCodecIsClosed() {
           take(__func__, parseRepresentationFormatDescriptorRefJson(
                              netlistJson)) == netlist,
           "gate-netlist JSON reference did not round-trip");
+  require(__func__,
+          take(__func__, parseRepresentationFormatDescriptorRefJson(
+                             physicalJson)) == physical,
+          "indexed-physical JSON reference did not round-trip");
 
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"major":2,"registry":"loom.hardware_representation_format","minor":0,"kind":0})json"),
+          R"json({"major":2,"registry":"loom.hardware_representation_format","minor":1,"kind":0})json"),
       "canonical");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":0,"kind":0,"name":"sv"})json"),
+          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":1,"kind":0,"name":"sv"})json"),
       "field");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"other","major":2,"minor":0,"kind":0})json"),
+          R"json({"registry":"other","major":2,"minor":1,"kind":0})json"),
       "registry");
   expectError(
       __func__,
@@ -181,12 +209,46 @@ void exactJsonCodecIsClosed() {
       __func__,
       parseRepresentationFormatDescriptorRefJson(
           R"json({"registry":"loom.hardware_representation_format","major":2,"minor":0,"kind":2})json"),
+      "version");
+  expectError(
+      __func__,
+      parseRepresentationFormatDescriptorRefJson(
+          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":1,"kind":3})json"),
       "kind");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":0,"kind":-1})json"),
+          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":1,"kind":-1})json"),
       "unsigned");
+}
+
+const RepresentationRootAdmission &
+requireAdmission(llvm::StringRef test,
+                 const RepresentationFormatDescriptor &descriptor,
+                 RepresentationRootVariant variant,
+                 std::optional<RepresentationPhysicalStage> stage) {
+  for (const RepresentationRootAdmission &admission : descriptor.admittedRoots)
+    if (admission.variant == variant && admission.stage == stage)
+      return admission;
+  fail(test, "descriptor is missing an exact root admission");
+}
+
+void requireContracts(
+    llvm::StringRef test, const RepresentationRootAdmission &admission,
+    std::initializer_list<RepresentationPayloadContract> expected) {
+  require(test,
+          admission.payloadContracts ==
+              llvm::ArrayRef(expected.begin(), expected.size()),
+          "root admission has the wrong payload contract");
+}
+
+void requireObjectKinds(
+    llvm::StringRef test, const RepresentationRootAdmission &admission,
+    std::initializer_list<RepresentationObjectKind> expected) {
+  require(test,
+          admission.admittedObjectKinds ==
+              llvm::ArrayRef(expected.begin(), expected.size()),
+          "root admission has the wrong object-kind set");
 }
 
 void staticDescriptorMetadataIsClosedWithoutCirct() {
@@ -196,49 +258,42 @@ void staticDescriptorMetadataIsClosedWithoutCirct() {
   const RepresentationFormatDescriptorRef gateRef = take(
       __func__, RepresentationFormatDescriptorRef::get(
                     RepresentationFormatKind::StructuralVerilogGateNetlist));
+  const RepresentationFormatDescriptorRef physicalRef =
+      take(__func__, RepresentationFormatDescriptorRef::get(
+                         RepresentationFormatKind::IndexedPhysical));
   const RepresentationFormatDescriptor &rtl =
       getRepresentationFormatDescriptor(rtlRef);
   const RepresentationFormatDescriptor &gate =
       getRepresentationFormatDescriptor(gateRef);
+  const RepresentationFormatDescriptor &physical =
+      getRepresentationFormatDescriptor(physicalRef);
 
-  require(__func__, rtl.formatRef == rtlRef && gate.formatRef == gateRef,
+  require(__func__,
+          rtl.formatRef == rtlRef && gate.formatRef == gateRef &&
+              physical.formatRef == physicalRef,
           "static descriptor changed its exact format reference");
-  require(__func__,
-          rtl.exactRootKind == RepresentationObjectKind::Module &&
-              gate.exactRootKind == RepresentationObjectKind::Module,
-          "initial HDL descriptor changed its exact root kind");
-  require(__func__,
-          rtl.payloadContracts.size() == 3 && gate.payloadContracts.size() == 3,
-          "initial HDL descriptor has the wrong role closure");
-  require(__func__,
-          rtl.payloadContracts[0] ==
-              RepresentationPayloadContract{
-                  PayloadRole::RtlSource, "text/x-systemverilog; charset=utf-8",
-                  1, std::nullopt, RepresentationTextPolicy::Utf8LfNoNul},
-          "RTL source contract changed");
-  require(__func__,
-          gate.payloadContracts[0] ==
-              RepresentationPayloadContract{
-                  PayloadRole::Netlist, "text/x-verilog; charset=utf-8", 1,
-                  std::nullopt, RepresentationTextPolicy::Utf8LfNoNul},
-          "gate-netlist source contract changed");
-  for (llvm::ArrayRef<RepresentationPayloadContract> contracts :
-       {rtl.payloadContracts, gate.payloadContracts}) {
-    require(__func__,
-            contracts[1] ==
-                RepresentationPayloadContract{
-                    PayloadRole::GenerationConstraint,
-                    "application/x-sdc; charset=utf-8", 0, std::nullopt,
-                    RepresentationTextPolicy::Utf8LfNoNul},
-            "generation-constraint contract changed");
-    require(__func__,
-            contracts[2] ==
-                RepresentationPayloadContract{
-                    PayloadRole::BlackBoxContract,
-                    "application/vnd.loom.black-box-contract", 0, std::nullopt,
-                    RepresentationTextPolicy::Opaque},
-            "black-box contract changed");
-  }
+  const RepresentationRootAdmission &rtlAdmission = requireAdmission(
+      __func__, rtl, RepresentationRootVariant::Rtl, std::nullopt);
+  const RepresentationRootAdmission &gateAdmission = requireAdmission(
+      __func__, gate, RepresentationRootVariant::GateNetlist, std::nullopt);
+  requireContracts(
+      __func__, rtlAdmission,
+      {{PayloadRole::RtlSource, "text/x-systemverilog; charset=utf-8", 1,
+        std::nullopt, RepresentationTextPolicy::Utf8LfNoNul},
+       {PayloadRole::GenerationConstraint, "application/x-sdc; charset=utf-8",
+        0, std::nullopt, RepresentationTextPolicy::Utf8LfNoNul},
+       {PayloadRole::BlackBoxContract,
+        "application/vnd.loom.black-box-contract", 0, std::nullopt,
+        RepresentationTextPolicy::Opaque}});
+  requireContracts(
+      __func__, gateAdmission,
+      {{PayloadRole::Netlist, "text/x-verilog; charset=utf-8", 1, std::nullopt,
+        RepresentationTextPolicy::Utf8LfNoNul},
+       {PayloadRole::GenerationConstraint, "application/x-sdc; charset=utf-8",
+        0, std::nullopt, RepresentationTextPolicy::Utf8LfNoNul},
+       {PayloadRole::BlackBoxContract,
+        "application/vnd.loom.black-box-contract", 0, std::nullopt,
+        RepresentationTextPolicy::Opaque}});
 
   require(__func__,
           rtl.frontendSourceRole == std::optional(PayloadRole::RtlSource) &&
@@ -251,19 +306,107 @@ void staticDescriptorMetadataIsClosedWithoutCirct() {
                   std::optional(RepresentationLanguageProfile::Ieee1364_2005),
           "descriptor language profiles changed");
 
-  const std::vector<RepresentationObjectKind> expectedRtlKinds{
-      RepresentationObjectKind::Module,   RepresentationObjectKind::Instance,
-      RepresentationObjectKind::Port,     RepresentationObjectKind::Net,
-      RepresentationObjectKind::Register, RepresentationObjectKind::Memory};
-  const std::vector<RepresentationObjectKind> expectedGateKinds{
-      RepresentationObjectKind::Module, RepresentationObjectKind::Cell,
-      RepresentationObjectKind::Port, RepresentationObjectKind::Pin,
-      RepresentationObjectKind::Net};
-  require(__func__, rtl.admittedObjectKinds == llvm::ArrayRef(expectedRtlKinds),
-          "RTL admitted object-kind set changed");
-  require(__func__,
-          gate.admittedObjectKinds == llvm::ArrayRef(expectedGateKinds),
-          "gate admitted object-kind set changed");
+  requireObjectKinds(
+      __func__, rtlAdmission,
+      {RepresentationObjectKind::Module, RepresentationObjectKind::Instance,
+       RepresentationObjectKind::Port, RepresentationObjectKind::Net,
+       RepresentationObjectKind::Register, RepresentationObjectKind::Memory});
+  requireObjectKinds(
+      __func__, gateAdmission,
+      {RepresentationObjectKind::Module, RepresentationObjectKind::Cell,
+       RepresentationObjectKind::Port, RepresentationObjectKind::Pin,
+       RepresentationObjectKind::Net});
+
+  require(__func__, physical.admittedRoots.size() == 6,
+          "indexed-physical descriptor has the wrong admission count");
+  require(__func__, !physical.frontendSourceRole && !physical.languageProfile,
+          "indexed-physical descriptor acquired an HDL frontend");
+
+  const auto opaque = [](PayloadRole role, std::uint64_t minimum,
+                         std::optional<std::uint64_t> maximum = std::nullopt) {
+    return RepresentationPayloadContract{role, "application/octet-stream",
+                                         minimum, maximum,
+                                         RepresentationTextPolicy::Opaque};
+  };
+  const RepresentationPayloadContract blackBox{
+      PayloadRole::BlackBoxContract, "application/vnd.loom.black-box-contract",
+      0, std::nullopt, RepresentationTextPolicy::Opaque};
+  const RepresentationPayloadContract index{
+      PayloadRole::RepresentationIndex,
+      "application/vnd.loom.physical-representation-index+json", 1,
+      std::optional<std::uint64_t>(1), RepresentationTextPolicy::Utf8LfNoNul};
+
+  const RepresentationRootAdmission &asicPlaced = requireAdmission(
+      __func__, physical, RepresentationRootVariant::AsicPhysical,
+      RepresentationPhysicalStage::Placed);
+  const RepresentationRootAdmission &asicRouted = requireAdmission(
+      __func__, physical, RepresentationRootVariant::AsicPhysical,
+      RepresentationPhysicalStage::Routed);
+  const RepresentationRootAdmission &asicExtracted = requireAdmission(
+      __func__, physical, RepresentationRootVariant::AsicPhysical,
+      RepresentationPhysicalStage::Extracted);
+  const RepresentationRootAdmission &fpgaPlaced = requireAdmission(
+      __func__, physical, RepresentationRootVariant::FpgaPhysical,
+      RepresentationPhysicalStage::Placed);
+  const RepresentationRootAdmission &fpgaRouted = requireAdmission(
+      __func__, physical, RepresentationRootVariant::FpgaPhysical,
+      RepresentationPhysicalStage::Routed);
+  const RepresentationRootAdmission &fpgaImage = requireAdmission(
+      __func__, physical, RepresentationRootVariant::FpgaImage, std::nullopt);
+
+  requireContracts(__func__, asicPlaced,
+                   {opaque(PayloadRole::PhysicalDatabase, 1),
+                    opaque(PayloadRole::GenerationConstraint, 0), blackBox,
+                    index});
+  requireContracts(__func__, asicRouted,
+                   {opaque(PayloadRole::PhysicalDatabase, 1),
+                    opaque(PayloadRole::LayoutStream, 0),
+                    opaque(PayloadRole::GenerationConstraint, 0), blackBox,
+                    index});
+  requireContracts(
+      __func__, asicExtracted,
+      {opaque(PayloadRole::PhysicalDatabase, 1),
+       opaque(PayloadRole::Parasitics, 1), opaque(PayloadRole::LayoutStream, 0),
+       opaque(PayloadRole::GenerationConstraint, 0), blackBox, index});
+  for (const RepresentationRootAdmission *admission :
+       {&fpgaPlaced, &fpgaRouted})
+    requireContracts(__func__, *admission,
+                     {opaque(PayloadRole::PhysicalDatabase, 1),
+                      opaque(PayloadRole::GenerationConstraint, 0), blackBox,
+                      index});
+  requireContracts(
+      __func__, fpgaImage,
+      {opaque(PayloadRole::DeviceImage, 1, std::optional<std::uint64_t>(1)),
+       index});
+
+  for (const RepresentationRootAdmission *admission :
+       {&asicPlaced, &asicRouted, &asicExtracted}) {
+    require(__func__,
+            admission->exactRootKind ==
+                RepresentationObjectKind::PhysicalObject,
+            "ASIC physical admission has the wrong root kind");
+    requireObjectKinds(
+        __func__, *admission,
+        {RepresentationObjectKind::Module, RepresentationObjectKind::Instance,
+         RepresentationObjectKind::Port, RepresentationObjectKind::Net,
+         RepresentationObjectKind::Register, RepresentationObjectKind::Memory,
+         RepresentationObjectKind::Cell, RepresentationObjectKind::Pin,
+         RepresentationObjectKind::PhysicalObject});
+  }
+  for (const RepresentationRootAdmission *admission :
+       {&fpgaPlaced, &fpgaRouted, &fpgaImage}) {
+    require(__func__,
+            admission->exactRootKind ==
+                RepresentationObjectKind::DeviceResource,
+            "FPGA admission has the wrong root kind");
+    requireObjectKinds(
+        __func__, *admission,
+        {RepresentationObjectKind::Module, RepresentationObjectKind::Instance,
+         RepresentationObjectKind::Port, RepresentationObjectKind::Net,
+         RepresentationObjectKind::Register, RepresentationObjectKind::Memory,
+         RepresentationObjectKind::Cell, RepresentationObjectKind::Pin,
+         RepresentationObjectKind::DeviceResource});
+  }
 }
 
 } // namespace

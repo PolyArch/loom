@@ -20,7 +20,7 @@ class Object;
 
 namespace loom::hardware {
 
-/// Canonical typed representation root for HardwareImplementation 2.0.
+/// Canonical typed representation root for HardwareImplementation 2.1.
 struct ImplementationRepresentationRoot final {
   RepresentationRootVariant variant;
   /// Present exactly for the physical variants.
@@ -57,6 +57,18 @@ llvm::Error validateImplementationRepresentationRoot(
 llvm::Error validateRepresentationRootAdmission(
     const RepresentationFormatDescriptor &descriptor,
     const ImplementationRepresentationRoot &root);
+
+llvm::Expected<llvm::StringRef>
+representationRootVariantSpelling(RepresentationRootVariant variant);
+
+std::optional<RepresentationRootVariant>
+parseRepresentationRootVariantSpelling(llvm::StringRef spelling);
+
+llvm::Expected<llvm::StringRef>
+representationPhysicalStageSpelling(RepresentationPhysicalStage stage);
+
+std::optional<RepresentationPhysicalStage>
+parseRepresentationPhysicalStageSpelling(llvm::StringRef spelling);
 
 /// Binary framing: u32be(variant), u32be(stage) for the physical variants,
 /// the exact format-reference bytes, the exact locator bytes, then

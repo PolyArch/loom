@@ -17,6 +17,7 @@
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Hardware/Implementation/HardwareImplementationLocalReference.h"
+#include "Hardware/Implementation/PhysicalRepresentationIndex.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -35,6 +36,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -105,6 +107,25 @@ void expectError(llvm::StringRef test, llvm::Error error,
 
 std::vector<std::uint8_t> bytes(llvm::StringRef value) {
   return std::vector<std::uint8_t>(value.bytes_begin(), value.bytes_end());
+}
+
+void writeFile(llvm::StringRef test, const std::filesystem::path &path,
+               llvm::StringRef contents) {
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+  if (!stream)
+    fail(test, "could not open dependency fixture for writing");
+  stream.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+  if (!stream)
+    fail(test, "could not write dependency fixture");
+}
+
+std::string readFile(llvm::StringRef test, const std::filesystem::path &path) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream)
+    fail(test, "could not open dependency fixture for reading");
+  return std::string(std::istreambuf_iterator<char>(stream),
+                     std::istreambuf_iterator<char>());
 }
 
 ExternalFileFingerprint fingerprint(llvm::StringRef value) {
@@ -326,12 +347,16 @@ makeGateRepresentation(llvm::StringRef test, const BlobStore &blobs,
 }
 
 platform::FinalizedImplementationPlatform
-makeAsicPlatform(llvm::StringRef test, const ArtifactStore &artifacts) {
-  return take(test, platform::finalizeImplementationPlatform(
-                        platform::ImplementationPlatformDraft{
-                            platform::AsicTarget{"saed14", "EDK_08_2025"},
-                            {"tt_0p80v_25c"}},
-                        artifacts));
+makeAsicPlatform(llvm::StringRef test, const ArtifactStore &artifacts,
+                 llvm::StringRef technology = "saed14",
+                 llvm::StringRef release = "EDK_08_2025",
+                 llvm::StringRef corner = "tt_0p80v_25c") {
+  return take(test,
+              platform::finalizeImplementationPlatform(
+                  platform::ImplementationPlatformDraft{
+                      platform::AsicTarget{technology.str(), release.str()},
+                      {corner.str()}},
+                  artifacts));
 }
 
 ImplementationRepresentationRoot
@@ -361,6 +386,41 @@ makeInstanceRepresentation(llvm::StringRef test, const BlobStore &blobs) {
                         RepresentationRootVariant::Rtl, std::nullopt, format,
                         {RepresentationObjectKind::Module, "top"},
                         {{PayloadRole::RtlSource, "rtl/top.sv", rtlDigest}}));
+}
+
+ImplementationRepresentationRoot
+makeAsicPhysicalRepresentation(llvm::StringRef test, const BlobStore &blobs) {
+  const auto format =
+      take(test, RepresentationFormatDescriptorRef::get(
+                     RepresentationFormatKind::IndexedPhysical));
+  const ImplementationPayload database{
+      PayloadRole::PhysicalDatabase, "database/state.bin",
+      take(test, blobs.put(bytes("authored synthetic physical state")))};
+  const RepresentationLocator top{RepresentationObjectKind::PhysicalObject,
+                                  "chip"};
+  const PhysicalRepresentationIndexPayload index = take(
+      test,
+      createPhysicalRepresentationIndexPayload(
+          format, RepresentationRootVariant::AsicPhysical,
+          RepresentationPhysicalStage::Placed, top, "index/physical.json",
+          {database},
+          {{{RepresentationObjectKind::Port, "chip.data"},
+            RepresentationSignalGeometry{RepresentationSignalDirection::Input,
+                                         128}},
+           {{RepresentationObjectKind::Net, "chip.activity"}, std::nullopt},
+           {{RepresentationObjectKind::Memory, "chip.memory"}, std::nullopt},
+           {{RepresentationObjectKind::Cell, "chip.external"}, std::nullopt},
+           {{RepresentationObjectKind::PhysicalObject, "chip"}, std::nullopt}},
+          {}));
+  const std::string indexBytes =
+      take(test, serializePhysicalRepresentationIndexPayloadJson(index));
+  const ImplementationPayload indexPayload{
+      PayloadRole::RepresentationIndex, index.indexLogicalName,
+      take(test, blobs.put(bytes(indexBytes)))};
+  return take(test, createImplementationRepresentationRoot(
+                        RepresentationRootVariant::AsicPhysical,
+                        RepresentationPhysicalStage::Placed, format, top,
+                        {database, indexPayload}));
 }
 
 HardwareImplementationDraft basicDraft(llvm::StringRef test,
@@ -490,11 +550,11 @@ void systemRootAndTypedRepresentationRoundTrip(const ArtifactStore &artifacts,
   require(__func__, first.reference() == second.reference(),
           "authoring order changed HardwareImplementation identity");
   require(__func__,
-          first.reference().schemaVersion == SchemaVersion{2, 0} &&
+          first.reference().schemaVersion == SchemaVersion{2, 1} &&
               first.implementation().fabric() == fixture.system.reference() &&
               first.implementation().representationRoot().variant ==
                   RepresentationRootVariant::Rtl,
-          "finalized root did not retain the exact schema-2.0 owners");
+          "finalized root did not retain the exact schema-2.1 owners");
   const FinalizedHardwareImplementation imported =
       take(__func__,
            importHardwareImplementation(first.reference(), artifacts, blobs));
@@ -517,18 +577,39 @@ void nonRtlRepresentationRequiresPlatform(const ArtifactStore &artifacts,
 void targetSpecializationChangesIdentity(const ArtifactStore &artifacts,
                                          const BlobStore &blobs) {
   const Fixture fixture = makeFixture(__func__, artifacts);
-  const platform::FinalizedImplementationPlatform platform =
+  const platform::FinalizedImplementationPlatform firstPlatform =
       makeAsicPlatform(__func__, artifacts);
+  const platform::FinalizedImplementationPlatform secondPlatform =
+      makeAsicPlatform(__func__, artifacts, "saed05", "EDK_06_2026",
+                       "ss_0p65v_125c");
+  require(__func__, firstPlatform.reference() != secondPlatform.reference(),
+          "distinct platform fixture inputs converged to one identity");
   const FinalizedHardwareImplementation portable = take(
       __func__, finalizeHardwareImplementation(
                     basicDraft(__func__, fixture, blobs), artifacts, blobs));
-  HardwareImplementationDraft targeted = basicDraft(__func__, fixture, blobs);
-  targeted.implementationPlatform = platform.reference();
-  const FinalizedHardwareImplementation specialized =
-      take(__func__, finalizeHardwareImplementation(std::move(targeted),
+  HardwareImplementationDraft firstDraft = basicDraft(__func__, fixture, blobs);
+  firstDraft.implementationPlatform = firstPlatform.reference();
+  const FinalizedHardwareImplementation first =
+      take(__func__, finalizeHardwareImplementation(std::move(firstDraft),
                                                     artifacts, blobs));
-  require(__func__, portable.reference() != specialized.reference(),
-          "target specialization did not change implementation identity");
+  HardwareImplementationDraft secondDraft =
+      basicDraft(__func__, fixture, blobs);
+  secondDraft.implementationPlatform = secondPlatform.reference();
+  const FinalizedHardwareImplementation second =
+      take(__func__, finalizeHardwareImplementation(std::move(secondDraft),
+                                                    artifacts, blobs));
+  require(__func__,
+          portable.reference() != first.reference() &&
+              portable.reference() != second.reference() &&
+              first.reference() != second.reference(),
+          "exact target specialization did not distinguish implementation "
+          "identity");
+  require(__func__,
+          first.implementation().implementationPlatform() ==
+                  firstPlatform.reference() &&
+              second.implementation().implementationPlatform() ==
+                  secondPlatform.reference(),
+          "target specialization did not retain its exact platform reference");
 }
 
 void configurationAbiRequiresExactFabric(const ArtifactStore &artifacts,
@@ -659,34 +740,74 @@ void externalBindingsRejectIncompleteContracts(const ArtifactStore &artifacts,
               finalizeHardwareImplementation(std::move(incompatible), catalog,
                                              artifacts, blobs),
               "provider contract does not support the representation");
+
+  HardwareImplementationDraft unusedBlackBox =
+      externalDraft(__func__, fixture, blobs);
+  ExternalImplementationBindingDraft extra =
+      unusedBlackBox.externalImplementationBindings.front();
+  extra.representationLocators = {{RepresentationObjectKind::Module, "top"}};
+  unusedBlackBox.externalImplementationBindings.push_back(std::move(extra));
+  expectError(__func__,
+              finalizeHardwareImplementation(std::move(unusedBlackBox), catalog,
+                                             artifacts, blobs),
+              "black-box binding closes no indexed definition");
 }
 
 void externalDependencyIdentityExcludesMachinePaths(
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+    const std::filesystem::path &root, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
   const Fixture fixture = makeFixture(__func__, artifacts);
   const ExternalImplementationContractCatalog catalog = makeExternalCatalog();
-  const llvm::StringRef machineLocalPath =
-      "/home/build-user/vendor/lib/vendor_cell.lib";
+  const std::filesystem::path firstPath = root / "host-a" / "vendor_cell.lib";
+  const std::filesystem::path secondPath = root / "host-b" / "renamed.lib";
+  const llvm::StringRef contents = "library bytes shared across hosts\n";
+  writeFile(__func__, firstPath, contents);
+  writeFile(__func__, secondPath, contents);
 
-  HardwareImplementationDraft explicitDraft =
+  HardwareImplementationDraft firstDraft =
       externalDraft(__func__, fixture, blobs);
-  explicitDraft.externalImplementationBindings.front()
+  firstDraft.externalImplementationBindings.front()
       .externalInputs.front()
       .dependencyIdentity =
-      ExplicitFileDependency{fingerprint(machineLocalPath)};
-  const FinalizedHardwareImplementation explicitImplementation =
-      take(__func__, finalizeHardwareImplementation(std::move(explicitDraft),
+      ExplicitFileDependency{fingerprint(readFile(__func__, firstPath))};
+  const FinalizedHardwareImplementation first =
+      take(__func__, finalizeHardwareImplementation(std::move(firstDraft),
                                                     catalog, artifacts, blobs));
+  HardwareImplementationDraft secondDraft =
+      externalDraft(__func__, fixture, blobs);
+  secondDraft.externalImplementationBindings.front()
+      .externalInputs.front()
+      .dependencyIdentity =
+      ExplicitFileDependency{fingerprint(readFile(__func__, secondPath))};
+  const FinalizedHardwareImplementation second =
+      take(__func__, finalizeHardwareImplementation(std::move(secondDraft),
+                                                    catalog, artifacts, blobs));
+  require(__func__, first.reference() == second.reference(),
+          "machine-local dependency paths changed implementation identity");
   const llvm::ArrayRef<std::uint8_t> explicitBytes =
-      explicitImplementation.canonicalBytes().bytes();
+      first.canonicalBytes().bytes();
   const llvm::StringRef explicitJson(
       reinterpret_cast<const char *>(explicitBytes.data()),
       explicitBytes.size());
   require(__func__,
           explicitJson.contains(
-              formatExternalFileFingerprint(fingerprint(machineLocalPath))) &&
-              !explicitJson.contains(machineLocalPath),
+              formatExternalFileFingerprint(fingerprint(contents))) &&
+              !explicitJson.contains(firstPath.string()) &&
+              !explicitJson.contains(secondPath.string()),
           "explicit dependency did not retain only its content identity");
+
+  writeFile(__func__, secondPath, "different library bytes\n");
+  HardwareImplementationDraft changedDraft =
+      externalDraft(__func__, fixture, blobs);
+  changedDraft.externalImplementationBindings.front()
+      .externalInputs.front()
+      .dependencyIdentity =
+      ExplicitFileDependency{fingerprint(readFile(__func__, secondPath))};
+  const FinalizedHardwareImplementation changed =
+      take(__func__, finalizeHardwareImplementation(std::move(changedDraft),
+                                                    catalog, artifacts, blobs));
+  require(__func__, first.reference() != changed.reference(),
+          "changed dependency contents did not change implementation identity");
 
   HardwareImplementationDraft bundledDraft =
       externalDraft(__func__, fixture, blobs);
@@ -697,9 +818,7 @@ void externalDependencyIdentityExcludesMachinePaths(
   const FinalizedHardwareImplementation bundledImplementation =
       take(__func__, finalizeHardwareImplementation(std::move(bundledDraft),
                                                     catalog, artifacts, blobs));
-  require(__func__,
-          explicitImplementation.reference() !=
-              bundledImplementation.reference(),
+  require(__func__, first.reference() != bundledImplementation.reference(),
           "explicit and tool-bundled dependencies converged to one identity");
 }
 
@@ -781,7 +900,7 @@ void ownerLocalReferencesAreExactAndBounded(const ArtifactStore &artifacts,
   expectError(__func__,
               decodeHardwareImplementationLocalReference<
                   HardwareImplementationActivityPointRef>(wrongSchema),
-              "loom.hardware_implementation 2.0");
+              "loom.hardware_implementation 2.1");
 
   EncodedArtifactLocalReference malformed = wrongKind;
   malformed.payload.pop_back();
@@ -951,6 +1070,96 @@ void foreignAndDuplicateMemoryBindingsAreRejected(
               "memory macro binding is duplicated");
 }
 
+void physicalIndexClosesEveryFinalizerLocator(const ArtifactStore &artifacts,
+                                              const BlobStore &blobs) {
+  const MemoryFixture fixture = makeMemoryFixture(__func__, artifacts);
+  const platform::FinalizedImplementationPlatform platform =
+      makeAsicPlatform(__func__, artifacts);
+  auto systemView =
+      take(__func__, loom::fabric::requireSystemRoot(fixture.system.view()));
+  require(__func__, !systemView.spatialAttachments().empty(),
+          "physical finalizer fixture has no data endpoint");
+  const auto dataEndpoint =
+      systemView.spatialAttachments().front().spatialEndpoint;
+
+  ExternalImplementationContractCatalog catalog;
+  if (llvm::Error error = catalog.add(ExternalImplementationContract{
+          "physical.cell",
+          {{"library", {ExternalDependencyKind::ExplicitFile}}},
+          {RepresentationRootVariant::AsicPhysical},
+          false,
+          false,
+          nullptr}))
+    fail(__func__, llvm::toString(std::move(error)));
+  if (llvm::Error error = catalog.add(ExternalImplementationContract{
+          "physical.memory",
+          {{"library", {ExternalDependencyKind::ExplicitFile}}},
+          {RepresentationRootVariant::AsicPhysical},
+          false,
+          true,
+          nullptr}))
+    fail(__func__, llvm::toString(std::move(error)));
+
+  const RepresentationLocator data{RepresentationObjectKind::Port, "chip.data"};
+  const RepresentationLocator activity{RepresentationObjectKind::Net,
+                                       "chip.activity"};
+  const RepresentationLocator memory{RepresentationObjectKind::Memory,
+                                     "chip.memory"};
+  const RepresentationLocator external{RepresentationObjectKind::Cell,
+                                       "chip.external"};
+  HardwareImplementationDraft draft{
+      fixture.system.reference(),
+      fixture.abi.reference(),
+      {},
+      makeAsicPhysicalRepresentation(__func__, blobs),
+      platform.reference(),
+      {{ImplementationDataInterfaceRef{dataEndpoint}, data, std::nullopt}},
+      {{activity, fixture.memory}},
+      {{fixture.memory, 1, memory}},
+      {{"physical.cell",
+        {{"library", ExplicitFileDependency{fingerprint("cell.lib")}}},
+        {fixture.nonMemory},
+        {external},
+        std::nullopt},
+       {"physical.memory",
+        {{"library", ExplicitFileDependency{fingerprint("memory.lib")}}},
+        {fixture.memory},
+        {memory},
+        std::nullopt}}};
+
+  HardwareImplementationDraft missingInterface = draft;
+  missingInterface.interfaces.front().representationLocator.canonicalName =
+      "chip.missing";
+  expectError(__func__,
+              finalizeHardwareImplementation(std::move(missingInterface),
+                                             catalog, artifacts, blobs),
+              "interface locator is absent");
+
+  const FinalizedHardwareImplementation finalized =
+      take(__func__, finalizeHardwareImplementation(std::move(draft), catalog,
+                                                    artifacts, blobs));
+  require(__func__,
+          finalized.implementation().representationRoot().variant ==
+                  RepresentationRootVariant::AsicPhysical &&
+              finalized.implementation()
+                      .interfaces()
+                      .front()
+                      .representationLocator == data &&
+              finalized.implementation()
+                      .activityPoints()
+                      .front()
+                      .representationLocator == activity &&
+              finalized.implementation()
+                      .memoryMacroBindings()
+                      .front()
+                      .representationLocator == memory &&
+              finalized.implementation()
+                      .externalImplementationBindings()
+                      .front()
+                      .representationLocators.front() == external,
+          "physical finalization lost an indexed locator owner");
+}
+
 void oldCallerAuthoredBindingIdIsRejected(const ArtifactStore &artifacts,
                                           const BlobStore &blobs) {
   const Fixture fixture = makeFixture(__func__, artifacts);
@@ -1021,11 +1230,12 @@ int main(int argc, char **argv) {
   typedInterfaceReferencesRemainPhysical(artifacts, blobs);
   externalBindingsUseDerivedDenseIdentity(artifacts, blobs);
   externalBindingsRejectIncompleteContracts(artifacts, blobs);
-  externalDependencyIdentityExcludesMachinePaths(artifacts, blobs);
+  externalDependencyIdentityExcludesMachinePaths(root, artifacts, blobs);
   ownerLocalReferencesAreExactAndBounded(artifacts, blobs);
   repeatedModuleImportsKeepPhysicalExternalBindings(artifacts, blobs);
   memoryMacrosUsePhysicalOccurrencesAndDenseBindings(artifacts, blobs);
   foreignAndDuplicateMemoryBindingsAreRejected(artifacts, blobs);
+  physicalIndexClosesEveryFinalizerLocator(artifacts, blobs);
   oldCallerAuthoredBindingIdIsRejected(artifacts, blobs);
   oldCallerAuthoredInterfaceKeyIsRejected(artifacts, blobs);
   return EXIT_SUCCESS;

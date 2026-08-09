@@ -5,8 +5,10 @@ add_library(LoomHardwareImplementation
   HardwareImplementationValidation.cpp
   ImplementationPayload.cpp
   ImplementationRepresentationRoot.cpp
+  PhysicalRepresentationIndex.cpp
   RepresentationFormat.cpp
   RepresentationIndexCore.cpp
+  RepresentationIndexDispatch.cpp
   RepresentationLocator.cpp
 )
 

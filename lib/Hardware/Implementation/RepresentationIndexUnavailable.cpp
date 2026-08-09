@@ -1,14 +1,11 @@
-#include "Hardware/Implementation/RepresentationIndex.h"
+#include "RepresentationIndexInternal.h"
 
-namespace loom::hardware {
+namespace loom::hardware::detail {
 
-llvm::Expected<RepresentationIndex>
-indexRepresentation(RepresentationFormatDescriptorRef,
-                    const RepresentationLocator &,
-                    llvm::ArrayRef<ImplementationPayload>, const BlobStore &) {
-  return llvm::make_error<RepresentationIndexFailure>(
-      RepresentationIndexFailureKind::Unsupported,
-      "representation indexing requires CIRCT");
+llvm::Expected<RawIndex> indexHdlRepresentation(
+    RepresentationFormatDescriptorRef, const RepresentationLocator &,
+    llvm::ArrayRef<ImplementationPayload>, const BlobStore &) {
+  return unsupportedIndex("HDL representation indexing requires CIRCT");
 }
 
-} // namespace loom::hardware
+} // namespace loom::hardware::detail

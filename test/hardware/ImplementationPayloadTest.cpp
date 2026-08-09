@@ -86,7 +86,7 @@ std::vector<std::uint8_t> expectedBytes(std::uint32_t role,
 }
 
 void stableTagsAndBinaryCodecAreClosed() {
-  constexpr std::array<PayloadRole, 8> roles{
+  constexpr std::array<PayloadRole, 9> roles{
       PayloadRole::RtlSource,
       PayloadRole::Netlist,
       PayloadRole::PhysicalDatabase,
@@ -95,6 +95,7 @@ void stableTagsAndBinaryCodecAreClosed() {
       PayloadRole::DeviceImage,
       PayloadRole::GenerationConstraint,
       PayloadRole::BlackBoxContract,
+      PayloadRole::RepresentationIndex,
   };
   for (std::uint32_t tag = 0; tag < roles.size(); ++tag) {
     const ImplementationPayload payload{roles[tag], "rtl/top.sv",
@@ -125,11 +126,11 @@ void stableTagsAndBinaryCodecAreClosed() {
   expectError(__func__, decodeImplementationPayload(trailing), "trailing");
 
   std::vector<std::uint8_t> unknownRole = bytes;
-  unknownRole[3] = 8;
+  unknownRole[3] = 9;
   expectError(__func__, decodeImplementationPayload(unknownRole), "role");
   expectError(__func__,
               encodeImplementationPayload(
-                  {static_cast<PayloadRole>(8), "rtl/top.sv", digest("rtl")}),
+                  {static_cast<PayloadRole>(9), "rtl/top.sv", digest("rtl")}),
               "role");
 
   std::vector<std::uint8_t> excessiveLength = bytes;
@@ -150,9 +151,16 @@ void stableTagsAndBinaryCodecAreClosed() {
 }
 
 void exactJsonCodecIsClosed() {
-  constexpr std::array<llvm::StringLiteral, 8> spellings{
-      "RtlSource",    "Netlist",     "PhysicalDatabase",     "Parasitics",
-      "LayoutStream", "DeviceImage", "GenerationConstraint", "BlackBoxContract",
+  constexpr std::array<llvm::StringLiteral, 9> spellings{
+      "RtlSource",
+      "Netlist",
+      "PhysicalDatabase",
+      "Parasitics",
+      "LayoutStream",
+      "DeviceImage",
+      "GenerationConstraint",
+      "BlackBoxContract",
+      "RepresentationIndex",
   };
   for (std::uint32_t tag = 0; tag < spellings.size(); ++tag) {
     const ImplementationPayload payload{static_cast<PayloadRole>(tag),
