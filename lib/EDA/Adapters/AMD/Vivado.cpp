@@ -115,10 +115,14 @@ constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 3> workUnits = {{
     {CandidateGeneratorWorkUnitRef(2), "fpga_image_publication"},
 }};
 
-constexpr std::array<llvm::StringLiteral, 6> declaredOutputPaths = {
-    "outputs/synthesized.dcp", "outputs/synthesis.json",
-    "outputs/routed.dcp",      "outputs/fpga-physical.json",
-    "outputs/device.bit",      "outputs/fpga-image.json",
+enum DeclaredOutput : std::size_t {
+  SynthesizedCheckpointOutput,
+  SynthesisMetadataOutput,
+  RoutedCheckpointOutput,
+  PhysicalMetadataOutput,
+  DeviceImageOutput,
+  ImageMetadataOutput,
+  DeclaredOutputCount,
 };
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -401,10 +405,26 @@ bool sameLocalToolBinding(const ResolvedToolBinding &lhs,
 struct InvocationInputs final {
   std::string top;
   std::string device;
+  std::array<std::string, DeclaredOutputCount> declaredOutputs;
+  std::string imageLogicalName;
   std::vector<std::string> rtlSources;
   std::vector<std::string> constraints;
   std::vector<MaterializedBundleFile> files;
 };
+
+bool isVersalDevice(llvm::StringRef device) {
+  return device.starts_with("xcvh") || device.starts_with("xcvp");
+}
+
+std::array<std::string, DeclaredOutputCount>
+declaredOutputPaths(llvm::StringRef device) {
+  return {"outputs/synthesized.dcp",
+          "outputs/synthesis.json",
+          "outputs/routed.dcp",
+          "outputs/fpga-physical.json",
+          isVersalDevice(device) ? "outputs/device.pdi" : "outputs/device.bit",
+          "outputs/fpga-image.json"};
+}
 
 llvm::Expected<InvocationInputs> collectInvocationInputs(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
@@ -454,7 +474,7 @@ llvm::Error validateExactManifestContract(
 const CandidateGeneratorDescriptor descriptor{
     vivadoStaticFullDeviceCandidateGeneratorKind,
     "eda.amd.vivado_static_full_device",
-    "loom.eda.amd.vivado_static_full_device.generator.v2",
+    "loom.eda.amd.vivado_static_full_device.generator.v3",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -502,7 +522,14 @@ llvm::Expected<InvocationInputs> collectInvocationInputs(
   if (!hardware.memoryMacroBindings().empty())
     return unsupported("input RTL requires unsupported memory macro binding");
   for (const ExternalImplementationBinding &external :
-       hardware.externalImplementationBindings())
+       hardware.externalImplementationBindings()) {
+    auto physicalInputs = contracts.canonicalizeAndValidateInputs(
+        external.providerContractRef, external.externalInputs,
+        RepresentationRootVariant::FpgaPhysical);
+    if (!physicalInputs)
+      return unsupported("external implementation cannot be retained in "
+                         "FpgaPhysical: " +
+                         llvm::toString(physicalInputs.takeError()));
     for (const ExternalInputBinding &input : external.externalInputs) {
       if (std::holds_alternative<ExplicitFileDependency>(
               input.dependencyIdentity))
@@ -516,6 +543,7 @@ llvm::Expected<InvocationInputs> collectInvocationInputs(
         return unsupported(
             "RTL bundled resource belongs to another provider build");
     }
+  }
   if (hardware.implementationPlatform() &&
       *hardware.implementationPlatform() != targetPlatform->reference())
     return unsupported(
@@ -534,6 +562,9 @@ llvm::Expected<InvocationInputs> collectInvocationInputs(
   InvocationInputs result;
   result.top = root.top.canonicalName;
   result.device = fpga->deviceOrderingCode;
+  result.declaredOutputs = declaredOutputPaths(result.device);
+  result.imageLogicalName =
+      isVersalDevice(result.device) ? "image/device.pdi" : "image/device.bit";
   std::uint64_t rtlOrdinal = 0;
   std::uint64_t constraintOrdinal = 0;
   for (const ImplementationPayload &payload : root.payloads) {
@@ -722,8 +753,8 @@ llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
     appendInheritedEnvironment(
         specification.inheritEnvironment,
         context.localConfig.polyArchContainer.inheritEnvironment);
-  for (llvm::StringRef output : declaredOutputPaths)
-    specification.declaredOutputs.push_back(output.str());
+  specification.declaredOutputs.assign(inputs->declaredOutputs.begin(),
+                                       inputs->declaredOutputs.end());
   specification.files = std::move(inputs->files);
   specification.files.push_back(
       {"drivers/synthesize.tcl", std::move(*synthesis), std::nullopt, false});
@@ -736,13 +767,14 @@ llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
                                               specification);
 }
 
-llvm::Error rejectUndeclaredOutputs(llvm::StringRef bundleRoot) {
+llvm::Error rejectUndeclaredOutputs(
+    llvm::StringRef bundleRoot,
+    const std::array<std::string, DeclaredOutputCount> &declaredOutputs) {
   const std::filesystem::path outputs =
       std::filesystem::path(bundleRoot.str()) / "outputs";
-  const std::set<std::string> allowed{
-      "synthesized.dcp",    "synthesis.json", "routed.dcp",
-      "fpga-physical.json", "device.bit",     "fpga-image.json",
-      "completion.json",    "stdout.log",     "stderr.log"};
+  std::set<std::string> allowed{"completion.json", "stdout.log", "stderr.log"};
+  for (const std::string &output : declaredOutputs)
+    allowed.insert(std::filesystem::path(output).filename().string());
   std::set<std::string> found;
   std::error_code error;
   const std::filesystem::file_status rootStatus =
@@ -947,11 +979,19 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
   for (const MaterializedBundleFile &file : inputs->files)
     expectation.semanticInputs.push_back(
         {file.relativePath, *file.sourceArtifact, digest(file.contents)});
-  for (llvm::StringRef output : declaredOutputPaths)
-    expectation.declaredOutputs.push_back(output.str());
+  expectation.declaredOutputs.assign(inputs->declaredOutputs.begin(),
+                                     inputs->declaredOutputs.end());
   auto attempt = importExternalToolInvocationAttempt(prepared, expectation);
   if (!attempt)
     return attempt.takeError();
+  auto config = adoptResolvedVivadoStaticFullDeviceConfigView(
+      descriptorBytes(), binding.canonicalConfigBytes(),
+      binding.configDigest());
+  if (!config)
+    return config.takeError();
+  if (llvm::Error error =
+          validateExactManifestContract(prepared, *inputs, *config))
+    return std::move(error);
   if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))
     return llvm::make_error<IncompleteExternalToolInvocationError>();
   if (const auto *failed =
@@ -964,12 +1004,11 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
       reason = CandidateGeneratorIncompleteReason::ProviderUnavailable;
       break;
     case InvocationCompletionStatus::ToolExit:
+    case InvocationCompletionStatus::MissingOutput:
       reason = CandidateGeneratorIncompleteReason::ExecutionFailed;
       break;
     case InvocationCompletionStatus::BundleContentMismatch:
       return invalid("invocation bundle content changed before execution");
-    case InvocationCompletionStatus::MissingOutput:
-      return invalid("Vivado invocation omitted a declared output");
     case InvocationCompletionStatus::Success:
       return invalid("failed invocation outcome carries success status");
     }
@@ -985,23 +1024,16 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
   }
   ImportedExternalToolInvocationBundle imported =
       std::get<ImportedExternalToolInvocationBundle>(std::move(*attempt));
-  auto config = adoptResolvedVivadoStaticFullDeviceConfigView(
-      descriptorBytes(), binding.canonicalConfigBytes(),
-      binding.configDigest());
-  if (!config)
-    return config.takeError();
   if (llvm::Error error =
-          validateExactManifestContract(prepared, *inputs, *config))
-    return std::move(error);
-  if (llvm::Error error = rejectUndeclaredOutputs(prepared.bundleRoot))
+          rejectUndeclaredOutputs(prepared.bundleRoot, inputs->declaredOutputs))
     return std::move(error);
 
   auto synthesized = readExternalToolInvocationDeclaredOutput(
-      imported, declaredOutputPaths[0]);
+      imported, inputs->declaredOutputs[SynthesizedCheckpointOutput]);
   if (!synthesized)
     return synthesized.takeError();
   auto synthesisFacts = readExternalToolInvocationDeclaredOutput(
-      imported, declaredOutputPaths[1]);
+      imported, inputs->declaredOutputs[SynthesisMetadataOutput]);
   if (!synthesisFacts)
     return synthesisFacts.takeError();
   if (synthesized->empty())
@@ -1010,11 +1042,11 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
     return invalid("synthesis metadata is not exact");
 
   auto routed = readExternalToolInvocationDeclaredOutput(
-      imported, declaredOutputPaths[2]);
+      imported, inputs->declaredOutputs[RoutedCheckpointOutput]);
   if (!routed)
     return routed.takeError();
   auto physicalFacts = readExternalToolInvocationDeclaredOutput(
-      imported, declaredOutputPaths[3]);
+      imported, inputs->declaredOutputs[PhysicalMetadataOutput]);
   if (!physicalFacts)
     return physicalFacts.takeError();
   if (routed->empty())
@@ -1023,11 +1055,11 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
     return invalid("physical metadata is not exact");
 
   auto bitstream = readExternalToolInvocationDeclaredOutput(
-      imported, declaredOutputPaths[4]);
+      imported, inputs->declaredOutputs[DeviceImageOutput]);
   if (!bitstream)
     return bitstream.takeError();
   auto imageFacts = readExternalToolInvocationDeclaredOutput(
-      imported, declaredOutputPaths[5]);
+      imported, inputs->declaredOutputs[ImageMetadataOutput]);
   if (!imageFacts)
     return imageFacts.takeError();
   if (bitstream->empty())
@@ -1049,8 +1081,8 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
   auto publishedImage = publishFpgaImageImplementation(
       *publishedPhysical,
       inputBindings[ImplementationPlatformInput].artifacts.front(),
-      inputs->device, "image/device.bit", *bitstream, contracts, artifacts,
-      blobs);
+      inputs->device, inputs->imageLogicalName, *bitstream, contracts,
+      artifacts, blobs);
   if (!publishedImage)
     return publishedImage.takeError();
 
@@ -1249,7 +1281,9 @@ renderVivadoImageDriver(llvm::StringRef topModule,
   std::string driver = exactDevicePreamble(deviceOrderingCode);
   driver += "open_checkpoint {outputs/routed.dcp}\n";
   driver += designCoherenceChecks(topModule);
-  driver += "write_bitstream -force {outputs/device.bit}\n";
+  driver += isVersalDevice(deviceOrderingCode)
+                ? "write_device_image -force {outputs/device.pdi}\n"
+                : "write_bitstream -force {outputs/device.bit}\n";
   driver += metadataWriter("outputs/fpga-image.json",
                            imageMetadata(topModule, deviceOrderingCode));
   return driver;

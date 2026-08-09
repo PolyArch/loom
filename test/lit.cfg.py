@@ -17,6 +17,7 @@ for executable, feature in (
     ("yosys", "yosys"),
     ("openroad", "openroad-2026-08-06"),
     ("quartus_sh", "quartus-prime-pro-26.1"),
+    ("vivado", "vivado-2024.2.2"),
 ):
     if shutil.which(executable, path=config.environment.get("PATH")):
         config.available_features.add(feature)

@@ -1,4 +1,5 @@
 #include "EDA/Adapters/AMD/Vivado.h"
+#include "EDA/Adapters/FpgaImplementationPublication.h"
 
 #include "ConfigurationABI2TestSupport.h"
 
@@ -68,6 +69,9 @@ constexpr llvm::StringLiteral kConstraint =
     "set_property IOSTANDARD LVCMOS33 [get_ports {a y}]\n";
 constexpr llvm::StringLiteral kNativeContract = "test.amd.native";
 constexpr llvm::StringLiteral kNativeModule = "amd_native_cell";
+constexpr llvm::StringLiteral kNativeImageResource =
+    "device_78637668313738322d6c737661343733372d3348502d652d53."
+    "external_module_616d645f6e61746976655f63656c6c";
 constexpr llvm::StringLiteral kNativeResource = "amd:test-native-cell";
 constexpr CandidateGeneratorOutputSlotRef kPhysicalOutput(0);
 constexpr CandidateGeneratorOutputSlotRef kImageOutput(1);
@@ -310,13 +314,16 @@ makeImplementation(llvm::StringRef test, const Fixture &fixture,
 }
 
 ExternalImplementationContractCatalog
-makeNativeContractCatalog(llvm::StringRef test) {
+makeNativeContractCatalog(llvm::StringRef test, bool supportsPhysical = true) {
   ExternalImplementationContractCatalog catalog;
+  std::vector<RepresentationRootVariant> representations{
+      RepresentationRootVariant::Rtl};
+  if (supportsPhysical)
+    representations.push_back(RepresentationRootVariant::FpgaPhysical);
   if (llvm::Error error = catalog.add(ExternalImplementationContract{
           kNativeContract.str(),
           {{"primitive", {ExternalDependencyKind::ToolBundledResource}}},
-          {RepresentationRootVariant::Rtl,
-           RepresentationRootVariant::FpgaPhysical},
+          std::move(representations),
           true,
           false,
           nullptr}))
@@ -356,7 +363,9 @@ FinalizedHardwareImplementation makeNativeImplementation(
       {{ImplementationDataInterfaceRef{fixture.firstDataEndpoint},
         {RepresentationObjectKind::Port, "top.a"},
         std::nullopt}},
-      {{{RepresentationObjectKind::Module, "top"}, fixture.firstOwner}},
+      {{{RepresentationObjectKind::Module, "top"}, fixture.firstOwner},
+       {{RepresentationObjectKind::Module, kNativeModule.str()},
+        fixture.firstOwner}},
       {},
       {{kNativeContract.str(),
         {{"primitive",
@@ -391,7 +400,8 @@ std::string imageMetadata(llvm::StringRef part) {
 }
 
 void makeFakeVivado(const std::filesystem::path &path, bool badMetadata,
-                    bool deviceAvailable = true, bool failSynthesis = false) {
+                    bool deviceAvailable = true, bool failSynthesis = false,
+                    bool omitImage = false) {
   std::string script =
       "#!/usr/bin/env bash\n"
       "set -euo pipefail\n"
@@ -430,10 +440,11 @@ void makeFakeVivado(const std::filesystem::path &path, bool badMetadata,
       "' >outputs/fpga-physical.json\n"
       "    ;;\n"
       "  drivers/image.tcl)\n"
-      "    [[ -s outputs/routed.dcp ]]\n"
-      "    printf 'SYNTHETIC-BITSTREAM\\n' >outputs/device.bit\n"
-      "    printf '%s' '" +
-      imageMetadata(kSyntheticPart) +
+      "    [[ -s outputs/routed.dcp ]]\n" +
+      (omitImage
+           ? ""
+           : "    printf 'SYNTHETIC-DEVICE-IMAGE\\n' >outputs/device.pdi\n") +
+      "    printf '%s' '" + imageMetadata(kSyntheticPart) +
       "' >outputs/fpga-image.json\n"
       "    ;;\n"
       "  *) exit 64 ;;\n"
@@ -525,7 +536,7 @@ void descriptorAndConfigAreExact() {
               descriptor.outputSlots.size() == 2 &&
               descriptor.providerForm == ProviderForm::ExternalPrepareImport &&
               descriptor.implementationSemanticIdentity ==
-                  "loom.eda.amd.vivado_static_full_device.generator.v2" &&
+                  "loom.eda.amd.vivado_static_full_device.generator.v3" &&
               descriptor.determinism ==
                   CandidateGeneratorDeterminism::IndependentReplicates,
           "Vivado descriptor shape is not exact");
@@ -574,6 +585,8 @@ void driversAreDeterministicAndDoNotInfer() {
       take(__func__, renderVivadoImplementationDriver("top", kSyntheticPart));
   const std::string image =
       take(__func__, renderVivadoImageDriver("top", kSyntheticPart));
+  const std::string ultrascaleImage =
+      take(__func__, renderVivadoImageDriver("top", kSupportedParts[2]));
   require(
       __func__,
       llvm::StringRef(implementation)
@@ -581,8 +594,11 @@ void driversAreDeterministicAndDoNotInfer() {
           llvm::StringRef(implementation).contains("place_design") &&
           llvm::StringRef(implementation).contains("route_design") &&
           llvm::StringRef(implementation).contains("outputs/synthesized.dcp") &&
-          llvm::StringRef(image).contains("write_bitstream") &&
-          llvm::StringRef(image).contains("outputs/routed.dcp"),
+          llvm::StringRef(image).contains("write_device_image") &&
+          llvm::StringRef(image).contains("outputs/device.pdi") &&
+          llvm::StringRef(image).contains("outputs/routed.dcp") &&
+          llvm::StringRef(ultrascaleImage).contains("write_bitstream") &&
+          llvm::StringRef(ultrascaleImage).contains("outputs/device.bit"),
       "implementation and image drivers do not form the exact route");
   expectFailureContains(
       __func__,
@@ -708,6 +724,22 @@ void requirePublishedResult(llvm::StringRef test, const LaneFixture &fixture,
                                     summary.consumed == 1;
                            }),
           "successful publication did not consume all three work units");
+
+  const ExternalImplementationContractCatalog contracts;
+  expectFailureContains(test,
+                        loom::eda::publishRoutedFpgaPhysicalImplementation(
+                            fixture.implementation,
+                            fixture.platform.reference(), kSupportedParts[1],
+                            "database/wrong-device.dcp", "wrong\n", contracts,
+                            fixture.artifacts, fixture.blobs),
+                        "device");
+  expectFailureContains(test,
+                        loom::eda::publishFpgaImageImplementation(
+                            physical, fixture.platform.reference(),
+                            kSupportedParts[1], "image/wrong-device.pdi",
+                            "wrong\n", contracts, fixture.artifacts,
+                            fixture.blobs),
+                        "device");
 }
 
 PreparedExternalToolInvocation
@@ -781,6 +813,16 @@ void bundleLifecycleIsStrict(const std::filesystem::path &root) {
                     fixture.inputs, fixture.binding, unexecuted,
                     fixture.artifacts, fixture.blobs));
 
+  const PreparedExternalToolInvocation invalidUnexecuted = rewriteManifestText(
+      __func__,
+      prepareBundle(__func__, fixture, root / "invalid-unexecuted", tool),
+      "\"-version\"", "\"--version\"");
+  expectFailureContains(__func__,
+                        importCandidateGeneratorInvocation(
+                            fixture.inputs, fixture.binding, invalidUnexecuted,
+                            fixture.artifacts, fixture.blobs),
+                        "provider probe");
+
   const std::filesystem::path failingTool = root / "tools" / "failing-vivado";
   makeFakeVivado(failingTool, false, true, true);
   const PreparedExternalToolInvocation failed =
@@ -817,6 +859,20 @@ void bundleLifecycleIsStrict(const std::filesystem::path &root) {
               executionFailed->retainedOutputBindings[0].artifacts.empty() &&
               executionFailed->retainedOutputBindings[1].artifacts.empty(),
           "tool failure did not remain an output-free typed result");
+
+  const PreparedExternalToolInvocation invalidFailed = rewriteManifestText(
+      __func__,
+      prepareBundle(__func__, fixture, root / "invalid-failed", failingTool),
+      "\"-version\"", "\"--version\"");
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(invalidFailed)) ==
+              9,
+          "invalid failed fixture did not preserve the tool exit code");
+  expectFailureContains(__func__,
+                        importCandidateGeneratorInvocation(
+                            fixture.inputs, fixture.binding, invalidFailed,
+                            fixture.artifacts, fixture.blobs),
+                        "provider probe");
 
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(first)) == 0,
@@ -908,12 +964,34 @@ void bundleLifecycleIsStrict(const std::filesystem::path &root) {
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(missing)) == 0,
           "missing-output fixture did not execute");
-  std::filesystem::remove(root / "missing" / "outputs" / "device.bit");
+  std::filesystem::remove(root / "missing" / "outputs" / "device.pdi");
   expectFailureContains(__func__,
                         importCandidateGeneratorInvocation(
                             fixture.inputs, fixture.binding, missing,
                             fixture.artifacts, fixture.blobs),
-                        "device.bit");
+                        "device.pdi");
+
+  const std::filesystem::path missingOutputTool =
+      root / "tools" / "missing-output-vivado";
+  makeFakeVivado(missingOutputTool, false, true, false, true);
+  const PreparedExternalToolInvocation missingOutput = prepareBundle(
+      __func__, fixture, root / "missing-at-execution", missingOutputTool);
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(missingOutput)) !=
+              0,
+          "execution-time missing output fixture returned success");
+  CandidateGeneratorProviderResult missingOutputResult =
+      take(__func__, importCandidateGeneratorInvocation(
+                         fixture.inputs, fixture.binding, missingOutput,
+                         fixture.artifacts, fixture.blobs));
+  const auto *missingOutputFailure =
+      std::get_if<IncompleteCandidateGeneratorResult>(
+          &missingOutputResult.outcome);
+  require(__func__,
+          missingOutputFailure &&
+              missingOutputFailure->reason ==
+                  CandidateGeneratorIncompleteReason::ExecutionFailed,
+          "execution-time missing output was not a typed execution failure");
 
   const PreparedExternalToolInvocation extra =
       prepareBundle(__func__, fixture, root / "extra", tool);
@@ -963,6 +1041,12 @@ void explicitContractCatalogPublishesNativeClosure(
       __func__, resolveVivadoStaticFullDeviceCandidateGeneratorBinding(config));
   const std::filesystem::path tool = root / "tools" / "native-vivado";
   makeFakeVivado(tool, false);
+  ExternalImplementationContractCatalog rtlOnlyContracts =
+      makeNativeContractCatalog(__func__, false);
+  expectTypedFailure<VivadoStaticFullDeviceUnsupportedError>(
+      __func__, prepareVivadoStaticFullDeviceInvocation(
+                    inputs, binding, rtlOnlyContracts, artifacts, blobs,
+                    preparationContext(root / "native-incompatible", tool)));
   PreparedExternalToolInvocation prepared =
       take(__func__, prepareVivadoStaticFullDeviceInvocation(
                          inputs, binding, contracts, artifacts, blobs,
@@ -998,7 +1082,14 @@ void explicitContractCatalogPublishesNativeClosure(
               std::vector<RepresentationLocator>{
                   {RepresentationObjectKind::Module, kNativeModule.str()}} &&
           physicalBindings.front().externalInputs.size() == 1 &&
-          image.implementation().externalImplementationBindings().empty(),
+          image.implementation().externalImplementationBindings().empty() &&
+          llvm::any_of(image.implementation().activityPoints(),
+                       [](const ActivityPoint &point) {
+                         return point.representationLocator ==
+                                RepresentationLocator{
+                                    RepresentationObjectKind::DeviceResource,
+                                    kNativeImageResource.str()};
+                       }),
       "explicit native contract closure was not preserved then absorbed");
 }
 

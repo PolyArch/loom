@@ -1,0 +1,3 @@
+# REQUIRES: vivado-2024.2.2
+# RUN: rm -rf %t
+# RUN: %loom-vivado-static-full-device-test --real-smoke %t amd/vivado/2024.2 xcvu47p-fsvh2892-3-e "SW Build 6060944 on Thu Mar 06 19:10:09 MST 2025" %S/Inputs/Vivado/top.xdc

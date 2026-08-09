@@ -558,6 +558,14 @@ llvm::Expected<InvocationInputs> collectInvocationInputs(
         "RTL HImpl2 requires an unsupported memory macro binding");
   for (const ExternalImplementationBinding &external :
        hardware.externalImplementationBindings()) {
+    auto physicalInputs = contracts.canonicalizeAndValidateInputs(
+        external.providerContractRef, external.externalInputs,
+        RepresentationRootVariant::FpgaPhysical);
+    if (!physicalInputs)
+      return unsupported<InvocationInputs>(
+          QuartusPrimeUnsupportedReason::InputRepresentation,
+          "external implementation cannot be retained in FpgaPhysical: " +
+              llvm::toString(physicalInputs.takeError()));
     for (const ExternalInputBinding &input : external.externalInputs) {
       if (std::holds_alternative<ExplicitFileDependency>(
               input.dependencyIdentity))

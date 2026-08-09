@@ -4,6 +4,7 @@
 #include "Common/BlobStore.h"
 #include "Hardware/Implementation/PhysicalRepresentationIndex.h"
 #include "Hardware/Implementation/RepresentationIndex.h"
+#include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -24,10 +25,22 @@ llvm::Error invalid(const llvm::Twine &message) {
                                      message);
 }
 
+std::string encodeIdentifier(llvm::StringRef prefix, llvm::StringRef value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string result = prefix.str();
+  result.reserve(result.size() + value.size() * 2);
+  for (const unsigned char byte : value.bytes()) {
+    result.push_back(kHex[byte >> 4]);
+    result.push_back(kHex[byte & 0x0f]);
+  }
+  return result;
+}
+
 llvm::Expected<RepresentationLocator>
 projectPhysicalLocator(const RepresentationLocator &locator,
                        const RepresentationLocator &sourceTop,
-                       const RepresentationLocator &physicalTop) {
+                       const RepresentationLocator &physicalTop,
+                       bool retainExternalBindings) {
   if (locator == sourceTop)
     return physicalTop;
   const std::string rootedPrefix = sourceTop.canonicalName + ".";
@@ -37,8 +50,14 @@ projectPhysicalLocator(const RepresentationLocator &locator,
                           llvm::StringRef(locator.canonicalName)
                               .drop_front(sourceTop.canonicalName.size())
                               .str()};
-  if (locator.kind == RepresentationObjectKind::Module)
+  if (locator.kind == RepresentationObjectKind::Module &&
+      retainExternalBindings)
     return locator;
+  if (locator.kind == RepresentationObjectKind::Module)
+    return RepresentationLocator{
+        RepresentationObjectKind::DeviceResource,
+        physicalTop.canonicalName + "." +
+            encodeIdentifier("external_module_", locator.canonicalName)};
   return invalid("ordinary source locator is not rooted at the source top");
 }
 
@@ -64,8 +83,8 @@ projectImplementationMetadata(const FinalizedHardwareImplementation &source,
 
   const auto addReferencedObject =
       [&](const RepresentationLocator &sourceLocator) -> llvm::Error {
-    auto projected =
-        projectPhysicalLocator(sourceLocator, sourceRoot.top, physicalTop);
+    auto projected = projectPhysicalLocator(
+        sourceLocator, sourceRoot.top, physicalTop, retainExternalBindings);
     if (!projected)
       return projected.takeError();
     if (llvm::any_of(result.objects, [&](const auto &object) {
@@ -90,8 +109,9 @@ projectImplementationMetadata(const FinalizedHardwareImplementation &source,
     if (llvm::Error error =
             addReferencedObject(interface.representationLocator))
       return std::move(error);
-    auto projected = projectPhysicalLocator(interface.representationLocator,
-                                            sourceRoot.top, physicalTop);
+    auto projected =
+        projectPhysicalLocator(interface.representationLocator, sourceRoot.top,
+                               physicalTop, retainExternalBindings);
     if (!projected)
       return projected.takeError();
     interface.representationLocator = std::move(*projected);
@@ -102,8 +122,9 @@ projectImplementationMetadata(const FinalizedHardwareImplementation &source,
   for (ActivityPoint &point : result.activityPoints) {
     if (llvm::Error error = addReferencedObject(point.representationLocator))
       return std::move(error);
-    auto projected = projectPhysicalLocator(point.representationLocator,
-                                            sourceRoot.top, physicalTop);
+    auto projected =
+        projectPhysicalLocator(point.representationLocator, sourceRoot.top,
+                               physicalTop, retainExternalBindings);
     if (!projected)
       return projected.takeError();
     point.representationLocator = std::move(*projected);
@@ -120,8 +141,8 @@ projectImplementationMetadata(const FinalizedHardwareImplementation &source,
     for (RepresentationLocator &locator : locators) {
       if (llvm::Error error = addReferencedObject(locator))
         return std::move(error);
-      auto projected =
-          projectPhysicalLocator(locator, sourceRoot.top, physicalTop);
+      auto projected = projectPhysicalLocator(
+          locator, sourceRoot.top, physicalTop, retainExternalBindings);
       if (!projected)
         return projected.takeError();
       locator = std::move(*projected);
@@ -150,8 +171,9 @@ projectImplementationMetadata(const FinalizedHardwareImplementation &source,
                      "implementation");
     if (llvm::Error error = addReferencedObject(binding.representationLocator))
       return std::move(error);
-    auto projected = projectPhysicalLocator(binding.representationLocator,
-                                            sourceRoot.top, physicalTop);
+    auto projected =
+        projectPhysicalLocator(binding.representationLocator, sourceRoot.top,
+                               physicalTop, retainExternalBindings);
     if (!projected)
       return projected.takeError();
     result.memoryBindings.push_back(MemoryMacroBindingDraft{
@@ -179,6 +201,14 @@ publishRepresentation(const FinalizedHardwareImplementation &source,
                       const ArtifactStore &artifacts, const BlobStore &blobs) {
   const ImplementationRepresentationRoot &sourceRoot =
       source.implementation().representationRoot();
+  auto targetPlatform =
+      platform::importImplementationPlatform(implementationPlatform, artifacts);
+  if (!targetPlatform)
+    return targetPlatform.takeError();
+  const auto *fpga =
+      std::get_if<platform::FpgaTarget>(&targetPlatform->platform().target());
+  if (!fpga || fpga->deviceOrderingCode != device)
+    return invalid("device ordering code does not match the FPGA platform");
   if (source.implementation().implementationPlatform() &&
       *source.implementation().implementationPlatform() !=
           implementationPlatform)
@@ -249,14 +279,7 @@ publishRepresentation(const FinalizedHardwareImplementation &source,
 } // namespace
 
 std::string fpgaDeviceResourceLocatorName(llvm::StringRef deviceOrderingCode) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string result = "device_";
-  result.reserve(result.size() + deviceOrderingCode.size() * 2);
-  for (const unsigned char byte : deviceOrderingCode.bytes()) {
-    result.push_back(kHex[byte >> 4]);
-    result.push_back(kHex[byte & 0x0f]);
-  }
-  return result;
+  return encodeIdentifier("device_", deviceOrderingCode);
 }
 
 llvm::Expected<FinalizedHardwareImplementation>
@@ -286,6 +309,12 @@ llvm::Expected<FinalizedHardwareImplementation> publishFpgaImageImplementation(
       routedPhysical.implementation().representationRoot().stage !=
           RepresentationPhysicalStage::Routed)
     return invalid("FpgaImage source is not a routed FpgaPhysical state");
+  const RepresentationLocator expectedTop{
+      RepresentationObjectKind::DeviceResource,
+      fpgaDeviceResourceLocatorName(deviceOrderingCode)};
+  if (!(routedPhysical.implementation().representationRoot().top ==
+        expectedTop))
+    return invalid("FpgaImage device does not match its routed physical state");
   return publishRepresentation(
       routedPhysical, implementationPlatform, deviceOrderingCode,
       RepresentationRootVariant::FpgaImage, std::nullopt,
