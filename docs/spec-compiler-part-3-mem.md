@@ -141,6 +141,11 @@ analysis may conservatively group an unresolved access while building an event
 network, but finalization rejects any such residual producer rather than
 granting it an external-memory authority.
 
+A source-origin `llvm.alloca` accepted by the Structured
+`PromoteSpscBufferToChannel` decision is not an exception to this rule. That
+decision must remove the complete proved allocation closure before D0; a
+residual allocation or pointer use remains non-canonical and is rejected.
+
 Access-to-partition membership is kept in a transient operation map before
 SCF operands are projected. Selector demuxing must not change alias identity.
 The map is discarded after explicit event edges are emitted.

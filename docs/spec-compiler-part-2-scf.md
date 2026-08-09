@@ -930,6 +930,20 @@ the allocation's exact logical domain. Their affine event correspondence must
 be a bijection with identical payload type and order. The allocation has no
 other read, write, capture, alias, escape, or observation.
 
+The fresh allocation may be an ordinary static `memref.alloc`, or a
+source-origin `llvm.alloca` that the same proof can eliminate completely. The
+LLVM form is eligible only when it allocates exactly one non-empty,
+statically-sized aggregate with one primitive scalar leaf type, is not
+`inalloca`, and has one exact lifetime interval when lifetime markers are
+present. Outside those markers, its result may occur only as the matching body
+operand of the two launches. Within each selected thread, every use of that
+formal must resolve through in-bounds constant-offset GEPs, or the zero-offset
+formal itself, to one scalar load or store. The two lexical event sequences
+must each cover the same dense offsets exactly once in strictly increasing
+order. Unknown size, padding between scalar leaves, dynamic or repeated
+offsets, casts, nested pointer escape, or any residual use makes the decision
+absent.
+
 The launch and effect proof must also establish that moving the consumer
 launch before the producer-completion wait is behavior-preserving: the
 consumer performs no externally visible effect before its first blocking
@@ -946,6 +960,12 @@ Dataflow channel owner derives endpoint identity, event correspondence, and
 any required source map from the resulting program. The decision does not
 select logical capacity, a physical FIFO, a NoC, a memory-backed queue, or a
 route.
+
+For a source-origin LLVM allocation, materialization also removes its proved
+GEPs and lifetime markers. No LLVM pointer, allocation, memory-service root, or
+pointer-to-memref bridge survives from that temporary into D0. Both allocation
+representations therefore materialize the same channel operations and the same
+decision kind rather than defining representation-specific transforms.
 
 All four decisions choose software-visible logical storage, order, or carrier
 structure. They never choose a physical SRAM, bank, address, coalescing or

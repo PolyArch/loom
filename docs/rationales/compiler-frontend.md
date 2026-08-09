@@ -566,6 +566,16 @@ distinctions. `StageConstantGlobal` introduces an explicit logical buffer,
 canonical channel operations. Each decision materializes ordinary IR and then
 disappears; no persistent plan object is needed.
 
+Source LLVM commonly represents a fixed local array as `llvm.alloca`, while
+the same logical temporary may already be a `memref.alloc` after an upstream
+Structured transform. Requiring an eager pointer-to-memref bridge would add a
+second memory-root interpretation and would be unnecessary when the complete
+temporary is about to disappear. The channel proof therefore admits only the
+closed LLVM allocation form whose size, scalar leaves, lifetime, launch uses,
+and dense ordered offsets are all exact. Promotion deletes that entire pointer
+closure and emits the same channel operations as the memref form. Any case that
+would leave a pointer or require inferred alias authority stays unpromotable.
+
 Adjacent storage-position exchange is sufficient because repeated exchanges
 generate every dense permutation. Enumerating complete permutations in one
 decision would make the same final layout reachable through a factorial
