@@ -127,8 +127,8 @@ class CorpusSummaryValidationTest(unittest.TestCase):
 
         result = semantic_baseline.validate_corpus_summary(summary, workloads)
 
-        self.assertEqual(result["workloads"], 889)
-        self.assertEqual(result["passed"], 842)
+        self.assertEqual(result["workloads"], 892)
+        self.assertEqual(result["passed"], 845)
         self.assertEqual(result["unsupported"], 47)
         self.assertEqual(len(result["unsupported_rows"]), 47)
 

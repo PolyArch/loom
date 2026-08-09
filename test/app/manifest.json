@@ -2,6 +2,17 @@
   "schema_version": "2.0",
   "cases": [
     {
+      "case": "attention",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run"],
+      "feature_tags": ["attention", "matrix", "softmax", "reduction", "buffer", "stream"],
+      "compiler_flags": ["-fno-math-errno"],
+      "link_flags": ["-lm"],
+      "expected_executables": ["attention_func", "attention_inline"]
+    },
+    {
       "case": "autocorrelation",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],
@@ -1124,6 +1135,17 @@
       "expected_executables": ["spmspm_func", "spmspm_inline"]
     },
     {
+      "case": "stencil3d",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run"],
+      "feature_tags": ["stencil", "3d", "boundary", "nested-loop", "reuse", "stream"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["stencil3d_func", "stencil3d_inline"]
+    },
+    {
       "case": "sort_bubble",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],
@@ -1342,6 +1364,17 @@
       "compiler_flags": [],
       "link_flags": [],
       "expected_executables": ["vecadd_func", "vecadd_inline"]
+    },
+    {
+      "case": "vector_pack",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run"],
+      "feature_tags": ["vector", "bit", "reinterpretation", "pack", "unpack"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["vector_pack_func", "vector_pack_inline"]
     },
     {
       "case": "vecmul",

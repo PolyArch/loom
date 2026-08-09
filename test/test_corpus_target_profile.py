@@ -71,11 +71,11 @@ class CorpusTargetProfileTest(unittest.TestCase):
             for workload in workloads
         )
 
-        self.assertEqual(len(workloads), 889)
+        self.assertEqual(len(workloads), 892)
         self.assertEqual(
             counts,
             {
-                corpus_target_profile.TargetProfileDisposition.RUNNABLE: 842,
+                corpus_target_profile.TargetProfileDisposition.RUNNABLE: 845,
                 corpus_target_profile.TargetProfileDisposition.INCOMPATIBLE_ISA: 47,
             },
         )

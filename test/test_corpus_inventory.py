@@ -34,9 +34,9 @@ class DualInventoryContractTest(unittest.TestCase):
 
         self.assertEqual(
             Counter(workload.suite for workload in workloads),
-            {"loombench": 132, "cmsis-dsp": 571, "cmsis-nn": 186},
+            {"loombench": 135, "cmsis-dsp": 571, "cmsis-nn": 186},
         )
-        self.assertEqual(len(workloads), 889)
+        self.assertEqual(len(workloads), 892)
         self.assertEqual(
             len({workload.operator_id for workload in workloads}),
             len(workloads),
@@ -67,6 +67,22 @@ class DualInventoryContractTest(unittest.TestCase):
         self.assertEqual(workload.oracle.kind, "expected-stdout")
         self.assertEqual(workload.oracle.path, "test/app/axpy/expected.txt")
         self.assertEqual(workload.vector_identity, "axpy:manifest-vector")
+
+        new_cases = {"attention", "stencil3d", "vector_pack"}
+        added = {
+            row.vector_identity.removesuffix(":manifest-vector"): row
+            for row in workloads
+            if row.suite == "loombench"
+            and row.vector_identity
+            in {f"{case}:manifest-vector" for case in new_cases}
+        }
+        self.assertEqual(set(added), new_cases)
+        for case, row in added.items():
+            self.assertEqual(row.sources, (f"test/app/{case}/main_func.c",))
+            self.assertEqual(row.entry_symbol, "main")
+            self.assertEqual(row.oracle.kind, "expected-stdout")
+            self.assertEqual(row.oracle.path, f"test/app/{case}/expected.txt")
+            self.assertEqual(row.vector_identity, f"{case}:manifest-vector")
 
     def test_cmsis_workloads_are_upstream_test_owners(self) -> None:
         workloads = corpus_inventory.load_workload_inventory(ROOT)

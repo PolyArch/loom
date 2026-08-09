@@ -1,0 +1,2 @@
+stencil3d checksum: 152412
+PASSED
