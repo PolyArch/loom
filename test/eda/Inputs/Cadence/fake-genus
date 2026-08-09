@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1-}" == "-version" ]]; then
+  printf '%s\n' 'Program Name: Genus fixture 26.1'
+  exit 0
+fi
+
+if [[ "$#" -ne 3 || "$1" != "-batch" || "$2" != "-files" ||
+      "$3" != "drivers/genus.tcl" ]]; then
+  exit 64
+fi
+
+test -f drivers/genus.tcl
+cat > outputs/genus-gate-netlist.v <<'EOF'
+module top(a, y);
+  input a;
+  output y;
+  wire a;
+  wire y;
+  INVX1 u0 (.A(a), .Y(y));
+endmodule
+EOF
