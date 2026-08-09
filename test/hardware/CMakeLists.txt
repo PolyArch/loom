@@ -614,6 +614,22 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-cadence-chipware-scalar-integer-multiply-test
+    CadenceChipWareScalarIntegerMultiplyTest.cpp
+  )
+
+  target_link_libraries(loom-cadence-chipware-scalar-integer-multiply-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-amd-xilinx-scalar-integer-multiply-test
     AmdXilinxScalarIntegerMultiplyTest.cpp
   )

@@ -34,6 +34,7 @@ add_library(LoomHardwareRTL
   Providers/MathRounding.cpp
   Providers/MathRoot.cpp
   Providers/AmdXilinxScalarIntegerMultiply.cpp
+  Providers/Native/ChipWare.cpp
   Providers/Native/DesignWare.cpp
   Providers/ProviderSupport.cpp
   Providers/ScalarBitReinterpret.cpp
