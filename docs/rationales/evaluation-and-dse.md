@@ -467,7 +467,10 @@ The common in-process model interface provides exact artifacts and immutable
 configuration views. Scratch placement, cancellation, resource scheduling,
 and operational logging remain caller-owned execution concerns; they are not
 semantic model inputs or ambient provider authority. An external model instead
-prepares an exact invocation bundle and imports its declared result. Neither
+prepares an exact invocation bundle and imports its declared result. If the
+valid exact Request lies outside a stable provider capability, preparation may
+instead return the existing typed Unsupported outcome. Evaluation, not the
+provider, binds that outcome to the Request and finalizes Evidence. Neither
 interface gives a model mutable DSE state, objective weights, or permission to
 promote or replace candidates.
 
@@ -514,6 +517,13 @@ the caller or site scheduler; another authorized attempt may retain the same
 logical WorkUnitKey. Adding execution claims or mutable Job states would repeat
 facts already owned by the bundle completion record, ExecutionJournal, and
 external scheduler.
+
+A stable capability rejection precedes that lifecycle. Returning typed
+Unsupported before bundle construction preserves the exact Request as a
+negative cache without inventing an executable no-op attempt. Restricting this
+branch to `RuntimeCapabilityUnavailable` also prevents preparation from
+claiming tool failure, cancellation, or completed observations that only a real
+attempt and strict importer can establish.
 
 Passing three independent strings or byte arrays to bundle finalization would
 still let each adapter implement a private descriptor codec and accidentally

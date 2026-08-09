@@ -722,4 +722,8 @@ its exact PGV tree. Keeping the first model to one global supply, temperature,
 and activity clock with one period avoids inventing a premature domain-to-layout
 schema while making the limitation observable as typed `Unsupported`.
 Multi-domain or dynamic analysis can add an exact model when its physical
-correspondence is owned, without weakening the existing whole-case metric.
+correspondence is owned, without weakening the existing whole-case metric. A
+preparation-time capability rejection finalizes that existing outcome directly;
+manufacturing a no-op Voltus bundle would create an attempt that never measured
+the requested physical implementation and would make completion a second
+capability authority.

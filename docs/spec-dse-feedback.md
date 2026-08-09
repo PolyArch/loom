@@ -666,7 +666,7 @@ EvaluationProviderImplementation =
               ArtifactStore,
               BlobStore,
               ExternalToolPreparationContext)
-        -> Expected<PreparedExternalToolInvocation>
+        -> Expected<EvaluationPreparationResult>
       import(EvaluationRequest,
              CaseArtifactResolution,
              PreparedExternalToolInvocation,
@@ -679,6 +679,10 @@ EvaluationModelResult {
     dense array<ModelOutputSlotRef, canonical ArtifactRootReference collection>
   outcome: EvaluationEvidenceOutcome
 }
+
+EvaluationPreparationResult =
+    PreparedExternalToolInvocation
+  | Unsupported { reason: RuntimeCapabilityUnavailable }
 ```
 
 `EvaluationModelResult` is a transient provider return, not another persistent
@@ -692,15 +696,23 @@ The exact finalized `EvaluationRequest` is the external form's complete
 semantic closure. `RequestVerifier`, case-signature callbacks, and Artifact-
 family importers remain the admission owners; `prepare` invokes those owners as
 needed and adds only descriptor-specific consumption plus local invocation
-preflight. It materializes one finalized bundle but does not execute a process,
-publish an output Artifact, or publish Evidence. `import` accepts the same
-Request and exact prepared bundle only after strict completion validation. It
-first finalizes every descriptor-owned output Artifact, then returns one
+preflight. When the exact valid Request is outside the provider's stable
+capability, `prepare` returns only the existing typed
+`Unsupported(RuntimeCapabilityUnavailable)` result. The Evaluation owner
+mechanically supplies the descriptor's dense empty output bindings, validates
+the result, and finalizes Evidence; the provider does not create Evidence. No
+script, bundle, attempt, or completion record exists on that path.
+
+Otherwise `prepare` materializes one finalized bundle but does not execute a
+process, publish an output Artifact, or publish Evidence. `import` accepts the
+same Request and exact prepared bundle only after strict completion validation.
+It first finalizes every descriptor-owned output Artifact, then returns one
 `EvaluationModelResult`. The Evaluation owner validates that result and
 finalizes `EvaluationEvidence`; the provider never writes Evidence directly.
 Already finalized but unreferenced output roots may remain after a later
 Evidence-publication failure, but no partial output binding or Evidence is
-published.
+published. `ExecutionFailed`, `CancelledOrTimeout`, and completed results cannot
+be produced by preparation because each requires a real attempted execution.
 
 The caller alone decides whether, where, and when to execute `run.sh`. The
 ordinary `evaluateRequest` facade applies only to `InProcess`; a synchronous

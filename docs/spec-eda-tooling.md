@@ -149,8 +149,9 @@ implementation stage and does not turn those bytes into Platform fields.
 
 ## Invocation Bundles
 
-An exact generator or evaluator descriptor's `prepare` operation emits one
-finalized `ExternalToolInvocationBundle` containing
+An exact generator descriptor's successful `prepare`, or the prepared branch
+of an evaluator descriptor's `prepare`, emits one finalized
+`ExternalToolInvocationBundle` containing
 exact materialized Artifact inputs, frozen references to declared external
 files, generated constraints, workload inputs and expected observations where
 applicable, provider Tcl/Python or equivalent drivers, a top-level Bash script,
@@ -177,6 +178,13 @@ A missing or unsupported required owner fails before the first point at which
 that owner could be consumed. Raw RTL, a free top name, a caller-authored
 semantic-binding string, or a backend-default constraint is never an alternate
 input.
+
+An evaluator whose exact valid Request is outside its stable provider
+capability returns typed `Unsupported(RuntimeCapabilityUnavailable)` directly
+from preparation. Evaluation finalizes that outcome against the exact Request;
+the adapter does not generate a no-op script or fabricated completion record.
+Candidate generation has no corresponding terminal semantic result and retains
+the single prepared-bundle form.
 
 The top-level script performs no discovery and does not contain a second copy
 of result-affecting model or generator configuration. Tool options that can
