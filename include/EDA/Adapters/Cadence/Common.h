@@ -110,7 +110,8 @@ llvm::Error validateCadenceRepresentation(
 
 llvm::Error validateCadenceProviderInputs(
     const CadenceInvocationDescriptor &descriptor,
-    llvm::ArrayRef<external_tool::ResolvedExternalFile> inputs);
+    llvm::ArrayRef<external_tool::ResolvedExternalFile> files,
+    llvm::ArrayRef<external_tool::ResolvedExternalFileTree> fileTrees);
 
 /// A binding already frozen by the shared resolver. No adapter API accepts a
 /// LocalToolConfig, probes PATH, activates modules, or chooses a runtime.
@@ -121,6 +122,7 @@ struct CadenceFrozenInvocation final {
   external_tool::ToolVersionProbe containerVersionProbe;
   std::vector<std::string> inheritEnvironment;
   std::vector<external_tool::ResolvedExternalFile> externalFiles;
+  std::vector<external_tool::ResolvedExternalFileTree> externalFileTrees;
 };
 
 struct CadenceBundleInputs final {
@@ -132,6 +134,10 @@ struct CadenceBundleInputs final {
   CadenceFrozenInvocation frozen;
   std::vector<external_tool::MaterializedBundleFile> semanticInputs;
 };
+
+llvm::Error
+validateCadenceInvocationInputs(const CadenceInvocationDescriptor &descriptor,
+                                const CadenceBundleInputs &inputs);
 
 llvm::Error
 validateCadenceSemanticInputs(const CadenceInvocationDescriptor &descriptor,

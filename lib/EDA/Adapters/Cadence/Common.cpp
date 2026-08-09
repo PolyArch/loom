@@ -62,8 +62,9 @@ llvm::Error validateTarget(const CadenceInvocationDescriptor &descriptor,
   return llvm::Error::success();
 }
 
-llvm::Error validateBundleInputs(const CadenceInvocationDescriptor &descriptor,
-                                 const CadenceBundleInputs &inputs) {
+llvm::Error
+validateInvocationInputs(const CadenceInvocationDescriptor &descriptor,
+                         const CadenceBundleInputs &inputs) {
   const bool generatorOperation =
       descriptor.operation == CadenceOperation::LogicSynthesis ||
       descriptor.operation == CadenceOperation::PhysicalImplementation;
@@ -96,8 +97,9 @@ llvm::Error validateBundleInputs(const CadenceInvocationDescriptor &descriptor,
         CadenceAdapterFailureKind::DescriptorMismatch,
         descriptor.implementationSemanticIdentity,
         "frozen tool binding has key '" + inputs.frozen.tool.toolKey + "'");
-  if (llvm::Error error = validateCadenceProviderInputs(
-          descriptor, inputs.frozen.externalFiles))
+  if (llvm::Error error =
+          validateCadenceProviderInputs(descriptor, inputs.frozen.externalFiles,
+                                        inputs.frozen.externalFileTrees))
     return error;
   for (const external_tool::MaterializedBundleFile &file :
        inputs.semanticInputs) {
@@ -132,6 +134,11 @@ makeExpectation(const CadenceInvocationDescriptor &descriptor,
     expectation.externalInputs.push_back(
         external_tool::ExternalToolInvocationExternalInput{
             file.providerInputSlot, file.fingerprint});
+  for (const external_tool::ResolvedExternalFileTree &tree :
+       inputs.frozen.externalFileTrees)
+    expectation.externalFileTrees.push_back(
+        external_tool::ExternalToolInvocationExternalFileTree{
+            tree.providerInputSlot, tree.members});
   for (llvm::StringLiteral output : descriptor.declaredOutputs)
     expectation.declaredOutputs.push_back(output.str());
   return expectation;
@@ -315,11 +322,21 @@ llvm::Error validateCadenceRepresentation(
 
 llvm::Error validateCadenceProviderInputs(
     const CadenceInvocationDescriptor &descriptor,
-    llvm::ArrayRef<external_tool::ResolvedExternalFile> inputs) {
+    llvm::ArrayRef<external_tool::ResolvedExternalFile> files,
+    llvm::ArrayRef<external_tool::ResolvedExternalFileTree> fileTrees) {
   std::vector<std::string> actual;
-  actual.reserve(inputs.size());
-  for (const external_tool::ResolvedExternalFile &input : inputs)
-    actual.push_back(input.providerInputSlot);
+  actual.reserve(files.size() + fileTrees.size());
+  for (const external_tool::ResolvedExternalFile &file : files)
+    actual.push_back(file.providerInputSlot);
+  for (const external_tool::ResolvedExternalFileTree &tree : fileTrees) {
+    if (llvm::Error error = external_tool::validateExternalFileTreeRequirement(
+            {tree.providerInputSlot, tree.members}))
+      return makeCadenceAdapterError(
+          CadenceAdapterFailureKind::DescriptorMismatch,
+          descriptor.implementationSemanticIdentity,
+          llvm::toString(std::move(error)));
+    actual.push_back(tree.providerInputSlot);
+  }
   llvm::sort(actual);
   if (std::adjacent_find(actual.begin(), actual.end()) != actual.end())
     return makeCadenceAdapterError(
@@ -338,6 +355,12 @@ llvm::Error validateCadenceProviderInputs(
         descriptor.implementationSemanticIdentity,
         "resolved provider input slots do not match the descriptor");
   return llvm::Error::success();
+}
+
+llvm::Error
+validateCadenceInvocationInputs(const CadenceInvocationDescriptor &descriptor,
+                                const CadenceBundleInputs &inputs) {
+  return validateInvocationInputs(descriptor, inputs);
 }
 
 llvm::Error
@@ -376,7 +399,7 @@ makeCadenceInvocationBundleSpec(
     const CadenceBundleInputs &inputs,
     std::vector<std::vector<std::string>> commands,
     std::vector<external_tool::MaterializedBundleFile> drivers) {
-  if (llvm::Error error = validateBundleInputs(descriptor, inputs))
+  if (llvm::Error error = validateInvocationInputs(descriptor, inputs))
     return std::move(error);
   for (const external_tool::MaterializedBundleFile &driver : drivers)
     if (driver.sourceArtifact ||
@@ -405,7 +428,7 @@ makeCadenceInvocationBundleSpec(
       std::move(outputs),
       std::move(files),
       inputs.frozen.externalFiles,
-      {}};
+      inputs.frozen.externalFileTrees};
 }
 
 llvm::Expected<external_tool::ImportedExternalToolInvocationBundle>
@@ -413,7 +436,7 @@ importCadenceInvocation(
     const CadenceInvocationDescriptor &descriptor,
     const external_tool::PreparedExternalToolInvocation &prepared,
     const CadenceBundleInputs &inputs) {
-  if (llvm::Error error = validateBundleInputs(descriptor, inputs))
+  if (llvm::Error error = validateInvocationInputs(descriptor, inputs))
     return std::move(error);
 
   auto attempt = external_tool::importExternalToolInvocationAttempt(

@@ -14,10 +14,10 @@ const CadenceInvocationDescriptor &voltusRailDescriptor();
 llvm::Expected<VoltusRailObservation>
 parseVoltusRailObservation(llvm::StringRef contents);
 
-/// Voltus rail preparation remains closed until ExternalTool can freeze a
-/// complete directory-valued PGV input. Treating one member file as the
-/// directory identity would allow undeclared commercial inputs to affect the
-/// result.
+/// Voltus rail preparation requires a complete directory-valued PGV input.
+/// It remains closed until the exact Evaluation model projects its analysis
+/// method, activity basis, network coverage, and supply conditions into a
+/// provider configuration.
 llvm::Expected<external_tool::ExternalToolInvocationBundleSpec>
 makeVoltusRailBundleSpec(const CadenceBundleInputs &inputs);
 

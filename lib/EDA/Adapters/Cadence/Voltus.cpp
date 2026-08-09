@@ -1,5 +1,6 @@
 #include "EDA/Adapters/Cadence/Voltus.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/JSON.h"
 
 namespace loom::eda::cadence {
@@ -60,25 +61,23 @@ parseVoltusRailObservation(llvm::StringRef contents) {
 
 llvm::Expected<external_tool::ExternalToolInvocationBundleSpec>
 makeVoltusRailBundleSpec(const CadenceBundleInputs &inputs) {
-  if (inputs.semanticContract.providerIdentity !=
-      descriptor.implementationSemanticIdentity)
-    return makeCadenceAdapterError(
-        CadenceAdapterFailureKind::DescriptorMismatch,
-        descriptor.implementationSemanticIdentity,
-        "semantic contract provider does not match the adapter");
-  if (!inputs.implementation)
-    return makeCadenceAdapterError(
-        CadenceAdapterFailureKind::MissingSemanticInput,
-        descriptor.implementationSemanticIdentity,
-        "exact HardwareImplementation representation is absent");
-  if (llvm::Error error =
-          validateCadenceRepresentation(descriptor, *inputs.implementation))
+  if (llvm::Error error = validateCadenceInvocationInputs(descriptor, inputs))
     return std::move(error);
+
+  const auto powerGridLibrary =
+      llvm::find_if(inputs.frozen.externalFileTrees, [](const auto &tree) {
+        return tree.providerInputSlot == "power_grid_library";
+      });
+  if (powerGridLibrary == inputs.frozen.externalFileTrees.end())
+    return makeCadenceAdapterError(
+        CadenceAdapterFailureKind::MissingProviderInput,
+        descriptor.implementationSemanticIdentity,
+        "power_grid_library must be one exact external file tree");
   return makeCadenceAdapterError(
-      CadenceAdapterFailureKind::MissingProviderInput,
+      CadenceAdapterFailureKind::PublicationUnavailable,
       descriptor.implementationSemanticIdentity,
-      "ExternalTool has no directory-valued fingerprint for the complete "
-      "Voltus power_grid_library closure");
+      "the exact Evaluation model has no Voltus rail analysis configuration "
+      "projection");
 }
 
 } // namespace loom::eda::cadence
