@@ -129,9 +129,10 @@ prepareOpenRoadPlacedInvocation(
     const OpenRoadResolvedExecution &execution,
     const external_tool::ExternalToolPreparationContext &context);
 
-/// Strictly imports one exact completed attempt. Until a shared physical
-/// representation format/index owner exists, a valid attempt returns the
-/// descriptor's dense typed Unsupported result and publishes no Artifact.
+/// Strictly imports one exact attempt. A successful placed result publishes an
+/// indexed AsicPhysical HardwareImplementation. Ordinary provider failures
+/// remain dense non-publishing outcomes; integrity and incomplete attempts are
+/// errors.
 llvm::Expected<dse::CandidateGeneratorProviderResult>
 importOpenRoadPlacedInvocation(
     llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,

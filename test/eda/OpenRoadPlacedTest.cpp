@@ -253,7 +253,8 @@ InvocationFixture makeInvocationFixture(llvm::StringRef test,
       contracts.add(loom::hardware::ExternalImplementationContract{
           "openroad.synthetic_cell",
           {{"library", {loom::hardware::ExternalDependencyKind::ExplicitFile}}},
-          {loom::hardware::RepresentationRootVariant::GateNetlist},
+          {loom::hardware::RepresentationRootVariant::GateNetlist,
+           loom::hardware::RepresentationRootVariant::AsicPhysical},
           true,
           false,
           nullptr}));
@@ -383,6 +384,19 @@ makeSyntheticInvocationHarness(llvm::StringRef test,
                                 std::move(resolvedTool),
                                 std::move(runtime),
                                 {}});
+}
+
+void writeFailingSyntheticOpenRoad(llvm::StringRef test,
+                                   const std::filesystem::path &root) {
+  const std::string toolBody =
+      "#!/usr/bin/env bash\n"
+      "set -eu\n"
+      "if [[ ${1-} == --version ]]; then\n"
+      "  printf '%s\\n' 'OpenROAD synthetic 2026.08.06'\n"
+      "  exit 0\n"
+      "fi\n"
+      "exit 37\n";
+  writeText(test, root / "synthetic-openroad", toolBody, true);
 }
 
 OpenRoadPlacementParameters parameters() {
@@ -580,6 +594,17 @@ void invocationBundleIsTheOnlyAttemptLifecycle(
 
   const std::string manifest =
       readText(__func__, root / "bundle-a" / "tool-invocation.json");
+  const loom::external_tool::ExternalToolSemanticContract semanticContract =
+      take(__func__, loom::dse::deriveExternalToolSemanticContract(
+                         harness.inputs, harness.binding));
+  require(__func__,
+          llvm::StringRef(manifest).contains("\"provider_identity\": \"" +
+                                             semanticContract.providerIdentity +
+                                             "\"") &&
+              llvm::StringRef(manifest).contains(
+                  "\"result_importer_identity\": \"" +
+                  semanticContract.resultImporterIdentity + "\""),
+          "bundle did not transport the owner-derived semantic contract");
   require(__func__,
           llvm::StringRef(manifest).contains("[\n      \"" +
                                              harness.execution.tool.executable +
@@ -593,6 +618,12 @@ void invocationBundleIsTheOnlyAttemptLifecycle(
               llvm::StringRef(manifest).contains(
                   "\"resolved_binding\": \"0000000000000023"),
           "candidate closure did not use the central owner codec");
+  for (llvm::StringRef slot :
+       {"technology_lef", "cell_lef.cells", "liberty.timing"})
+    require(__func__,
+            llvm::StringRef(manifest).contains("\"provider_input_slot\": \"" +
+                                               slot.str() + "\""),
+            "manifest omitted exact external input slot " + slot.str());
   const std::string driver =
       readText(__func__, root / "bundle-a" / "drivers" / "openroad.tcl");
   require(__func__,
@@ -615,26 +646,114 @@ void invocationBundleIsTheOnlyAttemptLifecycle(
       __func__,
       importOpenRoadPlacedInvocation(harness.inputs, harness.binding, first,
                                      fixture.contracts, artifacts, blobs));
-  const auto *unsupported =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+  const auto *completed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
           &imported.outcome);
-  require(
-      __func__,
-      unsupported &&
-          unsupported->reason ==
-              loom::dse::CandidateGeneratorIncompleteReason::Unsupported &&
-          unsupported->retainedOutputBindings.size() == 1 &&
-          unsupported->retainedOutputBindings.front().artifacts.empty(),
-      "valid physical attempt crossed the unavailable publication boundary");
+  require(__func__,
+          completed && completed->outputBindings.size() == 1 &&
+              completed->outputBindings.front().slot ==
+                  loom::dse::CandidateGeneratorOutputSlotRef(0) &&
+              completed->outputBindings.front().artifacts.size() == 1 &&
+              completed->lineageEdges.size() == 1 &&
+              completed->lineageEdges.front().kind ==
+                  loom::dse::CandidateGeneratorLineageEdgeKind::
+                      MechanicalDerivation &&
+              completed->lineageEdges.front().output ==
+                  completed->outputBindings.front().artifacts.front(),
+          "valid physical attempt did not publish one placed implementation");
   require(__func__,
           imported.workSummary ==
               std::vector<loom::dse::CandidateGeneratorWorkUnitSummary>{
                   {loom::dse::CandidateGeneratorWorkUnitRef(0), 1, 1}},
           "valid physical attempt lost exact work accounting");
+  const loom::hardware::FinalizedHardwareImplementation placed =
+      take(__func__, loom::hardware::importHardwareImplementation(
+                         completed->outputBindings.front().artifacts.front(),
+                         fixture.contracts, artifacts, blobs));
+  const loom::hardware::ImplementationRepresentationRoot &placedRoot =
+      placed.implementation().representationRoot();
+  require(__func__,
+          placed.implementation().fabric() ==
+                  fixture.gate.implementation().fabric() &&
+              placed.implementation().configurationAbi() ==
+                  fixture.gate.implementation().configurationAbi() &&
+              placed.implementation().implementationPlatform() ==
+                  fixture.gate.implementation().implementationPlatform() &&
+              placedRoot.variant ==
+                  loom::hardware::RepresentationRootVariant::AsicPhysical &&
+              placedRoot.stage ==
+                  loom::hardware::RepresentationPhysicalStage::Placed &&
+              placedRoot.formatRef.kind() ==
+                  loom::hardware::RepresentationFormatKind::IndexedPhysical &&
+              placedRoot.top ==
+                  loom::hardware::RepresentationLocator{
+                      loom::hardware::RepresentationObjectKind::PhysicalObject,
+                      "top"},
+          "placed implementation lost its exact source and platform state");
+  const auto databasePayload = llvm::find_if(
+      placedRoot.payloads, [](const loom::hardware::ImplementationPayload &p) {
+        return p.role == loom::hardware::PayloadRole::PhysicalDatabase;
+      });
+  require(__func__, databasePayload != placedRoot.payloads.end(),
+          "placed implementation omitted the physical database payload");
+  require(__func__,
+          take(__func__, blobs.get(databasePayload->blobDigest)) ==
+              bytes("synthetic placed database\n"),
+          "placed implementation did not publish the declared database");
+  const auto placedExternal =
+      placed.implementation().externalImplementationBindings();
+  const auto gateExternal =
+      fixture.gate.implementation().externalImplementationBindings();
+  require(__func__,
+          llvm::none_of(
+              placedRoot.payloads,
+              [](const loom::hardware::ImplementationPayload &payload) {
+                return payload.role == loom::hardware::PayloadRole::Netlist;
+              }) &&
+              placedExternal.size() == 1 && gateExternal.size() == 1 &&
+              placedExternal.front().providerContractRef ==
+                  gateExternal.front().providerContractRef &&
+              placedExternal.front().externalInputs ==
+                  gateExternal.front().externalInputs &&
+              placedExternal.front().representationLocators ==
+                  gateExternal.front().representationLocators &&
+              placedExternal.front().blackBoxContractPayloadRef ==
+                  gateExternal.front().blackBoxContractPayloadRef,
+          "placed implementation leaked the input netlist or lost external "
+          "bindings");
   require(__func__,
           readText(__func__, root / "bundle-a" / "outputs" / "placed.odb") ==
               "synthetic placed database\n",
           "execution did not remove and replace stale declared output");
+
+  const std::string workingSyntheticTool =
+      readText(__func__, root / "synthetic-openroad");
+  writeFailingSyntheticOpenRoad(__func__, root);
+  const auto failed = prepareAt("bundle-failed");
+  require(
+      __func__,
+      take(__func__, loom::external_tool::executeExternalToolInvocationBundle(
+                         failed)) == 37,
+      "synthetic OpenROAD failure did not preserve its exit code");
+  const loom::dse::CandidateGeneratorProviderResult failedImport = take(
+      __func__,
+      importOpenRoadPlacedInvocation(harness.inputs, harness.binding, failed,
+                                     fixture.contracts, artifacts, blobs));
+  const auto *executionFailed =
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &failedImport.outcome);
+  require(
+      __func__,
+      executionFailed &&
+          executionFailed->reason ==
+              loom::dse::CandidateGeneratorIncompleteReason::ExecutionFailed &&
+          executionFailed->retainedOutputBindings.size() == 1 &&
+          executionFailed->retainedOutputBindings.front().artifacts.empty() &&
+          failedImport.workSummary ==
+              std::vector<loom::dse::CandidateGeneratorWorkUnitSummary>{
+                  {loom::dse::CandidateGeneratorWorkUnitRef(0), 1, 1}},
+      "failed completion did not remain a typed non-publishing result");
+  writeText(__func__, root / "synthetic-openroad", workingSyntheticTool, true);
 
   OpenRoadPlacedConfig changedConfig = fixture.config;
   changedConfig.placement.placementDensityPpm += 1000;
@@ -763,16 +882,23 @@ void realOpenRoadPlacedSmoke(const std::filesystem::path &root,
       __func__,
       importOpenRoadPlacedInvocation(harness.inputs, harness.binding, prepared,
                                      fixture.contracts, artifacts, blobs));
-  const auto *unsupported =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+  const auto *completed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
           &imported.outcome);
   require(__func__,
-          unsupported &&
-              unsupported->reason ==
-                  loom::dse::CandidateGeneratorIncompleteReason::Unsupported &&
-              unsupported->retainedOutputBindings.size() == 1 &&
-              unsupported->retainedOutputBindings.front().artifacts.empty(),
-          "real placed attempt crossed the unavailable publication boundary");
+          completed && completed->outputBindings.size() == 1 &&
+              completed->outputBindings.front().artifacts.size() == 1,
+          "real placed attempt did not publish one implementation");
+  const loom::hardware::FinalizedHardwareImplementation placed =
+      take(__func__, loom::hardware::importHardwareImplementation(
+                         completed->outputBindings.front().artifacts.front(),
+                         fixture.contracts, artifacts, blobs));
+  require(__func__,
+          placed.implementation().representationRoot().variant ==
+                  loom::hardware::RepresentationRootVariant::AsicPhysical &&
+              placed.implementation().representationRoot().stage ==
+                  loom::hardware::RepresentationPhysicalStage::Placed,
+          "real OpenROAD output did not remain exactly placed");
   require(__func__,
           std::filesystem::file_size(root / "bundle" / "outputs" /
                                      "placed.odb") > 0,

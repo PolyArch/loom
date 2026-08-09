@@ -7,6 +7,8 @@
 #include "ExternalTool/ExternalFile.h"
 #include "ExternalTool/InvocationBundle.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
+#include "Hardware/Implementation/PhysicalRepresentationIndex.h"
+#include "Hardware/Implementation/RepresentationIndex.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -36,8 +38,6 @@ constexpr llvm::StringLiteral kResultSchema = "loom.openroad_physical_attempt";
 constexpr llvm::StringLiteral kResultVersion = "1.0";
 constexpr llvm::StringLiteral kProviderIdentity =
     "loom.openroad.placed_asic_physical.v1";
-constexpr llvm::StringLiteral kImporterIdentity =
-    "loom.openroad.placed_asic_physical_importer.v1";
 constexpr llvm::StringLiteral kDatabaseOutput = "outputs/placed.odb";
 constexpr llvm::StringLiteral kResultOutput = "outputs/placed-result.json";
 
@@ -347,61 +347,6 @@ std::string canonicalResult(llvm::StringRef topModule) {
          topModule.str() + "\"}\n";
 }
 
-void appendU32Be(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
-  for (int shift = 24; shift >= 0; shift -= 8)
-    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
-}
-
-void appendU64Be(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
-  for (int shift = 56; shift >= 0; shift -= 8)
-    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
-}
-
-void appendFramed(std::vector<std::uint8_t> &destination,
-                  llvm::ArrayRef<std::uint8_t> value) {
-  appendU64Be(destination, value.size());
-  destination.insert(destination.end(), value.begin(), value.end());
-}
-
-std::vector<std::uint8_t> canonicalInputBindingBytes(
-    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs) {
-  std::vector<std::uint8_t> bytes;
-  appendU64Be(bytes, inputs.size());
-  for (const dse::CandidateGeneratorInputBinding &input : inputs) {
-    appendU32Be(bytes, input.slot.ordinal());
-    appendU64Be(bytes, input.artifacts.size());
-    for (const ArtifactRootReference &artifact : input.artifacts) {
-      const std::vector<std::uint8_t> encoded =
-          encodeArtifactRootReference(artifact);
-      bytes.insert(bytes.end(), encoded.begin(), encoded.end());
-    }
-  }
-  return bytes;
-}
-
-std::vector<std::uint8_t> canonicalResolvedBindingBytes(
-    const dse::ResolvedCandidateGeneratorBinding &binding) {
-  std::vector<std::uint8_t> bytes;
-  const std::vector<std::uint8_t> descriptor =
-      dse::canonicalCandidateGeneratorDescriptorReferenceBytes(
-          binding.descriptorRef());
-  bytes.insert(bytes.end(), descriptor.begin(), descriptor.end());
-  appendFramed(bytes, binding.canonicalConfigBytes());
-  bytes.insert(bytes.end(), binding.configDigest().bytes().begin(),
-               binding.configDigest().bytes().end());
-  return bytes;
-}
-
-external_tool::CandidateGeneratorInvocationClosure
-invocationClosure(llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
-                  const dse::ResolvedCandidateGeneratorBinding &binding) {
-  const BlobDigest identity = dse::deriveCandidateGeneratorBindingIdentity(
-      binding.descriptorRef(), binding.canonicalConfigBytes());
-  return external_tool::CandidateGeneratorInvocationClosure{
-      canonicalInputBindingBytes(inputs),
-      canonicalResolvedBindingBytes(binding), identity.bytes()};
-}
-
 std::string externalSlot(const OpenRoadExternalFile &file) {
   switch (file.kind) {
   case OpenRoadExternalFileKind::TechnologyLef:
@@ -439,7 +384,7 @@ std::string indexedPath(llvm::StringRef directory, std::size_t ordinal,
 struct OpenRoadInvocationData final {
   OpenRoadPlacedConfig config;
   std::string topModule;
-  external_tool::SemanticInvocationClosure semanticClosure;
+  external_tool::ExternalToolSemanticContract semanticContract;
   std::vector<external_tool::MaterializedBundleFile> semanticFiles;
   std::vector<external_tool::ExternalFileRequirement> externalRequirements;
   OpenRoadPlacedDriverFiles driverFiles;
@@ -460,6 +405,10 @@ llvm::Expected<OpenRoadInvocationData> makeInvocationData(
   auto config = decodeOpenRoadPlacedConfig(binding.canonicalConfigBytes());
   if (!config)
     return config.takeError();
+  auto semanticContract =
+      dse::deriveExternalToolSemanticContract(inputs, binding);
+  if (!semanticContract)
+    return semanticContract.takeError();
 
   const ArtifactRootReference &inputReference =
       inputs.front().artifacts.front();
@@ -517,8 +466,7 @@ llvm::Expected<OpenRoadInvocationData> makeInvocationData(
 
   OpenRoadInvocationData data{std::move(*config),
                               root.top.canonicalName,
-                              external_tool::SemanticInvocationClosure(
-                                  invocationClosure(inputs, binding)),
+                              std::move(*semanticContract),
                               {},
                               {},
                               {}};
@@ -566,9 +514,7 @@ llvm::Expected<OpenRoadInvocationData> makeInvocationData(
 external_tool::ExternalToolInvocationImportExpectation
 importExpectation(const OpenRoadInvocationData &data) {
   external_tool::ExternalToolInvocationImportExpectation expectation;
-  expectation.providerIdentity = kProviderIdentity.str();
-  expectation.semanticClosure = data.semanticClosure;
-  expectation.resultImporterIdentity = kImporterIdentity.str();
+  expectation.semanticContract = data.semanticContract;
   for (const external_tool::MaterializedBundleFile &file : data.semanticFiles)
     expectation.semanticInputs.push_back(
         external_tool::ExternalToolInvocationSemanticInput{
@@ -582,6 +528,187 @@ importExpectation(const OpenRoadInvocationData &data) {
         {file.providerInputSlot, file.fingerprint});
   expectation.declaredOutputs = {kDatabaseOutput.str(), kResultOutput.str()};
   return expectation;
+}
+
+hardware::RepresentationLocator
+projectPhysicalLocator(const hardware::RepresentationLocator &locator,
+                       const hardware::RepresentationLocator &sourceTop,
+                       const hardware::RepresentationLocator &physicalTop) {
+  return locator == sourceTop ? physicalTop : locator;
+}
+
+llvm::Expected<hardware::FinalizedHardwareImplementation>
+publishPlacedImplementation(
+    const OpenRoadInvocationData &data,
+    const ArtifactRootReference &inputReference, llvm::StringRef database,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto source = hardware::importHardwareImplementation(
+      inputReference, contracts, artifacts, blobs);
+  if (!source)
+    return source.takeError();
+  const hardware::ImplementationRepresentationRoot &sourceRoot =
+      source->implementation().representationRoot();
+  auto sourceIndex = hardware::indexRepresentationRoot(sourceRoot, blobs);
+  if (!sourceIndex)
+    return sourceIndex.takeError();
+
+  auto format = hardware::RepresentationFormatDescriptorRef::get(
+      hardware::RepresentationFormatKind::IndexedPhysical);
+  if (!format)
+    return format.takeError();
+  const hardware::RepresentationLocator physicalTop{
+      hardware::RepresentationObjectKind::PhysicalObject, data.topModule};
+
+  std::vector<hardware::PhysicalRepresentationObject> objects{
+      {physicalTop, std::nullopt}};
+  std::vector<hardware::RepresentationLocator> unresolved;
+  const auto addReferencedObject =
+      [&](const hardware::RepresentationLocator &sourceLocator) -> llvm::Error {
+    const hardware::RepresentationLocator locator =
+        projectPhysicalLocator(sourceLocator, sourceRoot.top, physicalTop);
+    if (llvm::any_of(objects, [&](const auto &object) {
+          return object.locator == locator;
+        }))
+      return llvm::Error::success();
+    auto facts = sourceIndex->lookup(sourceLocator);
+    if (!facts)
+      return facts.takeError();
+    if (!*facts)
+      return invalid("referenced GateNetlist object is absent from its exact "
+                     "representation index");
+    objects.push_back({locator, (*facts)->signalGeometry});
+    if (locator.kind == hardware::RepresentationObjectKind::Module)
+      unresolved.push_back(locator);
+    return llvm::Error::success();
+  };
+
+  std::vector<hardware::ImplementationInterface> interfaces(
+      source->implementation().interfaces().begin(),
+      source->implementation().interfaces().end());
+  for (hardware::ImplementationInterface &interface : interfaces) {
+    if (llvm::Error error =
+            addReferencedObject(interface.representationLocator))
+      return std::move(error);
+    interface.representationLocator = projectPhysicalLocator(
+        interface.representationLocator, sourceRoot.top, physicalTop);
+  }
+
+  std::vector<hardware::ActivityPoint> activityPoints(
+      source->implementation().activityPoints().begin(),
+      source->implementation().activityPoints().end());
+  for (hardware::ActivityPoint &point : activityPoints) {
+    if (llvm::Error error = addReferencedObject(point.representationLocator))
+      return std::move(error);
+    point.representationLocator = projectPhysicalLocator(
+        point.representationLocator, sourceRoot.top, physicalTop);
+  }
+
+  std::vector<hardware::ExternalImplementationBindingDraft> externalBindings;
+  for (const hardware::ExternalImplementationBinding &binding :
+       source->implementation().externalImplementationBindings()) {
+    std::vector<hardware::RepresentationLocator> locators(
+        binding.representationLocators.begin(),
+        binding.representationLocators.end());
+    for (hardware::RepresentationLocator &locator : locators) {
+      if (llvm::Error error = addReferencedObject(locator))
+        return std::move(error);
+      locator = projectPhysicalLocator(locator, sourceRoot.top, physicalTop);
+    }
+    std::optional<hardware::ImplementationPayloadKey> blackBoxContract;
+    if (binding.blackBoxContractPayloadRef) {
+      if (binding.blackBoxContractPayloadRef->ordinal >=
+          sourceRoot.payloads.size())
+        return invalid("source black-box payload reference is out of range");
+      const hardware::ImplementationPayload &payload =
+          sourceRoot.payloads[binding.blackBoxContractPayloadRef->ordinal];
+      blackBoxContract = hardware::ImplementationPayloadKey{
+          payload.role, payload.canonicalLogicalName};
+    }
+    externalBindings.push_back(hardware::ExternalImplementationBindingDraft{
+        binding.providerContractRef, binding.externalInputs,
+        binding.fabricResourceRefs, std::move(locators),
+        std::move(blackBoxContract)});
+  }
+
+  std::vector<hardware::MemoryMacroBindingDraft> memoryBindings;
+  for (const hardware::MemoryMacroBinding &binding :
+       source->implementation().memoryMacroBindings()) {
+    if (binding.externalImplementationBindingRef.ordinal >=
+        externalBindings.size())
+      return invalid("source memory binding references an unknown external "
+                     "implementation");
+    if (llvm::Error error = addReferencedObject(binding.representationLocator))
+      return std::move(error);
+    memoryBindings.push_back(hardware::MemoryMacroBindingDraft{
+        binding.fabricMemoryRef,
+        binding.externalImplementationBindingRef.ordinal,
+        projectPhysicalLocator(binding.representationLocator, sourceRoot.top,
+                               physicalTop)});
+  }
+
+  for (const hardware::RepresentationLocator &locator :
+       sourceIndex->unresolvedExternalDefinitions())
+    if (llvm::Error error = addReferencedObject(locator))
+      return std::move(error);
+
+  std::vector<hardware::ImplementationPayload> payloads;
+  for (const hardware::ImplementationPayload &payload : sourceRoot.payloads) {
+    if (payload.role == hardware::PayloadRole::GenerationConstraint ||
+        payload.role == hardware::PayloadRole::BlackBoxContract)
+      payloads.push_back(payload);
+  }
+  auto databaseDigest = blobs.put(llvm::ArrayRef<std::uint8_t>(
+      reinterpret_cast<const std::uint8_t *>(database.data()),
+      database.size()));
+  if (!databaseDigest)
+    return databaseDigest.takeError();
+  payloads.push_back({hardware::PayloadRole::PhysicalDatabase,
+                      "database/openroad.odb", *databaseDigest});
+
+  auto index = hardware::createPhysicalRepresentationIndexPayload(
+      *format, hardware::RepresentationRootVariant::AsicPhysical,
+      hardware::RepresentationPhysicalStage::Placed, physicalTop,
+      "index/physical.json", payloads, std::move(objects),
+      std::move(unresolved));
+  if (!index)
+    return index.takeError();
+  auto indexBytes =
+      hardware::serializePhysicalRepresentationIndexPayloadJson(*index);
+  if (!indexBytes)
+    return indexBytes.takeError();
+  auto indexDigest = blobs.put(llvm::ArrayRef<std::uint8_t>(
+      reinterpret_cast<const std::uint8_t *>(indexBytes->data()),
+      indexBytes->size()));
+  if (!indexDigest)
+    return indexDigest.takeError();
+  payloads.push_back({hardware::PayloadRole::RepresentationIndex,
+                      index->indexLogicalName, *indexDigest});
+  auto representation = hardware::createImplementationRepresentationRoot(
+      hardware::RepresentationRootVariant::AsicPhysical,
+      hardware::RepresentationPhysicalStage::Placed, *format, physicalTop,
+      std::move(payloads));
+  if (!representation)
+    return representation.takeError();
+
+  return hardware::finalizeHardwareImplementation(
+      hardware::HardwareImplementationDraft{
+          source->implementation().fabric(),
+          source->implementation().configurationAbi(),
+          source->implementation().interconnectImplementations().vec(),
+          std::move(*representation),
+          source->implementation().implementationPlatform(),
+          std::move(interfaces), std::move(activityPoints),
+          std::move(memoryBindings), std::move(externalBindings)},
+      contracts, artifacts, blobs);
+}
+
+dse::CandidateGeneratorProviderResult
+incompleteResult(dse::CandidateGeneratorIncompleteReason reason) {
+  return dse::CandidateGeneratorProviderResult{
+      dse::IncompleteCandidateGeneratorResult{
+          reason, {{dse::CandidateGeneratorOutputSlotRef(0), {}}}, {}},
+      {{dse::CandidateGeneratorWorkUnitRef(0), 1, 1}}};
 }
 
 llvm::Error validateExecution(const OpenRoadResolvedExecution &execution,
@@ -845,9 +972,7 @@ prepareOpenRoadPlacedInvocation(
     return driver.takeError();
 
   external_tool::ExternalToolInvocationBundleSpec specification;
-  specification.providerIdentity = kProviderIdentity.str();
-  specification.semanticClosure = std::move(data->semanticClosure);
-  specification.resultImporterIdentity = kImporterIdentity.str();
+  specification.semanticContract = std::move(data->semanticContract);
   specification.tool = execution.tool;
   specification.toolVersionProbe = execution.provider.versionProbe;
   specification.runtime = execution.runtime;
@@ -877,18 +1002,44 @@ importOpenRoadPlacedInvocation(
   auto data = makeInvocationData(inputs, binding, contracts, artifacts, blobs);
   if (!data)
     return data.takeError();
-  auto imported = external_tool::importExternalToolInvocationBundle(
+  auto attempt = external_tool::importExternalToolInvocationAttempt(
       prepared, importExpectation(*data));
-  if (!imported)
-    return imported.takeError();
+  if (!attempt)
+    return attempt.takeError();
+  if (std::holds_alternative<
+          external_tool::IncompleteExternalToolInvocationAttempt>(*attempt))
+    return llvm::make_error<
+        external_tool::IncompleteExternalToolInvocationError>();
+  if (const auto *failed =
+          std::get_if<external_tool::FailedExternalToolInvocationAttempt>(
+              &*attempt)) {
+    using Status = external_tool::InvocationCompletionStatus;
+    switch (failed->status) {
+    case Status::Success:
+      return invalid("failed invocation outcome carries success status");
+    case Status::MissingEnvironment:
+    case Status::ModuleActivationFailed:
+    case Status::VersionMismatch:
+      return incompleteResult(
+          dse::CandidateGeneratorIncompleteReason::ProviderUnavailable);
+    case Status::BundleContentMismatch:
+      return invalid("invocation bundle content changed before execution");
+    case Status::ToolExit:
+    case Status::MissingOutput:
+      return incompleteResult(
+          dse::CandidateGeneratorIncompleteReason::ExecutionFailed);
+    }
+  }
+  auto imported = std::get<external_tool::ImportedExternalToolInvocationBundle>(
+      std::move(*attempt));
   auto database = external_tool::readExternalToolInvocationDeclaredOutput(
-      *imported, kDatabaseOutput);
+      imported, kDatabaseOutput);
   if (!database)
     return database.takeError();
   if (database->empty())
     return invalid("placed database output is empty");
   auto result = external_tool::readExternalToolInvocationDeclaredOutput(
-      *imported, kResultOutput);
+      imported, kResultOutput);
   if (!result)
     return result.takeError();
   auto parsed = parseOpenRoadPlacedAttemptResult(*result);
@@ -897,11 +1048,20 @@ importOpenRoadPlacedInvocation(
   if (parsed->topModule != data->topModule)
     return invalid("placed result top does not match the exact GateNetlist");
 
+  auto placed =
+      publishPlacedImplementation(*data, inputs.front().artifacts.front(),
+                                  *database, contracts, artifacts, blobs);
+  if (!placed)
+    return placed.takeError();
+
   return dse::CandidateGeneratorProviderResult{
-      dse::IncompleteCandidateGeneratorResult{
-          dse::CandidateGeneratorIncompleteReason::Unsupported,
-          {{dse::CandidateGeneratorOutputSlotRef(0), {}}},
-          {}},
+      dse::CompletedCandidateGeneratorResult{
+          {{dse::CandidateGeneratorOutputSlotRef(0), {placed->reference()}}},
+          {{dse::CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+            dse::CandidateGeneratorOutputSlotRef(0),
+            placed->reference(),
+            {},
+            {}}}},
       {{dse::CandidateGeneratorWorkUnitRef(0), 1, 1}}};
 }
 
