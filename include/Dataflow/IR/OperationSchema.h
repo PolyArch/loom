@@ -49,6 +49,18 @@ enum class CanonicalDataflowActorKind : std::uint32_t {
   Memory
 };
 
+/// The closed monotone transfer vocabulary for the derived activity proof.
+/// Missing is a real fail-closed relation, never an implicit identity rule.
+enum class ActivityDefinednessTransferKind : std::uint8_t {
+  Missing,
+  AlwaysDefined,
+  AllOperands,
+  FloatCompare,
+  SameOrdinalOperand,
+  Parallelize,
+  Serialize,
+};
+
 /// Count of registered schemas. Every schema id is in `[0, count)`.
 std::uint32_t operationSchemaCount();
 
@@ -74,6 +86,8 @@ OperationSchemaId requireOperationSchema(::mlir::Operation *op);
 
 CanonicalDataflowActorKind actorKind(OperationSchemaId schema);
 OperationSemanticsCase semanticsCase(OperationSchemaId schema);
+ActivityDefinednessTransferKind
+activityDefinednessTransfer(OperationSchemaId schema);
 
 /// Whether a fixed-vector instance is exactly the pointwise lift of the same
 /// scalar operation and may therefore use the canonical elementwise

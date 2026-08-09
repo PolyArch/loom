@@ -42,6 +42,10 @@ namespace {
 /// `Dataflow/IR/OperationSchema.h`; naming anything else would emit a row that
 /// does not compile, so it is rejected at generation instead.
 constexpr StringLiteral kActorKinds[] = {"Compute", "Control", "Memory"};
+constexpr StringLiteral kActivityDefinednessTransfers[] = {
+    "Missing",      "AlwaysDefined",      "AllOperands",
+    "FloatCompare", "SameOrdinalOperand", "Parallelize",
+    "Serialize"};
 
 struct SchemaRow {
   int64_t id;
@@ -52,6 +56,7 @@ struct SchemaRow {
   StringRef semanticsCase;
   StringRef selectorKind;
   StringRef selectorValue;
+  StringRef activityDefinednessTransfer;
   bool supportsElementwiseVectorDecomposition;
 };
 
@@ -158,6 +163,12 @@ readSchemas(const RecordKeeper &records,
     const int64_t selectorId = selector->getValueAsInt("selectorId");
     StringRef selectorKind = selector->getValueAsString("selectorKind");
     StringRef selectorValue = selector->getValueAsString("selectorValue");
+    StringRef activityTransfer =
+        record->getValueAsDef("activityDefinedness")
+            ->getValueAsString("activityDefinednessTransfer");
+    if (!llvm::is_contained(kActivityDefinednessTransfers, activityTransfer))
+      PrintFatalError(record->getName() +
+                      " names an unknown activity-definedness transfer");
     if ((selectorId == 0 && selectorKind != "WholeOperationClass") ||
         (selectorId == 1 && selectorKind != "LLVMIntrinsic") ||
         (selectorId != 0 && selectorId != 1))
@@ -176,7 +187,7 @@ readSchemas(const RecordKeeper &records,
         {record->getValueAsInt("schemaId"),
          record->getValueAsInt("stableWireTag"), record->getName(),
          record->getValueAsString("opClass"), actorKind, semantics,
-         selectorKind, selectorValue,
+         selectorKind, selectorValue, activityTransfer,
          record->getValueAsBit("supportsElementwiseVectorDecomposition")});
   }
   requireDenseDomain(rows, "operation schema");
@@ -275,6 +286,7 @@ void loom::tblgen::emitOperationSchemas(const RecordKeeper &records,
   emitMacroGuard(os, "LOOM_OPERATION_SCHEMA",
                  "Name, Id, WireTag, OpClass, ActorKind, SemanticsCase, "
                  "SelectorKind, SelectorValue, ElementwiseDecomposable");
+  emitMacroGuard(os, "LOOM_OPERATION_ACTIVITY_TRANSFER", "Name, TransferKind");
   os << "\n";
 
   for (const WireVocabularyRow &row : cases)
@@ -288,10 +300,15 @@ void loom::tblgen::emitOperationSchemas(const RecordKeeper &records,
        << row.selectorValue << ", "
        << (row.supportsElementwiseVectorDecomposition ? "true" : "false")
        << ")\n";
+  os << "\n";
+  for (const SchemaRow &row : schemas)
+    os << "LOOM_OPERATION_ACTIVITY_TRANSFER(" << row.name << ", "
+       << row.activityDefinednessTransfer << ")\n";
 
   os << "\n";
   emitMacroUndef(os, "LOOM_OPERATION_SEMANTICS_CASE");
   emitMacroUndef(os, "LOOM_OPERATION_SCHEMA");
+  emitMacroUndef(os, "LOOM_OPERATION_ACTIVITY_TRANSFER");
 }
 
 void loom::tblgen::emitImplementationFamilies(const RecordKeeper &records,

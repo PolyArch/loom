@@ -52,6 +52,14 @@ add_executable(loom-tech-mapping-generator-test
   SpatialMemoryConstraintTestSupport.cpp
 )
 
+add_executable(loom-tech-mapping-activity-definedness-test
+  TechMappingActivityDefinednessTest.cpp
+)
+
+target_include_directories(loom-tech-mapping-activity-definedness-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Mapping/Tech
+)
+
 add_executable(loom-tech-mapping-search-test
   TechMappingSearchTest.cpp
 )
@@ -190,6 +198,22 @@ target_link_libraries(loom-tech-mapping-generator-test PRIVATE
   MLIRLLVMDialect
   MLIRMemRefDialect
   MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-tech-mapping-activity-definedness-test PRIVATE
+  LoomADGBuilder
+  LoomMappingArtifact
+  LoomTechMapping
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRMapping
+  MLIRParser
+  MLIRSupport
   LLVMSupport
 )
 

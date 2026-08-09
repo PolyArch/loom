@@ -444,6 +444,8 @@ CanonicalDataflowProgramView::buildView(
   if (llvm::Error error = view.buildStructuralInventories(
           module, labeling.canonicalOperationOrder))
     return std::move(error);
+  if (llvm::Error error = view.buildActivityDefinednessProjection())
+    return std::move(error);
   return view;
 }
 

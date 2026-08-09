@@ -75,6 +75,7 @@ set(LOOM_TEST_DEPENDS
   loom-common-canonical-relation-test
   loom-common-mapping-debug-log-test
   loom-common-special-math-accuracy-test
+  loom-dataflow-activity-definedness-test
   loom-dataflow-canonical-artifact-test
   loom-dataflow-canonical-reference-test
   loom-dataflow-memory-effect-test
@@ -173,6 +174,7 @@ set(LOOM_TEST_DEPENDS
   loom-configured-hardware-projection-test
   loom-tech-mapping-artifact-test
   loom-tech-mapping-compute-boundary-test
+  loom-tech-mapping-activity-definedness-test
   loom-tech-mapping-config-test
   loom-tech-mapping-generator-test
   loom-tech-mapping-joint-legality-test

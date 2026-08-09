@@ -18,6 +18,7 @@ mlir_target_link_libraries(MLIRDataflowEnums PUBLIC
 
 add_mlir_dialect_library(MLIRDataflow
   DataflowActorSemantics.cpp
+  DataflowActivityDefinedness.cpp
   DataflowHandshakeSemantics.cpp
   DataflowArtifactLocalReference.cpp
   DataflowCanonicalArtifact.cpp

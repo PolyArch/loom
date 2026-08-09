@@ -1,6 +1,7 @@
 #include "TechMappingCandidateDomain.h"
 
 #include "Common/IndexWidth.h"
+#include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/IR/ImplementationFamily.h"
 
@@ -183,6 +184,45 @@ llvm::Expected<std::vector<CanonicalActorOption>> canonicalActorOptions(
   return options;
 }
 
+llvm::Expected<bool> activityDefinednessAdmits(
+    const TechMappingGenerationInputs &inputs,
+    const ::dataflow::CanonicalActorView &actor,
+    const ::loom::fabric::ResolvedFabricOpCapabilityView &capability) {
+  auto operandIsAlwaysDefined = [&](unsigned ordinal) -> llvm::Expected<bool> {
+    auto producer = inputs.dataflow.graphProducer(
+        ::dataflow::ActorTokenOperandRef{actor.ref, ordinal});
+    if (!producer)
+      return producer.takeError();
+    auto fact = inputs.dataflow.activityDefinedness(*producer);
+    if (!fact)
+      return fact.takeError();
+    return *fact == ::dataflow::ActivityDefinedness::AlwaysDefined;
+  };
+
+  switch (capability.implementationFamily) {
+  case ::fabric::ImplementationFamilyId::FixedVectorParallelize: {
+    auto adapter = llvm::dyn_cast<::dataflow::ParallelizeOp>(actor.op);
+    if (!adapter)
+      return false;
+    return operandIsAlwaysDefined(
+        adapter.getScalarPhaseMutable().getOperandNumber());
+  }
+  case ::fabric::ImplementationFamilyId::FixedVectorSerialize: {
+    auto adapter = llvm::dyn_cast<::dataflow::SerializeOp>(actor.op);
+    if (!adapter)
+      return false;
+    auto mask =
+        operandIsAlwaysDefined(adapter.getMaskMutable().getOperandNumber());
+    if (!mask || !*mask)
+      return mask;
+    return operandIsAlwaysDefined(
+        adapter.getGroupPhaseMutable().getOperandNumber());
+  }
+  default:
+    return true;
+  }
+}
+
 llvm::Expected<bool>
 admitActorCorrespondence(const TechMappingGenerationInputs &inputs,
                          const TechComputeActorView &selected) {
@@ -212,7 +252,7 @@ admitActorCorrespondence(const TechMappingGenerationInputs &inputs,
     llvm::consumeError(std::move(error));
     return false;
   }
-  return true;
+  return activityDefinednessAdmits(inputs, *actor, *capability);
 }
 
 llvm::Expected<bool>

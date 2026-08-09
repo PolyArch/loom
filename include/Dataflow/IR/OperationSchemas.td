@@ -130,7 +130,7 @@ def ScalarSpecialMathAdmission : TypedAdmissionProvider<27>;
 //===----------------------------------------------------------------------===//
 
 def ArithConstant : ActorSchema<0, 0x4c530201, "::mlir::arith::ConstantOp", "Compute",
-    TypedConstantValue>;
+    TypedConstantValue, WholeOperationClass, 0, AlwaysDefinedActivityTransfer>;
 def ArithAddI : ElementwiseActorSchema<1, 0x4c530202, "::mlir::arith::AddIOp", "Compute",
     ArithIntegerOverflow>;
 def ArithSubI : ElementwiseActorSchema<2, 0x4c530203, "::mlir::arith::SubIOp", "Compute",
@@ -144,11 +144,11 @@ def ArithShRSI : ElementwiseActorSchema<5, 0x4c530206, "::mlir::arith::ShRSIOp",
 def ArithShRUI : ElementwiseActorSchema<6, 0x4c530207, "::mlir::arith::ShRUIOp", "Compute",
     ArithExact>;
 def ArithAndI : ElementwiseActorSchema<7, 0x4c530208, "::mlir::arith::AndIOp", "Compute",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, AllOperandsActivityTransfer>;
 def ArithOrI : ElementwiseActorSchema<8, 0x4c530209, "::mlir::arith::OrIOp", "Compute",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, AllOperandsActivityTransfer>;
 def ArithXOrI : ElementwiseActorSchema<9, 0x4c53020a, "::mlir::arith::XOrIOp", "Compute",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, AllOperandsActivityTransfer>;
 def ArithDivSI : ActorSchema<10, 0x4c53020b, "::mlir::arith::DivSIOp", "Compute",
     ArithExact>;
 def ArithDivUI : ActorSchema<11, 0x4c53020c, "::mlir::arith::DivUIOp", "Compute",
@@ -166,9 +166,9 @@ def ArithMinUI : ElementwiseActorSchema<16, 0x4c530211, "::mlir::arith::MinUIOp"
 def ArithMaxUI : ElementwiseActorSchema<17, 0x4c530212, "::mlir::arith::MaxUIOp", "Compute",
     NoSemanticPayload>;
 def ArithCmpI : ElementwiseActorSchema<18, 0x4c530213, "::mlir::arith::CmpIOp", "Compute",
-    ArithIntegerCompare>;
+    ArithIntegerCompare, WholeOperationClass, AllOperandsActivityTransfer>;
 def ArithSelect : ElementwiseActorSchema<19, 0x4c530214, "::mlir::arith::SelectOp", "Compute",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, AllOperandsActivityTransfer>;
 def ArithExtSI : ElementwiseActorSchema<20, 0x4c530215, "::mlir::arith::ExtSIOp", "Compute",
     NoSemanticPayload>;
 def ArithExtUI : ElementwiseActorSchema<21, 0x4c530216, "::mlir::arith::ExtUIOp", "Compute",
@@ -180,7 +180,7 @@ def ArithIndexCast : ElementwiseActorSchema<23, 0x4c530218, "::mlir::arith::Inde
 def ArithIndexCastUI : ElementwiseActorSchema<24, 0x4c530219, "::mlir::arith::IndexCastUIOp",
     "Compute", ArithNonNegative>;
 def ArithBitcast : ElementwiseActorSchema<25, 0x4c53021a, "::mlir::arith::BitcastOp", "Compute",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, AllOperandsActivityTransfer>;
 def ArithAddF : ElementwiseActorSchema<26, 0x4c53021b, "::mlir::arith::AddFOp", "Compute",
     ArithFloatingPoint>;
 def ArithSubF : ElementwiseActorSchema<27, 0x4c53021c, "::mlir::arith::SubFOp", "Compute",
@@ -202,7 +202,7 @@ def ArithMinNumF : ElementwiseActorSchema<34, 0x4c530223, "::mlir::arith::MinNum
 def ArithMaxNumF : ElementwiseActorSchema<35, 0x4c530224, "::mlir::arith::MaxNumFOp", "Compute",
     ArithFloatingPoint>;
 def ArithCmpF : ElementwiseActorSchema<36, 0x4c530225, "::mlir::arith::CmpFOp", "Compute",
-    ArithFloatCompare>;
+    ArithFloatCompare, WholeOperationClass, FloatCompareActivityTransfer>;
 def ArithExtF : ElementwiseActorSchema<37, 0x4c530226, "::mlir::arith::ExtFOp", "Compute",
     ArithFloatingPoint>;
 def ArithTruncF : ElementwiseActorSchema<38, 0x4c530227, "::mlir::arith::TruncFOp", "Compute",
@@ -329,7 +329,7 @@ def VectorShuffle : ActorSchema<96, 0x4c530261, "::mlir::vector::ShuffleOp", "Co
 def UBPoison : ActorSchema<67, 0x4c530244, "::mlir::ub::PoisonOp", "Compute",
     NoSemanticPayload>;
 def LLVMFreeze : ElementwiseActorSchema<68, 0x4c530245, "::mlir::LLVM::FreezeOp", "Compute",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, AlwaysDefinedActivityTransfer>;
 def LLVMFshl : ElementwiseActorSchema<69, 0x4c530246, "::mlir::LLVM::FshlOp", "Compute",
     NoSemanticPayload>;
 def LLVMByteSwap : ElementwiseActorSchema<70, 0x4c530247, "::mlir::LLVM::ByteSwapOp", "Compute",
@@ -368,29 +368,33 @@ def LLVMGetElementPtr : ActorSchema<105, 0x4c53026a,
 //===----------------------------------------------------------------------===//
 
 def DataflowStream : ActorSchema<76, 0x4c53024d, "::dataflow::StreamOp", "Control",
-    StreamRecurrence>;
+    StreamRecurrence, WholeOperationClass, 0, AllOperandsActivityTransfer>;
 def DataflowCarry : ActorSchema<77, 0x4c53024e, "::dataflow::CarryOp", "Control",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, 0, AllOperandsActivityTransfer>;
 def DataflowInvariant : ActorSchema<78, 0x4c53024f, "::dataflow::InvariantOp", "Control",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, 0, AllOperandsActivityTransfer>;
 def DataflowGate : ActorSchema<79, 0x4c530250, "::dataflow::GateOp", "Control",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, 0, AllOperandsActivityTransfer>;
 def DataflowConstant : ActorSchema<80, 0x4c530251, "::dataflow::ConstantOp", "Control",
-    TypedConstantValue>;
+    TypedConstantValue, WholeOperationClass, 0, AlwaysDefinedActivityTransfer>;
 def DataflowSync : ActorSchema<81, 0x4c530252, "::dataflow::SyncOp", "Control",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, 0,
+    SameOrdinalOperandActivityTransfer>;
 def DataflowMux : ActorSchema<82, 0x4c530253, "::dataflow::MuxOp", "Control",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, 0, AllOperandsActivityTransfer>;
 def DataflowDemux : ActorSchema<83, 0x4c530254, "::dataflow::DemuxOp", "Control",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, 0, AllOperandsActivityTransfer>;
 def DataflowParallelize : ActorSchema<84, 0x4c530255, "::dataflow::ParallelizeOp",
-    "Control", NoSemanticPayload>;
+    "Control", NoSemanticPayload, WholeOperationClass, 0,
+    ParallelizeActivityTransfer>;
 def DataflowSerialize : ActorSchema<85, 0x4c530256, "::dataflow::SerializeOp", "Control",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, 0, SerializeActivityTransfer>;
 def DataflowPack : ActorSchema<86, 0x4c530257, "::dataflow::PackOp", "Control",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, 0,
+    SameOrdinalOperandActivityTransfer>;
 def DataflowUnpack : ActorSchema<87, 0x4c530258, "::dataflow::UnpackOp", "Control",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, 0,
+    SameOrdinalOperandActivityTransfer>;
 def DataflowLoad : ActorSchema<88, 0x4c530259, "::dataflow::LoadOp", "Memory",
     MemoryContract>;
 def DataflowStore : ActorSchema<89, 0x4c53025a, "::dataflow::StoreOp", "Memory",

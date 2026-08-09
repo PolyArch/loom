@@ -114,6 +114,11 @@ struct CanonicalProducerTerminalView {
   mlir::Type payloadType;
 };
 
+enum class ActivityDefinedness : std::uint8_t {
+  Unproven,
+  AlwaysDefined,
+};
+
 //===----------------------------------------------------------------------===//
 // CanonicalDataflowProgramView
 //===----------------------------------------------------------------------===//
@@ -243,6 +248,8 @@ public:
   /// range into the prebuilt edge inventory). Both sides are token-plane only.
   llvm::Expected<CanonicalGraphProducerEndpointRef>
   graphProducer(const CanonicalGraphConsumerEndpointRef &consumer) const;
+  llvm::Expected<ActivityDefinedness>
+  activityDefinedness(const CanonicalGraphProducerEndpointRef &producer) const;
   llvm::Expected<llvm::ArrayRef<CanonicalGraphConsumerEndpointRef>>
   graphConsumers(const CanonicalGraphProducerEndpointRef &producer) const;
 
@@ -378,6 +385,7 @@ private:
   llvm::Error buildStructuralInventories(
       mlir::ModuleOp module,
       llvm::ArrayRef<mlir::Operation *> canonicalOperationOrder);
+  llvm::Error buildActivityDefinednessProjection();
 
   // Resolve one admitted memory SSA value to its role from the prebuilt cache,
   // or fail. Composition seeds every admitted value, so a query never
@@ -427,6 +435,7 @@ private:
   std::vector<CanonicalGraphConsumerEndpointRef> graphEdgeConsumers_;
   std::map<std::tuple<int, unsigned, unsigned>, std::pair<unsigned, unsigned>>
       graphEdgeRange_;
+  std::vector<std::vector<ActivityDefinedness>> activityDefinednessByActorSlot_;
 
   // Channel multicast inventory: parallel flat consumer bindings and sink
   // terminals addressed by a collision-free typed producer key.

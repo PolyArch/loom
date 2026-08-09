@@ -682,6 +682,17 @@ dataflow::semanticsCase(OperationSchemaId schema) {
   return schemaTable()[static_cast<std::size_t>(schema)].semantics;
 }
 
+dataflow::ActivityDefinednessTransferKind
+dataflow::activityDefinednessTransfer(OperationSchemaId schema) {
+  switch (schema) {
+#define LOOM_OPERATION_ACTIVITY_TRANSFER(Name, TransferKind)                   \
+  case OperationSchemaId::Name:                                                \
+    return ActivityDefinednessTransferKind::TransferKind;
+#include "Dataflow/IR/OperationSchemas.inc"
+  }
+  llvm_unreachable("unknown operation schema");
+}
+
 bool dataflow::supportsElementwiseVectorDecomposition(
     OperationSchemaId schema) {
   return schemaTable()[static_cast<std::size_t>(schema)]

@@ -37,13 +37,37 @@ def WholeOperationClass : OperationInstanceSelector<
 class LLVMIntrinsicSelector<string intrinsic> : OperationInstanceSelector<
     1, "LLVMIntrinsic", intrinsic>;
 
+// One registered monotone relation for deriving whether an actor result is
+// always defined from the canonical graph. Missing is deliberately explicit:
+// callers may never infer identity semantics for an unregistered relation.
+class ActivityDefinednessTransfer<string kind> {
+  string activityDefinednessTransfer = kind;
+}
+
+def MissingActivityTransfer
+    : ActivityDefinednessTransfer<"Missing">;
+def AlwaysDefinedActivityTransfer
+    : ActivityDefinednessTransfer<"AlwaysDefined">;
+def AllOperandsActivityTransfer
+    : ActivityDefinednessTransfer<"AllOperands">;
+def FloatCompareActivityTransfer
+    : ActivityDefinednessTransfer<"FloatCompare">;
+def SameOrdinalOperandActivityTransfer
+    : ActivityDefinednessTransfer<"SameOrdinalOperand">;
+def ParallelizeActivityTransfer
+    : ActivityDefinednessTransfer<"Parallelize">;
+def SerializeActivityTransfer
+    : ActivityDefinednessTransfer<"Serialize">;
+
 // One registered canonical actor operation schema. `cls` is the operation
 // class that carries the source semantics. `selector` identifies the exact
 // source-owned instance when that class is a generic carrier.
 class ActorSchema<int id, int wireTag, string cls, string kind,
                   SemanticsCase case,
                   OperationInstanceSelector selector = WholeOperationClass,
-                  bit elementwiseDecomposable = 0> {
+                  bit elementwiseDecomposable = 0,
+                  ActivityDefinednessTransfer activityTransfer =
+                      MissingActivityTransfer> {
   int schemaId = id;
   int stableWireTag = wireTag;
   string opClass = cls;
@@ -51,6 +75,7 @@ class ActorSchema<int id, int wireTag, string cls, string kind,
   SemanticsCase semantics = case;
   OperationInstanceSelector instanceSelector = selector;
   bit supportsElementwiseVectorDecomposition = elementwiseDecomposable;
+  ActivityDefinednessTransfer activityDefinedness = activityTransfer;
 }
 
 // A pure software actor whose fixed-vector instance is exactly the pointwise
@@ -58,8 +83,10 @@ class ActorSchema<int id, int wireTag, string cls, string kind,
 // implementation-family admission rule.
 class ElementwiseActorSchema<
     int id, int wireTag, string cls, string kind, SemanticsCase case,
-    OperationInstanceSelector selector = WholeOperationClass>
-    : ActorSchema<id, wireTag, cls, kind, case, selector, 1>;
+    OperationInstanceSelector selector = WholeOperationClass,
+    ActivityDefinednessTransfer activityTransfer = MissingActivityTransfer>
+    : ActorSchema<id, wireTag, cls, kind, case, selector, 1,
+                  activityTransfer>;
 
 // One closed typed `hw_params` record schema an implementation family selects.
 // Every schema names one concrete C++ record; there is no generic record or
