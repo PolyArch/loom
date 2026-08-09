@@ -506,6 +506,15 @@ logical WorkUnitKey. Adding execution claims or mutable Job states would repeat
 facts already owned by the bundle completion record, ExecutionJournal, and
 external scheduler.
 
+Passing three independent strings or byte arrays to bundle finalization would
+still let each adapter implement a private descriptor codec and accidentally
+pair one closure with another importer. A single
+`ExternalToolSemanticContract`, derived by the CandidateGenerator or
+Evaluation owner, is the smaller boundary. ExternalTool owns the common hash
+framing while each semantic owner supplies its descriptor-reference and
+closure codecs. Adapters only transport the resulting value, so adding another
+EDA ecosystem does not add another semantic authority.
+
 Discovery belongs before bundle finalization. Explicit configuration has
 priority over the current environment, and module discovery is only a final
 fallback. Freezing the exact executable, loaded-module closure, version, and

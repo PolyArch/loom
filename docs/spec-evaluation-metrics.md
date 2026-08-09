@@ -262,13 +262,14 @@ LimitingClockFrequency form 0: WholeExactCase
 TotalArea             form 0: WholeExactCase
 DynamicPower          form 0: WholeExactCase
 LeakagePower          form 0: WholeExactCase
+MaximumVoltageDrop    form 0: WholeExactCase
 LimitingClockFrequencyPredictionError form 0: WholeExactCase
 TotalAreaPredictionError              form 0: WholeExactCase
 DynamicPowerPredictionError           form 0: WholeExactCase
 LeakagePowerPredictionError           form 0: WholeExactCase
 ```
 
-`Runtime` and the four whole-case physical metrics cover the exact evaluated
+`Runtime` and the five whole-case physical metrics cover the exact evaluated
 case directly. `CycleCount` and `ClockPeriod` use the exact case signature's executable
 `UniqueReferenceCycle` resolver; a model must not advertise either form when
 the signature declares `Absent` and cannot choose or rederive a different basis
@@ -288,6 +289,7 @@ LimitingClockFrequency : positive DecimalValue, hertz
 TotalArea              : nonnegative DecimalValue, square_meter
 DynamicPower           : nonnegative DecimalValue, watt
 LeakagePower           : nonnegative DecimalValue, watt
+MaximumVoltageDrop     : nonnegative DecimalValue, volt
 LimitingClockFrequencyPredictionError : DecimalValue in [0,2], one
 TotalAreaPredictionError              : DecimalValue in [0,2], one
 DynamicPowerPredictionError           : DecimalValue in [0,2], one
@@ -301,6 +303,19 @@ invent one local cycle as the whole-case reference cycle. `TotalArea` includes
 cells, macros, and allocated routing footprint. Dynamic power is workload and
 activity dependent; leakage power is not. A model lacking the required
 activity returns typed `Unsupported`, never a hidden toggle-rate default.
+
+`MaximumVoltageDrop` is the greatest nonnegative difference between the
+applied supply voltage and delivered voltage over every supply node included
+in the exact model's complete analyzed power network. Its whole-case scope is
+the maximum across all analyzed power domains; a provider must not publish a
+selected node, average, percentile, or vendor severity as this metric. Static
+and dynamic rail analyses may produce the same MetricKind because their
+method, activity basis, coverage, and uncertainty belong to their exact model
+descriptors. A physical model declares the exact HardwareImplementation-
+anchored `SupplyVoltage` base-condition patterns it consumes or requires. An
+unavailable or incomplete rail network cannot be replaced by a nominal-
+voltage default. A later per-domain question requires another owner-defined
+scope form rather than a vendor-specific MetricKind.
 
 Each prediction-error descriptor owns one permitted-and-required
 request-condition pattern: `Quantile` with the exact

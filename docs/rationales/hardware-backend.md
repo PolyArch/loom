@@ -667,3 +667,11 @@ The early model still estimates frequency, area, dynamic power, leakage power,
 and runtime with coherent relative scaling. Omitting a dimension would force
 frontend DSE to use a separate ad hoc score and would make later EDA calibration
 change the optimization data model instead of only improving its evidence.
+
+Rail analysis needs a different physical quantity, but not a provider-specific
+record. Maximum voltage drop is comparable across static and dynamic methods
+when it means the worst delivered-voltage deficit over the complete analyzed
+network of the exact case. Method, activity, network coverage, and uncertainty
+remain model facts. One shared `MaximumVoltageDrop` MetricKind therefore lets
+Voltus and future providers answer the same question without turning a vendor
+report field or severity label into an Evaluation authority.

@@ -488,6 +488,13 @@ Request already binds the model descriptor and workload, and the workload
 root owns that distinction. Repeating it in the execution would create a
 second case-kind authority.
 
+The C++ `SpatialSimulationExecution` authoring value is shared by DFG, CGRA,
+mapped RTL, and mapped gate-netlist models that execute a Spatial workload.
+`Spatial` names the workload-observation form, not the selected engine or
+fidelity. An external-HDL evaluator constructs this same value and uses the
+ordinary finalizer; it must not add an RTL-specific execution subtype, engine
+tag, or parallel serializer.
+
 The execution also has no direct observable-contract reference. It recovers
 the applicable contract through:
 

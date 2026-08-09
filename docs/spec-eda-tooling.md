@@ -276,6 +276,20 @@ produce `EvaluationEvidence`. Workload-running RTL simulation also produces
 `SimulationExecution`. Raw products remain owner-attempt or scratch material
 and have no current Artifact schema.
 
+Mapped RTL and gate-netlist execution use the ordinary Spatial
+`SimulationExecution` authoring and finalization API. The exact Evaluation
+model descriptor selects the HDL engine and the exact Request selects the
+workload; an adapter does not add an external-HDL execution kind.
+
+Rail analysis reports the provider-neutral whole-case
+`MaximumVoltageDrop` MetricKind in volts. Voltus and any other static or
+dynamic rail provider normalize their native node observations to that same
+metric. The exact model descriptor owns analysis method, activity basis,
+network coverage, and uncertainty, and consumes or requires the applicable
+HardwareImplementation-anchored `SupplyVoltage` base conditions. Tool names,
+report severity classes, selected nodes, and private voltage-drop fields do
+not become MetricKinds.
+
 FPGA prototype or measured-hardware execution uses the same
 EvaluationRequest, SimulationWorkload, SimulationRuntimeInput, and Evidence
 owners when a concrete evaluator is available. Loom does not add a measured

@@ -340,6 +340,12 @@ ExternalToolPreparationContext {
   bundle_destination
 }
 
+ExternalToolSemanticContract {
+  provider_identity
+  semantic_closure: SemanticInvocationClosure
+  result_importer_identity
+}
+
 PreparedExternalToolInvocation {
   bundle_root
   manifest_sha256
@@ -351,6 +357,14 @@ paths never enter an Artifact, Request, Evidence, or generator binding. The
 prepared handle does not own or recover the semantic closure; every import
 receives the full typed closure again and recomputes its expected manifest.
 `manifest_sha256` is only an integrity and lookup key.
+
+`ExternalToolInvocationBundleSpec` and
+`ExternalToolInvocationImportExpectation` each consume one complete
+`ExternalToolSemanticContract`. CandidateGenerator and Evaluation are the only
+owners that derive this value. An adapter may pass the value through but may
+not author any of its three fields, expose the low-level owner codecs as an
+adapter protocol, or assemble a contract from display names and private
+bytes.
 
 The 2.0 manifest uses stable closure tags `CandidateGenerator = 0` and
 `Evaluation = 1`. Canonical JSON spells them `candidate_generator` and
@@ -399,6 +413,19 @@ model binding. A compact digest is never sufficient to adopt configuration,
 select a descriptor, or invoke an importer, and the bundle alone is never a
 binding authority.
 
+The provider identity is exactly the
+`implementation_semantic_identity` recovered from the closure's exact
+CandidateGenerator or Evaluation model descriptor. Its provider form must be
+`ExternalPrepareImport`. The CandidateGenerator owner encodes typed input
+bindings as `u64be(binding_count)` followed by each dense `u32be(slot)` and
+`u64be(artifact_count)` plus Common canonical root-reference bytes. It encodes
+the resolved binding as the canonical descriptor-reference bytes, one
+length-framed canonical config view, and the exact 32-byte config digest. The
+Evaluation owner encodes a model descriptor reference as
+`u32be(schema_major) || u32be(schema_minor) || u32be(model_kind)` and places
+the exact `EvaluationRequest` ArtifactRootReference in the closure. These are
+owner codecs, not ExternalTool or adapter codecs.
+
 The result-importer identity is the verification digest:
 
 ```text
@@ -412,6 +439,13 @@ SHA-256(
 The manifest stores this digest as 64 lowercase hexadecimal characters and the
 importer recomputes it from the full typed closure. It is not a callback name,
 dynamic-library symbol, or importer selection authority.
+
+The shared ExternalTool layer owns only the domain-separated digest framing.
+The CandidateGenerator and Evaluation derivation APIs supply their exact
+descriptor-reference bytes and return the complete contract. Bundle
+finalization and strict import therefore compare one owner-derived value; five
+EDA adapters cannot become five independent implementations of identity or
+closure encoding.
 
 All bundle-owned paths are relative to the bundle root. Frozen host
 executables, module initialization paths, and directly referenced external

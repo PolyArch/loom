@@ -81,11 +81,12 @@ derive HardwareImplementation -> evaluate that exact implementation
 ## Metrics
 
 Metric kinds, dimensions, canonical units, scopes, and observation forms are
-owned by Evaluation registry 2.0. The current shared physical metrics are
+owned by Evaluation registry 2.0. The initial FPA prediction view covers
 `LimitingClockFrequency`, `TotalArea`, `DynamicPower`, and `LeakagePower`.
-Critical-path delay, timing slack, physical breakdowns, and energy are
-unsupported until their exact MetricKind and producing model owners are
-registered.
+`MaximumVoltageDrop` is an ordinary shared physical MetricKind but is outside
+that initial parameter-bundle and calibration contract. Critical-path delay,
+timing slack, other physical breakdowns, and energy are unsupported until
+their exact MetricKind and producing model owners are registered.
 
 Every observation records its exact request ordinal and provenance. Point,
 interval, censored, and not-applicable results retain their ordinary Evaluation
