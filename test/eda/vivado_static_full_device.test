@@ -1,0 +1,2 @@
+# RUN: rm -rf %t
+# RUN: %loom-vivado-static-full-device-test %t

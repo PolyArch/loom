@@ -36,6 +36,20 @@ target_link_libraries(loom-quartus-prime-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-vivado-static-full-device-test
+  VivadoStaticFullDeviceTest.cpp
+)
+
+target_link_libraries(loom-vivado-static-full-device-test PRIVATE
+  LoomEDAAMD
+  LoomHardwareConfigurationTestSupport
+  MLIRDataflow
+  MLIRFabric
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
 add_executable(loom-synopsys-adapter-test
   SynopsysAdapterTest.cpp
 )
