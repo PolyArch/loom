@@ -6,6 +6,8 @@
 #include "Common/BlobStore.h"
 #include "ExternalTool/Provider.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
+#include "Hardware/Implementation/PhysicalRepresentationIndex.h"
+#include "Hardware/Implementation/RepresentationIndex.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -59,10 +61,6 @@ using namespace hardware;
 
 constexpr llvm::StringLiteral kConfigDescriptor =
     "loom.intel_altera.quartus_prime_static_full_device_generator.config.1.0";
-constexpr llvm::StringLiteral kProviderIdentity =
-    "loom.intel_altera.quartus_prime.static_full_device.provider.v1";
-constexpr llvm::StringLiteral kImporterIdentity =
-    "loom.intel_altera.quartus_prime.static_full_device.importer.v1";
 constexpr llvm::StringLiteral kDriverPath = "drivers/quartus-static.tcl";
 constexpr llvm::StringLiteral kPlatformPath = "inputs/platform.json";
 constexpr llvm::StringLiteral kPhysicalPath = "outputs/fpga-physical.qar";
@@ -137,13 +135,6 @@ llvm::Expected<T> unavailable(QuartusPrimeUnavailableReason reason,
 llvm::ArrayRef<std::uint8_t> descriptorBytes() {
   return {reinterpret_cast<const std::uint8_t *>(kConfigDescriptor.data()),
           kConfigDescriptor.size()};
-}
-
-void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
-  bytes.push_back(static_cast<std::uint8_t>(value >> 24));
-  bytes.push_back(static_cast<std::uint8_t>(value >> 16));
-  bytes.push_back(static_cast<std::uint8_t>(value >> 8));
-  bytes.push_back(static_cast<std::uint8_t>(value));
 }
 
 void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
@@ -434,42 +425,6 @@ std::string renderDriver(llvm::StringRef providerBuild, llvm::StringRef device,
   return driver;
 }
 
-std::vector<std::uint8_t>
-encodeInputBindings(llvm::ArrayRef<CandidateGeneratorInputBinding> bindings) {
-  std::vector<std::uint8_t> bytes;
-  appendU64(bytes, bindings.size());
-  for (const CandidateGeneratorInputBinding &binding : bindings) {
-    appendU32(bytes, binding.slot.ordinal());
-    appendU64(bytes, binding.artifacts.size());
-    for (const ArtifactRootReference &artifact : binding.artifacts)
-      appendFixed(bytes, encodeArtifactRootReference(artifact));
-  }
-  return bytes;
-}
-
-std::vector<std::uint8_t>
-encodeResolvedBinding(const ResolvedCandidateGeneratorBinding &binding) {
-  std::vector<std::uint8_t> bytes;
-  const CandidateGeneratorDescriptorRef reference = binding.descriptorRef();
-  appendText(bytes, reference.descriptorSchema().identity);
-  appendU32(bytes, reference.descriptorSchema().version.major);
-  appendU32(bytes, reference.descriptorSchema().version.minor);
-  appendU32(bytes, reference.kind().ordinal());
-  appendBytes(bytes, binding.canonicalConfigBytes());
-  appendFixed(bytes, binding.configDigest().bytes());
-  return bytes;
-}
-
-CandidateGeneratorInvocationClosure
-makeClosure(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
-            const ResolvedCandidateGeneratorBinding &binding) {
-  return CandidateGeneratorInvocationClosure{
-      encodeInputBindings(inputs), encodeResolvedBinding(binding),
-      deriveCandidateGeneratorBindingIdentity(binding.descriptorRef(),
-                                              binding.canonicalConfigBytes())
-          .bytes()};
-}
-
 BlobDigest digest(llvm::StringRef contents) {
   return computeBlobDigest(llvm::ArrayRef<std::uint8_t>(
       reinterpret_cast<const std::uint8_t *>(contents.data()),
@@ -484,7 +439,7 @@ struct InvocationInputs final {
   std::vector<std::string> rtlSources;
   std::vector<std::string> constraints;
   std::vector<MaterializedBundleFile> files;
-  CandidateGeneratorInvocationClosure closure;
+  ExternalToolSemanticContract semanticContract;
 };
 
 llvm::Expected<InvocationInputs> collectInvocationInputs(
@@ -530,6 +485,10 @@ llvm::Expected<InvocationInputs> collectInvocationInputs(
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           kDescriptor.reference(), inputBindings))
     return std::move(error);
+  auto semanticContract =
+      deriveExternalToolSemanticContract(inputBindings, binding);
+  if (!semanticContract)
+    return semanticContract.takeError();
   auto config = adoptResolvedQuartusPrimeStaticFullDeviceConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -633,7 +592,7 @@ llvm::Expected<InvocationInputs> collectInvocationInputs(
   }
   if (result.rtlSources.empty())
     return invalid("RTL HImpl2 contains no RTL source payload");
-  result.closure = makeClosure(inputBindings, binding);
+  result.semanticContract = std::move(*semanticContract);
   return result;
 }
 
@@ -692,9 +651,7 @@ prepareProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         llvm::toString(runtime.takeError()));
 
   ExternalToolInvocationBundleSpec specification;
-  specification.providerIdentity = kProviderIdentity.str();
-  specification.semanticClosure = SemanticInvocationClosure(inputs->closure);
-  specification.resultImporterIdentity = kImporterIdentity.str();
+  specification.semanticContract = std::move(inputs->semanticContract);
   specification.tool = std::move(*tool);
   specification.toolVersionProbe = quartus.versionProbe;
   specification.runtime = std::move(*runtime);
@@ -750,6 +707,210 @@ llvm::Error rejectUndeclaredOutputs(llvm::StringRef bundleRoot) {
   return llvm::Error::success();
 }
 
+RepresentationLocator
+projectPhysicalLocator(const RepresentationLocator &locator,
+                       const RepresentationLocator &sourceTop,
+                       const RepresentationLocator &physicalTop) {
+  return locator == sourceTop ? physicalTop : locator;
+}
+
+struct ProjectedImplementationMetadata final {
+  std::vector<ImplementationInterface> interfaces;
+  std::vector<ActivityPoint> activityPoints;
+  std::vector<MemoryMacroBindingDraft> memoryBindings;
+  std::vector<ExternalImplementationBindingDraft> externalBindings;
+  std::vector<PhysicalRepresentationObject> objects;
+  std::vector<RepresentationLocator> unresolvedDefinitions;
+};
+
+llvm::Expected<ProjectedImplementationMetadata>
+projectImplementationMetadata(const FinalizedHardwareImplementation &source,
+                              const RepresentationIndex &sourceIndex,
+                              const RepresentationLocator &physicalTop,
+                              bool retainExternalBindings) {
+  const HardwareImplementation &implementation = source.implementation();
+  const ImplementationRepresentationRoot &sourceRoot =
+      implementation.representationRoot();
+  ProjectedImplementationMetadata result;
+  result.objects.push_back({physicalTop, std::nullopt});
+
+  const auto addReferencedObject =
+      [&](const RepresentationLocator &sourceLocator) -> llvm::Error {
+    const RepresentationLocator locator =
+        projectPhysicalLocator(sourceLocator, sourceRoot.top, physicalTop);
+    if (llvm::any_of(result.objects, [&](const auto &object) {
+          return object.locator == locator;
+        }))
+      return llvm::Error::success();
+    auto facts = sourceIndex.lookup(sourceLocator);
+    if (!facts)
+      return facts.takeError();
+    if (!*facts)
+      return invalid("referenced source object is absent from its exact "
+                     "representation index");
+    result.objects.push_back({locator, (*facts)->signalGeometry});
+    if (locator.kind == RepresentationObjectKind::Module)
+      result.unresolvedDefinitions.push_back(locator);
+    return llvm::Error::success();
+  };
+
+  result.interfaces.assign(implementation.interfaces().begin(),
+                           implementation.interfaces().end());
+  for (ImplementationInterface &interface : result.interfaces) {
+    if (llvm::Error error =
+            addReferencedObject(interface.representationLocator))
+      return std::move(error);
+    interface.representationLocator = projectPhysicalLocator(
+        interface.representationLocator, sourceRoot.top, physicalTop);
+  }
+
+  result.activityPoints.assign(implementation.activityPoints().begin(),
+                               implementation.activityPoints().end());
+  for (ActivityPoint &point : result.activityPoints) {
+    if (llvm::Error error = addReferencedObject(point.representationLocator))
+      return std::move(error);
+    point.representationLocator = projectPhysicalLocator(
+        point.representationLocator, sourceRoot.top, physicalTop);
+  }
+
+  if (retainExternalBindings) {
+    for (const ExternalImplementationBinding &binding :
+         implementation.externalImplementationBindings()) {
+      std::vector<RepresentationLocator> locators(
+          binding.representationLocators.begin(),
+          binding.representationLocators.end());
+      for (RepresentationLocator &locator : locators) {
+        if (llvm::Error error = addReferencedObject(locator))
+          return std::move(error);
+        locator = projectPhysicalLocator(locator, sourceRoot.top, physicalTop);
+      }
+      std::optional<ImplementationPayloadKey> blackBoxContract;
+      if (binding.blackBoxContractPayloadRef) {
+        if (binding.blackBoxContractPayloadRef->ordinal >=
+            sourceRoot.payloads.size())
+          return invalid("source black-box payload reference is out of range");
+        const ImplementationPayload &payload =
+            sourceRoot.payloads[binding.blackBoxContractPayloadRef->ordinal];
+        blackBoxContract = ImplementationPayloadKey{
+            payload.role, payload.canonicalLogicalName};
+      }
+      result.externalBindings.push_back(ExternalImplementationBindingDraft{
+          binding.providerContractRef, binding.externalInputs,
+          binding.fabricResourceRefs, std::move(locators),
+          std::move(blackBoxContract)});
+    }
+
+    for (const MemoryMacroBinding &binding :
+         implementation.memoryMacroBindings()) {
+      if (binding.externalImplementationBindingRef.ordinal >=
+          result.externalBindings.size())
+        return invalid("source memory binding references an unknown external "
+                       "implementation");
+      if (llvm::Error error =
+              addReferencedObject(binding.representationLocator))
+        return std::move(error);
+      result.memoryBindings.push_back(MemoryMacroBindingDraft{
+          binding.fabricMemoryRef,
+          binding.externalImplementationBindingRef.ordinal,
+          projectPhysicalLocator(binding.representationLocator, sourceRoot.top,
+                                 physicalTop)});
+    }
+
+    for (const RepresentationLocator &locator :
+         sourceIndex.unresolvedExternalDefinitions())
+      if (llvm::Error error = addReferencedObject(locator))
+        return std::move(error);
+  }
+  return result;
+}
+
+llvm::Expected<FinalizedHardwareImplementation>
+publishRepresentation(const FinalizedHardwareImplementation &source,
+                      llvm::StringRef device, RepresentationRootVariant variant,
+                      std::optional<RepresentationPhysicalStage> stage,
+                      PayloadRole outputRole, llvm::StringRef outputLogicalName,
+                      llvm::StringRef outputContents,
+                      bool retainExternalBindings,
+                      const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const ImplementationRepresentationRoot &sourceRoot =
+      source.implementation().representationRoot();
+  auto sourceIndex = indexRepresentationRoot(sourceRoot, blobs);
+  if (!sourceIndex)
+    return sourceIndex.takeError();
+  auto format = RepresentationFormatDescriptorRef::get(
+      RepresentationFormatKind::IndexedPhysical);
+  if (!format)
+    return format.takeError();
+  const RepresentationLocator physicalTop{
+      RepresentationObjectKind::DeviceResource, device.str()};
+  auto projected = projectImplementationMetadata(
+      source, *sourceIndex, physicalTop, retainExternalBindings);
+  if (!projected)
+    return projected.takeError();
+
+  std::vector<ImplementationPayload> payloads;
+  if (variant == RepresentationRootVariant::FpgaPhysical) {
+    for (const ImplementationPayload &payload : sourceRoot.payloads)
+      if (payload.role == PayloadRole::GenerationConstraint ||
+          payload.role == PayloadRole::BlackBoxContract)
+        payloads.push_back(payload);
+  }
+  auto outputDigest = blobs.put(llvm::ArrayRef<std::uint8_t>(
+      reinterpret_cast<const std::uint8_t *>(outputContents.data()),
+      outputContents.size()));
+  if (!outputDigest)
+    return outputDigest.takeError();
+  payloads.push_back(
+      {outputRole, outputLogicalName.str(), std::move(*outputDigest)});
+
+  auto index = createPhysicalRepresentationIndexPayload(
+      *format, variant, stage, physicalTop, "index/physical.json", payloads,
+      std::move(projected->objects),
+      std::move(projected->unresolvedDefinitions));
+  if (!index)
+    return index.takeError();
+  auto indexBytes = serializePhysicalRepresentationIndexPayloadJson(*index);
+  if (!indexBytes)
+    return indexBytes.takeError();
+  auto indexDigest = blobs.put(llvm::ArrayRef<std::uint8_t>(
+      reinterpret_cast<const std::uint8_t *>(indexBytes->data()),
+      indexBytes->size()));
+  if (!indexDigest)
+    return indexDigest.takeError();
+  payloads.push_back({PayloadRole::RepresentationIndex, index->indexLogicalName,
+                      std::move(*indexDigest)});
+
+  auto representation = createImplementationRepresentationRoot(
+      variant, stage, *format, physicalTop, std::move(payloads));
+  if (!representation)
+    return representation.takeError();
+  return finalizeHardwareImplementation(
+      HardwareImplementationDraft{
+          source.implementation().fabric(),
+          source.implementation().configurationAbi(),
+          source.implementation().interconnectImplementations().vec(),
+          std::move(*representation),
+          source.implementation().implementationPlatform(),
+          std::move(projected->interfaces),
+          std::move(projected->activityPoints),
+          std::move(projected->memoryBindings),
+          std::move(projected->externalBindings)},
+      artifacts, blobs);
+}
+
+CandidateGeneratorProviderResult
+incompleteResult(CandidateGeneratorIncompleteReason reason) {
+  return CandidateGeneratorProviderResult{
+      IncompleteCandidateGeneratorResult{
+          reason,
+          {{CandidateGeneratorOutputSlotRef(FpgaPhysicalOutput), {}},
+           {CandidateGeneratorOutputSlotRef(FpgaImageOutput), {}}},
+          {}},
+      {{CandidateGeneratorWorkUnitRef(0), 1, 1},
+       {CandidateGeneratorWorkUnitRef(1), 1, 0},
+       {CandidateGeneratorWorkUnitRef(2), 1, 0}}};
+}
+
 llvm::Expected<CandidateGeneratorProviderResult>
 importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
@@ -761,9 +922,7 @@ importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     return inputs.takeError();
 
   ExternalToolInvocationImportExpectation expectation;
-  expectation.providerIdentity = kProviderIdentity.str();
-  expectation.semanticClosure = SemanticInvocationClosure(inputs->closure);
-  expectation.resultImporterIdentity = kImporterIdentity.str();
+  expectation.semanticContract = inputs->semanticContract;
   for (const MaterializedBundleFile &file : inputs->files) {
     if (!file.sourceArtifact)
       continue;
@@ -772,18 +931,40 @@ importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   }
   for (llvm::StringRef output : kDeclaredOutputPaths)
     expectation.declaredOutputs.push_back(output.str());
-  auto imported = importExternalToolInvocationBundle(prepared, expectation);
-  if (!imported)
-    return imported.takeError();
+  auto attempt = importExternalToolInvocationAttempt(prepared, expectation);
+  if (!attempt)
+    return attempt.takeError();
+  if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))
+    return llvm::make_error<IncompleteExternalToolInvocationError>();
+  if (const auto *failed =
+          std::get_if<FailedExternalToolInvocationAttempt>(&*attempt)) {
+    switch (failed->status) {
+    case InvocationCompletionStatus::Success:
+      return invalid("failed invocation outcome carries success status");
+    case InvocationCompletionStatus::MissingEnvironment:
+    case InvocationCompletionStatus::ModuleActivationFailed:
+    case InvocationCompletionStatus::VersionMismatch:
+      return incompleteResult(
+          CandidateGeneratorIncompleteReason::ProviderUnavailable);
+    case InvocationCompletionStatus::BundleContentMismatch:
+      return invalid("invocation bundle content changed before execution");
+    case InvocationCompletionStatus::ToolExit:
+    case InvocationCompletionStatus::MissingOutput:
+      return incompleteResult(
+          CandidateGeneratorIncompleteReason::ExecutionFailed);
+    }
+  }
+  auto imported =
+      std::get<ImportedExternalToolInvocationBundle>(std::move(*attempt));
   if (llvm::Error error = rejectUndeclaredOutputs(prepared.bundleRoot))
     return std::move(error);
 
   auto physical =
-      readExternalToolInvocationDeclaredOutput(*imported, kPhysicalPath);
+      readExternalToolInvocationDeclaredOutput(imported, kPhysicalPath);
   if (!physical)
     return physical.takeError();
-  auto physicalFacts = readExternalToolInvocationDeclaredOutput(
-      *imported, kPhysicalMetadataPath);
+  auto physicalFacts =
+      readExternalToolInvocationDeclaredOutput(imported, kPhysicalMetadataPath);
   if (!physicalFacts)
     return physicalFacts.takeError();
   if (physical->empty())
@@ -792,11 +973,11 @@ importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       physicalMetadata(inputs->providerBuild, inputs->device, inputs->top))
     return invalid("FpgaPhysical metadata is not exact");
 
-  auto image = readExternalToolInvocationDeclaredOutput(*imported, kImagePath);
+  auto image = readExternalToolInvocationDeclaredOutput(imported, kImagePath);
   if (!image)
     return image.takeError();
   auto imageFacts =
-      readExternalToolInvocationDeclaredOutput(*imported, kImageMetadataPath);
+      readExternalToolInvocationDeclaredOutput(imported, kImageMetadataPath);
   if (!imageFacts)
     return imageFacts.takeError();
   if (image->empty())
@@ -805,15 +986,43 @@ importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       imageMetadata(inputs->providerBuild, inputs->device, inputs->top))
     return invalid("FpgaImage metadata is not exact");
 
+  auto source = importHardwareImplementation(
+      inputBindings[RtlImplementationInput].artifacts.front(), artifacts,
+      blobs);
+  if (!source)
+    return source.takeError();
+  auto publishedPhysical = publishRepresentation(
+      *source, inputs->device, RepresentationRootVariant::FpgaPhysical,
+      RepresentationPhysicalStage::Routed, PayloadRole::PhysicalDatabase,
+      "database/quartus.qar", *physical, true, artifacts, blobs);
+  if (!publishedPhysical)
+    return publishedPhysical.takeError();
+  auto publishedImage = publishRepresentation(
+      *publishedPhysical, inputs->device, RepresentationRootVariant::FpgaImage,
+      std::nullopt, PayloadRole::DeviceImage, "image/device.sof", *image, false,
+      artifacts, blobs);
+  if (!publishedImage)
+    return publishedImage.takeError();
+
   return CandidateGeneratorProviderResult{
-      IncompleteCandidateGeneratorResult{
-          CandidateGeneratorIncompleteReason::Unsupported,
-          {{CandidateGeneratorOutputSlotRef(FpgaPhysicalOutput), {}},
-           {CandidateGeneratorOutputSlotRef(FpgaImageOutput), {}}},
-          {}},
+      CompletedCandidateGeneratorResult{
+          {{CandidateGeneratorOutputSlotRef(FpgaPhysicalOutput),
+            {publishedPhysical->reference()}},
+           {CandidateGeneratorOutputSlotRef(FpgaImageOutput),
+            {publishedImage->reference()}}},
+          {{CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+            CandidateGeneratorOutputSlotRef(FpgaPhysicalOutput),
+            publishedPhysical->reference(),
+            {},
+            {}},
+           {CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+            CandidateGeneratorOutputSlotRef(FpgaImageOutput),
+            publishedImage->reference(),
+            {},
+            {}}}},
       {{CandidateGeneratorWorkUnitRef(0), 1, 1},
-       {CandidateGeneratorWorkUnitRef(1), 1, 0},
-       {CandidateGeneratorWorkUnitRef(2), 1, 0}}};
+       {CandidateGeneratorWorkUnitRef(1), 1, 1},
+       {CandidateGeneratorWorkUnitRef(2), 1, 1}}};
 }
 
 } // namespace

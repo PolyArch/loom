@@ -42,6 +42,8 @@ constexpr llvm::StringLiteral kProviderBuild =
 constexpr llvm::StringLiteral kToolVersion =
     "Version 26.1.0 Build 110 03/26/2026 SC Pro Edition";
 constexpr llvm::StringLiteral kTop = "loom_quartus_top";
+constexpr CandidateGeneratorOutputSlotRef kPhysicalOutput(0);
+constexpr CandidateGeneratorOutputSlotRef kImageOutput(1);
 
 [[noreturn]] void fail(llvm::StringRef test, const std::string &message) {
   std::cerr << test.str() << ": " << message << '\n';
@@ -578,18 +580,17 @@ void exactAdmissionIsTyped(const std::filesystem::path &root) {
                     QuartusPrimeUnsupportedReason::PlatformBinding);
 }
 
-void requireSchemaLimitedResult(llvm::StringRef test,
-                                CandidateGeneratorProviderResult result) {
+void requireIncompleteResult(llvm::StringRef test,
+                             CandidateGeneratorProviderResult result,
+                             CandidateGeneratorIncompleteReason reason) {
   const auto *incomplete =
       std::get_if<IncompleteCandidateGeneratorResult>(&result.outcome);
   require(test,
-          incomplete &&
-              incomplete->reason ==
-                  CandidateGeneratorIncompleteReason::Unsupported &&
+          incomplete && incomplete->reason == reason &&
               incomplete->retainedOutputBindings.size() == 2 &&
               incomplete->retainedOutputBindings[0].artifacts.empty() &&
               incomplete->retainedOutputBindings[1].artifacts.empty(),
-          "import crossed the schema-limited publication boundary");
+          "failed invocation changed its typed incomplete result");
   require(test,
           result.workSummary.size() == 3 &&
               result.workSummary[0].planned == 1 &&
@@ -598,7 +599,67 @@ void requireSchemaLimitedResult(llvm::StringRef test,
               result.workSummary[1].consumed == 0 &&
               result.workSummary[2].planned == 1 &&
               result.workSummary[2].consumed == 0,
-          "schema-limited result changed its exact work boundary");
+          "failed invocation changed its exact work boundary");
+}
+
+void requirePublishedResult(llvm::StringRef test, const LaneFixture &fixture,
+                            CandidateGeneratorProviderResult result) {
+  const auto *completed =
+      std::get_if<CompletedCandidateGeneratorResult>(&result.outcome);
+  require(test,
+          completed && completed->outputBindings.size() == 2 &&
+              completed->outputBindings[0].slot == kPhysicalOutput &&
+              completed->outputBindings[0].artifacts.size() == 1 &&
+              completed->outputBindings[1].slot == kImageOutput &&
+              completed->outputBindings[1].artifacts.size() == 1 &&
+              completed->lineageEdges.size() == 2,
+          "successful invocation did not publish both exact outputs");
+
+  FinalizedHardwareImplementation physical =
+      take(test, importHardwareImplementation(
+                     completed->outputBindings[0].artifacts.front(),
+                     fixture.artifacts, fixture.blobs));
+  FinalizedHardwareImplementation image =
+      take(test, importHardwareImplementation(
+                     completed->outputBindings[1].artifacts.front(),
+                     fixture.artifacts, fixture.blobs));
+  const HardwareImplementation &source =
+      fixture.implementation.implementation();
+  require(test,
+          physical.implementation().fabric() == source.fabric() &&
+              physical.implementation().configurationAbi() ==
+                  source.configurationAbi() &&
+              physical.implementation().implementationPlatform() ==
+                  source.implementationPlatform() &&
+              physical.implementation().representationRoot().variant ==
+                  RepresentationRootVariant::FpgaPhysical &&
+              physical.implementation().representationRoot().stage ==
+                  RepresentationPhysicalStage::Routed,
+          "FpgaPhysical publication lost its exact semantic closure");
+  require(test,
+          image.implementation().fabric() == source.fabric() &&
+              image.implementation().configurationAbi() ==
+                  source.configurationAbi() &&
+              image.implementation().implementationPlatform() ==
+                  source.implementationPlatform() &&
+              image.implementation().representationRoot().variant ==
+                  RepresentationRootVariant::FpgaImage &&
+              !image.implementation().representationRoot().stage,
+          "FpgaImage publication lost its exact semantic closure");
+  require(test,
+          completed->lineageEdges[0].output == physical.reference() &&
+              completed->lineageEdges[0].parents.empty() &&
+              completed->lineageEdges[1].output == image.reference() &&
+              completed->lineageEdges[1].parents.empty(),
+          "mechanical output lineage is not exact");
+  require(test,
+          result.workSummary.size() == 3 &&
+              llvm::all_of(result.workSummary,
+                           [](const auto &summary) {
+                             return summary.planned == 1 &&
+                                    summary.consumed == 1;
+                           }),
+          "successful publication did not consume all three work units");
 }
 
 void strictImportUsesOnlyTheCompletedDeclaredSnapshot(
@@ -623,8 +684,8 @@ void strictImportUsesOnlyTheCompletedDeclaredSnapshot(
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(valid)) == 0,
           "synthetic Quartus bundle execution failed");
-  requireSchemaLimitedResult(__func__,
-                             take(__func__, import(valid, fixture.binding)));
+  requirePublishedResult(__func__, fixture,
+                         take(__func__, import(valid, fixture.binding)));
 
   PreparedExternalToolInvocation tampered =
       prepareBundle(__func__, fixture, root / "tampered", tool);
@@ -642,8 +703,9 @@ void strictImportUsesOnlyTheCompletedDeclaredSnapshot(
   ::unsetenv("LOOM_QUARTUS_TEST_OMIT_IMAGE");
   require(__func__, partialExit != 0,
           "partial synthetic output was marked successful");
-  expectFailureContains(__func__, import(partial, fixture.binding),
-                        "successfully");
+  requireIncompleteResult(__func__,
+                          take(__func__, import(partial, fixture.binding)),
+                          CandidateGeneratorIncompleteReason::ExecutionFailed);
 
   PreparedExternalToolInvocation badMetadata =
       prepareBundle(__func__, fixture, root / "bad-metadata", tool);
@@ -722,13 +784,16 @@ void runRealSmoke(const std::filesystem::path &root, llvm::StringRef module,
       take(__func__, executeExternalToolInvocationBundle(prepared));
   require(__func__, exitCode == 0,
           "real Quartus bundle exited with " + std::to_string(exitCode));
-  requireSchemaLimitedResult(
-      __func__,
+  CandidateGeneratorProviderResult result =
       take(__func__, importCandidateGeneratorInvocation(
-                         inputs, binding, prepared, artifacts, blobs)));
+                         inputs, binding, prepared, artifacts, blobs));
+  const auto *completed =
+      std::get_if<CompletedCandidateGeneratorResult>(&result.outcome);
+  require(__func__, completed && completed->outputBindings.size() == 2,
+          "real Quartus smoke did not publish both hardware states");
   llvm::outs() << "quartus_smoke version=\"" << verifiedVersion
                << "\" device=\"" << device << "\" module=\"" << module
-               << "\" publication=unsupported\n";
+               << "\" publication=complete\n";
 }
 
 } // namespace
