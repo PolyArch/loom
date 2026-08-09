@@ -117,13 +117,13 @@ llvm::Expected<FabricOperationLeafInterface> deriveFabricOperationLeafInterface(
   std::size_t outputCount = 0;
   switch (capability.implementationFamily) {
   case ImplementationFamilyId::FixedVectorParallelize:
-    protocol = FabricOperationLeafProtocol::ElasticToken;
+    protocol = FabricOperationLeafProtocol::OrderedCardinalityToken;
     schema = OperationSchemaId::DataflowParallelize;
     inputCount = 2;
     outputCount = 3;
     break;
   case ImplementationFamilyId::FixedVectorSerialize:
-    protocol = FabricOperationLeafProtocol::ElasticToken;
+    protocol = FabricOperationLeafProtocol::OrderedCardinalityToken;
     schema = OperationSchemaId::DataflowSerialize;
     inputCount = 3;
     outputCount = 2;
@@ -428,10 +428,11 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
     return interface.takeError();
   const bool stateTransform = stateLayout->has_value();
   const bool tokenHandshake = interface->hasTokenHandshake();
+  const bool orderedProduction = interface->hasOrderedProductionGroups();
   std::vector<circt::hw::PortInfo> result;
   result.reserve(inputs.size() + configurationFields.size() + outputs.size() +
                  (tokenHandshake ? 2 * (inputs.size() + outputs.size()) : 0) +
-                 (stateTransform ? 3 : 0));
+                 (stateTransform ? 3 : 0) + (orderedProduction ? 1 : 0));
   for (const auto *input : inputs) {
     if (input->payloadWidthBits == 0)
       continue;
@@ -492,6 +493,9 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
           builder, "valid_output_" + std::to_string(output->reference.ordinal),
           1, circt::hw::ModulePort::Direction::Output));
   }
+  if (orderedProduction)
+    result.push_back(port(builder, "final_production", 1,
+                          circt::hw::ModulePort::Direction::Output));
   if (stateTransform) {
     const unsigned stateWidth = stateLayout->value().encodedBitCount();
     result.push_back(port(builder, "state_next", stateWidth,

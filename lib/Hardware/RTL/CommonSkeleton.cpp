@@ -438,9 +438,28 @@ const ModuleBoundaryTransportPortProjection *findProjection(
   return result;
 }
 
-const ::fabric::ResourceContract &
-supportedOperationResourceContract(::fabric::ImplementationFamilyId family) {
-  switch (family) {
+llvm::Expected<::fabric::ResourceContract> supportedOperationResourceContract(
+    const fabric::ResolvedFabricOpCapabilityView &capability) {
+  switch (capability.implementationFamily) {
+  case ::fabric::ImplementationFamilyId::FixedVectorParallelize:
+  case ::fabric::ImplementationFamilyId::FixedVectorSerialize: {
+    const auto *parameters = std::get_if<::fabric::FixedVectorAdapterParams>(
+        &capability.parameterizedCapability);
+    if (!parameters)
+      return skeletonError(
+          "ordered-cardinality operation has the wrong parameter schema");
+    auto maximumLaneCount =
+        ::fabric::maximumFixedVectorAdapterLaneCount(*parameters);
+    if (!maximumLaneCount)
+      return maximumLaneCount.takeError();
+    const auto schema =
+        capability.implementationFamily ==
+                ::fabric::ImplementationFamilyId::FixedVectorParallelize
+            ? ::dataflow::OperationSchemaId::DataflowParallelize
+            : ::dataflow::OperationSchemaId::DataflowSerialize;
+    return ::fabric::createOrderedCardinalityOperationResourceContract(
+        schema, *maximumLaneCount);
+  }
   case ::fabric::ImplementationFamilyId::LoopStream:
     return ::fabric::loopStreamOperationResourceContract();
   case ::fabric::ImplementationFamilyId::LoopCarry:
@@ -537,9 +556,12 @@ llvm::Expected<InternalOperationPlan> prepareInternalOperation(
       operation.capability->resourceStateAndTimingContract);
   if (!actualContract)
     return actualContract.takeError();
+  auto supportedResourceContract =
+      supportedOperationResourceContract(*operation.capability);
+  if (!supportedResourceContract)
+    return supportedResourceContract.takeError();
   auto supportedContract =
-      ::fabric::encodeResourceContractRecord(supportedOperationResourceContract(
-          operation.capability->implementationFamily));
+      ::fabric::encodeResourceContractRecord(*supportedResourceContract);
   if (!supportedContract)
     return supportedContract.takeError();
   if (*actualContract != *supportedContract)
@@ -1038,6 +1060,16 @@ llvm::Expected<ModuleRootCirctSkeleton> buildInternalOperationSkeleton(
               plan->clockReset.asynchronousReset);
         }
 
+        circt::Backedge continuationNext;
+        mlir::Value continuation = bitConstant(bodyBuilder, location, false);
+        if (plan->interface.hasOrderedProductionGroups()) {
+          continuationNext = backedges.get(bodyBuilder.getI1Type());
+          continuation = createOperationRegister(
+              bodyBuilder, location, continuationNext,
+              accessor.getInput("clock"), reset, llvm::APInt(1, 0),
+              "operation_continuation_reg", plan->clockReset.asynchronousReset);
+        }
+
         std::vector<circt::Backedge> resultDataNext(
             plan->physicalOutputs.size());
         std::vector<mlir::Value> resultData(plan->physicalOutputs.size());
@@ -1108,16 +1140,23 @@ llvm::Expected<ModuleRootCirctSkeleton> buildInternalOperationSkeleton(
           leafTransitionEnabled = circt::comb::AndOp::create(
               bodyBuilder, location, enabled, slotAvailable);
 
+        mlir::Value acceptsInput = leafTransitionEnabled;
+        if (plan->interface.hasOrderedProductionGroups())
+          acceptsInput = circt::comb::AndOp::create(
+              bodyBuilder, location, leafTransitionEnabled,
+              circt::comb::createOrFoldNot(bodyBuilder, location,
+                                           continuation));
+
         std::map<std::string, mlir::Value> leafInputs;
         for (auto [ordinal, input] : llvm::enumerate(plan->physicalInputs)) {
           if (input->payloadWidthBits != 0)
             leafInputs.emplace("data_input_" + std::to_string(ordinal),
                                inputRuntime[ordinal].data);
           if (plan->interface.hasTokenHandshake())
-            leafInputs.emplace("valid_input_" + std::to_string(ordinal),
-                               circt::comb::AndOp::create(
-                                   bodyBuilder, location, leafTransitionEnabled,
-                                   inputRuntime[ordinal].valid));
+            leafInputs.emplace(
+                "valid_input_" + std::to_string(ordinal),
+                circt::comb::AndOp::create(bodyBuilder, location, acceptsInput,
+                                           inputRuntime[ordinal].valid));
         }
         if (plan->interface.hasTokenHandshake())
           for (std::size_t ordinal = 0; ordinal < plan->physicalOutputs.size();
@@ -1217,6 +1256,18 @@ llvm::Expected<ModuleRootCirctSkeleton> buildInternalOperationSkeleton(
               andValues(bodyBuilder, location,
                         {leafTransitionEnabled,
                          orValues(bodyBuilder, location, producedValid)});
+          if (plan->interface.hasOrderedProductionGroups()) {
+            mlir::Value capturedNonFinal =
+                andValues(bodyBuilder, location,
+                          {capture, circt::comb::createOrFoldNot(
+                                        bodyBuilder, location,
+                                        leafOutputs.at("final_production"))});
+            mlir::Value retainedContinuation = circt::comb::AndOp::create(
+                bodyBuilder, location, continuation,
+                circt::comb::createOrFoldNot(bodyBuilder, location, capture));
+            continuationNext.setValue(circt::comb::OrOp::create(
+                bodyBuilder, location, capturedNonFinal, retainedContinuation));
+          }
           for (auto [ordinal, output] :
                llvm::enumerate(plan->physicalOutputs)) {
             mlir::Value retain = circt::comb::AndOp::create(
@@ -1238,9 +1289,10 @@ llvm::Expected<ModuleRootCirctSkeleton> buildInternalOperationSkeleton(
           publishedValid = heldTuple->publishedValids;
           for (std::size_t ordinal = 0; ordinal < plan->physicalInputs.size();
                ++ordinal)
-            operationInputReady.push_back(circt::comb::AndOp::create(
-                bodyBuilder, location, leafTransitionEnabled,
-                leafOutputs.at("ready_input_" + std::to_string(ordinal))));
+            operationInputReady.push_back(andValues(
+                bodyBuilder, location,
+                {acceptsInput,
+                 leafOutputs.at("ready_input_" + std::to_string(ordinal))}));
         } else {
           for (auto [ordinal, output] :
                llvm::enumerate(plan->physicalOutputs)) {

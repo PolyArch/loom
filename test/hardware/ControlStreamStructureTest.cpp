@@ -291,6 +291,73 @@ makeTokenSyncModule(llvm::StringRef test, loom::ArtifactStore &store) {
 }
 
 loom::fabric::FinalizedFabricRoot
+makeParallelizeModule(llvm::StringRef test, loom::ArtifactStore &store) {
+  using loom::adg::DesignBuilder;
+  using loom::adg::FuCapabilityTemplateSpec;
+  using loom::adg::FuSpec;
+  using loom::adg::OperationCapabilitySpec;
+  using loom::adg::PeSpec;
+  using loom::adg::PortType;
+
+  const PortType bits128 = take(test, PortType::bits(128));
+  const std::vector<PortType> inputs{bits128, bits128};
+  const std::vector<PortType> outputs{bits128, bits128, bits128};
+  const ::fabric::FixedVectorAdapterParams parameters{
+      ::fabric::IntegerWidthSet::get({::fabric::IntegerWidth::I8}),
+      ::fabric::FloatFormatSet{}, 128};
+  const unsigned maximumLaneCount =
+      take(test, ::fabric::maximumFixedVectorAdapterLaneCount(parameters));
+  auto contract =
+      take(test, ::fabric::createOrderedCardinalityOperationResourceContract(
+                     ::dataflow::OperationSchemaId::DataflowParallelize,
+                     maximumLaneCount));
+
+  DesignBuilder builder(store);
+  auto spatial = take(test, builder.createSpatialCore(
+                                "control-stream-parallelize", inputs, outputs));
+  std::vector<loom::adg::SpatialValue> spatialInputs;
+  for (unsigned ordinal = 0; ordinal != inputs.size(); ++ordinal)
+    spatialInputs.push_back(take(test, spatial.input(ordinal)));
+  auto pe = take(
+      test, spatial.addPe(spatialInputs, PeSpec::spatial(inputs, outputs)));
+  std::vector<loom::adg::PeValue> peInputs;
+  for (unsigned ordinal = 0; ordinal != inputs.size(); ++ordinal)
+    peInputs.push_back(take(test, pe.input(ordinal)));
+  auto fu = take(test, pe.addFu(peInputs, FuSpec{inputs, outputs}));
+  std::vector<loom::adg::FuValue> fuInputs;
+  for (unsigned ordinal = 0; ordinal != inputs.size(); ++ordinal)
+    fuInputs.push_back(take(test, fu.input(ordinal)));
+  auto operation = take(
+      test, fu.addOperation(
+                fuInputs,
+                OperationCapabilitySpec{
+                    ::fabric::ImplementationFamilyId::FixedVectorParallelize,
+                    parameters,
+                    {::dataflow::OperationSchemaId::DataflowParallelize},
+                    outputs,
+                    std::move(contract)}));
+  if (llvm::Error error =
+          fu.addCapabilityTemplate(FuCapabilityTemplateSpec{{operation}, {}}))
+    fail(test, llvm::toString(std::move(error)));
+  std::vector<loom::adg::FuValue> operationOutputs;
+  for (unsigned ordinal = 0; ordinal != outputs.size(); ++ordinal)
+    operationOutputs.push_back(take(test, operation.output(ordinal)));
+  if (llvm::Error error = fu.close(operationOutputs))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = pe.close())
+    fail(test, llvm::toString(std::move(error)));
+  std::vector<loom::adg::SpatialValue> spatialOutputs;
+  for (unsigned ordinal = 0; ordinal != outputs.size(); ++ordinal)
+    spatialOutputs.push_back(take(test, pe.output(ordinal)));
+  if (llvm::Error error = spatial.close(spatialOutputs))
+    fail(test, llvm::toString(std::move(error)));
+  auto design = take(test, std::move(builder).finalize());
+  require(test, design.roots().size() == 1,
+          "Parallelize fixture did not publish one Module root");
+  return design.roots().front();
+}
+
+loom::fabric::FinalizedFabricRoot
 makeLoopInvariantModule(llvm::StringRef test, loom::ArtifactStore &store,
                         const ::fabric::ResourceContract &resourceContract) {
   using loom::adg::DesignBuilder;
@@ -464,6 +531,85 @@ void tokenSyncUsesOneDerivedHandshakeContract(
           "TokenSync skeleton omitted its common elastic tuple boundary");
 }
 
+void orderedCardinalityUsesCommonContinuation(
+    const std::filesystem::path &root) {
+  const llvm::StringRef test = __func__;
+  std::filesystem::create_directories(root);
+  loom::ArtifactStore store(root.string());
+  auto module = makeParallelizeModule(test, store);
+  auto system = take(
+      test, loom::hardware::test::makeSingleSpatialCoreSystem(module, store));
+  auto systemView = take(test, loom::fabric::requireSystemRoot(system.view()));
+  auto operations = take(
+      test, loom::hardware::rtl::enumerateFabricPhysicalOperations(systemView));
+  const auto &parallelize =
+      findOperation(test, operations,
+                    ::fabric::ImplementationFamilyId::FixedVectorParallelize);
+  auto abi = take(
+      test,
+      loom::hardware::finalizeConfigurationABI(
+          take(test,
+               loom::hardware::test::makeCompleteConfigurationABIDraft(system)),
+          store));
+
+  mlir::MLIRContext context;
+  context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
+                      circt::seq::SeqDialect, circt::sv::SVDialect>();
+  mlir::OpBuilder builder(&context);
+  const auto ports =
+      take(test, loom::hardware::rtl::deriveFabricOperationLeafPorts(
+                     builder, parallelize.physicalOccurrence,
+                     *parallelize.capability, abi.abi()));
+  require(test,
+          hasPort(ports, "final_production") &&
+              hasPort(ports, "state_current") && hasPort(ports, "state_next") &&
+              hasPort(ports, "state_write"),
+          "ordered-cardinality leaf omitted its derived continuation boundary");
+
+  require(test, systemView.artifact().accCoreOccurrences().size() == 1,
+          "Parallelize System did not publish one SpatialCore");
+  const loom::fabric::SpatialCoreOccurrenceRef spatialCore{
+      systemView.artifact().accCoreOccurrences().front()};
+  auto skeleton = take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                                 context, spatialCore, abi.abi()));
+  require(test, skeleton.operationLeaves.size() == 1,
+          "Parallelize skeleton did not expose one operation leaf");
+  circt::hw::InstanceOp operationInstance;
+  skeleton.module->walk([&](circt::hw::InstanceOp candidate) {
+    if (candidate.getInstanceName() == "operation")
+      operationInstance = candidate;
+  });
+  require(test, static_cast<bool>(operationInstance),
+          "Parallelize skeleton omitted its operation instance");
+  std::optional<std::size_t> validInputOrdinal;
+  std::size_t inputOrdinal = 0;
+  for (const circt::hw::PortInfo &port :
+       skeleton.operationLeaves.front().module.getPortList()) {
+    if (port.isOutput())
+      continue;
+    if (port.getName() == "valid_input_0")
+      validInputOrdinal = inputOrdinal;
+    ++inputOrdinal;
+  }
+  require(test,
+          validInputOrdinal &&
+              *validInputOrdinal < operationInstance.getInputs().size(),
+          "Parallelize instance omitted its payload-valid operand");
+  llvm::SmallPtrSet<mlir::Operation *, 32> visited;
+  require(
+      test,
+      dependsOnRegisterNamed(operationInstance.getInputs()[*validInputOrdinal],
+                             "operation_continuation_reg", visited),
+      "ordered-cardinality input was not blocked by common continuation");
+  std::string skeletonText;
+  llvm::raw_string_ostream(skeletonText) << *skeleton.module;
+  require(
+      test,
+      llvm::StringRef(skeletonText).contains("operation_continuation_reg") &&
+          llvm::StringRef(skeletonText).contains("final_production"),
+      "common skeleton omitted ordered-cardinality claim state");
+}
+
 void builtinCapabilitiesOwnProtocolAndState(const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
   std::filesystem::create_directories(root);
@@ -485,11 +631,20 @@ void builtinCapabilitiesOwnProtocolAndState(const std::filesystem::path &root) {
   };
   for (const auto family :
        {::fabric::ImplementationFamilyId::FixedVectorParallelize,
-        ::fabric::ImplementationFamilyId::FixedVectorSerialize,
-        ::fabric::ImplementationFamilyId::TokenConstant,
-        ::fabric::ImplementationFamilyId::TokenSync,
-        ::fabric::ImplementationFamilyId::TokenMux,
-        ::fabric::ImplementationFamilyId::TokenDemux}) {
+        ::fabric::ImplementationFamilyId::FixedVectorSerialize}) {
+    const auto interface =
+        take(test, loom::hardware::rtl::deriveFabricOperationLeafInterface(
+                       capability(family)));
+    require(test,
+            interface.protocol ==
+                    FabricOperationLeafProtocol::OrderedCardinalityToken &&
+                interface.hasOrderedProductionGroups(),
+            "vector adapter did not derive ordered production groups");
+  }
+  for (const auto family : {::fabric::ImplementationFamilyId::TokenConstant,
+                            ::fabric::ImplementationFamilyId::TokenSync,
+                            ::fabric::ImplementationFamilyId::TokenMux,
+                            ::fabric::ImplementationFamilyId::TokenDemux}) {
     const auto interface =
         take(test, loom::hardware::rtl::deriveFabricOperationLeafInterface(
                        capability(family)));
@@ -925,6 +1080,8 @@ int main(int argc, char **argv) {
   if (argc != 2)
     fail("main", "expected one temporary directory argument");
   tokenSyncUsesOneDerivedHandshakeContract(argv[1]);
+  orderedCardinalityUsesCommonContinuation(std::filesystem::path(argv[1]) /
+                                           "ordered");
   builtinCapabilitiesOwnProtocolAndState(std::filesystem::path(argv[1]) /
                                          "builtin");
   writeAtomicTransportToolArtifacts(std::filesystem::path(argv[1]) /

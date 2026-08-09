@@ -26,6 +26,7 @@ namespace loom::hardware::rtl {
 enum class FabricOperationLeafProtocol {
   Combinational,
   ElasticToken,
+  OrderedCardinalityToken,
   ManagedToken,
   TransparentToken,
 };
@@ -42,7 +43,12 @@ struct FabricOperationLeafInterface final {
   }
 
   bool hasElasticResultStorage() const {
-    return protocol == FabricOperationLeafProtocol::ElasticToken;
+    return protocol == FabricOperationLeafProtocol::ElasticToken ||
+           protocol == FabricOperationLeafProtocol::OrderedCardinalityToken;
+  }
+
+  bool hasOrderedProductionGroups() const {
+    return protocol == FabricOperationLeafProtocol::OrderedCardinalityToken;
   }
 
   bool hasDirectTokenPublication() const {
