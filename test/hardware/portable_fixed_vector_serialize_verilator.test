@@ -1,0 +1,5 @@
+# REQUIRES: circt, verilator
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-parallelize-serialize-test %t
+# RUN: cd %t/generated && verilator --binary --timing --Wall --Wno-fatal --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench fixed_vector_serialize.sv serialize_testbench.sv --Mdir serialize_obj
+# RUN: %t/generated/serialize_obj/Vtestbench

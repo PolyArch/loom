@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-parallelize-serialize-test %t
+# RUN: cd %t/generated && yosys -q -s portable_fixed_vector_parallelize.ys

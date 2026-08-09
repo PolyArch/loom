@@ -1,0 +1,34 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-parallelize-serialize-test %t
+# RUN: FileCheck %s --check-prefix=PARALLEL < %t/generated/fixed_vector_parallelize.sv
+# RUN: FileCheck %s --check-prefix=SERIAL < %t/generated/fixed_vector_serialize.sv
+# RUN: FileCheck %s --check-prefix=PTB < %t/generated/parallelize_testbench.sv
+# RUN: FileCheck %s --check-prefix=STB < %t/generated/serialize_testbench.sv
+
+# PARALLEL-LABEL: module fixed_vector_parallelize
+# PARALLEL: input [35:0] state_current
+# PARALLEL: input continuation_current
+# PARALLEL: final_production,
+# PARALLEL: output [35:0] state_next
+# PARALLEL: output state_write
+# PARALLEL-NOT: always_ff
+
+# SERIAL-LABEL: module fixed_vector_serialize
+# SERIAL: input [35:0] state_current
+# SERIAL: input continuation_current
+# SERIAL: final_production,
+# SERIAL: output [35:0] state_next
+# SERIAL: output state_write
+# SERIAL-NOT: always_ff
+
+# PTB: parallelize partial payload did not hold as non-final
+# PTB: parallelize terminal phase did not block replacement
+# PTB: parallelize final release did not admit replacement
+# PTB: parallelize reset did not clear buffered continuation
+
+# STB: serialize first sparse lane did not hold atomically
+# STB: serialize final sparse lane did not block replacement
+# STB: serialize final release did not commit zero-mask replacement
+# STB: serialize observed i16 padding-mask lanes
+# STB: serialize reset did not clear buffered continuation
