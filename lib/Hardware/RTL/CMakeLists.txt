@@ -33,6 +33,7 @@ add_library(LoomHardwareRTL
   Providers/MathPower.cpp
   Providers/MathRounding.cpp
   Providers/MathRoot.cpp
+  Providers/Native/DesignWare.cpp
   Providers/ProviderSupport.cpp
   Providers/ScalarBitReinterpret.cpp
   Providers/ScalarFloatFma.cpp

@@ -15,7 +15,7 @@ inline constexpr llvm::StringLiteral synopsysDesignWareComponentInputSlot =
 inline constexpr llvm::StringLiteral synopsysDesignWareBuildIdentity =
     "synopsys.designware:Y-2026.03-DWBB_202603.2";
 inline constexpr llvm::StringLiteral synopsysDesignWareDwFpMacResourceKey =
-    "dwbb/DW_fp_mac.DW_fp_dp2";
+    "dwbb/DW_fp_mac";
 
 llvm::Error registerSynopsysDesignWareScalarFloatFmaProvider(
     FabricOperationProviderRegistry &registry);

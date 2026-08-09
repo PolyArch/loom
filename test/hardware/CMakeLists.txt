@@ -598,6 +598,22 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-synopsys-designware-test
+    SynopsysDesignWareTest.cpp
+  )
+
+  target_link_libraries(loom-synopsys-designware-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-fixed-vector-float-fma-test
     PortableFixedVectorFloatFmaTest.cpp
   )

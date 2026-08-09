@@ -359,6 +359,8 @@ void expectUnsupported(llvm::StringRef test, const std::filesystem::path &root,
 
 void exactOccurrenceBindingAndDeterminism(const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
+  require(test, synopsysDesignWareDwFpMacResourceKey == "dwbb/DW_fp_mac",
+          "DesignWare resource key does not name the selected component");
   std::filesystem::create_directories(root / "artifacts");
   std::filesystem::create_directories(root / "blobs");
   ArtifactStore store((root / "artifacts").string());
