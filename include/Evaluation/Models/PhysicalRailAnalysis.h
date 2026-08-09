@@ -60,6 +60,7 @@ struct CompleteRailAnalysisConfiguration final {
   RailAnalysisModelConfig model;
   ProcessCornerCondition processCorner;
   SupplyVoltageCondition supplyVoltage;
+  TemperatureCondition temperature;
   RequiredClockPeriodCondition clockPeriod;
   ExplicitRailActivityBinding activity;
 };

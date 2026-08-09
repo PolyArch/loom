@@ -93,6 +93,8 @@ conditions(const Fixture &fixture, platform::TechnologyCornerId corner) {
                                         corner}}},
       EvaluationCondition{SupplyVoltageCondition{
           target, take(__func__, DecimalValue::get(9, -1))}},
+      EvaluationCondition{TemperatureCondition{
+          target, take(__func__, DecimalValue::get(3, 2))}},
       EvaluationCondition{RequiredClockPeriodCondition{
           target, take(__func__, DecimalValue::get(2, -9))}},
       EvaluationCondition{ActivityBindingCondition{
@@ -154,6 +156,10 @@ void exactRequestProjectsOneCompleteConfiguration(const ArtifactStore &store) {
   require(test,
           projected.supplyVoltage.volts == take(test, DecimalValue::get(9, -1)),
           "projection changed the exact supply voltage");
+  require(test,
+          projected.temperature.kelvin ==
+              take(test, DecimalValue::get(3, 2)),
+          "projection changed the exact temperature");
   require(test,
           projected.clockPeriod.seconds ==
               take(test, DecimalValue::get(2, -9)),
