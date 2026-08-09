@@ -1,1 +1,10 @@
-# RUN: %loom-root-complete-spatial-pnr-generator-test spatial-mapping-feedback-replay
+# RUN: env -u LOOM_DEBUG_VERBOSE %loom-root-complete-spatial-pnr-generator-test spatial-mapping-feedback-replay > %t.off 2> %t.off.log
+# RUN: test ! -s %t.off.log
+# RUN: env LOOM_DEBUG_VERBOSE=1 %loom-root-complete-spatial-pnr-generator-test spatial-mapping-feedback-replay > %t.on 2> %t.on.log
+# RUN: diff -u %t.off %t.on
+# RUN: FileCheck %s --check-prefix=RESULT < %t.off
+# RUN: FileCheck %s --check-prefix=LOG < %t.on.log
+
+# RESULT: feedback_workflow before=3 after=1 child={{[0-9a-f]+}}
+# LOG: "decision_attempts":3
+# LOG-SAME: "operation":"mapping_feedback_summary"

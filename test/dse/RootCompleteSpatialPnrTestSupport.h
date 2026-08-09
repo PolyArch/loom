@@ -16,5 +16,8 @@ fabric::FinalizedFabricRoot buildSpatialCore(ArtifactStore &store,
 fabric::FinalizedFabricRoot
 buildLineageSpatialCore(ArtifactStore &store, std::uint32_t payloadWidth = 128);
 
+fabric::FinalizedFabricRoot
+buildFeedbackPruningSpatialCore(ArtifactStore &store);
+
 } // namespace test
 } // namespace loom

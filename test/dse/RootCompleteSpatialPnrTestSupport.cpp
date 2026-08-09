@@ -160,4 +160,120 @@ buildLineageSpatialCore(ArtifactStore &store, std::uint32_t payloadWidth) {
   return root;
 }
 
+fabric::FinalizedFabricRoot
+buildFeedbackPruningSpatialCore(ArtifactStore &store) {
+  constexpr std::uint32_t payloadWidth = 256;
+  const adg::PortType payloadType = take(adg::PortType::bits(payloadWidth));
+  const std::vector<adg::PortType> payloadTypes(4, payloadType);
+  const std::vector<adg::PortType> tokenInputTypes(5, payloadType);
+  const std::vector<adg::PortType> scalarInputTypes(2, payloadType);
+  const std::vector<adg::PortType> scalarOutputTypes(1, payloadType);
+
+  adg::DesignBuilder builder(store);
+  auto spatial = take(builder.createSpatialCore("feedback-pruning",
+                                                payloadTypes, payloadTypes));
+  auto network = take(
+      spatial.addMeshSwitchNetwork(take(adg::MeshSwitchNetworkSpec::spatial(
+          3, 2, 2, payloadType,
+          {{0, 0, {payloadType, payloadType}, {payloadType, payloadType}},
+           {0, 1, {payloadType, payloadType}, {payloadType, payloadType}},
+           {1, 0, payloadTypes, payloadTypes},
+           {1, 1, tokenInputTypes, payloadTypes},
+           {2, 0, scalarInputTypes, scalarOutputTypes}}))));
+
+  auto upperBoundary = take(network.attachment(0));
+  auto lowerBoundary = take(network.attachment(1));
+  auto vectorCompute = take(network.attachment(2));
+  auto tokenControl = take(network.attachment(3));
+  auto scalarCompute = take(network.attachment(4));
+  requireSuccess(upperBoundary.connectOutputs(
+      {take(spatial.input(0)), take(spatial.input(1))}));
+  requireSuccess(lowerBoundary.connectOutputs(
+      {take(spatial.input(2)), take(spatial.input(3))}));
+
+  auto vectorPe =
+      take(spatial.addPe(vectorCompute.inputs(),
+                         adg::PeSpec::spatial(payloadTypes, payloadTypes)));
+  std::vector<adg::PeValue> vectorInputs;
+  for (std::size_t ordinal = 0; ordinal != payloadTypes.size(); ++ordinal)
+    vectorInputs.push_back(take(vectorPe.input(ordinal)));
+  requireSuccess(adg::addVectorComputeFu(vectorPe, vectorInputs,
+                                         {payloadWidth, payloadWidth}));
+  const ::fabric::IntegerWidthSet integerWidths =
+      ::fabric::IntegerWidthSet::get(
+          {::fabric::IntegerWidth::I8, ::fabric::IntegerWidth::I16,
+           ::fabric::IntegerWidth::I32, ::fabric::IntegerWidth::I64});
+  const ::fabric::FloatFormatSet floatFormats = ::fabric::FloatFormatSet::get(
+      {::fabric::FloatFormat::F16, ::fabric::FloatFormat::BF16,
+       ::fabric::FloatFormat::F32, ::fabric::FloatFormat::F64});
+  const adg::VectorStructuralFuParameters structural{
+      payloadWidth, payloadWidth, 64,
+      ::fabric::FixedVectorSliceAlignMergeParams{
+          integerWidths, floatFormats, payloadWidth, payloadWidth, 0,
+          ::fabric::ResolvedIndexWidthSet::get({})},
+      ::fabric::FixedVectorShuffleParams{integerWidths, floatFormats,
+                                         payloadWidth, payloadWidth, 32, 8, 4}};
+  requireSuccess(adg::addVectorStructuralFu(
+      vectorPe, llvm::ArrayRef<adg::PeValue>(vectorInputs).take_front(2),
+      structural));
+  requireSuccess(vectorPe.close());
+  std::vector<adg::SpatialValue> vectorOutputs;
+  for (std::size_t ordinal = 0; ordinal != payloadTypes.size(); ++ordinal)
+    vectorOutputs.push_back(take(vectorPe.output(ordinal)));
+  requireSuccess(vectorCompute.connectOutputs(vectorOutputs));
+
+  auto tokenPe =
+      take(spatial.addPe(tokenControl.inputs(),
+                         adg::PeSpec::spatial(tokenInputTypes, payloadTypes)));
+  std::vector<adg::PeValue> tokenInputs;
+  for (std::size_t ordinal = 0; ordinal != tokenInputTypes.size(); ++ordinal)
+    tokenInputs.push_back(take(tokenPe.input(ordinal)));
+  requireSuccess(
+      adg::addTokenControlFu(tokenPe, tokenInputs, {payloadWidth, 64}));
+  requireSuccess(tokenPe.close());
+  std::vector<adg::SpatialValue> tokenOutputs;
+  for (std::size_t ordinal = 0; ordinal != payloadTypes.size(); ++ordinal)
+    tokenOutputs.push_back(take(tokenPe.output(ordinal)));
+  requireSuccess(tokenControl.connectOutputs(tokenOutputs));
+
+  auto scalarPe = take(
+      spatial.addPe(scalarCompute.inputs(),
+                    adg::PeSpec::spatial(scalarInputTypes, scalarOutputTypes)));
+  std::vector<adg::PeValue> scalarInputs;
+  for (std::size_t ordinal = 0; ordinal != scalarInputTypes.size(); ++ordinal)
+    scalarInputs.push_back(take(scalarPe.input(ordinal)));
+  auto scalarFu = take(scalarPe.addFu(
+      scalarInputs, adg::FuSpec{scalarInputTypes, scalarOutputTypes}));
+  std::vector<adg::FuValue> scalarFuInputs;
+  for (std::size_t ordinal = 0; ordinal != scalarInputTypes.size(); ++ordinal)
+    scalarFuInputs.push_back(take(scalarFu.input(ordinal)));
+  auto scalarAdd = take(scalarFu.addOperation(
+      scalarFuInputs,
+      adg::OperationCapabilitySpec{
+          ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+          ::fabric::ScalarIntegerParams{integerWidths},
+          {::dataflow::OperationSchemaId::ArithAddI},
+          {payloadType},
+          ::fabric::oneCycleElasticOperationResourceContract()}));
+  requireSuccess(scalarFu.addCapabilityTemplate(
+      adg::FuCapabilityTemplateSpec{{scalarAdd}, {}}));
+  requireSuccess(scalarFu.close({take(scalarAdd.output(0))}));
+  requireSuccess(scalarPe.close());
+  requireSuccess(scalarCompute.connectOutputs({take(scalarPe.output(0))}));
+
+  std::vector<adg::SpatialValue> outputs(upperBoundary.inputs().begin(),
+                                         upperBoundary.inputs().end());
+  outputs.insert(outputs.end(), lowerBoundary.inputs().begin(),
+                 lowerBoundary.inputs().end());
+  requireSuccess(spatial.close(outputs));
+  auto design = take(std::move(builder).finalize());
+  if (design.roots().size() != 1)
+    fail("feedback-pruning SpatialCore did not publish one Fabric root");
+  auto root = design.roots().front();
+  if (root.view().peOccurrences().size() != 3 ||
+      root.view().switchOccurrences().size() < 18)
+    fail("feedback-pruning SpatialCore lost its finite distributed topology");
+  return root;
+}
+
 } // namespace loom::test

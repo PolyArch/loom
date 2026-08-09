@@ -27,6 +27,7 @@
 #include <array>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <variant>
@@ -98,7 +99,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     spatialMappingFeedbackCandidateGeneratorKind,
     "mapping.spatial_feedback",
-    "loom.mapping.spatial_feedback.generator.v1",
+    "loom.mapping.spatial_feedback.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -332,7 +333,7 @@ llvm::Expected<std::optional<FeedbackCandidate>> materializeFeedback(
     const ::dataflow::CanonicalDataflowProgramView &parentView,
     const ::loom::pnr::SpatialMappingTraversalClaimProjection &projection,
     const ::loom::fabric::FabricArtifactView &fabric,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, std::uint64_t &decisionAttempts) {
   auto ranked = rankLogicalNets(parent.identity(), projection);
   if (!ranked)
     return ranked.takeError();
@@ -377,6 +378,9 @@ llvm::Expected<std::optional<FeedbackCandidate>> materializeFeedback(
             fields["decision_count"] = decisions->size();
           });
       for (const ::dataflow::DataflowRewriteDecision &decision : *decisions) {
+        if (decisionAttempts == std::numeric_limits<std::uint64_t>::max())
+          return invalid("feedback decision accounting overflows u64");
+        ++decisionAttempts;
         auto child = ::dataflow::materializeDataflowRewrite(parent, decision);
         if (!child)
           return child.takeError();
@@ -529,6 +533,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   std::vector<ArtifactRootReference> outputs;
   std::vector<CandidateGeneratorLineageEdge> lineage;
   bool proofNotEstablished = false;
+  std::uint64_t decisionAttempts = 0;
 
   for (std::size_t mappingOrdinal = 0; mappingOrdinal != mappings.size();
        ++mappingOrdinal) {
@@ -545,9 +550,9 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
         **frozen, mapping.mapping.view());
     if (!projection)
       return projection.takeError();
-    auto candidate =
-        materializeFeedback(dataflowReference, *dataflow, *dataflowView,
-                            *projection, fabric->view(), store);
+    auto candidate = materializeFeedback(
+        dataflowReference, *dataflow, *dataflowView, *projection,
+        fabric->view(), store, decisionAttempts);
     if (!candidate)
       return candidate.takeError();
     if (!*candidate)
@@ -558,6 +563,18 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   if (llvm::is_contained(consumedEvidence, false))
     return invalid("EvaluationEvidence set contains an unmatched record");
 
+  ::loom::mapping_debug::emit(
+      ::loom::mapping_debug::Level::Summary,
+      ::loom::mapping_debug::Stage::SpatialPnr,
+      ::loom::mapping_debug::Event::Statistics,
+      [&](llvm::json::Object &fields) {
+        fields["operation"] = "mapping_feedback_summary";
+        fields["mapping_count"] = mappings.size();
+        fields["decision_attempts"] = decisionAttempts;
+        fields["candidate_publications"] = outputs.size();
+        fields["proof_not_established"] = proofNotEstablished;
+      });
+
   CandidateGeneratorOutputBinding output{CandidateGeneratorOutputSlotRef(0),
                                          std::move(outputs)};
   if (proofNotEstablished)
@@ -566,11 +583,12 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
             CandidateGeneratorIncompleteReason::ProofNotEstablished,
             {std::move(output)},
             std::move(lineage)},
-        {{CandidateGeneratorWorkUnitRef(0), mappings.size(), mappings.size()}}};
+        {{CandidateGeneratorWorkUnitRef(0), decisionAttempts,
+          decisionAttempts}}};
   return CandidateGeneratorProviderResult{
       CompletedCandidateGeneratorResult{{std::move(output)},
                                         std::move(lineage)},
-      {{CandidateGeneratorWorkUnitRef(0), mappings.size(), mappings.size()}}};
+      {{CandidateGeneratorWorkUnitRef(0), decisionAttempts, decisionAttempts}}};
 }
 
 const CandidateGeneratorProvider provider{

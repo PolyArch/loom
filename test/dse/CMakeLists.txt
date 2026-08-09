@@ -39,6 +39,7 @@ add_executable(loom-root-complete-tech-mapping-generator-test
 )
 
 add_executable(loom-root-complete-spatial-pnr-generator-test
+  RootCompleteSpatialFeedbackTestSupport.cpp
   RootCompleteSpatialPnrGeneratorTest.cpp
   RootCompleteSpatialPnrTestSupport.cpp
 )

@@ -5,6 +5,7 @@
 #include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/InvocationManifest.h"
 #include "DSE/MappingCandidateGenerator.h"
+#include "DSE/Promotion.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
@@ -16,6 +17,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/Transforms/DataflowRewrite.h"
+#include "Evaluation/Models/CanonicalDataflowFunctional.h"
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/StandardFindings.h"
 #include "Fabric/IR/OperationResourceContract.h"
@@ -29,6 +31,7 @@
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialPnrGenerator.h"
 #include "PnR/SpatialPnrProblem.h"
+#include "RootCompleteSpatialFeedbackTestSupport.h"
 #include "RootCompleteSpatialPnrTestSupport.h"
 #include "Simulator/SimulationArtifacts.h"
 
@@ -41,12 +44,11 @@
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -101,83 +103,6 @@ mlir::MLIRContext makeContext() {
                   mlir::DLTIDialect, mlir::func::FuncDialect,
                   mlir::LLVM::LLVMDialect, loom::LoomDialect>();
   return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
-}
-
-loom::frontend::StructuredEntityRef findStructuredCallable(
-    const loom::frontend::StructuredProgramCandidate &candidate,
-    llvm::StringRef name) {
-  auto view = take(candidate.view());
-  for (const loom::frontend::StructuredEntity &entity :
-       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
-    auto function =
-        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
-    if (function && function.getSymName() == name)
-      return entity.reference;
-  }
-  fail("callable is absent from the Structured Program: " + name);
-}
-
-loom::frontend::StructuredProgramCandidate
-buildVectorStructuredSource(mlir::MLIRContext &context) {
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module {
-  llvm.func internal @kernel(%value: vector<4xi32>) -> vector<4xi32> {
-    %sum = arith.addi %value, %value : vector<4xi32>
-    llvm.return %sum : vector<4xi32>
-  }
-  llvm.func @main() -> i32 {
-    %value = arith.constant dense<[1, 2, 3, 4]> : vector<4xi32>
-    %result = llvm.call @kernel(%value)
-        : (vector<4xi32>) -> vector<4xi32>
-    %zero = arith.constant 0 : i32
-    llvm.return %zero : i32
-  }
-}
-)mlir",
-                                                        &context);
-  if (!module)
-    fail("cannot parse vector Structured source fixture");
-  if (llvm::InitializeNativeTarget() ||
-      llvm::InitializeNativeTargetAsmPrinter())
-    fail("cannot initialize the native target");
-  auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
-  module->getOperation()->setAttr(
-      "llvm.target_triple",
-      mlir::StringAttr::get(&context, "riscv64-unknown-unknown-elf"));
-  module->getOperation()->setAttr(
-      "llvm.data_layout",
-      mlir::StringAttr::get(&context,
-                            take(target.getDefaultDataLayoutForTarget())
-                                .getStringRepresentation()));
-  return take(loom::frontend::finalizeStructuredProgram(module.get()));
-}
-
-struct PublishedStructuredInputs final {
-  loom::sim::CanonicalSimulationWorkload workload;
-  loom::sim::CanonicalSimulationRuntimeInput runtimeInput;
-  loom::ArtifactRootReference workloadReference;
-  loom::ArtifactRootReference runtimeInputReference;
-};
-
-PublishedStructuredInputs publishVectorStructuredInputs(
-    const loom::frontend::StructuredProgramCandidate &source,
-    loom::ArtifactStore &store) {
-  auto view = take(source.view());
-  loom::sim::StructuredProgramSimulationWorkload workloadDraft{
-      findStructuredCallable(source, "main")};
-  workloadDraft.observableContract.returnValue = true;
-  auto workload =
-      take(loom::sim::finalizeSimulationWorkload(workloadDraft, view));
-  loom::sim::StructuredProgramSimulationRuntimeInputDraft runtimeDraft{
-      workload.identity()};
-  auto runtime = take(
-      loom::sim::finalizeSimulationRuntimeInput(runtimeDraft, workload, view));
-  auto workloadReference =
-      take(loom::sim::publishSimulationWorkload(workload, store));
-  auto runtimeInputReference =
-      take(loom::sim::publishSimulationRuntimeInput(runtime, store));
-  return {std::move(workload), std::move(runtime), std::move(workloadReference),
-          std::move(runtimeInputReference)};
 }
 
 dataflow::CanonicalDataflowArtifact buildDataflow(mlir::MLIRContext &context) {
@@ -584,7 +509,8 @@ publishSpatialInputs(const dataflow::CanonicalDataflowArtifact &dataflow,
 
 PublishedSpatialInputs
 publishVectorSpatialInputs(const dataflow::CanonicalDataflowArtifact &dataflow,
-                           loom::ArtifactStore &store) {
+                           loom::ArtifactStore &store,
+                           unsigned laneWidth = 32) {
   const auto view = take(dataflow.view());
   const dataflow::RootedGraphLaunchRef launch{
       view.rootThreadLaunches().front().ref,
@@ -599,10 +525,10 @@ publishVectorSpatialInputs(const dataflow::CanonicalDataflowArtifact &dataflow,
   runtimeDraft.runtimeValues = {
       {0,
        {1,
-        {loom::sim::SemanticLane::defined(llvm::APInt(32, 1)),
-         loom::sim::SemanticLane::defined(llvm::APInt(32, 2)),
-         loom::sim::SemanticLane::defined(llvm::APInt(32, 3)),
-         loom::sim::SemanticLane::defined(llvm::APInt(32, 4))}}}};
+        {loom::sim::SemanticLane::defined(llvm::APInt(laneWidth, 1)),
+         loom::sim::SemanticLane::defined(llvm::APInt(laneWidth, 2)),
+         loom::sim::SemanticLane::defined(llvm::APInt(laneWidth, 3)),
+         loom::sim::SemanticLane::defined(llvm::APInt(laneWidth, 4))}}}};
   auto runtime = take(
       loom::sim::finalizeSimulationRuntimeInput(runtimeDraft, workload, view));
   return {take(loom::sim::publishSimulationWorkload(workload, store)),
@@ -1584,12 +1510,12 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
     fail("cannot create BlobStore directory: " + error.message());
   const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  auto source = buildVectorStructuredSource(context);
+  auto source = loom::test::buildWideVectorStructuredSource(context);
   const loom::ArtifactRootReference sourceReference =
       take(loom::frontend::publishStructuredProgram(source, store));
-  PublishedStructuredInputs sourceInputs =
-      publishVectorStructuredInputs(source, store);
-  auto fabric = loom::test::buildLineageSpatialCore(store);
+  loom::test::PublishedStructuredSimulationInputs sourceInputs =
+      loom::test::publishWideVectorStructuredInputs(source, store);
+  auto fabric = loom::test::buildFeedbackPruningSpatialCore(store);
 
   loom::dse::StructuredOwnershipInvocation invocation(
       source, sourceInputs.workload, sourceInputs.runtimeInput, fabric,
@@ -1597,7 +1523,8 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
       {100000, 1000000, 256ULL * 1024ULL * 1024ULL});
   loom::dse::StructuredOwnershipInvocationScope invocationScope(invocation);
   loom::dse::StructuredOwnershipGenerationOptions ownership;
-  ownership.protocolCallableRoots = {findStructuredCallable(source, "kernel")};
+  ownership.protocolCallableRoots = {
+      loom::test::findStructuredCallable(source, "kernel")};
   auto generated = take(loom::dse::generateStructuredOwnershipCandidates(
       source, sourceInputs.workload, sourceInputs.runtimeInput, fabric,
       ownership, store));
@@ -1614,8 +1541,9 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
     structured.module().walk([&](loom::SpatialRegionOp spatial) {
       spatial.walk([&](mlir::arith::AddIOp add) {
         auto type = llvm::dyn_cast<mlir::VectorType>(add.getType());
-        hasVectorAdd |=
-            type && type.getShape() == llvm::ArrayRef<std::int64_t>{4};
+        hasVectorAdd |= type &&
+                        type.getShape() == llvm::ArrayRef<std::int64_t>{4} &&
+                        type.getElementType().isInteger(64);
       });
     });
     if (!hasVectorAdd)
@@ -1637,7 +1565,7 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
   auto spatial = generateSpatialFeedbackFixture(*dataflowReference, techMapping,
                                                 fabric, store);
   const PublishedSpatialInputs spatialInputs =
-      publishVectorSpatialInputs(dataflow, store);
+      publishVectorSpatialInputs(dataflow, store, 64);
   auto cgraObligation =
       take(loom::dse::prepareCgraSimulationEvidenceObligationTemplate(
           *dataflowReference, fabric.reference(), spatial.mapping,
@@ -1664,24 +1592,45 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
       take(loom::evaluation::publishEvaluationEvidence(
           cgraCompleted->evidence.front().evidence, store));
 
-  auto feedbackInputs =
-      take(loom::dse::bindSpatialMappingFeedbackCandidateGeneratorInputs(
-          {*dataflowReference}, {spatial.mapping},
-          spatial.constraints.reference(), {cgraEvidence},
-          spatialInputs.workload, spatialInputs.runtimeInput));
-  auto feedbackBinding =
-      take(loom::dse::resolveSpatialMappingFeedbackCandidateGeneratorBinding(
-          buildFeedbackSpatialConfig()));
-  auto feedbackOutcome = take(loom::dse::invokeCandidateGenerator(
-      feedbackInputs, feedbackBinding, store, blobs));
+  requireSuccess(loom::dse::registerSpatialMappingFeedbackCandidateGenerator());
+  const auto feedbackConfig = buildFeedbackSpatialConfig();
+  loom::ResolvedConfig feedbackPlanConfig = buildSpatialResolvedConfig();
+  feedbackPlanConfig.dse.planNodes = {loom::dse::GeneratePlanNodeDefinition{
+      loom::dse::spatialMappingFeedbackCandidateGeneratorDescriptor()
+          .reference(),
+      {loom::dse::ExactPlanArtifacts{{*dataflowReference}},
+       loom::dse::ExactPlanArtifacts{{spatial.mapping}},
+       loom::dse::ExactPlanArtifacts{{spatial.constraints.reference()}},
+       loom::dse::ExactPlanArtifacts{{cgraEvidence}},
+       loom::dse::ExactPlanArtifacts{{spatialInputs.workload}},
+       loom::dse::ExactPlanArtifacts{{spatialInputs.runtimeInput}}},
+      feedbackConfig.canonicalViewBytes().vec(),
+      feedbackConfig.digest()}};
+  auto feedbackPlanView =
+      take(loom::dse::projectResolvedDseConfigView(feedbackPlanConfig));
+  auto feedbackPlanOutcome =
+      take(loom::dse::executeDsePlan(feedbackPlanView, store, blobs));
   const auto *feedbackCompleted =
-      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
-          &feedbackOutcome.outcome);
-  if (!feedbackCompleted || feedbackCompleted->outputBindings.size() != 1 ||
-      feedbackCompleted->outputBindings.front().artifacts.size() != 1)
+      std::get_if<loom::dse::CompletedDsePlanExecution>(&feedbackPlanOutcome);
+  if (!feedbackCompleted || feedbackCompleted->resolve({0, 0}).size() != 1 ||
+      feedbackCompleted->generateInvocations().size() != 1 ||
+      feedbackCompleted->generateWorkSummaries().size() != 1)
     fail("source-backed Mapping feedback produced no immutable child");
   const loom::ArtifactRootReference child =
-      feedbackCompleted->outputBindings.front().artifacts.front();
+      feedbackCompleted->resolve({0, 0}).front();
+  const auto &feedbackInvocation =
+      feedbackCompleted->generateInvocations().front();
+  const auto &feedbackWork = feedbackCompleted->generateWorkSummaries().front();
+  if (feedbackInvocation.lineageEdges.size() != 1 ||
+      feedbackWork.units.size() != 1 ||
+      feedbackWork.units.front().planned !=
+          feedbackWork.units.front().consumed ||
+      feedbackWork.units.front().consumed <=
+          feedbackInvocation.lineageEdges.size())
+    fail("Mapping feedback did not preserve the capability-pruned before/after "
+         "candidate domain");
+  const std::uint64_t attemptedFeedbackDecisions =
+      feedbackWork.units.front().consumed;
 
   auto functionalObligation = take(
       loom::dse::prepareCanonicalDataflowFunctionalEvidenceObligationTemplate(
@@ -1707,6 +1656,58 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
   if (!functionalCompleted || functionalCompleted->evidence.size() != 1)
     fail("Mapping feedback child received no functional Evidence");
 
+  if (functionalObligation.findingRequests().size() != 1 ||
+      functionalObligation.findingRequests().front().query.kind !=
+          loom::evaluation::standard_findings::FunctionalMismatch)
+    fail("functional Evidence obligation lost its exact mismatch query");
+  auto candidates = take(
+      loom::dse::CandidateSet::get(dataflow::canonicalDataflowSchema, {child}));
+  auto functionalGate = take(loom::dse::QualityGatePolicy::get(
+      {{{loom::dse::FindingGate{0, loom::evaluation::FindingRequestOrdinal(0),
+                                loom::dse::RequiredFindingState::Absent}}}}));
+  auto promotion = take(loom::dse::promoteCandidates(
+      candidates,
+      loom::evaluation::models::canonicalDataflowFunctionalCandidateRole(),
+      functionalCompleted->evidence, functionalGate,
+      loom::dse::AllPassingSelection{}, nullptr, store));
+  const auto *promoted = std::get_if<loom::dse::CompletedSelection>(&promotion);
+  if (!promoted ||
+      promoted->selected != std::vector<loom::ArtifactRootReference>{child} ||
+      promoted->satisfiedEvidence.size() != 1)
+    fail("functional Evidence did not promote the immutable feedback child");
+
+  const loom::ArtifactIdentity storedConfig =
+      take(store.put(loom::ResolvedConfig::artifactSchema,
+                     loom::canonicalResolvedConfigBytes(feedbackPlanConfig)));
+  if (storedConfig != loom::resolvedConfigIdentity(feedbackPlanConfig))
+    fail("feedback Manifest changed the ResolvedConfig identity");
+  auto manifestRecords = loom::dse::takeDsePlanGenerateInvocationRecords(
+      std::move(feedbackPlanOutcome));
+  auto closure = take(loom::dse::DseRunClosure::get(
+      take(loom::dse::DseProducerSemanticBuildIdentity::get(
+          "loom.test.mapping_feedback_workflow.v1")),
+      {*dataflowReference, fabric.reference(), spatial.mapping,
+       spatial.constraints.reference(), spatialInputs.workload,
+       spatialInputs.runtimeInput},
+      feedbackPlanConfig, {cgraEvidence}, store));
+  auto manifest = take(loom::dse::InvocationManifest::get(
+      std::move(closure), 0, std::nullopt, feedbackPlanConfig, manifestRecords,
+      loom::dse::InvocationCompletedSelection{promoted->selected,
+                                              promoted->satisfiedEvidence},
+      store));
+  auto adoptedManifest = take(loom::dse::adoptInvocationManifest(
+      manifest.canonicalBytes(), feedbackPlanConfig, store));
+  if (adoptedManifest.generateRecords().size() != 1 ||
+      adoptedManifest.generateRecords().front().workSummary.units.size() != 1 ||
+      adoptedManifest.generateRecords()
+              .front()
+              .workSummary.units.front()
+              .consumed != attemptedFeedbackDecisions ||
+      adoptedManifest.generateRecords()
+              .front()
+              .invocation.lineageEdges.size() != 1)
+    fail("feedback Manifest lost its capability admission facts or lineage");
+
   auto selected = take(invocation.materializeSelectedDataflowCandidate(
       *structuredParent, child, store));
   if (selected.dataflowRewriteDerivations.size() != 1 ||
@@ -1715,6 +1716,10 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
           loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
       selected.functionalReplay->dynamicActivations == 0)
     fail("Mapping feedback child lost source-backed replay or typed lineage");
+
+  llvm::outs() << "feedback_workflow before=" << attemptedFeedbackDecisions
+               << " after=1 child=" << llvm::toHex(child.artifact.bytes(), true)
+               << '\n';
 }
 
 } // namespace
