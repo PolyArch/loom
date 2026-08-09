@@ -237,15 +237,26 @@ inventing a second logical net.
 
 A declared FIFO can operate buffered or transparently only when Fabric exposes
 that choice. Bypass improves cycle count but lengthens the combinational path;
-buffering adds latency while cutting forward-valid dependency. The choice is
-semantic-preserving but performance-relevant, so SpatialMapping selects it
-under Evaluation guidance.
+buffering adds latency while cutting both forward-valid and backward-ready
+dependencies. Its input capacity and output occupancy are cycle-start
+registered facts. A full queue therefore cannot borrow capacity from a
+current-cycle dequeue; preserving that full-queue throughput would require an
+explicit skid or credit refinement with separately declared physical capacity.
+The choice is semantic-preserving but performance-relevant, so SpatialMapping
+selects it under Evaluation guidance.
 
 Handshake-cycle legality is split by owner. Fabric rejects unconditional
 combinational cycles in the fully expanded hardware. Mapping derives the exact
 selected active graph and rejects cycles introduced by selected bypasses or
-switch alternatives. Neither owner uses a blanket rule that every FIFO cuts
-both valid and ready.
+switch alternatives. A topology that can form a cycle under some configuration
+is valid Fabric; finalization does not union mutually exclusive rows or modes.
+Every selected buffered FIFO is a complete ready/valid combinational isolation
+point, while every selected bypass is transparent in both directions.
+
+This changes both cycle timing and which selected configurations are legal, so
+it cannot reinterpret a 3.x Fabric Artifact in place. `loom.fabric 4.0` owns
+the complete isolation contract and rejects 3.x roots through the existing
+exact-version dependency and import boundary.
 
 ## Why Switch Behavior Must Be Explicit
 

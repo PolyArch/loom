@@ -24,10 +24,11 @@ FifoCapability {
 }
 ```
 
-`max_depth` is the fixed physical queue capacity. It is not an effective depth
-that Mapping may resize. A future partitionable bank, configurable depth,
-credit allocation, or virtual-channel resource must declare that separate
-typed capability explicitly rather than overloading this field.
+`max_depth` is the fixed total physical token-holding capacity. It is not an
+effective depth that Mapping may resize, and there is no hidden skid or credit
+slot outside it. A future partitionable bank, configurable depth, credit
+allocation, skid capacity, or virtual-channel resource must declare that
+separate typed capability explicitly rather than overloading this field.
 
 ## Mapping-Selected Traversal
 
@@ -62,10 +63,13 @@ Buffered mode owns a FIFO queue with capacity `max_depth`. In one local clock
 cycle it accepts at most one enqueue and completes at most one dequeue.
 
 An enqueued token is visible to dequeue no earlier than the following local
-cycle. A successful dequeue may release capacity for an enqueue in the same
-cycle, but the newly enqueued token cannot also dequeue in that cycle. Input
-ready and output valid follow from the queue state plus this simultaneous
-enqueue/dequeue rule. Token order is preserved exactly.
+cycle. Input ready is determined only by registered free capacity at the start
+of the cycle, and output valid is determined only by registered occupancy at
+the start of the cycle. A dequeue from a full queue releases capacity for the
+following cycle, not for an enqueue in the same cycle. When the queue is not
+full at cycle start, one enqueue and one dequeue may still complete together;
+the newly enqueued token cannot also dequeue in that cycle. Token order is
+preserved exactly.
 
 The queue contents, head, tail, and occupancy are dynamic execution state.
 They are not Mapping records, Fabric capability fields, or persistent
@@ -73,10 +77,12 @@ configuration.
 
 The FIFO schema uniquely owns its queue and bypass `ResourceState` values,
 canonical empty initial state, capacity dimensions, and atomic enqueue,
-dequeue, simultaneous enqueue/dequeue, and bypass-transfer UsePatterns. A
-pattern may claim input, output, and queue-capacity state atomically. The
-single input and output requester domains make grant order structural; a
-generic arbiter or Mapping-defined grant rule is invalid.
+dequeue, non-full simultaneous enqueue/dequeue, and bypass-transfer
+UsePatterns. A pattern may claim input, output, and queue-capacity state
+atomically. No buffered pattern may use current-cycle downstream readiness to
+admit an enqueue into a queue that was full at cycle start. The single input
+and output requester domains make grant order structural; a generic arbiter or
+Mapping-defined grant rule is invalid.
 
 ## Bypass Execution
 
@@ -87,10 +93,10 @@ retain a token while bypass mode is active.
 
 Zero registered cycles does not mean zero propagation delay. Bypass can reduce
 cycle count while lengthening a combinational path. Buffered mode adds at least
-one registered cycle and can cut that path. Mapping selects only the declared
-alternative. Accelerator-aware timing, frequency, initiation interval, and
-runtime consequences come from central Evaluation rather than a FIFO-private
-cost model.
+one registered cycle and cuts both directions of the ready/valid combinational
+path. Mapping selects only the declared alternative. Accelerator-aware timing,
+frequency, initiation interval, and runtime consequences come from central
+Evaluation rather than a FIFO-private cost model.
 
 ## Handshake Dependency Projection
 
@@ -100,19 +106,22 @@ Mapping does not persist a second cycle-breaking flag.
 `Bypass` contributes the transparent forward valid dependency from input to
 output and the transparent backward ready dependency from output to input.
 `Buffered` never contributes an input-valid to output-valid dependency because
-an enqueued token is not visible until a later cycle. Its same-cycle
-dequeue/enqueue rule may still contribute an output-ready to input-ready
-dependency when downstream acceptance releases full capacity. Therefore
-"stateful" is not a blanket assertion that every combinational dependency is
-cut. A registered-ready, skid-isolated, or otherwise stronger break exists
-only when Fabric declares that exact typed capability or refinement.
+an enqueued token is not visible until a later cycle, and never contributes an
+output-ready to input-ready dependency because current-cycle dequeue cannot
+create current-cycle input capacity. Buffered mode is therefore a complete
+ready/valid combinational isolation point. A higher-throughput full-queue
+credit or skid behavior exists only when Fabric declares that exact typed
+capability or refinement and includes all additional physical capacity in its
+identity.
 
 Fabric structural verification considers only FIFO arcs unconditional across
-all legal configured views. Mapping verification uses the exact selected mode
-and refinement. A bypass selection that closes a directed combinational
-handshake cycle is intrinsically invalid Mapping. Selecting buffered mode is
-legal only when the complete derived graph, including any remaining ready
-dependency, is acyclic.
+all legal configured views. A physical topology that can form a cycle under
+some switch rows or FIFO modes is legal Fabric; mutually exclusive alternatives
+are not unioned into a fabricated unconditional graph. Mapping verification
+uses the exact selected switch rows, FIFO modes, and refinements. A bypass
+selection that closes a directed combinational handshake cycle is intrinsically
+invalid Mapping. A selected buffered traversal contributes no cross-FIFO arc
+to that graph.
 
 ## Lifecycle
 
@@ -129,7 +138,8 @@ had occurred.
 
 CGRA-sim derives the selected mode from exact Fabric and Mapping, then executes
 the cycle rules above. It must not invent hidden queue capacity in bypass mode
-or same-cycle fall-through in buffered mode.
+or buffered mode, admit an enqueue into a cycle-start-full queue from
+current-cycle downstream readiness, or provide same-cycle fall-through.
 
 Fabric-to-RTL implements the same capability and selected-mode behavior. It
 may choose any circuit structure consistent with the declared capacity,
@@ -139,10 +149,11 @@ storage details do not become a second architectural contract.
 ## Verification Anchors
 
 Anchor-level tests cover one buffered occurrence at empty, full, enqueue,
-dequeue, and simultaneous dequeue/enqueue boundaries; one bypassable
-occurrence in both legal modes with propagated backpressure; rejection of
-bypass on a non-bypassable occurrence; derivation of configured mode from the
-selected RouteTree; and a topology in which bypass closes a selected
-handshake cycle while a declared registered break does not. Tests do not
-preserve internal pointer encoding,
-queue implementation, raw configuration bits, or exhaustive occupancy traces.
+dequeue, non-full simultaneous dequeue/enqueue, and full-dequeue capacity
+release boundaries; one bypassable occurrence in both legal modes with
+propagated backpressure; rejection of bypass on a non-bypassable occurrence;
+derivation of configured mode from the selected RouteTree; acceptance of a
+physical topology that only potentially forms a cycle; and rejection only
+when selected switch rows and bypass traversals close that cycle. Tests do not
+preserve internal pointer encoding, queue implementation, raw configuration
+bits, or exhaustive occupancy traces.

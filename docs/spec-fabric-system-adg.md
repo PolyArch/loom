@@ -161,7 +161,7 @@ AccCore = InstructionCore + SpatialCore
 ```
 
 Both HostCore and AccCore InstructionCore use one closed Architectural
-Contract. `loom.fabric 3.0` has one ISA variant, `RiscV`; adding another ISA is
+Contract. `loom.fabric 4.0` has one ISA variant, `RiscV`; adding another ISA is
 a schema change rather than an open string or opaque payload:
 
 ```text
@@ -1321,7 +1321,7 @@ complete typed facts used by RTL and constraint derivation.
 
 Every stateful imported Module owner obtains exactly one effective Clock and
 the Reset coverage required by its exact resource contract through the slot
-relation. `loom.fabric 3.0` admits no implicit resetless stateful owner. A
+relation. `loom.fabric 4.0` admits no implicit resetless stateful owner. A
 backend cannot supply a default Reset contract or infer one from Clock
 membership.
 
@@ -1407,7 +1407,7 @@ module-payload finalization. This provider-availability failure does not alter
 the stable root-kind ordinal or permit the reserved-unavailable
 `ImplementationInput` dependency role.
 
-In `loom.fabric 3.x`, the protocol-schema identity is a closed root-local schema
+In `loom.fabric 4.x`, the protocol-schema identity is a closed root-local schema
 tag interpreted by the typed interconnect implementation body. It is not an
 external Artifact reference and does not authorize a generic implementation
 dependency. The root has exactly one direct `RefinedSystem` dependency and no

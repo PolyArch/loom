@@ -74,7 +74,7 @@ stateful, consumes the Clock and Reset signals of its assigned slots, and must
 define every state's canonical reset value. An owner with no state inventory is
 combinational and consumes neither signal. Hidden registered state, a clocked
 owner without Fabric-owned state, and state without Reset are invalid in
-`loom.fabric 3.0`. A later resetless stateful contract requires an explicit
+`loom.fabric 4.0`. A later resetless stateful contract requires an explicit
 closed resource-contract variant and a Fabric major revision. Hierarchy,
 containment, insertion order, and a parent owner's assignment never imply an
 assignment for a child owner.
@@ -90,7 +90,7 @@ finalized parent Module.
 The source and destination of every ordinary Module-local physical connection
 must resolve to equal symbolic Clock and Reset slots. A cross-slot relation is
 legal only through an explicit typed crossing resource whose contract owns
-both faces. `loom.fabric 3.0` defines no Module-local Clock or Reset crossing
+both faces. `loom.fabric 4.0` defines no Module-local Clock or Reset crossing
 carrier, so a Module containing such a relation fails closed. A backend cannot
 repair it by inserting a synchronizer, FIFO, reset bridge, or timing exception.
 

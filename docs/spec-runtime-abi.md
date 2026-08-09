@@ -27,7 +27,7 @@ loom.gem5_simulation_binding  2.0
 
 The major versions change because the first root admits an exact
 `loom.hardware_implementation 2.0` and the second admits exact
-`loom.fabric 3.0` roots. Their record shapes remain as specified below; no 1.0
+`loom.fabric 4.0` roots. Their record shapes remain as specified below; no 1.0
 reference is reinterpreted with a different accepted dependency schema.
 
 Concrete device handles, leases, addresses, queues, and process state remain
@@ -487,7 +487,7 @@ admission joins the third:
   execution structure, timing, capacity, and mapping-visible resources; and
 * the compatible Compiler Target Binding used by the target-specific binary.
 
-Because `loom.fabric 3.0` admits only the `RiscV` Architectural Contract, the
+Because `loom.fabric 4.0` admits only the `RiscV` Architectural Contract, the
 selected gem5 build and every `Processor` correspondence must provide a
 compatible RISC-V ISA model. A build without that ISA or a correspondence to a
 different ISA is typed `Unsupported`; the binding cannot retarget the binary

@@ -241,11 +241,11 @@ a structural dependency. ConfigurationABI bits are derived later and cannot
 change this graph.
 
 For `fabric.fifo`, bypass contributes its transparent forward-valid and
-backward-ready arcs. Buffered mode contributes exactly the arcs derived by the
-FIFO contract, including any remaining same-cycle ready dependency; it is not
-assumed to break every cycle merely because it owns storage. A stronger
-registered break is available only through an exact Fabric capability or
-Mapping-selected refinement.
+backward-ready arcs. Buffered mode contributes neither cross-FIFO arc: its
+output validity and input capacity are both derived from cycle-start registered
+state. A higher-throughput full-queue credit or skid behavior is available only
+through an exact Fabric capability or Mapping-selected refinement whose
+additional physical capacity and replacement arcs are part of Fabric identity.
 
 The final graph must be a directed acyclic graph. A cycle is an intrinsic
 base-verifier failure, not congestion, a temporary capacity violation, a QoR

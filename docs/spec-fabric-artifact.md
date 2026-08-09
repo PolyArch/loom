@@ -10,11 +10,11 @@ identity, finalization, and publication.
 The current persistent family is:
 
 ```text
-loom.fabric 3.0
+loom.fabric 4.0
 
 ArtifactSchemaDescriptor {
   identity = "loom.fabric"
-  version = 3.0
+  version = 4.0
 }
 
 FabricRoot =
@@ -23,21 +23,23 @@ FabricRoot =
   | InterconnectImplementation
 ```
 
-Version 3.0 is one atomic breaking boundary. It closes every memory-plane
-System spatial attachment over its exact System service endpoint. A Fabric
-owner accepts and emits only the exact `loom.fabric 3.0` descriptor; there is
-no 2.x compatibility owner, fallback importer, in-place upgrade, or alternate
-identity path. A 2.x System does not contain enough information to recover the
-binding when several memory-plane, complementary-role System service endpoints
-exist. The RootRelative memory index-width relation introduced in 2.0 remains
-part of this boundary.
+Version 4.0 is one atomic breaking boundary. It retains the complete 3.0
+memory-plane, connection, identity, and root contracts while changing one
+execution invariant: a selected Buffered `fabric.fifo` cuts both forward-valid
+and backward-ready combinational dependencies, and a cycle-start-full queue
+does not admit an enqueue from current-cycle downstream readiness. A Fabric
+owner accepts and emits only the exact `loom.fabric 4.0` descriptor; there is
+no 3.x compatibility owner, fallback importer, in-place upgrade, or alternate
+identity path. Reinterpreting a 3.x FIFO would change selected handshake-cycle
+legality and cycle timing. The RootRelative memory index-width relation
+introduced in 2.0 and the exact System service-endpoint attachment introduced
+in 3.0 remain part of this boundary.
 
-The 3.0 `fabric.system.connection` relation includes both its Transport and
-MemoryService variants. This closes the already required operation-service
-endpoint references and direct identity connection; it is not an optional
-extension or a second connection schema. A producer that encoded only the
-Transport variant implemented a strict subset of 3.0. Omitting required direct
-memory-service edges cannot be repaired by endpoint matching in a consumer.
+The 4.0 `fabric.system.connection` relation retains both its Transport and
+MemoryService variants from 3.0. These remain required operation-service
+endpoint references and direct identity connections, not an optional extension
+or a second connection schema. Omitting required direct memory-service edges
+cannot be repaired by endpoint matching in a consumer.
 
 The three variants share one artifact family because they use the same Fabric
 semantic model, reference framing, canonicalization rules, and finalization
@@ -66,7 +68,7 @@ a known root variant, that variant fails closed as
 `Unsupported(FabricRootProviderUnavailable)`. It cannot fall back to another
 root operation. This is distinct from
 `fabric_artifact_owner_contract_unavailable`, which means the schema itself has
-no enabled owner contract, as for `ImplementationInput` in schema 3.x.
+no enabled owner contract, as for `ImplementationInput` in schema 4.x.
 
 There is no persistent finalized-design wrapper, separate family per variant,
 or generic hardware manifest.
@@ -80,37 +82,37 @@ dependency, it stores the dependency-table ordinal plus that owner's canonical
 local target bytes. This compact form mechanically recovers the complete
 `ArtifactReference<T>` and does not create another reference authority.
 
-The dependency-role catalog remains unchanged in `loom.fabric 3.0`:
+The dependency-role catalog remains unchanged in `loom.fabric 4.0`:
 
 ```text
 ImportedModule       = 0
 RefinedSystem        = 1
-ImplementationInput  = 2  // reserved-unavailable in schema 3.x
+ImplementationInput  = 2  // reserved-unavailable in schema 4.x
 ```
 
 A `Module` root admits no direct dependency: every authoring template use is
 fully elaborated into the canonical Module and no `fabric.instantiate`
 survives. A `System` root admits only `ImportedModule`. An
 `InterconnectImplementation` root admits exactly one `RefinedSystem` and no
-other direct dependency in schema 3.x. `ImplementationInput = 2` retains its
-wire ordinal so schema 3.x never renumbers a published discriminant, but it has
+other direct dependency in schema 4.x. `ImplementationInput = 2` retains its
+wire ordinal so schema 4.x never renumbers a published discriminant, but it has
 no accepted artifact family, schema version, root kind, owner-local target
-kind, or dependency-use contract in schema 3.x. It is therefore not an enabled
+kind, or dependency-use contract in schema 4.x. It is therefore not an enabled
 dependency role and cannot appear in a canonical Fabric root.
 
-The enabled schema-3.0 dependency contracts are exact:
+The enabled schema-4.0 dependency contracts are exact:
 
 ```text
 ImportedModule:
-  owner schema = loom.fabric 3.0
+  owner schema = loom.fabric 4.0
   required root = Module
 
 RefinedSystem:
-  owner schema = loom.fabric 3.0
+  owner schema = loom.fabric 4.0
   required root = System
 ```
 
-A `loom.fabric 2.x` Module has no 3.0 dependency contract and is rejected
+A `loom.fabric 3.x` Module has no 4.0 dependency contract and is rejected
 rather than republished under a new identity without exact finalization.
 Likewise, a `RefinedSystem` dependency cannot cross a Fabric schema version or
 name a Module or InterconnectImplementation root. A later compatible Fabric
@@ -130,7 +132,7 @@ ordinal alone never owns those facts.
 
 Dependency use is determined by the static field that contains the compact
 reference. There is no generic dependency-use tag, path, or property bag. The
-closed schema 3.x field catalog is:
+closed schema 4.x field catalog is:
 
 ```text
 System AccCore spatial_core
@@ -249,7 +251,7 @@ The exact Fabric canonical semantic bytes passed to the Common Artifact
 SHA-256 v1 finalizer are:
 
 ```text
-bytes("loom.fabric.semantic.v3\0")
+bytes("loom.fabric.semantic.v4\0")
 || u32be(root_variant)
 || u64be(direct_dependency_count)
 || repeated direct_dependency_count times {
@@ -266,7 +268,7 @@ bytes("loom.fabric.semantic.v3\0")
 
 Root variant ordinals are `Module = 0`, `System = 1`, and
 `InterconnectImplementation = 2`. The dependency-role ordinals above and the
-root ordinals are immutable throughout schema 3.x. Counts and lengths are
+root ordinals are immutable throughout schema 4.x. Counts and lengths are
 unsigned big-endian values, there is no padding or native layout, and the
 decoder rejects truncation, trailing bytes, noncanonical dependency order,
 duplicates, unused rows, and payload references outside the dependency table.
@@ -617,7 +619,7 @@ Anchor tests cover:
 * wrong-kind, foreign, duplicate, cyclic, and missing direct references;
 * fixed byte vectors for every root variant, zero and multiple dependencies,
   dependency-table target uses, and malformed count or length framing;
-* the `loom.fabric.semantic.v3` envelope, Module slot/assignment relation,
+* the `loom.fabric.semantic.v4` envelope, Module slot/assignment relation,
   System occurrence-slot membership, and memory-plane spatial service binding
   changing identity exactly when their semantic content changes;
 * strict field-owned dependency-use decoding, target re-encoding, and

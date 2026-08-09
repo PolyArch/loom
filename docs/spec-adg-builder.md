@@ -357,7 +357,7 @@ handle must belong to the receiving builder. The bindings must form the exact
 total same-kind correspondence required by `docs/spec-fabric-instantiate.md`.
 The target's effective handles come from `domainSlots`; this does not make its
 shorthand an instance-binding default. The two-argument overload is not
-retained for `loom.fabric 3.0`, and an empty binding range is invalid for every
+retained for `loom.fabric 4.0`, and an empty binding range is invalid for every
 Module target.
 
 `ModuleDomainSlotHandle` is local to the open SpatialCoreBuilder and cannot
