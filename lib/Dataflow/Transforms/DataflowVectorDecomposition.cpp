@@ -1,5 +1,7 @@
 #include "Dataflow/Transforms/DataflowRewrite.h"
 
+#include "DataflowRewriteInternal.h"
+
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowOps.h"
 
@@ -238,19 +240,17 @@ llvm::Error applyScalarizeRewrite(mlir::Operation *operation,
   return llvm::Error::success();
 }
 
-bool actorRefLess(ActorRef lhs, ActorRef rhs) {
-  if (lhs.artifact.bytes() != rhs.artifact.bytes())
-    return lhs.artifact.bytes() < rhs.artifact.bytes();
-  return lhs.entity.value() < rhs.entity.value();
-}
-
 llvm::Expected<ElementwiseVectorActor>
 validateElementwiseDecision(const CanonicalDataflowArtifact &parent,
                             const DataflowRewriteDecision &decision) {
-  const ActorRef actor =
+  if (dataflowRewriteKind(decision) !=
+      DataflowRewriteKind::ElementwiseVectorDecompose)
+    return invalid("decision is not an elementwise vector decomposition");
+  const ActorId actorId =
       std::holds_alternative<ElementwiseVectorChunkRewrite>(decision)
-          ? std::get<ElementwiseVectorChunkRewrite>(decision).actor
-          : std::get<ElementwiseVectorScalarizeRewrite>(decision).actor;
+          ? std::get<ElementwiseVectorChunkRewrite>(decision).compute
+          : std::get<ElementwiseVectorScalarizeRewrite>(decision).compute;
+  const ActorRef actor{parent.identity(), actorId};
   auto analyzed = analyzeElementwiseVectorActor(parent, actor);
   if (!analyzed)
     return analyzed.takeError();
@@ -260,9 +260,11 @@ validateElementwiseDecision(const CanonicalDataflowArtifact &parent,
   if (const auto *chunk =
           std::get_if<ElementwiseVectorChunkRewrite>(&decision)) {
     const std::int64_t leadingBlocks = (*analyzed)->resultType.getDimSize(0);
-    if (chunk->leadingBlocksPerChunk <= 0 ||
-        chunk->leadingBlocksPerChunk >= leadingBlocks ||
-        leadingBlocks % chunk->leadingBlocksPerChunk != 0)
+    if (chunk->leadingBlocksPerChunk >=
+            static_cast<std::uint64_t>(leadingBlocks) ||
+        static_cast<std::uint64_t>(leadingBlocks) %
+                chunk->leadingBlocksPerChunk !=
+            0)
       return invalid("chunk decision is not a proper leading-dimension "
                      "divisor");
   } else if (!llvm::is_contained((*analyzed)->operandTypes,
@@ -290,26 +292,6 @@ std::vector<std::int64_t> properLeadingDivisors(std::int64_t leadingBlocks) {
 
 } // namespace
 
-bool dataflowRewriteDecisionLess(const DataflowRewriteDecision &lhs,
-                                 const DataflowRewriteDecision &rhs) {
-  if (lhs.index() != rhs.index())
-    return lhs.index() < rhs.index();
-  if (const auto *left = std::get_if<DataflowRewriteKind>(&lhs))
-    return static_cast<std::uint32_t>(*left) <
-           static_cast<std::uint32_t>(std::get<DataflowRewriteKind>(rhs));
-  if (const auto *left = std::get_if<ElementwiseVectorChunkRewrite>(&lhs)) {
-    const auto &right = std::get<ElementwiseVectorChunkRewrite>(rhs);
-    if (actorRefLess(left->actor, right.actor))
-      return true;
-    if (actorRefLess(right.actor, left->actor))
-      return false;
-    return left->leadingBlocksPerChunk < right.leadingBlocksPerChunk;
-  }
-  const auto &left = std::get<ElementwiseVectorScalarizeRewrite>(lhs);
-  const auto &right = std::get<ElementwiseVectorScalarizeRewrite>(rhs);
-  return actorRefLess(left.actor, right.actor);
-}
-
 llvm::Expected<std::vector<DataflowRewriteDecision>>
 enumerateElementwiseVectorDecompositionDecisions(
     const CanonicalDataflowArtifact &parent, ActorRef actor) {
@@ -322,10 +304,11 @@ enumerateElementwiseVectorDecompositionDecisions(
 
   const std::int64_t leadingBlocks = (*analyzed)->resultType.getDimSize(0);
   for (std::int64_t chunk : properLeadingDivisors(leadingBlocks))
-    decisions.emplace_back(ElementwiseVectorChunkRewrite{actor, chunk});
+    decisions.emplace_back(ElementwiseVectorChunkRewrite{
+        actor.entity, static_cast<std::uint64_t>(chunk)});
 
   if (llvm::is_contained((*analyzed)->operandTypes, (*analyzed)->resultType))
-    decisions.emplace_back(ElementwiseVectorScalarizeRewrite{actor});
+    decisions.emplace_back(ElementwiseVectorScalarizeRewrite{actor.entity});
   return decisions;
 }
 
@@ -335,7 +318,8 @@ dataflowRewriteExpansionCost(const CanonicalDataflowArtifact &parent,
   auto encoded = encodeDataflowRewriteDecision(decision);
   if (!encoded)
     return encoded.takeError();
-  if (std::holds_alternative<DataflowRewriteKind>(decision))
+  if (dataflowRewriteKind(decision) !=
+      DataflowRewriteKind::ElementwiseVectorDecompose)
     return 1;
   auto analyzed = validateElementwiseDecision(parent, decision);
   if (!analyzed)
@@ -355,8 +339,9 @@ materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
   auto encoded = encodeDataflowRewriteDecision(decision);
   if (!encoded)
     return encoded.takeError();
-  if (const auto *fixed = std::get_if<DataflowRewriteKind>(&decision))
-    return materializeDataflowRewrite(parent, *fixed);
+  if (dataflowRewriteKind(decision) !=
+      DataflowRewriteKind::ElementwiseVectorDecompose)
+    return detail::materializeFixedDataflowRewrite(parent, decision);
 
   auto analyzed = validateElementwiseDecision(parent, decision);
   if (!analyzed)
@@ -371,8 +356,9 @@ materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
 
   if (const auto *chunk =
           std::get_if<ElementwiseVectorChunkRewrite>(&decision)) {
-    if (llvm::Error error = applyChunkRewrite(operation, analyzed->schema,
-                                              chunk->leadingBlocksPerChunk))
+    if (llvm::Error error = applyChunkRewrite(
+            operation, analyzed->schema,
+            static_cast<std::int64_t>(chunk->leadingBlocksPerChunk)))
       return std::move(error);
   } else if (llvm::Error error = applyScalarizeRewrite(
                  operation, analyzed->schema, analyzed->elementCount)) {

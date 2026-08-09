@@ -83,12 +83,12 @@ void populateReconvergent(StructuredOwnershipDataflowLineageIndex &index,
                           const Fixture &fixture, bool reverse) {
   requireSuccess(index.recordRoot(fixture.structuredA, fixture.rootA));
   requireSuccess(index.recordRoot(fixture.structuredB, fixture.rootB));
-  const auto firstKind =
-      dataflow::DataflowRewriteKind::PackUnpackRoundTripEliminate;
-  const auto secondKind =
-      dataflow::DataflowRewriteKind::ParallelizeSerializeRoundTripEliminate;
-  const auto joinKind =
-      dataflow::DataflowRewriteKind::ActivationPreservingConstantFold;
+  const dataflow::DataflowRewriteDecision firstKind =
+      dataflow::PackUnpackRoundTripRewrite{dataflow::ActorId(1)};
+  const dataflow::DataflowRewriteDecision secondKind =
+      dataflow::ParallelizeSerializeRoundTripRewrite{dataflow::ActorId(2)};
+  const dataflow::DataflowRewriteDecision joinKind =
+      dataflow::ActivationPreservingConstantFoldRewrite{dataflow::ActorId(3)};
   if (reverse) {
     requireSuccess(
         index.recordDecision(fixture.rootA, fixture.second, secondKind));
@@ -154,10 +154,10 @@ void cyclesFailClosed() {
   const Fixture fixture;
   StructuredOwnershipDataflowLineageIndex index;
   requireSuccess(index.recordRoot(fixture.structuredA, fixture.rootA));
-  const auto firstKind =
-      dataflow::DataflowRewriteKind::PackUnpackRoundTripEliminate;
-  const auto secondKind =
-      dataflow::DataflowRewriteKind::ParallelizeSerializeRoundTripEliminate;
+  const dataflow::DataflowRewriteDecision firstKind =
+      dataflow::PackUnpackRoundTripRewrite{dataflow::ActorId(1)};
+  const dataflow::DataflowRewriteDecision secondKind =
+      dataflow::ParallelizeSerializeRoundTripRewrite{dataflow::ActorId(2)};
   requireSuccess(
       index.recordDecision(fixture.rootA, fixture.cycleA, firstKind));
   requireSuccess(
@@ -173,10 +173,10 @@ void cyclesFailClosed() {
 void lateRootPathReachesExistingDescendants() {
   const Fixture fixture;
   StructuredOwnershipDataflowLineageIndex index;
-  const auto firstKind =
-      dataflow::DataflowRewriteKind::PackUnpackRoundTripEliminate;
-  const auto secondKind =
-      dataflow::DataflowRewriteKind::ParallelizeSerializeRoundTripEliminate;
+  const dataflow::DataflowRewriteDecision firstKind =
+      dataflow::PackUnpackRoundTripRewrite{dataflow::ActorId(1)};
+  const dataflow::DataflowRewriteDecision secondKind =
+      dataflow::ParallelizeSerializeRoundTripRewrite{dataflow::ActorId(2)};
 
   requireSuccess(index.recordRoot(fixture.structuredA, fixture.rootA));
   requireSuccess(
@@ -207,10 +207,10 @@ void lateRootPathReachesExistingDescendants() {
 void sharedDescendantScalesAcrossLateRoots() {
   constexpr std::uint64_t rootCount = 128;
   StructuredOwnershipDataflowLineageIndex index;
-  const auto firstKind =
-      dataflow::DataflowRewriteKind::PackUnpackRoundTripEliminate;
-  const auto secondKind =
-      dataflow::DataflowRewriteKind::ParallelizeSerializeRoundTripEliminate;
+  const dataflow::DataflowRewriteDecision firstKind =
+      dataflow::PackUnpackRoundTripRewrite{dataflow::ActorId(1)};
+  const dataflow::DataflowRewriteDecision secondKind =
+      dataflow::ParallelizeSerializeRoundTripRewrite{dataflow::ActorId(2)};
   const ArtifactRootReference shared =
       makeReference(dataflow::canonicalDataflowSchema, 1000);
   const ArtifactRootReference descendant =

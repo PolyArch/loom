@@ -34,7 +34,7 @@ struct ResolvedMemoryCommunicationConfig {
 };
 
 struct ResolvedDataflowRewriteConfig {
-  std::uint32_t scopeExpansionLimit = 64;
+  std::uint32_t scopeExpansionLimit = 256;
 };
 
 struct ResolvedTechMappingConfig {

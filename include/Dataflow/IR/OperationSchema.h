@@ -94,6 +94,26 @@ activityDefinednessTransfer(OperationSchemaId schema);
 /// decomposition rewrite.
 bool supportsElementwiseVectorDecomposition(OperationSchemaId schema);
 
+/// Whether separate evaluations of this registered operation denote the same
+/// result for the same complete semantic input. Pure operations such as poison
+/// and freeze that may independently select different values return false.
+bool isDeterministic(OperationSchemaId schema);
+
+/// Whether two values are either the same SSA value or sole results of
+/// deterministic, total, pure Compute instances with equal complete schema
+/// projections and identical ordered operand SSA values. Fanout factoring
+/// consumes this exact relation and cannot merge independently replicated
+/// operand trees.
+bool haveIdenticalDeterministicComputeInstance(::mlir::Value lhs,
+                                               ::mlir::Value rhs);
+
+/// Whether two values denote one recursively corresponding deterministic
+/// Compute stream. Distinct instances must have equal complete schema
+/// projections and pairwise corresponding ordered operands. Analyses consume
+/// this closure after layered fanout replication; it does not relax factoring.
+bool haveEquivalentDeterministicComputeCorrespondence(::mlir::Value lhs,
+                                                      ::mlir::Value rhs);
+
 /// Recomputes source-owned selector state after a type-preserving-schema
 /// rewrite changes one actor's exact function type. Whole-class carriers need
 /// no mutation; a registered LLVM intrinsic carrier receives the exact

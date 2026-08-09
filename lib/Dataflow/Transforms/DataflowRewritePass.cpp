@@ -7,6 +7,8 @@
 
 #include "Dataflow/Transforms/DataflowRewrite.h"
 
+#include "DataflowRewriteInternal.h"
+
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowGraphValidation.h"
@@ -16,13 +18,12 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SetVector.h"
@@ -31,6 +32,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <iterator>
 #include <optional>
 
 namespace {
@@ -52,7 +54,8 @@ using ::dataflow::DataflowRewriteKind;
 // invented by eliminating one.
 bool applyPackUnpackRoundTripEliminate(
     ::mlir::Operation *op,
-    ::llvm::function_ref<void(::mlir::Operation *)> eraseOperation) {
+    ::llvm::function_ref<void(::mlir::Operation *)> eraseOperation,
+    bool mutate = true) {
   ::mlir::Operation *inner = nullptr;
   if (auto unpack = ::llvm::dyn_cast<::dataflow::UnpackOp>(op))
     inner = unpack.getPacked().getDefiningOp<::dataflow::PackOp>();
@@ -75,6 +78,9 @@ bool applyPackUnpackRoundTripEliminate(
   ::mlir::Value source = inner->getOperand(0);
   if (op->getResult(0).getType() != source.getType())
     return false;
+
+  if (!mutate)
+    return true;
 
   op->getResult(0).replaceAllUsesWith(source);
   eraseOperation(op);
@@ -191,7 +197,8 @@ bool provesScalarStreamRoundTrip(std::uint64_t groupWidth) {
 // parallelize compacts the survivors across the original group boundaries.
 bool applyParallelizeSerializeRoundTripEliminate(
     ::mlir::Operation *op,
-    ::llvm::function_ref<void(::mlir::Operation *)> eraseOperation) {
+    ::llvm::function_ref<void(::mlir::Operation *)> eraseOperation,
+    bool mutate = true) {
   auto serialize = ::llvm::dyn_cast<::dataflow::SerializeOp>(op);
   if (!serialize)
     return false;
@@ -265,6 +272,9 @@ bool applyParallelizeSerializeRoundTripEliminate(
           static_cast<std::uint64_t>(groupVector->getDimSize(0))))
     return false;
 
+  if (!mutate)
+    return true;
+
   serialize.getData().replaceAllUsesWith(parallelize.getData());
   serialize.getScalarPhase().replaceAllUsesWith(*originalScalarPhase);
   eraseOperation(serialize);
@@ -282,7 +292,8 @@ bool applyParallelizeSerializeRoundTripEliminate(
 // still two activation streams and are never merged.
 bool applyActivationPreservingConstantFold(
     ::mlir::Operation *op,
-    ::llvm::function_ref<void(::mlir::Operation *)> eraseOperation) {
+    ::llvm::function_ref<void(::mlir::Operation *)> eraseOperation,
+    bool mutate = true) {
   // Canonical actor classification owns the selector, control, stateful and
   // memory exclusions; this rule adds no operation taxonomy of its own.
   if (!::dataflow::isCanonicalDataflowActor(
@@ -344,6 +355,9 @@ bool applyActivationPreservingConstantFold(
   if (!typed || typed.getType() != op->getResult(0).getType())
     return false;
 
+  if (!mutate)
+    return true;
+
   ::mlir::OpBuilder builder(op);
   auto replacement = ::dataflow::ConstantOp::create(
       builder, op->getLoc(), typed.getType(), ctrl,
@@ -364,16 +378,124 @@ bool applyActivationPreservingConstantFold(
 // own matcher, legality checker and builder; there is no callback table.
 bool applySelectedRewrite(
     ::mlir::Operation *op, DataflowRewriteKind kind,
-    ::llvm::function_ref<void(::mlir::Operation *)> eraseOperation) {
+    ::llvm::function_ref<void(::mlir::Operation *)> eraseOperation,
+    bool mutate = true) {
   switch (kind) {
+  case DataflowRewriteKind::SyncRendezvousRefactor:
+  case DataflowRewriteKind::ElementwiseCardinalityCommute:
+  case DataflowRewriteKind::PureComputeFanoutRefactor:
+  case DataflowRewriteKind::GraphDefinitionRefactor:
+  case DataflowRewriteKind::ElementwiseVectorDecompose:
+    return false;
   case DataflowRewriteKind::PackUnpackRoundTripEliminate:
-    return applyPackUnpackRoundTripEliminate(op, eraseOperation);
+    return applyPackUnpackRoundTripEliminate(op, eraseOperation, mutate);
   case DataflowRewriteKind::ParallelizeSerializeRoundTripEliminate:
-    return applyParallelizeSerializeRoundTripEliminate(op, eraseOperation);
+    return applyParallelizeSerializeRoundTripEliminate(op, eraseOperation,
+                                                       mutate);
   case DataflowRewriteKind::ActivationPreservingConstantFold:
-    return applyActivationPreservingConstantFold(op, eraseOperation);
+    return applyActivationPreservingConstantFold(op, eraseOperation, mutate);
   }
   return false;
+}
+
+std::optional<::dataflow::ActorId>
+fixedDecisionActor(const ::dataflow::DataflowRewriteDecision &decision) {
+  if (const auto *pack =
+          std::get_if<::dataflow::PackUnpackRoundTripRewrite>(&decision))
+    return pack->outerAdapter;
+  if (const auto *stream =
+          std::get_if<::dataflow::ParallelizeSerializeRoundTripRewrite>(
+              &decision))
+    return stream->outerSerialize;
+  if (const auto *fold =
+          std::get_if<::dataflow::ActivationPreservingConstantFoldRewrite>(
+              &decision))
+    return fold->compute;
+  return std::nullopt;
+}
+
+::llvm::Expected<bool> packExceptionalStateIsIdentity(
+    const ::dataflow::CanonicalDataflowProgramView &view,
+    const ::dataflow::CanonicalActorView &outer) {
+  auto unpack = ::llvm::dyn_cast<::dataflow::UnpackOp>(outer.op);
+  if (!unpack)
+    return true;
+  auto inner = unpack.getPacked().getDefiningOp<::dataflow::PackOp>();
+  if (!inner)
+    return false;
+
+  auto innerActor = ::llvm::find_if(
+      view.actors(), [&](const ::dataflow::CanonicalActorView &candidate) {
+        return candidate.op == inner.getOperation();
+      });
+  if (innerActor == view.actors().end())
+    return ::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "dataflow_rewrite_invalid: inner pack has no canonical actor");
+  auto producer =
+      view.graphProducer(::dataflow::CanonicalGraphConsumerEndpointRef{
+          ::dataflow::ActorTokenOperandRef{innerActor->ref, 0}});
+  if (!producer)
+    return producer.takeError();
+  auto definedness = view.activityDefinedness(*producer);
+  if (!definedness)
+    return definedness.takeError();
+  return *definedness == ::dataflow::ActivityDefinedness::AlwaysDefined;
+}
+
+::llvm::Expected<bool> matchesImplementedFixedDecision(
+    const ::dataflow::CanonicalDataflowProgramView &view,
+    const ::dataflow::DataflowRewriteDecision &decision) {
+  std::optional<::dataflow::ActorId> actor = fixedDecisionActor(decision);
+  if (!actor)
+    return false;
+  auto resolved = view.resolve(::dataflow::ActorRef{view.identity(), *actor});
+  if (!resolved)
+    return resolved.takeError();
+  auto noErase = [](::mlir::Operation *) {};
+  if (!applySelectedRewrite(resolved->op,
+                            ::dataflow::dataflowRewriteKind(decision), noErase,
+                            /*mutate=*/false))
+    return false;
+  if (std::holds_alternative<::dataflow::PackUnpackRoundTripRewrite>(decision))
+    return packExceptionalStateIsIdentity(view, *resolved);
+  return true;
+}
+
+::llvm::Expected<std::vector<::dataflow::DataflowRewriteDecision>>
+enumerateImplementedOneWayDecisions(
+    const ::dataflow::CanonicalDataflowArtifact &parent,
+    DataflowRewriteKind kind) {
+  if (kind != DataflowRewriteKind::PackUnpackRoundTripEliminate &&
+      kind != DataflowRewriteKind::ParallelizeSerializeRoundTripEliminate &&
+      kind != DataflowRewriteKind::ActivationPreservingConstantFold)
+    return ::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "dataflow_rewrite_invalid: kind is not a one-way fixed rule");
+
+  auto view = parent.view();
+  if (!view)
+    return view.takeError();
+  std::vector<::dataflow::DataflowRewriteDecision> decisions;
+  for (const ::dataflow::CanonicalActorView &actor : view->actors()) {
+    ::dataflow::DataflowRewriteDecision decision =
+        [&]() -> ::dataflow::DataflowRewriteDecision {
+      if (kind == DataflowRewriteKind::PackUnpackRoundTripEliminate)
+        return ::dataflow::PackUnpackRoundTripRewrite{actor.ref.entity};
+      if (kind == DataflowRewriteKind::ParallelizeSerializeRoundTripEliminate)
+        return ::dataflow::ParallelizeSerializeRoundTripRewrite{
+            actor.ref.entity};
+      return ::dataflow::ActivationPreservingConstantFoldRewrite{
+          actor.ref.entity};
+    }();
+    auto matches = matchesImplementedFixedDecision(*view, decision);
+    if (!matches)
+      return matches.takeError();
+    if (*matches)
+      decisions.push_back(std::move(decision));
+  }
+  ::llvm::sort(decisions, ::dataflow::dataflowRewriteDecisionLess);
+  return decisions;
 }
 
 struct DataflowRewritePass
@@ -434,75 +556,75 @@ struct DataflowRewritePass
     ::mlir::ModuleOp module = getOperation();
     ::mlir::OwningOpRef<::mlir::ModuleOp> candidate(
         ::mlir::cast<::mlir::ModuleOp>(module->clone()));
+    bool changed = false;
+    while (true) {
+      ::llvm::SmallVector<::mlir::Operation *, 32> trackedActors;
+      candidate->walk([&](::mlir::Operation *operation) {
+        if (::dataflow::isCanonicalDataflowActor(operation))
+          trackedActors.push_back(operation);
+      });
+      auto finalized = ::dataflow::finalizeCanonicalDataflowWithTrackedEntities(
+          *candidate, {}, trackedActors);
+      if (!finalized) {
+        module.emitError("dataflow-rewrite input finalization failed: ")
+            << ::llvm::toString(finalized.takeError());
+        return signalPassFailure();
+      }
+      auto decisions = enumerateImplementedOneWayDecisions(finalized->artifact,
+                                                           kind.getValue());
+      if (!decisions) {
+        module.emitError("dataflow-rewrite enumeration failed: ")
+            << ::llvm::toString(decisions.takeError());
+        return signalPassFailure();
+      }
+      if (decisions->empty())
+        break;
 
-    // The rules read exact types recovered by the pack/unpack and
-    // parallelize/serialize verifiers, so malformed input must be rejected
-    // before any match rather than erased into apparent validity.
-    if (::mlir::failed(validateCandidate(*candidate, "input program")))
-      return signalPassFailure();
-
-    if (!applySelectedRewrites(*candidate))
+      std::optional<::dataflow::ActorId> selected =
+          fixedDecisionActor(decisions->front());
+      if (!selected) {
+        module.emitError(
+            "dataflow-rewrite enumerated a decision without an actor anchor");
+        return signalPassFailure();
+      }
+      ::dataflow::ActorRef selectedRef{finalized->artifact.identity(),
+                                       *selected};
+      auto projected = ::llvm::find(finalized->trackedActors, selectedRef);
+      if (projected == finalized->trackedActors.end()) {
+        module.emitError(
+            "dataflow-rewrite could not project its canonical actor anchor");
+        return signalPassFailure();
+      }
+      std::size_t projectedIndex = static_cast<std::size_t>(
+          projected - finalized->trackedActors.begin());
+      if (projectedIndex >= trackedActors.size()) {
+        module.emitError("dataflow-rewrite actor projection is incomplete");
+        return signalPassFailure();
+      }
+      ::mlir::Operation *operation = trackedActors[projectedIndex];
+      auto erase = [](::mlir::Operation *erased) { erased->erase(); };
+      if (!applySelectedRewrite(operation, kind.getValue(), erase)) {
+        module.emitError(
+            "dataflow-rewrite legal decision failed authoring projection");
+        return signalPassFailure();
+      }
+      changed = true;
+    }
+    if (!changed)
       return;
 
-    if (::mlir::failed(validateCandidate(*candidate, "rewritten candidate")))
+    if (::mlir::failed(::mlir::verify(*candidate))) {
+      module.emitError("dataflow-rewrite output failed native verification");
       return signalPassFailure();
-
+    }
+    if (auto error = ::dataflow::validateFinalizedProgram(*candidate)) {
+      module.emitError(
+          "dataflow-rewrite output failed canonical Dataflow validation: ")
+          << ::llvm::toString(std::move(error));
+      return signalPassFailure();
+    }
     module->setAttrs((*candidate)->getAttrs());
     module.getBodyRegion().takeBody(candidate->getBodyRegion());
-  }
-
-  ::mlir::LogicalResult validateCandidate(::mlir::ModuleOp candidate,
-                                          ::llvm::StringRef stage) {
-    if (::mlir::failed(::mlir::verify(candidate))) {
-      getOperation().emitError("dataflow-rewrite ")
-          << stage << " failed native verification";
-      return ::mlir::failure();
-    }
-    if (auto error = ::dataflow::validateFinalizedProgram(candidate)) {
-      getOperation().emitError("dataflow-rewrite ")
-          << stage << " failed canonical Dataflow validation: "
-          << ::llvm::toString(std::move(error));
-      return ::mlir::failure();
-    }
-    return ::mlir::success();
-  }
-
-  // Deterministic order: graph definitions in module order, then operations in
-  // stored block order inside each graph body. A dataflow.graph is an MLIR
-  // Graph region, so a defining actor may occur after its consumer in that
-  // order. A rewrite can consequently erase an operation whose turn has not
-  // arrived. The transient slot map clears such entries before destruction;
-  // the iteration never dereferences a stale Operation pointer. It is only a
-  // mutation-safe traversal index and carries no persistent identity.
-  bool applySelectedRewrites(::mlir::ModuleOp candidate) {
-    ::llvm::SmallVector<::dataflow::GraphOp, 4> graphs;
-    candidate.walk([&](::dataflow::GraphOp graph) {
-      if (!graph.isExternal())
-        graphs.push_back(graph);
-    });
-
-    bool changed = false;
-    for (::dataflow::GraphOp graph : graphs) {
-      ::llvm::SmallVector<::mlir::Operation *, 32> programOrder;
-      ::llvm::DenseMap<::mlir::Operation *, std::size_t> liveSlot;
-      for (::mlir::Operation &op : graph.getBody().front()) {
-        liveSlot.try_emplace(&op, programOrder.size());
-        programOrder.push_back(&op);
-      }
-
-      auto eraseOperation = [&](::mlir::Operation *operation) {
-        auto found = liveSlot.find(operation);
-        if (found != liveSlot.end()) {
-          programOrder[found->second] = nullptr;
-          liveSlot.erase(found);
-        }
-        operation->erase();
-      };
-      for (::mlir::Operation *op : programOrder)
-        if (op)
-          changed |= applySelectedRewrite(op, kind.getValue(), eraseOperation);
-    }
-    return changed;
   }
 };
 
@@ -510,32 +632,105 @@ struct DataflowRewritePass
 
 llvm::Expected<std::unique_ptr<::mlir::Pass>>
 dataflow::createDataflowRewritePass(DataflowRewriteKind kind) {
-  if (static_cast<std::uint32_t>(kind) >
-      static_cast<std::uint32_t>(
-          DataflowRewriteKind::ActivationPreservingConstantFold))
+  if (kind != DataflowRewriteKind::PackUnpackRoundTripEliminate &&
+      kind != DataflowRewriteKind::ParallelizeSerializeRoundTripEliminate &&
+      kind != DataflowRewriteKind::ActivationPreservingConstantFold)
     return ::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
-        "dataflow_rewrite_invalid: typed rewrite kind is unknown");
+        "dataflow_rewrite_invalid: kind has no bulk developer driver");
   return std::make_unique<DataflowRewritePass>(kind);
 }
 
+llvm::Expected<std::vector<dataflow::DataflowRewriteDecision>>
+dataflow::enumerateFixedDataflowRewriteDecisions(
+    const CanonicalDataflowArtifact &parent) {
+  auto sync = detail::enumerateSyncRendezvousDecisions(parent);
+  if (!sync)
+    return sync.takeError();
+  std::vector<DataflowRewriteDecision> decisions = std::move(*sync);
+  const auto enumerate = [&](DataflowRewriteKind kind) -> llvm::Error {
+    auto oneWay = enumerateImplementedOneWayDecisions(parent, kind);
+    if (!oneWay)
+      return oneWay.takeError();
+    decisions.insert(decisions.end(), std::make_move_iterator(oneWay->begin()),
+                     std::make_move_iterator(oneWay->end()));
+    return ::llvm::Error::success();
+  };
+  if (llvm::Error error =
+          enumerate(DataflowRewriteKind::PackUnpackRoundTripEliminate))
+    return std::move(error);
+  if (llvm::Error error = enumerate(
+          DataflowRewriteKind::ParallelizeSerializeRoundTripEliminate))
+    return std::move(error);
+  auto cardinality = detail::enumerateCardinalityCommuteDecisions(parent);
+  if (!cardinality)
+    return cardinality.takeError();
+  decisions.insert(decisions.end(),
+                   std::make_move_iterator(cardinality->begin()),
+                   std::make_move_iterator(cardinality->end()));
+  auto fanout = detail::enumeratePureComputeFanoutDecisions(parent);
+  if (!fanout)
+    return fanout.takeError();
+  decisions.insert(decisions.end(), std::make_move_iterator(fanout->begin()),
+                   std::make_move_iterator(fanout->end()));
+  if (llvm::Error error =
+          enumerate(DataflowRewriteKind::ActivationPreservingConstantFold))
+    return std::move(error);
+  auto graph = detail::enumerateGraphDefinitionRefactorDecisions(parent);
+  if (!graph)
+    return graph.takeError();
+  decisions.insert(decisions.end(), std::make_move_iterator(graph->begin()),
+                   std::make_move_iterator(graph->end()));
+  llvm::sort(decisions, dataflowRewriteDecisionLess);
+  return decisions;
+}
+
 llvm::Expected<std::optional<dataflow::CanonicalDataflowArtifact>>
-dataflow::materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
-                                     DataflowRewriteKind kind) {
-  auto encoded = encodeDataflowRewriteDecision(DataflowRewriteDecision{kind});
+dataflow::detail::materializeFixedDataflowRewrite(
+    const CanonicalDataflowArtifact &parent,
+    const DataflowRewriteDecision &decision) {
+  auto encoded = encodeDataflowRewriteDecision(decision);
   if (!encoded)
     return encoded.takeError();
-  ::mlir::OwningOpRef<::mlir::ModuleOp> candidate(
-      ::mlir::cast<::mlir::ModuleOp>(parent.module()->clone()));
-  ::mlir::PassManager pipeline(candidate->getContext());
-  auto rewritePass = createDataflowRewritePass(kind);
-  if (!rewritePass)
-    return rewritePass.takeError();
-  pipeline.addPass(std::move(*rewritePass));
-  if (::mlir::failed(pipeline.run(*candidate)))
+  if (const auto *sync = std::get_if<SyncRendezvousRewrite>(&decision))
+    return materializeSyncRendezvousRewrite(parent, *sync);
+  if (const auto *cardinality =
+          std::get_if<ElementwiseCardinalityCommuteRewrite>(&decision))
+    return materializeCardinalityCommuteRewrite(parent, *cardinality);
+  if (std::holds_alternative<PureComputeFanoutReplicateRewrite>(decision) ||
+      std::holds_alternative<PureComputeFanoutFactorRewrite>(decision))
+    return materializePureComputeFanoutRewrite(parent, decision);
+  if (std::holds_alternative<GraphDefinitionSplitRewrite>(decision) ||
+      std::holds_alternative<GraphDefinitionMergeRewrite>(decision))
+    return materializeGraphDefinitionRefactor(parent, decision);
+  auto view = parent.view();
+  if (!view)
+    return view.takeError();
+  auto matches = matchesImplementedFixedDecision(*view, decision);
+  if (!matches)
+    return matches.takeError();
+  if (!*matches)
     return ::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
-        "dataflow_rewrite_invalid: typed rewrite pipeline failed");
+        "dataflow_rewrite_invalid: decision is not a legal parent match");
+
+  const ActorId actor = *fixedDecisionActor(decision);
+  auto resolved = view->resolve(ActorRef{parent.identity(), actor});
+  if (!resolved)
+    return resolved.takeError();
+  ::mlir::IRMapping mapping;
+  ::mlir::OwningOpRef<::mlir::ModuleOp> candidate(
+      ::mlir::cast<::mlir::ModuleOp>(parent.module()->clone(mapping)));
+  ::mlir::Operation *operation = mapping.lookupOrNull(resolved->op);
+  if (!operation)
+    return ::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "dataflow_rewrite_invalid: selected actor was not cloned");
+  auto erase = [](::mlir::Operation *erased) { erased->erase(); };
+  if (!applySelectedRewrite(operation, dataflowRewriteKind(decision), erase))
+    return ::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "dataflow_rewrite_invalid: legal match failed to materialize");
   auto finalized = finalizeCanonicalDataflow(candidate.get());
   if (!finalized)
     return finalized.takeError();

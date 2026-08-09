@@ -77,6 +77,12 @@ set(LOOM_TEST_DEPENDS
   loom-common-special-math-accuracy-test
   loom-dataflow-activity-definedness-test
   loom-dataflow-ordered-cardinality-handshake-test
+  loom-dataflow-rewrite-decision-test
+  loom-dataflow-sync-rewrite-test
+  loom-dataflow-cardinality-rewrite-test
+  loom-dataflow-fanout-rewrite-test
+  loom-dataflow-graph-definition-rewrite-test
+  loom-dataflow-vector-decomposition-rewrite-test
   loom-dataflow-canonical-artifact-test
   loom-dataflow-channel-create-test
   loom-dataflow-canonical-reference-test

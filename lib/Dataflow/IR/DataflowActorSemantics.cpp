@@ -1226,6 +1226,39 @@ bool dataflow::semantics::isVectorBoundaryTruePhaseOutputPayload(
   return false;
 }
 
+bool dataflow::semantics::haveEquivalentOrderedCardinality(
+    mlir::Value lhsPhase, mlir::Value rhsPhase) {
+  if (lhsPhase == rhsPhase)
+    return true;
+  auto lhsParallelize = lhsPhase.getDefiningOp<dataflow::ParallelizeOp>();
+  auto rhsParallelize = rhsPhase.getDefiningOp<dataflow::ParallelizeOp>();
+  if (lhsParallelize && rhsParallelize &&
+      lhsPhase == lhsParallelize.getGroupPhase() &&
+      rhsPhase == rhsParallelize.getGroupPhase()) {
+    auto lhsType =
+        llvm::dyn_cast<mlir::VectorType>(lhsParallelize.getVector().getType());
+    auto rhsType =
+        llvm::dyn_cast<mlir::VectorType>(rhsParallelize.getVector().getType());
+    return lhsType && rhsType && lhsType.getShape() == rhsType.getShape() &&
+           lhsParallelize.getScalarPhase() == rhsParallelize.getScalarPhase();
+  }
+
+  auto lhsSerialize = lhsPhase.getDefiningOp<dataflow::SerializeOp>();
+  auto rhsSerialize = rhsPhase.getDefiningOp<dataflow::SerializeOp>();
+  if (lhsSerialize && rhsSerialize &&
+      lhsPhase == lhsSerialize.getScalarPhase() &&
+      rhsPhase == rhsSerialize.getScalarPhase()) {
+    auto lhsType =
+        llvm::dyn_cast<mlir::VectorType>(lhsSerialize.getVector().getType());
+    auto rhsType =
+        llvm::dyn_cast<mlir::VectorType>(rhsSerialize.getVector().getType());
+    return lhsType && rhsType && lhsType.getShape() == rhsType.getShape() &&
+           lhsSerialize.getMask() == rhsSerialize.getMask() &&
+           lhsSerialize.getGroupPhase() == rhsSerialize.getGroupPhase();
+  }
+  return false;
+}
+
 std::optional<mlir::Value>
 dataflow::semantics::getStreamActivation(dataflow::StreamOp stream) {
   if (!stream)

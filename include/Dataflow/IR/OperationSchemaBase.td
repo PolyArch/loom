@@ -67,7 +67,8 @@ class ActorSchema<int id, int wireTag, string cls, string kind,
                   OperationInstanceSelector selector = WholeOperationClass,
                   bit elementwiseDecomposable = 0,
                   ActivityDefinednessTransfer activityTransfer =
-                      MissingActivityTransfer> {
+                      MissingActivityTransfer,
+                  bit deterministic = 1> {
   int schemaId = id;
   int stableWireTag = wireTag;
   string opClass = cls;
@@ -76,6 +77,7 @@ class ActorSchema<int id, int wireTag, string cls, string kind,
   OperationInstanceSelector instanceSelector = selector;
   bit supportsElementwiseVectorDecomposition = elementwiseDecomposable;
   ActivityDefinednessTransfer activityDefinedness = activityTransfer;
+  bit isDeterministic = deterministic;
 }
 
 // A pure software actor whose fixed-vector instance is exactly the pointwise
@@ -84,9 +86,10 @@ class ActorSchema<int id, int wireTag, string cls, string kind,
 class ElementwiseActorSchema<
     int id, int wireTag, string cls, string kind, SemanticsCase case,
     OperationInstanceSelector selector = WholeOperationClass,
-    ActivityDefinednessTransfer activityTransfer = MissingActivityTransfer>
+    ActivityDefinednessTransfer activityTransfer = MissingActivityTransfer,
+    bit deterministic = 1>
     : ActorSchema<id, wireTag, cls, kind, case, selector, 1,
-                  activityTransfer>;
+                  activityTransfer, deterministic>;
 
 // One closed typed `hw_params` record schema an implementation family selects.
 // Every schema names one concrete C++ record; there is no generic record or

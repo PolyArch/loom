@@ -327,9 +327,9 @@ def VectorShuffle : ActorSchema<96, 0x4c530261, "::mlir::vector::ShuffleOp", "Co
 //===----------------------------------------------------------------------===//
 
 def UBPoison : ActorSchema<67, 0x4c530244, "::mlir::ub::PoisonOp", "Compute",
-    NoSemanticPayload>;
+    NoSemanticPayload, WholeOperationClass, 0, MissingActivityTransfer, 0>;
 def LLVMFreeze : ElementwiseActorSchema<68, 0x4c530245, "::mlir::LLVM::FreezeOp", "Compute",
-    NoSemanticPayload, WholeOperationClass, AlwaysDefinedActivityTransfer>;
+    NoSemanticPayload, WholeOperationClass, AlwaysDefinedActivityTransfer, 0>;
 def LLVMFshl : ElementwiseActorSchema<69, 0x4c530246, "::mlir::LLVM::FshlOp", "Compute",
     NoSemanticPayload>;
 def LLVMByteSwap : ElementwiseActorSchema<70, 0x4c530247, "::mlir::LLVM::ByteSwapOp", "Compute",

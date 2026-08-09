@@ -359,6 +359,10 @@ private:
   friend llvm::Expected<FinalizedCanonicalDataflowProjection>
       finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
           mlir::ModuleOp, llvm::ArrayRef<mlir::Operation *>);
+  friend llvm::Expected<FinalizedCanonicalDataflowProjection>
+      finalizeCanonicalDataflowWithTrackedEntities(
+          mlir::ModuleOp, llvm::ArrayRef<mlir::Operation *>,
+          llvm::ArrayRef<mlir::Operation *>);
 
   // Assemble the typed ID maps and every closed structural inventory from an
   // already-computed canonical labeling. The importer calls this after
@@ -479,7 +483,7 @@ public:
   CanonicalDataflowArtifact(CanonicalDataflowArtifact &&) = default;
   CanonicalDataflowArtifact &
   operator=(const CanonicalDataflowArtifact &) = delete;
-  CanonicalDataflowArtifact &operator=(CanonicalDataflowArtifact &&) = default;
+  CanonicalDataflowArtifact &operator=(CanonicalDataflowArtifact &&) = delete;
 
   const ::loom::ArtifactIdentity &identity() const { return identity_; }
   mlir::ModuleOp module() const { return module_.get(); }
@@ -498,6 +502,10 @@ private:
   friend llvm::Expected<FinalizedCanonicalDataflowProjection>
       finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
           mlir::ModuleOp, llvm::ArrayRef<mlir::Operation *>);
+  friend llvm::Expected<FinalizedCanonicalDataflowProjection>
+      finalizeCanonicalDataflowWithTrackedEntities(
+          mlir::ModuleOp, llvm::ArrayRef<mlir::Operation *>,
+          llvm::ArrayRef<mlir::Operation *>);
   friend llvm::Expected<CanonicalDataflowArtifact>
   importCanonicalDataflow(const ::loom::ArtifactIdentity &,
                           const ::loom::CanonicalSemanticBytes &);
@@ -523,12 +531,13 @@ private:
 };
 
 /// Finalizer-owned ephemeral correspondence for caller-selected static graph
-/// launch operations. The references belong to `artifact`; the correspondence
-/// is not serialized and can always be reconstructed by lowering the exact
-/// owner again.
+/// launch and actor operations. The references belong to `artifact`; the
+/// correspondence is not serialized and can always be reconstructed by
+/// lowering the exact owner again.
 struct FinalizedCanonicalDataflowProjection final {
   CanonicalDataflowArtifact artifact;
   std::vector<StaticGraphLaunchRef> trackedStaticGraphLaunches;
+  std::vector<ActorRef> trackedActors;
 };
 
 /// Failure-atomic finalization. Operates on a private clone of `source`, strips
@@ -546,6 +555,16 @@ llvm::Expected<FinalizedCanonicalDataflowProjection>
 finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
     mlir::ModuleOp source,
     llvm::ArrayRef<mlir::Operation *> trackedStaticGraphLaunches);
+
+/// Finalizes one program while carrying typed launch and actor operations
+/// through the private clone and canonical labeling transaction. Each result
+/// vector preserves the order of its corresponding input vector. The
+/// correspondence is ephemeral and is never encoded in canonical bytes.
+llvm::Expected<FinalizedCanonicalDataflowProjection>
+finalizeCanonicalDataflowWithTrackedEntities(
+    mlir::ModuleOp source,
+    llvm::ArrayRef<mlir::Operation *> trackedStaticGraphLaunches,
+    llvm::ArrayRef<mlir::Operation *> trackedActors);
 
 /// Strictly imports one exact stored canonical Dataflow payload. The family
 /// importer independently rebuilds canonical labels and materialized entity

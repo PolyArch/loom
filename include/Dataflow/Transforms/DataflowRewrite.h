@@ -7,6 +7,7 @@
 
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <variant>
@@ -14,49 +15,145 @@
 
 namespace dataflow {
 
-/// The closed set of typed Dataflow-only rewrites implemented here. A rewrite
-/// kind is a semantic identity, not a pass name or a free string: one enum
-/// value owns one source pattern, one complete set of legality preconditions,
-/// and one deterministic result construction. Adding a kind means adding a
-/// proven observable-equivalence contract, never a new dispatch mechanism.
-enum class DataflowRewriteKind {
-  /// Eliminate an exact `unpack(pack(vector))` or `pack(unpack(bits))`.
-  PackUnpackRoundTripEliminate,
-  /// Eliminate an exact `serialize(parallelize(data, phase))`. The reverse
-  /// composition is not an identity and is never matched.
-  ParallelizeSerializeRoundTripEliminate,
-  /// Replace an exactly foldable pure Compute actor over same-ctrl
-  /// `dataflow.constant` operands with one `dataflow.constant` on that ctrl.
-  ActivationPreservingConstantFold,
+enum class DataflowRewriteKind : std::uint32_t {
+  SyncRendezvousRefactor = 0,
+  PackUnpackRoundTripEliminate = 1,
+  ParallelizeSerializeRoundTripEliminate = 2,
+  ElementwiseCardinalityCommute = 3,
+  PureComputeFanoutRefactor = 4,
+  ActivationPreservingConstantFold = 5,
+  GraphDefinitionRefactor = 6,
+  ElementwiseVectorDecompose = 7,
 };
 
-/// Split one fixed-vector elementwise actor into equal leading-dimension
-/// chunks. The ActorRef belongs to the exact parent artifact; it is invocation
-/// lineage, not a second persistent actor identity.
+enum class SyncRendezvousDirection : std::uint32_t {
+  DirectToTree = 0,
+  TreeToDirect = 1,
+};
+
+enum class CardinalityCommuteDirection : std::uint32_t {
+  MoveInside = 0,
+  MoveOutside = 1,
+};
+
+struct SyncRendezvousRewrite final {
+  ActorId root;
+  SyncRendezvousDirection direction;
+
+  friend bool operator==(const SyncRendezvousRewrite &lhs,
+                         const SyncRendezvousRewrite &rhs) {
+    return lhs.root == rhs.root && lhs.direction == rhs.direction;
+  }
+};
+
+struct PackUnpackRoundTripRewrite final {
+  ActorId outerAdapter;
+
+  friend bool operator==(const PackUnpackRoundTripRewrite &lhs,
+                         const PackUnpackRoundTripRewrite &rhs) {
+    return lhs.outerAdapter == rhs.outerAdapter;
+  }
+};
+
+struct ParallelizeSerializeRoundTripRewrite final {
+  ActorId outerSerialize;
+
+  friend bool operator==(const ParallelizeSerializeRoundTripRewrite &lhs,
+                         const ParallelizeSerializeRoundTripRewrite &rhs) {
+    return lhs.outerSerialize == rhs.outerSerialize;
+  }
+};
+
+struct ElementwiseCardinalityCommuteRewrite final {
+  ActorId compute;
+  std::vector<ActorId> adapters;
+  CardinalityCommuteDirection direction;
+
+  friend bool operator==(const ElementwiseCardinalityCommuteRewrite &lhs,
+                         const ElementwiseCardinalityCommuteRewrite &rhs) {
+    return lhs.compute == rhs.compute && lhs.adapters == rhs.adapters &&
+           lhs.direction == rhs.direction;
+  }
+};
+
+struct PureComputeFanoutReplicateRewrite final {
+  ActorId compute;
+
+  friend bool operator==(const PureComputeFanoutReplicateRewrite &lhs,
+                         const PureComputeFanoutReplicateRewrite &rhs) {
+    return lhs.compute == rhs.compute;
+  }
+};
+
+struct PureComputeFanoutFactorRewrite final {
+  std::vector<ActorId> replicas;
+
+  friend bool operator==(const PureComputeFanoutFactorRewrite &lhs,
+                         const PureComputeFanoutFactorRewrite &rhs) {
+    return lhs.replicas == rhs.replicas;
+  }
+};
+
+struct ActivationPreservingConstantFoldRewrite final {
+  ActorId compute;
+
+  friend bool operator==(const ActivationPreservingConstantFoldRewrite &lhs,
+                         const ActivationPreservingConstantFoldRewrite &rhs) {
+    return lhs.compute == rhs.compute;
+  }
+};
+
+struct GraphDefinitionSplitRewrite final {
+  GraphId graph;
+  std::vector<StaticGraphLaunchId> launches;
+
+  friend bool operator==(const GraphDefinitionSplitRewrite &lhs,
+                         const GraphDefinitionSplitRewrite &rhs) {
+    return lhs.graph == rhs.graph && lhs.launches == rhs.launches;
+  }
+};
+
+struct GraphDefinitionMergeRewrite final {
+  GraphId lowerGraph;
+  GraphId higherGraph;
+
+  friend bool operator==(const GraphDefinitionMergeRewrite &lhs,
+                         const GraphDefinitionMergeRewrite &rhs) {
+    return lhs.lowerGraph == rhs.lowerGraph &&
+           lhs.higherGraph == rhs.higherGraph;
+  }
+};
+
 struct ElementwiseVectorChunkRewrite final {
-  ActorRef actor;
-  std::int64_t leadingBlocksPerChunk;
+  ActorId compute;
+  std::uint64_t leadingBlocksPerChunk;
 
   friend bool operator==(const ElementwiseVectorChunkRewrite &lhs,
                          const ElementwiseVectorChunkRewrite &rhs) {
-    return lhs.actor == rhs.actor &&
+    return lhs.compute == rhs.compute &&
            lhs.leadingBlocksPerChunk == rhs.leadingBlocksPerChunk;
   }
 };
 
-/// Scalarize one fixed-vector elementwise actor at every row-major position.
 struct ElementwiseVectorScalarizeRewrite final {
-  ActorRef actor;
+  ActorId compute;
 
   friend bool operator==(const ElementwiseVectorScalarizeRewrite &lhs,
                          const ElementwiseVectorScalarizeRewrite &rhs) {
-    return lhs.actor == rhs.actor;
+    return lhs.compute == rhs.compute;
   }
 };
 
-using DataflowRewriteDecision =
-    std::variant<DataflowRewriteKind, ElementwiseVectorChunkRewrite,
-                 ElementwiseVectorScalarizeRewrite>;
+using DataflowRewriteDecision = std::variant<
+    SyncRendezvousRewrite, PackUnpackRoundTripRewrite,
+    ParallelizeSerializeRoundTripRewrite, ElementwiseCardinalityCommuteRewrite,
+    PureComputeFanoutReplicateRewrite, PureComputeFanoutFactorRewrite,
+    ActivationPreservingConstantFoldRewrite, GraphDefinitionSplitRewrite,
+    GraphDefinitionMergeRewrite, ElementwiseVectorChunkRewrite,
+    ElementwiseVectorScalarizeRewrite>;
+
+DataflowRewriteKind
+dataflowRewriteKind(const DataflowRewriteDecision &decision);
 
 llvm::ArrayRef<std::uint8_t> dataflowRewriteDecisionSchemaBytes();
 llvm::Expected<std::vector<std::uint8_t>>
@@ -64,47 +161,36 @@ encodeDataflowRewriteDecision(const DataflowRewriteDecision &decision);
 llvm::Expected<DataflowRewriteDecision>
 adoptDataflowRewriteDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes);
 
-/// Stable total order used only for deterministic invocation lineage.
 bool dataflowRewriteDecisionLess(const DataflowRewriteDecision &lhs,
                                  const DataflowRewriteDecision &rhs);
 
-/// Enumerates the finite decomposition domain for one exact actor. An empty
-/// result means that the actor is outside the closed pure fixed-vector
-/// elementwise domain.
+/// Enumerates every legal normalized decision in kinds 0 through 6 for one
+/// exact parent artifact, in canonical catalog order.
+llvm::Expected<std::vector<DataflowRewriteDecision>>
+enumerateFixedDataflowRewriteDecisions(const CanonicalDataflowArtifact &parent);
+
+/// Enumerates the finite kind-7 domain for one exact actor. The input carries
+/// the parent identity for resolution; emitted decisions retain only the
+/// parent-local ActorId owned by their lineage edge.
 llvm::Expected<std::vector<DataflowRewriteDecision>>
 enumerateElementwiseVectorDecompositionDecisions(
     const CanonicalDataflowArtifact &parent, ActorRef actor);
 
-/// Number of narrow compute actors materialized by one decision. Generators
-/// charge this exact amount against their resolved semantic work limit before
-/// constructing the candidate.
 llvm::Expected<std::uint64_t>
 dataflowRewriteExpansionCost(const CanonicalDataflowArtifact &parent,
                              const DataflowRewriteDecision &decision);
 
-/// Applies exactly one selected rewrite kind. Graph changes are made on a
-/// private module candidate and published only after native verification and
-/// whole-program `validateFinalizedProgram` succeed, so a rejected rewrite
-/// leaves the pass-visible module untouched.
-///
-/// This optional rewrite surface is separate from mandatory canonical
-/// finalization: the pass runs no canonicalizer and no finalization pipeline.
-llvm::Expected<std::unique_ptr<::mlir::Pass>>
-createDataflowRewritePass(DataflowRewriteKind kind);
-
-/// Applies one typed rewrite to a private clone and finalizes the complete
-/// result through the sole Canonical Dataflow finalizer. A no-op returns an
-/// empty optional; a changed result has a distinct immutable identity.
-llvm::Expected<std::optional<CanonicalDataflowArtifact>>
-materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
-                           DataflowRewriteKind kind);
-
+/// Applies one exact decision to a private clone and finalizes the complete
+/// result. A no-op returns an empty optional; a changed result has a distinct
+/// immutable identity.
 llvm::Expected<std::optional<CanonicalDataflowArtifact>>
 materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
                            const DataflowRewriteDecision &decision);
 
-/// Registers `--dataflow-rewrite` with the global pass registry so developer
-/// tools can drive it as `--dataflow-rewrite=kind=<value>`.
+/// Developer-only bulk driver for the three one-way legacy test surfaces. It
+/// composes exact per-match decisions and is not a lineage decision API.
+llvm::Expected<std::unique_ptr<::mlir::Pass>>
+createDataflowRewritePass(DataflowRewriteKind kind);
 void registerDataflowTransformsPasses();
 
 } // namespace dataflow

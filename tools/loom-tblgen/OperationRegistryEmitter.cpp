@@ -58,6 +58,7 @@ struct SchemaRow {
   StringRef selectorValue;
   StringRef activityDefinednessTransfer;
   bool supportsElementwiseVectorDecomposition;
+  bool isDeterministic;
 };
 
 struct FamilyRow {
@@ -188,7 +189,8 @@ readSchemas(const RecordKeeper &records,
          record->getValueAsInt("stableWireTag"), record->getName(),
          record->getValueAsString("opClass"), actorKind, semantics,
          selectorKind, selectorValue, activityTransfer,
-         record->getValueAsBit("supportsElementwiseVectorDecomposition")});
+         record->getValueAsBit("supportsElementwiseVectorDecomposition"),
+         record->getValueAsBit("isDeterministic")});
   }
   requireDenseDomain(rows, "operation schema");
   requireUniqueWireTags(rows, "operation schema");
@@ -287,6 +289,7 @@ void loom::tblgen::emitOperationSchemas(const RecordKeeper &records,
                  "Name, Id, WireTag, OpClass, ActorKind, SemanticsCase, "
                  "SelectorKind, SelectorValue, ElementwiseDecomposable");
   emitMacroGuard(os, "LOOM_OPERATION_ACTIVITY_TRANSFER", "Name, TransferKind");
+  emitMacroGuard(os, "LOOM_OPERATION_DETERMINISM", "Name, Deterministic");
   os << "\n";
 
   for (const WireVocabularyRow &row : cases)
@@ -304,11 +307,16 @@ void loom::tblgen::emitOperationSchemas(const RecordKeeper &records,
   for (const SchemaRow &row : schemas)
     os << "LOOM_OPERATION_ACTIVITY_TRANSFER(" << row.name << ", "
        << row.activityDefinednessTransfer << ")\n";
+  os << "\n";
+  for (const SchemaRow &row : schemas)
+    os << "LOOM_OPERATION_DETERMINISM(" << row.name << ", "
+       << (row.isDeterministic ? "true" : "false") << ")\n";
 
   os << "\n";
   emitMacroUndef(os, "LOOM_OPERATION_SEMANTICS_CASE");
   emitMacroUndef(os, "LOOM_OPERATION_SCHEMA");
   emitMacroUndef(os, "LOOM_OPERATION_ACTIVITY_TRANSFER");
+  emitMacroUndef(os, "LOOM_OPERATION_DETERMINISM");
 }
 
 void loom::tblgen::emitImplementationFamilies(const RecordKeeper &records,

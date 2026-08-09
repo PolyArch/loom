@@ -48,6 +48,10 @@ bool containsChannelType(mlir::Type type) {
       .wasInterrupted();
 }
 
+bool haveEquivalentCorrespondence(mlir::Value lhs, mlir::Value rhs) {
+  return dataflow::haveEquivalentDeterministicComputeCorrespondence(lhs, rhs);
+}
+
 bool isGraphMemoryInput(dataflow::GraphOp graph, mlir::Value value) {
   auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
   return argument && argument.getOwner() == &graph.getBody().front() &&
@@ -112,6 +116,13 @@ bool isResidualLLVMMemoryOperation(mlir::Operation *op) {
 
 using SelectorLanes = llvm::DenseMap<mlir::Value, unsigned>;
 
+SelectorLanes::iterator findEquivalentSelector(SelectorLanes &lanes,
+                                               mlir::Value selector) {
+  return llvm::find_if(lanes, [&](const auto &entry) {
+    return haveEquivalentCorrespondence(entry.first, selector);
+  });
+}
+
 /// A canonical memory actor publishes its remaining results together with
 /// `done` as one retirement event.
 bool isRetirementPublication(mlir::Value witness, mlir::Value prerequisite) {
@@ -138,12 +149,14 @@ bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
   std::optional<mlir::Value> insertedSelector;
   if (auto result = llvm::dyn_cast<mlir::OpResult>(witness)) {
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner())) {
-      auto [it, inserted] =
-          selectorLanes.try_emplace(demux.getSel(), result.getResultNumber());
-      if (!inserted && it->second != result.getResultNumber())
-        return false;
-      if (inserted)
+      auto it = findEquivalentSelector(selectorLanes, demux.getSel());
+      if (it != selectorLanes.end()) {
+        if (it->second != result.getResultNumber())
+          return false;
+      } else {
+        selectorLanes.try_emplace(demux.getSel(), result.getResultNumber());
         insertedSelector = demux.getSel();
+      }
     }
   }
   llvm::scope_exit selectorCleanup([&] {
@@ -163,11 +176,14 @@ bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
   };
   auto coversInLane = [&](mlir::Value value, mlir::Value selector,
                           unsigned lane) {
-    auto insertion = selectorLanes.try_emplace(selector, lane);
-    auto it = insertion.first;
-    bool inserted = insertion.second;
-    if (!inserted && it->second != lane)
-      return false;
+    auto it = findEquivalentSelector(selectorLanes, selector);
+    bool inserted = it == selectorLanes.end();
+    if (!inserted) {
+      if (it->second != lane)
+        return false;
+    } else {
+      selectorLanes.try_emplace(selector, lane);
+    }
     llvm::scope_exit cleanup([&] {
       if (inserted)
         selectorLanes.erase(selector);
@@ -180,7 +196,9 @@ bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
       mlir::Value phase = demux.getSel();
       llvm::DenseSet<mlir::Value> phaseVisited;
       while (phase && phaseVisited.insert(phase).second) {
-        if (phase == closeSignal)
+        if (haveEquivalentCorrespondence(phase, closeSignal) ||
+            dataflow::semantics::haveEquivalentOrderedCardinality(phase,
+                                                                  closeSignal))
           return true;
         mlir::Operation *phaseDef = phase.getDefiningOp();
         auto output =
@@ -372,6 +390,28 @@ struct CardinalityGraphIndex {
       if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(op))
         demuxesBySelector[demux.getSel()].push_back(demux);
     }
+  }
+
+  void collectCarries(mlir::Value phase,
+                      llvm::SmallVectorImpl<dataflow::CarryOp> &result) const {
+    for (const auto &entry : carriesByPhase)
+      if (haveEquivalentCorrespondence(entry.first, phase))
+        result.append(entry.second);
+  }
+
+  void
+  collectActivationInputs(mlir::Value phase,
+                          llvm::SmallVectorImpl<mlir::Value> &result) const {
+    for (const auto &entry : activationInputsByPhase)
+      if (haveEquivalentCorrespondence(entry.first, phase))
+        result.append(entry.second);
+  }
+
+  void collectDemuxes(mlir::Value selector,
+                      llvm::SmallVectorImpl<dataflow::DemuxOp> &result) const {
+    for (const auto &entry : demuxesBySelector)
+      if (haveEquivalentCorrespondence(entry.first, selector))
+        result.append(entry.second);
   }
 
   llvm::DenseMap<mlir::Value, llvm::SmallVector<dataflow::CarryOp, 4>>
@@ -669,13 +709,12 @@ private:
   bool isExactOneWhenSelected(mlir::Value value, mlir::Value selector,
                               unsigned lane) {
     GraphCardinalityAnalysis branch(graph, sharedState, causalDependencies);
-    auto demuxes = graphIndex->demuxesBySelector.find(selector);
-    if (demuxes != graphIndex->demuxesBySelector.end()) {
-      for (dataflow::DemuxOp demux : demuxes->second) {
-        if (lane >= demux.getOutputs().size() || !isExactOne(demux.getInput()))
-          continue;
-        branch.insertExactOneAssumption(demux.getOutputs()[lane]);
-      }
+    llvm::SmallVector<dataflow::DemuxOp, 4> demuxes;
+    graphIndex->collectDemuxes(selector, demuxes);
+    for (dataflow::DemuxOp demux : demuxes) {
+      if (lane >= demux.getOutputs().size() || !isExactOne(demux.getInput()))
+        continue;
+      branch.insertExactOneAssumption(demux.getOutputs()[lane]);
     }
     return branch.isExactOne(value);
   }
@@ -685,17 +724,16 @@ private:
                                         mlir::Value assumption,
                                         bool truePhaseOnly) {
     GraphCardinalityAnalysis branch(graph, sharedState, causalDependencies);
-    auto demuxes = graphIndex->demuxesBySelector.find(selector);
-    if (demuxes != graphIndex->demuxesBySelector.end()) {
-      for (dataflow::DemuxOp demux : demuxes->second) {
-        if (lane >= demux.getOutputs().size())
-          continue;
-        llvm::DenseSet<mlir::Value> visited;
-        if (!isAligned(demux.getInput(), phase, assumption, truePhaseOnly,
-                       visited))
-          continue;
-        branch.insertExactOneAssumption(demux.getOutputs()[lane]);
-      }
+    llvm::SmallVector<dataflow::DemuxOp, 4> demuxes;
+    graphIndex->collectDemuxes(selector, demuxes);
+    for (dataflow::DemuxOp demux : demuxes) {
+      if (lane >= demux.getOutputs().size())
+        continue;
+      llvm::DenseSet<mlir::Value> visited;
+      if (!isAligned(demux.getInput(), phase, assumption, truePhaseOnly,
+                     visited))
+        continue;
+      branch.insertExactOneAssumption(demux.getOutputs()[lane]);
     }
     return branch.isExactOne(value);
   }
@@ -708,7 +746,7 @@ private:
     if (!def)
       return false;
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
-      if (demux.getSel() == selector)
+      if (haveEquivalentCorrespondence(demux.getSel(), selector))
         return result.getResultNumber() == lane &&
                (isExactOne(demux.getInput()) ||
                 isGraphStreamInput(demux.getInput()));
@@ -783,7 +821,8 @@ private:
          isNestedGateCloseAligned(value, selector, lane, phase, assumption)))
       return true;
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
-      if (demux.getSel() == selector && result.getResultNumber() == lane) {
+      if (haveEquivalentCorrespondence(demux.getSel(), selector) &&
+          result.getResultNumber() == lane) {
         if (!isGraphStreamInput(demux.getInput())) {
           return isAligned(demux.getInput(), phase, assumption, truePhaseOnly,
                            visited);
@@ -879,17 +918,17 @@ private:
           !assumeExact(stream.getLimit()) || !assumeExact(stream.getStep()))
         return false;
     } else {
-      auto carries = graphIndex->carriesByPhase.find(childPhase);
-      if (carries == graphIndex->carriesByPhase.end() ||
-          carries->second.empty())
+      llvm::SmallVector<dataflow::CarryOp, 4> carries;
+      graphIndex->collectCarries(childPhase, carries);
+      if (carries.empty())
         return false;
     }
 
-    auto inputs = graphIndex->activationInputsByPhase.find(childPhase);
-    if (inputs != graphIndex->activationInputsByPhase.end())
-      for (mlir::Value input : inputs->second)
-        if (!assumeExact(input))
-          return false;
+    llvm::SmallVector<mlir::Value, 4> inputs;
+    graphIndex->collectActivationInputs(childPhase, inputs);
+    for (mlir::Value input : inputs)
+      if (!assumeExact(input))
+        return false;
     return true;
   }
 
@@ -900,7 +939,8 @@ private:
                                         mlir::Value parentAssumption,
                                         bool truePhaseOnly) {
     if (result.getResultNumber() != 0 || close.getOutputs().size() != 2 ||
-        close.getSel() == selector || close.getSel() == parentPhase)
+        haveEquivalentCorrespondence(close.getSel(), selector) ||
+        haveEquivalentCorrespondence(close.getSel(), parentPhase))
       return false;
 
     AlignmentQuery query{internedExactOneAssumptions(),
@@ -961,17 +1001,17 @@ private:
           !assumeExact(stream.getLimit()) || !assumeExact(stream.getStep()))
         return false;
     } else {
-      auto carries = graphIndex->carriesByPhase.find(childPhase);
-      if (carries == graphIndex->carriesByPhase.end() ||
-          carries->second.empty())
+      llvm::SmallVector<dataflow::CarryOp, 4> carries;
+      graphIndex->collectCarries(childPhase, carries);
+      if (carries.empty())
         return false;
     }
 
-    auto inputs = graphIndex->activationInputsByPhase.find(childPhase);
-    if (inputs != graphIndex->activationInputsByPhase.end())
-      for (mlir::Value input : inputs->second)
-        if (!assumeExact(input))
-          return false;
+    llvm::SmallVector<mlir::Value, 4> inputs;
+    graphIndex->collectActivationInputs(childPhase, inputs);
+    for (mlir::Value input : inputs)
+      if (!assumeExact(input))
+        return false;
     return true;
   }
 
@@ -979,7 +1019,7 @@ private:
                             mlir::Value parentPhase,
                             mlir::Value parentAssumption, bool truePhaseOnly) {
     if (result.getResultNumber() != 0 || close.getOutputs().size() != 2 ||
-        close.getSel() == parentPhase)
+        haveEquivalentCorrespondence(close.getSel(), parentPhase))
       return false;
 
     AlignmentQuery query{internedExactOneAssumptions(),
@@ -1042,9 +1082,10 @@ private:
     auto gate = dataflow::semantics::getGateCloseProjection(value);
     auto selectorGate = selector.getDefiningOp<dataflow::GateOp>();
     if (!gate || lane != 0 || !selectorGate ||
-        selector != selectorGate.getAfterCond() ||
-        gate->getBeforeCond() != parentPhase ||
-        selectorGate.getBeforeCond() != parentPhase)
+        !haveEquivalentCorrespondence(selector, selectorGate.getAfterCond()) ||
+        !haveEquivalentCorrespondence(gate->getBeforeCond(), parentPhase) ||
+        !haveEquivalentCorrespondence(selectorGate.getBeforeCond(),
+                                      parentPhase))
       return false;
 
     AlignmentQuery query{internedExactOneAssumptions(),
@@ -1071,7 +1112,7 @@ private:
                  bool truePhaseOnly, llvm::DenseSet<mlir::Value> &visited) {
     if (value == assumption || alignedCarryAssumptions.contains(value))
       return true;
-    if (value == phase)
+    if (haveEquivalentCorrespondence(value, phase))
       return !truePhaseOnly;
     auto cycleResult = [&] {
       return truePhaseOnly &&
@@ -1138,10 +1179,12 @@ private:
                phase == stream.getPhase();
       if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(def))
         return !truePhaseOnly && value == invariant.getOutput() &&
-               invariant.getCond() == phase && isExactOne(invariant.getInit());
+               haveEquivalentCorrespondence(invariant.getCond(), phase) &&
+               isExactOne(invariant.getInit());
       if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(def)) {
         if (truePhaseOnly || value != carry.getOutput() ||
-            carry.getCond() != phase || !isExactOne(carry.getInit()))
+            !haveEquivalentCorrespondence(carry.getCond(), phase) ||
+            !isExactOne(carry.getInit()))
           return false;
         bool inserted = insertAlignedCarryAssumption(carry.getOutput());
         if (!inserted)
@@ -1152,7 +1195,8 @@ private:
         return aligned;
       }
       if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def)) {
-        if (!truePhaseOnly || gate.getBeforeCond() != phase ||
+        if (!truePhaseOnly ||
+            !haveEquivalentCorrespondence(gate.getBeforeCond(), phase) ||
             (value != gate.getAfterCond() && value != gate.getAfterValue()))
           return false;
         return isAligned(gate.getBeforeValue(), phase, assumption,
@@ -1165,7 +1209,8 @@ private:
           return true;
         if (!truePhaseOnly)
           return false;
-        if (demux.getSel() != phase || result.getResultNumber() != 1)
+        if (!haveEquivalentCorrespondence(demux.getSel(), phase) ||
+            result.getResultNumber() != 1)
           return false;
         return isAligned(demux.getInput(), phase, assumption,
                          /*truePhaseOnly=*/false, visited);
@@ -1184,6 +1229,15 @@ private:
       if (dataflow::semantics::isVectorBoundaryTruePhaseOutputPayload(value,
                                                                       phase))
         return truePhaseOnly;
+      if (truePhaseOnly)
+        if (auto ownPhase =
+                dataflow::semantics::getVectorBoundaryOutputPhase(def);
+            ownPhase &&
+            dataflow::semantics::isVectorBoundaryTruePhaseOutputPayload(
+                value, *ownPhase) &&
+            dataflow::semantics::haveEquivalentOrderedCardinality(*ownPhase,
+                                                                  phase))
+          return true;
       if (dataflow::semantics::isStatelessOneTokenVectorBoundary(def)) {
         if (result.getResultNumber() != 0 || def->getNumOperands() != 1)
           return false;
@@ -1222,10 +1276,9 @@ private:
   void
   collectAlignedCarries(mlir::Value phase,
                         llvm::SmallVectorImpl<dataflow::CarryOp> &carries) {
-    auto phaseCarries = graphIndex->carriesByPhase.find(phase);
-    if (phaseCarries == graphIndex->carriesByPhase.end())
-      return;
-    for (dataflow::CarryOp carry : phaseCarries->second)
+    llvm::SmallVector<dataflow::CarryOp, 4> phaseCarries;
+    graphIndex->collectCarries(phase, phaseCarries);
+    for (dataflow::CarryOp carry : phaseCarries)
       if (isExactOne(carry.getInit()))
         carries.push_back(carry);
   }

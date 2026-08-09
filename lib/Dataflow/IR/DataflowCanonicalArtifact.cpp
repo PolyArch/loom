@@ -171,8 +171,7 @@ readMaterializedId(const detail::EntityCarrier &carrier) {
 
 llvm::Expected<CanonicalDataflowArtifact>
 finalizeCanonicalDataflow(ModuleOp source) {
-  auto finalized =
-      finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(source, {});
+  auto finalized = finalizeCanonicalDataflowWithTrackedEntities(source, {}, {});
   if (!finalized)
     return finalized.takeError();
   return std::move(finalized->artifact);
@@ -181,11 +180,19 @@ finalizeCanonicalDataflow(ModuleOp source) {
 llvm::Expected<FinalizedCanonicalDataflowProjection>
 finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
     ModuleOp source, ArrayRef<Operation *> trackedStaticGraphLaunches) {
+  return finalizeCanonicalDataflowWithTrackedEntities(
+      source, trackedStaticGraphLaunches, {});
+}
+
+llvm::Expected<FinalizedCanonicalDataflowProjection>
+finalizeCanonicalDataflowWithTrackedEntities(
+    ModuleOp source, ArrayRef<Operation *> trackedStaticGraphLaunches,
+    ArrayRef<Operation *> trackedActors) {
   IRMapping mapping;
   OwningOpRef<ModuleOp> clone(
       cast<ModuleOp>(source.getOperation()->clone(mapping)));
-  SmallVector<Operation *> tracked;
-  tracked.reserve(trackedStaticGraphLaunches.size());
+  SmallVector<Operation *> trackedLaunches;
+  trackedLaunches.reserve(trackedStaticGraphLaunches.size());
   for (Operation *operation : trackedStaticGraphLaunches) {
     if (!operation || !isa<GraphLaunchOp>(operation) ||
         operation->getParentOfType<ModuleOp>() != source)
@@ -193,7 +200,19 @@ finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
     Operation *mapped = mapping.lookupOrNull(operation);
     if (!mapped || !isa<GraphLaunchOp>(mapped))
       return invalid("canonical dataflow: tracked launch was not cloned");
-    tracked.push_back(mapped);
+    trackedLaunches.push_back(mapped);
+  }
+  SmallVector<Operation *> trackedActorOperations;
+  trackedActorOperations.reserve(trackedActors.size());
+  for (Operation *operation : trackedActors) {
+    if (!operation || !isCanonicalDataflowActor(operation) ||
+        !operation->getParentOfType<GraphOp>() ||
+        operation->getParentOfType<ModuleOp>() != source)
+      return invalid("canonical dataflow: tracked actor has the wrong owner");
+    Operation *mapped = mapping.lookupOrNull(operation);
+    if (!mapped || !isCanonicalDataflowActor(mapped))
+      return invalid("canonical dataflow: tracked actor was not cloned");
+    trackedActorOperations.push_back(mapped);
   }
 
   stripDerivedIds(clone.get());
@@ -212,14 +231,29 @@ finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
   clone->walk([&](GraphLaunchOp launch) {
     launchOrdinal[launch.getOperation()] = nextLaunchOrdinal++;
   });
-  SmallVector<unsigned> trackedOrdinals;
-  trackedOrdinals.reserve(tracked.size());
-  for (Operation *operation : tracked) {
+  SmallVector<unsigned> trackedLaunchOrdinals;
+  trackedLaunchOrdinals.reserve(trackedLaunches.size());
+  for (Operation *operation : trackedLaunches) {
     auto found = launchOrdinal.find(operation);
     if (found == launchOrdinal.end())
       return invalid(
           "canonical dataflow: tracked launch is not live after pruning");
-    trackedOrdinals.push_back(found->second);
+    trackedLaunchOrdinals.push_back(found->second);
+  }
+  llvm::DenseMap<Operation *, unsigned> actorOrdinal;
+  unsigned nextActorOrdinal = 0;
+  clone->walk([&](Operation *operation) {
+    if (isCanonicalDataflowActor(operation))
+      actorOrdinal[operation] = nextActorOrdinal++;
+  });
+  SmallVector<unsigned> trackedActorOrdinals;
+  trackedActorOrdinals.reserve(trackedActorOperations.size());
+  for (Operation *operation : trackedActorOperations) {
+    auto found = actorOrdinal.find(operation);
+    if (found == actorOrdinal.end())
+      return invalid(
+          "canonical dataflow: tracked actor is not live after pruning");
+    trackedActorOrdinals.push_back(found->second);
   }
 
   clone->walk([&](Operation *operation) {
@@ -238,13 +272,26 @@ finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
   normalized->module->walk([&](GraphLaunchOp launch) {
     normalizedLaunches.push_back(launch.getOperation());
   });
-  tracked.clear();
-  tracked.reserve(trackedOrdinals.size());
-  for (unsigned ordinal : trackedOrdinals) {
+  trackedLaunches.clear();
+  trackedLaunches.reserve(trackedLaunchOrdinals.size());
+  for (unsigned ordinal : trackedLaunchOrdinals) {
     if (ordinal >= normalizedLaunches.size())
       return invalid(
           "canonical dataflow: tracked launch was lost during normalization");
-    tracked.push_back(normalizedLaunches[ordinal]);
+    trackedLaunches.push_back(normalizedLaunches[ordinal]);
+  }
+  SmallVector<Operation *> normalizedActors;
+  normalized->module->walk([&](Operation *operation) {
+    if (isCanonicalDataflowActor(operation))
+      normalizedActors.push_back(operation);
+  });
+  trackedActorOperations.clear();
+  trackedActorOperations.reserve(trackedActorOrdinals.size());
+  for (unsigned ordinal : trackedActorOrdinals) {
+    if (ordinal >= normalizedActors.size())
+      return invalid(
+          "canonical dataflow: tracked actor was lost during normalization");
+    trackedActorOperations.push_back(normalizedActors[ordinal]);
   }
 
   llvm::Expected<detail::CanonicalLabeling> labeling =
@@ -274,8 +321,8 @@ finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
     return view.takeError();
 
   std::vector<StaticGraphLaunchRef> trackedReferences;
-  trackedReferences.reserve(tracked.size());
-  for (Operation *operation : tracked) {
+  trackedReferences.reserve(trackedLaunches.size());
+  for (Operation *operation : trackedLaunches) {
     auto found =
         llvm::find_if(view->staticGraphLaunches(),
                       [&](const CanonicalStaticGraphLaunchView &launch) {
@@ -286,12 +333,24 @@ finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
           "canonical dataflow: tracked launch is absent after finalization");
     trackedReferences.push_back(found->ref);
   }
+  std::vector<ActorRef> trackedActorReferences;
+  trackedActorReferences.reserve(trackedActorOperations.size());
+  for (Operation *operation : trackedActorOperations) {
+    auto found =
+        llvm::find_if(view->actors(), [&](const CanonicalActorView &actor) {
+          return actor.op == operation;
+        });
+    if (found == view->actors().end())
+      return invalid(
+          "canonical dataflow: tracked actor is absent after finalization");
+    trackedActorReferences.push_back(found->ref);
+  }
 
   return FinalizedCanonicalDataflowProjection{
       CanonicalDataflowArtifact(identity, std::move(normalized->module),
                                 std::move(bytes), std::move(*view),
                                 std::move(normalized->context)),
-      std::move(trackedReferences)};
+      std::move(trackedReferences), std::move(trackedActorReferences)};
 }
 
 //===----------------------------------------------------------------------===//

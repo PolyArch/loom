@@ -15,6 +15,8 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <iterator>
+#include <limits>
 #include <optional>
 #include <set>
 #include <utility>
@@ -51,12 +53,6 @@ constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 1> workUnits = {{
     {CandidateGeneratorWorkUnitRef(0), "rewrite_expansion"},
 }};
 
-constexpr std::array<dataflow::DataflowRewriteKind, 3> rewriteKinds = {{
-    dataflow::DataflowRewriteKind::PackUnpackRoundTripEliminate,
-    dataflow::DataflowRewriteKind::ParallelizeSerializeRoundTripEliminate,
-    dataflow::DataflowRewriteKind::ActivationPreservingConstantFold,
-}};
-
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "dataflow_rewrite_generator_invalid: " +
@@ -87,6 +83,8 @@ llvm::Expected<std::uint64_t> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     return invalid("config has trailing bytes");
   if (limit == 0)
     return invalid("scope expansion limit must be positive");
+  if (limit > std::numeric_limits<std::uint32_t>::max())
+    return invalid("scope expansion limit exceeds the uint32 owner domain");
   return limit;
 }
 
@@ -113,32 +111,21 @@ validateDecisionPayload(llvm::ArrayRef<std::uint8_t> bytes,
           dataflow::canonicalDataflowSchema.version)
     return invalid(
         "rewrite decision does not have one exact Canonical Dataflow parent");
-  if (const auto *chunk =
-          std::get_if<dataflow::ElementwiseVectorChunkRewrite>(&*adopted)) {
-    if (chunk->actor.artifact != parents.front().artifact)
-      return invalid("chunk decision does not belong to its exact parent");
-  } else if (const auto *scalar =
-                 std::get_if<dataflow::ElementwiseVectorScalarizeRewrite>(
-                     &*adopted)) {
-    if (scalar->actor.artifact != parents.front().artifact)
-      return invalid("scalarization decision does not belong to its exact "
-                     "parent");
-  }
   auto parent = dataflow::importCanonicalDataflow(parents.front(), store);
   if (!parent)
     return parent.takeError();
-  if (!std::holds_alternative<dataflow::DataflowRewriteKind>(*adopted)) {
-    auto cost = dataflow::dataflowRewriteExpansionCost(*parent, *adopted);
-    if (!cost)
-      return cost.takeError();
-  }
+  auto materialized = dataflow::materializeDataflowRewrite(*parent, *adopted);
+  if (!materialized)
+    return materialized.takeError();
+  if (!*materialized)
+    return invalid("rewrite lineage payload is an identity decision");
   return llvm::Error::success();
 }
 
 const CandidateGeneratorDescriptor descriptor{
     dataflowRewriteCandidateGeneratorKind,
     "compiler.dataflow_rewrite",
-    "loom.compiler.dataflow_rewrite.generator.v2",
+    "loom.compiler.dataflow_rewrite.generator.v3",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -158,6 +145,18 @@ struct SearchCandidate final {
   ArtifactRootReference reference;
   dataflow::CanonicalDataflowArtifact artifact;
 };
+
+struct AttemptedDecisionKey final {
+  ArtifactIdentity parent;
+  std::vector<std::uint8_t> payload;
+};
+
+bool attemptedDecisionLess(const AttemptedDecisionKey &lhs,
+                           const AttemptedDecisionKey &rhs) {
+  if (lhs.parent != rhs.parent)
+    return lhs.parent.bytes() < rhs.parent.bytes();
+  return lhs.payload < rhs.payload;
+}
 
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
@@ -194,6 +193,11 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       &artifactRootReferenceLess);
   std::vector<CandidateGeneratorLineageEdge> generatedLineageEdges;
   std::deque<SearchCandidate> frontier;
+  // This typed set is bound to dataflowRewriteDecisionSchemaBytes(), so the
+  // schema identity and version in the normative attempted key are invariant
+  // rather than copied into every entry.
+  std::set<AttemptedDecisionKey, decltype(&attemptedDecisionLess)> attempted(
+      &attemptedDecisionLess);
   std::uint64_t expansions = 0;
   bool semanticLimitReached = false;
 
@@ -206,8 +210,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     if (!miss)
       return miss.takeError();
     if (!*miss) {
-      outputs.push_back(std::move(reference));
-      return llvm::Error::success();
+      outputs.push_back(reference);
     }
     frontier.push_back(
         SearchCandidate{std::move(reference), std::move(candidate)});
@@ -218,6 +221,13 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       [&](const ArtifactRootReference &parent,
           const dataflow::DataflowRewriteDecision &decision,
           dataflow::CanonicalDataflowArtifact child) -> llvm::Error {
+    ArtifactRootReference reference{
+        dataflow::canonicalDataflowSchema.identity.str(),
+        dataflow::canonicalDataflowSchema.version, child.identity()};
+    // The attempt has already consumed its logical work slot. An identity
+    // reached through another lineage is neither republished nor re-enqueued.
+    if (seen.find(reference) != seen.end())
+      return llvm::Error::success();
     auto published = dataflow::publishCanonicalDataflow(child, store);
     if (!published)
       return published.takeError();
@@ -239,43 +249,15 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     return classify(std::move(*published), std::move(child));
   };
 
-  for (const ArtifactRootReference &reference :
-       inputBindings[CanonicalDataflowProgramsInput].artifacts) {
+  std::vector<ArtifactRootReference> orderedInputs =
+      inputBindings[CanonicalDataflowProgramsInput].artifacts;
+  llvm::sort(orderedInputs, artifactRootReferenceLess);
+  for (const ArtifactRootReference &reference : orderedInputs) {
     auto parent = dataflow::importCanonicalDataflow(reference, store);
     if (!parent)
       return parent.takeError();
-
-    // Fixed catalog rules are independent one-hop alternatives from the exact
-    // input. Their children become seeds for the same vector decomposition
-    // search instead of being discarded merely because the first rewrite is
-    // not yet Fabric-admissible.
-    std::vector<std::pair<dataflow::DataflowRewriteDecision,
-                          dataflow::CanonicalDataflowArtifact>>
-        fixedChildren;
-
-    for (dataflow::DataflowRewriteKind kind : rewriteKinds) {
-      if (expansions == config->scopeExpansionLimit()) {
-        semanticLimitReached = true;
-        break;
-      }
-      ++expansions;
-      auto child = dataflow::materializeDataflowRewrite(*parent, kind);
-      if (!child)
-        return child.takeError();
-      if (!*child)
-        continue;
-      fixedChildren.emplace_back(dataflow::DataflowRewriteDecision{kind},
-                                 std::move(**child));
-    }
-    if (semanticLimitReached)
-      break;
-
     if (llvm::Error error = classify(reference, std::move(*parent)))
       return std::move(error);
-    for (auto &[decision, child] : fixedChildren)
-      if (llvm::Error error =
-              publishChild(reference, decision, std::move(child)))
-        return std::move(error);
   }
 
   while (!semanticLimitReached && !frontier.empty()) {
@@ -284,14 +266,34 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     auto miss = capabilities.firstInadmissibleActor(parent.artifact);
     if (!miss)
       return miss.takeError();
-    if (!*miss)
-      return invalid("admitted candidate remained in the rewrite frontier");
+    auto fixed =
+        dataflow::enumerateFixedDataflowRewriteDecisions(parent.artifact);
+    if (!fixed)
+      return fixed.takeError();
+    std::vector<dataflow::DataflowRewriteDecision> decisions =
+        std::move(*fixed);
+    if (*miss) {
+      auto vectorDecisions =
+          dataflow::enumerateElementwiseVectorDecompositionDecisions(
+              parent.artifact, (*miss)->actor);
+      if (!vectorDecisions)
+        return vectorDecisions.takeError();
+      decisions.insert(decisions.end(),
+                       std::make_move_iterator(vectorDecisions->begin()),
+                       std::make_move_iterator(vectorDecisions->end()));
+    }
+    if (!llvm::is_sorted(decisions, dataflow::dataflowRewriteDecisionLess))
+      return invalid("rewrite decision domain is not canonically ordered");
 
-    auto decisions = dataflow::enumerateElementwiseVectorDecompositionDecisions(
-        parent.artifact, (*miss)->actor);
-    if (!decisions)
-      return decisions.takeError();
-    for (const dataflow::DataflowRewriteDecision &decision : *decisions) {
+    for (const dataflow::DataflowRewriteDecision &decision : decisions) {
+      auto payload = dataflow::encodeDataflowRewriteDecision(decision);
+      if (!payload)
+        return payload.takeError();
+      if (!attempted
+               .insert(AttemptedDecisionKey{parent.artifact.identity(),
+                                            std::move(*payload)})
+               .second)
+        continue;
       auto cost =
           dataflow::dataflowRewriteExpansionCost(parent.artifact, decision);
       if (!cost)
@@ -306,7 +308,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       if (!child)
         return child.takeError();
       if (!*child)
-        return invalid("typed vector decomposition produced an identity");
+        continue;
       if (llvm::Error error =
               publishChild(parent.reference, decision, std::move(**child)))
         return std::move(error);
@@ -337,14 +339,14 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
             std::move(retainedLineageEdges)},
         {{CandidateGeneratorWorkUnitRef(0), expansions, expansions}}};
   return CandidateGeneratorProviderResult{
-      CompletedCandidateGeneratorResult{
-          {std::move(output)},
-          std::move(retainedLineageEdges)},
+      CompletedCandidateGeneratorResult{{std::move(output)},
+                                        std::move(retainedLineageEdges)},
       {{CandidateGeneratorWorkUnitRef(0), expansions, expansions}}};
 }
 
 const CandidateGeneratorProvider provider{
-    descriptor.reference(), CandidateGeneratorInProcessProvider{invokeProvider}};
+    descriptor.reference(),
+    CandidateGeneratorInProcessProvider{invokeProvider}};
 
 } // namespace
 

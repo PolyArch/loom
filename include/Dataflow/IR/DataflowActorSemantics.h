@@ -579,6 +579,14 @@ mlir::ValueRange getVectorBoundaryTruePhaseInputPayloads(mlir::Operation *op);
 bool isVectorBoundaryTruePhaseOutputPayload(mlir::Value value,
                                             mlir::Value phase);
 
+/// Whether two distinct vector-boundary output phases have the same ordered
+/// cardinality by construction. Parallelizers share this relation when their
+/// scalar phase and fixed width agree. Serializers share it when their mask,
+/// group phase, and fixed width agree. Payload element types are irrelevant to
+/// the ordering relation.
+bool haveEquivalentOrderedCardinality(mlir::Value lhsPhase,
+                                      mlir::Value rhsPhase);
+
 std::optional<mlir::Value> getStreamActivation(dataflow::StreamOp stream);
 
 std::optional<mlir::Value> getCloseActivation(mlir::Value value);

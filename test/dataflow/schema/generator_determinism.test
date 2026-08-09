@@ -36,6 +36,9 @@
 # SCHEMAS: LOOM_OPERATION_ACTIVITY_TRANSFER(AlphaSchema, Missing)
 # SCHEMAS-NEXT: LOOM_OPERATION_ACTIVITY_TRANSFER(BetaSchema, Missing)
 # SCHEMAS-NEXT: LOOM_OPERATION_ACTIVITY_TRANSFER(GammaSchema, Missing)
+# SCHEMAS: LOOM_OPERATION_DETERMINISM(AlphaSchema, true)
+# SCHEMAS-NEXT: LOOM_OPERATION_DETERMINISM(BetaSchema, true)
+# SCHEMAS-NEXT: LOOM_OPERATION_DETERMINISM(GammaSchema, true)
 
 # A family descriptor carries exactly four fields: its stable id, its admitted
 # schemas, its capability parameter schema, and its typed admission provider.

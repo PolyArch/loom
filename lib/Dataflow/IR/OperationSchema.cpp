@@ -26,7 +26,10 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Target/LLVMIR/TypeToLLVM.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -697,6 +700,102 @@ bool dataflow::supportsElementwiseVectorDecomposition(
     OperationSchemaId schema) {
   return schemaTable()[static_cast<std::size_t>(schema)]
       .supportsElementwiseVectorDecomposition;
+}
+
+bool dataflow::isDeterministic(OperationSchemaId schema) {
+  switch (schema) {
+#define LOOM_OPERATION_DETERMINISM(Name, Deterministic)                        \
+  case OperationSchemaId::Name:                                                \
+    return Deterministic;
+#include "Dataflow/IR/OperationSchemas.inc"
+  }
+  llvm_unreachable("unknown operation schema");
+}
+
+namespace {
+
+bool haveEquivalentComputeShape(Value lhs, Value rhs) {
+  if (lhs == rhs)
+    return true;
+  auto lhsResult = llvm::dyn_cast<OpResult>(lhs);
+  auto rhsResult = llvm::dyn_cast<OpResult>(rhs);
+  if (!lhsResult || !rhsResult || lhsResult.getResultNumber() != 0 ||
+      rhsResult.getResultNumber() != 0)
+    return false;
+  Operation *lhsOp = lhsResult.getOwner();
+  Operation *rhsOp = rhsResult.getOwner();
+  if (lhsOp->getNumResults() != 1 || rhsOp->getNumResults() != 1 ||
+      lhsOp->getNumRegions() != 0 || rhsOp->getNumRegions() != 0 ||
+      lhsOp->getNumSuccessors() != 0 || rhsOp->getNumSuccessors() != 0 ||
+      !mlir::isPure(lhsOp) || !mlir::isPure(rhsOp) ||
+      lhsOp->getNumOperands() != rhsOp->getNumOperands())
+    return false;
+  std::optional<dataflow::OperationSchemaId> lhsSchema =
+      dataflow::operationSchemaOf(lhsOp);
+  std::optional<dataflow::OperationSchemaId> rhsSchema =
+      dataflow::operationSchemaOf(rhsOp);
+  if (!lhsSchema || lhsSchema != rhsSchema ||
+      dataflow::actorKind(*lhsSchema) !=
+          dataflow::CanonicalDataflowActorKind::Compute ||
+      !dataflow::isDeterministic(*lhsSchema))
+    return false;
+  auto lhsProjection = dataflow::projectRegisteredActorSchemaProjection(lhsOp);
+  auto rhsProjection = dataflow::projectRegisteredActorSchemaProjection(rhsOp);
+  if (!lhsProjection || !rhsProjection) {
+    if (!lhsProjection)
+      llvm::consumeError(lhsProjection.takeError());
+    if (!rhsProjection)
+      llvm::consumeError(rhsProjection.takeError());
+    return false;
+  }
+  return *lhsProjection == *rhsProjection;
+}
+
+using Correspondence = std::pair<Value, Value>;
+
+bool haveEquivalentComputeCorrespondence(
+    Value lhs, Value rhs, llvm::DenseMap<Correspondence, bool> &known,
+    llvm::DenseSet<Correspondence> &active) {
+  if (lhs == rhs)
+    return true;
+  Correspondence query{lhs, rhs};
+  if (auto found = known.find(query); found != known.end())
+    return found->second;
+  if (!active.insert(query).second)
+    return false;
+
+  bool equivalent = haveEquivalentComputeShape(lhs, rhs);
+  if (equivalent) {
+    Operation *lhsOp = cast<OpResult>(lhs).getOwner();
+    Operation *rhsOp = cast<OpResult>(rhs).getOwner();
+    equivalent = llvm::all_of(
+        llvm::zip_equal(lhsOp->getOperands(), rhsOp->getOperands()),
+        [&](auto operands) {
+          return haveEquivalentComputeCorrespondence(
+              std::get<0>(operands), std::get<1>(operands), known, active);
+        });
+  }
+  active.erase(query);
+  known.try_emplace(query, equivalent);
+  return equivalent;
+}
+
+} // namespace
+
+bool dataflow::haveIdenticalDeterministicComputeInstance(Value lhs, Value rhs) {
+  if (lhs == rhs)
+    return true;
+  if (!haveEquivalentComputeShape(lhs, rhs))
+    return false;
+  return llvm::equal(cast<OpResult>(lhs).getOwner()->getOperands(),
+                     cast<OpResult>(rhs).getOwner()->getOperands());
+}
+
+bool dataflow::haveEquivalentDeterministicComputeCorrespondence(Value lhs,
+                                                                Value rhs) {
+  llvm::DenseMap<Correspondence, bool> known;
+  llvm::DenseSet<Correspondence> active;
+  return haveEquivalentComputeCorrespondence(lhs, rhs, known, active);
 }
 
 llvm::Error

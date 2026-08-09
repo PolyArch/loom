@@ -137,4 +137,26 @@ module {
     dataflow.graph.return values(%retired#1, %retired#2 : i96, i96)
         streams() memories() complete(%retired#0 : none)
   }
+
+  // The inner pack would collapse an unproven exceptional state into an
+  // ordinary packed value. Activity definedness is the legality owner, so the
+  // developer bulk driver must preserve both adapters just like the anchored
+  // decision enumerator does.
+  // OPT-LABEL: dataflow.graph private @unproven_activity
+  // OPT: %[[UNPROVEN:[^ ]*]] = arith.divui
+  // OPT: %[[PACKED:[^ ]*]] = dataflow.pack %[[UNPROVEN]]
+  // OPT: dataflow.unpack %[[PACKED]]
+  dataflow.graph private @unproven_activity(
+      %start: none, %lhs: vector<3xi8>, %rhs: vector<3xi8>)
+      -> vector<3xi8>
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %unproven = arith.divui %lhs, %rhs : vector<3xi8>
+    %packed = dataflow.pack %unproven : vector<3xi8> -> i24
+    %restored = dataflow.unpack %packed : i24 -> vector<3xi8>
+    %retired:2 = dataflow.sync %start, %restored
+        : (none, vector<3xi8>) -> (none, vector<3xi8>)
+    dataflow.graph.return values(%retired#1 : vector<3xi8>)
+        streams() memories() complete(%retired#0 : none)
+  }
 }

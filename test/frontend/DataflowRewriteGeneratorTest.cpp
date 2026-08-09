@@ -12,6 +12,7 @@
 #include "Dataflow/Transforms/DataflowRewrite.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -24,10 +25,14 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/ThreadPool.h"
+#include "llvm/Support/Threading.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
 #include <cstdlib>
+#include <optional>
+#include <string>
 #include <system_error>
 #include <type_traits>
 #include <utility>
@@ -37,7 +42,7 @@ namespace {
 
 static_assert(std::is_same_v<decltype(dataflow::ElementwiseVectorChunkRewrite::
                                           leadingBlocksPerChunk),
-                             std::int64_t>);
+                             std::uint64_t>);
 
 [[noreturn]] void fail(const std::string &message) {
   llvm::errs() << "dataflowRewriteGenerator: " << message << '\n';
@@ -53,7 +58,8 @@ template <typename T> T take(llvm::Expected<T> value) {
 mlir::MLIRContext &context() {
   static mlir::MLIRContext *result = [] {
     mlir::DialectRegistry registry;
-    registry.insert<dataflow::DataflowDialect, mlir::LLVM::LLVMDialect>();
+    registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect,
+                    mlir::LLVM::LLVMDialect>();
     auto *created =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     created->loadAllAvailableDialects();
@@ -81,6 +87,35 @@ module {
                                                         &context());
   if (!module)
     fail("cannot parse the canonical rewrite fixture");
+  return take(dataflow::finalizeCanonicalDataflow(module.get()));
+}
+
+dataflow::CanonicalDataflowArtifact repeatedGraphLaunchProgram() {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.graph private @work(%start: none) -> ()
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    dataflow.graph.return %start : none
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    %first = dataflow.graph.launch @work deps(%ctrl) values()
+        stream_inputs() memories() stream_outputs() : (none) -> none
+    %second = dataflow.graph.launch @work deps(%first) values()
+        stream_inputs() memories() stream_outputs() : (none) -> none
+    dataflow.thread.yield %second : none
+  }
+  func.func private @host() {
+    %token = dataflow.thread.launch @worker()
+        : () -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail("cannot parse the inverse-cycle fixture");
   return take(dataflow::finalizeCanonicalDataflow(module.get()));
 }
 
@@ -456,6 +491,143 @@ void exactParentAndOneAtomicChildArePublished() {
     fail("cannot remove ArtifactStore directory: " + cleanup.message());
 }
 
+void inverseCycleChargesWorkWithoutPublishingCyclicLineage() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-dataflow-rewrite-inverse-cycle", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code createError = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + createError.message());
+  const loom::BlobStore blobs(blobPath);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  auto parentReference = take(
+      dataflow::publishCanonicalDataflow(repeatedGraphLaunchProgram(), store));
+
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.dataflowRewrite.scopeExpansionLimit = 8;
+  auto config = take(
+      loom::dse::projectResolvedDataflowRewriteGeneratorConfigView(resolved));
+  auto inputs = take(loom::dse::bindDataflowRewriteCandidateGeneratorInputs(
+      {parentReference}, design.roots().front().reference()));
+  auto binding =
+      take(loom::dse::resolveDataflowRewriteCandidateGeneratorBinding(config));
+  auto outcome =
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  auto *completed = std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+      &outcome.outcome);
+  if (!completed || completed->outputBindings.size() != 1 ||
+      completed->outputBindings.front().artifacts.size() != 2 ||
+      completed->lineageEdges.size() != 1)
+    fail("inverse rewrite cycle did not terminate at two unique artifacts");
+  if (outcome.workSummary.size() != 1 ||
+      outcome.workSummary.front().planned != 2 ||
+      outcome.workSummary.front().consumed != 2)
+    fail("inverse rewrite attempt did not retain its exact work charge");
+  if (completed->lineageEdges.front().output == parentReference)
+    fail("inverse rewrite published a cyclic edge back to the input");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail("cannot remove ArtifactStore directory: " + cleanup.message());
+}
+
+bool sameOutputBindings(
+    llvm::ArrayRef<loom::dse::CandidateGeneratorOutputBinding> lhs,
+    llvm::ArrayRef<loom::dse::CandidateGeneratorOutputBinding> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (auto [left, right] : llvm::zip_equal(lhs, rhs))
+    if (left.slot != right.slot || left.artifacts != right.artifacts)
+      return false;
+  return true;
+}
+
+bool sameFormalResult(const loom::dse::CandidateGeneratorProviderResult &lhs,
+                      const loom::dse::CandidateGeneratorProviderResult &rhs) {
+  if (lhs.workSummary != rhs.workSummary ||
+      lhs.outcome.index() != rhs.outcome.index())
+    return false;
+  if (const auto *left =
+          std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+              &lhs.outcome)) {
+    const auto &right =
+        std::get<loom::dse::CompletedCandidateGeneratorResult>(rhs.outcome);
+    return sameOutputBindings(left->outputBindings, right.outputBindings) &&
+           left->lineageEdges == right.lineageEdges;
+  }
+  const auto &left =
+      std::get<loom::dse::IncompleteCandidateGeneratorResult>(lhs.outcome);
+  const auto &right =
+      std::get<loom::dse::IncompleteCandidateGeneratorResult>(rhs.outcome);
+  return left.reason == right.reason &&
+         sameOutputBindings(left.retainedOutputBindings,
+                            right.retainedOutputBindings) &&
+         left.lineageEdges == right.lineageEdges;
+}
+
+void workerSchedulingPreservesFormalResult() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-dataflow-rewrite-worker-invariance", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code createError = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + createError.message());
+  const loom::BlobStore blobs(blobPath);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  auto parentReference = take(
+      dataflow::publishCanonicalDataflow(repeatedGraphLaunchProgram(), store));
+
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.dataflowRewrite.scopeExpansionLimit = 8;
+  auto config = take(
+      loom::dse::projectResolvedDataflowRewriteGeneratorConfigView(resolved));
+  auto inputs = take(loom::dse::bindDataflowRewriteCandidateGeneratorInputs(
+      {parentReference}, design.roots().front().reference()));
+  auto binding =
+      take(loom::dse::resolveDataflowRewriteCandidateGeneratorBinding(config));
+  auto expected =
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+
+  for (unsigned workerCount : {2U, 4U}) {
+    std::vector<std::optional<loom::dse::CandidateGeneratorProviderResult>>
+        results(workerCount);
+    std::vector<std::string> errors(workerCount);
+    llvm::DefaultThreadPool pool(
+        llvm::heavyweight_hardware_concurrency(workerCount));
+    for (unsigned worker = 0; worker != workerCount; ++worker)
+      pool.async([&, worker] {
+        auto result =
+            loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs);
+        if (!result) {
+          errors[worker] = llvm::toString(result.takeError());
+          return;
+        }
+        results[worker].emplace(std::move(*result));
+      });
+    pool.wait();
+    for (unsigned worker = 0; worker != workerCount; ++worker) {
+      if (!errors[worker].empty())
+        fail("parallel generator invocation failed: " + errors[worker]);
+      if (!results[worker] || !sameFormalResult(expected, *results[worker]))
+        fail("worker scheduling changed Dataflow frontier, order, or work");
+    }
+  }
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail("cannot remove ArtifactStore directory: " + cleanup.message());
+}
+
 void configRoundTripsAndRejectsZeroLimit() {
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.dataflowRewrite.scopeExpansionLimit = 7;
@@ -512,7 +684,9 @@ void configRoundTripsAndRejectsZeroLimit() {
 void invalidInMemoryDecisionFailsClosed() {
   auto parent = roundTripProgram();
   const dataflow::DataflowRewriteDecision decision =
-      static_cast<dataflow::DataflowRewriteKind>(99);
+      dataflow::SyncRendezvousRewrite{
+          dataflow::ActorId(0),
+          static_cast<dataflow::SyncRendezvousDirection>(99)};
   auto encoded = dataflow::encodeDataflowRewriteDecision(decision);
   if (encoded)
     fail("Dataflow encoder accepted an unknown in-memory rewrite kind");
@@ -540,8 +714,7 @@ void lineageCodecRejectsAnOutOfRangeActor() {
   auto parentReference =
       take(dataflow::publishCanonicalDataflow(parent, store));
   const dataflow::DataflowRewriteDecision decision =
-      dataflow::ElementwiseVectorScalarizeRewrite{
-          dataflow::ActorRef{parent.identity(), dataflow::ActorId(999999)}};
+      dataflow::ElementwiseVectorScalarizeRewrite{dataflow::ActorId(999999)};
   auto encoded = take(dataflow::encodeDataflowRewriteDecision(decision));
   const auto *contract =
       loom::dse::dataflowRewriteCandidateGeneratorDescriptor()
@@ -706,9 +879,9 @@ void semanticLimitNeverPromotesAnExploredPrefix() {
       take(dataflow::publishCanonicalDataflow(parent, store));
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
-  // Three fixed rule probes plus the two narrow actors of the first chunk
-  // candidate consume the complete limit. That child is admissible, but the
-  // remaining typed decisions have not been explored.
+  // The first chunk costs two narrow actors. The next canonical chunk costs
+  // four and cannot fit the remaining budget, so the admitted first child is
+  // retained only as an incomplete prefix.
   resolved.dse.dataflowRewrite.scopeExpansionLimit = 5;
   auto config = take(
       loom::dse::projectResolvedDataflowRewriteGeneratorConfigView(resolved));
@@ -738,7 +911,7 @@ void semanticLimitNeverPromotesAnExploredPrefix() {
   if (retainedNarrowAdds != 2)
     fail("semantic limit retained a different candidate identity");
 
-  resolved.dse.dataflowRewrite.scopeExpansionLimit = 4;
+  resolved.dse.dataflowRewrite.scopeExpansionLimit = 1;
   config = take(
       loom::dse::projectResolvedDataflowRewriteGeneratorConfigView(resolved));
   binding =
@@ -806,7 +979,7 @@ void decompositionUsesRegisteredSoftwareSemanticsAndOneValidator() {
 
   auto scalarized = take(dataflow::materializeDataflowRewrite(
       saturating,
-      dataflow::ElementwiseVectorScalarizeRewrite{saturatingActor}));
+      dataflow::ElementwiseVectorScalarizeRewrite{saturatingActor.entity}));
   if (!scalarized)
     fail("legal saturating vector scalarization produced no candidate");
   unsigned scalarSaturatingAdds = 0;
@@ -822,7 +995,8 @@ void decompositionUsesRegisteredSoftwareSemanticsAndOneValidator() {
     fail("scalarization did not materialize the exact row-major actor graph");
 
   auto invalidChunkCost = dataflow::dataflowRewriteExpansionCost(
-      saturating, dataflow::ElementwiseVectorChunkRewrite{saturatingActor, 4});
+      saturating,
+      dataflow::ElementwiseVectorChunkRewrite{saturatingActor.entity, 4});
   if (invalidChunkCost)
     fail("rewrite cost accepted a non-proper chunk decision");
   llvm::consumeError(invalidChunkCost.takeError());
@@ -831,13 +1005,15 @@ void decompositionUsesRegisteredSoftwareSemanticsAndOneValidator() {
   const dataflow::ActorRef comparisonActor =
       actorForSchema(comparison, dataflow::OperationSchemaId::ArithCmpI);
   auto invalidScalarCost = dataflow::dataflowRewriteExpansionCost(
-      comparison, dataflow::ElementwiseVectorScalarizeRewrite{comparisonActor});
+      comparison,
+      dataflow::ElementwiseVectorScalarizeRewrite{comparisonActor.entity});
   if (invalidScalarCost)
     fail("rewrite cost accepted scalarization without a result-typed base");
   llvm::consumeError(invalidScalarCost.takeError());
 
   auto comparisonChunk = take(dataflow::materializeDataflowRewrite(
-      comparison, dataflow::ElementwiseVectorChunkRewrite{comparisonActor, 2}));
+      comparison,
+      dataflow::ElementwiseVectorChunkRewrite{comparisonActor.entity, 2}));
   if (!comparisonChunk)
     fail("result-changing elementwise actor produced no chunk candidate");
   unsigned narrowComparisons = 0;
@@ -854,7 +1030,8 @@ void decompositionUsesRegisteredSoftwareSemanticsAndOneValidator() {
   const dataflow::ActorRef conversionActor =
       actorForSchema(conversion, dataflow::OperationSchemaId::LLVMFPToSISat);
   auto conversionChunk = take(dataflow::materializeDataflowRewrite(
-      conversion, dataflow::ElementwiseVectorChunkRewrite{conversionActor, 2}));
+      conversion,
+      dataflow::ElementwiseVectorChunkRewrite{conversionActor.entity, 2}));
   if (!conversionChunk)
     fail("registered intrinsic carrier produced no chunk candidate");
   unsigned canonicalIntrinsics = 0;
@@ -875,6 +1052,8 @@ int main() {
   invalidInMemoryDecisionFailsClosed();
   lineageCodecRejectsAnOutOfRangeActor();
   exactParentAndOneAtomicChildArePublished();
+  inverseCycleChargesWorkWithoutPublishingCyclicLineage();
+  workerSchedulingPreservesFormalResult();
   wideVectorActorIsChunkedForExactNarrowComputeFabric();
   recursiveRewriteRetainsItsRootedInternalLineage();
   semanticLimitNeverPromotesAnExploredPrefix();

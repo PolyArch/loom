@@ -264,6 +264,7 @@ target_link_libraries(loom-dataflow-rewrite-generator-test PRIVATE
   LoomCommon
   LoomDSECompilerGenerator
   MLIRDataflow
+  MLIRFuncDialect
   MLIRIR
   MLIRParser
   MLIRSupport
