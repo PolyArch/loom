@@ -1,0 +1,32 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-token-mux-demux-test %t
+# RUN: FileCheck %s --check-prefix=MUX < %t/leaf/token_mux.sv
+# RUN: FileCheck %s --check-prefix=DEMUX < %t/leaf/token_demux.sv
+# RUN: FileCheck %s --check-prefix=SYSTEM < %t/mux_system/token_mux_system.sv
+# RUN: FileCheck %s --check-prefix=SYSTEM < %t/demux_system/token_demux_system.sv
+
+# MUX-LABEL: module token_mux
+# MUX: input [31:0] data_input_0
+# MUX: data_input_1
+# MUX: data_input_3
+# MUX: data_input_4
+# MUX: input [3:0] config_0
+# MUX: ready_input_0
+# MUX: ready_input_4
+# MUX: valid_output_0
+
+# DEMUX-LABEL: module token_demux
+# DEMUX: input [31:0] data_input_0
+# DEMUX: data_input_1
+# DEMUX: input [3:0] config_0
+# DEMUX: ready_output_0
+# DEMUX: ready_output_3
+# DEMUX: valid_output_0
+# DEMUX: valid_output_3
+
+# SYSTEM-LABEL: module loom_module
+# SYSTEM: input clock
+# SYSTEM: reset
+# SYSTEM: configuration_
+# SYSTEM: result_valid_0_reg
