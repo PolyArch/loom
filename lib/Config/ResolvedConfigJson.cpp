@@ -302,6 +302,22 @@ llvm::json::Object objectiveCatalogsJson(const loom::ResolvedDseConfig &dse) {
 llvm::json::Object
 resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
   const loom::adg::BuiltinTargetScale &scale = config.hardwareTarget.parameters;
+  llvm::json::Object evaluation;
+  if (config.evaluation.cadenceVoltusStaticRail) {
+    const auto &binding = *config.evaluation.cadenceVoltusStaticRail;
+    llvm::json::Array members;
+    for (const loom::external_tool::ExternalFileTreeMember &member :
+         binding.powerGridLibraryMembers) {
+      members.push_back(llvm::json::Object{
+          {"relative_path", member.relativePath},
+          {"sha256", loom::formatExternalFileFingerprint(member.fingerprint)}});
+    }
+    evaluation.insert({"cadence_voltus_static_rail",
+                       llvm::json::Object{{"stable_provider_build_identity",
+                                           binding.stableProviderBuildIdentity},
+                                          {"power_grid_library_members",
+                                           std::move(members)}}});
+  }
   return llvm::json::Object{
       {"hardware_target",
        llvm::json::Object{
@@ -350,7 +366,8 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
            {"evaluation_and_objective_catalogs",
             objectiveCatalogsJson(config.dse)},
            {"spatial_pnr", pnrPolicyJson(config.dse.spatialPnr)},
-           {"system_pnr", pnrPolicyJson(config.dse.systemPnr)}}}};
+           {"system_pnr", pnrPolicyJson(config.dse.systemPnr)}}},
+      {"evaluation", std::move(evaluation)}};
 }
 
 } // namespace

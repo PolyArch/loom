@@ -221,6 +221,9 @@ llvm::Expected<std::uint64_t> requirePositiveU64(const ConfigSyntax *node,
 
 struct ConfigPatch {
   std::optional<loom::ResolvedHardwareTargetConfig> hardwareTarget;
+  std::optional<
+      loom::evaluation::models::CadenceVoltusStaticRailProviderBinding>
+      cadenceVoltusStaticRail;
   std::optional<std::uint32_t> ownershipScopeExpansionLimit;
   std::optional<std::uint32_t> scheduleScopeExpansionLimit;
   std::optional<std::uint32_t> memoryCommunicationScopeExpansionLimit;
@@ -297,6 +300,8 @@ llvm::Error touch(ConfigPatch &patch, llvm::StringRef canonicalKey) {
 void applyPatch(loom::ResolvedConfig &config, const ConfigPatch &patch) {
   if (patch.hardwareTarget)
     config.hardwareTarget = *patch.hardwareTarget;
+  if (patch.cadenceVoltusStaticRail)
+    config.evaluation.cadenceVoltusStaticRail = *patch.cadenceVoltusStaticRail;
   if (patch.ownershipScopeExpansionLimit)
     config.dse.structuredOwnership.scopeExpansionLimit =
         *patch.ownershipScopeExpansionLimit;
@@ -1380,6 +1385,78 @@ llvm::Error parseDse(ConfigPatch &patch, const ConfigSyntax *node) {
   return llvm::Error::success();
 }
 
+llvm::Expected<loom::evaluation::models::CadenceVoltusStaticRailProviderBinding>
+parseCadenceVoltusStaticRailBinding(const ConfigSyntax *node) {
+  constexpr llvm::StringLiteral prefix =
+      "evaluation.cadence_voltus_static_rail";
+  auto fieldsOrErr = ClosedMapping::parse(
+      node, prefix,
+      {"stable_provider_build_identity", "power_grid_library_members"});
+  if (!fieldsOrErr)
+    return fieldsOrErr.takeError();
+
+  auto buildOrErr =
+      requireScalarString(fieldsOrErr->at("stable_provider_build_identity"),
+                          prefix + ".stable_provider_build_identity");
+  if (!buildOrErr)
+    return buildOrErr.takeError();
+  auto membersOrErr =
+      requireSequence(fieldsOrErr->at("power_grid_library_members"),
+                      prefix + ".power_grid_library_members");
+  if (!membersOrErr)
+    return membersOrErr.takeError();
+
+  std::vector<loom::external_tool::ExternalFileTreeMember> members;
+  members.reserve((*membersOrErr)->size());
+  for (std::size_t index = 0; index < (*membersOrErr)->size(); ++index) {
+    const std::string memberPrefix =
+        (prefix + ".power_grid_library_members[" + llvm::Twine(index) + "]")
+            .str();
+    auto memberOrErr = ClosedMapping::parse(
+        &(*membersOrErr)->at(index), memberPrefix, {"relative_path", "sha256"});
+    if (!memberOrErr)
+      return memberOrErr.takeError();
+    auto pathOrErr = requireScalarString(memberOrErr->at("relative_path"),
+                                         memberPrefix + ".relative_path");
+    if (!pathOrErr)
+      return pathOrErr.takeError();
+    auto fingerprintTextOrErr = requireScalarString(memberOrErr->at("sha256"),
+                                                    memberPrefix + ".sha256");
+    if (!fingerprintTextOrErr)
+      return fingerprintTextOrErr.takeError();
+    auto fingerprintOrErr =
+        loom::parseExternalFileFingerprint(*fingerprintTextOrErr);
+    if (!fingerprintOrErr)
+      return fingerprintOrErr.takeError();
+    members.push_back({std::move(*pathOrErr), std::move(*fingerprintOrErr)});
+  }
+
+  loom::evaluation::models::CadenceVoltusStaticRailProviderBinding binding{
+      std::move(*buildOrErr), std::move(members)};
+  if (llvm::Error error = loom::evaluation::models::
+          validateCadenceVoltusStaticRailProviderBinding(binding))
+    return std::move(error);
+  return binding;
+}
+
+llvm::Error parseEvaluation(ConfigPatch &patch, const ConfigSyntax *node) {
+  auto fieldsOrErr = ClosedMapping::parse(node, "evaluation", {},
+                                          {"cadence_voltus_static_rail"});
+  if (!fieldsOrErr)
+    return fieldsOrErr.takeError();
+  if (const ConfigSyntax *rail =
+          fieldsOrErr->at("cadence_voltus_static_rail")) {
+    auto bindingOrErr = parseCadenceVoltusStaticRailBinding(rail);
+    if (!bindingOrErr)
+      return bindingOrErr.takeError();
+    patch.cadenceVoltusStaticRail = std::move(*bindingOrErr);
+    if (llvm::Error error =
+            touch(patch, "evaluation.cadence_voltus_static_rail"))
+      return error;
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<ConfigPatch>
 parseConfigPatchFromMapping(const ConfigSyntax &topMap,
                             llvm::StringRef sourceName);
@@ -1429,6 +1506,9 @@ parseConfigPatchFromMapping(const ConfigSyntax &topMap,
     } else if (key == "dse") {
       if (llvm::Error err = parseDse(local, &value))
         return err;
+    } else if (key == "evaluation") {
+      if (llvm::Error err = parseEvaluation(local, &value))
+        return err;
     } else {
       return diagnostic("config_unknown_key", key);
     }
@@ -1463,6 +1543,11 @@ llvm::Error validateResolvedConfig(const loom::ResolvedConfig &config) {
   if (llvm::Error error = loom::validateResolvedPnrPolicyConfig(
           config.dse.spatialPnr, config.dse.objectiveCatalogs))
     return error;
+  if (config.evaluation.cadenceVoltusStaticRail)
+    if (llvm::Error error = loom::evaluation::models::
+            validateCadenceVoltusStaticRailProviderBinding(
+                *config.evaluation.cadenceVoltusStaticRail))
+      return error;
   return loom::validateResolvedPnrPolicyConfig(config.dse.systemPnr,
                                                config.dse.objectiveCatalogs);
 }

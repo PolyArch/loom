@@ -1,6 +1,7 @@
 #ifndef LOOM_EVALUATION_MODELS_PHYSICALRAILANALYSIS_H
 #define LOOM_EVALUATION_MODELS_PHYSICALRAILANALYSIS_H
 
+#include "Evaluation/Models/PhysicalRailAnalysisConfig.h"
 #include "Evaluation/Request.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -58,6 +59,7 @@ struct ExplicitRailActivityBinding final {
 /// second persistent encoding.
 struct CompleteRailAnalysisConfiguration final {
   RailAnalysisModelConfig model;
+  CadenceVoltusStaticRailProviderBinding providerBinding;
   ProcessCornerCondition processCorner;
   SupplyVoltageCondition supplyVoltage;
   TemperatureCondition temperature;

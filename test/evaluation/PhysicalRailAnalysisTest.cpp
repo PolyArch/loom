@@ -9,6 +9,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -111,6 +112,25 @@ EvaluationSubjectBindings bindings(const ArtifactRootReference &hardware) {
                   {{hardwareImplementationPhysicalSubjectRole(), {hardware}}}));
 }
 
+ExternalFileFingerprint fingerprint(std::uint8_t seed) {
+  ExternalFileFingerprint::Storage bytes{};
+  for (std::size_t index = 0; index < bytes.size(); ++index)
+    bytes[index] = static_cast<std::uint8_t>(seed + index);
+  return take(__func__, ExternalFileFingerprint::fromBytes(bytes));
+}
+
+CadenceVoltusStaticRailProviderBinding providerBinding() {
+  return {"Voltus 26.10-p001_1",
+          {{"libraries/standard_cells.cl", fingerprint(1)},
+           {"technology.cl", fingerprint(2)}}};
+}
+
+ResolvedConfig railResolvedConfig() {
+  ResolvedConfig config = defaultResolvedConfig();
+  config.evaluation.cadenceVoltusStaticRail = providerBinding();
+  return config;
+}
+
 void exactRequestProjectsOneCompleteConfiguration(const ArtifactStore &store) {
   const llvm::StringRef test = __func__;
   const Fixture fixture = makeFixture(store);
@@ -130,12 +150,22 @@ void exactRequestProjectsOneCompleteConfiguration(const ArtifactStore &store) {
            MetricRequest::get(MetricQuery{MetricKind::MaximumVoltageDrop,
                                           EvaluationScope{ScopeFormRef(0), {}}},
                               {}, evaluationCase, fixture.resolution, store));
+  const ResolvedConfig resolvedConfig = railResolvedConfig();
+  const std::string canonicalConfig =
+      canonicalResolvedConfigJson(resolvedConfig);
+  const ResolvedConfig reparsed = take(
+      test, parseResolvedConfig(canonicalConfig, "rail-config-round-trip"));
+  require(test,
+          reparsed.evaluation.cadenceVoltusStaticRail ==
+              resolvedConfig.evaluation.cadenceVoltusStaticRail,
+          "ResolvedConfig round-trip changed the Voltus provider binding");
+
   ResolvedModelBinding modelBinding = take(
-      test,
-      ResolvedModelBinding::project(cadenceVoltusStaticRailModelDescriptorRef(),
-                                    {}, defaultResolvedConfig()));
-  require(test, modelBinding.resolvedModelConfig().canonicalViewBytes().empty(),
-          "fixed rail model config gained a duplicate persistent payload");
+      test, ResolvedModelBinding::project(
+                cadenceVoltusStaticRailModelDescriptorRef(), {}, reparsed));
+  require(test,
+          !modelBinding.resolvedModelConfig().canonicalViewBytes().empty(),
+          "rail model config omitted the exact provider binding");
 
   const EvaluationRequest request =
       take(test, EvaluationRequest::get(evaluationCase, {metric}, {},
@@ -147,6 +177,8 @@ void exactRequestProjectsOneCompleteConfiguration(const ArtifactStore &store) {
 
   require(test, projected.model == staticExplicitRailAnalysisModelConfig(),
           "projection changed the descriptor-owned rail model config");
+  require(test, projected.providerBinding == providerBinding(),
+          "projection changed the exact Voltus provider binding");
   require(
       test,
       projected.processCorner.corner ==
@@ -157,12 +189,10 @@ void exactRequestProjectsOneCompleteConfiguration(const ArtifactStore &store) {
           projected.supplyVoltage.volts == take(test, DecimalValue::get(9, -1)),
           "projection changed the exact supply voltage");
   require(test,
-          projected.temperature.kelvin ==
-              take(test, DecimalValue::get(3, 2)),
+          projected.temperature.kelvin == take(test, DecimalValue::get(3, 2)),
           "projection changed the exact temperature");
   require(test,
-          projected.clockPeriod.seconds ==
-              take(test, DecimalValue::get(2, -9)),
+          projected.clockPeriod.seconds == take(test, DecimalValue::get(2, -9)),
           "projection changed the exact activity clock period");
   require(test,
           projected.activity.assumption.staticProbability ==
@@ -189,19 +219,52 @@ void ownerAndConfigBoundariesRejectInvalidInputs(const ArtifactStore &store) {
                           fixture.resolution, store),
       "out of range");
 
+  expectErrorContains(
+      test,
+      ResolvedModelBinding::project(cadenceVoltusStaticRailModelDescriptorRef(),
+                                    {}, defaultResolvedConfig()),
+      "provider binding is unavailable");
+
+  ResolvedConfig invalidBuild = railResolvedConfig();
+  invalidBuild.evaluation.cadenceVoltusStaticRail->stableProviderBuildIdentity =
+      " Voltus 26.10-p001_1";
+  expectErrorContains(
+      test,
+      ResolvedModelBinding::project(cadenceVoltusStaticRailModelDescriptorRef(),
+                                    {}, invalidBuild),
+      "one normalized line");
+
+  ResolvedConfig unsortedMembers = railResolvedConfig();
+  std::swap(unsortedMembers.evaluation.cadenceVoltusStaticRail
+                ->powerGridLibraryMembers[0],
+            unsortedMembers.evaluation.cadenceVoltusStaticRail
+                ->powerGridLibraryMembers[1]);
+  expectErrorContains(
+      test,
+      ResolvedModelBinding::project(cadenceVoltusStaticRailModelDescriptorRef(),
+                                    {}, unsortedMembers),
+      "sorted by relative path");
+
   const EvaluationModelDescriptor *descriptor =
       cadenceVoltusStaticRailModelDescriptorRef().descriptor();
   require(test, descriptor, "rail model descriptor was not registered");
-  std::vector<std::uint8_t> nonemptyConfig{0};
+  ResolvedModelBinding valid = take(
+      test,
+      ResolvedModelBinding::project(cadenceVoltusStaticRailModelDescriptorRef(),
+                                    {}, railResolvedConfig()));
+  std::vector<std::uint8_t> noncanonicalConfig(
+      valid.resolvedModelConfig().canonicalViewBytes().begin(),
+      valid.resolvedModelConfig().canonicalViewBytes().end());
+  noncanonicalConfig.push_back(0);
   auto digest =
       take(test, computeComponentViewDigest(
                      descriptor->resolvedConfigView.schemaDescriptorBytes,
-                     nonemptyConfig));
+                     noncanonicalConfig));
   expectErrorContains(
       test,
       ResolvedModelBinding::adopt(cadenceVoltusStaticRailModelDescriptorRef(),
-                                  {}, std::move(nonemptyConfig), digest),
-      "must be empty");
+                                  {}, std::move(noncanonicalConfig), digest),
+      "trailing bytes");
 }
 
 } // namespace

@@ -5,11 +5,13 @@
 #include "Common/Artifact.h"
 #include "Common/ResolvedPnrPolicy.h"
 #include "DSE/ResolvedConfigView.h"
+#include "Evaluation/Models/PhysicalRailAnalysisConfig.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -58,12 +60,18 @@ struct ResolvedDseConfig {
   ResolvedPnrPolicyConfig systemPnr;
 };
 
+struct ResolvedEvaluationConfig final {
+  std::optional<evaluation::models::CadenceVoltusStaticRailProviderBinding>
+      cadenceVoltusStaticRail;
+};
+
 struct ResolvedConfig {
   static constexpr ArtifactSchemaDescriptor artifactSchema{
-      "loom.config.resolved", SchemaVersion{3, 2}};
+      "loom.config.resolved", SchemaVersion{3, 3}};
 
   ResolvedHardwareTargetConfig hardwareTarget;
   ResolvedDseConfig dse;
+  ResolvedEvaluationConfig evaluation;
 };
 
 ResolvedConfig defaultResolvedConfig();

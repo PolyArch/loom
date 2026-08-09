@@ -1,5 +1,8 @@
 #include "Evaluation/Models/PhysicalRailAnalysis.h"
 
+#include "CanonicalSupport.h"
+
+#include "Config/ResolvedConfig.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "ImplementationPlatform/TechnologyCorner.h"
 
@@ -103,31 +106,126 @@ constexpr RailAnalysisModelConfig kModelConfig{
     UncertaintyKind::ExactWithinModel,
 };
 
+class ConfigReader final {
+public:
+  explicit ConfigReader(llvm::ArrayRef<std::uint8_t> bytes) : bytes_(bytes) {}
+
+  llvm::Expected<std::uint64_t> u64(const llvm::Twine &field) {
+    if (bytes_.size() - offset_ < 8)
+      return railError(field + " is truncated");
+    std::uint64_t value = 0;
+    for (unsigned index = 0; index < 8; ++index)
+      value = (value << 8) | bytes_[offset_++];
+    return value;
+  }
+
+  llvm::Expected<std::string> text(llvm::StringRef field) {
+    auto sizeOrErr = u64(field + " length");
+    if (!sizeOrErr)
+      return sizeOrErr.takeError();
+    if (*sizeOrErr > bytes_.size() - offset_)
+      return railError(field + " is truncated");
+    const std::size_t size = static_cast<std::size_t>(*sizeOrErr);
+    std::string value(reinterpret_cast<const char *>(bytes_.data() + offset_),
+                      size);
+    offset_ += size;
+    return value;
+  }
+
+  llvm::Expected<ExternalFileFingerprint> fingerprint(llvm::StringRef field) {
+    if (bytes_.size() - offset_ < ExternalFileFingerprint::byteSize)
+      return railError(field + " is truncated");
+    auto value = ExternalFileFingerprint::fromBytes(
+        bytes_.slice(offset_, ExternalFileFingerprint::byteSize));
+    offset_ += ExternalFileFingerprint::byteSize;
+    return value;
+  }
+
+  bool empty() const { return offset_ == bytes_.size(); }
+
+private:
+  llvm::ArrayRef<std::uint8_t> bytes_;
+  std::size_t offset_ = 0;
+};
+
+std::vector<std::uint8_t>
+encodeProviderBinding(const CadenceVoltusStaticRailProviderBinding &binding) {
+  std::vector<std::uint8_t> bytes;
+  detail::appendFramedString(bytes, binding.stableProviderBuildIdentity);
+  detail::appendU64Be(bytes, binding.powerGridLibraryMembers.size());
+  for (const external_tool::ExternalFileTreeMember &member :
+       binding.powerGridLibraryMembers) {
+    detail::appendFramedString(bytes, member.relativePath);
+    bytes.insert(bytes.end(), member.fingerprint.bytes().begin(),
+                 member.fingerprint.bytes().end());
+  }
+  return bytes;
+}
+
 llvm::ArrayRef<std::uint8_t> configSchemaBytes() {
   static constexpr llvm::StringLiteral descriptor =
-      "loom.evaluation.static_explicit_rail.config.1.0";
+      "loom.evaluation.static_explicit_rail.config.2.0";
   return {reinterpret_cast<const std::uint8_t *>(descriptor.data()),
           descriptor.size()};
 }
 
-llvm::Expected<OwnerValue> projectConfig(const ResolvedConfig &) {
-  return OwnerValue::get(kModelConfig);
+llvm::Expected<OwnerValue> projectConfig(const ResolvedConfig &config) {
+  if (!config.evaluation.cadenceVoltusStaticRail)
+    return railError("Voltus provider binding is unavailable");
+  if (llvm::Error error = validateCadenceVoltusStaticRailProviderBinding(
+          *config.evaluation.cadenceVoltusStaticRail))
+    return std::move(error);
+  return OwnerValue::get(*config.evaluation.cadenceVoltusStaticRail);
 }
 
 llvm::Expected<std::vector<std::uint8_t>>
 encodeConfig(const OwnerValue &value) {
-  const auto *config = value.getIf<RailAnalysisModelConfig>();
-  if (!config || *config != kModelConfig)
-    return railError("config has the wrong owner type or fixed value");
-  return std::vector<std::uint8_t>{};
+  const auto *binding = value.getIf<CadenceVoltusStaticRailProviderBinding>();
+  if (!binding)
+    return railError("config has the wrong provider-binding owner type");
+  if (llvm::Error error =
+          validateCadenceVoltusStaticRailProviderBinding(*binding))
+    return std::move(error);
+  return encodeProviderBinding(*binding);
 }
 
 llvm::Expected<OwnerValue>
 adoptConfig(llvm::ArrayRef<std::uint8_t> canonicalBytes,
             const ComponentViewDigest &) {
-  if (!canonicalBytes.empty())
-    return railError("fixed config view must be empty");
-  return OwnerValue::get(kModelConfig);
+  ConfigReader reader(canonicalBytes);
+  auto buildOrErr = reader.text("stable provider build identity");
+  if (!buildOrErr)
+    return buildOrErr.takeError();
+  auto countOrErr = reader.u64("power-grid library member count");
+  if (!countOrErr)
+    return countOrErr.takeError();
+  if (*countOrErr > canonicalBytes.size())
+    return railError("power-grid library member count is invalid");
+
+  std::vector<external_tool::ExternalFileTreeMember> members;
+  members.reserve(static_cast<std::size_t>(*countOrErr));
+  for (std::uint64_t index = 0; index < *countOrErr; ++index) {
+    auto pathOrErr = reader.text("power-grid library member path");
+    if (!pathOrErr)
+      return pathOrErr.takeError();
+    auto fingerprintOrErr =
+        reader.fingerprint("power-grid library member fingerprint");
+    if (!fingerprintOrErr)
+      return fingerprintOrErr.takeError();
+    members.push_back({std::move(*pathOrErr), std::move(*fingerprintOrErr)});
+  }
+  if (!reader.empty())
+    return railError("resolved config view has trailing bytes");
+
+  CadenceVoltusStaticRailProviderBinding binding{std::move(*buildOrErr),
+                                                 std::move(members)};
+  if (llvm::Error error =
+          validateCadenceVoltusStaticRailProviderBinding(binding))
+    return std::move(error);
+  const std::vector<std::uint8_t> reencoded = encodeProviderBinding(binding);
+  if (llvm::ArrayRef<std::uint8_t>(reencoded) != canonicalBytes)
+    return railError("resolved config view is not canonical");
+  return OwnerValue::get(std::move(binding));
 }
 
 const ResolvedModelConfigViewContract kConfigView{
@@ -186,6 +284,18 @@ const RailAnalysisModelConfig &staticExplicitRailAnalysisModelConfig() {
   return kModelConfig;
 }
 
+llvm::Error validateCadenceVoltusStaticRailProviderBinding(
+    const CadenceVoltusStaticRailProviderBinding &binding) {
+  const llvm::StringRef build(binding.stableProviderBuildIdentity);
+  if (build.empty() || build.trim() != build ||
+      !llvm::all_of(build, [](unsigned char character) {
+        return character >= 0x20 && character <= 0x7e;
+      }))
+    return railError("provider build identity is not one normalized line");
+  return external_tool::validateExternalFileTreeRequirement(
+      {"power_grid_library", binding.powerGridLibraryMembers});
+}
+
 llvm::Expected<CompleteRailAnalysisConfiguration>
 projectCompleteRailAnalysisConfiguration(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
@@ -196,11 +306,15 @@ projectCompleteRailAnalysisConfiguration(
   if (request.modelBinding().descriptorRef() != kModelDescriptor.reference())
     return railError("request selects a foreign model descriptor");
 
-  const auto *modelConfig = request.modelBinding()
-                                .resolvedModelConfig()
-                                .getIf<RailAnalysisModelConfig>();
-  if (!modelConfig || *modelConfig != kModelConfig)
-    return railError("request does not carry the fixed rail model config");
+  const auto *providerBinding =
+      request.modelBinding()
+          .resolvedModelConfig()
+          .getIf<CadenceVoltusStaticRailProviderBinding>();
+  if (!providerBinding)
+    return railError("request does not carry the Voltus provider binding");
+  if (llvm::Error error =
+          validateCadenceVoltusStaticRailProviderBinding(*providerBinding))
+    return std::move(error);
 
   const auto hardwareSubjects =
       request.subjectBindings().subjects(kHardwareRole);
@@ -257,7 +371,12 @@ projectCompleteRailAnalysisConfiguration(
     return railError("rail conditions must target the exact global subject");
 
   return CompleteRailAnalysisConfiguration{
-      kModelConfig, *processCorner, *supplyVoltage, *temperature, *clockPeriod,
+      kModelConfig,
+      *providerBinding,
+      *processCorner,
+      *supplyVoltage,
+      *temperature,
+      *clockPeriod,
       ExplicitRailActivityBinding{activity->target, *assumption},
   };
 }
