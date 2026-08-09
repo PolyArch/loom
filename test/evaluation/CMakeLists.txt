@@ -32,3 +32,15 @@ target_link_libraries(loom-evaluation-evidence-test PRIVATE
   LoomExternalTool
   LLVMSupport
 )
+
+add_executable(loom-evaluation-physical-rail-analysis-test
+  PhysicalRailAnalysisTest.cpp
+)
+
+target_link_libraries(loom-evaluation-physical-rail-analysis-test PRIVATE
+  LoomConfig
+  LoomEvaluation
+  LoomHardwareImplementation
+  LoomImplementationPlatform
+  LLVMSupport
+)

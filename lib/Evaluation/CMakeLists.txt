@@ -12,6 +12,7 @@ add_library(LoomEvaluation
   ModelProvider.cpp
   NumericValue.cpp
   OwnerError.cpp
+  PhysicalRailAnalysis.cpp
   QueryText.cpp
   Request.cpp
   RequestText.cpp

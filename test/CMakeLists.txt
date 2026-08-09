@@ -107,6 +107,7 @@ set(LOOM_TEST_DEPENDS
   loom-evaluation-case-test
   loom-evaluation-evidence-test
   loom-evaluation-metric-test
+  loom-evaluation-physical-rail-analysis-test
   loom-external-tool-local-config-test
   loom-external-tool-external-file-test
   loom-external-tool-binding-test

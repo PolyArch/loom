@@ -1,6 +1,7 @@
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include "Common/ArtifactFinalizer.h"
+#include "Common/ArtifactLocalReferenceRegistry.h"
 #include "Common/ArtifactStore.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -115,7 +116,8 @@ llvm::StringRef vendorSpelling(FpgaVendor vendor) {
   llvm_unreachable("validated FPGA vendor is closed");
 }
 
-std::string serialize(const ImplementationPlatform &platform) {
+std::string serialize(const ImplementationTarget &target,
+                      llvm::ArrayRef<TechnologyCorner> corners) {
   llvm::SmallString<512> storage;
   llvm::raw_svector_ostream output(storage);
   llvm::json::OStream json(output);
@@ -136,10 +138,10 @@ std::string serialize(const ImplementationPlatform &platform) {
                              target.deviceOrderingCode);
             }
           },
-          platform.target());
+          target);
     });
     json.attributeArray("technology_corners", [&] {
-      for (const TechnologyCorner &corner : platform.technologyCorners()) {
+      for (const TechnologyCorner &corner : corners) {
         json.object([&] {
           json.attribute("corner_id", corner.id.value());
           json.attribute("corner_key", corner.key);
@@ -148,6 +150,10 @@ std::string serialize(const ImplementationPlatform &platform) {
     });
   });
   return output.str().str();
+}
+
+std::string serialize(const ImplementationPlatform &platform) {
+  return serialize(platform.target(), platform.technologyCorners());
 }
 
 llvm::Error rejectUnknownFields(const llvm::json::Object &object,
@@ -256,6 +262,60 @@ CanonicalSemanticBytes canonicalBytes(const ImplementationPlatform &platform) {
       std::vector<std::uint8_t>(body.begin(), body.end()));
 }
 
+CanonicalSemanticBytes canonicalBytes(const CanonicalPlatformData &data) {
+  const std::string body = serialize(data.target, data.corners);
+  return CanonicalSemanticBytes(
+      std::vector<std::uint8_t>(body.begin(), body.end()));
+}
+
+llvm::Expected<CanonicalPlatformData>
+decodeCanonicalPlatformData(const ArtifactRootReference &reference,
+                            const CanonicalSemanticBytes &storedBytes) {
+  if (reference.schemaIdentity != implementationPlatformSchema.identity ||
+      reference.schemaVersion != implementationPlatformSchema.version)
+    return invalid("reference requires loom.implementation_platform 1.0");
+  const llvm::ArrayRef<std::uint8_t> bytes = storedBytes.bytes();
+  const llvm::StringRef body(reinterpret_cast<const char *>(bytes.data()),
+                             bytes.size());
+  auto draft = parse(body);
+  if (!draft)
+    return draft.takeError();
+  auto data = canonicalize(std::move(*draft));
+  if (!data)
+    return data.takeError();
+  CanonicalSemanticBytes canonical = canonicalBytes(*data);
+  if (!canonical.bytes().equals(bytes))
+    return invalid("stored root is not canonical");
+  if (finalizeArtifactIdentity(implementationPlatformSchema, canonical) !=
+      reference.artifact)
+    return invalid("reference has a stale platform identity");
+  return data;
+}
+
+llvm::Error
+validateTechnologyCornerPayload(llvm::ArrayRef<std::uint8_t> payload) {
+  auto corner = decodeTechnologyCornerPayload(payload);
+  if (!corner)
+    return corner.takeError();
+  return llvm::Error::success();
+}
+
+llvm::Error
+validateTechnologyCornerTarget(const CanonicalSemanticBytes &artifactBytes,
+                               const EncodedArtifactLocalReference &reference) {
+  auto corner = decodeTechnologyCornerRef(reference);
+  if (!corner)
+    return corner.takeError();
+  auto data = decodeCanonicalPlatformData(reference.artifact, artifactBytes);
+  if (!data)
+    return data.takeError();
+  if (corner->entity.value() >= data->corners.size() ||
+      data->corners[static_cast<std::size_t>(corner->entity.value())].id !=
+          corner->entity)
+    return invalid("technology corner reference is out of range");
+  return llvm::Error::success();
+}
+
 } // namespace
 
 const TechnologyCorner *
@@ -294,25 +354,23 @@ importImplementationPlatform(const ArtifactRootReference &reference,
   auto stored = store.get(implementationPlatformSchema, reference.artifact);
   if (!stored)
     return stored.takeError();
-  const llvm::ArrayRef<std::uint8_t> bytes = stored->bytes();
-  const llvm::StringRef body(reinterpret_cast<const char *>(bytes.data()),
-                             bytes.size());
-  auto draft = parse(body);
-  if (!draft)
-    return draft.takeError();
-  auto data = canonicalize(std::move(*draft));
+  auto data = decodeCanonicalPlatformData(reference, *stored);
   if (!data)
     return data.takeError();
   ImplementationPlatform platform(std::move(data->target),
                                   std::move(data->corners));
   CanonicalSemanticBytes canonical = canonicalBytes(platform);
-  if (!canonical.bytes().equals(bytes))
-    return invalid("stored root is not canonical");
-  if (finalizeArtifactIdentity(implementationPlatformSchema, canonical) !=
-      reference.artifact)
-    return invalid("reference has a stale platform identity");
   return FinalizedImplementationPlatform(reference, std::move(canonical),
                                          std::move(platform));
+}
+
+llvm::Error registerImplementationPlatformLocalReferenceKinds() {
+  return registerArtifactLocalReferenceKind(
+      implementationPlatformSchema,
+      implementationPlatformLocalKind(
+          ImplementationPlatformLocalReferenceKind::TechnologyCorner),
+      ArtifactLocalReferenceCodec{&validateTechnologyCornerPayload,
+                                  &validateTechnologyCornerTarget});
 }
 
 llvm::Expected<TechnologyCorner>

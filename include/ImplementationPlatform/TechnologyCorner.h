@@ -73,6 +73,11 @@ encodeTechnologyCornerRef(const TechnologyCornerRef &reference);
 llvm::Expected<TechnologyCornerRef>
 decodeTechnologyCornerRef(const EncodedArtifactLocalReference &reference);
 
+/// Registers every owner-local reference kind of the exact platform schema.
+/// Registration is idempotent; consumers still validate through Common and
+/// never reinterpret the owner payload themselves.
+llvm::Error registerImplementationPlatformLocalReferenceKinds();
+
 } // namespace loom::platform
 
 #endif // LOOM_IMPLEMENTATIONPLATFORM_TECHNOLOGYCORNER_H
