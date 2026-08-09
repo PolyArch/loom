@@ -57,7 +57,8 @@ SpatialGlobalRoutingClosureScratch::run(SpatialCandidateState &candidate) {
 
   const SpatialMappingAction action =
       SpatialTransportRoutingAction{SpatialGlobalRoutingAction{}};
-  auto probe = actionExecutor_.probe(candidate, action);
+  auto probe = actionExecutor_.probe(
+      candidate, action, SpatialActionExecutionContext::FinalClosure);
   if (!probe)
     return probe.takeError();
   if (llvm::Error error = verifyRoutingClosure(candidate)) {

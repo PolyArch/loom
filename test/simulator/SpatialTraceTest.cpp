@@ -1,5 +1,7 @@
 #include "Simulator/SpatialTrace.h"
 
+#include "CGRAExecutionPlan.h"
+#include "CgraPhysicalTraceProjection.h"
 #include "Common/Artifact.h"
 #include "Evaluation/NumericValue.h"
 
@@ -7,6 +9,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdlib>
 #include <utility>
 #include <vector>
@@ -43,8 +46,8 @@ void levelsAndCanonicalKeysAreClosed() {
   SpatialDiagnosticTrace trace{TraceCaptureLevel::Microarchitecture, {}};
   ActorTransitionOccurrenceRef actor = transition(3);
   ActorResultTokenOccurrenceRef token{actor, 0, 5};
-  PhysicalActionOccurrenceRef physical{
-      TransitionPhysicalActionParent{actor}, 2};
+  PhysicalActionOccurrenceRef physical{TransitionPhysicalActionParent{actor},
+                                       2};
   const loom::fabric::SystemTransportResourceRef resource(1);
   const loom::fabric::FabricUsePatternOwnerRef useOwner(
       loom::fabric::FabricInventoryOwnerRef::of(resource));
@@ -65,9 +68,9 @@ void levelsAndCanonicalKeysAreClosed() {
       trace.frames.front().events[2].index() != 4)
     fail("events are not in canonical discriminant/key order");
 
-  SpatialTraceFrame duplicate{coordinate(8),
-                              {ActorRetiredTraceEvent{actor},
-                               ActorRetiredTraceEvent{actor}}};
+  SpatialTraceFrame duplicate{
+      coordinate(8),
+      {ActorRetiredTraceEvent{actor}, ActorRetiredTraceEvent{actor}}};
   llvm::Error duplicateError = canonicalizeSpatialTraceFrame(
       duplicate, TraceCaptureLevel::Microarchitecture);
   if (!duplicateError)
@@ -87,11 +90,9 @@ void levelsAndCanonicalKeysAreClosed() {
   const loom::fabric::FabricPhysicalTraversalRef traversal =
       loom::fabric::FabricPhysicalTraversalRef::switchTraversal(
           loom::fabric::FabricSwitchOccurrenceRef(7), 0, 1);
+  const PhysicalTransferTarget transfer{{traversal, traversal}, {}};
   SpatialTraceFrame duplicateTransfer{
-      coordinate(8),
-      {PhysicalRequestedTraceEvent{
-          physical,
-          PhysicalTransferTarget{{traversal, traversal}, std::nullopt}}}};
+      coordinate(8), {PhysicalRequestedTraceEvent{physical, transfer}}};
   llvm::Error targetError = canonicalizeSpatialTraceFrame(
       duplicateTransfer, TraceCaptureLevel::Microarchitecture);
   if (!targetError)
@@ -99,9 +100,49 @@ void levelsAndCanonicalKeysAreClosed() {
   llvm::consumeError(std::move(targetError));
 }
 
+void transferProjectionPreservesAtomicPatternSet() {
+  using namespace loom::sim;
+  using namespace loom::sim::detail;
+  using namespace loom::fabric;
+
+  const FabricSwitchOccurrenceRef owner(7);
+  const FabricInventoryOwnerRef inventory = FabricInventoryOwnerRef::of(owner);
+  CgraFrozenExecutionPlan plan;
+  plan.physicalUses.push_back({0, 2, 0});
+  plan.physicalUsePatterns = {
+      FabricUsePatternRef{FabricUsePatternOwnerRef(inventory), 0},
+      FabricUsePatternRef{FabricUsePatternOwnerRef(inventory), 1}};
+
+  const FabricPhysicalTraversalRef first =
+      FabricPhysicalTraversalRef::switchTraversal(owner, 0, 0);
+  const FabricPhysicalTraversalRef second =
+      FabricPhysicalTraversalRef::switchTraversal(owner, 0, 1);
+  const std::array<FabricPhysicalTraversalRef, 2> noncanonical = {second,
+                                                                  first};
+  PhysicalActionTarget target =
+      take(projectPhysicalTransferTarget(plan, 0, noncanonical));
+  const auto *transfer = std::get_if<PhysicalTransferTarget>(&target);
+  if (!transfer || transfer->traversals.size() != 2 ||
+      transfer->traversals.front() != first ||
+      transfer->traversals.back() != second ||
+      transfer->usePatterns != plan.physicalUsePatterns)
+    fail("transfer projection lost its canonical atomic pattern set");
+
+  SpatialTraceFrame frame{
+      coordinate(9),
+      {PhysicalRequestedTraceEvent{
+          PhysicalActionOccurrenceRef{
+              TransitionPhysicalActionParent{transition(4)}, 0},
+          std::move(target)}}};
+  if (llvm::Error error = canonicalizeSpatialTraceFrame(
+          frame, TraceCaptureLevel::Microarchitecture))
+    fail(llvm::toString(std::move(error)));
+}
+
 } // namespace
 
 int main() {
   levelsAndCanonicalKeysAreClosed();
+  transferProjectionPreservesAtomicPatternSet();
   return EXIT_SUCCESS;
 }

@@ -158,6 +158,26 @@ target_link_libraries(loom-pnr-spatial-action-proposal-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-spatial-pnr-scale-test
+  SpatialPnrScaleTest.cpp
+)
+
+target_link_libraries(loom-spatial-pnr-scale-test PRIVATE
+  LoomADGBuilder
+  LoomMappingArtifact
+  LoomMappingInspection
+  LoomPnR
+  LoomPnRGenerator
+  LoomTechMapping
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
 add_executable(loom-pnr-cp-sat-exact-protocol-test
   CpSatExactProtocolTest.cpp
 )

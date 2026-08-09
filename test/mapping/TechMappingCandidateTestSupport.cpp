@@ -21,6 +21,8 @@
 #include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialGlobalRoutingClosure.h"
+#include "PnR/SpatialPathFinderRouter.h"
+#include "PnR/SpatialRouteCostState.h"
 #include "ResourceCapacityVerification.h"
 #include "SpatialMappingCapacityVerification.h"
 
@@ -993,6 +995,7 @@ void loom::test::exerciseCanonicalCandidateInitialization(
             canonicalAttempt.candidate->memoryBinding(index).placement)
       fail("canonical initializer changed memory choice order");
   }
+  const auto attachmentOptions = problem->ports().attachmentOptions();
   for (pnr::PnrIndex demand = 0; demand < problem->ports().portDemands().size();
        ++demand) {
     const auto &record = problem->ports().portDemands()[demand];
@@ -1006,25 +1009,84 @@ void loom::test::exerciseCanonicalCandidateInitialization(
                   .placementOffset
             : realizations.memoryRealizations()[record.realization]
                   .placementOffset;
-    const auto &domain =
-        problem->ports().placementDomains()[record.placementDomainOffset +
-                                            placement - ownerOffset];
-    if (first->portAttachment(demand) != domain.attachmentOptionOffset ||
-        first->portAttachment(demand) != second->portAttachment(demand) ||
-        first->portAttachment(demand) !=
-            canonicalAttempt.candidate->portAttachment(demand))
+    const pnr::PnrIndex domainOrdinal =
+        record.placementDomainOffset + placement - ownerOffset;
+    const auto &domain = problem->ports().placementDomains()[domainOrdinal];
+    const pnr::PnrIndex selected = first->portAttachment(demand);
+    if (selected < domain.attachmentOptionOffset ||
+        selected - domain.attachmentOptionOffset >=
+            domain.attachmentOptionCount ||
+        selected >= attachmentOptions.size() ||
+        attachmentOptions[selected].ownerKind !=
+            pnr::FrozenSpatialAttachmentOwnerKind::PlacementDomain ||
+        attachmentOptions[selected].owner != domainOrdinal ||
+        selected != second->portAttachment(demand) ||
+        selected != canonicalAttempt.candidate->portAttachment(demand))
       fail("canonical initializer changed port attachment order");
+    if (attachmentOptions[selected].endpoint >=
+        problem->routing().routingEndpoints().size())
+      fail("canonical initializer selected a foreign attachment endpoint");
   }
   for (pnr::PnrIndex boundary = 0;
        boundary < problem->ports().graphBoundaries().size(); ++boundary) {
     const auto &record = problem->ports().graphBoundaries()[boundary];
-    if (first->graphBoundaryAttachment(boundary) !=
-            record.attachmentOptionOffset ||
-        first->graphBoundaryAttachment(boundary) !=
-            second->graphBoundaryAttachment(boundary) ||
-        first->graphBoundaryAttachment(boundary) !=
+    const pnr::PnrIndex selected = first->graphBoundaryAttachment(boundary);
+    if (selected < record.attachmentOptionOffset ||
+        selected - record.attachmentOptionOffset >=
+            record.attachmentOptionCount ||
+        selected >= attachmentOptions.size() ||
+        attachmentOptions[selected].ownerKind !=
+            pnr::FrozenSpatialAttachmentOwnerKind::GraphBoundary ||
+        attachmentOptions[selected].owner != boundary ||
+        selected != second->graphBoundaryAttachment(boundary) ||
+        selected !=
             canonicalAttempt.candidate->graphBoundaryAttachment(boundary))
       fail("canonical initializer changed graph-boundary attachment order");
+    if (attachmentOptions[selected].endpoint >=
+        problem->routing().routingEndpoints().size())
+      fail("canonical initializer selected a foreign boundary endpoint");
+  }
+  const auto &routing = problem->routing();
+  const auto endpoints = routing.routingEndpoints();
+  const auto arcs = routing.routingArcs();
+  const auto adjacency = routing.adjacencyOffsets();
+  const auto reachable = [&](pnr::PnrIndex source, pnr::PnrIndex target,
+                             std::uint32_t payloadWidth) {
+    if (source >= endpoints.size() || target >= endpoints.size() ||
+        adjacency.size() != endpoints.size() + 1)
+      fail("canonical initializer produced a malformed routing endpoint");
+    if (source == target)
+      return true;
+    std::vector<std::uint8_t> visited(endpoints.size(), 0);
+    std::vector<pnr::PnrIndex> worklist{source};
+    visited[source] = 1;
+    for (std::size_t cursor = 0; cursor < worklist.size(); ++cursor) {
+      const pnr::PnrIndex endpoint = worklist[cursor];
+      for (pnr::PnrIndex arc = adjacency[endpoint];
+           arc < adjacency[endpoint + 1]; ++arc) {
+        if (arc >= arcs.size() || arcs[arc].target >= endpoints.size())
+          fail("canonical initializer routing graph is malformed");
+        if (arcs[arc].payloadCapacityBits < payloadWidth)
+          continue;
+        const pnr::PnrIndex successor = arcs[arc].target;
+        if (visited[successor])
+          continue;
+        if (successor == target)
+          return true;
+        visited[successor] = 1;
+        worklist.push_back(successor);
+      }
+    }
+    return false;
+  };
+  for (pnr::PnrIndex logicalNet = 0;
+       logicalNet < problem->transfers().logicalNets().size(); ++logicalNet) {
+    const pnr::PnrIndex source = first->logicalNetSourceEndpoint(logicalNet);
+    const auto &net = problem->transfers().logicalNets()[logicalNet];
+    for (pnr::PnrIndex sink = 0; sink < net.sinkCount; ++sink)
+      if (!reachable(source, first->logicalNetSinkEndpoint(logicalNet, sink),
+                     first->logicalNetPayloadWidth(logicalNet)))
+        fail("canonical initializer selected an unreachable terminal pair");
   }
   for (pnr::PnrIndex actor = 0; actor < realizations.memoryActors().size();
        ++actor) {
@@ -1084,7 +1146,15 @@ void loom::test::exerciseCanonicalCandidateInitialization(
           .policy()
           .search.initializer.assignmentAttemptLimitPerSeed)
     fail("Spatial initializer exceeded its assignment work limit");
+}
 
+void loom::test::exerciseSpatialInitializerDiversification(
+    const pnr::FrozenSpatialPnrProblemHandle &problem) {
+  std::uint64_t canonicalAssignmentAttempts = 0;
+  const auto canonicalAttempt =
+      take(pnr::createSpatialCandidateInitializerAttempt(
+          problem, 0, canonicalAssignmentAttempts));
+  const auto &realizations = problem->realizations();
   bool observedDependentDiversification = false;
   for (std::uint32_t attempt = 1;
        attempt < problem->config().policy().search.initializer.seedAttemptCount;
@@ -1197,7 +1267,12 @@ void loom::test::exerciseCanonicalCandidateInitialization(
   if (foreignAttempt)
     fail("Spatial initializer accepted an out-of-range fixed slot");
   llvm::consumeError(foreignAttempt.takeError());
+}
 
+void loom::test::exerciseSpatialActionDomainAndObjective(
+    const pnr::FrozenSpatialPnrProblemHandle &problem) {
+  auto first = take(pnr::createCanonicalSpatialCandidate(problem));
+  auto second = take(pnr::createCanonicalSpatialCandidate(problem));
   pnr::SpatialActionDomainScratch actionDomain;
   requireSuccess(actionDomain.prepare(*problem));
   const std::size_t retainedActionDomainBytes =
@@ -1290,15 +1365,24 @@ void loom::test::exerciseCanonicalCandidateInitialization(
                             {first->unroutedObligationCount(), capacityOveruse,
                              first->totalSelectedTraversalClaim()}))
     fail("Spatial objective adapter changed a Mapping-owned value");
+}
 
+void loom::test::exerciseSpatialAnnealingReplay(
+    const pnr::FrozenSpatialPnrProblemHandle &problem, bool warmScratch) {
+  const auto &realizations = problem->realizations();
   auto annealedFirst = take(pnr::createCanonicalSpatialCandidate(problem));
-  auto annealedSecond = take(pnr::createCanonicalSpatialCandidate(problem));
+  auto annealedReplay = take(pnr::createCanonicalSpatialCandidate(problem));
   pnr::SpatialAnnealingSearchScratch firstSearch;
-  pnr::SpatialAnnealingSearchScratch secondSearch;
   const auto firstStatistics = take(firstSearch.run(*annealedFirst, 0));
-  const auto secondStatistics = take(secondSearch.run(*annealedSecond, 0));
-  if (!(firstStatistics == secondStatistics))
+  const std::size_t warmStorage = firstSearch.retainedStorageBytes();
+  pnr::SpatialAnnealingSearchScratch independentSearch;
+  const auto replayStatistics =
+      warmScratch ? take(firstSearch.run(*annealedReplay, 0))
+                  : take(independentSearch.run(*annealedReplay, 0));
+  if (!(firstStatistics == replayStatistics))
     fail("Spatial annealing replay changed its search statistics");
+  if (warmScratch && firstSearch.retainedStorageBytes() != warmStorage)
+    fail("warm Spatial annealing replay changed retained storage");
   if (firstStatistics.minimumTemperatureLevelCount != 1 ||
       firstStatistics.calibrationProposalSlots !=
           problem->config().policy().search.annealing.calibrationProposalCount)
@@ -1368,15 +1452,7 @@ void loom::test::exerciseCanonicalCandidateInitialization(
       fail("Spatial annealing replay changed its final objective");
   };
   requireSuccess(annealedFirst->verify());
-  requireSuccess(annealedSecond->verify());
-  requireSameCandidate(*annealedFirst, *annealedSecond);
-
-  auto annealedReplay = take(pnr::createCanonicalSpatialCandidate(problem));
-  const std::size_t warmStorage = firstSearch.retainedStorageBytes();
-  const auto replayStatistics = take(firstSearch.run(*annealedReplay, 0));
-  if (!(replayStatistics == firstStatistics) ||
-      firstSearch.retainedStorageBytes() != warmStorage)
-    fail("warm Spatial annealing replay changed statistics or storage");
+  requireSuccess(annealedReplay->verify());
   requireSameCandidate(*annealedFirst, *annealedReplay);
 
   auto foreignSeed = firstSearch.run(
@@ -1385,9 +1461,51 @@ void loom::test::exerciseCanonicalCandidateInitialization(
   if (foreignSeed)
     fail("Spatial annealing accepted an out-of-range seed ordinal");
   llvm::consumeError(foreignSeed.takeError());
+}
 
-  auto sequenceCandidate = take(pnr::createCanonicalSpatialCandidate(problem));
-  loom::test::exerciseSpatialActionSequence(problem, *sequenceCandidate, 512);
+void loom::test::exercisePathFinderFixedTerminalCutRejection(
+    pnr::SpatialCandidateState &candidate,
+    pnr::SpatialCandidateScratch &candidateScratch) {
+  auto routeCosts = take(pnr::SpatialRouteCostState::create(candidate));
+  pnr::SpatialPathFinderRouterScratch router;
+  requireSuccess(router.prepare(candidate.problem()));
+  const std::uint64_t routeClaim = candidate.totalSelectedTraversalClaim();
+  auto fixedCut =
+      router.routeToClosure(candidate, candidateScratch, routeCosts,
+                            {candidate.problem()
+                                 .config()
+                                 .policy()
+                                 .search.routing.endpointExpansionLimit,
+                             candidate.problem()
+                                 .config()
+                                 .policy()
+                                 .search.routing.negotiationIterationLimit},
+                            {});
+  if (fixedCut)
+    fail("PathFinder ignored a fixed-terminal capacity cut");
+  bool observedFixedCut = false;
+  llvm::handleAllErrors(
+      fixedCut.takeError(),
+      [&](const pnr::SpatialPathFinderClosureFailure &failure) {
+        observedFixedCut =
+            failure.kind() == pnr::SpatialPathFinderClosureFailure::Kind::
+                                  FixedTerminalCapacityCut &&
+            failure.certificateCapacity() != pnr::getInvalidPnrIndex() &&
+            failure.mandatoryUsage() > failure.physicalCapacity() &&
+            !failure.forcedLogicalNets().empty();
+      });
+  if (!observedFixedCut)
+    fail("PathFinder lost its fixed-terminal capacity-cut certificate");
+  if (candidate.totalSelectedTraversalClaim() != routeClaim)
+    fail("fixed-terminal cut rejection changed the candidate route overlay");
+  requireSuccess(routeCosts.resetFromCandidate());
+  for (pnr::PnrIndex capacity = 0;
+       capacity < candidate.problem().resources().capacityDimensions().size();
+       ++capacity)
+    if (routeCosts.workingCapacityUsageRaw(capacity) !=
+        candidate.routeCapacityUsageRaw(capacity))
+      fail("fixed-terminal cut rejection left stale route capacity");
+  requireSuccess(candidate.verify());
 }
 
 void loom::test::exerciseSpatialAttachmentConstraintRelations(

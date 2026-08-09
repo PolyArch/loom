@@ -178,6 +178,54 @@ InitializerRelationSolver::InitializerRelationSolver(
   removalJournal_.reserve(choiceCount);
   relationQueue_.resize(model.relations().size());
   relationPending_.resize(model.relations().size());
+  binaryEqualSupports_.resize(model.relations().size());
+  for (PnrIndex relation = 0; relation < model.relations().size(); ++relation) {
+    const InitializerRelationRecord &record = model.relations()[relation];
+    const auto members = model.members(record);
+    if (record.kind != InitializerRelationKind::Equal || members.size() != 2 ||
+        members[0].decision == members[1].decision)
+      continue;
+
+    BinaryEqualSupport &support = binaryEqualSupports_[relation];
+    support.first = members[0];
+    support.second = members[1];
+    std::vector<PnrIndex> values;
+    for (const InitializerRelationMember &member : members) {
+      const PnrIndex choiceCount = decisionChoiceOffsets_[member.decision + 1] -
+                                   decisionChoiceOffsets_[member.decision];
+      values.reserve(values.size() + choiceCount);
+      for (PnrIndex choice = 0; choice < choiceCount; ++choice)
+        values.push_back(model.projectedValue(member, choice));
+    }
+    llvm::sort(values);
+    values.erase(std::unique(values.begin(), values.end()), values.end());
+    assert(!values.empty() && values.size() <= getPnrIndexMax());
+    support.valueCount = static_cast<PnrIndex>(values.size());
+
+    const auto appendChoiceValues =
+        [&](const InitializerRelationMember &member) {
+          const std::size_t offset = binaryEqualChoiceValues_.size();
+          const PnrIndex choiceCount =
+              decisionChoiceOffsets_[member.decision + 1] -
+              decisionChoiceOffsets_[member.decision];
+          for (PnrIndex choice = 0; choice < choiceCount; ++choice) {
+            const PnrIndex projected = model.projectedValue(member, choice);
+            const auto found = llvm::lower_bound(values, projected);
+            assert(found != values.end() && *found == projected);
+            binaryEqualChoiceValues_.push_back(
+                static_cast<PnrIndex>(found - values.begin()));
+          }
+          return offset;
+        };
+    support.firstChoiceValueOffset = appendChoiceValues(support.first);
+    support.secondChoiceValueOffset = appendChoiceValues(support.second);
+    support.firstCountOffset = binaryEqualActiveCounts_.size();
+    binaryEqualActiveCounts_.resize(binaryEqualActiveCounts_.size() +
+                                    support.valueCount);
+    support.secondCountOffset = binaryEqualActiveCounts_.size();
+    binaryEqualActiveCounts_.resize(binaryEqualActiveCounts_.size() +
+                                    support.valueCount);
+  }
   canonicalActiveChoices_.resize(choiceCount);
   choiceOrder_.resize(choiceCount);
   choiceFenwick_.resize(choiceCount);
@@ -197,6 +245,26 @@ void InitializerRelationSolver::reset() {
   for (PnrIndex decision = 0; decision < domainCounts_.size(); ++decision)
     domainCounts_[decision] =
         decisionChoiceOffsets_[decision + 1] - decisionChoiceOffsets_[decision];
+  std::fill(binaryEqualActiveCounts_.begin(), binaryEqualActiveCounts_.end(),
+            0);
+  for (const BinaryEqualSupport &support : binaryEqualSupports_) {
+    if (support.valueCount == 0)
+      continue;
+    const PnrIndex firstChoiceCount =
+        decisionChoiceOffsets_[support.first.decision + 1] -
+        decisionChoiceOffsets_[support.first.decision];
+    for (PnrIndex choice = 0; choice < firstChoiceCount; ++choice)
+      ++binaryEqualActiveCounts_
+          [support.firstCountOffset +
+           binaryEqualChoiceValues_[support.firstChoiceValueOffset + choice]];
+    const PnrIndex secondChoiceCount =
+        decisionChoiceOffsets_[support.second.decision + 1] -
+        decisionChoiceOffsets_[support.second.decision];
+    for (PnrIndex choice = 0; choice < secondChoiceCount; ++choice)
+      ++binaryEqualActiveCounts_
+          [support.secondCountOffset +
+           binaryEqualChoiceValues_[support.secondChoiceValueOffset + choice]];
+  }
   removalJournal_.clear();
   clearQueue();
   assignmentAttempts_ = 0;
@@ -223,6 +291,41 @@ void InitializerRelationSolver::enqueueDecisionRelations(PnrIndex decision) {
     enqueueRelation(relation);
 }
 
+void InitializerRelationSolver::updateBinaryEqualSupport(PnrIndex decision,
+                                                         PnrIndex localChoice,
+                                                         bool add) {
+  if (decision >= model_->decisionCount())
+    return;
+  const auto offsets = model_->decisionRelationOffsets();
+  for (PnrIndex relation : model_->decisionRelations().slice(
+           offsets[decision], offsets[decision + 1] - offsets[decision])) {
+    const BinaryEqualSupport &support = binaryEqualSupports_[relation];
+    if (support.valueCount == 0)
+      continue;
+    std::size_t choiceValueOffset = 0;
+    std::size_t countOffset = 0;
+    if (support.first.decision == decision) {
+      choiceValueOffset = support.firstChoiceValueOffset;
+      countOffset = support.firstCountOffset;
+    } else {
+      assert(support.second.decision == decision);
+      choiceValueOffset = support.secondChoiceValueOffset;
+      countOffset = support.secondCountOffset;
+    }
+    PnrIndex &count =
+        binaryEqualActiveCounts_[countOffset +
+                                 binaryEqualChoiceValues_[choiceValueOffset +
+                                                          localChoice]];
+    if (add) {
+      assert(count != getPnrIndexMax());
+      ++count;
+    } else {
+      assert(count != 0);
+      --count;
+    }
+  }
+}
+
 bool InitializerRelationSolver::choiceActive(PnrIndex decision,
                                              PnrIndex localChoice) const {
   return activeChoices_[decisionChoiceOffsets_[decision] + localChoice] != 0;
@@ -234,6 +337,7 @@ bool InitializerRelationSolver::removeChoice(PnrIndex decision,
   if (!activeChoices_[choice])
     return domainCounts_[decision] != 0;
   activeChoices_[choice] = 0;
+  updateBinaryEqualSupport(decision, localChoice, false);
   --domainCounts_[decision];
   removalJournal_.push_back({decision, localChoice});
   enqueueDecisionRelations(decision);
@@ -241,8 +345,26 @@ bool InitializerRelationSolver::removeChoice(PnrIndex decision,
 }
 
 bool InitializerRelationSolver::equalChoiceSupported(
-    const InitializerRelationRecord &relation, PnrIndex decision,
-    PnrIndex localChoice) const {
+    PnrIndex relationOrdinal, PnrIndex decision, PnrIndex localChoice) const {
+  const BinaryEqualSupport &support = binaryEqualSupports_[relationOrdinal];
+  if (support.valueCount != 0) {
+    std::size_t choiceValueOffset = 0;
+    std::size_t otherCountOffset = 0;
+    if (support.first.decision == decision) {
+      choiceValueOffset = support.firstChoiceValueOffset;
+      otherCountOffset = support.secondCountOffset;
+    } else {
+      assert(support.second.decision == decision);
+      choiceValueOffset = support.secondChoiceValueOffset;
+      otherCountOffset = support.firstCountOffset;
+    }
+    const PnrIndex value =
+        binaryEqualChoiceValues_[choiceValueOffset + localChoice];
+    return binaryEqualActiveCounts_[otherCountOffset + value] != 0;
+  }
+
+  const InitializerRelationRecord &relation =
+      model_->relations()[relationOrdinal];
   const auto members = model_->members(relation);
   std::optional<PnrIndex> required;
   for (const InitializerRelationMember &member : members) {
@@ -355,7 +477,7 @@ bool InitializerRelationSolver::relationChoiceSupported(
   const InitializerRelationRecord &record = model_->relations()[relation];
   switch (record.kind) {
   case InitializerRelationKind::Equal:
-    return equalChoiceSupported(record, decision, localChoice);
+    return equalChoiceSupported(relation, decision, localChoice);
   case InitializerRelationKind::Disjoint:
     return disjointChoiceSupported(record, decision, localChoice);
   }
@@ -432,6 +554,7 @@ void InitializerRelationSolver::rollback(std::size_t journalMark) {
         decisionChoiceOffsets_[removed.decision] + removed.localChoice;
     assert(!activeChoices_[choice]);
     activeChoices_[choice] = 1;
+    updateBinaryEqualSupport(removed.decision, removed.localChoice, true);
     ++domainCounts_[removed.decision];
   }
 }
@@ -628,6 +751,9 @@ std::size_t InitializerRelationSolver::retainedStorageBytes() const {
   return retainedBytes(decisionChoiceOffsets_) + retainedBytes(activeChoices_) +
          retainedBytes(domainCounts_) + retainedBytes(removalJournal_) +
          retainedBytes(relationQueue_) + retainedBytes(relationPending_) +
+         retainedBytes(binaryEqualSupports_) +
+         retainedBytes(binaryEqualChoiceValues_) +
+         retainedBytes(binaryEqualActiveCounts_) +
          retainedBytes(canonicalActiveChoices_) + retainedBytes(choiceOrder_) +
          retainedBytes(choiceFenwick_) + retainedBytes(completeAssignment_);
 }

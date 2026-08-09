@@ -44,7 +44,7 @@ target_link_libraries(LoomFabricArtifact PUBLIC
   LoomFabricResourceContract
   LoomFabricSystemContracts
   LoomFabricTemporalOperandBuffer
-  LoomFabricTemporalSwitchResourceContract
+  LoomFabricSwitchResourceContract
   MLIRFabric
 )
 mlir_target_link_libraries(LoomFabricArtifact PUBLIC

@@ -2,6 +2,7 @@
 #include "ADG/Builtin.h"
 #include "ADG/MemoryLibrary.h"
 #include "CgraAdmissionTestSupport.h"
+#include "SpatialCandidateSelectionTestSupport.h"
 #include "TechMappingCandidateTestSupport.h"
 
 #include "Common/ArtifactLocalReference.h"
@@ -534,77 +535,9 @@ parseSpatial(mlir::MLIRContext &context,
   return mlir::parseSourceString<mlir::ModuleOp>(text, &context);
 }
 
-void selectReachableGraphBoundaries(loom::pnr::SpatialCandidateState &candidate,
-                                    loom::pnr::SpatialMoveTransaction &move) {
-  const auto &problem = candidate.problem();
-  const auto reachable = [&](loom::pnr::PnrIndex source,
-                             loom::pnr::PnrIndex destination) {
-    const auto &routing = problem.routing();
-    std::vector<std::uint8_t> visited(routing.routingEndpoints().size(), 0);
-    std::vector<loom::pnr::PnrIndex> worklist{source};
-    visited[source] = 1;
-    for (std::size_t cursor = 0; cursor < worklist.size(); ++cursor) {
-      const auto current = worklist[cursor];
-      if (current == destination)
-        return true;
-      const auto offsets = routing.adjacencyOffsets();
-      for (loom::pnr::PnrIndex arc = offsets[current];
-           arc != offsets[current + 1]; ++arc) {
-        const auto next = routing.routingArcs()[arc].target;
-        if (!visited[next]) {
-          visited[next] = 1;
-          worklist.push_back(next);
-        }
-      }
-    }
-    return false;
-  };
-  const auto selectedEndpoint =
-      [&](loom::pnr::FrozenSpatialTerminalBinding binding,
-          std::optional<std::pair<loom::pnr::PnrIndex, loom::pnr::PnrIndex>>
-              override) {
-        loom::pnr::PnrIndex option = 0;
-        if (binding.kind ==
-            loom::pnr::FrozenSpatialTerminalBindingKind::PortDemand) {
-          option = candidate.portAttachment(binding.index);
-        } else if (override && override->first == binding.index) {
-          option = override->second;
-        } else {
-          option = candidate.graphBoundaryAttachment(binding.index);
-        }
-        return problem.ports().attachmentOptions()[option].endpoint;
-      };
-  for (auto [boundaryOrdinal, boundary] :
-       llvm::enumerate(problem.ports().graphBoundaries())) {
-    const auto netOrdinal = boundary.logicalNet;
-    const auto &net = problem.transfers().logicalNets()[netOrdinal];
-    bool selected = false;
-    for (loom::pnr::PnrIndex option = boundary.attachmentOptionOffset;
-         option !=
-         boundary.attachmentOptionOffset + boundary.attachmentOptionCount;
-         ++option) {
-      const auto override = std::make_pair(
-          static_cast<loom::pnr::PnrIndex>(boundaryOrdinal), option);
-      const auto source = selectedEndpoint(
-          problem.transfers().logicalNetSourceBindings()[netOrdinal], override);
-      bool connects = true;
-      for (const auto sink : problem.transfers().logicalNetSinkBindings().slice(
-               net.sinkOffset, net.sinkCount))
-        connects &= reachable(source, selectedEndpoint(sink, override));
-      if (!connects)
-        continue;
-      requireSuccess(move.setGraphBoundaryAttachment(
-          static_cast<loom::pnr::PnrIndex>(boundaryOrdinal), option));
-      selected = true;
-      break;
-    }
-    if (!selected)
-      fail("graph boundary has no reachable attachment");
-  }
-}
-
 void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
-                                loom::pnr::SpatialCandidateScratch &scratch) {
+                                loom::pnr::SpatialCandidateScratch &scratch,
+                                bool requireLocalTagInterference) {
   const auto &problem = candidate.problem();
   const auto realizations = problem.realizations().computeRealizations();
   if (realizations.size() != 1)
@@ -626,25 +559,61 @@ void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
   }
   if (!legal)
     fail("Temporal SpatialMapping fixture has no legal compute binding");
-  if (candidate.computeBinding(0).placement == legal->placement &&
-      candidate.computeBinding(0).instructionContext ==
-          legal->instructionContext)
-    return;
-
   auto move = take(candidate.beginMove(scratch));
   requireSuccess(
       move.setComputeBinding(0, legal->placement, legal->instructionContext));
+  std::vector<loom::pnr::PnrIndex> selectedAttachments(
+      problem.ports().portDemands().size());
   for (auto [demandOrdinal, demand] :
        llvm::enumerate(problem.ports().portDemands())) {
     const auto &domain =
         problem.ports()
             .placementDomains()[demand.placementDomainOffset +
                                 legal->placement - realization.placementOffset];
-    requireSuccess(
-        move.setPortAttachment(static_cast<loom::pnr::PnrIndex>(demandOrdinal),
-                               domain.attachmentOptionOffset));
+    selectedAttachments[demandOrdinal] = domain.attachmentOptionOffset;
   }
-  selectReachableGraphBoundaries(candidate, move);
+  if (requireLocalTagInterference) {
+    bool foundSharedIngress = false;
+    const auto demands = problem.ports().portDemands();
+    const auto domains = problem.ports().placementDomains();
+    const auto options = problem.ports().attachmentOptions();
+    for (std::size_t lhs = 0; !foundSharedIngress && lhs < demands.size();
+         ++lhs) {
+      const auto &lhsDomain =
+          domains[demands[lhs].placementDomainOffset + legal->placement -
+                  realization.placementOffset];
+      for (std::size_t rhs = lhs + 1;
+           !foundSharedIngress && rhs < demands.size(); ++rhs) {
+        if (demands[lhs].logicalNet == demands[rhs].logicalNet)
+          continue;
+        const auto &rhsDomain =
+            domains[demands[rhs].placementDomainOffset + legal->placement -
+                    realization.placementOffset];
+        for (loom::pnr::PnrIndex lhsOption = lhsDomain.attachmentOptionOffset;
+             !foundSharedIngress &&
+             lhsOption != lhsDomain.attachmentOptionOffset +
+                              lhsDomain.attachmentOptionCount;
+             ++lhsOption)
+          for (loom::pnr::PnrIndex rhsOption = rhsDomain.attachmentOptionOffset;
+               rhsOption != rhsDomain.attachmentOptionOffset +
+                                rhsDomain.attachmentOptionCount;
+               ++rhsOption)
+            if (options[lhsOption].endpoint == options[rhsOption].endpoint) {
+              selectedAttachments[lhs] = lhsOption;
+              selectedAttachments[rhs] = rhsOption;
+              foundSharedIngress = true;
+              break;
+            }
+      }
+    }
+    if (!foundSharedIngress)
+      fail("Temporal route fixture has no shared ingress attachment");
+  }
+  for (auto [demandOrdinal, option] : llvm::enumerate(selectedAttachments))
+    requireSuccess(move.setPortAttachment(
+        static_cast<loom::pnr::PnrIndex>(demandOrdinal), option));
+  requireSuccess(loom::test::selectReachableGraphBoundaries(
+      candidate, move, selectedAttachments));
   if (!take(move.close()))
     fail("legal Temporal binding closes a selected handshake cycle");
   requireSuccess(move.commit());
@@ -720,11 +689,11 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
         typedGeneratorInputs, generatorBinding, store);
     const auto *generated =
         std::get_if<loom::pnr::GeneratedSpatialMappings>(&generatedSpatial);
-    if (!generated || generated->candidates.size() != 1 ||
+    if (!generated || generated->candidates.size() != 2 ||
         generated->accounting.seedAttemptSlots != 2 ||
-        generated->accounting.preparedSeeds != 1 ||
-        generated->accounting.finalizedRestarts != 1 ||
-        generated->accounting.publicationSlots != 1)
+        generated->accounting.preparedSeeds != 2 ||
+        generated->accounting.finalizedRestarts != 2 ||
+        generated->accounting.publicationSlots != 2)
       fail("Spatial PnR generator refilled or lost a fixed restart slot");
     if (!std::is_sorted(generated->candidates.begin(),
                         generated->candidates.end(),
@@ -859,7 +828,7 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
     }
     loom::pnr::SpatialCandidateScratch candidateScratch;
     requireSuccess(candidateScratch.prepare(*problem));
-    selectLegalTemporalBinding(*candidate, candidateScratch);
+    selectLegalTemporalBinding(*candidate, candidateScratch, boundaryWrapped);
     if (forceTagConflict) {
       auto costs = take(loom::pnr::SpatialRouteCostState::create(*candidate));
       loom::pnr::SpatialPathFinderRouterScratch router;
@@ -973,10 +942,13 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
   }
 
   bool observedSharedLocalDomain = false;
+  std::size_t maximumLocalDomainOccupancy = 0;
   for (loom::pnr::PnrIndex domain = 0;
        domain < problem->routing().tagContinuity().matchDomains().size();
        ++domain) {
     const auto members = tagAssignments.domainSegments(domain);
+    maximumLocalDomainOccupancy =
+        std::max(maximumLocalDomainOccupancy, members.size());
     observedSharedLocalDomain |= members.size() > 1;
     for (auto [position, lhs] : llvm::enumerate(members))
       for (loom::pnr::PnrIndex rhs : llvm::drop_begin(members, position + 1))
@@ -985,7 +957,13 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
           fail("one local Physical Tag match domain contains a collision");
   }
   if (boundaryWrapped && !observedSharedLocalDomain)
-    fail("Temporal route fixture did not exercise local tag interference");
+    fail(
+        ("Temporal route fixture did not exercise local tag interference: " +
+         llvm::Twine(tagAssignments.segments().size()) + " segments across " +
+         llvm::Twine(problem->routing().tagContinuity().matchDomains().size()) +
+         " domains, maximum local occupancy " +
+         llvm::Twine(maximumLocalDomainOccupancy))
+            .str());
 
   bool observedDisjointDomainReuse = false;
   const auto segmentDomainOffsets = tagAssignments.segmentDomainOffsets();
@@ -1602,7 +1580,8 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
     fail("restored local memory move lost its resource-time envelope");
   {
     auto move = take(candidate->beginMove(candidateScratch));
-    selectReachableGraphBoundaries(*candidate, move);
+    requireSuccess(
+        loom::test::selectReachableGraphBoundaries(*candidate, move));
     if (!take(move.close()))
       fail("reachable memory boundaries close a selected handshake cycle");
     requireSuccess(move.commit());

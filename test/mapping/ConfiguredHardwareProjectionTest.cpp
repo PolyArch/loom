@@ -355,7 +355,7 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
       buildConstraints(context, dataflow, tech.view(), fabric.view(), store);
 
   auto &search = resolved.dse.spatialPnr.search;
-  search.initializer.seedAttemptCount = 2;
+  search.initializer.seedAttemptCount = 1;
   search.actionProposal = {0, 1, 0};
   search.annealing.calibrationProposalCount = 1;
   search.annealing.fallbackTemperature = 1;

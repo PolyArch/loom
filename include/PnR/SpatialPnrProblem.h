@@ -825,6 +825,9 @@ public:
     return nodeSignals_;
   }
   llvm::ArrayRef<FrozenSpatialHandshakeArc> arcs() const { return arcs_; }
+  llvm::ArrayRef<::loom::fabric::FabricHandshakeOwner> owners() const {
+    return owners_;
+  }
   llvm::ArrayRef<PnrIndex> adjacencyOffsets() const {
     return adjacencyOffsets_;
   }
@@ -836,6 +839,9 @@ public:
   }
   llvm::ArrayRef<FrozenSpatialHandshakeFragment> fragments() const {
     return fragments_;
+  }
+  llvm::ArrayRef<PnrIndex> fragmentOwnerOrdinals() const {
+    return fragmentOwnerOrdinals_;
   }
   llvm::ArrayRef<PnrIndex> fragmentArcOrdinals() const {
     return fragmentArcOrdinals_;
@@ -884,10 +890,12 @@ public:
 private:
   std::vector<std::optional<::loom::fabric::HandshakeSignalRef>> nodeSignals_;
   std::vector<FrozenSpatialHandshakeArc> arcs_;
+  std::vector<::loom::fabric::FabricHandshakeOwner> owners_;
   std::vector<PnrIndex> adjacencyOffsets_;
   std::vector<PnrIndex> reverseAdjacencyOffsets_;
   std::vector<PnrIndex> reverseArcOrdinals_;
   std::vector<FrozenSpatialHandshakeFragment> fragments_;
+  std::vector<PnrIndex> fragmentOwnerOrdinals_;
   std::vector<PnrIndex> fragmentArcOrdinals_;
   std::vector<PnrIndex> fixedFragments_;
   std::vector<PnrIndex> traversalFragmentOffsets_;

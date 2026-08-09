@@ -19,8 +19,14 @@ struct SpatialPathFinderRoutingLimits final {
   std::uint64_t iterationLimit = 0;
 };
 
+enum class SpatialRoutingClosureRequirement : std::uint8_t {
+  PolicyAdmittedTemporary,
+  Final,
+};
+
 struct SpatialPathFinderClosureResult final {
   std::uint64_t completedIterations = 0;
+  bool capacityClosed = false;
 };
 
 class SpatialPathFinderClosureFailure final
@@ -28,20 +34,35 @@ class SpatialPathFinderClosureFailure final
 public:
   enum class Kind {
     NonClosure,
+    FixedTerminalCapacityCut,
     SelectedCombinationalHandshakeCycle,
   };
 
   static char ID;
 
-  SpatialPathFinderClosureFailure(Kind kind, std::string message);
+  SpatialPathFinderClosureFailure(
+      Kind kind, std::string message,
+      PnrIndex certificateCapacity = getInvalidPnrIndex(),
+      std::uint64_t mandatoryUsage = 0, std::uint64_t physicalCapacity = 0,
+      std::vector<PnrIndex> forcedLogicalNets = {});
 
   Kind kind() const { return kind_; }
+  PnrIndex certificateCapacity() const { return certificateCapacity_; }
+  std::uint64_t mandatoryUsage() const { return mandatoryUsage_; }
+  std::uint64_t physicalCapacity() const { return physicalCapacity_; }
+  llvm::ArrayRef<PnrIndex> forcedLogicalNets() const {
+    return forcedLogicalNets_;
+  }
   void log(llvm::raw_ostream &stream) const override;
   std::error_code convertToErrorCode() const override;
 
 private:
   Kind kind_;
   std::string message_;
+  PnrIndex certificateCapacity_;
+  std::uint64_t mandatoryUsage_;
+  std::uint64_t physicalCapacity_;
+  std::vector<PnrIndex> forcedLogicalNets_;
 };
 
 /// Worker-local deterministic PathFinder closure scratch. One invocation uses
@@ -68,14 +89,18 @@ public:
                  SpatialCandidateScratch &candidateScratch,
                  SpatialRouteCostState &costs,
                  SpatialPathFinderRoutingLimits limits,
-                 llvm::ArrayRef<RouteCost> evaluationPriorities);
+                 llvm::ArrayRef<RouteCost> evaluationPriorities,
+                 SpatialRoutingClosureRequirement closureRequirement =
+                     SpatialRoutingClosureRequirement::Final);
 
   /// Applies global negotiation inside an already active Mapping move. The
   /// caller owns close, objective evaluation, and commit or rollback.
   llvm::Expected<SpatialPathFinderClosureResult> routeToClosureInMove(
       SpatialMoveTransaction &move, SpatialCandidateState &candidate,
       SpatialRouteCostState &costs, SpatialPathFinderRoutingLimits limits,
-      llvm::ArrayRef<RouteCost> evaluationPriorities);
+      llvm::ArrayRef<RouteCost> evaluationPriorities,
+      SpatialRoutingClosureRequirement closureRequirement =
+          SpatialRoutingClosureRequirement::Final);
 
   llvm::Expected<RouteCost>
   routeWholeNetInMove(SpatialMoveTransaction &move,
@@ -115,6 +140,18 @@ private:
     RouteCost conflictPressure = 0;
   };
 
+  struct CapacityConflictAnalysis final {
+    std::uint64_t conflictCount = 0;
+    std::uint64_t diagnosticConflictCount = 0;
+    PnrIndex certificateCapacity = getInvalidPnrIndex();
+    std::uint64_t mandatoryUsage = 0;
+    std::uint64_t physicalCapacity = 0;
+
+    bool hasCertificate() const {
+      return certificateCapacity != getInvalidPnrIndex();
+    }
+  };
+
   llvm::Expected<NetProjection>
   projectLogicalNet(const SpatialCandidateState &candidate,
                     const SpatialRouteCostState &costs, PnrIndex logicalNet);
@@ -122,6 +159,15 @@ private:
   buildCanonicalNetOrder(const SpatialCandidateState &candidate,
                          const SpatialRouteCostState &costs,
                          llvm::ArrayRef<RouteCost> evaluationPriorities);
+  llvm::Error captureCurrentRoutes(const SpatialCandidateState &candidate);
+  llvm::Error restoreCapturedRoutes(SpatialMoveTransaction &move,
+                                    SpatialCandidateState &candidate,
+                                    SpatialRouteCostState &costs);
+  llvm::Expected<CapacityConflictAnalysis>
+  analyzeCapacityConflicts(const SpatialCandidateState &candidate,
+                           const SpatialRouteCostState &costs,
+                           std::uint64_t iteration,
+                           std::uint64_t sessionIteration);
   void beginProjection();
 
   SpatialNetRouterScratch netRouter_;
@@ -132,6 +178,21 @@ private:
   std::vector<RouteCost> capacityNetQCosts_;
   std::vector<PnrIndex> touchedCapacities_;
   std::vector<PnrIndex> constraintSweepNets_;
+  std::vector<std::size_t> capturedSinkPathOffsets_;
+  std::vector<PnrIndex> capturedForwardArcs_;
+  std::vector<PnrIndex> reversePath_;
+  std::vector<std::uint8_t> cutBlockedTraversals_;
+  std::vector<std::uint8_t> cutReachableEndpoints_;
+  std::vector<std::uint8_t> cutSeenTraversals_;
+  std::vector<std::uint8_t> cutSeenEndpoints_;
+  std::vector<PnrIndex> cutWorklist_;
+  std::vector<PnrIndex> cutContributingNets_;
+  std::vector<PnrIndex> cutForcedNets_;
+  std::vector<PnrIndex> cutCertificateForcedNets_;
+  std::vector<PnrIndex> cutTouchedClaims_;
+  std::vector<PnrIndex> cutNetClaimRefcounts_;
+  std::vector<PnrIndex> cutClaimSelectionCounts_;
+  std::vector<std::uint64_t> cutClaimTraversalRefcounts_;
   std::uint64_t projectionEpoch_ = 0;
   std::uint64_t negotiationIterationCount_ = 0;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;

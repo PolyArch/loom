@@ -1,0 +1,3 @@
+# RUN: %loom-spatial-pnr-scale-test tech | FileCheck %s
+
+# CHECK: tech_mapping_scale actors=1009 wall_ns={{[0-9]+}} match_rows={{[0-9]+}} cover_expansions={{[0-9]+}}

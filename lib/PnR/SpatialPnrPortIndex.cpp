@@ -871,21 +871,34 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialPortIndex(
     const std::size_t length = static_cast<std::size_t>(count);
     return begin <= size && length <= size - begin;
   };
+  using FuPortKey =
+      std::tuple<FabricEntityId, FabricPortDirection, FabricOrdinal>;
+  using FuDirectionKey = std::pair<FabricEntityId, FabricPortDirection>;
+  std::map<FuDirectionKey, FabricOrdinal> nextFuPortOrdinal;
+  std::map<FuPortKey, PnrIndex> fuPortEndpoints;
+  for (auto [index, endpoint] : llvm::enumerate(routing.routingEndpoints())) {
+    if (endpoint.reference.owner.kind() !=
+        FabricTransportEndpointOwnerKind::FabricFuOccurrence)
+      continue;
+    if (index > getPnrIndexMax())
+      return invalid("FU endpoint index exceeds PnrIndex");
+    const FabricFuOccurrenceRef fu =
+        std::get<FabricFuOccurrenceRef>(endpoint.reference.owner.payload);
+    FabricOrdinal &ordinal = nextFuPortOrdinal[{fu.id(), endpoint.direction}];
+    if (!fuPortEndpoints
+             .try_emplace({fu.id(), endpoint.direction, ordinal++},
+                          static_cast<PnrIndex>(index))
+             .second)
+      return invalid("FU endpoint lookup contains a duplicate");
+  }
   const auto fuPortEndpoint =
       [&](FabricFuOccurrenceRef fu, FabricPortDirection direction,
           FabricOrdinal directionOrdinal) -> std::optional<PnrIndex> {
-    std::uint64_t ordinal = 0;
-    for (auto [index, endpoint] : llvm::enumerate(routing.routingEndpoints())) {
-      if (endpoint.reference.owner.kind() !=
-              FabricTransportEndpointOwnerKind::FabricFuOccurrence ||
-          std::get<FabricFuOccurrenceRef>(endpoint.reference.owner.payload) !=
-              fu ||
-          endpoint.direction != direction)
-        continue;
-      if (ordinal++ == directionOrdinal)
-        return static_cast<PnrIndex>(index);
-    }
-    return std::nullopt;
+    const auto found =
+        fuPortEndpoints.find({fu.id(), direction, directionOrdinal});
+    return found == fuPortEndpoints.end()
+               ? std::nullopt
+               : std::optional<PnrIndex>(found->second);
   };
 
   if (transfers.logicalNetSourceBindings().size() !=

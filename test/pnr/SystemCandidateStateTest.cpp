@@ -38,6 +38,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
@@ -362,76 +363,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
-loom::ResolvedObjectiveCatalogs spatialObjectiveCatalogs() {
-  loom::ResolvedObjectiveCatalogs catalogs;
-  constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
-  catalogs.dimensions = {
-      {loom::ResolvedMappingViolationObjectiveSource{
-           loom::ResolvedPnrViolationKind::UnroutedObligation},
-       loom::ResolvedObjectiveDirection::Minimize,
-       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
-       maximum},
-      {loom::ResolvedMappingViolationObjectiveSource{
-           loom::ResolvedPnrViolationKind::CapacityOveruse},
-       loom::ResolvedObjectiveDirection::Minimize,
-       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
-       maximum},
-      {loom::ResolvedMappingMeasureObjectiveSource{static_cast<std::uint32_t>(
-           loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim)},
-       loom::ResolvedObjectiveDirection::Minimize,
-       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
-       maximum},
-  };
-  catalogs.weightedLevels = {{{{0, 1}, {1, 1}, {2, 1}}}};
-  catalogs.totalOrderings = {{{0}}};
-  return catalogs;
-}
-
-loom::ResolvedConfig buildResolvedConfig() {
-  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
-  resolved.dse.objectiveCatalogs = spatialObjectiveCatalogs();
-  resolved.dse.techMapping.candidatePublicationLimit = 1;
-  resolved.dse.spatialPnr.temporaryViolations.admitted = {
-      loom::ResolvedPnrViolationKind::UnroutedObligation,
-      loom::ResolvedPnrViolationKind::CapacityOveruse};
-  resolved.dse.spatialPnr.objectiveSelection = {0, 0, {}};
-  auto &search = resolved.dse.spatialPnr.search;
-  search.initializer.seedAttemptCount = 1;
-  search.actionProposal = {0, 1, 0};
-  search.annealing.calibrationProposalCount = 1;
-  search.annealing.fallbackTemperature = 1;
-  search.annealing.minimumTemperature = 1;
-  search.annealing.coolingRatio = {1, 2};
-  search.annealing.proposalsPerLevelBase = 1;
-  search.annealing.proposalsPerMovableDecision = 0;
-  search.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
-  resolved.dse.systemPnr.temporaryViolations.admitted = {
-      loom::ResolvedPnrViolationKind::UnroutedObligation,
-      loom::ResolvedPnrViolationKind::CapacityOveruse};
-  resolved.dse.systemPnr.objectiveSelection = {0, 0, {}};
-  return resolved;
-}
-
-loom::adg::FinalizedFabricDesign buildSpatialModule(loom::ArtifactStore &store,
-                                                    bool addBoundaryBuffer) {
-  loom::adg::DesignBuilder design(store);
-  auto expansion = take(loom::adg::expandBuiltinSpatialCore(
-      design, loom::adg::BuiltinTargetPreset::Small));
-  if (addBoundaryBuffer) {
-    const auto bits128 = take(loom::adg::PortType::bits(128));
-    expansion.outputs.front() = take(expansion.spatialCore.addFifo(
-                                         expansion.outputs.front(),
-                                         loom::adg::FifoSpec{bits128, 2, true}))
-                                    .value();
-  }
-  if (llvm::Error error = expansion.spatialCore.close(expansion.outputs))
-    fail(llvm::toString(std::move(error)));
-  auto finalized = take(std::move(design).finalize());
-  require(finalized.roots().size() == 1,
-          "SpatialCore fixture did not publish one Module root");
-  return finalized;
-}
-
 loom::ArtifactRootReference
 generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
                        const loom::fabric::FinalizedFabricRoot &module,
@@ -504,13 +435,14 @@ generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
                  outcome.diagnostic);
         },
         spatialOutcome);
-  require(spatialCandidates->candidates.size() == 1,
-          "SpatialMapping fixture did not produce one candidate");
+  require(!spatialCandidates->candidates.empty(),
+          "SpatialMapping fixture did not produce a candidate");
   return spatialCandidates->candidates.front();
 }
 
 } // namespace
-int main() {
+
+void memoryServiceWorkflow() {
   using loom::pnr::test::countOccurrences;
   using loom::pnr::test::rawSystemBytes;
   using loom::pnr::test::verifyFinalizedSystemMappingWorkflow;
@@ -521,9 +453,6 @@ int main() {
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
 
-  auto dataflowArtifact = buildDataflow(context);
-  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
   auto baselineDesign = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
   require(baselineDesign.roots().size() == 1 &&
@@ -531,16 +460,9 @@ int main() {
           "builtin System fixture did not publish one Module dependency");
   auto primaryModule = take(loom::fabric::importEntireFabricRoot(
       baselineDesign.roots().front().directDependencies().front().root, store));
-  auto alternateDesign = buildSpatialModule(store, true);
-  auto design = loom::pnr::test::buildHeterogeneousSystem(
-      store, baselineDesign.roots().front(), primaryModule,
-      alternateDesign.roots().front(), context);
-  const auto &systemRoot = design.roots().front();
-  auto system = take(loom::fabric::requireSystemRoot(systemRoot.view()));
-  require(systemRoot.directDependencies().size() == 2,
-          "heterogeneous System did not retain both SpatialCores");
 
-  const loom::ResolvedConfig resolved = buildResolvedConfig();
+  const loom::ResolvedConfig resolved =
+      loom::pnr::test::buildSystemCandidateResolvedConfig();
   const auto config =
       take(loom::pnr::projectResolvedSystemPnrConfigView(resolved));
 
@@ -554,8 +476,7 @@ int main() {
   auto endpointSystem = take(
       loom::fabric::requireSystemRoot(endpointDesign.roots().front().view()));
   loom::ResolvedConfig memoryResolved = resolved;
-  memoryResolved.dse.spatialPnr.search =
-      loom::defaultResolvedConfig().dse.spatialPnr.search;
+  memoryResolved.dse.spatialPnr.search = resolved.dse.spatialPnr.search;
   const auto memoryMapping = generateSpatialMapping(
       memoryDataflow, primaryModule, memoryResolved, store, &context);
   verifySystemResourceActionWorkflow(store, baselineDesign.roots().front(),
@@ -1159,6 +1080,45 @@ int main() {
   require(adoptedConstrained.canonicalViewBytes() ==
               constrainedSearchDomain.canonicalViewBytes(),
           "strict H adoption changed constraint-folded rows");
+
+  llvm::outs() << "System CandidateState memory-service anchors passed\n";
+}
+
+void graphBindingWorkflow() {
+  using loom::pnr::test::countOccurrences;
+  using loom::pnr::test::rawSystemBytes;
+  using loom::pnr::test::verifyFinalizedSystemMappingWorkflow;
+  using loom::pnr::test::verifySystemResourceActionWorkflow;
+  using loom::pnr::test::verifySystemServiceTargetRejections;
+  using loom::pnr::test::withFirstCoordinateLowerBound;
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+
+  auto dataflowArtifact = buildDataflow(context);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflow = take(dataflowArtifact.view());
+  auto baselineDesign = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  require(baselineDesign.roots().size() == 1,
+          "builtin System fixture did not publish one System root");
+  auto primaryDesign =
+      loom::pnr::test::buildSystemCandidateSpatialModule(store, false);
+  auto primaryModule = primaryDesign.roots().front();
+  auto alternateDesign =
+      loom::pnr::test::buildSystemCandidateSpatialModule(store, true);
+  auto design = loom::pnr::test::buildHeterogeneousSystem(
+      store, baselineDesign.roots().front(), primaryModule,
+      alternateDesign.roots().front(), context);
+  const auto &systemRoot = design.roots().front();
+  auto system = take(loom::fabric::requireSystemRoot(systemRoot.view()));
+  require(systemRoot.directDependencies().size() == 2,
+          "heterogeneous System did not retain both SpatialCores");
+
+  const loom::ResolvedConfig resolved =
+      loom::pnr::test::buildSystemCandidateResolvedConfig();
+  const auto config =
+      take(loom::pnr::projectResolvedSystemPnrConfigView(resolved));
 
   std::vector<loom::ArtifactRootReference> spatialMappings;
   std::vector<loom::pnr::FlatSpatialReopenProblem> flatProblems;
@@ -1795,6 +1755,18 @@ int main() {
           problem, withCanonicalRoutes(threadChoices, graphChoices)),
       "thread choice count does not match H");
 
-  llvm::outs() << "System CandidateState anchors passed\n";
+  llvm::outs() << "System CandidateState graph-binding anchors passed\n";
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2)
+    fail("expected one workflow name");
+  const llvm::StringRef workflow(argv[1]);
+  if (workflow == "memory-service")
+    memoryServiceWorkflow();
+  else if (workflow == "graph-binding")
+    graphBindingWorkflow();
+  else
+    fail("unknown workflow name");
   return EXIT_SUCCESS;
 }

@@ -11,6 +11,7 @@ add_mlir_library(LoomCommon
   ComponentViewDigest.cpp
   ExternalFileFingerprint.cpp
   IndexWidth.cpp
+  MappingDebugLog.cpp
   PointerLayout.cpp
   ResolvedPnrPolicy.cpp
   SpecialMathAccuracy.cpp

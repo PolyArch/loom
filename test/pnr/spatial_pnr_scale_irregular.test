@@ -1,0 +1,3 @@
+# RUN: %loom-spatial-pnr-scale-test irregular | FileCheck %s
+
+# CHECK: spatial_pnr_scale kind=irregular actors=1009

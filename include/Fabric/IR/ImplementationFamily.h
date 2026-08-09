@@ -692,9 +692,23 @@ llvm::Error verifyImplementationFamilyAdmission(
     const ::dataflow::CanonicalActorSchemaProjection &actor,
     unsigned indexBitWidth, const ::loom::PointerLayout &pointerLayout);
 
+/// Enumerates the exact canonical software-to-physical port correspondence
+/// domain admitted by one family over the supplied concrete port inventories.
+/// Concrete Fabric capability queries separately own type capacity and
+/// topology.
+llvm::Error forEachImplementationFamilyPortCorrespondence(
+    ImplementationFamilyId family,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    llvm::ArrayRef<std::uint64_t> physicalInputPorts,
+    llvm::ArrayRef<std::uint64_t> physicalResultPorts,
+    llvm::function_ref<
+        llvm::Expected<bool>(llvm::ArrayRef<std::uint64_t> operandPorts,
+                             llvm::ArrayRef<std::uint64_t> resultPorts)>
+        callback);
+
 /// Verifies the semantic role ordering of one software-to-physical port
-/// correspondence. Concrete Fabric capability queries separately own port
-/// existence, injection, type capacity, and topology.
+/// correspondence. This is the point-query form of the same family-owned
+/// finite domain enumerated above.
 llvm::Error verifyImplementationFamilyPortCorrespondence(
     ImplementationFamilyId family,
     const ::dataflow::CanonicalActorSchemaProjection &actor,

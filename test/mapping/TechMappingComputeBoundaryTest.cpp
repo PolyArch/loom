@@ -170,3 +170,9 @@ void computeBoundaryClosure() {
 }
 
 } // namespace loom::test::tech_mapping_artifact
+
+int main() {
+  loom::test::tech_mapping_artifact::computeBoundaryClosure();
+  llvm::outs() << "tech mapping compute boundary tests passed\n";
+  return 0;
+}

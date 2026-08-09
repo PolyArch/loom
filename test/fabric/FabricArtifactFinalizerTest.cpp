@@ -930,27 +930,33 @@ void spatialSwitchConnectivityBecomesTraversals() {
 
   FinalizedFabricRoot finalized =
       take(test, loom::fabric::finalizeFabricRoot(root(test, *source), store));
-  std::vector<loom::fabric::FabricSwitchTraversalPayload> traversals;
-  for (const loom::fabric::FabricPhysicalTraversalRef &traversal :
-       finalized.view().admittedTraversals()) {
-    if (traversal.kind() !=
+  unsigned connectivity = 0, spatialTraversalCount = 0;
+  for (const auto &traversal : finalized.view().physicalTraversals()) {
+    if (traversal.reference.kind() !=
         loom::fabric::FabricPhysicalTraversalKind::SwitchTraversal)
       continue;
-    traversals.push_back(std::get<loom::fabric::FabricSwitchTraversalPayload>(
-        traversal.payload));
+    ++spatialTraversalCount;
+    const auto &payload = std::get<loom::fabric::FabricSwitchTraversalPayload>(
+        traversal.reference.payload);
+    connectivity |= (payload.input == 0 && payload.output == 0) ? 1 : 0;
+    connectivity |= (payload.input == 1 && payload.output == 0) ? 2 : 0;
+    connectivity |= (payload.input == 1 && payload.output == 1) ? 4 : 0;
+    require(test,
+            traversal.resourceStates.size() == 2 &&
+                traversal.impliedUses.size() == 1,
+            "spatial switch traversal lost its resource projection");
+    const auto &use = traversal.impliedUses.front();
+    require(test,
+            use.activationGroup.kind ==
+                    loom::fabric::FabricTraversalActivationGroupKind::
+                        SwitchRequester &&
+                use.activationGroup.owner ==
+                    loom::fabric::FabricInventoryOwnerRef::of(payload.owner) &&
+                use.activationGroup.ordinal == 0,
+            "spatial switch traversal escaped its configuration requester");
   }
-  require(test, traversals.size() == 3,
-          "switch connectivity did not produce three physical traversals");
-  bool input0Output0 = false;
-  bool input1Output0 = false;
-  bool input1Output1 = false;
-  for (const auto &traversal : traversals) {
-    input0Output0 |= traversal.input == 0 && traversal.output == 0;
-    input1Output0 |= traversal.input == 1 && traversal.output == 0;
-    input1Output1 |= traversal.input == 1 && traversal.output == 1;
-  }
-  require(test, input0Output0 && input1Output0 && input1Output1,
-          "switch traversal ordinals do not follow the MSB-left convention");
+  require(test, spatialTraversalCount == 3 && connectivity == 7,
+          "spatial switch resource projection changed its traversal domain");
 
   mlir::OwningOpRef<mlir::ModuleOp> temporal = parse(test, R"mlir(
     module {

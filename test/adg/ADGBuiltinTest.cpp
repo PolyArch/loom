@@ -21,11 +21,13 @@
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
 #include <cstdint>
+#include <variant>
 #include <vector>
 
 namespace loom::adg::test {
@@ -71,11 +73,12 @@ void builtinPresetsExpandThroughPublicBuilder() {
     std::uint32_t temporalPes;
     std::uint32_t spatialMemories;
     std::uint32_t temporalMemories;
+    std::uint32_t meshDimension;
   };
   const std::array<Expectation, 3> expectations{{
-      {loom::adg::BuiltinTargetPreset::Small, 4, 12, 4, 1, 1},
-      {loom::adg::BuiltinTargetPreset::Default, 8, 27, 9, 2, 2},
-      {loom::adg::BuiltinTargetPreset::Large, 16, 48, 16, 4, 4},
+      {loom::adg::BuiltinTargetPreset::Small, 4, 12, 4, 1, 1, 4},
+      {loom::adg::BuiltinTargetPreset::Default, 8, 27, 9, 2, 2, 6},
+      {loom::adg::BuiltinTargetPreset::Large, 16, 48, 16, 4, 4, 8},
   }};
 
   for (const Expectation &expected : expectations) {
@@ -89,6 +92,8 @@ void builtinPresetsExpandThroughPublicBuilder() {
             descriptor.scale.spatialMemoryCount == expected.spatialMemories &&
             descriptor.scale.temporalMemoryCount == expected.temporalMemories,
         "builtin descriptor changed its scale contract");
+    require(test, descriptor.schemaMajor == 2 && descriptor.schemaMinor == 0,
+            "builtin descriptor did not select the distributed recipe");
 
     auto target =
         take(test, loom::adg::buildBuiltinTarget(store, expected.preset));
@@ -274,6 +279,59 @@ void builtinPresetsExpandThroughPublicBuilder() {
                     loom::fabric::FabricEntityKind::FabricMemoryOccurrence) ==
                     expected.spatialMemories + expected.temporalMemories,
             "builtin SpatialCore lost its PE or memory scale");
+    const std::uint64_t expectedMeshLinkFifos =
+        16 * expected.meshDimension * (expected.meshDimension - 1);
+    const std::uint64_t expectedAdapterFifos =
+        3 * (expected.spatialMemories + expected.temporalMemories) +
+        2 * descriptor.scale.gatewayCount;
+    require(test,
+            module.view().fifoOccurrences().size() ==
+                expectedMeshLinkFifos + expectedAdapterFifos,
+            "builtin did not emit one FIFO per mesh link and width adapter");
+    std::size_t interiorTransitSwitches = 0;
+    for (const auto occurrence : module.view().switchOccurrences()) {
+      const auto owner =
+          loom::fabric::FabricTransportEndpointOwnerRef::of(occurrence);
+      std::size_t inputs = 0;
+      std::size_t outputs = 0;
+      for (std::uint64_t ordinal = 0;
+           ordinal != module.view().transportEndpointCount(owner); ++ordinal) {
+        const loom::fabric::FabricTransportEndpointRef endpoint{
+            owner, loom::fabric::FabricOrdinal(ordinal)};
+        const auto direction =
+            module.view().transportEndpointDirection(endpoint);
+        require(test, direction.has_value(),
+                "builtin switch endpoint lost its direction");
+        if (*direction == loom::fabric::FabricPortDirection::Input)
+          ++inputs;
+        else
+          ++outputs;
+      }
+      require(test, inputs <= 8 && outputs <= 8,
+              "builtin mesh emitted a switch dimension larger than eight");
+      interiorTransitSwitches += inputs == 8 && outputs == 8;
+    }
+    require(test,
+            interiorTransitSwitches >=
+                2 * (expected.meshDimension - 2) *
+                    (expected.meshDimension - 2),
+            "builtin lost an interior 8x8 transit switch");
+    for (const auto memory : module.view().memoryOccurrences()) {
+      const auto memoryOwner =
+          loom::fabric::FabricTransportEndpointOwnerRef::of(memory);
+      llvm::SmallDenseSet<std::uint64_t, 4> ingressSwitches;
+      for (const auto &connection : module.view().pointConnections()) {
+        if (connection.destination.owner != memoryOwner)
+          continue;
+        const auto *source =
+            std::get_if<loom::fabric::FabricSwitchOccurrenceRef>(
+                &connection.source.owner.payload);
+        if (source)
+          ingressSwitches.insert(source->id());
+      }
+      require(test, ingressSwitches.size() >= 2,
+              "builtin memory transport inputs share one local switch");
+    }
     std::size_t wideScalarPorts = 0;
     for (std::uint64_t id = 0;; ++id) {
       const auto kind = module.view().entityKind(id);

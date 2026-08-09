@@ -29,6 +29,7 @@
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialPnrGenerator.h"
 #include "PnR/SpatialPnrProblem.h"
+#include "RootCompleteSpatialPnrTestSupport.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -39,6 +40,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/Support/Error.h"
@@ -47,6 +49,7 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <limits>
@@ -278,69 +281,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
-void addTokenSyncFu(loom::adg::PeBuilder &pe,
-                    llvm::ArrayRef<loom::adg::PeValue> inputs,
-                    const loom::adg::PortType &type,
-                    std::uint32_t payloadWidth) {
-  const std::vector<loom::adg::PortType> types(4, type);
-  auto fu = take(pe.addFu(inputs, loom::adg::FuSpec{types, types}));
-  std::vector<loom::adg::FuValue> fuInputs;
-  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
-    fuInputs.push_back(take(fu.input(ordinal)));
-  auto operation = take(fu.addOperation(
-      fuInputs, loom::adg::OperationCapabilitySpec{
-                    ::fabric::ImplementationFamilyId::TokenSync,
-                    ::fabric::RoutedTokenParams{payloadWidth, 4},
-                    {::dataflow::OperationSchemaId::DataflowSync},
-                    types,
-                    ::fabric::oneCycleElasticOperationResourceContract()}));
-  requireSuccess(fu.addCapabilityTemplate(
-      loom::adg::FuCapabilityTemplateSpec{{operation}, {}}));
-  std::vector<loom::adg::FuValue> outputs;
-  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
-    outputs.push_back(take(operation.output(ordinal)));
-  requireSuccess(fu.close(outputs));
-}
-
-loom::fabric::FinalizedFabricRoot
-buildSpatialCore(loom::ArtifactStore &store, std::uint32_t payloadWidth = 128) {
-  const loom::adg::PortType payloadType =
-      take(loom::adg::PortType::bits(payloadWidth));
-  const std::vector<loom::adg::PortType> types(4, payloadType);
-  loom::adg::DesignBuilder builder(store);
-  auto spatial = take(builder.createSpatialCore("sync", types, types));
-  std::vector<loom::adg::SpatialValue> spatialInputs;
-  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
-    spatialInputs.push_back(take(spatial.input(ordinal)));
-  auto pe = take(
-      spatial.addPe(spatialInputs, loom::adg::PeSpec::spatial(types, types)));
-  std::vector<loom::adg::PeValue> peInputs;
-  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
-    peInputs.push_back(take(pe.input(ordinal)));
-  addTokenSyncFu(pe, peInputs, payloadType, payloadWidth);
-  requireSuccess(pe.close());
-  std::vector<loom::adg::SpatialValue> outputs;
-  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
-    outputs.push_back(take(pe.output(ordinal)));
-  requireSuccess(spatial.close(outputs));
-  auto design = take(std::move(builder).finalize());
-  if (design.roots().size() != 1)
-    fail("SpatialCore fixture did not publish exactly one Fabric root");
-  return design.roots().front();
-}
-
-loom::fabric::FinalizedFabricRoot
-buildBuiltinSpatialCore(loom::ArtifactStore &store) {
-  loom::adg::DesignBuilder builder(store);
-  auto expansion = take(loom::adg::expandBuiltinSpatialCore(
-      builder, loom::adg::BuiltinTargetPreset::Small));
-  requireSuccess(expansion.spatialCore.close(expansion.outputs));
-  auto design = take(std::move(builder).finalize());
-  if (design.roots().size() != 1)
-    fail("builtin SpatialCore fixture did not publish exactly one Fabric root");
-  return design.roots().front();
-}
-
 loom::ResolvedObjectiveCatalogs availableSpatialObjectiveCatalogs() {
   loom::ResolvedObjectiveCatalogs catalogs;
   constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
@@ -394,6 +334,17 @@ loom::pnr::ResolvedPnrConfigView buildSpatialConfig() {
       buildSpatialResolvedConfig()));
 }
 
+loom::ResolvedConfig buildSingleCandidateSpatialResolvedConfig() {
+  loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
+  resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 1;
+  return resolved;
+}
+
+loom::pnr::ResolvedPnrConfigView buildSingleCandidateSpatialConfig() {
+  return take(loom::pnr::projectResolvedSpatialPnrConfigView(
+      buildSingleCandidateSpatialResolvedConfig()));
+}
+
 loom::pnr::ResolvedPnrConfigView buildFeedbackSpatialConfig() {
   loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
   resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 8;
@@ -401,6 +352,10 @@ loom::pnr::ResolvedPnrConfigView buildFeedbackSpatialConfig() {
   resolved.dse.spatialPnr.search.routing.negotiation =
       loom::ResolvedPathFinderPolicy{
           loom::ResolvedPathFinderPriceKernel::Additive, 1, {3, 2}, 1};
+  resolved.dse.spatialPnr.search.actionProposal = {3, 3, 2};
+  resolved.dse.spatialPnr.search.annealing.calibrationProposalCount = 16;
+  resolved.dse.spatialPnr.search.annealing.proposalsPerLevelBase = 64;
+  resolved.dse.spatialPnr.search.annealing.proposalsPerMovableDecision = 4;
   return take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
 }
 
@@ -485,7 +440,7 @@ Fixture buildFixture(mlir::MLIRContext &context, loom::ArtifactStore &store,
   auto dataflow = buildDataflow(context);
   auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
-  auto fabric = buildSpatialCore(store);
+  auto fabric = loom::test::buildSpatialCore(store);
   auto techMappingReference =
       generateTechMapping(dataflowReference, fabric.reference(), store, blobs);
   return {std::move(dataflow), std::move(dataflowReference), std::move(fabric),
@@ -502,7 +457,7 @@ generateSpatialMapping(const loom::ArtifactRootReference &techMapping,
           {techMapping}, fabric));
   auto binding =
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
-          buildSpatialConfig()));
+          buildSingleCandidateSpatialConfig()));
   auto outcome =
       take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *completed =
@@ -536,8 +491,10 @@ std::vector<loom::ArtifactRootReference> generateSpatialMappingSet(
   const auto *completed =
       std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
           &outcome.outcome);
-  if (!completed || completed->outputBindings.size() != 1)
+  if (!completed)
     fail("SpatialMapping fixture did not complete one output binding");
+  if (completed->outputBindings.size() != 1)
+    fail("SpatialMapping fixture completed with the wrong output width");
   if (completed->outputBindings.front().artifacts.size() < 2)
     fail("SpatialMapping fixture published " +
          llvm::Twine(completed->outputBindings.front().artifacts.size()) +
@@ -697,7 +654,7 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
   requireSuccess(
       loom::dse::registerRootCompleteTechMappingCandidateGenerator());
   requireSuccess(loom::dse::registerRootCompleteSpatialPnrCandidateGenerator());
-  loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
+  loom::ResolvedConfig resolved = buildSingleCandidateSpatialResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 1;
   auto techConfig =
       take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
@@ -889,7 +846,7 @@ void descriptorAndEmptySetAreClosed() {
   if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
     fail("cannot create BlobStore directory: " + error.message());
   const loom::BlobStore blobs(blobPath);
-  auto fabric = buildSpatialCore(store);
+  auto fabric = loom::test::buildSpatialCore(store);
   auto inputs =
       take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
           {}, fabric.reference()));
@@ -933,7 +890,7 @@ void finiteSetTraversesEveryCanonicalTechMapping() {
           techMappings, fixture.fabric.reference()));
   auto binding =
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
-          buildSpatialConfig()));
+          buildSingleCandidateSpatialConfig()));
   auto outcome =
       take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *completed =
@@ -971,8 +928,8 @@ void candidateWorkerCountPreservesFormalResult() {
   mlir::MLIRContext context = makeContext();
   Fixture fixture = buildFixture(context, store, blobs);
   auto dataflow = take(fixture.dataflow.view());
-  auto tech = take(loom::mapping::importTechMapping(
-      fixture.techMappingReference, store));
+  auto tech = take(
+      loom::mapping::importTechMapping(fixture.techMappingReference, store));
   auto constraints =
       take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
           dataflow, tech.view(), fixture.fabric.view(), store));
@@ -1091,7 +1048,7 @@ void foreignFabricIsRejectedBeforeSearch() {
   const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
   Fixture fixture = buildFixture(context, store, blobs);
-  auto foreignFabric = buildSpatialCore(store, 64);
+  auto foreignFabric = loom::test::buildSpatialCore(store, 64);
   auto inputs =
       take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
           {fixture.techMappingReference}, foreignFabric.reference()));
@@ -1181,7 +1138,7 @@ void spatialMappingPromotionExecutesExactCgraCase() {
   if (!llvm::StringRef(message).contains("Dataflow owner"))
     fail("foreign Dataflow owner rejection lost its typed diagnostic");
 
-  loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
+  loom::ResolvedConfig resolved = buildSingleCandidateSpatialResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 1;
   auto techConfig =
       take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
@@ -1246,7 +1203,7 @@ void spatialMappingPromotionKeepsEveryCandidateLineage() {
   auto dataflow = buildDataflow(context);
   const loom::ArtifactRootReference dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
-  auto fabric = buildBuiltinSpatialCore(store);
+  auto fabric = loom::test::buildSpatialCore(store);
   const std::vector<loom::ArtifactRootReference> techMappings =
       generateTechMappingSet(dataflowReference, fabric.reference(), store,
                              blobs);
@@ -1306,7 +1263,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
   auto dataflow = buildVectorDataflow(context);
   const loom::ArtifactRootReference dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
-  auto fabric = buildBuiltinSpatialCore(store);
+  auto fabric = loom::test::buildLineageSpatialCore(store);
   const loom::ArtifactRootReference techMapping =
       generateTechMapping(dataflowReference, fabric.reference(), store, blobs);
   auto spatial = generateSpatialFeedbackFixture(dataflowReference, techMapping,
@@ -1326,7 +1283,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
     const auto *lhsSwitch =
         std::get_if<loom::fabric::FabricSwitchTraversalPayload>(
             &lhs.reference.payload);
-    if (!lhsSwitch || lhs.routeClaimCount != 0)
+    if (!lhsSwitch || lhs.routeClaimCount == 0)
       continue;
     for (std::size_t second = first + 1; second < routing.traversals().size();
          ++second) {
@@ -1334,7 +1291,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
       const auto *rhsSwitch =
           std::get_if<loom::fabric::FabricSwitchTraversalPayload>(
               &rhs.reference.payload);
-      if (!rhsSwitch || rhs.routeClaimCount != 0 ||
+      if (!rhsSwitch || rhs.routeClaimCount == 0 ||
           lhsSwitch->owner != rhsSwitch->owner ||
           lhsSwitch->input != rhsSwitch->input ||
           lhsSwitch->output == rhsSwitch->output)
@@ -1343,6 +1300,16 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
       if (groups[first] == loom::pnr::getInvalidPnrIndex() ||
           groups[first] != groups[second])
         fail("spatial switch broadcast lost its physical replication group");
+      const auto lhsClaims = routing.traversalClaimKeys().slice(
+          lhs.routeClaimOffset, lhs.routeClaimCount);
+      const auto rhsClaims = routing.traversalClaimKeys().slice(
+          rhs.routeClaimOffset, rhs.routeClaimCount);
+      std::size_t sharedClaimCount = 0;
+      for (loom::pnr::PnrIndex claim : lhsClaims)
+        sharedClaimCount += llvm::is_contained(rhsClaims, claim);
+      if (sharedClaimCount != 1)
+        fail("spatial switch broadcast did not share exactly one ingress "
+             "claim");
       foundSpatialBroadcast = true;
     }
   }
@@ -1354,6 +1321,11 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
     fail("vector feedback fixture has no selected traversal claim");
   const PublishedSpatialInputs simulationInputs =
       publishVectorSpatialInputs(dataflow, store);
+  auto preparedCgra =
+      take(loom::evaluation::models::prepareCgraSimulationEvaluation(
+          dataflowReference, fabric.reference(), spatialMapping,
+          simulationInputs.workload, simulationInputs.runtimeInput,
+          loom::defaultResolvedConfig(), store));
 
   auto obligation =
       take(loom::dse::prepareCgraSimulationEvidenceObligationTemplate(
@@ -1412,13 +1384,24 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
   auto planOutcome = take(loom::dse::executeDsePlan(planView, store, blobs));
   const auto *completed =
       std::get_if<loom::dse::CompletedDsePlanExecution>(&planOutcome);
-  if (!completed || completed->generateInvocations().size() != 2 ||
-      completed->resolve({0, 0}) !=
-          llvm::ArrayRef<loom::ArtifactRootReference>{spatialMapping} ||
-      completed->resolve({0, 1}).size() != 1 ||
-      completed->resolve({1, 0}).size() != 1 ||
-      completed->resolve({2, 0}).size() != 1)
-    fail("central Mapping feedback plan lost its finite typed use-def");
+  if (!completed) {
+    const auto &incomplete =
+        std::get<loom::dse::IncompleteDsePlanExecution>(planOutcome);
+    fail("central Mapping feedback plan stopped at node " +
+         llvm::Twine(incomplete.nodeOrdinal()) + " with " +
+         loom::dse::toString(incomplete.reason()));
+  }
+  if (completed->generateInvocations().size() != 2)
+    fail("central Mapping feedback plan changed its Generate invocation count");
+  if (completed->resolve({0, 0}) !=
+      llvm::ArrayRef<loom::ArtifactRootReference>{spatialMapping})
+    fail("central Mapping feedback plan lost the promoted Mapping");
+  if (completed->resolve({0, 1}).size() != 1)
+    fail("central Mapping feedback plan lost promoted Evidence");
+  if (completed->resolve({1, 0}).size() != 1)
+    fail("central Mapping feedback plan lost the immutable Dataflow child");
+  if (completed->resolve({2, 0}).size() != 1)
+    fail("central Mapping feedback plan lost downstream TechMapping");
   const auto &childReference = completed->resolve({1, 0}).front();
   if (childReference == dataflowReference)
     fail("Mapping feedback returned its unchanged parent");
@@ -1450,11 +1433,6 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
       !chunk || chunk->leadingBlocksPerChunk != 2)
     fail("Mapping feedback lost its typed Dataflow decision lineage");
 
-  auto preparedCgra =
-      take(loom::evaluation::models::prepareCgraSimulationEvaluation(
-          dataflowReference, fabric.reference(), spatialMapping,
-          simulationInputs.workload, simulationInputs.runtimeInput,
-          loom::defaultResolvedConfig(), store));
   auto unsupportedEvidence = take(loom::evaluation::EvaluationEvidence::get(
       preparedCgra.request, {{loom::evaluation::ModelOutputSlotRef(0), {}}},
       loom::evaluation::UnsupportedEvidence{
@@ -1611,7 +1589,7 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
       take(loom::frontend::publishStructuredProgram(source, store));
   PublishedStructuredInputs sourceInputs =
       publishVectorStructuredInputs(source, store);
-  auto fabric = buildBuiltinSpatialCore(store);
+  auto fabric = loom::test::buildLineageSpatialCore(store);
 
   loom::dse::StructuredOwnershipInvocation invocation(
       source, sourceInputs.workload, sourceInputs.runtimeInput, fabric,
@@ -1755,8 +1733,7 @@ int main(int argc, char **argv) {
           .Case("descriptor-and-empty-set", descriptorAndEmptySetAreClosed)
           .Case("finite-set-traversal",
                 finiteSetTraversesEveryCanonicalTechMapping)
-          .Case("worker-invariance",
-                candidateWorkerCountPreservesFormalResult)
+          .Case("worker-invariance", candidateWorkerCountPreservesFormalResult)
           .Case("unavailable-negotiation",
                 unavailableNegotiationIsTypedIncomplete)
           .Case("initializer-semantic-limit",

@@ -31,7 +31,7 @@ llvm::Expected<SpatialPathFinderSeed> createPathFinderSpatialSeed(
 
 /// Builds initializer attempt zero and applies its explicit global PathFinder
 /// routing Action. The returned Candidate remains ephemeral and may still
-/// carry policy-admitted non-routing violations; this function never
+/// carry policy-admitted temporary violations; this function never
 /// materializes or publishes a SpatialMapping.
 llvm::Expected<SpatialPathFinderSeed> createCanonicalPathFinderSpatialSeed(
     FrozenSpatialPnrProblemHandle problem,

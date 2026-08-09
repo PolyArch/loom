@@ -14,17 +14,32 @@ add_executable(loom-system-service-route-wire-test
   SystemServiceRouteWireTest.cpp
 )
 
-add_executable(loom-tech-mapping-artifact-test
+add_library(loom-tech-mapping-artifact-test-support STATIC
   ../TestAllocationProbe.cpp
   SpatialMemoryActionTestSupport.cpp
   TechMappingArtifactTest.cpp
-  TechMappingComputeBoundaryTest.cpp
   TechMappingCandidateTestSupport.cpp
   SpatialRouteConstraintTestSupport.cpp
 )
 
-target_include_directories(loom-tech-mapping-artifact-test PRIVATE
+target_include_directories(loom-tech-mapping-artifact-test-support PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
+)
+
+add_executable(loom-tech-mapping-artifact-test
+  TechMappingArtifactTestMain.cpp
+)
+
+add_executable(loom-tech-mapping-compute-boundary-test
+  TechMappingComputeBoundaryTest.cpp
+)
+
+add_executable(loom-mapping-progress-test
+  MappingProgressTest.cpp
+)
+
+add_executable(loom-spatial-candidate-workflow-test
+  SpatialCandidateWorkflowTest.cpp
 )
 
 add_executable(loom-tech-mapping-config-test
@@ -52,6 +67,7 @@ add_executable(loom-spatial-mapping-wire-test
 add_executable(loom-spatial-mapping-artifact-test
   ../TestAllocationProbe.cpp
   CgraAdmissionTestSupport.cpp
+  SpatialCandidateSelectionTestSupport.cpp
   SpatialMemoryActionTestSupport.cpp
   SpatialMappingArtifactTest.cpp
   TechMappingCandidateTestSupport.cpp
@@ -62,6 +78,8 @@ add_executable(loom-spatial-tag-continuity-index-test
 )
 
 loom_enable_allocation_probe(loom-tech-mapping-artifact-test)
+loom_enable_allocation_probe(loom-tech-mapping-compute-boundary-test)
+loom_enable_allocation_probe(loom-spatial-candidate-workflow-test)
 loom_enable_allocation_probe(loom-tech-mapping-generator-test)
 loom_enable_allocation_probe(loom-spatial-mapping-artifact-test)
 
@@ -117,7 +135,7 @@ target_link_libraries(loom-system-service-route-wire-test PRIVATE
   LLVMSupport
 )
 
-target_link_libraries(loom-tech-mapping-artifact-test PRIVATE
+target_link_libraries(loom-tech-mapping-artifact-test-support PUBLIC
   LoomADGBuilder
   LoomMappingArtifact
   LoomPnR
@@ -131,6 +149,26 @@ target_link_libraries(loom-tech-mapping-artifact-test PRIVATE
   MLIRMemRefDialect
   MLIRParser
   LLVMSupport
+)
+
+target_link_libraries(loom-tech-mapping-artifact-test PRIVATE
+  loom-tech-mapping-artifact-test-support
+)
+
+target_link_libraries(loom-tech-mapping-compute-boundary-test PRIVATE
+  loom-tech-mapping-artifact-test-support
+)
+
+target_link_libraries(loom-mapping-progress-test PRIVATE
+  LoomMappingArtifact
+  MLIRDataflow
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-spatial-candidate-workflow-test PRIVATE
+  loom-tech-mapping-artifact-test-support
 )
 
 target_link_libraries(loom-tech-mapping-config-test PRIVATE

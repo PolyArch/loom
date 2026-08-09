@@ -495,8 +495,13 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
   }
 
   if (bestTarget == invalidIndex)
-    return failure(EndpointRouteSearchFailureKind::Unreachable,
-                   "no eligible route connects the endpoint sets");
+    return failure(
+        EndpointRouteSearchFailureKind::Unreachable,
+        "no eligible route connects the endpoint sets (source_count=",
+        request.sourceEndpoints.size(),
+        ", target_count=", request.targetEndpoints.size(),
+        ", first_source=", request.sourceEndpoints.front(),
+        ", first_target=", request.targetEndpoints.front(), ")");
 
   path_.clear();
   PnrIndex endpoint = bestTarget;

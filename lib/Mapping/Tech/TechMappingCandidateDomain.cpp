@@ -41,6 +41,31 @@ llvm::Error TechMatchRowCollector::reject(TechMatchSeedRejectionReason reason) {
   return llvm::Error::success();
 }
 
+llvm::Error TechMatchRowCollector::rejectCanonicalSeedRange(
+    std::vector<std::uint8_t> firstKey, std::vector<std::uint8_t> lastKey,
+    std::uint64_t count, bool countOverflow,
+    TechMatchSeedRejectionReason reason) {
+  if (activeSeedKey_)
+    return invalid("cannot reject a seed range with an active seed");
+  if (count == 0)
+    return invalid("canonical seed range is empty");
+  if (reason == TechMatchSeedRejectionReason::Count)
+    return invalid("match-row rejection reason is not a concrete variant");
+  if (lastKey < firstKey || (previousSeedKey_ && firstKey < *previousSeedKey_))
+    return invalid("match-row seed range is not in canonical key order");
+
+  const std::uint64_t available = limit_ - accounting_.matchRowAttempts;
+  const std::uint64_t charged = std::min(count, available);
+  accounting_.matchRowAttempts += charged;
+  rejectionCounts_[static_cast<std::size_t>(reason)] += charged;
+  if (charged != count || countOverflow) {
+    truncated_ = true;
+    return llvm::Error::success();
+  }
+  previousSeedKey_ = std::move(lastKey);
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::size_t>
 TechMatchRowCollector::actorSlot(::dataflow::ActorRef actor) const {
   auto found = llvm::lower_bound(

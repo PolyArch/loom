@@ -27,6 +27,7 @@
 #include <array>
 #include <cstdlib>
 #include <optional>
+#include <vector>
 
 using namespace fabric;
 using namespace mlir;
@@ -1170,6 +1171,90 @@ bool checkAdapterAndTokenAdmission(MLIRContext &context) {
   return ok;
 }
 
+bool checkPortCorrespondenceEnumeration(MLIRContext &context) {
+  Type i32 = IntegerType::get(&context, 32);
+  Type i1 = IntegerType::get(&context, 1);
+  const auto projection = [&](OperationSchemaId schema,
+                              llvm::ArrayRef<Type> inputs,
+                              llvm::ArrayRef<Type> results) {
+    return dataflow::CanonicalActorSchemaProjection{
+        schema, FunctionType::get(&context, inputs, results),
+        dataflow::NoPayload{}};
+  };
+  const auto countDomain =
+      [&](ImplementationFamilyId family,
+          const dataflow::CanonicalActorSchemaProjection &actor,
+          llvm::ArrayRef<std::uint64_t> inputs,
+          llvm::ArrayRef<std::uint64_t> results) -> std::optional<unsigned> {
+    unsigned count = 0;
+    if (llvm::Error error = forEachImplementationFamilyPortCorrespondence(
+            family, actor, inputs, results,
+            [&](llvm::ArrayRef<std::uint64_t> operandPorts,
+                llvm::ArrayRef<std::uint64_t> resultPorts)
+                -> llvm::Expected<bool> {
+              if (llvm::Error invalid =
+                      verifyImplementationFamilyPortCorrespondence(
+                          family, actor, operandPorts, resultPorts))
+                return std::move(invalid);
+              ++count;
+              return true;
+            })) {
+      llvm::errs() << llvm::toString(std::move(error)) << '\n';
+      return std::nullopt;
+    }
+    return count;
+  };
+
+  const std::array<Type, 2> syncTypes = {i32, i32};
+  const auto sync =
+      projection(OperationSchemaId::DataflowSync, syncTypes, syncTypes);
+  const std::array<std::uint64_t, 3> syncPorts = {0, 2, 4};
+  const auto syncCount = countDomain(ImplementationFamilyId::TokenSync, sync,
+                                     syncPorts, syncPorts);
+
+  const std::array<Type, 3> muxInputs = {i1, i32, i32};
+  const std::array<Type, 1> muxResults = {i32};
+  const auto mux =
+      projection(OperationSchemaId::DataflowMux, muxInputs, muxResults);
+  const std::array<std::uint64_t, 4> muxInputPorts = {0, 2, 4, 6};
+  const std::array<std::uint64_t, 2> muxResultPorts = {0, 1};
+  const auto muxCount = countDomain(ImplementationFamilyId::TokenMux, mux,
+                                    muxInputPorts, muxResultPorts);
+
+  const std::array<Type, 2> demuxInputs = {i1, i32};
+  const std::array<Type, 3> demuxResults = {i32, i32, i32};
+  const auto demux =
+      projection(OperationSchemaId::DataflowDemux, demuxInputs, demuxResults);
+  const std::array<std::uint64_t, 2> demuxInputPorts = {0, 1};
+  const std::array<std::uint64_t, 4> demuxResultPorts = {1, 3, 5, 7};
+  const auto demuxCount = countDomain(ImplementationFamilyId::TokenDemux, demux,
+                                      demuxInputPorts, demuxResultPorts);
+
+  const std::array<Type, 2> subtractInputs = {i32, i32};
+  const std::array<Type, 1> subtractResults = {i32};
+  const auto subtract =
+      projection(OperationSchemaId::ArithSubI, subtractInputs, subtractResults);
+  const std::array<std::uint64_t, 3> subtractInputPorts = {0, 1, 2};
+  const std::array<std::uint64_t, 2> subtractResultPorts = {0, 1};
+  const auto subtractCount =
+      countDomain(ImplementationFamilyId::ScalarIntegerAddSub, subtract,
+                  subtractInputPorts, subtractResultPorts);
+
+  if (syncCount != 3 || muxCount != 3 || demuxCount != 4 ||
+      subtractCount != 1) {
+    llvm::errs() << "implementation-family port domain has the wrong size\n";
+    return false;
+  }
+  llvm::Error reversed = verifyImplementationFamilyPortCorrespondence(
+      ImplementationFamilyId::TokenSync, sync, {2, 0}, {2, 0});
+  if (!reversed) {
+    llvm::errs() << "port-domain point query accepted a reversed lane image\n";
+    return false;
+  }
+  llvm::consumeError(std::move(reversed));
+  return true;
+}
+
 bool checkScalarFloatFmaBehaviorDomain(MLIRContext &context) {
   const FamilyCapabilityParams params = ScalarFloatParams{
       FloatFormatSet::get({FloatFormat::F16, FloatFormat::BF16,
@@ -1670,6 +1755,7 @@ int main() {
   ok &= checkFixedVectorAdmission(context);
   ok &= checkFixedVectorStructuralAdmission(context);
   ok &= checkAdapterAndTokenAdmission(context);
+  ok &= checkPortCorrespondenceEnumeration(context);
   ok &= checkScalarFloatFmaBehaviorDomain(context);
   ok &= checkIntegerLogicBehaviorDomains(context);
   ok &= checkFixedVectorMultiplyBehaviorDomain(context);

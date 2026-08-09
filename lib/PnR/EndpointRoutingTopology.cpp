@@ -104,15 +104,6 @@ transferPatternReplicationKey(const FabricTransferPatternLegPayload &payload) {
   return byteKey(bytes);
 }
 
-bool matchesSwitchRequester(
-    const FabricTraversalActivationGroupView &activation,
-    const FabricSwitchTraversalPayload &payload) {
-  return activation.kind ==
-             FabricTraversalActivationGroupKind::SwitchRequester &&
-         activation.owner == FabricInventoryOwnerRef::of(payload.owner) &&
-         activation.ordinal == payload.input;
-}
-
 std::uint32_t tagCapacity(const ::fabric::DataPathType &path) {
   return path.kind == ::fabric::DataPathKind::BitsTag ? path.tagWidthBits : 0;
 }
@@ -223,13 +214,6 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
       }
       replicationGroup = found->second;
     }
-    for (const FabricTraversalUseView &use : traversal.impliedUses)
-      if (use.activationGroup.kind ==
-          FabricTraversalActivationGroupKind::SwitchRequester)
-        if (!switchPayload ||
-            !matchesSwitchRequester(use.activationGroup, *switchPayload))
-          return invalid(
-              "a switch requester activation disagrees with its traversal");
     auto capacityClaimOffset =
         checked(capacityClaimContext, result.capacityClaims_.size());
     if (!capacityClaimOffset)
@@ -243,6 +227,14 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
         return invalid("a traversal use does not resolve its Fabric pattern");
       const ::fabric::UsePattern pattern =
           contract->usePattern(::fabric::UsePatternKey(use.pattern.ordinal));
+      if (use.activationGroup.kind ==
+          FabricTraversalActivationGroupKind::SwitchRequester)
+        if (!switchPayload ||
+            use.activationGroup.owner !=
+                FabricInventoryOwnerRef::of(switchPayload->owner) ||
+            use.activationGroup.ordinal != pattern.requester.ordinal())
+          return invalid(
+              "a switch requester activation disagrees with its pattern");
       const std::string activation = activationKey(use.activationGroup);
       auto activationPosition = capacityActivations.find(activation);
       if (activationPosition == capacityActivations.end()) {

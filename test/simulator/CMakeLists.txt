@@ -10,6 +10,10 @@ add_executable(loom-simulator-spatial-trace-test
   SpatialTraceTest.cpp
 )
 
+target_include_directories(loom-simulator-spatial-trace-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Simulator
+)
+
 add_executable(loom-simulator-spatial-observation-comparison-test
   SpatialObservationComparisonTest.cpp
 )

@@ -1111,6 +1111,107 @@ void fuSelectionUsesExactActorPortCorrespondence() {
                    node(test, *model, {output2, HandshakeSignalKind::Ready}),
                    node(test, *model, {output0, HandshakeSignalKind::Valid})),
       "inactive physical sync lanes created backpressure");
+
+  const auto *capability = module.view().resolvedFabricOpCapability(*operation);
+  require(test, capability != nullptr,
+          "selected sync operation has no resolved capability");
+  std::vector<mlir::Type> fullTypes;
+  std::vector<std::uint64_t> fullInputs;
+  std::vector<std::uint64_t> fullResults;
+  for (const auto &port : capability->physicalPorts) {
+    if (port.reference.direction == FabricPortDirection::Input)
+      fullInputs.push_back(port.reference.ordinal);
+    else
+      fullResults.push_back(port.reference.ordinal);
+  }
+  require(test, fullInputs.size() == fullResults.size(),
+          "TokenSync physical lane inventories disagree");
+  fullTypes.assign(fullInputs.size(), i32);
+  dataflow::CanonicalActorSchemaProjection fullActor{
+      dataflow::OperationSchemaId::DataflowSync,
+      mlir::FunctionType::get(&context(), fullTypes, fullTypes),
+      dataflow::NoPayload{}};
+  loom::fabric::FabricFuOperationHandshakeBinding fullBinding{
+      *operation, fullActor, 64, std::nullopt, fullInputs, fullResults};
+  const auto fullSelection =
+      take(test, loom::fabric::makeFuHandshakeSelection(
+                     module.view(), *occurrence, *templateRef, {fullBinding}));
+  FabricHandshakeSelection full;
+  full.fuCapabilities.push_back(fullSelection);
+  if (llvm::Error error =
+          loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+              module.view(), full))
+    fail(test, "full-width registered sync closed a combinational cycle: " +
+                   llvm::toString(std::move(error)));
+}
+
+void fullWidthDirectSyncIsAcyclic() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  const PortType bits128 = take(test, PortType::bits(128));
+  const std::vector<PortType> types(2, bits128);
+  DesignBuilder design(store);
+  auto spatial =
+      take(test, design.createSpatialCore("direct-sync", types, types));
+  auto pe = take(test, spatial.addPe({take(test, spatial.input(0)),
+                                      take(test, spatial.input(1))},
+                                     loom::adg::PeSpec::spatial(types, types)));
+  auto fu =
+      take(test, pe.addFu({take(test, pe.input(0)), take(test, pe.input(1))},
+                          loom::adg::FuSpec{types, types}));
+  auto operation = take(
+      test, fu.addOperation(
+                {take(test, fu.input(0)), take(test, fu.input(1))},
+                loom::adg::OperationCapabilitySpec{
+                    ::fabric::ImplementationFamilyId::TokenSync,
+                    ::fabric::RoutedTokenParams{128, 2},
+                    {::dataflow::OperationSchemaId::DataflowSync},
+                    types,
+                    ::fabric::oneCycleElasticOperationResourceContract()}));
+  if (llvm::Error error = fu.addCapabilityTemplate(
+          loom::adg::FuCapabilityTemplateSpec{{operation}, {}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = fu.close(
+          {take(test, operation.output(0)), take(test, operation.output(1))}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = pe.close())
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          spatial.close({take(test, pe.output(0)), take(test, pe.output(1))}))
+    fail(test, llvm::toString(std::move(error)));
+  FinalizedFabricRoot finalized =
+      take(test, std::move(design).finalize()).roots().front();
+
+  const FabricFuOccurrenceRef occurrence =
+      finalized.view().fuOccurrences().front();
+  const auto definition = finalized.view().fuTemplateOf(occurrence);
+  require(test, definition.has_value(), "direct sync FU has no definition");
+  const FabricFuCapabilityTemplateRef capability{*definition, 0};
+  const auto &row = finalized.view().fuCapabilityTemplates(*definition).front();
+  const auto selectedOperation =
+      llvm::find_if(row.activeNodes, [](const auto &node) {
+        return node.node == FabricFuNodeKind::Op;
+      });
+  require(test, selectedOperation != row.activeNodes.end(),
+          "direct sync capability has no operation");
+  mlir::Type none = mlir::NoneType::get(&context());
+  mlir::Type i32 = mlir::IntegerType::get(&context(), 32);
+  dataflow::CanonicalActorSchemaProjection actor{
+      dataflow::OperationSchemaId::DataflowSync,
+      mlir::FunctionType::get(&context(), {none, i32}, {none, i32}),
+      dataflow::NoPayload{}};
+  loom::fabric::FabricFuOperationHandshakeBinding binding{
+      *selectedOperation, actor, 64, std::nullopt, {0, 1}, {0, 1}};
+  const auto selected =
+      take(test, loom::fabric::makeFuHandshakeSelection(
+                     finalized.view(), occurrence, capability, {binding}));
+  FabricHandshakeSelection selection;
+  selection.fuCapabilities.push_back(selected);
+  if (llvm::Error error =
+          loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+              finalized.view(), selection))
+    fail(test, llvm::toString(std::move(error)));
 }
 
 } // namespace
@@ -1127,5 +1228,6 @@ int main() {
   registerFifoPathsAreRegisteredBreaks();
   memoryOperationPlanOwnsAtomicBoundaryAndRegisteredBreak();
   fuSelectionUsesExactActorPortCorrespondence();
+  fullWidthDirectSyncIsAcyclic();
   return EXIT_SUCCESS;
 }

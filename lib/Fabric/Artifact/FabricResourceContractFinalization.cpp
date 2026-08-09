@@ -7,8 +7,8 @@
 #include "Fabric/IR/MemoryCapabilityFinalization.h"
 #include "Fabric/IR/PhysicalTagResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
+#include "Fabric/IR/SwitchResourceContract.h"
 #include "Fabric/IR/TemporalPeResourceContract.h"
-#include "Fabric/IR/TemporalSwitchResourceContract.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Visitors.h"
@@ -110,9 +110,8 @@ deriveBaseResourceContract(Operation *operation,
     return std::optional<::fabric::ResourceContract>(
         derived->resourceContract());
   }
-  if (auto sw = dyn_cast<::fabric::SwitchOp>(operation);
-      sw && sw.getSchedule() == ::fabric::Schedule::Temporal) {
-    auto derived = ::fabric::deriveTemporalSwitchResourceContract(sw);
+  if (auto sw = dyn_cast<::fabric::SwitchOp>(operation)) {
+    auto derived = ::fabric::deriveSwitchResourceContract(sw);
     if (!derived)
       return derived.takeError();
     return std::optional<::fabric::ResourceContract>(

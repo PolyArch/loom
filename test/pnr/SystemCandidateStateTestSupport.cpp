@@ -1,6 +1,7 @@
 #include "SystemCandidateStateTestSupport.h"
 
 #include "ADG/Builtin.h"
+#include "ADG/FuLibrary.h"
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
@@ -10,6 +11,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/IR/MappingDialect.h"
+#include "PnR/MappingObjective.h"
 #include "PnR/System/SystemActionDomain.h"
 #include "PnR/System/SystemActionExecutor.h"
 #include "PnR/System/SystemAnnealingSearch.h"
@@ -26,6 +28,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <optional>
 #include <utility>
@@ -48,6 +51,11 @@ template <typename T> T take(llvm::Expected<T> value) {
 void require(bool condition, const llvm::Twine &message) {
   if (!condition)
     fail(message);
+}
+
+void requireSuccess(llvm::Error error) {
+  if (error)
+    fail(llvm::toString(std::move(error)));
 }
 
 void verifySelectedRouteCapacity(
@@ -198,6 +206,128 @@ inOrderMicroarchitecture() {
 }
 
 } // namespace
+
+loom::adg::FinalizedFabricDesign
+loom::pnr::test::buildSystemCandidateSpatialModule(
+    loom::ArtifactStore &store, bool addBoundaryBuffer) {
+  const std::uint32_t payloadWidth = 128;
+  const auto payloadType = take(loom::adg::PortType::bits(payloadWidth));
+  const auto byteType = take(loom::adg::PortType::bits(8));
+  const auto managerType = take(loom::adg::PortType::memory(
+      {loom::adg::PortType::kDynamicExtent}, byteType));
+  const std::vector<loom::adg::PortType> boundaryTypes(4, payloadType);
+  const std::vector<loom::adg::PortType> peInputTypes(5, payloadType);
+  std::vector<loom::adg::PortType> moduleInputTypes = boundaryTypes;
+  moduleInputTypes.push_back(managerType);
+  loom::adg::DesignBuilder design(store);
+  auto spatial = take(design.createSpatialCore(
+      addBoundaryBuffer ? "system-candidate-buffered"
+                        : "system-candidate-direct",
+      moduleInputTypes, boundaryTypes));
+  auto network = take(spatial.addMeshSwitchNetwork(
+      take(loom::adg::MeshSwitchNetworkSpec::spatial(
+          2, 2, 2, payloadType,
+          {{0,
+            0,
+            {payloadType, payloadType},
+            {payloadType, payloadType}},
+           {0,
+            1,
+            {payloadType, payloadType},
+            {payloadType, payloadType}},
+           {1, 0, peInputTypes, boundaryTypes},
+           {1, 1, peInputTypes, boundaryTypes}}))));
+
+  auto upperBoundary = take(network.attachment(0));
+  auto lowerBoundary = take(network.attachment(1));
+  requireSuccess(upperBoundary.connectOutputs(
+      {take(spatial.input(0)), take(spatial.input(1))}));
+  requireSuccess(lowerBoundary.connectOutputs(
+      {take(spatial.input(2)), take(spatial.input(3))}));
+
+  for (std::size_t attachmentOrdinal = 2; attachmentOrdinal != 4;
+       ++attachmentOrdinal) {
+    auto attachment = take(network.attachment(attachmentOrdinal));
+    auto pe = take(spatial.addPe(
+        attachment.inputs(),
+        loom::adg::PeSpec::spatial(peInputTypes, boundaryTypes)));
+    std::vector<loom::adg::PeValue> peInputs;
+    peInputs.reserve(peInputTypes.size());
+    for (std::size_t ordinal = 0; ordinal != peInputTypes.size(); ++ordinal)
+      peInputs.push_back(take(pe.input(ordinal)));
+    requireSuccess(loom::adg::addTokenControlFu(
+        pe, peInputs, {payloadWidth, 64}));
+    requireSuccess(pe.close());
+    std::vector<loom::adg::SpatialValue> peOutputs;
+    peOutputs.reserve(boundaryTypes.size());
+    for (std::size_t ordinal = 0; ordinal != boundaryTypes.size(); ++ordinal)
+      peOutputs.push_back(take(pe.output(ordinal)));
+    requireSuccess(attachment.connectOutputs(peOutputs));
+  }
+
+  std::vector<loom::adg::SpatialValue> outputs(upperBoundary.inputs().begin(),
+                                               upperBoundary.inputs().end());
+  outputs.insert(outputs.end(), lowerBoundary.inputs().begin(),
+                 lowerBoundary.inputs().end());
+  if (addBoundaryBuffer)
+    outputs.front() =
+        take(spatial.addFifo(outputs.front(),
+                             loom::adg::FifoSpec{payloadType, 2, true}))
+            .value();
+  requireSuccess(spatial.close(outputs));
+  auto finalized = take(std::move(design).finalize());
+  require(finalized.roots().size() == 1,
+          "SpatialCore fixture did not publish one Module root");
+  return finalized;
+}
+
+loom::ResolvedConfig loom::pnr::test::buildSystemCandidateResolvedConfig() {
+  loom::ResolvedObjectiveCatalogs catalogs;
+  constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+  catalogs.dimensions = {
+      {loom::ResolvedMappingViolationObjectiveSource{
+           loom::ResolvedPnrViolationKind::UnroutedObligation},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
+       maximum},
+      {loom::ResolvedMappingViolationObjectiveSource{
+           loom::ResolvedPnrViolationKind::CapacityOveruse},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
+       maximum},
+      {loom::ResolvedMappingMeasureObjectiveSource{static_cast<std::uint32_t>(
+           loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim)},
+       loom::ResolvedObjectiveDirection::Minimize,
+       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
+       maximum},
+  };
+  catalogs.weightedLevels = {{{{0, 1}, {1, 1}, {2, 1}}}};
+  catalogs.totalOrderings = {{{0}}};
+
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.objectiveCatalogs = std::move(catalogs);
+  resolved.dse.techMapping.candidatePublicationLimit = 1;
+  resolved.dse.spatialPnr.temporaryViolations.admitted = {
+      loom::ResolvedPnrViolationKind::UnroutedObligation,
+      loom::ResolvedPnrViolationKind::CapacityOveruse};
+  resolved.dse.spatialPnr.objectiveSelection = {0, 0, {}};
+  auto &search = resolved.dse.spatialPnr.search;
+  search.initializer.seedAttemptCount = 1;
+  search.routing.negotiationIterationLimit = 8;
+  search.actionProposal = {0, 1, 0};
+  search.annealing.calibrationProposalCount = 1;
+  search.annealing.fallbackTemperature = 1;
+  search.annealing.minimumTemperature = 1;
+  search.annealing.coolingRatio = {1, 2};
+  search.annealing.proposalsPerLevelBase = 1;
+  search.annealing.proposalsPerMovableDecision = 0;
+  search.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
+  resolved.dse.systemPnr.temporaryViolations.admitted = {
+      loom::ResolvedPnrViolationKind::UnroutedObligation,
+      loom::ResolvedPnrViolationKind::CapacityOveruse};
+  resolved.dse.systemPnr.objectiveSelection = {0, 0, {}};
+  return resolved;
+}
 
 mlir::DenseI8ArrayAttr
 loom::pnr::test::bytesAttr(mlir::MLIRContext *context,

@@ -166,6 +166,34 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
 }
 
 dataflow::CanonicalDataflowArtifact
+buildWideSyncDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @wide_sync(
+      %start: none, %v0: i32, %v1: i32, %v2: i32, %v3: i32,
+      %v4: i32, %v5: i32, %v6: i32, %v7: i32)
+      -> (i32, i32, i32, i32, i32, i32, i32, i32)
+      attributes {input_segments = array<i32: 8, 0, 0>,
+                  result_segments = array<i32: 8, 0, 0>} {
+    %result:9 = dataflow.sync %start, %v0, %v1, %v2, %v3,
+        %v4, %v5, %v6, %v7
+        : (none, i32, i32, i32, i32, i32, i32, i32, i32)
+          -> (none, i32, i32, i32, i32, i32, i32, i32, i32)
+    dataflow.graph.return values(
+        %result#1, %result#2, %result#3, %result#4,
+        %result#5, %result#6, %result#7, %result#8
+        : i32, i32, i32, i32, i32, i32, i32, i32)
+        streams() memories() complete(%result#0 : none)
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse wide-sync Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+dataflow::CanonicalDataflowArtifact
 buildIntegerAddChainDataflow(mlir::MLIRContext &context) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
@@ -411,12 +439,13 @@ integerAddCapability(const loom::adg::PortType &bits32) {
 
 void addTokenSyncFu(loom::adg::PeBuilder &pe,
                     llvm::ArrayRef<loom::adg::PeValue> inputs,
-                    const loom::adg::PortType &bits128) {
+                    const loom::adg::PortType &bits128,
+                    std::size_t laneCount = 4) {
   using loom::adg::FuCapabilityTemplateSpec;
   using loom::adg::FuSpec;
   using loom::adg::OperationCapabilitySpec;
 
-  const std::vector<loom::adg::PortType> types(4, bits128);
+  const std::vector<loom::adg::PortType> types(laneCount, bits128);
   auto fu = take(pe.addFu(inputs, FuSpec{types, types}));
   std::vector<loom::adg::FuValue> fuInputs;
   for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
@@ -424,7 +453,8 @@ void addTokenSyncFu(loom::adg::PeBuilder &pe,
   auto operation = take(fu.addOperation(
       fuInputs, OperationCapabilitySpec{
                     ::fabric::ImplementationFamilyId::TokenSync,
-                    ::fabric::RoutedTokenParams{128, 4},
+                    ::fabric::RoutedTokenParams{
+                        128, static_cast<std::uint32_t>(laneCount)},
                     {::dataflow::OperationSchemaId::DataflowSync},
                     types,
                     ::fabric::oneCycleElasticOperationResourceContract()}));
@@ -495,13 +525,13 @@ buildSerialIntegerAddFabric(loom::ArtifactStore &store) {
 }
 
 loom::fabric::FinalizedFabricRoot
-buildTokenSyncFabric(loom::ArtifactStore &store) {
+buildTokenSyncFabric(loom::ArtifactStore &store, std::size_t laneCount = 4) {
   using loom::adg::DesignBuilder;
   using loom::adg::PeSpec;
   using loom::adg::PortType;
 
   const PortType bits128 = take(PortType::bits(128));
-  const std::vector<PortType> types(4, bits128);
+  const std::vector<PortType> types(laneCount, bits128);
   DesignBuilder builder(store);
   auto spatial = take(builder.createSpatialCore("token-sync", types, types));
   std::vector<loom::adg::SpatialValue> spatialInputs;
@@ -511,7 +541,7 @@ buildTokenSyncFabric(loom::ArtifactStore &store) {
   std::vector<loom::adg::PeValue> peInputs;
   for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
     peInputs.push_back(take(pe.input(ordinal)));
-  addTokenSyncFu(pe, peInputs, bits128);
+  addTokenSyncFu(pe, peInputs, bits128, laneCount);
   if (llvm::Error error = pe.close())
     fail(llvm::toString(std::move(error)));
   std::vector<loom::adg::SpatialValue> spatialOutputs;
@@ -564,8 +594,8 @@ fabric::MemoryOperationPortDeclaration memoryPort(bool reads) {
       fabric::ClosedEnumDomain<fabric::WriteSubwordSemantics>::fromCanonical(
           {reads ? fabric::WriteSubwordSemantics::NotApplicable
                  : fabric::WriteSubwordSemantics::ByteEnable}));
-  auto address = take(fabric::MemoryAddressDomain::rootRelative(
-      singletonDomain(64)));
+  auto address =
+      take(fabric::MemoryAddressDomain::rootRelative(singletonDomain(64)));
   auto access = take(fabric::MemoryAccessClass::create(
       dataflow::semantics::MemoryAccessForm::Element, singletonDomain(32),
       singletonDomain(1),
@@ -818,6 +848,34 @@ void serialTopologyPrunesIndependentActorScale() {
     fail("independent-actor scale fixture did not stop at its semantic limit");
   if (elapsed >= std::chrono::seconds(10))
     fail("independent actors caused factorial serial-topology enumeration");
+}
+
+void wideTokenSyncUsesFamilyCorrespondenceDomain() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  auto dataflowArtifact = buildWideSyncDataflow(context);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflow = take(dataflowArtifact.view());
+  const auto fabric = buildTokenSyncFabric(store, 9);
+
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.techMapping.candidatePublicationLimit = 1;
+  const auto config =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
+  const std::array<dataflow::GraphRef, 1> covers = {
+      dataflow.graphs().front().ref};
+  const auto start = std::chrono::steady_clock::now();
+  const auto outcome = loom::mapping::generateTechMappings(
+      {dataflow, covers, fabric.view(), config, store});
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  const auto *generated =
+      std::get_if<loom::mapping::GeneratedTechMappings>(&outcome);
+  if (!generated || generated->candidates.size() != 1 ||
+      generated->accounting.matchRowAttempts != 1)
+    fail("wide token sync did not produce its unique family correspondence");
+  if (elapsed >= std::chrono::seconds(5))
+    fail("wide token sync enumerated a factorial port-map product");
 }
 
 void unrelatedBuiltinOperationsDoNotConsumeSeedBudget() {
@@ -1286,6 +1344,7 @@ int main() {
   serialComputeTemplateAcceptsExactActorChain();
   matchRowLimitPreservesGlobalActorOrder();
   serialTopologyPrunesIndependentActorScale();
+  wideTokenSyncUsesFamilyCorrespondenceDomain();
   unrelatedBuiltinOperationsDoNotConsumeSeedBudget();
   forcedComputeAndMemoryRowsPublishDeterministically();
   multiActorMemoryRowsCompeteWithSingletonCover();

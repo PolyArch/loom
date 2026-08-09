@@ -146,6 +146,16 @@ public:
   std::size_t retainedStorageBytes() const;
 
 private:
+  struct BinaryEqualSupport final {
+    InitializerRelationMember first;
+    InitializerRelationMember second;
+    std::size_t firstChoiceValueOffset = 0;
+    std::size_t secondChoiceValueOffset = 0;
+    std::size_t firstCountOffset = 0;
+    std::size_t secondCountOffset = 0;
+    PnrIndex valueCount = 0;
+  };
+
   struct RemovedChoice final {
     PnrIndex decision = 0;
     PnrIndex localChoice = 0;
@@ -161,12 +171,14 @@ private:
   void clearQueue();
   void enqueueRelation(PnrIndex relation);
   void enqueueDecisionRelations(PnrIndex decision);
+  void updateBinaryEqualSupport(PnrIndex decision, PnrIndex localChoice,
+                                bool add);
   bool removeChoice(PnrIndex decision, PnrIndex localChoice);
   bool choiceActive(PnrIndex decision, PnrIndex localChoice) const;
   bool relationChoiceSupported(PnrIndex relation, PnrIndex decision,
                                PnrIndex localChoice) const;
-  bool equalChoiceSupported(const InitializerRelationRecord &relation,
-                            PnrIndex decision, PnrIndex localChoice) const;
+  bool equalChoiceSupported(PnrIndex relation, PnrIndex decision,
+                            PnrIndex localChoice) const;
   bool disjointChoiceSupported(const InitializerRelationRecord &relation,
                                PnrIndex decision, PnrIndex localChoice) const;
   bool activeRelationSatisfied(const InitializerRelationRecord &relation) const;
@@ -194,6 +206,9 @@ private:
   std::vector<RemovedChoice> removalJournal_;
   std::vector<PnrIndex> relationQueue_;
   std::vector<std::uint8_t> relationPending_;
+  std::vector<BinaryEqualSupport> binaryEqualSupports_;
+  std::vector<PnrIndex> binaryEqualChoiceValues_;
+  std::vector<PnrIndex> binaryEqualActiveCounts_;
   std::vector<PnrIndex> canonicalActiveChoices_;
   std::vector<PnrIndex> choiceOrder_;
   std::vector<PnrIndex> choiceFenwick_;

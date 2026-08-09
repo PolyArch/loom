@@ -5,6 +5,7 @@ add_mlir_library(LoomADGBuilder
   Export.cpp
   FuLibrary.cpp
   MemoryLibrary.cpp
+  MeshSwitchNetwork.cpp
   SystemBuilder.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -21,7 +22,7 @@ target_link_libraries(LoomADGBuilder PUBLIC
   LoomCommon
   LoomFabricArtifact
   LoomFabricVisualization
-  LoomFabricTemporalSwitchResourceContract
+  LoomFabricSwitchResourceContract
   MLIRFabricEnums
   MLIRFabric
 )

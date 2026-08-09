@@ -88,11 +88,11 @@ llvm::Error appendPhysicalActionKey(std::vector<std::uint8_t> &bytes,
   appendU32(bytes, static_cast<std::uint32_t>(ref.parent.index()));
   if (const auto *transition =
           std::get_if<TransitionPhysicalActionParent>(&ref.parent)) {
-    if (llvm::Error error =
-            appendTransitionKey(bytes, transition->transition))
+    if (llvm::Error error = appendTransitionKey(bytes, transition->transition))
       return error;
   } else if (llvm::Error error = appendTokenKey(
-                 bytes, std::get<TokenPhysicalActionParent>(ref.parent).token)) {
+                 bytes,
+                 std::get<TokenPhysicalActionParent>(ref.parent).token)) {
     return error;
   }
   appendU64(bytes, ref.localActionOrdinal);
@@ -104,28 +104,27 @@ buildEventKey(const SpatialTraceEvent &event) {
   std::vector<std::uint8_t> bytes;
   appendU32(bytes, static_cast<std::uint32_t>(event.index()));
   llvm::Error error = std::visit(
-      Overloaded{
-          [&](const ActorCommittedTraceEvent &value) {
-            return appendTransitionKey(bytes, value.transition);
-          },
-          [&](const ActorRetiredTraceEvent &value) {
-            return appendTransitionKey(bytes, value.transition);
-          },
-          [&](const TokenPublishedTraceEvent &value) {
-            return appendTokenKey(bytes, value.token);
-          },
-          [&](const MemoryLinearizedTraceEvent &value) {
-            return appendMemoryActionKey(bytes, value.action);
-          },
-          [&](const PhysicalRequestedTraceEvent &value) {
-            return appendPhysicalActionKey(bytes, value.action);
-          },
-          [&](const PhysicalGrantedTraceEvent &value) {
-            return appendPhysicalActionKey(bytes, value.action);
-          },
-          [&](const PhysicalRetiredTraceEvent &value) {
-            return appendPhysicalActionKey(bytes, value.action);
-          }},
+      Overloaded{[&](const ActorCommittedTraceEvent &value) {
+                   return appendTransitionKey(bytes, value.transition);
+                 },
+                 [&](const ActorRetiredTraceEvent &value) {
+                   return appendTransitionKey(bytes, value.transition);
+                 },
+                 [&](const TokenPublishedTraceEvent &value) {
+                   return appendTokenKey(bytes, value.token);
+                 },
+                 [&](const MemoryLinearizedTraceEvent &value) {
+                   return appendMemoryActionKey(bytes, value.action);
+                 },
+                 [&](const PhysicalRequestedTraceEvent &value) {
+                   return appendPhysicalActionKey(bytes, value.action);
+                 },
+                 [&](const PhysicalGrantedTraceEvent &value) {
+                   return appendPhysicalActionKey(bytes, value.action);
+                 },
+                 [&](const PhysicalRetiredTraceEvent &value) {
+                   return appendPhysicalActionKey(bytes, value.action);
+                 }},
       event);
   if (error)
     return std::move(error);
@@ -148,6 +147,14 @@ llvm::Error validateEvent(const SpatialTraceEvent &event) {
     if (previous && *previous >= current)
       return invalid(
           "physical transfer target is not a canonical traversal set");
+    previous = std::move(current);
+  }
+  previous.reset();
+  for (const auto &pattern : transfer->usePatterns) {
+    auto current = ::loom::fabric::canonicalFabricBytes(pattern);
+    if (previous && *previous >= current)
+      return invalid(
+          "physical transfer target is not a canonical use-pattern set");
     previous = std::move(current);
   }
   return llvm::Error::success();

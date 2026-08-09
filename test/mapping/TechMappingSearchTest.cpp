@@ -151,12 +151,39 @@ void prospectiveSeedHasOneKeyedOutcome() {
     fail("prospective seed outcomes did not match attempt accounting");
 }
 
+void canonicalRejectedRangePreservesLimitAccounting() {
+  const loom::ArtifactIdentity owner = identity();
+  const std::array<dataflow::ActorRef, 1> actors = {actor(owner, 0)};
+  loom::mapping::TechMappingGenerationAccounting accounting;
+  loom::mapping::detail::TechMatchRowCollector collector(actors, 4, accounting);
+
+  if (!take(collector.beginSeed({0x10})))
+    fail("the seed before a rejected range did not enter the prefix");
+  if (llvm::Error error =
+          collector.reject(loom::mapping::detail::TechMatchSeedRejectionReason::
+                               CapabilityInadmissible))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = collector.rejectCanonicalSeedRange(
+          {0x20}, {0x60}, 5, false,
+          loom::mapping::detail::TechMatchSeedRejectionReason::
+              RealizationInadmissible))
+    fail(llvm::toString(std::move(error)));
+  if (!collector.truncated() || accounting.matchRowAttempts != 4 ||
+      collector.rejectionCount(
+          loom::mapping::detail::TechMatchSeedRejectionReason::
+              RealizationInadmissible) != 3)
+    fail("canonical rejected range did not stop at the semantic limit");
+  if (!take(collector.takeRows()).empty())
+    fail("a rejected canonical range produced a match row");
+}
+
 } // namespace
 
 int main() {
   independentComponentFrontierIsCompact();
   completedProductSurvivesExpansionLimit();
   prospectiveSeedHasOneKeyedOutcome();
+  canonicalRejectedRangePreservesLimitAccounting();
   llvm::outs() << "tech mapping search tests passed\n";
   return 0;
 }

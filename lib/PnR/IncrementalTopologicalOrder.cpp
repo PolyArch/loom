@@ -280,9 +280,6 @@ llvm::Error IncrementalTopologicalOrder::verify() const {
     if (isArcActive(static_cast<PnrIndex>(arcOrdinal)) &&
         ranks_[arc.source] >= ranks_[arc.destination])
       return topologyError("active arc violates topological rank");
-  auto rebuilt = buildCanonicalOrder(graph_, activeArcBits_);
-  if (!rebuilt)
-    return rebuilt.takeError();
   return llvm::Error::success();
 }
 

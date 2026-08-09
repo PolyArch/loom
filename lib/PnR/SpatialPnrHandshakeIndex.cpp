@@ -42,6 +42,9 @@ constexpr PnrCapacityContext arcCountContext{frozenArtifact, "handshake_arcs",
 constexpr PnrCapacityContext arcIndexContext{frozenArtifact, "handshake_arcs",
                                              "handshake_arcs",
                                              PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext ownerIndexContext{
+    frozenArtifact, "handshake_owners", "handshake_owners",
+    PnrCapacityMeasure::Index};
 constexpr PnrCapacityContext fragmentCountContext{
     frozenArtifact, "handshake_fragments", "handshake_fragments",
     PnrCapacityMeasure::Count};
@@ -254,8 +257,12 @@ private:
       modelArcPairs_.resize(models_.size());
       std::vector<ArcPair> allArcs;
       for (auto [modelOrdinal, model] : llvm::enumerate(models_)) {
+        auto ownerOrdinal = checked(ownerIndexContext, modelOrdinal);
+        if (!ownerOrdinal)
+          return ownerOrdinal.takeError();
+        result_.owners_.push_back(model.owner());
         modelOrdinals_.try_emplace(ownerKey(model.owner()),
-                                   static_cast<PnrIndex>(modelOrdinal));
+                                   *ownerOrdinal);
         auto &nodeMap = modelNodes_[modelOrdinal];
         nodeMap.reserve(model.nodes().size());
         for (const HandshakeOwnerNode &node : model.nodes()) {
@@ -381,6 +388,8 @@ private:
               contributions.end());
           result_.fragments_.push_back(
               {*contributionOffset, *contributionCount});
+          result_.fragmentOwnerOrdinals_.push_back(
+              static_cast<PnrIndex>(modelOrdinal));
 
           switch (fragment.activationKind) {
           case HandshakeActivationKind::Always:
@@ -731,6 +740,12 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialHandshakeIndex(
   for (PnrIndex arc : handshake.reverseArcOrdinals())
     if (arc >= handshake.arcs().size())
       return invalid("reverse handshake incidence is out of range");
+  if (handshake.fragmentOwnerOrdinals().size() !=
+      handshake.fragments().size())
+    return invalid("handshake fragment owner table is incomplete");
+  for (PnrIndex owner : handshake.fragmentOwnerOrdinals())
+    if (owner >= handshake.owners().size())
+      return invalid("handshake fragment owner is out of range");
   for (const FrozenSpatialHandshakeFragment &fragment : handshake.fragments()) {
     if (!rangeFits(fragment.contributionOffset, fragment.contributionCount,
                    handshake.fragmentArcOrdinals().size()))

@@ -79,9 +79,7 @@ llvm::Error classifyTransitionFailure(llvm::Error failure) {
   return llvm::handleErrors(
       std::move(failure),
       [&](const EndpointRouteSearchFailure &routeFailure) -> llvm::Error {
-        if (routeFailure.kind() == EndpointRouteSearchFailureKind::Invalid ||
-            routeFailure.kind() ==
-                EndpointRouteSearchFailureKind::ArithmeticOverflow) {
+        if (routeFailure.kind() == EndpointRouteSearchFailureKind::Invalid) {
           std::string message;
           llvm::raw_string_ostream stream(message);
           routeFailure.log(stream);
@@ -102,12 +100,32 @@ llvm::Error classifyTransitionFailure(llvm::Error failure) {
         std::string message;
         llvm::raw_string_ostream stream(message);
         closureFailure.log(stream);
+        if (closureFailure.kind() ==
+            SpatialPathFinderClosureFailure::Kind::FixedTerminalCapacityCut)
+          return llvm::make_error<SpatialPathFinderClosureFailure>(
+              closureFailure.kind(), stream.str(),
+              closureFailure.certificateCapacity(),
+              closureFailure.mandatoryUsage(),
+              closureFailure.physicalCapacity(),
+              std::vector<PnrIndex>(closureFailure.forcedLogicalNets().begin(),
+                                    closureFailure.forcedLogicalNets().end()));
         return llvm::make_error<SpatialActionTransitionFailure>(
             closureFailure.kind() ==
                     SpatialPathFinderClosureFailure::Kind::NonClosure
                 ? SpatialActionTransitionFailureKind::WorkLimit
                 : SpatialActionTransitionFailureKind::IntrinsicInvalid,
             stream.str());
+      },
+      [&](const RoutingNegotiationError &negotiationError) -> llvm::Error {
+        std::string message;
+        llvm::raw_string_ostream stream(message);
+        negotiationError.log(stream);
+        if (negotiationError.kind() ==
+            RoutingNegotiationError::Kind::InvalidPolicy)
+          return llvm::make_error<RoutingNegotiationError>(
+              negotiationError.kind(), stream.str());
+        return llvm::make_error<SpatialActionTransitionFailure>(
+            SpatialActionTransitionFailureKind::IntrinsicInvalid, stream.str());
       });
 }
 
@@ -239,6 +257,7 @@ SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate) {
   explicitLogicalMemoryBindings_.reserve(logicalMemoryCount);
   explicitLogicalMemoryChoices_.clear();
   explicitLogicalMemoryChoices_.reserve(logicalMemoryCount);
+  changedLogicalMemoryMarks_.resize(logicalMemoryCount);
   changedLogicalMemoryBindings_.clear();
   changedLogicalMemoryBindings_.reserve(logicalMemoryCount);
   const std::size_t memoryGroupCount =
@@ -292,6 +311,8 @@ void SpatialActionExecutorScratch::beginDependencyClosure() {
             explicitLogicalMemoryMarks_.end(), 0);
   explicitLogicalMemoryBindings_.clear();
   explicitLogicalMemoryChoices_.clear();
+  std::fill(changedLogicalMemoryMarks_.begin(),
+            changedLogicalMemoryMarks_.end(), 0);
   changedLogicalMemoryBindings_.clear();
   std::fill(explicitMemoryDispatchGroupMarks_.begin(),
             explicitMemoryDispatchGroupMarks_.end(), 0);
@@ -317,10 +338,10 @@ void SpatialActionExecutorScratch::markExplicitAttachment(PnrIndex decision) {
 }
 
 llvm::Error SpatialActionExecutorScratch::markNet(PnrIndex logicalNet) {
-  if (globalRouting_)
-    return executorError("Global routing overlaps a local dependency closure");
   if (logicalNet >= netMarks_.size())
     return executorError("Action dependency net is out of range");
+  if (globalRouting_)
+    return llvm::Error::success();
   for (PnrIndex member :
        candidate_->problem().routeConstraints().equalityClosure(logicalNet)) {
     if (member >= netMarks_.size())
@@ -525,6 +546,9 @@ llvm::Error SpatialActionExecutorScratch::applyMemoryBinding(
 
     for (PnrIndex use = memory.actorUseOffsets()[actor];
          use < memory.actorUseOffsets()[actor + 1]; ++use) {
+      if (memory.rootedUses()[use].logicalBinding)
+        markChangedLogicalMemoryBinding(
+            *memory.rootedUses()[use].logicalBinding);
       auto dispatchDomain = candidate.memoryDispatchDomain(use);
       if (!dispatchDomain)
         return dispatchDomain.takeError();
@@ -586,10 +610,10 @@ SpatialActionExecutorScratch::apply(SpatialMoveTransaction &move,
                   return markWitnessRegion(choice);
                 else if constexpr (std::is_same_v<Choice,
                                                   SpatialGlobalRoutingAction>) {
-                  if (!affectedNets_.empty() || globalRouting_)
-                    return executorError(
-                        "Global routing overlaps another routing scope");
+                  if (globalRouting_)
+                    return executorError("Global routing Action is duplicated");
                   globalRouting_ = true;
+                  affectedNets_.clear();
                   return llvm::Error::success();
                 }
               },
@@ -790,89 +814,99 @@ SpatialActionExecutorScratch::explicitLogicalMemoryTargetSupported(
 llvm::Error
 SpatialActionExecutorScratch::reconcileExplicitLogicalMemoryBindings(
     SpatialMoveTransaction &move, SpatialCandidateState &candidate) {
-  if (explicitLogicalMemoryBindings_.empty())
-    return llvm::Error::success();
-  auto solved = candidate.problem().memoryConstraints().solveCanonicalClosure(
-      candidate.logicalMemoryBindings_, explicitLogicalMemoryBindings_,
-      explicitLogicalMemoryChoices_,
-      candidate.problem()
-          .config()
-          .policy()
-          .search.initializer.assignmentAttemptLimitPerSeed,
-      [&](PnrIndex binding, PnrIndex target) -> llvm::Expected<bool> {
-        return explicitLogicalMemoryTargetSupported(candidate, binding, target);
-      },
-      *memoryConstraintScratch_);
-  if (!solved)
-    return llvm::handleErrors(
-        solved.takeError(),
-        [&](const detail::SpatialMemoryConstraintSolveFailure &)
-            -> llvm::Error {
-          return llvm::make_error<SpatialActionTransitionFailure>(
-              SpatialActionTransitionFailureKind::WorkLimit,
-              "Spatial memory relation closure exhausted its assignment "
-              "work limit");
-        });
-  if (!*solved)
-    return intrinsicTransitionFailure(
-        "logical-memory Action has no relation-closed assignment");
+  if (!explicitLogicalMemoryBindings_.empty()) {
+    auto solved = candidate.problem().memoryConstraints().solveCanonicalClosure(
+        candidate.logicalMemoryBindings_, explicitLogicalMemoryBindings_,
+        explicitLogicalMemoryChoices_,
+        candidate.problem()
+            .config()
+            .policy()
+            .search.initializer.assignmentAttemptLimitPerSeed,
+        [&](PnrIndex binding, PnrIndex target) -> llvm::Expected<bool> {
+          return explicitLogicalMemoryTargetSupported(candidate, binding,
+                                                      target);
+        },
+        *memoryConstraintScratch_);
+    if (!solved)
+      return llvm::handleErrors(
+          solved.takeError(),
+          [&](const detail::SpatialMemoryConstraintSolveFailure &)
+              -> llvm::Error {
+            return llvm::make_error<SpatialActionTransitionFailure>(
+                SpatialActionTransitionFailureKind::WorkLimit,
+                "Spatial memory relation closure exhausted its assignment "
+                "work limit");
+          });
+    if (!*solved)
+      return intrinsicTransitionFailure(
+          "logical-memory Action has no relation-closed assignment");
 
-  const auto solution = memoryConstraintScratch_->solution();
-  std::optional<PnrIndex> boundaryTarget;
-  for (auto [ordinal, target] :
-       llvm::enumerate(candidate.problem().memory().bindingTargets()))
-    if (std::holds_alternative<FrozenSpatialMemoryBoundaryProxy>(
-            target.target)) {
-      boundaryTarget = static_cast<PnrIndex>(ordinal);
-      break;
+    const auto solution = memoryConstraintScratch_->solution();
+    std::optional<PnrIndex> boundaryTarget;
+    for (auto [ordinal, target] :
+         llvm::enumerate(candidate.problem().memory().bindingTargets()))
+      if (std::holds_alternative<FrozenSpatialMemoryBoundaryProxy>(
+              target.target)) {
+        boundaryTarget = static_cast<PnrIndex>(ordinal);
+        break;
+      }
+    for (PnrIndex binding = 0; binding < solution.size(); ++binding) {
+      const auto &current = candidate.logicalMemoryBinding(binding);
+      const auto &replacement = solution[binding];
+      if (current.target == replacement.target &&
+          current.physicalOffsetBytes == replacement.physicalOffsetBytes)
+        continue;
+      markChangedLogicalMemoryBinding(binding);
+      if (!boundaryTarget)
+        return executorError("logical-memory closure has no BoundaryProxy");
+      if (!std::holds_alternative<FrozenSpatialMemoryBoundaryProxy>(
+              candidate.problem()
+                  .memory()
+                  .bindingTargets()[current.target]
+                  .target))
+        if (llvm::Error error =
+                move.setLogicalMemoryBinding(binding, *boundaryTarget, 0))
+          return error;
     }
-  for (PnrIndex binding = 0; binding < solution.size(); ++binding) {
-    const auto &current = candidate.logicalMemoryBinding(binding);
-    const auto &replacement = solution[binding];
-    if (current.target == replacement.target &&
-        current.physicalOffsetBytes == replacement.physicalOffsetBytes)
-      continue;
-    changedLogicalMemoryBindings_.push_back(binding);
-    if (!boundaryTarget)
-      return executorError("logical-memory closure has no BoundaryProxy");
-    if (!std::holds_alternative<FrozenSpatialMemoryBoundaryProxy>(
-            candidate.problem()
-                .memory()
-                .bindingTargets()[current.target]
-                .target))
-      if (llvm::Error error =
-              move.setLogicalMemoryBinding(binding, *boundaryTarget, 0))
+    for (PnrIndex binding = 0; binding < solution.size(); ++binding) {
+      const auto &replacement = solution[binding];
+      const auto &current = candidate.logicalMemoryBinding(binding);
+      if (current.target == replacement.target &&
+          current.physicalOffsetBytes == replacement.physicalOffsetBytes)
+        continue;
+      if (llvm::Error error = move.setLogicalMemoryBinding(
+              binding, replacement.target, replacement.physicalOffsetBytes))
         return error;
+    }
+    for (PnrIndex binding = 0; binding < solution.size(); ++binding) {
+      const auto &replacement = solution[binding];
+      const auto &current = candidate.logicalMemoryBinding(binding);
+      if (current.target != replacement.target ||
+          current.physicalOffsetBytes != replacement.physicalOffsetBytes)
+        return executorError(
+            "logical-memory closure lost its selected binding");
+    }
+    for (PnrIndex binding : explicitLogicalMemoryBindings_)
+      if (candidate.logicalMemoryBinding(binding).target !=
+              explicitLogicalMemorySelections_[binding].target ||
+          candidate.logicalMemoryBinding(binding).physicalOffsetBytes !=
+              explicitLogicalMemorySelections_[binding].physicalOffsetBytes)
+        return executorError(
+            "logical-memory closure replaced an explicit choice");
   }
-  for (PnrIndex binding = 0; binding < solution.size(); ++binding) {
-    const auto &replacement = solution[binding];
-    const auto &current = candidate.logicalMemoryBinding(binding);
-    if (current.target == replacement.target &&
-        current.physicalOffsetBytes == replacement.physicalOffsetBytes)
-      continue;
-    if (llvm::Error error = move.setLogicalMemoryBinding(
-            binding, replacement.target, replacement.physicalOffsetBytes))
-      return error;
-  }
-  for (PnrIndex binding = 0; binding < solution.size(); ++binding) {
-    const auto &replacement = solution[binding];
-    const auto &current = candidate.logicalMemoryBinding(binding);
-    if (current.target != replacement.target ||
-        current.physicalOffsetBytes != replacement.physicalOffsetBytes)
-      return executorError("logical-memory closure lost its selected binding");
-  }
-  for (PnrIndex binding : explicitLogicalMemoryBindings_)
-    if (candidate.logicalMemoryBinding(binding).target !=
-            explicitLogicalMemorySelections_[binding].target ||
-        candidate.logicalMemoryBinding(binding).physicalOffsetBytes !=
-            explicitLogicalMemorySelections_[binding].physicalOffsetBytes)
-      return executorError(
-          "logical-memory closure replaced an explicit choice");
   for (PnrIndex binding : changedLogicalMemoryBindings_)
     if (llvm::Error error =
             reconcileLogicalMemoryBinding(move, candidate, binding))
       return error;
   return llvm::Error::success();
+}
+
+void SpatialActionExecutorScratch::markChangedLogicalMemoryBinding(
+    PnrIndex binding) {
+  if (changedLogicalMemoryMarks_[binding])
+    return;
+  changedLogicalMemoryMarks_[binding] = 1;
+  changedLogicalMemoryBindings_.push_back(binding);
 }
 
 llvm::Error SpatialActionExecutorScratch::reconcileLogicalMemoryBinding(
@@ -1289,14 +1323,16 @@ SpatialActionExecutorScratch::restoreAfterFailure(SpatialMoveTransaction &move,
 
 llvm::Expected<SpatialActionProbe>
 SpatialActionExecutorScratch::probe(SpatialCandidateState &candidate,
-                                    const SpatialMappingAction &action) {
-  return probeBatch(candidate,
-                    llvm::ArrayRef<SpatialMappingAction>(&action, 1));
+                                    const SpatialMappingAction &action,
+                                    SpatialActionExecutionContext context) {
+  return probeBatch(candidate, llvm::ArrayRef<SpatialMappingAction>(&action, 1),
+                    context);
 }
 
 llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
     SpatialCandidateState &candidate,
-    llvm::ArrayRef<SpatialMappingAction> actions) {
+    llvm::ArrayRef<SpatialMappingAction> actions,
+    SpatialActionExecutionContext context) {
   if (activeProbe_)
     return executorError("another Action probe is active");
   if (candidate_ != &candidate || !routeCosts_ || !currentObjective_)
@@ -1326,8 +1362,10 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
     const auto &routing = candidate.problem().config().policy().search.routing;
     auto closure = router_.routeToClosureInMove(
         move, candidate, *routeCosts_,
-        {routing.endpointExpansionLimit, routing.negotiationIterationLimit},
-        {});
+        {routing.endpointExpansionLimit, routing.negotiationIterationLimit}, {},
+        context == SpatialActionExecutionContext::FinalClosure
+            ? SpatialRoutingClosureRequirement::Final
+            : SpatialRoutingClosureRequirement::PolicyAdmittedTemporary);
     if (!closure)
       return restoreAfterFailure(
           move, classifyTransitionFailure(closure.takeError()));
@@ -1346,6 +1384,9 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
                   "Spatial Action selected a combinational handshake cycle"));
   routeCostTraversals_.assign(move.touchedRouteTraversals().begin(),
                               move.touchedRouteTraversals().end());
+  if (llvm::Error error =
+          routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_))
+    return restoreAfterFailure(move, std::move(error));
 
   auto objective = candidate.problem().objectiveProgram().evaluate(candidate);
   if (!objective)
@@ -1378,6 +1419,7 @@ std::size_t SpatialActionExecutorScratch::retainedStorageBytes() const {
          retainedBytes(explicitLogicalMemoryMarks_) +
          retainedBytes(explicitLogicalMemoryBindings_) +
          retainedBytes(explicitLogicalMemoryChoices_) +
+         retainedBytes(changedLogicalMemoryMarks_) +
          retainedBytes(changedLogicalMemoryBindings_) +
          retainedBytes(explicitMemoryDispatchPatterns_) +
          retainedBytes(explicitMemoryDispatchGroupMarks_) +

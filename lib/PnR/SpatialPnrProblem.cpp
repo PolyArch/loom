@@ -259,13 +259,11 @@ internReplicationGroup(llvm::StringMap<PnrIndex> &groups,
   return found->second;
 }
 
-bool matchesSwitchRequester(
-    const FabricTraversalActivationGroupView &activation,
-    const FabricSwitchTraversalPayload &payload) {
+bool matchesSwitchOwner(const FabricTraversalActivationGroupView &activation,
+                        const FabricSwitchTraversalPayload &payload) {
   return activation.kind ==
              FabricTraversalActivationGroupKind::SwitchRequester &&
-         activation.owner == FabricInventoryOwnerRef::of(payload.owner) &&
-         activation.ordinal == payload.input;
+         activation.owner == FabricInventoryOwnerRef::of(payload.owner);
 }
 
 llvm::Error
@@ -1037,8 +1035,7 @@ public:
         if (activation.kind !=
             FabricTraversalActivationGroupKind::SwitchRequester)
           continue;
-        if (!switchPayload ||
-            !matchesSwitchRequester(activation, *switchPayload))
+        if (!switchPayload || !matchesSwitchOwner(activation, *switchPayload))
           return invalid(
               "switch requester activation disagrees with its traversal");
       }

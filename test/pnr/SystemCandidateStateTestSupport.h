@@ -55,6 +55,12 @@ adg::FinalizedFabricDesign buildHeterogeneousSystem(
     bool routeExtraMemoryThroughTransform = false);
 
 adg::FinalizedFabricDesign
+buildSystemCandidateSpatialModule(ArtifactStore &store,
+                                  bool addBoundaryBuffer);
+
+ResolvedConfig buildSystemCandidateResolvedConfig();
+
+adg::FinalizedFabricDesign
 buildNegotiatedRoutingSystem(ArtifactStore &store,
                              const fabric::FinalizedFabricRoot &baselineSystem,
                              const fabric::FinalizedFabricRoot &primaryModule,

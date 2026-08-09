@@ -38,7 +38,8 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
   auto routing = router.routeToClosure(
       *candidate, candidateScratch, *costs,
       {policy.endpointExpansionLimit, policy.negotiationIterationLimit},
-      evaluationPriorities);
+      evaluationPriorities,
+      SpatialRoutingClosureRequirement::PolicyAdmittedTemporary);
   workSummary.endpointExpansions = router.endpointExpansionCount();
   workSummary.negotiationIterations = router.negotiationIterationCount();
   if (!routing)

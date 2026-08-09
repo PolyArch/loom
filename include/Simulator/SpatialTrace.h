@@ -46,8 +46,7 @@ struct ActorResultTokenOccurrenceRef final {
 };
 
 using TokenOccurrenceRef =
-    std::variant<GraphIngressTokenOccurrenceRef,
-                 ActorResultTokenOccurrenceRef>;
+    std::variant<GraphIngressTokenOccurrenceRef, ActorResultTokenOccurrenceRef>;
 
 struct ActorWideMemoryActionRef final {};
 struct LaneMemoryActionRef final {
@@ -88,7 +87,7 @@ struct PhysicalUseTarget final {
 
 struct PhysicalTransferTarget final {
   std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversals;
-  std::optional<::loom::fabric::FabricUsePatternRef> usePattern;
+  std::vector<::loom::fabric::FabricUsePatternRef> usePatterns;
 };
 
 using PhysicalActionTarget =

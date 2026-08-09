@@ -36,6 +36,10 @@ public:
   bool truncated() const { return truncated_; }
   llvm::Expected<bool> beginSeed(std::vector<std::uint8_t> key);
   llvm::Error reject(TechMatchSeedRejectionReason reason);
+  llvm::Error rejectCanonicalSeedRange(std::vector<std::uint8_t> firstKey,
+                                       std::vector<std::uint8_t> lastKey,
+                                       std::uint64_t count, bool countOverflow,
+                                       TechMatchSeedRejectionReason reason);
   llvm::Error admit(TechMatchRealization realization,
                     llvm::ArrayRef<::dataflow::ActorRef> coveredActors);
   std::uint64_t rejectionCount(TechMatchSeedRejectionReason reason) const {

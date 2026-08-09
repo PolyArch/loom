@@ -34,6 +34,11 @@ enum class SpatialActionTransitionFailureKind : std::uint8_t {
   WorkLimit,
 };
 
+enum class SpatialActionExecutionContext : std::uint8_t {
+  Search,
+  FinalClosure,
+};
+
 /// A well-formed Action that cannot produce a candidate transition. Search
 /// consumes the proposal slot and continues; malformed Actions and owner
 /// invariant failures use their original errors and terminate the invocation.
@@ -106,11 +111,15 @@ public:
   ~SpatialActionExecutorScratch();
 
   llvm::Error prepare(SpatialCandidateState &candidate);
-  llvm::Expected<SpatialActionProbe> probe(SpatialCandidateState &candidate,
-                                           const SpatialMappingAction &action);
+  llvm::Expected<SpatialActionProbe>
+  probe(SpatialCandidateState &candidate, const SpatialMappingAction &action,
+        SpatialActionExecutionContext context =
+            SpatialActionExecutionContext::Search);
   llvm::Expected<SpatialActionProbe>
   probeBatch(SpatialCandidateState &candidate,
-             llvm::ArrayRef<SpatialMappingAction> actions);
+             llvm::ArrayRef<SpatialMappingAction> actions,
+             SpatialActionExecutionContext context =
+                 SpatialActionExecutionContext::Search);
 
   const dse::ObjectiveVector &currentObjective() const;
   std::uint64_t endpointExpansionCount() const {
@@ -140,6 +149,7 @@ private:
   llvm::Error reconcileLogicalMemoryBinding(SpatialMoveTransaction &move,
                                             SpatialCandidateState &candidate,
                                             PnrIndex binding);
+  void markChangedLogicalMemoryBinding(PnrIndex binding);
   llvm::Error
   recordExplicitLogicalMemoryBinding(const SpatialCandidateState &candidate,
                                      SpatialLogicalMemoryBindingAction action);
@@ -198,6 +208,7 @@ private:
   std::vector<PnrIndex> explicitLogicalMemoryBindings_;
   std::vector<SpatialLogicalMemoryBindingSelection>
       explicitLogicalMemoryChoices_;
+  std::vector<std::uint8_t> changedLogicalMemoryMarks_;
   std::vector<PnrIndex> changedLogicalMemoryBindings_;
   std::vector<PnrIndex> explicitMemoryDispatchPatterns_;
   std::vector<std::uint8_t> explicitMemoryDispatchGroupMarks_;

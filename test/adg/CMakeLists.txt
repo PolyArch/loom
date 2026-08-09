@@ -18,3 +18,14 @@ target_link_libraries(loom-adg-builder-api-test PRIVATE
   LoomFrontendCompilation
   LLVMSupport
 )
+
+add_executable(loom-adg-mesh-switch-network-test
+  ADGMeshSwitchNetworkTest.cpp
+)
+
+target_link_libraries(loom-adg-mesh-switch-network-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFabricArtifact
+  LLVMSupport
+)

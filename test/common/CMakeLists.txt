@@ -64,3 +64,12 @@ target_link_libraries(loom-common-special-math-accuracy-test PRIVATE
   LLVMCore
   LLVMSupport
 )
+
+add_executable(loom-common-mapping-debug-log-test
+  MappingDebugLogTest.cpp
+)
+
+target_link_libraries(loom-common-mapping-debug-log-test PRIVATE
+  LoomCommon
+  LLVMSupport
+)

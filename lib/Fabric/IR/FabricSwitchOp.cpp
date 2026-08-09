@@ -21,7 +21,7 @@
 
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricTypes.h"
-#include "Fabric/IR/TemporalSwitchResourceContract.h"
+#include "Fabric/IR/SwitchResourceContract.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -781,16 +781,14 @@ static LogicalResult verifyAllOrNothing(SwitchOp op, DictionaryAttr swDict,
 
 } // namespace
 
-llvm::Expected<TemporalSwitchResourceContract>
-fabric::deriveTemporalSwitchResourceContract(SwitchOp operation) {
-  auto invalid = [](const llvm::Twine &message)
-      -> llvm::Expected<TemporalSwitchResourceContract> {
+llvm::Expected<SwitchResourceContract>
+fabric::deriveSwitchResourceContract(SwitchOp operation) {
+  auto invalid =
+      [](const llvm::Twine &message) -> llvm::Expected<SwitchResourceContract> {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
-        "invalid temporal fabric.switch resource projection: " + message);
+        "invalid fabric.switch resource projection: " + message);
   };
-  if (operation.getSchedule() != Schedule::Temporal)
-    return invalid("operation is not temporal");
 
   std::uint64_t inputCount = operation.getNumOperands();
   std::uint64_t outputCount = operation.getNumResults();
@@ -871,8 +869,8 @@ fabric::deriveTemporalSwitchResourceContract(SwitchOp operation) {
     return invalid("grant policy has an unknown typed variant");
   }
 
-  return TemporalSwitchResourceContract::create(
-      {static_cast<std::uint32_t>(inputCount),
+  return SwitchResourceContract::create(
+      {operation.getSchedule(), static_cast<std::uint32_t>(inputCount),
        static_cast<std::uint32_t>(outputCount), std::move(sourcesByOutput),
        std::move(policy)});
 }
@@ -891,6 +889,18 @@ LogicalResult SwitchOp::verify() {
   SmallVector<Type, 4> inTys, outTys;
   if (failed(collectShape(*this, K, L, inTys, outTys, isNamed)))
     return failure();
+  auto crosspoints = validatedSwitchCrosspointCount(K, L);
+  if (!crosspoints)
+    return emitOpError(llvm::toString(crosspoints.takeError()));
+  auto finishVerification = [&]() -> LogicalResult {
+    if (*crosspoints > kSwitchCrosspointWarningThreshold)
+      mlir::emitWarning(getLoc())
+          << "fabric.switch crossbar has " << *crosspoints
+          << " crosspoints; values above "
+          << kSwitchCrosspointWarningThreshold
+          << " may be implementation-inefficient";
+    return success();
+  };
 
   // Read hw_params (mandatory).
   DictionaryAttr hwDict;
@@ -936,7 +946,7 @@ LogicalResult SwitchOp::verify() {
   if (failed(verifyAllOrNothing(*this, swDict, programmed)))
     return failure();
   if (!programmed)
-    return success();
+    return finishVerification();
 
   // Programmed branch.
   if (getSchedule() == Schedule::Spatial) {
@@ -1000,5 +1010,5 @@ LogicalResult SwitchOp::verify() {
       }
     }
   }
-  return success();
+  return finishVerification();
 }

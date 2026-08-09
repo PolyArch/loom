@@ -135,14 +135,14 @@ loom::ResolvedConfig spatialGenerationConfig() {
   resolved.dse.spatialPnr.objectiveSelection = {0, 0, {}};
   auto &search = resolved.dse.spatialPnr.search;
   search.initializer.seedAttemptCount = 1;
-  search.actionProposal = {0, 1, 0};
+  search.actionProposal = {1, 3, 2};
   search.annealing.calibrationProposalCount = 1;
   search.annealing.fallbackTemperature = 1;
   search.annealing.minimumTemperature = 1;
   search.annealing.coolingRatio = {1, 2};
   search.annealing.proposalsPerLevelBase = 1;
   search.annealing.proposalsPerMovableDecision = 0;
-  search.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
+  search.exactRepair = {loom::ResolvedPnrExactRepairKind::CpSat, 64, 1024};
   return resolved;
 }
 

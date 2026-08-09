@@ -135,9 +135,6 @@ struct CgraExecutionSession::Impl final {
     if (graphRetirement ||
         !detail::graphCompletionReady(graphExecution->execution, dynamicState))
       return llvm::Error::success();
-    if (llvm::Error error = detail::validateGraphRetirementBoundary(
-            context.graphOp, graphExecution->execution, dynamicState))
-      return error;
     graphRetirement = coordinate;
     return llvm::Error::success();
   }
@@ -153,6 +150,11 @@ struct CgraExecutionSession::Impl final {
           "CGRA execution ended with a semantic provider failure");
     }
     if (graphRetirement && !runtime->hasPendingEvents()) {
+      if (llvm::Error error = detail::validateGraphRetirementBoundary(
+              context.graphOp, graphExecution->execution, dynamicState)) {
+        lifecycle = SpatialExecutionSessionState::Failed;
+        return error;
+      }
       if (detail::hasPendingVectorGroups(dynamicState)) {
         lifecycle = SpatialExecutionSessionState::Failed;
         return invalid("CGRA execution retired with incomplete vector state");

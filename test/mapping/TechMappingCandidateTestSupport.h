@@ -50,6 +50,19 @@ void exerciseTemporalComputeUseProjection(
 void exerciseCanonicalCandidateInitialization(
     const pnr::FrozenSpatialPnrProblemHandle &problem);
 
+void exerciseSpatialInitializerDiversification(
+    const pnr::FrozenSpatialPnrProblemHandle &problem);
+
+void exerciseSpatialActionDomainAndObjective(
+    const pnr::FrozenSpatialPnrProblemHandle &problem);
+
+void exerciseSpatialAnnealingReplay(
+    const pnr::FrozenSpatialPnrProblemHandle &problem, bool warmScratch);
+
+void exercisePathFinderFixedTerminalCutRejection(
+    pnr::SpatialCandidateState &candidate,
+    pnr::SpatialCandidateScratch &candidateScratch);
+
 void exerciseSpatialActionSequence(
     const pnr::FrozenSpatialPnrProblemHandle &problem,
     pnr::SpatialCandidateState &candidate, std::uint64_t proposalCount);

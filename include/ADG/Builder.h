@@ -13,8 +13,8 @@
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/ModuleDomain.h"
 #include "Fabric/IR/ResourceContract.h"
+#include "Fabric/IR/SwitchResourceContract.h"
 #include "Fabric/IR/SystemServiceContract.h"
-#include "Fabric/IR/TemporalSwitchResourceContract.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -33,6 +33,7 @@
 namespace loom::adg {
 namespace detail {
 class DesignState;
+struct MeshSwitchNetworkState;
 struct SystemHandleAccess;
 } // namespace detail
 
@@ -43,6 +44,8 @@ class ModuleDomainMemberHandle;
 class HardwareDomainBuilder;
 class ServiceTransformBuilder;
 class SystemBuilder;
+class MeshCellAttachment;
+class MeshSwitchNetwork;
 
 /// A typed authoring description of one legal fabric.module port type.
 class PortType final {
@@ -496,6 +499,94 @@ struct SwitchSpec final {
            std::optional<::fabric::TemporalSwitchGrantPolicy> grantPolicy);
 };
 
+/// The closed arbitration choice applied to helper-generated Temporal
+/// switches that have physical fan-in.
+enum class MeshSwitchGrantPolicyKind : std::uint8_t {
+  FixedPriority,
+  RoundRobin,
+};
+
+/// One ordered local ingress/egress bank placed at an authoring-only cell.
+struct MeshCellAttachmentSpec final {
+  std::uint32_t x;
+  std::uint32_t y;
+  std::vector<PortType> inputTypes;
+  std::vector<PortType> outputTypes;
+};
+
+/// A validated typed recipe for one bounded rectangular switch network.
+class MeshSwitchNetworkSpec final {
+public:
+  static llvm::Expected<MeshSwitchNetworkSpec>
+  spatial(std::uint32_t width, std::uint32_t height,
+          std::uint32_t lanesPerDirection, const PortType &linkType,
+          std::vector<MeshCellAttachmentSpec> attachments);
+
+  static llvm::Expected<MeshSwitchNetworkSpec>
+  temporal(std::uint32_t width, std::uint32_t height,
+           std::uint32_t lanesPerDirection, const PortType &linkType,
+           std::uint32_t routeTableSize,
+           MeshSwitchGrantPolicyKind grantPolicyKind,
+           std::vector<MeshCellAttachmentSpec> attachments);
+
+private:
+  MeshSwitchNetworkSpec(
+      ::fabric::Schedule schedule, std::uint32_t width, std::uint32_t height,
+      std::uint32_t lanesPerDirection, PortType linkType,
+      std::optional<std::uint32_t> routeTableSize,
+      std::optional<MeshSwitchGrantPolicyKind> grantPolicyKind,
+      std::vector<MeshCellAttachmentSpec> attachments)
+      : schedule_(schedule), width_(width), height_(height),
+        lanesPerDirection_(lanesPerDirection), linkType_(std::move(linkType)),
+        routeTableSize_(routeTableSize), grantPolicyKind_(grantPolicyKind),
+        attachments_(std::move(attachments)) {}
+
+  ::fabric::Schedule schedule_;
+  std::uint32_t width_;
+  std::uint32_t height_;
+  std::uint32_t lanesPerDirection_;
+  PortType linkType_;
+  std::optional<std::uint32_t> routeTableSize_;
+  std::optional<MeshSwitchGrantPolicyKind> grantPolicyKind_;
+  std::vector<MeshCellAttachmentSpec> attachments_;
+
+  friend class SpatialCoreBuilder;
+};
+
+/// One owner-checked local bank returned by MeshSwitchNetwork authoring.
+class MeshCellAttachment final {
+public:
+  llvm::ArrayRef<SpatialValue> inputs() const;
+  llvm::Error connectOutputs(llvm::ArrayRef<SpatialValue> outputs);
+
+private:
+  MeshCellAttachment(std::shared_ptr<detail::MeshSwitchNetworkState> state,
+                     std::size_t ordinal)
+      : state_(std::move(state)), ordinal_(ordinal) {}
+
+  std::shared_ptr<detail::MeshSwitchNetworkState> state_;
+  std::size_t ordinal_ = 0;
+
+  friend class MeshSwitchNetwork;
+};
+
+/// Authoring-only access to the ordered local banks of one expanded network.
+class MeshSwitchNetwork final {
+public:
+  llvm::Expected<MeshCellAttachment> attachment(std::size_t ordinal) const;
+  llvm::ArrayRef<ModuleDomainMemberHandle> domainMembers() const;
+  std::size_t size() const;
+
+private:
+  explicit MeshSwitchNetwork(
+      std::shared_ptr<detail::MeshSwitchNetworkState> state)
+      : state_(std::move(state)) {}
+
+  std::shared_ptr<detail::MeshSwitchNetworkState> state_;
+
+  friend class SpatialCoreBuilder;
+};
+
 /// One exact optional fabric.mem Operation Engine declaration.
 class MemoryEngineSpec final {
 public:
@@ -722,17 +813,19 @@ public:
               llvm::ArrayRef<SpatialValue> inputs,
               llvm::ArrayRef<ModuleInstanceDomainSlotBinding> domainBindings);
 
-  llvm::Expected<FifoResult> addFifo(SpatialValue input,
-                                     const FifoSpec &spec);
+  llvm::Expected<FifoResult> addFifo(SpatialValue input, const FifoSpec &spec);
 
   llvm::Expected<BoundaryResult>
   addBoundary(llvm::ArrayRef<SpatialValue> inputs, const BoundarySpec &spec);
 
-  llvm::Expected<SwitchResult>
-  addSwitch(llvm::ArrayRef<SpatialValue> inputs, const SwitchSpec &spec);
+  llvm::Expected<SwitchResult> addSwitch(llvm::ArrayRef<SpatialValue> inputs,
+                                         const SwitchSpec &spec);
 
-  llvm::Expected<MemoryResult>
-  addMemory(llvm::ArrayRef<SpatialValue> inputs, const MemorySpec &spec);
+  llvm::Expected<MeshSwitchNetwork>
+  addMeshSwitchNetwork(const MeshSwitchNetworkSpec &spec);
+
+  llvm::Expected<MemoryResult> addMemory(llvm::ArrayRef<SpatialValue> inputs,
+                                         const MemorySpec &spec);
 
   llvm::Expected<PeBuilder> addPe(llvm::ArrayRef<SpatialValue> inputs,
                                   const PeSpec &spec);
@@ -756,6 +849,7 @@ private:
   std::size_t rootOrdinal_;
 
   friend class DesignBuilder;
+  friend class MeshCellAttachment;
 };
 
 /// One exact published Module dependency selected for a System root.
@@ -1101,9 +1195,8 @@ public:
                      std::size_t inputOrdinal,
                      llvm::ArrayRef<std::uint32_t> outputOrdinals,
                      std::uint32_t usePatternOrdinal);
-  llvm::Error
-  attachSpatialMemory(const SystemMemoryEndpoint &spatialEndpoint,
-                      const SystemServiceEndpoint &serviceEndpoint);
+  llvm::Error attachSpatialMemory(const SystemMemoryEndpoint &spatialEndpoint,
+                                  const SystemServiceEndpoint &serviceEndpoint);
   llvm::Error
   attachServiceLegCarriers(const SystemMemoryEndpoint &endpoint,
                            dataflow::semantics::ServiceKind kind,

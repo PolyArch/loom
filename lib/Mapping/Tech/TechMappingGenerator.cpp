@@ -1,5 +1,6 @@
 #include "Mapping/Tech/TechMappingGenerator.h"
 
+#include "Common/MappingDebugLog.h"
 #include "TechMappingCandidate.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -79,17 +80,70 @@ internal(InternalTechMappingGenerationReason reason,
 TechMappingGenerationOutcome
 generateTechMappings(const TechMappingGenerationInputs &inputs) {
   TechMappingGenerationAccounting accounting;
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::TechMapping,
+      mapping_debug::Event::InvocationBegin,
+      [&](llvm::json::Object &fields) {
+        fields["graph_count"] = inputs.covers.size();
+        fields["match_row_attempt_limit"] =
+            inputs.config.matchRowAttemptLimit();
+        fields["partial_cover_expansion_limit"] =
+            inputs.config.partialCoverExpansionLimit();
+        fields["candidate_publication_limit"] =
+            inputs.config.candidatePublicationLimit();
+      });
+  const auto finish = [&](TechMappingGenerationOutcome outcome) {
+    llvm::StringRef status = "internal";
+    std::uint64_t publicationCount = 0;
+    std::visit(
+        [&](const auto &result) {
+          using Result = std::decay_t<decltype(result)>;
+          if constexpr (std::is_same_v<Result, GeneratedTechMappings>) {
+            status = result.termination ==
+                             TechMappingGenerationTermination::SearchExhausted
+                         ? "search_exhausted"
+                         : "semantic_limit_reached";
+            publicationCount = result.candidates.size();
+          } else if constexpr (std::is_same_v<Result,
+                                              ProvenInfeasibleTechMapping>) {
+            status = "proven_infeasible";
+          } else if constexpr (std::is_same_v<
+                                   Result, IncompleteTechMappingGeneration>) {
+            status = "incomplete";
+          } else if constexpr (std::is_same_v<Result,
+                                              InvalidTechMappingGeneration>) {
+            status = "invalid";
+          }
+        },
+        outcome);
+    mapping_debug::emit(
+        mapping_debug::Level::Summary, mapping_debug::Stage::TechMapping,
+        mapping_debug::Event::InvocationEnd,
+        [&](llvm::json::Object &fields) {
+          fields["closure_status"] = status;
+          fields["candidate_publications"] = publicationCount;
+          fields["match_row_attempts"] = accounting.matchRowAttempts;
+          fields["partial_cover_expansions"] =
+              accounting.partialCoverExpansions;
+          fields["publication_slots"] = accounting.publicationSlots;
+        });
+    mapping_debug::MappingRunStatistics statistics;
+    statistics.candidateRows = accounting.matchRowAttempts;
+    statistics.candidatePublications = publicationCount;
+    statistics.emit(mapping_debug::Stage::TechMapping, status);
+    return outcome;
+  };
   TechMappingInvocationValidation validation = validateInvocation(inputs);
   if (auto *invalid = std::get_if<InvalidTechMappingGeneration>(&validation))
-    return std::move(*invalid);
+    return finish(TechMappingGenerationOutcome(std::move(*invalid)));
   auto domain = detail::deriveTechMatchDomain(
       inputs,
       std::get<ValidatedTechMappingInvocation>(validation).selectedActors,
       accounting);
   if (!domain)
-    return internal(
+    return finish(TechMappingGenerationOutcome(internal(
         InternalTechMappingGenerationReason::MatchRowDerivationFailed,
-        accounting, domain.takeError());
+        accounting, domain.takeError())));
 
   auto search =
       detail::searchTechMatchCovers(*domain, inputs.config, accounting);
@@ -103,25 +157,35 @@ generateTechMappings(const TechMappingGenerationInputs &inputs) {
     ++accounting.publicationSlots;
     auto candidate = detail::materializeTechMappingCandidate(inputs, cover);
     if (!candidate)
-      return internal(
+      return finish(TechMappingGenerationOutcome(internal(
           InternalTechMappingGenerationReason::CandidateFinalizationFailed,
-          accounting, candidate.takeError());
-    if (!llvm::is_contained(candidates, *candidate))
+          accounting, candidate.takeError())));
+    if (!llvm::is_contained(candidates, *candidate)) {
       candidates.push_back(std::move(*candidate));
+      mapping_debug::emit(
+          mapping_debug::Level::Decision,
+          mapping_debug::Stage::TechMapping,
+          mapping_debug::Event::Candidate,
+          [&](llvm::json::Object &fields) {
+            fields["candidate"] = candidates.size() - 1;
+            fields["publication_slot"] = accounting.publicationSlots - 1;
+          });
+    }
   }
 
   const bool exhausted = domain->exhausted && search.exhausted;
   if (!candidates.empty())
-    return TechMappingGenerationOutcome(GeneratedTechMappings{
+    return finish(TechMappingGenerationOutcome(GeneratedTechMappings{
         std::move(candidates),
         exhausted ? TechMappingGenerationTermination::SearchExhausted
                   : TechMappingGenerationTermination::SemanticLimitReached,
-        accounting});
+        accounting}));
   if (exhausted)
-    return TechMappingGenerationOutcome(
-        ProvenInfeasibleTechMapping{accounting});
-  return TechMappingGenerationOutcome(IncompleteTechMappingGeneration{
-      IncompleteTechMappingGenerationReason::ProofNotEstablished, accounting});
+    return finish(TechMappingGenerationOutcome(
+        ProvenInfeasibleTechMapping{accounting}));
+  return finish(TechMappingGenerationOutcome(IncompleteTechMappingGeneration{
+      IncompleteTechMappingGenerationReason::ProofNotEstablished,
+      accounting}));
 }
 
 } // namespace loom::mapping

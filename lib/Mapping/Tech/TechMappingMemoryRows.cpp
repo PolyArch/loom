@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <optional>
 #include <utility>
@@ -353,6 +354,33 @@ llvm::Error emitInternalEdgeSubsets(
     llvm::ArrayRef<const MemoryActorOption *> selection, bool capacityAdmitted,
     const std::optional<std::vector<TechMemoryGraphBoundaryView>> &boundaries,
     TechMatchRowCollector &collector) {
+  llvm::SmallVector<llvm::ArrayRef<std::uint8_t>, 16> actorKeys;
+  actorKeys.reserve(selection.size());
+  for (const MemoryActorOption *option : selection)
+    actorKeys.push_back(option->key);
+
+  if (!capacityAdmitted || !boundaries) {
+    auto firstKey = detail::canonicalTechMemoryRowKeyFromActorKeys(
+        base.engine, actorKeys, base.graphBoundaries, {},
+        inputs.dataflow.identity());
+    if (!firstKey)
+      return firstKey.takeError();
+    auto lastKey = detail::canonicalTechMemoryRowKeyFromActorKeys(
+        base.engine, actorKeys, base.graphBoundaries, eligibleEdges,
+        inputs.dataflow.identity());
+    if (!lastKey)
+      return lastKey.takeError();
+    const bool countOverflow = eligibleEdges.size() >= 64;
+    const std::uint64_t count = countOverflow
+                                    ? std::numeric_limits<std::uint64_t>::max()
+                                    : std::uint64_t{1} << eligibleEdges.size();
+    return collector.rejectCanonicalSeedRange(
+        std::move(*firstKey), std::move(*lastKey), count, countOverflow,
+        capacityAdmitted
+            ? TechMatchSeedRejectionReason::CorrespondenceInadmissible
+            : TechMatchSeedRejectionReason::RealizationInadmissible);
+  }
+
   std::vector<TechMemoryInternalEdgeView> selectedEdges;
   std::vector<::dataflow::ActorRef> covered;
   covered.reserve(base.actors.size());
@@ -378,10 +406,6 @@ llvm::Error emitInternalEdgeSubsets(
 
       TechMemoryRealizationView row = base;
       row.internalEdges = selectedEdges;
-      llvm::SmallVector<llvm::ArrayRef<std::uint8_t>, 16> actorKeys;
-      actorKeys.reserve(selection.size());
-      for (const MemoryActorOption *option : selection)
-        actorKeys.push_back(option->key);
       auto key = detail::canonicalTechMemoryRowKeyFromActorKeys(
           row.engine, actorKeys, row.graphBoundaries, row.internalEdges,
           inputs.dataflow.identity());
@@ -392,12 +416,6 @@ llvm::Error emitInternalEdgeSubsets(
         return entered.takeError();
       if (!*entered)
         return llvm::Error::success();
-      if (!capacityAdmitted)
-        return collector.reject(
-            TechMatchSeedRejectionReason::RealizationInadmissible);
-      if (!boundaries)
-        return collector.reject(
-            TechMatchSeedRejectionReason::CorrespondenceInadmissible);
       row.graphBoundaries = *boundaries;
       return collector.admit(std::move(row), covered);
     };

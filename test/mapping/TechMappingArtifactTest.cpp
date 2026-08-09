@@ -201,41 +201,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
-void cyclicProgressFailsClosed() {
-  mlir::MLIRContext context = makeContext();
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module {
-  dataflow.graph private @feedback(%start: none, %phase: i1) -> ()
-      attributes {input_segments = array<i32: 1, 0, 0>,
-                  result_segments = array<i32: 0, 0, 0>} {
-    %stable = dataflow.invariant %phase, %start : none
-    %carried = dataflow.carry %phase, %start, %lanes#1 : none
-    %lanes:2 = dataflow.demux %phase, %carried
-        : (i1, none) -> (none, none)
-    dataflow.graph.return values() streams() memories()
-        complete(%lanes#0 : none)
-  }
-}
-)mlir",
-                                                        &context);
-  if (!module)
-    fail("cannot parse cyclic progress fixture");
-  auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
-  const auto view = take(artifact.view());
-  const auto uncovered = take(
-      loom::mapping::deriveMappingProgressClosure(view, /*coveredGraphs=*/{}));
-  if (uncovered.kind !=
-      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
-    fail("progress analysis inspected a graph outside its covered set");
-  const std::array<dataflow::GraphRef, 1> covered = {view.graphs().front().ref};
-  const auto closure =
-      take(loom::mapping::deriveMappingProgressClosure(view, covered));
-  if (closure.kind !=
-      loom::mapping::MappingProgressClosureKind::ProofNotEstablished)
-    fail(
-        "cyclic actor dependencies were guessed to prove progress or deadlock");
-}
-
 dataflow::CanonicalActorView
 memoryActor(const dataflow::CanonicalDataflowProgramView &view) {
   for (const dataflow::CanonicalActorView &actor : view.actors())
@@ -609,6 +574,48 @@ spatialConstraintText(const dataflow::CanonicalDataflowProgramView &dataflow,
          identityAttr(fabric.identity()) + ") {\n" + clauses.str() + "  }\n}\n";
 }
 
+template <typename Exercise>
+void withSpatialCandidateFixture(Exercise &&exercise) {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  auto dataflowArtifact = buildDataflow(context);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflowView = take(dataflowArtifact.view());
+  loom::adg::DesignBuilder builder(store);
+  auto expansion = take(loom::adg::expandBuiltinSpatialCore(
+      builder, loom::adg::BuiltinTargetPreset::Small));
+  requireSuccess(expansion.spatialCore.close(expansion.outputs));
+  auto design = take(std::move(builder).finalize());
+  const auto &fabricRoot = design.roots().front();
+  const auto selected =
+      selectMemoryCapability(memoryActor(dataflowView), fabricRoot.view());
+  auto module = parseMapping(
+      context, mappingText(dataflowView, fabricRoot.view(), selected, false));
+  if (!module)
+    fail("candidate workflow TechMapping fixture did not parse");
+  auto roots = module->getOps<::mapping::TechOp>();
+  auto techMapping = take(loom::mapping::finalizeTechMapping(
+      *roots.begin(), dataflowView, fabricRoot.view(), store));
+  auto constraints = parseMapping(
+      context, spatialConstraintText(dataflowView, techMapping.view(),
+                                     fabricRoot.view(), /*clauses=*/""));
+  if (!constraints)
+    fail("candidate workflow constraint fixture did not parse");
+  auto constraintRoots = constraints->getOps<::mapping::ConstraintsSpatialOp>();
+  auto finalizedConstraints =
+      take(loom::mapping::finalizeSpatialMappingConstraintSet(
+          *constraintRoots.begin(), dataflowView, techMapping.view(),
+          fabricRoot.view(), store));
+  loom::ResolvedConfig resolved =
+      loom::test::buildSpatialPnrTestResolvedConfig();
+  const auto config =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
+  auto problem = take(loom::pnr::freezeSpatialPnrProblem(
+      dataflowView, techMapping.view(), fabricRoot.view(), config,
+      finalizedConstraints.view()));
+  exercise(problem);
+}
 } // namespace
 
 namespace loom::test::tech_mapping_artifact {
@@ -640,9 +647,27 @@ std::string spatialConstraintMappingText(
   return spatialConstraintText(dataflow, techMapping, fabric, clauses);
 }
 
-} // namespace loom::test::tech_mapping_artifact
-
-namespace {
+void spatialCandidateWorkflow(llvm::StringRef testCase) {
+  withSpatialCandidateFixture([&](const auto &problem) {
+    if (testCase == "canonical-initialization")
+      loom::test::exerciseCanonicalCandidateInitialization(problem);
+    else if (testCase == "initializer-diversification")
+      loom::test::exerciseSpatialInitializerDiversification(problem);
+    else if (testCase == "action-domain")
+      loom::test::exerciseSpatialActionDomainAndObjective(problem);
+    else if (testCase == "annealing-cold-replay")
+      loom::test::exerciseSpatialAnnealingReplay(problem, false);
+    else if (testCase == "annealing-warm-replay")
+      loom::test::exerciseSpatialAnnealingReplay(problem, true);
+    else if (testCase == "action-sequence") {
+      auto candidate =
+          take(loom::pnr::createCanonicalSpatialCandidate(problem));
+      loom::test::exerciseSpatialActionSequence(problem, *candidate, 512);
+    } else {
+      fail(("unknown Spatial candidate workflow case: " + testCase).str());
+    }
+  });
+}
 
 void artifactRoundTripAndReferenceValidation() {
   TemporaryDirectory directory;
@@ -877,7 +902,6 @@ void artifactRoundTripAndReferenceValidation() {
         realization.actorCount)
       fail("memory-placement plan incidence changed its actor domain");
   }
-  loom::test::exerciseCanonicalCandidateInitialization(frozen);
 
   std::vector<loom::pnr::SpatialComputeBindingSelection> computeBindings;
   computeBindings.reserve(frozen->realizations().computeRealizations().size());
@@ -1324,29 +1348,9 @@ void artifactRoundTripAndReferenceValidation() {
       !llvm::equal(routedCostState.currentArcCosts(), routedBaselineCosts))
     fail("failed PathFinder iteration did not roll back its complete overlay");
   requireSuccess(routedCandidate->verify());
-  auto selectedCycle = negotiatedRouter.routeToClosure(
-      *routedCandidate, routedCandidateScratch, routedCostState,
-      {spatialConfig.policy().search.routing.endpointExpansionLimit,
-       spatialConfig.policy().search.routing.negotiationIterationLimit},
-      {});
-  bool rejectedSelectedCycle = false;
-  if (selectedCycle) {
-    fail("cyclic global route fixture unexpectedly reached closure");
-  } else {
-    llvm::handleAllErrors(
-        selectedCycle.takeError(),
-        [&](const loom::pnr::SpatialPathFinderClosureFailure &failure) {
-          rejectedSelectedCycle = failure.kind() ==
-                                  loom::pnr::SpatialPathFinderClosureFailure::
-                                      Kind::SelectedCombinationalHandshakeCycle;
-        },
-        [&](const llvm::ErrorInfoBase &) {});
-  }
-  if (!rejectedSelectedCycle ||
-      routedCandidate->totalSelectedTraversalClaim() != routedObjective ||
-      !llvm::equal(routedCostState.currentArcCosts(), routedBaselineCosts))
-    fail("cyclic PathFinder overlay was not rejected and rolled back");
-  requireSuccess(routedCandidate->verify());
+
+  loom::test::exercisePathFinderFixedTerminalCutRejection(
+      *routedCandidate, routedCandidateScratch);
 
   auto rollbackMove = take(spatialCandidate->beginMove(candidateScratch));
   requireSuccess(rollbackMove.ripUpWholeRoute(*routedNet));
@@ -1788,12 +1792,4 @@ void artifactRoundTripAndReferenceValidation() {
     fail("stale Fabric memory endpoint was published");
 }
 
-} // namespace
-
-int main() {
-  cyclicProgressFailsClosed();
-  artifactRoundTripAndReferenceValidation();
-  loom::test::tech_mapping_artifact::computeBoundaryClosure();
-  llvm::outs() << "tech mapping artifact tests passed\n";
-  return 0;
-}
+} // namespace loom::test::tech_mapping_artifact

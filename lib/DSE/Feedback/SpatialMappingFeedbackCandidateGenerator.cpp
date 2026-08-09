@@ -5,6 +5,7 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/Transforms/DataflowRewrite.h"
@@ -337,19 +338,44 @@ llvm::Expected<std::optional<FeedbackCandidate>> materializeFeedback(
     return ranked.takeError();
   ::loom::frontend::FabricCapabilityIndex capabilities(fabric);
 
-  for (const RankedLogicalNet &logicalNet : *ranked) {
+  for (auto indexedNet : llvm::enumerate(*ranked)) {
+    const std::size_t netRank = indexedNet.index();
+    const RankedLogicalNet &logicalNet = indexedNet.value();
     if (logicalNet.contribution.value == 0)
       break;
     auto actors =
         feedbackActors(parentView, logicalNet.contribution.logicalNet);
     if (!actors)
       return actors.takeError();
+    ::loom::mapping_debug::emit(::loom::mapping_debug::Level::Detail,
+                                ::loom::mapping_debug::Stage::SpatialPnr,
+                                ::loom::mapping_debug::Event::Candidate,
+                                [&](llvm::json::Object &fields) {
+                                  fields["operation"] = "mapping_feedback_net";
+                                  fields["rank"] = netRank;
+                                  fields["selected_traversal_claim"] =
+                                      logicalNet.contribution.value;
+                                  fields["actor_count"] = actors->size();
+                                });
     for (const RankedActor &actor : *actors) {
       auto decisions =
           ::dataflow::enumerateElementwiseVectorDecompositionDecisions(
               parent, actor.actor);
       if (!decisions)
         return decisions.takeError();
+      auto actorView = parentView.resolve(actor.actor);
+      if (!actorView)
+        return actorView.takeError();
+      ::loom::mapping_debug::emit(
+          ::loom::mapping_debug::Level::Detail,
+          ::loom::mapping_debug::Stage::SpatialPnr,
+          ::loom::mapping_debug::Event::Candidate,
+          [&](llvm::json::Object &fields) {
+            fields["operation"] = "mapping_feedback_actor";
+            fields["rank"] = netRank;
+            fields["actor_operation"] = actorView->op->getName().getStringRef();
+            fields["decision_count"] = decisions->size();
+          });
       for (const ::dataflow::DataflowRewriteDecision &decision : *decisions) {
         auto child = ::dataflow::materializeDataflowRewrite(parent, decision);
         if (!child)
@@ -359,7 +385,29 @@ llvm::Expected<std::optional<FeedbackCandidate>> materializeFeedback(
         auto miss = capabilities.firstInadmissibleActor(**child);
         if (!miss)
           return miss.takeError();
-        if (*miss)
+        const bool inadmissible = miss->has_value();
+        ::loom::mapping_debug::emit(
+            ::loom::mapping_debug::Level::Detail,
+            ::loom::mapping_debug::Stage::SpatialPnr,
+            ::loom::mapping_debug::Event::Candidate,
+            [&](llvm::json::Object &fields) {
+              fields["operation"] = "mapping_feedback_decision";
+              fields["rank"] = netRank;
+              fields["fabric_admissible"] = !inadmissible;
+              if (inadmissible)
+                fields["inadmissible_schema"] =
+                    ::dataflow::operationSchemaSpelling((*miss)->schema);
+              if (const auto *chunk =
+                      std::get_if<::dataflow::ElementwiseVectorChunkRewrite>(
+                          &decision)) {
+                fields["rewrite_mode"] = "leading_chunk";
+                fields["leading_blocks_per_chunk"] =
+                    chunk->leadingBlocksPerChunk;
+              } else {
+                fields["rewrite_mode"] = "scalarize";
+              }
+            });
+        if (inadmissible)
           continue;
         auto published = ::dataflow::publishCanonicalDataflow(**child, store);
         if (!published)
@@ -518,18 +566,16 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
             CandidateGeneratorIncompleteReason::ProofNotEstablished,
             {std::move(output)},
             std::move(lineage)},
-        {{CandidateGeneratorWorkUnitRef(0), mappings.size(),
-          mappings.size()}}};
+        {{CandidateGeneratorWorkUnitRef(0), mappings.size(), mappings.size()}}};
   return CandidateGeneratorProviderResult{
-      CompletedCandidateGeneratorResult{
-          {std::move(output)},
-          std::move(lineage)},
-      {{CandidateGeneratorWorkUnitRef(0), mappings.size(),
-        mappings.size()}}};
+      CompletedCandidateGeneratorResult{{std::move(output)},
+                                        std::move(lineage)},
+      {{CandidateGeneratorWorkUnitRef(0), mappings.size(), mappings.size()}}};
 }
 
 const CandidateGeneratorProvider provider{
-    descriptor.reference(), CandidateGeneratorInProcessProvider{invokeProvider}};
+    descriptor.reference(),
+    CandidateGeneratorInProcessProvider{invokeProvider}};
 
 void canonicalizeReferences(std::vector<ArtifactRootReference> &references) {
   llvm::sort(references, artifactRootReferenceLess);

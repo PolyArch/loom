@@ -64,18 +64,13 @@ llvm::Expected<PhysicalActionTarget> projectPhysicalTransferTarget(
   auto selected = patterns(plan, actionOrdinal);
   if (!selected)
     return selected.takeError();
-  if (selected->size() != 1)
-    return unsupported(
-        "CGRA trace cannot encode a transfer activation with multiple exact "
-        "UsePatterns");
-
   PhysicalTransferTarget target;
   target.traversals.reserve(canonical.size());
   for (const auto &[key, traversal] : canonical) {
     (void)key;
     target.traversals.push_back(traversal);
   }
-  target.usePattern = selected->front();
+  target.usePatterns.assign(selected->begin(), selected->end());
   return PhysicalActionTarget{std::move(target)};
 }
 

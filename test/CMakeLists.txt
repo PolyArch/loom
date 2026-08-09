@@ -65,6 +65,7 @@ set(LOOM_TEST_DEPENDS
   loom-raise-opt
   loom-accelerator-final-link-test
   loom-adg-builder-api-test
+  loom-adg-mesh-switch-network-test
   loom-config-test
   loom-compiler-target-binding-test
   loom-constant-callback-specialization-test
@@ -72,6 +73,7 @@ set(LOOM_TEST_DEPENDS
   loom-common-artifact-test
   loom-common-blob-test
   loom-common-canonical-relation-test
+  loom-common-mapping-debug-log-test
   loom-common-special-math-accuracy-test
   loom-dataflow-canonical-artifact-test
   loom-dataflow-canonical-reference-test
@@ -148,7 +150,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-service-leg-carrier-attachment-test
   loom-fabric-system-service-contract-test
   loom-fabric-temporal-operand-buffer-test
-  loom-fabric-temporal-switch-resource-contract-test
+  loom-fabric-switch-resource-contract-test
   loom-frontend-dfg-integration-test
   loom-static-global-memory-test
   loom-structured-address-index-narrowing-test
@@ -170,6 +172,7 @@ set(LOOM_TEST_DEPENDS
   loom-system-service-route-wire-test
   loom-configured-hardware-projection-test
   loom-tech-mapping-artifact-test
+  loom-tech-mapping-compute-boundary-test
   loom-tech-mapping-config-test
   loom-tech-mapping-generator-test
   loom-tech-mapping-joint-legality-test
@@ -177,11 +180,14 @@ set(LOOM_TEST_DEPENDS
   loom-spatial-mapping-artifact-test
   loom-spatial-tag-continuity-index-test
   loom-spatial-mapping-wire-test
+  loom-mapping-progress-test
+  loom-spatial-candidate-workflow-test
   loom-pnr-endpoint-router-test
   loom-pnr-config-test
   loom-pnr-deterministic-search-protocol-test
   loom-pnr-initializer-relation-solver-test
   loom-pnr-incremental-topology-test
+  loom-spatial-pnr-scale-test
   loom-pnr-index-test
   loom-system-pnr-search-domain-test
   loom-system-pnr-service-domain-test

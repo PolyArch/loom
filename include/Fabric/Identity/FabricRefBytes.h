@@ -6,6 +6,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -18,6 +19,8 @@ namespace fabric {
 /// layout, no duplicated owner facts, and no native PnR indices.
 class FabricByteWriter {
 public:
+  FabricByteWriter() { bytes_.reserve(64); }
+
   void tag(std::uint32_t value) {
     for (int shift = 24; shift >= 0; shift -= 8)
       bytes_.push_back(static_cast<std::uint8_t>(value >> shift));

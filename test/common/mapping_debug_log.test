@@ -1,0 +1,38 @@
+# RUN: env -u LOOM_DEBUG_VERBOSE %loom-common-mapping-debug-log-test 0 2>&1 | count 0
+# RUN: env LOOM_DEBUG_VERBOSE=invalid %loom-common-mapping-debug-log-test 0 2>&1 | count 0
+# RUN: env LOOM_DEBUG_VERBOSE=0 %loom-common-mapping-debug-log-test 0 2>&1 | count 0
+# RUN: env LOOM_DEBUG_VERBOSE=1 %loom-common-mapping-debug-log-test 1 2>&1 | FileCheck %s --check-prefix=L1
+# RUN: env LOOM_DEBUG_VERBOSE=2 %loom-common-mapping-debug-log-test 2 2>&1 | FileCheck %s --check-prefix=L2
+# RUN: env LOOM_DEBUG_VERBOSE=3 %loom-common-mapping-debug-log-test 3 2>&1 | FileCheck %s --check-prefix=L3
+# RUN: env LOOM_DEBUG_VERBOSE=99 %loom-common-mapping-debug-log-test 3 2>&1 | FileCheck %s --check-prefix=L3
+
+# L1-COUNT-1: "event":"invocation_begin"
+# L1-NOT: "event":"negotiation_iteration"
+# L1-NOT: "event":"capacity_conflict"
+# L1: {"a_star_expansions":101
+# L1-SAME: "actions_accepted":8
+# L1-SAME: "actions_proposed":17
+# L1-SAME: "actions_rejected":6
+# L1-SAME: "actions_rolled_back":3
+# L1-SAME: "arithmetic_failures":1
+# L1-SAME: "candidate_publications":5
+# L1-SAME: "candidate_rows":13
+# L1-SAME: "capacity_conflicts":4
+# L1-SAME: "closure_status":"closed"
+# L1-SAME: "event":"statistics"
+# L1-SAME: "negotiated_iterations":11
+# L1-SAME: "schema":"loom.mapping.debug.1"
+# L1-SAME: "stage":"system_pnr"
+
+# L2-COUNT-1: "event":"invocation_begin"
+# L2-COUNT-1: "event":"negotiation_iteration"
+# L2-SAME: "iteration":11
+# L2-NOT: "event":"capacity_conflict"
+# L2-COUNT-1: "event":"statistics"
+
+# L3-COUNT-1: "event":"invocation_begin"
+# L3-COUNT-1: "event":"negotiation_iteration"
+# L3: {"capacity":1
+# L3-SAME: "event":"capacity_conflict"
+# L3-SAME: "usage":2
+# L3-COUNT-1: "event":"statistics"

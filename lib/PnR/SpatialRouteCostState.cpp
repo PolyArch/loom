@@ -1,5 +1,7 @@
 #include "PnR/SpatialRouteCostState.h"
 
+#include "Common/MappingDebugLog.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -202,8 +204,37 @@ llvm::Error SpatialRouteCostState::stageClaim(PnrIndex claim, bool restore) {
       return routeCostStateError("restored route occupancy overflows u64");
     usage += record.amount;
   } else {
-    if (record.amount > usage)
-      return routeCostStateError("excluded route occupancy underflows u64");
+    if (record.amount > usage) {
+      loom::mapping_debug::emit(
+          loom::mapping_debug::Level::Decision,
+          loom::mapping_debug::Stage::SpatialPnr,
+          loom::mapping_debug::Event::ArithmeticFailure,
+          [&](llvm::json::Object &fields) {
+            fields["operation"] = "route_claim_exclusion";
+            fields["claim"] = claim;
+            fields["capacity_ref"] = capacity;
+            fields["claim_amount"] = record.amount;
+            fields["working_usage"] = workingCapacityUsageRaw_[capacity];
+            fields["staged_usage"] = usage;
+            fields["candidate_usage"] =
+                candidate_->routeCapacityUsageRaw(capacity);
+            fields["capacity"] =
+                problem_->resources().capacityDimensions()[capacity].capacity;
+            if (selectedLogicalNet_)
+              fields["selected_logical_net"] = *selectedLogicalNet_;
+            llvm::json::Array logicalNets;
+            for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_;
+                 ++logicalNet)
+              if (candidate_->logicalNetRouteClaimRefcount(logicalNet, claim) !=
+                  0)
+                logicalNets.push_back(logicalNet);
+            fields["candidate_logical_nets"] = std::move(logicalNets);
+          });
+      return routeCostStateError(
+          "claim " + llvm::Twine(claim) + " excludes amount " +
+          llvm::Twine(record.amount) + " from capacity " +
+          llvm::Twine(capacity) + " with staged usage " + llvm::Twine(usage));
+    }
     usage -= record.amount;
   }
   return llvm::Error::success();
@@ -556,6 +587,9 @@ llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
                  policy_.presentPressureGrowth.denominator);
   if (!nextPressure)
     return nextPressure.takeError();
+
+  beginUpdate();
+  const FrozenSpatialRoutingGraph &routing = problem_->routing();
   for (PnrIndex capacity = 0; capacity < historyPressure_.size(); ++capacity) {
     auto nextHistory = pathFinderHistoryUpdate(historyPressure_[capacity],
                                                policy_.historyPressureIncrement,
@@ -563,9 +597,32 @@ llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
     if (!nextHistory)
       return nextHistory.takeError();
     stagedHistoryPressure_[capacity] = *nextHistory;
+
+    const auto claims = routing.capacityRouteClaims().slice(
+        routing.capacityRouteClaimOffsets()[capacity],
+        routing.capacityRouteClaimOffsets()[capacity + 1] -
+            routing.capacityRouteClaimOffsets()[capacity]);
+    const bool presentCostChanged =
+        *nextPressure != presentPressure_ &&
+        llvm::any_of(claims, [&](PnrIndex claim) {
+          return currentClaimOveruseCosts_[claim] != 0;
+        });
+    if (!presentCostChanged && *nextHistory == historyPressure_[capacity])
+      continue;
+
+    for (PnrIndex claim : claims) {
+      for (PnrIndex traversal : routing.routeClaimTraversals().slice(
+               routing.routeClaimTraversalOffsets()[claim],
+               routing.routeClaimTraversalOffsets()[claim + 1] -
+                   routing.routeClaimTraversalOffsets()[claim])) {
+        if (traversalUpdateEpochs_[traversal] == updateEpoch_)
+          continue;
+        traversalUpdateEpochs_[traversal] = updateEpoch_;
+        affectedTraversals_.push_back(traversal);
+      }
+    }
   }
-  for (PnrIndex traversal = 0;
-       traversal < problem_->routing().traversals().size(); ++traversal) {
+  for (PnrIndex traversal : affectedTraversals_) {
     auto cost =
         computeTraversalCost(traversal, *nextPressure, stagedHistoryPressure_);
     if (!cost)
@@ -575,10 +632,14 @@ llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
 
   presentPressure_ = *nextPressure;
   llvm::copy(stagedHistoryPressure_, historyPressure_.begin());
-  llvm::copy(stagedTraversalCosts_, currentTraversalCosts_.begin());
-  for (PnrIndex arc = 0; arc < problem_->routing().routingArcs().size(); ++arc)
-    currentArcCosts_[arc] = currentTraversalCosts_
-        [problem_->routing().routingArcs()[arc].traversal];
+  for (PnrIndex traversal : affectedTraversals_) {
+    currentTraversalCosts_[traversal] = stagedTraversalCosts_[traversal];
+    for (PnrIndex arc : routing.traversalArcs().slice(
+             routing.traversalArcOffsets()[traversal],
+             routing.traversalArcOffsets()[traversal + 1] -
+                 routing.traversalArcOffsets()[traversal]))
+      currentArcCosts_[arc] = stagedTraversalCosts_[traversal];
+  }
   return llvm::Error::success();
 }
 

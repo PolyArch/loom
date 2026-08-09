@@ -29,7 +29,9 @@ std::string spatialConstraintMappingText(
     const loom::mapping::TechMappingView &techMapping,
     const loom::fabric::FabricArtifactView &fabric, llvm::StringRef clauses);
 
+void artifactRoundTripAndReferenceValidation();
 void computeBoundaryClosure();
+void spatialCandidateWorkflow(llvm::StringRef testCase);
 
 } // namespace loom::test::tech_mapping_artifact
 

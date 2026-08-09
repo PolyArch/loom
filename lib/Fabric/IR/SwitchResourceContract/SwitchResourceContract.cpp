@@ -1,4 +1,4 @@
-#include "Fabric/IR/TemporalSwitchResourceContract.h"
+#include "Fabric/IR/SwitchResourceContract.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -19,7 +19,7 @@ constexpr TimingContractKey sameCycleTransfer{0};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "invalid temporal switch resource contract: " +
+                                 "invalid switch resource contract: " +
                                      message);
 }
 
@@ -39,11 +39,36 @@ std::vector<RequesterKey> requesterKeys(std::uint32_t inputCount) {
 
 } // namespace
 
-llvm::Expected<TemporalSwitchResourceContract>
-TemporalSwitchResourceContract::create(
-    TemporalSwitchResourceDeclaration declaration) {
+llvm::Expected<std::uint64_t>
+fabric::validatedSwitchCrosspointCount(std::uint64_t inputCount,
+                                       std::uint64_t outputCount) {
+  if (inputCount == 0 || outputCount == 0)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "switch crossbar dimensions must be "
+                                   "non-empty");
+  if (inputCount > std::numeric_limits<std::uint64_t>::max() / outputCount)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "switch crossbar exceeds maximum %llu crosspoints",
+        static_cast<unsigned long long>(kSwitchCrosspointLimit));
+  const std::uint64_t crosspoints = inputCount * outputCount;
+  if (crosspoints > kSwitchCrosspointLimit)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "switch crossbar has %llu crosspoints, exceeding maximum %llu",
+        static_cast<unsigned long long>(crosspoints),
+        static_cast<unsigned long long>(kSwitchCrosspointLimit));
+  return crosspoints;
+}
+
+llvm::Expected<SwitchResourceContract>
+SwitchResourceContract::create(SwitchResourceDeclaration declaration) {
   if (declaration.inputCount == 0 || declaration.outputCount == 0)
     return invalid("input and output domains must be non-empty");
+  if (auto crosspoints = validatedSwitchCrosspointCount(
+          declaration.inputCount, declaration.outputCount);
+      !crosspoints)
+    return crosspoints.takeError();
   if (declaration.sourcesByOutput.size() != declaration.outputCount)
     return invalid("connectivity row count does not match the output domain");
   if (declaration.inputCount >
@@ -74,9 +99,16 @@ TemporalSwitchResourceContract::create(
   for (llvm::ArrayRef<std::uint32_t> outputs : outputsByInput)
     if (outputs.empty())
       return invalid("an input has no admitted output");
-  if (hasFanIn != declaration.grantPolicy.has_value())
-    return invalid(hasFanIn ? "fan-in requires an exact grant policy"
-                            : "a grant policy is forbidden without fan-in");
+  if (declaration.schedule == Schedule::Spatial) {
+    if (declaration.grantPolicy)
+      return invalid("a spatial switch cannot declare a grant policy");
+  } else if (declaration.schedule == Schedule::Temporal) {
+    if (hasFanIn != declaration.grantPolicy.has_value())
+      return invalid(hasFanIn ? "temporal fan-in requires an exact grant policy"
+                              : "a grant policy is forbidden without fan-in");
+  } else {
+    return invalid("schedule is outside the closed switch domain");
+  }
 
   std::vector<std::uint32_t> inputOffsets(declaration.inputCount + 1, 0);
   std::vector<std::uint32_t> flatOutputs;
@@ -98,7 +130,8 @@ TemporalSwitchResourceContract::create(
                                       CapacityUnits(0)}}});
   resource.timingContracts = {
       TimingContractDeclaration{sameCycleTransfer, {0}}};
-  resource.requesters = requesterKeys(declaration.inputCount);
+  resource.requesters = requesterKeys(
+      declaration.schedule == Schedule::Spatial ? 1 : declaration.inputCount);
   resource.eligibilityCount = static_cast<std::uint32_t>(traversalCount);
   resource.eventCount = 1;
   resource.usePatterns.reserve(static_cast<std::size_t>(traversalCount));
@@ -108,7 +141,7 @@ TemporalSwitchResourceContract::create(
     for (std::uint32_t output : outputsByInput[input]) {
       resource.usePatterns.push_back(UsePatternDeclaration{
           UsePatternKey(pattern),
-          RequesterKey(input),
+          RequesterKey(declaration.schedule == Schedule::Spatial ? 0 : input),
           EligibilityKey(pattern),
           transferEvent,
           transferEvent,
@@ -147,31 +180,29 @@ TemporalSwitchResourceContract::create(
   auto contract = ResourceContract::create(resource);
   if (!contract)
     return contract.takeError();
-  return TemporalSwitchResourceContract(
-      declaration.inputCount, declaration.outputCount, std::move(inputOffsets),
-      std::move(flatOutputs), std::move(*contract));
+  return SwitchResourceContract(
+      declaration.schedule, declaration.inputCount, declaration.outputCount,
+      std::move(inputOffsets), std::move(flatOutputs), std::move(*contract));
 }
 
-StateKey TemporalSwitchResourceContract::inputState(std::uint32_t input) const {
+StateKey SwitchResourceContract::inputState(std::uint32_t input) const {
   assert(input < inputCount_ && "input ordinal outside switch domain");
   return inputStateKey(input);
 }
 
-StateKey
-TemporalSwitchResourceContract::outputState(std::uint32_t output) const {
+StateKey SwitchResourceContract::outputState(std::uint32_t output) const {
   assert(output < outputCount_ && "output ordinal outside switch domain");
   return outputStateKey(inputCount_, output);
 }
 
-RequesterKey
-TemporalSwitchResourceContract::inputRequester(std::uint32_t input) const {
+RequesterKey SwitchResourceContract::inputRequester(std::uint32_t input) const {
   assert(input < inputCount_ && "input ordinal outside switch domain");
-  return RequesterKey(input);
+  return RequesterKey(schedule_ == Schedule::Spatial ? 0 : input);
 }
 
 llvm::Expected<UsePatternKey>
-TemporalSwitchResourceContract::traversalPattern(std::uint32_t input,
-                                                 std::uint32_t output) const {
+SwitchResourceContract::traversalPattern(std::uint32_t input,
+                                         std::uint32_t output) const {
   if (input >= inputCount_ || output >= outputCount_)
     return invalid("traversal endpoint is outside the switch domain");
   const std::uint32_t begin = inputOffsets_[input];
@@ -185,7 +216,7 @@ TemporalSwitchResourceContract::traversalPattern(std::uint32_t input,
                        static_cast<std::uint32_t>(std::distance(first, found)));
 }
 
-llvm::Expected<UsePatternKey> fabric::resolveTemporalSwitchTraversalPattern(
+llvm::Expected<UsePatternKey> fabric::resolveSwitchTraversalPattern(
     const ResourceContract &contract, std::uint32_t inputCount,
     std::uint32_t input, std::uint32_t output) {
   if (input >= inputCount)
@@ -198,7 +229,7 @@ llvm::Expected<UsePatternKey> fabric::resolveTemporalSwitchTraversalPattern(
   for (std::uint32_t ordinal = 0; ordinal != contract.usePatternCount();
        ++ordinal) {
     const UsePattern pattern = contract.usePattern(UsePatternKey(ordinal));
-    if (pattern.requester != RequesterKey(input) || pattern.claims.size() != 2)
+    if (pattern.claims.size() != 2)
       continue;
     bool hasInput = false;
     bool hasOutput = false;

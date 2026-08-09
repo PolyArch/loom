@@ -40,6 +40,7 @@ add_executable(loom-root-complete-tech-mapping-generator-test
 
 add_executable(loom-root-complete-spatial-pnr-generator-test
   RootCompleteSpatialPnrGeneratorTest.cpp
+  RootCompleteSpatialPnrTestSupport.cpp
 )
 
 target_link_libraries(loom-dse-objective-test PRIVATE

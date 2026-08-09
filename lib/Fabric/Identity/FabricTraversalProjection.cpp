@@ -3,8 +3,8 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/BoundaryTransfer.h"
 #include "Fabric/IR/FifoResourceContract.h"
+#include "Fabric/IR/SwitchResourceContract.h"
 #include "Fabric/IR/TemporalPeResourceContract.h"
-#include "Fabric/IR/TemporalSwitchResourceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -78,9 +78,9 @@ patternActivation(const FabricUsePatternRef &pattern) {
 }
 
 FabricTraversalActivationGroupView
-switchActivation(FabricSwitchOccurrenceRef owner, FabricOrdinal input) {
+switchActivation(FabricSwitchOccurrenceRef owner, FabricOrdinal requester) {
   return {FabricTraversalActivationGroupKind::SwitchRequester,
-          FabricInventoryOwnerRef::of(owner), input};
+          FabricInventoryOwnerRef::of(owner), requester};
 }
 
 llvm::Error appendImpliedUse(const FabricArtifactView &view,
@@ -325,7 +325,7 @@ projectFabricTraversal(const FabricArtifactView &view,
           resourceState(resourceOwner, payload.input));
       result.resourceStates.push_back(
           resourceState(resourceOwner, outputState));
-      auto pattern = ::fabric::resolveTemporalSwitchTraversalPattern(
+      auto pattern = ::fabric::resolveSwitchTraversalPattern(
           *contract, static_cast<std::uint32_t>(inputCount),
           static_cast<std::uint32_t>(payload.input),
           static_cast<std::uint32_t>(payload.output));
@@ -333,8 +333,10 @@ projectFabricTraversal(const FabricArtifactView &view,
         return pattern.takeError();
       const FabricUsePatternRef patternRef{
           FabricUsePatternOwnerRef(resourceOwner), pattern->ordinal()};
+      const FabricOrdinal requester =
+          contract->usePattern(*pattern).requester.ordinal();
       if (llvm::Error error = appendImpliedUse(
-              view, patternRef, switchActivation(payload.owner, payload.input),
+              view, patternRef, switchActivation(payload.owner, requester),
               result))
         return std::move(error);
     }

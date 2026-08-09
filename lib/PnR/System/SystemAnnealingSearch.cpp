@@ -104,10 +104,10 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
       DeterministicPnrRandomStream::create(policy.determinism.masterSeed,
                                            seedAttemptOrdinal,
                                            PnrRandomStreamPurpose::Calibration);
+  if (llvm::Error error = actionDomain_.rebuild(*candidate))
+    return std::move(error);
   for (std::uint64_t slot = 0; slot < annealing.calibrationProposalCount;
        ++slot) {
-    if (llvm::Error error = actionDomain_.rebuild(*candidate))
-      return std::move(error);
     auto action = proposeSystemAction(policy.search.actionProposal,
                                       actionDomain_.view(), calibrationStream);
     if (!action)
@@ -149,6 +149,7 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
   do {
     if (llvm::Error error = actionDomain_.rebuild(*candidate))
       return std::move(error);
+    bool domainCurrent = true;
     const std::uint64_t movable = actionDomain_.movableDecisionCount();
     auto proposalCount = annealingProposalsPerLevel(annealing, movable);
     if (!proposalCount)
@@ -167,8 +168,11 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
                        "movable-decision proposal slot"))
       return std::move(error);
     for (std::uint64_t slot = 0; slot < *proposalCount; ++slot) {
-      if (llvm::Error error = actionDomain_.rebuild(*candidate))
-        return std::move(error);
+      if (!domainCurrent) {
+        if (llvm::Error error = actionDomain_.rebuild(*candidate))
+          return std::move(error);
+        domainCurrent = true;
+      }
       auto action = proposeSystemAction(policy.search.actionProposal,
                                         actionDomain_.view(), proposalStream);
       if (!action)
@@ -199,6 +203,7 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
             std::numeric_limits<std::uint64_t>::max())
           return invalid("accepted Action count overflows u64");
         ++statistics.acceptedActionCount;
+        domainCurrent = false;
       }
     }
   } while (schedule->advanceAfterCompletedLevel());

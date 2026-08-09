@@ -28,14 +28,6 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "adg_builtin_invalid: " + message);
 }
 
-template <typename T>
-llvm::Expected<T> indexed(llvm::ArrayRef<T> values, std::size_t &cursor,
-                          llvm::StringRef owner) {
-  if (cursor >= values.size())
-    return invalid(owner + " output cursor exceeds its typed interface");
-  return values[cursor++];
-}
-
 llvm::Expected<::fabric::ResourceContract>
 singleRequesterResourceContract(std::uint32_t capacity = 1) {
   ::fabric::ResourceContractDeclaration declaration;
@@ -163,11 +155,6 @@ struct FuDistribution final {
   std::vector<std::optional<std::uint32_t>> loopOrdinal;
 };
 
-struct TypedSpatialBackedge final {
-  SpatialBackedge edge;
-  PortType type;
-};
-
 FuDistribution makeFuDistribution(std::uint32_t count,
                                   std::uint32_t &nextLoopOrdinal) {
   FuDistribution distribution{
@@ -277,14 +264,24 @@ llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
   return pe.close();
 }
 
-std::vector<std::vector<std::uint32_t>>
-fullConnectivity(std::size_t inputCount, std::size_t outputCount) {
-  std::vector<std::uint32_t> sources;
-  sources.reserve(inputCount);
-  for (std::uint32_t ordinal = 0; ordinal != inputCount; ++ordinal)
-    sources.push_back(ordinal);
-  return std::vector<std::vector<std::uint32_t>>(outputCount, sources);
+std::uint32_t builtinMeshDimension(BuiltinTargetPreset preset) {
+  switch (preset) {
+  case BuiltinTargetPreset::Small:
+    return 4;
+  case BuiltinTargetPreset::Default:
+    return 6;
+  case BuiltinTargetPreset::Large:
+    return 8;
+  }
+  llvm_unreachable("unknown builtin target preset");
 }
+
+struct MemoryMeshAttachments final {
+  std::size_t first;
+  std::size_t second;
+  std::size_t firstInputCount;
+  std::size_t firstOutputCount;
+};
 
 llvm::Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSpatialCoreImpl(DesignBuilder &design,
@@ -332,194 +329,186 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   if (!temporalMemory)
     return temporalMemory.takeError();
 
-  std::vector<TypedSpatialBackedge> spatialPeFeedback;
-  std::vector<TypedSpatialBackedge> spatialMemoryFeedback;
-  std::vector<TypedSpatialBackedge> t2sFeedback;
-  std::vector<TypedSpatialBackedge> temporalPeFeedback;
-  std::vector<TypedSpatialBackedge> temporalMemoryFeedback;
-  std::vector<TypedSpatialBackedge> s2tFeedback;
-  auto appendFeedback = [&](std::vector<TypedSpatialBackedge> &destination,
-                            const PortType &type,
-                            std::size_t count) -> llvm::Error {
-    for (std::size_t ordinal = 0; ordinal != count; ++ordinal) {
-      auto edge = spatial->createBackedge(type);
-      if (!edge)
-        return edge.takeError();
-      destination.push_back({std::move(*edge), type});
-    }
-    return llvm::Error::success();
+  const std::uint32_t meshDimension =
+      builtinMeshDimension(descriptor.preset);
+  const std::size_t meshCellCount =
+      static_cast<std::size_t>(meshDimension) * meshDimension;
+  std::vector<MeshCellAttachmentSpec> spatialAttachmentSpecs;
+  std::vector<MeshCellAttachmentSpec> temporalAttachmentSpecs;
+  std::size_t spatialCellCursor = 0;
+  std::size_t temporalCellCursor = 0;
+  auto appendAttachment =
+      [&](std::vector<MeshCellAttachmentSpec> &attachments,
+          std::size_t &cellCursor, std::vector<PortType> inputTypes,
+          std::vector<PortType> outputTypes) {
+        const std::size_t cell = cellCursor++ % meshCellCount;
+        const std::size_t ordinal = attachments.size();
+        attachments.push_back(
+            {static_cast<std::uint32_t>(cell % meshDimension),
+             static_cast<std::uint32_t>(cell / meshDimension),
+             std::move(inputTypes), std::move(outputTypes)});
+        return ordinal;
+      };
+  auto appendMemoryAttachments =
+      [&](std::vector<MeshCellAttachmentSpec> &attachments,
+          std::size_t &cellCursor, const MemorySpec &memory,
+          const PortType &linkType) -> llvm::Expected<MemoryMeshAttachments> {
+    const llvm::ArrayRef<PortType> inputTypes =
+        memory.inputTypes().drop_front();
+    const llvm::ArrayRef<PortType> outputTypes = memory.outputTypes();
+    if (inputTypes.empty() || outputTypes.empty())
+      return invalid(
+          "builtin memory requires transport inputs and outputs");
+    const std::size_t firstInputCount = (inputTypes.size() + 1) / 2;
+    const std::size_t firstOutputCount = (outputTypes.size() + 1) / 2;
+    const std::size_t first = appendAttachment(
+        attachments, cellCursor,
+        std::vector<PortType>(firstInputCount, linkType),
+        std::vector<PortType>(firstOutputCount, linkType));
+    const std::size_t second = appendAttachment(
+        attachments, cellCursor,
+        std::vector<PortType>(inputTypes.size() - firstInputCount, linkType),
+        std::vector<PortType>(outputTypes.size() - firstOutputCount, linkType));
+    return MemoryMeshAttachments{first, second, firstInputCount,
+                                 firstOutputCount};
   };
-  if (llvm::Error error =
-          appendFeedback(spatialPeFeedback, *bits128, scale.spatialPeCount * 4))
-    return std::move(error);
-  for (std::uint32_t memory = 0; memory != scale.spatialMemoryCount; ++memory)
-    for (std::size_t output = 0; output != spatialMemory->outputTypes().size();
-         ++output)
-      if (llvm::Error error =
-              appendFeedback(spatialMemoryFeedback, *bits128, 1))
-        return std::move(error);
-  for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway) {
-    if (llvm::Error error = appendFeedback(t2sFeedback, *bits128, 1))
-      return std::move(error);
-    if (llvm::Error error = appendFeedback(t2sFeedback, *bits128, 1))
-      return std::move(error);
-  }
-  if (llvm::Error error = appendFeedback(temporalPeFeedback, *tagged128,
-                                         scale.temporalPeCount * 4))
-    return std::move(error);
-  for (std::uint32_t memory = 0; memory != scale.temporalMemoryCount; ++memory)
-    for (std::size_t output = 0; output != temporalMemory->outputTypes().size();
-         ++output)
-      if (llvm::Error error =
-              appendFeedback(temporalMemoryFeedback, *tagged128, 1))
-        return std::move(error);
-  if (llvm::Error error =
-          appendFeedback(s2tFeedback, *tagged128, scale.gatewayCount))
-    return std::move(error);
 
-  std::vector<SpatialValue> spatialSwitchInputs;
-  std::vector<PortType> spatialSwitchInputTypes;
-  for (std::uint32_t ordinal = 0; ordinal != scale.gatewayCount; ++ordinal) {
-    auto input = spatial->input(ordinal);
-    if (!input)
-      return input.takeError();
-    spatialSwitchInputs.push_back(*input);
-    spatialSwitchInputTypes.push_back(*bits128);
+  std::vector<std::size_t> spatialPeAttachments;
+  for (std::uint32_t site = 0; site != scale.spatialPeCount; ++site)
+    spatialPeAttachments.push_back(appendAttachment(
+        spatialAttachmentSpecs, spatialCellCursor,
+        std::vector<PortType>(5, *bits128),
+        std::vector<PortType>(4, *bits128)));
+  std::vector<MemoryMeshAttachments> spatialMemoryAttachments;
+  for (std::uint32_t memory = 0; memory != scale.spatialMemoryCount; ++memory) {
+    auto attachments = appendMemoryAttachments(
+        spatialAttachmentSpecs, spatialCellCursor, *spatialMemory, *bits128);
+    if (!attachments)
+      return attachments.takeError();
+    spatialMemoryAttachments.push_back(*attachments);
   }
-  auto appendValues = [](auto &values, auto &types, const auto &edges) {
-    for (const auto &edge : edges) {
-      values.push_back(edge.edge.value());
-      types.push_back(edge.type);
-    }
-  };
-  appendValues(spatialSwitchInputs, spatialSwitchInputTypes, spatialPeFeedback);
-  appendValues(spatialSwitchInputs, spatialSwitchInputTypes,
-               spatialMemoryFeedback);
-  appendValues(spatialSwitchInputs, spatialSwitchInputTypes, t2sFeedback);
+  std::vector<std::size_t> moduleGatewayAttachments;
+  std::vector<std::size_t> s2tSpatialAttachments;
+  std::vector<std::size_t> t2sSpatialAttachments;
+  for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
+    moduleGatewayAttachments.push_back(appendAttachment(
+        spatialAttachmentSpecs, spatialCellCursor, {*bits128}, {*bits128}));
+  for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
+    s2tSpatialAttachments.push_back(appendAttachment(
+        spatialAttachmentSpecs, spatialCellCursor, {*bits128, *bits128}, {}));
+  for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
+    t2sSpatialAttachments.push_back(appendAttachment(
+        spatialAttachmentSpecs, spatialCellCursor, {}, {*bits128, *bits128}));
 
-  std::vector<PortType> spatialSwitchOutputTypes;
-  spatialSwitchOutputTypes.insert(spatialSwitchOutputTypes.end(),
-                                  scale.spatialPeCount * 5, *bits128);
-  for (std::uint32_t memory = 0; memory != scale.spatialMemoryCount; ++memory)
-    spatialSwitchOutputTypes.insert(spatialSwitchOutputTypes.end(),
-                                    spatialMemory->inputTypes().size() - 1,
-                                    *bits128);
-  for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway) {
-    spatialSwitchOutputTypes.push_back(*bits128);
-    spatialSwitchOutputTypes.push_back(*bits128);
+  std::vector<std::size_t> temporalPeAttachments;
+  for (std::uint32_t site = 0; site != scale.temporalPeCount; ++site)
+    temporalPeAttachments.push_back(appendAttachment(
+        temporalAttachmentSpecs, temporalCellCursor,
+        std::vector<PortType>(5, *tagged128),
+        std::vector<PortType>(4, *tagged128)));
+  std::vector<MemoryMeshAttachments> temporalMemoryAttachments;
+  for (std::uint32_t memory = 0; memory != scale.temporalMemoryCount;
+       ++memory) {
+    auto attachments = appendMemoryAttachments(
+        temporalAttachmentSpecs, temporalCellCursor, *temporalMemory,
+        *tagged128);
+    if (!attachments)
+      return attachments.takeError();
+    temporalMemoryAttachments.push_back(*attachments);
   }
-  spatialSwitchOutputTypes.insert(spatialSwitchOutputTypes.end(),
-                                  scale.gatewayCount, *bits128);
-  auto spatialRoutes = spatial->addSwitch(
-      spatialSwitchInputs,
-      SwitchSpec::spatial(spatialSwitchInputTypes, spatialSwitchOutputTypes,
-                          fullConnectivity(spatialSwitchInputs.size(),
-                                           spatialSwitchOutputTypes.size())));
-  if (!spatialRoutes)
-    return spatialRoutes.takeError();
+  std::vector<std::size_t> temporalGatewayAttachments;
+  for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
+    temporalGatewayAttachments.push_back(appendAttachment(
+        temporalAttachmentSpecs, temporalCellCursor, {*tagged128},
+        {*tagged128}));
 
-  std::vector<SpatialValue> temporalSwitchInputs;
-  std::vector<PortType> temporalSwitchInputTypes;
-  appendValues(temporalSwitchInputs, temporalSwitchInputTypes, s2tFeedback);
-  appendValues(temporalSwitchInputs, temporalSwitchInputTypes,
-               temporalPeFeedback);
-  appendValues(temporalSwitchInputs, temporalSwitchInputTypes,
-               temporalMemoryFeedback);
-  std::vector<PortType> temporalSwitchOutputTypes;
-  temporalSwitchOutputTypes.insert(temporalSwitchOutputTypes.end(),
-                                   scale.temporalPeCount * 5, *tagged128);
-  for (std::uint32_t memory = 0; memory != scale.temporalMemoryCount; ++memory)
-    temporalSwitchOutputTypes.insert(temporalSwitchOutputTypes.end(),
-                                     temporalMemory->inputTypes().size() - 1,
-                                     *tagged128);
-  temporalSwitchOutputTypes.insert(temporalSwitchOutputTypes.end(),
-                                   scale.gatewayCount, *tagged128);
-  auto temporalRoutes = spatial->addSwitch(
-      temporalSwitchInputs,
-      SwitchSpec::temporal(
-          temporalSwitchInputTypes, temporalSwitchOutputTypes,
-          fullConnectivity(temporalSwitchInputs.size(),
-                           temporalSwitchOutputTypes.size()),
-          scale.temporalResidentContexts, [&]() {
-            std::vector<std::uint32_t> cycle(temporalSwitchInputs.size());
-            std::iota(cycle.begin(), cycle.end(), 0);
-            return ::fabric::TemporalSwitchGrantPolicy(
-                ::fabric::TemporalSwitchRoundRobin{std::move(cycle), 0});
-          }()));
-  if (!temporalRoutes)
-    return temporalRoutes.takeError();
+  auto spatialNetworkSpec = MeshSwitchNetworkSpec::spatial(
+      meshDimension, meshDimension, 2, *bits128,
+      std::move(spatialAttachmentSpecs));
+  if (!spatialNetworkSpec)
+    return spatialNetworkSpec.takeError();
+  auto spatialNetwork = spatial->addMeshSwitchNetwork(*spatialNetworkSpec);
+  if (!spatialNetwork)
+    return spatialNetwork.takeError();
+  auto temporalNetworkSpec = MeshSwitchNetworkSpec::temporal(
+      meshDimension, meshDimension, 2, *tagged128,
+      scale.temporalResidentContexts, MeshSwitchGrantPolicyKind::RoundRobin,
+      std::move(temporalAttachmentSpecs));
+  if (!temporalNetworkSpec)
+    return temporalNetworkSpec.takeError();
+  auto temporalNetwork = spatial->addMeshSwitchNetwork(*temporalNetworkSpec);
+  if (!temporalNetwork)
+    return temporalNetwork.takeError();
 
   std::uint32_t nextLoopOrdinal = 0;
   const FuDistribution spatialDistribution =
       makeFuDistribution(scale.spatialPeCount, nextLoopOrdinal);
   const FuDistribution temporalDistribution =
       makeFuDistribution(scale.temporalPeCount, nextLoopOrdinal);
-  std::size_t spatialCursor = 0;
-  std::size_t spatialFeedbackCursor = 0;
   const std::vector<PortType> spatialPeInputs(5, *bits128);
   const std::vector<PortType> spatialPeOutputs(4, *bits128);
   for (std::uint32_t site = 0; site != scale.spatialPeCount; ++site) {
-    std::vector<SpatialValue> inputs;
-    for (std::size_t ordinal = 0; ordinal != 5; ++ordinal) {
-      auto value = indexed<SpatialValue>(spatialRoutes->values(), spatialCursor,
-                                         "spatial switch");
-      if (!value)
-        return value.takeError();
-      inputs.push_back(*value);
-    }
+    auto attachment = spatialNetwork->attachment(spatialPeAttachments[site]);
+    if (!attachment)
+      return attachment.takeError();
     auto pe = spatial->addPe(
-        inputs, PeSpec::spatial(spatialPeInputs, spatialPeOutputs));
+        attachment->inputs(),
+        PeSpec::spatial(spatialPeInputs, spatialPeOutputs));
     if (!pe)
       return pe.takeError();
     if (llvm::Error error = addFuCatalog(*pe, site, spatialDistribution))
       return std::move(error);
+    std::vector<SpatialValue> outputs;
     for (std::size_t output = 0; output != 4; ++output) {
       auto value = pe->output(output);
       if (!value)
         return value.takeError();
-      auto fifo = spatial->addFifo(
-          *value, FifoSpec{*bits128, scale.temporalResidentContexts, true});
-      if (!fifo)
-        return fifo.takeError();
-      if (llvm::Error error = spatial->resolveBackedge(
-              std::move(spatialPeFeedback[spatialFeedbackCursor++].edge),
-              fifo->value()))
-        return std::move(error);
+      outputs.push_back(*value);
     }
+    if (llvm::Error error = attachment->connectOutputs(outputs))
+      return std::move(error);
   }
-  std::size_t spatialMemoryFeedbackCursor = 0;
   for (std::uint32_t memory = 0; memory != scale.spatialMemoryCount; ++memory) {
+    auto first =
+        spatialNetwork->attachment(spatialMemoryAttachments[memory].first);
+    if (!first)
+      return first.takeError();
+    auto second =
+        spatialNetwork->attachment(spatialMemoryAttachments[memory].second);
+    if (!second)
+      return second.takeError();
     std::vector<SpatialValue> inputs;
     auto manager = spatial->input(scale.gatewayCount);
     if (!manager)
       return manager.takeError();
     inputs.push_back(*manager);
-    for (std::size_t ordinal = 1; ordinal != spatialMemory->inputTypes().size();
-         ++ordinal) {
-      auto value = indexed<SpatialValue>(spatialRoutes->values(), spatialCursor,
-                                         "spatial switch");
-      if (!value)
-        return value.takeError();
-      inputs.push_back(*value);
-    }
+    inputs.insert(inputs.end(), first->inputs().begin(), first->inputs().end());
+    inputs.insert(inputs.end(), second->inputs().begin(),
+                  second->inputs().end());
     auto outputs = spatial->addMemory(inputs, *spatialMemory);
     if (!outputs)
       return outputs.takeError();
+    std::vector<SpatialValue> routedOutputs;
     for (SpatialValue output : outputs->values()) {
       auto fifo = spatial->addFifo(
-          output, FifoSpec{*bits128, scale.temporalResidentContexts, true});
+          output,
+          FifoSpec{*bits128, scale.temporalResidentContexts, true});
       if (!fifo)
         return fifo.takeError();
-      if (llvm::Error error = spatial->resolveBackedge(
-              std::move(
-                  spatialMemoryFeedback[spatialMemoryFeedbackCursor++].edge),
-              fifo->value()))
-        return std::move(error);
+      routedOutputs.push_back(fifo->value());
     }
+    const std::size_t split =
+        spatialMemoryAttachments[memory].firstOutputCount;
+    if (llvm::Error error =
+            first->connectOutputs(
+                llvm::ArrayRef<SpatialValue>(routedOutputs).take_front(split)))
+      return std::move(error);
+    if (llvm::Error error =
+            second->connectOutputs(
+                llvm::ArrayRef<SpatialValue>(routedOutputs).drop_front(split)))
+      return std::move(error);
   }
 
-  std::size_t temporalCursor = 0;
-  std::size_t temporalFeedbackCursor = 0;
   const std::vector<PortType> temporalPeInputs(5, *bits128);
   const std::vector<PortType> temporalPeOutputs(4, *tagged128);
   const TemporalPeParameters temporalParameters{
@@ -529,122 +518,121 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       TemporalRegisterFifoParameters{scale.temporalResidentContexts,
                                      scale.temporalResidentContexts, 2}};
   for (std::uint32_t site = 0; site != scale.temporalPeCount; ++site) {
-    std::vector<SpatialValue> inputs;
-    for (std::size_t ordinal = 0; ordinal != 5; ++ordinal) {
-      auto value = indexed<SpatialValue>(temporalRoutes->values(), temporalCursor,
-                                         "temporal switch");
-      if (!value)
-        return value.takeError();
-      inputs.push_back(*value);
-    }
-    auto pe = spatial->addPe(inputs, PeSpec::temporal(temporalPeInputs,
-                                                      temporalPeOutputs,
-                                                      temporalParameters));
+    auto attachment =
+        temporalNetwork->attachment(temporalPeAttachments[site]);
+    if (!attachment)
+      return attachment.takeError();
+    auto pe = spatial->addPe(
+        attachment->inputs(),
+        PeSpec::temporal(temporalPeInputs, temporalPeOutputs,
+                         temporalParameters));
     if (!pe)
       return pe.takeError();
     if (llvm::Error error = addFuCatalog(*pe, site, temporalDistribution))
       return std::move(error);
+    std::vector<SpatialValue> outputs;
     for (std::size_t output = 0; output != 4; ++output) {
       auto value = pe->output(output);
       if (!value)
         return value.takeError();
-      auto fifo = spatial->addFifo(
-          *value, FifoSpec{*tagged128, scale.temporalResidentContexts, true});
-      if (!fifo)
-        return fifo.takeError();
-      if (llvm::Error error = spatial->resolveBackedge(
-              std::move(temporalPeFeedback[temporalFeedbackCursor++].edge),
-              fifo->value()))
-        return std::move(error);
+      outputs.push_back(*value);
     }
+    if (llvm::Error error = attachment->connectOutputs(outputs))
+      return std::move(error);
   }
-  std::size_t temporalMemoryFeedbackCursor = 0;
   for (std::uint32_t memory = 0; memory != scale.temporalMemoryCount;
        ++memory) {
+    auto first =
+        temporalNetwork->attachment(temporalMemoryAttachments[memory].first);
+    if (!first)
+      return first.takeError();
+    auto second =
+        temporalNetwork->attachment(temporalMemoryAttachments[memory].second);
+    if (!second)
+      return second.takeError();
     std::vector<SpatialValue> inputs;
     auto manager = spatial->input(scale.gatewayCount);
     if (!manager)
       return manager.takeError();
     inputs.push_back(*manager);
-    for (std::size_t ordinal = 1;
-         ordinal != temporalMemory->inputTypes().size(); ++ordinal) {
-      auto value = indexed<SpatialValue>(temporalRoutes->values(), temporalCursor,
-                                         "temporal switch");
-      if (!value)
-        return value.takeError();
-      inputs.push_back(*value);
-    }
+    inputs.insert(inputs.end(), first->inputs().begin(), first->inputs().end());
+    inputs.insert(inputs.end(), second->inputs().begin(),
+                  second->inputs().end());
     auto outputs = spatial->addMemory(inputs, *temporalMemory);
     if (!outputs)
       return outputs.takeError();
+    std::vector<SpatialValue> routedOutputs;
     for (SpatialValue output : outputs->values()) {
       auto fifo = spatial->addFifo(
-          output, FifoSpec{*tagged128, scale.temporalResidentContexts, true});
+          output,
+          FifoSpec{*tagged128, scale.temporalResidentContexts, true});
       if (!fifo)
         return fifo.takeError();
-      if (llvm::Error error = spatial->resolveBackedge(
-              std::move(
-                  temporalMemoryFeedback[temporalMemoryFeedbackCursor++].edge),
-              fifo->value()))
-        return std::move(error);
+      routedOutputs.push_back(fifo->value());
     }
-  }
-
-  std::size_t s2tFeedbackCursor = 0;
-  for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway) {
-    auto data =
-        indexed<SpatialValue>(spatialRoutes->values(), spatialCursor, "spatial switch");
-    if (!data)
-      return data.takeError();
-    auto tag =
-        indexed<SpatialValue>(spatialRoutes->values(), spatialCursor, "spatial switch");
-    if (!tag)
-      return tag.takeError();
-    auto outputs = spatial->addBoundary(
-        {*data, *tag}, BoundarySpec::s2t(*bits128, *tagBits, *tagged128));
-    if (!outputs)
-      return outputs.takeError();
-    auto fifo = spatial->addFifo(
-        outputs->front(),
-        FifoSpec{*tagged128, scale.temporalResidentContexts, true});
-    if (!fifo)
-      return fifo.takeError();
-    if (llvm::Error error = spatial->resolveBackedge(
-            std::move(s2tFeedback[s2tFeedbackCursor++].edge), fifo->value()))
+    const std::size_t split =
+        temporalMemoryAttachments[memory].firstOutputCount;
+    if (llvm::Error error =
+            first->connectOutputs(
+                llvm::ArrayRef<SpatialValue>(routedOutputs).take_front(split)))
+      return std::move(error);
+    if (llvm::Error error =
+            second->connectOutputs(
+                llvm::ArrayRef<SpatialValue>(routedOutputs).drop_front(split)))
       return std::move(error);
   }
-  std::size_t t2sFeedbackCursor = 0;
+
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway) {
-    auto tagged = indexed<SpatialValue>(temporalRoutes->values(), temporalCursor,
-                                        "temporal switch");
-    if (!tagged)
-      return tagged.takeError();
+    auto spatialAttachment =
+        spatialNetwork->attachment(s2tSpatialAttachments[gateway]);
+    if (!spatialAttachment)
+      return spatialAttachment.takeError();
+    auto temporalAttachment =
+        temporalNetwork->attachment(temporalGatewayAttachments[gateway]);
+    if (!temporalAttachment)
+      return temporalAttachment.takeError();
     auto outputs = spatial->addBoundary(
-        {*tagged}, BoundarySpec::t2s(*tagged128, {*bits128, *tagBits}));
+        spatialAttachment->inputs(),
+        BoundarySpec::s2t(*bits128, *tagBits, *tagged128));
     if (!outputs)
       return outputs.takeError();
-    for (SpatialValue output : outputs->values()) {
+    if (llvm::Error error = temporalAttachment->connectOutputs(outputs->values()))
+      return std::move(error);
+    auto t2sOutputs = spatial->addBoundary(
+        temporalAttachment->inputs(),
+        BoundarySpec::t2s(*tagged128, {*bits128, *tagBits}));
+    if (!t2sOutputs)
+      return t2sOutputs.takeError();
+    auto t2sAttachment =
+        spatialNetwork->attachment(t2sSpatialAttachments[gateway]);
+    if (!t2sAttachment)
+      return t2sAttachment.takeError();
+    std::vector<SpatialValue> routedOutputs;
+    for (SpatialValue output : t2sOutputs->values()) {
       auto fifo = spatial->addFifo(
-          output, FifoSpec{*bits128, scale.temporalResidentContexts, true});
+          output,
+          FifoSpec{*bits128, scale.temporalResidentContexts, true});
       if (!fifo)
         return fifo.takeError();
-      if (llvm::Error error = spatial->resolveBackedge(
-              std::move(t2sFeedback[t2sFeedbackCursor++].edge), fifo->value()))
-        return std::move(error);
+      routedOutputs.push_back(fifo->value());
     }
+    if (llvm::Error error = t2sAttachment->connectOutputs(routedOutputs))
+      return std::move(error);
   }
 
   std::vector<SpatialValue> moduleOutputs;
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway) {
-    auto output =
-        indexed<SpatialValue>(spatialRoutes->values(), spatialCursor, "spatial switch");
-    if (!output)
-      return output.takeError();
-    moduleOutputs.push_back(*output);
+    auto attachment =
+        spatialNetwork->attachment(moduleGatewayAttachments[gateway]);
+    if (!attachment)
+      return attachment.takeError();
+    auto input = spatial->input(gateway);
+    if (!input)
+      return input.takeError();
+    if (llvm::Error error = attachment->connectOutputs({*input}))
+      return std::move(error);
+    moduleOutputs.push_back(attachment->inputs().front());
   }
-  if (spatialCursor != spatialRoutes->size() ||
-      temporalCursor != temporalRoutes->size())
-    return invalid("builtin switch output partition is incomplete");
   return BuiltinSpatialCoreExpansion{std::move(*spatial),
                                      std::move(moduleOutputs)};
 }
