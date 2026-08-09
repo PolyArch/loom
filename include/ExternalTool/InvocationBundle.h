@@ -163,6 +163,27 @@ struct ExternalToolInvocationImportExpectation final {
   std::vector<std::string> declaredOutputs;
 };
 
+/// A prepared invocation has no atomically published completion record. This
+/// carries no process-liveness, retry, polling, or lifecycle authority.
+struct IncompleteExternalToolInvocationAttempt final {};
+
+/// One valid non-success completion, preserving the script-owned status and
+/// exact process exit code without exposing any declared output bytes.
+struct FailedExternalToolInvocationAttempt final {
+  InvocationCompletionStatus status;
+  int exitCode;
+};
+
+class ImportedExternalToolInvocationBundle;
+
+/// The closed result of importing one expectation-bound invocation attempt.
+/// Integrity and expectation violations remain llvm::Error; only Success can
+/// carry an immutable declared-output snapshot.
+using ExternalToolInvocationAttemptOutcome =
+    std::variant<IncompleteExternalToolInvocationAttempt,
+                 FailedExternalToolInvocationAttempt,
+                 ImportedExternalToolInvocationBundle>;
+
 class ImportedExternalToolInvocationBundle final {
 private:
   ImportedExternalToolInvocationBundle(
@@ -171,8 +192,8 @@ private:
 
   std::vector<std::pair<std::string, std::string>> outputs_;
 
-  friend llvm::Expected<ImportedExternalToolInvocationBundle>
-  importExternalToolInvocationBundle(
+  friend llvm::Expected<ExternalToolInvocationAttemptOutcome>
+  importExternalToolInvocationAttempt(
       const PreparedExternalToolInvocation &prepared,
       const ExternalToolInvocationImportExpectation &expectation);
   friend llvm::Expected<std::string> readExternalToolInvocationDeclaredOutput(
@@ -180,13 +201,10 @@ private:
       llvm::StringRef relativePath);
 };
 
-/// The single typed signal that a prepared invocation has no completion
-/// record at all: the caller has not executed the bundle, or the attempt was
-/// interrupted before publication. Only an absent outputs/completion.json
-/// produces this error; a missing manifest, a present but malformed or
-/// non-success completion, and a missing declared output remain ordinary
-/// bundle integrity failures. The type is stateless and implies no retry,
-/// polling, or lifecycle authority.
+/// The success-only import wrapper's typed projection of an incomplete
+/// attempt. Only an absent outputs/completion.json produces this error; a
+/// missing manifest or present but malformed completion remains an ordinary
+/// bundle integrity failure.
 class IncompleteExternalToolInvocationError final
     : public llvm::ErrorInfo<IncompleteExternalToolInvocationError> {
 public:
@@ -216,11 +234,17 @@ llvm::Expected<InvocationCompletion>
 loadExternalToolInvocationCompletion(
     const PreparedExternalToolInvocation &prepared);
 
-/// Strictly imports one canonical, successfully completed invocation attempt
-/// through its exact prepared handle: the manifest bytes must digest to the
-/// prepared manifest_sha256, the completion must bind that manifest
-/// atomically, and every declared ordinary output is snapshotted as owned
-/// immutable bytes from the same bundle directory.
+/// Imports one canonical attempt against the exact prepared handle and full
+/// semantic expectation. The completion must bind the validated manifest
+/// before any outcome is exposed. Only Success verifies and snapshots every
+/// declared ordinary output as owned immutable bytes from the same directory.
+llvm::Expected<ExternalToolInvocationAttemptOutcome>
+importExternalToolInvocationAttempt(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationImportExpectation &expectation);
+
+/// Success-only compatibility wrapper over importExternalToolInvocationAttempt.
+/// Incomplete and failed outcomes are projected back to import errors.
 llvm::Expected<ImportedExternalToolInvocationBundle>
 importExternalToolInvocationBundle(
     const PreparedExternalToolInvocation &prepared,

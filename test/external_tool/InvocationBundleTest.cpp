@@ -357,9 +357,8 @@ void externalFileIsRevalidated(const std::filesystem::path &root,
 void missingOutputIsRecorded(const std::filesystem::path &root,
                              const std::filesystem::path &tool) {
   const std::filesystem::path bundle = root / "missing-output";
-  ExternalToolInvocationBundleSpec spec =
-      baseSpec(tool, "outputs/required.txt");
-  spec.commands = {{tool.string(), "no-output"}};
+  ExternalToolInvocationBundleSpec spec = baseSpec(tool, "outputs/present.txt");
+  spec.declaredOutputs.push_back("outputs/missing.txt");
   const PreparedExternalToolInvocation prepared = take(
       __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
   const int status =
@@ -373,6 +372,23 @@ void missingOutputIsRecorded(const std::filesystem::path &root,
           "missing output was not distinguished in completion");
   require(__func__, completion.outputDigests.empty(),
           "failed completion retained output digests");
+  require(__func__,
+          std::filesystem::exists(bundle / spec.declaredOutputs.front()),
+          "the partial-output fixture did not produce its first output");
+  ExternalToolInvocationAttemptOutcome partial = take(
+      __func__,
+      importExternalToolInvocationAttempt(prepared, importExpectation(spec)));
+  const auto *failed =
+      std::get_if<FailedExternalToolInvocationAttempt>(&partial);
+  require(__func__,
+          failed &&
+              failed->status == InvocationCompletionStatus::MissingOutput &&
+              failed->exitCode == status,
+          "partial output was not returned as the exact failed attempt");
+  require(
+      __func__,
+      !std::holds_alternative<ImportedExternalToolInvocationBundle>(partial),
+      "partial output exposed a readable declared-output snapshot");
 
   // A planted stale output never survives as a fresh result: the rerun-safe
   // prelude removes declared outputs before execution, so the tool's missing
@@ -638,17 +654,29 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
       "strict-import bundle did not execute");
 
   ExternalToolInvocationImportExpectation expected = importExpectation(spec);
-  ImportedExternalToolInvocationBundle imported = take(
-      __func__, importExternalToolInvocationBundle(prepared, expected));
+  ExternalToolInvocationAttemptOutcome attempt =
+      take(__func__, importExternalToolInvocationAttempt(prepared, expected));
+  const auto *snapshot =
+      std::get_if<ImportedExternalToolInvocationBundle>(&attempt);
+  require(__func__, snapshot != nullptr,
+          "successful attempt did not return an imported output snapshot");
   require(__func__,
           take(__func__, readExternalToolInvocationDeclaredOutput(
-                             imported, output.generic_string())) ==
+                             *snapshot, output.generic_string())) ==
               "literal; $(touch never)",
           "declared output bytes were not imported exactly");
   requireFailure(__func__,
                  readExternalToolInvocationDeclaredOutput(
-                     imported, "outputs/not-declared.txt"),
+                     *snapshot, "outputs/not-declared.txt"),
                  "an undeclared output was readable");
+
+  ImportedExternalToolInvocationBundle imported =
+      take(__func__, importExternalToolInvocationBundle(prepared, expected));
+  require(__func__,
+          take(__func__, readExternalToolInvocationDeclaredOutput(
+                             imported, output.generic_string())) ==
+              "literal; $(touch never)",
+          "the success-only import wrapper changed successful output bytes");
 
   ExternalToolInvocationImportExpectation wrong = expected;
   wrong.semanticContract.providerIdentity = "other-provider@1";
@@ -751,7 +779,7 @@ void unsafeOutputsCannotBeImported(const std::filesystem::path &root,
   std::filesystem::create_symlink(
       outside, symlinkBundle / symlinkSpec.declaredOutputs.front());
   requireFailure(__func__,
-                 importExternalToolInvocationBundle(
+                 importExternalToolInvocationAttempt(
                      symlinkPrepared, importExpectation(symlinkSpec)),
                  "a symlinked declared output was imported");
 
@@ -761,17 +789,16 @@ void unsafeOutputsCannotBeImported(const std::filesystem::path &root,
                           directorySpec.declaredOutputs.front());
   std::filesystem::create_directory(directoryBundle /
                                     directorySpec.declaredOutputs.front());
-  requireFailure(
-      __func__,
-      importExternalToolInvocationBundle(directoryPrepared,
-                                         importExpectation(directorySpec)),
-      "a directory declared output was imported");
+  requireFailure(__func__,
+                 importExternalToolInvocationAttempt(
+                     directoryPrepared, importExpectation(directorySpec)),
+                 "a directory declared output was imported");
 
   auto [changedBundle, changedSpec, changedPrepared] =
       makeExecutedBundle("changed-output");
   writeText(changedBundle / changedSpec.declaredOutputs.front(), "changed");
   requireFailure(__func__,
-                 importExternalToolInvocationBundle(
+                 importExternalToolInvocationAttempt(
                      changedPrepared, importExpectation(changedSpec)),
                  "an output changed after completion was imported");
 }
@@ -1056,6 +1083,25 @@ void incompleteAttemptHasATypedImportError(const std::filesystem::path &root,
   const PreparedExternalToolInvocation prepared = take(
       __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
 
+  writeText(bundle / spec.declaredOutputs.front(),
+            "foreign-output-without-completion");
+  ExternalToolInvocationImportExpectation wrong = importExpectation(spec);
+  wrong.semanticContract.providerIdentity = "wrong-provider@1";
+  requireFailureContains(__func__,
+                         importExternalToolInvocationAttempt(prepared, wrong),
+                         "provider identity");
+  ExternalToolInvocationAttemptOutcome attempt = take(
+      __func__,
+      importExternalToolInvocationAttempt(prepared, importExpectation(spec)));
+  require(
+      __func__,
+      std::holds_alternative<IncompleteExternalToolInvocationAttempt>(attempt),
+      "an absent completion was not returned as an incomplete attempt");
+  require(
+      __func__,
+      !std::holds_alternative<ImportedExternalToolInvocationBundle>(attempt),
+      "an incomplete attempt exposed a readable declared-output snapshot");
+
   // A prepared bundle that was never executed has no completion record: the
   // import failure is the one typed incomplete-attempt error.
   llvm::Expected<ImportedExternalToolInvocationBundle> incomplete =
@@ -1088,6 +1134,76 @@ void incompleteAttemptHasATypedImportError(const std::filesystem::path &root,
   llvm::consumeError(std::move(remainder));
 }
 
+void failedAttemptImportIsExpectationBound(const std::filesystem::path &root,
+                                           const std::filesystem::path &tool) {
+  const std::filesystem::path bundle = root / "failed-attempt";
+  ExternalToolInvocationBundleSpec spec = baseSpec(tool, "outputs/result.txt");
+  spec.commands = {{tool.string(), "timeout"}};
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 124,
+          "the timeout-like fixture did not return exit status 124");
+
+  std::filesystem::create_directory(bundle / spec.declaredOutputs.front());
+  const ExternalToolInvocationImportExpectation expected =
+      importExpectation(spec);
+  ExternalToolInvocationAttemptOutcome attempt =
+      take(__func__, importExternalToolInvocationAttempt(prepared, expected));
+  const auto *failed =
+      std::get_if<FailedExternalToolInvocationAttempt>(&attempt);
+  require(__func__,
+          failed && failed->status == InvocationCompletionStatus::ToolExit &&
+              failed->exitCode == 124,
+          "ToolExit did not preserve its exact status and exit reason");
+  require(
+      __func__,
+      !std::holds_alternative<ImportedExternalToolInvocationBundle>(attempt),
+      "a failed attempt exposed a readable declared-output snapshot");
+
+  ExternalToolInvocationImportExpectation wrong = expected;
+  wrong.semanticContract.providerIdentity = "wrong-provider@1";
+  requireFailureContains(__func__,
+                         importExternalToolInvocationAttempt(prepared, wrong),
+                         "provider identity");
+  wrong = expected;
+  wrong.semanticContract.semanticClosure =
+      SemanticInvocationClosure(loom::ArtifactRootReference{
+          "loom.test_request",
+          {1, 0},
+          take(__func__,
+               loom::parseArtifactIdentityHex(std::string(64, '3')))});
+  requireFailureContains(__func__,
+                         importExternalToolInvocationAttempt(prepared, wrong),
+                         "semantic closure");
+  wrong = expected;
+  wrong.semanticContract.resultImporterIdentity = "wrong-importer@1";
+  requireFailureContains(__func__,
+                         importExternalToolInvocationAttempt(prepared, wrong),
+                         "result importer identity");
+  wrong = expected;
+  wrong.semanticInputs.front().contentDigest = blobDigest("wrong-input");
+  requireFailureContains(__func__,
+                         importExternalToolInvocationAttempt(prepared, wrong),
+                         "semantic inputs");
+
+  const std::filesystem::path substitute = root / "failed-attempt-substitute";
+  ExternalToolInvocationBundleSpec substituteSpec = spec;
+  substituteSpec.tool.source = ToolBindingSource::EnvironmentPath;
+  const PreparedExternalToolInvocation substitutePrepared =
+      take(__func__, finalizeExternalToolInvocationBundle(substitute.string(),
+                                                          substituteSpec));
+  writeText(bundle / "tool-invocation.json",
+            readFile(substitute / "tool-invocation.json"));
+  const PreparedExternalToolInvocation substitutedHandle{
+      bundle.string(), substitutePrepared.manifestDigest};
+  requireFailureContains(
+      __func__,
+      importExternalToolInvocationAttempt(substitutedHandle,
+                                          importExpectation(substituteSpec)),
+      "completion does not bind the imported manifest");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1108,6 +1224,7 @@ int main(int argc, char **argv) {
                         "    printf '%s' completed >\"$4\"\n"
                         "    ;;\n"
                         "  no-output) : ;;\n"
+                        "  timeout) exit 124 ;;\n"
                         "  *) exit 64 ;;\n"
                         "esac\n");
   const std::filesystem::path container = root / "container bin" / "container";
@@ -1160,5 +1277,6 @@ int main(int argc, char **argv) {
   executionRejectsSubstitutedBundle(root, tool);
   finalizeRejectsNonNormalizedBundleRoot(root, tool);
   incompleteAttemptHasATypedImportError(root, tool);
+  failedAttemptImportIsExpectationBound(root, tool);
   return 0;
 }

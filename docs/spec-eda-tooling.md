@@ -188,17 +188,23 @@ script; resource isolation, limits, scheduling, container lifecycle, and
 license services remain external. Independent bundles may be executed in
 parallel without sharing mutable process environment.
 
-After execution, the shared strict-import helper verifies only attempt
-integrity and declared output bytes. The same semantic descriptor's `import`
-operation interprets that ephemeral immutable snapshot. A generator import
-finalizes a complete implementation and returns dense descriptor output
-bindings plus lineage contributions but no Evidence; an evaluator import
-finalizes any descriptor output Artifacts and returns their dense descriptor
-output bindings plus one normalized `EvaluationEvidenceOutcome` to the
-EvaluationEvidence finalizer. Neither path scans ArtifactStore for result
-membership. An evaluator cannot mutate or replace the subject. Generation
-reports are not reused by Evaluation in the baseline two-call contract; the
-evaluator prepares a new exact bundle over the finalized implementation.
+After execution, the shared expectation-bound attempt importer verifies the
+prepared handle, exact semantic expectation, attempt integrity, and
+completion-to-manifest binding. It returns an incomplete attempt, the exact
+failed completion status and exit code, or an ephemeral immutable declared-
+output snapshot. Only successful completion opens declared outputs. The same
+semantic descriptor's `import` operation interprets a successful snapshot or
+derives its own typed non-success outcome from a validated failed attempt; the
+external layer does not infer semantic failure kind from a process exit code.
+A generator import finalizes a complete implementation and returns dense
+descriptor output bindings plus lineage contributions but no Evidence; an
+evaluator import finalizes any descriptor output Artifacts and returns their
+dense descriptor output bindings plus one normalized
+`EvaluationEvidenceOutcome` to the EvaluationEvidence finalizer. Neither path
+scans ArtifactStore for result membership. An evaluator cannot mutate or
+replace the subject. Generation reports are not reused by Evaluation in the
+baseline two-call contract; the evaluator prepares a new exact bundle over the
+finalized implementation.
 
 ## HardwareImplementation Generation
 

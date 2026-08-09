@@ -498,22 +498,39 @@ The completion record is nonsemantic attempt state and is written atomically.
 It distinguishes launch or activation failure, tool exit, missing declared
 output, and successful driver completion. A signal, externally enforced
 timeout, scheduler cancellation, resource limit, or interrupted host may leave
-no valid completion record; that remains an incomplete attempt.
+no completion record; that remains an incomplete attempt.
 
-A prepared bundle with no valid completion record is merely incomplete. Loom
-does not infer whether an external process is still running, acquire an
-execution claim, retry the script, or create a replacement attempt. The caller
-or its external execution owner decides whether to wait, cancel, rerun, or
-prepare another owner attempt and is responsible for preventing concurrent
-writes. A new attempt may retain the same semantic WorkUnitKey but receives an
-independent bundle. None of these execution choices changes semantic identity
-or introduces a Loom Job state machine.
+A prepared bundle with no completion record is merely incomplete. A present
+malformed, noncanonical, or manifest-unbound completion is instead an
+integrity failure. Loom does not infer whether an external process is still
+running, acquire an execution claim, retry the script, or create a replacement
+attempt. The caller or its external execution owner decides whether to wait,
+cancel, rerun, or prepare another owner attempt and is responsible for
+preventing concurrent writes. A new attempt may retain the same semantic
+WorkUnitKey but receives an independent bundle. None of these execution
+choices changes semantic identity or introduces a Loom Job state machine.
 
-The shared strict-import helper reads only the exact manifest, valid completion
-record, and declared outputs. It verifies attempt integrity and returns one
-ephemeral immutable output snapshot to the descriptor-owned importer; it never
-scans a scratch directory or infers the nearest report. This helper is a
-library operation, not a third semantic importer or persistent output owner.
+The shared expectation-bound attempt importer validates the prepared-manifest
+handle, exact provider identity, semantic closure, importer identity, semantic
+and external inputs, and declared-output set before exposing any result. A
+present completion must bind that validated manifest before the importer
+returns one closed nonsemantic outcome:
+
+```text
+ExternalToolInvocationAttemptOutcome =
+    Incomplete
+  | Failed { InvocationCompletionStatus, exit_code }
+  | Imported { immutable declared-output snapshot }
+```
+
+Only `Success` completion may produce `Imported`; only that path opens,
+verifies, and snapshots declared output bytes. `Incomplete` and `Failed`
+contain no output snapshot. A success-only compatibility wrapper projects the
+first two alternatives back to import errors. Neither API scans a scratch
+directory or infers the nearest report. They are library operations, not a
+third semantic importer or persistent output owner. The exact generator or
+evaluator descriptor owns any later derivation into its semantic outcome;
+External Tool Invocation does not define a universal status mapping.
 
 A Candidate Generator importer finalizes only its descriptor-owned Artifact
 outputs and returns dense descriptor output bindings plus typed lineage
@@ -583,7 +600,9 @@ Stable tests cover:
 - exact HardwareImplementation bytes and top derived from its representation
   root, with raw-source, top-name, and prior-workdir substitution rejected;
 - independent parallel bundles with no shared mutable environment;
-- atomic completion publication and rejection of missing or partial results;
+- atomic completion publication, exact failed status preservation, and no
+  output snapshot for absent or partial completion;
+- completion-to-manifest binding before exposing failed or successful outcomes;
 - descriptor-owned prepare and import as separate calls, with an incomplete
   bundle remaining nonsemantic while any retry decision stays caller-owned;
 - generator import publishing no Evidence and evaluator import requiring an

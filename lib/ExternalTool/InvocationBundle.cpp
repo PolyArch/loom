@@ -1441,8 +1441,8 @@ loadExternalToolInvocationCompletion(
   return readCompletionFromRoot(bundle->root.get());
 }
 
-llvm::Expected<ImportedExternalToolInvocationBundle>
-importExternalToolInvocationBundle(
+llvm::Expected<ExternalToolInvocationAttemptOutcome>
+importExternalToolInvocationAttempt(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationImportExpectation &expectation) {
   auto bundle = openPreparedBundle(prepared);
@@ -1487,14 +1487,17 @@ importExternalToolInvocationBundle(
   if (::fstatat(bundleRoot, kCompletionPath.str().c_str(), &completionStatus,
                 AT_SYMLINK_NOFOLLOW) != 0 &&
       errno == ENOENT)
-    return llvm::make_error<IncompleteExternalToolInvocationError>();
+    return ExternalToolInvocationAttemptOutcome(
+        IncompleteExternalToolInvocationAttempt{});
   auto completion = readCompletionFromRoot(bundleRoot);
   if (!completion)
     return completion.takeError();
-  if (completion->status != InvocationCompletionStatus::Success)
-    return bundleError("invocation did not complete successfully");
   if (completion->manifestDigest != contentDigest(bundle->manifestBytes))
     return bundleError("completion does not bind the imported manifest");
+  if (completion->status != InvocationCompletionStatus::Success)
+    return ExternalToolInvocationAttemptOutcome(
+        FailedExternalToolInvocationAttempt{completion->status,
+                                            completion->exitCode});
   if (completion->outputDigests.size() != manifest->declaredOutputs.size())
     return bundleError("completion output digest count is invalid");
 
@@ -1510,7 +1513,22 @@ importExternalToolInvocationBundle(
       return bundleError("declared output does not match completion digest");
     outputs.emplace_back(path, std::move(*output));
   }
-  return ImportedExternalToolInvocationBundle(std::move(outputs));
+  return ExternalToolInvocationAttemptOutcome(
+      ImportedExternalToolInvocationBundle(std::move(outputs)));
+}
+
+llvm::Expected<ImportedExternalToolInvocationBundle>
+importExternalToolInvocationBundle(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationImportExpectation &expectation) {
+  auto attempt = importExternalToolInvocationAttempt(prepared, expectation);
+  if (!attempt)
+    return attempt.takeError();
+  if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))
+    return llvm::make_error<IncompleteExternalToolInvocationError>();
+  if (std::holds_alternative<FailedExternalToolInvocationAttempt>(*attempt))
+    return bundleError("invocation did not complete successfully");
+  return std::get<ImportedExternalToolInvocationBundle>(std::move(*attempt));
 }
 
 llvm::Expected<std::string> readExternalToolInvocationDeclaredOutput(
