@@ -4,6 +4,7 @@
 #include "Hardware/RTL/Providers/FixedVectorIntegerCompareMinMax.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerMultiply.h"
 #include "Hardware/RTL/Providers/FixedVectorPackUnpack.h"
+#include "Hardware/RTL/Providers/FixedVectorParallelizeSerialize.h"
 #include "Hardware/RTL/Providers/FixedVectorShuffle.h"
 #include "Hardware/RTL/Providers/FixedVectorSliceAlignMerge.h"
 #include "Hardware/RTL/Providers/FixedVectorValueSelect.h"
@@ -21,8 +22,8 @@
 #include "Hardware/RTL/Providers/LoopGate.h"
 #include "Hardware/RTL/Providers/LoopInvariant.h"
 #include "Hardware/RTL/Providers/LoopStream.h"
-#include "Hardware/RTL/Providers/MathRounding.h"
 #include "Hardware/RTL/Providers/MathRoot.h"
+#include "Hardware/RTL/Providers/MathRounding.h"
 #include "Hardware/RTL/Providers/ScalarBitReinterpret.h"
 #include "Hardware/RTL/Providers/ScalarFloatFma.h"
 #include "Hardware/RTL/Providers/ScalarIntegerAddSub.h"
@@ -144,6 +145,9 @@ void registerIndependentProviders(FabricOperationProviderRegistry &registry) {
   requireRegistration(
       loom::hardware::rtl::registerPortableFixedVectorUnpackProvider(registry));
   requireRegistration(
+      loom::hardware::rtl::
+          registerPortableFixedVectorParallelizeSerializeProviders(registry));
+  requireRegistration(
       loom::hardware::rtl::registerPortableScalarSignedIntegerDivRemProvider(
           registry));
   requireRegistration(
@@ -229,6 +233,8 @@ void aggregateRegistrationIsTheCoverageAuthority() {
       ::fabric::ImplementationFamilyId::FixedVectorFloatFma,
       ::fabric::ImplementationFamilyId::FixedVectorPack,
       ::fabric::ImplementationFamilyId::FixedVectorUnpack,
+      ::fabric::ImplementationFamilyId::FixedVectorParallelize,
+      ::fabric::ImplementationFamilyId::FixedVectorSerialize,
       ::fabric::ImplementationFamilyId::TokenConstant,
       ::fabric::ImplementationFamilyId::TokenSync,
       ::fabric::ImplementationFamilyId::TokenMux,

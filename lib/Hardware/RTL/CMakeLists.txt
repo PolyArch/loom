@@ -9,6 +9,7 @@ add_library(LoomHardwareRTL
   Providers/FixedVectorIntegerCompareMinMax.cpp
   Providers/FixedVectorIntegerMultiply.cpp
   Providers/FixedVectorPackUnpack.cpp
+  Providers/FixedVectorParallelizeSerialize.cpp
   Providers/FixedVectorShuffle.cpp
   Providers/FixedVectorSliceAlignMerge.cpp
   Providers/FixedVectorValueSelect.cpp

@@ -432,7 +432,7 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
   std::vector<circt::hw::PortInfo> result;
   result.reserve(inputs.size() + configurationFields.size() + outputs.size() +
                  (tokenHandshake ? 2 * (inputs.size() + outputs.size()) : 0) +
-                 (stateTransform ? 3 : 0) + (orderedProduction ? 1 : 0));
+                 (stateTransform ? 3 : 0) + (orderedProduction ? 2 : 0));
   for (const auto *input : inputs) {
     if (input->payloadWidthBits == 0)
       continue;
@@ -457,6 +457,9 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
     result.push_back(port(builder, "state_current", stateWidth,
                           circt::hw::ModulePort::Direction::Input));
   }
+  if (orderedProduction)
+    result.push_back(port(builder, "continuation_current", 1,
+                          circt::hw::ModulePort::Direction::Input));
   for (const fabric::FabricSemanticConfigFieldRef &field :
        configurationFields) {
     const ConfigurationFieldEncoding *encoding =

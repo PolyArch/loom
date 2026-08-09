@@ -1169,6 +1169,8 @@ llvm::Expected<ModuleRootCirctSkeleton> buildInternalOperationSkeleton(
           }
         if (plan->stateLayout)
           leafInputs.emplace("state_current", stateRegister);
+        if (plan->interface.hasOrderedProductionGroups())
+          leafInputs.emplace("continuation_current", continuation);
         for (const OperationConfigurationPlan &configuration :
              plan->operationConfiguration)
           leafInputs.emplace("config_" + std::to_string(configuration.ordinal),

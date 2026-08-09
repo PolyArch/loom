@@ -383,6 +383,22 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-fixed-vector-parallelize-serialize-test
+    PortableFixedVectorParallelizeSerializeTest.cpp
+  )
+
+  target_link_libraries(loom-portable-fixed-vector-parallelize-serialize-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-fixed-vector-shuffle-test
     PortableFixedVectorShuffleTest.cpp
   )

@@ -141,8 +141,10 @@ deriveTransparentLoopOperationLeafStateLayout(
 /// and ConfigurationABI. Nonzero physical payloads and encoded configuration
 /// fields form the ordinary combinational boundary. Control/stream families
 /// additionally expose ready/valid and, where required, an opaque
-/// selected-context state transform. Context selection, state storage, clock,
-/// reset, and elastic result storage remain structural-owner responsibilities.
+/// selected-context state transform. Ordered production exposes the structural
+/// continuation state and the leaf's final-production decision. Context
+/// selection, state storage, clock, reset, and elastic result storage remain
+/// structural-owner responsibilities.
 llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
     mlir::OpBuilder &builder,
     const fabric::FabricPhysicalOccurrenceOwnerRef &occurrence,
