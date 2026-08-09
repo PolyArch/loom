@@ -78,9 +78,10 @@ const EvaluationCaseSignatureDescriptor kCaseSignature{
     kBaseConditionPatterns,
 };
 
-const std::array<ModelConditionCapability, 3> kConditionCapabilities = {{
+const std::array<ModelConditionCapability, 4> kConditionCapabilities = {{
     {kBaseConditionPatterns[0], ConditionDisposition::Required},
     {kBaseConditionPatterns[1], ConditionDisposition::Required},
+    {kBaseConditionPatterns[3], ConditionDisposition::Required},
     {kBaseConditionPatterns[5], ConditionDisposition::Required},
 }};
 
@@ -217,6 +218,7 @@ projectCompleteRailAnalysisConfiguration(
 
   const ProcessCornerCondition *processCorner = nullptr;
   const SupplyVoltageCondition *supplyVoltage = nullptr;
+  const RequiredClockPeriodCondition *clockPeriod = nullptr;
   const ActivityBindingCondition *activity = nullptr;
   for (const EvaluationCondition &condition : request.baseConditions()) {
     if (const auto *value =
@@ -226,11 +228,14 @@ projectCompleteRailAnalysisConfiguration(
                  std::get_if<SupplyVoltageCondition>(&condition.payload))
       supplyVoltage = value;
     else if (const auto *value =
+                 std::get_if<RequiredClockPeriodCondition>(&condition.payload))
+      clockPeriod = value;
+    else if (const auto *value =
                  std::get_if<ActivityBindingCondition>(&condition.payload))
       activity = value;
   }
-  if (!processCorner || !supplyVoltage || !activity ||
-      request.baseConditions().size() != 3)
+  if (!processCorner || !supplyVoltage || !clockPeriod || !activity ||
+      request.baseConditions().size() != 4)
     return railError("request conditions do not form one complete rail input");
 
   const auto *assumption =
@@ -239,14 +244,14 @@ projectCompleteRailAnalysisConfiguration(
     return railError("request activity is not an explicit assumption");
   if (!isExactHardwareRootTarget(processCorner->target, hardware) ||
       !isExactHardwareRootTarget(supplyVoltage->powerDomain, hardware) ||
+      !isExactHardwareRootTarget(clockPeriod->clockDomain, hardware) ||
       !isExactHardwareRootTarget(activity->target, hardware) ||
-      !isExactHardwareRootTarget(assumption->clockDomain, hardware))
+      !isExactHardwareRootTarget(assumption->clockDomain, hardware) ||
+      clockPeriod->clockDomain != assumption->clockDomain)
     return railError("rail conditions must target the exact global subject");
 
   return CompleteRailAnalysisConfiguration{
-      kModelConfig,
-      *processCorner,
-      *supplyVoltage,
+      kModelConfig, *processCorner, *supplyVoltage, *clockPeriod,
       ExplicitRailActivityBinding{activity->target, *assumption},
   };
 }
