@@ -1,0 +1,19 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-math-root-test %t
+# RUN: FileCheck %s --check-prefix=SQRT < %t/generated/scalar_math_sqrt.sv
+# RUN: FileCheck %s --check-prefix=RSQRT < %t/generated/scalar_math_rsqrt.sv
+
+# SQRT: module scalar_math_sqrt
+# SQRT: input [2:0] config_0
+# SQRT: loom_math_sqrt_e11_f52
+# SQRT-NOT: $sqrt
+# SQRT-NOT: shortreal
+# SQRT-NOT: DPI
+
+# RSQRT: module scalar_math_rsqrt
+# RSQRT: input [2:0] config_0
+# RSQRT: loom_math_rsqrt_e11_f52
+# RSQRT-NOT: $sqrt
+# RSQRT-NOT: shortreal
+# RSQRT-NOT: DPI
