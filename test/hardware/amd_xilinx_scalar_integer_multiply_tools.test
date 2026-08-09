@@ -1,0 +1,5 @@
+# REQUIRES: circt, verilator
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-amd-xilinx-scalar-integer-multiply-test %t
+# RUN: cd %t/exact/provider_artifacts && env CXXFLAGS=-fcoroutines verilator --binary --timing -Wno-fatal --top-module testbench --Mdir verilator_obj amd_xilinx_scalar_integer_multiply.sv synthetic_dsp58.sv testbench.sv
+# RUN: %t/exact/provider_artifacts/verilator_obj/Vtestbench
