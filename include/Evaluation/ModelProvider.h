@@ -26,6 +26,19 @@ struct EvaluationModelResult final {
   EvaluationEvidenceOutcome outcome;
 };
 
+/// The transient external-provider preparation result. A valid exact Request
+/// outside stable provider capability can terminate as Unsupported without
+/// manufacturing an invocation attempt. Evaluation remains the Evidence owner.
+using EvaluationModelProviderPreparation =
+    std::variant<external_tool::PreparedExternalToolInvocation,
+                 UnsupportedEvidence>;
+
+/// The owner-validated public preparation result. The terminal branch is
+/// already bound to the exact Request with dense descriptor output bindings.
+using EvaluationModelPreparation =
+    std::variant<external_tool::PreparedExternalToolInvocation,
+                 EvaluationEvidence>;
+
 /// The closed provider implementation forms. The registered form must match
 /// the model descriptor's provider form exactly.
 struct EvaluationModelInProcessProvider final {
@@ -41,7 +54,7 @@ struct EvaluationModelInProcessProvider final {
 };
 
 struct EvaluationModelExternalPrepareImportProvider final {
-  llvm::Expected<external_tool::PreparedExternalToolInvocation> (*prepare)(
+  llvm::Expected<EvaluationModelProviderPreparation> (*prepare)(
       const EvaluationRequest &request,
       const CaseArtifactResolution &resolution,
       const ArtifactStore &artifactStore, const BlobStore &blobStore,
@@ -94,11 +107,11 @@ evaluateRequest(const EvaluationRequest &request,
                 const ArtifactStore &artifactStore,
                 const BlobStore &blobStore);
 
-/// Prepares one deterministic finalized invocation bundle through the exact
-/// registered ExternalPrepareImport model provider. The descriptor form is
+/// Prepares one deterministic finalized invocation bundle, or finalizes a
+/// stable typed Unsupported result without an attempt. The descriptor form is
 /// validated before any provider lookup; the caller alone decides whether,
-/// where, and when to execute run.sh.
-llvm::Expected<external_tool::PreparedExternalToolInvocation>
+/// where, and when to execute a returned run.sh.
+llvm::Expected<EvaluationModelPreparation>
 prepareEvaluationModelInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore,

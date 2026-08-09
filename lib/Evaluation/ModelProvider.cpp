@@ -23,6 +23,15 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "evaluation_provider_invalid: " + message);
 }
 
+std::vector<ModelOutputBinding>
+emptyOutputBindings(const EvaluationModelDescriptor &descriptor) {
+  std::vector<ModelOutputBinding> bindings;
+  bindings.reserve(descriptor.outputSlots.size());
+  for (const ModelOutputSlotDescriptor &slot : descriptor.outputSlots)
+    bindings.push_back(ModelOutputBinding{slot.slot, {}});
+  return bindings;
+}
+
 } // namespace
 
 llvm::Error
@@ -120,12 +129,8 @@ evaluateRequest(const EvaluationRequest &request,
       }
   }
   if (!implementation) {
-    std::vector<ModelOutputBinding> emptyOutputs;
-    emptyOutputs.reserve(descriptor->outputSlots.size());
-    for (const ModelOutputSlotDescriptor &slot : descriptor->outputSlots)
-      emptyOutputs.push_back(ModelOutputBinding{slot.slot, {}});
     return EvaluationEvidence::get(
-        request, std::move(emptyOutputs),
+        request, emptyOutputBindings(*descriptor),
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable},
         resolution, artifactStore);
   }
@@ -152,7 +157,7 @@ lookupProviderImplementation(EvaluationModelDescriptorRef descriptor) {
 
 } // namespace
 
-llvm::Expected<external_tool::PreparedExternalToolInvocation>
+llvm::Expected<EvaluationModelPreparation>
 prepareEvaluationModelInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore,
@@ -171,9 +176,23 @@ prepareEvaluationModelInvocation(
       lookupProviderImplementation(request.modelBinding().descriptorRef());
   if (!implementation)
     return invalid("external prepare/import model provider is unavailable");
-  return std::get<EvaluationModelExternalPrepareImportProvider>(
-             *implementation)
-      .prepare(request, resolution, artifactStore, blobStore, context);
+  auto preparation =
+      std::get<EvaluationModelExternalPrepareImportProvider>(*implementation)
+          .prepare(request, resolution, artifactStore, blobStore, context);
+  if (!preparation)
+    return preparation.takeError();
+  if (auto *prepared =
+          std::get_if<external_tool::PreparedExternalToolInvocation>(
+              &*preparation))
+    return EvaluationModelPreparation{std::move(*prepared)};
+
+  auto evidence = EvaluationEvidence::get(
+      request, emptyOutputBindings(*descriptor),
+      std::get<UnsupportedEvidence>(std::move(*preparation)), resolution,
+      artifactStore);
+  if (!evidence)
+    return evidence.takeError();
+  return EvaluationModelPreparation{std::move(*evidence)};
 }
 
 llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
