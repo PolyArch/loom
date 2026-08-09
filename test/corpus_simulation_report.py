@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -110,6 +111,7 @@ def parse_dfg_simulation_report(
     if not isinstance(payload, dict):
         return None, f"DFG simulation report is not a JSON object: {path}"
     expected_fields = {
+        "actor_refs",
         "actors",
         "artifacts",
         "compiler_target",
@@ -124,7 +126,9 @@ def parse_dfg_simulation_report(
         "operation_firings",
         "selected_source_files",
         "simulation_seconds",
+        "source_oracle",
         "status",
+        "transform_lineage",
         "value_lanes_compared",
         "wavefront_steps",
         "wavefront_steps_per_second",
@@ -158,8 +162,11 @@ def parse_dfg_simulation_report(
     artifacts = payload["artifacts"]
     artifact_fields = {
         "canonical_dataflow",
+        "canonical_dataflow_initial",
         "simulation_runtime_input",
         "simulation_workload",
+        "structured_initial",
+        "structured_selected",
     }
     if (
         not isinstance(artifacts, dict)
@@ -167,6 +174,63 @@ def parse_dfg_simulation_report(
         or any(not is_artifact_identity(artifacts[field]) for field in artifact_fields)
     ):
         return None, f"DFG simulation report has invalid artifact identities: {path}"
+
+    actor_refs = payload["actor_refs"]
+    actor_entities: set[str] = set()
+    if not isinstance(actor_refs, list) or not actor_refs:
+        return None, f"DFG simulation report has no stable ActorRefs: {path}"
+    for reference in actor_refs:
+        if (
+            not isinstance(reference, dict)
+            or set(reference) != {"artifact", "entity"}
+            or reference["artifact"] != artifacts["canonical_dataflow"]
+            or not isinstance(reference["entity"], str)
+            or re.fullmatch(r"0|[1-9][0-9]*", reference["entity"]) is None
+            or reference["entity"] in actor_entities
+        ):
+            return None, f"DFG simulation report has an invalid ActorRef: {path}"
+        actor_entities.add(reference["entity"])
+
+    source_oracle = payload["source_oracle"]
+    if (
+        not isinstance(source_oracle, dict)
+        or set(source_oracle) != {"comparison", "entry_result"}
+        or source_oracle["comparison"] != "equivalent"
+        or (
+            source_oracle["entry_result"] is not None
+            and (
+                isinstance(source_oracle["entry_result"], bool)
+                or not isinstance(source_oracle["entry_result"], int)
+            )
+        )
+    ):
+        return None, f"DFG simulation report has an invalid source oracle: {path}"
+
+    transform_lineage = payload["transform_lineage"]
+    lineage_fields = {
+        "dataflow_rewrite",
+        "execution_shape",
+        "memory_communication",
+        "ownership",
+        "schedule",
+        "special_math_accuracy",
+    }
+    if (
+        not isinstance(transform_lineage, dict)
+        or set(transform_lineage) != lineage_fields
+    ):
+        return None, f"DFG simulation report has invalid transform lineage: {path}"
+    for field in ("ownership", "execution_shape", "special_math_accuracy", "schedule"):
+        count = transform_lineage[field]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return None, f"DFG simulation report has invalid transform lineage: {path}"
+    for field in ("memory_communication", "dataflow_rewrite"):
+        kinds = transform_lineage[field]
+        if not isinstance(kinds, list) or any(
+            isinstance(kind, bool) or not isinstance(kind, int) or kind < 0
+            for kind in kinds
+        ):
+            return None, f"DFG simulation report has invalid transform lineage: {path}"
     if payload["execution_terminal"] != "retired":
         return None, f"DFG simulation report has invalid execution terminal: {path}"
 
@@ -203,6 +267,12 @@ def parse_dfg_simulation_report(
                 f"{field} must be a positive integer: {path}"
             )
         integers[field] = value
+
+    if len(actor_refs) != integers["actors"]:
+        return (
+            None,
+            f"DFG simulation report has an incomplete ActorRef inventory: {path}",
+        )
 
     for field in ("value_lanes_compared", "memory_bytes_compared"):
         value = payload[field]

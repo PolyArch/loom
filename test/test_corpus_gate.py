@@ -189,11 +189,19 @@ VALID_COUNTS = '{"actors": 3, "graphs": 1}\n'
 VALID_DFG_REPORT = (
     json.dumps(
         {
+            "actor_refs": [
+                {"artifact": "03" * 32, "entity": "0"},
+                {"artifact": "03" * 32, "entity": "1"},
+                {"artifact": "03" * 32, "entity": "2"},
+            ],
             "actors": 3,
             "artifacts": {
                 "canonical_dataflow": "03" * 32,
+                "canonical_dataflow_initial": "06" * 32,
                 "simulation_runtime_input": "05" * 32,
                 "simulation_workload": "04" * 32,
+                "structured_initial": "07" * 32,
+                "structured_selected": "08" * 32,
             },
             "compiler_target": {
                 "data_layout": corpus_gate.LLVM_DATALAYOUT_LINE.split('"')[1],
@@ -215,7 +223,16 @@ VALID_DFG_REPORT = (
                 str(ROOT / "test" / "app" / "axpy" / "main_func.cpp")
             ],
             "simulation_seconds": 0.0001,
+            "source_oracle": {"comparison": "equivalent", "entry_result": 0},
             "status": "pass",
+            "transform_lineage": {
+                "dataflow_rewrite": [7],
+                "execution_shape": 1,
+                "memory_communication": [2],
+                "ownership": 1,
+                "schedule": 1,
+                "special_math_accuracy": 0,
+            },
             "value_lanes_compared": 0,
             "wavefront_steps": 100,
             "wavefront_steps_per_second": 1_000_000.0,
@@ -276,6 +293,17 @@ class CorpusGateExecutionPolicyTest(unittest.TestCase):
 
         self.assertIsNone(report)
         self.assertIn("invalid artifact identities", defect)
+
+    def test_dfg_report_rejects_foreign_actor_reference(self) -> None:
+        payload = json.loads(VALID_DFG_REPORT)
+        payload["actor_refs"][0]["artifact"] = "09" * 32
+        with tempfile.TemporaryDirectory(prefix="loom-actor-report-") as root:
+            report_path = Path(root) / "report.json"
+            report_path.write_text(json.dumps(payload))
+            report, defect = corpus_gate.parse_dfg_simulation_report(report_path)
+
+        self.assertIsNone(report)
+        self.assertIn("invalid ActorRef", defect)
 
     def test_defaults_reserve_development_cpus_and_bound_dfg_sim_time(self) -> None:
         with mock.patch.object(corpus_gate.os, "cpu_count", return_value=32):

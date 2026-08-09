@@ -169,6 +169,7 @@ struct NullaryProgramInputs final {
 
 struct SourceBackedCompilation final {
   loom::dse::SelectedPreMappingCompilation selected;
+  loom::ArtifactIdentity structuredInitialIdentity;
   loom::ArtifactIdentity workloadIdentity;
   loom::ArtifactIdentity runtimeInputIdentity;
   std::vector<loom::dse::DsePlanGenerateInvocationRecords>
@@ -240,6 +241,8 @@ compileTarget(std::unique_ptr<llvm::Module> module,
   auto inputs = makeNullaryProgramInputs(source->structuredProgram, "main");
   if (!inputs)
     return inputs.takeError();
+  const loom::ArtifactIdentity structuredInitialIdentity =
+      source->structuredProgram.identity();
   const loom::ArtifactIdentity workloadIdentity = inputs->workload.identity();
   const loom::ArtifactIdentity runtimeInputIdentity =
       inputs->runtimeInput.identity();
@@ -307,9 +310,40 @@ compileTarget(std::unique_ptr<llvm::Module> module,
       generateSummary->incompleteInvocations != 0)
     return invalid("completed central DSE has invalid Generate provenance");
   return SourceBackedCompilation{std::move(completed.selected.front()),
-                                 workloadIdentity, runtimeInputIdentity,
+                                 structuredInitialIdentity,
+                                 workloadIdentity,
+                                 runtimeInputIdentity,
                                  std::move(completed.planGenerateInvocations),
                                  *generateSummary};
+}
+
+llvm::Expected<loom::ArtifactIdentity> initialCanonicalDataflowIdentity(
+    const loom::dse::SelectedPreMappingCompilation &selected) {
+  if (selected.dataflowRewriteDerivations.empty())
+    return selected.compilation.canonicalDataflow.identity();
+
+  std::vector<loom::ArtifactRootReference> roots;
+  bool selectedIsDerived = false;
+  for (const loom::dse::DataflowRewriteDerivation &candidate :
+       selected.dataflowRewriteDerivations) {
+    if (candidate.child.artifact ==
+        selected.compilation.canonicalDataflow.identity())
+      selectedIsDerived = true;
+    bool parentIsDerived = false;
+    for (const loom::dse::DataflowRewriteDerivation &other :
+         selected.dataflowRewriteDerivations)
+      parentIsDerived |= candidate.parent == other.child;
+    if (!parentIsDerived && llvm::find(roots, candidate.parent) == roots.end())
+      roots.push_back(candidate.parent);
+  }
+  if (!selectedIsDerived)
+    return invalid("selected D* is absent from its rewrite lineage");
+  if (roots.size() != 1 ||
+      roots.front().schemaIdentity !=
+          dataflow::canonicalDataflowSchema.identity ||
+      roots.front().schemaVersion != dataflow::canonicalDataflowSchema.version)
+    return invalid("rewrite lineage does not have one exact D0 root");
+  return roots.front().artifact;
 }
 
 llvm::Expected<std::vector<std::string>>
@@ -336,15 +370,13 @@ selectedSourceFiles(const loom::dse::SelectedPreMappingCompilation &selected) {
   return files;
 }
 
-llvm::Error writeReport(
-    llvm::StringRef path, std::uint64_t graphCount, std::uint64_t actorCount,
-    llvm::ArrayRef<std::string> selectedSourceFiles,
-    const loom::ArtifactIdentity &canonicalDataflowIdentity,
-    const loom::ArtifactIdentity &workloadIdentity,
-    const loom::ArtifactIdentity &runtimeInputIdentity,
-    const loom::SystemCompilerTargetBindings &compilerTargets,
-    const loom::sim::SourceBackedDfgValidationResult &replay,
-    const loom::dse::DsePlanGenerateInvocationSummary &planGenerateSummary) {
+llvm::Error
+writeReport(llvm::StringRef path,
+            llvm::ArrayRef<std::string> selectedSourceFiles,
+            const SourceBackedCompilation &compilation,
+            const dataflow::CanonicalDataflowProgramView &view,
+            const loom::SystemCompilerTargetBindings &compilerTargets,
+            const loom::sim::SourceBackedDfgValidationResult &replay) {
   llvm::SmallString<256> parent(path);
   llvm::sys::path::remove_filename(parent);
   if (!parent.empty())
@@ -358,16 +390,34 @@ llvm::Error writeReport(
   root["kind"] = "source_backed_dfg_comparison";
   root["status"] = "pass";
   root["execution_terminal"] = "retired";
+  auto canonicalDataflowInitial =
+      initialCanonicalDataflowIdentity(compilation.selected);
+  if (!canonicalDataflowInitial)
+    return canonicalDataflowInitial.takeError();
   llvm::json::Object artifacts;
-  artifacts["canonical_dataflow"] =
-      loom::formatArtifactIdentityHex(canonicalDataflowIdentity);
+  artifacts["canonical_dataflow"] = loom::formatArtifactIdentityHex(
+      compilation.selected.compilation.canonicalDataflow.identity());
+  artifacts["canonical_dataflow_initial"] =
+      loom::formatArtifactIdentityHex(*canonicalDataflowInitial);
   artifacts["simulation_workload"] =
-      loom::formatArtifactIdentityHex(workloadIdentity);
+      loom::formatArtifactIdentityHex(compilation.workloadIdentity);
   artifacts["simulation_runtime_input"] =
-      loom::formatArtifactIdentityHex(runtimeInputIdentity);
+      loom::formatArtifactIdentityHex(compilation.runtimeInputIdentity);
+  artifacts["structured_initial"] =
+      loom::formatArtifactIdentityHex(compilation.structuredInitialIdentity);
+  artifacts["structured_selected"] = loom::formatArtifactIdentityHex(
+      compilation.selected.compilation.structuredProgram.identity());
   root["artifacts"] = std::move(artifacts);
-  root["graphs"] = graphCount;
-  root["actors"] = actorCount;
+  root["graphs"] = view.graphs().size();
+  root["actors"] = view.actors().size();
+  llvm::json::Array actorReferences;
+  for (const dataflow::CanonicalActorView &actor : view.actors()) {
+    llvm::json::Object reference;
+    reference["artifact"] = loom::formatArtifactIdentityHex(actor.ref.artifact);
+    reference["entity"] = std::to_string(actor.ref.entity.value());
+    actorReferences.push_back(std::move(reference));
+  }
+  root["actor_refs"] = std::move(actorReferences);
   root["dynamic_calls"] = replay.dynamicActivations;
   root["value_lanes_compared"] = replay.valueLanesCompared;
   root["memory_bytes_compared"] = replay.memoryBytesCompared;
@@ -382,6 +432,43 @@ llvm::Error writeReport(
                 replay.simulationSeconds
           : 0.0;
   root["operation_firings"] = std::move(firings);
+  llvm::json::Object sourceOracle;
+  sourceOracle["comparison"] = "equivalent";
+  if (replay.sourceReturnValue && replay.sourceReturnValue->tokenCount == 1 &&
+      replay.sourceReturnValue->lanes.size() == 1 &&
+      replay.sourceReturnValue->lanes.front().state ==
+          loom::sim::SemanticState::Defined &&
+      replay.sourceReturnValue->lanes.front().bits.getBitWidth() <= 64)
+    sourceOracle["entry_result"] =
+        replay.sourceReturnValue->lanes.front().bits.getSExtValue();
+  else
+    sourceOracle["entry_result"] = nullptr;
+  root["source_oracle"] = std::move(sourceOracle);
+
+  llvm::json::Object transformLineage;
+  transformLineage["ownership"] = compilation.selected.derivations.size();
+  transformLineage["execution_shape"] =
+      compilation.selected.executionShapeDerivations.size();
+  transformLineage["special_math_accuracy"] =
+      compilation.selected.specialMathAccuracyDerivations.size();
+  transformLineage["schedule"] =
+      compilation.selected.scheduleDerivations.size();
+  llvm::json::Array memoryCommunication;
+  for (const loom::dse::StructuredMemoryCommunicationDerivation &derivation :
+       compilation.selected.memoryCommunicationDerivations)
+    memoryCommunication.push_back(static_cast<std::int64_t>(
+        loom::frontend::structuredMemoryCommunicationDecisionKind(
+            derivation.decision)));
+  transformLineage["memory_communication"] = std::move(memoryCommunication);
+  llvm::json::Array dataflowRewrite;
+  for (const loom::dse::DataflowRewriteDerivation &derivation :
+       compilation.selected.dataflowRewriteDerivations)
+    dataflowRewrite.push_back(static_cast<std::int64_t>(
+        dataflow::dataflowRewriteKind(derivation.decision)));
+  transformLineage["dataflow_rewrite"] = std::move(dataflowRewrite);
+  root["transform_lineage"] = std::move(transformLineage);
+
+  const auto &planGenerateSummary = compilation.planGenerateSummary;
   if (planGenerateSummary.completedInvocations == 0 ||
       planGenerateSummary.incompleteInvocations != 0)
     return invalid("completed DSE retained no Generate provenance");
@@ -530,12 +617,8 @@ int main(int argc, char **argv) {
   auto sourceFiles = selectedSourceFiles(selected->selected);
   if (!sourceFiles)
     return reportError(sourceFiles.takeError());
-  if (llvm::Error error = writeReport(
-          outputPath, view->graphs().size(), view->actors().size(),
-          *sourceFiles,
-          selected->selected.compilation.canonicalDataflow.identity(),
-          selected->workloadIdentity, selected->runtimeInputIdentity,
-          *compilerTargets, replay, selected->planGenerateSummary))
+  if (llvm::Error error = writeReport(outputPath, *sourceFiles, *selected,
+                                      *view, *compilerTargets, replay))
     return reportError(std::move(error));
   return 0;
 }
