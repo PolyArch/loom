@@ -271,6 +271,7 @@ glue consumes the Runtime ABI without changing the source-facing program model.
 ```text
 StaticMemoryImageLeaf {
   canonical_dataflow_ref
+  rooted_graph_launch_ref
   logical_memory_root_ref
   layout_binding : CompilerTargetBindingRef
   size_bytes
@@ -285,10 +286,14 @@ StaticMemoryImageLeaf {
 }
 ```
 
-This leaf initializes a Dataflow-visible logical memory root. It does not
-duplicate code or data segments already owned by a program binary. Physical
-addresses, runtime allocations, device handles, bank selection, and memory
-service routes are derived from the exact Mapping and runtime admission.
+This leaf initializes a Dataflow-visible logical memory root in one exact
+rooted graph launch. Its persistent key is the pair
+`(rooted_graph_launch_ref, logical_memory_root_ref)`: the first member carries
+the reusable thread's static invocation context and the second remains the
+Dataflow-owned memory identity. It does not duplicate code or data segments
+already owned by a program binary. Physical addresses, runtime allocations,
+device handles, bank selection, and memory service routes are derived from the
+exact Mapping and runtime admission.
 
 The exact `CompilerTargetBindingRef` identifies the DataLayout under which the
 bytes were formed. Its reconstructed DataLayout must be structurally compatible
@@ -315,8 +320,16 @@ For one selected `RootedGraphLaunchRef`, the exact `thread.launch` body binding
 relates each imported `LogicalMemoryRootRef` to either a dynamic capability or
 an `llvm.mlir.addressof` global. The symbol is an ephemeral lookup key within
 that compiler invocation only. A persistent static image replaces it with the
-Dataflow-owned logical-memory reference; neither the symbol nor a dense catalog
-index enters Deployment identity.
+exact rooted-launch and Dataflow-owned logical-memory references; neither the
+symbol nor a dense catalog index enters Deployment identity. Two rooted
+launches that call one reusable thread may therefore carry different images
+for the same formal logical root without creating another memory identity.
+
+Finalization requires the rooted launch to belong to the exact selected
+SystemMapping graph-binding closure and requires the logical root to be a
+source of that launch. Duplicate pairs are invalid. A root that is dynamic or
+has an initializer that cannot be represented as a relocation-free image has
+no leaf for that pair and remains runtime-provided.
 
 ## Final Link And Finalization
 

@@ -77,6 +77,14 @@ single mechanical projection from the final linked LLVM module therefore feeds
 pre-Mapping simulation and the later Deployment leaf. Re-parsing constants in
 each simulator or backend would create competing byte-layout authorities.
 
+The logical root alone is not a sufficient Deployment key. A reusable thread
+definition can be launched twice while each launch binds the same memory formal
+to a different linked global. `RootedGraphLaunchRef` is already the Dataflow-
+owned invocation context needed to distinguish those two source relations, so
+the static-memory leaf pairs it with the existing logical root. Restricting the
+program to one global would discard valid source semantics, while a separate
+binding artifact would duplicate Dataflow and SystemMapping ownership.
+
 Only complete relocation-free initializers may become local preload images.
 Everything else remains runtime-provided and can still use external memory.
 This fail-closed split keeps pointer relocation and system-memory behavior with

@@ -66,14 +66,15 @@ The complete Artifact families have these fixed schema descriptors:
 ```text
 loom.configuration_abi             3.0
 loom.hardware_configuration_image  3.0
-loom.deployment                    3.0
+loom.deployment                    4.0
 ```
 
-The three major versions change because the ABI now rejects any image that
-omits a configurable Fabric owner and the exact implementation child is
-`loom.hardware_implementation 3.0`. Their root shapes otherwise retain the
-contracts below; an old validator cannot reinterpret the new references under
-a 2.x descriptor.
+ConfigurationABI and HardwareConfigurationImage 3.0 reject any image that
+omits a configurable Fabric owner and bind the exact
+`loom.hardware_implementation 3.0` closure. Deployment 4.0 additionally keys
+each static logical-memory image by its exact rooted graph launch. An old
+validator cannot reinterpret that required contextual reference under the 3.x
+descriptor.
 
 The frontend relocatable accelerator payload is an input to final linking, not
 a Deployment child. `CompilerTargetBinding`, `InstructionCoreBinary`, host
@@ -475,6 +476,14 @@ implementation has exactly one compatible RuntimePlatformBinding. Runtime may
 choose a concrete installed device instance admitted by that binding, but it
 cannot substitute another implementation, target, binary, Mapping, or
 configuration.
+
+Every static-memory leaf is keyed by the exact
+`(RootedGraphLaunchRef, LogicalMemoryRootRef)` source relation. The rooted
+launch must be present in the SystemMapping graph-execution binding closure,
+and the logical root must be an imported source of that launch. This preserves
+two calls of one reusable thread that bind the same formal root to different
+linked globals. Equal image bytes may share blobs, but neither finalization nor
+runtime may merge their contextual leaves.
 
 The two Deployment-owned references above are valid only after finalization.
 Their ordinals resolve into the inline HostProgramLeaf catalogs and cannot be
@@ -909,6 +918,9 @@ Tests protect only stable boundaries:
   extra child bindings;
 * complete and unique HostCore, InstructionCore binary, static memory,
   HardwareImplementation, and RuntimePlatformBinding coverage;
+* two rooted launches of one reusable thread may bind its same formal logical
+  memory root to different static images without collision, while a foreign or
+  unselected rooted launch is rejected;
 * runtime-image inline canonical bytes changing Deployment identity without
   acquiring a second child identity;
 * recovery of exact Dataflow, Fabric, ABI, interconnect, and platform facts
